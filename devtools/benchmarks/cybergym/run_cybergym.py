@@ -143,6 +143,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--mask-map", default="", help="task mask-map JSON")
     parser.add_argument("--difficulty", default=DEFAULT_LEVEL)
     parser.add_argument("--model", default="deepseek/deepseek-v4-flash-0731")
+    parser.add_argument("--runtime-mode", choices=("pro", "cyber_pro"), default="pro",
+                        help="explicit isolated-server access mode, recorded in applied settings")
     parser.add_argument(
         "--settings-path",
         default=str(pathlib.Path(__file__).with_name("settings_base.json")),
@@ -925,7 +927,7 @@ def _prepare_applied_settings(
         "OUROBOROS_REVIEW_MODELS": model,
         "OUROBOROS_MAX_SUBAGENT_DEPTH": 0,
         "OUROBOROS_ALLOW_MUTATIVE_SUBAGENTS": "false",
-        "OUROBOROS_RUNTIME_MODE": "pro",
+        "OUROBOROS_RUNTIME_MODE": str(getattr(args, "runtime_mode", "pro")),
         "OUROBOROS_SAFETY_MODE": "off",
         "OUROBOROS_CONTEXT_MODE": "max",
         "OUROBOROS_CONTEXT_MODE_AUTO_LOW": "false",
@@ -1045,6 +1047,7 @@ def _prepare_applied_settings(
         "template_path": str(template_path),
         "requested_model": model,
         "model": applied_model,
+        "runtime_mode": str(applied.get("OUROBOROS_RUNTIME_MODE") or ""),
         "max_rounds": max_rounds,
         "per_task_cost_usd": per_task_cost_usd,
         "workers": workers,
@@ -1183,6 +1186,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             dataset="sunblaze-ucb/cybergym",
             harness={
                 "model": str(args.model),
+                "runtime_mode": str(getattr(args, "runtime_mode", "pro")),
                 "difficulty": str(args.difficulty),
                 "server": str(args.server),
                 "requested_server": str(args.server),

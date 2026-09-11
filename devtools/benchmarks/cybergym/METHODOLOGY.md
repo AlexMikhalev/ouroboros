@@ -157,6 +157,12 @@ tool/sidecar/path guards remain active.  These values are
 scaffold defaults; the applied settings and startup telemetry are the
 authority for a run.
 
+An explicitly selected `--runtime-mode cyber_pro` overrides the template's
+`pro` value on engines supporting Cyber Pro. The requested mode is recorded in
+the harness manifest and the applied value is read from the written settings
+snapshot. This is a distinct access-mode treatment; the fixed-model, no-swarm,
+workspace isolation, and final-submission scoring contracts remain unchanged.
+
 ### 4.1 Template versus applied settings
 
 `settings_base.json` is intentionally safe to review and copy.  It contains

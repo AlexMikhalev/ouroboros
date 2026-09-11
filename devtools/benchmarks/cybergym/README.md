@@ -136,6 +136,13 @@ recorded state layout.
 
 ## Template settings versus applied settings
 
+`--runtime-mode cyber_pro` explicitly selects Cyber Pro for an isolated run.
+The default remains `pro`. The launcher overrides the template's mode with the
+selected value and records both the request and the applied snapshot. Changing
+access mode creates a distinct experiment configuration; it does not change
+the no-swarm task contract, fixed model, private verifier boundary, or scoring.
+Use this option only with an engine version that supports `cyber_pro`.
+
 `settings_base.json` is a reviewable template.  It is not evidence that a live
 run used those values.  It contains only a blank OpenRouter credential field;
 the launcher must derive a fresh isolated settings
