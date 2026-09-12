@@ -264,12 +264,18 @@ def _emit_simple_usage(
     if not isinstance(metadata, dict):
         metadata = {}
     try:
-        cost = estimate_cost_optional(
-            model if "/" in str(model) else f"{provider}/{model}",
-            prompt_tokens,
-            completion_tokens,
-            provider=provider,
-        )
+        from ouroboros._usage_response import observed_processing_mode, provider_cost_value
+
+        mode = observed_processing_mode(provider, usage or {})
+        cost = provider_cost_value((usage or {}).get("cost"))
+        if cost is None:
+            cost = estimate_cost_optional(
+                model if "/" in str(model) else f"{provider}/{model}",
+                prompt_tokens,
+                completion_tokens,
+                provider=provider,
+                **({"processing_mode": mode} if mode else {}),
+            )
         ctx.pending_events.append({
             "type": "llm_usage",
             "task_id": str(getattr(ctx, "task_id", "") or ""),
@@ -319,8 +325,11 @@ def _web_search_openrouter(ctx: ToolContext, query: str, model: str = "", search
             )
         message = response.choices[0].message if getattr(response, "choices", None) else None
         text = str(getattr(message, "content", "") or "").strip()
-        usage_obj = getattr(response, "usage", None)
-        usage = usage_obj.model_dump() if hasattr(usage_obj, "model_dump") else (_obj_to_plain(usage_obj) if usage_obj else {})
+        from ouroboros._usage_response import usage_from_response
+        from ouroboros.llm_attempt import attach_processing_receipt
+
+        usage, _cost, _final = usage_from_response(response)
+        attach_processing_receipt({"provider": "openrouter", "usage_model": active_model}, usage)
         # Guard: an exotic (non-dict) usage object must not crash the leg with a
         # successful paid answer in hand — mirror the Anthropic leg's isinstance
         # check (a `.get` on a non-dict would raise and discard the result).
@@ -378,6 +387,9 @@ def _web_search_anthropic(ctx: ToolContext, query: str, model: str = "",
         usage = _obj_to_plain(getattr(response, "usage", None))
         if not isinstance(usage, dict):
             usage = {}
+        from ouroboros.llm_attempt import attach_processing_receipt
+
+        attach_processing_receipt({"provider": "anthropic", "usage_model": active_model}, usage)
         usage["ledger_attempt_ids"] = list(attempt_ids)
         _emit_simple_usage(
             ctx,
@@ -498,6 +510,7 @@ def _web_search(
     reasoning_effort: str = "",
     _attempt: int = 0,
     _processing_preference: Optional[str] = None,
+    _processing_submission: Optional[str] = None,
 ) -> str:
     from ouroboros.model_slots import resolve_processing_preference
 
@@ -606,6 +619,8 @@ def _web_search(
                    "reasoning": {"effort": active_effort}, "tool_choice": "auto", "input": query,
                    "stream": True}
         apply_processing_preference(target, payload)
+        if _processing_submission == "standard":
+            payload["service_tier"] = "default"
         candidate = _finalized_physical_candidate(target, payload, "responses")
         scope = _accounting_scope(ctx, "web_search.openai_responses")
         request = replace(_attempt_request(target, candidate),
@@ -625,7 +640,15 @@ def _web_search(
         manifest = _candidate_before_dispatch(candidate, request)(reservation)
         mark_dispatched(reservation, candidate_manifest_ref=manifest)
         dispatched = True
-        stream = client.responses.create(**candidate)
+        try:
+            stream = client.responses.create(**candidate)
+        except Exception as error:
+            from ouroboros.llm_attempt import processing_refusal
+
+            refusal = processing_refusal(target, candidate, error)
+            if refusal is error:
+                raise
+            raise refusal from error
         text_parts: list[str] = []
         usage: dict = {}
         sources: List[Dict[str, str]] = []
@@ -752,6 +775,9 @@ def _web_search(
 
         return json.dumps({"answer": text or "(no answer)", "answer_type": "summary", "sources": sources, "backend": "openai_responses"}, ensure_ascii=False, indent=2)
     except Exception as e:
+        from ouroboros.llm_attempt import ProcessingNotStarted
+
+        processing_refused = isinstance(e, ProcessingNotStarted)
         if dispatched:
             from ouroboros.transport_custody import release_pre_dispatch_attempt
 
@@ -782,7 +808,7 @@ def _web_search(
         # One retry is safe only before dispatch or after an explicit terminal
         # provider response. An ambiguous dispatched outcome stops the cascade.
         if _attempt == 0 and (
-            (_is_timeout_error(e) and not was_dispatched) or retryable_terminal
+            (_is_timeout_error(e) and not was_dispatched) or retryable_terminal or processing_refused
         ):
             from ouroboros.deadline_utils import deadline_remaining_sec, has_deadline
 
@@ -795,6 +821,7 @@ def _web_search(
                 ctx, query, model=model, search_context_size=search_context_size,
                 reasoning_effort=reasoning_effort, _attempt=1,
                 _processing_preference=preference,
+                _processing_submission="standard" if processing_refused else _processing_submission,
             )
         return _fallbacks([f"OpenAI web search failed ({type(e).__name__}): {detail}"])
 

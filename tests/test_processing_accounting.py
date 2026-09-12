@@ -113,3 +113,56 @@ def test_session_processing_and_components_are_retained_once_without_repricing(d
     assert rows(data_root)[-1]["attempt_execution"] == original
     assert rows(data_root)[-1]["cost_usd"] is None
     assert ua.usage_projection(data_root)["unknown_unmetered"] == 1
+
+
+
+def test_review_wave_prices_each_captured_processing_choice_before_dispatch(data_root, monkeypatch):
+    monkeypatch.setenv("OUROBOROS_PROCESSING_PREFERENCE", "fast")
+    seen = []
+    monkeypatch.setattr(ua, "_reservation_cost", lambda request: seen.append(
+        (request.processing_preference, request.submitted_processing_mode)) or 0.1)
+    result = ua.review_wave_admission(data_root, root_task_id="review", models=["openai::same"] * 3,
+        prompt_chars=100, remaining_usd_override=1,
+        processing_preferences=["standard", "economy", ""])
+    assert seen == [("standard", "default"), ("economy", "flex"), ("", "")]
+    assert result["fits"] and result["slot_bounds"] == [0.1, 0.1, 0.1]
+
+
+@pytest.mark.parametrize("observed,modes,expected", [("unknown", [], "unknown"),
+    ("mixed", ["fast", "default"], "unknown"), ("standard", ["default"], "default")])
+def test_loop_and_helper_display_keep_the_observed_price_qualifier(monkeypatch, observed, modes, expected):
+    from types import SimpleNamespace
+    from ouroboros import loop_llm_call
+    from ouroboros.tools import search
+
+    calls = []
+    def price(*args, **kwargs):
+        calls.append(kwargs.get("processing_mode"))
+        return None if kwargs.get("processing_mode") == "unknown" else 0.1
+    monkeypatch.setattr(loop_llm_call, "estimate_cost_optional", price)
+    monkeypatch.setattr(search, "estimate_cost_optional", price)
+    usage = {"cost": None, "provider": "openrouter", "prompt_tokens": 10, "completion_tokens": 2,
+             "processing": {"observed": observed, "observedNative": modes}}
+    cost, _, _, _ = loop_llm_call._normalize_usage_cost(usage, model="openai/same", use_local=False)
+    ctx = SimpleNamespace(pending_events=[], task_metadata={}, task_id="helper")
+    search._emit_simple_usage(ctx, provider="openrouter", model="openai/same", usage={**usage, "cost": None})
+    assert calls == [expected, expected]
+    assert ctx.pending_events[0]["cost"] == cost == (None if expected == "unknown" else 0.1)
+
+
+def test_host_view_callback_is_invoked_but_never_recorded_as_a_model_argument(tmp_path, monkeypatch):
+    from ouroboros import llm_observability as observed
+
+    recorded, views = [], []
+    monkeypatch.setattr(observed, "persist_call", lambda *args, **kwargs: recorded.append(kwargs["payload"]) or {})
+    callback = lambda messages, schemas: views.append(messages)
+
+    class Client:
+        def chat(self, **kwargs):
+            kwargs["model_context_observer"](kwargs["messages"], kwargs.get("tools"))
+            return {"role": "assistant", "content": "done"}, {}
+
+    observed.chat_observed(Client(), drive_root=tmp_path, messages=[{"role": "user", "content": "exact"}],
+                           model="model", model_context_observer=callback)
+    assert len(views) == 1 and recorded
+    assert all("model_context_observer" not in payload.get("kwargs", {}) for payload in recorded)

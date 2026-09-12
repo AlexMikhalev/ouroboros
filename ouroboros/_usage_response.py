@@ -84,6 +84,17 @@ def _reported_token_count(usage: Dict[str, Any], *keys: str) -> Optional[int]:
     return None
 
 
+def observed_processing_mode(provider: str, usage: Dict[str, Any]) -> str:
+    """A pricing qualifier from observation; absent explicit-mode proof stays unknown."""
+    receipt = usage.get("processing")
+    if isinstance(receipt, dict):
+        modes = receipt.get("observedNative")
+        return (str(modes[0]) if receipt.get("observed") not in {"unknown", "mixed"}
+                and isinstance(modes, list) and len(modes) == 1 else "unknown")
+    value = usage.get("speed") if provider == "anthropic" else usage.get("service_tier")
+    return value if isinstance(value, str) else ""
+
+
 def _normalized_input_token_usage(raw: Any) -> Optional[Dict[str, Any]]:
     """The complete native input split, or None; never repair partial evidence."""
     keys = ("total_tokens", "cache_read_tokens", "cache_write_tokens")

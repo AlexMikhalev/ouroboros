@@ -367,7 +367,9 @@ class _RecoveryLadderMixin:
             nonlocal prior_capture
             # Socket policy is not model input; seal only the provider payload.
             candidate = {key: value for key, value in candidate.items() if key != "timeout"}
-            candidate = _finalized_physical_candidate(target, candidate, "chat.completions")
+            candidate = _finalized_physical_candidate(
+                target, candidate, "messages" if target.get("provider") == "anthropic" else "chat.completions",
+            )
             request = _attempt_request(target, candidate)
 
             def dispatch():

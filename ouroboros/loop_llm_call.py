@@ -878,6 +878,9 @@ def _normalize_usage_cost(
         usage["cost_final"] = False  # unknown cost is never a closed book
         return None, display_model, provider, bool(usage.get("cost_estimated"))
     elif cost is None and provider != "claudexor":
+        from ouroboros._usage_response import observed_processing_mode
+
+        processing_mode = observed_processing_mode(provider, usage)
         cost = estimate_cost_optional(
             display_model,
             int(usage.get("prompt_tokens") or 0),
@@ -893,6 +896,7 @@ def _normalize_usage_cost(
                 ),
             },
             provider=provider,
+            **({"processing_mode": processing_mode} if processing_mode else {}),
         )
     usage["cost"] = cost
     cost_estimated = bool(usage.get("cost_estimated")) or (cost is not None and not provider_reported_cost)

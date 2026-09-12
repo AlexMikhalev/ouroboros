@@ -175,7 +175,8 @@ def test_processing_components_survive_compaction_without_becoming_cash(data_roo
         hold = ua.reserve_attempt(request)
         ua.mark_dispatched(hold)
         ua.settle_attempt(hold, {"processing": receipt, "cost_evidence": {
-            "knowledge": knowledge, "valuationUsd": 5.25, "valuationKnowledge": "exact",
+            "knowledge": knowledge, "cashUsd": 0 if knowledge == "exact" else None,
+            "valuationUsd": 5.25, "valuationKnowledge": "exact",
             "processing": {"nativeMode": "fast", "kind": "paid_credits", "source": "native_policy"}}},
             cost_usd=0 if knowledge == "exact" else None, cost_final=knowledge == "exact")
     ua.record_subscription_session("session-modes", drive_root=data_root, route="claude",

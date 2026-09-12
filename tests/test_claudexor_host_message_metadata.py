@@ -29,3 +29,15 @@ def test_host_marker_is_removed_without_rewriting_content_tools_or_native_payloa
     assert payload["messages"][1:] == messages[1:]
     assert payload["tools"] == tools
     assert messages == original and tools == original_tools
+
+
+def test_direct_provider_projection_also_excludes_host_acceptance_metadata():
+    from ouroboros.llm_messages import _MessageShapingMixin
+
+    messages = [{"role": "user", "content": "Exact evidence", "acceptance_observation": {"revision": "host"}},
+                {"role": "assistant", "content": "Answer", "_acceptance_observation": "private"}]
+    original = deepcopy(messages)
+    sent = _MessageShapingMixin._copy_messages_with_cache_policy(
+        messages, allow_message_cache_control=False, flatten_tool_content_blocks=True)
+    assert sent == [{"role": "user", "content": "Exact evidence"}, {"role": "assistant", "content": "Answer"}]
+    assert messages == original

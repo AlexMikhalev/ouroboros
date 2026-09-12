@@ -52,6 +52,7 @@ def _processing_summary(rows: Sequence[Dict[str, Any]], *, decimal_values: bool 
             "processingCostBasis": evidence.get("processing") or row.get("processing_basis"),
             "usageCost": {"valuationUsd": evidence.get("valuationUsd"),
                           "valuationKnowledge": evidence.get("valuationKnowledge", "unknown"),
+                          "cashUsd": evidence.get("cashUsd") if evidence.get("cashUsd") is not None else evidence.get("estimatedUsd"),
                           "cashKnowledge": evidence.get("knowledge", "unknown")} if evidence else {},
         }]
         for entry in entries:
@@ -66,7 +67,7 @@ def _processing_summary(rows: Sequence[Dict[str, Any]], *, decimal_values: bool 
             if basis.get("kind"):
                 facts["billing_kinds"] = {basis["kind"]: 1}
             if cost:
-                facts["unknown_cash_rows"] = int(cost.get("cashKnowledge") not in {"exact", "estimated"})
+                facts["unknown_cash_rows"] = int(cost.get("cashKnowledge") not in {"exact", "estimated"} or cost.get("cashUsd") is None)
                 known_valuation = cost.get("valuationKnowledge") in {"exact", "estimated"}
                 facts["unknown_valuation_rows"] = int(not known_valuation or cost.get("valuationUsd") is None)
                 facts["valuation_usd"] = cost.get("valuationUsd") if known_valuation else None

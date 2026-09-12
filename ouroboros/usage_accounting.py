@@ -24,7 +24,7 @@ from typing import Any, Callable, Dict, Iterator, Literal, Optional, Sequence, T
 
 from ouroboros.pricing import estimate_cost_optional
 from ouroboros._usage_response import (
-    _normalized_input_token_usage, _reported_token_count, processing_receipt, usage_from_response,
+    _normalized_input_token_usage, _reported_token_count, processing_receipt, observed_processing_mode, usage_from_response,
 )
 from ouroboros.review_dispatch import invoke_bound_api_review_paid_stamp
 from ouroboros.transport_custody import release_pre_dispatch_attempt
@@ -1240,11 +1240,7 @@ def settle_attempt(
     cached_tokens = _reported_token_count(normalized, "cached_tokens")
     cache_write_tokens = _reported_token_count(normalized, "cache_write_tokens")
     cost = _number(cost_usd)
-    processing = normalized.get("processing") or {}
-    observed = processing.get("observedNative") if isinstance(processing, dict) else None
-    observed_mode = (str(observed[0]) if isinstance(observed, list) and len(observed) == 1 else
-                     str(normalized.get("speed") or normalized.get("service_tier") or ""))
-    pricing_mode = observed_mode or ("unknown" if reservation.processing_preference or reservation.submitted_processing_mode else "")
+    pricing_mode = observed_processing_mode(reservation.provider, normalized)
     has_usage = bool((prompt_tokens or 0) or (completion_tokens or 0))
     if cost is None and str(reservation.provider or "").lower() == "local":
         cost, cost_final = 0.0, True

@@ -30,6 +30,8 @@ from ouroboros.context_budget import (  # noqa: F401
     context_overflow_message,
 )
 from ouroboros.llm_anthropic import (
+
+    anthropic_web_search_server_tool as _anthropic_web_search_server_tool,
     _AnthropicLaneMixin,  # noqa: F401
 )
 from ouroboros.llm_attempt import (
@@ -82,6 +84,8 @@ from ouroboros.llm_messages import (
     _MessageShapingMixin,  # noqa: F401
 )
 from ouroboros.llm_openai_compatible import (
+
+    openrouter_web_search_server_tool as _openrouter_web_search_server_tool,
     _bounded_response_metadata_label,  # noqa: F401
     _FALSE_LIKE_ENV_VALUES,  # noqa: F401
     _OpenAICompatibleLaneMixin,  # noqa: F401
@@ -678,108 +682,27 @@ class LLMClient(
 
 
 def openrouter_web_search_server_tool(
-    *,
-    api_key: str,
-    model: str,
-    query: str,
-    search_context_size: str,
-    accounting_scope: Optional[UsageScope] = None,
-    timeout: Optional[float] = None,
+
+    *, api_key: str, model: str, query: str, search_context_size: str,
+    accounting_scope: Optional[UsageScope] = None, timeout: Optional[float] = None,
     processing_preference: str | None = None,
 ) -> Any:
-    """Run OpenRouter's provider-owned web_search server tool."""
-
-    from ouroboros.net_transport import web_search_openai_client
-    from ouroboros.model_slots import resolve_processing_preference
-
-    target = {"provider": "openrouter", "usage_model": model, "resolved_model": model,
-              "processing_preference": resolve_processing_preference("websearch", override=processing_preference)}
-
-    client = web_search_openai_client(
-        api_key=api_key,
-        base_url="https://openrouter.ai/api/v1",
-        timeout=timeout,
-        default_headers=dict(OPENROUTER_APP_HEADERS),
+    """Keep native search tools on the shared physical-send recovery driver."""
+    return _openrouter_web_search_server_tool(
+        api_key=api_key, model=model, query=query, search_context_size=search_context_size,
+        accounting_scope=accounting_scope, timeout=timeout, processing_preference=processing_preference,
+        _recovery=LLMClient()._create_chat_completion_with_retries,
     )
-    payload = dict(
-        model=model,
-        messages=[{"role": "user", "content": query}],
-        tools=[{
-            "type": "openrouter:web_search",
-            "parameters": {
-                "search_context_size": search_context_size,
-                "max_total_results": 10,
-            },
-        }],
-    )
-    apply_processing_preference(target, payload)
-    candidate = _physical_candidate(payload)
-    request = _attempt_request(
-        target,
-        candidate,
-        source="web_search.openrouter",
-    )
-    before_dispatch = _candidate_before_dispatch(candidate, request)
-    if accounting_scope is None:
-        return _execute_candidate(
-            request, lambda: client.chat.completions.create(**candidate), before_dispatch,
-        )
-    with usage_scope(accounting_scope):
-        return _execute_candidate(
-            request, lambda: client.chat.completions.create(**candidate), before_dispatch,
-        )
 
 
 def anthropic_web_search_server_tool(
-    *,
-    api_key: str,
-    model: str,
-    query: str,
-    accounting_scope: Optional[UsageScope] = None,
-    timeout: Optional[float] = None,
+    *, api_key: str, model: str, query: str,
+    accounting_scope: Optional[UsageScope] = None, timeout: Optional[float] = None,
     processing_preference: str | None = None,
 ) -> Any:
-    """Run Anthropic's provider-owned web_search server tool."""
-
-    import anthropic
-    from ouroboros.model_slots import resolve_processing_preference
-
-    target = {"provider": "anthropic", "usage_model": model, "resolved_model": model,
-              "processing_preference": resolve_processing_preference("websearch", override=processing_preference)}
-
-    client_kwargs: Dict[str, Any] = {"api_key": api_key, "max_retries": 0}
-    if timeout is not None:
-        client_kwargs["timeout"] = float(timeout)
-    payload = dict(
-        model=model,
-        max_tokens=2048,
-        tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
-        messages=[{"role": "user", "content": query}],
+    """Compose native Messages search without converting its provider-owned tool."""
+    return _anthropic_web_search_server_tool(
+        api_key=api_key, model=model, query=query, accounting_scope=accounting_scope,
+        timeout=timeout, processing_preference=processing_preference,
+        _recovery=LLMClient()._create_chat_completion_with_retries,
     )
-    apply_processing_preference(target, payload)
-    headers = processing_contract_headers(target, payload)
-    if headers:
-        client_kwargs["default_headers"] = headers
-    client = anthropic.Anthropic(**client_kwargs)
-    candidate = _physical_candidate(payload)
-    request = _attempt_request(
-        target,
-        candidate,
-        source="web_search.anthropic",
-    )
-    before_dispatch = _candidate_before_dispatch(candidate, request)
-    def send():
-        # The stable Messages SDK exposes beta speed only through extra_body.
-        # The merged HTTP body still equals the sealed native candidate above.
-        kwargs = {key: value for key, value in candidate.items() if key != "speed"}
-        if "speed" in candidate:
-            kwargs["extra_body"] = {"speed": candidate["speed"]}
-        return client.messages.create(**kwargs)
-    if accounting_scope is None:
-        return _execute_candidate(
-            request, send, before_dispatch,
-        )
-    with usage_scope(accounting_scope):
-        return _execute_candidate(
-            request, send, before_dispatch,
-        )

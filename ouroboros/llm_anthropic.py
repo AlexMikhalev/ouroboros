@@ -43,7 +43,9 @@ from ouroboros.request_wire_recovery import (
     plan_next_wire_retry,
     request_wire_scoped,
 )
-from ouroboros.usage_accounting import UsageAccountingError, last_physical_attempt_capture
+
+from ouroboros.usage_accounting import UsageAccountingError, last_physical_attempt_capture, UsageScope, usage_scope
+from ouroboros._usage_response import observed_processing_mode
 
 
 class _AnthropicLaneMixin:
@@ -400,8 +402,7 @@ class _AnthropicLaneMixin:
                     "cache_write_tokens_by_ttl": write_split or None,
                 },
                 provider="anthropic",
-                **({"processing_mode": ((usage["processing"].get("observedNative") or ["unknown"])[0]
-                    if len(usage["processing"].get("observedNative") or []) <= 1 else "unknown")}
+                **({"processing_mode": observed_processing_mode("anthropic", usage)}
                    if usage.get("processing") else {}),
             )
             if estimated_cost is not None:
@@ -584,3 +585,50 @@ class _AnthropicLaneMixin:
             target,
             prompt_cache_ttl=prompt_cache_ttl,
         )
+
+
+
+def anthropic_web_search_server_tool(
+    *,
+    api_key: str,
+    model: str,
+    query: str,
+    accounting_scope: Optional[UsageScope] = None,
+    timeout: Optional[float] = None,
+    processing_preference: str | None = None,
+    _recovery: Any,
+) -> Any:
+    """Run Anthropic's provider-owned web_search server tool."""
+
+    import anthropic
+    from ouroboros.model_slots import resolve_processing_preference
+    from ouroboros.usage_accounting import current_usage_scope
+    from dataclasses import replace
+
+    target = {"provider": "anthropic", "usage_model": model, "resolved_model": model,
+              "processing_preference": resolve_processing_preference("websearch", override=processing_preference)}
+
+    client_kwargs: Dict[str, Any] = {"api_key": api_key, "max_retries": 0}
+    if timeout is not None:
+        client_kwargs["timeout"] = float(timeout)
+    payload = dict(
+        model=model,
+        max_tokens=2048,
+        tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
+        messages=[{"role": "user", "content": query}],
+    )
+    apply_processing_preference(target, payload)
+    headers = processing_contract_headers(target, payload)
+    if headers:
+        client_kwargs["default_headers"] = headers
+    client = anthropic.Anthropic(**client_kwargs)
+    def send(**candidate):
+        # The stable Messages SDK exposes beta speed only through extra_body.
+        # The merged HTTP body still equals the sealed native candidate above.
+        kwargs = {key: value for key, value in candidate.items() if key != "speed"}
+        if "speed" in candidate:
+            kwargs["extra_body"] = {"speed": candidate["speed"]}
+        return client.messages.create(**kwargs)
+    scope = replace(accounting_scope or current_usage_scope() or UsageScope(), source="web_search.anthropic")
+    with usage_scope(scope):
+        return _recovery(send, payload, target)

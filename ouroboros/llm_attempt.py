@@ -413,6 +413,48 @@ def _finalized_physical_candidate(
     )
 
 
+
+def _prepared_input_measurement(target: Dict[str, Any], payload: Dict[str, Any]) -> dict:
+    """Current routes offer an actual-shape estimate, never an exact template count."""
+    from ouroboros.context_fit import bounded_prompt_tokens_for_payload
+
+    context = {key: payload[key] for key in ("system", "messages", "input", "instructions", "tools", "functions") if key in payload}
+    chars = len(_canonical_candidate_bytes(context).decode("utf-8"))
+    return {"input_tokens": bounded_prompt_tokens_for_payload(context, chars),
+            "input_is_exact": False, "tokenizer_template_provenance": None,
+            "route_capacity_tokens": target.get("context_window_tokens", getattr(current_physical_attempt_context(), "capacity_total_tokens", None)),
+            "route_capacity_confirmed": bool(target.get("context_window_confirmed", False))}
+
+
+def _fit_output_payload(target: Dict[str, Any], payload: Dict[str, Any], api_surface: str) -> Dict[str, Any]:
+    """Use the shared Nano arithmetic after native tool projection and before sealing."""
+    from dataclasses import asdict
+    from ouroboros.context_budget import OWNER_NANO_TARGET_TOKENS, NANO_MIN_HEADROOM_TOKENS
+    from ouroboros.context_fit import resolve_call_context_fit
+
+    field = next((key for key in ("max_completion_tokens", "max_tokens") if isinstance(payload.get(key), int)), None)
+    if field is None:
+        return payload  # An opaque route has no enforceable native output field here.
+    measured = _prepared_input_measurement(target, payload)
+    provider = target.get("provider")
+    # Local formatters can make additional internal generations outside this cap.
+    limit_enforced = provider == "openai" and field == "max_completion_tokens" or provider == "anthropic" and field == "max_tokens"
+    nano = target.get("context_mode") == "nano"
+    fit = resolve_call_context_fit(**measured, caller_max_tokens=payload[field],
+        total_target_tokens=OWNER_NANO_TARGET_TOKENS if nano else None,
+        minimum_free_tokens=NANO_MIN_HEADROOM_TOKENS if nano else 0, output_limit_enforced=limit_enforced,
+        reasoning_included_in_limit=True if limit_enforced else None)
+    facts = asdict(fit)
+    target["call_context_fit"] = facts
+    if fit.effective_max_tokens <= 0 or measured["input_is_exact"] and fit.fit_status in {"unfit", "insufficient_headroom"}:
+        error = PhysicalAttemptPreparationFailed("Exact prepared input does not fit the selected context allowance")
+        error.call_context_fit = facts
+        raise error
+    result = {**payload, field: fit.effective_max_tokens}
+    facts["candidate_raw_sha256"] = hashlib.sha256(_canonical_candidate_bytes(result)).hexdigest()
+    return result
+
+
 def _candidate_before_dispatch(candidate: Dict[str, Any], request: AttemptRequest):
     """Close over one final candidate without putting it in accounting rows."""
     predicate = current_physical_attempt_predicate()
