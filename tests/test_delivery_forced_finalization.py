@@ -453,9 +453,9 @@ def test_budget_latch_preserves_stale_candidate_with_resume_disclosure(
     loop._publish_delivery_candidate(registry, old, trace)
     loop._latch_final_answer_marker(trace, f"FINAL ANSWER: {answer}")
 
-    # Owner evidence invalidates the candidate without adding a tool call. The
-    # unconditional FINAL ANSWER latch remains useful, but its unchanged text
-    # must retain its old evidence provenance and carry a loud resume disclosure.
+    # Unprocessed owner input prevents final acceptance, but does not itself
+    # change the semantic criteria. Preserve the answer and evidence provenance
+    # with a loud resume disclosure until Main processes the new source.
     registry._ctx._owner_directives = [{"content": "Late answer constraint"}]
     monkeypatch.setattr(
         accounting,
@@ -496,14 +496,14 @@ def test_budget_latch_preserves_stale_candidate_with_resume_disclosure(
     assert rebound.acceptance_binding["acceptance_status"] == "unaccepted"
     assert rebound.acceptance_binding["authoritative"] is False
     assert rebound.acceptance_binding["stale_evidence"] is True
-    assert returned_trace["delivery_candidate"]["evidence_current"] is False
+    assert returned_trace["delivery_candidate"]["evidence_current"] is True
     forced = returned_trace["forced_finalization"]
     assert forced["source"] == (
         "budget_latched_fallback_stale_evidence_resume_required"
     )
-    assert forced["evidence_current"] is False
+    assert forced["evidence_current"] is True
     assert forced["evidence_revision"] == old.evidence_revision
-    assert forced["current_evidence_revision"] > old.evidence_revision
+    assert forced["current_evidence_revision"] == old.evidence_revision
     assert usage["_best_effort_extracted"] is True
     assert trace["tool_calls"] == []
 
@@ -531,6 +531,8 @@ def test_provider_unavailable_preserves_stale_candidate_with_resume_disclosure(
         "binding_hash": "binding-old",
     }
     loop._publish_delivery_candidate(registry, old, trace)
+    # Source acknowledgement and semantic evidence have separate generations.
+    # Provider failure cannot acknowledge this source or infer new criteria.
     registry._ctx._owner_directives = [{"content": "Late answer constraint"}]
 
     forced_calls = 0
@@ -559,12 +561,12 @@ def test_provider_unavailable_preserves_stale_candidate_with_resume_disclosure(
     assert rebound.acceptance_binding["acceptance_status"] == "unaccepted"
     assert rebound.acceptance_binding["authoritative"] is False
     assert rebound.acceptance_binding["stale_evidence"] is True
-    assert returned_trace["delivery_candidate"]["evidence_current"] is False
+    assert returned_trace["delivery_candidate"]["evidence_current"] is True
     forced = returned_trace["forced_finalization"]
     assert forced["source"] == "host_fallback_stale_evidence_resume_required"
-    assert forced["evidence_current"] is False
+    assert forced["evidence_current"] is True
     assert forced["evidence_revision"] == old.evidence_revision
-    assert forced["current_evidence_revision"] > old.evidence_revision
+    assert forced["current_evidence_revision"] == old.evidence_revision
     assert usage["_best_effort_extracted"] is True
     assert usage["terminal_origin"] == "host_salvage"
     assert trace["tool_calls"] == []
@@ -1328,8 +1330,9 @@ def test_child_result_change_during_host_panel_supersedes_pass(tmp_path, monkeyp
     assert another_round is True
     assert registry._ctx._task_acceptance_reviewed is False
     assert trace["review_runs"][0]["superseded_by_revision"] is True
+    # The unified subject includes material child-result evidence.
     assert trace["review_runs"][0]["superseded_reason"] == (
-        "host_acceptance_evidence_revision_changed"
+        "host_acceptance_subject_changed"
     )
     binding = loop._delivery_acceptance_binding(
         registry, trace, hashlib.sha256(answer.encode("utf-8")).hexdigest(),

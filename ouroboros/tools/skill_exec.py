@@ -575,19 +575,21 @@ def _author_finish_existing_skill_review(
     disposition: str,
     rationale: str,
 ) -> Optional[Dict[str, Any]]:
-    """Apply an explicit advisory author finish without buying a new panel.
+    """Record author finish in Advisory or Cyber without buying a new panel.
 
-    The first reviewer panel remains the source of findings.  A later finish
-    call accepts the current payload after deterministic preflight, including
-    after a local fix. Reviewer hash, findings and status stay intact;
-    only the author record binds the newly accepted bytes.
+    Advisory needs prior feedback and a passing current preflight; Cyber may
+    continue with either missing or failed. Reviewer hash, findings and status
+    stay intact; only the author record binds the newly accepted bytes.
     """
     from ouroboros.config import get_review_enforcement
     from ouroboros.review_records import build_author_disposition
     from ouroboros.skill_loader import compute_content_hash, load_review_state, save_review_state
     from ouroboros.skill_review import _run_deterministic_preflight
+    from ouroboros.tools.review_helpers import review_enforcement_blocks
 
-    if str(get_review_enforcement() or "").strip().lower() != "advisory":
+    enforcement = str(get_review_enforcement() or "").strip().lower()
+    cyber = not review_enforcement_blocks("blocking")
+    if review_enforcement_blocks(enforcement):
         return {"error": "SKILL_REVIEW_ERROR: explicit author finish requires advisory enforcement."}
     loaded = load_bound_skill(binding)
     if loaded is None:
@@ -599,9 +601,9 @@ def _author_finish_existing_skill_review(
     )
     drive_root = binding.state_drive_root
     review_state = load_review_state(drive_root, skill_name, skill_type=loaded.manifest.type, skill_dir=loaded.skill_dir)
-    if review_state.status == "pending":
+    if not cyber and review_state.status == "pending":
         return {"error": "SKILL_REVIEW_ERROR: existing review is pending or has no reviewer verdict."}
-    if not (review_state.findings or review_state.raw_actor_records or review_state.raw_result):
+    if not cyber and not (review_state.findings or review_state.raw_actor_records or review_state.raw_result):
         return {"error": "SKILL_REVIEW_ERROR: no prior reviewer evidence is available for author finish."}
     try:
         author_record = build_author_disposition(
@@ -609,20 +611,29 @@ def _author_finish_existing_skill_review(
             rationale=rationale,
             subject_hash=current_hash,
             reviewer_signal=review_state.status,
-            enforcement="advisory",
+            enforcement=enforcement,
         )
     except ValueError as exc:
         return {"error": f"SKILL_REVIEW_ERROR: {exc}"}
     previous_hash = str(review_state.reviewed_content_hash or review_state.content_hash or "")
+    preflight_facts = None
     if previous_hash != current_hash:
-        # A changed payload is accepted only after the existing deterministic
-        # gate checks the complete current payload.  This is not a reviewer
-        # PASS: the prior findings remain attached as historical evidence.
+        # Current preflight is independent evidence; Cyber may continue with its
+        # failure, while ordinary Advisory still requires it to pass.
         preflight = _run_deterministic_preflight(
             ctx, drive_root, loaded, current_hash, persist=False, binding=binding,
         )
-        if preflight is not None:
+        if preflight is not None and not cyber:
             return {"error": "SKILL_REVIEW_ERROR: deterministic preflight did not pass for the current payload."}
+        if preflight is not None:
+            from ouroboros.utils import append_jsonl, utc_now_iso
+
+            preflight_facts = {"content_hash": current_hash, "status": preflight.status,
+                               "findings": list(preflight.findings or []), "error": preflight.error}
+            append_jsonl(ctx.drive_logs() / "events.jsonl", {
+                "ts": utc_now_iso(), "type": "skill_review_author_preflight",
+                "skill_name": skill_name, "decision_authority": "cyber_pro", **preflight_facts,
+            })
     review_state.author_disposition = author_record
     save_review_state(drive_root, skill_name, review_state)
     from ouroboros.skill_loader import auto_grant_if_enabled
@@ -648,6 +659,7 @@ def _author_finish_existing_skill_review(
         "deps_status": deps_status, "deps_error": deps_error, "extension": extension,
         "review_stale": review_state.is_stale_for(current_hash),
         "review_gate": review_state.gate_for(current_hash),
+        **({"author_preflight": preflight_facts} if preflight_facts is not None else {}),
     }
 
 

@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from ouroboros.task_results import plan_review_notes_are_annotatable
 from ouroboros.tools.review_synthesis import PLAN_REVIEW_CONTROL_PREFIX
 from ouroboros.tools.plan_spec import MAX_FINDINGS_PER_SLOT
+from ouroboros.tools.review_helpers import review_enforcement_blocks
 
 
 # B2 (honest DEGRADED): every aggregate reaches the control line as itself — the
@@ -128,10 +129,20 @@ def _next_step(wave: dict, *, enforcement: str, cap: Optional[int], cycles_paid:
             f"Author finish recorded as {author.get('disposition')} against this exact "
             "review fingerprint; raw reviewer findings remain evidence. "
         )
-        if enforcement == "blocking":
+        if review_enforcement_blocks(enforcement):
             author_note += "Blocking enforcement still holds the open plan gate. "
+        elif not review_enforcement_blocks("blocking"):
+            author_note += "Cyber Pro preserves final judgment with Ouroboros. "
         else:
             author_note += "Advisory enforcement permits proceeding with the review open. "
+    if not review_enforcement_blocks("blocking"):
+        return (
+            author_note + "Cyber Pro: Ouroboros decides whether and how to continue. "
+            "The recorded verdict, open findings and any unresolved physical reviewers remain "
+            "independent facts; continuation does not close the wave or create a PASS. "
+            f"The existing $0 plan_task(review_disposition={{review_fingerprint: '{fp}', items: [...]}}) "
+            "can collect results or record a disposition without a new panel."
+        )
     if bool(wave.get("closed")):
         if plan_review_notes_are_annotatable(wave):
             return (

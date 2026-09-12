@@ -2609,9 +2609,11 @@ by "Provider Independence" above. Call-site imperatives:
   `ouroboros/loop_delivery.py`). A FORCED finalization resolves an armed
   control purely and without retry: valid keep/replace is honored, anything
   malformed preserves the retained candidate with a typed degraded reason,
-  and protocol JSON never reaches chat or the durable result. Owner
-  messages, tool effects, child results, and verification receipts advance
-  the evidence revision and require fresh delivery/acceptance binding;
+  and protocol JSON never reaches chat or the durable result. Main distinguishes
+  consumed owner source from changed requirements. Effective criteria and
+  material effects, including nominated read observations, define the reviewed
+  subject; ingress generations preserve unread-message ordering. Status text,
+  narration and a changed working view do not themselves buy another review;
   finalize task-scoped service outputs/errors before host acceptance. The
   control must not bypass verification, acceptance, safety, skill
   finalization, deadline, child handoff, the unconditional `FINAL ANSWER:`
@@ -2635,11 +2637,14 @@ by "Provider Independence" above. Call-site imperatives:
 - Host task acceptance is root-only; eligibility uses structured facts
   (`outcomes.turn_has_reviewable_effects` plus a typed
   deliverable/criterion), never keywords (BIBLE P3/P5). The agent-callable
-  `task_acceptance_review` stores evidence but makes zero reviewer calls and
-  returns `deferred_to_host_acceptance`, `authoritative=false`. Before root
-  acceptance, atomically fence new descendants under the queue lock and
-  prove recursive subtree quiescence from the task-status SSOT; a revision
-  must explicitly reopen the fence, and terminal/degraded outcomes seal it.
+  `task_acceptance_review` records the full result nomination and returns
+  `deferred_to_host_acceptance`, `authoritative=false`. After the complete
+  tool-result block, the host advances the same operation as final delivery.
+  Freeze its request and resolved roster; use existing review custody and
+  mailbox continuation for pending work and free collection. The worker never
+  writes Main's live candidate or author decision. Early settlement does not
+  seal task ingress; actual final delivery does. Keep subtree/status facts
+  separate from reviewer findings and Cyber's authority under BIBLE P0.
 - Delivery-control JSON applies only to a final response with no tool calls.
   Retaining an answer leaves tools available for further work; changed evidence
   still requires the existing complete replacement. A requested file or diff

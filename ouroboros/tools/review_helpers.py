@@ -36,6 +36,15 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 # non-blocking skip gate leaves headroom for default 1M-context reviewer models.
 REVIEW_PROMPT_TOKEN_BUDGET = 920_000
 
+
+def review_enforcement_blocks(enforcement: str | None = None) -> bool:
+    """Project action authority without changing configured policy or review facts."""
+    from ouroboros.config import get_review_enforcement, get_runtime_mode
+    from ouroboros.runtime_mode_policy import runtime_mode_at_least
+
+    selected = get_review_enforcement() if enforcement is None else enforcement
+    return selected == "blocking" and not runtime_mode_at_least(get_runtime_mode(), "cyber_pro")
+
 # Tokenizer-density calibration shared by every review surface (triad, scope, plan,
 # deep self-review). estimate_tokens (chars/4) tracks GPT-style tokenizers, but a
 # real Claude scope pack estimated at 739,508 tokens measured 1,166,914 REAL tokens

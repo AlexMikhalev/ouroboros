@@ -113,7 +113,7 @@ def test_cyber_save_settings_can_configure_supervisor_and_keys(cyber_settings):
 
 
 @pytest.mark.parametrize("key,value", [
-    ("OUROBOROS_SAFETY_MODE", "off"), ("OUROBOROS_CONTEXT_MODE", "low"),
+    ("OUROBOROS_SAFETY_MODE", "off"), ("OUROBOROS_CONTEXT_MODE", "low"), ("OUROBOROS_CONTEXT_MODE", "nano"),
 ])
 def test_pro_lowering_ratchets_use_effective_boot_mode(cyber_settings, monkeypatch, key, value):
     from ouroboros import config as cfg
@@ -165,7 +165,8 @@ def test_cyber_generic_post_saves_controls_and_preserves_fact_provenance(cyber_s
 
 
 @pytest.mark.parametrize("mode,status", [("cyber_pro", 200), ("pro", 409)])
-def test_context_owner_endpoint_allows_cyber_during_work(cyber_settings, monkeypatch, mode, status):
+@pytest.mark.parametrize("context_mode", ["low", "nano"])
+def test_context_owner_endpoint_allows_cyber_during_work(cyber_settings, monkeypatch, mode, status, context_mode):
     from ouroboros import config as cfg
     from ouroboros.gateway import settings as settings_mod
     from supervisor.active_activity import get_direct_activity_registry
@@ -179,15 +180,16 @@ def test_context_owner_endpoint_allows_cyber_during_work(cyber_settings, monkeyp
     registry.register("settings-author", 1)
     try:
         assert settings_mod._has_running_agent_tasks()
-        response = TestClient(app).post("/api/owner/context-mode", json={"mode": "low"})
+        response = TestClient(app).post("/api/owner/context-mode", json={"mode": context_mode})
     finally:
         registry.unregister("settings-author")
     assert response.status_code == status, response.text
-    assert json.loads(cyber_settings.read_text())["OUROBOROS_CONTEXT_MODE"] == ("low" if status == 200 else "max")
+    assert json.loads(cyber_settings.read_text())["OUROBOROS_CONTEXT_MODE"] == (context_mode if status == 200 else "max")
 
 
 @pytest.mark.parametrize("has_context", [True, False])
-def test_cyber_can_self_lower_context_and_author_its_marker(cyber_settings, has_context):
+@pytest.mark.parametrize("context_mode", ["low", "nano"])
+def test_cyber_can_self_lower_context_and_author_its_marker(cyber_settings, has_context, context_mode):
     from ouroboros import config as cfg
 
     if not has_context:
@@ -195,11 +197,11 @@ def test_cyber_can_self_lower_context_and_author_its_marker(cyber_settings, has_
         raw.pop("OUROBOROS_CONTEXT_MODE")
         raw.pop("OUROBOROS_CONTEXT_MODE_AUTO_LOW")
         cyber_settings.write_text(json.dumps(raw))
-    cfg.save_settings({**cfg.load_settings(), "OUROBOROS_CONTEXT_MODE": "low"})
+    cfg.save_settings({**cfg.load_settings(), "OUROBOROS_CONTEXT_MODE": context_mode})
     stored = json.loads(cyber_settings.read_text())
-    assert stored["OUROBOROS_CONTEXT_MODE"] == "low"
-    assert stored["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] == "false"
-    assert cfg.load_settings()["OUROBOROS_CONTEXT_MODE"] == "low"
+    assert stored["OUROBOROS_CONTEXT_MODE"] == context_mode
+    assert cfg.load_settings()["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] == "false"
+    assert cfg.load_settings()["OUROBOROS_CONTEXT_MODE"] == context_mode
 
 
 def test_cyber_context_save_retains_current_task_snapshot(cyber_settings, monkeypatch):

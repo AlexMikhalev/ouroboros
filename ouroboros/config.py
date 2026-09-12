@@ -20,7 +20,7 @@ import time
 from typing import Any, Optional, Sequence  # noqa: F401
 
 from ouroboros.context_mode_compat import (
-    normalize_and_persist_context_mode_compat, normalize_context_mode, owner_declared_low,
+    VALID_CONTEXT_MODES, normalize_and_persist_context_mode_compat, normalize_context_mode, owner_declared_low,
 )
 from ouroboros.platform_layer import pid_lock_acquire as _compat_pid_lock_acquire, pid_lock_release as _compat_pid_lock_release
 from ouroboros.provider_models import compute_direct_review_models_fallback, fallback_candidate_targets, local_only_review_route_env, migrate_model_value, resolve_model_target, review_model_uses_local as review_model_uses_local  # noqa: F401
@@ -441,7 +441,7 @@ def get_safety_mode() -> str:
 
 
 def get_context_mode() -> str:
-    """The EFFECTIVE working-context mode (low | max) used by context sizing: owner selection or
+    """The EFFECTIVE working-context mode (nano | low | max) used by context sizing: owner selection or
     an explicitly forwarded benchmark/operator value. The P3 scope gate reads
     get_owner_context_mode instead so a bare env Low cannot author owner intent. No boot-pin:
     hot-applies on the next task; the key is dropped from the agent-reachable /api/settings POST (P1)."""
@@ -454,8 +454,9 @@ def get_owner_context_mode() -> str:
     auto-Low is retired, but a bare forwarded env ``low`` still lacks owner provenance and keeps
     P3 at Max; only explicit ``low`` + tombstone ``false`` means owner Low. Raw persisted legacy
     ambiguity is normalized before env projection, so this matters only for env-only runs."""
-    if get_context_mode() != "low":
-        return "max"
+    mode = get_context_mode()
+    if mode != "low":
+        return mode
     return "low" if owner_declared_low(runtime_setting("OUROBOROS_CONTEXT_MODE_AUTO_LOW", "")) else "max"
 
 
@@ -483,9 +484,9 @@ def _guard_context_mode_lowering(settings: dict, *, allow_context_lowering: bool
         return
     previous_mode = normalize_context_mode(_settings_file_value("OUROBOROS_CONTEXT_MODE", "max"))
     next_mode = normalize_context_mode(settings.get("OUROBOROS_CONTEXT_MODE", previous_mode))
-    if previous_mode == "max" and next_mode == "low" and not allow_context_lowering:
+    if VALID_CONTEXT_MODES.index(next_mode) < VALID_CONTEXT_MODES.index(previous_mode) and not allow_context_lowering:
         raise PermissionError(
-            "OUROBOROS_CONTEXT_MODE lowering refused: 'max' -> 'low'. "
+            f"OUROBOROS_CONTEXT_MODE lowering refused: {previous_mode!r} -> {next_mode!r}. "
             "Context mode is owner-controlled — use the dedicated owner endpoint/UI/CLI."
         )
     if allow_context_lowering or "OUROBOROS_CONTEXT_MODE_AUTO_LOW" not in settings:

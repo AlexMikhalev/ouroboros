@@ -1,9 +1,8 @@
 """Enforcement-aware Atlas-backed scope reviewer for the commit pipeline.
 
 Runs beside triad review and sees touched context plus a generated repo atlas. Critical findings follow
-``OUROBOROS_REVIEW_ENFORCEMENT``: blocking enforcement blocks, advisory
-enforcement reports them without blocking. Failed rows retain their original
-status and typed origin. The commit aggregate applies advisory permission to
+the selected enforcement outside Cyber; Cyber findings are advisory to action.
+Failed rows retain their original status and typed origin. The commit aggregate applies permission to
 technical failures independently of candidate, custody and owner admission.
 In owner-selected ``low`` context mode no reviewer runs and a typed skip is recorded.
 """
@@ -48,6 +47,7 @@ from ouroboros.tools.review_helpers import (
     build_touched_file_pack,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
     load_checklist_section,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
     review_drive_root,
+    review_enforcement_blocks,
     CRITICAL_FINDING_CALIBRATION,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
     BINARY_EXTENSIONS,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
     _SENSITIVE_EXTENSIONS,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
@@ -868,7 +868,7 @@ def run_scope_review(
 
     if critical_findings:
         from ouroboros import config as _cfg
-        if _cfg.get_review_enforcement() == "blocking":
+        if review_enforcement_blocks(_cfg.get_review_enforcement()):
             return ScopeReviewResult(
                 blocked=True,
                 block_message=_build_block_message(critical_findings, advisory_findings),
