@@ -356,7 +356,8 @@ def test_service_outputs_finalize_before_acceptance_and_require_replacement(tmp_
 
     assert result == replacement
     assert len(model_calls) == 2
-    assert "keep is NOT allowed" in model_calls[1][-1]["content"]
+    # A fresh source observation follows the candidate-control instruction.
+    assert any("keep is NOT allowed" in message.get("content", "") for message in model_calls[1])
     assert trace["delivery_candidate"]["revision"] == 2
     assert trace["delivery_candidate"]["finalization_control"] == "replace"
     assert trace["verification_events"][0]["kind"] == "services_stopped"

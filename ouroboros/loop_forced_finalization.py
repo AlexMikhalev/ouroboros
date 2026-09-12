@@ -501,9 +501,22 @@ _FORCED_BEST_EFFORT_TAIL = (
 def _prepare_forced_prompt(
     ctx: _RoundLimitContext, prompt: str, llm_trace: Dict[str, Any],
 ) -> str:
+    _loop()._drain_forced_owner_directives(ctx, llm_trace)
     _loop()._finalize_forced_services(ctx, llm_trace)
     tools_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
-    return prompt + _loop()._forced_delegation_note(tools_ctx, llm_trace)
+    return prompt + _loop()._forced_delegation_note(tools_ctx, llm_trace) + _forced_subject_prompt(ctx, llm_trace)
+
+
+def _forced_subject_prompt(ctx: _RoundLimitContext, llm_trace: Dict[str, Any]) -> str:
+    """Capture the source before pricing/sending, never after a reply arrives."""
+    from ouroboros.loop_acceptance import capture_acceptance_observation, acceptance_observation_prompt
+
+    tools_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
+    if tools_ctx is None:
+        return ""
+    observed = capture_acceptance_observation(tools_ctx, llm_trace, ctx.incoming_messages)
+    rendered = acceptance_observation_prompt(tools_ctx, observed)
+    return "\n\n" + rendered if rendered else ""
 
 
 def _finalize_forced_services(
@@ -851,6 +864,7 @@ def _forced_fallback_result(
 def _resolve_forced_delivery_control(
     tools_ctx: Any,
     extracted: str,
+    *, ctx: Optional[_RoundLimitContext] = None, llm_trace: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, str, bool, bool]:
     """Resolve forced control; returns text, degradation, retained, replaced."""
     if tools_ctx is None or not extracted:
@@ -867,6 +881,29 @@ def _resolve_forced_delivery_control(
     )
     if consumed:
         tools_ctx._delivery_control_required = False
+        from ouroboros.loop_delivery import _parse_delivery_control_body, apply_delivery_subject_decision
+
+        parsed, duplicate, embedded = _parse_delivery_control_body(extracted)
+        if (not duplicate and not embedded and isinstance(parsed, dict)
+                and "acceptance_subject" in parsed and not degraded):
+            applied, error = (
+                apply_delivery_subject_decision(ctx.tools, ctx, llm_trace, parsed["acceptance_subject"])
+                if ctx is not None and llm_trace is not None else
+                (False, "forced subject has no current source observation context")
+            )
+            if llm_trace is not None:
+                llm_trace["forced_acceptance_subject"] = {"applied": applied, "reason": error}
+            if not applied:
+                degraded = True
+                if ctx is not None and llm_trace is not None and isinstance(candidate, _loop().DeliveryCandidate):
+                    candidate.acceptance_binding = _loop()._forced_unaccepted_binding(
+                        ctx.tools, candidate, REASON_DELIVERY_CONTROL_DEGRADED,
+                    )
+                    tools_ctx._task_acceptance_reviewed = False
+                    _loop()._set_acceptance_decision(llm_trace, {
+                        "status": "finalized_unaccepted", "reason": REASON_DELIVERY_CONTROL_DEGRADED,
+                        "source": "forced_acceptance_subject", "rationale": error,
+                    })
     return (
         resolved,
         REASON_DELIVERY_CONTROL_DEGRADED if degraded else "",
@@ -929,7 +966,7 @@ def _forced_final_answer(
                 reason_code,
                 source="provider_outcome_unknown_no_resend",
             )
-        if attempt == 1:
+        if single_semantic_turn or attempt == 1:
             return _loop()._forced_fallback_result(
                 ctx,
                 llm_trace,
@@ -941,7 +978,8 @@ def _forced_final_answer(
         _loop()._finalize_forced_services(ctx, llm_trace)
         _loop()._append_or_merge_user_message(
             ctx.messages,
-            "[FORCED_OWNER_REFRESH] Answer all current directives; ignore the stale draft.",
+            "[FORCED_OWNER_REFRESH] Answer all current directives; ignore the stale draft."
+            + _forced_subject_prompt(ctx, llm_trace),
         )
 
     # Control resolution runs BEFORE the incomplete branch: a retained candidate
@@ -949,7 +987,7 @@ def _forced_final_answer(
     # and a stale-evidence retention keeps its own reason (#447/issue-449).
     incomplete = bool(extracted) and forced_response_is_incomplete(response_meta)
     extracted, control_degraded, retained, replaced = _resolve_forced_delivery_control(
-        tools_ctx, extracted,
+        tools_ctx, extracted, ctx=ctx, llm_trace=llm_trace,
     )
     current = _loop()._current_delivery_candidate(ctx, llm_trace)
     if retained and current is None:
