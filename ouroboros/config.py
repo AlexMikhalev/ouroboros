@@ -441,19 +441,16 @@ def get_safety_mode() -> str:
 
 
 def get_context_mode() -> str:
-    """The EFFECTIVE working-context mode (nano | low | max) used by context sizing: owner selection or
-    an explicitly forwarded benchmark/operator value. The P3 scope gate reads
-    get_owner_context_mode instead so a bare env Low cannot author owner intent. No boot-pin:
-    hot-applies on the next task; the key is dropped from the agent-reachable /api/settings POST (P1)."""
+    """Working-context choice in the current settings read view.
+
+    Future tasks see a new choice; an active TaskSettingsSnapshot stays captured.
+    """
     default_val = str(SETTINGS_DEFAULTS["OUROBOROS_CONTEXT_MODE"])
     return normalize_context_mode(runtime_setting("OUROBOROS_CONTEXT_MODE", default_val) or default_val)
 
 
 def get_owner_context_mode() -> str:
-    """The explicitly selected context mode during the auto-Low compatibility window: persistent
-    auto-Low is retired, but a bare forwarded env ``low`` still lacks owner provenance and keeps
-    P3 at Max; only explicit ``low`` + tombstone ``false`` means owner Low. Raw persisted legacy
-    ambiguity is normalized before env projection, so this matters only for env-only runs."""
+    """Keep legacy auto-Low provenance distinct from an explicit context choice."""
     mode = get_context_mode()
     if mode != "low":
         return mode
@@ -477,9 +474,8 @@ def _settings_file_value(key: str, default: str) -> str:
 
 def _guard_context_mode_lowering(settings: dict, *, allow_context_lowering: bool = False) -> None:
     """Outside Cyber Pro, lowering requires the dedicated owner endpoint.
-
-    Authoring false on ambiguous legacy Low also lowers the horizon, unless the
-    same write restores Max: Max+false is the non-lowering compatibility migration."""
+    Authoring false on ambiguous Low lowers the horizon unless this same write
+    restores Max; Max+false is the non-lowering compatibility migration."""
     if runtime_mode_at_least(get_runtime_mode(), "cyber_pro"):
         return
     previous_mode = normalize_context_mode(_settings_file_value("OUROBOROS_CONTEXT_MODE", "max"))
@@ -502,14 +498,9 @@ def _guard_context_mode_lowering(settings: dict, *, allow_context_lowering: bool
 
 def prepare_settings_for_persist(settings: dict, *, authored_keys: Sequence[str] = (),
         allow_context_lowering: bool = False, allow_safety_lowering: bool = False) -> dict:
-    """THE prologue EVERY writer that persists settings.json must call; returns the dict to write.
-
-    ONE enforcement point: three review rounds found this rule on one path while a sibling bypassed it. Ratchets
-    are enforced here, and SILENCE STAYS SILENCE — a disk-authored key the file does not carry, arriving as nothing
-    but the shipped default, is a gap filled by a defaults merge (load_settings / _owner_read_settings_raw), not
-    authorship: persisting it ends a forwarded env override mid-run and labels a benchmark artifact with a mode it
-    never ran under (mirror: apply_settings_to_env). AUTHORSHIP IS INFORMATION ONLY THE CALLER HAS — one that
-    really authors such a key names it in ``authored_keys``; a POST never about these keys authors nothing."""
+    """Normalize settings writes under existing ratchets. Only the actual writer
+    names authored_keys; a defaults merge preserves absent disk-owned intent,
+    forwarded environment choices and install-time provenance."""
     authored = set(authored_keys or ())
     prepared = {k: v for k, v in settings.items() if not (
         k in _DISK_AUTHORED_SETTINGS and k not in authored and not _settings_file_value(k, "")
