@@ -928,8 +928,8 @@ _DIRECTORY_CHANGE_COMMANDS = frozenset({"cd", "pushd"})
 _MAX_INLINE_RECURSION = 3
 
 
-def direct_utility_target_rows(raw_cmd: Any) -> List[tuple]:
-    """Certain argv writes only; explicit shell syntax retains literal provenance.
+def direct_shell_rows(raw_cmd: Any) -> List[tuple]:
+    """Actual argv, input/output redirects and whether explicit shell syntax applies.
 
     Interpreter/program bodies, substitutions, heredocs and unknown utility forms
     make no target claim. This view never changes the command that executes.
@@ -938,33 +938,41 @@ def direct_utility_target_rows(raw_cmd: Any) -> List[tuple]:
     if not argv:
         return []
     head = pathlib.PurePath(argv[0]).name.lower().removesuffix(".exe")
-    if head not in POSIX_SHELL_HEADS:
-        return [(argv, _writer_target_tokens_single(argv, direct_only=True, parse_redirects=False), (), False)]
-    typed = shell_tokens_typed(shell_command_string(argv))
+    body = shell_command_string(argv) if head in POSIX_SHELL_HEADS else ""
+    if not body:
+        return [(argv, [], [], False)]
+    typed = shell_tokens_typed(body)
     if typed is None or any(syntax and token in {"(", ")", "<<", "<<-", "<<<"} for token, syntax in typed):
         return []
-    rows, segment, redirects = [], [], []
+    rows, segment, reads, writes = [], [], [], []
     index = 0
     while index <= len(typed):
         token, syntax = typed[index] if index < len(typed) else (";", True)
         if syntax and token in {";", "&&", "||", "|", "|&", "&"}:
             if segment and segment[0] in _DIRECTORY_CHANGE_COMMANDS and any(c in " ".join(segment[1:]) for c in "$`*?{}~"):
                 return rows  # Following relative cwd is unknown; retain only earlier target facts.
-            targets = _writer_target_tokens_single(segment, direct_only=True, parse_redirects=False)
-            rows.append((segment, [*targets, *redirects], (), False))
-            segment, redirects = [], []
+            rows.append((segment, reads, writes, True))
+            segment, reads, writes = [], [], []
         elif syntax and token in {">", ">>", ">|", "&>", "&>>", ">&", "<", "<&"}:
             if segment and segment[-1].isdigit():
                 segment.pop()  # Descriptor syntax is not a utility file operand.
             index += 1
             if index < len(typed):
                 operand = typed[index][0]
-                if token[0] != "<" and not (token == ">&" and (operand.isdigit() or operand == "-")):
-                    redirects.append(operand)
+                if token == "<":
+                    reads.append(operand)
+                elif token != "<&" and not (token == ">&" and (operand.isdigit() or operand == "-")):
+                    writes.append(operand)
         else:
             segment.append(token)
         index += 1
     return rows
+
+
+def direct_utility_target_rows(raw_cmd: Any) -> List[tuple]:
+    """Certain utility writes plus real output redirects; input reads are independent."""
+    return [(argv, [*_writer_target_tokens_single(argv, direct_only=True, parse_redirects=False), *writes], (), False)
+            for argv, _reads, writes, _shell in direct_shell_rows(raw_cmd)]
 
 
 def writer_target_rows(raw_cmd: Any, _depth: int = 0) -> List[tuple]:
@@ -1196,6 +1204,8 @@ def _writer_target_tokens_single(
         return list(dict.fromkeys(t for t in redirect_targets if str(t or "").strip()))
     cmd = pathlib.PurePath(argv[0]).name.lower().removesuffix(".exe")
     if direct_only:
+        if cmd == "dd":
+            return [token[3:] for token in argv[1:] if token.startswith("of=")] + redirect_targets
         if cmd in _DIRECTORY_DESTINATION_COMMANDS:
             pairs = directory_destination_pairs(argv)
             return list(dict.fromkeys([*[dest for _, dest, _ in pairs],

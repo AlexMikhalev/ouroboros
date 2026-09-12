@@ -289,7 +289,7 @@ def test_light_repo_formatter_preserves_sorted_bounded_path_disclosure():
         "⚠️ LIGHT_MODE_REPO_CHANGED: runtime_mode=light observed a mutation of the "
         "Ouroboros repository after run_script. The execution result is preserved and no "
         "automatic rollback was attempted to avoid overwriting concurrent human edits. "
-        "Affected/dirty paths: a.py, b.py, z.py. Switch to advanced/pro for repo writes."
+        "Affected/dirty paths: a.py, b.py, z.py. Inspect these changes against the task contract."
     )
 
     crowded = process_guard._format_light_repo_write_note(
@@ -384,7 +384,7 @@ def test_process_post_checks_append_every_tripwire_note_after_the_payload(
         "⚠️ LIGHT_MODE_REPO_CHANGED: runtime_mode=light observed a mutation of the "
         "Ouroboros repository after run_script. The execution result is preserved and no "
         "automatic rollback was attempted to avoid overwriting concurrent human edits. "
-        "Affected/dirty paths: changed.py. Switch to advanced/pro for repo writes.\n\n"
+        "Affected/dirty paths: changed.py. Inspect these changes against the task contract.\n\n"
         "⚠️ WORKSPACE_GIT_REF_CHANGED: run_command changed git HEAD or refs inside the "
         "external workspace. External workspace runs must leave changes as files/patch "
         "artifacts, not commits/tags/resets."

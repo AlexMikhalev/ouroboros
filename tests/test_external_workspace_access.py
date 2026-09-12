@@ -698,16 +698,27 @@ def test_deliverables_shell_presence_grant_preserves_declared_and_undeclared_cus
         {"cmd": command, "cwd": str(workspace)}, "advanced",
     ) is None
 
-    from ouroboros.tools.shell import _resolve_declared_output, _run_shell
+    from ouroboros.tools.shell import _resolve_declared_output
+    from ouroboros.artifacts import collect_task_artifact_records
+    from hashlib import sha256
 
-    result = _run_shell(ctx, command, cwd=str(workspace))
-    assert destination.exists()
+    monkeypatch.setattr("ouroboros.safety.check_safety", lambda *_a, **_kw: (True, ""))
+    result = reg.execute("run_command", {"cmd": command, "cwd": str(workspace)})
+    assert destination.read_bytes() == source.read_bytes() == b"ok", result
     assert "ARTIFACT_OUTPUT_UNDECLARED" in result
     resolved, reason = _resolve_declared_output(
         ctx, str(destination), workspace, cwd_root="active_workspace",
     )
     assert reason == ""
     assert resolved == destination.resolve()
+    declared = deliverables / "declared.html"
+    result = reg.execute("run_command", {"cmd": ["cp", str(source), str(declared)],
+        "cwd": str(workspace), "outputs": [str(declared)]})
+    assert "exit_code=0" in result and "registered output" in result, result
+    records = collect_task_artifact_records(data, ctx.task_id)
+    record = next(row for row in records if row["name"] == declared.name)
+    assert pathlib.Path(record["path"]).read_bytes() == declared.read_bytes() == source.read_bytes()
+    assert record["sha256"] == sha256(source.read_bytes()).hexdigest()
 
 
 def test_deliverables_presence_prefix_uses_logical_user_files_path(

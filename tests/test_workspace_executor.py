@@ -554,14 +554,16 @@ def test_docker_executor_protected_artifact_policy_matches_host_and_backend_spel
 
     backend_policy_host_arg = registry_for_policy("/workspace/executable").execute("run_command", {"cmd": ["cat", "executable"]})
     relative_policy_backend_arg = registry_for_policy("executable").execute("run_command", {"cmd": ["cat", "/workspace/executable"]})
-    backend_policy_interpreter_arg = registry_for_policy("/workspace/executable").execute(
-        "run_command",
-        {"cmd": ["python3", "-c", "open('executable','rb').read()"]},
-    )
+    # Inline program text has no independent semantic veto. Check admission
+    # without pretending an unavailable Docker transport executed the program.
+    from ouroboros.protected_artifacts import shell_block_reason
+    backend_registry = registry_for_policy("/workspace/executable")
+    backend_policy_interpreter_arg = shell_block_reason(
+        backend_registry._ctx, ["python3", "-c", "open('executable','rb').read()"], cwd=str(workspace))
 
     assert "RESOURCE_POLICY_BLOCKED" in backend_policy_host_arg
     assert "RESOURCE_POLICY_BLOCKED" in relative_policy_backend_arg
-    assert "RESOURCE_POLICY_BLOCKED" in backend_policy_interpreter_arg
+    assert backend_policy_interpreter_arg == ""
 
 
 def test_overlay_env_is_case_aware():

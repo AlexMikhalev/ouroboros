@@ -279,10 +279,7 @@ class LLMClient(
         caller_execution_deadline: Optional[float] = None,
         wait_for_resources: bool = True,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        """Async remote chat; no_proxy keeps forked macOS workers off OS proxy APIs.
-
-        Host temperature hints, resource waiting and the active-turn transport
-        slot follow ``chat``'s effective-route contract."""
+        """Async chat with the same host hints, resource waiting and transport contract as ``chat``."""
         from ouroboros.llm_claudexor import turn_state_for_route
 
         messages = self._normalize_system_message_placement(messages)

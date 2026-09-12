@@ -707,171 +707,129 @@ def _git_static_introspection_is_path_limited(work_dir: pathlib.Path, candidates
     return False
 
 
+def _file_operand_tokens(argv: list[str]) -> list[str]:
+    """Bounded utility file roles; patterns, programs and option values are not files."""
+    first = pathlib.PurePath(argv[0]).name.lower().removesuffix(".exe") if argv else ""
+    if first == "find":
+        files = []
+        for token in argv[1:]:
+            if not files and token in {"-H", "-L", "-P", "--"}:
+                continue
+            if token.startswith("-") or token in _FIND_EXPRESSION_MARKERS:
+                break
+            files.append(token)
+        return files or ["."]
+    if first == "dd":
+        return [token[3:] for token in argv[1:] if token.startswith("if=")]
+    patterned = first in {"grep", "egrep", "fgrep", "rg", "ripgrep", "ag", "ack", "sed", "awk"}
+    if not patterned:
+        return [token for token in argv[1:] if token and not token.startswith("-")]
+    files, pattern_seen, index = [], False, 1
+    while index < len(argv):
+        token = argv[index]
+        if token == "--":
+            tail = argv[index + 1:]
+            return files + (tail if pattern_seen else tail[1:])
+        if token in {"-e", "--regexp", "--expression", "-f", "--file"}:
+            if index + 1 >= len(argv):
+                return files
+            if token in {"-f", "--file"}:
+                files.append(argv[index + 1])
+            pattern_seen, index = True, index + 2
+            continue
+        if token.startswith(("--regexp=", "--expression=", "-e")):
+            pattern_seen = True
+        elif token.startswith(("--file=", "-f")):
+            files.append(token.split("=", 1)[1] if token.startswith("--") else token[2:])
+            pattern_seen = True
+        elif (first == "awk" and token in {"-v", "-F"}) or token in {
+            "-A", "-B", "-C", "-m", "-g", "--glob", "--iglob", "--include", "--exclude", "--exclude-dir",
+        }:
+            index += 2
+            continue
+        elif first == "sed" and token == "-i" and index + 1 < len(argv) and argv[index + 1] == "":
+            index += 2
+            continue
+        elif token.startswith("-"):
+            # Unknown long options may consume a value; do not invent a file role.
+            if token.startswith("--") and "=" not in token and token not in {
+                "--line-number", "--recursive", "--fixed-strings", "--ignore-case", "--quiet", "--in-place",
+            }:
+                return files
+        elif not pattern_seen:
+            pattern_seen = True
+        elif first != "awk" or "=" not in token:
+            files.append(token)
+        index += 1
+    return files
+
+
+def _shell_operand_block(ctx, tokens, operation, work_dir, binding, shell_syntax=False) -> str:
+    candidates = []
+    for text in tokens:
+        if not text or any(char in text for char in "$`~"):
+            continue  # Unexpanded values are not concrete filesystem evidence.
+        if shell_syntax and _contains_shell_glob(text):
+            if reason := _glob_pattern_could_match_protected(ctx, work_dir, text, operation, binding):
+                return reason
+            continue
+        candidate = _resolve_candidate_path(ctx, work_dir, text)
+        if candidate is not None:
+            candidates.append(candidate)
+    if reason := any_protected_target(ctx, candidates, operation, binding):
+        return reason
+    if operation in _DIRECTORY_TARGET_OPERATIONS:
+        return _directory_contains_protected_target(ctx, candidates, operation, binding)
+    return ""
+
+
 def shell_block_reason(
-    ctx: Any,
-    raw_cmd: Any,
-    *,
-    cwd: str = "",
-    default_cwd: pathlib.Path | None = None,
+    ctx: Any, raw_cmd: Any, *, cwd: str = "", default_cwd: pathlib.Path | None = None,
     binding: ResolvedResourceBinding | None = None,
 ) -> str:
     from ouroboros.config import get_runtime_mode
     from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+    from ouroboros.shell_parse import sequential_effective_cwds
+    from ouroboros.tools.shell_guards import direct_shell_rows, _writer_target_tokens_single
 
-    if mode_has_unrestricted_agency(get_runtime_mode()):
+    if mode_has_unrestricted_agency(get_runtime_mode()) or not protected_artifact_paths(ctx, binding):
         return ""
-    protected_paths = protected_artifact_paths(ctx, binding)
-    if not protected_paths:
-        return ""
-    raw_argv = shell_argv(raw_cmd)
-    env_values = [
-        token.split("=", 1)[1]
-        for token in raw_argv
-        if "=" in token and not token.startswith("=") and token.split("=", 1)[1]
-    ]
-    argv = strip_leading_env_assignments(unwrap_env_argv(raw_argv))
-    if not argv:
-        return ""
-    first = pathlib.PurePath(argv[0]).name.lower().removesuffix(".exe")
-    if first in _SHELLS:
-        inline = _inline_shell_command(argv, first)
-        if inline:
-            # Retain the original shell envelope for the typed redirect view.
-            # A plain argv/string is not itself shell syntax.
-            argv = shell_argv(inline)
-            if not argv:
-                return ""
-            first = pathlib.PurePath(argv[0]).name.lower().removesuffix(".exe")
-    operation = (
-        _git_static_introspection_operation(argv)
-        if first == "git"
-        else _find_operation(argv)
-        if first == "find"
-        else _SHELL_COMMAND_OPERATIONS.get(first)
-    )
-    high_risk = _is_high_risk_interpreter(first)
     if binding is not None:
         work_dir = pathlib.Path(binding.target_path)
     else:
         try:
-            work_dir, _cwd_root, _allowed = resolve_shell_cwd(ctx, cwd)
+            work_dir, _root, _allowed = resolve_shell_cwd(ctx, cwd)
         except Exception:
             work_dir = pathlib.Path(default_cwd or ".").resolve(strict=False)
-    try:
-        first_path = pathlib.Path(str(argv[0] or "")).expanduser()
-        first_target = first_path.resolve(strict=False) if first_path.is_absolute() else (pathlib.Path(work_dir) / first_path).resolve(strict=False)
-    except (OSError, TypeError, ValueError):
-        first_target = None
-    if first_target is not None:
-        for protected in protected_paths:
-            if first_target == pathlib.Path(protected).resolve(strict=False):
-                return block_reason_for_path(ctx, first_target, "execute", binding)
-    if first == "git":
-        work_dir = _git_work_dir(ctx, argv, pathlib.Path(work_dir))
-        candidate_tokens = [*env_values, *_git_candidate_tokens(argv)]
-    else:
-        candidate_tokens = [*env_values, *argv[1:]]
-    if first == "find" and not _find_has_explicit_start_path(argv):
-        candidate_tokens.append(".")
-    candidates: list[pathlib.Path] = []
-    glob_texts: list[str] = []  # v6.57.0 (1.6): checked precisely by pattern, not blanket-dir
-    # Body strings are not filesystem operations. Concrete shell redirections
-    # and known utility operands are supplied by the shared direct-only view.
-    from ouroboros.tools.shell_guards import direct_utility_target_rows
-
-    write_target_texts = [target for row in direct_utility_target_rows(raw_cmd) for target in row[1]]
-    candidate_tokens.extend(write_target_texts)
-    for raw in candidate_tokens:
-        text = str(raw or "")
-        if not text or text in {"|", "&&", "||", ";"}:
+    rows = direct_shell_rows(raw_cmd)
+    for (raw_argv, reads, writes, shell_syntax), row_cwd in zip(rows, sequential_effective_cwds(rows, work_dir)):
+        argv = strip_leading_env_assignments(unwrap_env_argv(raw_argv))
+        first = pathlib.PurePath(argv[0]).name.lower().removesuffix(".exe") if argv else ""
+        if first in {"cmd", "powershell", "pwsh"} and (inline := _inline_shell_command(argv, first)):
+            argv = shell_argv(inline)  # Retain the existing explicit Windows command-operand view.
+        # Redirections are independent operations, including around allowed execution.
+        write_targets = [*_writer_target_tokens_single(argv, direct_only=True, parse_redirects=False), *writes]
+        for tokens, operation in ((reads, "read_bytes"), (write_targets, "write")):
+            if reason := _shell_operand_block(ctx, tokens, operation, row_cwd, binding, shell_syntax):
+                return reason
+        if not argv:
             continue
-        if first == "dd" and text.startswith("if="):
-            text = text.split("=", 1)[1]
-        elif first == "dd" and "=" in text:
-            continue
-        if text.startswith("-") and not pathlib.Path(text).is_absolute():
-            continue
-        if _contains_shell_glob(text):
-            glob_texts.append(text)
-            continue
-        candidate = _resolve_candidate_path(ctx, pathlib.Path(work_dir), text)
-        if candidate is not None:
-            candidates.append(candidate)
-    if (
-        first == "git"
-        and operation == "static_introspection"
-        and not _git_static_introspection_is_path_limited(pathlib.Path(work_dir), candidates)
-        # Round-2: a plain worktree/staged `git diff` (the vcs_diff tool shape)
-        # cannot dump the protected binary, so do NOT fall back to blocking on the
-        # whole work_dir. A pathspec naming the protected file still blocks via the
-        # candidate tokens above; a rev/content-flag diff keeps the fallback.
-        and _git_diff_can_dump_content(argv)
-    ):
-        candidates.append(pathlib.Path(work_dir).resolve(strict=False))
-    if write_target_texts:
-        # Check ONLY the actual redirect/write targets. Screening every token here
-        # used to block any command that both redirects (to a scratch file) and
-        # merely MENTIONS an execute-allowed artifact — which is exactly the shape
-        # of a differential-testing loop (`ref ... > ref.out; exe ... > exe.out`).
-        write_candidates: list[pathlib.Path] = []
-        write_glob_texts: list[str] = []
-        for raw in write_target_texts:
-            text = str(raw or "")
-            if not text:
-                continue
-            if _contains_shell_glob(text):
-                # v6.57.0 (1.6): a write/delete GLOB (`rm -f *.out`) is checked by PATTERN,
-                # not by blanket-blocking its whole directory just because a protected file
-                # lives there — else cleaning scratch beside a black-box ref binary blocks.
-                write_glob_texts.append(text)
-                continue
-            candidate = _resolve_candidate_path(ctx, pathlib.Path(work_dir), text)
-            if candidate is not None:
-                write_candidates.append(candidate)
-        write_block = any_protected_target(ctx, write_candidates, "write", binding)
-        if write_block:
-            return write_block
-        write_dir_block = _directory_contains_protected_target(
-            ctx, write_candidates, "write", binding
-        )
-        if write_dir_block:
-            return write_dir_block
-        for gt in write_glob_texts:
-            gblock = _glob_pattern_could_match_protected(
-                ctx, pathlib.Path(work_dir), gt, "write", binding
-            )
-            if gblock:
-                return gblock
-    if operation:
-        direct_block = any_protected_target(ctx, candidates, operation, binding)
-        if direct_block:
-            return direct_block
-        for gt in glob_texts:
-            gblock = _glob_pattern_could_match_protected(
-                ctx, pathlib.Path(work_dir), gt, operation, binding
-            )
-            if gblock:
-                return gblock
-        if operation in _DIRECTORY_TARGET_OPERATIONS:
-            return _directory_contains_protected_target(
-                ctx, candidates, operation, binding
-            )
-        return ""
-    if not high_risk:
-        return ""
-    # Bare-token read check ONLY for the file(s) the interpreter itself opens
-    # (the script operand, or a `-m <module>` file operand): `python3 <protected>`
-    # and `python3 -m pdb <protected>` read the artifact's bytes and stay blocked,
-    # while quoted mentions inside -c/heredoc code text do not prove a read.
-    script_candidates: list[pathlib.Path] = []
-    for operand in _interpreter_read_operands(argv):
-        if operand and not _contains_shell_glob(operand):
-            resolved_script = _resolve_candidate_path(ctx, pathlib.Path(work_dir), operand)
-            if resolved_script is not None:
-                script_candidates.append(resolved_script)
-    default_block = any_protected_target(
-        ctx, script_candidates, "read_bytes", binding
-    )
-    if default_block:
-        return default_block
+        first = pathlib.PurePath(argv[0]).name.lower().removesuffix(".exe")
+        executable = _resolve_candidate_path(ctx, row_cwd, argv[0])
+        if executable is not None and executable.exists() and (reason := block_reason_for_path(ctx, executable, "execute", binding)):
+            return reason
+        if first == "git":
+            operation = _git_static_introspection_operation(argv)
+            row_cwd = _git_work_dir(ctx, argv, row_cwd)
+            tokens = _git_candidate_tokens(argv)
+            candidates = [_resolve_candidate_path(ctx, row_cwd, token) for token in tokens]
+            if operation and not _git_static_introspection_is_path_limited(row_cwd, [p for p in candidates if p is not None]) and _git_diff_can_dump_content(argv):
+                tokens.append(str(row_cwd))
+        elif _is_high_risk_interpreter(first):
+            operation, tokens = "read_bytes", _interpreter_read_operands(argv)
+        else:
+            operation = _find_operation(argv) if first == "find" else _SHELL_COMMAND_OPERATIONS.get(first)
+            tokens = _file_operand_tokens(argv) if operation else []
+        if operation and (reason := _shell_operand_block(ctx, tokens, operation, row_cwd, binding, shell_syntax)):
+            return reason
     return ""

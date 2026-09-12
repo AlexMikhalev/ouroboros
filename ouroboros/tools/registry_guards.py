@@ -657,6 +657,7 @@ def _direct_shell_write_block(self, raw_cmd: Any, work_dir: pathlib.Path, runtim
     from ouroboros.tools.core import _binding_skill_control_plane_path, is_skill_control_plane_path
     from ouroboros.shell_parse import directory_destination_child_name
     from ouroboros.runtime_mode_policy import mode_allows_protected_write, protected_paths_in
+    from ouroboros.tools.shell_audit import _presence_allows_user_output
 
     rows = direct_utility_target_rows(raw_cmd)
     if not any(row[1] for row in rows):
@@ -695,7 +696,12 @@ def _direct_shell_write_block(self, raw_cmd: Any, work_dir: pathlib.Path, runtim
                         if runtime_mode == "light" or (protected_paths_in([resolved.relative_to(base).as_posix()])
                                                        and not mode_allows_protected_write(runtime_mode)):
                             continue
-                    if not _registry()._presence_binding_allowed(self._ctx, target_binding):
+                    # Process output uses the existing shell/write grant owner,
+                    # including a remapped Deliverables logical path prefix.
+                    if root == "user_files":
+                        if not _presence_allows_user_output(self._ctx, resolved):
+                            continue
+                    elif not _registry()._presence_binding_allowed(self._ctx, target_binding):
                         continue
                     break
                 except (OSError, ValueError, RuntimeError):

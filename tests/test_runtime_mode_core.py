@@ -1111,7 +1111,7 @@ def test_runtime_identity_deletion_uses_the_selected_mode(tmp_path, monkeypatch,
     if mode == "cyber_pro":
         assert "exit_code=0" in result and not identity.exists(), result
     else:
-        assert "IDENTITY_DELETE_BLOCKED" in result
+        assert "WORKSPACE_SHELL_BLOCKED" in result
         assert identity.read_text() == "identity\n"
 
 
@@ -1236,13 +1236,13 @@ def test_run_shell_allows_readonly_mentions_of_protected_paths(cmd, tmp_path, mo
     ["bash", "-c", "printf x > README.md"],
     ["sh", "-c", "touch README.md"],
 ])
-def test_light_mode_executes_a_simple_shell_writer(cmd, tmp_path, monkeypatch):
+def test_light_mode_preserves_direct_repo_write_authority(cmd, tmp_path, monkeypatch):
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
     monkeypatch.setenv("OUROBOROS_SAFETY_MODE", "off")
     reg = _registry(tmp_path)
     result = reg.execute("run_command", {"cmd": cmd})
-    assert "exit_code=0" in result, result
-    assert (tmp_path / "README.md").exists()
+    assert "LIGHT_MODE_BLOCKED" in result, result
+    assert not (tmp_path / "README.md").exists()
 
 
 def test_light_mode_allows_shell_wrapper_non_repo_writer(tmp_path, monkeypatch):

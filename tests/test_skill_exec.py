@@ -340,9 +340,9 @@ def test_skill_preflight_reports_missing_pluginapi_permissions(tmp_path, monkeyp
 def test_run_shell_writes_a_self_authored_marker_example(tmp_path, monkeypatch):
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
     monkeypatch.setenv("OUROBOROS_SAFETY_MODE", "off")
-    marker = tmp_path / "example" / ".self_authored.json"
-    marker.parent.mkdir()
     ctx = _make_ctx(tmp_path)
+    marker = ctx.repo_dir / "example" / ".self_authored.json"
+    marker.parent.mkdir()
     registry = ToolRegistry(repo_dir=ctx.repo_dir, drive_root=ctx.drive_root)
     registry._ctx = ctx
 
@@ -356,7 +356,7 @@ def test_run_shell_writes_a_self_authored_marker_example(tmp_path, monkeypatch):
 
 
 @pytest.mark.serial
-def test_run_shell_blocks_obfuscated_self_authored_marker_write_pre_exec(tmp_path, monkeypatch):
+def test_run_shell_blocks_actual_self_authored_marker_write_pre_exec(tmp_path, monkeypatch):
     """The explicit redirect targets the actual runtime skill metadata.
 
     This is a physical owner-state write, not a reference inside script text.
@@ -374,7 +374,7 @@ def test_run_shell_blocks_obfuscated_self_authored_marker_write_pre_exec(tmp_pat
         {"cmd": ["bash", "-c", f"printf '{{}}' > {marker}"]},
     )
 
-    assert "SKILL_STATE_WRITE_BLOCKED" in result
+    assert "WORKSPACE_SHELL_BLOCKED" in result and "process was not started" in result
     assert not marker.exists()
 
 
