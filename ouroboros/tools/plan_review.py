@@ -525,11 +525,13 @@ async def _run_plan_review_async(ctx: ToolContext, request: _PlanRequest, *, col
     # The declaration wraps the builder ONLY when non-empty: zero-arg stubs of the builder stay valid.
     slots_fn = (lambda: _plan_review_slots(default_effort=request.reviewer_effort)) if request.reviewer_effort else _plan_review_slots
     existing = plan_review_wave(state, fingerprint)
-    if existing is not None and not isinstance(existing.get("spec"), dict):
-        existing = None  # C-09: a COMPACTED row (no frozen spec) is never authority
     if existing is not None:
         try:
+            # A compact index is not authority; resolve its retained exact source
+            # before deciding that this subject needs another paid review.
             existing = _authority_wave(state_root, task_id, existing)
+            if not isinstance(existing.get("spec"), dict):
+                raise PlanReviewSourceUnavailable("Recorded plan has no complete spec source")
             historical = _completed_historical_feedback(ctx, existing)
         except (OSError, ValueError, json.JSONDecodeError):
             return _plan_unavailable(
@@ -995,5 +997,3 @@ def _apply_disposition(ctx: ToolContext, disposition: dict) -> str:
     )
     return _publish_rendered_wave(ctx, stored, cap=cap, cycles_paid=cycles_paid,
                                   enforcement=enforcement, notes=list(closure["notes"]))
-
-# ------------------------------------------------------------------------ rendering

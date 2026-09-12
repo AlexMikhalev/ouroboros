@@ -105,7 +105,7 @@ def authority_wave(drive_root: Any, task_id: str, hot_wave: Optional[dict]) -> O
         return None
     ref = hot_wave.get("wave_artifact") if isinstance(hot_wave.get("wave_artifact"), dict) else {}
     if not ref:
-        if hot_wave.get("spec_in_artifact") or hot_wave.get("spec_body_truncated"):
+        if hot_wave.get("compact") or hot_wave.get("spec_in_artifact") or hot_wave.get("spec_body_truncated"):
             raise PlanReviewSourceUnavailable("PLAN_REVIEW_SOURCE_UNAVAILABLE: full spec has no artifact reference")
         return hot_wave
     if not drive_root or not task_id:

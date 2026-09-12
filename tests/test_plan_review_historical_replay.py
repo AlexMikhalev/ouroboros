@@ -158,3 +158,57 @@ def test_historical_text_cannot_create_another_host_control_line(tmp_path):
                                   cached=True, historical_feedback=feedback)
     assert '> PLAN_REVIEW_CONTROL_JSON:' in shown
     assert _parse_plan_review_control(shown) == (old["aggregate"], old["closed"])
+
+
+@pytest.mark.parametrize("missing", [None, "wave", "spec", "legacy_no_sources"])
+def test_compacted_historical_wave_resolves_sources_before_any_new_send(harness, monkeypatch, missing):  # noqa: F811
+    from ouroboros import review_custody
+
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "unlimited")
+    executor = _install_real_substrate(monkeypatch)
+    ctx = harness.make_ctx()
+    try:
+        _call(ctx)
+        fp = _state(harness)["waves"][-1]["request_fingerprint"]
+        _call(ctx, spec={**DECK_SPEC, "in_scope": ["six slides"]})
+        executor.release.set()
+        assert _wait_until(lambda: len(tr.plan_review_wave(_state(harness), fp).get("historical_supplements") or []) == 3)
+        for index in range(7):
+            spec = {**DECK_SPEC, "in_scope": [f"another plan {index}"]}
+            _call(ctx, spec=spec)
+            assert _wait_until(lambda: not review_custody._ACTIVE)
+            _call(ctx, spec=spec)
+        old = copy.deepcopy(tr.plan_review_wave(_state(harness), fp))
+        last_selected_fp = _state(harness)["current_attempt"]["fingerprint"]
+        assert old["compact"] and "spec" not in old
+        assert executor.execute_calls == 27 and _state(harness)["cycles_paid"] == 9
+        artifact_root = task_artifact_dir_path(harness.drive, ctx.task_id, create=False)
+        assert (artifact_root / old["wave_artifact"]["path"]).is_file()
+        assert (artifact_root / old["spec_source_ref"]["path"]).is_file()
+        if missing in {"wave", "spec"}:
+            ref = old["wave_artifact" if missing == "wave" else "spec_source_ref"]
+            (artifact_root / ref["path"]).unlink()
+        elif missing == "legacy_no_sources":
+            def remove_sources(value):
+                target = next(row for row in value["waves"] if row["request_fingerprint"] == fp)
+                target.pop("wave_artifact", None)
+                target.pop("spec_source_ref", None)
+                return value
+            tr._update_plan_review_state(harness.drive, ctx.task_id, remove_sources)
+            old = copy.deepcopy(tr.plan_review_wave(_state(harness), fp))
+        for _ in range(2):
+            result = _call(ctx)
+            assert executor.execute_calls == 27
+            actual = _state(harness)
+            assert actual["cycles_paid"] == 9
+            assert tr.plan_review_wave(actual, fp) == old
+            assert actual["current_attempt"]["fingerprint"] == (last_selected_fp if missing else fp)
+            if missing:
+                assert "PLAN_REVIEW_SOURCE_UNAVAILABLE" in result and "completed historical responses" not in result
+            else:
+                assert "free read of the completed historical responses" in result
+                assert _control(result) == {"outcome": old["aggregate"], "closed": old["closed"]}
+                for row in old["historical_supplements"]:
+                    assert row["source_ref"]["path"] in result
+    finally:
+        executor.release.set()
