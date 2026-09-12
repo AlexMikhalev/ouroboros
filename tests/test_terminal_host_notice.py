@@ -31,6 +31,9 @@ def test_equal_evidence_fields_cannot_revive_changed_owner_authority(tmp_path, m
         tools._ctx._task_acceptance_owner_generation = 1
         tools._ctx.owner_message_admission_agent = SimpleNamespace(_owner_message_generation=2)
     elif change == "superseded":
+        # The release notification follows real ingress; it is no longer a
+        # declaration that the task's meaning changed by itself.
+        tools._ctx._owner_directives = [{"content": "Use the newly supplied source."}]
         loop._supersede_task_acceptance_for_owner_followup(tools._ctx, trace)
     else:
         prior["superseded_by_revision"] = True

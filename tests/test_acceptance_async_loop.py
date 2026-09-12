@@ -219,6 +219,58 @@ def test_new_criterion_same_answer_gets_one_new_panel_and_keeps_prior_request(fu
     assert project_task_acceptance_review_capacity(f.ctx, task_id=f.ctx.task_id)["claimed_cycles"] == 2
 
 
+@pytest.mark.parametrize("pending_first", [False, True])
+@pytest.mark.parametrize("changed_requirement", [False, True])
+def test_explicit_renomination_replaces_the_held_answer_without_control_repair(
+    full_loop, monkeypatch, pending_first, changed_requirement,
+):
+    f = full_loop
+    revised = "The revised complete report includes the corrected budget of 200."
+    criterion = "Use the corrected budget of 200 in the report."
+    if not pending_first:
+        f.release.set()
+        f.ctx.owner_wait_callback = None
+    original_executor = review_substrate._review_route_executor
+    notified = False
+
+    def executor(assignment, **kw):
+        nonlocal notified
+        if changed_requirement and not notified:
+            notified = True
+            f.incoming.put(criterion)
+        return original_executor(assignment, **kw)
+
+    monkeypatch.setattr(review_substrate, "_review_route_executor", executor)
+
+    def main(_llm, messages, *_a, **_kw):
+        f.model_inputs.append(copy.deepcopy(messages))
+        f.model_step += 1
+        if f.model_step <= 2:
+            args = {"claim": ANSWER if f.model_step == 1 else revised}
+            if f.model_step == 2:
+                assert f.entered.wait(5)
+                if changed_requirement:
+                    assert criterion in str(messages)
+                    args["acceptance_subject"] = {
+                        "owner_source_sha256": f.ctx._acceptance_observation["owner_source_sha256"],
+                        "effective_criteria": "Complete report with the corrected budget of 200.",
+                    }
+            return {"content": "", "tool_calls": [call("task_acceptance_review", args, f"nominate-{f.model_step}")]}, 0.0
+        assert f.model_step < 8
+        return keep(f), 0.0
+
+    monkeypatch.setattr(loop, "call_llm_with_retry", main)
+    result, _usage, trace = f.run()
+    assert result == revised
+    assert [request.subject for request in f.review_requests] == [ANSWER, revised]
+    assert len(f.review_sends) == len(set(f.review_sends)) == 2
+    host = [run for run in trace["review_runs"] if run.get("authority") == "host_root"]
+    assert len(host) == 2 and host[0]["superseded_by_revision"]
+    assert host[0]["request"]["subject"] == ANSWER and host[1]["request"]["subject"] == revised
+    assert "DELIVERY_CONTROL_REPAIR" not in str(f.model_inputs)
+    assert trace["acceptance_decision"]["status"] == "accepted"
+
+
 def test_explicit_ready_panel_does_not_seal_before_main_finishes(full_loop, monkeypatch):
     f = full_loop
     f.release.set()

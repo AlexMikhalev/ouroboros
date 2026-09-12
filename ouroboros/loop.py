@@ -37,11 +37,7 @@ from ouroboros.usage_accounting import (
     invalidate_task_cache_splits,
     last_physical_attempt_capture,  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
 )
-from ouroboros.task_finalization import (  # noqa: F401 -- historical import surface for the L-B leaves
-    TERMINAL_ORIGIN_HOST_NOTICE,
-    TERMINAL_ORIGIN_HOST_SALVAGE,
-    TERMINAL_ORIGIN_MODEL_FINAL,
-)
+from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_NOTICE, TERMINAL_ORIGIN_HOST_SALVAGE, TERMINAL_ORIGIN_MODEL_FINAL  # noqa: F401 -- historical import surface for the L-B leaves
 from supervisor.owner_stop import (
     _mark_owner_stop_control_drained,  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
     _narrow_round_deadline,  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
@@ -525,7 +521,7 @@ def run_llm_loop(
                 if _compaction_usage:
                     _account_compaction_usage(accumulated_usage, _compaction_usage, event_queue, task_id)
 
-                prepare_acceptance_observation(ctx, llm_trace, incoming_messages, messages)
+                prepare_acceptance_observation(ctx, llm_trace, incoming_messages, messages, tool_schemas)
                 seal_task_transcript(messages)
 
                 model_call = _RoundModelCallContext(

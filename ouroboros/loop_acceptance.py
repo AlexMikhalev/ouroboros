@@ -342,8 +342,9 @@ def _task_acceptance_owner_generation_changed(ctx: Any) -> bool:
 
     from ouroboros.loop_messages import owner_source_sha256
 
-    acknowledged = getattr(ctx, "_acceptance_ack_source_sha256", "")
-    if acknowledged and acknowledged != owner_source_sha256(ctx):
+    known_source = (getattr(ctx, "_acceptance_ack_source_sha256", "")
+                    or getattr(getattr(ctx, "_delivery_candidate", None), "owner_source_sha256", ""))
+    if known_source and known_source != owner_source_sha256(ctx):
         return True
     expected_owner = getattr(ctx, "_task_acceptance_owner_generation", None)
     admission_agent = getattr(ctx, "owner_message_admission_agent", None)

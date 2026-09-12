@@ -406,6 +406,7 @@ def _publish_delivery_candidate(
         "effective_criteria": redact_projection(candidate.effective_criteria).value,
         "material_tool_indices": list(candidate.material_tool_indices),
         "owner_source_sha256": candidate.owner_source_sha256,
+        "owner_source_current": not _loop()._task_acceptance_owner_generation_changed(tools._ctx),
         "subject_sha256": delivery_subject_hash(tools._ctx, llm_trace, candidate.full_text),
     }
 
@@ -425,6 +426,7 @@ def _replace_delivery_candidate(
     )
     previous_candidate = getattr(tools._ctx, "_delivery_candidate", None)
     from ouroboros.loop_acceptance import acknowledge_acceptance_observation
+    from ouroboros.loop_messages import owner_source_sha256
 
     observed = getattr(tools._ctx, "_acceptance_observation", {})
     if previous_candidate is None and observed.get("owner_source_sha256"):
@@ -467,7 +469,9 @@ def _replace_delivery_candidate(
         ),
         effective_criteria=tools._ctx._delivery_effective_criteria,
         material_tool_indices=tuple(getattr(tools._ctx, "_delivery_material_tool_indices", ())),
-        owner_source_sha256=str(getattr(tools._ctx, "_acceptance_ack_source_sha256", "") or ""),
+        # The source snapshot is not an acknowledgment. Legacy/direct callers
+        # still need to distinguish a changed corpus from a current candidate.
+        owner_source_sha256=str(getattr(tools._ctx, "_acceptance_ack_source_sha256", "") or owner_source_sha256(tools._ctx)),
     )
     tools._ctx._delivery_candidate = candidate
     tools._ctx._delivery_control_required = False
@@ -907,6 +911,11 @@ def _resolve_delivery_control(
             historical_control = True
         else:
             # An owner revision starts an ordinary substantive answer round.
+            if candidate.finalization_control == "owner_revision_required":
+                from ouroboros.loop_acceptance import acknowledge_acceptance_observation
+
+                observed = getattr(tools._ctx, "_acceptance_observation", {})
+                acknowledge_acceptance_observation(tools._ctx, observed.get("owner_source_sha256", ""))
             return "fresh", _loop()._extract_plain_text_from_content(content)
     subject_error = ""
     if control_kind in {"keep", "replace"} and isinstance(parsed, dict) and "acceptance_subject" in parsed:
@@ -1190,7 +1199,10 @@ def _no_tool_final_answer(
                 emit_progress("Owner follow-up awaits Main's decision about the retained acceptance subject.")
             if isinstance(candidate, _loop().DeliveryCandidate):
                 candidate.finalization_control = "owner_revision_required"
-                _loop()._arm_delivery_control(tools, limit_ctx, llm_trace, control="owner_revision_required")
+                if candidate.control_episode_seen or acceptance_was_terminal:
+                    _loop()._arm_delivery_control(tools, limit_ctx, llm_trace, control="owner_revision_required")
+                else:
+                    tools._ctx._delivery_control_required = False
             return None
         if provisional_assistant is not None and messages[-1] is provisional_assistant:
             messages.pop()

@@ -735,6 +735,7 @@ def _publish_stale_forced_candidate(
     # A host disclosure cannot make the preserved model text current.
     candidate.evidence_revision = stale_candidate.evidence_revision
     candidate.evidence_fingerprint = stale_candidate.evidence_fingerprint
+    candidate.owner_source_sha256 = stale_candidate.owner_source_sha256
     candidate.acceptance_binding = _loop()._forced_unaccepted_binding(
         tools, candidate, reason_code,
     )

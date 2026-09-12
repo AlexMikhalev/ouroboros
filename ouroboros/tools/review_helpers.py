@@ -18,11 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from ouroboros.tools.release_sync import check_worktree_version_sync  # noqa: F401 - moved to its version-sync home; compatibility re-export
-from ouroboros.utils import (
-    sanitize_tool_result_for_log,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
-    truncate_review_artifact as _truncate_review_artifact,
-    utc_now_iso,
-)
+from ouroboros.utils import sanitize_tool_result_for_log, truncate_review_artifact as _truncate_review_artifact, utc_now_iso  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
 
 if TYPE_CHECKING:
     # Avoid runtime registry import; this module stays tool-module independent.

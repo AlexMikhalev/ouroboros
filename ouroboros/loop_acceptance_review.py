@@ -114,11 +114,14 @@ def announce_acceptance_settlement(usage_ctx: Any, request: Any, wave: dict) -> 
         log.warning("Acceptance settlement wake failed for %s", request.task_id, exc_info=True)
 
 
-def prepare_acceptance_observation(ctx: Any, trace: dict, incoming: Any, messages: list) -> None:
+def prepare_acceptance_observation(ctx: Any, trace: dict, incoming: Any, messages: list, tool_schemas: list) -> None:
     """Present the current owner-source selector immediately before Main's send."""
     from ouroboros.loop_acceptance import capture_acceptance_observation, acceptance_observation_prompt
 
     observed = capture_acceptance_observation(ctx, trace, incoming)
+    if (_loop().get_task_review_mode() not in {"auto", "required"}
+            or not any(row.get("function", {}).get("name") == "task_acceptance_review" for row in tool_schemas)):
+        return
     note = acceptance_observation_prompt(ctx, observed)
     if note:
         messages[:] = [row for row in messages if not row.get("acceptance_observation")]
@@ -157,6 +160,9 @@ def advance_explicit_acceptance(tools: Any, limit_ctx: Any, trace: dict,
             return
     tools._ctx._acceptance_review_only = True
     try:
+        # The tool's claim is a new complete nomination, not prose responding
+        # to an earlier keep/replace prompt. Readiness and review stay shared.
+        _loop()._replace_delivery_candidate(tools, limit_ctx, trace, request.get("subject") or "", control="candidate")
         _loop()._no_tool_final_answer(request.get("subject") or "", limit_ctx, trace,
                                       tools, incoming, seen, emit, review_only=True)
     finally:
