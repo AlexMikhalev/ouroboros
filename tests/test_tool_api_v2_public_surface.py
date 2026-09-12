@@ -3,6 +3,8 @@ import re
 import shlex
 import sys
 
+import pytest
+
 from ouroboros.tools.registry import ToolRegistry
 
 
@@ -189,7 +191,50 @@ def _registry_under_fake_home(tmp_path, monkeypatch):
     monkeypatch.setattr(pathlib.Path, "home", lambda: home)
     registry = ToolRegistry(repo_dir=repo, drive_root=data)
     registry._ctx.task_id = "task1"
+    from ouroboros.tools import shell
+
+    original_env = shell._shell_env_for_cwd
+
+    def fixture_child_env(ctx, cwd):
+        return {**original_env(ctx, cwd), "HOME": str(home), "USERPROFILE": str(home),
+                "OUROBOROS_DATA_DIR": str(data), "OUROBOROS_SETTINGS_PATH": str(data / "settings.json")}
+
+    # Bind the process environment without moving the parent pytest live-data
+    # guard onto this fixture's production-shaped home/Ouroboros/data tree.
+    monkeypatch.setattr(shell, "_shell_env_for_cwd", fixture_child_env)
+    child_env = shell._shell_env_for_cwd(registry._ctx, registry._ctx.task_drive_root())
+    assert child_env["HOME"] == child_env["USERPROFILE"] == str(home)
+    assert child_env["OUROBOROS_DATA_DIR"] == str(data)
+    assert child_env["OUROBOROS_SETTINGS_PATH"] == str(data / "settings.json")
     return registry, repo, data, desktop
+
+
+@pytest.mark.serial
+@pytest.mark.parametrize("tool", ["run_command", "run_script"])
+def test_fake_home_fixture_binds_the_actual_child_environment(tmp_path, monkeypatch, tool):
+    monkeypatch.setenv("OUROBOROS_SAFETY_MODE", "off")
+    registry, _repo, data, _desktop = _registry_under_fake_home(tmp_path, monkeypatch)
+    home = pathlib.Path.home()
+    expected = {"HOME": str(home), "USERPROFILE": str(home),
+                "OUROBOROS_DATA_DIR": str(data), "OUROBOROS_SETTINGS_PATH": str(data / "settings.json")}
+    body = "import os\nfor key in " + repr(list(expected)) + ": print(key + '=' + os.environ[key])\n"
+    args = {"cmd": [sys.executable, "-c", body]} if tool == "run_command" else {"script": body}
+    result = registry.execute(tool, {**args, "cwd": "task_drive"})
+    assert "exit_code=0" in result, result
+    for key, value in expected.items():
+        assert key + "=" + value in result, result
+
+
+def test_fake_home_fixture_preserves_the_parent_live_data_guard(tmp_path, monkeypatch):
+    import os
+    from ouroboros.utils import assert_test_data_path
+
+    parent_home = pathlib.Path(os.path.expanduser("~"))
+    _registry_under_fake_home(tmp_path, monkeypatch)
+    assert pathlib.Path(os.path.expanduser("~")) == parent_home
+    with pytest.raises(RuntimeError, match="PYTEST_LIVE_DATA_WRITE_BLOCKED"):
+        assert_test_data_path(parent_home / "Ouroboros/data/settings.json")
+
 
 
 def test_user_files_root_is_public_and_task_artifact_audited(tmp_path, monkeypatch):
