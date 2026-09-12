@@ -1199,9 +1199,13 @@ def _network_settings_error(request: Request, current: dict, old_settings: dict)
     """Validate the existing save-time bind/password contract before persistence."""
     try:
         from ouroboros.server_auth import is_loopback_host
+        from ouroboros.config import get_runtime_mode
+        from ouroboros.runtime_mode_policy import runtime_mode_at_least
+
         desired_host = str(current.get("OUROBOROS_SERVER_HOST") or "").strip()
         desired_password = str(current.get("OUROBOROS_NETWORK_PASSWORD") or "").strip()
-        trust_unauth = _trust_nonlocal_bind_without_password_enabled()
+        trust_unauth = (_trust_nonlocal_bind_without_password_enabled()
+                        or runtime_mode_at_least(get_runtime_mode(), "cyber_pro"))
         allowed_saved_hosts = {"", "127.0.0.1", "localhost", "::1", "[::1]", "0.0.0.0", "::", "[::]"}
         if desired_host and desired_host not in allowed_saved_hosts:
             return unsaved_error(
