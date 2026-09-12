@@ -269,7 +269,7 @@ def _format_light_repo_write_note(before: Dict[str, Any], after: Dict[str, Any],
         f"a mutation of the Ouroboros repository after {tool_name}. "
         "The execution result is preserved and no automatic rollback was attempted "
         "to avoid overwriting concurrent human edits. "
-        f"Affected/dirty paths: {listed}. Switch to advanced/pro for repo writes."
+        f"Affected/dirty paths: {listed}. Inspect these changes against the task contract."
     )
 
 
@@ -313,6 +313,8 @@ def _run_shell_safety_check(
     self._ctx._protected_shell_notice_paths = []
     if mode_has_unrestricted_agency(runtime_mode):
         return None
+    if direct_block := registry_guards._direct_shell_write_block(self, raw_cmd, work_dir, runtime_mode, binding):
+        return direct_block
     if _registry().sudo_noninteractive_violation(raw_cmd):
         return ToolResult(
             status="blocked", code="SUDO_INTERACTIVE_BLOCKED",
@@ -323,6 +325,12 @@ def _run_shell_safety_check(
         identity_path=pathlib.Path(self._ctx.drive_root) / "memory" / "identity.md",
     ):
         return ToolResult(status="blocked", code="CORE_PROTECTION_BLOCKED", text=reason)
+    from ouroboros.protected_artifacts import shell_block_reason
+
+    items = _registry()._binding_items(binding)
+    if reason := shell_block_reason(self._ctx, raw_cmd, cwd=str(work_dir),
+                                    default_cwd=work_dir, binding=items[0] if items else None):
+        return ToolResult(status="blocked", code="RESOURCE_POLICY_BLOCKED", text=reason)
     return registry_guards._shell_git_and_runtime_block(
         self, raw_cmd, args, "", bool(getattr(self._ctx, "is_workspace_mode", lambda: False)()),
         self._acting_self_worktree(), binding,

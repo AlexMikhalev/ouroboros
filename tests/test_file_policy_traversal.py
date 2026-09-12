@@ -90,8 +90,8 @@ def test_prepared_check_keeps_per_target_identity_and_all_data_roots(environment
     state_alias.parent.mkdir()
     state_alias.hardlink_to(owner_files[0])
     check = core_secret_paths.make_subagent_secret_target_check(repo, ctx=ctx)
-    assert not check(ordinary) and not check(public) and not check(output)
-    assert check(nested) and check(secret) and check(alias) and check(state_alias)
+    assert not check(ordinary) and not check(public) and not check(output) and not check(nested)
+    assert check(secret) and check(alias) and check(state_alias)
     assert all(check(path) for path in owner_files)
 
     # A prepared list of candidate names must not cache their inode identities.
@@ -103,9 +103,12 @@ def test_prepared_check_keeps_per_target_identity_and_all_data_roots(environment
 
 
 def test_prepared_check_resolves_each_new_symlink_target(environment):
-    _reg, ctx, _home, repo, _data = environment
-    ordinary, secret, alias = repo / "normal.txt", repo / "credentials.json", repo / "link.txt"
+    _reg, ctx, home, repo, _data = environment
+    # The protected destination is the owner's physical store, not a project
+    # file merely named credentials.json. The shared fixture binds Path.home().
+    ordinary, secret, alias = repo / "credentials.json", home / ".ssh" / "id_rsa", repo / "link.txt"
     ordinary.write_text("ordinary", encoding="utf-8")
+    secret.parent.mkdir()
     secret.write_text("synthetic fixture", encoding="utf-8")
     try:
         alias.symlink_to(ordinary)
@@ -116,6 +119,9 @@ def test_prepared_check_resolves_each_new_symlink_target(environment):
     alias.unlink()
     alias.symlink_to(secret)
     assert check(alias)
+    alias.unlink()
+    alias.symlink_to(ordinary)
+    assert not check(alias)
 
 
 def test_query_cached_facts_do_not_cache_read_permission(environment, monkeypatch):

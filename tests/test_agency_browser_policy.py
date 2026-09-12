@@ -113,8 +113,13 @@ def test_live_evaluate_reads_policy_words_and_cyber_posts_once(control_page, tmp
         screenshot_path = tmp_path / f"agency-{engine}.png"
         screenshot_path.write_bytes(screenshot)
         print(f"Browser evidence: {screenshot_path}")
-        malformed = browser._browser_action(ctx, "evaluate", value="const = ;")
-        assert "BROWSER_EVALUATE_SYNTAX_ERROR" in malformed and len(hits) == 1
+        with pytest.raises(Exception, match="SyntaxError"):
+            browser._browser_action(ctx, "evaluate", value="const = ;")
+        assert len(hits) == 1
+        assert browser._browser_action(ctx, "evaluate", value="return 2 + 3;") == "5"
+        with pytest.raises(Exception, match="SyntaxError"):
+            browser._browser_action(ctx, "evaluate", value="window.effectCount = (window.effectCount || 0) + 1; JSON.parse('invalid')")
+        assert browser._browser_action(ctx, "evaluate", value="window.effectCount") == "1"
     finally:
         browser.cleanup_browser(ctx)
 

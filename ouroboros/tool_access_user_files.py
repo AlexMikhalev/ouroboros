@@ -279,7 +279,12 @@ def resolve_user_file_path(
         # (/tmp, /build, sibling checkouts) — for them the generic
         # user_files_path_block_reason below stays the authority, mirroring its
         # own is_external_workspace carve-out.
-        if not allow_outside_home and not _tool_access().is_external_workspace(ctx):
+        from ouroboros.config import get_runtime_mode
+        from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+        from ouroboros.tool_access import active_tool_profile
+
+        cyber = mode_has_unrestricted_agency(get_runtime_mode()) and active_tool_profile(ctx) != "local_readonly_subagent"
+        if not allow_outside_home and not cyber and not _tool_access().is_external_workspace(ctx):
             home_resolved = home.resolve(strict=False)
             # Case-insensitive-platform parity with the user_files_path_block_reason
             # authority: a differently-cased safe home path must not be rejected

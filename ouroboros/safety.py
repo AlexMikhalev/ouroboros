@@ -1047,6 +1047,7 @@ def _safety_model_call(
                     max_tokens=get_safety_max_tokens(), reasoning_effort="low",
                     timeout=get_safety_call_timeout_sec(),
                     model_role="light",
+                    wait_for_resources=not mode_has_unrestricted_agency(get_runtime_mode()),
                     response_format=({"type": "json_object"}
                                      if LLMClient.supports_response_format(light_model, use_local=use_local)
                                      else None),
@@ -1342,11 +1343,9 @@ def check_safety(
             # (adversarial review r1 #19: audit only real deltas vs full mode).
             return True, ""
 
-    # Owner-selected LLM-safety coverage (full | light | off). This gates ONLY the
-    # LLM supervisor layer — the deterministic registry sandbox, protected-path
-    # policy, and light-mode write guards run in every mode (BIBLE P3: the LLM
-    # supervisor is a configurable layer, not the immune floor). Non-full modes
-    # emit a durable audit event so a waved-through call is never silent.
+    # Preserve the selected assessment coverage independently of resource
+    # admission. Cyber changes the authority of an assessment, never its verdict.
+    # Non-full modes retain their existing disclosed skips.
     safety_mode = get_safety_mode()
     if safety_mode != "full":
         skip_llm = safety_mode == "off" or (safety_mode == "light" and policy == POLICY_CHECK_CONDITIONAL)

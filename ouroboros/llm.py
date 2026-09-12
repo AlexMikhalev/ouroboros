@@ -199,6 +199,7 @@ class LLMClient(
         stream: bool = False,
         caller_deadline_ts: Optional[float] = None,
         caller_execution_deadline: Optional[float] = None,
+        wait_for_resources: bool = True,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Single LLM call returning (message, usage); no_proxy avoids macOS fork proxy crashes.
 
@@ -213,7 +214,9 @@ class LLMClient(
 
         ``model_turn_state`` is the caller's optional active-turn transport slot
         (``llm_claudexor.ModelTurnState``); this seam is where a dispatch that
-        leaves that transport ends the turn."""
+        leaves that transport ends the turn. ``wait_for_resources=False`` returns
+        a confirmed quota/auth refusal to this caller without entering resource
+        waiting; task overrides, controls and dispatched-operation custody remain."""
         from ouroboros.llm_claudexor import turn_state_for_route
 
         messages = self._normalize_system_message_placement(messages)
@@ -274,11 +277,12 @@ class LLMClient(
         stream: bool = False,
         caller_deadline_ts: Optional[float] = None,
         caller_execution_deadline: Optional[float] = None,
+        wait_for_resources: bool = True,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Async remote chat; no_proxy keeps forked macOS workers off OS proxy APIs.
 
-        Host temperature hints and the active-turn transport slot follow
-        ``chat``'s effective-route contract."""
+        Host temperature hints, resource waiting and the active-turn transport
+        slot follow ``chat``'s effective-route contract."""
         from ouroboros.llm_claudexor import turn_state_for_route
 
         messages = self._normalize_system_message_placement(messages)

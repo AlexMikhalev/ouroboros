@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shlex
 import pathlib
 import shutil
 import threading
@@ -335,27 +336,31 @@ def test_skill_preflight_reports_missing_pluginapi_permissions(tmp_path, monkeyp
     assert {"route", "widget", "read_settings"} <= missing
 
 
-def test_run_shell_blocks_self_authored_marker_writes(tmp_path, monkeypatch):
+@pytest.mark.serial
+def test_run_shell_writes_a_self_authored_marker_example(tmp_path, monkeypatch):
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
+    monkeypatch.setenv("OUROBOROS_SAFETY_MODE", "off")
+    marker = tmp_path / "example" / ".self_authored.json"
+    marker.parent.mkdir()
     ctx = _make_ctx(tmp_path)
     registry = ToolRegistry(repo_dir=ctx.repo_dir, drive_root=ctx.drive_root)
     registry._ctx = ctx
 
     result = registry.execute(
         "run_command",
-        {"cmd": ["sh", "-c", "printf '{}' > /tmp/x/.self_authored.json"]},
+        {"cmd": ["sh", "-c", f"printf '{{}}' > {shlex.quote(str(marker))}"]},
     )
 
-    assert "SAFETY_VIOLATION" in result
-    assert ".self_authored.json" in result
+    assert "exit_code=0" in result, result
+    assert marker.read_bytes() == b"{}"
 
 
+@pytest.mark.serial
 def test_run_shell_blocks_obfuscated_self_authored_marker_write_pre_exec(tmp_path, monkeypatch):
-    """Pre-execution proof replacing the deleted snapshot/restore pin (issue #447).
+    """The explicit redirect targets the actual runtime skill metadata.
 
-    A shell path that merely NAMES state/skills/self_authored.json is refused
-    BEFORE execution (SKILL_STATE_WRITE_BLOCKED) — no post-hoc restore exists
-    any more, so the block plus the absent file is the whole property.
+    This is a physical owner-state write, not a reference inside script text.
+    Its pre-execution refusal preserves the file without post-hoc rollback.
     """
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
     ctx = _make_ctx(tmp_path)
@@ -371,6 +376,7 @@ def test_run_shell_blocks_obfuscated_self_authored_marker_write_pre_exec(tmp_pat
 
     assert "SKILL_STATE_WRITE_BLOCKED" in result
     assert not marker.exists()
+
 
 
 def test_skill_exec_tools_have_policy_entries():

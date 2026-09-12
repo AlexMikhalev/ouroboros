@@ -41,6 +41,7 @@ class TestStageTaskAttachments:
 
         monkeypatch.setattr(config, "get_runtime_mode", lambda: "cyber_pro")
         monkeypatch.setitem(_RUNTIME_MODE_RANK, "cyber_pro", 3)
+        monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: tmp_path))
         drive = _drive(tmp_path)
         src = tmp_path / ".ssh" / "id_rsa"
         src.parent.mkdir()
@@ -110,7 +111,7 @@ class TestStageTaskAttachments:
             assert str(src) != str(value)
         assert "/" not in entry["relpath"].split("/", 1)[1]  # single attachments/ component
 
-    def test_secret_source_skipped_credentials(self, tmp_path):
+    def test_ordinary_credential_named_source_is_staged(self, tmp_path):
         from ouroboros.artifacts import stage_task_attachments
 
         drive = _drive(tmp_path)
@@ -124,16 +125,17 @@ class TestStageTaskAttachments:
         )
         labels = {m["label"] for m in manifest if m["status"] == "staged"}
         assert "ok.txt" in labels
-        assert "credentials.json" not in labels
+        assert "credentials.json" in labels
         assert len(manifest) == 2
-        assert manifest[0]["status"] == "rejected"
-        assert manifest[0]["reason"] == "secret_source"
+        assert manifest[0]["status"] == "staged"
+        assert pathlib.Path(manifest[0]["abs_path"]).read_bytes() == secret.read_bytes()
         assert manifest[0]["ordinal"] == 0
 
-    def test_secret_source_skipped_ssh_dir(self, tmp_path):
+    def test_secret_source_skipped_ssh_dir(self, tmp_path, monkeypatch):
         from ouroboros.artifacts import stage_task_attachments
 
         drive = _drive(tmp_path)
+        monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: tmp_path))
         ssh = tmp_path / ".ssh"
         ssh.mkdir()
         key = ssh / "id_rsa"
@@ -146,7 +148,7 @@ class TestStageTaskAttachments:
             "status": "rejected",
             "reason": "secret_source",
             "label": "id_rsa",
-            "rule": "credential/control directory component '.ssh'",
+            "rule": "path is hidden or credential-like (owner credential location)",
         }]
 
     def test_image_source_marked_is_image(self, tmp_path):

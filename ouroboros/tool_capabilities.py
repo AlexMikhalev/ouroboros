@@ -132,6 +132,14 @@ ACTING_SUBAGENT_TOOL_NAMES: frozenset[str] = frozenset({
     "list_available_tools",
 })
 
+def schema_selection_tools_for_context(ctx: object) -> frozenset[str]:
+    """Existing Nano view controls select schemas without granting capabilities."""
+    from ouroboros.config import get_context_mode
+
+    mode = str(getattr(ctx, "active_context_mode", "") or get_context_mode())
+    return META_TOOL_NAMES | {"compact_context"} if mode == "nano" else frozenset()
+
+
 def acting_tool_names_for_context(ctx: object, registered_names: Iterable[str]) -> frozenset[str]:
     """Project the actual catalog; inherited acting labels do not veto Cyber."""
     from ouroboros.config import get_runtime_mode
@@ -139,7 +147,7 @@ def acting_tool_names_for_context(ctx: object, registered_names: Iterable[str]) 
 
     if mode_has_unrestricted_agency(get_runtime_mode()):
         return frozenset(registered_names)
-    return ACTING_SUBAGENT_TOOL_NAMES
+    return ACTING_SUBAGENT_TOOL_NAMES | schema_selection_tools_for_context(ctx)
 
 
 READ_ONLY_PARALLEL_TOOLS: frozenset[str] = frozenset({

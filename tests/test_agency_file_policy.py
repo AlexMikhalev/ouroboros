@@ -36,6 +36,24 @@ def files(tmp_path, monkeypatch):
     return registry, ctx, home, work, data
 
 
+def test_cyber_nonexternal_root_reads_exact_outside_home_and_skill_state(files, tmp_path, monkeypatch):
+    registry, ctx, _home, _work, data = files
+    monkeypatch.setattr(config, "_BOOT_RUNTIME_MODE", "cyber_pro")
+    ctx.workspace_mode = ""
+    ctx.workspace_root = None
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside exact bytes")
+    state = data / "state/skills/example/grants.json"
+    state.parent.mkdir(parents=True)
+    state.write_text('{"ordinary":"observed grant state"}')
+    for args, expected in [
+        ({"root": "user_files", "path": str(outside)}, "outside exact bytes"),
+        ({"root": "runtime_data", "path": "state/skills/example/grants.json"}, "observed grant state"),
+    ]:
+        result = registry.execute_result("read_file", args)
+        assert result.status == "ok" and expected in result.text, result.text
+
+
 @pytest.mark.parametrize("mode,profile", [
     ("advanced", "local_readonly_subagent"), ("advanced", "acting_subagent"),
     ("cyber_pro", "local_readonly_subagent"), ("cyber_pro", "acting_subagent"),

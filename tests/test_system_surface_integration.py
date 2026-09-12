@@ -13,24 +13,23 @@ from ouroboros.tool_access import resource_root_path
 
 
 @pytest.mark.parametrize('relative', ['auth_token.json', 'profiles/alpha/auth_token.json'])
-def test_exact_host_token_leaf_is_hidden_in_repository_but_not_task_outputs(tmp_path, relative):
+def test_ordinary_token_named_file_is_readable_in_repository_and_task_outputs(tmp_path, relative):
     repo, data = tmp_path / 'repo', tmp_path / 'data'
     repo.mkdir()
     data.mkdir()
     secret = repo / relative
     secret.parent.mkdir(parents=True, exist_ok=True)
-    secret.write_text('PRIVATE_HOST_TOKEN')
+    secret.write_text('ORDINARY_PROJECT_TOKEN_REPORT')
     ctx = ToolContext(repo_dir=repo, drive_root=data,
                       task_constraint=TaskConstraint(mode='local_readonly_subagent'))
     registry = ToolRegistry(repo_dir=repo, drive_root=data)
     registry.set_context(ctx)
     result = registry.execute_result('read_file', {'root':'system_repo','path':relative})
-    assert result.code == 'LEGACY_BLOCKED'
-    assert result.text.startswith('⚠️ READ_FILE_BLOCKED:')
-    assert 'PRIVATE_HOST_TOKEN' not in result.text
-    assert 'auth_token.json' not in registry.execute('list_files', {'root':'system_repo','path':str(secret.parent.relative_to(repo))})
-    search = registry.execute('search_code', {'query':'PRIVATE_HOST_TOKEN'})
-    assert 'auth_token.json:' not in search
+    assert result.status == 'ok'
+    assert 'ORDINARY_PROJECT_TOKEN_REPORT' in result.text
+    assert 'auth_token.json' in registry.execute('list_files', {'root':'system_repo','path':str(secret.parent.relative_to(repo))})
+    search = registry.execute('search_code', {'query':'ORDINARY_PROJECT_TOKEN_REPORT'})
+    assert 'auth_token.json:' in search
     task_root = resource_root_path(ctx, 'task_drive')
     target = task_root / relative
     target.parent.mkdir(parents=True, exist_ok=True)

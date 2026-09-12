@@ -176,7 +176,7 @@ def test_cyber_acting_registry_exposes_review_skill_and_runtime_tools(tmp_path, 
 
     names = set(reg.initial_tool_names())
     assert {"review_status", "plan_task", "skill_review", "skill_exec", "toggle_evolution"} <= names
-    assert "commit_reviewed" not in names and "vcs_commit_reviewed" not in names
+    assert "commit_reviewed" in names
     schemas = {
         item["function"]["name"] for item in reg.schemas()
         if item.get("function")

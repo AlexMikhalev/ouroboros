@@ -35,6 +35,7 @@ from ouroboros.runtime_mode_policy import (
 from ouroboros.tool_capabilities import (
     ACTING_SUBAGENT_MODE,
     acting_tool_names_for_context,
+    schema_selection_tools_for_context,
     CORE_TOOL_NAMES,
     LOCAL_READONLY_SUBAGENT_MODE,
     LOCAL_READONLY_SUBAGENT_TOOL_NAMES,
@@ -492,7 +493,7 @@ class ToolRegistry:
         pending.  Keep that exception bound to the private host bootstrap marker;
         the handler applies the same check again at execution time.
         """
-        if name in LOCAL_READONLY_SUBAGENT_TOOL_NAMES:
+        if name in LOCAL_READONLY_SUBAGENT_TOOL_NAMES | schema_selection_tools_for_context(self._ctx):
             return True
         if name != "verify_and_record" or not self._is_local_readonly_subagent():
             return False
@@ -509,7 +510,7 @@ class ToolRegistry:
 
     def initial_tool_names(self) -> frozenset[str]:
         if self._is_local_readonly_subagent():
-            names = set(LOCAL_READONLY_SUBAGENT_TOOL_NAMES)
+            names = set(LOCAL_READONLY_SUBAGENT_TOOL_NAMES | schema_selection_tools_for_context(self._ctx))
             if self._readonly_tool_allowed("verify_and_record"):
                 names.add("verify_and_record")
             return frozenset(names)

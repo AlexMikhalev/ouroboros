@@ -23,7 +23,7 @@ from ouroboros import browser_policy
 from ouroboros.config import runtime_setting
 from ouroboros.tool_access import active_tool_profile
 from ouroboros.tools.registry import ToolContext, ToolEntry
-from ouroboros.tools.tool_result import _compose_execute_result
+from ouroboros.tools.tool_result import _compose_execute_result, _publish_tool_result, ToolResult
 
 log = logging.getLogger(__name__)
 
@@ -748,6 +748,32 @@ def _wait_for_page_paint(page: Any, timeout_ms: int = 3000) -> None:
         pass
 
 
+def _evaluate_source(expression: str) -> str:
+    """Select function-body syntax before execution, never by a runtime error.
+
+    The existing JavaScript grammar distinguishes a top-level return from one
+    inside a function. If grammar support is unavailable, retain the literal
+    expression; a failed evaluation is never replayed to try another form.
+    """
+    try:
+        from tree_sitter_language_pack import get_parser
+
+        tree = get_parser("javascript").parse(expression.encode("utf-8"))
+        pending = [tree.root_node]
+        functions = {"function_declaration", "function_expression", "arrow_function",
+                     "generator_function", "generator_function_declaration", "method_definition"}
+        while pending:
+            node = pending.pop()
+            if node.type in functions:
+                continue
+            if node.type == "return_statement" and not tree.root_node.has_error:
+                return "(() => {\n" + expression + "\n})()"
+            pending.extend(node.named_children)
+    except Exception:
+        pass
+    return expression
+
+
 def _evaluate_bounded(page: Any, expression: str, timeout_ms: int = 30000) -> Any:
     """``page.evaluate`` with an in-page deadline.
 
@@ -1013,31 +1039,7 @@ def _browser_action(ctx: ToolContext, action: str, selector: str = "",
         elif normalized_action == "evaluate":
             if not value:
                 return "Error: value (JS code) required for evaluate"
-            try:
-                result = _evaluate_bounded(page, value, effective_default_ms)
-            except Exception as eval_err:  # noqa: BLE001
-                msg = str(eval_err)
-                if "SyntaxError" not in msg:
-                    raise
-                # J (v6.39): a statement-style snippet (a top-level `return`, or several
-                # statements) is a SyntaxError for a raw evaluate EXPRESSION; retry the same
-                # code wrapped in an IIFE function body before surfacing a real parse error.
-                try:
-                    result = _evaluate_bounded(
-                        page, "(() => {\n" + value + "\n})()", effective_default_ms,
-                    )
-                except Exception as iife_err:  # noqa: BLE001
-                    # The IIFE PARSED but threw a RUNTIME error (e.g. ReferenceError) -> that
-                    # is the real result; surface it like the raw path, not as a parse error.
-                    if "SyntaxError" not in str(iife_err):
-                        raise
-                    snippet = value.strip()[:80]
-                    return (
-                        "⚠️ BROWSER_EVALUATE_SYNTAX_ERROR: the JS failed to parse "
-                        f"({msg.splitlines()[0][:160]}). First 80 chars: {snippet!r}. "
-                        "Check for stray git conflict markers (<<<<<<<) or shell "
-                        "heredocs (<<EOF) leaked into the value."
-                    )
+            result = _evaluate_bounded(page, _evaluate_source(value), effective_default_ms)
             out = str(result)
             return out[:20000] + ("... [truncated]" if len(out) > 20000 else "")
         elif normalized_action == "scroll":
@@ -1071,10 +1073,12 @@ def _browser_action(ctx: ToolContext, action: str, selector: str = "",
         if reason := getattr(generation_cell[0], "request_block_reason", ""):
             return "⚠️ " + reason
         if _is_infrastructure_error(ctx):
-            log.warning("Browser infrastructure error: %s. Cleaning up and retrying...", e)
+            log.warning("Browser action connection failed; preserving unknown outcome: %s", e)
             cleanup_browser(ctx)
-            result = _do_action()
-            return _compose_execute_result(result, getattr(generation_cell[0], "request_block_reason", ""), "")
+            return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ERROR", text=(
+                "⚠️ BROWSER_ACTION_OUTCOME_UNKNOWN: the browser connection failed. "
+                "The action may already have taken effect and was not repeated. "
+                f"Inspect the target before deciding what to do next. Detail: {e}")))
         raise
 
 

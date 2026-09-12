@@ -6,7 +6,8 @@ capture rules excluded generated-output directories by NAME — a rule inherited
 from a benchmark capture script that owns its own copy and never imported this
 module. The project's own ``.gitignore`` is the authority instead, and the
 remaining host rules stay: the per-file size cap, git's binary verdict, and the
-credential-shaped name check.
+retained dotenv policy. Ordinary log and credential-named project files remain
+captured content.
 """
 
 from __future__ import annotations
@@ -86,7 +87,9 @@ def test_the_remaining_host_vetoes_still_apply_to_generated_output(tmp_path, mon
     excluded = {item["path"]: item["reason"] for item in manifest["untracked_excluded"]}
     assert "dist/widget.js" in patch
     assert "binary file" in excluded.get("dist/app.bin", "")
-    assert "junk artifact" in excluded.get("dist/build.log", "")
+    assert "dist/build.log" in patch
+    assert "dist/build.log" in manifest["untracked_included"]
+    assert "dist/build.log" not in excluded
     assert "size cap" in excluded.get("dist/big.js", "")
 
 
@@ -102,7 +105,7 @@ def test_the_snapshot_veto_agrees_with_the_patch_by_subtraction(tmp_path):
 
     assert untracked_capture_veto_reason(repo, "dist/widget.js") == ""
     assert untracked_capture_veto_reason(repo, "build/widget.js") == ""
-    assert "junk artifact" in untracked_capture_veto_reason(repo, "dist/run.log")
+    assert untracked_capture_veto_reason(repo, "dist/run.log") == ""
 
 
 def test_the_benchmark_capture_script_owns_its_own_rule(tmp_path):

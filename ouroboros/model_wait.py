@@ -590,7 +590,11 @@ def current_model_wait() -> TaskModelWait | None:
 
 
 def model_waitable(function: Callable | None = None, *, client_parameter: str = "self") -> Callable:
-    """Catch resource refusals inside one LLM call, before helper catch-all blocks."""
+    """Catch resource refusals before helper catches; callers may decline waiting.
+
+    ``wait_for_resources`` is call-local, leaving the shared task's overrides,
+    controls and custody intact even when a refusal returns immediately.
+    """
     if function is None:
         return functools.partial(model_waitable, client_parameter=client_parameter)
     signature = inspect.signature(function)
@@ -627,6 +631,7 @@ def model_waitable(function: Callable | None = None, *, client_parameter: str = 
 
         capture = getattr(error, "physical_attempt_capture", None)
         return bool(context and not context.closed and values.get("model_role")
+                    and values.get("wait_for_resources", True)
                     and isinstance(error, ClaudexorModelError)
                     and model_wait_reason(error)
                     and getattr(capture, "state", None) in {"released", "settled"})

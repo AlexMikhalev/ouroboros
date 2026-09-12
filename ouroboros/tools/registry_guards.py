@@ -648,6 +648,71 @@ def _resolved_shell_cwd(
     return pathlib.Path(work_dir)
 
 
+def _direct_shell_write_block(self, raw_cmd: Any, work_dir: pathlib.Path, runtime_mode: str, binding: Any) -> ToolResult | None:
+    """Apply existing resource authority to certain direct writes, never mentions."""
+    from dataclasses import replace
+    from ouroboros.tool_access import _process_root_candidates, _resolve_target_in_selected_base, decide_tool_access, path_is_relative_to
+    from ouroboros.tools.deliverables_shell import _command_path
+    from ouroboros.tools.shell_guards import direct_utility_target_rows, directory_destination_pairs
+    from ouroboros.tools.core import _binding_skill_control_plane_path, is_skill_control_plane_path
+    from ouroboros.shell_parse import directory_destination_child_name
+    from ouroboros.runtime_mode_policy import mode_allows_protected_write, protected_paths_in
+
+    rows = direct_utility_target_rows(raw_cmd)
+    if not any(row[1] for row in rows):
+        return None
+    items = _registry()._binding_items(binding)
+    selected = items[0] if items else _registry().build_resolved_resource_binding(
+        self._ctx, operation="shell", process_cwd=str(work_dir))
+    roots = list(dict.fromkeys([(selected.root, selected.base_path, selected.source, selected.skill_name),
+                               *_process_root_candidates(self._ctx, "shell")]))
+    for (argv, targets, _inline, _unknown), cwd in zip(rows, _registry().sequential_effective_cwds(rows, work_dir)):
+        for command, destination, source in directory_destination_pairs(argv):
+            directory = _command_path(self._ctx, cwd, destination)
+            child = directory_destination_child_name(command, argv, source)
+            if directory is not None and directory.is_dir() and child:
+                targets = [token for token in targets if token != destination] + [str(directory / child)]
+        for token in targets:
+            if not token or token == "/dev/null" or any(char in token for char in "$`*?{}~"):
+                continue  # Unexpanded/computed words are not concrete target evidence.
+            target = _command_path(self._ctx, cwd, token)
+            if target is None:
+                continue
+            for root, base, source, skill in roots:
+                if not decide_tool_access(profile=selected.profile, root=root, operation="write").allow:
+                    continue
+                try:
+                    resolved = _resolve_target_in_selected_base(
+                        self._ctx, root=root, base_path=base, path=str(target), operation="write")
+                    target_binding = replace(selected, root=root, base_path=base, target_path=resolved,
+                                             operation="write", source=source, skill_name=skill)
+                    if (root == "skill_payload" and _binding_skill_control_plane_path(target_binding)
+                            or is_skill_control_plane_path(resolved, target_binding.state_drive_root)):
+                        return ToolResult(status="blocked", code="SKILL_PAYLOAD_BLOCKED", text=(
+                            f"⚠️ SKILL_PAYLOAD_BLOCKED: explicit write target {resolved} is skill control-plane state. "
+                            "Edit user-authored payload files instead. The process was not started."))
+                    if _registry().binding_targets_system_repo(self._ctx, target_binding):
+                        if runtime_mode == "light" or (protected_paths_in([resolved.relative_to(base).as_posix()])
+                                                       and not mode_allows_protected_write(runtime_mode)):
+                            continue
+                    if not _registry()._presence_binding_allowed(self._ctx, target_binding):
+                        continue
+                    break
+                except (OSError, ValueError, RuntimeError):
+                    continue
+            else:
+                if self._is_acting_subagent():
+                    return _workspace_write_block_outside_root_result(target.resolve(strict=False), work_dir, token)
+                light_internal = runtime_mode == "light" and any(
+                    path_is_relative_to(target, root) for root in _git_protected_roots(self))
+                code = "LIGHT_MODE_BLOCKED" if light_internal else "WORKSPACE_BLOCKED"
+                prefix = "LIGHT_MODE_BLOCKED" if light_internal else "WORKSPACE_SHELL_BLOCKED"
+                return ToolResult(status="blocked", code=code, text=(
+                    f"⚠️ {prefix}: explicit write target {target} is outside the resources this task may write. "
+                    f"Selected process root: {work_dir}. The process was not started."))
+    return None
+
+
 def _external_workspace_git_block(
     self, raw_cmd: Any, work_dir: pathlib.Path,
 ) -> ToolResult | None:
