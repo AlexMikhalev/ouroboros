@@ -634,7 +634,8 @@ def _finish_cyber_acceptance(ctx: _TaskAcceptanceContext, result: Any) -> bool:
 
 def _finish_advisory_author(ctx: _TaskAcceptanceContext) -> bool:
     """Finish a current explicit response to delivered criticism, without another panel."""
-    if review_enforcement_blocks(_loop().get_review_enforcement()):
+    if (not review_enforcement_blocks("blocking")
+            or review_enforcement_blocks(_loop().get_review_enforcement())):
         return False
     stance = ctx.llm_trace.get("acceptance_decision") or {}
     intent = stance.get("agent_finish_intent") or {}
@@ -657,8 +658,6 @@ def _finish_advisory_author(ctx: _TaskAcceptanceContext) -> bool:
         subject_hash=ctx.review_binding["binding_hash"],
         reviewer_signal=str(feedback.get("aggregate_signal") or "DEGRADED"), enforcement="advisory",
     )
-    if not review_enforcement_blocks("blocking"):
-        return False  # the common final-response application records Cyber author choice
     if not _loop()._end_task_acceptance_fence(ctx.tools._ctx, outcome="terminal"):
         _loop()._supersede_task_acceptance_for_owner_followup(ctx.tools._ctx, ctx.llm_trace)
         return True
@@ -1465,10 +1464,10 @@ def _run_task_acceptance_review_once(
             reused_result = SimpleNamespace(**prior_run)
             # The original forensic binding remains the authority of the paid
             # operation even when Main consumed a harmless new source message.
-            review_ctx.review_binding = {key: prior_run[key] for key in (
+            review_ctx.review_binding = {"subject_hash": review_ctx.review_binding["subject_hash"], **{key: prior_run[key] for key in (
                 "candidate_hash", "evidence_revision", "fence_hash", "binding_hash",
                 "panel_id", "paid_identity", "subject_hash",
-            ) if key in prior_run}
+            ) if key in prior_run}}
         elif binding_hash in seen_bindings:
             # A process-local attempt without its authoritative trace is not
             # safe to repeat or silently accept. The infra-degraded path below

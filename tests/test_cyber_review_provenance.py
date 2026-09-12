@@ -254,3 +254,21 @@ def test_new_subject_after_unknown_review_keeps_the_original_operation(actual_ac
     assert new["subject_hash"] != first["subject_hash"]
     assert new["request"]["retry_key"] != first["request"]["retry_key"]
     assert new["actors"][0]["operation_id"] != first["actors"][0]["operation_id"]
+
+
+@pytest.mark.parametrize("also_missing_roster", [False, True])
+def test_legacy_settled_review_replays_its_proven_subject_without_key_error(actual_acceptance, also_missing_roster):
+    h = actual_acceptance
+    subject = f"Complete legacy result {also_missing_roster}"
+    assert h.run(subject) is True  # The real critic supplied its improvement note.
+    first = h.trace["review_runs"][-1]
+    old_actors = copy.deepcopy(first["actors"])
+    first.pop("subject_hash")
+    if also_missing_roster:
+        first.pop("slot_roster", None)
+    h.ctx._task_acceptance_reviewed = False
+    h.run(subject)
+    assert len(h.physical.calls) == 1
+    assert h.trace["review_runs"][-1]["actors"] == old_actors
+    assert h.trace["acceptance_decision"]["reason"] != "infra_failure"
+    assert "KeyError" not in json.dumps(h.trace.get("acceptance_decision") or {})
