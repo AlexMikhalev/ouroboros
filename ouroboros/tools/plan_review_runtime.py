@@ -1123,6 +1123,18 @@ def plan_wave_replay_decision(slots_fn: Any, existing: Dict[str, Any]) -> tuple:
     return plan_health_epoch(fresh) != normalized, fresh
 
 
+def plan_pending_actors(wave: Dict[str, Any]) -> list[dict]:
+    """Physical pending rows, retaining the original critic records unchanged."""
+    settled = {
+        row.get("operation_id") for row in wave.get("historical_supplements") or []
+        if row.get("cycle_index") == wave.get("cycle_index")
+        and row.get("operation_state") in {"settled", "late_settled", "not_dispatched"}
+    }
+    return [row for row in wave.get("actors") or [] if isinstance(row, dict)
+            and (row.get("late_result_pending") or row.get("operation_state") in {"pending_dispatch", "in_flight"})
+            and row.get("operation_id") not in settled]
+
+
 def plan_wave_has_in_flight(wave: Dict[str, Any]) -> bool:
     """Whether a paid wave must re-enter exact custody reconciliation.
 
@@ -1153,11 +1165,7 @@ def plan_wave_has_in_flight(wave: Dict[str, Any]) -> bool:
             or str(actor.get("status") or "").strip().lower() == "not_dispatched"
         ):
             return True
-    return any(
-        str(actor.get("operation_state") or "") == "in_flight"
-        or bool(actor.get("late_result_pending"))
-        for actor in actors or []
-    )
+    return bool(plan_pending_actors(wave))
 
 
 def plan_in_flight_custody_error(

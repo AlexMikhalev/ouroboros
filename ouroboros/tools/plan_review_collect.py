@@ -207,8 +207,8 @@ def in_flight_hold(state: Dict[str, Any], *, fingerprint: str, cap: Any) -> str:
     current_fp = str((state.get("current_attempt") or {}).get("fingerprint") or "")
     wave = next((w for w in pending if str(w.get("request_fingerprint") or "") == current_fp), pending[-1])
     fp = str(wave.get("request_fingerprint") or "")
-    running = sum(1 for a in wave.get("actors") or []
-                  if isinstance(a, dict) and a.get("operation_state") in {"pending_dispatch", "in_flight"})
+    from ouroboros.tools.plan_review_runtime import plan_pending_actors
+    running = len(plan_pending_actors(wave))
     outcome = "(a wave that proves no physical dispatch leaves the cap untouched; a paid one spends it)"
     route = (
         f"Collect it at $0 with plan_task(review_disposition={{review_fingerprint: '{fp}', items: []}}) "

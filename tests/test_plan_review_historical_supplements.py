@@ -102,6 +102,8 @@ def test_a_b_late_a_preserves_authority_and_complete_source(tmp_path):
     assert tr.plan_review_wave(after, B) == tr.plan_review_wave(before, B)
     assert after["current_attempt"] == before["current_attempt"]
     assert old["custody_pending"] is True  # second slot has not settled
+    from ouroboros.tools.plan_review_runtime import plan_pending_actors
+    assert [r["slot_id"] for r in plan_pending_actors(old)] == [slots[1].slot_id]
     assert after["cycles_paid"] == 2
     supplement = json.loads(read_actor_source_bytes(
         tmp_path, TASK, old["historical_supplements"][0]["source_ref"]))
@@ -123,6 +125,8 @@ def test_closed_wave_and_terminal_root_accept_history_without_reopening(tmp_path
     assert original_authority(tr.plan_review_wave(after, A)) == original_authority(a)
     assert after["current_attempt"] == before["current_attempt"] and after["cycles_paid"] == 1
     assert not tr.plan_review_wave(after, A)["custody_pending"]
+    from ouroboros.tools.plan_review_runtime import plan_wave_has_in_flight
+    assert not plan_wave_has_in_flight(tr.plan_review_wave(after, A))
     if terminal:
         result = tr.load_task_result(tmp_path, TASK)
         assert result["status"] == "completed" and result["result"] == "original answer"
