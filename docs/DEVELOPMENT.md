@@ -1905,7 +1905,7 @@ both critical. The imperatives:
 - The parent is the SOLE committer of the live body: acting children return
   a `workspace.patch`, the parent applies a chosen patch with
   `integrate_subagent_patch` and runs its own `commit_reviewed`. The shared
-  `external_workspace` surface verifies and records without re-applying; a
+  `external_workspace` surface, including ordinary folders, verifies and records without re-applying; a
   genesis project is durable because the project directory IS the
   deliverable. A genesis project starts without a `.gitignore`, so its small
   text build output (`dist/`, `build/`) rides the `workspace.patch` record
@@ -1919,7 +1919,7 @@ both critical. The imperatives:
   generic data-tool behavior while fixing subagent isolation
   (`forward_to_worker` writes only to validated running tasks in the
   current task/root lineage).
-- The DELEGATED lane is the other half of that rule: a delegated run edits a
+- The DELEGATED Git/payload lane is the other half of that rule: it edits a
   private execution snapshot and reaches a tree only through
   `integrate_delegated_patch`, whose apply normally requires the caller's
   active root to EQUAL the run's recorded target. A terminal owner's orphan
@@ -1945,6 +1945,8 @@ both critical. The imperatives:
   the accepted plan calls for them. Push/live events are wakeups, not
   terminal authority — lifecycle changes must exercise lost/reordered
   terminal frames and reversed snapshot completion.
+
+For ordinary-directory sessions use the engine-owned file work product: preserve the parent-selected direct/copy strategy and footprint through actor-first startup, with stable source identity separate from actual execution root. Never initialize Git or change run mode as a workaround. Native writes preserve known successful file postimages through the existing artifact owner; do not replace this with a full-tree scan or success-text parser. Keep copied binary/large inputs outside the target Git object database with exact baseline identity. Capture and apply include both source patches and full file artifacts, including deletion; an empty text diff cannot certify no work. Apply selected results through the existing engine CAS and durable intent/key, retain unselected results, and never relabel direct effects or discard as an undo. Test actual file handlers through child copyback/reopen, mixed and file-only apply, binary input preservation, concurrent edits, and lost apply receipts.
 
 ### Cancellation and effective status
 
