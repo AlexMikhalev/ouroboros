@@ -319,11 +319,13 @@ def _iter_payload_files(
     """Return files hashed for review freshness.
 
     The hash covers every regular runtime-reachable file under ``skill_dir``
-    except metadata/cache/sensitive paths, lifecycle control files
+    except metadata/cache paths, lifecycle control files
     (``HASH_EXEMPT_CONTROL_FILENAMES``), and symlink escapes. Manifest entry
     points are re-added only when confined, keeping executable and reviewed
     surfaces aligned. ``include_control_files=True`` reproduces the legacy
     pre-v6.31 hash (control files included) for one-shot state migration.
+    Sensitive-looking filenames refuse ordinary loading; Cyber includes them
+    in the same byte hash and review pack rather than silently omitting them.
     """
     out: List[pathlib.Path] = []
     resolved_root = skill_dir.resolve()
@@ -354,6 +356,10 @@ def _iter_payload_files(
         _SENSITIVE_EXTENSIONS,
         _SENSITIVE_NAMES,
     )
+    from ouroboros.config import get_runtime_mode
+    from ouroboros.runtime_mode_policy import runtime_mode_at_least
+
+    cyber = runtime_mode_at_least(get_runtime_mode(), "cyber_pro")
 
     def _is_sensitive(path: pathlib.Path) -> bool:
         lowered = path.name.lower()
@@ -385,7 +391,7 @@ def _iter_payload_files(
                 and resolved_root.parent.name == "native"
             ):
                 continue
-            if _is_sensitive(path):
+            if _is_sensitive(path) and not cyber:
                 # Fail closed: a reviewed skill could still read a skipped
                 # credential-shaped file at runtime.
                 raise SkillPayloadUnreadable(
