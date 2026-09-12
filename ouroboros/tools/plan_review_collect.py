@@ -10,7 +10,8 @@ for a child result — ``wait_task``/``wait_tasks`` return on
 ``owner_mailbox_pending``), and the $0 collection that closes or advances the
 recorded wave through the existing ``review_disposition`` mode. Closing and
 aggregating a wave stays with the collecting call (the sole wave writer);
-nothing here polls, times, or writes wave state of its own.
+Historical settlement attaches exact source references through the same wave
+owner; it never reaggregates or changes the current plan.
 """
 
 from __future__ import annotations
@@ -38,6 +39,16 @@ def announce_released_settlement(
         return
     fingerprint = str((getattr(request, "reconciliation_identity", {}) or {}).get("subject_hash") or "")
     slot_id = str(getattr(slot, "slot_id", "") or "")
+    if usage_ctx is not None and getattr(usage_ctx, "drive_root", None):
+        try:
+            from ouroboros.tools.plan_review import _planning_state_location
+            state_root, _ = _planning_state_location(usage_ctx)
+            attach_historical_results(
+                state_root, task_id, fingerprint=fingerprint,
+                operation_id=str(getattr(actor, "operation_id", "") or ""),
+            )
+        except Exception:
+            log.warning("plan review historical settlement could not be attached", exc_info=True)
     try:
         emit = getattr(usage_ctx, "emit_progress_fn", None)
         if callable(emit):
@@ -143,35 +154,26 @@ async def collect_before_supersede(
     writes its own superseding reference. Returns the (re)loaded state; an unreadable
     wave is logged and left as it was.
 
-    The collection leaves the CURRENT pointer where the caller found it: each wave is
-    resumed over its own recorded inputs and records its own reference, so collecting a
-    wave that is not the current one moves ``current_attempt`` onto it. The caller alone
-    supersedes, and a caller that then refuses (the in-flight hold) must not have moved
-    the pointer off the closed authority. A pointer that stayed on the same wave is left
-    untouched: a collection may legitimately restate its status and reason."""
-    from ouroboros.task_results import load_plan_review_state, record_plan_review_attempt
+    Only the currently open wave uses the live collector. Older/closed waves
+    receive historical supplements without becoming current, even transiently.
+    """
+    from ouroboros.task_results import load_plan_review_state
 
-    pending = [
-        w for w in state.get("waves") or []
-        if isinstance(w, dict) and w.get("custody_pending")
-        and str(w.get("request_fingerprint") or "") != str(fingerprint or "")
-    ]
-    if not pending:
-        return state
-    current = dict(state.get("current_attempt") or {})
-    for wave in pending:
+    current_fp = str((state.get("current_attempt") or {}).get("fingerprint") or "")
+    for wave in state.get("waves") or []:
+        if not isinstance(wave, dict) or not wave.get("custody_pending"):
+            continue
+        fp = str(wave.get("request_fingerprint") or "")
+        if fp == str(fingerprint or ""):
+            continue
         try:
-            await collect_open_wave(ctx, state_root=state_root, task_id=task_id, wave=wave)
-        except (OSError, ValueError) as exc:
-            log.warning("in-flight plan wave %s could not be collected before supersede: %s",
-                        str(wave.get("request_fingerprint") or "")[:8], exc)
-    state = load_plan_review_state(state_root, task_id)
-    kept = str(current.get("fingerprint") or "")
-    if kept and str((state.get("current_attempt") or {}).get("fingerprint") or "") != kept:
-        state = record_plan_review_attempt(  # pointer only: no attempt row, no reference, no cycle
-            state_root, task_id, fingerprint=kept,
-            status=str(current.get("status") or "open"), reason=str(current.get("reason") or ""))
-    return state
+            if fp == current_fp and not wave.get("closed"):
+                await collect_open_wave(ctx, state_root=state_root, task_id=task_id, wave=wave)
+            else:
+                attach_historical_results(state_root, task_id, fingerprint=fp)
+        except (OSError, ValueError, TimeoutError) as exc:
+            log.warning("in-flight plan wave %s could not be collected: %s", fp[:8], exc)
+    return load_plan_review_state(state_root, task_id)
 
 
 def in_flight_hold(state: Dict[str, Any], *, fingerprint: str, cap: Any) -> str:
@@ -242,3 +244,86 @@ def collect_before_gate(ctx: Any, state: Dict[str, Any]) -> Dict[str, Any]:
         log.warning("plan wave %s could not be collected before the gate: %s",
                     str(current.get("request_fingerprint") or "")[:8], exc)
         return state
+
+
+def attach_historical_results(
+    state_root: Any, task_id: str, *, fingerprint: str, operation_id: str = "",
+) -> int:
+    """Attach complete producers to one exact old wave, never invoke a panel.
+
+    Current open review remains the ordinary collector's responsibility. This
+    also handles the dispatch-barrier race: record_exact_wave calls it for the
+    known historical set after publishing a new current wave. No read projection
+    writes state, and neither callback waits for a worker or re-enters its queue.
+    """
+    from types import SimpleNamespace
+    from dataclasses import asdict
+    from ouroboros.observability import read_call_payload
+    from ouroboros.review_custody import recover_review_producer
+    from ouroboros.task_results import (
+        load_plan_review_state, plan_review_wave,
+    )
+    from ouroboros.tools.plan_review_artifacts import (
+        authority_wave, persist_historical_result, record_plan_review_supplement,
+    )
+    from ouroboros.tools.plan_review_runtime import _plan_row_from_actor
+
+    state = load_plan_review_state(state_root, task_id)
+    hot = plan_review_wave(state, fingerprint)
+    if hot is None or (not hot.get("closed") and
+            (state.get("current_attempt") or {}).get("fingerprint") == fingerprint):
+        return 0
+    wave = authority_wave(state_root, task_id, hot)
+    attached = 0
+    for row in wave.get("actors") or []:
+        op = str(row.get("operation_id") or "")
+        if not op or (operation_id and op != operation_id):
+            continue
+        if not (row.get("late_result_pending") or row.get("operation_state") in
+                {"pending_dispatch", "in_flight", "custody_lost"}):
+            continue
+        if any(item.get("operation_id") == op for item in wave.get("historical_supplements") or []):
+            continue
+        try:
+            _, prompt, _ = read_call_payload(state_root, task_id=task_id, call_id=f"{op}_prompt")
+            request, slot = SimpleNamespace(**prompt["request"]), SimpleNamespace(**prompt["slot"])
+            from ouroboros.review_execution import ReviewRouteKind
+            slot.route = ReviewRouteKind(slot.route)
+            identity = dict(getattr(request, "reconciliation_identity", {}) or {})
+            retry_key = str(wave.get("retry_key") or f"plan_review:{fingerprint}:{wave['cycle_index']}")
+            if (request.surface != "plan_review" or request.task_id != task_id
+                    or str(request.retry_key) != retry_key
+                    or identity.get("subject_hash") != fingerprint
+                    or identity.get("epoch") != retry_key
+                    or identity.get("roster_hash") != wave.get("reviewer_config_fingerprint")
+                    or identity.get("health_epoch", []) != wave.get("health_epoch", [])
+                    or slot.slot_id != row.get("slot_id")):
+                continue
+            actor = recover_review_producer(state_root, request, slot, row)
+            if actor is None or actor.late_result_pending or actor.operation_state not in {
+                "settled", "late_settled", "not_dispatched",
+            }:
+                continue
+            result = _plan_row_from_actor(asdict(actor), slot)
+            ref = persist_historical_result(state_root, task_id, wave, result)
+            if record_plan_review_supplement(state_root, task_id, wave=wave, result=result, source_ref=ref):
+                attached += 1
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            log.warning("historical plan reviewer %s remains unresolved: %s", op, exc)
+    return attached
+
+
+def attach_late_plan_event(state_root: Any, event: Dict[str, Any]) -> int:
+    """Recover the addressed plan producer after a supervisor late-result event."""
+    if event.get("surface") != "plan_review":
+        return 0
+    from ouroboros.observability import read_call_payload
+
+    task_id, op = str(event.get("task_id") or ""), str(event.get("operation_id") or "")
+    if not task_id or not op:
+        return 0
+    _, prompt, _ = read_call_payload(state_root, task_id=task_id, call_id=f"{op}_prompt")
+    identity = (prompt.get("request") or {}).get("reconciliation_identity") or {}
+    return attach_historical_results(
+        state_root, task_id, fingerprint=str(identity.get("subject_hash") or ""), operation_id=op,
+    )
