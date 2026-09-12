@@ -403,7 +403,7 @@ def test_max_mode_external_workspace_keeps_arch_full_but_drops_development():
     assert contract_false["context_requires_self_body_docs"] is False
 
 
-def test_low_mode_external_workspace_gets_nav_arch_and_dev_pointer():
+def test_low_mode_external_workspace_gets_both_book_navigation_views():
     external = _build_system_text(
         {
             "workspace_root": "/tmp/example-workspace",
@@ -415,7 +415,7 @@ def test_low_mode_external_workspace_gets_nav_arch_and_dev_pointer():
     )
     assert "navigation map" in external
     assert _ARCH_BODY_SENTINEL not in external
-    assert "## DEVELOPMENT.md" not in external
+    assert "## DEVELOPMENT.md (navigation map)" in external
 
 
 def test_max_mode_evolution_task_keeps_arch_and_development_full():
@@ -432,7 +432,7 @@ def test_max_mode_evolution_task_keeps_arch_and_development_full():
     review_text = _build_system_text({"type": "deep_self_review"}, context_mode="max")
     assert _ARCH_BODY_SENTINEL in review_text
 
-    # In low mode evolution stays on the cheap form: nav ARCH + full DEV.
+    # Low retains navigation to both books; Max's full bodies stay unchanged.
     low_text = _build_system_text({"type": "evolution"}, context_mode="low")
     assert "navigation map" in low_text
     assert _ARCH_BODY_SENTINEL not in low_text
@@ -523,19 +523,18 @@ def test_low_mode_architecture_is_navigation_map_not_full_body():
     assert _ARCH_BODY_SENTINEL not in text  # full body NOT inlined in low
 
 
-def test_low_mode_development_full_for_direct_chat_tasks_unless_explicitly_disabled():
+def test_low_mode_development_navigation_for_task_and_direct_chat():
     code_text = _build_system_text({"type": "task"}, context_mode="low")
-    assert "## DEVELOPMENT.md" in code_text  # code / self-mod task → full
+    assert "## DEVELOPMENT.md (navigation map)" in code_text
 
     chat_text = _build_system_text({"_is_direct_chat": True}, context_mode="low")
-    assert "## DEVELOPMENT.md" in chat_text  # chat can still be code / self-mod work
+    assert "## DEVELOPMENT.md (navigation map)" in chat_text
 
     pure_chat_text = _build_system_text(
         {"_is_direct_chat": True, "context_requires_development": False},
         context_mode="low",
     )
-    assert "## DEVELOPMENT.md" not in pure_chat_text
-    assert "DEVELOPMENT.md" in pure_chat_text  # but named in the on-demand pointer
+    assert "## DEVELOPMENT.md (navigation map)" in pure_chat_text
 
 
 # Predicted route pressure no longer changes the document projection. The

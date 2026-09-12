@@ -10,7 +10,7 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 |---|---|---:|---:|
 | D01 | Agent core & main loop | 30 | 0 |
 | D02 | LLM client, routing & providers | 36 | 0 |
-| D03 | Context assembly, fit & compaction | 11 | 0 |
+| D03 | Context assembly, fit & compaction | 12 | 0 |
 | D04 | Tool execution: registry, access & typed results | 20 | 0 |
 | D05 | Tool surfaces: files, code, shell, media, external | 28 | 0 |
 | D06 | Review stack | 66 | 0 |
@@ -22,13 +22,13 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D12 | Settings & configuration | 15 | 0 |
 | D13 | Safety, guards & runtime mode | 9 | 0 |
 | D14 | Skills & extensions | 54 | 0 |
-| D15 | Memory, knowledge, consciousness & self-evolution | 17 | 0 |
+| D15 | Memory, knowledge, consciousness & self-evolution | 18 | 0 |
 | D16 | Observability, usage accounting & cost | 11 | 0 |
 | D17 | Projects, workspaces & task results | 20 | 0 |
-| D18 | Launcher, packaging, platform & shared substrate | 12 | 0 |
+| D18 | Launcher, packaging, platform & shared substrate | 13 | 0 |
 | D19 | Frozen contracts (ABI) | 10 | 0 |
 | D20 | Presence | 9 | 0 |
-| **total** | | **532** | **0** |
+| **total** | | **535** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -258,6 +258,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/context_mode_compat.py`
 - `ouroboros/context_runtime_facts.py`
 - `ouroboros/main_context_authority.py`
+- `ouroboros/reference_books.py`
 - `ouroboros/tools/compact_context.py`
 
 ### D04 — Tool execution: registry, access & typed results
@@ -677,6 +678,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/evolution_checkpoints.py`
 - `ouroboros/evolution_fingerprint.py`
 - `ouroboros/improvement_backlog.py`
+- `ouroboros/knowledge.py`
 - `ouroboros/memory.py`
 - `ouroboros/memory_journal_compaction.py`
 - `ouroboros/post_task_evolution.py`
@@ -734,6 +736,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/launcher_bootstrap.py`
 - `ouroboros/launcher_server_reaper.py`
 - `ouroboros/launcher_windows_runtime.py`
+- `ouroboros/markdown_source.py`
 - `ouroboros/node_runtime.py`
 - `ouroboros/packaged_cli.py`
 - `ouroboros/packaged_cli_install.py`

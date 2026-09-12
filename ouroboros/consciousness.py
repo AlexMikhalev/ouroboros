@@ -1320,13 +1320,15 @@ class BackgroundConsciousness:
 
         timeout_sec = _get_tool_timeout(self._registry, fn_name, args)
         result = None
+        result_meta: Dict[str, Any] = {}
         error = None
         timed_out = False
 
         def _run_tool():
-            nonlocal result, error
+            nonlocal result, result_meta, error
             try:
-                result = self._registry.execute(fn_name, args)
+                produced = self._registry.execute_result(fn_name, args)
+                result, result_meta = produced.text, dict(produced.meta)
             except Exception as e:
                 error = e
 
@@ -1391,9 +1393,18 @@ class BackgroundConsciousness:
             if path is not None:
                 try:
                     raw = path.read_bytes()
-                    current = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
-                    if str(result) == current and result_str == current:
-                        self._identity_source_reads[topic] = hashlib.sha256(raw).hexdigest()
+                    current = raw.decode("utf-8")
+                    ref = result_meta.get("knowledge_source") or {}
+                    start = result_meta.get("knowledge_body_start")
+                    size = result_meta.get("knowledge_body_chars")
+                    revision = hashlib.sha256(raw).hexdigest()
+                    if (result_meta.get("knowledge_source_complete") is True
+                            and type(start) is int and type(size) is int and start >= 0 and size == len(current)
+                            and ref.get("revision") == revision
+                            and pathlib.Path(ref.get("path", "")).resolve() == path.resolve()
+                            and len(result_str) >= start + size
+                            and result_str[start:start + size] == current):
+                        self._identity_source_reads[topic] = revision
                 except Exception:
                     pass
 

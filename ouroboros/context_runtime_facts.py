@@ -21,6 +21,43 @@ from ouroboros.config import runtime_setting
 log = logging.getLogger(__name__)
 
 
+def _queue_context_fact(task: Dict[str, Any]) -> Dict[str, Any]:
+    """One dated canonical-queue view, frozen with the task's ContextCore."""
+    from ouroboros.config import DATA_DIR, get_max_active_subagents_per_root, get_max_workers
+    from ouroboros.task_status import _load_queue_snapshot, queue_snapshot_observation
+
+    root = pathlib.Path(task.get("budget_drive_root") or DATA_DIR)
+    snapshot = _load_queue_snapshot(root)
+    fact = {**queue_snapshot_observation(snapshot), "source_root": str(root),
+            "max_workers": int(get_max_workers()),
+            "max_active_subagents_per_root": int(get_max_active_subagents_per_root())}
+    if snapshot.get("_snapshot_missing") or snapshot.get("_snapshot_invalid"):
+        return {**fact, "note": "Queue observation unavailable; current capacity is unknown."}
+    for key in ("running", "pending"):
+        rows = snapshot.get(key)
+        fact[key + "_count"] = sum(isinstance(row, dict) for row in rows) if isinstance(rows, list) else None
+    fact["reaping_count"] = snapshot.get("reaping_count")
+    fact["worker_total"] = snapshot.get("worker_total")
+    assignable = snapshot.get("assignable_idle_workers")
+    if assignable is not None:
+        fact["free_worker_slots"] = max(0, int(assignable))
+        fact["free_worker_slots_basis"] = "recorded_assignable_idle_workers"
+    elif fact["running_count"] is not None:
+        fact["free_worker_slots"] = max(0, fact["max_workers"] - fact["running_count"]
+                                          - int(fact["reaping_count"] or 0))
+        fact["free_worker_slots_basis"] = "legacy_estimate_from_configured_limit"
+    else:
+        fact["free_worker_slots"] = None
+        fact["free_worker_slots_basis"] = "unknown"
+    fact["note"] = (
+        "Last recorded queue counts at ts; freshness and age were measured when this context "
+        "was built and do not refresh during the task. Stale or unknown observations do not "
+        "establish current load. Legacy free-slot estimates are not measured capacity. "
+        "Scheduling owns admission; these observations reserve no slots."
+    )
+    return fact
+
+
 def _project_room_fact(task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """The room's active folder and ordinary tool target, or None.
 

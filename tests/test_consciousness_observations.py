@@ -452,7 +452,8 @@ def test_tool_receipt_write_failure_forbids_cycle_ack(tmp_path, monkeypatch):
         "provider": "openai", "resolved_model": "test-model",
     })
     bc._registry.get_timeout.return_value = 1
-    bc._registry.execute.return_value = "tool-result"
+    from ouroboros.tools.tool_result import ToolResult
+    bc._registry.execute_result.return_value = ToolResult(status="ok", code="OK", text="tool-result")
     bc._registry._ctx = SimpleNamespace(pending_events=[])
     responses = [
         ({"content": "", "tool_calls": [{

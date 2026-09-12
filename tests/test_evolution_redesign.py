@@ -942,16 +942,18 @@ def test_memory_provenance_records_old_and_new_content(tmp_path):
     from ouroboros.tools.control import _update_identity
     from ouroboros.tools.knowledge import _knowledge_write
     from ouroboros.tools.registry import ToolContext
+    from ouroboros.knowledge import read_knowledge_note, resolve_knowledge_address
 
     ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path)
     _knowledge_write(ctx, "facts", "old", mode="overwrite")
-    _knowledge_write(ctx, "facts", "new", mode="overwrite")
+    current = read_knowledge_note(resolve_knowledge_address(tmp_path, "facts"))
+    _knowledge_write(ctx, "facts", "new", mode="overwrite", expected_revision=current.revision)
     history = [
         json.loads(line)
         for line in (tmp_path / "memory" / "knowledge_history.jsonl").read_text(encoding="utf-8").splitlines()
     ]
-    assert history[-1]["old_content"] == "old"
-    assert history[-1]["new_content"] == "new"
+    assert history[-1]["old_content"] == current.text
+    assert history[-1]["new_content"] == "---\ntype: note\n---\nnew"
 
     _update_identity(ctx, "I am v1 with enough detail to satisfy the identity update length gate.")
     _update_identity(ctx, "I am v2 with enough detail to satisfy the identity update length gate.")

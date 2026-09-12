@@ -177,15 +177,15 @@ def _run_post_task_processing_async(
             task_memory = Memory(drive_root=env.drive_root, repo_dir=env.repo_dir)
 
             def _promotion() -> None:
-                if is_presence_task(task_snapshot):
-                    return
                 from ouroboros.project_facts import resolve_project_id
 
                 reflection_entry = result.get("reflection_entry")
                 _pid = resolve_project_id(task_snapshot)
+                _apply_reflection_memory_actions(env, reflection_entry, project_id=_pid)
+                if is_presence_task(task_snapshot):
+                    return
                 # Project facts stay scoped; generic process lessons remain global.
                 _update_improvement_backlog(env, reflection_entry)
-                _apply_reflection_memory_actions(env, reflection_entry, project_id=_pid)
                 try:
                     from ouroboros.post_task_evolution import maybe_promote
 

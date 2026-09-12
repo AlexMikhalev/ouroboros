@@ -124,11 +124,8 @@ def test_nav_map_no_heading_fallback_names_all_supported_depths():
     assert "(no `##`/`###`/`####` headings; read `x.md` directly)" in m
 
 
-def test_reference_doc_sections_decouple_arch_mode_from_dev_inclusion():
-    """D-ARCH (owner, 2026-08-08): context_mode decides ONLY the ARCHITECTURE
-    form (full in max, nav map in low); DEVELOPMENT inclusion is the caller's
-    mode-independent decision. Whatever is not inlined is named in the visible
-    on-demand pointer (P1)."""
+def test_reference_doc_sections_preserve_max_and_orient_both_books_in_low():
+    """Max retains its full bodies; Low names both complete retrievable books."""
     arch = "## Arch A\n\nARCHBODY\n"
     dev = "## Dev A\n\nDEVBODY\n"
 
@@ -153,7 +150,8 @@ def test_reference_doc_sections_decouple_arch_mode_from_dev_inclusion():
     low_dev = _render("low", True)
     assert "ARCHBODY" not in low_dev  # nav map in low
     assert "navigation map" in low_dev
-    assert "DEVBODY" in low_dev  # DEV inclusion independent of the mode
+    assert "DEVBODY" not in low_dev
+    assert "## DEVELOPMENT.md (navigation map)" in low_dev
 
     low_no_dev = _render("low", False)
     assert "DEVBODY" not in low_no_dev

@@ -11,23 +11,24 @@ from ouroboros.tools.registry import ToolContext
 
 def test_knowledge_topic_and_index_update_share_one_stable_file_lock(tmp_path, monkeypatch):
     from ouroboros.tools import knowledge
+    from ouroboros import knowledge as store
 
     drive = tmp_path / "data"
     ctx = ToolContext(repo_dir=tmp_path, drive_root=drive)
     entered_index = threading.Event()
     release_index = threading.Event()
-    real_update = knowledge._update_index_entry
+    real_update = store.rebuild_knowledge_index
     calls = 0
 
-    def paused_update(inner_ctx, topic):
+    def paused_update(address):
         nonlocal calls
         calls += 1
         if calls == 1:
             entered_index.set()
             assert release_index.wait(2)
-        return real_update(inner_ctx, topic)
+        return real_update(address)
 
-    monkeypatch.setattr(knowledge, "_update_index_entry", paused_update)
+    monkeypatch.setattr(store, "rebuild_knowledge_index", paused_update)
     results: list[str] = []
     first = threading.Thread(
         target=lambda: results.append(knowledge._knowledge_write(ctx, "alpha", "one")),

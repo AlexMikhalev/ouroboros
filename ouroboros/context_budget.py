@@ -31,6 +31,12 @@ from typing import Any, Dict, Literal, Optional, Tuple
 # effort. Crossing T never creates a task failure.
 OWNER_LOW_TARGET_TOKENS = 200_000
 
+# Nano's owner-selected total window and free input headroom. The send boundary
+# chooses the largest output allowance up to the caller's existing ceiling;
+# the headroom is a minimum, never a fixed generation cap.
+OWNER_NANO_TARGET_TOKENS = 81_920
+NANO_MIN_HEADROOM_TOKENS = 8_192
+
 # One overflow vocabulary for every seam that must recognize a CONTEXT-WINDOW
 # overflow (Main provider-code precedence, the local transport, and the
 # summarizer split path). A provider code or message shape added here reaches
@@ -91,6 +97,7 @@ MeasurementBasis = Literal["fresh_route_usage", "fresh_model_usage", "cold_estim
 ReclaimStatus = Literal[
     "applied", "no_eligible", "no_positive_reclaim", "checkpoint_failed",
     "summarizer_failed", "no_measurable_shrink", "binding_mismatch",
+    "no_op", "fit_rejected", "source_unavailable",
 ]
 
 
@@ -103,6 +110,11 @@ class ContextReclaimRequest:
     measurement_density: float
     reclaim_goal_tokens: int
     allow_partial_shrink: bool = True
+    working_note: Optional[str] = None
+    expected_view_revision: str = ""
+    keep_unit_ids: Optional[Tuple[str, ...]] = None
+    restore_unit_refs: Tuple[Dict[str, Any], ...] = ()
+    schema_names: Optional[Tuple[str, ...]] = None
 
 
 @dataclass(frozen=True)
@@ -116,6 +128,13 @@ class ContextReclaimReceipt:
     goal_reached: bool
     checkpoint_ref: Optional[Dict[str, Any]]
     capsule_refs: Tuple[Dict[str, Any], ...]
+    observed_view_revision: str = ""
+    view_revision: str = ""
+    retained_unit_ids: Tuple[str, ...] = ()
+    restored_unit_refs: Tuple[Dict[str, Any], ...] = ()
+    source_refs: Tuple[Dict[str, Any], ...] = ()
+    schema_names: Optional[Tuple[str, ...]] = None
+    fit: Optional[Dict[str, Any]] = None
 
 
 class SummarizerContextOverflow(RuntimeError):

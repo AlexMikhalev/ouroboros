@@ -305,6 +305,7 @@ _OWNER_CLIENT_NOTE = (
 from ouroboros.context_runtime_facts import (  # noqa: E402,F401 — re-exported public surface
     _delegation_capability_fact,
     _project_room_fact,
+    _queue_context_fact,
     _runtime_budget_info,
 )
 
@@ -395,10 +396,11 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
     }
     runtime_data.update(_task_authority_projection(env, task))
     runtime_data["operational_reality_rule"] = (
-        "This live runtime context is authoritative over stale paths, tool lists, "
+        "This captured runtime context is authoritative over stale paths, tool lists, "
         "or capability assumptions embedded in the task text. Use the visible "
         "task_contract, [ATTACHMENTS], disabled_tools, filesystem roots, and queue "
-        "capacity here when they conflict with older prompt wording."
+        "observations here when they conflict with older prompt wording. Queue load is dated "
+        "evidence at context construction, not a continuously refreshed capacity reading."
     )
     if str(task.get("workspace_root") or "").strip():
         runtime_data["active_workspace"] = {
@@ -474,41 +476,7 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
     except Exception:
         log.debug("Failed to build capability digest for context", exc_info=True)
     try:
-        from ouroboros.config import DATA_DIR, get_max_active_subagents_per_root, get_max_workers
-        from ouroboros.task_status import _load_queue_snapshot
-
-        # The supervisor persists the snapshot at the canonical data root, NOT a forked
-        # child drive — so read it from budget_drive_root (the main root for a subagent)
-        # or DATA_DIR. Reading env.drive_root would leave subagents (the actors most likely
-        # to mis-reason about "starved" siblings) with no live-queue honesty signal.
-        _snap_root = str(task.get("budget_drive_root") or "").strip() or str(DATA_DIR)
-        _snap = _load_queue_snapshot(_snap_root)
-        if not (_snap.get("_snapshot_missing") or _snap.get("_snapshot_invalid")):
-            _running = [r for r in (_snap.get("running") or []) if isinstance(r, dict)]
-            _pending = [r for r in (_snap.get("pending") or []) if isinstance(r, dict)]
-            _maxw = int(get_max_workers())
-            _reaping = int(_snap.get("reaping_count") or 0)
-            # Prefer the ACTUAL assignable-idle worker count persisted from the live pool
-            # (the real pool can be smaller than the configured max, and a mid-reap slot is
-            # unavailable); fall back to a derived estimate for older snapshots.
-            _assignable = _snap.get("assignable_idle_workers")
-            if _assignable is not None:
-                _free = max(0, int(_assignable))
-            else:
-                _free = max(0, _maxw - len(_running) - _reaping)
-            runtime_data["queue"] = {
-                "running_count": len(_running),
-                "pending_count": len(_pending),
-                "reaping_count": _reaping,
-                "max_workers": _maxw,
-                "worker_total": int(_snap.get("worker_total") or _maxw),
-                "free_worker_slots": _free,
-                "max_active_subagents_per_root": int(get_max_active_subagents_per_root()),
-                "note": (
-                    "live worker/queue load. Read THIS before claiming children are 'starved' "
-                    "or the queue is 'saturated' — derive resource facts from here, not guesses."
-                ),
-            }
+        runtime_data["queue"] = _queue_context_fact(task)
     except Exception:
         log.debug("Failed to build queue digest for context", exc_info=True)
     if budget_info:
@@ -636,29 +604,43 @@ def build_knowledge_sections(
     project_id: str = "",
     warn_large: bool = False,
     pattern_header: str = "## Known error patterns (Pattern Register)",
+    include_pattern_body: bool = True,
 ) -> List[str]:
     sections: List[str] = []
-    # Knowledge base index: for a project-scoped task load ONLY the current
-    # project's facts (`projects/<id>/knowledge`), isolated from the global
-    # memory/knowledge tree and from any other project (Phase 3b). The Pattern
-    # Register stays global (general error patterns are cross-project cognition).
+    # One mind keeps its authored common orientation across rooms. The generated
+    # inventory is navigation, not a substitute for that understanding; a
+    # project's shelf adds focus without hiding the common corpus.
+    from ouroboros.knowledge import INDEX_FILE, OVERVIEW_TOPIC, read_knowledge_note, resolve_knowledge_address
+
     pid = str(project_id or "").strip()
+    global_address = resolve_knowledge_address(env.drive_root, OVERVIEW_TOPIC, "global")
+    try:
+        overview = read_knowledge_note(global_address)
+        overview_text = overview.source.text_at(overview.source.body_span) if overview.source else overview.text
+        if overview_text.strip():
+            sections.append("## Shared understanding\n\n" + overview_text)
+    except FileNotFoundError:
+        pass  # The generated index retains prior orientation until one is authored.
+    except (OSError, UnicodeDecodeError) as exc:
+        sections.append(f"Shared understanding source unavailable: knowledge_read(topic='{OVERVIEW_TOPIC}', scope='global'). {type(exc).__name__}.")
+    knowledge_indexes = [(global_address.shelf / INDEX_FILE,
+                          "## Knowledge base", "knowledge index")]
     if pid:
         from ouroboros.project_facts import project_knowledge_dir
 
-        knowledge_index = (project_knowledge_dir(pid) / "index-full.md", f"## Project knowledge ({pid})", "project knowledge index")
-    else:
-        knowledge_index = (env.drive_path("memory/knowledge/index-full.md"), "## Knowledge base", "knowledge index")
-    for path, header, label in (
-        knowledge_index,
-        (env.drive_path("memory/knowledge/patterns.md"), pattern_header, "patterns register"),
-    ):
+        knowledge_indexes.append((project_knowledge_dir(pid) / INDEX_FILE,
+                                  f"## Project knowledge ({pid})", "project knowledge index"))
+    if include_pattern_body:
+        knowledge_indexes.append((env.drive_path("memory/knowledge/patterns.md"), pattern_header, "patterns register"))
+    for path, header, label in knowledge_indexes:
         text = safe_read(path)
         if not text.strip():
             continue
         if warn_large and len(text) > _LARGE_CONTEXT_SECTION_CHARS:
             log.warning("context: %s is large (%d chars)", label, len(text))
         sections.append(f"{header}\n\n{text}")
+    if not include_pattern_body:
+        sections.append("Pattern Register details: knowledge_read(topic='patterns', scope='global').")
     if pid:
         # Bounded per-project journal tail + workpad (multi-project, v6.32.0):
         # the project's durable progress memory rides along with its knowledge.
@@ -785,13 +767,14 @@ def _render_scratchpad_for_context(memory: "Memory", budget: int) -> str:
     return section
 
 
-def build_memory_sections(memory: Memory, partition: str = "all", durable_dialogue_gaps_out: Optional[List[Dict[str, Any]]] = None) -> List[str]:
+def build_memory_sections(memory: Memory, partition: str = "all", durable_dialogue_gaps_out: Optional[List[Dict[str, Any]]] = None,
+                          *, include_scratchpad: bool = True) -> List[str]:
     sections = []
 
     include_stable = partition in {"all", "stable"}
     include_volatile = partition in {"all", "volatile"}
 
-    if include_volatile:
+    if include_volatile and include_scratchpad:
         scratchpad_raw = memory.load_scratchpad()
         # WARNING is preserved on the RAW (pre-trim) value: it signals the rot
         # class is present, even when the helper trims it down for the consumer.
@@ -1168,8 +1151,22 @@ def _capture_context_core(
         fallback="You are Ouroboros. Your base prompt could not be loaded."
     )
     bible_md = safe_read(env.repo_path("BIBLE.md"))
-    architecture_md = safe_read(env.repo_path("docs/ARCHITECTURE.md"))
-    development_md = safe_read(env.repo_path("docs/DEVELOPMENT.md"))
+    from ouroboros.reference_books import BOOK_ENTRYPOINTS, compose_book, load_reference_book
+
+    books = []
+    book_text = {}
+    book_errors = []
+    for book_id, entrypoint in BOOK_ENTRYPOINTS.items():
+        try:
+            book = load_reference_book(env.repo_dir, book_id, read_bytes=lambda path: env.repo_path(path).read_bytes())
+            books.append(book)
+            book_text[book_id] = compose_book(book)
+        except (OSError, ValueError) as exc:
+            log.warning("Reference book unavailable (%s): %s", entrypoint, exc)
+            book_errors.append(f"Reference book source unavailable: {entrypoint}. {exc}. Full context is not established.")
+            book_text[book_id] = ""
+    architecture_md = book_text["architecture"]
+    development_md = book_text["development"]
 
     # A fork is an execution boundary, not a second mind.  Keep the agent's
     # writable Memory object task-local, but capture identity/dialogue from the
@@ -1196,47 +1193,14 @@ def _capture_context_core(
 
     from ouroboros.project_facts import resolve_project_id
 
-    # ------------------------------------------------------------------ #
-    # Reference-doc forms (D-ARCH unification, owner decision 2026-08-08).
-    #
-    # ARCHITECTURE.md follows the OWNER CONTEXT MODE alone: full-resident in
-    # max for EVERY task class — self-body, PROJECT tasks (with or without a
-    # folder), evolution, external/headless/delegated surfaces — and the
-    # lossless navigation map in low. OWNER'S MOTIVATION (recorded verbatim-in-
-    # spirit so it is not lost): architecture.md is Ouroboros's capability/
-    # tools/access map; it stays resident in max even for project/evolution
-    # work because without it the agent cannot reason about HOW to work
-    # effectively — context economy comes from dropping DEVELOPMENT.md for
-    # project work, never ARCHITECTURE. This removed the former max-mode
-    # ARCH→nav-map downgrade for the external-surface class (v6.17.0) and for
-    # evolution (v6.30.0); in low mode ARCH stays the nav map (the cheap mode).
-    #
-    # DEVELOPMENT.md (the self-engineering handbook) is what adapts, MODE-
-    # INDEPENDENTLY — the doc decision is deliberately DECOUPLED from workspace
-    # binding for ARCHITECTURE (binding a workspace fixes paths/tool profile/
-    # lease, it must not drag the capability map out of context in max).
-    #
-    # D-DEV (owner decision, 2026-08-08). OWNER'S MOTIVATION, recorded here so it
-    # is not lost: "DEVELOPMENT.md is the self-engineering handbook; it loads
-    # exactly when the work targets Ouroboros's own body — the signal is the repo
-    # binding, a path fact, never a guess from message text (P5)."
-    #
-    # The structural signal is therefore the ACTIVE REPO BINDING —
-    # `not _task_uses_external_context(task)`: no workspace bound, not a subagent,
-    # not an api/cli/scheduled surface — and NOT project membership. An earlier
-    # draft also dropped the handbook whenever `resolve_project_id` returned an id,
-    # which silently took it away from a DIRECT-CHAT turn in a project room even
-    # though that turn is still working on Ouroboros's own body with no workspace
-    # bound. Order:
-    #   1. an explicit context_requires_development on the task wins;
-    #   2. self-body work keeps it full (explicit context_requires_self_body_docs
-    #      or evolution/deep_self_review/review task types);
-    #   3. the external-surface class — a bound workspace (including a project
-    #      task's auto-provisioned genesis tree), a subagent, or an api/cli/
-    #      scheduled surface — works on ANOTHER codebase and gets the on-demand
-    #      pointer. `workspace="none"` binds no workspace, so such a task is not
-    #      external and keeps the handbook (its own territory);
-    #   4. everything else keeps the existing type/direct-chat semantics.
+    task_metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+    is_child = str(task.get("delegation_role") or task_metadata.get("delegation_role") or "") == "subagent"
+
+    # Max keeps the full capability/WHY map even for external work: binding a
+    # folder changes tools' default target, not the mind's knowledge of its body.
+    # Its handbook follows the active self-body binding, with explicit task
+    # requirements taking precedence. Low/Nano and children instead receive both
+    # books' authored orientation through the same captured-source projection.
     explicit_dev = task.get("context_requires_development")
     if explicit_dev is not None:
         docs_need_development = normalize_bool(explicit_dev)
@@ -1261,11 +1225,12 @@ def _capture_context_core(
         log.debug("Failed to build Available subagents catalog", exc_info=True)
     semi_stable_parts.extend(build_memory_sections(context_memory, partition="stable"))
 
-    semi_stable_parts.extend(build_knowledge_sections(context_env, project_id=resolve_project_id(task)))
+    semi_stable_parts.extend(build_knowledge_sections(context_env, project_id=resolve_project_id(task),
+                                                     include_pattern_body=not is_child))
 
     deep_review_path = context_env.drive_path("memory/deep_review.md")
     try:
-        if deep_review_path.exists():
+        if not is_child and deep_review_path.exists():
             dr_text = deep_review_path.read_text(encoding="utf-8")
             if dr_text.strip():
                 semi_stable_parts.append(
@@ -1287,7 +1252,7 @@ def _capture_context_core(
     dynamic_parts = []
     if health_section:
         dynamic_parts.append(health_section)
-    dynamic_parts.extend(build_memory_sections(context_memory, partition="volatile"))
+    dynamic_parts.extend(build_memory_sections(context_memory, partition="volatile", include_scratchpad=not is_child))
 
     registry_digest = _build_registry_digest(context_env)
     if registry_digest:
@@ -1347,11 +1312,19 @@ def _capture_context_core(
         _reflections_pid = resolve_project_id(task)
     except Exception:
         _reflections_pid = ""
-    dynamic_parts.extend(build_recent_sections(
-        context_memory, env, task_id=task.get("id", ""), thread_chat_id=int(task.get("chat_id") or 0),
-        project_id=_reflections_pid,
-    ))
-    task_metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+    if is_child:
+        dynamic_parts.append(
+            "## Working sources\n\n"
+            "The shared biography is loaded above. Your parent's selected discussion and working "
+            "sources are in this assignment's context. Other raw conversations, the global scratchpad "
+            "and earlier task reports are not preloaded: use chat_history, knowledge_read, "
+            "get_task_result or ask your parent for exact sources when useful."
+        )
+    else:
+        dynamic_parts.extend(build_recent_sections(
+            context_memory, env, task_id=task.get("id", ""), thread_chat_id=int(task.get("chat_id") or 0),
+            project_id=_reflections_pid,
+        ))
     try:
         from ouroboros.presence_context import build_presence_context_section
 
@@ -1375,6 +1348,9 @@ def _capture_context_core(
             build_user_content(task), ensure_ascii=False, sort_keys=True,
         ),
         docs_need_development=docs_need_development,
+        reference_books=tuple(books),
+        reference_book_errors=tuple(book_errors),
+        compact_reference_docs=is_child,
     )
 
 
@@ -1440,5 +1416,7 @@ def build_llm_messages(
         "max_calibrated_tokens": plan.max_projection.calibrated_tokens,
         "low_estimated_tokens": plan.low_projection.estimated_tokens,
         "low_calibrated_tokens": plan.low_projection.calibrated_tokens,
+        "nano_estimated_tokens": plan.nano_projection.estimated_tokens if plan.nano_projection else None,
+        "nano_calibrated_tokens": plan.nano_projection.calibrated_tokens if plan.nano_projection else None,
     }}
     return messages, cap_info
