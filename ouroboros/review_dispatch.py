@@ -143,6 +143,39 @@ def claim_task_acceptance_dispatch(
     )
 
 
+def collect_task_acceptance_run(run: dict, *, drive_root: Any, usage_ctx: Any) -> Any:
+    """Collect the recorded operation at zero new dispatch, using its exact inputs.
+
+    The existing host review record owns the request and roster; custody owns live
+    workers and complete producer artifacts. No new configuration or evidence is
+    sampled here, and missing custody cannot turn collection into a new send.
+    """
+    import copy
+    import time
+    from ouroboros.review_custody import _freeze_roster_rows
+    from ouroboros.review_execution import ReviewRouteKind
+    from ouroboros.review_substrate import ReviewRequest, ReviewSlot, run_review_request
+
+    request = ReviewRequest(**copy.deepcopy(run["request"]))
+    if request.surface != "task_acceptance" or not request.retry_key:
+        raise ValueError("recorded acceptance operation identity is missing")
+    slots = [ReviewSlot(**{**row, "route": ReviewRouteKind(row["route"])})
+             for row in copy.deepcopy(run.get("slot_roster") or [])]
+    if not slots:
+        raise ValueError("recorded acceptance roster is unavailable")
+    request.reconcile_only, request.drain_deadline = True, time.monotonic()
+    previous = getattr(usage_ctx, "_review_frozen_rows", None)
+    usage_ctx._review_frozen_rows = {
+        **(previous or {}),
+        "task_acceptance": _freeze_roster_rows(usage_ctx, "task_acceptance", run.get("actors")),
+    }
+    try:
+        return run_review_request(request, slots=slots, drive_root=pathlib.Path(drive_root),
+                                  usage_ctx=usage_ctx)
+    finally:
+        usage_ctx._review_frozen_rows = previous
+
+
 def task_acceptance_preclaim_refusal(ctx: Any) -> Any:
     """Project every free refusal before assembly and again at dispatch."""
     from ouroboros.review_substrate import ReviewRunResult
@@ -366,7 +399,8 @@ def review_reconciliation_identity(request: Any, slots: list, *, root_task_id: s
     for slot in slots:
         values = asdict(slot) if is_dataclass(slot) else dict(getattr(slot, "__dict__", {}) or {})
         roster.append({k: v for k, v in values.items()
-                       if k not in {"timeout_sec", "transport_timeout_sec"}})
+                       if k not in {"timeout_sec", "transport_timeout_sec"}
+                       and (k != "processing_preference" or v)})
     retry_key = getattr(request, "retry_key", None)
     return {
         "subject_hash": digest(retry_key or {

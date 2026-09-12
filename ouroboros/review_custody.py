@@ -711,6 +711,8 @@ def _attempt_key(request: Any, slot: Any) -> str:
     }
     if getattr(slot, "default_temperature", None) is not None:
         slot_data["default_temperature"] = slot.default_temperature
+    if getattr(slot, "processing_preference", ""):
+        slot_data["processing_preference"] = slot.processing_preference
     identity = {
         "retry_key": retry_key,
         "surface": getattr(request, "surface", ""),
@@ -1017,6 +1019,10 @@ def _settle_review_attempt(
 
         announce_released_settlement(usage_ctx, request=request, task_id=task_id, slot=slot, actor=actor,
                                      settled_wave=dict(released_wave.get("slots") or {}), roster_size=int(released_wave.get("total") or 0))
+        if getattr(request, "surface", "") == "task_acceptance" and released_wave:
+            from ouroboros.loop_acceptance_review import announce_acceptance_settlement
+
+            announce_acceptance_settlement(usage_ctx, request, released_wave)
     if late and not pending_invocation and not custody_lost and usage_ctx is not None:
         try:
             from ouroboros.tools.review_helpers import emit_review_event

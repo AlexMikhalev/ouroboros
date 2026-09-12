@@ -525,6 +525,15 @@ def run_llm_loop(
                 if _compaction_usage:
                     _account_compaction_usage(accumulated_usage, _compaction_usage, event_queue, task_id)
 
+                from ouroboros.loop_acceptance import (
+                    capture_acceptance_observation, acceptance_observation_prompt,
+                )
+                observed = capture_acceptance_observation(ctx, llm_trace, incoming_messages)
+                observation_note = acceptance_observation_prompt(ctx, observed)
+                if observation_note:
+                    messages[:] = [row for row in messages if not row.get("acceptance_observation")]
+                    messages.append({"role": "user", "content": observation_note,
+                                     "acceptance_observation": True})
                 seal_task_transcript(messages)
 
                 model_call = _RoundModelCallContext(
@@ -626,6 +635,10 @@ def run_llm_loop(
                     _owner_msg_seen, emit_progress,
                 )
                 if final_result is None:
+                    if getattr(ctx, "_task_acceptance_pending", ""):
+                        wait_after_tools(ctx, messages, llm_trace, accumulated_usage,
+                                         round_idx, tool_schemas, _owner_msg_seen,
+                                         review_binding=ctx._task_acceptance_pending)
                     continue
                 return final_result
 
@@ -639,6 +652,10 @@ def run_llm_loop(
                 tool_calls, tools, drive_logs, task_id, stateful_executor,
                 messages, llm_trace, emit_progress
             )
+            from ouroboros.loop_acceptance_review import advance_explicit_acceptance
+
+            advance_explicit_acceptance(tools, limit_ctx, llm_trace, incoming_messages,
+                                        _owner_msg_seen, emit_progress)
             wait_after_tools(ctx, messages, llm_trace, accumulated_usage,
                              round_idx, tool_schemas, _owner_msg_seen)
             # Every completed batch rejoins one control/budget tail, warm or cold.

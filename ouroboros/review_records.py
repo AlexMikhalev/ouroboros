@@ -153,6 +153,8 @@ class ReviewSlot:
     # compound route slug or the surface setting applied. Disclosure for the
     # last-execution projection; identity already rides ``effort``.
     declared_effort: str = ""
+    # Captured preference; empty explicitly preserves the legacy request shape.
+    processing_preference: str = ""
 
     @property
     def native_retrieval(self) -> bool:
@@ -263,6 +265,9 @@ class ReviewRunResult:
     # can never quietly look like an ordinary multi-reviewer PASS).
     single_reviewer_no_diversity: bool = False
     panel_id: str = ""
+    # The resolved roster belongs to this operation, including overrides in force
+    # at dispatch. Collection must not read a subsequently edited configuration.
+    slot_roster: List[Dict[str, Any]] = field(default_factory=list)
 
 
 HARDNESS_ADVISORY_VISIBLE = "advisory_visible"  # fed back as a compact capsule, never blocks

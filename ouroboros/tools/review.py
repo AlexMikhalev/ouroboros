@@ -71,8 +71,9 @@ def get_tools():
                 "name": "task_acceptance_review",
                 "description": (
                     "Record a task-result claim, checklist, evidence, and optional agent disposition. "
-                    "For a root task in auto/required mode this is a cheap evidence call: the host runs "
-                    "the only authoritative reviewer panel after the turn becomes structurally eligible. "
+                    "For a root task in auto/required mode, nominate the complete ready task result: "
+                    "after all tool results in this round, the host advances the same review operation "
+                    "used by final delivery. Settling review does not finish the task. "
                     "Child-task and off-mode behavior is unchanged."
                 ),
                 "parameters": {
@@ -82,6 +83,16 @@ def get_tools():
                         "goal": {"type": "string", "description": "Original task goal."},
                         "evidence": {"type": "object", "description": "Relevant tool trace, artifacts, tests, and observed facts. To select earlier tool records from the host's complete retained trajectory, supply tool_trajectory_indices: [zero-based source indices]. The host materializes these records with their corpus-SHA addresses; a bounded or missing record stays partial/unavailable. Your own prose remains agent-supplied evidence."},
                         "checklist": {"type": "string", "default": "", "description": "Optional acceptance checklist."},
+                        "acceptance_subject": {
+                            "type": "object",
+                            "description": "Main's current subject decision, naming the exact owner_source_sha256 from the latest observation; optionally supply complete effective_criteria or material_tool_indices for changed requirements/evidence.",
+                            "properties": {
+                                "owner_source_sha256": {"type": "string"},
+                                "effective_criteria": {"type": "string"},
+                                "material_tool_indices": {"type": "array", "items": {"type": "integer"}},
+                            },
+                            "required": ["owner_source_sha256"],
+                        },
                         "agent_disposition": {
                             "type": "string",
                             "enum": ["accepted", "rejected", "partial", "deferred"],
@@ -126,6 +137,7 @@ def _handle_task_acceptance_review(
     agent_disposition: str = "",
     rationale: str = "",
     obligation_dispositions: Optional[list] = None,
+    acceptance_subject: Optional[dict] = None,
 ) -> str:
     from ouroboros.config import get_task_review_mode
     from ouroboros.review_evidence import (
@@ -281,6 +293,7 @@ def _handle_task_acceptance_review(
                 "provenance": evidence.get("__provenance__") or {},
             },
             "agent_supplied": evidence.get("agent_supplied") or {},
+            "acceptance_subject": acceptance_subject,
         }
         if agent_decision:
             deferred["agent_decision"] = agent_decision

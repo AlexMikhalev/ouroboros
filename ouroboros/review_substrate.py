@@ -401,6 +401,7 @@ class ReviewCoordinator:
             actors=[asdict(actor) for actor in actors],
             **aggregate,
             panel_id=_review_panel_id(request, actors),
+            slot_roster=[asdict(slot) for slot in slots],
         )
 
     def _custody_drive_root(self) -> pathlib.Path:
