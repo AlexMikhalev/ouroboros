@@ -544,7 +544,7 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # root-task projection with its gaps ledger (``state/skill_review_root_tasks*``)
 # and the per-project retirement locks (``state/delegate_project_retirements/``)
 # — while the retired acceptance api-fallback record left the population.
-EXPECTED_SCAN_PATHS = 286  # Combined Artifact, Skills and Host path owners.
+EXPECTED_SCAN_PATHS = 289  # Existing delegated capture now retains engine manifest and file bodies.
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

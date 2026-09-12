@@ -39,7 +39,7 @@ class DirectoryEngine(_HealthStub):
         return {"runId": "directory-run", "runDir": "/engine/run"}
 
     def get_run(self, rid):
-        return {"summary": {"applyState": "applied" if self.applies else "not_applied"},
+        return {"summary": {"result": {"applyState": "applied" if self.applies else "not_applied"}},
                 "workProduct": {"kind": "files", "files": {"manifest": "final/files/manifest.json"},
                                 "meta": {"manifest_sha256": "sha256:" + sha256(self.raw).hexdigest(),
                                          "apply_state": "applied" if self.strategy == "direct" else "not_applied"}}}
@@ -59,7 +59,8 @@ class DirectoryEngine(_HealthStub):
         if self.lost_apply:
             self.lost_apply = False
             raise OSError("response lost after application")
-        return {"applied": True, "deliveryStatus": "applied"}
+        return {"applied": True, "refused": False, "appliedPaths": ["out.bin"],
+                "treeMutated": True, "alreadyApplied": False}
 
     def decide_run(self, rid, request, *, idempotency_key):
         self.decisions.append((request, idempotency_key))
@@ -140,3 +141,58 @@ def test_lost_apply_leaves_existing_intent_pending(tmp_path, monkeypatch):
     response = json.loads(integrate_directory_result(ctx, held, "apply", "", engine, acknowledge_ambiguous=True))
     assert response["status"] == "applied"
     assert engine.applies[0] == engine.applies[1]
+
+
+def test_selected_apply_keeps_remaining_results_undisposed(tmp_path, monkeypatch):
+    ctx, target = context(tmp_path, monkeypatch)
+    engine, held = DirectoryEngine(target), entry(ctx, target, "copy")
+    get_run = engine.get_run
+
+    def partially_delivered(run_id):
+        detail = get_run(run_id)
+        detail["summary"]["result"]["applyState"] = "not_applied"
+        return detail
+
+    monkeypatch.setattr(engine, "get_run", partially_delivered)
+    response = json.loads(integrate_directory_result(
+        ctx, held, "apply", "selected output", engine, paths=["out.bin"]))
+    assert response["status"] == "partially_applied"
+    assert response["engine_receipt"]["appliedPaths"] == ["out.bin"]
+    assert (target / "out.bin").read_bytes() == engine.body
+    assert not held.patch_disposed and not held.patch_apply_pending
+
+
+def test_lost_start_replays_original_processing_facts_after_setting_changes(tmp_path, monkeypatch):
+    from ouroboros.gateways import claudexor
+
+    ctx, target = context(tmp_path, monkeypatch)
+    engine = DirectoryEngine(target)
+    capabilities = engine.agent_capabilities
+    monkeypatch.setattr(engine, "agent_capabilities", lambda: {
+        **capabilities(), "harnesses": [{**row, "processingPreferences": ["fast", "economy"]}
+                                       for row in capabilities()["harnesses"]]})
+    prepare_actor = delegate.prepare_delegate_start_actor
+    preference = "economy"
+
+    def actor(*args, **kwargs):
+        captured, refusal = prepare_actor(*args, **kwargs)
+        return {**captured, "processing_preference": preference}, refusal
+
+    def start(request, *, idempotency_key):
+        engine.posts.append((request, idempotency_key))
+        if len(engine.posts) == 1:
+            raise claudexor.ClaudexorUnavailable("daemon_unreachable", "response lost")
+        return {"runId": "directory-run"}
+
+    monkeypatch.setattr(delegate, "prepare_delegate_start_actor", actor)
+    monkeypatch.setattr(engine, "start_run", start)
+    monkeypatch.setattr(claudexor, "ClaudexorGateway", lambda: engine)
+    lost = json.loads(delegate._delegate_start(ctx, "edit documents", directory_strategy="copy", scope_paths=["."]))
+    token = lost["pending_invocation_id"]
+    original = custody.invocation_record(ctx.drive_root, token)["processing"]
+    assert original["requested"] == original["submitted"] == "economy"
+    preference = "fast"
+    retried = json.loads(delegate._delegate_start(ctx, "edit documents", retry_of=token))
+    assert retried["status"] == "started" and retried["processing"] == original
+    assert engine.posts[0] == engine.posts[1]
+    assert engine.posts[1][0]["processingPreference"] == "economy"

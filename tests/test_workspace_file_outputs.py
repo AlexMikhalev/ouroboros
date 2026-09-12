@@ -34,7 +34,11 @@ def commit(root):
 @pytest.mark.parametrize("unborn", [False, True])
 def test_binary_file_only_result_applies_and_rolls_back_without_touching_index(tmp_path, unborn):
     source = repository(tmp_path / "source", unborn=unborn)
-    target = repository(tmp_path / "target", unborn=unborn)
+    if unborn:
+        target = repository(tmp_path / "target", unborn=True)
+    else:
+        target = tmp_path / "target"
+        git(tmp_path, "clone", str(source), str(target))
     (source / "nested").mkdir()
     (source / "nested" / "answer.bin").write_bytes(b"answer\x00bytes")
     (target / "unrelated.txt").write_text("owner dirty content")

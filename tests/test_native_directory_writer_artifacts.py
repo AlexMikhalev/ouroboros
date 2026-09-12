@@ -161,3 +161,46 @@ def test_git_and_self_repo_writes_keep_existing_artifact_behavior(tmp_path, monk
     assert "Written 1 file" in result, result
     assert "Retained file outputs:" not in result
     assert collect_task_artifact_records(ctx.drive_root, ctx.task_id) == []
+
+
+@pytest.mark.parametrize("mode", ["overwrite", "append"])
+@pytest.mark.parametrize("failure", ["", "write", "capture"])
+def test_batch_retains_each_success_with_one_capture_preamble(tmp_path, monkeypatch, mode, failure):
+    registry, ctx, _, _ = _registry(tmp_path, monkeypatch)
+    names = ("first.txt", "second.txt", "third.txt")
+    for name in names:
+        target = ctx.workspace_root / name
+        if failure == "write" and name == "third.txt":
+            target.mkdir()  # Both write and append fail after the first two writes.
+        else:
+            target.write_text("before\n", encoding="utf-8")
+    if failure == "capture":
+        from ouroboros import artifacts
+        original_copy = artifacts.copy_artifact_file
+
+        def copy_except_second(source, destination, **kwargs):
+            if Path(source).name == "second.txt":
+                raise OSError("second artifact unavailable")
+            return original_copy(source, destination, **kwargs)
+
+        monkeypatch.setattr(artifacts, "copy_artifact_file", copy_except_second)
+    result = str(registry.execute("write_file", {
+        "files": [{"path": name, "content": "after\n"} for name in names], "mode": mode,
+    }))
+    assert result.count("no separate patch apply is needed") == 1, result
+    expected = b"before\nafter\n" if mode == "append" else b"after\n"
+    written = names[:2] if failure == "write" else names
+    for name in written:
+        assert (ctx.workspace_root / name).read_bytes() == expected
+    retained = set(written) - ({"second.txt"} if failure == "capture" else set())
+    records = collect_task_artifact_records(ctx.drive_root, ctx.task_id)
+    assert {Path(row["source_path"]).name for row in records} == retained
+    for row in records:
+        assert Path(row["path"]).read_bytes() == expected
+        assert row["sha256"] == sha256(expected).hexdigest()
+        assert f"artifact_store:{row['name']}, {len(expected)} bytes, sha256={row['sha256']}" in result
+    if failure == "write":
+        assert "FILE_WRITE_ERROR" in result and "Successfully written before error" in result
+    if failure == "capture":
+        assert "OUTPUT_CAPTURE_FAILED: second.txt" in result
+        assert "writes remain applied; do not repeat" in result

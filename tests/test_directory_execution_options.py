@@ -34,6 +34,7 @@ def test_directory_options_have_one_public_parameter_surface(options):
     {"directory_strategy": "copy", "scope_paths": []},
     {"scope_paths": "documents"}, {"scope_paths": [""]}, {"scope_paths": [1]},
     {"scope_paths": ["/absolute"]}, {"scope_paths": ["C:\\absolute"]},
+    {"scope_paths": ["../outside"]},
 ])
 def test_directory_options_refuse_an_unusable_scope_shape(options):
     fields, error = _validated_schedule_fields({"objective": "Edit", "expected_output": "Files", **options})

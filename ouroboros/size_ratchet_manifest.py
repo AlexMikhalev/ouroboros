@@ -129,7 +129,6 @@ BAND_PATHS = {
     "ouroboros/gateway/extensions.py": "Extensions HTTP surface re-entered the band when the module endpoint moved to the in-memory reviewed bundle (widgets lifecycle 1a); shrink next touch.",
     "ouroboros/gateway/host_service.py": "The one loopback callback boundary for reviewed skills: token auth, the chat/decision/presence/WS-relay routes and, with #667, the operation read/cancel that joins existing chat, routing, turn and task records; one trust boundary, one module.",
     "ouroboros/gateways/claudexor.py": "The existing owned-engine gateway also owns typed model operations and exact-byte resource transfer; no second control client.",
-    "ouroboros/headless.py": "Existing child-drive and artifact finalization owner now covers direct directory output references with the same copyback lifecycle.",
     "ouroboros/launcher_bootstrap.py": "Native seed version resync keeps manifest parsing and equal-version payload diagnostics with the existing bootstrap owner; no separate loader or overwrite policy.",
     "ouroboros/loop_acceptance_review.py": "F6 upstream sync: the A-material acceptance family (paid identity, free replay, identical-refusal terminal, dialogue history) folded into the campaign review leaf per the sync principle (upstream leaf acceptance_dialogue.py retired)",
     "ouroboros/loop_delivery.py": "F6 upstream sync: the delivery-protocol upstream deltas (hold-control literals, trailing-object/fence-aware protocol parsers) folded into the campaign delivery leaf (upstream leaf delivery_protocol.py retired)",

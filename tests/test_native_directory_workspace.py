@@ -108,12 +108,15 @@ def test_native_directory_bundle_verifies_members(tmp_path, monkeypatch):
     assert "INTEGRATE_DIRECTORY_OUTPUT_MISMATCH" in _integrate_subagent_patch(parent, task_id="child")
 
 
-def test_native_directory_admission_keeps_git_geometry(tmp_path, monkeypatch):
+@pytest.mark.parametrize("context_kind", ["supervisor", "tool"])
+def test_native_directory_admission_keeps_git_geometry(tmp_path, monkeypatch, context_kind):
     workspace, drive, _, parent, _ = _setup(tmp_path, monkeypatch)
     from supervisor.events_subagent_admission import _validate_external_workspace
-    assert "overlap" in _validate_external_workspace(SimpleNamespace(REPO_DIR=parent.repo_dir, DRIVE_ROOT=drive), str(parent.repo_dir))
+    ctx = (SimpleNamespace(REPO_DIR=parent.repo_dir, DRIVE_ROOT=drive) if context_kind == "supervisor"
+           else ToolContext(repo_dir=parent.repo_dir, drive_root=drive))
+    assert "overlap" in _validate_external_workspace(ctx, str(parent.repo_dir))
+    assert "overlap" in _validate_external_workspace(ctx, str(drive))
     (workspace / ".git").write_text("gitdir: /nonexistent/project-git")
-    ctx = SimpleNamespace(REPO_DIR=parent.repo_dir, DRIVE_ROOT=drive)
     def admission():
         return _resolve_subagent_constraint(
             ctx, tid="bad", requested_constraint={"mode": "acting_subagent", "surface": "external_workspace",
@@ -150,6 +153,8 @@ def test_native_directory_parent_cannot_verify_another_folder(tmp_path, monkeypa
                                                  ("external_workspace", False, ""),
                                                  ("self_worktree", False, "worktree"),
                                                  ("self_worktree", False, "index"),
+                                                 ("self_worktree", False, "unmerged"),
+                                                 ("self_worktree", True, "unmerged"),
                                                  ("self_worktree", True, "stage_failure")])
 def test_native_git_receives_complete_file_outputs(tmp_path, monkeypatch, surface, mixed, drift):
     from ouroboros import workspace_patch_capture as capture
@@ -186,7 +191,23 @@ def test_native_git_receives_complete_file_outputs(tmp_path, monkeypatch, surfac
     ctx = ToolContext(repo_dir=target, drive_root=drive, task_id="parent",
                       workspace_root=source if surface == "external_workspace" else None,
                       workspace_mode="external" if surface == "external_workspace" else "")
-    if drift == "stage_failure":
+    if drift == "unmerged":
+        oid = git(target, "rev-parse", "HEAD:large.bin").decode().strip()
+        conflict = (f"0 {'0' * len(oid)}\tlarge.bin\n"
+                    + "".join(f"100644 {oid} {stage}\tlarge.bin\n" for stage in (1, 2, 3)))
+        subprocess.run(["git", "update-index", "--index-info"], cwd=target,
+                       input=conflict.encode(), check=True, capture_output=True)
+        index_before = git(target, "ls-files", "--stage", "-z")
+        assert git(target, "ls-files", "--unmerged")
+        run = subprocess.run
+
+        def no_apply(args, *a, **kw):
+            if args[:2] == ["git", "apply"] and "--3way" in args:
+                pytest.fail("an unmerged index must be reported before patch apply")
+            return run(args, *a, **kw)
+
+        monkeypatch.setattr(subprocess, "run", no_apply)
+    elif drift == "stage_failure":
         run = subprocess.run
         def fail_stage(args, *a, **kw):
             if args[:2] == ["git", "add"]:
@@ -201,6 +222,11 @@ def test_native_git_receives_complete_file_outputs(tmp_path, monkeypatch, surfac
     output = _integrate_subagent_patch(ctx, task_id="child-git")
     if drift:
         assert "INTEGRATE_CONFLICT" in output
+        if drift == "unmerged":
+            assert "No file or patch apply was attempted" in output
+            assert "3-way apply" not in output and "vcs_restore" not in output
+            assert git(target, "ls-files", "--stage", "-z") == index_before
+            assert (target / "text.txt").read_text() == "a\n"
         if drift == "stage_failure":
             assert (target / "text.txt").read_text() == "b\n"
             verdict = json.loads((task_artifacts_dir(drive, "parent") / "subagent_patch_verdict_child-git.json").read_text())

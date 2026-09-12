@@ -190,7 +190,9 @@ def _repo_write(ctx: ToolContext, path: str = "", content: str = "",
                     fh.write(e["content"])  # append is intentionally NOT atomized
                 written.append(f"{display_root}:{rel_path} (+{len(e['content'])} chars appended)")
                 written_paths.append(rel_path)
-                note = capture_known_workspace_outputs(ctx, binding.base_path, [rel_path], source_tool="write_file")
+                note = capture_known_workspace_outputs(
+                    ctx, binding.base_path, [rel_path], source_tool="write_file", include_preamble=not capture_notes,
+                )
                 if note:
                     capture_notes.append(note)
                 continue
@@ -203,7 +205,9 @@ def _repo_write(ctx: ToolContext, path: str = "", content: str = "",
             _git().write_text(target, e["content"])
             written.append(f"{display_root}:{rel_path} ({len(e['content'])} chars)")
             written_paths.append(rel_path)
-            note = capture_known_workspace_outputs(ctx, binding.base_path, [rel_path], source_tool="write_file")
+            note = capture_known_workspace_outputs(
+                ctx, binding.base_path, [rel_path], source_tool="write_file", include_preamble=not capture_notes,
+            )
             if note:
                 capture_notes.append(note)
             if old_content is not None and old_content != e["content"]:

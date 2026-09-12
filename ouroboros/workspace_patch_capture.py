@@ -154,14 +154,14 @@ def write_workspace_patch_artifacts(
         if reason:
             excluded.append({"path": rel, "reason": reason})
             continue
-        blob_reason = _untracked_blob_exclude_reason(root, rel, file_outputs=file_output_paths)
+        blob_reason = _untracked_blob_exclude_reason(root, rel, file_outputs=file_output_paths, warnings=diagnostics)
         if blob_reason:
             excluded.append({"path": rel, "reason": blob_reason})
             continue
         included_untracked.append(rel)
     captured_inputs: List[str] = []
     for rel in file_input_paths:
-        sensitive_reason = _sensitive_untracked_reason(rel) or pem_private_key_reason(root, rel)
+        sensitive_reason = _sensitive_untracked_reason(rel) or pem_capture_refusal(root, rel, warnings=diagnostics)
         if sensitive_reason:
             sensitive.append({"path": rel, "reason": sensitive_reason})
             continue
@@ -641,7 +641,24 @@ def pem_private_key_reason(root: pathlib.Path, rel: str) -> str:
     return "private key material (PEM private-key header)" if _PEM_PRIVATE_KEY_RE.search(head) else ""
 
 
-def _untracked_blob_exclude_reason(root: pathlib.Path, rel: str, *, file_outputs: Optional[List[str]] = None) -> str:
+def pem_capture_refusal(root: pathlib.Path, rel: str, *, warnings=None) -> str:
+    """Keep the observed PEM finding while the shared effective mode decides its effect."""
+    from ouroboros.config import get_runtime_mode
+    from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+
+    reason = pem_private_key_reason(root, rel)
+    if reason and mode_has_unrestricted_agency(get_runtime_mode()):
+        finding = {"path": rel, "reason": reason, "advisory": True}
+        if warnings is not None:
+            warnings.append(finding)
+        else:
+            import logging
+            logging.getLogger(__name__).warning("PEM capture finding retained as advisory: %s", finding)
+        return ""
+    return reason
+
+
+def _untracked_blob_exclude_reason(root: pathlib.Path, rel: str, *, file_outputs: Optional[List[str]] = None, warnings=None) -> str:
     """Reason to drop an untracked file from the workspace patch when it is a
     build/runtime BINARY, exceeds the per-file size cap, or carries a PEM
     private-key header in its head bytes. Keeps real-usage patches
@@ -653,7 +670,7 @@ def _untracked_blob_exclude_reason(root: pathlib.Path, rel: str, *, file_outputs
         size = (root / rel).lstat().st_size
     except OSError:
         return ""  # unreadable/symlink races: include and let git decide
-    if reason := pem_private_key_reason(root, rel):
+    if reason := pem_capture_refusal(root, rel, warnings=warnings):
         return reason
     if size > _PATCH_MAX_UNTRACKED_FILE_BYTES:
         if file_outputs is not None:
@@ -673,7 +690,7 @@ def _untracked_blob_exclude_reason(root: pathlib.Path, rel: str, *, file_outputs
     return ""
 
 
-def untracked_capture_veto_reason(root: pathlib.Path, rel: str, *, file_outputs: Optional[List[str]] = None) -> str:
+def untracked_capture_veto_reason(root: pathlib.Path, rel: str, *, file_outputs: Optional[List[str]] = None, warnings=None) -> str:
     """Classify an untracked file for Git, file-reference transfer, or exclusion.
 
     The delegated-run baseline snapshot
@@ -694,7 +711,7 @@ def untracked_capture_veto_reason(root: pathlib.Path, rel: str, *, file_outputs:
     reason = _patch_exclude_reason(rel)
     if reason:
         return reason
-    return _untracked_blob_exclude_reason(root, rel, file_outputs=file_outputs)
+    return _untracked_blob_exclude_reason(root, rel, file_outputs=file_outputs, warnings=warnings)
 
 
 def _preflight_head_from_task(task: Dict[str, Any]) -> str:

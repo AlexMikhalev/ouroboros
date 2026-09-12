@@ -21,6 +21,7 @@ from typing import Any, BinaryIO, Dict, Iterable, List, Optional, Sequence, Tupl
 
 from ouroboros.contracts.task_constraint import normalize_task_constraint  # noqa: F401
 from ouroboros.post_task_checkpoint import project_replica_task_result_fields
+from ouroboros.workspace_file_outputs import _directory_direct_artifacts
 from ouroboros.task_results import (
     cancellation_blocks_child_result, load_task_result, validate_task_id, write_task_result,
 )
@@ -731,45 +732,6 @@ def _file_artifact(kind: str, path: pathlib.Path, **facts: Any) -> Dict[str, Any
     """One row shape for an artifact written straight into the task artifact dir."""
     return {"kind": kind, "name": path.name, "path": str(path),
             "size": path.stat().st_size if path.exists() else 0, **facts}
-
-
-def _directory_direct_artifacts(
-    root: pathlib.Path, artifact_dir: pathlib.Path, task: Dict[str, Any], existing: Dict[str, Any],
-) -> Optional[Tuple[List[Dict[str, Any]], Dict[str, Any]]]:
-    """Record direct folder effects without inventing a before-image or scanning the tree."""
-    root = root.resolve(strict=False)
-    constraint = _acting_constraint_from_task(task)
-    surface = str((task.get("task_constraint") or {}).get("surface") or "")
-    if (not root.is_dir() or surface in {"self_worktree", "genesis"}
-            or (constraint and constraint.base_sha) or _preflight_head_from_task(task)
-            or any((p / ".git").exists() or (p / ".git").is_symlink() for p in (root, *root.parents))):
-        return None
-    from ouroboros.artifacts import (
-        collect_task_artifact_records, merge_artifact_records, artifact_record, registered_task_artifact,
-    )
-
-    drive = artifact_dir.parents[2]
-    captured = collect_task_artifact_records(drive, str(task["id"]))
-    records = merge_artifact_records(existing.get("artifacts") or [], [
-        registered_task_artifact(drive, str(task["id"]), item["name"]) or item for item in captured
-    ])
-    outputs = []
-    for item in records:
-        source = str(item.get("source_path") or "")
-        if source and pathlib.Path(source).resolve(strict=False).is_relative_to(root):
-            outputs.append(dict(item))
-    manifest = {
-        "schema_version": 1, "workspace_root": str(root), "status": ARTIFACT_STATUS_READY,
-        "capture_kind": "directory_direct", "apply_state": "already_applied",
-        "before": "unknown", "complete": False, "evidence_extent": "registered_outputs_only",
-        "registered_outputs": outputs, "created_at": utc_now_iso(),
-        "note": "Direct effects remain in the selected folder. Registered outputs retain their captured "
-                "bytes; other shell, GUI or external effects and the full changed-file set are unknown. "
-                "No full rollback is available.",
-    }
-    path = artifact_dir / "workspace_patch.json"
-    atomic_write_json(path, manifest, trailing_newline=True)
-    return [*outputs, artifact_record(path, kind="workspace_patch_manifest")], manifest
 
 
 def finalize_task_artifacts(parent_drive_root: pathlib.Path, task: Dict[str, Any]) -> List[Dict[str, Any]]:

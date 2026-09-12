@@ -192,12 +192,14 @@ def _terminal_payload(run_id: str, detail: Dict[str, Any],
         "primary_output": detail.get("primaryOutput"),
         "failure": summary.get("failure"),
         "last_seq": int(detail.get("lastSeq") or 0),
-        "cost": _reported_cost(summary),
+        "cost": _reported_cost(summary, attempt_execution=detail.get("attemptExecution")),
         # The ACCESS half of the same honesty, on EVERY terminal payload — see
         # `_access_evidence`. Both lanes: `readonly` staying `readonly` is the profile
         # that matters most, while `containment` is asked only of marker-carrying runs.
         "access_evidence": _access_evidence(detail, authority.access),
     }
+    if isinstance(detail.get("attemptExecution"), list):
+        payload["attempt_execution"] = detail["attemptExecution"]
     if authority.delegated:
         payload["containment"] = _containment_evidence(detail)
     facts = payload.get("outcome_facts")
@@ -286,7 +288,7 @@ def _record_containment(ctx: ToolContext, entry: Optional[_RunCustody],
         entry.containment_disclosed = True
 
 
-def _reported_cost(summary: Dict[str, Any]) -> Dict[str, Any]:
+def _reported_cost(summary: Dict[str, Any], *, attempt_execution: Any = None) -> Dict[str, Any]:
     """What this run cost, as the AGENT will read it.
 
     This is the payload the nanny relays to its parent, so it must tell the same story
@@ -294,7 +296,7 @@ def _reported_cost(summary: Dict[str, Any]) -> Dict[str, Any]:
     fix was written to eliminate — so a run that really charged money settled honestly in
     the ledger and then told the reasoning path the work was free.
     """
-    spend, estimated = _delegate().custody.disclosed_spend(summary)
+    spend, estimated = _delegate().custody.disclosed_spend(summary, attempt_execution=attempt_execution)
     if spend is None:
         return {
             "cost_usd": None,

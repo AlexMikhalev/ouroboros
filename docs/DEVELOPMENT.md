@@ -113,7 +113,10 @@ rules have no automated surface — review-only.
   attachment ingest otherwise checks exact credential leaves and credential/control
   directory components; enumerated physical owner stores are mutation-fence
   authority, while the git lanes also check content evidence (the bounded PEM
-  head read, `workspace_patch_capture.pem_private_key_reason`).
+  head read, `workspace_patch_capture.pem_private_key_reason`). The capture,
+  snapshot and cooperative checkpoint consumers use `pem_capture_refusal`:
+  effective Cyber preserves the original finding as advisory and includes the
+  requested bytes; ordinary modes retain the existing exclusion.
   Restricted file readers mask complete private-key blocks before
   selecting a window, preserving character positions and line breaks. The
   owner credential fence covers the enumerated locations in

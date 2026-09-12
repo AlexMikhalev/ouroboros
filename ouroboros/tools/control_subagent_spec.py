@@ -64,7 +64,7 @@ def schedule_subagent_properties() -> Dict[str, Any]:
         },
         "scope_paths": {
             "type": "array", "items": {"type": "string"},
-            "description": "Relative files/directories: copied inputs for copy, or capture footprint for direct (including outputs not created yet). ['.'] explicitly selects the whole folder. Copy requires nonempty scope. This selects material to preserve, not a restriction on direct work.",
+            "description": "For an agent_session in an ordinary folder: relative copied inputs for copy, or capture footprint for direct (including future outputs). ['.'] explicitly selects the whole folder. Copy requires nonempty scope. Native children declare process outputs on their file/process tools instead.",
         },
         "protected_paths_grant": {"type": "boolean", "default": False, "description": "Allow the child to modify protected paths in its self_worktree. Honored only in pro runtime mode; you still re-check at integration."},
         "external_tool_grants": {"type": "array", "items": {"type": "string"}, "description": "Optional extension/MCP tool names to grant this mutative child. Denied by default."},
@@ -189,7 +189,7 @@ def _validated_schedule_fields(params: Dict[str, Any], *, ctx: Any = None) -> tu
         if not isinstance(paths, list) or any(
             not isinstance(path, str) or not path.strip() or "\x00" in path
             or PurePosixPath(path).is_absolute() or PureWindowsPath(path).drive
-            or PureWindowsPath(path).root for path in paths
+            or PureWindowsPath(path).root or ".." in PurePosixPath(path).parts for path in paths
         ):
             return {}, "⚠️ TOOL_ARG_ERROR (schedule_subagent): scope_paths must be an array of nonempty relative paths."
         directory_options["scope_paths"] = list(paths)

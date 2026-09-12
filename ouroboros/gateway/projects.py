@@ -397,6 +397,7 @@ async def api_projects_create(request: Request) -> JSONResponse:
 
         working_dir, provenance, clone_url = "", "none", ""
         init_git_skipped: list = []
+        init_git_warnings: list = []
         if attach_path:
             from ouroboros.project_sources import (
                 attach_snapshot_init,
@@ -412,7 +413,7 @@ async def api_projects_create(request: Request) -> JSONResponse:
             if bool(body.get("init_git")):
                 # The explicit choice may create a standalone repository inside
                 # an existing one. Validate that resulting worktree geometry.
-                init_error, init_git_skipped = await asyncio.to_thread(attach_snapshot_init, resolved)
+                init_error, init_git_skipped = await asyncio.to_thread(attach_snapshot_init, resolved, warnings=init_git_warnings)
                 if init_error:
                     return JSONResponse({"error": f"init_git failed: {init_error}"}, status_code=400)
             try:
@@ -459,6 +460,16 @@ async def api_projects_create(request: Request) -> JSONResponse:
             trusted_at=utc_now_iso() if provenance in ("attached", "cloned") else str(entry.get("trusted_at") or ""),
         )
         payload: dict = {"project": stamped or entry}
+        if init_git_warnings:
+            from ouroboros.utils import append_jsonl
+            payload["init_git_warnings"] = init_git_warnings
+            try:
+                append_jsonl(drive_root / "logs" / "events.jsonl", {
+                    "ts": utc_now_iso(), "type": "project_capture_advisory", "project_id": entry["id"],
+                    "findings": init_git_warnings,
+                })
+            except Exception:
+                log.warning("Project capture advisory could not be logged", exc_info=True)
         if init_git_skipped:
             # Disclosed omission (P1): credential-shaped files excluded from the
             # attach snapshot; they stay untracked via .git/info/exclude.

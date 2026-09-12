@@ -271,7 +271,7 @@ def _compose_subagent_text(
             "runtime / skills lifecycle, enable tools, or write cognitive memory. Your "
             "Git changes are recorded as a workspace.patch; ordinary-folder outputs use their "
             "registered file artifacts. Isolated self_worktree changes are applied; shared "
-            "external_workspace results are checked without reapplying. "
+            "external_workspace files are verified without reapplying. "
             "The parent is the sole committer of the live body. Nested delegation is "
             "allowed within configured depth/cap limits; depth bounds how DEEP delegation "
             "nests and never how strong a descendant is — ask for the lane you need.",
@@ -323,11 +323,12 @@ def _validate_external_workspace(ctx, path: str) -> str:
     """Use the same ordinary-folder/Git geometry admission as project tasks."""
     from ouroboros.workspace_admission import WorkspaceRootError, validate_workspace_root
     from ouroboros.config import DATA_DIR
+    from ouroboros.tools.tool_resolution import system_repo_dir_for
 
     try:
         root = validate_workspace_root(
-            path, system_repo_dir=ctx.REPO_DIR,
-            drive_root=getattr(ctx, "DRIVE_ROOT", None) or DATA_DIR,
+            path, system_repo_dir=getattr(ctx, "REPO_DIR", None) or system_repo_dir_for(ctx),
+            drive_root=getattr(ctx, "DRIVE_ROOT", None) or getattr(ctx, "drive_root", None) or DATA_DIR,
         )
         if root is None:
             return "Subagent rejected: external_workspace path is required."

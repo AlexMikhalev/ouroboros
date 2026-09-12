@@ -294,7 +294,50 @@ def prepare_file_outputs(rows, target, *, baseline_sha="", file_baseline=None):
         yield PreparedFileOutputs(rows, target, temporary, baseline_sha, file_baseline)
 
 
-def capture_known_workspace_outputs(ctx, workspace_root, paths, *, source_tool):
+def _directory_direct_artifacts(
+    root: Path, artifact_dir: Path, task: dict, existing: dict,
+) -> tuple[list[dict], dict] | None:
+    """Record direct folder effects without inventing a before-image or scanning the tree."""
+    from ouroboros.headless_status import ARTIFACT_STATUS_READY
+    from ouroboros.workspace_patch_capture import _acting_constraint_from_task, _preflight_head_from_task
+    from ouroboros.utils import atomic_write_json, utc_now_iso
+
+    root = root.resolve(strict=False)
+    constraint = _acting_constraint_from_task(task)
+    surface = str((task.get("task_constraint") or {}).get("surface") or "")
+    if (not root.is_dir() or surface in {"self_worktree", "genesis"}
+            or (constraint and constraint.base_sha) or _preflight_head_from_task(task)
+            or any((p / ".git").exists() or (p / ".git").is_symlink() for p in (root, *root.parents))):
+        return None
+    from ouroboros.artifacts import (
+        collect_task_artifact_records, merge_artifact_records, artifact_record, registered_task_artifact,
+    )
+
+    drive = artifact_dir.parents[2]
+    captured = collect_task_artifact_records(drive, str(task["id"]))
+    records = merge_artifact_records(existing.get("artifacts") or [], [
+        registered_task_artifact(drive, str(task["id"]), item["name"]) or item for item in captured
+    ])
+    outputs = []
+    for item in records:
+        source = str(item.get("source_path") or "")
+        if source and Path(source).resolve(strict=False).is_relative_to(root):
+            outputs.append(dict(item))
+    manifest = {
+        "schema_version": 1, "workspace_root": str(root), "status": ARTIFACT_STATUS_READY,
+        "capture_kind": "directory_direct", "apply_state": "already_applied",
+        "before": "unknown", "complete": False, "evidence_extent": "registered_outputs_only",
+        "registered_outputs": outputs, "created_at": utc_now_iso(),
+        "note": "Direct effects remain in the selected folder. Registered outputs retain their captured "
+                "bytes; other shell, GUI or external effects and the full changed-file set are unknown. "
+                "No full rollback is available.",
+    }
+    path = artifact_dir / "workspace_patch.json"
+    atomic_write_json(path, manifest, trailing_newline=True)
+    return [*outputs, artifact_record(path, kind="workspace_patch_manifest")], manifest
+
+
+def capture_known_workspace_outputs(ctx, workspace_root, paths, *, source_tool, include_preamble=True):
     """Retain known native file postimages in an ordinary folder, without inventorying it.
 
     Called only after successful writes. Capture cannot undo those effects, so a
@@ -322,15 +365,15 @@ def capture_known_workspace_outputs(ctx, workspace_root, paths, *, source_tool):
             record = copy_file_to_task_artifacts(ctx, source, kind="user_file")
             if not record:
                 raise OSError("written file has no captured artifact")
-            captured.append(f"{relative} (artifact_store:{record['name']}, sha256={record['sha256']})")
+            captured.append(f"{relative} (artifact_store:{record['name']}, {record['size']} bytes, sha256={record['sha256']})")
         except Exception as exc:
             unavailable.append(f"{relative}: {type(exc).__name__}: {exc}")
-    note = f"{source_tool}: changes are already on disk in the selected folder; no separate patch apply is needed."
+    notes = [f"{source_tool}: changes are already on disk in the selected folder; no separate patch apply is needed."] if include_preamble else []
     if captured:
-        note += "\nRetained file outputs: " + "; ".join(captured)
+        notes.append("Retained file outputs: " + "; ".join(captured))
     if removed:
-        note += "\nChanged paths now absent have no file postimage to retain: " + ", ".join(removed)
+        notes.append("Changed paths now absent have no file postimage to retain: " + ", ".join(removed))
     if unavailable:
-        note += ("\n⚠️ OUTPUT_CAPTURE_FAILED: " + "; ".join(unavailable)
-                 + ". The writes remain applied; do not repeat them to retry artifact capture.")
-    return note
+        notes.append("⚠️ OUTPUT_CAPTURE_FAILED: " + "; ".join(unavailable)
+                     + ". The writes remain applied; do not repeat them to retry artifact capture.")
+    return "\n".join(notes)

@@ -174,12 +174,13 @@ def integrate_directory_result(ctx, entry, decision, reason, gateway, *, acknowl
                                                   apply_idempotency_key=key):
             return "⚠️ INTEGRATE_INTENT_UNWRITTEN: the apply intent could not be saved; nothing was submitted."
         receipt = gateway.apply_run(entry.run_id, request, idempotency_key=key)
-        if receipt.get("deliveryStatus") not in {"applied", "already_applied"} or receipt.get("applied") is not True:
+        if receipt.get("applied") is not True or receipt.get("refused") is True:
             if receipt.get("refused") is True:
                 custody.record_patch_apply_resolved(drive, entry, reason="engine_refused")
             return "⚠️ INTEGRATE_DELEGATED_APPLY_UNCONFIRMED: " + json.dumps(receipt, ensure_ascii=False)
         disposition = "applied"
-        state = (gateway.get_run(entry.run_id).get("summary") or {}).get("applyState")
+        summary = gateway.get_run(entry.run_id).get("summary") or {}
+        state = (summary.get("result") or {}).get("applyState")
         if state not in {"applied", "applied_review_blocked"}:
             custody.record_patch_apply_resolved(drive, entry, reason="engine_partial_delivery", engine_receipt=receipt)
             return json.dumps({"status": "partially_applied", "run_id": entry.run_id,

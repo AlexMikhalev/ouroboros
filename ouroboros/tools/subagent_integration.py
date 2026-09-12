@@ -854,6 +854,7 @@ def _integrate_subagent_patch(
     except Exception as exc:
         return f"⚠️ INTEGRATE_LOCK_TIMEOUT: could not acquire the repo git lock: {type(exc).__name__}: {exc}."
     partial_applied = False
+    apply_attempted = False
     try:
         # Match --index semantics for file results too: never replace a parent's
         # staged preimage merely because its working copy matches the child base.
@@ -861,12 +862,14 @@ def _integrate_subagent_patch(
             ["git", "write-tree"], cwd=str(target), capture_output=True, text=True, check=True,
         ).stdout.strip() if file_rows else ""
         with prepare_file_outputs(file_rows, target, baseline_sha=index_tree) as prepared:
+            apply_attempted = has_patch
             proc = (subprocess.run(
                 ["git", "apply", "--3way", "--index", str(patch_path)],
                 cwd=str(target), capture_output=True, text=True,
             ) if has_patch else subprocess.CompletedProcess([], 0, "", ""))
             if proc.returncode == 0 and file_rows:
                 try:
+                    apply_attempted = True
                     prepared.apply()
                     if not prepared.verify_applied():
                         raise OSError("file outputs changed before staging")
@@ -900,11 +903,12 @@ def _integrate_subagent_patch(
             manifest=manifest, applied=partial_applied, conflicts=conflicts or [stderr[:500]],
             protected=[p.path for p in protected], target=str(target),
         )
-        return (
-            f"⚠️ INTEGRATE_CONFLICT: 3-way apply of {child_task_id} into {target} did not apply cleanly. "
-            f"git said: {stderr[:600]}\n"
-            "Inspect with vcs_diff and resolve, or run vcs_restore to abort, then retry or pick another child."
-        )
+        detail = ("Integration did not finish cleanly." if apply_attempted else
+                  "Result preparation failed. No file or patch apply was attempted.")
+        next_step = ("Inspect with vcs_diff and resolve, or run vcs_restore to abort, then retry or pick another child."
+                     if apply_attempted else "Inspect the existing target/index state with vcs_diff and resolve it, then retry.")
+        return (f"⚠️ INTEGRATE_CONFLICT: {child_task_id} into {target}: {detail} "
+                f"Details: {stderr[:600]}\n{next_step}")
 
     try:
         invalidate_advisory_after_mutation(
@@ -1095,7 +1099,7 @@ def get_tools() -> List[ToolEntry]:
                     "type": "object",
                     "properties": {
                         "run_id": {"type": "string", "description": "The delegated run whose captured patch to integrate (from delegate_start)."},
-                        "decision": {"type": "string", "enum": ["apply", "reject"], "default": "apply", "description": "apply = integrate the captured result (Git: stage; payload: live CAS; directory copy: engine file delivery). reject = explicit discard of unapplied results, never an undo of direct effects."},
+                        "decision": {"type": "string", "enum": ["apply", "reject"], "default": "apply", "description": "apply = integrate the captured result: Git changes are STAGED into your active root; skill changes are applied LIVE into the non-Git payload with content-hash CAS; directory copies use engine file delivery. reject = explicit discard of unapplied results, never an undo of direct effects."},
                         "paths": {"type": "array", "items": {"type": "string"}, "description": "For an engine directory copy, optionally select captured file paths to apply. Remaining changes stay retained until applied or explicitly rejected. Omit to apply the complete result."},
                         "reason": {"type": "string", "description": "Optional rationale recorded in the verdict and the durable disposition row."},
                         "acknowledge_ambiguous": {"type": "boolean", "default": False, "description": "Set true ONLY after inspecting an INTEGRATE_DELEGATED_APPLY_AMBIGUOUS state (a crashed apply left a durable unresolved intent): resolves that stale intent and re-runs the normal disposition guards, which re-verify the tree. A no-op when no ambiguity is pending."},

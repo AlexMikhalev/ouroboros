@@ -33,6 +33,16 @@ def runtime_mode_at_least(runtime_mode: str, minimum: str) -> bool:
     return mode_rank >= 0 and minimum_rank >= 0 and mode_rank >= minimum_rank
 
 
+def mode_has_unrestricted_agency(runtime_mode: str) -> bool:
+    """Whether internal permission and review decisions are advisory only.
+
+    Cyber Pro keeps independent findings and actual operation failures intact;
+    those facts do not grant an internal mechanism authority to veto an action.
+    Consumers use the existing effective runtime-mode source, not saved future
+    settings or a second task-local permission flag.
+    """
+    return runtime_mode_at_least(runtime_mode, "cyber_pro")
+
 def protected_bible_history_delete_reason(
     raw_cmd: object, *,
     protect_bible: bool = True, identity_path: pathlib.Path | None = None,

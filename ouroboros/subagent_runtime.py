@@ -635,6 +635,7 @@ def prepare_delegate_start_actor(
     return {
         "route": route,
         "selected_subagent_id": selected_id,
+        "processing_preference": str(snapshot.get("processing_preference") or ""),
         "config_fingerprint": config_fingerprint,
         "work_order_fingerprint": work_order_fingerprint,
         "authority_fingerprint": authority_fingerprint,

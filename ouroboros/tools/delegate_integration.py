@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import pathlib
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any, Dict, NamedTuple, Optional, Tuple
 
 from ouroboros import delegate_custody as custody
@@ -237,6 +238,7 @@ class _RetryBinding(NamedTuple):
     baseline_sha: str
     authority_source: str
     resource_ref: Dict[str, Any]
+    processing: Dict[str, Any]
 
 
 def _resolve_retry_invocation(ctx: ToolContext, drive: pathlib.Path, retry_token: str,
@@ -345,6 +347,7 @@ def _resolve_retry_invocation(ctx: ToolContext, drive: pathlib.Path, retry_token
         authority_source=str(record.get("authority_source") or ""),
         resource_ref=(record.get("resource_ref")
                       if isinstance(record.get("resource_ref"), dict) else {}),
+        processing=deepcopy(record.get("processing") if isinstance(record.get("processing"), dict) else {}),
     ), ""
 
 
@@ -393,10 +396,13 @@ def _record_baseline_manifest(drive: pathlib.Path, task_id: str, invocation_id: 
             "baseline_tree": handle.baseline_tree,
             "manifest_digest": handle.manifest_digest,
             "entry_count": handle.entry_count,
+            "file_input_count": len(getattr(handle, "file_baseline", {})),
+            "file_input_bytes": sum(item.get("size", 0) for item in getattr(handle, "file_baseline", {}).values()),
             "target_root": handle.target_root,
             "target_head": handle.target_head,
             "execution_root": handle.path,
             "excluded_untracked": list(handle.excluded_untracked),
+            "capture_warnings": list(getattr(handle, "capture_warnings", ())),
             **extra,
         }, trailing_newline=True)
     except Exception:

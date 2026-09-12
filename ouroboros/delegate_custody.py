@@ -743,6 +743,7 @@ def invocation_record(drive_root: Any, invocation_id: str) -> Optional[Dict[str,
                 "work_order_fingerprint": str(row.get("work_order_fingerprint") or ""),
                 "work_order_coverage": str(row.get("work_order_coverage") or ""),
                 "authority_fingerprint": str(row.get("authority_fingerprint") or ""),
+                "processing": row.get("processing") if isinstance(row.get("processing"), dict) else {},
                 "work_order_source_request": (
                     row.get("work_order_source_request")
                     if isinstance(row.get("work_order_source_request"), dict) else {}
@@ -928,7 +929,7 @@ def settle_run(drive_root: Any, gateway: Any, custody: RunCustody, detail: Dict[
     # is only free when the amount is really zero AND really settled: expired
     # sessions, bill-by-construction routes and auth fallbacks all charge, and
     # writing 0.0/cost_final=True over them hides money from every budget fence.
-    spend, estimated = disclosed_spend(summary)
+    spend, estimated = disclosed_spend(summary, attempt_execution=detail.get("attemptExecution"))
     # Model and credential profile belong to one final attempt. The run-level
     # authRoute can borrow an earlier account; missing final facts stay unknown.
     applied_profile = observed.get("profile_id", "")

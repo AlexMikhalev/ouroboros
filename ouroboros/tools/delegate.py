@@ -292,6 +292,24 @@ def _start_request(ctx: ToolContext, route: "DelegationRoute", authority: "Deleg
     return request
 
 
+def _processing_start_request(request, actor, gateway, route):
+    """Carry only captured actor intent on a route advertising the wire field."""
+    preference = str(actor.get("processing_preference") or "")
+    if not preference:
+        return request, {}
+    try:
+        catalog = gateway.agent_capabilities()
+        row = next((item for item in catalog.get("harnesses", [])
+                    if isinstance(item, dict) and item.get("id") == route.route_id), {})
+    except Exception:
+        row = {}
+    if preference in (row.get("processingPreferences") or []):
+        request["processingPreference"] = preference
+    return request, {"requested": preference, "submitted": request.get("processingPreference"),
+                     "observed": "unknown", "source": "host_request",
+                     "reason": "submitted" if "processingPreference" in request else "processing_not_submitted"}
+
+
 def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = None,
                     retry_of: Optional[str] = None, root: Optional[str] = None,
                     bucket: Optional[str] = None, skill_name: Optional[str] = None,
@@ -323,11 +341,8 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
 
     drive = custody.custody_root(ctx)
     owned_project_id, project_persistent = "", False
-    invocation_id = ""
-    snapshot_id = ""
-    baseline_sha = ""
-    target_root = ""
-    authority_source = ""
+    invocation_id = snapshot_id = baseline_sha = target_root = authority_source = ""
+    processing_info: Dict[str, Any] = {}
     resource_ref: Dict[str, Any] = {}
     directory_options: Dict[str, Any] = {}
     retry_token = str(retry_of or "").strip()
@@ -356,7 +371,7 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
             return refusal
         (request_body, route, authority, root, key, project_id, owned_project_id,
          project_persistent, seconds, snapshot_id, target_root, baseline_sha,
-         authority_source, resource_ref) = binding
+         authority_source, resource_ref, processing_info) = binding
         invocation_id = retry_token
         if directory_strategy is not None or scope_paths is not None:
             return _fail("delegate_start", "retry_selector_conflict",
@@ -452,13 +467,14 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
                 project_persistent = True
             # Assignment plus instructions identifies pending work; the invocation
             # remains the wire key, and retry replays its original complete body.
-            key = custody.idempotency_key(getattr(ctx, "task_id", ""), route.route_id,
-                                          access, authority.mode, authority.isolation,
-                                          root, text, instructions)
             seconds = _bounded_max_seconds(ctx, max_seconds)
             request_body = _start_request(ctx, route, authority, scope_root, text,
                                           seconds, instructions, execution_root,
                                           **({"directory_options": directory_options} if directory_options else {}))
+            request_body, processing_info = _processing_start_request(request_body, actor, gateway, route)
+            key = custody.idempotency_key(getattr(ctx, "task_id", ""), route.route_id,
+                                          access, authority.mode, authority.isolation,
+                                          root, text, request_body["instructions"])
         lineage = getattr(ctx, "task_metadata", {}) or {}
         lineage = lineage if isinstance(lineage, dict) else {}
         # Fresh payload run: busy check + durable write = ONE atomic claim (fix 5).
@@ -483,6 +499,7 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
             work_order_coverage=work_order_coverage,
             authority_fingerprint=authority_fingerprint,
             work_order_source_request=work_order_source_request,
+            processing=processing_info,
         )
         if claim_refusal:
             reason = str(claim_refusal.get("reason") or "replacement_custody_unknown")
@@ -591,13 +608,14 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
                             snapshot_id=snapshot_id, target_root=target_root,
                             baseline_sha=baseline_sha,
                             resource_ref=resource_ref,
+                            processing=processing_info,
                             engine_version=str(getattr(gateway, "engine_version", "") or ""))
 
 
 def _started_payload(handle: Dict[str, Any], run_id: str, route: Any, access: str,
                      authority: "DelegatedRunShape", root: str, *, durable: bool,
                      recovering: bool, invocation_id: str, snapshot_id: str, target_root: str,
-                     baseline_sha: str, engine_version: str = "", resource_ref=None) -> str:
+                     baseline_sha: str, engine_version: str = "", resource_ref=None, processing=None) -> str:
     """The one author of delegate_start's started result (note + payload).
 
     The AUTHORITY guidance and the CUSTODY warning are independent facts about the same
@@ -649,12 +667,15 @@ def _started_payload(handle: Dict[str, Any], run_id: str, route: Any, access: st
     }
     if not durable:
         payload["pending_invocation_id"] = str(invocation_id or "")
+    if processing:
+        payload["processing"] = processing
     if snapshot_id:
         # The C1 binding, stated where the nanny can read it: the run edits the
         # EXECUTION snapshot; the authority target receives nothing until apply.
         payload["execution_root"] = root
         payload["authority_target_root"] = target_root
         payload["baseline_id"] = baseline_sha
+        payload["baseline_manifest_read"] = {"root": "artifact_store", "path": f"delegated_runs/{snapshot_id}/baseline_manifest.json"}
     if isinstance(resource_ref, dict) and resource_ref.get("workspace_kind") == "directory":
         direct = resource_ref.get("strategy") == "direct"
         payload.update(authority_target_root=target_root,

@@ -444,6 +444,7 @@ class ExecutionSnapshotHandle:
     standalone: bool = False
     payload_hash: str = ""
     file_baseline: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    capture_warnings: tuple = ()
 
 
 def _git_env_index(index_path: Path) -> Dict[str, str]:
@@ -538,9 +539,10 @@ def provision_execution_snapshot(
             excluded: List[Dict[str, str]] = []
             eligible: List[str] = []
             file_inputs: List[str] = []
+            capture_warnings: List[Dict[str, Any]] = []
             for rel in (p for p in untracked_raw.split("\0") if p):
                 reference: List[str] = []
-                reason = untracked_capture_veto_reason(target, rel, file_outputs=reference)
+                reason = untracked_capture_veto_reason(target, rel, file_outputs=reference, warnings=capture_warnings)
                 if reference:
                     file_inputs.append(rel)
                 elif reason:
@@ -607,6 +609,7 @@ def provision_execution_snapshot(
             entry_count=entry_count,
             excluded_untracked=tuple(excluded),
             file_baseline=file_baseline,
+            capture_warnings=tuple(capture_warnings),
         )
         try:
             entries = [
