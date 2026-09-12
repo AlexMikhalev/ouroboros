@@ -27,7 +27,7 @@ import logging
 import math
 import pathlib
 import threading
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Dict, Iterator
 
 log = logging.getLogger(__name__)
 _BOUND_API_PAID_STAMP: contextvars.ContextVar[Any] = contextvars.ContextVar(
@@ -417,3 +417,38 @@ def review_reconciliation_identity(request: Any, slots: list, *, root_task_id: s
         **supplied,
         "root_task_id": str(root_task_id), "task_attempt": getattr(request, "task_attempt", None),
     }
+
+
+def retrieving_acceptance_packet(evidence: Dict[str, Any]) -> Dict[str, Any]:
+    """The packet a NATIVE row receives (R4/R15): the same host-attested exhibits
+    WITHOUT the freely degradable tail the api ladder spends first — the
+    tool-trajectory rows and artifact previews — because that row reads those
+    sources itself at the pointers. Every section key survives, so an
+    `evidence_ref` naming it still resolves against the FULL dict (the ref
+    authority never changes), and the omission is manifested like every other."""
+    packet = dict(evidence)
+    manifest_present = "omissions_manifest" in packet
+    manifest = packet.get("omissions_manifest")
+    # A sequence is a manifest; anything else present (None, a dict, a string) is
+    # malformed and is normalized to an empty list — never carried as-is, never its keys.
+    omissions = list(manifest) if isinstance(manifest, (list, tuple)) else []
+    trajectory = packet.get("tool_trajectory")
+    if isinstance(trajectory, list) and trajectory:
+        packet["tool_trajectory"] = [{
+            "retrieve": "tool-trajectory rows withheld from this delivery; read the trajectory log at the pointer",
+            "calls": len(trajectory),
+        }]
+        omissions.append({"section": "tool_trajectory", "omitted": len(trajectory), "reason": "retrieving_delivery"})
+    artifacts = packet.get("artifacts")
+    if isinstance(artifacts, list):
+        rows = [
+            {k: v for k, v in row.items() if k != "preview"} if isinstance(row, dict) and row.get("preview") else row
+            for row in artifacts
+        ]
+        stripped = sum(1 for before, after in zip(artifacts, rows) if before is not after)
+        if stripped:
+            packet["artifacts"] = rows
+            omissions.append({"section": "artifact_previews", "omitted": stripped, "reason": "retrieving_delivery"})
+    if omissions or (manifest_present and not isinstance(manifest, list)):
+        packet["omissions_manifest"] = omissions  # normalized whenever present and not a list; an absent key stays absent
+    return packet

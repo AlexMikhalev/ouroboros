@@ -37,7 +37,8 @@ def full_loop(tmp_path, monkeypatch):
     monkeypatch.setattr("ouroboros.tools.review_helpers.review_wave_budget_gate", lambda *_a, **_k: None)
     monkeypatch.setattr("ouroboros.review_evidence.acceptance_packet_budget_chars", lambda *_: 2_000_000)
     slot = ReviewSlot(slot_id="acceptance-one", model="fixture/reviewer", effort="high", timeout_sec=30)
-    monkeypatch.setattr(review_substrate, "triad_delivery_slots", lambda **_kw: [slot])
+    slots = [slot]
+    monkeypatch.setattr(review_substrate, "triad_delivery_slots", lambda **_kw: slots)
     registry = ToolRegistry(repo_dir=tmp_path / "repo", drive_root=tmp_path / "data")
     registry._ctx.repo_dir.mkdir()
     ctx = registry._ctx
@@ -57,7 +58,7 @@ def full_loop(tmp_path, monkeypatch):
                               model_inputs=[], review_requests=[], review_snapshots=[], review_sends=[],
                               entered=threading.Event(), release=threading.Event(), settled=threading.Event(),
                               waits=[], progress=[], model_step=0, condition=threading.Condition(),
-                              settled_count=0)
+                              settled_count=0, reviewer_verdict="PASS", slots=slots)
     original_settle = review_custody._settle_review_attempt
     def settle(*a, **kw):
         try:
@@ -97,8 +98,9 @@ def full_loop(tmp_path, monkeypatch):
             vocabulary = acceptance_evidence_ref_vocabulary(request.evidence)
             reference = next(key for key, basis in vocabulary.items() if basis in {"tool_record", "packet_section"})
             response_text = json.dumps({
-                "verdict": "PASS", "summary": "Complete answer", "findings": [],
-                "outcome_tier": "solved", "completion_coach": "Deliver the complete answer.",
+                "verdict": fixture.reviewer_verdict, "summary": "Independent review", "findings": [],
+                "outcome_tier": "solved" if fixture.reviewer_verdict == "PASS" else "best_effort",
+                "completion_coach": "Deliver the complete answer." if fixture.reviewer_verdict == "PASS" else "Add independent verification.",
                 "criteria_used": [{"criterion": "full report", "status": "supported",
                                    "evidence_refs": [reference]}],
             })
@@ -282,6 +284,7 @@ def test_cold_loop_resume_collects_saved_roster_and_request_once(full_loop, monk
     from ouroboros.artifacts import read_actor_source_bytes
     from ouroboros.owner_wait import set_owner_wait
     f = full_loop
+    f.slots.append(ReviewSlot("acceptance-two", "fixture/second-reviewer", effort="high", timeout_sec=30))
     class PlannedPause(BaseException):
         pass
     def pause(ctx, checkpoint):
@@ -306,7 +309,8 @@ def test_cold_loop_resume_collects_saved_roster_and_request_once(full_loop, monk
     assert saved_run["slot_roster"][0]["model"] == "fixture/reviewer"
     assert checkpoint["reason"] == "review" and not checkpoint["quiz_id"]
     f.release.set()
-    assert f.settled.wait(10)
+    with f.condition:
+        assert f.condition.wait_for(lambda: f.settled_count == 2, timeout=10)
     old = f.ctx
     new_tools = ToolRegistry(repo_dir=old.repo_dir, drive_root=old.drive_root)
     new = new_tools._ctx
@@ -333,11 +337,12 @@ def test_cold_loop_resume_collects_saved_roster_and_request_once(full_loop, monk
         return keep(f), 0.0
     monkeypatch.setattr(loop, "call_llm_with_retry", resumed_main)
     result, _usage, trace = f.run()
-    assert result == ANSWER and len(f.review_sends) == 1
+    assert result == ANSWER and len(f.review_sends) == 2
     run = trace["review_runs"][-1]
     assert run["request"] == saved_run["request"]
     assert run["slot_roster"] == saved_run["slot_roster"]
-    assert run["actors"][0]["operation_id"] == saved_run["actors"][0]["operation_id"]
+    assert len(run["slot_roster"]) == 2
+    assert [r["operation_id"] for r in run["actors"]] == [r["operation_id"] for r in saved_run["actors"]]
     assert trace["acceptance_decision"]["status"] == "accepted"
 
 
@@ -356,3 +361,114 @@ def test_automatic_completion_uses_the_same_retained_candidate_and_free_collect(
     assert result == ANSWER and len(f.review_sends) == 1
     assert trace["acceptance_decision"]["status"] == "accepted"
     assert f.waits and f.waits[0]["reason"] == "review"
+
+
+
+@pytest.mark.parametrize("failure", ["pending", "fail", "unavailable", "evidence_unavailable"])
+def test_cyber_final_response_never_waits_for_or_obeys_critic_veto(full_loop, monkeypatch, failure):
+    f = full_loop
+    monkeypatch.setattr("ouroboros.config.get_runtime_mode", lambda: "cyber_pro")
+    if failure == "fail":
+        f.reviewer_verdict = "FAIL"
+        f.release.set()
+    if failure == "unavailable":
+        monkeypatch.setattr(review_substrate, "triad_delivery_slots", lambda **_kw: [])
+    if failure == "evidence_unavailable":
+        def evidence_unavailable(*_a, **_kw):
+            raise OSError("fixture evidence storage unavailable")
+        monkeypatch.setattr("ouroboros.loop_acceptance_review._build_host_acceptance_evidence", evidence_unavailable)
+    def forbidden_wait(*_a, **_kw):
+        pytest.fail("Cyber final-response decision was parked by a review")
+    f.ctx.owner_wait_callback = forbidden_wait
+    def main(_llm, messages, *_a, **_kw):
+        f.model_inputs.append(copy.deepcopy(messages))
+        f.model_step += 1
+        if failure == "fail" and f.model_step == 1:
+            return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": ANSWER}, "explicit-critic")]}, 0.0
+        if failure == "fail":
+            with f.condition:
+                assert f.condition.wait_for(lambda: f.settled_count == 1, timeout=10)
+            assert f.model_step == 2
+            return keep(f), 0.0
+        assert f.model_step == 1
+        return {"content": ANSWER}, 0.0
+    monkeypatch.setattr(loop, "call_llm_with_retry", main)
+    result, _usage, trace = f.run()
+    assert result == ANSWER
+    assert trace["acceptance_decision"]["status"] == "finalized_unaccepted"
+    assert trace["acceptance_decision"]["reason"] == "author_finish"
+    assert trace["acceptance_decision"]["author_disposition"]["source"] == "author_final_response"
+    assert not f.waits
+    if failure == "pending":
+        assert not f.release.is_set()
+        assert trace["review_runs"][-1]["actors"][0]["operation_state"] in {"pending_dispatch", "in_flight"}
+        assert trace["acceptance_decision"]["review_pending"]
+    elif failure == "fail":
+        assert trace["review_runs"][-1]["aggregate_signal"] == "FAIL"
+        assert trace["review_runs"][-1]["actors"][0]["parsed"]["verdict"] == "FAIL"
+        assert len(f.review_sends) == 1
+    else:
+        assert trace["review_runs"][-1]["aggregate_signal"] == "DEGRADED"
+        assert not f.review_sends
+        if failure == "evidence_unavailable":
+            assert "evidence storage unavailable" in str(trace["review_runs"][-1]["degraded_reasons"])
+            assert "binding_hash" not in trace["review_runs"][-1]
+            assert trace["acceptance_decision"]["author_disposition"]["subject_hash"] == trace["delivery_candidate"]["subject_sha256"]
+
+
+@pytest.mark.parametrize("failure", ["begin", "end", "inspect"])
+def test_cyber_admission_unavailable_is_disclosed_without_review_veto(full_loop, monkeypatch, failure):
+    f = full_loop
+    monkeypatch.setattr("ouroboros.config.get_runtime_mode", lambda: "cyber_pro")
+    f.ctx.begin_acceptance_fence = lambda **_kw: None if failure == "begin" else {"token": "unreleased-fence", "owner_message_generation": 0}
+    f.ctx.end_acceptance_fence = lambda **_kw: {"ok": False, "error": "fixture release unavailable"}
+    if failure == "inspect":
+        def inspect_unavailable(**_kw):
+            raise OSError("fixture queue inspection unavailable")
+        f.ctx.inspect_acceptance_fence = inspect_unavailable
+    monkeypatch.setattr(loop, "_task_acceptance_subtree_snapshot", lambda *_a: (False, [{"task_id": "child", "status": "running"}]))
+    f.ctx.owner_wait_callback = lambda *_a: pytest.fail("review admission withheld Cyber final")
+    def main(*_a, **_kw):
+        f.model_step += 1
+        assert f.model_step == 1, "Unknown admission inspection was treated as a new owner request"
+        return {"content": ANSWER}, 0.0
+    monkeypatch.setattr(loop, "call_llm_with_retry", main)
+    result, _usage, trace = f.run()
+    assert result == ANSWER
+    assert trace["review_decision"]["admission_fence_available"] is (failure != "begin")
+    assert trace["review_decision"]["admission_released"] is (failure == "begin")
+    assert trace["review_decision"]["subtree_quiescent"] is False
+    assert trace["acceptance_decision"]["status"] == "finalized_unaccepted"
+    if failure == "inspect":
+        assert trace["review_decision"]["admission_inspection"] == {
+            "status": "unknown", "reason": "queue_inspection_failed", "error_type": "OSError",
+        }
+
+
+def test_cyber_unread_owner_message_still_reaches_same_main(full_loop, monkeypatch):
+    f = full_loop
+    monkeypatch.setattr("ouroboros.config.get_runtime_mode", lambda: "cyber_pro")
+    f.ctx.owner_wait_callback = lambda *_a: None  # unread inbox wakes rather than waits on a critic
+    original = review_substrate._review_route_executor
+    injected = False
+    def executor(assignment, **kw):
+        nonlocal injected
+        result = original(assignment, **kw)
+        if not injected:
+            injected = True
+            f.incoming.put(STATUS)
+        return result
+    monkeypatch.setattr(review_substrate, "_review_route_executor", executor)
+    def main(_llm, messages, *_a, **_kw):
+        f.model_inputs.append(copy.deepcopy(messages))
+        f.model_step += 1
+        if f.model_step == 1:
+            return {"content": ANSWER}, 0.0
+        assert f.model_step == 2 and STATUS in str(messages)
+        assert f.ctx._acceptance_ack_source_sha256 != f.ctx._acceptance_observation["owner_source_sha256"]
+        return keep(f), 0.0
+    monkeypatch.setattr(loop, "call_llm_with_retry", main)
+    result, _usage, trace = f.run()
+    assert result == ANSWER and f.model_step == 2
+    assert len(f.review_sends) == 1
+    assert trace["acceptance_decision"]["status"] == "finalized_unaccepted"

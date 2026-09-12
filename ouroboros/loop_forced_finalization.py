@@ -15,7 +15,7 @@ import time
 
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from ouroboros.loop_llm_call import forced_response_is_incomplete, forced_response_parts
-from ouroboros.outcomes import REASON_DELIVERY_CONTROL_DEGRADED
+from ouroboros.outcomes import ACCEPTANCE_FINALIZED_UNACCEPTED, REASON_DELIVERY_CONTROL_DEGRADED
 from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_NOTICE, TERMINAL_ORIGIN_HOST_SALVAGE, TERMINAL_ORIGIN_MODEL_FINAL, set_terminal_host_notice
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.usage_accounting import BudgetExceeded
@@ -901,7 +901,7 @@ def _resolve_forced_delivery_control(
                     )
                     tools_ctx._task_acceptance_reviewed = False
                     _loop()._set_acceptance_decision(llm_trace, {
-                        "status": "finalized_unaccepted", "reason": REASON_DELIVERY_CONTROL_DEGRADED,
+                        "status": ACCEPTANCE_FINALIZED_UNACCEPTED, "reason": REASON_DELIVERY_CONTROL_DEGRADED,
                         "source": "forced_acceptance_subject", "rationale": error,
                     })
     return (

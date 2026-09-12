@@ -11,7 +11,7 @@ import pathlib
 from typing import Any, Callable, Dict, List, Optional
 from ouroboros.review_cycles import REASON_REVIEW_CYCLES_EXHAUSTED
 from ouroboros.review_projection import publish_acceptance_checkpoint
-from ouroboros.outcomes import ACCEPTANCE_ACCEPTED, ACCEPTANCE_BYPASS_REASONS, ACCEPTANCE_BYPASS_REASON_BY_RAIL, ACCEPTANCE_DECISION_STATUSES, ACCEPTANCE_FINALIZED_UNACCEPTED, ACCEPTANCE_REVISION_REQUESTED, REASON_ACCEPTANCE_REVIEW_SKIPPED_DEADLINE_RESERVE, REASON_IDENTICAL_ACCEPTANCE_REFUSED, extract_final_answer, turn_has_reviewable_effects
+from ouroboros.outcomes import ACCEPTANCE_ACCEPTED, ACCEPTANCE_BYPASS_REASONS, ACCEPTANCE_BYPASS_REASON_BY_RAIL, ACCEPTANCE_DECISION_STATUSES, ACCEPTANCE_FINALIZED_UNACCEPTED, ACCEPTANCE_REVISION_REQUESTED, REASON_ACCEPTANCE_REVIEW_SKIPPED_DEADLINE_RESERVE, REASON_DELIVERY_CONTROL_DEGRADED, REASON_IDENTICAL_ACCEPTANCE_REFUSED, extract_final_answer, turn_has_reviewable_effects
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.utils import truncate_review_artifact
 
@@ -365,8 +365,19 @@ def _task_acceptance_owner_generation_changed(ctx: Any) -> bool:
             isinstance(state, dict)
             and int(state.get("owner_message_generation") or 0) != int(expected_queue)
         )
-    except Exception:
-        return True
+    except Exception as exc:
+        from ouroboros.tools.review_helpers import review_enforcement_blocks
+
+        trace = getattr(ctx, "_execution_trace", None)
+        if isinstance(trace, dict):
+            trace.setdefault("review_decision", {})["admission_inspection"] = {
+                "status": "unknown", "reason": "queue_inspection_failed",
+                "error_type": type(exc).__name__,
+            }
+        # Unknown queue state is not evidence that a new message arrived.
+        # Cyber still drains actual ingress before delivery; other modes keep
+        # their selected admission behavior when inspection is unavailable.
+        return review_enforcement_blocks("blocking")
 
 
 def _supersede_task_acceptance_for_evidence_change(
@@ -587,6 +598,7 @@ ACCEPTANCE_DECISION_REASONS = (
     # A-material (2026-08-30): the resubmit carried no changed candidate and no new
     # obligation disposition, so the recorded verdict was replayed for free.
     REASON_IDENTICAL_ACCEPTANCE_REFUSED,
+    REASON_DELIVERY_CONTROL_DEGRADED,
     # Owner Q2A: the forced children_unabsorbed rail runs the panel but cannot
     # grant a requested improvement pass; the dangling revision terminalizes.
     "revision_unavailable_on_forced_rail",
