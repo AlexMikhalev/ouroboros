@@ -289,7 +289,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_end_task_acceptance_fence", "_execute_task_acceptance_panel",
         "_extract_plain_text_from_content", "_format_obligations_clause",
         "_latch_final_answer_marker", "_mark_root_acceptance_checkpoint",
-        "_no_tool_final_answer", "_open_acceptance_obligations", "_set_acceptance_decision",
+        "_no_tool_final_answer", "_open_acceptance_obligations", "_replace_delivery_candidate", "_set_acceptance_decision",
         "_supersede_task_acceptance_for_evidence_change",
         "_supersede_task_acceptance_for_owner_followup", "_task_acceptance_eligible",
         "_task_acceptance_owner_generation_changed", "_task_acceptance_subtree_snapshot",

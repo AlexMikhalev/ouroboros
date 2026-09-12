@@ -49,10 +49,7 @@ def test_required_blocking_binds_shared_cycle_cap_but_explicit_cap_always_wins(m
 
 def test_system_prompt_describes_one_whole_result_acceptance_operation():
     import pathlib
-
-    system = (
-        pathlib.Path(__file__).resolve().parents[1] / "prompts" / "SYSTEM.md"
-    ).read_text(encoding="utf-8")
+    system = (pathlib.Path(__file__).resolve().parents[1] / "prompts/SYSTEM.md").read_text(encoding="utf-8")
     normalized = " ".join(system.split())
     assert "`task_acceptance_review` can nominate my complete task result for review" in normalized
     assert "After the whole tool-result block, the host advances the same operation as final delivery" in normalized
