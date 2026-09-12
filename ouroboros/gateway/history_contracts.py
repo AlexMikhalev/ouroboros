@@ -15,7 +15,7 @@ class ChatHistoryResponse(TypedDict, total=False):
     has_more: bool
     next_before_ts: str
     next_cursor: Optional[str]
-    page_cursor: str
+    page_cursor: Optional[str]
     window: Dict[str, Any]
     error: str
     reason_code: str

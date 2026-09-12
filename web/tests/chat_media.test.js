@@ -297,7 +297,7 @@ test('live media and quiz-state writes use the injected content boundary', () =>
             documentMessageKey: (msg) => `doc:${msg.task_id}:${msg.ts}`,
             buildQuizCard: () => null,
             applyQuizStateFrame: (_root, msg) => msg.changed === true,
-            messagesRoot: () => ({}),
+            messagesRoot: () => globalThis.document.body,
             deliverContentMutation(mutate) { mutations += 1; return mutate(); },
         });
         handlers.get('photo')({
@@ -634,6 +634,11 @@ test('live gallery items adopt separate history identities and older photos do n
         assert.deepEqual(newerWrapper.querySelectorAll('.chat-gallery-item'), originalItems);
         assert.deepEqual(originalItems.map((item) => item.dataset.historyId), ['chat:2', 'chat:3']);
         assert.equal(newerWrapper.dataset.historyId, undefined, 'physical IDs belong to items, not their shared gallery');
+        seen.clear(); // The live-key FIFO can expire while this page stays mounted.
+        for (const seconds of [2, 3]) assert.equal(delivery.appendMediaBubble({
+            ...photo(seconds), history_id: `chat:${seconds}`,
+        }), false);
+        assert.deepEqual(newerWrapper.querySelectorAll('.chat-gallery-item'), originalItems);
         delivery.appendMediaBubble({ ...photo(1), history_id: 'chat:1' });
         assert.equal(fx.inserted.length, 2, 'older history obtains its own chronologically placed wrapper');
         assert.deepEqual(newerWrapper.querySelectorAll('.chat-gallery-item'), originalItems);

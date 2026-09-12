@@ -819,13 +819,13 @@ export function createChatMedia({
         const keysFor = (msg, legacy) => ({ legacy, exact: msg.history_id ? `history:${msg.history_id}` : legacy });
         function alreadyRendered(msg, keys) {
             if (seenMessageKeys.has(keys.exact)) return true;
-            if (!msg.history_id || !seenMessageKeys.has(keys.legacy)) return false;
             const existing = Array.from(messagesRoot().querySelectorAll('[data-message-key]'))
                 .sort((a, b) => Number(b.matches('.chat-gallery-item, .chat-file-item'))
                     - Number(a.matches('.chat-gallery-item, .chat-file-item')))
-                .find(node => node.dataset.messageKey === keys.legacy && !node.dataset.historyId);
+                .find(node => msg.history_id && node.dataset.historyId === msg.history_id
+                    || node.dataset.messageKey === keys.legacy && (!msg.history_id || !node.dataset.historyId));
             if (!existing) return false;
-            stampHistoryNode(existing, msg.history_id, msg.history_position);
+            if (msg.history_id) stampHistoryNode(existing, msg.history_id, msg.history_position);
             rememberMessageKey(keys.exact);
             return true;
         }

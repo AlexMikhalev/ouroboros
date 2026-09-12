@@ -1385,9 +1385,9 @@ export const GATEWAY_CONTRACT_VERSION = '7.0.0';
  *
  * @typedef {Object} ChatHistoryResponse
  * @property {Array<Object>} messages Rows and hidden typed quiz/terminal replay evidence.
- * @property {boolean} has_more Physical bytes remain; an empty sparse page is not EOF.
+ * @property {boolean} has_more Older bytes remain or a disclosed source gap prevents establishing EOF.
  * @property {string|null} next_cursor Opaque room-bound older continuation.
- * @property {string} page_cursor Replays this frozen page, including the initial recent window.
+ * @property {string|null} page_cursor Replays a frozen page; null for an unavailable source boundary.
  * @property {{complete:boolean,truncated_by:Array<string>}} window Whole-history coverage.
  * @property {string} [next_before_ts] Legacy field retained for compatibility.
  * @property {string} [error]

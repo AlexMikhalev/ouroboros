@@ -120,6 +120,6 @@ test('the replay batch no longer bypasses the status reducer', () => {
     assert.match(chatSource, /if \(ws\.isConnected\?\.\(\)\) setStatus\('online', 'Online'\);/);
     // The reducer still runs unconditionally right after the replay dispatch, so
     // a replayed unfinished foreground card reaches the badge through it.
-    const replayEnd = chatSource.indexOf('_historyReplayActive = false;', chatSource.indexOf('_historyReplayActive = true;'));
-    assert.match(chatSource.slice(replayEnd, replayEnd + 200), /syncChatStatus\(\);/);
+    const replayEnd = fn.lastIndexOf('_historyReplayActive = false;');
+    assert.match(fn.slice(replayEnd), /syncChatStatus\(\);/);
 });

@@ -1496,7 +1496,7 @@ def _assemble_history_response(
         deferred_lineage=deferred_lineage,
     )
     for source in ("chat", "progress"):
-        before[source] = max([before[source], *(entry["_history_end"] for entry in selections[source][0]
+        before[source] = max([before[source], *(entry["_history_end"] for entry in selections[source][0] or ()
                                                if entry.get("history_id") in deferred_lineage)])
 
     # Background consciousness writes no task_result, so its progress would
@@ -1530,7 +1530,7 @@ def _assemble_history_response(
             chat_quota_rows, progress_quota_rows, n_human, n_progress,
             chat_path, progress_path, archive_dir,
             human_rows_dropped, lineage_truncated, review_overlays_truncated,
-            {"chat": chat_gaps, "progress": progress_gaps},
+            {"chat": chat_gaps | selections["chat"][2], "progress": progress_gaps | selections["progress"][2]},
         ) if recent else {"complete": False, "truncated_by": ["page", *(
             f"{source}_{gap}" for source in ("chat", "progress") for gap in sorted(selections[source][2])
         )]}

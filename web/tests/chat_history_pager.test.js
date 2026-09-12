@@ -22,7 +22,7 @@ function harness({ fetch, maxPages = 3 } = {}) {
                 : page(Number(cursor.split(':').at(-1)), { chain: cursor.split(':')[1] });
         },
         applyPage: (messages, descriptor) => applied.push({ messages, ...descriptor }),
-        releasePage: (descriptor, context) => released.push({ ...descriptor, ...context }),
+        releasePage: descriptor => released.push(descriptor),
         isPageProtected: descriptor => protectedIds.has(descriptor.id),
         isAlive: () => live,
         onState: state => states.push(state),
@@ -72,8 +72,6 @@ test('evicted newer and older pages replay their exact handles, including page z
     assert.deepEqual(state.cachedPages.map(item => item.index), [1, 2, 3]);
     assert.equal(state.canNewer, true);
     assert.equal(h.released[0].index, 0);
-    assert.equal(h.released[0].messages[0].history_id, 'chat:0');
-    assert.deepEqual(h.released[0].keepPageIds, state.cachedPages.map(item => item.id));
     await h.pager.newer();
     assert.equal(h.calls.at(-1).cursor, 'replay:A:0');
     state = h.pager.getState();
@@ -194,7 +192,7 @@ test('a failed latest read leaves the old chain available and retries the same r
     assert.equal(h.pager.getState().firstPage.requestCursor, 'replay:B:0');
 });
 
-test('destroy aborts the read, releases cached bodies once, and rejects late applies', async () => {
+test('destroy aborts the read, releases cached pages once, and rejects late applies', async () => {
     let resolve;
     const h = harness({ fetch: () => new Promise(done => { resolve = done; }) });
     h.pager.acceptRecent(page(0));
@@ -205,7 +203,6 @@ test('destroy aborts the read, releases cached bodies once, and rejects late app
     const states = h.states.length;
     assert.equal(h.calls[0].signal.aborted, true);
     assert.equal(h.released.length, 1);
-    assert.deepEqual(h.released[0].keepPageIds, []);
     resolve(page(1));
     assert.equal((await loading).status, 'disposed');
     assert.equal(h.applied.length, 1);

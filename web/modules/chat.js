@@ -71,6 +71,7 @@ import {
 import {
     captureLiveCardProjection,
     createHistoryResyncScheduler,
+    createHistoryControls,
     createLiveCardBound,
     createLiveCardTimelineRenderer,
     createTimelineAnchors,
@@ -90,6 +91,7 @@ import {
     chatMediaMessageKey,
     chatThreadAccepts,
     clearStickyCardState,
+    clearTransientRoutingAnnotations,
     confirmAndSendPanic,
     computeDerivedChatStatus,
     computeHydratedDirectActivities,
@@ -138,6 +140,7 @@ export {
     boundActivityPreview,
     chatMediaMessageKey,
     clearStickyCardState,
+    clearTransientRoutingAnnotations,
     confirmAndSendPanic,
     computeDerivedChatStatus,
     computeHydratedDirectActivities,
@@ -767,7 +770,9 @@ export function createChatInstance({
         appendTimelineItem,
         patchLastTimelineItem,
         patchTimelineItemAt,
-    } = createLiveCardTimelineRenderer({ withStableViewport, buildTimelineItemHtml });
+    } = createLiveCardTimelineRenderer({
+        withStableViewport, buildTimelineItemHtml, isReplayActive: () => _historyReplayActive,
+    });
 
     function insertMessageNode(node, options = {}) {
         if (!node) return false;
@@ -2364,11 +2369,17 @@ export function createChatInstance({
             taskId,
         });
         const messageKey = opts.historyId ? `history:${opts.historyId}` : legacyKey;
-        if (messageKey && seenMessageKeys.has(messageKey)) {
-            if (opts.historyId && opts.chatAnnotation) {
-                const prior = historyNodes(opts.historyId).find(node => node.classList.contains('chat-bubble'));
+        if (opts.historyId || _historyReplayActive) {
+            // Retained page nodes can outlive the bounded live-message key FIFO.
+            const prior = opts.historyId
+                ? historyNodes(opts.historyId).find(node => node.classList.contains('chat-bubble'))
+                : Array.from(messagesDiv.querySelectorAll('.chat-bubble')).find(node => node.dataset.messageKey === legacyKey);
+            if (prior) {
+                rememberMessageKey(messageKey);
                 return chatDecision.renderRoutingDecision(prior, opts.chatAnnotation);
             }
+        }
+        if (messageKey && seenMessageKeys.has(messageKey)) {
             return false;
         }
         if (opts.historyId) {
@@ -2468,19 +2479,6 @@ export function createChatInstance({
         const bubble = Array.from(messagesDiv.querySelectorAll('.chat-bubble.user[data-client-message-id]'))
             .find((candidate) => candidate.dataset.clientMessageId === messageId);
         return chatDecision.renderRoutingDecision(bubble, annotation);
-    }
-
-    function clearTransientRoutingAnnotations() {
-        let changed = false;
-        for (const note of messagesDiv.querySelectorAll(
-            '.msg-routing-annotation[data-annotation-status="pending"]',
-        )) {
-            const bubble = note.closest('.chat-bubble');
-            if (bubble) delete bubble.dataset.chatAnnotationStatus;
-            note.remove();
-            changed = true;
-        }
-        return changed;
     }
 
     function markPendingDelivered(clientMessageId, dropped = false) {
@@ -2814,6 +2812,11 @@ export function createChatInstance({
                     record.historyIds ||= new Set();
                     for (const id of historyRowIds(row)) record.historyIds.add(id);
                 }
+                // All historical state, including terminal projections, is now final.
+                _historyReplayActive = false;
+                for (const record of liveCardRecords.values()) {
+                    if (record._timelineDirty) renderLiveCardTimeline(record);
+                }
                 persistVisibleHistory();
                 return true;
             });
@@ -2870,7 +2873,14 @@ export function createChatInstance({
 
                 const oldRecentIds = recentHistoryIds;
                 recentHistoryIds = new Set(messages.flatMap(historyRowIds));
-                if (!historyPager.getState().initialized && data.page_cursor) historyPager.acceptRecent(data);
+                for (const id of oldRecentIds) {
+                    if (data.window?.truncated_by?.includes(`${id.split(':')[0]}_source_unavailable`)) recentHistoryIds.add(id);
+                }
+                if ((!historyPager.getState().initialized && data.page_cursor)
+                        || data.reason_code === 'history_source_unavailable') {
+                    const result = historyPager.acceptRecent(data);
+                    if (result.status !== 'applied') applyHistoryMessages(messages, { fromReconnect, includeUser: true });
+                }
                 else applyHistoryMessages(messages, { fromReconnect, includeUser: true });
                 withStableViewport(() => releaseHistoryIds(oldRecentIds));
                 if (armedAtStart) {
@@ -3497,8 +3507,9 @@ export function createChatInstance({
     }
 
     function releaseHistoryIds(ids) {
+        if (!(ids.size || ids.length)) return;
         const retained = retainedHistoryIds();
-        const affectedCards = new Set();
+        const released = new Set();
         const byId = new Map();
         for (const node of messagesDiv.querySelectorAll('[data-history-id]')) {
             const key = node.dataset.historyId;
@@ -3523,15 +3534,21 @@ export function createChatInstance({
                 }
             }
             seenMessageKeys.delete(`history:${id}`);
-            for (const record of liveCardRecords.values()) {
-                if (record.historyIds?.delete(id)) affectedCards.add(record.groupId);
-                const before = record.items.length;
-                record.items = record.items.filter(item => (item.historyId || item.sourceHistoryId) !== id);
-                if (before !== record.items.length) { renderLiveCardTimeline(record); updateLiveCardCount(record); }
-            }
+            released.add(id);
         }
+        if (!released.size) return;
         for (const [id, record] of [...liveCardRecords].reverse()) {
-            if (!affectedCards.has(id) || record.historyIds?.size || activeDirectActivities.has(id)
+            let affected = false;
+            for (const key of record.historyIds || []) {
+                if (released.has(key)) affected = record.historyIds.delete(key) || affected;
+            }
+            const items = record.items.filter(item => !released.has(item.historyId || item.sourceHistoryId));
+            if (items.length !== record.items.length) {
+                record.items = items;
+                renderLiveCardTimeline(record);
+                updateLiveCardCount(record);
+            }
+            if (!affected || record.historyIds?.size || activeDirectActivities.has(id)
                     || record.subagentsEl?.querySelector('.chat-live-card')
                     || historyNodeIsProtected(record.root, messagesDiv)) continue;
             if (!record.finished && !record.historicalUnavailable && !record.historicalUnconfirmed) continue;
@@ -3543,21 +3560,11 @@ export function createChatInstance({
         }
     }
 
-    const loadOlderEl = document.createElement('div');
-    loadOlderEl.className = 'chat-load-older';
-    const loadOlderBtn = document.createElement('button');
-    loadOlderBtn.type = 'button'; loadOlderBtn.className = 'chat-load-older-btn';
-    const loadOlderNote = document.createElement('span');
-    loadOlderNote.className = 'chat-load-older-note';
-    loadOlderEl.append(loadOlderBtn, loadOlderNote);
-    const loadNewerEl = document.createElement('div');
-    loadNewerEl.className = 'chat-load-newer';
-    const loadNewerBtn = document.createElement('button');
-    loadNewerBtn.type = 'button'; loadNewerBtn.className = 'chat-load-older-btn';
-    loadNewerEl.append(loadNewerBtn);
+    const historyControls = createHistoryControls(messagesDiv, typingEl);
+    const { olderButton: loadOlderBtn, newerButton: loadNewerBtn } = historyControls;
 
     const historyPager = createChatHistoryPager({
-        fetchPage: cursor => apiClient.chatHistory({ chatId, cursor }),
+        fetchPage: (cursor, { signal }) => apiClient.chatHistory({ chatId, cursor, signal }),
         isAlive: () => !destroyed,
         applyPage: (messages, descriptor) => {
             pageHistoryIds.set(descriptor.id, new Set(messages.flatMap(historyRowIds)));
@@ -3576,25 +3583,7 @@ export function createChatInstance({
     function syncLoadOlderControl(snapshot = historyPager.getState()) {
         if (destroyed) return;
         withStableViewport(() => {
-            const error = snapshot.error;
-            const changedView = error?.body?.reason_code === 'history_view_changed';
-            loadOlderBtn.textContent = snapshot.loading ? 'Loading…'
-                : changedView ? 'Refresh history' : error ? 'Retry loading messages' : 'Load older messages';
-            loadOlderBtn.disabled = Boolean(snapshot.loading);
-            loadOlderBtn.hidden = !error && !snapshot.canOlder;
-            loadOlderNote.textContent = error ? String(error.message || error)
-                : snapshot.olderExhausted ? 'Beginning of saved history' : '';
-            loadOlderNote.hidden = !loadOlderNote.textContent;
-            if ((snapshot.initialized || error) && !loadOlderEl.isConnected) messagesDiv.prepend(loadOlderEl);
-            loadNewerBtn.textContent = snapshot.loading === 'newer' ? 'Loading…' : 'Load newer messages';
-            loadNewerBtn.disabled = Boolean(snapshot.loading);
-            if (snapshot.canNewer) {
-                if (!loadNewerEl.isConnected) messagesDiv.insertBefore(loadNewerEl, typingEl);
-            } else loadNewerEl.remove();
-            const hasGaps = [...pageWindows.values()].some(value => (value?.truncated_by || [])
-                .some(cause => !['quota', 'archive_floor', 'lineage_cap', 'page'].includes(cause)));
-            historyWindow = { complete: Boolean(snapshot.initialized && snapshot.olderExhausted
-                && !snapshot.canNewer && !hasGaps && !error), truncated_by: hasGaps ? ['read_gap'] : [] };
+            historyWindow = historyControls.render(snapshot, pageWindows.values());
             return true;
         });
     }
@@ -3616,12 +3605,13 @@ export function createChatInstance({
 
     function navigateHistoryAtEdge() {
         if (destroyed || _restoring || !historyLoaded || !isInstanceVisible()) return;
+        let snapshot = historyPager.getState();
+        if (snapshot.loading || snapshot.error || !snapshot.initialized) return;
         retryHistoricalUpserts();
         historyPager.trim();
-        withStableViewport(releaseLiveOverflow);
-        withStableViewport(() => releaseHistoryIds([...pendingHistoryEvictions]));
-        const snapshot = historyPager.getState();
-        if (snapshot.loading || snapshot.error || !snapshot.initialized) return;
+        if (pendingLiveEvictions.size) withStableViewport(releaseLiveOverflow);
+        if (pendingHistoryEvictions.size) withStableViewport(() => releaseHistoryIds([...pendingHistoryEvictions]));
+        snapshot = historyPager.getState();
         if (messagesDiv.scrollTop < 80 && snapshot.canOlder) void loadOlderAtEdge();
         else if (isNearBottom(80) && snapshot.canNewer) void historyPager.newer();
     }
@@ -3973,7 +3963,7 @@ export function createChatInstance({
                 changed = appendTaskSummaryToLiveCard(msg) || changed;
             }
             if (!finalizing && typedTerminal) markAssistantReply(explicitTaskId);
-            const routingCleared = clearTransientRoutingAnnotations();
+            const routingCleared = clearTransientRoutingAnnotations(messagesDiv);
             const added = addMessage(msg.content, msg.role, msg.markdown, msg.ts || null, false, {
                 systemType: msg.system_type || '',
                 source: msg.source || '',

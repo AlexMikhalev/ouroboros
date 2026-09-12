@@ -234,22 +234,32 @@ def select_history_page(data_dir, thread_id, view, cursor, quotas, predicates, c
     selections, upper, before, page_ends = {}, {}, {}, {}
     paths = {"chat": data_dir / "logs" / "chat.jsonl", "progress": data_dir / "logs" / "progress.jsonl"}
     for source, quota in (("chat", "human"), ("progress", "progress")):
-        reader = HistorySource(paths[source], source,
-                               continuation["upper"][source] if continuation else None)
-        upper[source] = reader.upper
-        page_ends[source] = continuation["before"][source] if continuation else reader.upper
-        if continuation and continuation["kind"] == "page":
-            selections[source] = reader.replay(continuation["lower"][source], page_ends[source])
-        elif continuation:
-            selections[source] = reader.older(page_ends[source], quotas[quota], predicates[source])
-        else:
-            selections[source] = reader.recent(quotas[quota], predicates[source])
+        try:
+            reader = HistorySource(paths[source], source,
+                                   continuation["upper"][source] if continuation else None)
+            upper[source] = reader.upper
+            page_ends[source] = continuation["before"][source] if continuation else reader.upper
+            if continuation and continuation["kind"] == "page":
+                selections[source] = reader.replay(continuation["lower"][source], page_ends[source])
+            elif continuation:
+                selections[source] = reader.older(page_ends[source], quotas[quota], predicates[source])
+            else:
+                selections[source] = reader.recent(quotas[quota], predicates[source])
+        except OSError:
+            if continuation:
+                raise
+            # The existing recent collector can still show readable rows. An
+            # unknown chain prefix cannot establish global offsets or EOF.
+            selections[source] = (None, 0, {"source_unavailable"})
         before[source] = selections[source][1]
     return {"v": 1, "chat_id": thread_id, "view": view, "upper": upper, "quotas": quotas,
             "recent": recent, "selections": selections, "before": before, "page_ends": page_ends}
 
 
 def history_page_tokens(page):
+    if any(selection[0] is None for selection in page["selections"].values()):
+        return {"has_more": True, "next_cursor": None, "page_cursor": None,
+                "reason_code": "history_source_unavailable"}
     state = {key: page[key] for key in ("v", "chat_id", "view", "upper", "quotas")}
     before = {source: position if page["quotas"]["human" if source == "chat" else source] else 0
               for source, position in page["before"].items()}
@@ -277,6 +287,8 @@ def projected_history_ids(messages):
 
 def deferred_before(source, entries, candidates, messages, before):
     """Do not advance a recent cursor beyond any quota-deferred physical row."""
+    if entries is None:
+        return before
     deferred = projected_history_ids(candidates) - projected_history_ids(messages)
     references = {(row.get("surface"), row.get("presentation_owner_task_id") or row.get("task_id"))
                   for row in messages if row.get("system_type") == "review_reference"}

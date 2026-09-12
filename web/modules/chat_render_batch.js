@@ -5,6 +5,54 @@ import { compareHistoryPosition } from './chat_history_replay.js';
 const nodePosition = node => node?.dataset?.historySource
     ? { source: node.dataset.historySource, offset: Number(node.dataset.historyOffset) } : null;
 
+/** History chrome only; the chat instance retains navigation and reading state. */
+export function createHistoryControls(messagesDiv, typingEl) {
+    const doc = messagesDiv.ownerDocument;
+    const make = className => {
+        const root = doc.createElement('div');
+        root.className = className;
+        const button = doc.createElement('button');
+        button.type = 'button';
+        button.className = 'chat-load-older-btn';
+        root.append(button);
+        return { root, button };
+    };
+    const older = make('chat-load-older');
+    const newer = make('chat-load-newer');
+    const note = doc.createElement('span');
+    note.className = 'chat-load-older-note';
+    older.root.append(note);
+    return {
+        olderButton: older.button,
+        newerButton: newer.button,
+        render(snapshot, windows) {
+            const error = snapshot.error;
+            const changedView = error?.body?.reason_code === 'history_view_changed';
+            const noteText = error ? String(error.message || error)
+                : snapshot.olderExhausted ? 'Beginning of saved history' : '';
+            const fields = [
+                [older.button, { textContent: snapshot.loading ? 'Loading…'
+                    : changedView ? 'Refresh history' : error ? 'Retry loading messages' : 'Load older messages',
+                    disabled: Boolean(snapshot.loading), hidden: !error && !snapshot.canOlder }],
+                [newer.button, { textContent: snapshot.loading === 'newer' ? 'Loading…' : 'Load newer messages',
+                    disabled: Boolean(snapshot.loading) }],
+                [note, { textContent: noteText, hidden: !noteText }],
+            ];
+            for (const [node, values] of fields) {
+                for (const [key, value] of Object.entries(values)) if (node[key] !== value) node[key] = value;
+            }
+            if ((snapshot.initialized || error) && !older.root.isConnected) messagesDiv.prepend(older.root);
+            if (snapshot.canNewer) {
+                if (!newer.root.isConnected) messagesDiv.insertBefore(newer.root, typingEl);
+            } else newer.root.remove();
+            const hasGaps = [...windows].some(value => (value?.truncated_by || [])
+                .some(cause => !['quota', 'archive_floor', 'lineage_cap', 'page'].includes(cause)));
+            return { complete: Boolean(snapshot.initialized && snapshot.olderExhausted
+                && !snapshot.canNewer && !hasGaps && !error), truncated_by: hasGaps ? ['read_gap'] : [] };
+        },
+    };
+}
+
 /**
  * The Main chat's live-card bound (issue #135). Main never runs destroy(), so its
  * live task cards would accumulate for the whole session. Past `cap` cards BEYOND
@@ -188,7 +236,7 @@ export function syncLiveCardToggle(record) {
 // Incremental timeline DOM writes share the Chat viewport boundary but own no
 // scroll state. Keeping them here also keeps the byte-capped instance factory
 // focused on event projection rather than HTML replacement mechanics.
-export function createLiveCardTimelineRenderer({ withStableViewport, buildTimelineItemHtml }) {
+export function createLiveCardTimelineRenderer({ withStableViewport, buildTimelineItemHtml, isReplayActive = () => false }) {
     // Remember generated markup, not the enhanced DOM: a timestamp update must
     // not undo markdown controls or replace a body the reader has selected.
     const rendered = new WeakMap();
@@ -230,7 +278,7 @@ export function createLiveCardTimelineRenderer({ withStableViewport, buildTimeli
         return true;
     };
     const defer = (record) => {
-        if (!record?.isSubagent || record.root?.dataset?.expanded === '1') return false;
+        if (!isReplayActive() && (!record?.isSubagent || record.root?.dataset?.expanded === '1')) return false;
         record._timelineDirty = true;
         return true;
     };

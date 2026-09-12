@@ -3227,11 +3227,15 @@ SPA, not a relocatable-page or multi-instance panel framework.
 
 History pages and reconnect merge into the existing keyed card/row owners. Preserve
 actual selected/focused/expanded nodes; rebuilding an equivalent node is not preservation.
+Timeline patches compare generated markup so unchanged enhanced markdown retains its controls;
+the Reviews reconciler separately owns lazy attempt-detail state and cannot replace that behavior.
 Physical source identity orders equal-time archive rows without rewriting JSONL.
 A historical frame never grants current activity or replaces newer terminal evidence.
 Eviction releases only its own page's media, markdown and decision views, protecting
 visible reading, focus and selection. Exact page handles retain return navigation;
-read gaps and sparse empty pages never become false EOF. Tests:
+read gaps and sparse empty pages never become false EOF. Readable recent rows survive an
+unavailable archive with explicit gap/retry and no fabricated physical cursor. Flush historical
+timeline changes once per card, and skip idle scroll cleanup when no work is pending. Tests:
 `tests/test_chat_history_paging.py`, `tests/test_chat_history_paging_browser.py`
 and `web/tests/chat_history_integration.test.js`.
 

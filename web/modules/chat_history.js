@@ -54,7 +54,7 @@ export function createChatHistoryPager({
 
     function release(entry) {
         cache.delete(entry.page.id);
-        releasePage(entry.page, { messages: entry.messages, keepPageIds: [...cache.keys()] });
+        releasePage(entry.page);
     }
 
     function prune() {
@@ -77,7 +77,18 @@ export function createChatHistoryPager({
         return released;
     }
 
+    function sourceReadError(data) {
+        if (!data?.page_cursor && data?.reason_code === 'history_source_unavailable') {
+            const error = new Error(data.error || 'Some saved history is unavailable. Retry loading messages.');
+            error.body = data;
+            return error;
+        }
+        return null;
+    }
+
     function land(data, { index, direction, newChain }) {
+        const error = sourceReadError(data);
+        if (error) throw error;
         if (!Array.isArray(data?.messages) || typeof data.has_more !== 'boolean'
             || data.page_cursor == null || (data.has_more && data.next_cursor == null)) {
             throw new TypeError('History page is missing its messages or continuation boundary');
@@ -94,7 +105,7 @@ export function createChatHistoryPager({
         if (!alive()) return { status: 'disposed' };
         if (newChain) { chain = nextChain; pages = [page]; }
         else pages[index] = page;
-        cache.set(page.id, { page, messages: data.messages });
+        cache.set(page.id, { page });
         focus = index;
         const releasedPageIds = prune();
         const messageCount = data.messages.filter(row => row.system_type !== 'quiz_answer'
@@ -151,6 +162,12 @@ export function createChatHistoryPager({
         // here or replacing the original page-zero continuation.
         acceptRecent(data) {
             if (!alive()) return { status: 'disposed' };
+            const sourceError = sourceReadError(data);
+            if (sourceError && !pending) {
+                failure = { direction: 'recent', index: 0, cursor: null, newChain: true, error: sourceError };
+                publish();
+                return { status: 'error', error: sourceError, cursor: null };
+            }
             if (pages.length || pending) return { status: 'ignored' };
             try {
                 const result = land(data, { index: 0, direction: 'recent', newChain: true });
@@ -189,7 +206,7 @@ export function createChatHistoryPager({
         trim() {
             if (!alive()) return [];
             const released = prune();
-            publish();
+            if (released.length) publish();
             return released;
         },
         destroy() {
