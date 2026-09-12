@@ -610,21 +610,25 @@ def build_knowledge_sections(
     # One mind keeps its authored common orientation across rooms. The generated
     # inventory is navigation, not a substitute for that understanding; a
     # project's shelf adds focus without hiding the common corpus.
-    from ouroboros.knowledge import INDEX_FILE, OVERVIEW_TOPIC, read_knowledge_note, resolve_knowledge_address
+    from ouroboros.knowledge import (INDEX_FILE, OVERVIEW_TOPIC, inventory_knowledge,
+                                     read_knowledge_note, render_knowledge_index, resolve_knowledge_address)
 
     pid = str(project_id or "").strip()
-    global_address = resolve_knowledge_address(env.drive_root, OVERVIEW_TOPIC, "global")
+    global_address = resolve_knowledge_address(env.drive_path("memory").parent, OVERVIEW_TOPIC, "global")
+    authored_overview = False
     try:
         overview = read_knowledge_note(global_address)
         overview_text = overview.source.text_at(overview.source.body_span) if overview.source else overview.text
         if overview_text.strip():
-            sections.append("## Shared understanding\n\n" + overview_text)
+            authored_overview = overview.source is not None
+            sections.append(f"## Shared understanding\n\nSource: knowledge_read(topic='{OVERVIEW_TOPIC}', scope='global').\n\n" + overview_text)
     except FileNotFoundError:
         pass  # The generated index retains prior orientation until one is authored.
     except (OSError, UnicodeDecodeError) as exc:
         sections.append(f"Shared understanding source unavailable: knowledge_read(topic='{OVERVIEW_TOPIC}', scope='global'). {type(exc).__name__}.")
     knowledge_indexes = [(global_address.shelf / INDEX_FILE,
-                          "## Knowledge base", "knowledge index")]
+                          "## Knowledge base\n\nGlobal navigation: knowledge_list(scope='global'); read linked topics with knowledge_read(topic=..., scope='global').",
+                          "knowledge index")]
     if pid:
         from ouroboros.project_facts import project_knowledge_dir
 
@@ -633,7 +637,8 @@ def build_knowledge_sections(
     if include_pattern_body:
         knowledge_indexes.append((env.drive_path("memory/knowledge/patterns.md"), pattern_header, "patterns register"))
     for path, header, label in knowledge_indexes:
-        text = safe_read(path)
+        text = (render_knowledge_index(inventory_knowledge(global_address), include_summaries=False)
+                if authored_overview and path == global_address.shelf / INDEX_FILE else safe_read(path))
         if not text.strip():
             continue
         if warn_large and len(text) > _LARGE_CONTEXT_SECTION_CHARS:

@@ -180,14 +180,15 @@ def _label(value: str) -> str:
     return value.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]").replace("*", "\\*")
 
 
-def render_knowledge_index(rows: tuple[dict[str, Any], ...], legacy_context: str = "") -> str:
+def render_knowledge_index(rows: tuple[dict[str, Any], ...], legacy_context: str = "",
+                           *, include_summaries: bool = True) -> str:
     """Generated navigation is separate from authored understanding."""
     entries = []
     for row in rows:
         topic, title = str(row["topic"]), str(row.get("title") or row["topic"])
         line = f"- **{_label(topic)}**: [{_label(title)}](<{quote(topic + '.md', safe='/')}>)"
         summary = row.get("summary")
-        if isinstance(summary, str) and summary:
+        if include_summaries and isinstance(summary, str) and summary:
             line += "\n" + "\n".join("  " + part for part in summary.splitlines())
         if row.get("read_error") or row.get("parse_error"):
             line += "\n  (source metadata unavailable; read the original note)"
