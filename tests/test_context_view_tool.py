@@ -85,3 +85,18 @@ def test_receipt_itself_is_included_in_final_fit_before_publication(tmp_path, mo
     result, _ = _run_round_compaction(messages, _context(tmp_path, ctx, schemas, monkeypatch, fit))
     assert len(calls) == 2 and result is messages
     assert ctx._context_view_receipt["status"] == "fit_rejected"
+
+
+def test_omitted_revision_binds_this_actors_actual_send_without_inspection(tmp_path, monkeypatch):
+    ctx, other = SimpleNamespace(active_context_mode="low"), SimpleNamespace(active_context_mode="low")
+    messages, schemas = _source(), []
+    record_context_view(ctx, messages, schemas)
+    record_context_view(other, [{"role": "user", "content": "Another actor"}], schemas)
+    response = _compact_context(ctx, working_note="I retained the evidence and will continue.", keep_unit_ids=[])
+    assert "requested" in response
+    current = [*messages, {"role": "user", "content": "Owner arrived after that send"}]
+    result, _ = _run_round_compaction(current, _context(tmp_path, ctx, schemas, monkeypatch))
+    assert ctx._context_view_receipt["status"] == "applied"
+    assert current[-1] in result
+    assert other._last_context_observation["messages"][0]["content"] == "Another actor"
+    assert _compact_context(ctx, expected_view_revision="unrelated", working_note="stale", keep_unit_ids=[]).startswith("Context view mismatch")

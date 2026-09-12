@@ -141,3 +141,33 @@ def test_first_full_pressure_read_retains_source_when_inspection_cannot_fit(tmp_
     assert read_actor_source_bytes(tmp_path, "memory-view", llm.source).decode().endswith(original.text)
     assert not reads.reads
     assert k.read_knowledge_note(original.address).raw == original.raw
+
+
+def test_full_pressure_read_can_compact_directly_from_its_causal_send(tmp_path, fit):
+    from ouroboros.artifacts import read_actor_source_bytes
+
+    fit.window = 24000
+    ctx, original, reads = _setup(tmp_path, "Large complete experience. " * 10000)
+    class FullThenCompact:
+        calls = 0
+        source = None
+        def chat(self, **kwargs):
+            self.calls += 1
+            assert estimate_context_prompt_tokens(kwargs["messages"], kwargs["tools"]) + kwargs["max_tokens"] <= fit.window
+            if self.calls == 1:
+                return {"tool_calls": [_call("knowledge_read", {"topic": "large", "scope": "global"})]}, {"cost": 0.01}
+            if self.calls == 2:
+                partial = kwargs["messages"][-1]["content"]
+                self.source = json.loads(partial.split("\n[Tool result source view]\n", 1)[1])["source_ref"]
+                return {"tool_calls": [_call("compact_context", {
+                    "working_note": "I have only read a partial source. Keep its exact source reference and continue reading ranges.",
+                    "keep_unit_ids": [],
+                }, "compact-direct")]}, {"cost": 0.01}
+            assert any("partial source" in str(m.get("content")) for m in kwargs["messages"])
+            return {"content": "The working view is usable; the full note remains unread and unchanged."}, {"cost": 0.01}
+    llm = FullThenCompact()
+    content, usage = c._call_consolidation_llm(llm, "Original episode.", "causal compact", knowledge=reads)
+    assert content and llm.calls == 3, usage
+    assert not reads.reads
+    assert k.read_knowledge_note(original.address).raw == original.raw
+    assert read_actor_source_bytes(tmp_path, "memory-view", llm.source).decode().endswith(original.text)

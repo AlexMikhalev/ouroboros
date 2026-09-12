@@ -51,8 +51,16 @@ def _compact_context(ctx, keep_last_n: int = 6, *, inspect: bool = False,
             "rule": "This revision names the observed messages; schemas are listed separately. Select complete unit IDs to keep, write one working_note, and preserve original sources. Newer owner/tool messages remain untouched.",
         }, ensure_ascii=False)
     if working_note is not None:
-        observed = getattr(ctx, "_inspected_context_view", None)
-        if not isinstance(observed, dict) or observed.get("revision") != expected_view_revision:
+        # This invocation is a response to the actor's recorded physical send.
+        # The host already owns that causal binding; echoing its hash is only
+        # needed when the actor explicitly selects an earlier inspected view.
+        observed = (getattr(ctx, "_inspected_context_view", None) if expected_view_revision
+                    else getattr(ctx, "_last_context_observation", None))
+        if expected_view_revision and (not isinstance(observed, dict) or observed.get("revision") != expected_view_revision):
+            last = getattr(ctx, "_last_context_observation", None)
+            if isinstance(last, dict) and last.get("revision") == expected_view_revision:
+                observed = last
+        if not isinstance(observed, dict) or expected_view_revision and observed.get("revision") != expected_view_revision:
             return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR",
                 text="Context view mismatch: call compact_context(inspect=true) and use its view_revision. Current context is unchanged."))
         if (not isinstance(working_note, str)
@@ -65,7 +73,7 @@ def _compact_context(ctx, keep_last_n: int = 6, *, inspect: bool = False,
                 text="Invalid context view request: use a prose working_note, arrays of exact unit/schema names and checkpoint reference objects."))
         ctx._pending_compaction = {
             "observed": observed, "working_note": working_note,
-            "expected_view_revision": expected_view_revision,
+            "expected_view_revision": observed["revision"],
             "keep_unit_ids": None if keep_unit_ids is None else tuple(keep_unit_ids),
             "restore_unit_refs": tuple(restore_unit_refs or ()),
             "schema_names": None if schema_names is None else tuple(schema_names),
@@ -103,7 +111,7 @@ def get_tools() -> List[ToolEntry]:
                     "type": "object",
                     "properties": {
                         "inspect": {"type": "boolean", "description": "Return and pin the last observed view revision, complete unit IDs, source references and current schema names without changing context."},
-                        "expected_view_revision": {"type": "string", "description": "view_revision returned by inspect; required for an authored view replacement."},
+                        "expected_view_revision": {"type": "string", "description": "Optional view_revision from inspect, checked exactly. Omitted binds the actual model-send view that produced this call; inspect is not required to replace all completed units."},
                         "working_note": {"type": "string", "description": "One coherent account of current understanding, corrections and unresolved work. Supplying it selects your authored view; omission keeps legacy helper compaction."},
                         "keep_unit_ids": {"type": "array", "items": {"type": "string"}, "description": "Exact inspected complete units to retain raw; omitted keeps all, empty keeps none. Owner/system messages and newer tail are preserved."},
                         "restore_unit_refs": {"type": "array", "items": {"type": "object", "properties": {
