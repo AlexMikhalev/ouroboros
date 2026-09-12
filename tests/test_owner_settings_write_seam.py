@@ -136,6 +136,7 @@ def test_cyber_generic_post_saves_controls_and_preserves_fact_provenance(cyber_s
     chosen = {
         "OUROBOROS_RUNTIME_MODE": "pro", "OUROBOROS_SAFETY_MODE": "off",
         "OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS": "true", "OUROBOROS_MODEL": "openai/test-model",
+        "OUROBOROS_CONTEXT_MODE": "low", "OUROBOROS_REVIEW_ENFORCEMENT": "advisory",
         "SERVICE_API_KEY": "owner-test-key",
     }
     response = TestClient(app).post("/api/settings", json={
@@ -158,11 +159,13 @@ def test_cyber_generic_post_saves_controls_and_preserves_fact_provenance(cyber_s
     events = [json.loads(line) for line in (cyber_settings.parent / "logs/events.jsonl").read_text().splitlines()]
     change = next(event for event in events if event.get("action") == "settings_controls")
     assert change["changes"]["OUROBOROS_SAFETY_MODE"] == {"old": "full", "new": "off"}
+    assert change["changes"]["OUROBOROS_CONTEXT_MODE"] == {"old": "max", "new": "low"}
+    assert change["changes"]["OUROBOROS_REVIEW_ENFORCEMENT"] == {"old": "blocking", "new": "advisory"}
     assert "owner-test-key" not in json.dumps(change)
 
 
-@pytest.mark.parametrize("mode,status", [("cyber_pro", 409), ("pro", 409)])
-def test_context_owner_endpoint_preserves_idle_requirement(cyber_settings, monkeypatch, mode, status):
+@pytest.mark.parametrize("mode,status", [("cyber_pro", 200), ("pro", 409)])
+def test_context_owner_endpoint_allows_cyber_during_work(cyber_settings, monkeypatch, mode, status):
     from ouroboros import config as cfg
     from ouroboros.gateway import settings as settings_mod
     from supervisor.active_activity import get_direct_activity_registry
@@ -180,16 +183,43 @@ def test_context_owner_endpoint_preserves_idle_requirement(cyber_settings, monke
     finally:
         registry.unregister("settings-author")
     assert response.status_code == status, response.text
-    assert json.loads(cyber_settings.read_text())["OUROBOROS_CONTEXT_MODE"] == "max"
+    assert json.loads(cyber_settings.read_text())["OUROBOROS_CONTEXT_MODE"] == ("low" if status == 200 else "max")
 
 
-def test_cyber_cannot_self_lower_context_or_author_its_marker(cyber_settings):
+@pytest.mark.parametrize("has_context", [True, False])
+def test_cyber_can_self_lower_context_and_author_its_marker(cyber_settings, has_context):
     from ouroboros import config as cfg
 
-    before = cyber_settings.read_bytes()
-    with pytest.raises(PermissionError, match="lowering refused"):
-        cfg.save_settings({**cfg.load_settings(), "OUROBOROS_CONTEXT_MODE": "low"})
-    assert cyber_settings.read_bytes() == before
+    if not has_context:
+        raw = json.loads(cyber_settings.read_text())
+        raw.pop("OUROBOROS_CONTEXT_MODE")
+        raw.pop("OUROBOROS_CONTEXT_MODE_AUTO_LOW")
+        cyber_settings.write_text(json.dumps(raw))
+    cfg.save_settings({**cfg.load_settings(), "OUROBOROS_CONTEXT_MODE": "low"})
+    stored = json.loads(cyber_settings.read_text())
+    assert stored["OUROBOROS_CONTEXT_MODE"] == "low"
+    assert stored["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] == "false"
+    assert cfg.load_settings()["OUROBOROS_CONTEXT_MODE"] == "low"
+
+
+def test_cyber_context_save_retains_current_task_snapshot(cyber_settings, monkeypatch):
+    from ouroboros import config as cfg
+    from ouroboros.gateway import settings as settings_mod
+    from ouroboros.settings_integrity import task_settings_scope, task_settings_snapshot
+
+    app = _settings_app(monkeypatch, cyber_settings)
+    monkeypatch.setattr(settings_mod, "_apply_settings_to_env", cfg.apply_settings_to_env)
+    snapshot = task_settings_snapshot(cfg.load_settings(), dict(os.environ))
+    with task_settings_scope(snapshot):
+        response = TestClient(app).post("/api/settings", json={
+            "OUROBOROS_CONTEXT_MODE": "low", "OUROBOROS_REVIEW_ENFORCEMENT": "advisory",
+        })
+        assert response.status_code == 200, response.text
+        assert cfg.get_owner_context_mode() == "max"
+        assert cfg.get_review_enforcement() == "blocking"
+    assert cfg.get_owner_context_mode() == "low"
+    assert cfg.get_review_enforcement() == "advisory"
+    assert snapshot.settings["OUROBOROS_CONTEXT_MODE"] == "max"
 
 
 def test_cyber_still_cannot_write_a_pinned_benchmark_snapshot(cyber_settings, monkeypatch):
