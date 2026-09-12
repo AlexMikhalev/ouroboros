@@ -447,6 +447,7 @@ def _fit_output_payload(target: Dict[str, Any], payload: Dict[str, Any], api_sur
     provider = target.get("provider")
     # Local formatters can make additional internal generations outside this cap.
     limit_enforced = provider == "openai" and field == "max_completion_tokens" or provider == "anthropic" and field == "max_tokens"
+
     if provider == "local":
         limit_enforced = measured["input_is_exact"] and (target.get("local_input_measurement") or {}).get("output_limit_enforced") is True
     nano = target.get("context_mode") == "nano"

@@ -222,6 +222,8 @@ class _LocalLaneMixin:
 
         for msg in clean_messages:
             content = msg.get("content")
+            if content is None and msg.get("role") == "assistant":
+                msg["content"] = ""  # Local text templates require a string beside tool calls.
             if isinstance(content, list):
                 msg["content"] = "\n\n".join(
                     b.get("text", "") for b in content

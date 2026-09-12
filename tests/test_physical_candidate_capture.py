@@ -263,6 +263,11 @@ def test_local_candidate_is_measured_after_existing_local_transform(data_root, m
     }]
     assert sent["max_tokens"] == 2048
     final = _rows(data_root)[-1]
+
+    assert sent["max_tokens"] == 8192 - final["call_context_fit"]["input_tokens"]
+    assert sent["max_tokens"] > 2048
+    assert not final["call_context_fit"]["strict_bound_proven"]
+    assert "enforced_output_limit" in final["call_context_fit"]["missing_evidence"]
     raw = _canonical_candidate_bytes(sent)
     assert final["candidate_raw_sha256"] == hashlib.sha256(raw).hexdigest()
     assert final["candidate_raw_size_bytes"] == len(raw)
