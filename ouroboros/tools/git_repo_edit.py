@@ -164,6 +164,9 @@ def _repo_write(ctx: ToolContext, path: str = "", content: str = "",
     written = []
     written_paths: List[str] = []
     overwrite_diffs: List[str] = []
+    capture_notes: List[str] = []
+    from ouroboros.workspace_file_outputs import capture_known_workspace_outputs
+
     for e, binding in zip(write_list, binding_items):
         rel_path = _git()._binding_repo_rel(binding)
         # Append can only grow a file, so the truncation shrink-guard does not apply.
@@ -178,7 +181,7 @@ def _repo_write(ctx: ToolContext, path: str = "", content: str = "",
                     mutation_root=binding_items[0].base_path,
                     source_tool="write_file",
                 )
-            return shrink_warning
+            return "\n".join([shrink_warning, *([f"Successfully written: {', '.join(written)}"] if written else []), *capture_notes])
         try:
             target = binding.target_path
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -187,6 +190,9 @@ def _repo_write(ctx: ToolContext, path: str = "", content: str = "",
                     fh.write(e["content"])  # append is intentionally NOT atomized
                 written.append(f"{display_root}:{rel_path} (+{len(e['content'])} chars appended)")
                 written_paths.append(rel_path)
+                note = capture_known_workspace_outputs(ctx, binding.base_path, [rel_path], source_tool="write_file")
+                if note:
+                    capture_notes.append(note)
                 continue
             old_content: Optional[str] = None
             if target.exists():
@@ -197,6 +203,9 @@ def _repo_write(ctx: ToolContext, path: str = "", content: str = "",
             _git().write_text(target, e["content"])
             written.append(f"{display_root}:{rel_path} ({len(e['content'])} chars)")
             written_paths.append(rel_path)
+            note = capture_known_workspace_outputs(ctx, binding.base_path, [rel_path], source_tool="write_file")
+            if note:
+                capture_notes.append(note)
             if old_content is not None and old_content != e["content"]:
                 from ouroboros.tools.edit_ops import _unified_diff
 
@@ -213,6 +222,7 @@ def _repo_write(ctx: ToolContext, path: str = "", content: str = "",
             return (
                 f"⚠️ FILE_WRITE_ERROR on '{e['path']}': {exc}\n"
                 f"Successfully written before error: {already}"
+                + ("\n" + "\n".join(capture_notes) if capture_notes else "")
             )
 
     _git()._invalidate_advisory(
@@ -223,7 +233,9 @@ def _repo_write(ctx: ToolContext, path: str = "", content: str = "",
     )
     summary = ", ".join(written)
     system_target = _git()._binding_targets_system_repo(ctx, binding_items[0])
-    if ctx.is_workspace_mode() and not system_target:
+    if capture_notes:
+        result = f"✅ Written {len(written)} file(s): {summary}\n" + "\n".join(capture_notes)
+    elif ctx.is_workspace_mode() and not system_target:
         result = (
             f"✅ Written {len(written)} file(s): {summary}\n"
             "Files are on disk in the active workspace. Do not commit; the headless runner will emit a patch artifact."
@@ -403,6 +415,11 @@ def _str_replace_editor(
         _git().write_text(target, new_content)
     except Exception as e:
         return f"⚠️ STR_REPLACE_ERROR: write failed for {path}: {e}"
+    from ouroboros.workspace_file_outputs import capture_known_workspace_outputs
+
+    capture_note = capture_known_workspace_outputs(
+        ctx, binding.base_path, [rel_path], source_tool="edit_text",
+    ) if binding is not None else ""
     if _repair_cas_constraint is not None:
         from ouroboros.skill_repair_admission import advance_repair_expected_hash
 
@@ -432,7 +449,9 @@ def _str_replace_editor(
         result += f"\nResolved root: {binding.base_path}"
     if short_form is not None and short_form.ignored_reason:
         result += f"\n⚠️ SKILL_SHORT_FORM_IGNORED: {short_form.ignored_reason}."
-    if data_skill_target is None and ctx.is_workspace_mode() and not system_target:
+    if capture_note:
+        result += "\n" + capture_note
+    elif data_skill_target is None and ctx.is_workspace_mode() and not system_target:
         result += "\nDo not commit; the headless runner will emit a patch artifact."
     elif system_target:
         result += "\nRun commit_reviewed when ready.\n⚠️ Advisory pre-review is now stale — run preflight_review before commit_reviewed."

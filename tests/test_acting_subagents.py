@@ -1020,20 +1020,21 @@ def test_remove_worktree_path_outside_root_guarded(tmp_path):
 
 
 # 11. Triad+scope round-5 fixes: external_workspace validation + owner-only toggle
-def test_external_workspace_requires_git_outside_repo(tmp_path, monkeypatch):
+def test_external_workspace_accepts_folders_and_preserves_git_geometry(tmp_path, monkeypatch):
     from supervisor.events import _resolve_subagent_constraint
     monkeypatch.setenv("OUROBOROS_ALLOW_MUTATIVE_SUBAGENTS", "true")
     repo = tmp_path / "repo"
     _init_repo(repo, {"a.txt": "hi\n"})
     ctx = SimpleNamespace(REPO_DIR=repo)
-    # A non-git external workspace cannot return a workspace.patch -> rejected.
+    # An ordinary directory is admitted directly, with no invented Git base.
     nogit = tmp_path / "proj"; nogit.mkdir()
     c, wr, wm, detail = _resolve_subagent_constraint(
         ctx, tid="e1",
         requested_constraint={"mode": "acting_subagent", "surface": "external_workspace", "write_root": str(nogit)},
         workspace_root="", workspace_mode="", base_sha="", parent_task_id="p",
     )
-    assert c["mode"] == "local_readonly_subagent" and "git working tree" in detail
+    assert detail == "" and c["mode"] == "acting_subagent" and c["base_sha"] == ""
+    assert wr == str(nogit) and wm == "external_workspace"
     # A git working tree outside repo/data is accepted.
     proj = tmp_path / "gitproj"
     _init_repo(proj, {"x.txt": "y\n"})

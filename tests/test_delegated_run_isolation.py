@@ -248,7 +248,7 @@ class TestCaptureAndIntegrate:
         capture = _capture_terminal_patch(ctx, entry)
         assert capture["status"] == "ready_no_changes"
         out = _integrate_delegated_patch(ctx, "run-1", "apply", "")
-        assert "changed NOTHING" in out, out
+        assert "no captured file changes" in out, out
         assert entry.patch_disposed == "applied"
         assert find_execution_snapshot("snapX") is None
         custody._CUSTODY.clear()

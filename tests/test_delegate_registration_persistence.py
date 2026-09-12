@@ -57,6 +57,35 @@ def test_persistent_registration_predicate():
     assert persistent_registration("  ", "workspace_write") is False
 
 
+def test_directory_copy_apply_key_survives_replay_and_duplicate_started(tmp_path):
+    """A lost apply response rejoins its recorded intent, with no fake Git identity."""
+    row = custody.RunCustody(run_id="copy-apply", task_id="t", route_id="r", model="m",
+                            resource_ref={"workspace_kind": "directory", "strategy": "copy"})
+    custody.record_started(tmp_path, row)
+    assert custody.record_patch_apply_started(tmp_path, row, apply_idempotency_key="apply-1")
+    assert row.patch_apply_key == "apply-1"
+    custody.record_started(tmp_path, custody.RunCustody(
+        run_id="copy-apply", task_id="t", route_id="r", model="m"))
+    restored = custody.replay(tmp_path)["copy-apply"]
+    assert restored.patch_apply_pending and restored.patch_apply_key == "apply-1"
+    assert restored.snapshot_id == ""
+    restored.settled = True
+    assert custody.undisposed_patches(tmp_path, {restored.run_id: restored}) == [restored]
+    restored.resource_ref["strategy"] = "direct"
+    assert custody.undisposed_patches(tmp_path, {restored.run_id: restored}) == []
+    restored.resource_ref["strategy"] = "copy"
+    restored.patch_disposed = "rejected"
+    assert custody.undisposed_patches(tmp_path, {restored.run_id: restored}) == []
+
+
+def test_failed_apply_intent_does_not_replace_existing_rejoin_key(tmp_path, monkeypatch):
+    row = custody.RunCustody(run_id="copy-denied", task_id="t", route_id="r", model="m",
+                            patch_apply_key="old-intent")
+    monkeypatch.setattr(custody, "emit", lambda *args, **kwargs: False)
+    assert not custody.record_patch_apply_started(tmp_path, row, apply_idempotency_key="new-intent")
+    assert row.patch_apply_key == "old-intent" and not row.patch_apply_pending
+
+
 def test_registration_survives_settlement(tmp_path):
     """The issue's first regression: settling a run over a persistent
     registration must NOT delete the user's project."""

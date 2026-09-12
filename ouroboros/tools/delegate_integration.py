@@ -151,6 +151,10 @@ def _retry_binding_refusal(record: Dict[str, Any], retry_token: str) -> str:
     retroactively and replaying would write straight into the shared tree, in the
     in-place regime C1 retired. Returns "" when the full binding is present.
     """
+    reference = record.get("resource_ref") or {}
+    request = record.get("request") or {}
+    if reference.get("workspace_kind") == "directory" and (request.get("execution") or {}).get("workspaceKind") == "directory" and record.get("target_root"):
+        return ""
     snapshot_id = str(record.get("snapshot_id") or "")
     baseline_sha = str(record.get("baseline_sha") or "")
     target_root = str(record.get("target_root") or "")
@@ -428,12 +432,15 @@ def _capture_block(entry: _RunCustody, cap_dir: pathlib.Path,
         "manifest_read": {"root": "artifact_store", "path": f"{read_prefix}/workspace_patch.json"},
         "sha256": str(manifest.get("sha256") or ""),
         "diffstat": str(manifest.get("diffstat") or ""),
+        "file_outputs": list(manifest.get("file_outputs") or []),
+        "file_output_count": len(manifest.get("file_output_changes") or []),
         "note": (
             "NOT APPLIED: the run edited its private execution snapshot only. Nothing "
             "reaches the shared tree until you explicitly call "
             "integrate_delegated_patch(run_id=...) with decision='apply' or 'reject'. "
-            "The snapshot and this patch persist until that disposition. Read the "
-            "captured diff via read_file(root='artifact_store', path=patch_read.path)."
+            "The snapshot and complete file results persist until that disposition. "
+            "Read manifest_read, its file artifacts, and patch_read when present; "
+            "the text patch alone need not contain the complete result."
         ),
     }
     if status not in {ARTIFACT_STATUS_READY_WITH_CHANGES, ARTIFACT_STATUS_READY_NO_CHANGES}:
@@ -453,7 +460,7 @@ def _capture_block(entry: _RunCustody, cap_dir: pathlib.Path,
     return block
 
 
-def _capture_terminal_patch(ctx: ToolContext, entry: Optional[_RunCustody]) -> Optional[Dict[str, Any]]:
+def _capture_terminal_patch(ctx: ToolContext, entry: Optional[_RunCustody], *, gateway=None) -> Optional[Dict[str, Any]]:
     """Capture a terminal mutating run's diff from its execution snapshot, durably.
 
     Idempotent: the durable ``patch_captured`` flag (replayed) plus the manifest on
@@ -462,12 +469,12 @@ def _capture_terminal_patch(ctx: ToolContext, entry: Optional[_RunCustody]) -> O
     in-place runs return None. Capture failure is disclosed in the block, never
     raised — the settlement and delivery around it must not die on a diff error.
     """
-    if entry is None or not entry.execution_root:
+    if entry is None:
         return None
-    return capture_terminal_patch_for_drive(custody.custody_root(ctx), entry)
+    return capture_terminal_patch_for_drive(custody.custody_root(ctx), entry, gateway=gateway)
 
 
-def capture_terminal_patch_for_drive(drive: Any, entry: _RunCustody) -> Optional[Dict[str, Any]]:
+def capture_terminal_patch_for_drive(drive: Any, entry: _RunCustody, *, gateway=None) -> Optional[Dict[str, Any]]:
     """The drive-rooted core of the terminal capture — same contract, no ToolContext.
 
     One capture author for both the nanny flow and the RECONCILIATION path
@@ -479,6 +486,21 @@ def capture_terminal_patch_for_drive(drive: Any, entry: _RunCustody) -> Optional
     but leaves the row uncaptured (every retry point stays open), and a pre-R3
     row over a failed manifest falls through to a fresh capture.
     """
+    from ouroboros.delegate_directory import is_directory_run, capture_directory_result, directory_capture_block
+
+    if is_directory_run(entry):
+        owned_gateway = None
+        try:
+            if gateway is None:
+                from ouroboros.claudexor_daemon import read_owned_gateway
+                owned_gateway = gateway = read_owned_gateway()
+            return directory_capture_block(drive, entry, capture_directory_result(drive, entry, gateway))
+        except Exception as exc:
+            return {"status": "failed", "capture_kind": "engine_directory", "authority_target_root": entry.target_root,
+                    "note": f"Directory capture unavailable: {type(exc).__name__}: {exc}. The engine result is retained; no new run was started."}
+        finally:
+            if owned_gateway is not None:
+                owned_gateway.close()
     if entry is None or not entry.execution_root:
         return None
     from ouroboros.headless import (
@@ -522,9 +544,12 @@ def capture_terminal_patch_for_drive(drive: Any, entry: _RunCustody) -> Optional
             # The preflight-head shape pins the capture BASE to the snapshot's baseline
             # commit (never a moved HEAD), reusing the one existing capture primitive —
             # sensitive veto, binary handling, sha256 manifest and all.
+            from ouroboros.subagent_worktrees import find_execution_snapshot
+            snapshot = find_execution_snapshot(entry.snapshot_id) or {}
             _, manifest = write_workspace_patch_artifacts(
                 exec_root, cap_dir,
-                task={"metadata": {"workspace_preflight": {"git": {"head": entry.baseline_sha}}}},
+                task={"metadata": {"workspace_preflight": {"git": {"head": entry.baseline_sha}},
+                                   "file_baseline": snapshot.get("file_baseline") or {}}},
             )
     except Exception as exc:
         log.warning("Delegated run patch capture failed for %s", entry.run_id, exc_info=True)
@@ -552,7 +577,8 @@ def capture_terminal_patch_for_drive(drive: Any, entry: _RunCustody) -> Optional
 def capture_stranded_patch(drive_root: Any, run: _RunCustody) -> Dict[str, Any]:
     """Capture a reconciled dead-owner run without deciding its disposition."""
 
-    if not (run.execution_root and run.settled and not run.patch_disposed):
+    from ouroboros.delegate_directory import is_directory_run
+    if not ((run.execution_root or is_directory_run(run)) and run.settled and not run.patch_disposed):
         return {}
     try:
         block = capture_terminal_patch_for_drive(drive_root, run) or {}

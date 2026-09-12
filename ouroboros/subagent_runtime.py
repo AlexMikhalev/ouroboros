@@ -763,6 +763,8 @@ def exact_start(ctx: Any, prompt: str, spec: Optional[dict[str, Any]] = None) ->
             _canonical_work_order_fingerprint=canonical_work_order_fingerprint,
             _work_order_source_request=work_order_source_request,
             _coordination_context=coordination_context,
+            **{key: options.pop(key) for key in ("directory_strategy", "scope_paths")
+               if key in options},
         )
         # Every configured-session start lands here — the host's pre-start
         # (charter, owner 2026-08-28/29) and any model-issued retry/replacement
@@ -876,6 +878,8 @@ def delegate_start_entry(ctx: Any, prompt: str, _resolved_binding: Any = None, *
             "compiled_work_order": True,
             "work_order_fingerprint": str(bootstrap.get("work_order_fingerprint") or ""),
             "_coordination_context": str(prompt or ""),
+            **{key: bootstrap[key] for key in ("directory_strategy", "scope_paths")
+               if key in bootstrap},
         })
         if _resolved_binding is not None:
             bound["_resolved_binding"] = _resolved_binding

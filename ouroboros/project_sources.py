@@ -71,9 +71,8 @@ def validate_attach_path(
     """Validate an owner folder for attach. Checks run on the RESOLVED realpath
     (symlinks followed) so a symlink cannot smuggle the home root or repo/data in:
     must exist, be a directory, not be the home root itself, and not overlap the
-    Ouroboros system repo or data drive. Being a git repo is NOT required at attach
-    time (``init_git`` is the opt-in; task admission separately requires a git
-    worktree root and loud-fails otherwise). Returns (resolved, error)."""
+    Ouroboros system repo or data drive. Ordinary directories need no Git;
+    ``init_git`` remains an explicit optional operation. Returns (resolved, error)."""
     text = str(raw_path or "").strip()
     if not text:
         return None, "path is required"
@@ -100,9 +99,10 @@ def validate_attach_path(
 
 
 def is_git_worktree_root(path: pathlib.Path) -> bool:
-    """True when ``path`` IS a git worktree root (the same fact task admission's
-    validate_workspace_root later requires — checked at attach time so a non-git
-    attach cannot register a project whose room tasks are born dead, triad r5)."""
+    """Whether the directory itself is a Git worktree root, for optional Git setup.
+
+    Ordinary folder admission is independent of this capability observation.
+    """
     bootstrap_process_path()
     try:
         res = subprocess.run(
