@@ -389,8 +389,9 @@ function isMarkdownHeading(text, { rendered = false } = {}) {
     return visibleHeadingText(text, rendered).length <= MARKDOWN_HEADING_MAX_CHARS;
 }
 
-function headingOrProse(cls, text) {
-    return isMarkdownHeading(text, { rendered: true }) ? `<strong class="${cls}">${text}</strong>` : text;
+function headingOrProse(cls, text, breakAfter = false) {
+    return isMarkdownHeading(text, { rendered: true })
+        ? `<strong class="${cls}">${text}</strong>${breakAfter ? '<br>' : ''}` : text;
 }
 
 // The renderer's fence grammar (`/```(\w*)\n([\s\S]*?)```/`), line by line on the
@@ -439,7 +440,7 @@ export function joinMarkdownHeadings(text) {
     }).join('\n');
 }
 
-export function renderMarkdown(text) {
+export function renderMarkdown(text, { inlineHeadingBreaks = false } = {}) {
     let html = escapeHtmlText(text);
     html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
     // One pass for both span forms: a double-backtick span may contain backticks.
@@ -450,9 +451,14 @@ export function renderMarkdown(text) {
     // Header order matters: deeper levels first. Levels 4+ have no own size. A
     // marker in front of a whole paragraph is not a heading: past the length
     // cap the marker is dropped and the line stays prose.
-    html = html.replace(/^#{3,6} (.+)$/gm, (_, text) => headingOrProse('md-h3', text));
-    html = html.replace(/^## (.+)$/gm, (_, text) => headingOrProse('md-h2', text));
-    html = html.replace(/^# (.+)$/gm, (_, text) => headingOrProse('md-h1', text));
+    // Timeline labels stay inline, but their following paragraph needs a real
+    // copyable break when its surface collapses source whitespace.
+    const heading = (cls) => (match, content, offset, source) => headingOrProse(
+        cls, content, inlineHeadingBreaks && ['\r', '\n'].includes(source[offset + match.length]),
+    );
+    html = html.replace(/^#{3,6} (.+)$/gm, heading('md-h3'));
+    html = html.replace(/^## (.+)$/gm, heading('md-h2'));
+    html = html.replace(/^# (.+)$/gm, heading('md-h1'));
     html = html.replace(/^- (.+)$/gm, '<span class="md-li">\u2022 $1</span>');
     html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(_, text, url) {
         const safe = safeExternalUrl(decodeHtmlEntities(url));

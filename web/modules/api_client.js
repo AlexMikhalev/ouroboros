@@ -196,6 +196,13 @@ export function updateStrategyForPlan(plan = {}) {
 }
 
 export const apiClient = {
+    /** Read a recent window or replay one opaque, room-bound history page. */
+    chatHistory: ({ chatId = 1, cursor = null } = {}) => {
+        const params = new URLSearchParams();
+        if (chatId !== 1) params.set('chat_id', String(chatId));
+        if (cursor) params.set('cursor', cursor);
+        return fetchJson(`/api/chat/history${params.size ? `?${params}` : ''}`, { cache: 'no-store' });
+    },
     /** @returns {Promise<import('./api_types.js').HealthResponse>} */
     health: () => fetchJson('/api/health', { cache: 'no-store' }),
     /** @returns {Promise<import('./api_types.js').StateResponse>} */

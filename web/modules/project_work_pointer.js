@@ -1,6 +1,10 @@
 /** A navigation pointer to existing Project cards, never another work dashboard. */
+import { compareHistoryPosition } from './chat_history_replay.js';
+
 export function projectWorkTarget(records = []) {
-    const roots = records.filter(record => !record.isSubagent && record.root?.isConnected);
+    const roots = records.filter(record => !record.isSubagent && record.root?.isConnected)
+        .sort((a, b) => Number(a.root.dataset?.ts || 0) - Number(b.root.dataset?.ts || 0)
+            || compareHistoryPosition(a.historyPosition, b.historyPosition));
     return roots.filter(record => !record.finished).at(-1) || roots.at(-1) || null;
 }
 

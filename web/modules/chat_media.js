@@ -4,6 +4,7 @@ import { downloadViaHostBridge, normalizeTone, openViaHostBridge } from './ui_he
 import { MAX_LINK_ACTIONS } from './api_types.js';
 import { apiFetch, taskArtifactDownloadUrl } from './api_client.js';
 import { bindMenu } from './ui_interactions.js';
+import { stampHistoryNode } from './chat_history_replay.js';
 
 const MIME_RE = /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/;
 const BASE64_RE = /^[A-Za-z0-9+/=\s]+$/;
@@ -122,7 +123,9 @@ export function createChatMedia({
     stampNodeTimestamp,
 }) {
     const disposers = new Set();
+    const resourceOwners = new Map();
     const timers = new Set();
+    const timerOwners = new Map();
     const objectUrls = new Set();
     const groupingWrappers = new Set();
     const playerRegistry = new Set();
@@ -132,20 +135,24 @@ export function createChatMedia({
     let dialogFile = null;
     let destroyed = false;
 
-    function listen(target, type, handler, options) {
+    function listen(target, type, handler, options, owner = target) {
         if (!target) return () => {};
         target.addEventListener(type, handler, options);
         const dispose = () => target.removeEventListener(type, handler, options);
         disposers.add(dispose);
+        resourceOwners.set(dispose, owner);
         return dispose;
     }
 
-    function later(handler, delay) {
+    function later(handler, delay, owner = null) {
         const timer = setTimeout(() => {
             timers.delete(timer);
+            timerOwners.delete(timer);
+            if (owner && !owner.isConnected) return;
             handler();
         }, delay);
         timers.add(timer);
+        if (owner) timerOwners.set(timer, owner);
         return timer;
     }
 
@@ -174,6 +181,11 @@ export function createChatMedia({
             ${timeHtml}
         `;
         stampNodeTimestamp(bubble, rawTs);
+        if (msg.history_id) bubble.dataset.historyId = msg.history_id;
+        if (msg.history_position) {
+            bubble.dataset.historySource = msg.history_position.source;
+            bubble.dataset.historyOffset = String(msg.history_position.offset);
+        }
         return bubble;
     }
 
@@ -467,8 +479,10 @@ export function createChatMedia({
         });
         listen(menu, 'click', (event) => {
             if (event.target.closest('[data-photo-action]')) binding?.close({ restoreFocus: true });
-        }, { capture: true });
-        disposers.add(() => { binding?.destroy(); menu.remove(); });
+        }, { capture: true }, item);
+        const disposeMenu = () => { binding?.destroy(); menu.remove(); };
+        disposers.add(disposeMenu);
+        resourceOwners.set(disposeMenu, item);
 
         // A durable photo rides the host-bridge helper with BOTH addresses
         // (bridge form for the launcher gate, canonical for browsers); a data:
@@ -482,11 +496,11 @@ export function createChatMedia({
             window.open(source, '_blank', 'noopener');
         };
         listen(item.querySelector('.chat-photo'), 'click', openPhoto);
-        listen(action('open'), 'click', openPhoto);
+        listen(action('open'), 'click', openPhoto, undefined, item);
         listen(action('download'), 'click', async () => {
             try { await downloadSource(sourceRef, filename, mime); }
             catch (error) { showToast(`Could not download image: ${error?.message || error}`, 'error'); }
-        });
+        }, undefined, item);
         listen(action('copy'), 'click', async () => {
             try {
                 const blob = await sourceBlob(sourceRef, mime);
@@ -501,7 +515,7 @@ export function createChatMedia({
             } catch (error) {
                 showToast(`Could not copy image: ${error?.message || error}`, 'error');
             }
-        });
+        }, undefined, item);
     }
 
     function buildMediaBubble(msg) {
@@ -626,13 +640,23 @@ export function createChatMedia({
         const map = kind === 'photos' ? photoGroups : fileGroups;
         const selector = kind === 'photos' ? '.chat-gallery-item' : '.chat-file-item';
         const gridSelector = kind === 'photos' ? '.chat-gallery-grid' : '.chat-file-grid';
+        const ownItem = bubble.querySelector(selector);
+        if (ownItem && bubble.dataset.messageKey) ownItem.dataset.messageKey = bubble.dataset.messageKey;
+        if (ownItem && msg.history_id) {
+            ownItem.dataset.historyId = msg.history_id;
+            stampNodeTimestamp(ownItem, msg.ts);
+            delete bubble.dataset.historyId;
+        }
         if (!taskId) {
             insertMessageNode(bubble);
             return true;
         }
         const key = `${role}:${kind}:${taskId}`;
         const existing = map.get(key);
-        if (existing && isFeedTailWrapper(existing)) {
+        const sourceAfter = !msg.history_id || Number(existing?.dataset.ts) < Date.parse(msg.ts || '')
+            || Number(existing?.dataset.ts) === Date.parse(msg.ts || '')
+                && Number(existing?.dataset.historyOffset) <= Number(msg.history_position?.offset);
+        if (existing && isFeedTailWrapper(existing) && sourceAfter) {
             const item = bubble.querySelector(selector);
             const grid = existing.querySelector(gridSelector);
             if (!item || !grid) return false;
@@ -705,7 +729,7 @@ export function createChatMedia({
                 button.innerHTML = COPY_ICON_SVG;
                 button.title = 'Copy';
                 button.setAttribute('aria-label', 'Copy message');
-            }, 1500);
+            }, 1500, button);
         });
         // The bubble class reserves a timestamp gutter under the icon (style.css).
         bubble.classList.add('has-copy');
@@ -718,8 +742,10 @@ export function createChatMedia({
             try { dispose(); } catch {}
         }
         disposers.clear();
+        resourceOwners.clear();
         for (const timer of timers) clearTimeout(timer);
         timers.clear();
+        timerOwners.clear();
         for (const player of playerRegistry) {
             try {
                 player.pause();
@@ -745,6 +771,30 @@ export function createChatMedia({
         }
     }
 
+    // Release only the evicted page's subtree; other media and copy controls
+    // keep their listeners, playback, focus and outstanding user actions.
+    function release(root) {
+        const owns = (node) => node === root || root?.contains?.(node);
+        for (const [dispose, owner] of resourceOwners) if (owns(owner)) {
+            try { dispose(); } catch {}
+            resourceOwners.delete(dispose);
+            disposers.delete(dispose);
+        }
+        for (const [timer, owner] of timerOwners) if (owns(owner)) {
+            clearTimeout(timer); timers.delete(timer); timerOwners.delete(timer);
+        }
+        for (const player of playerRegistry) if (owns(player)) {
+            try { player.pause(); player.removeAttribute('src'); player.load?.(); } catch {}
+            playerRegistry.delete(player);
+        }
+        for (const wrapper of groupingWrappers) if (owns(wrapper)) {
+            groupingWrappers.delete(wrapper);
+            for (const map of [photoGroups, fileGroups]) {
+                for (const [key, value] of map) if (value === wrapper) map.delete(key);
+            }
+        }
+    }
+
     function destroy() {
         if (destroyed) return;
         reset();
@@ -766,30 +816,49 @@ export function createChatMedia({
         messagesRoot,
         deliverContentMutation = (mutate) => mutate(),
     }) {
+        const keysFor = (msg, legacy) => ({ legacy, exact: msg.history_id ? `history:${msg.history_id}` : legacy });
+        function alreadyRendered(msg, keys) {
+            if (seenMessageKeys.has(keys.exact)) return true;
+            if (!msg.history_id || !seenMessageKeys.has(keys.legacy)) return false;
+            const existing = Array.from(messagesRoot().querySelectorAll('[data-message-key]'))
+                .sort((a, b) => Number(b.matches('.chat-gallery-item, .chat-file-item'))
+                    - Number(a.matches('.chat-gallery-item, .chat-file-item')))
+                .find(node => node.dataset.messageKey === keys.legacy && !node.dataset.historyId);
+            if (!existing) return false;
+            stampHistoryNode(existing, msg.history_id, msg.history_position);
+            rememberMessageKey(keys.exact);
+            return true;
+        }
+        function rememberBubble(bubble, keys) {
+            bubble.dataset.messageKey = keys.legacy;
+            rememberMessageKey(keys.exact);
+            rememberMessageKey(keys.legacy);
+        }
         function appendMediaBubble(msg) {
-            const key = chatMediaMessageKey(msg);
-            if (key && seenMessageKeys.has(key)) return false;
+            const keys = keysFor(msg, chatMediaMessageKey(msg));
+            if (alreadyRendered(msg, keys)) return false;
             const bubble = buildMediaBubble(msg);
             if (!bubble) return false;
-            rememberMessageKey(key);
+            rememberBubble(bubble, keys);
             if ((msg.msg_type || msg.type) === 'photo') return buildGallery('photos', msg, bubble);
             return insertMessageNode(bubble) !== false;
         }
         function appendDocumentBubble(msg) {
-            const key = documentMessageKey(msg);
-            if (key && seenMessageKeys.has(key)) return false;
+            const keys = keysFor(msg, documentMessageKey(msg));
+            if (alreadyRendered(msg, keys)) return false;
             const bubble = buildDocumentBubble(msg);
             if (!bubble) return false;
-            rememberMessageKey(key);
+            rememberBubble(bubble, keys);
             return buildGallery('files', msg, bubble);
         }
         function appendLinksMessage(msg) {
             const actions = Array.isArray(msg.actions) ? msg.actions.slice(0, MAX_LINK_ACTIONS) : [];
             const key = `links:${msg.task_id || ''}:${msg.ts || ''}:${JSON.stringify(actions)}:${msg.title || ''}`;
-            if (seenMessageKeys.has(key)) return false;
+            const keys = keysFor(msg, key);
+            if (alreadyRendered(msg, keys)) return false;
             const bubble = buildLinksMessage(msg);
             if (!bubble) return false;
-            rememberMessageKey(key);
+            rememberBubble(bubble, keys);
             return insertMessageNode(bubble) !== false;
         }
         function appendQuizMessage(msg) {
@@ -833,6 +902,7 @@ export function createChatMedia({
         attachCopyControl,
         wireDeliveries,
         reset,
+        release,
         destroy,
     };
 }

@@ -79,14 +79,14 @@ export function buildTimelineItemHtml(item, record) {
     const isProgressLine = item.phase === 'working' || item.phase === 'thinking';
     const bodyId = `chat-live-line-body-${String(record.groupId || 'task').replace(/[^A-Za-z0-9_-]/g, '-')}-${String(item.lineKey || '').replace(/[^A-Za-z0-9_-]/g, '-')}`;
     const headContent = `
-        <span class="chat-live-line-title"${isProgressLine ? ' data-chat-markdown-enhanced' : ''}>${isProgressLine ? renderMarkdown(displayHeadline) : escapeHtml(displayHeadline)}</span>
+        <span class="chat-live-line-title"${isProgressLine ? ' data-chat-markdown-enhanced' : ''}>${isProgressLine ? renderMarkdown(displayHeadline, { inlineHeadingBreaks: true }) : escapeHtml(displayHeadline)}</span>
         <span class="chat-live-line-repeat" ${item.count > 1 ? '' : 'hidden'}>${item.count > 1 ? `${item.count}x` : ''}</span>
         ${item.ts ? `<span class="chat-live-line-time">${escapeHtml(item.ts)}</span>` : ''}
     `;
     const headHtml = expandable
         ? `
-            <button
-                type="button"
+            <div
+                role="button" tabindex="0"
                 class="chat-live-line-toggle"
                 data-live-line-toggle="${escapeHtmlAttr(item.lineKey)}"
                 aria-expanded="${expanded ? 'true' : 'false'}"
@@ -94,17 +94,18 @@ export function buildTimelineItemHtml(item, record) {
             >
                 <span class="chat-live-line-head">${headContent}</span>
                 <span class="chat-live-line-expand-label">${expanded ? 'Collapse' : ((item.truncated && item.fullRef) ? 'Show full' : 'Expand')}</span>
-            </button>
+            </div>
         `
         : `<div class="chat-live-line-head">${headContent}</div>`;
     return `
         <div
             class="chat-live-line ${item.phase || 'working'}${expandable ? ' expandable' : ''}"
             data-live-line-key="${escapeHtmlAttr(item.lineKey || '')}"
+            ${item.historyId ? `data-history-id="${escapeHtmlAttr(item.historyId)}"` : ''}
             data-expanded="${expanded ? '1' : '0'}"
         >
             ${headHtml}
-            ${displayBody ? `<div class="chat-live-line-body${showingFetched ? ' chat-live-line-body-full' : ''}" id="${escapeHtmlAttr(bodyId)}">${renderMarkdown(displayBody)}${loadingFull ? '<div class="chat-live-line-loading">Loading full output…</div>' : ''}</div>` : ''}
+            ${displayBody ? `<div class="chat-live-line-body${showingFetched ? ' chat-live-line-body-full' : ''}" id="${escapeHtmlAttr(bodyId)}">${renderMarkdown(displayBody, { inlineHeadingBreaks: true })}${loadingFull ? '<div class="chat-live-line-loading">Loading full output…</div>' : ''}</div>` : ''}
         </div>
     `;
 }
@@ -253,9 +254,31 @@ export function saveChatInputHistory(storage, key, entries) {
 export function liveLineRowToggleKey(target, selection = null) {
     const line = target?.closest?.('.chat-live-line.expandable');
     if (!line) return '';
-    if (target.closest('button, a, input, textarea, select, label, summary, [contenteditable="true"]')) return '';
+    const control = target.closest('button, a, input, textarea, select, label, summary, [contenteditable="true"], [role="button"]');
+    if (control && !control.matches?.('[data-live-line-toggle]')) return '';
     if (selectionInside(line, selection)) return '';
     return (line.dataset && line.dataset.liveLineKey) || '';
+}
+
+/** One listener owner survives keyed timeline patches and older-page replay. */
+export function bindLiveCardTimeline(el, onActivate) {
+    if (!el) return;
+    el.addEventListener('click', (event) => {
+        const lineKey = liveLineRowToggleKey(event.target, el.ownerDocument?.getSelection?.() || globalThis.getSelection?.());
+        if (!lineKey) return;
+        event.stopPropagation();
+        onActivate(lineKey, event);
+    });
+    el.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        const header = event.target?.closest?.('[data-live-line-toggle]');
+        if (!header || !el.contains(header)) return;
+        const lineKey = liveLineRowToggleKey(event.target);
+        if (!lineKey) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (!event.repeat) onActivate(lineKey, event);
+    });
 }
 
 /** Twins share a displayed role; their model is a separately labelled fact. */
@@ -277,11 +300,17 @@ export function subagentTwin(children, childId) {
 }
 
 /**
- * A non-collapsed text selection anchored inside `el`: the reader is copying,
+ * A non-collapsed text selection touching `el`: the reader is copying,
  * not clicking, so a click-to-toggle surface must not fire (DESIGN.md §5).
  */
 export function selectionInside(el, selection = globalThis.getSelection?.()) {
-    return Boolean(selection && !selection.isCollapsed && el?.contains?.(selection.anchorNode));
+    if (!el || !selection || selection.isCollapsed) return false;
+    if (el.contains?.(selection.anchorNode) || el.contains?.(selection.focusNode)) return true;
+    // Both endpoints can be outside a header while the selected range crosses it.
+    for (let i = 0; i < (selection.rangeCount || 0); i += 1) {
+        if (selection.getRangeAt(i).intersectsNode(el)) return true;
+    }
+    return false;
 }
 
 /**
@@ -292,14 +321,20 @@ export function selectionInside(el, selection = globalThis.getSelection?.()) {
  */
 export function bindContentButton(el, onActivate) {
     if (!el) return;
+    const nestedControl = (event) => {
+        const control = event.target?.closest?.('button, a, input, textarea, select, label, summary, [contenteditable="true"], [role="button"]');
+        return control && control !== el;
+    };
     el.addEventListener('click', (event) => {
-        if (event.detail && selectionInside(el)) return;
+        if (nestedControl(event) || (event.detail && selectionInside(el))) return;
+        event.stopPropagation?.();
         onActivate(event);
     });
     el.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
+        if (!nestedControl(event) && (event.key === 'Enter' || event.key === ' ')) {
             event.preventDefault();
-            el.click();
+            event.stopPropagation?.();
+            if (!event.repeat) el.click();
         }
     });
 }

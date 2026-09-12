@@ -146,7 +146,7 @@ test('subagent terminal projection leaves review rendering to the Reviews sectio
     assert.equal(summary.body, 'Concrete child result');
     assert.doesNotMatch(summary.fullBody, /panel_child|\[REVIEW\]/);
     assert.match(summary.fullBody, /\[RESULT\]\nConcrete child result/);
-    assert.deepEqual(summary.meta, ['write=none', 'status=completed']);
+    assert.deepEqual(summary.meta || [], []);
 });
 
 test('terminal subagent activity prefers the authoritative result over emitter boilerplate', () => {

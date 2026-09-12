@@ -1377,3 +1377,23 @@ export const MAX_QUIZ_OPTIONS = 6;
 // the card must not offer to send one.
 export const MAX_DECISION_COMMENT = 2000;
 export const GATEWAY_CONTRACT_VERSION = '7.0.0';
+
+/**
+ * @typedef {Object} ChatHistoryPosition
+ * @property {'chat'|'progress'} source
+ * @property {number} offset Physical byte offset in the retained source chain.
+ *
+ * @typedef {Object} ChatHistoryResponse
+ * @property {Array<Object>} messages Rows and hidden typed quiz/terminal replay evidence.
+ * @property {boolean} has_more Physical bytes remain; an empty sparse page is not EOF.
+ * @property {string|null} next_cursor Opaque room-bound older continuation.
+ * @property {string} page_cursor Replays this frozen page, including the initial recent window.
+ * @property {{complete:boolean,truncated_by:Array<string>}} window Whole-history coverage.
+ * @property {string} [next_before_ts] Legacy field retained for compatibility.
+ * @property {string} [error]
+ * @property {string} [reason_code]
+ *
+ * Physical messages and folded review attempts may additionally carry
+ * history_id:string and history_position:ChatHistoryPosition. They identify
+ * stored source records, never current task or review authority.
+ */

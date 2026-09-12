@@ -593,12 +593,13 @@ export function summarizeLogEvent(evt) {
     const taskMeta = (...items) => [evt.task_id ? `task=${evt.task_id}` : '', ...items];
 
     if (evt.is_progress || t === 'send_message') {
+        const narration = describeText(String(evt.content || evt.text || '').replace(/^💬\s*/, ''), 240, { markdown: true });
         if (isSubagentEvent(evt)) {
             const sid = subagentId(evt);
             const event = String(evt.subagent_event || 'update').toLowerCase();
             const role = String(evt.subagent_role || '').trim();
             return view(event === 'completed' ? 'done' : event === 'failed' || event === 'rejected' ? 'warn' : 'progress', subagentHeadline(sid, role, event, evt.model, { full: true }), {
-                body: shortText(String(evt.content || evt.text || '').replace(/^💬\s*/, ''), 240),
+                body: narration.preview,
                 meta: [
                     sid ? `task=${sid}` : '',
                     role ? `role=${role}` : '',
@@ -611,7 +612,7 @@ export function summarizeLogEvent(evt) {
         }
         return view(
             evt.task_id === 'bg-consciousness' ? 'thought' : 'progress',
-            shortText(String(evt.content || evt.text || '').replace(/^💬\s*/, ''), 240) || 'Progress update',
+            narration.preview || 'Progress update',
             { meta: [evt.task_id === 'bg-consciousness' ? 'background' : 'task'] },
         );
     }
@@ -1131,10 +1132,6 @@ export function summarizeChatLiveEvent(evt) {
             // subagent task id so "show full" can fetch the genuinely-full output.
             fullRef: sid,
             truncated: Boolean(evt.result_truncated || evt.trace_summary_truncated),
-            meta: [
-                evt.write_surface ? `write=${evt.write_surface}` : '',
-                status ? `status=${status}` : '',
-            ],
             // «ТУТ … субагент на codex» — the child's own executor chip.
             chip: executorChip(evt),
             model: evt.model,

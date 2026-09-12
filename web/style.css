@@ -1125,11 +1125,13 @@ body.resizing-panels { user-select: none; }
     50% { opacity: 0.5; }
 }
 
-/* "Load older" control at the top of the chat feed (perf2 P4.5). */
-.chat-load-older {
+/* History navigation at either edge of the rendered window. */
+.chat-load-older, .chat-load-newer {
     display: flex;
     justify-content: center;
     align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-2);
     padding: 6px 12px 10px;
 }
 .chat-load-older[hidden] { display: none; }
@@ -1138,7 +1140,7 @@ body.resizing-panels { user-select: none; }
     border: 1px solid var(--divider);
     border-radius: 999px;
     background: var(--bg-secondary);
-    color: var(--text-secondary);
+    color: var(--text-primary);
     font-size: var(--type-meta);
     padding: 5px 14px;
     cursor: pointer;
@@ -1149,9 +1151,13 @@ body.resizing-panels { user-select: none; }
     border-color: var(--accent);
 }
 .chat-load-older-btn:disabled { opacity: 0.6; cursor: default; }
+.chat-load-older-btn:focus-visible {
+    outline: 2px solid var(--focus-accent-border);
+    outline-offset: 2px;
+}
 .chat-load-older-note {
     font-size: var(--type-meta);
-    color: var(--text-muted);
+    color: var(--text-meta);
     text-align: center;
     max-width: 460px;
 }
@@ -2253,6 +2259,8 @@ body.resizing-panels { user-select: none; }
 }
 
 .chat-live-line-toggle {
+    user-select: text;
+    -webkit-user-select: text;
     width: 100%;
     padding: 0;
     border: 0;
