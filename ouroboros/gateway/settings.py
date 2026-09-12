@@ -737,7 +737,7 @@ def _review_capability_notices(settings: Dict[str, Any]) -> list:
 
 @owner_write_guard
 async def api_owner_context_mode(request: Request) -> JSONResponse:
-    """Persist the owner-selected context mode (low/max).
+    """Persist the owner-selected working context mode.
 
     Ordinary modes use this owner path; Cyber can also author a generic save.
     The choice applies to subsequent tasks, so no restart is required.
@@ -757,15 +757,15 @@ def _api_owner_context_mode_sync(request: Request, body: Any) -> JSONResponse:
     from ouroboros.context_mode_compat import VALID_CONTEXT_MODES
 
     if raw_mode not in set(VALID_CONTEXT_MODES):
-        return unsaved_error("'mode' must be one of: low, max", 400)
+        return unsaved_error("'mode' must be one of: " + ", ".join(VALID_CONTEXT_MODES), 400)
     next_mode = _config.normalize_context_mode(raw_mode)
     digest = settings_document_digest()
     previous_mode = _config.get_owner_context_mode()
     cyber = runtime_mode_at_least(_config.get_runtime_mode(), "cyber_pro")
-    if not cyber and previous_mode == "max" and next_mode == "low" and _has_running_agent_tasks():
+    if not cyber and VALID_CONTEXT_MODES.index(next_mode) < VALID_CONTEXT_MODES.index(previous_mode) and _has_running_agent_tasks():
         return unsaved_error(
             "Context mode can only be lowered while Ouroboros is idle. "
-            "Wait until no queued or running work remains, then switch Low/Max.",
+            "Wait until no queued or running work remains, then choose the working context.",
             409,
         )
 
@@ -783,10 +783,10 @@ def _api_owner_context_mode_sync(request: Request, body: Any) -> JSONResponse:
         # digest alone cannot attest idleness. Cyber can choose the next mode
         # during work; existing task snapshots retain their original settings.
         previous_mode = _config.get_owner_context_mode()
-        if not cyber and previous_mode == "max" and next_mode == "low" and _has_running_agent_tasks():
+        if not cyber and VALID_CONTEXT_MODES.index(next_mode) < VALID_CONTEXT_MODES.index(previous_mode) and _has_running_agent_tasks():
             return unsaved_error(
                 "Context mode can only be lowered while Ouroboros is idle. "
-                "Wait until no queued or running work remains, then switch Low/Max.",
+                "Wait until no queued or running work remains, then choose the working context.",
                 409,
             )
         # This endpoint IS the author of both keys, so they persist even at the shipped default.
