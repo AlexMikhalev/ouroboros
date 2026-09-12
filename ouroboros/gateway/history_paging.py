@@ -232,8 +232,9 @@ def select_history_page(data_dir, thread_id, view, cursor, quotas, predicates, c
             raise HistoryCursorError("history_cursor_invalid", 400)
     recent = not continuation or (continuation["kind"] == "page" and continuation["recent"])
     selections, upper, before, page_ends = {}, {}, {}, {}
+    paths = {"chat": data_dir / "logs" / "chat.jsonl", "progress": data_dir / "logs" / "progress.jsonl"}
     for source, quota in (("chat", "human"), ("progress", "progress")):
-        reader = HistorySource(data_dir / "logs" / f"{source}.jsonl", source,
+        reader = HistorySource(paths[source], source,
                                continuation["upper"][source] if continuation else None)
         upper[source] = reader.upper
         page_ends[source] = continuation["before"][source] if continuation else reader.upper
@@ -291,9 +292,14 @@ def deferred_before(source, entries, candidates, messages, before):
 
 
 def replay_evidence_rows(messages, evidence):
+    """Carry cross-page evidence only when this page has no equivalent fact."""
     visible = {row.get("history_id") for row in messages if row.get("history_id")}
     answered = {(row.get("task_id"), row["quiz"].get("quiz_id")) for row in messages
                 if row.get("msg_type") == "quiz" and row["quiz"].get("state") == "answered"}
+    terminals = {row["task_id"]: row["historical_terminal"] for row in messages
+                 if row.get("task_id") and row.get("historical_terminal")}
     return [row for row in evidence if row.get("history_id") not in visible
             and not (row.get("system_type") == "quiz_answer"
-                     and (row.get("task_id"), row["quiz"].get("quiz_id")) in answered)]
+                     and (row.get("task_id"), row["quiz"].get("quiz_id")) in answered)
+            and not (row.get("historical_terminal")
+                     and terminals.get(row.get("task_id")) == row["historical_terminal"])]

@@ -382,8 +382,8 @@ def test_project_activity_stays_out_of_main_static_contract():
     # History replay renders the durable compact completion independently of
     # task-card reconstruction.
     history = chat[
-        chat.index("async function syncHistory"):
-        chat.index("function cancelHistoryPaint")
+        chat.index("function applyHistoryMessages"):
+        chat.index("async function syncHistory")
     ]
     assert "appendTaskSummaryToLiveCard(msg" in history
     assert "PROJECT_ROW_TYPES.has(msg.system_type)" in history
@@ -595,7 +595,7 @@ def test_web_frames_keep_reference_order_and_one_authored_reply():
     logs = chat[chat.index("function updateLiveCardFromLogEvent"):chat.index("function addMessage")]
     assert logs.index("handleCardReference(evt)") < logs.index("const taskId = getLogTaskGroupId(evt)")
     assert logs.index("handleCardReference(evt)") < logs.index("applyEventTelemetry")
-    history = chat[chat.index("async function syncHistory"):chat.index("function cancelHistoryPaint")]
+    history = chat[chat.index("function applyHistoryMessages"):chat.index("async function syncHistory")]
     assert history.index("handleCardReference(msg)") < history.index("updateLiveCardFromProgressMessage(msg,")
     fanout = chat[chat.index("onWs('chat'"):chat.index("onWs('message_annotation'")]
     assert fanout.index("handleCardReference(msg)") < fanout.index("updateLiveCardFromProgressMessage(msg,")

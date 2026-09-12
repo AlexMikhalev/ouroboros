@@ -3225,6 +3225,16 @@ SPA, not a relocatable-page or multi-instance panel framework.
   coverage is chosen by risk; this WebKit-sensitive contract requires the
   engines exercised by its marker-gated UI smoke.
 
+History pages and reconnect merge into the existing keyed card/row owners. Preserve
+actual selected/focused/expanded nodes; rebuilding an equivalent node is not preservation.
+Physical source identity orders equal-time archive rows without rewriting JSONL.
+A historical frame never grants current activity or replaces newer terminal evidence.
+Eviction releases only its own page's media, markdown and decision views, protecting
+visible reading, focus and selection. Exact page handles retain return navigation;
+read gaps and sparse empty pages never become false EOF. Tests:
+`tests/test_chat_history_paging.py`, `tests/test_chat_history_paging_browser.py`
+and `web/tests/chat_history_integration.test.js`.
+
 The Project work pointer is a navigation component over the existing Chat card
 registry (`project_work_pointer.js`), updated inside the same viewport mutation
 transaction. Preserve its loaded-window coverage disclosure; a represented

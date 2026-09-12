@@ -177,11 +177,14 @@ def test_historical_terminal_never_overrides_current_result_authority(tmp_path, 
     status, payload = request(tmp_path)
     assert status == 200
     [narration] = [message for message in payload["messages"] if message.get("is_progress")]
-    [evidence] = [message for message in payload["messages"] if message.get("summary_kind")]
-    assert evidence["historical_terminal"]["status"] == "completed"
+    evidence = [message for message in payload["messages"] if message.get("summary_kind")]
     assert "task_terminal_status" not in narration
     if current in {"running", "finalizing"}:
+        assert len(evidence) == 1 and evidence[0]["historical_terminal"]["status"] == "completed"
         assert "historical_terminal" not in narration
+    else:
+        assert evidence == []  # the visible narration already carries this exact fact
+        assert narration["historical_terminal"]["status"] == "completed"
     if current == "finalizing":
         assert narration["task_phase"] == "finalizing" and narration["outcome_final"] is False
     if current in {"malformed", "future"}:

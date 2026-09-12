@@ -504,7 +504,16 @@ def test_child_projection_enters_main_cognition_and_project_lineage_not_main_ui(
     main_rows = json.loads(asyncio.run(endpoint(SimpleNamespace(
         query_params={"chat_id": "1"},
     ))).body)["messages"]
-    assert not any(row.get("task_id") == "child-main" for row in main_rows)
+    # The synthetic cognitive text is never a Main bubble. Its compact typed
+    # terminal observation can cross a page boundary to close older narration,
+    # but carries neither current task authority nor the cognitive result text.
+    [evidence] = [row for row in main_rows if row.get("task_id") == "child-main"]
+    assert evidence["system_type"] == "task_summary"
+    assert evidence["summary_kind"] == "terminal_result_projection"
+    assert evidence["text"] == "" and evidence["is_progress"] is False
+    assert evidence["historical_terminal"]["status"] == "completed"
+    assert not {"task_terminal_status", "outcome_axes", "review_projection", "result"} & evidence.keys()
+    assert "Unscoped child truth" not in json.dumps(main_rows)
 
 
 def test_project_build_reads_canonical_scratchpad_and_mutates_only_project_workpad(
