@@ -419,7 +419,7 @@ def get_trust_native_seeded_skills() -> bool:
 
 
 def get_runtime_mode() -> str:
-    """Return the configured runtime mode (light / advanced / pro)."""
+    """Return effective Access, preserving the process's restart-bound baseline."""
     default_val = str(SETTINGS_DEFAULTS["OUROBOROS_RUNTIME_MODE"])
     if _BOOT_RUNTIME_MODE is not None:
         return normalize_runtime_mode(_BOOT_RUNTIME_MODE)
@@ -430,12 +430,12 @@ def get_runtime_mode() -> str:
 
 
 def get_safety_mode() -> str:
-    """Return the owner-selected LLM-safety-supervisor coverage (full | light | off).
+    """Return captured Supervisor coverage (full | light | off).
 
-    Owner-only at the write surface (dropped from the agent-reachable /api/settings POST),
-    so the agent cannot lower its own safety coverage. Deterministic registry sandbox,
-    protected paths and light-mode guards run regardless (BIBLE P3: the LLM supervisor is a
-    layer, not the floor)."""
+    Ordinary modes use the owner writer; Cyber may configure subsequent work
+    through the same settings owner. Coverage is separate from Cyber's advisory
+    decision authority and from the facts of a saved physical request.
+    """
     default_val = str(SETTINGS_DEFAULTS["OUROBOROS_SAFETY_MODE"])
     return normalize_safety_mode(runtime_setting("OUROBOROS_SAFETY_MODE", default_val) or default_val)
 
