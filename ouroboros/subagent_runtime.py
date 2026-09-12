@@ -286,6 +286,7 @@ def select_subagent_snapshot(
     Availability is deliberately not embedded here: saved intent is immutable;
     dispatch/start records its dated live observation in a separate task field.
     """
+    from ouroboros.model_slots import resolve_processing_preference
 
     selected_id = str(subagent_id or "").strip()
     has_legacy = bool(legacy_model_lane_supplied or legacy_executor_supplied)
@@ -332,6 +333,8 @@ def select_subagent_snapshot(
             row.route, api_kind="api_model", pin_key="credential_profile_id"
         ),
         "effort": row.effort,
+        "processing_preference": resolve_processing_preference(
+            override=row.processing_preference or None, settings=dict(settings)),
         "selected_at": utc_now_iso(),
     }, used_legacy
 
@@ -353,6 +356,14 @@ def validate_subagent_snapshot(raw: Any) -> dict[str, Any]:
         raise SubagentSelectionError(
             "subagent_snapshot_invalid", "The task has no complete immutable subagent snapshot."
         )
+    from ouroboros.model_slots import normalize_processing_preference
+
+    try:
+        # An old durable snapshot captures legacy behavior, never today's global setting.
+        snapshot["processing_preference"] = normalize_processing_preference(
+            snapshot.get("processing_preference"))
+    except ValueError as exc:
+        raise SubagentSelectionError("subagent_snapshot_invalid", str(exc)) from exc
     return snapshot
 
 
@@ -763,6 +774,8 @@ def exact_start(ctx: Any, prompt: str, spec: Optional[dict[str, Any]] = None) ->
             _canonical_work_order_fingerprint=canonical_work_order_fingerprint,
             _work_order_source_request=work_order_source_request,
             _coordination_context=coordination_context,
+            **{key: options.pop(key) for key in ("directory_strategy", "scope_paths")
+               if key in options},
         )
         # Every configured-session start lands here — the host's pre-start
         # (charter, owner 2026-08-28/29) and any model-issued retry/replacement
@@ -876,6 +889,8 @@ def delegate_start_entry(ctx: Any, prompt: str, _resolved_binding: Any = None, *
             "compiled_work_order": True,
             "work_order_fingerprint": str(bootstrap.get("work_order_fingerprint") or ""),
             "_coordination_context": str(prompt or ""),
+            **{key: bootstrap[key] for key in ("directory_strategy", "scope_paths")
+               if key in bootstrap},
         })
         if _resolved_binding is not None:
             bound["_resolved_binding"] = _resolved_binding

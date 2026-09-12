@@ -20,7 +20,10 @@ from ouroboros.secret_masking import (
     MASKED_SECRET_SETTING_KEYS as SECRET_SETTING_KEYS,
 )
 from ouroboros.task_pacing import COST_PLANNING_MARGIN_USD
-from ouroboros.model_slots import MODEL_ACCOUNTS_KEY, MODEL_CONTEXT_WINDOWS_KEY, normalize_model_role_options
+from ouroboros.model_slots import (
+    MODEL_ACCOUNTS_KEY, MODEL_CONTEXT_WINDOWS_KEY, MODEL_PROCESSING_PREFERENCES_KEY,
+    PROCESSING_PREFERENCE_KEY, normalize_model_role_options, normalize_processing_preference,
+)
 from ouroboros.provider_models import parse_claudexor_model, provider_for_model
 
 
@@ -406,6 +409,8 @@ def build_initial_setup_state(settings: dict, host_mode: str = "desktop") -> dic
     state.update(budget_state)
     state["modelAccounts"] = normalize_model_role_options(MODEL_ACCOUNTS_KEY, settings.get(MODEL_ACCOUNTS_KEY))[0]
     state["modelContextWindows"] = normalize_model_role_options(MODEL_CONTEXT_WINDOWS_KEY, settings.get(MODEL_CONTEXT_WINDOWS_KEY))[0]
+    state["processingPreference"] = normalize_processing_preference(settings.get(PROCESSING_PREFERENCE_KEY))
+    state["modelProcessingPreferences"] = normalize_model_role_options(MODEL_PROCESSING_PREFERENCES_KEY, settings.get(MODEL_PROCESSING_PREFERENCES_KEY))[0]
     state.update({slot["stateKey"]: _string(settings.get(slot["settingKey"])) or defaults[slot["slot"]] for slot in _MODEL_SLOTS})
     return state
 
@@ -546,12 +551,17 @@ def validate_setup_payload(data: dict, current_settings: dict) -> Tuple[dict, st
         return {}, "Local-only setups must route at least one model to the local runtime."
 
     prepared = dict(current_settings)
-    for key in (MODEL_ACCOUNTS_KEY, MODEL_CONTEXT_WINDOWS_KEY):
+    for key in (MODEL_ACCOUNTS_KEY, MODEL_CONTEXT_WINDOWS_KEY, MODEL_PROCESSING_PREFERENCES_KEY):
         if key in data:
             try:
                 prepared[key] = normalize_model_role_options(key, data[key])[1]
             except ValueError as exc:
                 return {}, str(exc)
+    if PROCESSING_PREFERENCE_KEY in data:
+        try:
+            prepared[PROCESSING_PREFERENCE_KEY] = normalize_processing_preference(data[PROCESSING_PREFERENCE_KEY])
+        except ValueError as exc:
+            return {}, str(exc)
     prepared.update(models)
     prepared.update(keys)
     prepared.update(parsed_budget)
