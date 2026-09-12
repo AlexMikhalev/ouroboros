@@ -45,6 +45,8 @@ from ouroboros.secret_masking import (
     looks_masked_mcp_secret,
     looks_masked_settings_secret,
     mask_prefixed_secret,
+    mask_mcp_url,
+    rehydrate_mcp_url,
     mask_settings_secret,
 )
 from ouroboros.server_runtime import (
@@ -142,6 +144,8 @@ def _mask_mcp_servers_payload(servers: Any) -> list:
         clone = dict(entry)
         if clone.get("id"):
             clone["id"] = _mcp_canonical_id(clone.get("id"))
+        if "url" in clone:
+            clone["url"] = mask_mcp_url(clone["url"])
         token = str(clone.get("auth_token") or "")
         if token:
             clone["auth_token"] = mask_prefixed_secret(token, visible_chars=8)
@@ -226,9 +230,11 @@ def _rehydrate_mcp_servers_payload(incoming: Any, current: Any) -> list:
         clone = {key: value for key, value in entry.items() if key not in MCP_RESPONSE_ONLY_FIELDS}
         if clone.get("id"):
             clone["id"] = _mcp_canonical_id(clone.get("id"))
+        existing = current_by_id.get(_mcp_canonical_id(clone.get("id"))) or {}
+        if "url" in clone:
+            clone["url"] = rehydrate_mcp_url(clone["url"], existing.get("url"))
         token = str(clone.get("auth_token") or "")
         if looks_masked_mcp_secret(token):
-            existing = current_by_id.get(_mcp_canonical_id(clone.get("id")))
             clone["auth_token"] = str((existing or {}).get("auth_token") or "")
         out.append(clone)
     return out

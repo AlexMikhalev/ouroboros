@@ -130,6 +130,44 @@ def looks_masked_mcp_secret(value: Any) -> bool:
     return text == "***" or _looks_prefixed_mask(text, visible_chars=4) or _looks_prefixed_mask(text, visible_chars=8)
 
 
+
+def mask_mcp_url(value: Any) -> str:
+    """Mask URL userinfo for the editable Settings surface, preserving its address."""
+    from urllib.parse import urlsplit
+
+    text = str(value or "")
+    try:
+        authority = urlsplit(text).netloc
+    except ValueError:
+        # A malformed saved address remains editable without exposing credentials.
+        return CONFIGURED_SECRET_PLACEHOLDER if "@" in text else text
+    _userinfo, separator, host = authority.rpartition("@")
+    return text.replace(authority, "***@" + host, 1) if separator else text
+
+
+def rehydrate_mcp_url(value: Any, current_value: Any) -> str:
+    """Restore only the exact mask of this server's current URL.
+
+    A changed address with a placeholder has no newly supplied credentials;
+    remove the placeholder, never carry the old userinfo to a different target.
+    A real new userinfo or an explicit URL without it is kept as supplied.
+    """
+    from urllib.parse import urlsplit
+
+    text, current = str(value or ""), str(current_value or "")
+    if text == CONFIGURED_SECRET_PLACEHOLDER:
+        return current if current and mask_mcp_url(current) == text else ""
+    try:
+        authority = urlsplit(text).netloc
+    except ValueError:
+        return text  # a new invalid address is the ordinary config validator's input
+    userinfo, separator, host = authority.rpartition("@")
+    if not separator or userinfo != "***":
+        return text
+    if current and mask_mcp_url(current) == text:
+        return current
+    return text.replace(authority, host, 1)
+
 def looks_masked_secret(value: Any) -> bool:
     """Compatibility union of the exact placeholder shapes this module emits."""
     text = str(value or "").strip()

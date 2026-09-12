@@ -16,7 +16,7 @@ from ouroboros.mcp_client import (
     get_manager,
     reconfigure_from_settings,
 )
-from ouroboros.secret_masking import looks_masked_mcp_secret
+from ouroboros.secret_masking import looks_masked_mcp_secret, rehydrate_mcp_url
 
 log = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ async def api_mcp_refresh(request: Request) -> JSONResponse:
 
 
 async def api_mcp_test(request: Request) -> JSONResponse:
-    """Probe unsaved or edited MCP config; rehydrate masked saved auth token."""
+    """Probe the edited candidate with the same URL rehydration as Settings."""
     try:
         body: Dict[str, Any] = await request_json_or(request, {})
         await asyncio.to_thread(_ensure_configured)
@@ -82,8 +82,10 @@ async def api_mcp_test(request: Request) -> JSONResponse:
                 # Use the edited candidate, but rehydrate masked token
                 # values from the saved config. The caller can also omit
                 # auth_token entirely to intentionally test without auth.
-                probe = dict(candidate)
-                if looks_masked_mcp_secret(probe.get("auth_token")):
+                from ouroboros.gateway.settings import _rehydrate_mcp_servers_payload
+
+                probe = _rehydrate_mcp_servers_payload([candidate], [target])[0]
+                if looks_masked_mcp_secret(candidate.get("auth_token")):
                     probe["auth_token"] = str(target.get("auth_token") or "")
                 target = probe
             outcome = await asyncio.to_thread(manager.test_server, target, settings=settings)
@@ -94,6 +96,10 @@ async def api_mcp_test(request: Request) -> JSONResponse:
                 {"ok": False, "error": "request body must include `server` (object) or `server_id` (string)"},
                 status_code=400,
             )
+        # Without a selected saved server, URL masks cannot identify credentials.
+        candidate = dict(candidate)
+        if "url" in candidate:
+            candidate["url"] = rehydrate_mcp_url(candidate["url"], "")
         outcome = await asyncio.to_thread(manager.test_server, candidate, settings=settings)
         return JSONResponse(outcome)
     except Exception as exc:
