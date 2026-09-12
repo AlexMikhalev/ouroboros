@@ -792,7 +792,7 @@ def test_owner_context_mode_endpoint_persists_and_hot_applies(isolated_settings,
 
     invalid = client.post("/api/owner/context-mode", json={"mode": "huge"})
     assert invalid.status_code == 400, invalid.text
-    assert "'mode' must be one of: low, max" in invalid.text
+    assert "'mode' must be one of: nano, low, max" in invalid.text
     assert os.environ["OUROBOROS_CONTEXT_MODE"] == "low"
 
 
