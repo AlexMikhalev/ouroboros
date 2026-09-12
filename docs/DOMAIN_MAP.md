@@ -10,7 +10,7 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 |---|---|---:|---:|
 | D01 | Agent core & main loop | 30 | 0 |
 | D02 | LLM client, routing & providers | 36 | 0 |
-| D03 | Context assembly, fit & compaction | 12 | 0 |
+| D03 | Context assembly, fit & compaction | 11 | 0 |
 | D04 | Tool execution: registry, access & typed results | 20 | 0 |
 | D05 | Tool surfaces: files, code, shell, media, external | 28 | 0 |
 | D06 | Review stack | 66 | 0 |
@@ -25,7 +25,7 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D15 | Memory, knowledge, consciousness & self-evolution | 18 | 0 |
 | D16 | Observability, usage accounting & cost | 11 | 0 |
 | D17 | Projects, workspaces & task results | 20 | 0 |
-| D18 | Launcher, packaging, platform & shared substrate | 13 | 0 |
+| D18 | Launcher, packaging, platform & shared substrate | 14 | 0 |
 | D19 | Frozen contracts (ABI) | 10 | 0 |
 | D20 | Presence | 9 | 0 |
 | **total** | | **535** | **0** |
@@ -65,7 +65,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
 
 ## Hidden coupling (classified out of the strict graph)
 
-- lazy-only cross-domain pairs: **98**
+- lazy-only cross-domain pairs: **99**
   - D01->D08
   - D01->D10
   - D01->D11
@@ -133,6 +133,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
   - D14->D13
   - D14->D17
   - D14->D20
+  - D15->D05
   - D15->D06
   - D15->D07
   - D15->D08
@@ -258,7 +259,6 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/context_mode_compat.py`
 - `ouroboros/context_runtime_facts.py`
 - `ouroboros/main_context_authority.py`
-- `ouroboros/reference_books.py`
 - `ouroboros/tools/compact_context.py`
 
 ### D04 — Tool execution: registry, access & typed results
@@ -741,6 +741,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/packaged_cli.py`
 - `ouroboros/packaged_cli_install.py`
 - `ouroboros/platform_layer.py`
+- `ouroboros/reference_books.py`
 - `ouroboros/utils.py`
 - `ouroboros/verified_download.py`
 

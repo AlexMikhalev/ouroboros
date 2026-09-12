@@ -31,6 +31,11 @@
 # context instead of adding an attempt ledger (D09 -> D16). These dependencies
 # implement the accepted shared-wait contract; they add no cycle group.
 
+# Reference books describe physical Markdown sources and composition only, with no
+# cognitive policy or LLM state; their shared reader belongs to D18. Light memory
+# operations reuse the existing file/source reader (D15 -> D05) rather than
+# inventing a second parser, source resolver or review-coverage store.
+
 [meta]
 reference_tree = "ouroboros_v7_wip @ 9f691656e7e756c483f72ef549418c0e7a1b8054 (frozen)"
 population_rule = "git-tracked *.py under ouroboros/ and supervisor/, plus server.py and launcher.py"
@@ -98,7 +103,7 @@ D20 = "Presence"
 "ouroboros/consolidator.py" = "D15"
 "ouroboros/knowledge.py" = "D15"
 "ouroboros/markdown_source.py" = "D18"
-"ouroboros/reference_books.py" = "D03"
+"ouroboros/reference_books.py" = "D18"
 "ouroboros/context.py" = "D03"
 "ouroboros/context_runtime_facts.py" = "D03"
 "ouroboros/context_budget.py" = "D03"
@@ -868,6 +873,7 @@ lazy_only = [
   "D14->D13",
   "D14->D17",
   "D14->D20",
+  "D15->D05",
   "D15->D06",
   "D15->D07",
   "D15->D08",

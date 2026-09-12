@@ -124,7 +124,7 @@ def test_run_reflection_returns_entry_when_generated(tmp_path, monkeypatch):
         def chat(self, *, messages, model, reasoning_effort, max_tokens, model_role, **kwargs):
             captured["prompt"] = messages[0]["content"]
             captured["model_role"] = model_role
-            assert {tool["function"]["name"] for tool in kwargs["tools"]} == {"knowledge_read", "knowledge_list", "compact_context"}
+            assert {tool["function"]["name"] for tool in kwargs["tools"]} == {"knowledge_read", "knowledge_list", "compact_context", "read_file"}
             return {
                 "content": (
                     "Reflection text.\n"

@@ -394,6 +394,7 @@ def generate_reflection(
 ) -> Dict[str, Any]:
     """Call the light LLM and return a JSONL-ready reflection entry."""
     goal = _truncate_with_notice(task.get("text", ""), 200)
+    source_ref = None
     memory_operation_errors: List[Dict[str, Any]] = []
     error_details = _collect_error_details(llm_trace)
     markers = _detect_markers(llm_trace)
@@ -442,8 +443,11 @@ def generate_reflection(
                 project_id=str(task.get("project_id") or ""),
                 task_id=str(task.get("id") or task.get("task_id") or "reflection"))
         knowledge = KnowledgeReadContext(knowledge_context, "task_reflection")
+        from ouroboros.consolidator import retain_memory_source
+        complete_prompt = KNOWLEDGE_MAINTENANCE_PROMPT + prompt
+        source_ref = retain_memory_source(knowledge_context, "task_input_reflection", complete_prompt.encode("utf-8"))
         raw_reflection_text, refl_usage = _call_consolidation_llm(
-            llm_client, KNOWLEDGE_MAINTENANCE_PROMPT + prompt, "Task reflection", knowledge=knowledge)
+            llm_client, complete_prompt, "Task reflection", knowledge=knowledge, source_ref=source_ref)
         raw_reflection_text = raw_reflection_text.strip()
         memory_operation_errors = refl_usage.get("_consolidation_errors") or []
         if not raw_reflection_text and memory_operation_errors:
@@ -529,6 +533,7 @@ def generate_reflection(
         "reflection": reflection_text,
         "backlog_candidates": backlog_candidates,
         "memory_actions": memory_actions,
+        **({"source_ref": source_ref} if source_ref else {}),
         **({"memory_operation_errors": memory_operation_errors} if memory_operation_errors else {}),
     }
 
