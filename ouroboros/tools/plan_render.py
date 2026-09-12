@@ -282,6 +282,7 @@ def _dialogue_source_view(wave: dict, *, cached: bool) -> list[str]:
 def _render_wave(
     wave: dict, *, cap: Optional[int], cycles_paid: int, enforcement: str,
     cached: bool = False, notes: Optional[List[str]] = None, reminder: str = "",
+    historical_feedback: Optional[list[dict]] = None,
 ) -> str:
     aggregate = str(wave.get("aggregate") or "")
     closed = bool(wave.get("closed"))
@@ -315,7 +316,7 @@ def _render_wave(
             "", "⚠️ REVIEW CUSTODY PENDING: the received quorum is provisional; "
             "a paid reviewer operation is still in flight and this wave remains open."
         ]
-    elif aggregate == "DEGRADED":
+    elif aggregate == "DEGRADED" and historical_feedback is None:
         # Banner aligned with _next_step: the replay promise depends on whether the
         # wave carries structural snapshot evidence (see _degraded_replay_note).
         lines += ["", "⚠️ DEGRADED: no parseable reviewer quorum — recorded as an OPEN wave; "
@@ -334,7 +335,7 @@ def _render_wave(
             f"- declared reviewer effort: {wave['reviewer_effort']} (this envelope's order; an explicit "
             "per-row effort or a compound route slug outranks it)")
     lines += [
-        "", "### Reviewer slots", "", *actor_lines,
+        "", "### Reviewer slots" + (" (original recorded state)" if historical_feedback is not None else ""), "", *actor_lines,
         "", "### Findings (per slot; finding_id = slot:id)", "", "```json",
         json.dumps(finding_page, ensure_ascii=False, indent=2, default=str), "```",
     ]
@@ -351,6 +352,23 @@ def _render_wave(
         lines += ["", "### Unparseable reviewer output (bounded preview)", ""]
         for actor in previews:
             lines += [f"#### {actor.get('slot_id')}", _quote_control_lines(str(actor.get("raw_text_preview"))), ""]
+    if wave.get("historical_supplements"):
+        lines += ["", "### Historical feedback", "",
+                  "Late responses are retained separately. The original actors, aggregate and closure below "
+                  "have not been recomputed; these sources do not create a new PASS."]
+        resolved = {row["operation_id"]: row for row in historical_feedback or []}
+        for row in wave["historical_supplements"]:
+            ref = row.get("source_ref") or {}
+            lines += [f"#### {row.get('slot_id')} · cycle {row.get('cycle_index')} · {row.get('operation_state')}",
+                      f"Operation: {row.get('operation_id')}. Source SHA256: {ref.get('sha256') or 'unavailable'}.",
+                      f"Source: read_file(root='artifact_store', path='{ref.get('path') or ''}')."]
+            result = (resolved.get(row.get("operation_id")) or {}).get("result")
+            if result is not None:
+                if result.get("error"):
+                    lines += ["Recorded error: " + _quote_control_lines(str(result["error"]))]
+                lines += [_quote_control_lines(str(result.get("text") or "(no reviewer text)"))]
+            else:
+                lines += ["Full source is retained at the reference above; its body was not read for this view."]
     lines += [
         "", f"### Aggregate: {aggregate}" + (" (closed)" if closed else " (open)"),
         "", "Reasons: " + (", ".join(str(r) for r in wave.get("reasons") or []) or "none")
@@ -367,7 +385,10 @@ def _render_wave(
     outcome, closed = wave_control_state(wave)
     lines += [
         "", "## Plan Review Contract", "",
-        _next_step(wave, enforcement=enforcement, cap=cap, cycles_paid=cycles_paid), "",
+        ("This is a free read of the completed historical responses. No reviewer was called and no cycle "
+         "was consumed. Consider the feedback alongside the current task; the original review decision "
+         "remains unchanged." if historical_feedback is not None else
+         _next_step(wave, enforcement=enforcement, cap=cap, cycles_paid=cycles_paid)), "",
         PLAN_REVIEW_CONTROL_PREFIX + json.dumps({"outcome": outcome, "closed": closed}, separators=(",", ":")),
     ]
     return "\n".join(lines)

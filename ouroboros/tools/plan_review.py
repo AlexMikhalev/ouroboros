@@ -59,6 +59,7 @@ from ouroboros.tools.plan_review_runtime import (
     REVIEWER_EFFORT_SCHEMA as _REVIEWER_EFFORT_SCHEMA,
     publish_plan_review_projection as _publish_plan_review_projection,
     publish_rendered_wave as _publish_rendered_wave,
+    completed_historical_feedback as _completed_historical_feedback,
     plan_payload_roots as _plan_payload_roots,
     plan_review_slots as _plan_review_slots,
     plan_reviewer_config_fingerprint as _plan_reviewer_config_fingerprint,
@@ -529,12 +530,16 @@ async def _run_plan_review_async(ctx: ToolContext, request: _PlanRequest, *, col
     if existing is not None:
         try:
             existing = _authority_wave(state_root, task_id, existing)
+            historical = _completed_historical_feedback(ctx, existing)
         except (OSError, ValueError, json.JSONDecodeError):
             return _plan_unavailable(
                 ctx,
                 "ERROR: Exact plan-review authority is unreadable; replay and disposition are refused.",
                 "plan_review_exact_artifact_unavailable",
             )
+        if historical is not None:
+            return _publish_rendered_wave(ctx, existing, cap=cap, cycles_paid=cycles_paid,
+                enforcement=enforcement, cached=True, reminder=reminder, historical_feedback=historical)
         resume_in_flight = _plan_wave_has_in_flight(existing)
         # Identical requests replay free unless authority lapsed; fully rejected
         # blocking findings are the one earned-delta exception (4e133c8a).
