@@ -87,14 +87,11 @@ rules have no automated surface — review-only.
 - A process cwd determines relative paths, not the root task's entire write
   authority. Reuse the resource binding for other authorized destinations;
   preserve child write confinement and actual runtime/credential boundaries.
-  Only the filesystem writer lane excludes SSH remote payloads, retaining local
-  options and redirections. Other guards inspect the original command, as does
-  execution. Child, external-task and Light read checks share the physical paths
-  from `shell_guards.shell_inspection_paths`, including each row's effective cwd.
-  Remote commands can reach local files through configured SSH trust (including
-  loopback); this local inspection is not a remote-effect sandbox.
-  Positional GitHub policy inspects direct `gh` and shell-wrapper segments;
-  remote `ssh ... gh auth` is an inherited residual, not classified as local auth.
+  Process admission preserves original argv and the prepared physical target.
+  Do not reconstruct semantic permission from command words or guessed effects;
+  use the Supervisor source and mode contract in ARCHITECTURE "Safety and runtime
+  mode". Explicit task resources and actual Git targets remain distinct from
+  semantic judgment; this does not promise an SSH or OS sandbox.
 - Do not infer credential authority from ordinary source/config directory
   names. Reads and searches share ONE byte masker in every scope: known token
   formats and PEM private-key blocks are masked, ordinary long source, hashes
@@ -136,8 +133,10 @@ rules have no automated surface — review-only.
 
 Do not lower model quality, reasoning effort, output budget, or context breadth
 as an incidental latency/cost optimization (BIBLE P1 owns the principle). An
-intentional narrowing is an owner-approved change reflected in the plan, docs,
-tests, and evidence. No automated surface — review-only: commit review carries
+intentional narrowing is an explicit recorded decision reflected in the plan,
+docs, tests, and evidence; outside Cyber Pro it belongs to the owner. Cyber
+configuration authority follows BIBLE P0/P3 without rewriting earlier call facts.
+No automated surface — review-only: commit review carries
 it through CHECKLISTS items 1 (`bible_compliance`) and 21
 (`capability_regression`: an accidental narrowing is the named failure class).
 
@@ -872,7 +871,7 @@ declared keys whose values are `None`, `""` or `[]`) is ignored, never mistaken
 for a second operation, while any non-empty list, undeclared key or non-blank
 string is meaning and makes the call mixed. Never replay the plan envelope with
 the disposition.
-Any real blocking finding, including one below quorum, stays open pending a paid
+Outside Cyber Pro, a real blocking finding, including one below quorum, stays open pending a paid
 delta review of a changed spec or justified rejection, when capacity remains; advice
 does not become a blocker through repetition. Blocking `REVISE_PLAN` likewise
 requires another panel when another paid cycle is available; advisory
@@ -883,8 +882,9 @@ is never a required number of findings.
 
 Force-plan is an LLM-first pre-implementation obligation on the admitted
 managed root, not a mechanical permission check. `plan_review_state` owns
-durable review authority and `config.get_review_enforcement()` owns
-blocking/advisory policy. Every submitted envelope that reaches `plan_task`
+durable review facts and `config.get_review_enforcement()` owns the configured
+blocking/advisory value. Effective Cyber authority is separate and follows
+BIBLE P0/P3; it never rewrites an old wave to GREEN. Every submitted envelope that reaches `plan_task`
 supersedes prior authority, so a newer attempt cannot fall back to an older
 GREEN. Wave recording, free replays, DEGRADED semantics, structurally dead
 slots, and `quorum_unreachable` release live in ARCHITECTURE "Plan
@@ -1070,8 +1070,11 @@ ARCHITECTURE "Review delivery" owns the dataflow.
 A technical review failure may permit continuing under owner-selected advisory
 enforcement on a known, independently bound candidate. The failure's phase,
 reason, received findings and full result stay recorded as failure, never PASS.
-Blocking enforcement still blocks. Candidate/ownership, unfinished custody,
-Stop/deadline and budget/admission errors remain independent. Diagnostic
+Outside Cyber Pro, Blocking enforcement still blocks. Cyber may continue
+without prior review, preserving the original findings, missing sources and
+pending invocation. It never fabricates candidate bytes, completed custody or
+physical effects; Stop, deadline and cost facts remain independently recorded.
+Diagnostic
 `repo_commit_ready` projects this permission only from an exact repo/hash match;
 it does not change the failed review's status or freshness.
 
@@ -1377,8 +1380,8 @@ and `tests/test_skill_payload_binary_transfer.py`.
 
 ### Task contract resource policy
 
-- `resource_policy.protected_artifacts` is enforced as a typed affordance
-  policy in every runtime mode: execute-only black-box references may run;
+- Outside Cyber Pro, `resource_policy.protected_artifacts` is a typed affordance
+  policy: execute-only black-box references may run;
   byte reads, copy/hash/static introspection, tracing, and debugging of
   declared paths are blocked.
 - Observable Acceptance Claims are bounded, advisory, task-general criteria
@@ -1643,8 +1646,9 @@ schedule retain their separate existing CI owners.
 ### Light mode and external deliverables
 
 - `runtime_mode=light` is a self-modification boundary (`ouroboros/config.py`
-  owns the semantics; ARCHITECTURE "Safety and runtime mode" states why). `pro` and `cyber_pro` share the protected-rewrite seam, while `cyber_pro` additionally permits the selected owner-configuration paths; User-visible deliverables are allowed when they are outside the
-  Ouroboros repo/control-plane.
+  owns the semantics; ARCHITECTURE "Safety and runtime mode" states why). Pro
+  permits protected rewrites; Cyber agency follows the same effective Access
+  owner. Light still supports user deliverables outside the Ouroboros repo/control-plane.
 - Preferred flow: `task_drive` for scratch, `artifact_store` for canonical
   deliverables, `user_files` for the owner's visible copy.
   `write_file(root=user_files)` and declared process `outputs` register/copy
@@ -1690,32 +1694,12 @@ schedule retain their separate existing CI owners.
   Accepted follow-up inputs retain their exact manifest sources separately from
   the initial task contract. Copy failure retains the owner mailbox as the retry
   source; successful retry releases it through normal terminal cleanup.
-- For argv-visible targets, the shell guard checks lexical Deliverables origin
-  before generic workspace or executor roots, then the symlink-resolved
-  destination; direct `cp`/`mv`/`ln` directory destinations derive their
-  immediate child target. The pre-execution workspace lane uses
-  `shell_parse.split_redirections` as its one redirect grammar and emits one
-  `(segment_argv, targets, inline_code, unprovable)` row per shell segment. It
-  recurses through shell `-c` bodies at most three levels. A visible heredoc is
-  attached as program text only when its interpreter has no inline program or
-  script-file operand; shell stdin programs recurse like `-c` bodies. Python
-  UNKNOWN is independent of recovered targets; Node opaque execution and
-  write-shaped Perl bodies follow the same rule. `cd`/`pushd` and `env
-  -C`/`--chdir` update a sequential, symlink-resolved effective cwd used for
-  later/wrapped relative writes, while find/xargs replacement placeholders are
-  never concrete targets. An `unprovable` row widens only that
-  row's tokens and inline/heredoc body mentions, never an independent read-only
-  segment. The raw mention lane remains separate so POSIX shlex cannot erase
-  Windows drive/UNC spellings; the light fence likewise retains its unfiltered
-  inline-body signal.
-- This is conservative target extraction, not a full shell interpreter.
-  Variable/indirect destinations, path construction performed at runtime,
-  wrapper grammars beyond the bounded shell-body recursion, and inode aliases
-  remain parser residuals. The post-execution undeclared-output audit also
-  cannot reconstruct post-`cd` relative writes or unwalked recursive copies
-  (`ouroboros/tools/shell_guards.py`, `ouroboros/tools/deliverables_shell.py`).
-  Known parser gaps remain `dd of=`, `install`, `git -C /outside apply`, and bare
-  `xargs -I{} cp x {}` without a visible producer; they are not broadened here.
+- Preserve exact process arguments and the prepared resource binding through
+  admission and execution. Quoted examples and unknown interpreter effects are
+  not proof of writes. ARCHITECTURE "Safety and runtime mode" owns the full
+  source/Supervisor contract; reuse it without a second detector, consent store
+  or automatic repetition of a denied operation. Post-execution observations
+  annotate the original result and never roll back concurrent owner state.
 - `scratch=[...]` is a DISTINCT channel from `outputs=[...]`: ephemeral
   in-cwd verification files, exempt from the undeclared-output guard, never
   registered as artifacts, adopted only with a declaration-time sha through
@@ -1737,8 +1721,7 @@ schedule retain their separate existing CI owners.
   `user_files_path_blocked`, `cwd_blocked`, and `artifact_output_undeclared`
   are non-failure outcomes; failing to register a declared output remains
   `artifact_output_error`.
-- The default shell lane carries the same target-aware git policy in every
-  runtime mode: mutating git is blocked only when it targets the Ouroboros
+- Outside Cyber Pro, the default shell lane carries target-aware git policy: mutating git is blocked only when it targets the Ouroboros
   runtime (bidirectional, casefold, symlink-resolved containment;
   `commit_reviewed` is the remedy for self-repo changes); read-only git works
   everywhere; the network fence still applies; acting `self_worktree`
@@ -1885,10 +1868,11 @@ both critical. The imperatives:
   requested/permitted/attempted/achieved depth facts and never recompute
   historical permission from current Settings.
 - `active_tool_profile` fails closed to read-only, never to
-  `self_modification`/`operator_control`; `external_tool_grants` is
-  deny-by-default; acting children keep commit, tool-enable and cognitive-memory
-  tools blocked. Cyber-effective acting children inherit selected review, runtime
-  and skill tools through the existing matrix; ordinary restrictions remain. Only
+  `self_modification`/`operator_control`. Ordinary external grants remain
+  deny-by-default and ordinary acting-tool restrictions remain. Cyber acting
+  children use the actual registered capability catalog; a static inherited
+  name exclusion or default-empty grant list must not hide an existing tool.
+  An explicit read-only assignment remains read-only. Only
   `schedule_subagent` may create subagents (forged `delegation_role`
   rejected at API/CLI ingress); live `memory_mode=shared` stays disabled
   (`tests/test_acting_subagents.py`). The subagent browser boundary refuses a
@@ -2034,9 +2018,10 @@ owner, owed terminal delivery, cascade postconditions — lives in ARCHITECTURE
   immediate effects, explicit task overrides and boot pins. The OOP extension
   payload carries only permitted typed values, never the whole snapshot. Test
   actual child dispatch, unchanged empty/absent values, and current grant checks.
-- Cyber retains supplied-key/host/child authority and Supervisor configuration;
-  it cannot self-switch review scope/enforcement or context Low. Apply this at
-  existing guards and instructions without turning every setting into a new ban.
+- Cyber can select context, review scope/enforcement, models and Supervisor
+  configuration through the existing settings writer. Use effective Access for
+  that authority; retain task snapshots, restart-bound access, install-time
+  provenance and honest write receipts. Permission is not a review verdict.
 
 
 - One five-step wizard serves subscriptions, API keys and mixed installs:
@@ -2178,7 +2163,7 @@ owner, owed terminal delivery, cascade postconditions — lives in ARCHITECTURE
 
 - `LLMClient.chat` and `chat_async` accept optional `stream=False`, `caller_deadline_ts` (Unix seconds) and `caller_execution_deadline` (the existing quota-adjusted monotonic clock). Main opts into streaming. Subtract finalization reserve once at the caller; every physical recovery send re-checks the inherited bounds. Unset deadlines keep ordinary transport defaults. A socket-phase timeout is not an overall wall-clock promise, and late paid completion retains its original attempt.
 - Stream consumption completes inside physical accounting. Preserve indexed tools, native signatures, complete final framing and cumulative usage snapshots. An EOF/error/cancellation retains private wire evidence and cannot produce a usable partial answer. Only a structural parameter rejection uses the existing wire recovery; never infer a retry from missing stream text or ping cadence. Compatible async tool calls now use the same normalizer/validation path; local, GigaChat and Claudexor retain their separate wire contracts.
-- Late reviewer reuse resolves the exact operation's complete producer receipt from existing CAS, with original task/root/attempt, slot/route, subject, contract, roster/epoch and delegated invocation where present. The current surface remains the sole wave writer and reducer. No source file existence, preview or matching prompt prose alone grants authority; missing/partial/error/mismatched custody never buys another same-operation dispatch.
+- Late reviewer reuse resolves the exact operation's complete producer receipt from existing CAS, with original task/root/attempt, slot/route, subject, contract, roster/epoch and delegated invocation where present. The current surface remains the sole wave writer and reducer. Late plan feedback attaches through that writer as an exact-operation historical supplement, preserving the old actors, verdict and current-wave pointer; paid settlement is recorded once. No source file existence, preview or matching prompt prose alone grants authority; missing/partial/error/mismatched custody never buys another same-operation dispatch.
 - Managed unknown-outcome recovery uses the existing network-wait owner, with non-generating upstream observations and an explicit new-attempt notice after connectivity returns. Keep old outcome/cost unknown and apply current budget/Stop/deadline before dispatch. Subscription catalogs prove reachability only with generic `provenance="provider_http"` plus `observedAt` after wait entry and exact source/model/effective account; legacy/static catalogs remain unknown. A control-channel outage first rejoins the same accepted operation. Non-generating HEAD uses the existing connection allowance for every socket phase, narrowed by the owner remainder, rather than inheriting a cognitive read window without its lease. No scheduler, provider/model table, paid readiness probe or automatic manual-restart recovery is introduced.
 - `delegate_wait` supervision's three-second observation beat is separate from its HTTP read allowance. A typed read-only-retryable transport failure (read timeout, connect error or timeout, pool timeout, read/write error, protocol error) is a quiet observation hole carrying its typed reason and the actual elapsed time; the beat does not slow and no durable counter or outage latch is kept. The reason is per class, because our own read bound expiring against a live daemon is not the same fact as a socket that carried no answer: only the second is disclosed to the owner, once per episode with one recovery line, each stamped with that episode. Received auth/protocol failures and owner controls remain meaningful. After terminal cleanup, use the current custody host notice alongside the original answer/narrative. Genuine builtin refusals publish typed non-success at their producer; successful warnings and existing review/Git warning buckets keep their semantics. Acceptance JSON validity and completion cleanliness remain separate decisions.
 
@@ -2646,10 +2631,13 @@ by "Provider Independence" above. Call-site imperatives:
   seal task ingress; actual final delivery does. Keep subtree/status facts
   separate from reviewer findings and Cyber's authority under BIBLE P0.
 - Delivery-control JSON applies only to a final response with no tool calls.
-  Retaining an answer leaves tools available for further work; changed evidence
-  still requires the existing complete replacement. A requested file or diff
+  Retaining an answer leaves tools available for further work. Main may keep
+  the complete answer while explicitly changing effective criteria or material
+  evidence; that creates a new review subject, not fresh authority from an old
+  verdict. Source acknowledgement never infers semantic change by generation.
+  A requested file or diff
   does not imply a universal commit-or-revert rule. Self-modification keeps its
-  reviewed-commit contract.
+  reviewed-commit contract under BIBLE P0/P3.
 - Post-task synthesis receives `completion_observations` from the existing
   terminal result writer: per-send-tool counts and latest recorded returns,
   task-related skill readiness plus coverage, and a full redacted artifact for
@@ -2735,15 +2723,12 @@ by "Provider Independence" above. Call-site imperatives:
   restarted supervisor. The transient recovery report defers task-source pruning
   for that pass when any protected/unresolved source or ownership/read error
   remains; no saved anchor is required. Never race unknown prior worker ownership.
-- The host buys one authoritative acceptance panel per PAID IDENTITY —
-  `sha256(candidate_hash + the sorted set of nonempty (obligation_id,
-  disposition, sha256(reason)) tuples)`; an empty disposition reason hashes
-  to `""` and buys nothing. Only a changed candidate answer or a new
-  nonempty obligation disposition mints a paid panel — the evidence revision
-  must NOT (every cosmetic tool call moves it) — and an unchanged paid
-  identity replays the recorded verdict for FREE, terminalizing with the
-  typed `identical_acceptance_refused` reason. This prices changed
-  substance, never cosmetic evidence revision.
+- Acceptance payment follows the semantic subject and substantive disposition
+  identity defined in ARCHITECTURE "Task lifecycle". Source generations,
+  read repetition or narration alone do not create paid authority; changed
+  effective criteria or material evidence can change it even with identical
+  answer text. Reuse the existing subject and paid-identity owners, never
+  introduce a second hash or rely on cosmetic answer edits.
 - Task-acceptance actors are the configured triad rows (owner R0–R2,
   2026-09-01; `reviewer_slot_config.triad_delivery_slots`, malformed config
   refuses typed) and receive one substantive interaction on their own
