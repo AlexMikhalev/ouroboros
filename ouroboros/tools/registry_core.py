@@ -27,6 +27,7 @@ from ouroboros.runtime_mode_policy import (
     PROTECTED_RUNTIME_PATHS,
     core_patch_notice,
     mode_allows_protected_write,
+    mode_has_unrestricted_agency,
     runtime_mode_at_least,
     protected_paths_in,
     protected_write_block_message,
@@ -473,7 +474,11 @@ class ToolRegistry:
         except (OSError, TypeError, ValueError, RuntimeError):
             return False
 
-    def _acting_tool_grants(self) -> set:
+    def _acting_tool_grants(self) -> set | None:
+        from ouroboros.config import get_runtime_mode
+
+        if mode_has_unrestricted_agency(get_runtime_mode()):
+            return None  # No inherited name filter; explicit task/resource facts still apply.
         tc = normalize_task_constraint(getattr(self._ctx, "task_constraint", None))
         return set(getattr(tc, "external_tool_grants", ()) or ()) if tc else set()
 
@@ -509,7 +514,7 @@ class ToolRegistry:
                 names.add("verify_and_record")
             return frozenset(names)
         if self._is_acting_subagent():
-            return acting_tool_names_for_context(self._ctx)
+            return acting_tool_names_for_context(self._ctx, self._entries)
         return frozenset(set(self.available_tools()) | set(META_TOOL_NAMES))
 
     def available_tools(self) -> List[str]:
@@ -524,7 +529,7 @@ class ToolRegistry:
             if _presence_tool_allowed(self._ctx, e.name)
             if _builtin_tool_availability(e.name, self._ctx)[0]
             if not local_readonly_subagent or self._readonly_tool_allowed(e.name)
-            if not acting_subagent or e.name in acting_tool_names_for_context(self._ctx)
+            if not acting_subagent or e.name in acting_tool_names_for_context(self._ctx, self._entries)
         ]
 
     def _schema_for_entry(self, entry: ToolEntry) -> Dict[str, Any]:
@@ -586,7 +591,7 @@ class ToolRegistry:
                 props = schema.get("parameters", {}).get("properties", {})
                 for field in ("root", "bucket", "skill_name"):
                     props.pop(field, None)
-        elif self._is_acting_subagent():
+        elif self._is_acting_subagent() and self._acting_tool_grants() is not None:
             # Advertise only what the acting profile can actually execute: writes go
             # ONLY to the isolated surface (active_workspace); reads use the read roots;
             # browser evaluate remains available on the current page; the browser
@@ -695,7 +700,7 @@ class ToolRegistry:
             if _presence_tool_allowed(self._ctx, entry.name)
             if entry.name not in unavailable_tools
             if not local_readonly_subagent or self._readonly_tool_allowed(entry.name)
-            if not acting_subagent or entry.name in acting_tool_names_for_context(self._ctx)
+            if not acting_subagent or entry.name in acting_tool_names_for_context(self._ctx, self._entries)
             for schema in self._schemas_for_entry(entry)
         ]
         if disabled_tools:
@@ -728,7 +733,7 @@ class ToolRegistry:
                         for tool in _ext_tools.values()
                         if _ext_is_live(str(tool.get("skill") or ""), capability_root, repo_path=str(tool.get("skills_repo_path") or "") or None)
                         and _presence_tool_allowed(self._ctx, tool["name"])
-                        and (not acting_subagent or tool["name"] in acting_grants)
+                        and (not acting_subagent or acting_grants is None or tool["name"] in acting_grants)
                     ]
                 extension_tools = self._visible_dynamic_tools("extensions", extension_tools)
                 extension_schemas = [
@@ -759,7 +764,7 @@ class ToolRegistry:
                         tool
                         for tool in _mgr.list_tools_for_registry()
                         if _presence_tool_allowed(self._ctx, tool["name"])
-                        if not acting_subagent or tool["name"] in acting_grants
+                        if not acting_subagent or acting_grants is None or tool["name"] in acting_grants
                     ]
                     mcp_tools = self._visible_dynamic_tools("mcp", mcp_tools)
                     mcp_schemas = [
@@ -772,7 +777,7 @@ class ToolRegistry:
                     slug_collisions = getattr(
                         _mgr, "tool_name_collisions", lambda: []
                     )()
-                    if acting_subagent:
+                    if acting_subagent and acting_grants is not None:
                         slug_collisions = [
                             item
                             for item in slug_collisions
@@ -814,11 +819,11 @@ class ToolRegistry:
                 continue
             if local_readonly_subagent and not self._readonly_tool_allowed(e.name):
                 continue
-            if acting_subagent and e.name not in acting_tool_names_for_context(self._ctx):
+            if acting_subagent and e.name not in acting_tool_names_for_context(self._ctx, self._entries):
                 continue
             if (
                 (local_readonly_subagent and self._readonly_tool_allowed(e.name))
-                or (acting_subagent and e.name in acting_tool_names_for_context(self._ctx))
+                or (acting_subagent and e.name in acting_tool_names_for_context(self._ctx, self._entries))
                 or e.name in CORE_TOOL_NAMES
                 or e.name in ("list_available_tools", "enable_tools")
             ):
@@ -865,7 +870,7 @@ class ToolRegistry:
         acting_subagent = self._is_acting_subagent()
         if self._is_local_readonly_subagent() and not self._readonly_tool_allowed(requested):
             return "hidden by the read-only subagent profile"
-        if acting_subagent and requested not in acting_tool_names_for_context(self._ctx):
+        if acting_subagent and requested not in acting_tool_names_for_context(self._ctx, self._entries):
             return "hidden by the acting subagent profile"
         return None
 
@@ -899,7 +904,7 @@ class ToolRegistry:
                 return None
             if local_readonly_subagent and not self._readonly_tool_allowed(requested):
                 return None
-            if acting_subagent and requested not in acting_tool_names_for_context(self._ctx):
+            if acting_subagent and requested not in acting_tool_names_for_context(self._ctx, self._entries):
                 return None
             return self._schema_for_entry(entry)
         try:
@@ -907,7 +912,7 @@ class ToolRegistry:
         except Exception:
             _ext_parse_name = None
         if _ext_parse_name and _ext_parse_name(name):
-            if acting_subagent and requested not in acting_grants:
+            if acting_subagent and acting_grants is not None and requested not in acting_grants:
                 return None
             if not _resource_allowed(self._ctx, "network"):
                 self._capability_omissions.append({"surface": "extensions", "reason": "resource_blocked", "resource": "network=false"})
@@ -942,7 +947,7 @@ class ToolRegistry:
             _mcp_get_manager = None
             _mcp_is_name = None
         if _mcp_get_manager and _mcp_is_name and _mcp_is_name(requested):
-            if acting_subagent and requested not in acting_grants:
+            if acting_subagent and acting_grants is not None and requested not in acting_grants:
                 return None
             if not _resource_allowed(self._ctx, "network"):
                 self._capability_omissions.append({"surface": "mcp", "reason": "resource_blocked", "resource": "network=false"})
@@ -1094,7 +1099,7 @@ class ToolRegistry:
         acting_subagent = self._is_acting_subagent()
         acting_self_worktree = acting_subagent and str(getattr(task_constraint, "surface", "") or "") == "self_worktree"
         acting_protected_grant = acting_subagent and bool(getattr(task_constraint, "protected_paths_grant", False))
-        acting_tool_grants = set(getattr(task_constraint, "external_tool_grants", ()) or ()) if acting_subagent else set()
+        acting_tool_grants = self._acting_tool_grants() if acting_subagent else set()
         entry = self._entries.get(name)
         ext_tool, extension_unavailable = extension_dispatch._extension_dispatch_candidate(self._ctx, name) if entry is None else (None, False)
         _mcp_is_name = None
@@ -1298,6 +1303,7 @@ class ToolRegistry:
             messages=getattr(self._ctx, "messages", None),
             ctx=self._ctx,
             python_resolution=interpreter_resolution,
+            resolved_binding=resolved_binding,
         )
         if not is_safe:
             return ToolResult(status="blocked", code="SAFETY_VIOLATION", text=safety_msg)

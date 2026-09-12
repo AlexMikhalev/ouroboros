@@ -144,9 +144,9 @@ def stage_task_attachments(
         return []
     try:
         from ouroboros.config import get_runtime_mode
-        from ouroboros.runtime_mode_policy import runtime_mode_at_least
+        from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
 
-        allow_owner_sensitive = runtime_mode_at_least(get_runtime_mode(), "cyber_pro")
+        allow_owner_sensitive = mode_has_unrestricted_agency(get_runtime_mode())
     except Exception:
         allow_owner_sensitive = False
 
@@ -178,10 +178,7 @@ def stage_task_attachments(
 
     # SSOT secret detection: reuse the shared credential-shape vocabulary so a
     # credential SOURCE (e.g. ~/.ssh/id_rsa, credentials.json) is never copied in.
-    from ouroboros.credential_shapes import (
-        CREDENTIAL_COMPONENT_NAMES,
-        CREDENTIAL_FILE_NAMES,
-    )
+    from ouroboros.credential_shapes import user_files_mutation_shape_reason
 
     # G10 (capinv-447): BOTH attachment routes get ONE policy. A path-selected
     # attachment is judged on its host path; a /api/chat/upload byte upload sits
@@ -210,14 +207,10 @@ def stage_task_attachments(
                 original = _upload_name_re.sub("", src.name)
                 reason = _sensitive_untracked_reason(original)
                 return f"uploaded file name {original!r}: {reason}" if reason else ""
-        for part in src.parts:
-            part_lower = part.lower()
-            if part_lower in CREDENTIAL_COMPONENT_NAMES:
-                return f"credential/control directory component {part!r}"
+        physical_reason = user_files_mutation_shape_reason(src, pathlib.Path.home())
+        if physical_reason:
+            return physical_reason
         name = src.name
-        name_lower = name.lower()
-        if name_lower in CREDENTIAL_FILE_NAMES:
-            return f"credential-shaped file name {name!r}"
         reason = _sensitive_untracked_reason(name)
         return f"file name {name!r}: {reason}" if reason else ""
 
@@ -644,6 +637,12 @@ def artifact_store_path_block_reason(
 ) -> str:
     """Return a block reason for task-artifact control/provenance paths."""
 
+    from ouroboros.config import get_runtime_mode
+    from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+
+    if mode_has_unrestricted_agency(get_runtime_mode()):
+        return ""
+
     try:
         candidate = pathlib.Path(path)
         if base_path is not None:
@@ -656,9 +655,11 @@ def artifact_store_path_block_reason(
         parts = candidate.parts
     except TypeError:
         parts = (str(path),)
-    for part in parts:
-        if part.startswith("."):
-            return "artifact_store hidden/control metadata paths are reserved"
+    from ouroboros.headless import SCRATCH_MANIFEST_NAME
+
+    if any(part in {_ARTIFACT_MANIFEST, _ARTIFACT_MANIFEST + ".lock", SCRATCH_MANIFEST_NAME}
+           for part in parts):
+        return "artifact_store task metadata paths are reserved"
     if parts == ("verification_receipts.jsonl",):
         return "artifact_store verification receipt authority path is reserved"
     return ""

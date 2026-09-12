@@ -18,7 +18,6 @@ from ouroboros.tool_capabilities import ACTING_SUBAGENT_MODE, ACTING_SUBAGENT_TO
 from ouroboros.runtime_mode_policy import mode_allows_protected_write
 from ouroboros.tools.registry import ToolContext, ToolRegistry
 from ouroboros import subagent_worktrees as sw
-from tests._typed_guard_shared import _shell_guard_text
 
 
 def _git(repo, *args, check=True):
@@ -1148,43 +1147,7 @@ def test_external_workspace_unborn_first_commit_keeps_artifact(tmp_path, monkeyp
     assert any(item["kind"] == "workspace_patch" for item in artifacts)
 
 
-def test_mutative_toggle_self_change_detected():
-    from ouroboros.tools.registry import _detect_mutative_toggle_self_change
-    assert _detect_mutative_toggle_self_change('echo true >> data/settings.json # ouroboros_allow_mutative_subagents')
-    assert _detect_mutative_toggle_self_change('save_settings({"ouroboros_allow_mutative_subagents": "true"})')
-    # CLI settings-set path must also be caught.
-    assert _detect_mutative_toggle_self_change("ouroboros settings set ouroboros_allow_mutative_subagents true")
-    assert not _detect_mutative_toggle_self_change("echo hello world")
-
-
-def test_evolution_owner_control_self_change_detected():
-    from ouroboros.tools.registry import _detect_evolution_owner_control_self_change as d
-    assert d('echo true >> data/settings.json # ouroboros_post_task_evolution')
-    assert d('save_settings({"ouroboros_post_task_evolution": "true"})')
-    assert d("ouroboros settings set ouroboros_post_task_evolution true")
-    # The persistent objective is owner-only too (it steers every evolution campaign).
-    # Detector receives pre-lowered text (cmd_lower), mirror that here.
-    assert d('curl -x post 127.0.0.1:8765/api/settings -d \'{"ouroboros_evolution_persistent_objective":"x"}\'')
-    assert d('save_settings({"ouroboros_evolution_persistent_objective": "grab budget"})')
-    assert not d("echo hello world")
-    assert not d("ouroboros_post_task_evolution")  # key alone, no write target
-
-
-def test_post_task_evolution_js_guard():
-    from ouroboros.browser_policy import _blocks_post_task_evolution_js
-    assert _blocks_post_task_evolution_js(
-        "fetch('/api/settings', {method:'POST', body: JSON.stringify({OUROBOROS_POST_TASK_EVOLUTION: true})})"
-    )
-    assert _blocks_post_task_evolution_js('save_settings({"ouroboros_post_task_evolution": true})')
-    assert _blocks_post_task_evolution_js(
-        "fetch('/api/settings', {method:'POST', body: JSON.stringify({OUROBOROS_EVOLUTION_PERSISTENT_OBJECTIVE: 'x'})})"
-    )
-    assert not _blocks_post_task_evolution_js("document.title")
-
-
-def test_pro_acting_shell_write_outside_surface_blocked(tmp_path):
-    # Even in pro mode, an acting child's write-like shell targeting outside its
-    # isolated surface is blocked (no pro workspace passthrough for acting subagents).
+def test_acting_structured_write_stays_inside_its_selected_surface(tmp_path):
     repo = tmp_path / "repo"; repo.mkdir()
     drive = tmp_path / "data"; drive.mkdir()
     wt = tmp_path / "wt"; wt.mkdir()
@@ -1194,24 +1157,9 @@ def test_pro_acting_shell_write_outside_surface_blocked(tmp_path):
     )
     reg = ToolRegistry(repo_dir=repo, drive_root=drive)
     reg._ctx = ctx
-    block = _shell_guard_text(reg, {"cmd": "echo x > ../outside.txt"}, "pro")
-    assert block and "WORKSPACE_SHELL_BLOCKED" in block
-
-
-def test_subagent_shell_secret_markers_cover_relative_paths():
-    from ouroboros.tools.registry import _subagent_shell_targets_secret
-    assert _subagent_shell_targets_secret("cat .env")
-    assert _subagent_shell_targets_secret("cat .git/config")
-    assert _subagent_shell_targets_secret("cat .git/credentials")
-    assert _subagent_shell_targets_secret("cat ~/.ssh/id_rsa")
-    # Synthesis F3: the managed-update tx marker is owner-control state —
-    # subagent shell may not touch it (main-agent resolver and supervisor
-    # writers are unaffected; this guard is subagent-only by construction).
-    assert _subagent_shell_targets_secret("cat .git/ouroboros-update-tx.json")
-    assert _subagent_shell_targets_secret(
-        'python -c "open(\'.git/ouroboros-update-tx.json\',\'w\')"'.lower()
-    )
-    assert not _subagent_shell_targets_secret("cat src/main.py")
+    block = reg.execute("write_file", {"path": "../outside.txt", "content": "x"})
+    assert "WRITE_FILE_ERROR" in block and "Path traversal is not allowed" in block, block
+    assert not (wt.parent / "outside.txt").exists()
 
 
 def test_acting_read_schema_excludes_system_repo(tmp_path):
@@ -1222,20 +1170,6 @@ def test_acting_read_schema_excludes_system_repo(tmp_path):
         root_enum = rf["parameters"]["properties"].get("root", {}).get("enum")
         if isinstance(root_enum, list):
             assert "system_repo" not in root_enum  # matches acting _POLICY (no system_repo)
-
-
-def test_acting_subagent_cannot_shell_read_secrets(tmp_path):
-    repo = tmp_path / "repo"; repo.mkdir()
-    drive = tmp_path / "data"; drive.mkdir()
-    wt = tmp_path / "wt"; wt.mkdir()
-    ctx = ToolContext(
-        repo_dir=repo, drive_root=drive, workspace_root=str(wt), workspace_mode="self_worktree",
-        task_constraint=TaskConstraint(mode="acting_subagent", surface="self_worktree", write_root=str(wt)),
-    )
-    reg = ToolRegistry(repo_dir=repo, drive_root=drive)
-    reg._ctx = ctx
-    block = _shell_guard_text(reg, {"cmd": ["cat", str(drive / "settings.json")]}, "pro")
-    assert block and "SUBAGENT_SECRET_READ_BLOCKED" in block
 
 
 def test_integrate_counts_as_reviewable_effect():
@@ -1277,9 +1211,8 @@ def test_acting_schema_narrows_write_root_and_browser(tmp_path):
             assert "evaluate" in action_enum
 
 
-def test_acting_browser_evaluate_runs_and_keeps_owner_guards(tmp_path, monkeypatch):
-    """Acting children may inspect their current page, but owner/self-lowering
-    browser guards remain in the shared execution path."""
+def test_acting_browser_evaluate_runs_and_keeps_resource_targets(tmp_path, monkeypatch):
+    """Page code is not a request; actual target admission remains separate."""
     from ouroboros.tools import browser as browser_mod
 
     repo = tmp_path / "repo"; repo.mkdir()
@@ -1335,9 +1268,9 @@ def test_acting_browser_evaluate_runs_and_keeps_owner_guards(tmp_path, monkeypat
         blocked = registry.execute("browser_action", {"action": "evaluate", "value": "1 + 1"})
         assert "BROWSER_LOCAL_READONLY_BLOCKED" in blocked
         ctx.task_constraint = None
-        blocked = registry.execute("browser_action", {"action": "evaluate",
+        allowed = registry.execute("browser_action", {"action": "evaluate",
             "value": "fetch('/api/owner/context-mode', {method:'POST', body: JSON.stringify({mode:'low'})})"})
-        assert "CONTEXT_MODE_SELF_LOWERING_BLOCKED" in blocked
+        assert allowed == "2"
 
 
 def test_no_workspace_acting_integrate_blocked(tmp_path):

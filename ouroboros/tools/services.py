@@ -378,7 +378,12 @@ def _start_service(
             # references; literal env keeps its existing process capability.
             from ouroboros.presence_authority import presence_ceiling_from_context
 
-            if (active_tool_profile(ctx) not in (_TOP_LEVEL_PRINCIPAL_PROFILES | {"operator_control"})
+            from ouroboros.config import get_runtime_mode
+            from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+
+            cyber_actor = (active_tool_profile(ctx) == "acting_subagent"
+                           and mode_has_unrestricted_agency(get_runtime_mode()))
+            if (not cyber_actor and active_tool_profile(ctx) not in (_TOP_LEVEL_PRINCIPAL_PROFILES | {"operator_control"})
                     or presence_ceiling_from_context(ctx) is not None):
                 return _publish_tool_result(ctx, ToolResult(
                     status="blocked", code="ACCESS_BLOCKED",
@@ -411,20 +416,22 @@ def _start_service(
         # names every allowed root as label=path instead of a bare rootless
         # ValueError echo; the SHELL_CWD_BLOCKED status is a typed policy denial.
         return shell_cwd_block_message(ctx, cwd, operation="service", error=exc)
-    try:
-        from ouroboros.protected_artifacts import shell_block_reason
+    if _resolved_binding is None:
+        # Registry dispatch has already checked this exact prepared binding.
+        # A direct handler caller uses the same Supervisor before the first
+        # process effect, rather than a second black-box text detector.
+        from ouroboros.safety import check_safety
 
-        protected_block = shell_block_reason(
-            ctx,
-            cmd,
-            cwd=str(workdir),
-            default_cwd=workdir,
-            binding=binding,
-        )
-        if protected_block:
-            return protected_block
-    except Exception:
-        pass
+        allowed, advice = check_safety("start_service", {
+            "cmd": cmd, "cwd": str(workdir), "name": service_name,
+            "env": env, "env_from_settings": refs,
+        }, messages=getattr(ctx, "messages", None), ctx=ctx, resolved_binding=binding)
+        if not allowed:
+            return _publish_tool_result(ctx, ToolResult(
+                status="blocked", code="SAFETY_VIOLATION", text=advice,
+            ))
+        if advice:
+            ctx.emit_progress_fn(advice)
     declared_outputs = [str(item) for item in (outputs or []) if str(item or "").strip()]
     try:
         from ouroboros.tools.shell import _snapshot_declared_outputs

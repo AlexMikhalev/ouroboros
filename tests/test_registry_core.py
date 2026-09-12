@@ -93,8 +93,7 @@ def test_registry_core_extraction_preserves_only_proven_facades():
     # not migrated in this window), so the reference's exact-32-name equality
     # over vars(registry) does not transfer. The durable fact it protected —
     # execution moved ONCE and the facade authors nothing — is pinned
-    # structurally instead: the module may DEFINE only the disclosed read-carve
-    # helper; everything else must be a re-export.
+    # structurally instead: the module defines no execution behavior.
     import ast
     import pathlib
 
@@ -106,7 +105,7 @@ def test_registry_core_extraction_preserves_only_proven_facades():
         for node in facade_ast.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     }
-    assert facade_defined == {"_owner_control_mention_blocks"}
+    assert facade_defined == set()
     assert all(hasattr(registry, name) for name in proven)
     assert registry.ToolRegistry is registry_core.ToolRegistry is tools_package.ToolRegistry
     assert registry.ToolContext is tool_context.ToolContext is tools_package.ToolContext

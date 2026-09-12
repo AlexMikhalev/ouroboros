@@ -823,8 +823,8 @@ def interpreter_attestation(ctx: Any, trace: Any):
     """Scope the per-call interpreter attestation to one handler invocation.
 
     Publishes BOTH slots the downstream consumers read — the trace itself
-    (``ctx._active_interpreter_resolution``: run_script's allowlist attestation,
-    verify_and_record's R4 substitution, the handlers' emergency env prepend)
+    (``ctx._active_interpreter_resolution``: verify_and_record's R4 substitution
+    and the handlers' emergency env prepend)
     and, exactly when the resolver substituted execution (an argv rewrite or an
     attested emergency PATH prepend), the ONE string slot
     ``ctx._process_resolved_runtime`` that result_meta and the verify receipt

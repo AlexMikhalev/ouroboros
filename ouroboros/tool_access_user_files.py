@@ -131,6 +131,12 @@ def user_files_path_block_reason(
     """
 
     resolved = pathlib.Path(candidate).expanduser().resolve(strict=False)
+    from ouroboros.config import get_runtime_mode
+    from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+    from ouroboros.tool_access import active_tool_profile
+
+    if mode_has_unrestricted_agency(get_runtime_mode()) and active_tool_profile(ctx) != "local_readonly_subagent":
+        return ""
     home = _tool_access()._user_files_root()
     outside_home = not _tool_access().path_is_relative_to(resolved, home) and not _tool_access()._path_is_relative_to_casefold(resolved, home)
     # External-workspace tasks may reach host scratch outside home (/tmp, /build,
@@ -218,18 +224,6 @@ def user_files_path_block_reason(
         # name shapes are never consulted here, so this branch must stay free
         # of any credential_shapes import (import-boundary test).
         return ""
-    try:
-        from ouroboros.config import get_runtime_mode
-        from ouroboros.runtime_mode_policy import runtime_mode_at_least
-        from ouroboros.tool_access import active_tool_profile
-
-        # Cyber Pro is the explicit owner authority for credential-file
-        # mutation. A deliberately readonly child remains excluded; acting
-        # children inherit the same authority through the existing profile.
-        if runtime_mode_at_least(get_runtime_mode(), "cyber_pro") and active_tool_profile(ctx) != "local_readonly_subagent":
-            return ""
-    except Exception:
-        pass
     from ouroboros.credential_shapes import user_files_mutation_shape_reason
 
     return user_files_mutation_shape_reason(resolved, home)

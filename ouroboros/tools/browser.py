@@ -51,9 +51,8 @@ def _normalize_browser_engine(engine: str = "") -> str:
     return value
 
 
-# Subagent browse restrictions (no loopback/private/non-HTTP) apply to ALL
-# delegated subagents — read-only, acting, and fail-closed missing-constraint.
-# Same fail-closed predicate as secret/control READ denials (SSOT in tools.core).
+# Reuse the effective child contract: Cyber acting children retain agency;
+# explicitly readonly children keep their assigned access contract.
 from ouroboros.tools.core import is_restricted_subagent_profile as _readonly_subagent  # noqa: E402
 
 
@@ -456,7 +455,7 @@ def _ensure_browser(ctx: ToolContext, *, engine: str = "chromium", device: str =
     def route_request(route: Any) -> None:
         try:
             reason = browser_policy.browser_request_block_reason(
-                route.request, ctx, restricted=readonly_subagent,
+                route.request, ctx, restricted=_readonly_subagent(ctx),
                 runtime_mode=_runtime_mode_for_browser(ctx))
         except Exception:
             log.warning("Browser request policy could not read target identity", exc_info=True)
@@ -863,7 +862,8 @@ def _navigation_block_reason(page: Any, bs: Any, ctx: ToolContext, restricted: b
             targets.append(str(request.url))
             request = request.redirected_from
     for target in dict.fromkeys(targets):
-        if reason := browser_policy.browser_url_block_reason(target, ctx, restricted=restricted):
+        if reason := browser_policy.browser_url_block_reason(
+            target, ctx, restricted=restricted, runtime_mode=_runtime_mode_for_browser(ctx)):
             return reason
     return ""
 
@@ -873,7 +873,8 @@ def _browse_page(ctx: ToolContext, url: str, output: str = "text",
                  viewport: str = "", engine: str = "chromium", device: str = "", state: str = "visible") -> str:
     readonly_subagent = _readonly_subagent(ctx)
     if reason := browser_policy.browser_url_block_reason(
-        str(url or ""), ctx, restricted=readonly_subagent):
+        str(url or ""), ctx, restricted=readonly_subagent,
+        runtime_mode=_runtime_mode_for_browser(ctx)):
         return "⚠️ " + reason
     entry_generation = ctx.browser_state
     try:
@@ -1012,11 +1013,6 @@ def _browser_action(ctx: ToolContext, action: str, selector: str = "",
         elif normalized_action == "evaluate":
             if not value:
                 return "Error: value (JS code) required for evaluate"
-            if reason := browser_policy.browser_evaluate_block_reason(
-                str(getattr(page, "url", "") or ""), value, ctx,
-                runtime_mode=_runtime_mode_for_browser(ctx),
-            ):
-                return reason
             try:
                 result = _evaluate_bounded(page, value, effective_default_ms)
             except Exception as eval_err:  # noqa: BLE001

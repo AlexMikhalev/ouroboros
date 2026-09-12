@@ -37,6 +37,8 @@ from ouroboros.secret_masking import (
 )
 from ouroboros.tools.tool_result import ToolResult
 from ouroboros.platform_layer import IS_WINDOWS
+from ouroboros.config import get_runtime_mode
+from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
 from ouroboros.workspace_executor import resolve_process_env, validate_process_env
 
 log = logging.getLogger(__name__)
@@ -196,7 +198,7 @@ def is_mcp_tool_name(name: str) -> bool:
 
 
 def _validate_url(url: str) -> str:
-    """Normalize HTTP(S) URLs while refusing obvious metadata SSRF hosts."""
+    """Normalize HTTP(S) URLs, applying metadata policy outside Cyber."""
     text = str(url or "").strip()
     if not text:
         raise ValueError("url is required")
@@ -210,6 +212,9 @@ def _validate_url(url: str) -> str:
     host = host.rstrip(".")
     if not host:
         raise ValueError("MCP server url is missing a hostname")
+    parsed.port  # Raises for a malformed or out-of-range port.
+    if mode_has_unrestricted_agency(get_runtime_mode()):
+        return text
     if parsed.username or parsed.password:
         raise ValueError("MCP server url must not include username/password credentials")
     if host in _DENIED_HOSTS:
@@ -322,6 +327,9 @@ def normalize_server_config(
             auth_token = ""
         else:
             url = _validate_url(raw.get("url") or "")
+            parsed_url = urllib.parse.urlparse(url)
+            url_secrets = tuple(value for value in (parsed_url.username, parsed_url.password) if value)
+            secret_values = (*secret_values, *url_secrets, *(urllib.parse.unquote(value) for value in url_secrets))
             command = ""
             args = []
             auth_header = _validate_auth_header(raw.get("auth_header") or "Authorization")
@@ -394,7 +402,7 @@ def redact_servers_for_status(configs: List[MCPServerConfig]) -> List[Dict[str, 
                 "name": cfg.name,
                 "enabled": cfg.enabled,
                 "transport": cfg.transport,
-                "url": cfg.url,
+                "url": _redact_error_text(cfg.url, cfg),
                 "auth_header": cfg.auth_header,
                 "auth_token": mask_prefixed_secret(cfg.auth_token, visible_chars=4),
                 "auth_configured": cfg.has_auth(),
@@ -412,7 +420,6 @@ def _redact_error_text(text: Any, cfg: Optional[MCPServerConfig] = None) -> str:
         token = str(cfg.auth_token or "")
         if token:
             out = out.replace(token, "<redacted:mcp-auth-token>")
-        out = redact_known_values(out, cfg.secret_values)
         parsed = urllib.parse.urlparse(cfg.url)
         if parsed.username or parsed.password:
             safe_netloc = parsed.hostname or ""
@@ -420,6 +427,7 @@ def _redact_error_text(text: Any, cfg: Optional[MCPServerConfig] = None) -> str:
                 safe_netloc = f"{safe_netloc}:{parsed.port}"
             safe_url = urllib.parse.urlunparse(parsed._replace(netloc=safe_netloc))
             out = out.replace(cfg.url, safe_url)
+        out = redact_known_values(out, cfg.secret_values)
     return out
 
 
@@ -727,6 +735,7 @@ class MCPManager:
             "MCP_ENABLED": settings.get("MCP_ENABLED"),
             "MCP_TOOL_TIMEOUT_SEC": settings.get("MCP_TOOL_TIMEOUT_SEC"),
             "MCP_SERVERS": settings.get("MCP_SERVERS"),
+            "effective_runtime_mode": get_runtime_mode(),
         }
         references = set()
         servers = settings.get("MCP_SERVERS")
@@ -821,7 +830,7 @@ class MCPManager:
                 cfg = runtime.config
                 if not cfg.enabled:
                     continue
-                allowed = set(cfg.allowed_tools)
+                allowed = set() if mode_has_unrestricted_agency(get_runtime_mode()) else set(cfg.allowed_tools)
                 for tool in runtime.tools:
                     if allowed and tool.raw_name not in allowed:
                         continue
@@ -848,7 +857,8 @@ class MCPManager:
                 if runtime.config.enabled
                 for item in runtime.tool_name_collisions
                 if (
-                    not runtime.config.allowed_tools
+                    mode_has_unrestricted_agency(get_runtime_mode())
+                    or not runtime.config.allowed_tools
                     or item.get("kept_raw_name") in runtime.config.allowed_tools
                     or item.get("dropped_raw_name") in runtime.config.allowed_tools
                 )
@@ -872,7 +882,7 @@ class MCPManager:
                         "name": cfg.name,
                         "enabled": cfg.enabled,
                         "transport": cfg.transport,
-                        "url": cfg.url,
+                        "url": _redact_error_text(cfg.url, cfg),
                         "auth_header": cfg.auth_header,
                         "auth_configured": cfg.has_auth(),
                         "allowed_tools": list(cfg.allowed_tools),
@@ -1104,7 +1114,7 @@ class MCPManager:
                 cfg = runtime.config
                 if not cfg.enabled:
                     continue
-                allowed = set(cfg.allowed_tools)
+                allowed = set() if mode_has_unrestricted_agency(get_runtime_mode()) else set(cfg.allowed_tools)
                 for tool in runtime.tools:
                     if tool.prefixed_name == prefixed_name:
                         if allowed and tool.raw_name not in allowed:

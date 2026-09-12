@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 # The delegation_role value background consciousness stamps on its shared tool
 # context before every tool call. Owner-delivery gating keys on it, so both
 # sides import this one name instead of repeating the literal.
@@ -130,31 +132,15 @@ ACTING_SUBAGENT_TOOL_NAMES: frozenset[str] = frozenset({
     "list_available_tools",
 })
 
-# Cyber Pro keeps the acting-child lineage and custody contract, while exposing
-# the existing review, skill and owner-runtime tools. Commit/live-body tools
-# stay outside this extension and explicit task disabled_tools still win.
-CYBER_PRO_ACTING_TOOL_NAMES: frozenset[str] = frozenset({
-    "review_status", "preflight_review", "advisory_review",
-    "task_acceptance_review", "plan_task",
-    "list_skills", "skill_preflight", "skill_review", "skill_exec",
-    "toggle_skill", "skill_owner_action",
-    "set_tool_timeout", "request_deep_self_review", "toggle_evolution",
-    "toggle_consciousness",
-})
+def acting_tool_names_for_context(ctx: object, registered_names: Iterable[str]) -> frozenset[str]:
+    """Project the actual catalog; inherited acting labels do not veto Cyber."""
+    from ouroboros.config import get_runtime_mode
+    from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
 
+    if mode_has_unrestricted_agency(get_runtime_mode()):
+        return frozenset(registered_names)
+    return ACTING_SUBAGENT_TOOL_NAMES
 
-def acting_tool_names_for_context(ctx: object) -> frozenset[str]:
-    """Return the acting allowlist after applying the effective Cyber mode."""
-    names = set(ACTING_SUBAGENT_TOOL_NAMES)
-    try:
-        from ouroboros.config import get_runtime_mode
-        from ouroboros.runtime_mode_policy import runtime_mode_at_least
-
-        if runtime_mode_at_least(get_runtime_mode(), "cyber_pro"):
-            names.update(CYBER_PRO_ACTING_TOOL_NAMES)
-    except Exception:
-        pass
-    return frozenset(names)
 
 READ_ONLY_PARALLEL_TOOLS: frozenset[str] = frozenset({
     "read_file", "list_files",
