@@ -1134,19 +1134,15 @@ def plan_review_gate_projection(
     *,
     hard_rail: str = "",
 ) -> Dict[str, Any]:
-    """Project one plan-review finalization decision from existing authority.
+    """Project finalization permission without changing the durable review facts.
 
-    ``plan_review_state`` is the durable SSOT; the ``current_attempt`` pointer keeps a
-    newer fingerprint from falling back to an older closed wave. Statuses: ``closed``
-    (allow) · ``rail_degraded`` (a task-wide rail released the hold — allow) ·
-    ``advisory_open`` (advisory enforcement proceeds under loud disclosure) ·
-    ``cycles_exhausted`` (the shared cap is spent on an OPEN wave: finalization is
-    released so the task can terminalize honestly as blocked — owner D27 — while
-    the wave itself stays open) · ``open`` / ``unavailable`` / ``pending`` /
-    ``legacy_open_requires_resubmission`` (blocking hold; EXCEPT an ``open`` wave
-    whose ``quorum_unreachable`` typed fact holds — B2b — which releases
-    finalization the same honest-blocked way while staying open) · ``absent``. Accepts a v2
-    state, a loaded v1 wrapper, or a raw v1 record (read-only projection)."""
+    The current-attempt pointer prevents an older closed wave authorizing new
+    work. In ordinary Blocking, open/unavailable/pending/legacy-open reviews hold
+    finalization; spent cycles (D27), unreachable quorum (B2b) or a hard rail
+    release it for an honest blocked outcome. Advisory releases an open review.
+    Cyber retains judgment even with missing evidence: allow never implies closed
+    or PASS. Accepts v2 state, a v1 wrapper or raw v1 as a read-only projection.
+    """
     policy = "blocking" if str(enforcement or "").lower() == "blocking" else "advisory"
     control: Dict[str, Any] = {}
     attempted = False
@@ -1202,8 +1198,13 @@ def plan_review_gate_projection(
 
     status = str(control.get("status") or "unavailable")
     closed = bool(control.get("closed"))
+    from ouroboros.tools.review_helpers import review_enforcement_blocks
+
+    cyber = not review_enforcement_blocks("blocking")
     if status == "closed" and closed:
         gate_status, allow = "closed", True
+    elif cyber:
+        gate_status, allow = "advisory_open", True
     elif hard_rail or status == "rail_degraded":
         gate_status, allow = "rail_degraded", True
     elif policy == "advisory" and status in {
@@ -1225,6 +1226,7 @@ def plan_review_gate_projection(
         gate_status, allow = status, False
     return {
         "enforcement": policy,
+        **({"decision_authority": "cyber_pro", "review_status": status} if cyber else {}),
         "status": gate_status,
         "allow": allow,
         "attempted": attempted,
