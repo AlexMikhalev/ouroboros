@@ -644,6 +644,7 @@ def prospective_wrapup_attempt_request(
     model_role: str = "main", model_account_override: Optional[str] = None,
     model_turn_state: Any = None,
     cache_affinity: str = "",
+    processing_preference: Optional[str] = None,
 ) -> Any:
     """Build the conservative request facts from the prospective wire payload.
 
@@ -655,21 +656,28 @@ def prospective_wrapup_attempt_request(
     from ouroboros.request_wire_recovery import request_wire_call_scope
     from ouroboros.pricing import infer_provider_from_model
     from ouroboros.usage_accounting import AttemptRequest, _merge_scope
+    from ouroboros.model_slots import resolve_processing_preference
+
+    processing_preference = resolve_processing_preference(model_role, override=processing_preference)
 
     if not callable(getattr(llm, "_resolve_remote_target", None)):
         return _merge_scope(AttemptRequest(
             model=model, provider=infer_provider_from_model(model),
             prompt_tokens_estimate=prompt_tokens,
             max_completion_tokens=MAIN_LOOP_MAX_TOKENS,
+            processing_preference=processing_preference,
+            force_unknown_reservation=bool(processing_preference),
         ))[0]
 
-    target = llm._resolve_remote_target(model)
+    target = {**llm._resolve_remote_target(model), "processing_preference": processing_preference}
     if target.get("provider") == "claudexor":
-        from ouroboros.llm_claudexor import _request
+        from ouroboros.llm_claudexor import _request, prepare_processing_target
 
+        target = prepare_processing_target(target)
         candidate = _request(target, messages, tools, {"reasoning_effort": reasoning_effort,
             "model_role": model_role, "model_account_override": model_account_override,
             "model_turn_state": model_turn_state,
+            "processing_preference": processing_preference,
             "cache_affinity": cache_affinity, "prospective": True})
         return _merge_scope(replace(_attempt_request(target, candidate),
             force_unknown_reservation=True, max_completion_tokens=MAIN_LOOP_MAX_TOKENS))[0]
@@ -695,7 +703,7 @@ def prepared_wrapup_candidate(
     The forced send this candidate admits continues the loop's active transport
     turn, so the candidate is built from that same owner slot."""
     from ouroboros.loop_llm_call import _prepare_main_messages
-    from ouroboros.model_slots import task_model_binding
+    from ouroboros.model_slots import task_model_binding, task_processing_preference
     from ouroboros.model_wait import current_model_wait
     from ouroboros.observability import new_execution_id
 
@@ -729,6 +737,8 @@ def prepared_wrapup_candidate(
         # main loop declares the same execution-scoped cache affinity, so this
         # prepared copy binds the execution id exactly as that dispatch does.
         cache_affinity=str(ctx.accumulated_usage.setdefault("execution_id", new_execution_id())),
+        processing_preference=task_processing_preference(
+            {"task_metadata": getattr(owner_ctx, "task_metadata", {})}, model_role=role),
     )
     return request, send_messages
 

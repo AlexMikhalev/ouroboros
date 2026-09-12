@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -33,7 +35,7 @@ def metadata_engine(monkeypatch, tmp_path):
     monkeypatch.setattr(runtime.ClaudexorRuntimeManager, "ensure", forbidden)
     monkeypatch.setattr(owned.subprocess, "Popen", forbidden)
     monkeypatch.setattr(wire, "discover_daemon", forbidden)
-    state = {"reachable": True, "handshake_error": False}
+    state = {"reachable": True, "handshake_error": False, "accounts_view": False}
 
     def respond(request):
         calls.append((request.method, request.url.path, dict(request.url.params)))
@@ -44,6 +46,14 @@ def metadata_engine(monkeypatch, tmp_path):
             return httpx.Response(200, json={"compatible": not state["handshake_error"],
                 "protocolMajor": wire.CLAUDEXOR_PROTOCOL_MAJOR,
                 "engine": {"version": wire.CLAUDEXOR_MIN_VERSION}})
+        if request.url.path == "/v2/operations":
+            return httpx.Response(200, json={"operations": [
+                {"method": "GET", "path": path, "parameters": [
+                    {"name": "view", "location": "query", "enum": ["accounts"]}]}
+                for path in ("/v2/model-sources", "/v2/model-sources/:id/models", "/v2/harnesses/:id/models")
+            ] if state["accounts_view"] else []})
+        if request.url.path in state.get("responses", {}):
+            return httpx.Response(200, json=deepcopy(state["responses"][request.url.path]))
         if request.url.path == "/v2/model-sources":
             return httpx.Response(200, json={"sources": [{"id": "codex", "label": "Codex",
                 "credentialHarness": "codex"}]})
@@ -118,6 +128,85 @@ def test_warm_owned_metadata_preserves_models_profiles_and_closes(metadata_engin
     assert calls[-1][2] == {"credentialProfileId": "account-a", "requestedModel": "exact-model"}
     assert sum(path == "/v2/handshake" for _, path, _ in calls) == 3
     assert len(clients) == 3 and all(client.is_closed for client in clients)
+
+
+def test_account_catalog_view_reaches_raw_http_without_affecting_execution_discovery(metadata_engine):
+    from ouroboros.llm import LLMClient
+
+    state, calls, clients, provision, _ = metadata_engine
+    state["accounts_view"] = True
+    envelope = {"source": "codex", "partial": True, "accounts": [
+        {"credentialProfileId": "account-a", "availability": "available", "problem": None,
+         "catalog": {"source": "codex", "credentialProfileId": "account-a", "observedAt": None,
+                     "provenance": "fixture", "models": [{"id": "exact-model"}]}},
+        {"credentialProfileId": "account-b", "availability": "unknown", "catalog": None,
+         "problem": {"code": "model_catalog_unavailable", "message": "Read failed"}},
+    ]}
+    state["responses"] = {"/v2/model-sources/codex/models": envelope}
+    provision()
+    app = Starlette(routes=[Route("/api/model-catalog", api_model_catalog)])
+    with TestClient(app) as client:
+        payload = client.get("/api/model-catalog?source_id=codex").json()
+    assert payload["account_catalogs"] == [envelope]
+    assert payload["items"][0]["observed_at"] is None and payload["partial"] is True
+    assert ("GET", "/v2/model-sources", {"view": "accounts"}) in calls
+    assert calls[-1] == ("GET", "/v2/model-sources/codex/models", {"view": "accounts"})
+    LLMClient.claudexor_model_catalog("codex", "account-a", requested_model="exact-model")
+    assert calls[-1][2] == {"credentialProfileId": "account-a", "requestedModel": "exact-model"}
+    assert all(client.is_closed for client in clients)
+
+
+@pytest.mark.parametrize("account_view,wire_mode", [(False, "legacy"), (True, "stub"), (True, "http")])
+def test_status_native_models_reuse_negotiated_account_catalog(metadata_engine, monkeypatch, account_view, wire_mode):
+    from ouroboros.gateway.claudexor_accounts import _status_payload
+
+    state, calls, clients, provision, _ = metadata_engine
+    state["accounts_view"] = account_view
+    records = [
+        {"credentialProfileId": profile, "availability": availability, "problem": None,
+         "catalog": {"harnessId": "codex", "credentialProfileId": profile, "source": "manifest",
+                     "verifiedAgainst": "fixture-v1", "provenance": "manifest", "observedAt": None,
+                     "models": [{"id": model, "processing": {"modes": modes, "eligible": None}}]}}
+        for profile, availability, model, modes in (
+            ("account-a", "available", "model-a", ["standard"]),
+            ("account-b", "unavailable", "model-b", ["standard", "fast"]))
+    ]
+    records.append({"credentialProfileId": "account-c", "availability": "unknown", "catalog": None,
+                    "problem": {"code": "model_catalog_unavailable", "message": "Could not read catalog"}})
+    envelope = {"harnessId": "codex", "accounts": records, "partial": True}
+    state["responses"] = {
+        "/v2/agent-capabilities": {"harnesses": [{"id": "codex", "displayName": "Codex", "enabled": True}]},
+        "/v2/harnesses": {"harnesses": []},
+        "/v2/credential-profiles": {"profiles": [], "harnessAccounts": []},
+        "/v2/quota": {"snapshots": [], "absences": []},
+        "/v2/harnesses/codex/models": envelope if account_view else {"harnessId": "codex", "models": [{"id": "legacy"}]},
+    }
+    if wire_mode == "stub":
+        from ouroboros.gateways.claudexor import ClaudexorGateway
+
+        def catalog_stub(gateway, harness, *, view):
+            assert harness == "codex" and view == "accounts"
+            calls.append(("STUB", "/v2/harnesses/codex/models", {"view": view}))
+            return deepcopy(envelope)
+
+        monkeypatch.setattr(ClaudexorGateway, "harness_model_catalog", catalog_stub, raising=False)
+    monkeypatch.setattr(owned, "get_owned_daemon", lambda: SimpleNamespace(status_dict=lambda: {"state": "running"}))
+    provision()
+    payload = _status_payload(include_models=True)
+    assert payload["reads"] == dict.fromkeys(("catalog", "accounts", "quota"), "ok")
+    harness, = payload["harnesses"]
+    if account_view:
+        assert harness["model_catalog"] == envelope
+        assert [(model["id"], model["credential_profile_id"], model["availability"]) for model in harness["models"]] == [
+            ("model-a", "account-a", "available"), ("model-b", "account-b", "unavailable")]
+        assert all(model["observed_at"] is None and model["catalog_source"] == "manifest" for model in harness["models"])
+        assert harness["models"][1]["processing"]["modes"] == ["standard", "fast"]
+    else:
+        assert harness["models"] == [{"id": "legacy"}] and "model_catalog" not in harness
+    assert sum(path == "/v2/operations" for _, path, _ in calls) == 1
+    assert calls[-1] == ("STUB" if wire_mode == "stub" else "GET", "/v2/harnesses/codex/models",
+                         {"view": "accounts"} if account_view else {})
+    assert all(client.is_closed for client in clients)
 
 
 @pytest.mark.parametrize("operation", ["sources", "catalog", "capability"])

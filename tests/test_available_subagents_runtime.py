@@ -454,7 +454,8 @@ def test_real_task_context_bootstraps_before_context_and_any_llm(monkeypatch, tm
     assert _ctx._nanny_delegate_baseline == {"round": 0, "cost": 0.0}
 
 
-def test_actor_first_delegate_start_binds_snapshot_and_canonical_work_order(monkeypatch, tmp_path):
+@pytest.mark.parametrize("geometry", [{}, {"directory_strategy": "copy", "scope_paths": ["output.bin"]}])
+def test_actor_first_delegate_start_binds_snapshot_and_canonical_work_order(monkeypatch, tmp_path, geometry):
     import ouroboros.subagent_runtime as runtime
 
     snapshot = _snapshot(_settings(_session_row()), "session-builder")
@@ -474,6 +475,7 @@ def test_actor_first_delegate_start_binds_snapshot_and_canonical_work_order(monk
             "canonical_work_order": "OBJECTIVE\nBuild the patch",
             "work_order_fingerprint": "full-work-order-sha",
             "work_order_chars": 23,
+            **geometry,
         },
     )
 
@@ -486,6 +488,7 @@ def test_actor_first_delegate_start_binds_snapshot_and_canonical_work_order(monk
             "compiled_work_order": True,
             "work_order_fingerprint": "full-work-order-sha",
             "_coordination_context": "",
+            **geometry,
         },
     )]
 

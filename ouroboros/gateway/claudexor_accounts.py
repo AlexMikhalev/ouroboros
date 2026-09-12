@@ -367,8 +367,10 @@ def _status_payload(include_models: bool) -> Dict[str, Any]:
             # a guessed True would draw named-row affordances over pseudo-rows
             # the engine cannot honor. Absorbed like the manifest read: a
             # rendering input, never a reported facet.
+            operations = []
             try:
-                payload["unified_accounts"] = _unified_accounts_native(operations_call.result())
+                operations = operations_call.result()
+                payload["unified_accounts"] = _unified_accounts_native(operations)
             except Exception:
                 log.debug("operations catalog read failed; assuming legacy account model",
                           exc_info=True)
@@ -390,7 +392,20 @@ def _status_payload(include_models: bool) -> Dict[str, Any]:
                 }
                 if include_models and projected["id"]:
                     try:
-                        projected["models"] = gateway.harness_models(projected["id"])
+                        from ouroboros.gateway.models import account_catalog_models, account_catalog_supported
+
+                        if account_catalog_supported(operations, "/v2/harnesses/:id/models"):
+                            envelope = gateway.harness_model_catalog(projected["id"], view="accounts")
+                            projected["model_catalog"] = envelope
+                            projected["models"] = [
+                                {**model, "credential_profile_id": account.get("credentialProfileId"),
+                                 "availability": account.get("availability"), "problem": account.get("problem"),
+                                 "provenance": source.get("provenance"), "observed_at": source.get("observedAt"),
+                                 "catalog_source": source.get("source")}
+                                for account, source, model in account_catalog_models(envelope)
+                            ]
+                        else:
+                            projected["models"] = gateway.harness_models(projected["id"])
                     except ClaudexorUnavailable as exc:
                         projected["models"] = []
                         projected["models_error"] = exc.code

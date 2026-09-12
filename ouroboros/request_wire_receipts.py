@@ -691,6 +691,38 @@ def bind_wire_candidate(
     )
 
 
+def rebind_processing_candidate(
+    candidate: WireCandidateManifest, *, target: Mapping[str, Any],
+    source_payload: Mapping[str, Any], field_name: str, standard_value: str,
+) -> Tuple[WireCandidateManifest, Dict[str, Any]]:
+    """Rebuild a processing-only retry while retaining the canonical tool twin.
+
+    Processing is not an effort/dialect downgrade or learned capability action.
+    Reuse the original factory and require the rebuilt send to equal the prior
+    physical body except for its one explicit native processing field.
+    """
+    provider = candidate.accepted_profile.provider
+    if (provider, field_name, standard_value) not in {
+        ("openai", "service_tier", "default"),
+        ("openrouter", "service_tier", "default"),
+        ("anthropic", "speed", "standard"),
+    }:
+        raise ValueError("unsupported processing-only transition")
+    source = copy.deepcopy(dict(source_payload))
+    source[field_name] = standard_value
+    rebuilt = bind_wire_candidate(
+        target=target, api_surface=candidate.source_profile.api_surface,
+        source_payload=source, candidate_spec=candidate.candidate_spec,
+        requested_effort=candidate.requested_effort, ladder_ordinal=candidate.ladder_ordinal,
+        applied_actions=candidate.applied_actions,
+    )
+    expected = candidate.physical_payload()
+    expected[field_name] = standard_value
+    if rebuilt.physical_payload() != expected:
+        raise ValueError("processing retry changed unrelated physical input")
+    return rebuilt, source
+
+
 def wire_semantic_kind_allowed(
     profile: RequestWireProfile,
     semantic_kind: str,

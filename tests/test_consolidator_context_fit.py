@@ -82,12 +82,18 @@ def _summary(llm, text="source" * 100, **kwargs):
     return c._create_block_summary(llm, text, "2026-01-01T01:00", "2026-01-01T02:00", "identity", 1, **kwargs)
 
 
-def test_oversized_logical_block_splits_complete_source_and_advances_once(tmp_path, fit, monkeypatch):
+@pytest.mark.parametrize("code", ["provider_failed", "invalid_request"])
+def test_oversized_logical_block_splits_complete_source_and_advances_once(tmp_path, fit, monkeypatch, code):
+    from ouroboros.llm_claudexor import ClaudexorModelError
     fit.window = None
     chat, blocks, meta = _paths(tmp_path)
     rows = _write_chat(chat, text_size=120)
     source_bytes = chat.read_bytes()
-    llm = _LLM(limit=3500)
+    def reject(llm, prompt):
+        if len(prompt.encode("utf-8")) > llm.limit:
+            raise ClaudexorModelError({"code": code, "message": "Controlled provider refusal",
+                "context": {"httpStatus": 400, "vendorCode": "context_length_exceeded", "parameter": "input"}})
+    llm = _LLM(limit=3500, effect=reject)
     advances = []
     advance = c._advance_cursor
     monkeypatch.setattr(c, "_advance_cursor", lambda *args: (advances.append(args[-1]), advance(*args))[-1])
@@ -104,6 +110,7 @@ def test_oversized_logical_block_splits_complete_source_and_advances_once(tmp_pa
     assert not c.should_consolidate(meta, chat)
     refused = usage["_consolidation_errors"][0]
     assert refused["kind"] == "context_overflow" and not refused["preflight_only"]
+    assert refused["capacity_tokens"] is None and refused["input_limit"] is None
     sizes = [len(call["messages"][0]["content"].encode("utf-8")) for call in llm.calls]
     for index, size in enumerate(sizes[:-1]):
         if size > llm.limit:
@@ -258,10 +265,12 @@ def test_wait_interruption_propagates_after_a_successful_part(tmp_path, fit):
 
 
 @pytest.mark.parametrize("unresolved", [False, True])
-def test_confirmed_model_context_refusal_splits_but_unknown_custody_propagates(fit, unresolved):
+@pytest.mark.parametrize("code", ["provider_failed", "invalid_request"])
+def test_confirmed_model_context_refusal_splits_but_unknown_custody_propagates(fit, unresolved, code):
     from ouroboros.llm_claudexor import ClaudexorModelError
     fit.window = None
-    error = ClaudexorModelError({"code": "context_length_exceeded", "message": "too long"})
+    error = ClaudexorModelError({"code": code, "message": "Controlled provider refusal",
+        "context": {"httpStatus": 400, "vendorCode": "context_length_exceeded", "parameter": "input"}})
     error.physical_attempt_capture = SimpleNamespace(state="unresolved" if unresolved else "settled")
     def refuse_once(llm, _):
         if len(llm.calls) == 1:
@@ -496,8 +505,10 @@ def test_unavailable_capacity_reader_retains_ordinary_call(monkeypatch):
 
 
 @pytest.mark.parametrize("preceding_blocks", [0, 1])
-def test_refusal_bound_survives_preceding_logical_blocks(tmp_path, fit, preceding_blocks):
+@pytest.mark.parametrize("code", ["provider_failed", "invalid_request"])
+def test_refusal_bound_survives_preceding_logical_blocks(tmp_path, fit, preceding_blocks, code):
     """Earlier success cannot consume a later unpublished block's refusal."""
+    from ouroboros.llm_claudexor import ClaudexorModelError
     from ouroboros.model_wait import ModelWaitInterrupted
 
     fit.window = None
@@ -509,7 +520,8 @@ def test_refusal_bound_survives_preceding_logical_blocks(tmp_path, fit, precedin
 
     def first_cycle(llm, prompt):
         if len(llm.calls) == preceding_blocks + 1:
-            error = _Refusal()
+            error = ClaudexorModelError({"code": code, "message": "Controlled provider refusal",
+                "context": {"httpStatus": 400, "vendorCode": "context_length_exceeded", "parameter": "input"}})
             error.physical_attempt_capture = SimpleNamespace(state="settled")
             raise error
         if len(llm.calls) > preceding_blocks + 1:

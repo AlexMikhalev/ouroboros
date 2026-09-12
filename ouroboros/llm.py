@@ -52,6 +52,8 @@ from ouroboros.llm_attempt import (
     _structured_error_values,  # noqa: F401
     _VALID_CACHE_TTLS,  # noqa: F401
     cache_ttl_seconds,  # noqa: F401
+    apply_processing_preference,
+    processing_contract_headers,
     supports_message_cache_control,  # noqa: F401
 )
 from ouroboros.llm_capability_policy import (
@@ -199,6 +201,8 @@ class LLMClient(
         stream: bool = False,
         caller_deadline_ts: Optional[float] = None,
         caller_execution_deadline: Optional[float] = None,
+        wait_for_resources: bool = True,
+        processing_preference: str | None = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Single LLM call returning (message, usage); no_proxy avoids macOS fork proxy crashes.
 
@@ -213,7 +217,9 @@ class LLMClient(
 
         ``model_turn_state`` is the caller's optional active-turn transport slot
         (``llm_claudexor.ModelTurnState``); this seam is where a dispatch that
-        leaves that transport ends the turn."""
+        leaves that transport ends the turn. ``wait_for_resources=False`` returns
+        a confirmed quota/auth refusal to this caller without entering resource
+        waiting; task overrides, controls and dispatched-operation custody remain."""
         from ouroboros.llm_claudexor import turn_state_for_route
 
         messages = self._normalize_system_message_placement(messages)
@@ -222,12 +228,14 @@ class LLMClient(
                 turn_state_for_route(model_turn_state, "local")
                 message, usage = self._chat_local(
                     messages, tools, max_tokens, tool_choice, timeout=timeout,
+                    processing_preference=processing_preference,
                 )
             else:
                 # Central worker policy: remote calls from worker processes avoid
                 # system proxy lookup without every caller remembering a flag.
                 no_proxy = no_proxy or in_worker_process()
-                target = self._resolve_remote_target(model)
+                target = {**self._resolve_remote_target(model),
+                          "processing_preference": processing_preference}
                 if temperature is None and target.get("provider") != "claudexor":
                     temperature = default_temperature
                 message, usage = self._chat_remote(
@@ -274,11 +282,13 @@ class LLMClient(
         stream: bool = False,
         caller_deadline_ts: Optional[float] = None,
         caller_execution_deadline: Optional[float] = None,
+        wait_for_resources: bool = True,
+        processing_preference: str | None = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Async remote chat; no_proxy keeps forked macOS workers off OS proxy APIs.
 
-        Host temperature hints and the active-turn transport slot follow
-        ``chat``'s effective-route contract."""
+        Host temperature hints, resource waiting and the active-turn transport
+        slot follow ``chat``'s effective-route contract."""
         from ouroboros.llm_claudexor import turn_state_for_route
 
         messages = self._normalize_system_message_placement(messages)
@@ -289,7 +299,8 @@ class LLMClient(
 
             def local_call():
                 adopt_physical_attempt_capture(None)
-                result = self._chat_local(messages, tools, max_tokens, tool_choice, timeout=timeout)
+                result = self._chat_local(messages, tools, max_tokens, tool_choice, timeout=timeout,
+                                          processing_preference=processing_preference)
                 return result, last_physical_attempt_capture()
 
             with capture_attempt_ids() as attempt_ids:
@@ -301,7 +312,8 @@ class LLMClient(
                 adopt_physical_attempt_capture(capture)
             result[1]["ledger_attempt_ids"] = list(attempt_ids)
             return result
-        target = self._resolve_remote_target(model)
+        target = {**self._resolve_remote_target(model),
+                  "processing_preference": processing_preference}
         if temperature is None and target.get("provider") != "claudexor":
             temperature = default_temperature
         carried_turn_state = turn_state_for_route(model_turn_state, target.get("provider"))
@@ -613,6 +625,7 @@ class LLMClient(
         model_poll_control: Any = None,
         model_operation_observer: Any = None,
         model_account_override: str | None = None,
+        processing_preference: str | None = None,
     ) -> Tuple[str, Dict[str, Any]]:
         """Run a lightweight vision query; image dicts use url or base64+mime."""
         content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
@@ -645,6 +658,7 @@ class LLMClient(
             model_poll_control=model_poll_control,
             model_operation_observer=model_operation_observer,
             model_account_override=model_account_override,
+            processing_preference=processing_preference,
         )
         text = response_msg.get("content") or ""
         return text, usage
@@ -671,10 +685,15 @@ def openrouter_web_search_server_tool(
     search_context_size: str,
     accounting_scope: Optional[UsageScope] = None,
     timeout: Optional[float] = None,
+    processing_preference: str | None = None,
 ) -> Any:
     """Run OpenRouter's provider-owned web_search server tool."""
 
     from ouroboros.net_transport import web_search_openai_client
+    from ouroboros.model_slots import resolve_processing_preference
+
+    target = {"provider": "openrouter", "usage_model": model, "resolved_model": model,
+              "processing_preference": resolve_processing_preference("websearch", override=processing_preference)}
 
     client = web_search_openai_client(
         api_key=api_key,
@@ -693,9 +712,10 @@ def openrouter_web_search_server_tool(
             },
         }],
     )
+    apply_processing_preference(target, payload)
     candidate = _physical_candidate(payload)
     request = _attempt_request(
-        {"provider": "openrouter", "usage_model": model, "resolved_model": model},
+        target,
         candidate,
         source="web_search.openrouter",
     )
@@ -717,33 +737,49 @@ def anthropic_web_search_server_tool(
     query: str,
     accounting_scope: Optional[UsageScope] = None,
     timeout: Optional[float] = None,
+    processing_preference: str | None = None,
 ) -> Any:
     """Run Anthropic's provider-owned web_search server tool."""
 
     import anthropic
+    from ouroboros.model_slots import resolve_processing_preference
+
+    target = {"provider": "anthropic", "usage_model": model, "resolved_model": model,
+              "processing_preference": resolve_processing_preference("websearch", override=processing_preference)}
 
     client_kwargs: Dict[str, Any] = {"api_key": api_key, "max_retries": 0}
     if timeout is not None:
         client_kwargs["timeout"] = float(timeout)
-    client = anthropic.Anthropic(**client_kwargs)
     payload = dict(
         model=model,
         max_tokens=2048,
         tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
         messages=[{"role": "user", "content": query}],
     )
+    apply_processing_preference(target, payload)
+    headers = processing_contract_headers(target, payload)
+    if headers:
+        client_kwargs["default_headers"] = headers
+    client = anthropic.Anthropic(**client_kwargs)
     candidate = _physical_candidate(payload)
     request = _attempt_request(
-        {"provider": "anthropic", "usage_model": model, "resolved_model": model},
+        target,
         candidate,
         source="web_search.anthropic",
     )
     before_dispatch = _candidate_before_dispatch(candidate, request)
+    def send():
+        # The stable Messages SDK exposes beta speed only through extra_body.
+        # The merged HTTP body still equals the sealed native candidate above.
+        kwargs = {key: value for key, value in candidate.items() if key != "speed"}
+        if "speed" in candidate:
+            kwargs["extra_body"] = {"speed": candidate["speed"]}
+        return client.messages.create(**kwargs)
     if accounting_scope is None:
         return _execute_candidate(
-            request, lambda: client.messages.create(**candidate), before_dispatch,
+            request, send, before_dispatch,
         )
     with usage_scope(accounting_scope):
         return _execute_candidate(
-            request, lambda: client.messages.create(**candidate), before_dispatch,
+            request, send, before_dispatch,
         )

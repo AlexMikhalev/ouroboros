@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from ouroboros.llm_attempt import supports_message_cache_control
+from ouroboros.llm_attempt import apply_processing_preference, attach_processing_receipt, supports_message_cache_control
 from ouroboros.llm_capability_policy import (
     _EFFORT_CLAMP_CVAR,
     _OPTIONAL_DROPPABLE_PARAMS,
@@ -214,6 +214,7 @@ class _OpenAICompatibleLaneMixin:
                 _eb = kwargs.setdefault("extra_body", {})
                 if isinstance(_eb, dict):
                     _eb["cache"] = {"no-cache": True}
+            apply_processing_preference(target, kwargs)
             return kwargs
 
         if any(isinstance(m, dict) and "reasoning_content" in m for m in messages):
@@ -347,6 +348,7 @@ class _OpenAICompatibleLaneMixin:
                 if optional_param not in supported and optional_param in kwargs
             ]
             note_provider_metadata_drop_fields(unsupported)
+        apply_processing_preference(target, kwargs)
         return kwargs
 
     def _normalize_remote_response(
@@ -359,6 +361,9 @@ class _OpenAICompatibleLaneMixin:
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Normalize an OpenAI-compatible response; skip_cost_fetch keeps no_proxy pure."""
         usage = resp_dict.get("usage") or {}
+        if "service_tier" in resp_dict:
+            usage["service_tier"] = resp_dict["service_tier"]
+        attach_processing_receipt(target, usage)
         if isinstance(resp_dict.get("_stream_receipt"), dict):
             usage["stream_receipt"] = dict(resp_dict["_stream_receipt"])
         if isinstance(usage, dict):
@@ -512,6 +517,9 @@ class _OpenAICompatibleLaneMixin:
                 },
                 allow_live_fetch=not skip_cost_fetch,
                 provider=usage["provider"],
+                **({"processing_mode": ((usage["processing"].get("observedNative") or ["unknown"])[0]
+                    if len(usage["processing"].get("observedNative") or []) <= 1 else "unknown")}
+                   if usage.get("processing") else {}),
             )
             if estimated_cost is not None:
                 usage["cost"] = estimated_cost

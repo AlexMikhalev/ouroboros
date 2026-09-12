@@ -28,6 +28,10 @@ from ouroboros.llm_attempt import (
     _finalized_physical_candidate,
     preserve_prior_dispatch,
     strongest_dispatch_capture,
+    apply_processing_preference,
+    attach_processing_receipt,
+    processing_contract_headers,
+    processing_refusal,
 )
 from ouroboros.deadline_utils import physical_dispatch_timeout
 from ouroboros.llm_stream import consume_stream
@@ -371,6 +375,10 @@ class _AnthropicLaneMixin:
             "provider": "anthropic",
             "resolved_model": str(target.get("usage_model") or target.get("resolved_model") or ""),
         }
+        for key in ("speed", "service_tier", "processing"):
+            if key in raw_usage:
+                usage[key] = raw_usage[key]
+        attach_processing_receipt(target, usage)
         if isinstance(resp_dict.get("_stream_receipt"), dict):
             usage["stream_receipt"] = dict(resp_dict["_stream_receipt"])
         if prompt_cache_ttl:
@@ -392,6 +400,9 @@ class _AnthropicLaneMixin:
                     "cache_write_tokens_by_ttl": write_split or None,
                 },
                 provider="anthropic",
+                **({"processing_mode": ((usage["processing"].get("observedNative") or ["unknown"])[0]
+                    if len(usage["processing"].get("observedNative") or []) <= 1 else "unknown")}
+                   if usage.get("processing") else {}),
             )
             if estimated_cost is not None:
                 usage["cost"] = estimated_cost
@@ -457,6 +468,7 @@ class _AnthropicLaneMixin:
             choice = self._build_anthropic_tool_choice(tool_choice)
             if choice:
                 payload["tool_choice"] = choice
+        apply_processing_preference(target, payload)
         return payload
 
     @request_wire_scoped
@@ -502,14 +514,18 @@ class _AnthropicLaneMixin:
                 def receive(sent):
                     if sent.status_code >= 400:
                         body_preview = (sent.text or "")[:2000]
-                        raise requests.HTTPError(
+                        error = requests.HTTPError(
                             f"{sent.status_code} {sent.reason} for url {sent.url}: {body_preview}",
                             response=sent,
                         )
+                        refusal = processing_refusal(target, candidate, error)
+                        if refusal is error:
+                            raise error
+                        raise refusal from error
                     return consume_stream(sent, native=True) if candidate.get("stream") else sent
 
                 def post(sender):
-                    return receive(sender(url, headers=headers, json=candidate,
+                    return receive(sender(url, headers={**headers, **processing_contract_headers(target, candidate)}, json=candidate,
                                           timeout=physical_dispatch_timeout(request_timeout),
                                           **({"stream": True} if candidate.get("stream") else {})))
 
@@ -543,7 +559,7 @@ class _AnthropicLaneMixin:
         except UsageAccountingError:
             raise
         except Exception as exc:
-            retry_payload = plan_next_wire_retry(payload, error=exc)
+            retry_payload = plan_next_wire_retry(payload, error=exc, target=target)
             if retry_payload is None:
                 self._pop_effort_clamp_disclosure()
                 raise
@@ -555,7 +571,7 @@ class _AnthropicLaneMixin:
                     raise
                 except Exception as retry_exc:
                     retry_payload = plan_next_wire_retry(
-                        retry_payload, error=retry_exc,
+                        retry_payload, error=retry_exc, target=target,
                     )
                     if retry_payload is None:
                         self._pop_effort_clamp_disclosure()

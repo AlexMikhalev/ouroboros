@@ -1325,8 +1325,12 @@ def call_llm_with_retry(
     stop_retry_check: Optional[Callable[[], bool]] = None,
     model_role: str = "main", model_turn_state: Any = None,
     model_account_override: Optional[str] = None,
+    processing_preference: Optional[str] = None,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[float]]:
     """Call one model with bounded retries and deadline-aware transport."""
+    from ouroboros.model_slots import resolve_processing_preference
+
+    processing_preference = resolve_processing_preference(model_role, override=processing_preference)
     _replace_response_meta(response_meta_out)
     drive_root = pathlib.Path(drive_logs).parent
     accumulated_usage.pop(RETRY_WALL_EXHAUSTED_KEY, None)  # last-invocation marker (see key)
@@ -1375,6 +1379,7 @@ def call_llm_with_retry(
                 "model": model,
                 "model_role": model_role, "model_turn_state": model_turn_state,
                 "model_account_override": model_account_override,
+                "processing_preference": processing_preference,
                 "reasoning_effort": effort,
                 "max_tokens": MAIN_LOOP_MAX_TOKENS,
                 "stream": True, "caller_deadline_ts": (None if deadline_ts is None

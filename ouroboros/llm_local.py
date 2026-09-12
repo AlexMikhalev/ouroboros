@@ -194,6 +194,7 @@ class _LocalLaneMixin:
         max_tokens: int,
         tool_choice: str,
         timeout: Optional[float] = None,
+        processing_preference: Optional[str] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Send a chat request to the local llama-cpp-python server."""
         client = self._get_local_client()
@@ -246,7 +247,10 @@ class _LocalLaneMixin:
             kwargs["timeout"] = float(timeout)
 
         candidate = _physical_candidate(kwargs)
-        local_target = {"provider": "local", "usage_model": "local-model"}
+        from ouroboros.model_slots import resolve_processing_preference
+
+        preference = resolve_processing_preference(override=processing_preference)
+        local_target = {"provider": "local", "usage_model": "local-model", "processing_preference": preference}
         # ONE physical attempt per call. Re-sending here spent the caller's
         # physical-attempt budget without the caller authorising it, so a
         # transient local failure now surfaces to the single retry policy that
@@ -293,4 +297,8 @@ class _LocalLaneMixin:
         # returned usage alone could not attribute the call.
         usage["provider"] = "local"
         usage["resolved_model"] = "local-model"
+        if preference:
+            from ouroboros._usage_response import processing_receipt
+
+            usage["processing"] = processing_receipt("local", usage, requested=preference)
         return msg, usage

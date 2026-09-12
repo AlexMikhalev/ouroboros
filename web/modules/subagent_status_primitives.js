@@ -13,6 +13,7 @@ import {
     modelsGapNote,
     routeSupportsAccount,
     splitSessionTarget,
+    accountScopedModelCatalog,
 } from './route_editor_primitives.js';
 
 export function harnessMap(snapshot) {
@@ -78,7 +79,8 @@ export function sessionRouteVerdict(row, state, nowMs = Date.now()) {
     if (!state?.catalogKnown || !state?.accountsKnown) {
         return verdict(NOT_CHECKED, 'Agent session · live availability not checked');
     }
-    const harnessEntry = harnessMap(state.snapshot)[harness];
+    const pin = String(row?.route?.credential_profile_id || '');
+    const harnessEntry = accountScopedModelCatalog(harnessMap(state.snapshot)[harness], pin);
     if (!harnessEntry) return verdict(UNAVAILABLE, `${harness} · currently unavailable`);
     if (!harnessModelsKnown(harnessEntry, state.catalogKnown)) {
         return verdict(NOT_CHECKED, `${harness} · model availability not checked`);
@@ -88,7 +90,6 @@ export function sessionRouteVerdict(row, state, nowMs = Date.now()) {
     }
 
     const rows = accountRows(state.snapshot).filter((account) => account.harness === harness);
-    const pin = String(row?.route?.credential_profile_id || '');
     if (pin) {
         const account = rows.find((candidate) => String(candidate.profile_id || '') === pin);
         if (!account || account.enabled === false
@@ -155,7 +156,7 @@ export function rowStatus(row, state) {
     }
     const live = sessionRouteVerdict(row, state);
     const { harness } = splitSessionTarget(row.route.target_id);
-    const gap = modelsGapNote(harnessMap(state.snapshot)[harness], state.catalogKnown);
+    const gap = modelsGapNote(accountScopedModelCatalog(harnessMap(state.snapshot)[harness], row.route.credential_profile_id), state.catalogKnown);
     return {
         label: `${intent.word} · ${live.label}`,
         tone: worseTone(intent.tone, live.tone),

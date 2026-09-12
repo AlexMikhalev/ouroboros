@@ -34,6 +34,7 @@ from ouroboros.usage_accounting import (
     current_usage_scope,
     execute_physical_attempt,
     execute_physical_attempt_async,
+    last_physical_attempt_capture,
 )
 
 
@@ -199,6 +200,130 @@ def _applied_payload_cache_ttl(payload: Dict[str, Any]) -> Optional[str]:
     return "default" if breakpoints else None
 
 
+def submitted_processing_mode(target: Dict[str, Any], payload: Dict[str, Any]) -> str:
+    """Read the actual native carrier, never infer execution from requested intent."""
+    provider = target.get("provider")
+    if provider in {"openai", "openrouter"}:
+        extra = payload.get("extra_body")
+        value = (extra["service_tier"] if isinstance(extra, dict) and "service_tier" in extra
+                 else payload.get("service_tier"))
+    elif provider == "anthropic":
+        value = payload.get("speed")
+    elif provider == "claudexor":
+        value = (payload.get("options") or {}).get("serviceTier")
+    else:
+        value = None
+    return value if isinstance(value, str) else ""
+
+
+def apply_processing_preference(target: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    """Project already captured advisory intent before sealing this send copy.
+
+    These are provider protocol fields, not a model eligibility table. Explicit
+    native options win; unknown transports retain their ordinary request shape.
+    A retry already carries its replacement native mode and is never re-resolved.
+    """
+    preference = target.get("processing_preference")
+    if not preference:
+        return
+    if submitted_processing_mode(target, payload):
+        target["processing_native_origin"] = "native_override"
+        return
+    provider = target.get("provider")
+    if provider in {"openai", "openrouter"}:
+        payload["service_tier"] = {
+            "standard": "default", "fast": "priority", "economy": "flex",
+        }[preference]
+    elif provider == "anthropic":
+        # Messages has no synchronous Economy speed. Its explicit ordinary
+        # projection preserves the advisory request without inventing a tier.
+        payload["speed"] = "fast" if preference == "fast" else "standard"
+    else:
+        return
+    target["processing_native_origin"] = "preference"
+
+
+def attach_processing_receipt(target: Dict[str, Any], usage: Dict[str, Any]) -> None:
+    """Project the matching terminal attempt; never reconstruct a pre-fallback mode."""
+    from ouroboros._usage_response import processing_receipt
+
+    provider = str(target.get("provider") or "")
+    model = str(target.get("usage_model") or target.get("resolved_model") or "")
+    capture = last_physical_attempt_capture()
+    matched = capture is not None and capture.provider == provider and capture.model == model
+    requested = (capture.processing_preference if matched
+                 else str(target.get("processing_preference") or ""))
+    submitted = capture.submitted_processing_mode if matched else ""
+    receipt = processing_receipt(provider, usage, requested=requested, submitted_native=submitted)
+    if receipt is not None:
+        usage["processing"] = receipt
+
+
+def processing_contract_headers(target: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, str]:
+    """The native Messages speed beta belongs to the same exact request profile."""
+    headers = dict(target.get("contract_headers") or {})
+    if target.get("provider") == "anthropic" and (
+        payload.get("speed") == "fast" or target.get("processing_preference") == "fast"
+    ):
+        betas = [value.strip() for value in headers.get("anthropic-beta", "").split(",") if value.strip()]
+        if "fast-mode-2026-02-01" not in betas:
+            betas.append("fast-mode-2026-02-01")
+        headers["anthropic-beta"] = ",".join(betas)
+    return headers
+
+
+class ProcessingNotStarted(ProviderNotDispatched):
+    """A provider-owned processing refusal proving this generation never began."""
+
+    def __init__(self, error: BaseException, *, reason: str):
+        super().__init__(str(error))
+        self.processing_reason = reason
+        for name in ("body", "code", "type", "status_code", "response"):
+            if hasattr(error, name):
+                setattr(self, name, getattr(error, name))
+
+
+def processing_refusal(target: Dict[str, Any], payload: Dict[str, Any],
+                       error: BaseException) -> BaseException:
+    """Normalize only a documented native refusal; socket/stream errors stay unknown.
+
+    Dedicated Flex resource refusal and unsupported request fields precede
+    generation. Generic quota, overload, timeout and stream failures do not.
+    """
+    if getattr(error, "stream_incomplete", False) or isinstance(error, ProviderNotDispatched):
+        return error
+    if (target.get("processing_preference") not in {"fast", "economy"}
+            or target.get("processing_native_origin") != "preference"):
+        return error
+    response = getattr(error, "response", None)
+    status = getattr(error, "status_code", None) or getattr(response, "status_code", None)
+    body = getattr(error, "body", None)
+    if body is None and response is not None and callable(getattr(response, "json", None)):
+        try:
+            body = response.json()
+        except (ValueError, TypeError):
+            return error
+    native_error = body.get("error", body) if isinstance(body, dict) else None
+    if not isinstance(native_error, dict):
+        return error
+    provider, mode = target.get("provider"), submitted_processing_mode(target, payload)
+    reason = ""
+    if (provider == "anthropic" and mode == "fast" and status == 429
+            and native_error.get("type") == "rate_limit_error"):
+        reason = "capacity"
+    elif provider == "openai" and mode in {"priority", "fast", "flex"}:
+        if mode == "flex" and status == 429 and native_error.get("code") == "resource_unavailable":
+            reason = "capacity"
+        elif (status == 400 and native_error.get("code") == "unsupported_parameter"
+              and native_error.get("param") == "service_tier"):
+            reason = "unsupported"
+    if reason:
+        normalized = ProcessingNotStarted(error, reason=reason)
+        normalized.body = copy.deepcopy(body)
+        return normalized
+    return error
+
+
 def _attempt_request(
     target: Dict[str, Any],
     payload: Dict[str, Any],
@@ -248,6 +373,9 @@ def _attempt_request(
         physical_context=current_physical_attempt_context(),
         route_is_loopback=is_loopback_base_url(target.get("base_url")),
         prompt_tokens_bounded_estimate=bounded_tokens,
+        processing_preference=str(target.get("processing_preference") or ""),
+        submitted_processing_mode=submitted_processing_mode(target, payload),
+        processing_basis=copy.deepcopy(target.get("processing_basis")),
     )
 
 
@@ -280,7 +408,8 @@ def _finalized_physical_candidate(
     target: Dict[str, Any], payload: Dict[str, Any], api_surface: str,
 ) -> Dict[str, Any]:
     return prepare_wire_payload_for_send(
-        target, _physical_candidate(payload), api_surface=api_surface,
+        {**target, "contract_headers": processing_contract_headers(target, payload)},
+        _physical_candidate(payload), api_surface=api_surface,
     )
 
 

@@ -1,8 +1,4 @@
-// The wizard is served as a real ES module (`GET /onboarding`), so it uses the
-// SPA's shared helpers directly instead of carrying private copies that could
-// drift from them (the escaping is a security contract, and the request wrapper
-// is the gateway boundary) — and the Agents step imports the SAME login
-// machinery and the SAME status store the rest of the app uses.
+// The served wizard shares the SPA's escaping, request, login and status owners.
 import { fetchJson } from './api_client.js';
 import {
     agentsStepHtml,
@@ -17,17 +13,15 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
 import { createModelRolesEditor, modelRolesHost, modelRoleMap, parseModelSource } from './model_roles.js';
 import { availableSubagentsEditorHost } from './subagents_settings.js';
 import { adoptSubagentRoster, applyReviewerSlotsDraft, collectReviewerSlots,
-    destroyReviewerSlots, initReviewerSlots, renderReviewerSlotsSection } from './reviewer_slots.js';
+    destroyReviewerSlots, initReviewerSlots, renderReviewerSlotsSection, setReviewerProcessingPreference } from './reviewer_slots.js';
+import { PROCESSING_PREFERENCE_KEY, MODEL_PROCESSING_PREFERENCES_KEY, processingIntentLabel } from './route_editor_primitives.js';
 import { accountRows } from './claudexor_status_store.js';
 import { accountRowFacts } from './harness_accounts.js';
 
 (() => {
-        // The wizard is its own document inside the overlay iframe, so the SPA's
-        // Alt menu-lock guard cannot see its keyboard events — install our own.
+        // The served wizard document needs its own menu-key binding.
         installAltMenuSuppression();
-        // Same two-document pattern for the desktop shell: the Agents step's
-        // primary "Open sign-in link" is a target="_blank" anchor, a silent
-        // no-op in the embedded WebView without the shell link interceptor.
+        // Shell interception makes sign-in links work inside the embedded WebView.
         // When framed, the pywebview bridge lives on the PARENT window; the
         // installer resolves it lazily and stays inert in ordinary browsers.
         installDesktopShellLinkInterceptor();
@@ -60,9 +54,7 @@ import { accountRowFacts } from './harness_accounts.js';
         const MODEL_DEFAULTS = bootstrap.modelDefaults || {};
         const LOCAL_PRESETS = bootstrap.localPresets || {};
         const INITIAL_STATE = bootstrap.initialState || {};
-        // What a stored credential looks like in INITIAL_STATE: a marker saying
-        // "configured", not the secret. Posting it back means "leave it alone";
-        // the shared server-side validator resolves it to the stored value.
+        // Credential placeholders retain stored values through the shared validator.
         const SECRET_PLACEHOLDER = bootstrap.secretPlaceholder || '';
         const root = document.getElementById('root');
 
@@ -127,6 +119,10 @@ import { accountRowFacts } from './harness_accounts.js';
         });
         if ('OUROBOROS_MODEL_ACCOUNTS' in settings) state.modelAccounts = modelRoleMap(settings.OUROBOROS_MODEL_ACCOUNTS);
         if ('OUROBOROS_MODEL_CONTEXT_WINDOWS' in settings) state.modelContextWindows = modelRoleMap(settings.OUROBOROS_MODEL_CONTEXT_WINDOWS);
+        if (PROCESSING_PREFERENCE_KEY in settings) state.processingPreference = settings[PROCESSING_PREFERENCE_KEY];
+        if (MODEL_PROCESSING_PREFERENCES_KEY in settings) state.modelProcessingPreferences = modelRoleMap(settings[MODEL_PROCESSING_PREFERENCES_KEY]);
+        agentsStep?.setProcessingPreference(state.processingPreference);
+        setReviewerProcessingPreference(state.processingPreference, state.modelProcessingPreferences || {});
     }
 
     function hasApiAccess() {
@@ -568,9 +564,10 @@ import { accountRowFacts } from './harness_accounts.js';
             const { source, model } = parseModelSource(value);
             const account = slot.slot === 'fallback' ? state.modelAccounts.fallback?.[index] : state.modelAccounts[slot.slot];
             const context = slot.slot === 'fallback' ? state.modelContextWindows.fallback?.[index] : state.modelContextWindows[slot.slot];
+            const processing = slot.slot === 'fallback' ? state.modelProcessingPreferences?.fallback?.[index] : state.modelProcessingPreferences?.[slot.slot];
             const assignment = source.startsWith('subscription:')
                 ? `${source.slice(13)} · ${model} · ${account ? `Account: ${account}` : 'Auto rotation'}` : value;
-            return `${inherited ? 'Uses Main · ' : ''}${assignment}${Number(context) > 0 ? ` · ${Number(context).toLocaleString('en-US')} tokens, set by you` : ''}`;
+            return `${inherited ? 'Uses Main · ' : ''}${assignment} · Processing: ${processingIntentLabel(processing, state.processingPreference)}${Number(context) > 0 ? ` · ${Number(context).toLocaleString('en-US')} tokens, set by you` : ''}`;
         }).join(' → ') || 'None';
     }
 
@@ -580,13 +577,12 @@ import { accountRowFacts } from './harness_accounts.js';
         const account = route?.profile_id || route?.credential_profile_id;
         const effort = row.effort || actor?.effort;
         return [row.enabled === false ? 'Disabled' : '', route?.target_id || row.subagent_id || 'Not configured',
-            account ? `Account: ${account}` : '', effort ? `Effort: ${effort}` : ''].filter(Boolean).join(' · ');
+            account ? `Account: ${account}` : '', effort ? `Effort: ${effort}` : '',
+            `Processing: ${processingIntentLabel(row.subagent_id ? actor?.processing_preference : row.processing_preference, state.processingPreference)}`].filter(Boolean).join(' · ');
     }
 
     function agentsSummaryValue() {
-        // Through the step's own snapshot, so this line and the Agents step one
-        // screen earlier spell a family the same way. Without it the summary
-        // fell back to the bootstrap names and quietly undid an engine rename.
+        // Read family labels from the same snapshot the Agents step displays.
         const labels = familyLabels(state.agentsConnected, agentsStep?.snapshot, {
             catalogKnown: Boolean(agentsStep?.catalogKnown),
         });
@@ -728,7 +724,7 @@ import { accountRowFacts } from './harness_accounts.js';
                     syncCurrentStepActionState();
                 },
                 previewPayload: draftSettings,
-                onSubagentsChange: (setting) => { state.availableSubagents = setting; },
+                onSubagentsChange: (setting) => { state.availableSubagents = setting; adoptSubagentRoster({ OUROBOROS_SUBAGENTS: setting }); },
                 onSetupPreview: applySetupPreview,
                 onStatus: () => {
                     const quota = document.getElementById('wizard-subscription-quota');
@@ -738,6 +734,7 @@ import { accountRowFacts } from './harness_accounts.js';
         }
         agentsStep.setSkipPresets(state.skipSubscriptionPresets);
         agentsStep.mount();
+        agentsStep.setProcessingPreference(state.processingPreference);
         syncCurrentStepActionState();
     }
 
@@ -1220,6 +1217,7 @@ import { accountRowFacts } from './harness_accounts.js';
         loadModelRoles();
         modelRoles.mount();
         agentsStep?.mount();
+        agentsStep?.setProcessingPreference(state.processingPreference);
         syncCurrentStepActionState();
     }
 
@@ -1244,6 +1242,7 @@ import { accountRowFacts } from './harness_accounts.js';
             markStepEdited();
         } });
         adoptSubagentRoster({ OUROBOROS_SUBAGENTS: state.availableSubagents });
+        setReviewerProcessingPreference(state.processingPreference, state.modelProcessingPreferences || {});
         if (state.reviewerSlots) applyReviewerSlotsDraft(state.reviewerSlots);
         bindChoices('data-review-mode', 'reviewEnforcement');
         bindChoices('data-runtime-mode', 'runtimeMode');

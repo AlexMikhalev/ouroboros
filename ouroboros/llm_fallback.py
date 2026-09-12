@@ -29,6 +29,7 @@ from ouroboros.llm_attempt import (
     _is_structured_context_overflow_exception,
     preserve_prior_dispatch,
     strongest_dispatch_capture,
+    processing_refusal,
 )
 from ouroboros.deadline_utils import physical_dispatch_timeout
 from ouroboros.llm_stream import consume_stream, consume_stream_async
@@ -371,7 +372,13 @@ class _RecoveryLadderMixin:
 
             def dispatch():
                 timeout = physical_dispatch_timeout(transport_timeout)
-                response = create_fn(**candidate, **({"timeout": timeout} if timeout is not None else {}))
+                try:
+                    response = create_fn(**candidate, **({"timeout": timeout} if timeout is not None else {}))
+                except Exception as error:
+                    refusal = processing_refusal(target, candidate, error)
+                    if refusal is error:
+                        raise
+                    raise refusal from error
                 return consume_stream(response, expected_choices=candidate.get("n", 1)) if candidate.get("stream") else response
 
             try:
@@ -417,7 +424,7 @@ class _RecoveryLadderMixin:
                     if current_failure is None:
                         body = _body_error(current_response)
                         retry_kwargs = plan_next_wire_retry(
-                            current_candidate, error=body, body_error=True,
+                            current_candidate, error=body, body_error=True, target=target,
                         )
                         if retry_kwargs is None:
                             return current_response
@@ -427,7 +434,7 @@ class _RecoveryLadderMixin:
                             # rung may re-attempt the refused call.
                             raise current_failure
                         retry_kwargs = plan_next_wire_retry(
-                            current_candidate, error=current_failure,
+                            current_candidate, error=current_failure, target=target,
                         )
                         if retry_kwargs is None and not signature_used:
                             retry_kwargs = self._openrouter_signature_retry_kwargs(
@@ -529,7 +536,13 @@ class _RecoveryLadderMixin:
 
             async def dispatch():
                 timeout = physical_dispatch_timeout(transport_timeout)
-                response = await create_fn(**candidate, **({"timeout": timeout} if timeout is not None else {}))
+                try:
+                    response = await create_fn(**candidate, **({"timeout": timeout} if timeout is not None else {}))
+                except Exception as error:
+                    refusal = processing_refusal(target, candidate, error)
+                    if refusal is error:
+                        raise
+                    raise refusal from error
                 return await consume_stream_async(response, expected_choices=candidate.get("n", 1)) if candidate.get("stream") else response
 
             try:
@@ -575,7 +588,7 @@ class _RecoveryLadderMixin:
                     if current_failure is None:
                         body = _body_error(current_response)
                         retry_kwargs = plan_next_wire_retry(
-                            current_candidate, error=body, body_error=True,
+                            current_candidate, error=body, body_error=True, target=target,
                         )
                         if retry_kwargs is None:
                             return current_response
@@ -585,7 +598,7 @@ class _RecoveryLadderMixin:
                             # rung may re-attempt the refused call.
                             raise current_failure
                         retry_kwargs = plan_next_wire_retry(
-                            current_candidate, error=current_failure,
+                            current_candidate, error=current_failure, target=target,
                         )
                         if retry_kwargs is None and not signature_used:
                             retry_kwargs = self._openrouter_signature_retry_kwargs(

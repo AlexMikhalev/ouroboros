@@ -11,6 +11,7 @@ import {
     createAvailableSubagentsEditor,
 } from './subagents_settings.js';
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
+import { PROCESSING_PREFERENCE_KEY, MODEL_PROCESSING_PREFERENCES_KEY } from './route_editor_primitives.js';
 
 // Every supported task harness in the linear Available-subagents compiler.
 // Reviewer policy remains a separate core-only projection: Agy is task-only and
@@ -148,6 +149,8 @@ export function onboardingSettingsDraft({
         )),
         OUROBOROS_MODEL_ACCOUNTS: state.modelAccounts || {},
         OUROBOROS_MODEL_CONTEXT_WINDOWS: state.modelContextWindows || {},
+        ...(state.processingPreference !== undefined ? { [PROCESSING_PREFERENCE_KEY]: clean(state.processingPreference) } : {}),
+        ...(state.modelProcessingPreferences !== undefined ? { [MODEL_PROCESSING_PREFERENCES_KEY]: state.modelProcessingPreferences } : {}),
         OUROBOROS_RUNTIME_MODE: clean(state.runtimeMode) || 'advanced',
     };
 }
@@ -793,6 +796,7 @@ export function createAgentsStep({
         get reads() { return store.reads; },
         refreshStatus() { return store.refresh(); },
         get availableSubagents() { return subagents.setting; },
+        setProcessingPreference(value) { subagents.setProcessingPreference(value); },
         get generatedPreviewReady() {
             if (subagents.dirty) return true;
             try {
