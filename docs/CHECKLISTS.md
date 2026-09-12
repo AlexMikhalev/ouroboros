@@ -6,6 +6,15 @@ multi-model review prompt.
 
 When a new reviewable concern appears, add it here — not in prompts or docs.
 
+**Application follows BIBLE P0/P3.** Review findings and failures are independent
+facts in every mode. In Cyber Pro they inform Ouroboros and never prohibit an
+action or require permission; the agent may configure its own subsequent work.
+Configured enforcement remains recorded as selected, and an author decision does
+not rewrite FAIL, pending, missing source or an unperformed effect as PASS.
+Enforcement requirements below describe ordinary modes; Cyber applies the same
+checks as advice. This product rule does not replace an external developer's
+explicit work-order review obligations.
+
 ---
 
 ## Advisory Pre-Review Workflow
@@ -625,7 +634,7 @@ and do not return `PASS` for an item that also has a `FAIL` — the concrete
     `blockers` are executable by operator choice. This changes
     `executable_review` only; it does not rewrite the verdict, suppress
     findings, or change `skill_review_status` semantics.
-  - `pending` is never executable. A stale critic verdict does not authorize bytes;
+  - Outside Cyber Pro, `pending` is not executable. A stale critic verdict does not authorize bytes;
     under Advisory a separate current author acceptance may admit the payload
     after deterministic preflight. Blocking still requires fresh critic evidence.
 - Review state stores findings and computes the verdict at load time. Agents
@@ -633,8 +642,8 @@ and do not return `PASS` for an item that also has a `FAIL` — the concrete
   not the raw status string, when deciding whether the skill is runnable.
 - A deterministic `skill_preflight` FAIL is a structural gate failure, not an LLM
   verdict: it persists and aggregates to `pending`, which is non-executable under
-  EVERY enforcement mode (advisory included) and in every readiness/execution
-  caller — the strongest fail-closed outcome, stronger than an overridable blocker.
+  ordinary enforcement mode (advisory included). Cyber keeps the failed check
+  and pending verdict visible while leaving the execution decision to Ouroboros.
 - Hard trust-boundary items are blocker findings on any FAIL regardless of
   reviewer-supplied severity: `manifest_schema`,
   `permissions_honesty`, `no_repo_mutation`, `path_confinement`,

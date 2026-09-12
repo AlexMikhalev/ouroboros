@@ -803,6 +803,9 @@ def emit_plan_review_advisory_open(
            json.dumps(wave.get("health_epoch") or [], sort_keys=True, default=str))
     if key in _ADVISORY_OPEN_SEEN:
         return
+    from ouroboros.config import get_review_enforcement
+    from ouroboros.tools.review_helpers import review_enforcement_blocks
+
     row = {
         "type": "plan_review_advisory_open",
         "surface": "plan_review",
@@ -813,7 +816,8 @@ def emit_plan_review_advisory_open(
         "paid": bool(wave.get("paid")),
         "cycles_paid": int(cycles_paid),
         "cap": cap,
-        "enforcement": "advisory",
+        "enforcement": get_review_enforcement(),
+        "decision_authority": "cyber_pro" if not review_enforcement_blocks("blocking") else "advisory",
         # Bounded per-slot typed facts: who failed, with what code, until when.
         "slots": [
             {"slot_id": a.get("slot_id"), "ok": bool(a.get("ok")),
