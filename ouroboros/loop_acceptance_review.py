@@ -113,6 +113,32 @@ def announce_acceptance_settlement(usage_ctx: Any, request: Any, wave: dict) -> 
         log.warning("Acceptance settlement wake failed for %s", request.task_id, exc_info=True)
 
 
+def prepare_acceptance_observation(ctx: Any, trace: dict, incoming: Any, messages: list) -> None:
+    """Present the current owner-source selector immediately before Main's send."""
+    from ouroboros.loop_acceptance import capture_acceptance_observation, acceptance_observation_prompt
+
+    observed = capture_acceptance_observation(ctx, trace, incoming)
+    note = acceptance_observation_prompt(ctx, observed)
+    if note:
+        messages[:] = [row for row in messages if not row.get("acceptance_observation")]
+        messages.append({"role": "user", "content": note, "acceptance_observation": True})
+
+
+def wait_for_acceptance_feedback(tools: Any, limit_ctx: Any, trace: dict,
+                                 tool_schemas: list, seen: set) -> None:
+    """Park a pending final answer with the same keep/replace contract as nomination."""
+    ctx = tools._ctx
+    binding = getattr(ctx, "_task_acceptance_pending", "")
+    if not binding:
+        return
+    if not getattr(getattr(ctx, "_delivery_candidate", None), "control_episode_seen", False):
+        _loop()._arm_delivery_control(tools, limit_ctx, trace)
+    from ouroboros.owner_wait import wait_after_tools
+
+    wait_after_tools(ctx, limit_ctx.messages, trace, limit_ctx.accumulated_usage,
+                     limit_ctx.round_idx, tool_schemas, seen, review_binding=binding)
+
+
 def advance_explicit_acceptance(tools: Any, limit_ctx: Any, trace: dict,
                                 incoming: Any, seen: set, emit: Any) -> None:
     """Nominate a complete result only after the round's entire tool block exists."""
@@ -134,6 +160,12 @@ def advance_explicit_acceptance(tools: Any, limit_ctx: Any, trace: dict,
                                       tools, incoming, seen, emit, review_only=True)
     finally:
         tools._ctx._acceptance_review_only = False
+    if (getattr(tools._ctx, "_task_acceptance_pending", "")
+            or getattr(tools._ctx, "_task_acceptance_reviewed", False)):
+        # Explicit submission retained a complete answer without delivering it.
+        # Teach the existing keep/replace reader that this is a control episode;
+        # otherwise the subject-observation's requested keep JSON becomes prose.
+        _loop()._arm_delivery_control(tools, limit_ctx, trace)
 
 
 def _acceptance_dialogue_quorum(result: Any) -> int:
@@ -1444,18 +1476,12 @@ def _run_task_acceptance_review_once(
             panel_result = collect_task_acceptance_run(
                 prior_run, drive_root=drive_root or tools._ctx.drive_root, usage_ctx=tools._ctx,
             )
-            # Same host record and paid claim. The original request bytes remain
-            # frozen; collection updates producer facts, never current inputs.
+            # Keep the paid operation's request; only its producer facts advance.
             prior_run.update({key: value for key, value in vars(panel_result).items()
                               if key != "request"})
-            reused_result = panel_result
         else:
             panel_result = reused_result or _loop()._execute_task_acceptance_panel(review_ctx)
-        run_record = (
-            prior_run
-            if reused_result is not None
-            else _record_host_acceptance_run(review_ctx, panel_result)
-        )
+        run_record = prior_run if reused_result is not None else _record_host_acceptance_run(review_ctx, panel_result)
         if acceptance_run_pending(panel_result):
             tools._ctx._task_acceptance_pending = str(run_record.get("binding_hash") or "")
             run_record["enforcement_impact"] = "pending_feedback"

@@ -356,7 +356,10 @@ def test_service_outputs_finalize_before_acceptance_and_require_replacement(tmp_
 
     assert result == replacement
     assert len(model_calls) == 2
-    assert "keep is NOT allowed" in model_calls[1][-1]["content"]
+    controls = [str(row.get("content") or "") for row in model_calls[1]
+                if "[DELIVERY_FINALIZATION_CONTROL]" in str(row.get("content") or "")]
+    assert any("keep is NOT allowed" in text for text in controls)
+    # The current source selector may follow the unchanged control instruction.
     assert trace["delivery_candidate"]["revision"] == 2
     assert trace["delivery_candidate"]["finalization_control"] == "replace"
     assert trace["verification_events"][0]["kind"] == "services_stopped"

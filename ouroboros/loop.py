@@ -525,29 +525,14 @@ def run_llm_loop(
                 if _compaction_usage:
                     _account_compaction_usage(accumulated_usage, _compaction_usage, event_queue, task_id)
 
-                from ouroboros.loop_acceptance import (
-                    capture_acceptance_observation, acceptance_observation_prompt,
-                )
-                observed = capture_acceptance_observation(ctx, llm_trace, incoming_messages)
-                observation_note = acceptance_observation_prompt(ctx, observed)
-                if observation_note:
-                    messages[:] = [row for row in messages if not row.get("acceptance_observation")]
-                    messages.append({"role": "user", "content": observation_note,
-                                     "acceptance_observation": True})
+                prepare_acceptance_observation(ctx, llm_trace, incoming_messages, messages)
                 seal_task_transcript(messages)
 
                 model_call = _RoundModelCallContext(
-                        llm=llm,
-                        messages=messages,
-                        tools=tools,
-                        context_fit_plan=context_fit_plan,
-                        active_model=active_model,
-                        tool_schemas=tool_schemas,
-                        active_effort=active_effort,
-                        max_retries=max_retries,
-                        drive_logs=drive_logs,
-                        task_id=task_id,
-                        round_idx=round_idx,
+                        llm=llm, messages=messages, tools=tools, context_fit_plan=context_fit_plan,
+                        active_model=active_model, tool_schemas=tool_schemas,
+                        active_effort=active_effort, max_retries=max_retries,
+                        drive_logs=drive_logs, task_id=task_id, round_idx=round_idx,
                         event_queue=event_queue,
                         accumulated_usage=accumulated_usage,
                         task_type=task_type,
@@ -635,10 +620,7 @@ def run_llm_loop(
                     _owner_msg_seen, emit_progress,
                 )
                 if final_result is None:
-                    if getattr(ctx, "_task_acceptance_pending", ""):
-                        wait_after_tools(ctx, messages, llm_trace, accumulated_usage,
-                                         round_idx, tool_schemas, _owner_msg_seen,
-                                         review_binding=ctx._task_acceptance_pending)
+                    wait_for_acceptance_feedback(tools, limit_ctx, llm_trace, tool_schemas, _owner_msg_seen)
                     continue
                 return final_result
 
@@ -652,8 +634,6 @@ def run_llm_loop(
                 tool_calls, tools, drive_logs, task_id, stateful_executor,
                 messages, llm_trace, emit_progress
             )
-            from ouroboros.loop_acceptance_review import advance_explicit_acceptance
-
             advance_explicit_acceptance(tools, limit_ctx, llm_trace, incoming_messages,
                                         _owner_msg_seen, emit_progress)
             wait_after_tools(ctx, messages, llm_trace, accumulated_usage,
@@ -715,6 +695,9 @@ from ouroboros.loop_acceptance import (  # noqa: E402, F401 -- intentional publi
     terminalize_dangling_revision,
 )
 from ouroboros.loop_acceptance_review import (  # noqa: E402, F401 -- intentional public re-exports
+    wait_for_acceptance_feedback,
+    prepare_acceptance_observation,
+    advance_explicit_acceptance,
     _ACCEPTANCE_REVIEW_CHECKLIST,
     _TaskAcceptanceContext,
     _acceptance_dialogue_quorum,
