@@ -1044,7 +1044,7 @@ def compact_tool_history_llm(
     """Return a candidate and receipt; the caller owns atomic view publication.
 
     Legacy ``keep_recent`` requests use Light. An explicit ``working_note``
-    uses the actor's observed snapshot/selection, requires a pure prospective
+    uses the actor's observed snapshot/selection, requires a non-generating prospective
     ``fit_candidate(messages, tools)`` returning ``accepted`` plus fit facts,
     and never calls Light. Supply observed schemas to prove a whole-view no-op
     when selecting schemas. Missing fit evidence leaves current messages intact.

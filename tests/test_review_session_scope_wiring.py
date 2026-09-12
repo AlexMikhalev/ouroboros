@@ -729,3 +729,22 @@ def test_skill_review_legacy_session_dispatch_keeps_shared_profile_pin(
     assert starts[0]["credentialProfileId"] == "legacy-profile"
     assert starts[0]["model"] == "fake-small"
     assert starts[0]["effort"] == "high"
+
+
+def test_scope_book_navigation_uses_physical_chapter_sources(tmp_path):
+    from ouroboros.tools.scope_review_session import governance_nav_maps
+    from tests.test_reference_books import sources
+
+    for path, raw in sources().items():
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+    text = governance_nav_maps(tmp_path, ("docs/ARCHITECTURE.md",))
+    assert "docs/architecture/runtime.md" in text
+    assert "Processes carry the work" in text
+    assert "The full startup mechanism" not in text
+    assert 'root="system_repo"' in text
+    (tmp_path / "docs/architecture/runtime.md").unlink()
+    missing = governance_nav_maps(tmp_path, ("docs/ARCHITECTURE.md",))
+    assert "Required coverage is incomplete" in missing
+    assert "no `##`" not in missing
