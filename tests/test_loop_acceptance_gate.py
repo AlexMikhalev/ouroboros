@@ -435,8 +435,10 @@ def _exercise_owner_followup_during_acceptance_panel(monkeypatch, tmp_path, *, d
     assert acceptance_ctx._task_acceptance_reviewed is False
     assert root_id not in queue_mod.ACCEPTANCE_FENCES
     assert trace.get("root_phase_checkpoint") is None
-    assert trace["review_runs"][0]["superseded_by_revision"] is True
-    assert trace["review_runs"][0]["superseded_reason"] == "owner_followup_after_acceptance_evidence"
+    # Arrival is unread input, not Main's judgment that the reviewed subject
+    # changed. Retain the paid result while returning control to consume it.
+    assert trace["review_runs"][0].get("superseded_by_revision") is not True
+    assert trace["review_decision"]["eligibility"] == "pending_owner_followup"
     assert trace["acceptance_decision"]["status"] == "revision_requested"
     assert (direct_agent._busy and direct_agent._accepting_owner_messages) if direct else root_id in running
 

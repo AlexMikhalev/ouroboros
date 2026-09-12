@@ -83,6 +83,14 @@ def _task_acceptance_eligible(
     return False, "skipped_unknown_mode"
 
 
+from ouroboros.loop_messages import (  # noqa: F401 — shared owner-source surface
+    _acceptance_observation_state,
+    capture_acceptance_observation,
+    acknowledge_acceptance_observation,
+    acceptance_observation_prompt,
+)
+
+
 def _begin_task_acceptance_fence(ctx: Any, task_id: str) -> tuple[bool, Any]:
     """Optional seam implemented by the supervisor under its queue lock."""
     admission_lock = getattr(ctx, "owner_message_admission_lock", None)
@@ -142,6 +150,8 @@ def _begin_task_acceptance_fence(ctx: Any, task_id: str) -> tuple[bool, Any]:
 def _end_task_acceptance_fence(
     ctx: Any, *, outcome: str, admission_locked: bool = False,
 ) -> bool:
+    if getattr(ctx, "_acceptance_review_only", False) and outcome != "revision":
+        outcome = "revision"  # Early feedback never closes the root's future work.
     token = getattr(ctx, "_task_acceptance_fence_token", None)
     if token is None and str(outcome) == "revision":
         token = getattr(ctx, "_task_acceptance_sealed_fence_token", None)
@@ -154,11 +164,23 @@ def _end_task_acceptance_fence(
             admission_lock.acquire()
             acquired = True
         expected_owner_generation = getattr(ctx, "_task_acceptance_owner_generation", None)
+        from ouroboros.loop_messages import owner_source_sha256
+        from ouroboros.loop_transport import _owner_signal_pending
+
+        acknowledged_source = getattr(ctx, "_acceptance_ack_source_sha256", "")
         direct_generation_mismatch = bool(
+            (acknowledged_source and (
+                acknowledged_source != owner_source_sha256(ctx)
+                or _owner_signal_pending(
+                    getattr(ctx, "_acceptance_observation_incoming", None), getattr(ctx, "drive_root", None),
+                    str(getattr(ctx, "task_id", "") or ""), getattr(ctx, "_loop_mailbox_seen_ids", None),
+                    getattr(ctx, "task_attempt", None) or 1,
+                )
+            )) or (
             expected_owner_generation is not None
             and admission_agent is not None
             and int(getattr(admission_agent, "_owner_message_generation", 0) or 0)
-            != int(expected_owner_generation)
+            != int(expected_owner_generation))
         )
         effective_outcome = "revision" if direct_generation_mismatch else str(outcome)
         if token is None or not callable(callback):
@@ -294,24 +316,14 @@ def _supersede_task_acceptance_for_owner_followup(
     *,
     admission_locked: bool = False,
 ) -> bool:
-    """Invalidate a paid verdict whose immutable evidence predates an owner follow-up."""
+    """Release finalization for Main to consume new input, retaining paid evidence."""
     released = _loop()._end_task_acceptance_fence(
         ctx, outcome="revision", admission_locked=admission_locked,
     )
-    for run in reversed(llm_trace.get("review_runs") or []):
-        if (
-            isinstance(run, dict)
-            and run.get("authority") == "host_root"
-            and not run.get("superseded_by_revision")
-        ):
-            run["superseded_by_revision"] = True
-            run["superseded_reason"] = "owner_followup_after_acceptance_evidence"
-            run["enforcement_impact"] = "requires_revision"
-            break
     ctx._task_acceptance_reviewed = False
     ctx._task_acceptance_fence_generation_mismatch = False
     llm_trace.pop("root_phase_checkpoint", None)
-    llm_trace["review_decision"] = {
+    llm_trace["review_decision"] = {**dict(llm_trace.get("review_decision") or {}),
         "eligibility": "pending_owner_followup",
         "trigger": "owner_followup_after_acceptance",
     }
@@ -319,7 +331,7 @@ def _supersede_task_acceptance_for_owner_followup(
         "status": ACCEPTANCE_REVISION_REQUESTED,
         "reason": "owner_followup",
         "source": "owner_followup",
-        "rationale": "The owner added a directive after acceptance evidence was frozen; re-review is required.",
+        "rationale": "Main must consume the owner follow-up and decide whether the retained review subject changed.",
     })
     publish_acceptance_checkpoint(ctx, llm_trace)
     return released
@@ -328,6 +340,11 @@ def _supersede_task_acceptance_for_owner_followup(
 def _task_acceptance_owner_generation_changed(ctx: Any) -> bool:
     """Check direct and queue-owned owner generations without closing the fence."""
 
+    from ouroboros.loop_messages import owner_source_sha256
+
+    acknowledged = getattr(ctx, "_acceptance_ack_source_sha256", "")
+    if acknowledged and acknowledged != owner_source_sha256(ctx):
+        return True
     expected_owner = getattr(ctx, "_task_acceptance_owner_generation", None)
     admission_agent = getattr(ctx, "owner_message_admission_agent", None)
     if (
