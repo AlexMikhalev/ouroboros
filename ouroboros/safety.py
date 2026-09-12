@@ -702,6 +702,11 @@ def _resolve_safety_routing() -> Tuple[bool, bool, Optional[str]]:
         return True, False, None
 
     light_model = get_light_model()
+    from ouroboros.provider_models import provider_for_model
+
+    if provider_for_model(light_model) == "claudexor":
+        # Subscription credentials and readiness belong to the model transport.
+        return False, False, None
 
     if _any_remote_provider_configured():
         # The direct light-model provider needs its own key.

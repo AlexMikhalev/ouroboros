@@ -31,7 +31,6 @@ def test_resource_refusal_does_not_suspend_cyber_execution(live_wait, tmp_path, 
     factory = lambda: client
     factory.supports_response_format = lambda *args, **kwargs: False
     monkeypatch.setattr(safety, "LLMClient", factory)
-    monkeypatch.setattr(safety, "_resolve_safety_routing", lambda: (False, False, None))
     monkeypatch.setattr(safety, "get_light_model", lambda: MODEL)
     monkeypatch.setattr(safety, "_SAFETY_STORM_UNTIL", 0)
     monkeypatch.setattr(safety, "get_runtime_mode", lambda: mode)
@@ -63,3 +62,9 @@ def test_resource_refusal_does_not_suspend_cyber_execution(live_wait, tmp_path, 
     assert [row["state"] for row in ledger(root)] == ["reserved", "dispatched", "released"]
     assert current_model_wait() is controller and not controller.closed
     assert "wait_for_resources" not in json.dumps(transport.uploads[0][0])
+
+
+def test_explicit_local_safety_keeps_precedence_over_subscription_name(monkeypatch):
+    monkeypatch.setenv("USE_LOCAL_LIGHT", "true")
+    monkeypatch.setattr(safety, "get_light_model", lambda: MODEL)
+    assert safety._resolve_safety_routing() == (True, False, None)

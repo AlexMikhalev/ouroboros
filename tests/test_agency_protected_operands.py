@@ -118,3 +118,26 @@ def test_sequential_cwd_and_cyber_keep_actual_operation_identity(protected, monk
     result = registry.execute_result("run_command", {"cmd": ["sh", "-c", body]})
     assert result.status == "ok" and str(len(original)) in result.text, result.text
     assert reference.read_bytes() == original
+
+
+@pytest.mark.parametrize("command", ["cp", "mv", "ln"])
+def test_directory_destination_only_targets_the_actual_child(protected, command):
+    registry, _ctx, reference, workspace = protected
+    original = reference.read_bytes()
+    (workspace / "ordinary/input.txt").write_text("ordinary input\n")
+    result = registry.execute_result("run_command", {
+        "cmd": [command, "ordinary/input.txt", "."], "outputs": ["input.txt"],
+    })
+    assert result.status == "ok", result.text
+    assert (workspace / "input.txt").read_text() == "ordinary input\n"
+    assert reference.read_bytes() == original
+
+
+@pytest.mark.parametrize("command", ["cp", "mv", "ln"])
+def test_directory_destination_cannot_overwrite_the_protected_child(protected, command):
+    registry, _ctx, reference, workspace = protected
+    original = reference.read_bytes()
+    (workspace / "ordinary/reference").write_text("ordinary source")
+    result = registry.execute_result("run_command", {"cmd": [command, "ordinary/reference", "."]})
+    assert result.status == "blocked" and "RESOURCE_POLICY_BLOCKED" in result.text, result.text
+    assert reference.read_bytes() == original

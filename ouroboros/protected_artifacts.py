@@ -789,8 +789,8 @@ def shell_block_reason(
 ) -> str:
     from ouroboros.config import get_runtime_mode
     from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
-    from ouroboros.shell_parse import sequential_effective_cwds
-    from ouroboros.tools.shell_guards import direct_shell_rows, _writer_target_tokens_single
+    from ouroboros.shell_parse import sequential_effective_cwds, directory_destination_child_name
+    from ouroboros.tools.shell_guards import direct_shell_rows, directory_destination_pairs, _writer_target_tokens_single
 
     if mode_has_unrestricted_agency(get_runtime_mode()) or not protected_artifact_paths(ctx, binding):
         return ""
@@ -809,6 +809,13 @@ def shell_block_reason(
             argv = shell_argv(inline)  # Retain the existing explicit Windows command-operand view.
         # Redirections are independent operations, including around allowed execution.
         write_targets = [*_writer_target_tokens_single(argv, direct_only=True, parse_redirects=False), *writes]
+        pairs = directory_destination_pairs(argv)
+        if pairs:
+            write_targets = list(writes)
+            for command, destination, source in pairs:
+                target = _resolve_candidate_path(ctx, row_cwd, destination)
+                child = directory_destination_child_name(command, argv, source)
+                write_targets.append(str(target / child) if target is not None and target.is_dir() and child else destination)
         for tokens, operation in ((reads, "read_bytes"), (write_targets, "write")):
             if reason := _shell_operand_block(ctx, tokens, operation, row_cwd, binding, shell_syntax):
                 return reason
@@ -827,6 +834,9 @@ def shell_block_reason(
                 tokens.append(str(row_cwd))
         elif _is_high_risk_interpreter(first):
             operation, tokens = "read_bytes", _interpreter_read_operands(argv)
+        elif pairs:
+            operation = "copy" if first == "cp" else "delete" if first == "mv" else None
+            tokens = [source for _command, _destination, source in pairs]
         else:
             operation = _find_operation(argv) if first == "find" else _SHELL_COMMAND_OPERATIONS.get(first)
             tokens = _file_operand_tokens(argv) if operation else []
