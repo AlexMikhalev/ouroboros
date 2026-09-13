@@ -97,7 +97,7 @@ class ElementStub {
     removeAttribute(name) { this.attributes.delete(name); }
     appendChild(node) { return this.insertBefore(node, null); }
     append(...nodes) { nodes.forEach((node) => this.appendChild(node)); }
-    prepend(node) { return this.insertBefore(node, this.children[0] || null); }
+    prepend(...nodes) { const before = this.children[0] || null; nodes.forEach((node) => this.insertBefore(node, before)); }
     after(node) {
         const parent = this.parentNode;
         if (parent) parent.insertBefore(node, parent.children[parent.children.indexOf(this) + 1] || null);

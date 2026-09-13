@@ -3237,8 +3237,11 @@ and `web/tests/chat_history_integration.test.js`.
 
 The Project work pointer is a navigation component over the existing Chat card
 registry (`project_work_pointer.js`), updated inside the same viewport mutation
-transaction. Preserve its loaded-window coverage disclosure; a represented
-unfinished card is not independent proof of current execution. Its click changes
+transaction. Its label names the card on one line (`projectWorkLabel`: coined
+name, else title, capped; the `.project-work-pointer-label` CSS ellipsizes) and
+never restates the card's full status headline; without a represented root card it is
+hidden, not shown disabled. Preserve its loaded-window coverage disclosure; a
+represented unfinished card is not independent proof of current execution. Its click changes
 only the messages container's scroll position and existing reading intent, never
 message routing. Dispose it with the chat; do not add a second card tree, poller
 or task-state store for this navigation affordance.
