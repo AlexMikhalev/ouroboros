@@ -58,6 +58,9 @@ _CAPTURE = _object({
     "candidate_manifest_ref": {"type": ["object", "null"]},
     "physical_context": {"anyOf": [_CONTEXT, {"type": "null"}]},
     "route_is_loopback": {"type": "boolean"},
+    "processing_preference": _STRING,
+    "submitted_processing_mode": _STRING,
+    "processing_basis": {"type": ["object", "null"]},
 })
 _CUSTODY = _object({
     "operation_id": _STRING, "invocation_id": {"type": "string", "minLength": 1},
