@@ -58,6 +58,24 @@ test(' retained cancelled fact outranks untyped historical answer after result q
         assert.equal(fx.card('past').querySelector('[data-live-phase]').textContent, 'Cancelled');
     } finally {fx.instance.destroy(); restoreDom(fx.prior);}
 });
+
+test('terminal-root history projection settles a card after a later finalizing summary', async () => {
+    const terminal = {status: 'completed', phase: 'done', ts: '2026-09-09T09:02:00Z',
+        provenance: 'canonical_task_result_after_finalization'};
+    const fx = makeInstance([
+        {task_id: 'replayed', is_progress: true, text: 'Working', ts: '2026-09-09T09:00:00Z'},
+        {task_id: 'replayed', summary_kind: 'terminal_root_projection', historical_terminal: terminal,
+            role: 'system', system_type: 'task_summary', outcome_final: true, ts: '2026-09-09T09:02:00Z'},
+        {task_id: 'replayed', summary_kind: 'authored_root_summary', role: 'system',
+            system_type: 'task_summary', task_phase: 'finalizing', outcome_final: false,
+            status: 'completed', ts: '2026-09-09T09:03:00Z'},
+    ]);
+    try {
+        await fx.instance.refreshHistory({revision: 1});
+        assert.equal(fx.card('replayed').dataset.finished, '1');
+        assert.equal(fx.card('replayed').querySelector('[data-live-phase]').textContent, 'Done');
+    } finally { fx.instance.destroy(); restoreDom(fx.prior); }
+});
 for (const via of ['log', 'detail']) test(`child terminal ${via} retains the producer model observation`, async () => {
     const observation = {source: 'usable_solve_response', used_model: 'fallback', requested_model: 'initial',
         used_local: false, requested_use_local: false, llm_call_id: 'call', provider: 'openrouter'};
