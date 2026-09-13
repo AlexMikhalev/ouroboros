@@ -3081,6 +3081,10 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     pointer-events: none;
 }
 .chat-context-mode .chat-seg {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
     height: var(--composer-control-height);
     padding: 0 12px;
     border: none;
@@ -3101,6 +3105,10 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 .chat-context-mode[data-context-mode="low"] .chat-seg[data-mode="low"] {
     background: rgba(245, 158, 11, 0.16);
     color: var(--amber);
+}
+.chat-context-mode[data-context-mode="nano"] .chat-seg[data-mode="nano"] {
+    background: rgba(168, 85, 247, 0.18);
+    color: var(--purple, #c084fc);
 }
 
 .chat-send-group {
