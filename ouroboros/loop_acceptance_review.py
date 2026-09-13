@@ -473,7 +473,11 @@ def _execute_task_acceptance_panel(ctx: _TaskAcceptanceContext) -> Any:
             _prompt_chars = len(json.dumps(evidence, ensure_ascii=False, default=str))
         floor_models = [getattr(slot, "model", "") for slot in paid]
         _admission = review_wave_budget_gate(
-            ctx.tools._ctx, surface="task_acceptance", models=floor_models, prompt_chars=_prompt_chars,
+            ctx.tools._ctx,
+            surface="task_acceptance",
+            models=floor_models,
+            prompt_chars=_prompt_chars,
+            processing_preferences=[getattr(slot, "processing_preference", "") for slot in paid],
         )
         if _admission is not None:
             return _refused(

@@ -253,6 +253,7 @@ def review_wave_budget_gate(
     extra: dict | None = None,
     categories: str | list = "",
     slot_ids: str | list = "",
+    processing_preferences: str | list = "",
 ) -> Optional[dict]:
     """Shared review-wave budget admission (v6.69.0).
 
@@ -288,6 +289,7 @@ def review_wave_budget_gate(
             global_limit_usd=scope.global_limit_usd,
             categories=categories,
             slot_ids=slot_ids,
+            processing_preferences=processing_preferences,
         )
         unpriced = int(admission.get("unpriced_slots") or 0)
         base = {
