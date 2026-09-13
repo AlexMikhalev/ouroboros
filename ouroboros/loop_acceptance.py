@@ -367,7 +367,6 @@ def _task_acceptance_owner_generation_changed(ctx: Any) -> bool:
             and int(state.get("owner_message_generation") or 0) != int(expected_queue)
         )
     except Exception as exc:
-        from ouroboros.tools.review_helpers import review_enforcement_blocks
 
         trace = getattr(ctx, "_execution_trace", None)
         if isinstance(trace, dict):

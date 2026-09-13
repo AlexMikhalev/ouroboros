@@ -19,8 +19,6 @@ from ouroboros.llm_attempt import (
     _candidate_before_dispatch,
     _execute_candidate,
 
-    _is_structured_context_overflow_exception,
-    _physical_candidate,
     _finalized_physical_candidate,
     _is_structured_context_overflow_exception,
 )

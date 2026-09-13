@@ -559,7 +559,7 @@ def test_native_prompt_names_the_corpus_and_the_lifted_bound_when_the_reading_fi
     corpus and THAT bound (the number the episode applies); the facts carry the
     declaration and no shortfall code."""
     import ouroboros.llm as llm_mod
-    from ouroboros.review_native_episode import native_landing_at, native_mandatory_read_bound
+    from ouroboros.review_native_episode import native_landing_at
 
     monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", "50000")
     _fake_window(monkeypatch, 1_000_000)

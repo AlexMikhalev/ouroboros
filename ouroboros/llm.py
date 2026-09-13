@@ -38,24 +38,18 @@ from ouroboros.llm_attempt import (
     PROVIDER_POLICY_REFUSAL,  # noqa: F401
     ProviderPolicyRefusal,  # noqa: F401
     _applied_payload_cache_ttl,  # noqa: F401
-    _attempt_request,
     _CACHE_TTL_SECONDS,  # noqa: F401
-    _candidate_before_dispatch,
     _canonical_candidate_bytes,  # noqa: F401
-    _execute_candidate,
     _execute_candidate_async,  # noqa: F401
     _finalized_physical_candidate,  # noqa: F401
     _is_provider_policy_refusal,  # noqa: F401
     _is_structured_context_overflow_body,  # noqa: F401
     _is_structured_context_overflow_exception,  # noqa: F401
     _PayloadCachePolicyMixin,  # noqa: F401
-    _physical_candidate,
     _route_normalizes_cache_breakpoints,  # noqa: F401
     _structured_error_values,  # noqa: F401
     _VALID_CACHE_TTLS,  # noqa: F401
     cache_ttl_seconds,  # noqa: F401
-    apply_processing_preference,
-    processing_contract_headers,
     supports_message_cache_control,  # noqa: F401
 )
 from ouroboros.llm_capability_policy import (
@@ -102,7 +96,6 @@ from ouroboros.llm_routing import (
     _ProviderRoutingMixin,  # noqa: F401
     _resolve_or_provider,  # noqa: F401
 )
-from ouroboros.openrouter_attribution import OPENROUTER_APP_HEADERS
 from ouroboros.provider_models import (  # noqa: F401  (prior import surface)
     DEEPSEEK_BASE_URL,
     OPENROUTER_DEFAULTS,
@@ -136,8 +129,7 @@ from ouroboros.usage_accounting import (
     execute_physical_attempt,  # noqa: F401
     execute_physical_attempt_async,  # noqa: F401
     last_physical_attempt_capture,  # noqa: F401
-    usage_scope,
-)
+    )
 from ouroboros.utils import in_worker_process, sanitize_tool_result_for_log  # noqa: F401
 from ouroboros.config import runtime_setting
 
