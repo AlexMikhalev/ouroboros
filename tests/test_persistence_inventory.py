@@ -515,7 +515,18 @@ class _PathResolver:
 
 @functools.lru_cache(maxsize=4)
 def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
-    return frozenset(_PathResolver(root).paths())
+    paths = set(_PathResolver(root).paths())
+    # The linked-knowledge owner derives the project shelf from a validated
+    # project id, then appends its history beside that shelf.  Keep these
+    # canonical dynamic siblings visible to the inventory audit even though
+    # the AST resolver cannot expand the address object's validated prefix.
+    if (root / "ouroboros" / "knowledge.py").exists():
+        paths.update({
+            "projects/*/knowledge/*.md",
+            "projects/*/knowledge_history.jsonl",
+            "projects/*/knowledge_journal.jsonl",
+        })
+    return frozenset(paths)
 
 
 # The pinned scan-population size. Moving it is deliberate: a new distinct
@@ -544,7 +555,7 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # root-task projection with its gaps ledger (``state/skill_review_root_tasks*``)
 # and the per-project retirement locks (``state/delegate_project_retirements/``)
 # — while the retired acceptance api-fallback record left the population.
-EXPECTED_SCAN_PATHS = 289  # Existing delegated capture now retains engine manifest and file bodies.
+EXPECTED_SCAN_PATHS = 290  # Linked project knowledge history is a dynamic validated shelf.
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts
