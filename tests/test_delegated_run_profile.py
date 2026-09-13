@@ -71,6 +71,7 @@ def test_the_model_has_no_argument_that_could_widen_the_profile():
     # ResolvedResourceBinding authorizer as ordinary writes (R1 item 9).
     assert properties == {
         "prompt", "subagent_id", "max_seconds", "retry_of", "root", "bucket", "skill_name",
+        "directory_strategy", "scope_paths",
     }
     assert entry.schema["parameters"]["properties"]["root"]["enum"] == ["skill_payload"]
     assert not properties & {"access", "mode", "isolation", "scope", "write_surface", "cwd"}

@@ -32,7 +32,7 @@ export function openNewProjectDialog({ apiClient, onCreated }) {
                         <legend>Working folder</legend>
                         <label><input type="radio" name="np-source" value="fileless" checked> None — chat/research project (no folder)</label>
                         <label><input type="radio" name="np-source" value="genesis"> New managed folder (fresh git repo under the projects root)</label>
-                        <label><input type="radio" name="np-source" value="attach"> Attach an existing folder…</label>
+                        <label><input type="radio" name="np-source" value="attach"> Attach an existing folder (Git optional)…</label>
                         <label><input type="radio" name="np-source" value="clone"> Clone a git URL…</label>
                     </fieldset>
                     <div class="new-project-source-detail" data-np-attach hidden>
@@ -43,7 +43,7 @@ export function openNewProjectDialog({ apiClient, onCreated }) {
                         <p class="new-project-selected-target ui-field-help" data-np-selected role="status" aria-live="polite">No folder selected.</p>
                         <label class="local-toggle ui-field ui-field-inline" title="Runs git init + an 'attach snapshot' commit of the current state with a local identity. Never done without this checkbox.">
                             <input class="ui-checkbox" type="checkbox" name="project-init-git" data-np-initgit>
-                            Initialize git here if missing (attach-snapshot commit)
+                            Initialize Git and commit current files
                         </label>
                     </div>
                     <div class="new-project-source-detail" data-np-clone hidden>

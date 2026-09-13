@@ -630,6 +630,10 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
     except SubagentSelectionError as exc:
         return f"⚠️ {exc.code}: {exc.detail}"
     route = configured_subagent.get("route") if isinstance(configured_subagent.get("route"), dict) else {}
+    if fields.get("directory_strategy") == "copy" and route.get("kind") != "agent_session":
+        return _publish_scheduling_refusal(
+            ctx, "error", "TOOL_ARG_ERROR",
+            "⚠️ TOOL_ARG_ERROR (schedule_subagent): directory_strategy=copy is unsupported for native/API children, which use shared files directly; select an agent_session actor for copy.")
     requested_model_lane = "auto"  # bounded historical projection only
     requested_executor = "harness" if route.get("kind") == "agent_session" else "native"
 
@@ -782,6 +786,7 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
         "requested_executor": requested_executor,
         "configured_subagent": configured_subagent,
         "parent_cognitive_route": parent_cognitive_route,
+        **{key: fields[key] for key in ("directory_strategy", "scope_paths") if key in fields},
     }
     evt = {
         "type": "schedule_subagent",

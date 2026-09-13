@@ -161,6 +161,7 @@ BAND_PATHS = {
     "ouroboros/tools/skill_exec.py": None,
     "ouroboros/tools/skill_preflight.py": "Entered the band by absorbing the upstream classic-script validator, widget entry/grammar findings and the preflight schema description beside the v7 typed _run_check rework they attach to.",
     "ouroboros/tools/skill_publish.py": "Entered the band from 952 lines: publish now writes the OuroborosHub publication receipt at pr_opened through the shared locked-update seam and maps the receipt from the validated serialized form (hubflow sprint, receipt-as-only-stored-fact design).",
+    "ouroboros/tools/subagent_integration.py": "Existing native result integration owner handles source patches and complete file artifacts under one disposition and target authority.",
     "ouroboros/usage_compaction.py": "Entered the band from 971 lines: the C6 round-4 fixes homed here \u2014 dir-fd/O_NOFOLLOW anchoring of the archive writer and reader (a link planted after any path check cannot receive or serve monetary history) and the swap's last-instant snapshot re-proof inside the atomic replace \u2014 defenses that belong beside the compaction pass they defend.",
     "ouroboros/workspace_executor.py": None,
     "scripts/claudexor_platform_smoke.py": "The managed Claudexor platform smoke owns a multi-platform fixture, lifecycle receipt, and cleanup proof; keeping this runner in the documented band preserves the release gate without moving those checks into product runtime.",

@@ -11,9 +11,9 @@ folder into a task's active workspace:
 Two invariants this module enforces (BIBLE P3/P5):
 
 1. **One admission path.** Both surfaces call ``validate_workspace_root`` — the
-   SAME git-worktree-root + repo/data-overlap check — so they cannot drift.
+   SAME folder + Git geometry + repo/data-overlap check — so they cannot drift.
 2. **Loud fail over silent self_modification.** A task born in a project ROOM
-   whose ``working_dir`` is SET-but-unusable (deleted/moved/not a git worktree)
+   whose ``working_dir`` is SET-but-unusable (deleted/moved/invalid Git root)
    must fail LOUDLY at admission, never silently run workspace-less — a
    workspace-less task resolves to the ``self_modification`` tool profile over the
    system repo (``tool_access.active_tool_profile``), which is exactly the danger
@@ -22,7 +22,7 @@ Two invariants this module enforces (BIBLE P3/P5):
 The heavy per-task preflight (git snapshot + toolchain probes) stays on the
 creation surface that can afford it: the async gateway handler runs it inline;
 the promote path runs it under a hard time cap (``resolve_room_workspace`` does
-only the cheap registry read + git-root validation, keeping the supervisor
+only the cheap registry read + folder validation, keeping the supervisor
 event-drain thread responsive).
 """
 from __future__ import annotations
@@ -38,7 +38,7 @@ log = logging.getLogger(__name__)
 
 
 class WorkspaceRootError(ValueError):
-    """A workspace_root that is missing, overlapping, or not a git worktree root."""
+    """A workspace_root that is missing, overlapping, or has invalid Git geometry."""
 
 
 def validate_workspace_root(
@@ -47,11 +47,11 @@ def validate_workspace_root(
     system_repo_dir: Any,
     drive_root: Any,
 ) -> Optional[pathlib.Path]:
-    """SSOT workspace-root validator (moved verbatim from gateway/tasks.py so both
-    admission surfaces share it). Returns the resolved root, ``None`` for empty
-    input, or raises ``WorkspaceRootError``: the path must exist, be a directory,
-    NOT overlap the Ouroboros system repo or data drive, and BE the git worktree
-    root (not a subdir of one)."""
+    """Return an existing ordinary folder or Git worktree root, ``None`` for
+    empty input, or raise ``WorkspaceRootError``. Git is optional, but an
+    existing repository must resolve to its worktree root, not a subdirectory.
+    Repo/data overlap and broken addresses never become workspace-less tasks.
+    """
     from ouroboros.tool_access import paths_overlap_casefold
 
     text = str(value or "").strip()
@@ -80,7 +80,7 @@ def validate_workspace_root(
     bootstrap_process_path()
     try:
         res = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
+            ["git", "rev-parse", "--is-bare-repository", "--show-toplevel"],
             cwd=str(root),
             capture_output=True,
             text=True,
@@ -88,10 +88,18 @@ def validate_workspace_root(
         )
     except Exception:
         res = None
-    git_root_text = (res.stdout or "").strip() if res is not None and res.returncode == 0 else ""
+    output = (res.stdout or "").strip() if res is not None else ""
+    if output.splitlines()[:1] == ["true"]:
+        raise WorkspaceRootError("workspace_root must be a Git worktree, not a bare repository")
+    git_root_text = output.partition("\n")[2] if res is not None and res.returncode == 0 else ""
     git_root = pathlib.Path(git_root_text).resolve(strict=False) if git_root_text else None
     if git_root is None:
-        raise WorkspaceRootError("workspace_root must be a git worktree root")
+        # A failed probe must not reclassify an existing/broken Git worktree
+        # as an ordinary folder (including linked worktrees with a .git file).
+        if any((parent / ".git").exists() or (parent / ".git").is_symlink()
+               for parent in (root, *root.parents)):
+            raise WorkspaceRootError("workspace_root Git worktree could not be resolved")
+        return root
     if git_root != root:
         raise WorkspaceRootError(f"workspace_root must be the git worktree root: {git_root}")
     return root
@@ -224,7 +232,8 @@ def compose_workspace_block(
         "Before finalizing, re-read the original task and verify each explicit requirement through the interface/path/format/service the task names; do not treat a weaker surrogate self-test as completion.\n"
         "Final summaries belong in the final answer, not new repo markdown files unless requested.\n"
         "Task-local git is allowed when the task requires it (clone, branch, commit, push to task-local remotes); "
-        "Ouroboros still protects its own repo/data paths. Workspace artifacts are captured against the preflight git base.\n"
+        "Ouroboros still protects its own repo/data paths. Git results use the preflight base; "
+        "ordinary-folder work stays on site with captured output references, without a Git patch or full rollback promise.\n"
     )
 
 

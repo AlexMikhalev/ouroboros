@@ -241,7 +241,8 @@ def record_started_custody(
         work_order_source_request=work_order_source_request,
         authority_fingerprint=authority_fingerprint,
         snapshot_id=snapshot_id,
-        execution_root=(root if snapshot_id else ""),
+        execution_root=(root if snapshot_id or (resource_ref.get("workspace_kind") == "directory"
+                                               and resource_ref.get("strategy") == "direct") else ""),
         baseline_sha=baseline_sha,
         target_root=target_root,
         authority_source=authority_source,

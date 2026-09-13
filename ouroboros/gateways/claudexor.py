@@ -286,6 +286,17 @@ def _is_loopback(host: str) -> bool:
         return False
 
 
+def account_catalog_supported(operations: list[dict], path: str) -> bool:
+    """Opt in only when this exact operation declares the accounts query view."""
+    return any(
+        operation.get("method") == "GET" and operation.get("path") == path
+        and any(parameter.get("name") == "view" and parameter.get("location") == "query"
+                and "accounts" in (parameter.get("enum") or [])
+                for parameter in operation.get("parameters", []) if isinstance(parameter, dict))
+        for operation in operations if isinstance(operation, dict)
+    )
+
+
 class ClaudexorGateway:
     """Thin typed client over the Claudexor ``/v2`` control API."""
 
@@ -468,19 +479,27 @@ class ClaudexorGateway:
     # waiting, billing and explicit acknowledgement. The engine owns account
     # choice; this client preserves the caller's Auto/pin request verbatim.
 
-    def list_model_sources(self) -> Dict[str, Any]:
+    def list_model_sources(self, *, view: Optional[str] = None) -> Dict[str, Any]:
         """Return the engine's opaque source ids and credential-harness bindings."""
-        return _model_object(self._request("GET", "/v2/model-sources"))
+        from urllib.parse import urlencode
+
+        path = "/v2/model-sources"
+        if view is not None:
+            path += "?" + urlencode({"view": view})
+        return _model_object(self._request("GET", path))
 
     def list_source_models(self, source: str,
                            credential_profile_id: Optional[str] = None, *,
                            requested_model: Optional[str] = None,
-                           timeout_sec: Optional[float] = None) -> Dict[str, Any]:
+                           timeout_sec: Optional[float] = None,
+                           view: Optional[str] = None) -> Dict[str, Any]:
         """Preserve the exact-profile catalog envelope; an omitted pin means engine Auto."""
         from urllib.parse import quote, urlencode
 
         path = f"/v2/model-sources/{quote(str(source), safe='')}/models"
         query = {}
+        if view is not None:
+            query["view"] = view
         if credential_profile_id is not None:
             query["credentialProfileId"] = credential_profile_id
         if requested_model is not None:
@@ -775,6 +794,65 @@ class ClaudexorGateway:
             raise self._problem(response)
         return response.content
 
+    def stream_run_artifact(self, run_id: str, path: str, sink: Any,
+                            *, expected: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Stream exact run bytes into a caller-owned temporary file.
+
+        The caller publishes only after this read verifies the manifest identity.
+        HTTP refusals and partial streams never become an empty successful file;
+        the existing small diagnostic-artifact reader keeps its bytes contract.
+        """
+        from urllib.parse import quote
+
+        digest, size = hashlib.sha256(), 0
+        response = None
+        try:
+            with self._client.stream(
+                "GET", f"/v2/runs/{quote(str(run_id), safe='')}/artifacts/{quote(str(path), safe='/')}",
+            ) as response:
+                if response.status_code >= 400:
+                    response.read()
+                    raise self._problem(response)
+                for chunk in response.iter_bytes(chunk_size=1024 * 1024):
+                    sink.write(chunk)
+                    digest.update(chunk)
+                    size += len(chunk)
+        except httpx.HTTPError as exc:
+            retryable = (isinstance(exc, _OBSERVATION_RETRYABLE_ERRORS)
+                         and (response is None or response.status_code < 400))
+            raise ClaudexorUnavailable(
+                "daemon_unreachable", f"Claudexor artifact read failed: {type(exc).__name__}",
+                status_code=response.status_code if response is not None else 0,
+                observation_timeout=retryable,
+                observation_reason=_observation_reason(exc) if retryable else "",
+            ) from exc
+        measured = {"size": size, "sha256": digest.hexdigest()}
+        if expected is not None:
+            want_size = expected.get("sizeBytes", expected.get("size"))
+            want_hash = str(expected.get("sha256") or "").removeprefix("sha256:")
+            if (want_size is not None and want_size != size) or want_hash != measured["sha256"]:
+                raise ClaudexorUnavailable("artifact_integrity_error", "Run artifact differs from its captured manifest")
+        return measured
+
+    def apply_run(self, run_id: str, request: Dict[str, Any], *, idempotency_key: str) -> Dict[str, Any]:
+        """Apply the existing run product; the caller retains intent and custody."""
+        from urllib.parse import quote
+
+        return _model_object(self._request(
+            "POST", f"/v2/runs/{quote(str(run_id), safe='')}/apply", json_body=request,
+            headers={"Idempotency-Key": idempotency_key},
+        ))
+
+    def decide_run(self, run_id: str, request: Dict[str, Any], *, idempotency_key: str) -> Dict[str, Any]:
+        """Submit an explicit disposition through the existing engine decision route."""
+        from urllib.parse import quote
+
+        body = self._request("POST", f"/v2/runs/{quote(str(run_id), safe='')}/decision", json_body=request,
+                             headers={"Idempotency-Key": idempotency_key})
+        if not isinstance(body, dict):
+            raise ClaudexorUnavailable("malformed_response", "Run decision returned a non-object response")
+        return body
+
     def answer_interaction(self, run_id: str, interaction_id: str,
                            answers: List[Dict[str, Any]]) -> Dict[str, Any]:
         """POST /v2/runs/:id/interactions/:iid/answer — deliver one answer set.
@@ -900,6 +978,22 @@ class ClaudexorGateway:
         body = self._request("GET", f"/v2/harnesses/{quote(str(harness_id), safe='')}/models")
         models = body.get("models") if isinstance(body, dict) else None
         return [row for row in (models or []) if isinstance(row, dict)]
+
+    def harness_model_catalog(self, harness_id: str, *,
+                              credential_profile_id: Optional[str] = None,
+                              view: Optional[str] = None) -> Dict[str, Any]:
+        """Retain the catalog envelope for an explicitly negotiated view."""
+        from urllib.parse import quote, urlencode
+
+        path = f"/v2/harnesses/{quote(str(harness_id), safe='')}/models"
+        query = {}
+        if view is not None:
+            query["view"] = view
+        if credential_profile_id is not None:
+            query["credentialProfileId"] = credential_profile_id
+        if query:
+            path += "?" + urlencode(query)
+        return _model_object(self._request("GET", path))
 
     def setup_job_create(self, request: Dict[str, Any], *, idempotency_key: str = "") -> Dict[str, Any]:
         body = self._request(

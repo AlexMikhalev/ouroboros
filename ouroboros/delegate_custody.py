@@ -743,6 +743,7 @@ def invocation_record(drive_root: Any, invocation_id: str) -> Optional[Dict[str,
                 "work_order_fingerprint": str(row.get("work_order_fingerprint") or ""),
                 "work_order_coverage": str(row.get("work_order_coverage") or ""),
                 "authority_fingerprint": str(row.get("authority_fingerprint") or ""),
+                "processing": row.get("processing") if isinstance(row.get("processing"), dict) else {},
                 "work_order_source_request": (
                     row.get("work_order_source_request")
                     if isinstance(row.get("work_order_source_request"), dict) else {}

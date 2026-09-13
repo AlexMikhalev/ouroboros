@@ -21,6 +21,7 @@ from typing import Any, BinaryIO, Dict, Iterable, List, Optional, Sequence, Tupl
 
 from ouroboros.contracts.task_constraint import normalize_task_constraint  # noqa: F401
 from ouroboros.post_task_checkpoint import project_replica_task_result_fields
+from ouroboros.workspace_file_outputs import _directory_direct_artifacts
 from ouroboros.task_results import (
     cancellation_blocks_child_result, load_task_result, validate_task_id, write_task_result,
 )
@@ -758,10 +759,9 @@ def finalize_task_artifacts(parent_drive_root: pathlib.Path, task: Dict[str, Any
             artifact_status=ARTIFACT_STATUS_FINALIZING,
         )
         try:
-            patch_artifacts, manifest = write_workspace_patch_artifacts(
-                workspace_root,
-                artifact_dir,
-                task=task,
+            direct = _directory_direct_artifacts(workspace_root, artifact_dir, task, existing)
+            patch_artifacts, manifest = direct if direct is not None else write_workspace_patch_artifacts(
+                workspace_root, artifact_dir, task=task,
             )
             artifacts.extend(patch_artifacts)
             artifact_status = str(manifest.get("status") or ARTIFACT_STATUS_READY_WITH_CHANGES)

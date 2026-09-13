@@ -203,7 +203,8 @@ custody_pid = int(getattr(getattr(owned, '_proc', None), 'pid', 0) or 0)
 ordinary = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'], **pl.subprocess_new_group_kwargs())
 info = json.loads((root/'claudexor'/'fixture-engine.json').read_text())
 info.update(worker_pid=os.getpid(), ordinary_pid=ordinary.pid, custody_pid=custody_pid)
-(root/'ready.json').write_text(json.dumps(info))
+(root/'ready.json.tmp').write_text(json.dumps(info))
+(root/'ready.json.tmp').replace(root/'ready.json')
 time.sleep(120)
 '''
 

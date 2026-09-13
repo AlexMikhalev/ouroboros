@@ -208,7 +208,10 @@ def _pre_start_leaf(
 
     from ouroboros.subagent_runtime import delegate_start_entry
 
-    started_raw = delegate_start_entry(ctx, "")
+    started_raw = delegate_start_entry(ctx, "", **{
+        key: actor_bootstrap[key] for key in ("directory_strategy", "scope_paths")
+        if key in actor_bootstrap
+    })
     try:
         payload = json.loads(started_raw) if isinstance(started_raw, str) else {}
     except (TypeError, ValueError):
@@ -639,6 +642,8 @@ def _prepare_actor_first_bootstrap(
         "route_available": not bool(getattr(dispatch, "blocked", False)),
         "exact_start_pending": True,
         "physical_started": False,
+        **{key: task[key] if key == "directory_strategy" else list(task[key])
+           for key in ("directory_strategy", "scope_paths") if key in task},
     }
     zero_run_evidence_gaps: set[str] = set()
     durable_zero_run = _durable_zero_run_receipt(
