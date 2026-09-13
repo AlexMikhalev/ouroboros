@@ -1990,6 +1990,22 @@ def test_hard_timeout_ceiling_is_bounded():
     assert 60 <= skill_exec_mod._HARD_TIMEOUT_CEILING_SEC <= 900
 
 
+def test_login_identity_is_forwarded_without_secret_shaped_siblings(tmp_path, monkeypatch):
+    """CLIs a skill may call (gh, claude, codex, cursor-agent) find their keychain/credential
+    entries by the login name: it is forwarded like HOME, while a secret-shaped sibling that merely
+    starts the same way is not (parity with workspace_executor.service_env())."""
+    from ouroboros.tools import skill_exec as se
+
+    for key in ("USER", "LOGNAME", "USERNAME"):
+        monkeypatch.setenv(key, "synthetic-login")
+    monkeypatch.setenv("USER_API_TOKEN", "synthetic-host-only")
+    skill_state_dir_path = tmp_path / "state" / "skills" / "ok"
+    skill_state_dir_path.mkdir(parents=True, exist_ok=True)
+    env = se._scrub_env(manifest_env_keys=[], skill_state_dir_path=skill_state_dir_path, skill_name="ok")
+    assert env["USER"] == env["LOGNAME"] == env["USERNAME"] == "synthetic-login"
+    assert "USER_API_TOKEN" not in env
+
+
 def test_env_denylist_blocks_secret_forwarding(tmp_path, monkeypatch):
     """Core settings keys are withheld unless a content-bound grant exists.
 

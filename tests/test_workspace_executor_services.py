@@ -102,12 +102,14 @@ def test_service_baseline_preserves_allowed_values_without_inheriting_credential
     # a secret-shaped name that merely starts the same way still is not.
     monkeypatch.setenv("USER", "synthetic-login")
     monkeypatch.setenv("LOGNAME", "synthetic-login")
+    monkeypatch.setenv("USERNAME", "synthetic-login")
     monkeypatch.setenv("USER_API_TOKEN", "synthetic-host-only")
     for build in (_service_env, _executor_service_env):
         env = build()
         assert env["NODE_PATH"] == value
         assert env["USER"] == "synthetic-login"
         assert env["LOGNAME"] == "synthetic-login"
+        assert env["USERNAME"] == "synthetic-login"
         assert "UNSELECTED_660_SECRET" not in env
         assert "USER_API_TOKEN" not in env
 

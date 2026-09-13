@@ -12,6 +12,7 @@ from enum import Enum
 
 import pytest
 
+from ouroboros.llm_stream import ProviderStreamError
 from ouroboros.provider_models import (
     OPENAI_DIRECT_DEFAULTS,
     normalize_deepseek_reasoning_effort,
@@ -222,6 +223,21 @@ def classify_provider_failure(
         return ProviderFailureClassification(
             ProviderFailureKind.INCONCLUSIVE, "transport_timeout",
         )
+    if getattr(exc, "stream_incomplete", False):
+        # Main streams, so the canary's first turn does too. Weather, never
+        # contract: a socket that died before the terminal frame, or the
+        # provider's own SSE error frame without a 4xx code (an overload/
+        # api_error shape; 429/5xx already took the ladder above). A complete
+        # body the host judged unusable falls through to RED — that assembler
+        # contract is what this canary guards.
+        if isinstance(exc, ProviderStreamError) and not (status is not None and 400 <= status <= 499):
+            return ProviderFailureClassification(
+                ProviderFailureKind.INCONCLUSIVE, "stream_provider_error", status,
+            )
+        if not getattr(exc, "stream_rejected", False):
+            return ProviderFailureClassification(
+                ProviderFailureKind.INCONCLUSIVE, "stream_transport_loss", status,
+            )
     return ProviderFailureClassification(
         ProviderFailureKind.RED, "provider_contract_or_unclassified", status,
     )
@@ -719,8 +735,10 @@ def run_provider_contract_canary(
             "max_tokens": CANARY_MAX_TOKENS,
             # Main sets stream=True on every remote completion, so the canary's
             # first turn must exercise that transport rather than one Main never
-            # uses. The continuation turn below stays non-stream, which covers
-            # both transports with zero extra physical sends.
+            # uses. Rows that continue to a final answer keep their second turn
+            # non-stream, so those routes (and GigaChat, whose lane drops the
+            # flag) still cover the non-stream transport at zero extra physical
+            # sends; every other row now covers streaming only.
             "stream": True,
             "no_proxy": True,
             "timeout": CANARY_TIMEOUT_SEC,

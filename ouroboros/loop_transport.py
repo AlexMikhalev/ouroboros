@@ -265,37 +265,63 @@ def reconcile_transport_wait(
     ``transport_unavailable`` and a pre-dispatch deadline refusal keep the
     latch for the wait/terminal step. A failed local fallback pass
     (``after_local_pass``) never clears the latched remote cause.
-    A granted continuation whose NEW physical attempt is unknown again returns
-    to the SAME episode (work-order §B9 "repeated unknown creates no burst"):
-    the latch keeps its entry facts and growing backoff, only clearing the
-    grant, counting the redial and refreshing the unresolved custody. Any other
-    outcome of a granted continuation ends the latch exactly as before.
+    A granted continuation that fails again — unknown after dispatch, or
+    released before it — returns to the SAME episode (work-order §B9 "repeated
+    unknown creates no burst"), and so does a free redial that crosses dispatch
+    and dies unknown: the latch keeps its elapsed clock, growing backoff and
+    redial count (one per wait iteration), switches its cause to the latest
+    failure, and for an unknown outcome refreshes the custody and re-arms the
+    probe's freshness bound at that failure. A granted continuation whose round
+    made no new attempt (a failed probe, a call that yielded to control) keeps
+    its grant untouched. An answer or any other failure class ends the latch
+    exactly as before.
     """
+    pending = dict((getattr(ctx, "_accumulated_usage", {}) or {}).get("_pending_transport_outcome") or {})
+    unknown_again = error_kind == "provider_outcome_unknown" and managed_transport_continuation(ctx)
     if episode is not None and episode.continuation_granted:
-        if (not msg_present and error_kind == "provider_outcome_unknown"
-                and managed_transport_continuation(ctx)):
-            # §B9: the repeat belongs to the SAME wait owner, so the existing
-            # backoff keeps growing (4->8->16->32->60s) instead of restarting at
-            # 4s with a zero counter. The entry facts (started_at,
-            # started_monotonic, wait_iterations) are deliberately untouched:
-            # the reachability probe's observed_after bound must keep naming
-            # when this outage episode began, not when its latest repeat failed.
+        if msg_present or error_kind not in ("provider_outcome_unknown", "transport_unavailable"):
+            episode = None  # This new physical outcome ends the episode (an answer) or owns a fresh one.
+        elif error_kind == "provider_outcome_unknown" and not pending:
+            return episode  # No new attempt exists yet (a failed probe, a yielded call): the grant stands.
+        else:
+            # §B9: the granted attempt failed again — unknown after dispatch
+            # (fresh custody) or released before it ($0) — and the SAME wait
+            # owner keeps its elapsed clock and growing backoff (4->8->16->32->
+            # 60s) instead of restarting at 4s with a zero counter; the wait
+            # iteration that granted the attempt already counted its redial. An
+            # unknown repeat re-arms the probe's freshness bound at THIS failure
+            # (started_at is read only as observed_after), so a catalog
+            # observation taken before the latest unknown outcome cannot prove
+            # recovery from it. A released repeat keeps the old custody (already
+            # disclosed in the transcript) and resumes free redials.
             episode.continuation_granted = False
-            episode.redials += 1
-            episode.outcome_custody = dict(
-                (getattr(ctx, "_accumulated_usage", {}) or {}).get("_pending_transport_outcome") or {})
+            episode.wait_cause = error_kind
+            if error_kind == "provider_outcome_unknown":
+                episode.started_at = time.time()
+                episode.outcome_custody = pending
             emit_network_wait_event(
-                drive_logs, task_id=task_id, phase="waiting", elapsed_sec=episode.waited_sec,
-                redials=episode.redials, model=model, detail="continuation_outcome_unknown",
+                drive_logs, task_id=task_id, phase="continued",
+                elapsed_sec=time.monotonic() - episode.started_monotonic, redials=episode.redials, model=model,
+                detail=("continuation_outcome_unknown" if error_kind == "provider_outcome_unknown"
+                        else "continuation_transport_unavailable"),
                 outcome_custody=episode.outcome_custody,
             )
             return episode
-        episode = None  # This new physical outcome owns a fresh outage episode.
     if (episode is not None and not after_local_pass and episode.wait_cause != "provider_outcome_unknown"
-            and error_kind == "provider_outcome_unknown" and managed_transport_continuation(ctx)):
-        emit_network_wait_event(drive_logs, task_id=task_id, phase="ended", elapsed_sec=episode.waited_sec,
-            redials=episode.redials, model=model, detail="redial_outcome_unknown")
-        episode = None  # A formerly free redial crossed dispatch; it now needs upstream proof.
+            and unknown_again):
+        # A formerly free redial crossed dispatch and died unknown: the same
+        # episode now needs upstream proof before its next attempt; the clock,
+        # backoff and redial count carry over instead of a fresh 4s episode.
+        episode.wait_cause = "provider_outcome_unknown"
+        episode.started_at = time.time()
+        if pending:
+            episode.outcome_custody = pending
+        emit_network_wait_event(
+            drive_logs, task_id=task_id, phase="continued",
+            elapsed_sec=time.monotonic() - episode.started_monotonic, redials=episode.redials, model=model,
+            detail="redial_outcome_unknown", outcome_custody=episode.outcome_custody,
+        )
+        return episode
     if episode is None:
         unknown = error_kind == "provider_outcome_unknown" and managed_transport_continuation(ctx)
         if msg_present or (error_kind != "transport_unavailable" and not unknown):

@@ -149,6 +149,23 @@ def test_disconnect_and_generic_connection_error_are_red():
     ).kind is ProviderFailureKind.RED
 
 
+def test_stream_loss_before_the_terminal_frame_is_inconclusive_but_a_rejected_body_is_red():
+    """Main streams and so does the canary's first turn: a socket that died before the terminal
+    frame and a provider's own code-less SSE error frame are weather (INCONCLUSIVE); a complete body
+    the host judged unusable is the assembler contract this canary guards (RED)."""
+    from ouroboros.llm_stream import IncompleteProviderStream, ProviderStreamError
+
+    lost = classify_provider_failure(
+        "provider_canary", IncompleteProviderStream("Stream ended without complete terminal framing"))
+    assert (lost.kind, lost.reason) == (ProviderFailureKind.INCONCLUSIVE, "stream_transport_loss")
+    overloaded = classify_provider_failure(
+        "provider_canary", ProviderStreamError({"error": {"type": "overloaded_error", "message": "Overloaded"}}))
+    assert (overloaded.kind, overloaded.reason) == (ProviderFailureKind.INCONCLUSIVE, "stream_provider_error")
+    rejected = RuntimeError("Stream rejected after terminal framing: choice 0: no finish_reason")
+    rejected.stream_incomplete = rejected.stream_rejected = True
+    assert classify_provider_failure("provider_canary", rejected).kind is ProviderFailureKind.RED
+
+
 def test_provider_alarm_output_sanitizes_token_shaped_evidence(capsys):
     sentinel = "sk-proj-" + ("A" * 40)
     exc = _http_error(429, f'{{"error":{{"token":"{sentinel}"}}}}')
@@ -861,7 +878,7 @@ def test_public_chat_builds_full_registry_request_for_every_matrix_row():
             assert "expected_final_marker" in first["messages"][0]["content"]
             second = client.calls[1]
             assert second["tool_choice"] == "none"
-            # Non-stream on purpose: both transports covered, zero extra sends.
+            # Non-stream on purpose: continuation rows keep the non-stream transport covered at zero extra sends.
             assert "stream" not in second
             assert second["bypass_response_cache"] is False
             assert second["max_tokens"] == CANARY_CONTINUATION_MAX_TOKENS
