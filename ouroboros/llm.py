@@ -230,9 +230,11 @@ class LLMClient(
         with capture_attempt_ids() as attempt_ids:
             if use_local:
                 turn_state_for_route(model_turn_state, "local")
+                local_kwargs = {"timeout": timeout}
+                if processing_preference:
+                    local_kwargs["processing_preference"] = processing_preference
                 message, usage = self._chat_local(
-                    messages, tools, max_tokens, tool_choice, timeout=timeout,
-                    processing_preference=processing_preference,
+                    messages, tools, max_tokens, tool_choice, **local_kwargs,
                 )
             else:
                 # Central worker policy: remote calls from worker processes avoid
@@ -303,8 +305,10 @@ class LLMClient(
 
             def local_call():
                 adopt_physical_attempt_capture(None)
-                result = self._chat_local(messages, tools, max_tokens, tool_choice, timeout=timeout,
-                                          processing_preference=processing_preference)
+                local_kwargs = {"timeout": timeout}
+                if processing_preference:
+                    local_kwargs["processing_preference"] = processing_preference
+                result = self._chat_local(messages, tools, max_tokens, tool_choice, **local_kwargs)
                 return result, last_physical_attempt_capture()
 
             with capture_attempt_ids() as attempt_ids:
