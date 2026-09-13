@@ -19,6 +19,13 @@ from tests.ui_chat_viewport_smoke import _CAPTURE_TEST_SOCKET, _emit_ws_frame
 REPO_ROOT = os.path.dirname(os.path.dirname(__file__))
 
 
+def _fixture_python() -> str:
+    """Use the real Windows interpreter, bypassing the venv PID redirector."""
+    if os.name == "nt":
+        return str(getattr(sys, "_base_executable", sys.executable))
+    return sys.executable
+
+
 def _open_review_checkpoint(card, *, open_card=True):
     if open_card:
         card.locator(":scope > [data-live-summary-button]").click()
@@ -266,48 +273,51 @@ def direct_server_with_data(tmp_path):
             "OUROBOROS_HOST_SERVICE_PORT": str(port + 1),
             "OUROBOROS_NETWORK_PASSWORD": "ui-smoke-password",
         }
+        if os.name == "nt":
+            site = pathlib.Path(sys.executable).resolve().parent.parent / "Lib" / "site-packages"
+            if site.is_dir():
+                env["PYTHONPATH"] = os.pathsep.join([str(site), env.get("PYTHONPATH", "")])
         url = f"http://127.0.0.1:{port}"
-        active_proc = None
+        active_proc = active_container = None
 
         def stop_server() -> None:
-            nonlocal active_proc
-            if active_proc is None or active_proc.poll() is not None:
+            nonlocal active_proc, active_container
+            proc, container = active_proc, active_container
+            active_proc = active_container = None
+            if container is None:
                 return
-            from ouroboros.platform_layer import IS_WINDOWS, kill_process_tree
-
-            # Windows terminate() is an immediate TerminateProcess, so the parent
-            # can disappear before its worker tree and bypass the timeout cleanup.
-            # taskkill /T must own that path from the start.
-            if IS_WINDOWS:
-                kill_process_tree(active_proc)
-                active_proc.wait(timeout=5)
-                active_proc = None
-                return
-            active_proc.terminate()
             try:
-                active_proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                # A timed-out UI-smoke server still owns its worker pool. Killing
-                # only the parent leaks ten orphan workers into later smoke tests,
-                # producing suite-order history/card timeouts. The server starts in
-                # its own process group below, so the shared cross-platform helper
-                # can close the complete tree without touching pytest.
-                kill_process_tree(active_proc)
-                active_proc.wait(timeout=5)
+                if proc is not None and proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        pass  # The container below also owns surviving descendants.
             finally:
-                active_proc = None
+                try:
+                    # Parent exit never proves the entire incarnation is gone.
+                    error = container.reap()
+                finally:
+                    container.close()
+                if error:
+                    if proc is not None:
+                        proc.poll()  # Collect an exited parent without masking the reap failure.
+                    raise RuntimeError(f"UI fixture process cleanup failed: {error}")
+                if proc is not None:
+                    proc.wait(timeout=5)
 
         def start_server() -> None:
-            nonlocal active_proc
-            from ouroboros.platform_layer import subprocess_new_group_kwargs
+            nonlocal active_proc, active_container
+            from ouroboros.process_containment import ProcessContainer
 
-            active_proc = subprocess.Popen(
-                [sys.executable, "server.py"],
+            # Reap consumes the token/Job: every restart needs fresh containment.
+            active_container = ProcessContainer()
+            active_proc = active_container.spawn(
+                [_fixture_python(), "server.py"],
                 cwd=REPO_ROOT,
                 env=env,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                **subprocess_new_group_kwargs(),
             )
             _wait_health(url)
             _wait_supervisor_ready(url)
