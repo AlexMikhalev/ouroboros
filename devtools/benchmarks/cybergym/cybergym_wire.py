@@ -20,6 +20,10 @@ import urllib.parse
 import urllib.request
 from typing import Any, Mapping, Sequence
 
+from devtools.benchmarks.cybergym.cybergym_cost_evidence import (
+    frame_accounting_sources as _frame_accounting_sources,
+    root_cost_snapshot,
+)
 from devtools.benchmarks.cybergym.cybergym_adapter import (
     _TERMINAL_GATEWAY_STATUSES,
     CyberGymIntegrationUnavailable,
@@ -179,24 +183,6 @@ _COST_GRACE_PERIOD_SEC = 120.0
 _COST_GRACE_MARKER = "cost_grace_acceptance"
 
 
-def _frame_accounting_sources(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    """Walk the frame plus its nested accounting views (terminal-projection shape)."""
-    sources: list[Mapping[str, Any]] = []
-    queue: list[Mapping[str, Any]] = [payload]
-    seen: set[int] = set()
-    for source in queue:
-        marker = id(source)
-        if marker in seen:
-            continue
-        seen.add(marker)
-        sources.append(source)
-        for child_key in ("result", "task_result", "runtime_result", "cost_breakdown"):
-            child = source.get(child_key)
-            if isinstance(child, Mapping):
-                queue.append(child)
-    return sources
-
-
 def _abandoned_cost_residue_usd(payload: Mapping[str, Any]) -> float | None:
     """Return the abandoned-row residue when it is the frame's ONLY open cost cause.
 
@@ -210,6 +196,18 @@ def _abandoned_cost_residue_usd(payload: Mapping[str, Any]) -> float | None:
         return None
     if _response_status(payload) != "completed" or not _cost_is_pending(payload):
         return None
+    present_snapshot, snapshot = root_cost_snapshot(payload)
+    if present_snapshot:
+        if snapshot is None or (
+            snapshot["non_final_rows"] != snapshot["attempt_counts"]["unresolved"]
+            or snapshot["unknown_unmetered"] != 0 or snapshot["reserved_usd"] != 0
+        ):
+            return None
+        residue = snapshot["unresolved_upper_bound_usd"]
+        return residue if (
+            snapshot["non_final_rows"] > 0
+            and 0 < residue <= _COST_GRACE_UNRESOLVED_UB_USD
+        ) else None
     sources = _frame_accounting_sources(payload)
 
     def present(name: str) -> list[Any]:
@@ -314,6 +312,11 @@ class _CostGraceTracker:
             "grace_period_sec": _COST_GRACE_PERIOD_SEC,
             "waited_sec": round(elapsed, 3),
         }
+        _present, snapshot = root_cost_snapshot(payload)
+        if snapshot is not None:
+            frame[_COST_GRACE_MARKER].update(
+                accounting_schema=snapshot["schema"], root_task_id=snapshot["root_task_id"]
+            )
         return frame
 
 
@@ -339,19 +342,28 @@ def _valid_cost_grace(payload: Mapping[str, Any]) -> dict[str, Any] | None:
     if isinstance(waited, bool):
         return None
     try:
-        if float(waited) < _COST_GRACE_PERIOD_SEC:
+        waited_value = float(waited)
+        if not math.isfinite(waited_value) or waited_value < _COST_GRACE_PERIOD_SEC:
             return None
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     residue = _abandoned_cost_residue_usd(payload)
     if residue is None:
+        return None
+    present, snapshot = root_cost_snapshot(payload)
+    if not present and any(key in marker for key in ("accounting_schema", "root_task_id")):
+        return None
+    if present and (snapshot is None or any(
+        marker.get(key) != snapshot[source]
+        for key, source in (("accounting_schema", "schema"), ("root_task_id", "root_task_id"))
+    )):
         return None
     claimed = marker.get("unresolved_upper_bound_usd")
     if isinstance(claimed, bool):
         return None
     try:
         claimed_value = float(claimed)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     if not math.isclose(claimed_value, residue, rel_tol=1e-9, abs_tol=1e-9):
         return None

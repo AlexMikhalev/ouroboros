@@ -129,6 +129,11 @@ def project_replica_task_result_fields(
         if isinstance(replica_checkpoint, dict):
             merged_checkpoint.update(replica_checkpoint)
         merged_checkpoint["post_task_synthesis"] = canonical_post_task
+        # The canonical phase owns this tree observation, including its absence
+        # on older records. A replica cannot invent or replace that evidence.
+        merged_checkpoint.pop("accounting", None)
+        if "accounting" in canonical_checkpoint:
+            merged_checkpoint["accounting"] = canonical_checkpoint["accounting"]
         if "post_task_stop_reason" in canonical_checkpoint:
             merged_checkpoint["post_task_stop_reason"] = canonical_checkpoint[
                 "post_task_stop_reason"
@@ -249,6 +254,13 @@ def project_root_post_task_checkpoint_fields(
             current["post_task_stop_reason"] = patch["post_task_stop_reason"]
         if patch_post_task:
             current["post_task_synthesis"] = patch_post_task
+    if patch_post_task and (
+        not post_task_synthesis_is_terminal(canonical_post_task)
+        or patch_post_task == canonical_post_task
+    ):
+        current.pop("accounting", None)
+        if post_task_synthesis_is_terminal(patch_post_task) and "accounting" in patch:
+            current["accounting"] = patch["accounting"]
     overlay["root_phase_checkpoint"] = current
     return overlay
 
@@ -281,6 +293,32 @@ def root_checkpoint_roots(env: Any, task: Dict[str, Any]) -> list[pathlib.Path]:
         return []
 
 
+def _root_accounting_snapshot(root_task_id: str, subtree: Dict[str, Any] | None) -> Dict[str, Any]:
+    """Keep one root-tree ledger observation distinct from own-task money.
+
+    This records row states, not an invoice or local-work closure. The phase
+    owner supplies a fresh breakdown; unavailable refreshes retain no old proof.
+    """
+    source = subtree if isinstance(subtree, dict) else {}
+    counts = source.get("attempt_counts")
+    return {
+        "schema": "ouroboros.root_cost_snapshot.v1",
+        "scope": "root_tree",
+        "root_task_id": root_task_id,
+        "cost_accounting_status": "available" if subtree is not None else "unavailable",
+        "accounted_upper_bound_usd": honest_accounted_amount(source),
+        **{key: source.get(key) for key in (
+            "unresolved_upper_bound_usd", "reserved_usd", "non_final_rows", "unknown_unmetered",
+        )},
+        "attempt_counts": (
+            {"unresolved": counts.get("unresolved", 0)} if isinstance(counts, dict) else None
+        ),
+        "ledger_integrity_degraded": (
+            source.get("integrity_degraded") if subtree is not None else True
+        ),
+    }
+
+
 def set_root_post_task_checkpoint(
     env: Any,
     task: Dict[str, Any],
@@ -308,25 +346,20 @@ def set_root_post_task_checkpoint(
         saved = str(checkpoint.get("post_task_synthesis") or "") if isinstance(checkpoint, dict) else ""
         effective_status = saved if requested_status == "refresh" and saved else requested_status
         cost_fields: Dict[str, Any] = {"cost_final": False, "cost_with_children_partial": True}
+        accounting = None
         if post_task_synthesis_is_terminal(effective_status):
+            metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+            logical_root_id = str(task.get("root_task_id") or metadata.get("root_task_id") or task_id)
+            accounting = _root_accounting_snapshot(logical_root_id, None)
             try:
                 from ouroboros.usage_accounting import usage_breakdown
                 from supervisor.state import reconstruct_task_cost
 
                 cost_fields.update(reconstruct_task_cost(task_id, fields=True, drive_root=authority_root))
-                metadata = (
-                    task.get("metadata")
-                    if isinstance(task.get("metadata"), dict)
-                    else {}
-                )
-                logical_root_id = str(
-                    task.get("root_task_id")
-                    or metadata.get("root_task_id")
-                    or task_id
-                )
                 subtree = usage_breakdown(
                     authority_root, root_task_id=logical_root_id
                 )
+                accounting = _root_accounting_snapshot(logical_root_id, subtree)
                 subtree_final = bool(subtree.get("cost_final"))
                 subtree_amount = honest_accounted_amount(subtree)
                 cost_fields.update({
@@ -338,6 +371,7 @@ def set_root_post_task_checkpoint(
                 })
             except Exception:
                 log.error("Failed to refresh final root cost projection for %s", task_id, exc_info=True)
+                accounting = _root_accounting_snapshot(logical_root_id, None)
                 cost_fields.update({
                     "cost_accounting_status": "unavailable",
                     "cost_accounting_error": "ledger_unavailable",
@@ -352,6 +386,8 @@ def set_root_post_task_checkpoint(
         # mutation leaked, so this producer can never persist a diverged pair.
         cost_fields = with_cost_aliases(cost_fields)
         checkpoint_patch = {"post_task_synthesis": effective_status}
+        if accounting is not None:
+            checkpoint_patch["accounting"] = accounting
         if stop_reason:
             checkpoint_patch["post_task_stop_reason"] = str(stop_reason)
         stored: Dict[str, Any] | None = None
