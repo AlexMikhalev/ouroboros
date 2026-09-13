@@ -178,6 +178,7 @@ test('history query construction remains portable when URLSearchParams.size is u
     assert.match(requested, /cursor=c/);
 });
 
+
 for (const hydrated of [false, true]) test(`an unavailable archive keeps recent messages and a fresh retry (hydrated=${hydrated})`, async (t) => {
     const partial = { messages: [row('chat:10', 'Readable recent answer', {
         history_id: undefined, history_position: undefined,

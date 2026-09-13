@@ -38,6 +38,11 @@ def test_chat_marks_pending_messages_until_reconnect():
     assert "result?.status === 'queued'" in source
 
 
+def test_history_replay_does_not_overwrite_recent_session_fallback():
+    source = _read("web/modules/chat.js")
+    assert "if (!isProgress && !ephemeral && !_historyReplayActive)" in source
+
+
 def test_chat_resyncs_history_after_reconnect():
     source = _read("web/modules/chat.js")
     assert "async function syncHistory" in source
