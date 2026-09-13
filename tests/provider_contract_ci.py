@@ -717,6 +717,11 @@ def run_provider_contract_canary(
             "tool_choice": tool_choice,
             "reasoning_effort": canary.reasoning_effort,
             "max_tokens": CANARY_MAX_TOKENS,
+            # Main sets stream=True on every remote completion, so the canary's
+            # first turn must exercise that transport rather than one Main never
+            # uses. The continuation turn below stays non-stream, which covers
+            # both transports with zero extra physical sends.
+            "stream": True,
             "no_proxy": True,
             "timeout": CANARY_TIMEOUT_SEC,
         },

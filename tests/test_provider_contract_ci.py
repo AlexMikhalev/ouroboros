@@ -845,6 +845,7 @@ def test_public_chat_builds_full_registry_request_for_every_matrix_row():
         assert first["model"] == canary.model
         assert first["reasoning_effort"] == canary.reasoning_effort
         assert first["max_tokens"] == CANARY_MAX_TOKENS
+        assert first["stream"] is True  # the transport Main actually sends
         assert first["no_proxy"] is True
         assert first["bypass_response_cache"] is False
         assert first["timeout"] == CANARY_TIMEOUT_SEC
@@ -860,6 +861,8 @@ def test_public_chat_builds_full_registry_request_for_every_matrix_row():
             assert "expected_final_marker" in first["messages"][0]["content"]
             second = client.calls[1]
             assert second["tool_choice"] == "none"
+            # Non-stream on purpose: both transports covered, zero extra sends.
+            assert "stream" not in second
             assert second["bypass_response_cache"] is False
             assert second["max_tokens"] == CANARY_CONTINUATION_MAX_TOKENS
             assert [tool["function"]["name"] for tool in second["tools"]] == [
