@@ -22,6 +22,20 @@ def call(name, arguments, identifier):
     return {"id": identifier, "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}
 
 
+def test_queue_inspection_failure_does_not_invent_owner_generation_change():
+    def inspect_unavailable(**_kwargs):
+        raise OSError("queue unavailable")
+
+    ctx = SimpleNamespace(
+        _task_acceptance_fence_generation=1,
+        _task_acceptance_fence_token="fence",
+        _execution_trace={},
+        inspect_acceptance_fence=inspect_unavailable,
+    )
+    assert loop._task_acceptance_owner_generation_changed(ctx) is False
+    assert ctx._execution_trace["review_decision"]["admission_inspection"]["status"] == "unknown"
+
+
 @pytest.fixture
 def full_loop(tmp_path, monkeypatch):
     from ouroboros import review_custody

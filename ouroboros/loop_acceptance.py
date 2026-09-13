@@ -375,10 +375,10 @@ def _task_acceptance_owner_generation_changed(ctx: Any) -> bool:
                 "status": "unknown", "reason": "queue_inspection_failed",
                 "error_type": type(exc).__name__,
             }
-        # Unknown queue state is not evidence that a new message arrived.
-        # Cyber still drains actual ingress before delivery; other modes keep
-        # their selected admission behavior when inspection is unavailable.
-        return review_enforcement_blocks("blocking")
+        # Unknown queue state is not evidence that a new message arrived. Keep
+        # the existing acceptance candidate; the inspection failure is already
+        # disclosed above and must not manufacture a semantic owner change.
+        return False
 
 
 def _supersede_task_acceptance_for_evidence_change(
