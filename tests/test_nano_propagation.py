@@ -20,3 +20,19 @@ def test_usage_ledger_accepts_nano_physical_context():
         }
     }
     _validate_candidate_facts(row, 1)
+
+
+def test_chat_carries_nano_mode_to_physical_target(monkeypatch):
+    from ouroboros.llm import LLMClient
+
+    client = LLMClient()
+    captured = {}
+    monkeypatch.setattr(client, "_resolve_remote_target", lambda _model: {"provider": "openai"})
+
+    def remote(target, *_args, **_kwargs):
+        captured.update(target)
+        return {"content": "ok"}, {}
+
+    monkeypatch.setattr(client, "_chat_remote", remote)
+    client.chat([{"role": "user", "content": "hello"}], "openai::test", context_mode="nano")
+    assert captured["context_mode"] == "nano"

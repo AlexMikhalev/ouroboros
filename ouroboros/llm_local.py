@@ -198,6 +198,7 @@ class _LocalLaneMixin:
         self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]],
         max_tokens: int, tool_choice: str, timeout: Optional[float] = None,
         processing_preference: Optional[str] = None,
+        context_mode: Optional[str] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Prepare the complete local payload for sizing and actual dispatch."""
         messages = self._normalize_system_message_placement(messages)
@@ -241,7 +242,8 @@ class _LocalLaneMixin:
         preference = resolve_processing_preference(override=processing_preference)
         target = {"provider": "local", "resolved_model": "local-model", "usage_model": "local-model",
                   "processing_preference": preference, "context_window_tokens": evidence.get("context_window"),
-                  "context_window_confirmed": evidence.get("confirmed") is True}
+                  "context_window_confirmed": evidence.get("confirmed") is True,
+                  "context_mode": context_mode}
         return target, kwargs
 
     def _finalize_local_candidate(self, target: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -270,11 +272,12 @@ class _LocalLaneMixin:
         self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]],
         max_tokens: int, tool_choice: str, timeout: Optional[float] = None,
         processing_preference: Optional[str] = None,
+        context_mode: Optional[str] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Send exactly the previously prepared complete local candidate."""
         client = self._get_local_client()
         local_target, candidate = self._build_local_candidate(
-            messages, tools, max_tokens, tool_choice, timeout, processing_preference)
+            messages, tools, max_tokens, tool_choice, timeout, processing_preference, context_mode)
         candidate = self._finalize_local_candidate(local_target, candidate)
         clean_tools = candidate.get("tools")
         preference = local_target["processing_preference"]

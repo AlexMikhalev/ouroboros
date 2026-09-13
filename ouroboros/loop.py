@@ -119,7 +119,7 @@ from ouroboros.nanny_pacing import (
 )
 
 
-def _setup_dynamic_tools(tools_registry, tool_schemas, messages):
+def _setup_dynamic_tools(tools_registry, tool_schemas, messages, context_mode="max"):
     """Attach list/enable tool handlers and mutate the active schema list."""
     enabled_extra: set = set()
     active_tool_names = {
@@ -134,7 +134,7 @@ def _setup_dynamic_tools(tools_registry, tool_schemas, messages):
             else []
         )
         non_core = [
-            t for t in list_non_core_tools(tools_registry)
+            t for t in list_non_core_tools(tools_registry, context_mode=context_mode)
             if t["name"] not in active_tool_names
         ]
         if not non_core:
@@ -193,7 +193,7 @@ def _setup_dynamic_tools(tools_registry, tool_schemas, messages):
     tools_registry.override_handler("list_available_tools", _handle_list_tools)
     tools_registry.override_handler("enable_tools", _handle_enable_tools)
 
-    non_core_count = len(list_non_core_tools(tools_registry))
+    non_core_count = len(list_non_core_tools(tools_registry, context_mode=context_mode))
     if non_core_count > 0:
         _append_or_merge_user_message(
             messages,
@@ -401,8 +401,10 @@ def run_llm_loop(
     from ouroboros.tools import tool_discovery as _td
     _td.set_registry(tools)
 
-    tool_schemas = saved["tool_schemas"] if saved else initial_tool_schemas(tools)
-    tool_schemas, _enabled_extra_tools = _setup_dynamic_tools(tools, tool_schemas, messages)
+    tool_schemas = saved["tool_schemas"] if saved else initial_tool_schemas(tools, context_mode=active_context_mode)
+    tool_schemas, _enabled_extra_tools = _setup_dynamic_tools(
+        tools, tool_schemas, messages, context_mode=active_context_mode
+    )
     ctx.event_queue, ctx.task_id, ctx.messages = event_queue, task_id, messages
     stateful_executor = StatefulToolExecutor()
     exit_ctx = _LoopExitContext(

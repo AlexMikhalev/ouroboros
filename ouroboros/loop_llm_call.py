@@ -1377,6 +1377,7 @@ def call_llm_with_retry(
                 "model_role": model_role, "model_turn_state": model_turn_state,
                 "model_account_override": model_account_override,
                 "processing_preference": processing_preference,
+                "context_mode": getattr(physical_context, "rendered_mode", None),
                 "reasoning_effort": effort,
                 "max_tokens": MAIN_LOOP_MAX_TOKENS,
                 "stream": True, "caller_deadline_ts": (None if deadline_ts is None
