@@ -764,6 +764,7 @@ def _delivery_slot(
         session_target=row.session_target,
         session_profile=row.profile_id,
         subagent_id=row.subagent_id,
+        processing_preference=row.processing_preference,
         **slot_fields,
     )
 

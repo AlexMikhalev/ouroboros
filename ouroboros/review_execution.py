@@ -432,6 +432,7 @@ class ApiChatReviewExecutor(ReviewSlotExecutor):
                 "model": slot.model,
                 "model_role": f"reviewer:{slot.slot_id}",
                 "model_account_override": slot.session_profile,
+                "processing_preference": slot.processing_preference,
                 "reasoning_effort": slot.effort,
                 "processing_preference": slot.processing_preference or None,
                 "max_tokens": int(request.max_tokens or slot.max_tokens),

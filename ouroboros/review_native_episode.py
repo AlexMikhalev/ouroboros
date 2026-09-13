@@ -967,6 +967,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             "model": slot.model,
             "model_role": f"reviewer:{slot.slot_id}",
             "model_account_override": slot.session_profile,
+            "processing_preference": slot.processing_preference,
             "tools": schemas,
             "tool_choice": "auto",
             "reasoning_effort": slot.effort,
