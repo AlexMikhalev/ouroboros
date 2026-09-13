@@ -3,170 +3,12 @@ import test from 'node:test';
 import { readFileSync } from 'node:fs';
 
 import {
-    LOAD_OLDER_QUOTA_STEPS,
     createHistoryResyncScheduler,
     createLiveCardBound,
-    createRebuildBatch,
     createTimelineAnchors,
-    loadOlderControlState,
-    nextQuotaEscalation,
-    orderBatchNodes,
-    timelineNodeSortKey,
 } from '../modules/chat_render_batch.js';
 
 const chatSource = readFileSync(new URL('../modules/chat.js', import.meta.url), 'utf8');
-
-function makeNode(id, ts = null) {
-    return { id, dataset: ts == null ? {} : { ts: String(ts) }, parentNode: null };
-}
-
-// ───────────────────────── stable batch ordering ─────────────────────────
-
-test('batch order sorts by stamped ts', () => {
-    const ordered = orderBatchNodes([makeNode('c', 3), makeNode('a', 1), makeNode('b', 2)]);
-    assert.deepEqual(ordered.map((n) => n.id), ['a', 'b', 'c']);
-});
-
-test('equal timestamps preserve collection (arrival) order', () => {
-    // Mirrors the insertTimelineNode pin (chat_chronology.test.js:59-64):
-    // equal ts = arrival order, reproduced by the stable tie-break.
-    const ordered = orderBatchNodes([
-        makeNode('first', 5), makeNode('second', 5), makeNode('third', 5),
-    ]);
-    assert.deepEqual(ordered.map((n) => n.id), ['first', 'second', 'third']);
-});
-
-test('timestamp-free nodes land at the end in arrival order', () => {
-    const ordered = orderBatchNodes([
-        makeNode('undatedA'), makeNode('late', 9), makeNode('undatedB'), makeNode('early', 1),
-    ]);
-    assert.deepEqual(ordered.map((n) => n.id), ['early', 'late', 'undatedA', 'undatedB']);
-    assert.equal(timelineNodeSortKey(makeNode('u')), Infinity);
-    assert.equal(timelineNodeSortKey(makeNode('d', 42)), 42);
-});
-
-// ───────────────────────── batch mount semantics ─────────────────────────
-
-function makeFakeDom() {
-    const doc = {
-        createDocumentFragment() {
-            return {
-                _isFragment: true,
-                children: [],
-                // DOM-faithful: appending re-parents the node (mount() reads
-                // parentNode to tell "still in the holding fragment" from
-                // "pass 2 nested this node inside another card").
-                appendChild(node) { node.parentNode = this; this.children.push(node); },
-            };
-        },
-    };
-    const makeMessages = () => ({
-        children: [],
-        insertBefore(node, before) {
-            const incoming = node._isFragment ? node.children : [node];
-            const index = this.children.indexOf(before);
-            this.children.splice(index === -1 ? this.children.length : index, 0, ...incoming);
-            for (const item of incoming) item.parentNode = this;
-        },
-        appendChild(node) { this.insertBefore(node, null); },
-    });
-    return { doc, makeMessages };
-}
-
-test('mount inserts one sorted fragment before typing; typing stays last', () => {
-    const { doc, makeMessages } = makeFakeDom();
-    const messages = makeMessages();
-    const typing = makeNode('typing');
-    messages.children.push(typing);
-    typing.parentNode = messages;
-
-    const batch = createRebuildBatch(doc);
-    const b = makeNode('b', 2);
-    batch.collect(b);
-    batch.collect(makeNode('a', 1));
-    batch.collect(b);  // duplicate collect is a no-op
-    batch.collect(makeNode('c', 3));
-    batch.mount(messages, typing);
-    assert.deepEqual(messages.children.map((n) => n.id), ['a', 'b', 'c', 'typing']);
-});
-
-test('mount leaves a node that pass 2 nested inside another card where it is (#636)', () => {
-    // The replay collects every card into a detached holding fragment; when a
-    // later row moves a child card INTO its parent's subagent container, the
-    // node has left the fragment and mount() must not tear it back out as a
-    // top-level card below the whole feed.
-    const { doc, makeMessages } = makeFakeDom();
-    const messages = makeMessages();
-    const batch = createRebuildBatch(doc);
-    const parent = makeNode('parent', 1);
-    const child = makeNode('child', 2);
-    const later = makeNode('later', 3);
-    batch.collect(parent);
-    batch.collect(child);
-    batch.collect(later);
-    assert.ok(child.parentNode?._isFragment, 'collected nodes wait in the holding fragment');
-    assert.equal(child.parentNode, parent.parentNode);
-    // pass 2 nests the child under its parent (parent.appendChild in production)
-    const container = { id: 'parent-subagents', children: [] };
-    container.children.push(child);
-    child.parentNode = container;
-    batch.mount(messages, null);
-    assert.deepEqual(messages.children.map((n) => n.id), ['parent', 'later']);
-    assert.equal(child.parentNode, container, 'the nested child stays inside its parent');
-});
-
-test('mount without a mounted typing node appends at the end', () => {
-    const { doc, makeMessages } = makeFakeDom();
-    const messages = makeMessages();
-    const batch = createRebuildBatch(doc);
-    batch.collect(makeNode('only', 7));
-    batch.mount(messages, null);
-    assert.deepEqual(messages.children.map((n) => n.id), ['only']);
-});
-
-test('touch() registers each record once for the per-card finals', () => {
-    const batch = createRebuildBatch();
-    const record = { groupId: 't1' };
-    batch.touch(record);
-    batch.touch(record);
-    batch.touch(null);
-    assert.deepEqual([...batch.touched], [record]);
-});
-
-// ───────────────────────── Load-older escalation ─────────────────────────
-
-test('quota escalation ladder: default window -> 400 -> caps -> exhausted', () => {
-    const first = nextQuotaEscalation(null);
-    assert.deepEqual(first, LOAD_OLDER_QUOTA_STEPS[0]);
-    assert.equal(first.n_human, 400);
-    const second = nextQuotaEscalation(first);
-    assert.deepEqual(second, { n_human: 1500, n_progress: 600 });
-    assert.equal(nextQuotaEscalation(second), null);
-});
-
-test('load-older control follows the SERVER window verdict', () => {
-    // Complete window (or a server predating the field): no control at all —
-    // a short history must never be told about phantom archives.
-    assert.equal(loadOlderControlState({ complete: true, truncated_by: [] }).mode, 'hidden');
-    assert.equal(loadOlderControlState(null).mode, 'hidden');
-    // Quota truncation with escalation headroom: a real button.
-    const btn = loadOlderControlState({ complete: false, truncated_by: ['quota'] }, null);
-    assert.equal(btn.mode, 'button');
-    // Quota truncation at the caps: honest boundary notice instead.
-    const capped = loadOlderControlState(
-        { complete: false, truncated_by: ['quota'] },
-        { n_human: 1500, n_progress: 600 },
-    );
-    assert.equal(capped.mode, 'notice');
-    // Archive-floor / lineage-cap truncation cannot be escalated away.
-    const floor = loadOlderControlState(
-        { complete: false, truncated_by: ['archive_floor', 'lineage_cap'] }, null,
-    );
-    assert.equal(floor.mode, 'notice');
-    // The notice names BOTH boundaries: on-disk archives AND the lineage cap.
-    assert.match(floor.label, /archive/i);
-    assert.match(floor.label, /lineage/i);
-});
 
 // ─────────────── sticky hydration / replay contracts ──────────────────────
 
@@ -362,8 +204,8 @@ test('chat.js wires the replay flag around the replay and keeps live callsites i
     assert.ok(flagUp !== -1);
     // (search from flagUp: the earlier `let … = false;` declaration also matches)
     const replaySection = chatSource.slice(flagUp, chatSource.indexOf('_historyReplayActive = false;', flagUp));
-    assert.match(replaySection, /if \(rebuildAll\) \{/);
-    assert.match(replaySection, /applySyncedMessages\(\);/);
+    assert.match(replaySection, /withStableViewport\(\(\) => \{/);
+    assert.match(replaySection, /learnSubagentLineage\(msg\)/);
     assert.doesNotMatch(replaySection, /await /);
     // Both finished-transition paths share settleLiveCard; the task-bound
     // review lifecycle keeps its own trigger. The replay decision stays ONLY

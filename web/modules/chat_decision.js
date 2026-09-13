@@ -719,6 +719,10 @@ export function createChatDecision({
             for (const key of observations.keys()) if (!keep.has(key)) observations.delete(key);
             quizViews.clear(); pointerViews.clear();
         },
+        releaseViews(root) {
+            for (const [key, card] of quizViews) if (root.contains(card)) quizViews.delete(key);
+            for (const [key, view] of pointerViews) if (root.contains(view.card)) pointerViews.delete(key);
+        },
         destroy() { disposed = true; observations.clear(); quizViews.clear(); pointerViews.clear(); detailReads.clear(); },
     };
 }

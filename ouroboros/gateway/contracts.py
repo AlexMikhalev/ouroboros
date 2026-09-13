@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from ouroboros.gateway.history_contracts import ChatHistoryResponse  # noqa: F401 -- public re-export
 from ouroboros.gateway.widgets import ExtensionLiveSnapshot, WidgetTab, WidgetsResponse
 from ouroboros.gateway.decision_contracts import DecisionRequest, DecisionResponse  # noqa: F401 -- public re-exports
 
@@ -1021,13 +1022,6 @@ class FileBrowserListResponse(TypedDict, total=False):
     root: str
     path: str
     entries: list[Dict[str, Any]]
-    error: str
-
-
-class ChatHistoryResponse(TypedDict, total=False):
-    messages: list[Dict[str, Any]]
-    has_more: bool
-    next_before_ts: str
     error: str
 
 

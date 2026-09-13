@@ -153,8 +153,7 @@ test('subagent projection keeps identity, compact facts and complete disclosure'
     assert.equal(subagentIdentityTitle({ role: 'planner', model: '' }), 'planner');
     assert.ok(summary.activityPreview.length <= COLLAPSED_ACTIVITY_MAX);
     assert.match(summary.fullBody, /UNIQUE_CHILD_TAIL$/);
-    assert.deepEqual(summary.meta, ['write=workspace', 'status=running']);
-    assert.doesNotMatch(summary.meta.join(' '), /subagent|role=|parent=|root=/);
+    assert.deepEqual(summary.meta || [], []);
 });
 
 test('the collapsed activity line is plain text: the renderer\'s markdown inventory', () => {

@@ -11,7 +11,6 @@ import {
     reconcileHydratedDirectActivities,
     unconfirmedForegroundCardIds,
 } from '../modules/chat_activity.js';
-import { createRebuildBatch } from '../modules/chat_render_batch.js';
 import { REUSABLE_TASK_IDS } from '../modules/task_control_menu.js';
 
 const chatSource = readFileSync(new URL('../modules/chat.js', import.meta.url), 'utf8');
@@ -105,13 +104,13 @@ test('chat.js hands the card projection to the selector inside hydrateDirectActi
 
 test('the replay batch no longer bypasses the status reducer', () => {
     const fn = chatSource.slice(
-        chatSource.indexOf('function finalizeRebuildBatch('),
+        chatSource.indexOf('function applyHistoryMessages('),
         chatSource.indexOf('async function syncHistory('),
     );
     assert.doesNotMatch(fn, /setStatus\(/);
     assert.doesNotMatch(fn, /batch\.status/);
     assert.doesNotMatch(chatSource, /_rebuildBatch\.status/);
-    assert.equal(Object.prototype.hasOwnProperty.call(createRebuildBatch(), 'status'), false);
+    assert.doesNotMatch(chatSource, /createRebuildBatch/);
     // setStatus has exactly three callsites: the reducer (syncChatStatus) and the
     // panel-boot 'Online' seed — the one documented exception — plus its own
     // definition. The replay-batch "Working..." write is gone.
@@ -121,6 +120,6 @@ test('the replay batch no longer bypasses the status reducer', () => {
     assert.match(chatSource, /if \(ws\.isConnected\?\.\(\)\) setStatus\('online', 'Online'\);/);
     // The reducer still runs unconditionally right after the replay dispatch, so
     // a replayed unfinished foreground card reaches the badge through it.
-    const replayEnd = chatSource.indexOf('_historyReplayActive = false;', chatSource.indexOf('_historyReplayActive = true;'));
-    assert.match(chatSource.slice(replayEnd, replayEnd + 200), /syncChatStatus\(\);/);
+    const replayEnd = fn.lastIndexOf('_historyReplayActive = false;');
+    assert.match(fn.slice(replayEnd), /syncChatStatus\(\);/);
 });

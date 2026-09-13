@@ -239,6 +239,8 @@ def test_chat_history_reads_bounded_progress_tail_with_zero_artifact_work(
     — never the whole file — and its terminal-truth annotation must perform
     zero artifact collection/copies and zero disposition-hash lookups."""
     from ouroboros.gateway.history import make_chat_history_endpoint
+    from ouroboros.gateway import history_paging
+    from contextlib import contextmanager
     from ouroboros.task_results import write_task_result
 
     logs = tmp_path / "logs"
@@ -258,17 +260,44 @@ def test_chat_history_reads_bounded_progress_tail_with_zero_artifact_work(
     assert progress_size > 3_000_000  # much larger than the 512KB start window
     write_task_result(tmp_path, "t1", "completed", result="done", ts="2026-08-08T05:00:00Z")
 
-    tail_calls = _install_tail_read_counter(monkeypatch)
+    # The pager feeds the shared parser an already-bounded borrowed buffer.
+    # Count actual source bytes, rather than the old parser's tail_bytes hint.
+    reads = []
+    chain_handles = history_paging.jsonl_chain_handles
+
+    class CountedHandle:
+        def __init__(self, path, handle):
+            self.path, self.handle = path, handle
+
+        def __getattr__(self, name):
+            return getattr(self.handle, name)
+
+        def read(self, size=-1):
+            start = self.handle.tell()
+            data = self.handle.read(size)
+            reads.append((self.path, start, len(data)))
+            return data
+
+    @contextmanager
+    def counted_handles(*args, **kwargs):
+        with chain_handles(*args, **kwargs) as handles:
+            yield [(path, CountedHandle(path, handle)) for path, handle in handles]
+
+    monkeypatch.setattr(history_paging, "jsonl_chain_handles", counted_handles)
     artifact_counters = _install_artifact_counters(monkeypatch)
 
     endpoint = make_chat_history_endpoint(tmp_path)
     response = asyncio.run(endpoint(types.SimpleNamespace(query_params={})))
     messages = json.loads(response.body)["messages"]
 
-    progress_reads = [c for c in tail_calls if c[0].endswith("progress.jsonl")]
+    progress_reads = [(start, size) for path, start, size in reads if path.name == "progress.jsonl"]
     assert progress_reads  # the bounded reader actually served the endpoint
-    assert all(tail is not None for _path, tail in progress_reads)  # no full read
-    assert sum(tail for _path, tail in progress_reads) < progress_size
+    assert all(start >= progress_size - 512 * 1024 - 1 and size > 0 for start, size in progress_reads)
+    # One alignment lookahead and one parsed window, plus newline probes.
+    assert sum(size for _start, size in progress_reads) <= 2 * 512 * 1024 + 2 < progress_size
+    progress_rows = [row for row in messages if row.get("is_progress")]
+    assert len(progress_rows) == 60
+    assert progress_rows[-1]["text"] == "telemetry-15999"
     # Annotation ran on the emitted window (terminal truth landed on rows)...
     annotated = [m for m in messages if m.get("task_terminal_status") == "completed"]
     assert annotated
