@@ -51,6 +51,16 @@ import threading
 import time
 from typing import Any, Dict, Literal, Optional
 
+from ouroboros.claudexor_startup_failure import (
+    ExitFact,
+    build_start_failure_record,
+    classify_startup_failure,
+    latch_cleared_row,
+    read_startup_log_interval,
+    start_failure_detail,
+    start_failure_label,
+    start_failure_row,
+)
 from ouroboros.config import (
     CLAUDEXOR_STARTUP_WAIT_SEC as _SPAWN_WAIT_SEC,
     CLAUDEXOR_STARTUP_POLL_SEC as _SPAWN_POLL_SEC,
@@ -115,6 +125,20 @@ def owned_config_dir() -> pathlib.Path:
 
 def owned_descriptor_path() -> pathlib.Path:
     return owned_config_dir() / "daemon" / "control-api.json"
+
+
+def _descriptor_identity() -> Optional[tuple]:
+    """Stat identity of the control descriptor, ``None`` when absent.
+
+    Recorded at spawn and compared at the exit fact: a changed identity (the
+    engine publishes atomically, so a new inode) means a descriptor was
+    written DURING that spawn — the second half of the latch predicate.
+    """
+    try:
+        stat = owned_descriptor_path().stat()
+    except OSError:
+        return None
+    return (stat.st_ino, stat.st_mtime_ns, stat.st_size)
 
 
 def owned_daemon_provisioned() -> bool:
@@ -322,6 +346,11 @@ class OwnedClaudexorDaemon:
         self._generation = 0
         self._stopping = False
         self._startup_attempt: Dict[str, Any] = {}
+        # Spawn latch (#844): the typed record of the last start that ended
+        # with ``ExitFact.failed_without_control``. While set, no caller
+        # spawns; the periodic supervisor sweep, a live attach, or a new
+        # manager (Restart/Panic) clears it. Not a counter, not a backoff.
+        self._last_start_failure: Optional[Dict[str, Any]] = None
         # Rotation reconcile (B3): a non-blocking lock dedups CONCURRENT
         # ensures so they never double-POST settings; nothing else is gated.
         self._rotation_lock = threading.Lock()
@@ -488,7 +517,42 @@ class OwnedClaudexorDaemon:
                 self._proc = None  # Popen.poll reaps an exited election contender.
                 self._startup_attempt = {}
             self._last_error = ""
+        # A live authenticated daemon (started by anyone) is the fact the latch
+        # waited for: a hand-started or peer-started engine clears it.
+        self.clear_start_failure_latch(cleared_by="live_daemon_attached")
         return endpoint
+
+    def clear_start_failure_latch(self, *, cleared_by: str) -> bool:
+        """Release the spawn latch; True when one was set (a durable row names who released it).
+
+        Callers: the periodic supervisor sweep (the ONLY retrier), and a
+        successful attach. Restart/Panic clear it by constructing a new manager.
+        """
+        with self._lock:
+            record, self._last_start_failure = self._last_start_failure, None
+        if record is None:
+            return False
+        from ouroboros.utils import utc_now_iso
+
+        self._supervisor_row(latch_cleared_row(record, cleared_by=cleared_by, ts=utc_now_iso()))
+        return True
+
+    def _refuse_latched_spawn(self) -> None:
+        """While the latch is set, the typed refusal is immediate and spawns nothing."""
+        from ouroboros.gateways.claudexor import ClaudexorUnavailable
+
+        with self._lock:
+            record = self._last_start_failure
+        if record is None:
+            return
+        detail = start_failure_detail(record)
+        self._last_error = f"daemon_spawn_failed: {detail}"
+        raise ClaudexorUnavailable(
+            "daemon_spawn_failed",
+            "owned daemon start is latched after a typed startup failure; no new spawn until "
+            f"the periodic supervisor sweep retries or the owner restarts; {detail}",
+            status_code=503,
+        )
 
     def ensure_running(self, *, startup_wait_sec: Optional[float] = None) -> Any:
         """Attach or join an installation-owned startup within this caller's wait.
@@ -518,6 +582,8 @@ class OwnedClaudexorDaemon:
                 return self._accept_endpoint(endpoint, generation)
         elif self._startup_pids():
             return self._wait_for_start(generation, startup_wait_sec)
+        else:
+            self._refuse_latched_spawn()  # before preparation: the refusal is immediate
         if state == "foreign_daemon" and detail:
             log.warning("owned-daemon startup leaves the foreign responder untouched: %s", detail)
         try:
@@ -542,6 +608,7 @@ class OwnedClaudexorDaemon:
         if endpoint is not None:
             return self._accept_endpoint(endpoint, generation)
         if not self._startup_pids():
+            self._refuse_latched_spawn()  # a peer's failure may have latched during preparation
             self._spawn(command, runtime_manager, generation)
         return self._wait_for_start(generation, startup_wait_sec)
 
@@ -589,6 +656,7 @@ class OwnedClaudexorDaemon:
                                                               os.fstat(sink.fileno()).st_ino),
                     "version": runtime.get("version") or "unknown",
                     "build_sha": runtime.get("build_sha") or "unknown",
+                    "descriptor": _descriptor_identity(),
                 }
                 self._proc = spawn_supervised(
                     command,
@@ -630,14 +698,48 @@ class OwnedClaudexorDaemon:
             )
         with self._lock:
             self._check_start_generation(generation)
-            if self._proc is not None and self._proc.poll() is not None:
+            proc, attempt = self._proc, dict(self._startup_attempt)
+            if proc is not None and proc.poll() is not None:
                 self._proc = None
                 self._startup_attempt = {}
+        failure = self._record_start_failure(proc, attempt)
+        if failure is not None:
+            detail = f"{detail}; {start_failure_label(failure)}"
         self._last_error = f"daemon_spawn_failed: {detail}"
         raise ClaudexorUnavailable(
             "daemon_spawn_failed", f"no live owned startup or authenticated endpoint after {wait:.1f}s; {detail}",
             status_code=503,
         )
+
+    def _record_start_failure(self, proc: Any, attempt: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Typed exit fact -> diagnostic classification -> durable row; latch on the FACT alone (#844).
+
+        Only this manager's own exited child carries an exit fact; a joined
+        peer startup that vanished leaves nothing to classify and never latches.
+        """
+        returncode = proc.poll() if proc is not None and attempt else None
+        if returncode is None:
+            return None
+        from ouroboros.utils import utc_now_iso
+
+        exit_status = ExitFact(returncode=returncode,
+                               descriptor_written=_descriptor_identity() != attempt.get("descriptor"))
+        log_path = owned_config_dir() / "daemon.log"
+        interval, written = read_startup_log_interval(
+            log_path, start=int(attempt["log_start"]), identity=attempt["log_identity"])
+        record = build_start_failure_record(
+            pin_version=str(attempt.get("version") or "unknown"),
+            pin_build=str(attempt.get("build_sha") or "unknown"),
+            exit_status=exit_status, classification=classify_startup_failure(written, exit_status),
+            log_path=str(log_path), log_interval=interval, at=utc_now_iso(),
+        )
+        latched = exit_status.failed_without_control
+        if latched:
+            with self._lock:
+                self._last_start_failure = record
+        log.warning("Owned Claudexor start failed (latched=%s): %s", latched, start_failure_detail(record))
+        self._supervisor_row(start_failure_row(record, latched=latched))
+        return record
 
     def _startup_diagnostic(self, pids: set[int]) -> str:
         """Name current process evidence and its log interval, never an old tail as cause."""
@@ -933,15 +1035,19 @@ class OwnedClaudexorDaemon:
 
     def _report_stop_unconfirmed(self, detail: str) -> None:
         """The lifecycle owner discloses a failed stop in the existing supervisor log."""
-        from ouroboros.config import DATA_DIR
-        from ouroboros.utils import append_jsonl, utc_now_iso
+        from ouroboros.utils import utc_now_iso
 
         self._last_error = detail
         log.critical("Owned Claudexor stop unconfirmed: %s; custody retained", detail)
-        append_jsonl(pathlib.Path(DATA_DIR) / "logs" / "supervisor.jsonl", {
-            "ts": utc_now_iso(), "type": "process_stop_unconfirmed",
-            "purpose": CUSTODY_PURPOSE, "reason": detail,
-        })
+        self._supervisor_row({"ts": utc_now_iso(), "type": "process_stop_unconfirmed", "reason": detail})
+
+    def _supervisor_row(self, row: Dict[str, Any]) -> None:
+        """The manager's one durable disclosure seam: a purpose-stamped supervisor row."""
+        from ouroboros.config import DATA_DIR
+        from ouroboros.utils import append_jsonl
+
+        append_jsonl(pathlib.Path(DATA_DIR) / "logs" / "supervisor.jsonl",
+                     {**row, "purpose": CUSTODY_PURPOSE})
 
 
 _MANAGER: Optional[OwnedClaudexorDaemon] = None

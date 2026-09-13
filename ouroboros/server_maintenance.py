@@ -85,7 +85,7 @@ def _periodic_supervisor_maintenance(last_custody_reap: list, last_review_reconc
     if time.time() - last_custody_reap[0] > 600:
         last_custody_reap[0] = time.time()
         try:
-            from ouroboros.claudexor_daemon import CUSTODY_PURPOSE
+            from ouroboros.claudexor_daemon import CUSTODY_PURPOSE, get_owned_daemon
             from ouroboros.process_custody import reap_orphaned_processes
             from supervisor.queue import RUNNING as _running_tasks
 
@@ -99,6 +99,12 @@ def _periodic_supervisor_maintenance(last_custody_reap: list, last_review_reconc
                 live_owner_skills=_installed_skill_names(),
                 retained_purposes={CUSTODY_PURPOSE},
             )
+            # Issue #844: this sweep is the ONE retrier of a latched owned-daemon
+            # start. Every ordinary caller is refused typed (no spawn) while the
+            # manager's start-failure latch is set; clearing it right before this
+            # sweep's own ensure below means a persistently crashing engine costs
+            # at most one spawn per sweep period instead of one per caller.
+            get_owned_daemon().clear_start_failure_latch(cleared_by="supervisor_sweep")
             # A delegated Claudexor run is an orphan under exactly the same predicate:
             # its owning task is no longer running. It has no pid, so the process
             # reaper cannot see it — but it is still spending quota and still writing.
