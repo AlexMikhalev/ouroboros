@@ -184,7 +184,7 @@ def test_landing_notice_is_posted_once_at_the_landing_fraction(subject_repo, mon
     ]
     assert [len(n) for n in notices] == [0, 1, 1]  # posted before send 2, carried (not repeated) on send 3
     notice = notices[1][0]["content"]
-    assert f"of {bound} chars" in notice and "no tool calls" in notice
+    assert f"of {bound} chars" in notice and "compact_context" in notice
     # The notice follows the tool results of the round that crossed the line.
     round2 = llm.calls[1]["messages"]
     assert round2[-1] == notices[1][0] and round2[-2]["role"] == "tool"
@@ -242,7 +242,7 @@ def test_transcript_bound_fails_closed_for_verdict_shapes(subject_repo, monkeypa
     # The first read was CLAMPED to the room below the bound and disclosed as
     # nearly spent; the landing notice followed it before the next send.
     tool_msgs = [m for m in llm.calls[1]["messages"] if m.get("role") == "tool"]
-    assert "RESULT TRUNCATED" in tool_msgs[0]["content"] and "answer now" in tool_msgs[0]["content"]
+    assert "RESULT TRUNCATED" in tool_msgs[0]["content"] and "revise the working view" in tool_msgs[0]["content"]
     assert any("[EPISODE_BUDGET]" in str(m.get("content")) for m in llm.calls[1]["messages"])
     # The settled failure replays; no second paid episode.
     with pytest.raises(ReviewRouteUnavailable):
@@ -509,11 +509,11 @@ def test_terminal_round_is_kept_when_the_landing_notice_is_the_last_message(subj
     # The notice's OWN charge crossing the bound (notice last, no send after it)
     # is a bound end that still records the terminal round. Tool results are
     # clamped below the reserve, so only the reviewer's own (uncapped) prose
-    # can land the transcript within a notice of the bound: a round of 2.5K
+    # can land the transcript within a notice of the bound: a round of 5K
     # prose plus a tiny read. Measure that transcript from the executor's own
     # counter, then set the bound 200 chars above it — the landing line
     # (bound − reserve) is crossed and the ~300-char notice pushes it over.
-    prose = "p" * 2_500
+    prose = "p" * 5_000
     monkeypatch.setattr(native_episode, "review_native_transcript_bound", lambda *a, **k: 900_000)
     probe = _ScriptedLLM([{"content": prose, "tool_calls": [_tool_call("read_file", {"path": "greeting.txt"}, "c1")]}, {"content": _VERDICT}])
     after_one_round = NativeToolRoundReviewExecutor(_assignment(subject_repo, probe), llm=probe).execute().usage["native_transcript_chars"]
@@ -839,7 +839,7 @@ def test_notice_overflow_is_resolved_before_the_clock(subject_repo, monkeypatch,
     verdict shape (typed refusal) and the report shape (draft kept, incomplete)."""
     import ouroboros.review_native_episode as native_episode
 
-    prose = "p" * 2_500
+    prose = "p" * 5_000
     round1 = {"content": prose, "tool_calls": [_tool_call("read_file", {"path": "greeting.txt"}, "c1")]}
     monkeypatch.setattr(native_episode, "review_native_transcript_bound", lambda *a, **k: 900_000)
     probe = _ScriptedLLM([round1, {"content": _VERDICT}])

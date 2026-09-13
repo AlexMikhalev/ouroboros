@@ -30,7 +30,7 @@ def test_list_without_index_writes_nothing_and_still_lists_topics(tmp_path):
     ctx = _Ctx(tmp_path / "drive")
     kdir = ctx.drive_root / "memory" / "knowledge"
     kdir.mkdir(parents=True)
-    (kdir / "git-recipes.md").write_text("# Git recipes\n\nUse rebase sparingly.\n", encoding="utf-8")
+    (kdir / "git-recipes.md").write_text("---\ntype: procedure\nsummary: Use rebase sparingly.\n---\n# Git recipes\n\nDetails.\n", encoding="utf-8")
     (kdir / "browser.md").write_text("# Browser\n\nHeadless needs a display shim.\n", encoding="utf-8")
     before = _tree(ctx.drive_root)
 
@@ -38,7 +38,8 @@ def test_list_without_index_writes_nothing_and_still_lists_topics(tmp_path):
 
     assert "git-recipes" in listing
     assert "browser" in listing
-    assert "rebase" in listing  # summaries are rendered, not just names
+    assert "rebase" in listing  # authored summaries are rendered, not body snippets
+    assert "Headless needs" not in listing  # plain legacy bodies stay in their source
     # A pure read: no index, no lock sidecar, no new files anywhere in the drive.
     assert _tree(ctx.drive_root) == before
     assert not (kdir / INDEX_FILE).exists()

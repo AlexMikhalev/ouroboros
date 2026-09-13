@@ -200,7 +200,7 @@ def test_knowledge_write_canonical_when_no_project(tmp_path):
 
 # --- selective context load ---------------------------------------------------
 
-def test_context_project_scope_replaces_global_knowledge_index(tmp_path, monkeypatch):
+def test_context_project_scope_adds_to_global_knowledge_index(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "DATA_DIR", tmp_path / "data")
     from ouroboros import context
 
@@ -223,7 +223,7 @@ def test_context_project_scope_replaces_global_knowledge_index(tmp_path, monkeyp
     blob = "\n".join(context.build_knowledge_sections(env, project_id="proj_x"))
     assert "project x stuff" in blob
     assert "project y secret" not in blob  # never another project's facts
-    assert "GLOBAL stuff" not in blob      # project scope replaces the global index
+    assert "GLOBAL stuff" in blob         # project focus retains the shared corpus
     # unscoped -> global index
     blob2 = "\n".join(context.build_knowledge_sections(env))
     assert "GLOBAL stuff" in blob2

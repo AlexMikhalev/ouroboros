@@ -101,7 +101,13 @@ _SINGLE_CONTENT = (
 
 _SESSION_RETRIEVAL = (
     "Use native read/search tools inside the source-repository session root. Read "
-    "`BIBLE.md`, `docs/ARCHITECTURE.md`, and `docs/DEVELOPMENT.md` in full; read "
+    "`BIBLE.md` in full. Read the `docs/ARCHITECTURE.md` and `docs/DEVELOPMENT.md` "
+    "book entrypoints in full, then every physical chapter in each entrypoint's "
+    "`Chapters` membership list in full, in the order you choose. Resolve each chapter link "
+    "relative to its entrypoint; a legacy monolith without `Chapters` is already "
+    "the complete book. Cite physical file paths and file-local lines, never "
+    "line numbers in a composed book. Reading an entrypoint alone does not "
+    "cover its chapters; report any missing or unread chapter explicitly. Read "
     "the `Skill Review Checklist` section of `docs/CHECKLISTS.md`; then read "
     "`docs/CREATING_SKILLS.md`, `ouroboros/contracts/plugin_api.py`, and "
     "`ouroboros/extension_ui_validation.py` in full. Treat those source reads as "
