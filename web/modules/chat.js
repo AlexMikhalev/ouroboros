@@ -2583,8 +2583,12 @@ export function createChatInstance({
                 }
                 for (const msg of messages) learnSubagentLineage(msg);
 
+                const historicalTerminalProjections = new Set();
                 for (const msg of messages) if (msg.historical_terminal && msg.task_id) {
                     historicalTerminals.set(msg.task_id, msg.historical_terminal);
+                    if (msg.summary_kind === 'terminal_root_projection' || msg.outcome_final === true) {
+                        historicalTerminalProjections.add(msg.task_id);
+                    }
                 }
                 // First pass builds card state without DOM insertion.
                 _syncPass1Active = true;
@@ -2778,6 +2782,26 @@ export function createChatInstance({
                     }
                 }
                 _historyRow = null;
+
+                // A terminal-root projection is the durable result authority,
+                // even though it is an intentionally hidden history row.  Do
+                // not let a later authored_root_summary (which may still say
+                // `finalizing`) leave the card open after restart.  Resolve it
+                // only after replay has seen all narrative rows so the
+                // terminal fact cannot itself be downgraded by later prose.
+                for (const [tid, historicalTerminal] of historicalTerminals) {
+                    if (!historicalTerminalProjections.has(tid)) continue;
+                    const terminalRecord = { ...historicalTerminal, task_id: tid };
+                    if (!taskDoneIsTerminal(terminalRecord)) continue;
+                    if (subagentChildParents.has(tid)) {
+                        routeSubagentTerminalToCard(tid, terminalRecord);
+                        continue;
+                    }
+                    const rec = liveCardRecords.get(tid);
+                    if (!rec) continue;
+                    insertCardIfNeeded(tid);
+                    finishLiveCard(tid, taskTerminalPhase(terminalRecord));
+                }
 
                 // Append disconnected visible cards after mid-task reload; skip trivial placeholders.
                 for (const [tid, rec] of liveCardRecords) {
