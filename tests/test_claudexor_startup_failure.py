@@ -388,8 +388,65 @@ def test_a_real_child_killed_by_a_signal_carries_the_raw_return_code(monkeypatch
 
 # --- the supervisor sweep is the one retrier ------------------------------------
 
-def test_periodic_sweep_clears_the_latch_right_before_its_own_ensure(monkeypatch):
-    """EXECUTED wiring: the real 600 s tick releases the latch, then reconciles."""
+def _run_real_sweep(monkeypatch, manager, order: list) -> None:
+    """Drive the real 600 s tick against ``manager`` with NO delegated-run work.
+
+    The reconcile step is a recorder: the real one ensures a gateway only when
+    it has orphan work, so with none it is exactly a no-op here — which is why
+    the retry must be the sweep's own.
+    """
+    from ouroboros import claudexor_daemon as daemon_mod
+    from ouroboros import process_custody as pc
+    from ouroboros import server_maintenance as sm
+    from supervisor import queue
+
+    monkeypatch.setattr(sm, "_LAST_CANCEL_INTENT_SWEEP", [time.time()])  # 20 s cadence idle
+    monkeypatch.setattr(sm, "_installed_skill_names", lambda: None)
+    monkeypatch.setattr(pc, "reap_orphaned_processes", lambda root, **kw: order.append("reap") or [])
+    monkeypatch.setattr(sm, "_reconcile_delegated_runs", lambda live: order.append("reconcile"))
+    monkeypatch.setattr(sm, "_cursor_refresh_settled_terminals", lambda: None)
+    monkeypatch.setattr(queue, "RUNNING", {})
+    monkeypatch.setattr(daemon_mod, "get_owned_daemon", lambda: manager)
+    sm._periodic_supervisor_maintenance([0.0], [time.time()])
+
+
+def test_the_sweep_itself_makes_the_one_retry_after_releasing_the_latch(monkeypatch, tmp_path, caplog):
+    """D5: the sweep is the ONLY retrier — ordinary callers never pay the retry."""
+    import logging
+
+    stand = _Stand(monkeypatch, tmp_path, returncode=-6, banner=_OOM_REACHED)
+    stand.fail_once()
+    assert len(stand.spawned) == 1 and stand.manager._last_start_failure is not None
+    order: list = []
+    with caplog.at_level(logging.WARNING):
+        _run_real_sweep(monkeypatch, stand.manager, order)
+    assert order == ["reap", "reconcile"], "the swallowed refusal never skips the reconcile"
+    assert len(stand.spawned) == 2 and len(stand.ensures) == 2, "exactly one retry, made by the sweep"
+    assert stand.manager._last_start_failure is not None, "the failed retry re-latched"
+    assert any("retry after latch release refused (daemon_spawn_failed)" in rec.getMessage()
+               for rec in caplog.records)
+    assert [(row["type"], row.get("cleared_by")) for row in _rows(stand.data_dir)] == [
+        ("claudexor_daemon_start_failed", None),
+        ("claudexor_daemon_start_latch_cleared", "supervisor_sweep"),
+        ("claudexor_daemon_start_failed", None),
+    ]
+    refused = stand.fail_once()
+    assert "latched" in str(refused) and "startup_failure=heap_exhausted" in str(refused)
+    assert len(stand.spawned) == 2 and len(stand.ensures) == 2, "an ordinary caller still never spawns"
+
+
+def test_a_healthy_sweep_never_ensures_or_spawns(monkeypatch, tmp_path):
+    stand = _Stand(monkeypatch, tmp_path, returncode=-6, banner=_OOM_REACHED)
+    order: list = []
+    _run_real_sweep(monkeypatch, stand.manager, order)
+    assert order == ["reap", "reconcile"]
+    assert stand.spawned == [] and stand.ensures == [] and not _rows(stand.data_dir)
+    assert stand.manager._last_start_failure is None
+
+
+@pytest.mark.parametrize("released", [True, False])
+def test_periodic_sweep_retries_only_after_it_released_a_latch(monkeypatch, released):
+    """EXECUTED wiring: release → (retry only if released) → reconcile, in that order."""
     from ouroboros import claudexor_daemon as daemon_mod
     from ouroboros import process_custody as pc
     from ouroboros import server_maintenance as sm
@@ -399,11 +456,39 @@ def test_periodic_sweep_clears_the_latch_right_before_its_own_ensure(monkeypatch
     monkeypatch.setattr(sm, "_LAST_CANCEL_INTENT_SWEEP", [time.time()])  # 20 s cadence idle
     monkeypatch.setattr(sm, "_installed_skill_names", lambda: None)
     monkeypatch.setattr(pc, "reap_orphaned_processes", lambda root, **kw: order.append("reap") or [])
+    monkeypatch.setattr(sm, "_retry_latched_daemon_start", lambda: order.append("retry"))
     monkeypatch.setattr(sm, "_reconcile_delegated_runs", lambda live: order.append("reconcile"))
     monkeypatch.setattr(sm, "_cursor_refresh_settled_terminals", lambda: None)
     monkeypatch.setattr(queue, "RUNNING", {})
     stub = SimpleNamespace(
-        clear_start_failure_latch=lambda *, cleared_by: order.append(f"clear:{cleared_by}") or True)
+        clear_start_failure_latch=lambda *, cleared_by: order.append(f"clear:{cleared_by}") or released)
     monkeypatch.setattr(daemon_mod, "get_owned_daemon", lambda: stub)
     sm._periodic_supervisor_maintenance([0.0], [time.time()])
-    assert order == ["reap", "clear:supervisor_sweep", "reconcile"]
+    assert order == ["reap", "clear:supervisor_sweep", *(["retry"] if released else []), "reconcile"]
+
+
+def test_the_sweep_retry_swallows_refusals_and_surprises_and_closes_its_gateway(monkeypatch):
+    from ouroboros import claudexor_daemon as daemon_mod
+    from ouroboros import server_maintenance as sm
+    from ouroboros.gateways.claudexor import ClaudexorUnavailable
+
+    calls: list = []
+
+    def refused(*, admission_wait_sec):
+        calls.append(admission_wait_sec)
+        raise ClaudexorUnavailable("daemon_spawn_failed", "latched again")
+
+    monkeypatch.setattr(daemon_mod, "ensure_owned_gateway", refused)
+    assert sm._retry_latched_daemon_start() is None and calls == [0]
+
+    def surprise(*, admission_wait_sec):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(daemon_mod, "ensure_owned_gateway", surprise)
+    assert sm._retry_latched_daemon_start() is None
+
+    closed: list = []
+    monkeypatch.setattr(daemon_mod, "ensure_owned_gateway",
+                        lambda *, admission_wait_sec: SimpleNamespace(close=lambda: closed.append(1)))
+    sm._retry_latched_daemon_start()
+    assert closed == [1], "an opened gateway is closed at once"

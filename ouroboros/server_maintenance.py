@@ -101,10 +101,13 @@ def _periodic_supervisor_maintenance(last_custody_reap: list, last_review_reconc
             )
             # Issue #844: this sweep is the ONE retrier of a latched owned-daemon
             # start. Every ordinary caller is refused typed (no spawn) while the
-            # manager's start-failure latch is set; clearing it right before this
-            # sweep's own ensure below means a persistently crashing engine costs
-            # at most one spawn per sweep period instead of one per caller.
-            get_owned_daemon().clear_start_failure_latch(cleared_by="supervisor_sweep")
+            # manager's start-failure latch is set; only when THIS sweep released
+            # a latch does it make the single retry itself (the reconcile below
+            # ensures only when it has orphan work, so it cannot be the retrier),
+            # so a healthy install never pays a startup wait here and a
+            # persistently crashing engine costs exactly one spawn per sweep period.
+            if get_owned_daemon().clear_start_failure_latch(cleared_by="supervisor_sweep"):
+                _retry_latched_daemon_start()
             # A delegated Claudexor run is an orphan under exactly the same predicate:
             # its owning task is no longer running. It has no pid, so the process
             # reaper cannot see it — but it is still spending quota and still writing.
@@ -115,6 +118,26 @@ def _periodic_supervisor_maintenance(last_custody_reap: list, last_review_reconc
     if time.time() - last_review_reconcile[0] > 300:
         last_review_reconcile[0] = time.time()
         _periodic_zombie_reconcile()
+
+
+def _retry_latched_daemon_start() -> None:
+    """The one retry of a latched owned-daemon start (#844), made by the sweep itself.
+
+    Called only after this sweep released the latch: one ``ensure_owned_gateway``
+    with the sweep's zero admission wait (the gateway is closed at once — the
+    reconcile that follows attaches on its own). The typed refusal of a still
+    crashing engine re-latches inside the manager and is logged here, never
+    raised into the supervisor loop; nothing else is retried or scheduled.
+    """
+    from ouroboros.claudexor_daemon import ensure_owned_gateway
+    from ouroboros.gateways.claudexor import ClaudexorUnavailable
+
+    try:
+        ensure_owned_gateway(admission_wait_sec=0).close()
+    except ClaudexorUnavailable as exc:
+        log.warning("Owned daemon retry after latch release refused (%s): %s", exc.code, exc)
+    except Exception:
+        log.warning("Owned daemon retry after latch release failed unexpectedly", exc_info=True)
 
 
 def _reconcile_delegated_runs(running_task_ids: set) -> None:

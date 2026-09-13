@@ -3006,8 +3006,10 @@ non-zero or signal exit with no control descriptor written during that spawn);
 diagnostic label and the one `claudexor_daemon_start_failed` supervisor row, never
 for behaviour (BIBLE P5). Do not add a backoff machine, a retry counter, a cooldown
 constant, host-side heap sizing or writer-lease handling, and do not add a second
-retrier: the periodic supervisor sweep (`clear_start_failure_latch`), a live
-attach, or a new manager (Restart/Panic) are the only releases; `NODE_OPTIONS`
+retrier: the periodic supervisor sweep (`clear_start_failure_latch`, then its
+own single `ensure_owned_gateway` only when it released a latch —
+`_retry_latched_daemon_start`), a live attach, or a new manager (Restart/Panic)
+are the only releases, and ordinary callers never make the retry; `NODE_OPTIONS`
 passthrough is the operator escape hatch (ARCHITECTURE §9).
 
 Ordinary close preserves the shared daemon on every platform, including forced
