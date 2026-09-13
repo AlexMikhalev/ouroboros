@@ -262,14 +262,14 @@ export function liveLineRowToggleKey(target, selection = null) {
 
 /** One listener owner survives keyed timeline patches and older-page replay. */
 export function bindLiveCardTimeline(el, onActivate) {
-    if (!el) return;
-    el.addEventListener('click', (event) => {
+    if (!el) return () => {};
+    const onClick = (event) => {
         const lineKey = liveLineRowToggleKey(event.target, el.ownerDocument?.getSelection?.() || globalThis.getSelection?.());
         if (!lineKey) return;
         event.stopPropagation();
         onActivate(lineKey, event);
-    });
-    el.addEventListener('keydown', (event) => {
+    };
+    const onKeydown = (event) => {
         if (event.key !== 'Enter' && event.key !== ' ') return;
         const header = event.target?.closest?.('[data-live-line-toggle]');
         if (!header || !el.contains(header)) return;
@@ -278,7 +278,16 @@ export function bindLiveCardTimeline(el, onActivate) {
         event.preventDefault();
         event.stopPropagation();
         if (!event.repeat) onActivate(lineKey, event);
-    });
+    };
+    el.addEventListener('click', onClick);
+    el.addEventListener('keydown', onKeydown);
+    let released = false;
+    return () => {
+        if (released) return;
+        released = true;
+        el.removeEventListener('click', onClick);
+        el.removeEventListener('keydown', onKeydown);
+    };
 }
 
 /** Twins share a displayed role; their model is a separately labelled fact. */
