@@ -257,8 +257,7 @@ def review_wave_budget_gate(
 ) -> Optional[dict]:
     """Shared review-wave budget admission (v6.69.0).
 
-    Returns the admission dict when the wave must be DECLINED (emitting one
-    typed ``review_wave_budget_insufficient`` event), else None. Every paid
+    Returns admission data when the wave must be declined, else None. Every paid
     review wave is admitted here as a whole — skill/plan/acceptance reviewers
     and, since the owner decision of 2026-09-05, the P3 commit gate
     (``surface="commit_gate"``: scope seats first, then the triad, each seat

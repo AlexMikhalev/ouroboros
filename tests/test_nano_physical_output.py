@@ -12,7 +12,7 @@ transport = _transport
 
 @pytest.mark.parametrize("input_tokens,cap", [(60826, 21094), (73728, 8192)])
 def test_nano_actual_custom_tools_are_measured_before_output_seal(transport, monkeypatch, input_tokens, cap):
-    root, client, sent = transport
+    _root, client, sent = transport
     monkeypatch.setattr(config, "get_context_mode", lambda: "nano")
     measured = []
 
@@ -30,8 +30,6 @@ def test_nano_actual_custom_tools_are_measured_before_output_seal(transport, mon
             "name": "inspect", "parameters": {"type": "object", "properties": {"name": {"type": "string"}}}}}])
     assert message["content"] == "ok" and measured and len(sent) == 1
     assert sent[0]["max_completion_tokens"] == cap
-    records = [json.loads(line) for line in (root / ua.LEDGER_REL).read_text().splitlines()]
-
 def test_nano_unknown_template_keeps_route_usable_and_discloses_unproven_bound(transport, monkeypatch):
     root, client, sent = transport
     monkeypatch.setattr(config, "get_context_mode", lambda: "nano")
