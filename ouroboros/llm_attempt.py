@@ -418,6 +418,14 @@ def _prepared_input_measurement(target: Dict[str, Any], payload: Dict[str, Any])
     """Current routes offer an actual-shape estimate, never an exact template count."""
     from ouroboros.context_fit import bounded_prompt_tokens_for_payload
 
+    measured = target.get("local_input_measurement") or {}
+    if target.get("provider") == "local" and measured.get("supported") and measured.get("input_is_exact") is True:
+        from ouroboros.local_model_server import input_fingerprint
+
+        if measured.get("native_input_sha256") == input_fingerprint(payload):
+            return {"input_tokens": measured["input_tokens"], "input_is_exact": True,
+                    "tokenizer_template_provenance": measured.get("tokenizer_template_provenance"),
+                    "route_capacity_tokens": measured.get("context_window"), "route_capacity_confirmed": True}
     context = {key: payload[key] for key in ("system", "messages", "input", "instructions", "tools", "functions") if key in payload}
     chars = len(_canonical_candidate_bytes(context).decode("utf-8"))
     return {"input_tokens": bounded_prompt_tokens_for_payload(context, chars),
@@ -439,12 +447,16 @@ def _fit_output_payload(target: Dict[str, Any], payload: Dict[str, Any], api_sur
     provider = target.get("provider")
     # Local formatters can make additional internal generations outside this cap.
     limit_enforced = provider == "openai" and field == "max_completion_tokens" or provider == "anthropic" and field == "max_tokens"
+    if provider == "local":
+        limit_enforced = measured["input_is_exact"] and (target.get("local_input_measurement") or {}).get("output_limit_enforced") is True
     nano = target.get("context_mode") == "nano"
     fit = resolve_call_context_fit(**measured, caller_max_tokens=payload[field],
         total_target_tokens=OWNER_NANO_TARGET_TOKENS if nano else None,
         minimum_free_tokens=NANO_MIN_HEADROOM_TOKENS if nano else 0, output_limit_enforced=limit_enforced,
         reasoning_included_in_limit=True if limit_enforced else None)
     facts = asdict(fit)
+    if provider == "local" and measured["input_is_exact"]:
+        facts["serving_process_id"] = target["local_input_measurement"].get("process_id")
     target["call_context_fit"] = facts
     if fit.effective_max_tokens <= 0 or measured["input_is_exact"] and fit.fit_status in {"unfit", "insufficient_headroom"}:
         error = PhysicalAttemptPreparationFailed("Exact prepared input does not fit the selected context allowance")

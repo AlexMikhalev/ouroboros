@@ -502,6 +502,36 @@ def _stream_failure_error(event_type: str, error: Any, response: Any) -> Runtime
     return exc
 
 
+def _responses_search_candidate(ctx, query: str, model: str, options: dict):
+    """One complete Responses body supplies capture, reservation and actual send."""
+    from ouroboros.llm_attempt import (
+        _attempt_request, _candidate_before_dispatch, _finalized_physical_candidate,
+        apply_processing_preference,
+    )
+    target = {"provider": "openai", "resolved_model": model, "base_url": options["base_url"],
+              "usage_model": model if "/" in model else f"openai/{model}",
+              "processing_preference": options["preference"]}
+    payload = {"model": model,
+               "tools": [{"type": "web_search", "search_context_size": options["search_context_size"]}],
+               "reasoning": {"effort": options["effort"]}, "tool_choice": "auto", "input": query,
+               "stream": True}
+    apply_processing_preference(target, payload)
+    if options.get("submission") == "standard":
+        payload["service_tier"] = "default"
+    candidate = _finalized_physical_candidate(target, payload, "responses")
+    scope = _accounting_scope(ctx, "web_search.openai_responses")
+    request = replace(_attempt_request(target, candidate),
+        max_completion_tokens=8192,
+        drive_root=scope.drive_root,
+        task_id=scope.task_id,
+        root_task_id=scope.root_task_id,
+        parent_task_id=scope.parent_task_id,
+        category=scope.category,
+        source=scope.source,
+    )
+    return target, candidate, request, _candidate_before_dispatch(candidate, request)
+
+
 def _web_search(
     ctx: ToolContext,
     query: str,
@@ -606,38 +636,15 @@ def _web_search(
             base_url=base_url,
             timeout=transport_timeout,
         )
-        # The same detached request is recorded, reserved and sent, including service tier.
-        from ouroboros.llm_attempt import (
-            _attempt_request, _candidate_before_dispatch, _finalized_physical_candidate,
-            apply_processing_preference,
-        )
-        target = {"provider": "openai", "resolved_model": active_model, "base_url": base_url,
-                  "usage_model": active_model if "/" in active_model else f"openai/{active_model}",
-                  "processing_preference": preference}
-        payload = {"model": active_model,
-                   "tools": [{"type": "web_search", "search_context_size": active_context}],
-                   "reasoning": {"effort": active_effort}, "tool_choice": "auto", "input": query,
-                   "stream": True}
-        apply_processing_preference(target, payload)
-        if _processing_submission == "standard":
-            payload["service_tier"] = "default"
-        candidate = _finalized_physical_candidate(target, payload, "responses")
-        scope = _accounting_scope(ctx, "web_search.openai_responses")
-        request = replace(_attempt_request(target, candidate),
-            max_completion_tokens=8192,
-            drive_root=scope.drive_root,
-            task_id=scope.task_id,
-            root_task_id=scope.root_task_id,
-            parent_task_id=scope.parent_task_id,
-            category=scope.category,
-            source=scope.source,
-        )
+        target, candidate, request, before_dispatch = _responses_search_candidate(ctx, query, active_model, {
+            "base_url": base_url, "preference": preference, "submission": _processing_submission,
+            "search_context_size": active_context, "effort": active_effort})
         reservation = reserve_attempt(request)
         if _web_search_deadline_exhausted(ctx):
             release_attempt(reservation, "deadline_exhausted_before_dispatch")
             reservation = None
             return _web_search_deadline_result()
-        manifest = _candidate_before_dispatch(candidate, request)(reservation)
+        manifest = before_dispatch(reservation)
         mark_dispatched(reservation, candidate_manifest_ref=manifest)
         dispatched = True
         try:
