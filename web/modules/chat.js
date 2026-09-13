@@ -2881,7 +2881,11 @@ export function createChatInstance({
                     if (result.status !== 'applied') applyHistoryMessages(messages, { fromReconnect, includeUser: true });
                 }
                 else applyHistoryMessages(messages, { fromReconnect, includeUser: true });
-                withStableViewport(() => releaseHistoryIds(oldRecentIds));
+                // While the reader is in an older-page chain, the prior recent
+                // window is the forward navigation island. Keep its mounted
+                // rows until the pager returns to a fresh latest chain.
+                const releasableRecentIds = historyPager.getState().canNewer ? [] : oldRecentIds;
+                withStableViewport(() => releaseHistoryIds(releasableRecentIds));
                 if (armedAtStart) {
                     const represented = new Set(messages.map(row => row.presentation_owner_task_id || row.task_id));
                     for (const id of cardsAtStart) if (!represented.has(id)) pendingLiveEvictions.add(id);
