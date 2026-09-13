@@ -246,7 +246,7 @@ def test_warmup_is_one_background_ensure_for_a_provisioned_home_only(restart_roo
     descriptor.write_text("{}")
     assert owned.warm_owned_daemon() is True
     _join_warmup_thread()
-    assert ensures == [("ensure", {}), "closed"]
+    assert ensures == [("ensure", {"admission_wait_sec": 40.0}), "closed"]
 
     def unreachable(**kw):
         raise RuntimeError("fixture daemon down")
