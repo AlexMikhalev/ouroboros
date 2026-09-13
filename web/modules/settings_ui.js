@@ -498,7 +498,7 @@ export function renderSettingsPage() {
                         <div class="settings-section-copy">
                             Working-context size profile (separate axis from Runtime Mode and Review Enforcement).
                             <code>Max</code> inlines ARCHITECTURE and DEVELOPMENT in full &mdash; for ~1M-context models (today's behavior).
-                            <code>Low</code> fits ~200K / local models: ARCHITECTURE becomes a navigation map (read full sections on demand), DEVELOPMENT stays full for normal runnable tasks unless a structured non-development caller opts out, and memory compacts sooner. It never changes the model or reasoning effort, and never lowers the review context floor.
+                            <code>Nano</code> uses the compact owner projection for small context windows. <code>Low</code> fits ~200K / local models: ARCHITECTURE becomes a navigation map (read full sections on demand), DEVELOPMENT stays full for normal runnable tasks unless a structured non-development caller opts out, and memory compacts sooner. It never changes the model or reasoning effort, and never lowers the review context floor.
                             <br><strong>Human controlled:</strong> saved via the owner endpoint; saves immediately (no restart), and lowering to Low requires Ouroboros to be idle.
                         </div>
                         <div class="settings-effort-card">
@@ -508,6 +508,7 @@ export function renderSettingsPage() {
                                 target: 's-context-mode',
                                 title: 'Saves immediately; no restart required. Lowering to Low requires Ouroboros to be idle.',
                                 options: [
+                                    { value: 'nano', label: 'Nano' },
                                     { value: 'low', label: 'Low' },
                                     { value: 'max', label: 'Max' },
                                 ],

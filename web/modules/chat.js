@@ -238,7 +238,8 @@ export function createChatInstance({
                 <div class="chat-toolbar-row">
                     <div class="chat-composer-pills" id="chat-composer-pills">
                         <button class="chat-swarm" id="chat-swarm" type="button" data-armed="false" title="Swarm: route your next message into a new managed task, run a deep plan review with plan_task, then delegate when parallel work helps. Auto-disarms after sending.">Swarm</button>
-                        <div class="chat-context-mode" id="chat-context-mode" data-context-mode="max" role="group" aria-label="Context size mode" title="Context mode (owner setting). Low fits ~200K / local models; Max is full. Saves immediately; lowering to Low requires Ouroboros to be idle.">
+                        <div class="chat-context-mode" id="chat-context-mode" data-context-mode="max" role="group" aria-label="Context size mode" title="Context mode (owner setting). Nano is compact; Low fits ~200K / local models; Max is full. Saves immediately; lowering requires Ouroboros to be idle.">
+                            <button class="chat-seg" type="button" data-mode="nano">Nano</button>
                             <button class="chat-seg" type="button" data-mode="low">Low</button>
                             <button class="chat-seg" type="button" data-mode="max">Max</button>
                         </div>
@@ -641,7 +642,7 @@ export function createChatInstance({
         }
         const ctxBtn = byId('context-mode');
         if (ctxBtn && typeof data?.context_mode === 'string') {
-            ctxBtn.dataset.contextMode = data.context_mode === 'low' ? 'low' : 'max';
+            ctxBtn.dataset.contextMode = ['nano', 'low', 'max'].includes(data.context_mode) ? data.context_mode : 'max';
         }
         const budget = headerBudgetPresentation(data);
         const budgetText = byId('budget-text');
@@ -3209,8 +3210,8 @@ export function createChatInstance({
     contextModeBtn?.addEventListener('click', async (event) => {
         const seg = event.target.closest('.chat-seg');
         if (!seg || contextModeBtn.dataset.disabled === 'true') return;
-        const next = seg.dataset.mode === 'low' ? 'low' : 'max';
-        const current = contextModeBtn.dataset.contextMode === 'low' ? 'low' : 'max';
+        const next = ['nano', 'low', 'max'].includes(seg.dataset.mode) ? seg.dataset.mode : 'max';
+        const current = ['nano', 'low', 'max'].includes(contextModeBtn.dataset.contextMode) ? contextModeBtn.dataset.contextMode : 'max';
         if (next === current) return;
         contextModeBtn.dataset.disabled = 'true';
         const postMode = (mode) => apiFetch('/api/owner/context-mode', {
