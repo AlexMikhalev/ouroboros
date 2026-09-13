@@ -2856,8 +2856,6 @@ export function createChatInstance({
                     await historyPager.restore(initialScrollState.history);
                     if (destroyed) return false;
                 }
-                // the server's window verdict (P3.2 additive field)
-                // drives the Load-older button/notice after this sync lands.
                 historyWindow = (data && typeof data.window === 'object' && data.window)
                     ? data.window
                     : null;
@@ -2890,11 +2888,8 @@ export function createChatInstance({
                     for (const id of cardsAtStart) if (!represented.has(id)) pendingLiveEvictions.add(id);
                     withStableViewport(releaseLiveOverflow);
                 }
-                // After first load, sync status from live cards/active turns.
                 syncChatStatus();
 
-                // One-shot server recall seed includes other clients without resetting
-                // ArrowUp during reconnect. Merge [server..., local...], newest wins.
                 if (!inputHistorySeededFromServer) {
                     const serverTexts = [];
                     for (const msg of messages) {
