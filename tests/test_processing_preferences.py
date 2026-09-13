@@ -103,3 +103,18 @@ def test_reviewer_reference_cannot_save_a_second_processing_choice(preference):
     with roster_env_override(settings["OUROBOROS_SUBAGENTS"], environ=settings):
         with pytest.raises(ValueError, match="inherits Processing"):
             parse_reviewer_slots(panel({"subagent_id": "critic", "processing_preference": preference}))
+
+def test_reviewer_last_execution_preserves_mixed_observation_and_never_echoes_request(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from ouroboros import reviewer_slot_config as slots
+    monkeypatch.setattr(slots, "_last_execution_path", lambda: tmp_path / "last.json")
+    receipt = {"requested": "fast", "submitted": "fast", "submittedNative": "fast", "observed": "mixed", "observedNative": ["fast", "standard"], "reason": None, "source": "native_session"}
+    row = SimpleNamespace(slot_id="one", model="m", processing_preference="fast", route=SimpleNamespace(value="agent_session"))
+    actor = SimpleNamespace(slot_id="one", usage={"processing": receipt}, status="ok")
+    slots.record_reviewer_slot_executions("review", [actor], {"one": row})
+    assert slots.reviewer_slot_last_executions()["one"]["effective"]["processing"] == receipt
+    actor.usage = {}
+    slots.record_reviewer_slot_executions("review", [actor], {"one": row})
+    current = slots.reviewer_slot_last_executions()["one"]
+    assert current["requested"]["processing_preference"] == "fast"
+    assert "processing" not in current["effective"]

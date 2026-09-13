@@ -1125,6 +1125,8 @@ def record_reviewer_slot_executions(surface: str, actors: Any, slots_by_id: Dict
                 # the model rule above forbids.
                 "verdict_method": str(usage.get("verdict_method") or ""),
             }
+            if isinstance(usage.get("processing"), dict):
+                effective["processing"] = dict(usage["processing"])
             # D29 applied account/access, verbatim from the engine receipt; absent
             # keys mean the telemetry predates the receipt — shown as absence.
             if usage.get("applied_profile"):
@@ -1147,6 +1149,7 @@ def record_reviewer_slot_executions(surface: str, actors: Any, slots_by_id: Dict
                     # Actor binding, when the row is a configured-subagent
                     # reference ('' = direct row) — disclosure, never routing.
                     "subagent_id": str(getattr(slot, "subagent_id", "") or ""),
+                    "processing_preference": str(getattr(slot, "processing_preference", "") or ""),
                 },
                 "effective": effective,
                 "capability_delta": usage.get("capability_delta") or [],
