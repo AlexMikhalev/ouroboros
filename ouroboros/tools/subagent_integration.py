@@ -1075,25 +1075,19 @@ def get_tools() -> List[ToolEntry]:
             {
                 "name": "integrate_delegated_patch",
                 "description": (
-                    "EXPLICITLY apply or reject the captured patch of ONE of your own delegated runs (delegate_start), or a terminal owner's orphan. Applying requires the caller's active Git root or fresh payload binding to equal the run's recorded target; for a terminal owner's ORPHAN the target may instead be a host-minted project tree NESTED inside that root (both under the subagent-projects root). Rejecting a terminal-owner orphan requires only the owner's terminality; it exists to release a dead task's locks and snapshot. A mutating delegated run edits a PRIVATE execution "
-                    "snapshot; its diff is captured at terminal, and NOTHING reaches your tree "
-                    "until you call this. apply = stage the run's diff into your active root "
-                    "(sha256-verified; under the repo git lock every touched path is first "
-                    "compared against the run's baseline, then applied to the working tree and "
-                    "staged; protected paths are gated only when the target IS the Ouroboros "
-                    "repo) — staged, never committed; you remain the sole committer. reject = "
-                    "record a rejection and discard. Either DURABLY RECORDED disposition "
-                    "releases the run's execution snapshot; a CONFLICT (a path drifted since "
-                    "the snapshot) keeps snapshot and patch as resolution material you own. "
-                    "For a skill-payload run (delegate_start root='skill_payload') apply is "
-                    "instead a LIVE apply into the non-Git payload, guarded by a whole-payload "
-                    "content-hash CAS — nothing is staged into your active root — and the "
-                    "skill's existing review goes STALE: it must be re-run before the skill "
-                    "is relied on. The run's output is a claim, not a verified result: read the captured "
-                    "diff first (see delegate_wait's workspace_capture block) when your roots reach it, and "
-                    "otherwise call apply, which verifies the patch against its recorded sha256 manifest and answers with a typed verdict. Finalizing your task while one of your runs is neither "
-                    "applied nor rejected leaves your custody audit unreconciled: the task completes as "
-                    "Done with warnings (reason delegated_custody_unreconciled); reject is the closing move."
+                    "EXPLICITLY apply or reject the captured result of ONE terminal delegated run. "
+                    "Git runs edit a private execution snapshot; apply verifies its complete result "
+                    "against the recorded baseline under the repository lock, applies and stages "
+                    "changed files into your active root, and never commits. Skill-payload runs "
+                    "apply LIVE apply into the non-Git payload with content-hash CAS (nothing is staged into your active root) and make its review "
+                    "stale before reuse. Ordinary-folder copies use the engine's complete file "
+                    "manifest and per-file baseline checks; paths may select files and remaining "
+                    "results stay retained. Direct ordinary-folder work has already changed the "
+                    "source: apply acknowledges those effects, reject cannot undo them, and no full "
+                    "rollback is promised. Unapplied copies can be explicitly rejected; conflicts "
+                    "retain their snapshot and results. Read the captured result before deciding. "
+                    "Undisposed snapshots or directory-copy results remain custody debt; direct runs "
+                    "do not create that debt."
                 ),
                 "parameters": {
                     "type": "object",
@@ -1107,8 +1101,8 @@ def get_tools() -> List[ToolEntry]:
                     "required": ["run_id"],
                 },
             },
-            lambda ctx, run_id="", decision="apply", reason="", acknowledge_ambiguous=False: _integrate_delegated_patch(
-                ctx, run_id, decision, reason, acknowledge_ambiguous=bool(acknowledge_ambiguous)),
+            lambda ctx, run_id="", decision="apply", reason="", acknowledge_ambiguous=False, paths=None: _integrate_delegated_patch(
+                ctx, run_id, decision, reason, acknowledge_ambiguous=bool(acknowledge_ambiguous), paths=paths),
         ),
     ]
 

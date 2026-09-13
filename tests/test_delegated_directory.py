@@ -162,6 +162,13 @@ def test_selected_apply_keeps_remaining_results_undisposed(tmp_path, monkeypatch
     assert not held.patch_disposed and not held.patch_apply_pending
 
 
+def test_registered_integration_tool_accepts_selected_paths():
+    from ouroboros.tools.subagent_integration import get_tools
+    entry = next(item for item in get_tools() if item.name == "integrate_delegated_patch")
+    assert entry.handler.__defaults__ is not None
+    assert "paths" in __import__("inspect").signature(entry.handler).parameters
+
+
 def test_lost_start_replays_original_processing_facts_after_setting_changes(tmp_path, monkeypatch):
     from ouroboros.gateways import claudexor
 

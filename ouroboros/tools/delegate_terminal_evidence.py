@@ -317,12 +317,12 @@ def _reported_cost(summary: Dict[str, Any], *, attempt_execution: Any = None) ->
         return {
             "cost_usd": spend,
             "cost_final": True,
-            "note": "this run was BILLED — it did not ride the subscription",
+            "note": "The engine reported an incremental cash charge (BILLED); see the attempt evidence for its billing basis.",
         }
     return {
         "cost_usd": 0.0,
         "cost_final": True,
-        "note": "subscription session — already paid; the nanny's own model calls are metered separately",
+        "note": "The engine reported no incremental cash charge.",
     }
 
 
