@@ -3963,7 +3963,7 @@ export function createChatInstance({
                 changed = appendTaskSummaryToLiveCard(msg) || changed;
             }
             if (!finalizing && typedTerminal) markAssistantReply(explicitTaskId);
-            const routingCleared = clearTransientRoutingAnnotations();
+            const routingCleared = clearTransientRoutingAnnotations(messagesDiv);
             const added = addMessage(msg.content, msg.role, msg.markdown, msg.ts || null, false, {
                 systemType: msg.system_type || '',
                 source: msg.source || '',

@@ -320,7 +320,7 @@ def test_project_sidebar_and_menu_static_contracts():
     ]
     assert "updateMessageAnnotation" in annotation_handler
     assert "addMessage(" not in annotation_handler
-    assert "clearTransientRoutingAnnotations();" in chat
+    assert "clearTransientRoutingAnnotations(messagesDiv);" in chat
 
     assert "menu.setAttribute('role', 'menu')" in menu
     assert 'role="menuitem" data-prm="rename"' in menu
