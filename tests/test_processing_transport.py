@@ -265,7 +265,8 @@ def test_anthropic_fast_rate_refusal_releases_then_sends_standard(transport, mon
                                   "anthropic::test-model", processing_preference="fast")
     assert message["content"] == "ok"
     assert [entry["payload"]["speed"] for entry in sent] == ["fast", "standard"]
-    assert sent[0]["headers"] == sent[1]["headers"]
+    assert "fast-mode-2026-02-01" in sent[0]["headers"].get("anthropic-beta", "")
+    assert "fast-mode-2026-02-01" not in sent[1]["headers"].get("anthropic-beta", "")
     rows = [json.loads(line) for line in (root / ua.LEDGER_REL).read_text().splitlines()]
     assert [row["state"] for row in {r["attempt_id"]: r for r in rows}.values()] == ["released", "settled"]
 
