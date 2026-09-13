@@ -267,8 +267,19 @@ class _LocalLaneMixin:
         """
         from ouroboros.local_model import get_manager
 
-        target["local_input_measurement"] = get_manager().measure_prepared_input(payload)
-        return _finalized_physical_candidate(target, payload, "chat.completions")
+        manager = get_manager()
+        measure = getattr(manager, "measure_prepared_input", None)
+        # Bind the provider-clean physical payload before measuring. Host-only
+        # metadata must not affect the measured input or candidate hash.
+        candidate = _finalized_physical_candidate(target, payload, "chat.completions")
+        if callable(measure):
+            evidence = measure(candidate)
+            if isinstance(evidence, dict) and evidence.get("supported"):
+                target["local_input_measurement"] = evidence
+                # Rebuild from the original prepared source so the exact
+                # measured input and output cap are sealed together.
+                candidate = _finalized_physical_candidate(target, payload, "chat.completions")
+        return candidate
 
     def _chat_local(
         self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]],

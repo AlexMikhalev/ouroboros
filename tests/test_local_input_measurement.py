@@ -1,5 +1,6 @@
 """The owned server counts with its actual formatter and never invokes inference."""
 import asyncio
+import copy
 import os
 from types import SimpleNamespace
 
@@ -38,6 +39,42 @@ def test_selected_formatter_tokenizer_and_serving_capacity_are_used(native_model
     assert native_model.seen == [{**{key: None for key in ("functions", "function_call")},
                                  **{key: payload[key] for key in ("messages", "tools", "tool_choice")}}]
     assert "actual rendered template" not in str(result)
+
+
+def test_measurement_fingerprint_is_after_host_metadata_scrubbing(native_model):
+    payload = {"model": "local-model", "messages": [
+        {"role": "user", "content": "exact", "_context_capsule": "host-only"},
+    ], "tools": []}
+    clean = {**payload, "messages": [{"role": "user", "content": "exact"}], "tools": []}
+    result = measure_chat_input(native_model, clean)
+    assert result["native_input_sha256"] == input_fingerprint(clean)
+    assert result["native_input_sha256"] != input_fingerprint(payload)
+
+
+def test_finalize_measures_the_provider_clean_candidate_not_the_caller_payload(monkeypatch):
+    from ouroboros import llm_local
+
+    client = object.__new__(llm_local._LocalLaneMixin)
+    payload = {"model": "local-model", "messages": [
+        {"role": "user", "content": "exact", "_context_capsule": "host-only"},
+    ], "max_tokens": 256}
+    clean = {"model": "local-model", "messages": [{"role": "user", "content": "exact"}], "max_tokens": 256}
+    seen = []
+
+    monkeypatch.setattr(llm_local, "_finalized_physical_candidate", lambda target, value, surface: clean)
+    monkeypatch.setattr("ouroboros.local_model.get_manager", lambda: SimpleNamespace(
+        measure_prepared_input=lambda value: seen.append(copy.deepcopy(value)) or {
+            "supported": True, "input_is_exact": True, "input_tokens": 8,
+            "context_window": 81920, "process_id": 1,
+            "native_input_sha256": input_fingerprint(value),
+            "output_limit_enforced": True,
+            "reasoning_included_in_limit": True,
+            "tokenizer_template_provenance": {"source": "fixture"},
+        }))
+    target = {"provider": "local", "resolved_model": "local-model", "usage_model": "local-model"}
+    assert client._finalize_local_candidate(target, payload) == clean
+    assert seen == [clean]
+    assert target["local_input_measurement"]["native_input_sha256"] == input_fingerprint(clean)
 
 
 def test_unrecognized_handler_is_not_called_to_guess_its_behavior(native_model):
