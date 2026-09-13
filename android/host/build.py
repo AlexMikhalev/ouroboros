@@ -72,7 +72,7 @@ def main() -> None:
     if not args.project:
         (res / "drawable").mkdir(exist_ok=True)
         # source is <repo>/android/host; the shared asset lives at <repo>/assets.
-        shutil.copyfile(source.parents[2] / "assets" / "icon_1024.png", res / "drawable" / "icon.png")
+        shutil.copyfile(source.parents[1] / "assets" / "icon_1024.png", res / "drawable" / "icon.png")
     run(tools / "aapt2", "compile", "--dir", res, "-o", out / "resources.zip")
     versions = []
     if args.version_code is not None:

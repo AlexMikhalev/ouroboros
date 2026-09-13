@@ -157,5 +157,5 @@ def test_android_smoke_requirements_do_not_claim_a_device_was_tested():
 
 def test_default_host_build_uses_the_shared_root_asset_path():
     source = (REPO / "android/host/build.py").read_text(encoding="utf-8")
-    assert 'source.parents[2] / "assets" / "icon_1024.png"' in source
+    assert 'source.parents[1] / "assets" / "icon_1024.png"' in source
     assert (REPO / "assets/icon_1024.png").is_file()
