@@ -65,6 +65,7 @@ from ouroboros.settings_scales import (
 from ouroboros.model_slots import (
     MODEL_ACCOUNTS_KEY,
     MODEL_CONTEXT_WINDOWS_KEY,
+    MODEL_PROCESSING_PREFERENCES_KEY,
     normalize_model_role_options,
     _LEGACY_SLOT_RENAMES,  # noqa: F401
     ResolvedModelTarget,  # noqa: F401
@@ -514,7 +515,7 @@ def prepare_settings_for_persist(settings: dict, *, authored_keys: Sequence[str]
     if runtime_mode_at_least(get_runtime_mode(), "cyber_pro") and prepared.get("OUROBOROS_CONTEXT_MODE") == "low":
         # Cyber may author Low. Keep that explicit choice distinct from retired auto-Low.
         prepared["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] = "false"
-    for key in (MODEL_ACCOUNTS_KEY, MODEL_CONTEXT_WINDOWS_KEY):
+    for key in (MODEL_ACCOUNTS_KEY, MODEL_CONTEXT_WINDOWS_KEY, MODEL_PROCESSING_PREFERENCES_KEY):
         if key in prepared:
             prepared[key] = normalize_model_role_options(key, prepared[key])[1]
     return strip_masked_secrets(prepared, known_setting_keys=SETTINGS_DEFAULTS)
@@ -665,7 +666,7 @@ def _release_settings_lock(fd: Optional[int]) -> None:
 
 def _coerce_setting_value(key: str, value):
     default = SETTINGS_DEFAULTS.get(key)
-    if key in (MODEL_ACCOUNTS_KEY, MODEL_CONTEXT_WINDOWS_KEY):
+    if key in (MODEL_ACCOUNTS_KEY, MODEL_CONTEXT_WINDOWS_KEY, MODEL_PROCESSING_PREFERENCES_KEY):
         return normalize_model_role_options(key, value)[1]
     # Normalize runtime mode on read so all consumers see the closed enum.
     if key == "OUROBOROS_RUNTIME_MODE":
@@ -967,7 +968,7 @@ def apply_settings_to_env(settings: dict, *, environ=None) -> None:
             if val is None or val == "":
                 environ.pop(k, None)
             else:
-                if k in (MODEL_ACCOUNTS_KEY, MODEL_CONTEXT_WINDOWS_KEY):
+                if k in (MODEL_ACCOUNTS_KEY, MODEL_CONTEXT_WINDOWS_KEY, MODEL_PROCESSING_PREFERENCES_KEY):
                     val = normalize_model_role_options(k, val)[1]
                 elif isinstance(val, (dict, list)):
                     val = json.dumps(val, ensure_ascii=False, separators=(",", ":"))

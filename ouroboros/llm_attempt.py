@@ -262,8 +262,17 @@ def attach_processing_receipt(target: Dict[str, Any], usage: Dict[str, Any]) -> 
 def processing_contract_headers(target: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, str]:
     """The native Messages speed beta belongs to the same exact request profile."""
     headers = dict(target.get("contract_headers") or {})
+    if target.get("provider") == "anthropic" and payload.get("speed") == "standard":
+        betas = [value.strip() for value in headers.get("anthropic-beta", "").split(",")
+                 if value.strip() != "fast-mode-2026-02-01"]
+        if betas:
+            headers["anthropic-beta"] = ",".join(betas)
+        else:
+            headers.pop("anthropic-beta", None)
     if target.get("provider") == "anthropic" and (
-        payload.get("speed") == "fast" or target.get("processing_preference") == "fast"
+        payload.get("speed") == "fast" or (
+            "speed" not in payload and target.get("processing_preference") == "fast"
+        )
     ):
         betas = [value.strip() for value in headers.get("anthropic-beta", "").split(",") if value.strip()]
         if "fast-mode-2026-02-01" not in betas:
@@ -311,8 +320,10 @@ def processing_refusal(target: Dict[str, Any], payload: Dict[str, Any],
     if (provider == "anthropic" and mode == "fast" and status == 429
             and native_error.get("type") == "rate_limit_error"):
         reason = "capacity"
-    elif provider == "openai" and mode in {"priority", "fast", "flex"}:
-        if mode == "flex" and status == 429 and native_error.get("code") == "resource_unavailable":
+    elif provider in {"openai", "openrouter"} and mode in {"priority", "fast", "flex"}:
+        if mode == "flex" and status in {400, 429, 503} and native_error.get("code") in {
+            "resource_unavailable", "unsupported_service_tier",
+        }:
             reason = "capacity"
         elif (status == 400 and native_error.get("code") == "unsupported_parameter"
               and native_error.get("param") == "service_tier"):
