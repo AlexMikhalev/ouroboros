@@ -135,7 +135,11 @@ def _rows(data_dir: pathlib.Path) -> list:
 
 
 class _Stand:
-    """One synthetic failing-start stand: fake runtime, fake spawn, synthetic clock."""
+    """One synthetic failing-start stand: fake runtime, fake spawn, synthetic clock.
+
+    ``exit_code`` is what the spawned child's ``poll()`` answers and may be
+    changed between calls (``None`` = still running).
+    """
 
     def __init__(self, monkeypatch, tmp_path, *, returncode, banner, write_descriptor=False):
         from ouroboros import claudexor_runtime as runtime
@@ -161,6 +165,7 @@ class _Stand:
 
         monkeypatch.setattr(owned, "time", Clock())
         self.ensures, self.spawned = [], []
+        self.exit_code = returncode
         stand = self
 
         class ReadyRuntime:
@@ -198,7 +203,7 @@ class _Stand:
                 self.pid = pid
 
             def poll(self):
-                return returncode
+                return stand.exit_code
 
             def terminate(self):
                 raise AssertionError("an exited child must not be terminated")
@@ -325,6 +330,49 @@ def test_a_crash_after_publishing_control_is_not_the_latched_class(monkeypatch, 
     assert len(stand.spawned) == 2
     assert [row["latched"] for row in _rows(stand.data_dir)] == [False, False]
     assert _rows(stand.data_dir)[0]["descriptor_written"] is True
+
+
+def test_a_child_that_dies_after_the_callers_wait_is_settled_by_the_next_caller(monkeypatch, tmp_path):
+    """The real cadence: V8 dies after the startup window, with nobody waiting."""
+    stand = _Stand(monkeypatch, tmp_path, returncode=None, banner=_OOM_REACHED)  # alive through the wait
+    first = stand.fail_once()
+    assert first.code == "daemon_starting" and "retry joins the same startup" in str(first)
+    assert len(stand.spawned) == 1 and stand.manager._proc is stand.spawned[0]
+    assert not _rows(stand.data_dir) and stand.manager._last_start_failure is None
+    stand.exit_code = -6  # the OOM abort lands between callers
+    second = stand.fail_once()
+    assert second.code == "daemon_spawn_failed" and "latched" in str(second)
+    assert "startup_failure=heap_exhausted" in str(second) and "exit_signal=6" in str(second)
+    assert len(stand.spawned) == 1 and len(stand.ensures) == 1, "no silent respawn, no preparation"
+    assert stand.manager._proc is None and stand.manager._startup_attempt == {}
+    latch = stand.manager._last_start_failure
+    assert latch is not None and latch["classification"] == "heap_exhausted" and latch["exit_signal"] == 6
+    rows = _rows(stand.data_dir)
+    assert [row["type"] for row in rows] == ["claudexor_daemon_start_failed"] and rows[0]["latched"] is True
+    third = stand.fail_once()
+    assert "latched" in str(third) and len(stand.spawned) == 1 and len(_rows(stand.data_dir)) == 1
+
+
+def test_an_own_child_reaped_on_the_attach_path_is_rowed_but_never_latched(monkeypatch, tmp_path):
+    """A crash after publishing control, found by the next attach: one row, no latch."""
+    stand = _Stand(monkeypatch, tmp_path, returncode=None, banner=_OOM_REACHED)
+    assert stand.fail_once().code == "daemon_starting"
+    descriptor = stand.config_dir / "daemon" / "control-api.json"
+    descriptor.parent.mkdir(parents=True, exist_ok=True)
+    (descriptor.parent / "token").write_text("fixture-token", encoding="utf-8")
+    descriptor.write_text(json.dumps({"host": "127.0.0.1", "port": 45690,
+                                      "tokenPath": str(descriptor.parent / "token")}), encoding="utf-8")
+    stand.exit_code = -11
+    manager = stand.manager
+    monkeypatch.setattr(manager, "_classify_liveness", lambda **_kw: (stand.endpoint, "running", ""))
+    manager._engine_version, manager._engine_build_sha = "3.11.0", "b" * 40
+    assert manager.ensure_running() is stand.endpoint
+    assert manager._proc is None and manager._startup_attempt == {} and manager._last_start_failure is None
+    rows = _rows(stand.data_dir)
+    assert [row["type"] for row in rows] == ["claudexor_daemon_start_failed"]
+    assert rows[0]["latched"] is False and rows[0]["descriptor_written"] is True
+    assert rows[0]["exit_signal"] == 11 and rows[0]["classification"] == "heap_exhausted"
+    assert len(stand.spawned) == 1
 
 
 def test_a_joined_peer_startup_that_vanished_has_no_exit_fact(monkeypatch, tmp_path):

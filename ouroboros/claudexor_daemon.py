@@ -513,14 +513,34 @@ class OwnedClaudexorDaemon:
         _write_ownership_marker()
         with self._lock:
             self._check_start_generation(generation)
-            if self._proc is not None and self._proc.poll() is not None:
-                self._proc = None  # Popen.poll reaps an exited election contender.
-                self._startup_attempt = {}
+        # An own child that exited while a live daemon answers — an election
+        # loser, or a crash after publishing control — is reaped and ROWED
+        # here (Popen.poll reaps it); it never latches against this attach,
+        # because a live authenticated daemon (started by anyone) is exactly
+        # the fact the latch waited for, so the attach clears it right after.
+        self._settle_exited_child()
+        with self._lock:
             self._last_error = ""
-        # A live authenticated daemon (started by anyone) is the fact the latch
-        # waited for: a hand-started or peer-started engine clears it.
         self.clear_start_failure_latch(cleared_by="live_daemon_attached")
         return endpoint
+
+    def _settle_exited_child(self) -> Optional[Dict[str, Any]]:
+        """Reap this manager's own EXITED child once and harvest its exit fact (#844).
+
+        Called at every spawn decision and at attach, not only when a caller's
+        wait expires: with the real crash cadence (V8 dies after the 20 s
+        startup window) the waiting caller got ``daemon_starting`` and the
+        child died with nobody waiting — the next caller must still find the
+        row, the classification and the latch instead of respawning silently.
+        A live child, or a joined peer startup (no own handle), settles nothing.
+        """
+        with self._lock:
+            proc, attempt = self._proc, dict(self._startup_attempt)
+            if proc is None or proc.poll() is None:
+                return None
+            self._proc = None
+            self._startup_attempt = {}
+        return self._record_start_failure(proc, attempt)
 
     def clear_start_failure_latch(self, *, cleared_by: str) -> bool:
         """Release the spawn latch; True when one was set (a durable row names who released it).
@@ -538,9 +558,15 @@ class OwnedClaudexorDaemon:
         return True
 
     def _refuse_latched_spawn(self) -> None:
-        """While the latch is set, the typed refusal is immediate and spawns nothing."""
+        """Settle an own child that died unwatched; while latched, refuse immediately, spawning nothing.
+
+        Runs at both spawn-decision points (before preparation and right before
+        spawn), so the exit fact is harvested wherever a spawn could otherwise
+        follow — never only on a caller's wait expiry.
+        """
         from ouroboros.gateways.claudexor import ClaudexorUnavailable
 
+        self._settle_exited_child()
         with self._lock:
             record = self._last_start_failure
         if record is None:
@@ -698,11 +724,7 @@ class OwnedClaudexorDaemon:
             )
         with self._lock:
             self._check_start_generation(generation)
-            proc, attempt = self._proc, dict(self._startup_attempt)
-            if proc is not None and proc.poll() is not None:
-                self._proc = None
-                self._startup_attempt = {}
-        failure = self._record_start_failure(proc, attempt)
+        failure = self._settle_exited_child()
         if failure is not None:
             detail = f"{detail}; {start_failure_label(failure)}"
         self._last_error = f"daemon_spawn_failed: {detail}"

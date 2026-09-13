@@ -3004,7 +3004,9 @@ start latches on the TYPED exit fact only (`ExitFact.failed_without_control`:
 non-zero or signal exit with no control descriptor written during that spawn);
 `claudexor_startup_failure.py` classifies the child's own log interval for the
 diagnostic label and the one `claudexor_daemon_start_failed` supervisor row, never
-for behaviour (BIBLE P5). Do not add a backoff machine, a retry counter, a cooldown
+for behaviour (BIBLE P5). Harvest the exit fact at every spawn decision and at
+attach (`_settle_exited_child`), never only on a caller's wait expiry — the real
+crash lands after the startup window, with nobody waiting. Do not add a backoff machine, a retry counter, a cooldown
 constant, host-side heap sizing or writer-lease handling, and do not add a second
 retrier: the periodic supervisor sweep (`clear_start_failure_latch`, then its
 own single `ensure_owned_gateway` only when it released a latch —
