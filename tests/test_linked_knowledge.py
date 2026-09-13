@@ -18,7 +18,7 @@ def address(tmp_path, topic="people/Антон", scope="global"):
 
 
 def history(addr):
-    return [json.loads(line) for line in (addr.shelf.parent / "knowledge_history.jsonl").read_text().splitlines()]
+    return [json.loads(line) for line in (addr.shelf.parent / "knowledge_history.jsonl").read_text(encoding="utf-8").splitlines()]
 
 
 def test_plain_new_note_gets_minimal_format_without_invented_summary(tmp_path):
@@ -27,7 +27,7 @@ def test_plain_new_note_gets_minimal_format_without_invented_summary(tmp_path):
     assert result.ok
     assert result.current.metadata == {"type": "note"}
     assert result.current.summary == ""
-    assert "personal observation" not in (target.shelf / store.INDEX_FILE).read_text()
+    assert "personal observation" not in (target.shelf / store.INDEX_FILE).read_text(encoding="utf-8")
     assert result.current.text.endswith("not a permanent rule.")
     assert result.current.revision == hashlib.sha256(target.path.read_bytes()).hexdigest()
 
@@ -51,7 +51,7 @@ An interpretation grounded in two episodes.
 """
     first = store.write_knowledge_note(target, source)
     assert first.ok and first.current.text == source
-    index = (target.shelf / store.INDEX_FILE).read_text()
+    index = (target.shelf / store.INDEX_FILE).read_text(encoding="utf-8")
     assert "Brevity helps" in index and "Detailed reasoning" in index
     second = store.write_knowledge_note(target, "---\nsummary: A revised interpretation.\n---\nNew episode.",
                                        expected_revision=first.current.revision)
@@ -184,7 +184,7 @@ def test_malformed_legacy_yaml_is_readable_and_does_not_break_inventory(tmp_path
     assert good.ok
     rows = store.inventory_knowledge(bad)
     assert {row["topic"] for row in rows} == {"broken", "good"}
-    assert "source metadata unavailable" in (bad.shelf / store.INDEX_FILE).read_text()
+    assert "source metadata unavailable" in (bad.shelf / store.INDEX_FILE).read_text(encoding="utf-8")
     ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path)
     assert "Original evidence." in tools._knowledge_read(ctx, "broken")
 
@@ -242,16 +242,16 @@ def test_legacy_index_context_survives_until_authored_overview_without_recursive
     target.shelf.mkdir(parents=True)
     original = "# Knowledge Base Index\n\n- **old**: A useful older understanding.\n"
     index = target.shelf / store.INDEX_FILE
-    index.write_text(original)
+    index.write_bytes(original.encode("utf-8"))
     assert store.write_knowledge_note(target, "New detailed evidence.").ok
     for topic in ("second", "third"):
         assert store.write_knowledge_note(address(tmp_path, topic), "A detail.").ok
-        text = index.read_text()
+        text = index.read_text(encoding="utf-8")
         assert text.count(original) == 1
         assert text.count("## Earlier generated context") == 1
         assert "historical context, not current authored summaries" in text
     assert sum(row.get("type") == "knowledge_index_source" for row in history(target)) == 1
     assert store.write_knowledge_note(address(tmp_path, "overview"),
                                       "# What I currently understand\n\nA reconsidered overview with [details](details.md).").ok
-    assert "Earlier generated context" not in index.read_text()
+    assert "Earlier generated context" not in index.read_text(encoding="utf-8")
     assert any(row.get("old_content") == original for row in history(target))

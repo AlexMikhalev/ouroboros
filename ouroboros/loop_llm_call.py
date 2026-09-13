@@ -1320,7 +1320,6 @@ def call_llm_with_retry(
     initial_messages: Optional[List[Dict[str, Any]]] = None,
     stop_retry_check: Optional[Callable[[], bool]] = None,
     model_role: str = "main", model_turn_state: Any = None,
-
     model_account_override: Optional[str] = None, processing_preference: Optional[str] = None,
     model_context_observer: Any = None,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[float]]:

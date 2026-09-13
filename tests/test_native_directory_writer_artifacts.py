@@ -100,7 +100,7 @@ def test_all_native_writers_register_outputs_before_result_and_survive_reopen(tm
 def test_capture_failure_reports_already_written_file_without_retry(tmp_path, monkeypatch, tool):
     registry, ctx, task, parent = _registry(tmp_path, monkeypatch)
     target = ctx.workspace_root / "out.txt"
-    target.write_text("before\n", encoding="utf-8")
+    target.write_bytes(b"before\n")
     calls = []
     def failed_copy(source, dest, **kwargs):
         calls.append(str(source))
@@ -173,7 +173,7 @@ def test_batch_retains_each_success_with_one_capture_preamble(tmp_path, monkeypa
         if failure == "write" and name == "third.txt":
             target.mkdir()  # Both write and append fail after the first two writes.
         else:
-            target.write_text("before\n", encoding="utf-8")
+            target.write_bytes(b"before\n")
     if failure == "capture":
         from ouroboros import artifacts
         original_copy = artifacts.copy_artifact_file

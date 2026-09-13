@@ -1789,11 +1789,21 @@ def test_run_shell_writes_skill_state_examples(shape, filename, tmp_path, monkey
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
     monkeypatch.setenv("OUROBOROS_SAFETY_MODE", "off")
     reg = ToolRegistry(repo_dir=tmp_path, drive_root=drive_root)
-    cmd = (
-        ["bash", "-c", f"cat {payload} > {target}"]
-        if shape == "redirect"
-        else ["cp", str(payload), str(target)]
-    )
+    if os.name == "nt":
+        # ``bash`` on hosted Windows resolves to WSL, which has no distro in
+        # the GitHub runner image. Exercise the same redirect/copy shapes via
+        # the native command interpreter instead of depending on WSL setup.
+        cmd = (
+            ["cmd.exe", "/d", "/c", f'type "{payload}" > "{target}"']
+            if shape == "redirect"
+            else ["cmd.exe", "/d", "/c", f'copy /Y "{payload}" "{target}" >NUL']
+        )
+    else:
+        cmd = (
+            ["bash", "-c", f"cat {payload} > {target}"]
+            if shape == "redirect"
+            else ["cp", str(payload), str(target)]
+        )
     result = reg.execute("run_command", {"cmd": cmd})
     assert "exit_code=0" in result, result
     assert target.read_bytes() == payload.read_bytes()

@@ -212,6 +212,20 @@ def _validate_url(url: str) -> str:
     host = host.rstrip(".")
     if not host:
         raise ValueError("MCP server url is missing a hostname")
+    # Python 3.10.11 accepts malformed bracketed hosts while newer urllib
+    # releases reject them during parsing. Keep URL admission consistent on
+    # the older CI runtimes by applying the RFC 3986 bracket-host check here.
+    if "[" in parsed.netloc:
+        if host.startswith("v"):
+            if not re.fullmatch(r"v[0-9a-f]+\..+", host):
+                raise ValueError("MCP server url contains an invalid IPvFuture host")
+        else:
+            try:
+                address = ipaddress.ip_address(host)
+            except ValueError as exc:
+                raise ValueError("MCP server url contains an invalid bracketed host") from exc
+            if isinstance(address, ipaddress.IPv4Address):
+                raise ValueError("MCP server url cannot bracket an IPv4 host")
     parsed.port  # Raises for a malformed or out-of-range port.
     if mode_has_unrestricted_agency(get_runtime_mode()):
         return text

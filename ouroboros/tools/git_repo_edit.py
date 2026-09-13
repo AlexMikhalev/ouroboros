@@ -188,7 +188,7 @@ def _repo_write(ctx: ToolContext, path: str = "", content: str = "",
             target = binding.target_path
             target.parent.mkdir(parents=True, exist_ok=True)
             if mode == "append":
-                with target.open("a", encoding="utf-8") as fh:
+                with target.open("a", encoding="utf-8", newline="") as fh:
                     fh.write(e["content"])  # append is intentionally NOT atomized
                 written.append(f"{display_root}:{rel_path} (+{len(e['content'])} chars appended)")
                 written_paths.append(rel_path)

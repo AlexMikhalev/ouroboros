@@ -592,7 +592,7 @@ def test_skill_governance_is_complete_and_stable_across_checkouts(tmp_path, monk
         for path, text in corpus.items():
             target = root / path
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(text, encoding="utf-8")
+            target.write_bytes(text.encode("utf-8"))
         monkeypatch.setattr(prompt_owner, "_REPO_ROOT", root)
         prompt, boundary = prompt_owner._build_review_prompt(
             name, root / "external-skill", "{}", name, f"PAYLOAD-{name}",

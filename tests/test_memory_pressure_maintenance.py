@@ -52,7 +52,7 @@ class SourceReader:
             if self.stage == "read":
                 result = kwargs["messages"][-1]["content"]
                 body = result.split("\n[Tool result source view]\n", 1)[0].split("\n", 1)[1]
-                source = (self.root / self.ref["read"]["arguments"]["path"]).read_text()
+                source = (self.root / self.ref["read"]["arguments"]["path"]).read_text(encoding="utf-8")
                 assert body == source[self.position:self.position + len(body)]
                 assert body
                 self.position += len(body)
@@ -127,7 +127,7 @@ def test_pressure_reduces_whole_chronicle_and_one_huge_block_before_normal_send(
     scratch = {"ts": "2026-09-01", "source": "task", "content": "Active complete source. " * 15000 + "FINAL QUESTION."}
     memory.mutate_scratchpad_blocks(lambda _current: [scratch])
     def fits():
-        messages = [{"role": "system", "content": memory.identity_path().read_text() + path.read_text() + memory.scratchpad_path().read_text()}]
+        messages = [{"role": "system", "content": memory.identity_path().read_text(encoding="utf-8") + path.read_text(encoding="utf-8") + memory.scratchpad_path().read_text(encoding="utf-8")}]
         return estimate_context_prompt_tokens(messages) < 2000
     assert not fits() and not c.should_consolidate_scratchpad(memory)
     actor = SourceReader(tmp_path, fit.window)
@@ -136,18 +136,18 @@ def test_pressure_reduces_whole_chronicle_and_one_huge_block_before_normal_send(
     assert fits() and memory.identity_path().read_bytes() == identity_before
     assert result["changed_sources"]
     assert result["usage"]["cost"] == pytest.approx(len(actor.calls) * 0.01)
-    saved = json.loads(path.read_text())
+    saved = json.loads(path.read_text(encoding="utf-8"))
     assert saved[1] == blocks[1] and len(saved) == 3
     for original, compressed in ((blocks[0], saved[0]), (blocks[2], saved[2])):
         ref = compressed["source_ref"]
-        assert json.loads((tmp_path / ref["read"]["arguments"]["path"]).read_text()) == [original]
-    journal = [json.loads(line) for line in memory.journal_path().read_text().splitlines()]
+        assert json.loads((tmp_path / ref["read"]["arguments"]["path"]).read_text(encoding="utf-8")) == [original]
+    journal = [json.loads(line) for line in memory.journal_path().read_text(encoding="utf-8").splitlines()]
     assert next(row for row in journal if row["type"] == "blocks_consolidated")["source_blocks"] == [scratch]
     assert len(actor.sources) == 3 and all(actor.received)
     assert all("CURRENT GOAL: resolve the outstanding research question." in source for source in actor.received)
     # The caller can now construct its normal first request; maintenance has
     # not changed the identity or truncated any original source to achieve fit.
-    assert estimate_context_prompt_tokens([{"role": "system", "content": path.read_text() + memory.load_scratchpad()}]) < 2000
+    assert estimate_context_prompt_tokens([{"role": "system", "content": path.read_text(encoding="utf-8") + memory.load_scratchpad()}]) < 2000
 
 
 def test_force_tail_is_explicit_and_advances_a_huge_short_dialogue_once(tmp_path, fit):
@@ -163,11 +163,11 @@ def test_force_tail_is_explicit_and_advances_a_huge_short_dialogue_once(tmp_path
     assert not actor.calls
     before = chat.read_bytes()
     result = c.maintain_memory_pressure(memory, actor, ctx,
-        fits=lambda: meta.exists() and json.loads(meta.read_text()).get("last_consolidated_offset") == 1)
+        fits=lambda: meta.exists() and json.loads(meta.read_text(encoding="utf-8")).get("last_consolidated_offset") == 1)
     assert result["status"] == "fitting"
     assert chat.read_bytes() == before
     assert len(actor.calls) == 1  # the tail now fits, so no additional era call
-    assert sum(row["message_count"] for row in json.loads(blocks.read_text())) == 1
+    assert sum(row["message_count"] for row in json.loads(blocks.read_text(encoding="utf-8"))) == 1
     assert not c.should_consolidate(meta, chat)
 
 
@@ -187,7 +187,7 @@ def test_pressure_uses_read_revision_to_rewrite_the_authored_overview(tmp_path, 
     result = c.maintain_memory_pressure(memory, Overview(), ctx, fits=lambda: len(address.path.read_bytes()) < 1000)
     assert result["status"] == "fitting"
     assert result["actions"][0]["writes"][0]["ok"]
-    history = [json.loads(line) for line in (tmp_path / "memory/knowledge_history.jsonl").read_text().splitlines()]
+    history = [json.loads(line) for line in (tmp_path / "memory/knowledge_history.jsonl").read_text(encoding="utf-8").splitlines()]
     assert any(row.get("old_content") == old.text for row in history)
 
 

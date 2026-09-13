@@ -238,11 +238,7 @@ export function createChatInstance({
                 <div class="chat-toolbar-row">
                     <div class="chat-composer-pills" id="chat-composer-pills">
                         <button class="chat-swarm" id="chat-swarm" type="button" data-armed="false" title="Swarm: route your next message into a new managed task, run a deep plan review with plan_task, then delegate when parallel work helps. Auto-disarms after sending.">Swarm</button>
-                        <div class="chat-context-mode" id="chat-context-mode" data-context-mode="max" role="group" aria-label="Context size mode" title="Context mode (owner setting). Nano is the compact owner window, Low fits ~200K / local models, Max is full. Saves immediately; lowering requires Ouroboros to be idle.">
-                            <button class="chat-seg" type="button" data-mode="nano">Nano</button>
-                            <button class="chat-seg" type="button" data-mode="low">Low</button>
-                            <button class="chat-seg" type="button" data-mode="max">Max</button>
-                        </div>
+                        <div class="chat-context-mode" id="chat-context-mode" data-context-mode="max" role="group" aria-label="Context size mode" title="Context mode (owner setting). Nano is the compact owner window, Low fits ~200K / local models, Max is full. Saves immediately; lowering requires Ouroboros to be idle."><button class="chat-seg" type="button" data-mode="nano">Nano</button><button class="chat-seg" type="button" data-mode="low">Low</button><button class="chat-seg" type="button" data-mode="max">Max</button></div>
                     </div>
                 </div>
                 <div class="chat-text-row">
@@ -387,8 +383,6 @@ export function createChatInstance({
         stagePendingFiles(files);
     });
 
-    // Image paste uses the same stager; only image matches call preventDefault().
-    // Timestamped names keep repeated clipboard images distinct.
     input.addEventListener('paste', (e) => {
         const items = e.clipboardData && e.clipboardData.items;
         if (!items) return;
@@ -440,7 +434,6 @@ export function createChatInstance({
         stagePendingFiles(event.dataTransfer?.files || []);
     });
 
-    // Pass 1 builds live cards in memory; pass 2 inserts them in transcript order.
     let _syncPass1Active = false;
     let _historyReplayActive = false;
     let _historyRow = null;

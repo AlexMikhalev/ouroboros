@@ -664,7 +664,7 @@ def _write_file(
                     # Batch items honor the declared mode like the single-file path below:
                     # silently overwriting here destroyed every prior chunk of a chunked
                     # large-file write while reporting success (#447 D2).
-                    with target.open("a", encoding="utf-8") as fh:
+                    with target.open("a", encoding="utf-8", newline="") as fh:
                         fh.write(body)  # append is intentionally NOT atomized
                 else:
                     # Deferral 5: batch items overwrite too — shrink-guard each (parity with the
@@ -689,7 +689,7 @@ def _write_file(
                 return f"⚠️ WRITE_FILE_BLOCKED: artifact_store path blocked: {block_reason}"
         target.parent.mkdir(parents=True, exist_ok=True)
         if mode == "append":
-            with target.open("a", encoding="utf-8") as fh:
+            with target.open("a", encoding="utf-8", newline="") as fh:
                 fh.write(content)  # append is intentionally NOT atomized
         else:
             # Deferral 5: shrink-guard the full overwrite (e.g. active_workspace rewrites)

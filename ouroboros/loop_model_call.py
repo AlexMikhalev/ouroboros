@@ -252,6 +252,7 @@ def _rebind_context_fit_plan(
         )
     from ouroboros.capability_evidence import is_known
     from ouroboros.context import _context_fit_route
+    from ouroboros.context_budget import NANO_MIN_HEADROOM_TOKENS, OWNER_NANO_TARGET_TOKENS
     from ouroboros.context_fit import _failed_route_evidence, _route_calibration_ratio
     from ouroboros.provider_models import parse_claudexor_model
 
@@ -282,8 +283,11 @@ def _rebind_context_fit_plan(
 
     def project(projection: Any) -> Any:
         calibrated = int(int(projection.estimated_tokens or 0) * ratio)
+        nano = projection.mode == "nano"
+        reserve = NANO_MIN_HEADROOM_TOKENS if nano else int(plan.output_reserve_tokens or 0)
+        capacity = min(OWNER_NANO_TARGET_TOKENS, window_tokens) if nano else window_tokens
         fits = (
-            calibrated + int(plan.output_reserve_tokens or 0) <= window_tokens
+            calibrated + reserve <= capacity
             if known_window else None
         )
         return replace(
@@ -295,7 +299,11 @@ def _rebind_context_fit_plan(
 
     max_projection = project(plan.max_projection)
     low_projection = project(plan.low_projection)
-    preferred = preferred_mode if preferred_mode in {"low", "max"} else "max"
+    nano_projection = (
+        project(plan.nano_projection)
+        if getattr(plan, "nano_projection", None) is not None else None
+    )
+    preferred = preferred_mode if preferred_mode in {"low", "max", "nano"} else "max"
     initial_mode = preferred
     rebound = replace(
         plan,
@@ -309,6 +317,7 @@ def _rebind_context_fit_plan(
         window_tokens=window_tokens,
         max_projection=max_projection,
         low_projection=low_projection,
+        nano_projection=nano_projection,
         model_role=task["model_role"],
         model_route={
             "source": str(getattr(evidence, "source_id", "") or ""),
