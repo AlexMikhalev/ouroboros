@@ -22,13 +22,13 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D12 | Settings & configuration | 15 | 0 |
 | D13 | Safety, guards & runtime mode | 9 | 0 |
 | D14 | Skills & extensions | 54 | 0 |
-| D15 | Memory, knowledge, consciousness & self-evolution | 17 | 0 |
+| D15 | Memory, knowledge, consciousness & self-evolution | 18 | 0 |
 | D16 | Observability, usage accounting & cost | 11 | 0 |
 | D17 | Projects, workspaces & task results | 20 | 0 |
-| D18 | Launcher, packaging, platform & shared substrate | 12 | 0 |
+| D18 | Launcher, packaging, platform & shared substrate | 14 | 0 |
 | D19 | Frozen contracts (ABI) | 10 | 0 |
 | D20 | Presence | 9 | 0 |
-| **total** | | **534** | **0** |
+| **total** | | **538** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -46,10 +46,10 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
 | **D08** | ✓ | · | · | ✓ | ✓ | ✓ | ✓ | · | ✓ | · | · | ✓ | · | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | · |
 | **D09** | ✓ | · | · | · | · | ✓ | · | ✓ | · | · | · | · | · | · | · | ✓ | · | ✓ | · | · |
 | **D10** | · | · | · | ✓ | ✓ | ✓ | · | ✓ | · | · | · | ✓ | ✓ | · | · | · | · | ✓ | ✓ | · |
-| **D11** | ✓ | ✓ | ✓ | ✓ | ✓ | · | ✓ | ✓ | ✓ | ✓ | · | ✓ | · | ✓ | · | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **D11** | ✓ | ✓ | ✓ | ✓ | ✓ | · | ✓ | ✓ | ✓ | ✓ | · | ✓ | ✓ | ✓ | · | ✓ | ✓ | ✓ | ✓ | ✓ |
 | **D12** | ✓ | ✓ | ✓ | · | · | · | ✓ | · | · | · | ✓ | · | ✓ | · | · | · | · | ✓ | · | · |
 | **D13** | ✓ | ✓ | · | ✓ | · | · | · | · | · | · | · | ✓ | · | · | · | · | ✓ | ✓ | · | · |
-| **D14** | · | ✓ | · | ✓ | ✓ | ✓ | · | · | ✓ | ✓ | ✓ | ✓ | · | · | · | ✓ | · | ✓ | ✓ | · |
+| **D14** | · | ✓ | · | ✓ | ✓ | ✓ | · | · | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | ✓ | · | ✓ | ✓ | · |
 | **D15** | ✓ | ✓ | ✓ | ✓ | · | · | · | · | ✓ | · | · | ✓ | · | · | · | ✓ | · | ✓ | ✓ | · |
 | **D16** | · | ✓ | · | · | · | ✓ | · | · | · | · | · | ✓ | · | ✓ | · | · | · | ✓ | · | · |
 | **D17** | ✓ | · | · | ✓ | · | ✓ | · | · | · | · | · | · | · | · | ✓ | ✓ | · | ✓ | ✓ | · |
@@ -65,7 +65,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
 
 ## Hidden coupling (classified out of the strict graph)
 
-- lazy-only cross-domain pairs: **97**
+- lazy-only cross-domain pairs: **98**
   - D01->D08
   - D01->D10
   - D01->D11
@@ -115,7 +115,6 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
   - D10->D15
   - D10->D17
   - D11->D06
-  - D11->D13
   - D11->D15
   - D12->D05
   - D12->D06
@@ -126,12 +125,13 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
   - D13->D05
   - D13->D06
   - D13->D08
+  - D13->D09
   - D13->D15
   - D14->D01
   - D14->D08
-  - D14->D13
   - D14->D17
   - D14->D20
+  - D15->D05
   - D15->D06
   - D15->D07
   - D15->D08
@@ -149,6 +149,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
   - D17->D08
   - D17->D09
   - D17->D12
+  - D17->D13
   - D18->D01
   - D18->D07
   - D18->D11
@@ -679,6 +680,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/evolution_checkpoints.py`
 - `ouroboros/evolution_fingerprint.py`
 - `ouroboros/improvement_backlog.py`
+- `ouroboros/knowledge.py`
 - `ouroboros/memory.py`
 - `ouroboros/memory_journal_compaction.py`
 - `ouroboros/post_task_evolution.py`
@@ -736,10 +738,12 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/launcher_bootstrap.py`
 - `ouroboros/launcher_server_reaper.py`
 - `ouroboros/launcher_windows_runtime.py`
+- `ouroboros/markdown_source.py`
 - `ouroboros/node_runtime.py`
 - `ouroboros/packaged_cli.py`
 - `ouroboros/packaged_cli_install.py`
 - `ouroboros/platform_layer.py`
+- `ouroboros/reference_books.py`
 - `ouroboros/utils.py`
 - `ouroboros/verified_download.py`
 
