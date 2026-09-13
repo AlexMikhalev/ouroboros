@@ -18,12 +18,13 @@ from ouroboros.llm_attempt import (
     _attempt_request,
     _candidate_before_dispatch,
     _execute_candidate,
+
     _is_structured_context_overflow_exception,
     _physical_candidate,
     _finalized_physical_candidate,
+    _is_structured_context_overflow_exception,
 )
 from ouroboros.usage_accounting import PhysicalAttemptCapture, UsageAccountingError
-
 
 # The moved warnings keep the logger identity they were emitted under.
 log = logging.getLogger("ouroboros.llm")
@@ -34,6 +35,7 @@ class LocalContextTooLargeError(RuntimeError):
 
 
 # Lives beside its proxy constant; the historical private name stays importable.
+
 from ouroboros.context_budget import estimate_message_chars as _estimate_message_chars
 
 
@@ -234,6 +236,7 @@ class _LocalLaneMixin:
             kwargs["tool_choice"] = tool_choice
         if timeout and timeout > 0:
             kwargs["timeout"] = float(timeout)
+
         from ouroboros.model_slots import resolve_processing_preference
         from ouroboros.local_model import get_manager
         evidence = get_manager().serving_context_evidence()

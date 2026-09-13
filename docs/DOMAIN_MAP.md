@@ -9,7 +9,7 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | domain | name | modules | proposed |
 |---|---|---:|---:|
 | D01 | Agent core & main loop | 30 | 0 |
-| D02 | LLM client, routing & providers | 36 | 0 |
+| D02 | LLM client, routing & providers | 37 | 0 |
 | D03 | Context assembly, fit & compaction | 11 | 0 |
 | D04 | Tool execution: registry, access & typed results | 20 | 0 |
 | D05 | Tool surfaces: files, code, shell, media, external | 28 | 0 |
@@ -227,6 +227,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/llm_stream.py`
 - `ouroboros/local_model.py`
 - `ouroboros/local_model_autostart.py`
+- `ouroboros/local_model_server.py`
 - `ouroboros/model_concurrency.py`
 - `ouroboros/net_transport.py`
 - `ouroboros/openai_chat_custom.py`
