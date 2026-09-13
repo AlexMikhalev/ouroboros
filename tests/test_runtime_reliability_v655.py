@@ -701,7 +701,7 @@ def test_subagent_slot_note_reads_snapshot(tmp_path):
 def test_subagent_slot_note_fail_soft_without_snapshot(tmp_path):
     from ouroboros.tools.control import _subagent_slot_note
 
-    assert _subagent_slot_note(_ctx(tmp_path), "root-1") == ""
+    assert _subagent_slot_note(_ctx(tmp_path), "root-1") == " [tree slot observation unavailable; current occupancy is unknown]"
 
 
 # ---------------------------------------------------------------------------

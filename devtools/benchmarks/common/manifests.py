@@ -53,7 +53,12 @@ CAMPAIGN_FATAL_PROVENANCE_REASONS = frozenset({
 
 # Non-secret role routing/options, not model IDs. Keep these in the manifest
 # vocabulary without parsing their JSON values as comma-separated model lists.
-MODEL_ROUTE_OPTION_KEYS = ("OUROBOROS_MODEL_ACCOUNTS", "OUROBOROS_MODEL_CONTEXT_WINDOWS")
+MODEL_ROUTE_OPTION_KEYS = (
+    "OUROBOROS_MODEL_ACCOUNTS",
+    "OUROBOROS_MODEL_CONTEXT_WINDOWS",
+    "OUROBOROS_PROCESSING_PREFERENCE",
+    "OUROBOROS_MODEL_PROCESSING_PREFERENCES",
+)
 
 # Active projection used by every NEW run manifest and preflight. Heavy is not an
 # execution slot after Available subagents and must not leak in from ambient env/settings.
