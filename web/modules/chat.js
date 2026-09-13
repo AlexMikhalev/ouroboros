@@ -441,8 +441,6 @@ export function createChatInstance({
 
     // Pass 1 builds live cards in memory; pass 2 inserts them in transcript order.
     let _syncPass1Active = false;
-    // Synchronous replay suppresses the post-completion refresh: these rows
-    // already came from durable history and live events cannot interleave.
     let _historyReplayActive = false;
     let _historyRow = null;
     let _historyAppending = false;
@@ -2811,7 +2809,6 @@ export function createChatInstance({
                     record.historyIds ||= new Set();
                     for (const id of historyRowIds(row)) record.historyIds.add(id);
                 }
-                // All historical state, including terminal projections, is now final.
                 _historyReplayActive = false;
                 for (const record of liveCardRecords.values()) {
                     if (record._timelineDirty) renderLiveCardTimeline(record);
@@ -2881,10 +2878,8 @@ export function createChatInstance({
                     if (result.status !== 'applied') applyHistoryMessages(messages, { fromReconnect, includeUser: true });
                 }
                 else applyHistoryMessages(messages, { fromReconnect, includeUser: true });
-                // While the reader is in an older-page chain, the prior recent
-                // window is the forward navigation island. Keep its mounted
-                // rows until the pager returns to a fresh latest chain.
-                const releasableRecentIds = historyPager.getState().canNewer ? [] : oldRecentIds;
+                const recentState = historyPager.getState();
+                const releasableRecentIds = recentState.olderExhausted ? oldRecentIds : [];
                 withStableViewport(() => releaseHistoryIds(releasableRecentIds));
                 if (armedAtStart) {
                     const represented = new Set(messages.map(row => row.presentation_owner_task_id || row.task_id));
