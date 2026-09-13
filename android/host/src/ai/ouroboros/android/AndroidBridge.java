@@ -50,7 +50,8 @@ final class AndroidBridge implements Closeable {
     private static final String[] METHODS = {"capabilities", "packages.list", "packages.inspect",
             "providers.list", "intent.resolve", "intent.start", "content.query", "content.call",
             "content.insert", "content.update", "content.delete", "content.read", "content.write",
-            "location.state", "location.get"};
+            "location.state", "location.get", "accessibility.state", "accessibility.windows",
+            "accessibility.perform", "notifications.state", "notifications.list"};
     private final Context context;
     private final LocalServerSocket server;
     private final ExecutorService calls = Executors.newCachedThreadPool();
@@ -165,6 +166,11 @@ final class AndroidBridge implements Closeable {
             case "intent.start": return startActivity(intent(p));
             case "location.state": return locationState(p);
             case "location.get": return locationGet(p);
+            case "accessibility.state": return OuroborosAccessibilityService.state();
+            case "accessibility.windows": return OuroborosAccessibilityService.windows();
+            case "accessibility.perform": return OuroborosAccessibilityService.perform(p);
+            case "notifications.state": return OuroborosNotificationListener.state();
+            case "notifications.list": return OuroborosNotificationListener.list(p);
             default:
                 if (Arrays.asList(METHODS).contains(method)) return content(method, p);
                 throw new IllegalArgumentException("Unknown method: " + method);

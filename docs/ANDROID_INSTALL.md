@@ -174,6 +174,17 @@ WebView is available over a locked keyguard. The core and other background work
 can continue after the phone has been unlocked once; a cold reboot before the
 first unlock is a separate Direct Boot case and is not promised by this APK.
 
+### Optional Android control surfaces
+
+The APK declares four opt-in surfaces: Accessibility for owner-requested UI
+actions, Notification Listener for notification readback, a live wallpaper, and
+a Quick Settings tile. Their declaration is not consent. The public setup path
+must use Android's Settings consent screens and read the enabled state back;
+private rooted qualification may enable them through the owner-authorized fast
+path. The bridge reports typed `accessibility.*` and `notifications.*` state so
+the agent can discover whether a capability is actually available instead of
+assuming it from the APK manifest.
+
 Three independent permissions are involved:
 
 - **Magisk root access** lets Ouroboros operate broadly on the phone through its

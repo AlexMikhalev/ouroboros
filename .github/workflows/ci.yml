@@ -793,6 +793,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+          echo "$JAVA_HOME_17_X64/bin" >> "$GITHUB_PATH"
           test -x "$JAVA_HOME_17_X64/bin/java"
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
             'platforms;android-36' 'build-tools;36.0.0'

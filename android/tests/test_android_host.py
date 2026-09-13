@@ -22,6 +22,23 @@ class AndroidHostTest(unittest.TestCase):
         self.assertIn("createRequestRoleIntent(RoleManager.ROLE_ASSISTANT)", source)
         self.assertIn("isRoleHeld(RoleManager.ROLE_ASSISTANT)", source)
 
+    def test_opt_in_android_control_surfaces_and_direct_boot_marker_are_declared(self):
+        manifest = ET.parse(HOST / "AndroidManifest.xml").getroot()
+        app = manifest.find("application")
+        services = {row.get(A + "name"): row for row in app.findall("service")}
+        self.assertIn(".OuroborosAccessibilityService", services)
+        self.assertIn(".OuroborosNotificationListener", services)
+        self.assertIn(".OuroborosWallpaperService", services)
+        self.assertIn(".OuroborosQuickSettingsTile", services)
+        self.assertIn(".DirectBootReceiver", {row.get(A + "name"): row for row in app.findall("receiver")})
+        self.assertIn("android.permission.BIND_ACCESSIBILITY_SERVICE", services[".OuroborosAccessibilityService"].get(A + "permission"))
+        self.assertEqual(services[".OuroborosAccessibilityService"].get(A + "exported"), "true")
+        receiver = app.find("receiver[@android:name='.DirectBootReceiver']", {"android": "http://schemas.android.com/apk/res/android"})
+        self.assertEqual(receiver.get(A + "directBootAware"), "true")
+        self.assertIn("android.intent.action.LOCKED_BOOT_COMPLETED", {
+            row.get(A + "name") for row in receiver.findall("intent-filter/action")
+        })
+
     def test_location_bridge_has_state_and_bounded_current_fix_methods(self):
         source = (HOST / "src/ai/ouroboros/android/AndroidBridge.java").read_text()
         self.assertIn('"location.state"', source)
