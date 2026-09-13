@@ -2999,7 +2999,16 @@ purpose-filtered startup custody before and after runtime preparation; caller wa
 engine writer election. Keep startup and normal admission waits independent,
 identify current PID/build/log interval rather than an old log tail, and preserve
 existing malformed/foreign ownership markers. Publish a missing marker atomically
-only after revalidating the home under the shared JSON lock.
+only after revalidating the home under the shared JSON lock. A failed owned-daemon
+start latches on the TYPED exit fact only (`ExitFact.failed_without_control`:
+non-zero or signal exit with no control descriptor written during that spawn);
+`claudexor_startup_failure.py` classifies the child's own log interval for the
+diagnostic label and the one `claudexor_daemon_start_failed` supervisor row, never
+for behaviour (BIBLE P5). Do not add a backoff machine, a retry counter, a cooldown
+constant, host-side heap sizing or writer-lease handling, and do not add a second
+retrier: the periodic supervisor sweep (`clear_start_failure_latch`), a live
+attach, or a new manager (Restart/Panic) are the only releases; `NODE_OPTIONS`
+passthrough is the operator escape hatch (ARCHITECTURE §9).
 
 Ordinary close preserves the shared daemon on every platform, including forced
 worker/server/stray cleanup. Exclusions protect the whole subtree, not merely a
