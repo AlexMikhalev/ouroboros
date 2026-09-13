@@ -1,5 +1,13 @@
 """Wire assembly for completed Chat Completions and native Messages SSE replies.
 
+Doctrine: strict about completeness, tolerant about form. Terminal framing, a
+finish reason on every choice and structurally complete tool calls are the only
+hard requirements; identity, index and shape irregularities are forgiven
+first-wins/skip, and every forgiven fact is disclosed in the stream receipt as
+``anomalies``. ``tools/search.py`` (the Responses SSE consumer behind
+``web_search``) is the house precedent: it ignores unknown events, settles only
+on ``response.completed`` and never retries on form.
+
 Consumption belongs inside the physical send closure. Only protocol-complete
 assemblies leave it as responses; partial bytes stay in private observability
 custody and never become an assistant message or a successful settlement.
@@ -11,23 +19,54 @@ import base64
 import copy
 import json
 import re
-from typing import Any
+from typing import Any, Callable
 
 
 class IncompleteProviderStream(RuntimeError):
+    """The wire ended before its terminal framing: the provider outcome is unknown."""
+
     code = "model_outcome_unknown"
     stream_incomplete = True
 
 
-class ProviderStreamError(IncompleteProviderStream):
-    """An explicit SSE error, distinct from an EOF or a socket failure."""
+class RejectedProviderStream(RuntimeError):
+    """Terminal framing arrived, but the assembled body is unusable.
 
-    def __init__(self, body: dict):
+    A deterministic local verdict on complete wire: it carries no ``code`` (it
+    never reads as an unknown outcome), keeps ``stream_incomplete`` (wire
+    recovery must not resend) and hands the usage frame it read to the ledger.
+    """
+
+    stream_rejected = True
+    stream_incomplete = True
+
+    def __init__(self, message: str, *, usage: Any = None, anomalies: Any = None):
+        super().__init__(message)
+        self.stream_usage = copy.deepcopy(usage) if isinstance(usage, dict) and usage else None
+        self.anomalies = list(anomalies or [])
+
+
+class ProviderStreamError(IncompleteProviderStream):
+    """An explicit SSE error, distinct from an EOF or a socket failure.
+
+    A provider fact, not an unknown outcome: no ``code``; the body's numeric
+    ``error.code`` becomes ``status_code`` so the classifier files it through
+    its ordinary status ladder.
+    """
+
+    code = ""
+
+    def __init__(self, body: dict, *, usage: Any = None):
         self.body = copy.deepcopy(body)
-        self.status_code = 200
-        error = body.get("error") or {}
+        error = body.get("error")
+        error = error if isinstance(error, dict) else {}
+        code = error.get("code")
+        self.status_code = (
+            code if isinstance(code, int) and not isinstance(code, bool) and 100 <= code <= 599 else 200
+        )
         self.type = str(error.get("type") or error.get("code") or "provider_stream_error")
         self.provider_message = str(error.get("message") or "")
+        self.stream_usage = copy.deepcopy(usage) if isinstance(usage, dict) and usage else None
         # Keep producer facts in body/private evidence. Text-only pre-routing
         # classifiers must not turn an HTTP-200 SSE failure into a free rejection.
         super().__init__("Provider reported an SSE error after stream dispatch")
@@ -46,10 +85,25 @@ class AssembledResponse:
         return self.model_dump()
 
 
+_IDENTITY_KEYS = frozenset({"type", "role", "format", "id"})
+_ANOMALY_KEEP = 16
+
+
+def _valid_index(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
 def _index(value: Any) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+    if not _valid_index(value):
         raise IncompleteProviderStream("Stream item lacks a non-negative integer index")
     return value
+
+
+def _adjacent(last: Any, item: dict) -> bool:
+    """Continuation of the last record: ``type`` and ``id`` absent on either side or equal."""
+    return isinstance(last, dict) and all(
+        last.get(key) is None or item.get(key) is None or last.get(key) == item.get(key)
+        for key in ("type", "id"))
 
 
 def _snapshot(target: dict, update: dict) -> None:
@@ -61,130 +115,217 @@ def _snapshot(target: dict, update: dict) -> None:
             target[key] = copy.deepcopy(value)
 
 
-def _delta(target: dict, update: dict) -> None:
+def _delta(target: dict, update: dict, note: Callable[[str], None]) -> None:
+    """Fold one delta into the assembly; a shape or identity conflict is noted, never raised."""
     for key, value in update.items():
-        if key == "tool_calls" and value is not None and not isinstance(value, list):
-            raise IncompleteProviderStream("Tool call delta is not a list")
+        current = target.get(key)
         if value is None:
             target.setdefault(key, None)
         elif isinstance(value, dict):
-            if target.get(key) is None:
-                target[key] = {}
-            current = target.setdefault(key, {})
+            if current is None:
+                current = target[key] = {}
             if not isinstance(current, dict):
-                raise IncompleteProviderStream(f"Conflicting stream field: {key}")
-            _delta(current, value)
+                note(f"{key}: object delta onto {type(current).__name__}; kept first shape")
+                continue
+            _delta(current, value, note)
         elif isinstance(value, list):
-            if target.get(key) is None:
-                target[key] = []
-            current = target.setdefault(key, [])
+            if current is None:
+                current = target[key] = []
             if not isinstance(current, list):
-                raise IncompleteProviderStream(f"Conflicting stream list: {key}")
+                note(f"{key}: list delta onto {type(current).__name__}; kept first shape")
+                continue
             for item in value:
-                if isinstance(item, dict) and "index" in item:
-                    index = _index(item["index"])
-                    match = next((row for row in current if isinstance(row, dict)
-                                  and row.get("index") == index), None)
-                    if match is None:
-                        match = {"index": index}
-                        current.append(match)
-                    _delta(match, item)
-                elif key == "tool_calls":
-                    raise IncompleteProviderStream("Tool call delta lacks its index")
-                else:
-                    current.append(copy.deepcopy(item))
-        elif isinstance(value, str) and key not in {"type", "role", "format", "id"}:
-            current = target.get(key)
+                _merge_list_item(key, current, item, note)
+        elif isinstance(value, str) and key not in _IDENTITY_KEYS:
             if current is not None and not isinstance(current, str):
-                raise IncompleteProviderStream(f"Conflicting stream text: {key}")
+                note(f"{key}: text delta onto {type(current).__name__}; kept first shape")
+                continue
             target[key] = (current or "") + value
-        elif key in {"type", "role", "format", "id"} and target.get(key) not in (None, value):
-            raise IncompleteProviderStream(f"Conflicting stream identity: {key}")
+        elif key in _IDENTITY_KEYS:
+            if current is None:
+                target[key] = copy.deepcopy(value)
+            elif current != value:
+                note(f"{key}: {current!r} then {value!r}; kept first")
+        elif isinstance(current, (dict, list)):
+            note(f"{key}: scalar delta onto {type(current).__name__}; kept first shape")
         else:
             target[key] = copy.deepcopy(value)
 
 
-class ChatAccumulator:
+def _merge_list_item(key: str, current: list, item: Any, note: Callable[[str], None]) -> None:
+    """List identity is a property of the wire field: ``reasoning_details`` records are
+    reassembled by type transition (every delta repeats a frame-local ``index`` that is
+    not a record key, as the wire's own reference client documents); every other list
+    keys on ``index``, and an index-less tool-call fragment continues the last call."""
+    if not isinstance(item, dict):
+        current.append(copy.deepcopy(item))
+        return
+    match = None
+    if key == "reasoning_details":
+        if "type" not in item:
+            note(f"{key}: item without type")
+        if current and _adjacent(current[-1], item):
+            match = current[-1]
+    else:
+        index = item.get("index")
+        if "index" in item and not _valid_index(index):
+            note(f"{key}: index {index!r} is not a non-negative integer; treated as absent")
+            index = None
+        if index is not None:
+            match = next((row for row in current if isinstance(row, dict) and row.get("index") == index), None)
+            if match is None:
+                match = {"index": index}
+                current.append(match)
+        elif key == "tool_calls":
+            if current and _adjacent(current[-1], item):
+                match = current[-1]
+            note(f"{key}: item without index; {'merged into the last call' if match else 'appended'}")
+    if match is None:
+        current.append(copy.deepcopy(item))
+    else:
+        _delta(match, item, note)
+
+
+def _tool_call_problem(call: Any) -> str:
+    """Why a tool call cannot be executed; empty when it is structurally complete."""
+    if not isinstance(call, dict):
+        return f"is {type(call).__name__}, not an object"
+    if not isinstance(call.get("id"), str) or not call["id"]:
+        return "id missing"
+    kind = call.get("type")
+    if kind not in {"function", "custom"}:
+        return f"type {kind!r}"
+    payload = call.get(kind)
+    if not isinstance(payload, dict) or not isinstance(payload.get("name"), str) or not payload["name"]:
+        return f"{kind}.name missing"
+    field = "arguments" if kind == "function" else "input"
+    if not isinstance(payload.get(field), str):
+        return f"{kind}.{field} is not text"
+    return ""
+
+
+class _Accumulator:
+    """Shared ledger of forgiven wire irregularities: the first few verbatim plus a total."""
+
+    def __init__(self) -> None:
+        self.anomalies: list[str] = []
+        self.anomaly_count = 0
+        self.done = False
+
+    def _note(self, text: str) -> None:
+        self.anomaly_count += 1
+        if len(self.anomalies) < _ANOMALY_KEEP:
+            self.anomalies.append(text)
+
+    def anomaly_facts(self) -> dict:
+        return {"count": self.anomaly_count, "first": list(self.anomalies)}
+
+
+class ChatAccumulator(_Accumulator):
     def __init__(self, expected_choices: int = 1):
+        super().__init__()
         self.body: dict = {"object": "chat.completion"}
         self.choices: dict[int, dict] = {}
         self.expected_choices = expected_choices
-        self.done = False
 
     def accept(self, event: str, data: str) -> None:
         if self.done:
-            raise IncompleteProviderStream("Data after stream terminal frame")
+            self._note("data after [DONE]; ignored")
+            return
         if data == "[DONE]":
             self.done = True
             return
-        chunk = json.loads(data)
+        try:
+            chunk = json.loads(data)
+        except ValueError:
+            self._note("chunk is not JSON; skipped")
+            return
         if not isinstance(chunk, dict):
-            raise IncompleteProviderStream("Stream chunk is not an object")
+            self._note(f"chunk is {type(chunk).__name__}, not an object; skipped")
+            return
         if isinstance(chunk.get("error"), dict):
             _snapshot(self.body, {key: value for key, value in chunk.items()
                                   if key not in {"choices", "usage", "object"}})
-            raise ProviderStreamError(chunk)
+            raise ProviderStreamError(chunk, usage=self.body.get("usage"))
         for key, value in chunk.items():
             if key in {"choices", "object", "obfuscation"} or value is None:
                 continue
             if key in {"id", "model"} and self.body.get(key) not in (None, value):
-                raise IncompleteProviderStream(f"Conflicting completion {key}")
+                self._note(f"{key}: {self.body[key]!r} then {value!r}; kept first")
+                continue
             _snapshot(self.body, {key: value})
         choices = chunk.get("choices")
+        if choices is None:
+            return  # A usage/metadata frame: its envelope keys were snapshotted above.
         if not isinstance(choices, list):
-            raise IncompleteProviderStream("Stream chunk lacks choices")
-        for update in choices:
-            if not isinstance(update, dict):
-                raise IncompleteProviderStream("Stream choice is not an object")
-            index = _index(update.get("index"))
-            choice = self.choices.setdefault(index, {"index": index, "message": {"role": "assistant", "content": None}})
-            delta = update.get("delta")
-            if not isinstance(delta, dict):
-                raise IncompleteProviderStream("Stream choice lacks delta")
-            # OpenRouter's final usage frame repeats finish_reason and an empty
-            # delta. It updates accounting without creating a second answer.
-            substantive = any(value not in (None, "", [], {}) for key, value in delta.items() if key != "role")
-            if choice.get("finish_reason") and substantive:
-                raise IncompleteProviderStream("Content after choice completion")
-            _delta(choice["message"], delta)
-            if update.get("logprobs") is not None:
-                _delta(choice.setdefault("logprobs", {}), update["logprobs"])
-            finish = update.get("finish_reason")
-            if finish is not None and (not isinstance(finish, str) or not finish):
-                raise IncompleteProviderStream("Invalid choice terminal reason")
-            if finish == "error":
-                raise ProviderStreamError({"error": {"type": "stream_finish_error"}})
-            if finish is not None and choice.get("finish_reason") not in (None, finish):
-                raise IncompleteProviderStream("Conflicting choice terminal")
-            _snapshot(choice, {key: value for key, value in update.items()
-                               if key not in {"delta", "logprobs", "index"}})
+            self._note(f"choices is {type(choices).__name__}, not a list; skipped")
+            return
+        for position, update in enumerate(choices):
+            self._accept_choice(position, update)
+
+    def _accept_choice(self, position: int, update: Any) -> None:
+        if not isinstance(update, dict):
+            self._note(f"choice at position {position} is not an object; skipped")
+            return
+        index = update.get("index")
+        if not _valid_index(index):
+            index = 0 if self.expected_choices == 1 else position
+            self._note(f"choice at position {position}: index {update.get('index')!r}; used {index}")
+        delta = update.get("delta")
+        if not isinstance(delta, dict):
+            self._note(f"choice {index}: delta is not an object; skipped")
+            return
+        choice = self.choices.setdefault(index, {"index": index, "message": {"role": "assistant", "content": None}})
+        # OpenRouter's final usage frame repeats finish_reason and an empty
+        # delta. It updates accounting without creating a second answer.
+        substantive = any(value not in (None, "", [], {}) for key, value in delta.items() if key != "role")
+        if choice.get("finish_reason") and substantive:
+            self._note(f"choice {index}: content after finish_reason {choice['finish_reason']!r}; accepted")
+        _delta(choice["message"], delta, self._note)
+        logprobs = update.get("logprobs")
+        if isinstance(logprobs, dict):
+            _delta(choice.setdefault("logprobs", {}), logprobs, self._note)
+        elif logprobs is not None:
+            self._note(f"choice {index}: logprobs is {type(logprobs).__name__}, not an object; skipped")
+        finish = update.get("finish_reason")
+        if finish is not None:
+            if not isinstance(finish, str) or not finish:
+                self._note(f"choice {index}: finish_reason {finish!r} is not a non-empty string; ignored")
+            elif finish == "error":
+                raise ProviderStreamError({"error": {"type": "stream_finish_error"}}, usage=self.body.get("usage"))
+            elif choice.get("finish_reason") not in (None, finish):
+                self._note(f"choice {index}: finish_reason {choice['finish_reason']!r} then {finish!r}; kept first")
+            else:
+                choice["finish_reason"] = finish
+        _snapshot(choice, {key: value for key, value in update.items()
+                           if key not in {"delta", "logprobs", "index", "finish_reason"}})
 
     def result(self) -> dict:
+        """Judge once, after terminal framing: unknown outcome vs. unusable body."""
         if not self.done or set(self.choices) != set(range(self.expected_choices)):
             raise IncompleteProviderStream("Stream ended without complete terminal framing")
         body = self.partial()
-        for choice in self.choices.values():
-            calls = choice["message"].get("tool_calls") or []
-            if {call["index"] for call in calls} != set(range(len(calls))):
-                raise IncompleteProviderStream("Stream ended with missing tool call indices")
         for choice in body["choices"]:
+            path = f"choice {choice['index']}"
             if not choice.get("finish_reason"):
-                raise IncompleteProviderStream("Stream ended before every choice finished")
-            calls = choice["message"].get("tool_calls") or []
-            legacy = choice["message"].get("function_call")
-            if (calls or legacy) and choice["finish_reason"] in {"length", "content_filter"}:
-                raise IncompleteProviderStream("Stream exhausted output while producing tool calls")
-            for call in calls:
-                kind = call.get("type")
-                payload = call.get(kind) if kind in {"function", "custom"} else None
-                if (not isinstance(call.get("id"), str) or not call["id"]
-                        or not isinstance(payload, dict) or not isinstance(payload.get("name"), str) or not payload["name"]
-                        or not isinstance(payload.get("arguments" if kind == "function" else "input"), str)):
-                    raise IncompleteProviderStream("Incomplete streamed tool call")
-            if legacy is not None and (not isinstance(legacy, dict) or not legacy.get("name")
-                                       or not isinstance(legacy.get("arguments"), str)):
-                raise IncompleteProviderStream("Incomplete streamed legacy function call")
+                self._reject(f"{path}: no finish_reason after the terminal frame")
+            message = choice["message"]
+            calls = message.get("tool_calls")
+            if calls is not None and not isinstance(calls, list):
+                self._reject(f"{path}: tool_calls is {type(calls).__name__}, not a list")
+            for position, call in enumerate(calls or []):
+                problem = _tool_call_problem(call)
+                if problem:
+                    self._reject(f"{path} tool call {position}: {problem}")
+            legacy = message.get("function_call")
+            if legacy is not None and (not isinstance(legacy, dict) or not isinstance(legacy.get("name"), str)
+                                       or not legacy["name"] or not isinstance(legacy.get("arguments"), str)):
+                self._reject(f"{path} function_call: name or arguments incomplete")
         return body
+
+    def _reject(self, detail: str) -> None:
+        raise RejectedProviderStream(f"Stream rejected after terminal framing: {detail}",
+                                     usage=self.body.get("usage"), anomalies=self.anomalies)
 
     def partial(self) -> dict:
         body = copy.deepcopy(self.body)
@@ -192,19 +333,21 @@ class ChatAccumulator:
         for choice in body["choices"]:
             calls = choice["message"].get("tool_calls")
             if isinstance(calls, list) and calls:
-                calls.sort(key=lambda call: call["index"])
+                if all(isinstance(call, dict) and _valid_index(call.get("index")) for call in calls):
+                    calls.sort(key=lambda call: call["index"])
                 for call in calls:
-                    call.pop("index", None)
+                    if isinstance(call, dict):
+                        call.pop("index", None)
         return body
 
 
-class AnthropicAccumulator:
+class AnthropicAccumulator(_Accumulator):
     def __init__(self):
+        super().__init__()
         self.body: dict = {}
         self.blocks: dict[int, dict] = {}
         self.open_blocks: set[int] = set()
         self.inputs: dict[int, str] = {}
-        self.done = False
 
     def accept(self, event: str, data: str) -> None:
         if self.done:
@@ -258,7 +401,7 @@ class AnthropicAccumulator:
             elif delta_type == "citations_delta":
                 block.setdefault("citations", []).append(copy.deepcopy(delta["citation"]))
             else:
-                _delta(block, {key: value for key, value in delta.items() if key != "type"})
+                _delta(block, {key: value for key, value in delta.items() if key != "type"}, self._note)
         elif kind == "message_delta":
             if not self.body or self.open_blocks:
                 raise IncompleteProviderStream("Native message delta before blocks finished")
@@ -350,7 +493,8 @@ class _StreamAssembly:
         scope = current_usage_scope()
         attempt_id = str(getattr(capture, "attempt_id", "") or "")
         facts = {"attempt_id": attempt_id, "complete": complete,
-                 "generation_id": self.generation_id or self.accumulator.body.get("id", "")}
+                 "generation_id": self.generation_id or self.accumulator.body.get("id", ""),
+                 "anomalies": self.accumulator.anomaly_facts()}
         evidence = {"wire_base64": base64.b64encode(b"".join(self.raw)).decode("ascii"),
                     "partial_assembly": self.accumulator.partial(), **facts}
         try:
@@ -390,7 +534,8 @@ def consume_stream(stream: Any, *, native: bool = False, expected_choices: int =
         body = assembly.result()
         response.close()
     except BaseException as exc:
-        assembly.retain(complete=False, error=exc)
+        # A rejected body that reached its terminal frame is complete wire.
+        assembly.retain(complete=assembly.accumulator.done, error=exc)
         try:
             response.close()
         except BaseException:
@@ -410,7 +555,7 @@ async def consume_stream_async(stream: Any, *, expected_choices: int = 1) -> Ass
         body = assembly.result()
         await response.aclose()
     except BaseException as exc:
-        assembly.retain(complete=False, error=exc)
+        assembly.retain(complete=assembly.accumulator.done, error=exc)
         try:
             await response.aclose()
         except BaseException:

@@ -715,6 +715,7 @@ def classify_llm_exception(exc: Exception, safe_error: str = "") -> LlmErrorClas
     """Classify provider errors without changing model/request semantics."""
 
     safe = safe_error or sanitize_tool_result_for_log(repr(exc))
+    if getattr(exc, "stream_rejected", False): return LlmErrorClassification("provider_error", False)  # complete wire judged unusable: a local verdict, never a same-model repeat
     if getattr(exc, "code", "") == "model_outcome_unknown":
         return LlmErrorClassification("provider_outcome_unknown", False)
     if getattr(exc, "code", "") in {"unsupported_parameter", "invalid_continuation", "auth_changed", "model_unavailable"}:

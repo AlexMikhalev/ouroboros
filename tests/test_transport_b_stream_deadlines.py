@@ -6,6 +6,7 @@ import asyncio
 import base64
 import copy
 import json
+import pathlib
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -15,7 +16,12 @@ import pytest
 from ouroboros import deadline_utils, model_wait, usage_accounting as ua
 from ouroboros.llm import LLMClient
 from ouroboros.llm_attempt import PhysicalDispatchInterrupted
-from ouroboros.llm_stream import AssembledResponse, IncompleteProviderStream, ProviderStreamError
+from ouroboros.llm_stream import (
+    AssembledResponse, IncompleteProviderStream, ProviderStreamError, RejectedProviderStream,
+)
+from ouroboros.loop_llm_call import classify_llm_exception
+
+WIRE_CORPUS = pathlib.Path(__file__).parent / "fixtures" / "llm_wire"
 
 
 MESSAGES = [{"role": "user", "content": "preserve the complete answer"}]
@@ -149,34 +155,38 @@ def assert_unsettled(root):
     assert rows(root)[-1]["state"] == "dispatched"
 
 
-def test_interleaved_choices_tools_reasoning_annotations_and_usage(isolated):
-    first = chunk({"tool_calls": [{"index": 1, "id": "b", "type": "custom", "custom": {"name": "lookup", "input": '{"q":'}},
-                                   {"index": 0, "id": "a", "type": "function", "function": {"name": "look", "arguments": '{"q":'}}],
-                   "reasoning": "think ", "reasoning_content": "native ",
-                   "reasoning_details": [{"index": 0, "type": "reasoning.encrypted", "data": "abc", "format": "opaque"}],
-                   "annotations": [{"type": "url_citation", "url_citation": {"url": "https://example.test", "title": "cite"}}]},
-                  usage={"prompt_tokens": 10, "completion_tokens": 1, "cost": 0.1})
-    second = chunk({"tool_calls": [{"index": 0, "function": {"name": "up", "arguments": '"a"}'}},
-                                    {"index": 1, "custom": {"input": '"b"}'}}],
-                    "reasoning": "again", "reasoning_content": "again",
-                    "reasoning_details": [{"index": 0, "data": "def"}]}, "tool_calls")
-    other = chunk({"content": "second", "refusal": "no"}, "stop", index=1)
-    usage = {"prompt_tokens": 10, "completion_tokens": 12, "cost": 0.5,
-             "prompt_tokens_details": {"cached_tokens": 8}, "completion_tokens_details": {"reasoning_tokens": 7},
-             "server_tool_use": {"web_search_requests": 1}}
-    tail = {"id": "gen-test", "choices": [], "usage": usage, "provider": "fake-serving", "service_tier": "default"}
-    response = WireResponse(sse(first, other, second, tail))
-    result = run_driver(lambda **k: response, payload(stream=True, n=2), target()).model_dump()
+def test_recorded_gemini_multicall_frames_through_the_driver(isolated):
+    """Real OpenRouter frames (google/gemini-3.8-flash, two tool calls, high reasoning)
+    through the physical driver at 13-byte fragmentation: every ``reasoning_details``
+    delta carries ``index: 0``, so records are reassembled by type transition — the four
+    ``reasoning.text`` deltas become ONE text record and the ``reasoning.encrypted``
+    thought signature stays discrete — while ``tool_calls`` keep their stable indices.
+    The wire ``index`` is preserved as recorded (round-trip accepted with any indices)."""
+    wire = (WIRE_CORPUS / "openrouter" / "gemini-3.8-flash" / "multicall_stream.sse").read_bytes()
+    response = WireResponse(wire, step=lambda: assert_unsettled(isolated))
+    result = run_driver(lambda **k: response, payload(stream=True), target()).model_dump()
+    receipt = result.pop("_stream_receipt")
     msg = result["choices"][0]["message"]
-    assert [call["id"] for call in msg["tool_calls"]] == ["a", "b"]
-    assert msg["tool_calls"][0]["function"] == {"name": "lookup", "arguments": '{"q":"a"}'}
-    assert msg["tool_calls"][1]["custom"]["input"] == '{"q":"b"}'
-    assert msg["reasoning_details"][0]["data"] == "abcdef"
-    assert msg["reasoning"] == "think again" and msg["reasoning_content"] == "native again"
-    assert msg["annotations"][0]["url_citation"]["title"] == "cite"
-    assert result["choices"][1]["message"]["refusal"] == "no"
-    assert result["usage"] == usage and result["provider"] == "fake-serving"
-    assert rows(isolated)[-1]["cost_usd"] == 0.5
+    assert [call["id"] for call in msg["tool_calls"]] == ["call_2216119", "call_2216120"]
+    assert [json.loads(call["function"]["arguments"]) for call in msg["tool_calls"]] == [
+        {"query": "ouroboros"}, {"query": "serpent"}]
+    assert all(call["function"]["name"] == "lookup" and call["type"] == "function" for call in msg["tool_calls"])
+    text, encrypted = msg["reasoning_details"]
+    assert text["type"] == "reasoning.text" and text["format"] == "google-gemini-v1" and text["index"] == 0
+    assert text["text"].startswith("**Exploring Etymological Roots**")
+    assert text["text"].count("**") == 8  # four streamed deltas, one record
+    assert msg["reasoning"] == text["text"]
+    assert encrypted["type"] == "reasoning.encrypted" and encrypted["id"] == "call_2216119" and encrypted["index"] == 0
+    assert encrypted["data"].startswith("AY89a19L6dC0Kq4QOSn6Z5Qz")
+    assert result["choices"][0]["finish_reason"] == "tool_calls" and result["provider"] == "Google"
+    assert result["usage"]["cost"] == 0.00358725 and result["usage"]["completion_tokens"] == 944
+    assert receipt["complete"] is True and receipt["anomalies"] == {"count": 0, "first": []}
+    assert response.closed
+    assert [row["state"] for row in rows(isolated)] == ["reserved", "dispatched", "settled"]
+    assert rows(isolated)[-1]["cost_usd"] == 0.00358725
+    normalized_msg, normalized_usage = LLMClient()._normalize_remote_response(result, target(), skip_cost_fetch=True)
+    assert [detail["type"] for detail in normalized_msg["reasoning_details"]] == ["reasoning.text", "reasoning.encrypted"]
+    assert normalized_usage["response_provider"] == "Google"
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
@@ -212,12 +222,18 @@ def test_incomplete_stream_never_settles_or_replays(isolated, asynchronous, fail
     assert _capture_on_chain(exc).state == "unresolved"
     while not hasattr(exc, "stream_receipt") and transport_exception_cause(exc) is not None:
         exc = transport_exception_cause(exc)
-    assert exc.stream_receipt["complete"] is False
+    # missing_finish reached [DONE]: complete wire judged unusable (a verdict, not an
+    # unknown outcome); without a usage frame its money stays unknown like the rest.
+    rejected = failure == "missing_finish"
+    assert isinstance(exc, RejectedProviderStream) is rejected
+    assert exc.stream_receipt["complete"] is rejected
     assert exc.stream_receipt["generation_id"] == "header-generation"
     assert rows(isolated)[-1]["state"] == "unresolved"
     assert all(row["state"] != "settled" for row in rows(isolated))
     if failure.startswith("error"):
         assert isinstance(exc, ProviderStreamError) and exc.body["error"] == error["error"]
+        assert exc.code == "" and exc.stream_usage is None
+        assert exc.status_code == (404 if failure == "error_free_claim" else 200)
     from ouroboros.observability import read_blob_ref
     manifest = json.loads((isolated / exc.stream_receipt["manifest_ref"]["path"]).read_text())
     projection = read_blob_ref(isolated, manifest["full_payload_ref"])
@@ -242,16 +258,123 @@ def test_sse_bom_multiline_data_and_split_unicode(isolated):
     assert result.model_dump()["choices"][0]["message"]["content"] == "π\u2028done"
 
 
-@pytest.mark.parametrize("delta,finish", [
-    ({"tool_calls": 1}, "stop"),
-    ({"function_call": {"name": "lookup", "arguments": '{"q":'}}, "length"),
-    ({"tool_calls": [{"index": 0, "id": "t", "type": "function", "function": {"name": "lookup"}}]}, "tool_calls"),
+@pytest.mark.parametrize("delta", [
+    {"tool_calls": 1},
+    {"function_call": {"name": "lookup"}},
+    {"tool_calls": [{"index": 0, "id": "t", "type": "function", "function": {"name": "lookup"}}]},
 ])
-def test_terminal_does_not_complete_malformed_tool_fields(isolated, delta, finish):
-    with pytest.raises(IncompleteProviderStream) as caught:
-        run_driver(lambda **kw: WireResponse(sse(chunk(delta, finish))), payload(stream=True), target())
-    assert caught.value.stream_receipt["manifest_ref"]
-    assert rows(isolated)[-1]["state"] == "unresolved"
+def test_rejected_terminal_body_settles_usage_and_classifies_provider_error(isolated, delta):
+    """Drained to the terminal frame, but the body cannot be executed: the verdict is a
+    ``RejectedProviderStream`` (no ``code`` — never an unknown outcome) that carries the
+    usage frame it read, the ledger row settles at the reported cost, and the classifier
+    files ``provider_error`` with no same-model repeat (the cross-model chain may run)."""
+    with pytest.raises(RejectedProviderStream) as caught:
+        run_driver(lambda **kw: WireResponse(sse(chunk(delta, "stop", usage=completion()["usage"]))),
+                   payload(stream=True), target())
+    exc = caught.value
+    assert not getattr(exc, "code", None) and exc.stream_rejected and exc.stream_incomplete
+    assert "choice 0" in str(exc)
+    assert exc.stream_usage == completion()["usage"]
+    assert exc.stream_receipt["complete"] is True and exc.stream_receipt["manifest_ref"]
+    assert exc.physical_attempt_capture.state == "settled"
+    assert [row["state"] for row in rows(isolated)] == ["reserved", "dispatched", "settled"]
+    assert rows(isolated)[-1]["cost_usd"] == 0.25 and rows(isolated)[-1]["prompt_tokens"] == 10
+    classification = classify_llm_exception(exc)
+    assert (classification.kind, classification.retry_same_request) == ("provider_error", False)
+
+
+def test_terminal_length_with_a_partial_tool_call_returns_like_non_stream(isolated):
+    """``finish_reason=length`` after ``[DONE]`` is complete wire: the assembler returns
+    the exhausted tool call exactly as the non-stream path would, and the loop owns it."""
+    wire = sse(chunk({"tool_calls": [{"index": 0, "id": "t", "type": "function",
+                                      "function": {"name": "lookup", "arguments": '{"q":'}}]},
+                     "length", usage=completion()["usage"]))
+    result = run_driver(lambda **kw: WireResponse(wire), payload(stream=True), target()).model_dump()
+    choice = result["choices"][0]
+    assert choice["finish_reason"] == "length"
+    assert choice["message"]["tool_calls"] == [
+        {"id": "t", "type": "function", "function": {"name": "lookup", "arguments": '{"q":'}}]
+    assert result["_stream_receipt"]["complete"] is True and result["_stream_receipt"]["anomalies"]["count"] == 0
+    assert [row["state"] for row in rows(isolated)] == ["reserved", "dispatched", "settled"]
+
+
+def test_identity_conflict_is_forgiven_and_disclosed_in_the_receipt(isolated):
+    """First value wins for identity scalars (a tool call's ``id``, the envelope ``id``);
+    each conflict is a fact in ``usage["stream_receipt"]["anomalies"]``, never a raise."""
+    wire = sse(chunk({"tool_calls": [{"index": 0, "id": "call_a", "type": "function",
+                                      "function": {"name": "lookup", "arguments": '{"q":'}}]}),
+               chunk({"tool_calls": [{"index": 0, "id": "call_b", "function": {"arguments": '"ok"}'}}]},
+                     "tool_calls", usage=completion()["usage"], id="gen-other"))
+    result = run_driver(lambda **kw: WireResponse(wire), payload(stream=True), target()).model_dump()
+    msg, usage = LLMClient()._normalize_remote_response(result, target(), skip_cost_fetch=True)
+    assert msg["tool_calls"][0]["id"] == "call_a" and msg["response_id"] == "gen-test"
+    assert json.loads(msg["tool_calls"][0]["function"]["arguments"]) == {"q": "ok"}
+    assert usage["stream_receipt"]["anomalies"] == {"count": 2, "first": [
+        "id: 'gen-test' then 'gen-other'; kept first",
+        "id: 'call_a' then 'call_b'; kept first",
+    ]}
+    assert rows(isolated)[-1]["state"] == "settled"
+
+
+def test_index_less_tool_call_fragment_continues_the_last_call(isolated):
+    """A tool-call delta without ``index`` is a fragment of the last call when its type/id
+    are compatible (merged, disclosed); a fresh id is a new call (appended, disclosed)."""
+    wire = sse(chunk({"tool_calls": [{"index": 0, "id": "t", "type": "function",
+                                      "function": {"name": "lookup", "arguments": '{"q":'}}]}),
+               chunk({"tool_calls": [{"function": {"arguments": '"ok"}'}}]}),
+               chunk({"tool_calls": [{"id": "u", "type": "function", "function": {"name": "lookup", "arguments": "{}"}}]}),
+               chunk({}, "tool_calls", usage=completion()["usage"]))
+    result = run_driver(lambda **kw: WireResponse(wire), payload(stream=True), target()).model_dump()
+    assert result["choices"][0]["message"]["tool_calls"] == [
+        {"id": "t", "type": "function", "function": {"name": "lookup", "arguments": '{"q":"ok"}'}},
+        {"id": "u", "type": "function", "function": {"name": "lookup", "arguments": "{}"}},
+    ]
+    assert result["_stream_receipt"]["anomalies"]["first"] == [
+        "tool_calls: item without index; merged into the last call",
+        "tool_calls: item without index; appended",
+    ]
+
+
+def test_index_less_annotations_stay_separate_records(isolated):
+    """Lists that never carry an index (annotations) keep their append semantics: two
+    citations of the same type are two harvested sources, never merged into one."""
+    wire = sse(chunk({"content": "cite", "annotations": [
+                   {"type": "url_citation", "url_citation": {"url": "https://a.test", "title": "A"}}]}),
+               chunk({"annotations": [{"type": "url_citation", "url_citation": {"url": "https://b.test", "title": "B"}}]},
+                     "stop", usage=completion()["usage"]))
+    result = run_driver(lambda **kw: WireResponse(wire), payload(stream=True), target()).model_dump()
+    _msg, usage = LLMClient()._normalize_remote_response(result, target(), skip_cost_fetch=True)
+    assert [source["url"] for source in usage["web_search_sources"]] == ["https://a.test", "https://b.test"]
+    assert usage["stream_receipt"]["anomalies"]["count"] == 0
+
+
+@pytest.mark.parametrize("usage_first", [False, True])
+def test_mid_stream_error_chunk_classifies_by_body_and_settles_only_with_usage(isolated, usage_first):
+    """Doc-shaped fixture: the corpus holds no recorded error chunk (the recorded refusals
+    are ``content_filter`` finishes, not errors), so this is OpenRouter's documented
+    mid-stream ``{"error": {"code": 502, "message": ...}}`` chunk. A provider fact, not an
+    unknown outcome: the body code becomes the status the classifier files
+    (``provider_transient``), and custody settles only when a usage frame was read first."""
+    error = {"id": "gen-test", "object": "chat.completion.chunk",
+             "error": {"code": 502, "message": "Upstream provider error"},
+             "choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": "error"}]}
+    frames = [chunk({"content": "par"})]
+    if usage_first:
+        frames.append({"id": "gen-test", "choices": [], "usage": completion()["usage"]})
+    frames.append(error)
+    with pytest.raises(ProviderStreamError) as caught:
+        run_driver(lambda **kw: WireResponse(sse(*frames, done=False)), payload(stream=True), target())
+    exc = caught.value
+    assert exc.code == "" and exc.status_code == 502 and exc.provider_message == "Upstream provider error"
+    assert exc.stream_receipt["complete"] is False
+    assert exc.stream_usage == (completion()["usage"] if usage_first else None)
+    assert exc.physical_attempt_capture.state == ("settled" if usage_first else "unresolved")
+    assert rows(isolated)[-1]["state"] == ("settled" if usage_first else "unresolved")
+    if usage_first:
+        assert rows(isolated)[-1]["cost_usd"] == 0.25
+    classification = classify_llm_exception(exc)
+    assert (classification.kind, classification.retry_same_request, classification.status_code) == (
+        "provider_transient", True, 502)
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
@@ -486,17 +609,29 @@ def test_native_incomplete_blocks_or_message_cannot_return_tools(isolated, monke
 
 
 @pytest.mark.parametrize("before_content", [False, True])
-def test_native_http_200_sse_error_keeps_producer_facts_and_custody(isolated, monkeypatch, before_content):
+@pytest.mark.parametrize("error,status,kind", [
+    ({"type": "overloaded_error", "message": "Overloaded"}, 200, "provider_outcome_unknown"),
+    ({"type": "api_error", "code": 502, "message": "Bad gateway"}, 502, "provider_transient"),
+])
+def test_native_http_200_sse_error_keeps_producer_facts_and_custody(isolated, monkeypatch, before_content,
+                                                                    error, status, kind):
+    """An explicit SSE error is a provider fact, not ``model_outcome_unknown``: a numeric
+    body code becomes the status the classifier files (502 → provider_transient); a
+    type-only body keeps status 200, so unresolved custody alone still reads unknown.
+    Custody stays unresolved either way because no usage frame was read."""
     import requests
     events, _ = native_events()
-    error = {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}
-    response = WireResponse(sse(*(events[:3] if not before_content else []), ("error", error), done=False))
+    event = {"type": "error", "error": error}
+    response = WireResponse(sse(*(events[:3] if not before_content else []), ("error", event), done=False))
     monkeypatch.setattr(requests, "post", lambda *a, **kw: response)
     with pytest.raises(ProviderStreamError) as caught:
         LLMClient()._chat_anthropic(target("anthropic"), MESSAGES, TOOLS, "high", 1024, "auto", stream=True)
-    assert caught.value.body == error and caught.value.type == "overloaded_error"
-    assert caught.value.stream_receipt["generation_id"] == "header-generation"
+    exc = caught.value
+    assert exc.body == event and exc.type == error["type"]
+    assert exc.code == "" and exc.status_code == status and exc.stream_usage is None
+    assert exc.stream_receipt["generation_id"] == "header-generation" and exc.stream_receipt["complete"] is False
     assert response.closed and rows(isolated)[-1]["state"] == "unresolved"
+    assert classify_llm_exception(exc).kind == kind
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
