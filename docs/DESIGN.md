@@ -338,10 +338,17 @@ archive; only the source reader establishes that boundary.
 
 A Project keeps its conversation and real nested task cards. One compact pointer
 leads to an unfinished represented root, or the latest represented root when all
-are finished. It states `Loaded messages only` unless history coverage is complete;
-without a represented card it states that absence and has no action. Navigation
-moves the conversation to the existing card without changing the next message's
-recipient, opening another work pane or manufacturing activity.
+are finished. It occupies one line: it names the card (its coined name, else its
+title) and ellipsizes rather than restating a status headline in full, so the status bar
+never grows into the reading area; the complete text stays on the card itself,
+one click away, not in a mouse-only tooltip. A default desktop panel keeps the
+pointer, the coverage note and the status pill on one row while the pill is
+short (Online, Working, Thinking, Sending, Queued); a longer pill, a narrower
+panel or a phone wraps the bar to a second row, never a third. It states `Loaded messages only`
+unless history coverage is complete; without a represented card the pointer and
+that note are hidden, which is not a claim that the Project has no work.
+Navigation moves the conversation to the existing card without changing the next
+message's recipient, opening another work pane or manufacturing activity.
 
 ### List editors
 

@@ -64,6 +64,16 @@ def test_observed_executor_role_activity_and_project_pointer_live_replay(subscri
     assert activity.evaluate('e=>getComputedStyle(e).webkitLineClamp') == '1'
     pointer=page.locator('#executor-proof .project-work-pointer')
     assert 'UI coherence' in pointer.inner_text()
+    # One-line pointer: the label ellipsizes instead of wrapping the status bar open.
+    label=pointer.locator('.project-work-pointer-label')
+    assert label.evaluate('e=>[getComputedStyle(e).whiteSpace,getComputedStyle(e).textOverflow]')==['nowrap','ellipsis']
+    assert pointer.bounding_box()['height'] <= 40
+    # Row policy: the coined name is never clipped at either width; a default desktop
+    # panel keeps one row, a phone-width panel wraps the note and pill to a second row
+    # and never a third.
+    assert label.evaluate('e=>e.scrollWidth<=e.clientWidth')
+    bar_height=page.locator('#executor-proof .chat-panel-statusbar').bounding_box()['height']
+    assert bar_height <= (80 if width < 980 else 44)
     assert page.locator('#executor-proof .project-work-coverage').inner_text() == 'Loaded messages only'
     input_box=page.locator('#proof-input')
     input_box.fill('Message stays in this Project')
