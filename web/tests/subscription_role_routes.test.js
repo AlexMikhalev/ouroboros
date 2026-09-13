@@ -23,14 +23,20 @@ const actor = () => ({ subagent_id: 'native', recommended_use: 'Inspect the repo
 const roster = () => ({ enabled: true, items: [actor()] });
 
 test('reviewer source roundtrips restore model/account without cross-source borrowing', () => {
+    // The memory key is the FULL choice, provider included: a draft belongs to
+    // the source it was typed for, and returning to THAT source restores it.
     const original = route('api_chat');
-    const api = advisoryRouteTransition(original, { kind: 'api_chat' });
-    assert.deepEqual(api.route, { kind: 'api_chat', target_id: '' });
+    const api = advisoryRouteTransition(original, { kind: 'api_chat', provider: 'openai' });
+    assert.deepEqual(api.route, { kind: 'api_chat', target_id: 'openai::' });
     const edited = { ...api.route, target_id: 'openai::owner-choice' };
     const restored = advisoryRouteTransition(edited, { kind: 'api_chat', source: 'opaque-source' }, api.memory);
     assert.deepEqual(restored.route, original);
-    const back = advisoryRouteTransition(restored.route, { kind: 'api_chat' }, restored.memory);
+    const back = advisoryRouteTransition(restored.route, { kind: 'api_chat', provider: 'openai' }, restored.memory);
     assert.deepEqual(back.route, edited);
+    // …while a provider that was never drafted starts empty rather than
+    // inheriting the other provider's model.
+    assert.deepEqual(advisoryRouteTransition(restored.route, { kind: 'api_chat' }, restored.memory).route,
+        { kind: 'api_chat', target_id: '' });
 });
 
 test('source parsing is shared with Models and never assumes source id equals harness', () => {
@@ -59,7 +65,7 @@ test('subscription source choices round-trip and do not hide a saved undiscovere
     assert.equal(encodeRouteChoice({ route: route() }), 'subscription:opaque-source');
     assert.deepEqual(decodeRouteChoice('subscription:opaque-source'), { kind: 'api_model', source: 'opaque-source' });
     const groups = routeChoiceGroups({ modelSources: sources, harnesses: [{ id: 'cursor' }] });
-    assert.deepEqual(groups.map((group) => group.label), ['Models — subscriptions', 'API', 'Agents — subscriptions']);
+    assert.deepEqual(groups.map((group) => group.label), ['Subscriptions · models', 'API keys', 'Agents · sessions']);
     const missing = routeChoiceGroups({ currentChoice: 'subscription:removed', catalogKnown: true });
     assert.match(missing[0].options[0].label, /not checked/);
     assert.ok(reviewerChoiceGroups({ roster: roster().items, modelSources: sources })
@@ -131,6 +137,13 @@ test('actor subscription controls use the mapped account family and preserve unl
     assert.match(html, /value="personal" selected/);
     assert.match(html, /value="gpt-test"/);
     assert.match(html, /value="subscription:opaque-source" selected/);
+    // The chip names the SOURCE and wears its CREDENTIAL HARNESS's mark — the
+    // opaque source id is never split as if it were a session target.
+    assert.match(html, /data-harness-identity="codex"/);
+    assert.match(html, />Subscription model · model<\/span>/);
     const unknown = availableSubagentRowMarkup(actor(), { ...state, modelSources: [] });
     assert.match(unknown, /personal \(not checked\)/);
+    // With no catalog to map the id, the chip falls back to the source id
+    // itself and still never claims a harness it could not resolve.
+    assert.match(unknown, /data-harness-identity="opaque-source"/);
 });

@@ -85,7 +85,7 @@ const PROVIDER_CARDS = [
         id: 'openai', title: 'OpenAI', icon: '/static/providers/openai.svg', hint: 'Official OpenAI API',
         fields: [{ id: 's-openai', settingKey: 'OPENAI_API_KEY', label: 'OpenAI API Key', placeholder: 'sk-...' }],
         testProvider: 'openai', testInputs: { 's-openai': 'OPENAI_API_KEY' },
-        note: 'Use model values like <code>openai::gpt-5.6-terra</code> in the Models tab to route models directly here. If OpenRouter is absent and the shipped defaults are still untouched, Ouroboros auto-remaps them to official OpenAI defaults.',
+        note: 'Pick OpenAI as the source in Models or Agents to route a role through this key. If OpenRouter is absent and the shipped defaults are still untouched, Ouroboros auto-remaps them to official OpenAI defaults.',
     },
     {
         id: 'compatible', title: 'OpenAI Compatible', icon: '/static/providers/openai-compatible.svg', hint: 'Custom OpenAI-style endpoint',
@@ -123,7 +123,7 @@ const PROVIDER_CARDS = [
         ],
         testProvider: 'minimax',
         testInputs: { 's-minimax-key': 'MINIMAX_API_KEY', 's-minimax-region': 'MINIMAX_REGION' },
-        note: 'Use <code>minimax::MiniMax-M3</code> or <code>minimax::MiniMax-M2.7</code> in the Models tab. Leave Region empty for <code>global_en</code>; use <code>cn_zh</code> for the China endpoint.',
+        note: 'Pick MiniMax as the source in Models or Agents, then choose MiniMax-M3 or MiniMax-M2.7. Leave Region empty for <code>global_en</code>; use <code>cn_zh</code> for the China endpoint.',
     },
     {
         id: 'deepseek', title: 'DeepSeek', icon: '', hint: 'Direct OpenAI-compatible runtime (v4 family)', advanced: true,
@@ -132,7 +132,7 @@ const PROVIDER_CARDS = [
         ],
         testProvider: 'deepseek',
         testInputs: { 's-deepseek-key': 'DEEPSEEK_API_KEY' },
-        note: 'Use <code>deepseek::deepseek-v4-pro</code> or <code>deepseek::deepseek-v4-flash</code> in the Models tab. Blocking deep/scope review in Max context mode additionally needs the owner 1M-window acknowledgement.',
+        note: 'Pick DeepSeek as the source in Models or Agents, then choose deepseek-v4-pro or deepseek-v4-flash. Blocking deep/scope review in Max context mode additionally needs the owner 1M-window acknowledgement.',
     },
     {
         id: 'gigachat', title: 'GigaChat', icon: '/static/providers/gigachat.svg', hint: 'Sber GigaChat via the gigachat library', advanced: true,
@@ -153,13 +153,13 @@ const PROVIDER_CARDS = [
             's-gigachat-base-url': 'GIGACHAT_BASE_URL',
             's-gigachat-verify-ssl': 'GIGACHAT_VERIFY_SSL_CERTS',
         },
-        note: 'Use model values like <code>gigachat::GigaChat-2-Max</code> in the Models tab to route directly through GigaChat. Authenticate with either an Authorization Key (OAuth, scope <code>GIGACHAT_API_PERS</code>, <code>GIGACHAT_API_B2B</code>, or <code>GIGACHAT_API_CORP</code>) or User + Password.',
+        note: 'Pick GigaChat as the source in Models or Agents to route a role through this account. Authenticate with either an Authorization Key (OAuth, scope <code>GIGACHAT_API_PERS</code>, <code>GIGACHAT_API_B2B</code>, or <code>GIGACHAT_API_CORP</code>) or User + Password.',
     },
     {
         id: 'anthropic', title: 'Anthropic', icon: '/static/providers/anthropic.png', hint: 'Direct Anthropic API access',
         fields: [{ id: 's-anthropic', settingKey: 'ANTHROPIC_API_KEY', label: 'Anthropic API Key', placeholder: 'sk-ant-...' }],
         testProvider: 'anthropic', testInputs: { 's-anthropic': 'ANTHROPIC_API_KEY' },
-        note: 'Use model values like <code>anthropic::claude-sonnet-5</code> in the Models tab to route models directly through Anthropic.',
+        note: 'Pick Anthropic as the source in Models or Agents to route a role directly through this key.',
     },
 ];
 

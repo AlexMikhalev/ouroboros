@@ -4,7 +4,9 @@
 import { fetchJson } from './api_client.js';
 import { MODEL_CATALOG_TIMEOUT_MS, catalogReadNote, mergeModelCatalog } from './settings_catalog.js';
 import { bindStatusSurface, claudexorStatus } from './claudexor_status_store.js';
-import { parseModelSource, composeModelSource, indexProfilesByHarness, profileOptionsFor, selectHtml, mintStableId } from './route_editor_primitives.js';
+import { parseModelSource, composeModelSource, configuredApiProviders, indexProfilesByHarness,
+    profileOptionsFor, routeChoiceGroups, selectHtml, mintStableId, API_CHOICE_PREFIX,
+    DEFAULT_API_PROVIDER } from './route_editor_primitives.js';
 import { PROCESSING_PREFERENCE_KEY, MODEL_PROCESSING_PREFERENCES_KEY, PROCESSING_CHOICES,
     processingSelectHtml, processingIntentLabel, processingCapabilityNote, catalogModelOptions } from './route_editor_primitives.js';
 import { revealNewRow } from './ui_helpers.js';
@@ -23,25 +25,38 @@ export function modelRoleMap(value) {
     return value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : {};
 }
 
-export function modelSourceGroups({ sources = [], providers = {}, current = '', catalogKnown = false, accountsKnown = false } = {}) {
-    const subscriptions = sources.map((source) => ({ value: `subscription:${source.id}`,
-        label: source.label || source.id }));
-    const api = Object.entries(providers).filter(([id]) => !['local', 'direct-multi'].includes(id))
-        .map(([id, provider]) => ({ value: id, label: provider.label || id }));
-    if (!api.some((row) => row.value === 'openrouter')) api.unshift({ value: 'openrouter', label: 'OpenRouter' });
-    if (current && current !== 'inherit' && ![...subscriptions, ...api].some((row) => row.value === current)) {
-        (current.startsWith('subscription:') ? subscriptions : api).push({
-            value: current, label: `${current.replace('subscription:', '')} (not checked)`,
-        });
-    }
+/**
+ * The row's stored source spelling (`openrouter`, `openai`, `subscription:x`,
+ * `inherit`) as the shared select vocabulary. Mapping happens only here and in
+ * `sourceFromChoice`, so the stored model strings never learn a new spelling.
+ */
+export function sourceChoice(source) {
+    const raw = String(source || '');
+    if (!raw || raw === 'inherit' || raw.startsWith('subscription:')) return raw;
+    return `${API_CHOICE_PREFIX}${raw}`;
+}
+
+export function sourceFromChoice(choice) {
+    const raw = String(choice || '');
+    return raw.startsWith(API_CHOICE_PREFIX)
+        ? raw.slice(API_CHOICE_PREFIX.length) || DEFAULT_API_PROVIDER : raw;
+}
+
+/**
+ * The Models source select. One vocabulary with Agents: the same groups, the
+ * same order, the same configured-only API list; only the "Uses Main" entry and
+ * the absent agent-session group are specific to a model role.
+ * @param {{sources?: Array, providers?: Array<{id:string,label?:string}>, current?: string,
+ *   catalogKnown?: boolean, accountsKnown?: boolean, providerProfiles?: object}} args
+ *   `providers` is `configuredApiProviders()` output, `current` a stored row source.
+ */
+export function modelSourceGroups({ sources = [], providers = [], current = '',
+    catalogKnown = false, accountsKnown = false, providerProfiles = {} } = {}) {
     return [
         ...(current === 'inherit' ? [{ options: [{ value: 'inherit', label: 'Uses Main' }] }] : []),
-        { label: 'Claudexor · subscriptions', options: subscriptions.length ? subscriptions : [
-            { value: '', label: catalogKnown && accountsKnown ? 'No model sources listed — connect one in Accounts'
-                : catalogKnown ? 'No model sources listed; accounts have not been checked'
-                    : 'Model sources have not been read — use Refresh Model Catalog', disabled: true },
-        ] },
-        { label: 'API', options: api },
+        ...routeChoiceGroups({ modelSources: sources, providers, providerProfiles,
+            currentChoice: current === 'inherit' ? '' : sourceChoice(current),
+            catalogKnown, accountsKnown, includeSessions: false }),
     ];
 }
 
@@ -63,7 +78,8 @@ export function createModelRolesEditor({ hostId, store = claudexorStatus,
     let slots = [];
     let rows = [];
     let settings = {};
-    let providers = {};
+    let providerProfiles = {};
+    let apiProviders = [];
     let catalog = { items: [], model_sources: [], read_state: 'not_read' };
     let loaded = false;
     let destroyed = false;
@@ -136,6 +152,12 @@ export function createModelRolesEditor({ hostId, store = claudexorStatus,
     function effectiveSource(row) { return row.source === 'inherit' ? rows.find((entry) => entry.slot.slot === 'main')?.source || 'openrouter' : row.source; }
     function sourceId(row) { const source = effectiveSource(row); return source.startsWith('subscription:') ? source.slice(13) : ''; }
     function catalogKey(row) { return JSON.stringify([sourceId(row), row.account]); }
+    // A saved source whose key is gone stays selectable and labelled; discovery
+    // only widens the list, it never rewrites the owner's assignment.
+    function sourceGroupsFor(row, facts = {}) {
+        return modelSourceGroups({ sources: catalog.model_sources, providers: apiProviders,
+            providerProfiles, current: row.source, ...facts });
+    }
     function itemsFor(row) {
         return sourceId(row) ? (catalogs.get(catalogKey(row))?.items || [])
             : catalog.items.filter((item) => parseModelSource(item.value || item.id).source === row.source);
@@ -170,7 +192,7 @@ export function createModelRolesEditor({ hostId, store = claudexorStatus,
         const inputId = inputIdFor(row);
         return `<div class="model-role-row" data-model-role="${escapeHtml(row.id)}">
             <div class="model-role-controls">
-                ${selectHtml(`data-model-role-source aria-label="${escapeHtml(row.slot.label)} source"`, modelSourceGroups({ sources: catalog.model_sources, providers, current: row.source }), row.source)}
+                ${selectHtml(`data-model-role-source aria-label="${escapeHtml(row.slot.label)} source"`, sourceGroupsFor(row), sourceChoice(row.source))}
                 ${modelChooserHtml(`id="${escapeHtml(inputId)}" data-model-role-model aria-label="${escapeHtml(row.slot.label)}${isFallback ? ` ${index + 1}` : ''}"`, row.model, `${hostId}-${row.id}-models`, [], { placeholder: row.slot.slot === 'main' ? 'Choose a model' : 'Empty uses Main' })}
                 <select class="ui-control" data-model-role-account aria-label="${escapeHtml(row.slot.label)} account" ${sourceId(row) ? '' : 'hidden'}></select>
                 ${isFallback ? `<span class="model-role-order"><button type="button" class="btn btn-default" data-model-up aria-label="Move fallback up" ${index === 0 ? 'disabled' : ''}>↑</button><button type="button" class="btn btn-default" data-model-down aria-label="Move fallback down" ${index === total - 1 ? 'disabled' : ''}>↓</button><button type="button" class="btn btn-default" data-model-remove aria-label="Remove fallback">Remove</button></span>` : ''}
@@ -216,8 +238,9 @@ export function createModelRolesEditor({ hostId, store = claudexorStatus,
             const node = element.querySelector(`[data-model-role="${row.id}"]`);
             if (!node) continue;
             const source = node.querySelector('[data-model-role-source]');
-            const sourceHtml = selectHtml('', modelSourceGroups({ sources: catalog.model_sources, providers, current: row.source,
-                catalogKnown: catalog.sources_read_state === 'ok', accountsKnown: store.accountsKnown }), row.source);
+            const sourceHtml = selectHtml('', sourceGroupsFor(row, {
+                catalogKnown: catalog.sources_read_state === 'ok', accountsKnown: store.accountsKnown,
+            }), sourceChoice(row.source));
             const options = sourceHtml.slice(sourceHtml.indexOf('>') + 1, sourceHtml.lastIndexOf('</select>'));
             if (source.innerHTML !== options) source.innerHTML = options;
             const account = node.querySelector('[data-model-role-account]');
@@ -235,7 +258,10 @@ export function createModelRolesEditor({ hostId, store = claudexorStatus,
                 catalog.model_sources.find((source) => source.id === sourceId(row))?.processingPreferences);
             const status = node.querySelector('[data-model-role-status]');
             const rowCatalog = catalogs.get(catalogKey(row));
-            const note = catalogReadNote(sourceId(row) && rowCatalog ? rowCatalog : catalog);
+            // A subscription row reports its own account read in full; an API row
+            // sits under the section banner, so it keeps to the compact form.
+            const own = Boolean(sourceId(row) && rowCatalog);
+            const note = catalogReadNote(own ? rowCatalog : catalog, { compact: !own });
             status.textContent = row.local ? 'Uses the local runtime.'
                 : note || (!row.model ? (row.slot.slot === 'main' ? 'Choose a model to continue.' : 'Uses Main.')
                     : sourceId(row) ? (rowCatalog?.read_state === 'ok' && !rowCatalog.items.length
@@ -278,7 +304,7 @@ export function createModelRolesEditor({ hostId, store = claudexorStatus,
         for (const row of rows) {
             const node = element.querySelector(`[data-model-role="${row.id}"]`);
             node.querySelector('[data-model-role-source]').addEventListener('change', (event) => {
-                row.source = event.target.value; row.model = ''; row.account = ''; row.context = 0;
+                row.source = sourceFromChoice(event.target.value); row.model = ''; row.account = ''; row.context = 0;
                 changed(); render();
                 host()?.querySelector(`[data-model-role="${row.id}"] [data-model-role-model]`)?.focus();
             });
@@ -334,7 +360,8 @@ export function createModelRolesEditor({ hostId, store = claudexorStatus,
             validationAttempted = false;
             settings = { ...value }; slots = contract.modelSlots || slots;
             processingPreference = String(settings[PROCESSING_PREFERENCE_KEY] || ''); processingTouched = false;
-            providers = contract.providerProfiles || providers;
+            providerProfiles = contract.providerProfiles || providerProfiles;
+            apiProviders = configuredApiProviders(settings, providerProfiles);
             rows = [];
             for (const slot of slots) {
                 if (slot.slot === 'fallback') {

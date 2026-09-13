@@ -509,6 +509,7 @@ export function agentsStepHtml({ compact = false, showRoster = true } = {}) {
  * @param {Function} [options.previewPayload] current open provider/local draft
  * @param {Function} [options.previewTransport] injectable preview request
  * @param {Function} [options.onSubagentsChange] receives the editable canonical list
+ * @param {object}   [options.providerProfiles] setup-contract provider names
  * @returns {object} controller
  */
 export function createAgentsStep({
@@ -520,6 +521,7 @@ export function createAgentsStep({
     previewPayload = () => ({}),
     previewTransport = (payload) => apiClient.previewOnboardingSubagents(payload),
     onSubagentsChange = () => {},
+    providerProfiles = {},
     onSetupPreview = () => {},
     onStatus = () => {},
 } = {}) {
@@ -718,8 +720,20 @@ export function createAgentsStep({
         state.listHtml = null;
         paint();
         subagents.mount();
+        // The wizard's API keys are typed on the Accounts step, so the provider
+        // list is re-derived on every entry into a step that shows these rows —
+        // never once at construction, when no key exists yet.
+        applySourceContext();
         refreshSubagentsPreview();
         store.refresh();
+    }
+
+    /** The roster editor offers the providers the current draft has keys for. */
+    function applySourceContext() {
+        subagents.setSourceContext({
+            settings: previewPayload() || {},
+            providerProfiles,
+        });
     }
 
     /**
@@ -797,6 +811,11 @@ export function createAgentsStep({
         refreshStatus() { return store.refresh(); },
         get availableSubagents() { return subagents.setting; },
         setProcessingPreference(value) { subagents.setProcessingPreference(value); },
+        /** Re-derive the provider list after the owner edits Accounts. */
+        setSourceContext(context) {
+            if (context) subagents.setSourceContext(context);
+            else applySourceContext();
+        },
         get generatedPreviewReady() {
             if (subagents.dirty) return true;
             try {
