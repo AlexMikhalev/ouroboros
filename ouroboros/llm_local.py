@@ -239,7 +239,7 @@ class _LocalLaneMixin:
 
         from ouroboros.model_slots import resolve_processing_preference
         from ouroboros.local_model import get_manager
-        evidence = get_manager().serving_context_evidence()
+        evidence = get_manager().serving_context_evidence() or {}
         preference = resolve_processing_preference(override=processing_preference)
         target = {"provider": "local", "resolved_model": "local-model", "usage_model": "local-model",
                   "processing_preference": preference, "context_window_tokens": evidence.get("context_window"),

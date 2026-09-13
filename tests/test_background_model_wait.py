@@ -39,6 +39,11 @@ def background(tmp_path, monkeypatch):
                                get_timeout=lambda _name: 10, schemas=lambda: [])
     tools = []
     registry.execute = lambda name, args: tools.append((name, args)) or "read completed once"
+    from ouroboros.tools.tool_result import ToolResult
+    registry.execute_result = lambda name, args: (
+        tools.append((name, args))
+        or ToolResult(status="ok", code="OK", text="read completed once", meta={"source": "fixture"})
+    )
     monkeypatch.setattr(BackgroundConsciousness, "_build_registry", lambda self: registry)
     events = queue.Queue()
     bc = BackgroundConsciousness(root, tmp_path / "repo", events, lambda: 1)
