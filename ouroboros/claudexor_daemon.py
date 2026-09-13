@@ -970,7 +970,13 @@ def warm_owned_daemon() -> bool:
 
     def warm() -> None:
         try:
-            ensure_owned_gateway().close()
+            # Warmup is the host's speculative join, so give an already
+            # custodied daemon enough room to finish journal admission after
+            # its control socket appears.  A normal caller keeps the shorter
+            # admission window; expiry still leaves custody intact and the
+            # first real caller simply joins the same startup.
+            warmup_admission_wait = max(_ADMISSION_WAIT_SEC, _SPAWN_WAIT_SEC * 2.0)
+            ensure_owned_gateway(admission_wait_sec=warmup_admission_wait).close()
         except Exception:
             log.info("Owned daemon warmup did not reach readiness; the first caller starts or joins",
                      exc_info=True)
