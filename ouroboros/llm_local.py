@@ -20,6 +20,7 @@ from ouroboros.llm_attempt import (
     _execute_candidate,
     _is_structured_context_overflow_exception,
     _physical_candidate,
+    _finalized_physical_candidate,
 )
 from ouroboros.usage_accounting import PhysicalAttemptCapture, UsageAccountingError
 
@@ -135,7 +136,13 @@ def local_context_limits(max_tokens: int) -> Tuple[int, int]:
     local_max = min(max_tokens, 2048)
     try:
         from ouroboros.local_model import get_manager
-        ctx_len = get_manager().get_context_length()
+        manager = get_manager()
+        evidence_fn = getattr(manager, "serving_context_evidence", None)
+        if callable(evidence_fn):
+            evidence = evidence_fn() or {}
+            ctx_len = int(evidence.get("context_window") or 0)
+        if ctx_len <= 0:
+            ctx_len = int(manager.get_context_length() or 0)
         if ctx_len > 0:
             local_max = min(max_tokens, max(256, ctx_len // 4))
     except Exception:
@@ -187,24 +194,16 @@ class _LocalLaneMixin:
             f"({compacted_chars} chars > target {target_chars})."
         )
 
-    def _chat_local(
-        self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]],
-        max_tokens: int,
-        tool_choice: str,
-        timeout: Optional[float] = None,
+    def _build_local_candidate(
+        self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]],
+        max_tokens: int, tool_choice: str, timeout: Optional[float] = None,
         processing_preference: Optional[str] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        """Send a chat request to the local llama-cpp-python server."""
-        client = self._get_local_client()
-
+        """Prepare the complete local payload for sizing and actual dispatch."""
         messages = self._normalize_system_message_placement(messages)
         clean_messages = self._strip_openrouter_roundtrip_metadata(
             self._copy_messages_with_cache_policy(
-                messages,
-                allow_message_cache_control=False,
-                flatten_tool_content_blocks=True,
+                messages, allow_message_cache_control=False, flatten_tool_content_blocks=True,
             )
         )
         # Local llama.cpp has no vision; avoid flattening base64 into the prompt.
@@ -216,46 +215,31 @@ class _LocalLaneMixin:
                 if isinstance(block, dict) and str(block.get("type") or "") in ("image_url", "image"):
                     content[idx] = {"type": "text", "text": "[image omitted: model has no vision]"}
         ctx_len, local_max = local_context_limits(max_tokens)
-
         if ctx_len > 0:
             clean_messages = self._prepare_messages_for_local_context(clean_messages, ctx_len, local_max)
-
         for msg in clean_messages:
             content = msg.get("content")
             if content is None and msg.get("role") == "assistant":
-                msg["content"] = ""  # Local text templates require a string beside tool calls.
+                msg["content"] = ""
             if isinstance(content, list):
                 msg["content"] = "\n\n".join(
-                    b.get("text", "") for b in content
-                    if isinstance(b, dict) and b.get("type") == "text"
+                    b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
                 )
-
         clean_tools = None
         if tools:
-            clean_tools = [
-                {k: v for k, v in t.items() if k != "cache_control"}
-                for t in tools
-            ]
-
-        kwargs: Dict[str, Any] = {
-            "model": "local-model",
-            "messages": clean_messages,
-            "max_tokens": local_max,
-        }
+            clean_tools = [{k: v for k, v in t.items() if k != "cache_control"} for t in tools]
+        kwargs: Dict[str, Any] = {"model": "local-model", "messages": clean_messages, "max_tokens": local_max}
         if clean_tools:
             kwargs["tools"] = clean_tools
             kwargs["tool_choice"] = tool_choice
         if timeout and timeout > 0:
             kwargs["timeout"] = float(timeout)
-
-        candidate = _physical_candidate(kwargs)
         from ouroboros.model_slots import resolve_processing_preference
-
+        from ouroboros.local_model import get_manager
+        evidence = get_manager().serving_context_evidence()
         preference = resolve_processing_preference(override=processing_preference)
-
         target = {"provider": "local", "resolved_model": "local-model", "usage_model": "local-model",
-                  "processing_preference": preference,
-                  "context_window_tokens": evidence.get("context_window"),
+                  "processing_preference": preference, "context_window_tokens": evidence.get("context_window"),
                   "context_window_confirmed": evidence.get("confirmed") is True}
         return target, kwargs
 
