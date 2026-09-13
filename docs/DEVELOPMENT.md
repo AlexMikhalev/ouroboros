@@ -894,9 +894,10 @@ slots, and `quorum_unreachable` release live in ARCHITECTURE "Plan
 construction and review"; paid cycles are bounded by the shared
 `OUROBOROS_REVIEW_MAX_CYCLES`.
 
-**Context mode (Low / Max).** `OUROBOROS_CONTEXT_MODE` controls the
+**Context mode (Nano / Low / Max).** `OUROBOROS_CONTEXT_MODE` controls the
 Architecture projection in the agent's own context: Max keeps `ARCHITECTURE.md`
-full for every task class, Low supplies its lossless navigation map.
+full for every task class, Low supplies its lossless navigation map, and Nano
+uses the compact owner projection.
 `DEVELOPMENT.md` is mode-independent and follows the active repository
 binding — the signal is the repo binding, a path fact, never a guess from
 message text (full for system-repo work including a project room with no

@@ -419,9 +419,10 @@ def _physical_candidate(payload: Dict[str, Any]) -> Dict[str, Any]:
 def _finalized_physical_candidate(
     target: Dict[str, Any], payload: Dict[str, Any], api_surface: str,
 ) -> Dict[str, Any]:
+    payload = _fit_output_payload(target, _physical_candidate(payload), api_surface)
     return prepare_wire_payload_for_send(
         {**target, "contract_headers": processing_contract_headers(target, payload)},
-        _physical_candidate(payload), api_surface=api_surface,
+        payload, api_surface=api_surface,
     )
 
 
