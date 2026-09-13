@@ -405,7 +405,7 @@ def test_skill_review_contract_fingerprint_preserves_legacy_and_tracks_rows(monk
     legacy = skill_review_contract_fingerprint(["m1", "m2"], required_items=("a",))
     # The author-finality contract is part of the skill-review prompt contract;
     # its deliberate wording change invalidates the old fingerprint.
-    assert legacy == "9ac317b05e8f8b732c4a2813c4cf9a5b0b9fd8564ef8443c730ae9603a113f6e"
+    assert legacy == "b0d298d70bf93185b2b88f647af3ab28233e18db517c13398d7b323c786dd16b"
     legacy_delivery = {
         "legacy_skill_fingerprint": True,
         "models": ["m1", "m2"], "routes": ["api_chat", "api_chat"],
