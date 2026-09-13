@@ -5,16 +5,45 @@
 // this module only decides which positive/negative facts a card may honestly
 // claim.
 
-import { accountRows, nextUpAccount, quotaConstraintFact } from './claudexor_status_store.js';
+import { accountRows, familyLabel, nextUpAccount, quotaConstraintFact } from './claudexor_status_store.js';
 import {
     ROUTE_KIND_AGENT_SESSION,
     describeExecutionEvidence,
     harnessModelsKnown,
     modelsGapNote,
-    routeSupportsAccount,
+    routeModelFields,
+    sourceIdentityLabel,
     splitSessionTarget,
     accountScopedModelCatalog,
 } from './route_editor_primitives.js';
+
+/**
+ * The card's source chip (owner decision 4A): the provider behind an API row,
+ * the model source behind a subscription, the agent behind a session. A
+ * retained daemon product name is evidence only while the catalog read is
+ * known — during a gap `familyLabel` falls back to the presentation catalog.
+ */
+export function rowIdentity(row, state = {}) {
+    const session = row?.route?.kind === ROUTE_KIND_AGENT_SESSION;
+    // `harness` is the session's own harness OR the subscription source's
+    // credential harness; a direct API route has neither and shows the channel
+    // mark. Never split the stored target here: only the model-sources catalog
+    // maps an opaque source id to a harness.
+    const fields = routeModelFields(row?.route, state.modelSources, {
+        providerProfiles: state.providerProfiles,
+    });
+    const label = sourceIdentityLabel(row?.route, {
+        modelSources: state.modelSources,
+        providerProfiles: state.providerProfiles,
+        harnesses: [{
+            id: fields.harness,
+            display_name: familyLabel(fields.harness, state.snapshot, { catalogKnown: state.catalogKnown }),
+        }],
+    });
+    return session || fields.subscription
+        ? { harnessId: fields.harness || fields.source, label, channel: '' }
+        : { harnessId: 'api', label, channel: 'api' };
+}
 
 export function harnessMap(snapshot) {
     return Object.fromEntries((snapshot?.harnesses || [])
@@ -148,10 +177,16 @@ function intentAxis(state) {
 export function rowStatus(row, state) {
     const intent = intentAxis(state);
     if (row.route.kind !== ROUTE_KIND_AGENT_SESSION) {
+        // The sentence names the SOURCE the owner picked, not a bare channel:
+        // "API model" alone left two rows on different providers reading
+        // identically (owner decision 4A).
+        const fields = routeModelFields(row.route, state.modelSources, {
+            providerProfiles: state.providerProfiles,
+        });
         return {
             label: `${intent.word} · Checked at start`,
             tone: worseTone(intent.tone, 'neutral'),
-            text: `${intent.text} · ${routeSupportsAccount(row.route) ? 'Subscription model' : 'API model'} · availability is checked when a child starts`,
+            text: `${intent.text} · ${fields.subscription ? 'Subscription model' : `${fields.providerLabel} API model`} · availability is checked when a child starts`,
         };
     }
     const live = sessionRouteVerdict(row, state);
@@ -180,7 +215,17 @@ function executionFor(snapshot, subagentId) {
 // invitation, not an error); the last actual run; nothing.
 export function rowMeta(row, state, errors) {
     if (row._uiAttempted && errors.length) return { text: errors[0], tone: 'error' };
-    if (!String(row.route?.target_id || '').trim()) return { text: ROUTE_HINT, tone: '' };
+    const session = row.route?.kind === ROUTE_KIND_AGENT_SESSION;
+    // An empty draft (`openai::` with no model yet) is still an invitation.
+    if (!String(row.route?.target_id || '').trim()
+        || (!session && !routeModelFields(row.route).model.trim())) return { text: ROUTE_HINT, tone: '' };
     const evidence = describeExecutionEvidence(executionFor(state.snapshot, row.subagent_id));
-    return { text: evidence ? `Last actual run: ${evidence}` : '', tone: '' };
+    // The exact stored spelling is disclosed here, where it informs, and never
+    // in a placeholder, where it would instruct (docs/DESIGN.md §7). A session
+    // target already reads as harness plus model in its own controls.
+    const saved = session ? '' : `stored as ${String(row.route.target_id).trim()}`;
+    return {
+        text: [saved, evidence ? `Last actual run: ${evidence}` : ''].filter(Boolean).join(' · '),
+        tone: '',
+    };
 }

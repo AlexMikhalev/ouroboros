@@ -196,7 +196,8 @@ test('configured subagent marks surround native text controls without changing s
     };
     const html = availableSubagentRowMarkup(sessionRow, state);
     assert.match(html, /data-harness-identity="codex"/);
-    assert.match(html, />Codex Live<\/span>/);
+    // The chip names the source: the agent, not the channel (decision 4A).
+    assert.match(html, />Codex Live · agent<\/span>/);
     assert.match(html, /<select[^>]*data-subagent-field="route"/);
     assert.equal(JSON.stringify(sessionRow), before);
     assert.deepEqual(serializeRouteSpec(sessionRow.route, {
@@ -236,14 +237,14 @@ test('configured identity ignores stale daemon labels until the catalog read is 
         catalogKnown: false, accountsKnown: false, quotaKnown: false,
         statusError: '', snapshot,
     });
-    assert.match(gapHtml, />Codex<\/span>/);
+    assert.match(gapHtml, />Codex · agent<\/span>/);
     assert.doesNotMatch(gapHtml, /Stale daemon label/);
 
     const provenHtml = availableSubagentRowMarkup(row, {
         catalogKnown: true, accountsKnown: false, quotaKnown: false,
         statusError: '', snapshot,
     });
-    assert.match(provenHtml, />Stale daemon label<\/span>/);
+    assert.match(provenHtml, />Stale daemon label · agent<\/span>/);
 });
 
 test('Chat, Logs, onboarding, and reviewer lanes consume the same mark owner', () => {

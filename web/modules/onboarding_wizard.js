@@ -13,7 +13,8 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
 import { createModelRolesEditor, modelRolesHost, modelRoleMap, parseModelSource } from './model_roles.js';
 import { availableSubagentsEditorHost } from './subagents_settings.js';
 import { adoptSubagentRoster, applyReviewerSlotsDraft, collectReviewerSlots,
-    destroyReviewerSlots, initReviewerSlots, renderReviewerSlotsSection, setReviewerProcessingPreference } from './reviewer_slots.js';
+    destroyReviewerSlots, initReviewerSlots, renderReviewerSlotsSection, setReviewerProcessingPreference,
+    setReviewerSourceContext } from './reviewer_slots.js';
 import { PROCESSING_PREFERENCE_KEY, MODEL_PROCESSING_PREFERENCES_KEY, processingIntentLabel } from './route_editor_primitives.js';
 import { accountRows } from './claudexor_status_store.js';
 import { accountRowFacts } from './harness_accounts.js';
@@ -143,7 +144,10 @@ import { accountRowFacts } from './harness_accounts.js';
         if (!state.reviewerDraftDirty && response.reviewer_slots) {
             state.reviewerSlots = typeof response.reviewer_slots === 'string'
                 ? JSON.parse(response.reviewer_slots) : response.reviewer_slots;
-            if (state.currentStep === 'review_mode') applyReviewerSlotsDraft(state.reviewerSlots);
+            if (state.currentStep === 'review_mode') {
+                setReviewerSourceContext({ settings: draftSettings(), providerProfiles: PROVIDER_PROFILES });
+                applyReviewerSlotsDraft(state.reviewerSlots);
+            }
         }
         modelRoles.adoptCatalog(response);
         if (state.agentsConnected.length) {
@@ -724,6 +728,7 @@ import { accountRowFacts } from './harness_accounts.js';
                     syncCurrentStepActionState();
                 },
                 previewPayload: draftSettings,
+                providerProfiles: PROVIDER_PROFILES,
                 onSubagentsChange: (setting) => { state.availableSubagents = setting; adoptSubagentRoster({ OUROBOROS_SUBAGENTS: setting }); },
                 onSetupPreview: applySetupPreview,
                 onStatus: () => {
@@ -1242,6 +1247,10 @@ import { accountRowFacts } from './harness_accounts.js';
             markStepEdited();
         } });
         adoptSubagentRoster({ OUROBOROS_SUBAGENTS: state.availableSubagents });
+        // Keys typed on Accounts decide which providers these lanes may offer,
+        // so the list is derived from the CURRENT draft on every entry into
+        // this step rather than once at construction.
+        setReviewerSourceContext({ settings: draftSettings(), providerProfiles: PROVIDER_PROFILES });
         setReviewerProcessingPreference(state.processingPreference, state.modelProcessingPreferences || {});
         if (state.reviewerSlots) applyReviewerSlotsDraft(state.reviewerSlots);
         bindChoices('data-review-mode', 'reviewEnforcement');

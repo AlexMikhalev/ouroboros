@@ -2,7 +2,7 @@ import { refreshModelCatalog } from './settings_catalog.js';
 import { bindEffortSegments, syncEffortSegments, readCustomSecretDraft, collectCustomSecretDraft, paintSettingsFieldErrors, settingsWriteFailure } from './settings_controls.js';
 import { bindLocalModelControls } from './settings_local_model.js';
 import { applyMcpSettings, collectMcpSettings, initMcpSettings, validateMcpSettings } from './mcp_settings.js';
-import { adoptSubagentRoster, collectReviewerSlots, initReviewerSlots, reloadReviewerSlots, validateReviewerSlots, noteReviewerSlotsSaveAttempt, discardReviewerSlotsDraft, setReviewerProcessingPreference } from './reviewer_slots.js';
+import { adoptSubagentRoster, collectReviewerSlots, initReviewerSlots, reloadReviewerSlots, validateReviewerSlots, noteReviewerSlotsSaveAttempt, discardReviewerSlotsDraft, setReviewerProcessingPreference, setReviewerSourceContext } from './reviewer_slots.js';
 import {
     applySubagentsSettings,
     availableSubagentsPreviewPayload,
@@ -13,6 +13,7 @@ import {
     subagentSettingsFingerprint,
     validateSubagentsDraft,
     setSubagentsProcessingPreference,
+    setSubagentsSourceContext,
 } from './subagents_settings.js';
 import { initHarnessAccounts } from './harness_accounts.js';
 import { openConfirmDialog } from './confirm_dialog.js';
@@ -618,6 +619,12 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         // The Review-lanes «Configured subagent» selects reference the SAME
         // roster; adopt it from the same loaded document.
         adoptSubagentRoster(s);
+        // …and both editors offer the API providers THIS document has a
+        // credential for, named by the setup contract. Derived from the loaded
+        // settings, so a key added under Accounts shows up on the next load
+        // rather than being typed as a prefix (docs/DESIGN.md §7).
+        setReviewerSourceContext({ settings: s, providerProfiles: setupContract.providerProfiles });
+        setSubagentsSourceContext(s, setupContract.providerProfiles);
         // Post-task evolution: one owner-facing selector maps to enable + cadence.
         const evoEnabled =
             ({ true: 'on', '1': 'on', on: 'on', false: 'off', '0': 'off', off: 'off' }[

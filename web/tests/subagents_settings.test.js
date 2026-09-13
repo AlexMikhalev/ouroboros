@@ -6,6 +6,7 @@ import {
     ROUTE_KIND_AGENT_SESSION,
     ROUTE_KIND_API_MODEL,
     compoundSessionEffort,
+    configuredApiProviders,
     compoundSessionEffortConflict,
     normalizeRouteSpec,
     serializeRouteSpec,
@@ -26,7 +27,7 @@ import {
     validateAvailableSubagentsSetting,
 } from '../modules/subagents_settings.js';
 import { buildReviewerSlotsSetting } from '../modules/reviewer_slots.js';
-import { sessionRouteVerdict } from '../modules/subagent_status_primitives.js';
+import { rowMeta, rowStatus, sessionRouteVerdict } from '../modules/subagent_status_primitives.js';
 import { revealNewRow } from '../modules/ui_helpers.js';
 
 const CONTRACT_FIXTURE = JSON.parse(fs.readFileSync(
@@ -706,7 +707,7 @@ test('the card head carries the ordinal, the route mark, a two-word status and t
     // An API model's availability is only known when a child starts: the
     // second word says that instead of repeating the route mark beside it.
     const api = availableSubagentRowMarkup(apiRow(), { ...QUIET_STATE, dirty: true }, 0);
-    assert.match(api, /data-tone="neutral" title="Draft intent · API model · availability is checked when a child starts">Draft · Checked at start</);
+    assert.match(api, /data-tone="neutral" title="Draft intent · OpenRouter API model · availability is checked when a child starts">Draft · Checked at start</);
 });
 
 test('a fresh row invites instead of erroring until the owner tries to save', () => {
@@ -782,4 +783,72 @@ test('the head dot takes the worse of the two status axes', () => {
     assert.match(availableSubagentRowMarkup(sessionRow(), { ...live, baseline: 'generated' }, 0),
         /data-tone="neutral"[^>]*>Generated · Available</);
     assert.match(availableSubagentRowMarkup(apiRow(), live, 0), /data-tone="neutral"[^>]*>Saved · Checked at start</);
+});
+
+// ---------------------------------------------------------------------------
+// The source is CHOSEN, never spelled (docs/DESIGN.md §7): the roster card
+// offers the same grouped picker the review lanes and Models do, scoped to the
+// providers this install actually has a credential for.
+// ---------------------------------------------------------------------------
+
+test('the roster picker offers only credentialed providers and keeps a saved keyless one', () => {
+    const state = {
+        ...QUIET_STATE,
+        providers: configuredApiProviders({ OPENROUTER_API_KEY: 'k', OPENAI_API_KEY: '***set***' }),
+        providerProfiles: { openai: { label: 'OpenAI' } },
+    };
+    const html = availableSubagentRowMarkup(apiRow({ route: { kind: ROUTE_KIND_API_MODEL, target_id: 'openai::gpt-x' } }), state, 0);
+    assert.match(html, /<optgroup label="API keys">/);
+    assert.match(html, /<option value="api:openai" selected>OpenAI<\/option>/);
+    assert.match(html, /<option value="api:openrouter">OpenRouter<\/option>/);
+    assert.match(html, /<option value="" disabled>Add a key in Accounts for more<\/option>/);
+    assert.doesNotMatch(html, /value="api:anthropic"/, 'a provider with no key is not offered');
+    // The model field holds the model ALONE; the editor composes the prefix.
+    assert.match(html, /data-subagent-field="model"[^>]*value="gpt-x"/);
+    // The chip names the provider, and the exact stored id rides the meta line.
+    assert.match(html, />API · OpenAI<\/span>/);
+    assert.match(html, /data-subagent-meta[^>]*>stored as openai::gpt-x</);
+    assert.match(html, /title="Saved intent · OpenAI API model · availability is checked when a child starts"/);
+
+    // A saved provider whose key is gone stays selectable and says why.
+    const keyless = availableSubagentRowMarkup(
+        apiRow({ route: { kind: ROUTE_KIND_API_MODEL, target_id: 'anthropic::claude-opus-5' } }), state, 0);
+    assert.match(keyless, /<option value="api:anthropic" selected>Anthropic \(no key\)<\/option>/);
+    assert.match(keyless, />API · Anthropic<\/span>/);
+});
+
+test('the roster row status and meta name the source, never a bare channel', () => {
+    const base = { ...QUIET_STATE, providerProfiles: { openai: { label: 'OpenAI' } } };
+    const row = apiRow({ route: { kind: ROUTE_KIND_API_MODEL, target_id: 'openai::gpt-x' } });
+    assert.equal(rowStatus(row, base).text,
+        'Saved intent · OpenAI API model · availability is checked when a child starts');
+    assert.deepEqual(rowMeta(row, base, []), { text: 'stored as openai::gpt-x', tone: '' });
+    // An empty provider draft is still an invitation, not a stored id.
+    assert.match(rowMeta(apiRow({ route: { kind: ROUTE_KIND_API_MODEL, target_id: 'openai::' } }), base, []).text, /Choose how this subagent runs/);
+    // A subscription row answers to its source, not to an API provider.
+    const subscription = apiRow({ route: { kind: ROUTE_KIND_API_MODEL, target_id: 'claudexor::codex-models=gpt' } });
+    assert.match(rowStatus(subscription, base).text, /Subscription model/);
+    assert.deepEqual(rowMeta(subscription, base, []),
+        { text: 'stored as claudexor::codex-models=gpt', tone: '' });
+    // A session already spells harness and model in its own controls.
+    assert.deepEqual(rowMeta(sessionRow(), base, []), { text: '', tone: '' });
+    // An error and the fresh-row invitation still outrank the disclosure.
+    assert.deepEqual(rowMeta({ ...row, _uiAttempted: true }, base, ['Subagent 1 needs a model or agent-session route.']),
+        { text: 'Subagent 1 needs a model or agent-session route.', tone: 'error' });
+    assert.match(rowMeta(apiRow({ route: { kind: ROUTE_KIND_API_MODEL, target_id: '' } }), base, []).text,
+        /^Choose how this subagent runs/);
+});
+
+test('the editor derives its provider list from the settings document it is given', () => {
+    const editor = createAvailableSubagentsEditor({ doc: null, win: null });
+    assert.doesNotThrow(() => editor.setSourceContext({
+        settings: { OPENAI_API_KEY: '***set***' }, providerProfiles: { openai: { label: 'OpenAI' } },
+    }));
+    // The signature moves with the provider list, so a key typed in Accounts
+    // repaints these rows instead of leaving a stale picker on screen.
+    const state = { ...QUIET_STATE, setting: setting([apiRow()]), providers: [], providerProfiles: {} };
+    assert.notEqual(
+        availableSubagentsRenderSignature(state),
+        availableSubagentsRenderSignature({ ...state, providers: configuredApiProviders({ OPENAI_API_KEY: 'k' }) }),
+    );
 });
