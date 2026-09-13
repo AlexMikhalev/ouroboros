@@ -1041,7 +1041,8 @@ export function unconfirmedForegroundCardIds(cards, activeIds) {
 
 // Extracted from chat.js (byte-ratchet payment): the DOM half of the routing
 // acknowledgement, kept beside its text builder above.
-export function clearTransientRoutingAnnotations(messagesDiv) {
+export function clearTransientRoutingAnnotations(messagesDiv = globalThis.document?.querySelector?.('#chat-messages')) {
+    if (!messagesDiv) return false;
     let changed = false;
     for (const note of messagesDiv.querySelectorAll(
         '.msg-routing-annotation[data-annotation-status="pending"]',
