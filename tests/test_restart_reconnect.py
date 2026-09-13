@@ -52,7 +52,8 @@ def test_chat_resyncs_history_after_reconnect():
     history = client[client.index("chatHistory:"):client.index("health:")]
     assert "await apiClient.chatHistory({ chatId })" in source
     assert "if (chatId !== 1) params.set('chat_id', String(chatId));" in history
-    assert "fetchJson(`/api/chat/history${params.size ? `?${params}` : ''}`" in history
+    assert "const query = params.toString();" in history
+    assert "fetchJson(`/api/chat/history${query ? `?${query}` : ''}`" in history
     assert not any(quota in history for quota in ("n_human", "n_progress", "limit"))
     assert "limit=1000" not in source
     assert "cache: 'no-store'" in history
