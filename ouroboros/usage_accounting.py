@@ -660,6 +660,13 @@ def _per_slot(value: Any, count: int) -> list:
     return [value] * count
 
 
+def _submitted_mode_for_preference(preference: Any) -> str:
+    """Project a captured preference onto the provider-neutral reservation mode."""
+    return {"standard": "default", "fast": "priority", "economy": "flex"}.get(
+        str(preference or "").strip().lower(), ""
+    )
+
+
 def review_wave_admission(
     drive_root: pathlib.Path | str | None = None,
     *,
@@ -673,6 +680,7 @@ def review_wave_admission(
     global_limit_usd: float | None = None,
     categories: str | Sequence[str] = "",
     slot_ids: str | Sequence[str] = "",
+    processing_preferences: str | Sequence[str] = "",
 ) -> Dict[str, Any]:
     """Read-only all-slot admission using the normal reservation math; fail open.
     ``remaining_usd_override`` serves callers outside any task usage scope (the
@@ -750,6 +758,7 @@ def review_wave_admission(
         outputs = _per_slot(max_completion_tokens, len(models))
         seat_categories = _per_slot(categories, len(models))
         seat_slot_ids = _per_slot(slot_ids, len(models))
+        seat_processing = _per_slot(processing_preferences, len(models))
         base_scope = current_usage_scope() or UsageScope()
         total = 0.0
         for index, model in enumerate(models):
@@ -767,6 +776,8 @@ def review_wave_admission(
                         prompt_tokens_estimate=max(0, int(chars[index] or 0)) // 4,
                         max_completion_tokens=max(0, int(outputs[index] or 0)),
                         task_id=str(task_id or ""),
+                        processing_preference=str(seat_processing[index] or ""),
+                        submitted_processing_mode=_submitted_mode_for_preference(seat_processing[index]),
                     )
                 )
             result["slot_bounds"].append(None if bound is None else round(float(bound), 6))
