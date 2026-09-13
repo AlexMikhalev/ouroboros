@@ -14,7 +14,7 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D04 | Tool execution: registry, access & typed results | 20 | 0 |
 | D05 | Tool surfaces: files, code, shell, media, external | 28 | 0 |
 | D06 | Review stack | 66 | 0 |
-| D07 | Delegation, subagents & Claudexor | 48 | 0 |
+| D07 | Delegation, subagents & Claudexor | 49 | 0 |
 | D08 | Supervisor: queue, workers, events & runtime control | 44 | 0 |
 | D09 | Cancellation, owner control & process custody | 13 | 0 |
 | D10 | Git, update & release machinery | 28 | 0 |
@@ -24,11 +24,11 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D14 | Skills & extensions | 54 | 0 |
 | D15 | Memory, knowledge, consciousness & self-evolution | 18 | 0 |
 | D16 | Observability, usage accounting & cost | 11 | 0 |
-| D17 | Projects, workspaces & task results | 20 | 0 |
+| D17 | Projects, workspaces & task results | 21 | 0 |
 | D18 | Launcher, packaging, platform & shared substrate | 14 | 0 |
 | D19 | Frozen contracts (ABI) | 10 | 0 |
 | D20 | Presence | 9 | 0 |
-| **total** | | **538** | **0** |
+| **total** | | **540** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -393,6 +393,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/delegate_custody.py`
 - `ouroboros/delegate_custody_reconcile.py`
 - `ouroboros/delegate_custody_usage.py`
+- `ouroboros/delegate_directory.py`
 - `ouroboros/delegate_evidence.py`
 - `ouroboros/delegate_hold.py`
 - `ouroboros/delegate_interactions.py`
@@ -726,6 +727,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/tools/project_journal.py`
 - `ouroboros/workspace_admission.py`
 - `ouroboros/workspace_executor.py`
+- `ouroboros/workspace_file_outputs.py`
 - `ouroboros/workspace_patch_capture.py`
 - `ouroboros/workspace_patch_rules.py`
 - `ouroboros/workspace_preflight.py`
