@@ -2869,6 +2869,9 @@ export function createChatInstance({
 
                 const oldRecentIds = recentHistoryIds;
                 recentHistoryIds = new Set(messages.flatMap(historyRowIds));
+                const pagerBeforeRecent = historyPager.getState();
+                const rechainRecent = !data.reason_code && pagerBeforeRecent.initialized && !pagerBeforeRecent.canNewer
+                    && [...oldRecentIds].some(id => !recentHistoryIds.has(id));
                 for (const id of oldRecentIds) {
                     if (data.window?.truncated_by?.includes(`${id.split(':')[0]}_source_unavailable`)) recentHistoryIds.add(id);
                 }
@@ -2879,8 +2882,9 @@ export function createChatInstance({
                 }
                 else applyHistoryMessages(messages, { fromReconnect, includeUser: true });
                 const recentState = historyPager.getState();
-                const releasableRecentIds = recentState.olderExhausted ? oldRecentIds : [];
+                const releasableRecentIds = rechainRecent || recentState.canNewer ? [] : oldRecentIds;
                 withStableViewport(() => releaseHistoryIds(releasableRecentIds));
+                if (rechainRecent && !destroyed) void historyPager.latest();
                 if (armedAtStart) {
                     const represented = new Set(messages.map(row => row.presentation_owner_task_id || row.task_id));
                     for (const id of cardsAtStart) if (!represented.has(id)) pendingLiveEvictions.add(id);
