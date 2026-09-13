@@ -332,6 +332,8 @@ CURRENT_PRODUCER_CONTRACTS = {
     # The harvest puts every identifier first. A standalone capture failure
     # is an error; the actual successful-write suffix is pinned separately.
     "OUTPUT_CAPTURE_FAILED": (True, "error"),
+    "TOOL_ERROR": (True, "error"),
+    "native:TOOL_REPORTED_FAILURE:TOOL_ERROR": (True, "tool_reported_failure"),
 }
 
 
