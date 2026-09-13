@@ -250,7 +250,36 @@ class _LocalLaneMixin:
         from ouroboros.model_slots import resolve_processing_preference
 
         preference = resolve_processing_preference(override=processing_preference)
-        local_target = {"provider": "local", "usage_model": "local-model", "processing_preference": preference}
+
+        target = {"provider": "local", "resolved_model": "local-model", "usage_model": "local-model",
+                  "processing_preference": preference,
+                  "context_window_tokens": evidence.get("context_window"),
+                  "context_window_confirmed": evidence.get("confirmed") is True}
+        return target, kwargs
+
+    def _finalize_local_candidate(self, target: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Measure on the serving instance, then bind the output allowance before send.
+
+        This explicit stage may perform bounded, non-generating loopback I/O.
+        The payload builder and shared context arithmetic remain pure.
+        """
+        from ouroboros.local_model import get_manager
+
+        target["local_input_measurement"] = get_manager().measure_prepared_input(payload)
+        return _finalized_physical_candidate(target, payload, "chat.completions")
+
+    def _chat_local(
+        self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]],
+        max_tokens: int, tool_choice: str, timeout: Optional[float] = None,
+        processing_preference: Optional[str] = None,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """Send exactly the previously prepared complete local candidate."""
+        client = self._get_local_client()
+        local_target, candidate = self._build_local_candidate(
+            messages, tools, max_tokens, tool_choice, timeout, processing_preference)
+        candidate = self._finalize_local_candidate(local_target, candidate)
+        clean_tools = candidate.get("tools")
+        preference = local_target["processing_preference"]
         # ONE physical attempt per call. Re-sending here spent the caller's
         # physical-attempt budget without the caller authorising it, so a
         # transient local failure now surfaces to the single retry policy that
@@ -258,10 +287,24 @@ class _LocalLaneMixin:
         # the attempts it authorises.
         try:
             request = _attempt_request(local_target, candidate, source="llm.local")
+            before = _candidate_before_dispatch(candidate, request)
+
+            def check_instance(reservation):
+                measured = local_target.get("local_input_measurement") or {}
+                if measured.get("supported"):
+                    from ouroboros.local_model import get_manager
+                    from ouroboros.usage_accounting import PhysicalAttemptPreparationFailed
+
+                    current = get_manager().serving_context_evidence()
+                    if (current.get("process_id") != measured.get("process_id") or not current.get("confirmed")
+                            or current.get("context_window") != measured.get("context_window")):
+                        raise PhysicalAttemptPreparationFailed("The measured local model instance changed before dispatch")
+                return before(reservation)
+
             resp = _execute_candidate(
                 request,
                 lambda: client.chat.completions.create(**candidate),
-                _candidate_before_dispatch(candidate, request),
+                check_instance,
             )
         except UsageAccountingError:
             raise
