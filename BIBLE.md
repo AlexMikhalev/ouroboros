@@ -409,12 +409,14 @@ their application in Cyber Pro follows P0 and the P3 rule above:
   — but never abandoned or replaced wholesale. An immune system without
   durable memory is not immune. These files share the Ship-of-Theseus
   protection of the constitutional core.
-- **Audited advisory skip only.** `skip_advisory_review` waives only
-  advisory freshness and advisory-carried obligations/debt. The choice is
-  LLM-first, not a hardcoded allowlist of change types. Every skip is
+- **Audited advisory skip only.** Outside Cyber Pro, `skip_advisory_review`
+  waives only advisory freshness and advisory-carried obligations/debt. The
+  choice is LLM-first, not a hardcoded allowlist of change types. Every skip is
   explicit and durably audited. It cannot waive independently applicable tests,
-  the triad, applicable scope review, staged-fingerprint revalidation, or
-  final commit/tag/SHA binding. Silent skip is forbidden.
+  the triad, applicable scope review, staged-fingerprint revalidation, or final
+  commit/tag/SHA binding. In Cyber Pro these remain recorded evidence and
+  provenance facts; they never become an internal veto or permission request.
+  Silent skip is forbidden outside Cyber Pro.
 - **Selected enforcement, independent evidence.** The owner selects review
   enforcement (`blocking` or `advisory`) outside Cyber Pro; in Cyber Pro
   Ouroboros may select it itself and retains final judgment regardless of
