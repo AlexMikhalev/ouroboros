@@ -35,6 +35,7 @@ from ouroboros.llm_anthropic import (
     _AnthropicLaneMixin,  # noqa: F401
 )
 from ouroboros.llm_attempt import (
+    _attempt_request,  # noqa: F401 -- historical public import surface
     PROVIDER_POLICY_REFUSAL,  # noqa: F401
     ProviderPolicyRefusal,  # noqa: F401
     _applied_payload_cache_ttl,  # noqa: F401
