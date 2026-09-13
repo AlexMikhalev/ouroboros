@@ -2370,7 +2370,6 @@ export function createChatInstance({
         });
         const messageKey = opts.historyId ? `history:${opts.historyId}` : legacyKey;
         if (opts.historyId || _historyReplayActive) {
-            // Retained page nodes can outlive the bounded live-message key FIFO.
             const prior = opts.historyId
                 ? historyNodes(opts.historyId).find(node => node.classList.contains('chat-bubble'))
                 : Array.from(messagesDiv.querySelectorAll('.chat-bubble')).find(node => node.dataset.messageKey === legacyKey);
