@@ -131,13 +131,22 @@ def test_android_ci_is_fork_safe_and_required_for_publication():
     assert "python -m pytest android/tests tests/test_android_release.py" in validation
     assert "--create-development-key" not in release
     assert "if: startsWith(github.ref, 'refs/tags/v')" in release
-    assert "needs: [android-test, release-preflight]" in release
+    assert "needs: [android-test, android-emulator-smoke, release-preflight]" in release
     assert "publisher signing credentials are required" in release
     assert "android-build" in next(line for line in publication.splitlines() if "needs:" in line)
     assert "secrets." not in release.split("- name: Generate Android source", 1)[1]
     for suffix in ("android-arm64.tar.gz", "android.apk"):
         assert f"release-artifacts/Ouroboros-*-{suffix}" in publication
     assert "draft: true" in publication
+
+
+def test_android_ci_has_representative_emulator_matrix_without_calling_it_device_qualification():
+    workflow = (REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    smoke = workflow.split("  android-emulator-smoke:", 1)[1].split("  # The publisher key", 1)[0]
+    assert "api-level: [26, 30, 33, 36]" in smoke
+    assert "adb install -r" in smoke
+    assert "dumpsys package ai.ouroboros.android" in smoke
+    assert "SELinux" not in smoke
 
 
 def test_android_smoke_requirements_do_not_claim_a_device_was_tested():
