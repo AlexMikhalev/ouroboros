@@ -449,7 +449,7 @@ def test_registry_guard_native_outcomes_preserve_exact_text(
     from ouroboros.tool_capabilities import LOCAL_READONLY_SUBAGENT_TOOL_NAMES
 
     registry = SimpleNamespace(
-        _ctx=ctx,
+        _ctx=ctx, _entries={},
         _readonly_tool_allowed=lambda name: name in LOCAL_READONLY_SUBAGENT_TOOL_NAMES,
     )
     kwargs = {
@@ -501,7 +501,7 @@ def test_registry_guard_allow_paths_return_no_result(monkeypatch) -> None:
     from ouroboros.tool_capabilities import LOCAL_READONLY_SUBAGENT_TOOL_NAMES
 
     registry = SimpleNamespace(
-        _ctx=ctx,
+        _ctx=ctx, _entries={},
         _readonly_tool_allowed=lambda name: name in LOCAL_READONLY_SUBAGENT_TOOL_NAMES,
     )
     assert _subagent_and_update_guard_result(

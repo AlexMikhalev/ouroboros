@@ -63,7 +63,7 @@ def test_scope_review_floor_gateway_surface_is_gone():
     assert not hasattr(gw_settings, "_api_owner_scope_review_floor_sync")
 
 
-def test_scope_review_floor_guards_are_gone_but_family_read_carve_survives():
+def test_scope_review_floor_and_semantic_owner_detectors_are_gone():
     from ouroboros import browser_policy
     from ouroboros.tools import browser, registry, registry_guard_process
 
@@ -76,9 +76,9 @@ def test_scope_review_floor_guards_are_gone_but_family_read_carve_survives():
     ):
         assert not hasattr(browser, name)
         assert not hasattr(browser_policy, name)
-    # The shared read-carve the floor guard adjudicated stays, family-wide.
+    # Cheap inspection classification remains; semantic owner vetos were removed.
     assert callable(registry_guard_process._is_pure_read_inspection)
-    assert callable(registry._detect_safety_mode_self_lowering)
+    assert not hasattr(registry, "_detect_safety_mode_self_lowering")
 
 
 def test_scope_review_floor_left_no_source_remnants():

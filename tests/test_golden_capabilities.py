@@ -181,9 +181,10 @@ def test_skill_owner_state_inspection_read_passes(tmp_path, cmd):
 # members; one rejected sibling no longer voids the whole declaration.
 # ---------------------------------------------------------------------------
 
-def test_partial_attachment_set_stages_the_valid_member(tmp_path):
+def test_partial_attachment_set_stages_the_valid_member(tmp_path, monkeypatch):
     from ouroboros.artifacts import stage_task_attachments
 
+    monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: tmp_path))
     aws = tmp_path / ".aws"
     aws.mkdir()
     (aws / "credentials").write_text("[default]\n", encoding="utf-8")

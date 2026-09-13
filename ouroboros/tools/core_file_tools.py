@@ -425,7 +425,8 @@ def _data_read(
         if _resolved_binding is not None
         else pathlib.Path(ctx.drive_root)
     )
-    if _is_skill_owner_state_target(target, state_root) and target.name.lower() != "review.json":
+    if (not _raw_owner_secret_access_allowed(ctx)
+            and _is_skill_owner_state_target(target, state_root) and target.name.lower() != "review.json"):
         # Owner item A.20: this refusal was the one in the family that shipped WITHOUT
         # the warning marker, so the adapter read a policy denial as a successful read
         # and the model was handed the refusal as if it were file content. The marker

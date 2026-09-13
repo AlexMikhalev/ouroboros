@@ -12,6 +12,7 @@ pagination, injective tool slugs, resource/structuredContent fidelity).
 from __future__ import annotations
 
 import asyncio
+import pathlib
 import types
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -287,7 +288,8 @@ def test_export_component_policy_matches_patch_policy():
     assert _sensitive_output_component_reason((".github", "workflows", "ci.yml")) == ""
     assert _sensitive_output_component_reason((".env.example",)) == ""
     assert "dotenv secret" in _sensitive_output_component_reason((".env",))
-    assert "credential filename" in _sensitive_output_component_reason(("keys", "id_rsa"))
+    assert _sensitive_output_component_reason(("keys", "id_rsa")) == ""
+    assert _sensitive_output_component_reason(("token-report", "run.log")) == ""
     # A key/certificate SUFFIX carries no authority any more: exporting
     # server.pem is ordinary owner output (owner answer Q6 of batch 2).
     assert _sensitive_output_component_reason(("server.pem",)) == ""
@@ -367,9 +369,10 @@ def test_upload_route_permits_env_example_and_ordinary_names(tmp_path, monkeypat
     assert [row["status"] for row in manifest] == ["staged"]
 
 
-def test_host_path_secret_rejection_names_the_rule(tmp_path):
+def test_host_path_secret_rejection_names_the_rule(tmp_path, monkeypatch):
     from ouroboros.artifacts import stage_task_attachments
 
+    monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: tmp_path))
     aws = tmp_path / ".aws"
     aws.mkdir()
     credentials = aws / "credentials"
@@ -378,7 +381,7 @@ def test_host_path_secret_rejection_names_the_rule(tmp_path):
     manifest = stage_task_attachments(tmp_path / "drive", "task-3", [str(credentials)])
     assert manifest[0]["status"] == "rejected"
     assert manifest[0]["reason"] == "secret_source"
-    assert ".aws" in manifest[0]["rule"]
+    assert "owner credential location" in manifest[0]["rule"]
 
 
 # ---------------------------------------------------------------------------

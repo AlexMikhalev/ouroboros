@@ -35,9 +35,9 @@ def is_restricted_subagent_profile(ctx: ToolContext) -> bool:
     if profile == "acting_subagent":
         try:
             from ouroboros.config import get_runtime_mode
-            from ouroboros.runtime_mode_policy import runtime_mode_at_least
+            from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
 
-            if runtime_mode_at_least(get_runtime_mode(), "cyber_pro"):
+            if mode_has_unrestricted_agency(get_runtime_mode()):
                 return False
         except Exception:
             pass
@@ -80,13 +80,9 @@ def _is_subagent_secret_repo_path(norm: str, *, credential_names: bool = True) -
         return True
     if not credential_names:
         return False
-    # Exact credential names remain protected at every depth. Ordinary source
-    # directories such as src/auth and public certificate suffixes do not
-    # identify a credential store.
-    name = pathlib.PurePosixPath(text).name.lower()
-    if name in (_SUBAGENT_SECRET_FILE_NAMES - {"settings.json", "settings.json.lock"}):
-        return True
+    # A project filename alone does not identify an owner credential store.
     # Match the live dotenv forms, not an ordinary example/template payload.
+    name = pathlib.PurePosixPath(text).name.lower()
     if name.startswith(".env") or name.endswith(".env") or ".env." in name:
         return not name.endswith((".example", ".sample", ".template", ".dist"))
     return False

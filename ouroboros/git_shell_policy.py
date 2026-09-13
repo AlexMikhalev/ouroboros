@@ -127,40 +127,8 @@ def _git_config_readonly(args: list[str]) -> bool:
 # unknown future verb) only read — fail-open on unknown verbs is deliberate: the
 # hazard is a closed, named set of identity mutations, and the LLM safety layer
 # still reviews intent (#447 A7: the old substring scan refused `rg "gh auth"`).
-_GH_AUTH_MUTATING_VERBS = frozenset({"login", "logout", "refresh", "switch", "setup-git"})
 
 
-def gh_shell_block_reason(raw_cmd: Any, *, runtime_mode: str = "") -> str:
-    """Positional gh policy, with Cyber Pro owner-authority escape.
-
-    The argv/segment parser remains the source of the ordinary-mode policy.
-    Cyber Pro is the explicit owner-selected mode that permits technical
-    authentication and repository setup attempts; the tool's factual result
-    (including provider/OS failure) is still returned unchanged.
-    """
-    if runtime_mode:
-        from ouroboros.runtime_mode_policy import runtime_mode_at_least
-
-        if runtime_mode_at_least(runtime_mode, "cyber_pro"):
-            return ""
-    for segment in shell_segments(raw_cmd):
-        _env, command = collect_leading_env(segment)
-        if not command:
-            continue
-        head = pathlib.PurePath(str(command[0])).name.lower()
-        if head in {"bash", "sh", "zsh"}:
-            inline = shell_command_string(command)
-            if inline and (nested := gh_shell_block_reason(inline, runtime_mode=runtime_mode)):
-                return nested
-            continue
-        if head != "gh":
-            continue
-        words = [str(t).lower() for t in command[1:] if not str(t).startswith("-")]
-        if len(words) >= 2 and words[0] == "repo" and words[1] in {"create", "delete"}:
-            return "⚠️ SAFETY_VIOLATION: Creating/deleting GitHub repositories requires admin approval."
-        if len(words) >= 2 and words[0] == "auth" and words[1] in _GH_AUTH_MUTATING_VERBS:
-            return "⚠️ SAFETY_VIOLATION: Modifying GitHub authentication is not permitted. Read-only `gh auth status` / `gh auth token` are allowed."
-    return ""
 
 
 def _git_subcommand_and_args(cmd_parts: list[str]) -> tuple[str, list[str]]:
@@ -825,7 +793,7 @@ def external_workspace_git_violation(
             # never resolved. Every other invocation keeps the full argument scan.
             skip_value = False
             pending_path_value = False
-            for arg in invocation[1:]:
+            for arg in (invocation[1:] if destination else []):
                 text = str(arg)
                 if skip_value:
                     skip_value = False

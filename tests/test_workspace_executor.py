@@ -329,9 +329,15 @@ def test_run_script_external_workspace_registers_changed_directory_output(tmp_pa
     assert list(artifact_dir.glob("site.*.zip"))
 
 
-def test_run_script_directory_output_blocks_sensitive_members(tmp_path, monkeypatch):
+def test_run_script_directory_output_keeps_ordinary_names_and_reports_dotenv_skip(tmp_path, monkeypatch):
+    import pathlib
     import ouroboros.safety as safety_mod
 
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: home))
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
     monkeypatch.setattr(safety_mod, "check_safety", lambda *a, **k: (True, ""))
     system_repo = tmp_path / "system"
@@ -357,20 +363,21 @@ def test_run_script_directory_output_blocks_sensitive_members(tmp_path, monkeypa
             "script": (
                 "from pathlib import Path; Path('site').mkdir(); "
                 "Path('site/index.html').write_text('<h1>ok</h1>'); "
-                "Path('site/id_rsa').write_text('SECRETKEY')"
+                "Path('site/id_rsa').write_text('ordinary named fixture'); "
+                "Path('site/.env').write_text('TOKEN=fixture')"
             ),
             "cwd": str(workspace),
             "outputs": ["site"],
         },
     )
 
-    # D4 (capinv-447): a credential-shaped MEMBER is skipped with a receipt;
-    # the rest of the declared directory still exports (per-member, not atomic).
+    # Ordinary project names export. The retained dotenv exclusion still
+    # reports one skipped member without discarding the rest of the directory.
     assert "ARTIFACT_OUTPUTS" in result
     assert "registered directory output" in result
     assert "skipped 1 member(s)" in result
-    assert "id_rsa" in result
-    assert "credential filename" in result
+    assert ".env" in result
+    assert "dotenv secret" in result
     artifact_dir = data / "task_results" / "artifacts" / "workspace-sensitive-dir-output"
     zips = list(artifact_dir.glob("site.*.zip"))
     assert zips
@@ -378,7 +385,8 @@ def test_run_script_directory_output_blocks_sensitive_members(tmp_path, monkeypa
 
     names = _zipfile.ZipFile(zips[0]).namelist()
     assert any(name.endswith("index.html") for name in names)
-    assert not any("id_rsa" in name for name in names)
+    assert any(name.endswith("id_rsa") for name in names)
+    assert not any(name.endswith(".env") for name in names)
 
 
 def test_run_command_external_workspace_unchanged_directory_output_is_cosmetic(tmp_path, monkeypatch):
@@ -546,14 +554,16 @@ def test_docker_executor_protected_artifact_policy_matches_host_and_backend_spel
 
     backend_policy_host_arg = registry_for_policy("/workspace/executable").execute("run_command", {"cmd": ["cat", "executable"]})
     relative_policy_backend_arg = registry_for_policy("executable").execute("run_command", {"cmd": ["cat", "/workspace/executable"]})
-    backend_policy_interpreter_arg = registry_for_policy("/workspace/executable").execute(
-        "run_command",
-        {"cmd": ["python3", "-c", "open('executable','rb').read()"]},
-    )
+    # Inline program text has no independent semantic veto. Check admission
+    # without pretending an unavailable Docker transport executed the program.
+    from ouroboros.protected_artifacts import shell_block_reason
+    backend_registry = registry_for_policy("/workspace/executable")
+    backend_policy_interpreter_arg = shell_block_reason(
+        backend_registry._ctx, ["python3", "-c", "open('executable','rb').read()"], cwd=str(workspace))
 
     assert "RESOURCE_POLICY_BLOCKED" in backend_policy_host_arg
     assert "RESOURCE_POLICY_BLOCKED" in relative_policy_backend_arg
-    assert "RESOURCE_POLICY_BLOCKED" in backend_policy_interpreter_arg
+    assert backend_policy_interpreter_arg == ""
 
 
 def test_overlay_env_is_case_aware():

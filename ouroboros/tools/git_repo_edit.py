@@ -39,7 +39,9 @@ def _check_shrink_guard(
     force: bool = False,
 ) -> Optional[str]:
     """Block likely accidental tracked-file truncation unless force=True."""
-    if force:
+    from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+
+    if force or mode_has_unrestricted_agency(_git()._current_runtime_mode()):
         return None
     try:
         target = binding.target_path

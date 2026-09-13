@@ -58,7 +58,7 @@ def test_wait_for_page_paint_never_raises():
     browser._wait_for_page_paint(_BadPage(), 3000)
 
 
-def test_evaluate_retries_statement_snippet_in_iife(monkeypatch):
+def test_evaluate_selects_statement_snippet_before_single_execution(monkeypatch):
     # A statement-style snippet (top-level `return`) is a SyntaxError as a raw evaluate
     # expression; the action must retry it wrapped in an IIFE before surfacing a parse error.
     # Both attempts arrive inside the _evaluate_bounded Promise.race deadline wrapper
@@ -86,8 +86,8 @@ def test_evaluate_retries_statement_snippet_in_iife(monkeypatch):
 
     out = browser._browser_action(_Ctx(), "evaluate", value="return 1 + 1;")
     assert "iife-ok" in out
-    assert len(seen) == 2  # raw then IIFE-wrapped
-    assert "})()" not in seen[0] and "})()" in seen[1]
+    assert len(seen) == 1
+    assert "})()" in seen[0]
     assert all("Promise.race" in js for js in seen)  # both attempts stay bounded
 
 
@@ -116,6 +116,22 @@ def test_evaluate_runtime_error_not_misreported_as_syntax(monkeypatch):
         browser._browser_action(_Ctx(), "evaluate", value="return missingFn();")
     assert "ReferenceError" in str(exc.value)
     assert "BROWSER_EVALUATE_SYNTAX_ERROR" not in str(exc.value)
+
+
+def test_browser_disconnect_after_click_never_replays_action(monkeypatch):
+    seen = []
+    page = _RecordingPage()
+    def click(*args, **kwargs):
+        seen.append("click")
+        raise RuntimeError("connection disconnected after dispatch")
+    page.click = click
+    monkeypatch.setattr(browser, "_ensure_browser", lambda ctx, *a, **k: (page, ctx.browser_state))
+    monkeypatch.setattr(browser, "_readonly_subagent", lambda ctx: False)
+    monkeypatch.setattr(browser, "_is_infrastructure_error", lambda ctx: True)
+    monkeypatch.setattr(browser, "cleanup_browser", lambda ctx: None)
+    result = browser._browser_action(_action_ctx(), "click", selector="#submit")
+    assert seen == ["click"]
+    assert "BROWSER_ACTION_OUTCOME_UNKNOWN" in result
 
 
 class _RecordingPage:

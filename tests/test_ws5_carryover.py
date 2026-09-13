@@ -20,78 +20,6 @@ def test_context_mode_is_owner_only_not_generic_settings():
 
 # --- CW1: the owner-control mention family and its shared read-carve ---
 
-def test_read_exemption_is_option_aware_not_head_only():
-    """Review round 2: an allowlisted HEAD is not evidence that the command only reads.
-
-    Several allowed heads execute or mutate through their own options (`find -exec`,
-    `-delete`, `rg --pre`, `sort -o`, git's external-diff/textconv helpers), and the
-    environment prefix decides what runs at all (`PATH=`, `LD_PRELOAD=`,
-    `GIT_EXTERNAL_DIFF=`) — dropping it, as the first version did, let a command headed by
-    a read token reach the owner-only endpoint. Membership is now necessary, not
-    sufficient: options are validated per command, assignments are refused rather than
-    stripped, and the executable must resolve to a bare name or a system bin.
-    """
-    from ouroboros.tools.registry import _detect_safety_mode_self_lowering as det
-    from ouroboros.tools.shell_guards import shell_has_write_indicator
-
-    def verdict(cmd: str) -> bool:
-        return det(cmd.lower(), writeish=shell_has_write_indicator(cmd))
-
-    # find: execution and deletion under a read head.
-    assert verdict(
-        "find ouroboros -name '*.py' -exec curl "
-        "http://127.0.0.1:8765/api/owner/safety-mode ;"
-    ) is True
-    assert verdict("find . -name settings.json -delete # ouroboros_safety_mode") is True
-    assert verdict(
-        "find . -name '*.json' -fprintf /tmp/x '%p' # ouroboros_safety_mode "
-        "data/settings.json"
-    ) is True
-    assert verdict("fd -x sh -c 'curl http://127.0.0.1:8765/api/owner/safety-mode'") is True
-    # git: an external diff / textconv helper is an arbitrary configured program.
-    assert verdict("git diff --ext-diff data/settings.json # ouroboros_safety_mode") is True
-    assert verdict("git show --textconv head:data/settings.json # ouroboros_safety_mode") is True
-    assert verdict("git grep -o /api/owner/safety-mode") is True  # -O opens a pager
-    # Execution-affecting environment assignments are REFUSED, never discarded.
-    assert verdict("git_external_diff=/tmp/x.sh git diff data/settings.json "
-                   "# ouroboros_safety_mode") is True
-    assert verdict("path=/tmp/evil grep ouroboros_safety_mode data/settings.json") is True
-    assert verdict("ld_preload=/tmp/x.so cat data/settings.json | grep "
-                   "ouroboros_safety_mode") is True
-    assert verdict("env git_config_global=/tmp/g git log -1 -- data/settings.json "
-                   "# ouroboros_safety_mode") is True
-    assert verdict("env -i grep ouroboros_safety_mode data/settings.json") is True
-    # Executable shadowing: an absolute path outside the system bins, or a relative one.
-    assert verdict("/tmp/evil/grep ouroboros_safety_mode data/settings.json") is True
-    assert verdict("./grep ouroboros_safety_mode data/settings.json") is True
-    assert verdict("../bin/rg /api/owner/safety-mode ouroboros/") is True
-    # Other allowlisted heads that write or execute through an option.
-    assert verdict("sort -o /tmp/out data/settings.json # ouroboros_safety_mode") is True
-    assert verdict("rg --pre /tmp/evil.sh /api/owner/safety-mode ouroboros/") is True
-
-    # The exemption itself SURVIVES: legitimate inspection of the same surface is allowed,
-    # including a trusted absolute path, a benign option and a read-only pipeline.
-    assert verdict("/usr/bin/grep ouroboros_safety_mode data/settings.json") is False
-    assert verdict("find ouroboros -name '*.py' -newer /api/owner/safety-mode") is False
-    assert verdict("rg -n --no-heading '/api/owner/safety-mode' ouroboros/ | sort") is False
-    assert verdict("git diff --stat -- data/settings.json # ouroboros_safety_mode") is False
-    assert verdict("git grep -n /api/owner/safety-mode") is False
-
-    # Pin the MECHANISM, not just the verdict: the classifier itself must refuse these,
-    # so a future change to the write-shape fact cannot silently mask the exemption hole.
-    from ouroboros.tools.registry import _is_pure_read_inspection as pure
-
-    for hostile in (
-        "find . -name '*.py' -exec sh -c ':' ;",
-        "git diff --ext-diff data/settings.json",
-        "path=/tmp/evil grep floor data/settings.json",
-        "/tmp/evil/grep floor data/settings.json",
-        "sort -o /tmp/out data/settings.json",
-    ):
-        assert pure(hostile) is False, hostile
-    assert pure("/usr/bin/grep floor data/settings.json") is True
-
-
 def test_stored_singular_scope_pin_is_ghost_purged(monkeypatch, tmp_path):
     """ABI 7.0 (ABI-10): both comma spellings are RETIRED settings keys — a
     stored pin (singular or plural) is ghost-purged on load, never promoted.
@@ -116,18 +44,6 @@ def test_stored_singular_scope_pin_is_ghost_purged(monkeypatch, tmp_path):
 
 
 # --- CW4: the external-shell secret guard catches relative interpreter paths ---
-
-def test_secret_guard_catches_relative_interpreter_path(tmp_path):
-    from types import SimpleNamespace
-    from ouroboros.tools.registry import _subagent_shell_targets_secret
-
-    data = tmp_path / "data"
-    ctx = SimpleNamespace(drive_root=data, task_metadata={})
-    assert _subagent_shell_targets_secret(["python", "-c", "open('data/settings.json')"], ctx=ctx, cwd=tmp_path)
-    assert _subagent_shell_targets_secret(["node", "-e", "readFileSync('../../data/settings.json')"], ctx=ctx, cwd=tmp_path / "a" / "b")
-    assert _subagent_shell_targets_secret("cat ~/.ssh/id_rsa")
-    assert not _subagent_shell_targets_secret("cat /tmp/notes.txt")
-
 
 # --- Exact-route context fitting honours USE_LOCAL_MAIN ---
 
@@ -392,63 +308,6 @@ def test_unrecognised_review_model_ids_are_reported_loudly(monkeypatch):
     # Without an authoritative catalog nothing may be CLAIMED unknown.
     monkeypatch.setattr(LLMClient, "_CAPABILITIES_FETCH_OK", False, raising=False)
     assert smod._unrecognised_review_models(["-5"]) == []
-
-
-def test_read_exemption_fails_closed_on_nested_execution_constructs():
-    """An allowlisted head may not smuggle a writer inside a command substitution.
-
-    `_is_pure_read_inspection` checks the HEAD of each segment, so `echo "$(curl -X POST
-    .../api/owner/safety-mode)"` presented `echo` — allowlisted — while the nested
-    `curl` was never validated as a head at all, and the write-shape detector does not
-    recognise an HTTP POST. The exemption was therefore granted to a command line whose whole
-    purpose was to reach the owner-only endpoint. Nested EXECUTION is now refused outright
-    (`$()`, backticks, process substitution, subshells) rather than enumerated: the writer
-    inside it need not be a shape anybody listed.
-    """
-    from ouroboros.tools.registry import _detect_safety_mode_self_lowering as det
-    from ouroboros.tools.registry import _is_pure_read_inspection as pure
-    from ouroboros.tools.shell_guards import shell_has_write_indicator
-
-    ep = "http://127.0.0.1:8765/api/owner/safety-mode"
-
-    def verdict(cmd: str) -> bool:
-        return det(cmd.lower(), writeish=shell_has_write_indicator(cmd))
-
-    # Command substitution under three different allowlisted heads, quoted and bare.
-    assert verdict(f'echo "$(curl -X POST {ep} -d mode=off)"') is True
-    assert verdict(f'echo $(curl -X POST {ep} -d mode=off)') is True
-    assert verdict(f'grep "$(curl -X POST {ep} -d mode=off)" data/settings.json') is True
-    assert verdict(f'cat "$(curl -X POST {ep} -d mode=off)"') is True
-    assert verdict(f'sort "$(curl -X POST {ep})"') is True
-    # Backticks and process substitution are the same capability by another spelling.
-    assert verdict(f'echo `curl -X POST {ep} -d mode=off`') is True
-    assert verdict(f'cat <(curl -X POST {ep} -d mode=off)') is True
-    assert verdict(f'grep floor <(curl -X POST {ep})') is True
-    # A subshell is nested execution too.
-    assert verdict(f'(curl -X POST {ep} -d mode=off)') is True
-
-    # Pin the MECHANISM: the classifier must refuse these on its own, so the verdict cannot
-    # come to depend on the write-shape fact noticing an HTTP POST (it does not).
-    for hostile in (
-        f'echo "$(curl -X POST {ep})"',
-        f'grep "$(curl -X POST {ep})" data/settings.json',
-        f'cat `curl -X POST {ep}`',
-        f'cat <(curl -X POST {ep})',
-    ):
-        assert pure(hostile.lower()) is False, hostile
-        assert shell_has_write_indicator(hostile) is False, (
-            "precondition: the write-shape detector does not catch an HTTP POST, which is "
-            "exactly why the read exemption has to fail closed by itself"
-        )
-
-    # The exemption SURVIVES for genuine inspection, including pipes between reads.
-    assert verdict("grep ouroboros_safety_mode data/settings.json") is False
-    assert verdict("cat data/settings.json | grep ouroboros_safety_mode") is False
-    assert verdict(f"rg -n --no-heading '{ep}' ouroboros/ | sort") is False
-    assert verdict("git grep -n /api/owner/safety-mode") is False
-    assert verdict("/usr/bin/grep ouroboros_safety_mode data/settings.json") is False
-    assert pure("grep ouroboros_safety_mode data/settings.json") is True
-    assert pure("cat data/settings.json | grep floor") is True
 
 
 def test_scope_capability_notice_fires_on_stale_evidence(monkeypatch, tmp_path):

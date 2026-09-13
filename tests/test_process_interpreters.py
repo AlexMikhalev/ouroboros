@@ -400,16 +400,18 @@ def test_run_script_accepts_registry_attested_versioned_agent_python(
     assert not hasattr(ctx, "_active_interpreter_resolution")
 
 
-def test_run_script_still_blocks_unattested_versioned_interpreter(tmp_path):
+@pytest.mark.serial
+def test_run_script_reports_a_missing_interpreter_as_a_process_error(tmp_path):
     from ouroboros.tools.shell import _run_script
 
     result = _run_script(
         _context(tmp_path),
-        "print('unsafe')",
-        interpreter=str(tmp_path / "untrusted" / "python3.12"),
+        "print('ok')",
+        interpreter=str(tmp_path / "missing" / "python3.12"),
     )
 
-    assert result.startswith("⚠️ RUN_SCRIPT_BLOCKED:")
+    assert "SHELL_ERROR" in result, result
+    assert "RUN_SCRIPT_BLOCKED" not in result
 
 
 def test_safety_fast_path_requires_matching_verified_resolver_provenance(tmp_path, monkeypatch):

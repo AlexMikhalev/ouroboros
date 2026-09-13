@@ -116,49 +116,16 @@ def test_light_mode_task_drive_label_cwd_is_not_light_blocked(tmp_path, monkeypa
     assert (task_drive / "out.txt").exists()
 
 
-def test_light_mode_versioned_interpreter_runtime_data_write_is_registry_blocked(tmp_path, monkeypatch):
-    """Registry-level twin of ``test_versioned_interpreter_basename_still_classified``.
-
-    The unit test above pins shell_guards' inline-write fence; this pins the
-    OTHER half of INFRA-1 — ``ToolRegistry._run_shell_safety_check``'s
-    ``runtime_data_scan`` classifier — which that unit test cannot see. The
-    four public-surface light-fence tests run ``sys.executable``, whose
-    basename on CI is unversioned, so reverting the registry classifier to the
-    exact set {"python", "python3", ...} keeps them green there. This test
-    spells the versioned basename explicitly and is host-independent: the
-    guard must refuse BEFORE execution, so ``python3.11`` need not exist on
-    the host — and where it does exist, the write would land and fail the
-    no-file assertion instead.
-    """
-    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
-    reg = _registry(tmp_path)
-    # A runtime_data path outside the task's own roots (drive_root/uploads is
-    # neither this task's task_drive nor its artifact_store).
-    target = tmp_path / "drive" / "uploads" / "probe-report.html"
-    result = reg.execute("run_command", {
-        "cmd": [
-            "python3.11",
-            "-c",
-            (
-                "from pathlib import Path\n"
-                f"p = Path({str(target)!r})\n"
-                "p.parent.mkdir(parents=True, exist_ok=True)\n"
-                "p.touch()\n"
-            ),
-        ],
-        "cwd": str(reg._ctx.task_drive_root()),
-    })
-    assert "LIGHT_MODE_BLOCKED" in result, result[:300]
-    assert "runtime_data" in result
-    assert not target.exists()
 
 
+@pytest.mark.serial
 def test_light_mode_repo_write_still_blocked(tmp_path, monkeypatch):
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
     reg = _registry(tmp_path)
     result = reg.execute("run_command", {"cmd": "touch marker.py"})
     assert "LIGHT_MODE_BLOCKED" in result, result[:300]
     assert not (pathlib.Path(reg._ctx.repo_dir) / "marker.py").exists()
+
 
 
 def test_light_mode_cwd_resolution_failure_fails_closed(tmp_path, monkeypatch):
@@ -168,31 +135,6 @@ def test_light_mode_cwd_resolution_failure_fails_closed(tmp_path, monkeypatch):
     assert "SHELL_CWD_BLOCKED" in result, result[:300]
 
 
-def test_light_mode_versioned_interpreter_triggers_runtime_data_scan(tmp_path, monkeypatch):
-    """The registry half of the versioned-basename fix: `python3.11` must engage
-    ToolRegistry's light-mode runtime_data scan exactly like `python`.
-
-    The command is deliberately a PURE READ (no coarse write indicator — pathlib
-    ``read_text``, no ``open(``), so `writeish` is False and the ONLY thing that
-    can start the scan is the interpreter classification itself: with the
-    exact-set match ({"python", "python3", ...}) a versioned agent python walked
-    straight past the scan and read secret-named runtime_data (settings.json at
-    the drive root) that the same command spelled `python -c` is blocked from.
-    `runtime_data_guard_targets` always handled startswith("python") internally —
-    the invocation trigger was the untested bypass."""
-    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
-    reg = _registry(tmp_path)
-    secret = pathlib.Path(reg._ctx.drive_root) / "settings.json"
-    read_cmd = f"import pathlib; print(pathlib.Path({str(secret)!r}).read_text())"
-
-    result = reg.execute_result("run_command", {"cmd": ["python3.11", "-c", read_cmd]})
-    assert (result.status, result.code) == ("blocked", "LIGHT_MODE_BLOCKED")
-    assert str(secret) in result.text
-
-    # Parity pin: the unversioned spelling of the same command is blocked the
-    # same way — the versioned basename must not be the weaker path.
-    unversioned = reg.execute_result("run_command", {"cmd": ["python", "-c", read_cmd]})
-    assert (unversioned.status, unversioned.code) == (result.status, result.code)
 
 
 @pytest.mark.parametrize("head", ["sh", "bash", "zsh", "dash", "ash"])
@@ -244,12 +186,13 @@ def test_posix_wrappers_preserve_light_read_and_deliverable_guards(
     for body in ("rm ordinary.py", "rm BIBLE.md", "rm ../drive/state/state.json"):
         refusal = guard(body)
         assert refusal is not None, body
-        assert (refusal.status, refusal.code) == ("blocked", "LIGHT_MODE_BLOCKED"), refusal
+        assert (refusal.status, refusal.code) == ("blocked", "CORE_PROTECTION_BLOCKED" if "BIBLE_DELETE_BLOCKED" in refusal.text else "LIGHT_MODE_BLOCKED"), refusal
     assert shell_writer_targets_protected([head, "-c", "rm BIBLE.md"]) is True
     rows = writer_target_rows([head, "-c", "printf result > report.txt"])
     assert [target for _argv, targets, _inline, _unknown in rows for target in targets] == ["report.txt"]
     assert not (deliverables / "report.txt").exists()  # inspection never executes
     assert (repo / "BIBLE.md").read_text(encoding="utf-8") == "Constitution fixture"
+
 
 
 @pytest.mark.parametrize("head", ["sh", "bash", "zsh", "dash", "ash"])

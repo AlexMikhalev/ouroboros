@@ -5,21 +5,22 @@ that the current bytes are publication-ready.  It does know whether the action i
 visible and whether an ordinary managed task may start to repair/review/publish the
 skill.  The selected-skill preflight owns the later scanner-backed readiness fact.
 
-Imports ONLY the config-level review-status constants — no skill loading, no gateway
-code — so it stays a thin, dependency-light predicate.
+Imports only review vocabulary and the effective runtime policy — no skill loading
+or gateway code — so it stays a thin predicate.
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict
 
+from ouroboros.config import get_runtime_mode
+from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
 from ouroboros.skill_review_status import STATUS_CLEAN, STATUS_WARNINGS, normalize_skill_review_status
 
 # Sources whose payload may be submitted to the hub (native without a marker is
 # handled by skill_loader reclassification, not here).
 PUBLISHABLE_SOURCES = ("external", "self_authored", "user_repo", "ouroboroshub", "clawhub")
-# A no-blocker review — clean OR advisory-only warnings (warnings are disclosed in the
-# PR body). This is the SSOT both the backend gate and the UI predicate use.
+# Ordinary-mode publication requires clean or advisory-only review warnings.
 PUBLISHABLE_STATUSES = frozenset({STATUS_CLEAN, STATUS_WARNINGS})
 
 
@@ -35,14 +36,15 @@ def submit_hub_eligibility(
 
     ``disabled`` is only the compatibility projection of
     ``not task_start_allowed``.  Repairable review states keep the ordinary task
-    available; the authoritative tool still enforces a fresh publishable review
-    before any outbound effect.
+    available; ordinary publication requires a fresh publishable review, while
+    Cyber Pro retains review and scanner evidence as advice.
     """
     src = str(source or "native").lower()
     # Normalize the verdict the SAME way the backend publish gate does, so a raw verdict
     # (e.g. 'pass'/'advisory_pass') and the normalized form ('clean'/'warnings') agree.
     review_status = normalize_skill_review_status(review_status)
-    if src not in PUBLISHABLE_SOURCES:
+    cyber = mode_has_unrestricted_agency(get_runtime_mode())
+    if src not in PUBLISHABLE_SOURCES and not cyber:
         return {
             "visible": False,
             "publication_ready": False,
@@ -60,7 +62,9 @@ def submit_hub_eligibility(
             "state": "hard_block",
             "reason": "Configure GITHUB_TOKEN in Settings → Secrets",
         }
-    if str(review_profile or "") == "owner_attested":
+    if cyber:
+        reason = "Open Publish to inspect current bytes; review and scanner findings are advisory in Cyber Pro"
+    elif str(review_profile or "") == "owner_attested":
         # Owner-attested skills SKIPPED the LLM review; a public submission needs the
         # full tri-model review, so the hub refuses them.
         reason = "Owner-attested skills need a full LLM review before publication"

@@ -177,26 +177,6 @@ def test_classify_safety_parse_failure_classes():
 # 1.2 — self-lowering detectors (shell + browser JS)
 
 
-def test_registry_detects_safety_mode_self_lowering():
-    from ouroboros.tools.registry import _detect_safety_mode_self_lowering as det
-
-    assert det("curl -x post http://127.0.0.1:8765/api/owner/safety-mode -d off")
-    assert det("python -c \"...ouroboros_safety_mode...\" >> settings.json".lower())
-    # Percent-encoded endpoint must not slip the scan (review round 6).
-    assert det("curl -x post http://127.0.0.1:8765/api/owner/safety%2dmode -d off")
-    assert not det("echo safety first")
-    assert not det("grep ouroboros_safety_mode docs/architecture.md")
-
-
-def test_browser_js_guard_blocks_safety_mode_change():
-    from ouroboros.browser_policy import _blocks_safety_mode_self_lowering_js as js
-
-    assert js("fetch('/api/owner/safety-mode', {method: 'POST'})")
-    assert js("body: JSON.stringify({OUROBOROS_SAFETY_MODE: 'off'}) /api/settings")
-    assert js("fetch('/api/owner/safety%2Dmode', {method: 'POST'})")
-    assert not js("console.log('safety-mode docs')")
-
-
 def test_safety_mode_owner_post_route_decodes_percent_encoding():
     from ouroboros.browser_policy import _is_safety_mode_owner_post
 

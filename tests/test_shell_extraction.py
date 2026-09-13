@@ -115,10 +115,10 @@ def test_shell_catalog_schema_bytes_and_handler_owners_are_stable():
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode()
-    # Only run_script's description changed: its temporary file now lives in
-    # an ignored per-invocation workspace directory or the existing task drive.
+    # run_script accepts any installed file interpreter; its temporary file
+    # lives in an ignored workspace directory or the existing task drive.
     assert hashlib.sha256(schema_bytes).hexdigest() == (
-        "e053d8164ac708c9053b5ea9cf5271b70c1a05667a33f14253101bb2b1ce9cfd"
+        "2e6ebf9e5d81bc2fb321bd9615d66af2c6cd1e58f7bcc23a1a557353049e99f8"
     )
     original = json.loads(schema_bytes)
     original[1]["description"] = (
@@ -128,7 +128,7 @@ def test_shell_catalog_schema_bytes_and_handler_owners_are_stable():
     )
     assert hashlib.sha256(json.dumps(original, sort_keys=True, ensure_ascii=False,
                                     separators=(",", ":")).encode()).hexdigest() == (
-        "0c0215cafdb54ee2231e43f9edafbe8aa21d4a5aa3841eba4ab45b5ab5e3eb42"
+        "a85e03bfc1a9834116b3ada4ce86638a56a1fec267e289e23a5a8f31e8a12f60"
     )
     assert {
         entry.name: (entry.handler.__module__, entry.handler.__name__)

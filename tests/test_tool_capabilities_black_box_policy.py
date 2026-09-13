@@ -1,9 +1,9 @@
 """The protected black-box policy over executor artifacts and control state.
 
 Split verbatim out of ``tests/test_tool_capabilities.py`` by theme. This
-module owns the introspection fence: which paths the black-box policy
-blocks, how it maps executor backend paths recursively, and the runtime
-data-write block on workspace executor control state.
+module owns concrete protected-path operations and executor path mapping.
+Inline interpreter bodies are judged by the configured Supervisor; names and
+encoding alone do not authorize a separate semantic veto.
 """
 import os
 import base64
@@ -11,7 +11,7 @@ import pathlib
 import sys
 
 
-def test_protected_black_box_artifact_policy_blocks_introspection(tmp_path, monkeypatch):
+def test_black_box_policy_preserves_concrete_operands_without_inline_code_guesses(tmp_path, monkeypatch):
     from ouroboros.contracts.task_contract import build_task_contract
     from ouroboros.tools.registry import ToolContext, ToolRegistry
 
@@ -150,7 +150,7 @@ def test_protected_black_box_artifact_policy_blocks_introspection(tmp_path, monk
             ]
         },
     )
-    assert "RESOURCE_POLICY_BLOCKED" in interpreter_read
+    assert "exit_code=0" in interpreter_read and "reference" in interpreter_read, interpreter_read
     relative_interpreter_read = registry.execute(
         "run_command",
         {
@@ -162,19 +162,19 @@ def test_protected_black_box_artifact_policy_blocks_introspection(tmp_path, monk
             "cwd": str(repo),
         },
     )
-    assert "RESOURCE_POLICY_BLOCKED" in relative_interpreter_read
+    assert "exit_code=0" in relative_interpreter_read and "reference" in relative_interpreter_read, relative_interpreter_read
     versioned_interpreter_read = registry.execute(
         "run_command",
         {
             "cmd": [
-                "python3.12",
+                str(pathlib.Path(sys.executable).resolve()),
                 "-c",
                 f"from pathlib import Path; print(Path({protected.name!r}).read_bytes())",
             ],
             "cwd": str(repo),
         },
     )
-    assert "RESOURCE_POLICY_BLOCKED" in versioned_interpreter_read
+    assert "exit_code=0" in versioned_interpreter_read and "reference" in versioned_interpreter_read, versioned_interpreter_read
     constructed_path_read = registry.execute(
         "run_command",
         {
@@ -188,7 +188,7 @@ def test_protected_black_box_artifact_policy_blocks_introspection(tmp_path, monk
             ]
         },
     )
-    assert "RESOURCE_POLICY_BLOCKED" in constructed_path_read
+    assert "exit_code=0" in constructed_path_read and "reference" in constructed_path_read, constructed_path_read
     backslash_parent = str(protected.parent).replace("/", "\\")
     backslash_constructed_path_read = registry.execute(
         "run_command",
@@ -203,19 +203,24 @@ def test_protected_black_box_artifact_policy_blocks_introspection(tmp_path, monk
             ]
         },
     )
-    assert "RESOURCE_POLICY_BLOCKED" in backslash_constructed_path_read
-    env_assignment_read = registry.execute(
+    # On POSIX a Windows separator is a real missing path, not forbidden intent.
+    assert "RESOURCE_POLICY_BLOCKED" not in backslash_constructed_path_read
+    if os.name == "nt":
+        assert "exit_code=0" in backslash_constructed_path_read
+    else:
+        assert "FileNotFoundError" in backslash_constructed_path_read
+    monkeypatch.setenv("REF", str(protected))
+    inherited_env_read = registry.execute(
         "run_command",
         {
             "cmd": [
-                f"REF={protected}",
                 sys.executable,
                 "-c",
                 "import os; print(open(os.environ['REF'], 'rb').read())",
-            ]
+            ],
         },
     )
-    assert "RESOURCE_POLICY_BLOCKED" in env_assignment_read
+    assert "exit_code=0" in inherited_env_read and "reference" in inherited_env_read, inherited_env_read
     shell_script_read = registry.execute("run_command", {"cmd": ["sh", str(protected)]})
     assert "RESOURCE_POLICY_BLOCKED" in shell_script_read
     for cmd in (
@@ -230,13 +235,16 @@ def test_protected_black_box_artifact_policy_blocks_introspection(tmp_path, monk
     ):
         result = registry.execute("run_command", {"cmd": cmd, "cwd": str(repo)})
         assert "RESOURCE_POLICY_BLOCKED" in result, cmd
+    # Encoded body text no longer makes a policy decision. The transport may
+    # still report that PowerShell is unavailable on the current platform.
+    from ouroboros.protected_artifacts import shell_block_reason
+
     encoded_read = base64.b64encode(f"Get-Content {protected.name}".encode("utf-16le")).decode("ascii")
     for cmd in (
         ["powershell.exe", "-EncodedCommand", encoded_read],
         ["pwsh", "-enc", encoded_read],
     ):
-        result = registry.execute("run_command", {"cmd": cmd, "cwd": str(repo)})
-        assert "RESOURCE_POLICY_BLOCKED" in result, cmd
+        assert shell_block_reason(registry._ctx, cmd, cwd=str(repo)) == "", cmd
     search_direct = registry.execute("search_code", {"query": "reference", "path": protected.name})
     assert "RESOURCE_POLICY_BLOCKED" in search_direct
     search_protected_dir = registry.execute("search_code", {"query": "secret", "path": protected_dir.name})
@@ -390,7 +398,7 @@ def test_protected_black_box_recursive_policy_maps_executor_backend_paths(tmp_pa
     assert "executable" not in digest
 
 
-def test_runtime_data_write_blocks_workspace_executor_control_state(tmp_path, monkeypatch):
+def test_runtime_data_file_tools_block_control_state_and_approved_bodies_execute_once(tmp_path, monkeypatch):
     from ouroboros.tools.registry import ToolContext, ToolRegistry
 
     repo = tmp_path / "repo"
@@ -403,7 +411,14 @@ def test_runtime_data_write_blocks_workspace_executor_control_state(tmp_path, mo
     existing.write_text("original", encoding="utf-8")
     registry = ToolRegistry(repo_dir=repo, drive_root=data)
     registry.set_context(ToolContext(repo_dir=repo, drive_root=data))
-    monkeypatch.setattr("ouroboros.safety.check_safety", lambda *a, **k: (True, ""))
+    approvals = []
+
+    def approve(*args, **kwargs):
+        approvals.append((args, kwargs))
+        return True, "approved fixture command"
+
+    monkeypatch.setattr("ouroboros.safety.check_safety", approve)
+    witness = repo / "executions.txt"
 
     direct_write = registry.execute(
         "write_file",
@@ -446,13 +461,16 @@ def test_runtime_data_write_blocks_workspace_executor_control_state(tmp_path, mo
                 "-c",
                 (
                     "from pathlib import Path; "
-                    f"Path(r'{existing}').write_text('{{\"owner\":\"ouroboros_workspace_executor\"}}')"
+                    f"Path(r'{existing}').write_text('{{\"owner\":\"ouroboros_workspace_executor\"}}'); "
+                    f"Path({str(witness)!r}).open('a').write('python\\n')"
                 ),
             ],
         },
     )
-    assert "WORKSPACE_EXECUTOR_STATE_WRITE_BLOCKED" in shell_write
-    assert existing.read_text(encoding="utf-8") == "original"
+    assert "exit_code=0" in shell_write, shell_write
+    assert existing.read_text(encoding="utf-8") == '{"owner":"ouroboros_workspace_executor"}'
+    assert witness.read_text() == "python\n"
+    assert sum(args[0] == "run_command" for args, _kwargs in approvals) == 1
 
     node_eval_write = registry.execute(
         "run_command",
@@ -460,9 +478,12 @@ def test_runtime_data_write_blocks_workspace_executor_control_state(tmp_path, mo
             "cmd": [
                 "node",
                 "-e",
-                f"require('fs').writeFileSync({str(existing)!r}, '{{}}')",
+                f"require('fs').writeFileSync({str(existing)!r}, '{{}}'); "
+                f"require('fs').appendFileSync({str(witness)!r}, 'node\\n')",
             ],
         },
     )
-    assert "WORKSPACE_EXECUTOR_STATE_WRITE_BLOCKED" in node_eval_write
-    assert existing.read_text(encoding="utf-8") == "original"
+    assert "exit_code=0" in node_eval_write, node_eval_write
+    assert existing.read_text(encoding="utf-8") == "{}"
+    assert witness.read_text() == "python\nnode\n"
+    assert sum(args[0] == "run_command" for args, _kwargs in approvals) == 2
