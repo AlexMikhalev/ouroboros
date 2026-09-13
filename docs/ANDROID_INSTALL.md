@@ -212,6 +212,18 @@ preserved. Existing sessions on every platform keep
 Working files unless you change them. Read-only assignments remain read-only;
 Codex's readonly sandbox is not qualified on the tested Android kernel.
 
+The bridge also provides a typed `packages.install` path for an APK exposed by a
+`content://` or other readable URI. It stages bytes through Android's
+`PackageInstaller`, records the source URI, size and SHA-256, and requires a caller
+supplied idempotency key. The call is asynchronous: `submitted` means that staging
+and commit submission were observed, while `packages.install.status` and
+`packages.sessions` are required to observe completion. A lost response is unknown
+and is never retried automatically; a duplicate key with the same digest returns
+the original receipt. Android may still return `pending_user_action` when the
+installer policy requires owner consent. The adapter does not claim rollback
+support, so an update caller must preserve the prior APK and verify the installed
+package before deciding whether to recover.
+
 The manifest intentionally declares `QUERY_ALL_PACKAGES` for general installed-app
 discovery and component inspection through Android's PackageManager. This is a
 [normal install-time permission](https://developer.android.com/reference/android/Manifest.permission#QUERY_ALL_PACKAGES),

@@ -3,7 +3,11 @@
 
 Read the full request from stdin (or --request FILE); never put credentials in argv.
 Examples: {"method":"capabilities"}, {"method":"packages.inspect","params":{
-"package":"ai.ouroboros.android"}}. Use method names returned by capabilities.
+"package":"ai.ouroboros.android"}}, or {"method":"packages.install","params":{
+"source_uri":"content://...","idempotency_key":"termux-2026-09-14"}}. Use method names returned by capabilities.
+Package installs are asynchronous: a successful call proves bytes were staged and commit was submitted,
+not that Android completed the install. Query packages.install.status and packages.sessions. A lost response
+is unknown and is never retried automatically.
 Intent params: action, data, type (MIME), package, component (package/class),
 categories, numeric flags, extras. Extras and ContentValues use {"type":...,"value":...}
 per key, e.g. {"length":{"type":"int","value":900}}. Bytes are base64, long values

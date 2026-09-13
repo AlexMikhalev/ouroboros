@@ -63,10 +63,27 @@ class AndroidHostTest(unittest.TestCase):
         self.assertEqual(service.get(A + "process"), ":native")
         self.assertEqual(service.get(A + "exported"), "false")
         self.assertIsNone(app.find("activity").get(A + "process"))
-        receiver = app.find("receiver")
+        receiver = app.find("receiver[@android:name='.BootReceiver']", {"android": "http://schemas.android.com/apk/res/android"})
+        self.assertIsNotNone(receiver)
         self.assertEqual(receiver.get(A + "process"), ":native")
         actions = {item.get(A + "name") for item in receiver.findall("intent-filter/action")}
         self.assertEqual(actions, {"android.intent.action.BOOT_COMPLETED", "android.intent.action.MY_PACKAGE_REPLACED"})
+
+    def test_package_install_bridge_is_typed_and_idempotent(self):
+        manifest = ET.parse(HOST / "AndroidManifest.xml").getroot()
+        permissions = {row.get(A + "name") for row in manifest.findall("uses-permission")}
+        self.assertIn("android.permission.REQUEST_INSTALL_PACKAGES", permissions)
+        receiver = manifest.find("application/receiver[@android:name='.PackageInstallReceiver']", {"android": "http://schemas.android.com/apk/res/android"})
+        self.assertIsNotNone(receiver)
+        source = (HOST / "src/ai/ouroboros/android/AndroidBridge.java").read_text()
+        for marker in ("\"packages.sessions\"", "\"packages.install\"",
+                       "idempotency_key", "source_sha256", "completion_observed",
+                       "retry_automatically", "rollback"):
+            self.assertIn(marker, source)
+        callback = (HOST / "src/ai/ouroboros/android/PackageInstallReceiver.java").read_text()
+        self.assertIn("STATUS_PENDING_USER_ACTION", callback)
+        self.assertIn("pending_user_action", callback)
+        self.assertNotIn("startActivity", callback)
 
     def test_alarm_and_initial_data_capabilities_are_declared(self):
         manifest = ET.parse(HOST / "AndroidManifest.xml").getroot()

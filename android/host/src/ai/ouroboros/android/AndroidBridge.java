@@ -1,5 +1,6 @@
 package ai.ouroboros.android;
 
+import android.app.PendingIntent;
 import android.content.ComponentName;
 import android.content.ContentResolver;
 import android.content.ContentValues;
@@ -7,6 +8,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ComponentInfo;
 import android.content.pm.PackageInfo;
+import android.content.pm.PackageInstaller;
 import android.content.pm.PackageManager;
 import android.content.pm.ProviderInfo;
 import android.content.pm.ResolveInfo;
@@ -27,6 +29,7 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.security.MessageDigest;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
@@ -47,7 +50,9 @@ import org.json.JSONObject;
 final class AndroidBridge implements Closeable {
     static final String SOCKET = "ai.ouroboros.android.rpc";
     private static final int MAX_REQUEST_BYTES = 4 * 1024 * 1024;
-    private static final String[] METHODS = {"capabilities", "packages.list", "packages.inspect",
+    private static final long MAX_INSTALL_BYTES = 512L * 1024L * 1024L;
+    private static final String[] METHODS = {"capabilities", "packages.list", "packages.inspect", "packages.sessions",
+            "packages.install", "packages.install.status",
             "providers.list", "intent.resolve", "intent.start", "content.query", "content.call",
             "content.insert", "content.update", "content.delete", "content.read", "content.write",
             "location.state", "location.get", "accessibility.state", "accessibility.windows",
@@ -152,6 +157,9 @@ final class AndroidBridge implements Closeable {
                         .put("services", components(info.services)).put("receivers", components(info.receivers))
                         .put("providers", components(info.providers)).put("permissions", permissions(info, pm));
             }
+            case "packages.sessions": return packageSessions(pm, p);
+            case "packages.install": return installPackage(pm, p);
+            case "packages.install.status": return installStatus(p);
             case "providers.list": {
                 JSONArray rows = new JSONArray();
                 List<ProviderInfo> providers = pm.queryContentProviders(null, 0, PackageManager.MATCH_DISABLED_COMPONENTS);
@@ -175,6 +183,144 @@ final class AndroidBridge implements Closeable {
                 if (Arrays.asList(METHODS).contains(method)) return content(method, p);
                 throw new IllegalArgumentException("Unknown method: " + method);
         }
+    }
+
+    /** Inspect installer-owned sessions so a lost response never causes a duplicate install. */
+    private JSONObject packageSessions(PackageManager pm, JSONObject p) throws Exception {
+        JSONArray rows = new JSONArray();
+        PackageInstaller installer = pm.getPackageInstaller();
+        for (PackageInstaller.SessionInfo info : installer.getAllSessions()) {
+            if (!context.getPackageName().equals(info.getInstallerPackageName())) continue;
+            rows.put(sessionInfo(info));
+        }
+        return page(rows, p).put("coverage", "installer_owned_packageinstaller_sessions")
+                .put("source_total_known", true);
+    }
+
+    /**
+     * Stage one APK in Android's PackageInstaller. The operation is asynchronous:
+     * the returned receipt proves only that bytes were staged and commit submitted.
+     * packages.install.status or packages.sessions is required to observe completion.
+     */
+    private JSONObject installPackage(PackageManager pm, JSONObject p) throws Exception {
+        String source = p.getString("source_uri");
+        Uri uri = Uri.parse(source);
+        if (!uri.isAbsolute()) throw new IllegalArgumentException("source_uri must be an absolute URI");
+        String key = p.optString("idempotency_key", "");
+        if (key.isEmpty()) throw new IllegalArgumentException("idempotency_key is required");
+        if (!key.matches("[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}"))
+            throw new IllegalArgumentException("idempotency_key must be 1-128 ASCII characters");
+        SourceDigest digest = digestSource(uri);
+        android.content.SharedPreferences receipts = receipts();
+        String previous = receipts.getString(key, null);
+        if (previous != null) {
+            JSONObject receipt = new JSONObject(previous);
+            if (!digest.sha256.equals(receipt.optString("source_sha256")))
+                throw new IllegalArgumentException("idempotency_key was already used for another APK");
+            int sessionId = receipt.optInt("session_id", -1);
+            PackageInstaller.SessionInfo active = sessionId < 0 ? null : pm.getPackageInstaller().getSessionInfo(sessionId);
+            if (active != null) return receipt.put("deduplicated", true).put("completion_observed", false);
+            if (!"submitted".equals(receipt.optString("status")))
+                return receipt.put("deduplicated", true);
+            // A sealed or completed session may no longer be listed. The prior receipt remains authoritative
+            // for idempotency, and callers must inspect packages.install.status before deciding to retry.
+            return receipt.put("deduplicated", true).put("outcome", "unknown")
+                    .put("retry_automatically", false);
+        }
+        PackageInstaller installer = pm.getPackageInstaller();
+        PackageInstaller.SessionParams params = new PackageInstaller.SessionParams(
+                PackageInstaller.SessionParams.MODE_FULL_INSTALL);
+        params.setInstallReason(PackageManager.INSTALL_REASON_USER);
+        int sessionId = installer.createSession(params);
+        PackageInstaller.Session session = installer.openSession(sessionId);
+        boolean commitSubmitted = false;
+        try {
+            try (InputStream input = context.getContentResolver().openInputStream(uri)) {
+                if (input == null) throw new IOException("source_uri could not be opened");
+                MessageDigest stagedDigest = MessageDigest.getInstance("SHA-256");
+                try (OutputStream output = session.openWrite("base.apk", 0, digest.size)) {
+                    byte[] buffer = new byte[64 * 1024]; int count;
+                    long copied = 0;
+                    while ((count = input.read(buffer)) != -1) {
+                        copied += count;
+                        if (copied > MAX_INSTALL_BYTES) throw new IOException("APK exceeds 512 MiB install limit");
+                        stagedDigest.update(buffer, 0, count); output.write(buffer, 0, count);
+                    }
+                    if (copied != digest.size || !digest.sha256.equals(hex(stagedDigest.digest())))
+                        throw new IOException("source changed while staging APK");
+                    session.fsync(output);
+                }
+            }
+            Intent callback = new Intent(context, PackageInstallReceiver.class)
+                    .setAction(PackageInstallReceiver.ACTION)
+                    .putExtra(PackageInstallReceiver.KEY, key)
+                    .putExtra(PackageInstallReceiver.SESSION, sessionId);
+            PendingIntent pending = PendingIntent.getBroadcast(context, sessionId, callback,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            JSONObject receipt = new JSONObject().put("idempotency_key", key)
+                    .put("source_uri", source).put("source_sha256", digest.sha256)
+                    .put("source_size", digest.size).put("session_id", sessionId)
+                    .put("status", "submitted").put("outcome", "submitted")
+                    .put("completion_observed", false).put("retry_automatically", false)
+                    .put("rollback", new JSONObject().put("supported", false)
+                            .put("reason", "PackageInstaller commit does not expose a rollback handle here"));
+            receipts.edit().putString(key, receipt.toString()).apply();
+            commitSubmitted = true;
+            session.commit(pending.getIntentSender());
+            return receipt;
+        } catch (Exception error) {
+            if (!commitSubmitted) receipts.edit().remove(key).apply();
+            try { session.abandon(); } catch (Exception ignored) { }
+            throw error;
+        } finally { session.close(); }
+    }
+
+    private JSONObject installStatus(JSONObject p) throws Exception {
+        String key = p.getString("idempotency_key");
+        String value = receipts().getString(key, null);
+        if (value == null) return new JSONObject().put("known", false).put("idempotency_key", key);
+        return new JSONObject(value).put("known", true);
+    }
+
+    private android.content.SharedPreferences receipts() {
+        return context.getSharedPreferences("package_install_receipts", Context.MODE_PRIVATE);
+    }
+
+    private static JSONObject sessionInfo(PackageInstaller.SessionInfo info) throws Exception {
+        JSONObject result = new JSONObject().put("session_id", info.getSessionId())
+                .put("installer_package", nullable(info.getInstallerPackageName()))
+                .put("package", nullable(info.getAppPackageName())).put("label", nullable(info.getAppLabel()))
+                .put("active", info.isActive()).put("sealed", info.isSealed())
+                .put("staged", Build.VERSION.SDK_INT >= 29 && info.isStaged())
+                .put("progress", info.getProgress()).put("size_bytes", info.getSize());
+        if (Build.VERSION.SDK_INT >= 29) result.put("created_ms", info.getCreatedMillis());
+        return result;
+    }
+
+    private SourceDigest digestSource(Uri uri) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        long size = 0;
+        try (InputStream input = context.getContentResolver().openInputStream(uri)) {
+            if (input == null) throw new IOException("source_uri could not be opened");
+            byte[] buffer = new byte[64 * 1024]; int count;
+            while ((count = input.read(buffer)) != -1) {
+                size += count;
+                if (size > MAX_INSTALL_BYTES) throw new IOException("APK exceeds 512 MiB install limit");
+                digest.update(buffer, 0, count);
+            }
+        }
+        return new SourceDigest(hex(digest.digest()), size);
+    }
+
+    private static String hex(byte[] bytes) {
+        StringBuilder result = new StringBuilder(bytes.length * 2);
+        for (byte value : bytes) result.append(String.format("%02x", value & 0xff));
+        return result.toString();
+    }
+
+    private static final class SourceDigest {
+        final String sha256; final long size;
+        SourceDigest(String sha256, long size) { this.sha256 = sha256; this.size = size; }
     }
 
     private JSONObject capabilities(PackageManager pm) throws Exception {
