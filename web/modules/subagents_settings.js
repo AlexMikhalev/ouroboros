@@ -995,6 +995,5 @@ export function validateSubagentsDraft() { return settingsEditor?.validate() || 
 
 /** Settings' Save button: the draft's own errors become visible from here on. */
 export function noteSubagentsSaveAttempt() { settingsEditor?.noteSaveAttempt(); }
-
 // Compatibility name for callers of the actor-list signature.
 export const renderSignature = availableSubagentsRenderSignature;
