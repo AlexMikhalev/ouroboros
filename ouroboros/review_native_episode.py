@@ -970,6 +970,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             "tools": schemas,
             "tool_choice": "auto",
             "reasoning_effort": slot.effort,
+            "processing_preference": slot.processing_preference or None,
             "max_tokens": max_tokens,
             "no_proxy": bool(request.no_proxy),
             "use_local": bool(slot.use_local),
