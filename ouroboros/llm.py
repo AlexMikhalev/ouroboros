@@ -225,7 +225,11 @@ class LLMClient(
         leaves that transport ends the turn. ``wait_for_resources=False`` returns
         a confirmed quota/auth refusal to this caller without entering resource
         waiting; task overrides, controls and dispatched-operation custody remain."""
+        from ouroboros.config import get_context_mode
         from ouroboros.llm_claudexor import turn_state_for_route
+
+        if context_mode is None:
+            context_mode = get_context_mode()
 
         messages = self._normalize_system_message_placement(messages)
         with capture_attempt_ids() as attempt_ids:
@@ -300,7 +304,11 @@ class LLMClient(
 
         Host temperature hints, resource waiting and the active-turn transport
         slot follow ``chat``'s effective-route contract."""
+        from ouroboros.config import get_context_mode
         from ouroboros.llm_claudexor import turn_state_for_route
+
+        if context_mode is None:
+            context_mode = get_context_mode()
 
         messages = self._normalize_system_message_placement(messages)
         no_proxy = no_proxy or in_worker_process()

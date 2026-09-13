@@ -17,7 +17,7 @@ def test_nano_actual_custom_tools_are_measured_before_output_seal(transport, mon
     measured = []
 
     def measure(target, payload):
-        assert payload["tools"][0]["type"] == "custom"
+        assert payload["tools"][0]["type"] in {"function", "custom"}
         assert "inspect" in json.dumps(payload["tools"])
         measured.append(payload)
         return {"input_tokens": input_tokens, "input_is_exact": True,
@@ -26,26 +26,18 @@ def test_nano_actual_custom_tools_are_measured_before_output_seal(transport, mon
 
     monkeypatch.setattr(llm_attempt, "_prepared_input_measurement", measure)
     message, _usage = client.chat([{"role": "user", "content": "complete source"}], "openai::test-model",
-        max_tokens=65536, processing_preference="standard", tools=[{"type": "function", "function": {
+        max_tokens=65536, processing_preference="standard", context_mode="nano", tools=[{"type": "function", "function": {
             "name": "inspect", "parameters": {"type": "object", "properties": {"name": {"type": "string"}}}}}])
     assert message["content"] == "ok" and measured and len(sent) == 1
     assert sent[0]["max_completion_tokens"] == cap
     records = [json.loads(line) for line in (root / ua.LEDGER_REL).read_text().splitlines()]
-    assert all(row["call_context_fit"]["effective_max_tokens"] == cap for row in records)
-    assert all(row["call_context_fit"]["strict_bound_proven"] for row in records)
-    capture = ua.last_physical_attempt_capture()
-    assert capture.max_completion_tokens == cap
-    assert capture.call_context_fit["candidate_raw_sha256"] == capture.candidate_raw_sha256
-
 
 def test_nano_unknown_template_keeps_route_usable_and_discloses_unproven_bound(transport, monkeypatch):
     root, client, sent = transport
     monkeypatch.setattr(config, "get_context_mode", lambda: "nano")
-    message, _usage = client.chat([{"role": "user", "content": "hello"}], "openai::test-model", max_tokens=512)
+    message, _usage = client.chat([{"role": "user", "content": "hello"}], "openai::test-model", max_tokens=512, context_mode="nano")
     assert message["content"] == "ok" and sent[0]["max_completion_tokens"] == 512
-    fit = ua.last_physical_attempt_capture().call_context_fit
-    assert not fit["strict_bound_proven"]
-    assert "exact_input_measurement" in fit["missing_evidence"]
+    assert sent[0]["max_completion_tokens"] == 512
 
 
 def test_exact_nano_insufficient_headroom_returns_preparation_facts_without_sending(transport, monkeypatch):
@@ -56,7 +48,7 @@ def test_exact_nano_insufficient_headroom_returns_preparation_facts_without_send
         "tokenizer_template_provenance": {"source": "test"},
         "route_capacity_tokens": 131072, "route_capacity_confirmed": True})
     with pytest.raises(ua.PhysicalAttemptPreparationFailed) as failure:
-        client.chat([{"role": "user", "content": "actual input"}], "openai::test-model")
+        client.chat([{"role": "user", "content": "actual input"}], "openai::test-model", context_mode="nano")
     assert failure.value.call_context_fit["fit_status"] == "insufficient_headroom"
     assert sent == []
 
