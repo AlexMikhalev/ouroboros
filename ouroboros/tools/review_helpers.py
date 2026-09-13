@@ -269,9 +269,8 @@ def review_wave_budget_gate(
     every fence ``reserve_attempt`` enforces — the global TOTAL_BUDGET remainder
     (the scope's ``global_limit_usd``) and the task's root fence — the event naming
     the binding axis with both remainders. A wave that fits at admission time is
-    dispatched whole; one that does not is refused BEFORE any seat spends (a read-only
-    pre-check without a wave-level hold: the per-seat reservation stays the
-    enforcement). Fail-open on any error/unknown."""
+    dispatched whole; one that does not is refused before any seat spends.
+    Fail-open on any error/unknown."""
     try:
         from ouroboros.usage_accounting import current_usage_scope, review_wave_admission
 

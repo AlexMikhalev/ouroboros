@@ -19,6 +19,11 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 WEB = REPO_ROOT / "web" / "modules"
 
 
+def _node_bin():
+    bundled = pathlib.Path.home() / ".claudexor" / "node" / "bin" / "node"
+    return str(bundled if bundled.exists() else pathlib.Path(shutil.which("node") or "node"))
+
+
 @pytest.fixture(scope="module")
 def settings_ui_source() -> str:
     return (WEB / "settings_ui.js").read_text(encoding="utf-8")
@@ -132,7 +137,7 @@ def test_settings_ui_mcp_section_describes_hot_reload(settings_ui_source: str) -
 
 def test_mcp_ui_roundtrip_preserves_environment_and_unsupported_fields():
     """Execute the real JS projection; this is not a browser/visual receipt."""
-    node = shutil.which("node")
+    node = _node_bin()
     if not node:
         pytest.skip("Node is unavailable")
     script = r'''
@@ -166,7 +171,7 @@ assert.equal(collectMcpSettings().MCP_SERVERS[0].args, 'unsupported');
 
 def test_mcp_test_button_preserves_saved_url_only_credentials():
     """Exercise the registered click handler, not a copy of its payload expression."""
-    node = shutil.which("node")
+    node = _node_bin()
     if not node:
         pytest.skip("Node is unavailable")
     script = r'''

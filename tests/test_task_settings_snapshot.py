@@ -484,10 +484,12 @@ def test_vision_child_gets_snapshot_env_without_snapshot_in_ipc(monkeypatch):
 
 def test_bundled_node_child_reads_projected_task_env():
     import subprocess
+    import pathlib
 
     snapshot = task_settings_snapshot({"OPENAI_API_KEY": "old"}, {"OPENAI_API_KEY": "old"})
     with config.task_settings_scope(snapshot):
-        result = subprocess.run(["node", "-e", "process.stdout.write(process.env.OPENAI_API_KEY)"],
+        node = str(pathlib.Path.home() / ".claudexor" / "node" / "bin" / "node") if (pathlib.Path.home() / ".claudexor" / "node" / "bin" / "node").exists() else "node"
+        result = subprocess.run([node, "-e", "process.stdout.write(process.env.OPENAI_API_KEY)"],
                                 env=config.runtime_environ(), text=True, capture_output=True, timeout=10)
     assert result.returncode == 0, result.stderr
     assert result.stdout == "old"

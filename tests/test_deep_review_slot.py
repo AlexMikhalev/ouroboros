@@ -171,6 +171,7 @@ def test_reviewer_slots_endpoint_reports_the_deep_review_row_and_its_limit(env):
     assert body["deep_review"] == {
         "route": {"kind": "api_chat", "target_id": "openai/legacy-deep-model"},
         "effort": "",
+        "processing_preference": "",
         "synthesized_from": "OUROBOROS_MODEL_DEEP_SELF_REVIEW",
     }
     # Saved direct session row: the stored form round-trips with its pin, unlabeled.
@@ -180,6 +181,7 @@ def test_reviewer_slots_endpoint_reports_the_deep_review_row_and_its_limit(env):
     assert body["deep_review"] == {
         "route": {"kind": "agent_session", "target_id": "codex=gpt-5.6-sol", "profile_id": "koshak"},
         "effort": "high",
+        "processing_preference": "",
     }
     # Saved reference: the subagent_id IS the stored form; the route is disclosure only.
     env.setenv(REVIEWER_SLOTS_ENV, _payload({"subagent_id": "api-critic"}))
