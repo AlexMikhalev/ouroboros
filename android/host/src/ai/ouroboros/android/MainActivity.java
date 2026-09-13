@@ -227,15 +227,6 @@ public final class MainActivity extends Activity {
         }
     }
 
-    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != ASSISTANT_ROLE_REQUEST || Build.VERSION.SDK_INT < 29) return;
-        RoleManager roles = (RoleManager) getSystemService(RoleManager.class);
-        boolean held = roles != null && roles.isRoleHeld(RoleManager.ROLE_ASSISTANT);
-        notifyOutcome(held ? "Ouroboros выбран системным ассистентом"
-                : "Выбор системного ассистента отменён");
-    }
-
     private String[] missingRuntimePermissions() {
         ArrayList<String> missing = new ArrayList<>();
         android.content.pm.PackageManager pm = getPackageManager();
@@ -446,6 +437,13 @@ public final class MainActivity extends Activity {
 
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (request == ASSISTANT_ROLE_REQUEST && Build.VERSION.SDK_INT >= 29) {
+            RoleManager roles = (RoleManager) getSystemService(RoleManager.class);
+            boolean held = roles != null && roles.isRoleHeld(RoleManager.ROLE_ASSISTANT);
+            notifyOutcome(held ? "Ouroboros выбран системным ассистентом"
+                    : "Выбор системного ассистента отменён");
+            return;
+        }
         if (request == 10 && chooser != null) {
             chooser.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(result, data)); chooser = null;
         }
