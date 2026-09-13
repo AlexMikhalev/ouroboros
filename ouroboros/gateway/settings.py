@@ -945,9 +945,11 @@ async def api_reviewer_slots(request: Request) -> JSONResponse:
         if getattr(r, "subagent_id", ""):
             return {
                 "slot_id": r.slot_id, "subagent_id": r.subagent_id,
-                "effort": r.effort, "resolved_route": route,
+                "effort": r.effort, "processing_preference": r.processing_preference,
+                "resolved_route": route,
             }
-        return {"slot_id": r.slot_id, "route": route, "effort": r.effort}
+        return {"slot_id": r.slot_id, "route": route, "effort": r.effort,
+                "processing_preference": r.processing_preference}
 
     payload["source"] = config.source
     payload["triad"] = [_row(r) for r in config.triad]
@@ -964,6 +966,7 @@ async def api_reviewer_slots(request: Request) -> JSONResponse:
     payload["advisory"] = {
         "enabled": config.advisory.enabled,
         "effort": config.advisory.effort,
+        "processing_preference": config.advisory.processing_preference,
     }
     if getattr(config.advisory, "subagent_id", ""):
         payload["advisory"]["subagent_id"] = config.advisory.subagent_id

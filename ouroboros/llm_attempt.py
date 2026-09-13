@@ -210,7 +210,8 @@ def submitted_processing_mode(target: Dict[str, Any], payload: Dict[str, Any]) -
     elif provider == "anthropic":
         value = payload.get("speed")
     elif provider == "claudexor":
-        value = (payload.get("options") or {}).get("serviceTier")
+        options = payload.get("options") or {}
+        value = options.get("processingPreference") or options.get("serviceTier")
     else:
         value = None
     return value if isinstance(value, str) else ""
