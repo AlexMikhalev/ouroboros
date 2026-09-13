@@ -419,10 +419,12 @@ def _physical_candidate(payload: Dict[str, Any]) -> Dict[str, Any]:
 def _finalized_physical_candidate(
     target: Dict[str, Any], payload: Dict[str, Any], api_surface: str,
 ) -> Dict[str, Any]:
-    payload = _fit_output_payload(target, _physical_candidate(payload), api_surface)
+    physical = _physical_candidate(payload)
+    if target.get("context_mode") == "nano":
+        physical = _fit_output_payload(target, physical, api_surface)
     return prepare_wire_payload_for_send(
-        {**target, "contract_headers": processing_contract_headers(target, payload)},
-        payload, api_surface=api_surface,
+        {**target, "contract_headers": processing_contract_headers(target, physical)},
+        physical, api_surface=api_surface,
     )
 
 

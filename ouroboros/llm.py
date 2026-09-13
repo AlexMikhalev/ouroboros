@@ -41,7 +41,10 @@ from ouroboros.llm_attempt import (
     _applied_payload_cache_ttl,  # noqa: F401
     _CACHE_TTL_SECONDS,  # noqa: F401
     _canonical_candidate_bytes,  # noqa: F401
+    _candidate_before_dispatch,  # noqa: F401 -- historical public import surface
     _execute_candidate_async,  # noqa: F401
+    _execute_candidate,  # noqa: F401 -- historical public import surface
+    _physical_candidate,  # noqa: F401 -- historical public import surface
     _finalized_physical_candidate,  # noqa: F401
     _is_provider_policy_refusal,  # noqa: F401
     _is_structured_context_overflow_body,  # noqa: F401
@@ -52,6 +55,8 @@ from ouroboros.llm_attempt import (
     _VALID_CACHE_TTLS,  # noqa: F401
     cache_ttl_seconds,  # noqa: F401
     supports_message_cache_control,  # noqa: F401
+    apply_processing_preference,  # noqa: F401 -- historical public import surface
+    processing_contract_headers,  # noqa: F401 -- historical public import surface
 )
 from ouroboros.llm_capability_policy import (
     _CapabilityPolicyMixin,  # noqa: F401
@@ -116,6 +121,7 @@ from ouroboros.request_wire_recovery import (
     request_wire_scoped,
 )
 from ouroboros.transport_custody import is_loopback_base_url  # noqa: F401
+from ouroboros.openrouter_attribution import OPENROUTER_APP_HEADERS  # noqa: F401 -- historical public import surface
 from ouroboros.usage_accounting import (
     AttemptRequest,  # noqa: F401
     PhysicalAttemptCapture,  # noqa: F401
@@ -130,6 +136,7 @@ from ouroboros.usage_accounting import (
     execute_physical_attempt,  # noqa: F401
     execute_physical_attempt_async,  # noqa: F401
     last_physical_attempt_capture,  # noqa: F401
+    usage_scope,  # noqa: F401 -- historical public import surface
     )
 from ouroboros.utils import in_worker_process, sanitize_tool_result_for_log  # noqa: F401
 from ouroboros.config import runtime_setting
