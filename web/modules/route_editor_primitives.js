@@ -11,6 +11,49 @@ export const ROUTE_KIND_API_MODEL = 'api_model';
 export const ROUTE_KIND_AGENT_SESSION = 'agent_session';
 export const API_ROUTE_CHOICE = 'api';
 export const EFFORT_CHOICES = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+export const PROCESSING_PREFERENCE_KEY = 'OUROBOROS_PROCESSING_PREFERENCE';
+export const MODEL_PROCESSING_PREFERENCES_KEY = 'OUROBOROS_MODEL_PROCESSING_PREFERENCES';
+export const PROCESSING_CHOICES = ['standard', 'fast', 'economy'];
+
+export function processingLabel(value) {
+    return { standard: 'Standard', fast: 'Fast', economy: 'Economy', mixed: 'Mixed', unknown: 'Unknown' }[value] || 'Route default';
+}
+
+export function processingIntentLabel(value, inherited = '') {
+    return value ? `${processingLabel(value)} (override)`
+        : inherited ? `${processingLabel(inherited)} (from Models)` : 'Route default (inherited)';
+}
+
+export function processingSelectHtml(attrs, selected, { global = false } = {}) {
+    return selectHtml(attrs, [{ options: [
+        { value: '', label: global ? 'Keep route defaults' : 'Use global setting' },
+        ...PROCESSING_CHOICES.map((value) => ({ value, label: processingLabel(value) })),
+    ] }], selected || '');
+}
+
+/** Intent controls never change model/effort or claim the route served this mode. */
+export function processingDetailsHtml(attrs, selected, inherited = '') {
+    return `<details class="model-role-details" data-processing-details><summary>Processing · <span data-processing-summary>${escapeHtml(processingIntentLabel(selected, inherited))}</span></summary>
+        <label class="ui-field">Processing ${processingSelectHtml(attrs, selected)}</label>
+        <div class="ui-field-help">Uses the same model and reasoning effort. An explicit native service choice takes precedence.</div></details>`;
+}
+
+export function processingCapabilityNote(preference, capability, transportPreferences) {
+    if (preference && Array.isArray(transportPreferences) && !transportPreferences.includes(preference)) return `${processingLabel(preference)} processing is not advertised by this transport. Ordinary service remains available.`;
+    return preference && Array.isArray(capability?.modes) && !capability.modes.includes(preference)
+        ? `${processingLabel(preference)} is not advertised for this route. Ordinary service may be used; the model and effort stay the same.` : '';
+}
+
+/** Display only an existing execution receipt, keeping requested and observed separate. */
+export function processingExecutionText(processing) {
+    if (!processing || !('observed' in processing)) return '';
+    const parts = [processing.observed === 'unknown' ? 'Applied processing not reported'
+        : `Applied processing: ${processingLabel(processing.observed)}`];
+    if (processing.requested) parts.push(`requested ${processingLabel(processing.requested)}`);
+    if (processing.submittedNative) parts.push(`submitted service ${processing.submittedNative}`);
+    if (processing.reason) parts.push(String(processing.reason));
+    return parts.join(' · ');
+}
 
 export function parseModelSource(value) {
     const raw = String(value || '').trim();
@@ -71,16 +114,43 @@ export function changeRouteChoice(route, choice, { apiKind = ROUTE_KIND_API_MODE
         ? `claudexor::${decoded.source}=` : '') };
 }
 
+function routeCatalogItems(route, items = []) {
+    const fields = routeModelFields(route);
+    const pin = route?.credential_profile_id || route?.profile_id || '';
+    return items.filter((item) => (!fields.subscription || parseModelSource(item?.value || item?.id || item).source === `subscription:${fields.source}`)
+        && (!pin || !item?.credential_profile_id || item.credential_profile_id === pin));
+}
+
+/** Collapse duplicate values for the chooser, retaining account evidence in labels. */
+export function catalogModelOptions(items = []) {
+    const values = new Map();
+    for (const item of items) {
+        const value = String(item?.value || item?.id || item);
+        const label = String(item?.name || item?.label || value);
+        const account = item?.credential_profile_id;
+        const facts = account ? [account, item.availability, item.observed_at
+            ? formatRelativeAge(Date.parse(item.observed_at), 'just now') : 'date unknown'].filter(Boolean).join(' · ') : '';
+        const current = values.get(value) || { value, label, accounts: [] };
+        if (facts && !current.accounts.includes(facts)) current.accounts.push(facts);
+        values.set(value, current);
+    }
+    return [...values.values()].map(({ value, label, accounts }) => ({ value,
+        label: accounts.length ? `${label} · ${accounts.join('; ')}` : label }));
+}
+
 export function routeModelSuggestions(route, items = []) {
     const fields = routeModelFields(route);
-    return items.map((item) => String(item?.value || item?.id || item))
-        .filter((value) => !fields.subscription || parseModelSource(value).source === `subscription:${fields.source}`)
+    return routeCatalogItems(route, items).map((item) => String(item?.value || item?.id || item))
         .map((value) => fields.subscription ? parseModelSource(value).model : value);
 }
 
 /** Catalog suggestions, not an entitlement or context claim for the selected account. */
 export function routeModelInputHtml(attrs, route, items, listId, { placeholder = 'Choose a model' } = {}) {
-    const values = routeModelSuggestions(route, items);
+    const fields = routeModelFields(route);
+    const values = catalogModelOptions(routeCatalogItems(route, items).map((item) => {
+        const value = String(item?.value || item?.id || item);
+        return { ...(typeof item === 'object' ? item : {}), value: fields.subscription ? parseModelSource(value).model : value };
+    }));
     return modelChooserHtml(attrs, routeModelFields(route).model, listId, values, { placeholder });
 }
 
@@ -225,7 +295,7 @@ export function routeChoiceGroups({
                 value: '',
                 disabled: true,
                 label: catalogKnown
-                    ? 'None available — connect one under Accounts above'
+                    ? 'None available — no agent sources were listed'
                     : 'Could not be listed — see the service banner above',
             }] },
     ];
@@ -252,6 +322,18 @@ export function profileEntry(entry) {
     return { id: String(entry?.id || ''), enabled: entry?.enabled !== false };
 }
 
+/** Native model discovery is per account; an unread account is not an empty catalog. */
+export function accountScopedModelCatalog(harness, pin = '') {
+    const envelope = harness?.model_catalog;
+    if (!Array.isArray(envelope?.accounts)) return harness;
+    const accounts = envelope.accounts.filter((account) => !pin || account.credentialProfileId === pin);
+    const gaps = accounts.filter((account) => !account.catalog);
+    const error = gaps.map((account) => account.problem?.message || 'Account model list could not be read').join('; ')
+        || ((!pin || !accounts.length) && envelope.partial ? 'Some account model lists could not be read' : '');
+    return { ...harness, models: (harness.models || []).filter((item) => !pin || item.credential_profile_id === pin),
+        models_error: error };
+}
+
 export function harnessModelsKnown(harness, catalogKnown = true) {
     return Boolean(catalogKnown) && !String(harness?.models_error || '');
 }
@@ -265,10 +347,7 @@ export function sessionModelOptions(harness, currentModel, { catalogKnown = true
     const models = harness?.models || [];
     const options = [
         { value: '', label: 'Engine default model' },
-        ...models.map((model) => ({
-            value: String(model.id || model.value || model),
-            label: String(model.id || model.label || model),
-        })),
+        ...catalogModelOptions(models),
     ];
     if (currentModel && !options.some((option) => option.value === currentModel)) {
         options.push({
@@ -336,6 +415,8 @@ export function describeExecutionEvidence(entry) {
         const account = String(entry.applied_profile || '');
         if (account) parts.push(`account ${account}`);
         const when = formatRelativeAge(Date.parse(entry.ts || ''), 'just now');
+        const processing = processingExecutionText(entry.processing);
+        if (processing) parts.push(processing);
         if (when) parts.push(when);
         return parts.join(' · ');
     }
@@ -354,6 +435,8 @@ export function describeExecutionEvidence(entry) {
     if (account) parts.push(`account ${account}`);
     if (effective.access) parts.push(`access ${effective.access}`);
     const when = formatRelativeAge(Date.parse(entry.ts || ''), 'just now');
+    const processing = processingExecutionText(effective.processing || entry.processing);
+    if (processing) parts.push(processing);
     if (when) parts.push(when);
     return parts.join(' · ');
 }

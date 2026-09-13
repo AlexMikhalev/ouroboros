@@ -126,6 +126,8 @@ def _safe_target(target: Mapping[str, Any]) -> Dict[str, Any]:
         key: copy.deepcopy(target.get(key))
         for key in (
             "provider", "resolved_model", "usage_model", "base_url", "contract_headers",
+            "processing_preference",
+            "processing_native_origin",
         )
         if target.get(key) is not None
     }
@@ -920,15 +922,64 @@ def plan_wire_retry_from_body_error(error: Any) -> Optional[Dict[str, Any]]:
     return _plan_retry(status, str(error.get("message") or ""))
 
 
+def _processing_retry(payload: Mapping[str, Any], error: Any,
+                      target: Optional[Mapping[str, Any]]) -> Optional[Dict[str, Any]]:
+    """One ordinary-speed retry after a released, typed no-start receipt."""
+    from ouroboros.llm_attempt import ProcessingNotStarted
+    from ouroboros.request_wire_receipts import rebind_processing_candidate
+
+    capture = getattr(error, "physical_attempt_capture", None)
+    if not isinstance(error, ProcessingNotStarted) or getattr(capture, "state", None) != "released":
+        return None
+    registered = _WIRE_CALL_STATE.get().current
+    route = registered.target if registered is not None else target or {}
+    provider, preference = route.get("provider"), route.get("processing_preference")
+    if route.get("processing_native_origin") != "preference":
+        return None
+    current = registered.candidate.physical_payload() if registered is not None else copy.deepcopy(dict(payload))
+    if capture.candidate_raw_sha256 != physical_candidate_sha256(current):
+        return None
+    if provider in {"openai", "openrouter"}:
+        field, standard = "service_tier", "default"
+        allowed = {"fast": {"fast", "priority"}, "economy": {"flex"}}.get(preference, set())
+        # An explicit extra_body override has precedence and must not be
+        # accidentally replaced by the top-level advisory projection.
+        if isinstance(current.get("extra_body"), dict) and "service_tier" in current["extra_body"]:
+            return None
+    elif provider == "anthropic":
+        field, standard = "speed", "standard"
+        allowed = {"fast"} if preference == "fast" else set()
+    else:
+        return None
+    if current.get(field) not in allowed:
+        return None
+    if registered is None:
+        current[field] = standard
+        return current
+    try:
+        candidate, source = rebind_processing_candidate(
+            registered.candidate, target=route, source_payload=registered.source_payload,
+            field_name=field, standard_value=standard,
+        )
+    except (TypeError, ValueError):
+        return None  # The original provider refusal remains the caller's fact.
+    register_wire_candidate(candidate, source_payload=source, target=route)
+    return candidate.physical_payload()
+
+
 def plan_next_wire_retry(
     payload: Mapping[str, Any],
     *,
     error: Any,
     body_error: bool = False,
+    target: Optional[Mapping[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """One exception/body-parity entrypoint for the bounded transport drivers."""
     if getattr(error, "stream_incomplete", False):
         return None
+    processing = _processing_retry(payload, error, target)
+    if processing is not None:
+        return processing
     planned = (
         plan_wire_retry_from_body_error(error)
         if body_error else

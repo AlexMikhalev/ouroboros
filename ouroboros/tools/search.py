@@ -12,7 +12,6 @@ from typing import Any, Dict, List, Optional
 from ouroboros.pricing import estimate_cost_optional
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.usage_accounting import (
-    AttemptRequest,
     PhysicalAttemptCapture,
     UsageAccountingError,
     UsageScope,
@@ -265,12 +264,18 @@ def _emit_simple_usage(
     if not isinstance(metadata, dict):
         metadata = {}
     try:
-        cost = estimate_cost_optional(
-            model if "/" in str(model) else f"{provider}/{model}",
-            prompt_tokens,
-            completion_tokens,
-            provider=provider,
-        )
+        from ouroboros._usage_response import observed_processing_mode, provider_cost_value
+
+        mode = observed_processing_mode(provider, usage or {})
+        cost = provider_cost_value((usage or {}).get("cost"))
+        if cost is None:
+            cost = estimate_cost_optional(
+                model if "/" in str(model) else f"{provider}/{model}",
+                prompt_tokens,
+                completion_tokens,
+                provider=provider,
+                **({"processing_mode": mode} if mode else {}),
+            )
         ctx.pending_events.append({
             "type": "llm_usage",
             "task_id": str(getattr(ctx, "task_id", "") or ""),
@@ -295,7 +300,8 @@ def _emit_simple_usage(
         log.debug("Failed to emit web_search fallback cost event", exc_info=True)
 
 
-def _web_search_openrouter(ctx: ToolContext, query: str, model: str = "", search_context_size: str = "") -> str:
+def _web_search_openrouter(ctx: ToolContext, query: str, model: str = "", search_context_size: str = "",
+                           processing_preference: Optional[str] = None) -> str:
     if _web_search_deadline_exhausted(ctx):
         return _web_search_deadline_result()
     api_key = str(runtime_setting("OPENROUTER_API_KEY") or "").strip()
@@ -315,11 +321,15 @@ def _web_search_openrouter(ctx: ToolContext, query: str, model: str = "", search
                 search_context_size=search_context_size or DEFAULT_SEARCH_CONTEXT_SIZE,
                 accounting_scope=_accounting_scope(ctx, "web_search.openrouter"),
                 timeout=_web_search_transport_timeout(ctx),
+                processing_preference=processing_preference,
             )
         message = response.choices[0].message if getattr(response, "choices", None) else None
         text = str(getattr(message, "content", "") or "").strip()
-        usage_obj = getattr(response, "usage", None)
-        usage = usage_obj.model_dump() if hasattr(usage_obj, "model_dump") else (_obj_to_plain(usage_obj) if usage_obj else {})
+        from ouroboros._usage_response import usage_from_response
+        from ouroboros.llm_attempt import attach_processing_receipt
+
+        usage, _cost, _final = usage_from_response(response)
+        attach_processing_receipt({"provider": "openrouter", "usage_model": active_model}, usage)
         # Guard: an exotic (non-dict) usage object must not crash the leg with a
         # successful paid answer in hand — mirror the Anthropic leg's isinstance
         # check (a `.get` on a non-dict would raise and discard the result).
@@ -346,7 +356,8 @@ def _web_search_openrouter(ctx: ToolContext, query: str, model: str = "", search
         raise _wrapped_provider_error("OpenRouter", exc) from exc
 
 
-def _web_search_anthropic(ctx: ToolContext, query: str, model: str = "") -> str:
+def _web_search_anthropic(ctx: ToolContext, query: str, model: str = "",
+                          processing_preference: Optional[str] = None) -> str:
     if _web_search_deadline_exhausted(ctx):
         return _web_search_deadline_result()
     api_key = str(runtime_setting("ANTHROPIC_API_KEY") or "").strip()
@@ -365,6 +376,7 @@ def _web_search_anthropic(ctx: ToolContext, query: str, model: str = "") -> str:
                 query=query,
                 accounting_scope=_accounting_scope(ctx, "web_search.anthropic"),
                 timeout=_web_search_transport_timeout(ctx),
+                processing_preference=processing_preference,
             )
         blocks = _obj_to_plain(getattr(response, "content", []) or [])
         text_parts: list[str] = []
@@ -375,6 +387,9 @@ def _web_search_anthropic(ctx: ToolContext, query: str, model: str = "") -> str:
         usage = _obj_to_plain(getattr(response, "usage", None))
         if not isinstance(usage, dict):
             usage = {}
+        from ouroboros.llm_attempt import attach_processing_receipt
+
+        attach_processing_receipt({"provider": "anthropic", "usage_model": active_model}, usage)
         usage["ledger_attempt_ids"] = list(attempt_ids)
         _emit_simple_usage(
             ctx,
@@ -487,6 +502,36 @@ def _stream_failure_error(event_type: str, error: Any, response: Any) -> Runtime
     return exc
 
 
+def _responses_search_candidate(ctx, query: str, model: str, options: dict):
+    """One complete Responses body supplies capture, reservation and actual send."""
+    from ouroboros.llm_attempt import (
+        _attempt_request, _candidate_before_dispatch, _finalized_physical_candidate,
+        apply_processing_preference,
+    )
+    target = {"provider": "openai", "resolved_model": model, "base_url": options["base_url"],
+              "usage_model": model if "/" in model else f"openai/{model}",
+              "processing_preference": options["preference"]}
+    payload = {"model": model,
+               "tools": [{"type": "web_search", "search_context_size": options["search_context_size"]}],
+               "reasoning": {"effort": options["effort"]}, "tool_choice": "auto", "input": query,
+               "stream": True}
+    apply_processing_preference(target, payload)
+    if options.get("submission") == "standard":
+        payload["service_tier"] = "default"
+    candidate = _finalized_physical_candidate(target, payload, "responses")
+    scope = _accounting_scope(ctx, "web_search.openai_responses")
+    request = replace(_attempt_request(target, candidate),
+        max_completion_tokens=8192,
+        drive_root=scope.drive_root,
+        task_id=scope.task_id,
+        root_task_id=scope.root_task_id,
+        parent_task_id=scope.parent_task_id,
+        category=scope.category,
+        source=scope.source,
+    )
+    return target, candidate, request, _candidate_before_dispatch(candidate, request)
+
+
 def _web_search(
     ctx: ToolContext,
     query: str,
@@ -494,7 +539,12 @@ def _web_search(
     search_context_size: str = "",
     reasoning_effort: str = "",
     _attempt: int = 0,
+    _processing_preference: Optional[str] = None,
+    _processing_submission: Optional[str] = None,
 ) -> str:
+    from ouroboros.model_slots import resolve_processing_preference
+
+    preference = resolve_processing_preference("websearch", override=_processing_preference)
     if _web_search_deadline_exhausted(ctx):
         return _web_search_deadline_result()
     # Backend pin forces ONE backend. Fixed-model runs pin pure-retrieval 'ddgs',
@@ -506,8 +556,8 @@ def _web_search(
             if pinned == "ddgs":
                 return _web_search_ddgs(query)
             if pinned == "openrouter":
-                return _web_search_openrouter(ctx, query, model=model, search_context_size=search_context_size)
-            return _web_search_anthropic(ctx, query, model=model)
+                return _web_search_openrouter(ctx, query, model=model, search_context_size=search_context_size, processing_preference=preference)
+            return _web_search_anthropic(ctx, query, model=model, processing_preference=preference)
         except UsageAccountingError:
             raise
         except Exception as exc:
@@ -539,11 +589,12 @@ def _web_search(
                 "openrouter_server_tool",
                 lambda: _web_search_openrouter(
                     ctx, query, model=model, search_context_size=search_context_size,
+                    processing_preference=preference,
                 ),
             ),
             (
                 "anthropic_server_tool",
-                lambda: _web_search_anthropic(ctx, query, model=model),
+                lambda: _web_search_anthropic(ctx, query, model=model, processing_preference=preference),
             ),
             ("ddgs", lambda: _web_search_ddgs(query)),
         ):
@@ -585,42 +636,32 @@ def _web_search(
             base_url=base_url,
             timeout=transport_timeout,
         )
-        # Reserve before dispatch; settle only after the terminal stream event.
-        scope = _accounting_scope(ctx, "web_search.openai_responses")
-        reservation = reserve_attempt(AttemptRequest(
-            model=active_model if "/" in active_model else f"openai/{active_model}",
-            provider="openai",
-            prompt_tokens_estimate=max(0, len(str(query or "")) // 4),
-            max_completion_tokens=8192,
-            drive_root=scope.drive_root,
-            task_id=scope.task_id,
-            root_task_id=scope.root_task_id,
-            parent_task_id=scope.parent_task_id,
-            category=scope.category,
-            source=scope.source,
-        ))
+        target, candidate, request, before_dispatch = _responses_search_candidate(ctx, query, active_model, {
+            "base_url": base_url, "preference": preference, "submission": _processing_submission,
+            "search_context_size": active_context, "effort": active_effort})
+        reservation = reserve_attempt(request)
         if _web_search_deadline_exhausted(ctx):
             release_attempt(reservation, "deadline_exhausted_before_dispatch")
             reservation = None
             return _web_search_deadline_result()
-        mark_dispatched(reservation)
+        manifest = before_dispatch(reservation)
+        mark_dispatched(reservation, candidate_manifest_ref=manifest)
         dispatched = True
-        stream = client.responses.create(
-            model=active_model,
-            tools=[{
-                "type": "web_search",
-                "search_context_size": active_context,
-            }],
-            reasoning={"effort": active_effort},
-            tool_choice="auto",
-            input=query,
-            stream=True,
-        )
+        try:
+            stream = client.responses.create(**candidate)
+        except Exception as error:
+            from ouroboros.llm_attempt import processing_refusal
+
+            refusal = processing_refusal(target, candidate, error)
+            if refusal is error:
+                raise
+            raise refusal from error
         text_parts: list[str] = []
         usage: dict = {}
         sources: List[Dict[str, str]] = []
         progress_sent = False
         response_completed = False
+        reported_cost, reported_cost_final = None, False
 
         for event in stream:
             etype = getattr(event, "type", "")
@@ -659,9 +700,13 @@ def _web_search(
                 response_completed = True
                 resp_obj = getattr(event, "response", None)
                 if resp_obj:
-                    u = getattr(resp_obj, "usage", None)
-                    if u:
-                        usage = u.model_dump() if hasattr(u, "model_dump") else {}
+                    from ouroboros._usage_response import processing_receipt, usage_from_response
+
+                    usage, reported_cost, reported_cost_final = usage_from_response(resp_obj)
+                    receipt = processing_receipt("openai", usage,
+                        requested=request.processing_preference, submitted_native=request.submitted_processing_mode)
+                    if receipt is not None:
+                        usage["processing"] = receipt
                     sources = _extract_sources_from_response(resp_obj)
 
         text = "".join(text_parts)
@@ -673,11 +718,8 @@ def _web_search(
                 settle_attempt(
                     reservation,
                     usage,
-                    cost_usd=(
-                        _estimate_openai_cost(active_model, input_tokens, output_tokens)
-                        if input_tokens or output_tokens else None
-                    ),
-                    cost_final=False,
+                    cost_usd=reported_cost,
+                    cost_final=reported_cost_final,
                 )
             else:
                 mark_unresolved(reservation, "Responses stream ended without response.completed")
@@ -740,6 +782,9 @@ def _web_search(
 
         return json.dumps({"answer": text or "(no answer)", "answer_type": "summary", "sources": sources, "backend": "openai_responses"}, ensure_ascii=False, indent=2)
     except Exception as e:
+        from ouroboros.llm_attempt import ProcessingNotStarted
+
+        processing_refused = isinstance(e, ProcessingNotStarted)
         if dispatched:
             from ouroboros.transport_custody import release_pre_dispatch_attempt
 
@@ -770,7 +815,7 @@ def _web_search(
         # One retry is safe only before dispatch or after an explicit terminal
         # provider response. An ambiguous dispatched outcome stops the cascade.
         if _attempt == 0 and (
-            (_is_timeout_error(e) and not was_dispatched) or retryable_terminal
+            (_is_timeout_error(e) and not was_dispatched) or retryable_terminal or processing_refused
         ):
             from ouroboros.deadline_utils import deadline_remaining_sec, has_deadline
 
@@ -782,6 +827,8 @@ def _web_search(
             return _web_search(
                 ctx, query, model=model, search_context_size=search_context_size,
                 reasoning_effort=reasoning_effort, _attempt=1,
+                _processing_preference=preference,
+                _processing_submission="standard" if processing_refused else _processing_submission,
             )
         return _fallbacks([f"OpenAI web search failed ({type(e).__name__}): {detail}"])
 

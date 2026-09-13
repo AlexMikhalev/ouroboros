@@ -10,10 +10,75 @@ so historical import and monkeypatch sites keep working unchanged.
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, Sequence
+from decimal import Decimal, InvalidOperation
 
 from ouroboros.usage_ledger import _number
 
 REVIEW_ATTRIBUTION_KEYS = ("review_skill", "review_wave_id", "review_slot_id")
+
+
+def _merge_processing_summary(total: dict, addition: dict) -> None:
+    """Sum existing evidence components; preserve absent amounts and exact literals."""
+    for key in ("valuation_usd", "unclassified_usd"):
+        value = addition.get(key)
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            amount = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            continue
+        if amount.is_finite() and amount >= 0:
+            total[key] = total.get(key, Decimal(0)) + amount
+    for key in ("unknown_cash_rows", "unknown_valuation_rows"):
+        if key in addition:
+            total[key] = total.get(key, 0) + int(addition[key])
+    for key in ("observed_modes", "billing_kinds"):
+        for label, count in (addition.get(key) or {}).items():
+            bucket = total.setdefault(key, {})
+            bucket[label] = bucket.get(label, 0) + int(count)
+
+
+def _processing_summary(rows: Sequence[Dict[str, Any]], *, decimal_values: bool = False) -> dict:
+    """Valuation and unclassified amounts are disclosures, never added to cash."""
+    total: dict = {}
+    for row in rows:
+        if isinstance(row.get("processing_summary"), dict):
+            _merge_processing_summary(total, row["processing_summary"])
+            continue
+        attempts = row.get("attempt_execution")
+        evidence = row.get("cost_evidence") or {}
+        entries = attempts if isinstance(attempts, list) else [{
+            "processing": row.get("processing"),
+            "processingCostBasis": evidence.get("processing") or row.get("processing_basis"),
+            "usageCost": {"valuationUsd": evidence.get("valuationUsd"),
+                          "valuationKnowledge": evidence.get("valuationKnowledge", "unknown"),
+                          "cashUsd": evidence.get("cashUsd") if evidence.get("cashUsd") is not None else evidence.get("estimatedUsd"),
+                          "cashKnowledge": evidence.get("knowledge", "unknown")} if evidence else {},
+        }]
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            receipt = entry.get("processing") or {}
+            basis = entry.get("processingCostBasis") or {}
+            cost = entry.get("usageCost") or {}
+            facts = {}
+            if receipt.get("observed"):
+                facts["observed_modes"] = {receipt["observed"]: 1}
+            if basis.get("kind"):
+                facts["billing_kinds"] = {basis["kind"]: 1}
+            if cost:
+                facts["unknown_cash_rows"] = int(cost.get("cashKnowledge") not in {"exact", "estimated"} or cost.get("cashUsd") is None)
+                known_valuation = cost.get("valuationKnowledge") in {"exact", "estimated"}
+                facts["unknown_valuation_rows"] = int(not known_valuation or cost.get("valuationUsd") is None)
+                facts["valuation_usd"] = cost.get("valuationUsd") if known_valuation else None
+                facts["unclassified_usd"] = cost.get("unknownUsd")
+            _merge_processing_summary(total, facts)
+    if total:
+        for key in ("valuation_usd", "unclassified_usd"):
+            total.setdefault(key, None)
+    return {key: (value if decimal_values or not isinstance(value, Decimal) else float(value))
+            for key, value in total.items()}
+
 
 def _summary(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     settled = confirmed = estimated = reserved = unresolved = 0.0
@@ -36,9 +101,7 @@ def _summary(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     # is a flag no reader can reconstruct.
     non_final_rows = 0
     counts: Dict[str, int] = {}
-    # Separate "sessions and quota" axis: subscription work is already paid for, so
-    # it contributes exactly $0 to money, and its real scarce resource (sessions and
-    # the window that grants them) is counted here instead of being faked as cash.
+    # Session count/quota and incremental cash remain separate observed axes.
     sessions = 0
     session_windows: Dict[str, str] = {}
     for row in rows:
@@ -116,6 +179,7 @@ def _summary(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         "attempt_counts": counts,
         "subscription_sessions": sessions,
         "subscription_windows": session_windows,
+        **({"processing_summary": processing} if (processing := _processing_summary(rows)) else {}),
     }
 
 
@@ -199,6 +263,7 @@ _SKILL_ATTEMPT_FIELDS = (
     "cost_usd", "cost_final", "reservation_upper_bound_usd", "pricing_known",
     "prompt_tokens", "completion_tokens", "cached_tokens", "subscription_route",
     "subscription_reset_at", "credential_profile_id", "access_profile",
+    "processing", "processing_basis", "cost_evidence", "attempt_execution",
 )
 
 

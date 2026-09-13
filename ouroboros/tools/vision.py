@@ -161,7 +161,8 @@ _VLM_MAX_IMAGE_SIDE = 1600
 
 
 @model_waitable(client_parameter="client")
-def _vision_query_with_timeout(client: Any, *, model_role: str = "vision", **kwargs: Any) -> tuple[str, dict]:
+def _vision_query_with_timeout(client: Any, *, model_role: str = "vision",
+                               processing_preference: Optional[str] = None, **kwargs: Any) -> tuple[str, dict]:
     """Wait around one image call while keeping inference in a tracked child."""
     from ouroboros.provider_models import provider_for_model
     from ouroboros.deadline_utils import dispatch_window_remaining_sec
@@ -179,7 +180,7 @@ def _vision_query_with_timeout(client: Any, *, model_role: str = "vision", **kwa
         raise TimeoutError("VLM task execution window exhausted before child dispatch")
     child_timeout = operation_timeout + NESTED_SETTLEMENT_MARGIN_SEC
     return run_vision_child(child_timeout=child_timeout, subscription=subscription,
-                            model_role=model_role, **kwargs)
+                            model_role=model_role, processing_preference=processing_preference, **kwargs)
 
 
 def _vision_execution_window() -> float:

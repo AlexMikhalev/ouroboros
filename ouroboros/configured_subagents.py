@@ -32,7 +32,7 @@ SOURCE_INVALID = "invalid"
 
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _TOP_KEYS = frozenset({"enabled", "items"})
-_ROW_KEYS = frozenset({"subagent_id", "name", "recommended_use", "route", "effort"})
+_ROW_KEYS = frozenset({"subagent_id", "name", "recommended_use", "route", "effort", "processing_preference"})
 _ROUTE_ALIASES = {
     ROUTE_KIND_API_MODEL: ROUTE_KIND_API_MODEL,
     ROUTE_KIND_AGENT_SESSION: ROUTE_KIND_AGENT_SESSION,
@@ -69,6 +69,7 @@ class ConfiguredSubagent:
     recommended_use: str = ""
     route: RouteSpec = None  # type: ignore[assignment]
     effort: str = ""
+    processing_preference: str = ""
 
 
 @dataclass(frozen=True)
@@ -141,6 +142,8 @@ def _parse_payload(raw: Any) -> Mapping[str, Any]:
 
 def parse_configured_subagents(raw: Any) -> ConfiguredSubagents:
     """Strict parser for stored JSON strings and owner-supplied JSON objects."""
+    from ouroboros.model_slots import normalize_processing_preference
+
     payload = _parse_payload(raw)
     unknown = sorted(set(payload) - _TOP_KEYS)
     if unknown:
@@ -197,6 +200,7 @@ def parse_configured_subagents(raw: Any) -> ConfiguredSubagents:
                 recommended_use=row["recommended_use"],
                 route=route,
                 effort=effort,
+                processing_preference=normalize_processing_preference(row.get("processing_preference")),
             )
         )
     return ConfiguredSubagents(enabled=payload["enabled"], items=tuple(items))
@@ -216,6 +220,8 @@ def configured_subagents_dict(config: ConfiguredSubagents) -> dict[str, Any]:
         }
         if row.effort:
             payload["effort"] = row.effort
+        if row.processing_preference:
+            payload["processing_preference"] = row.processing_preference
         items.append(payload)
     return {"enabled": config.enabled, "items": items}
 

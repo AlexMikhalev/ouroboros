@@ -44,12 +44,72 @@ def provider_cost_value(value: Any) -> Optional[float]:
 _number = provider_cost_value  # historical local name at this boundary
 
 
+def processing_receipt(provider: str, usage: Dict[str, Any], *, requested: str = "",
+                       submitted_native: str = "", reason: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Keep native observations separate from captured intent on the shared receipt."""
+    import copy
+
+    if isinstance(usage.get("processing"), dict):
+        return copy.deepcopy(usage["processing"])
+    if provider in {"openai", "openrouter"}:
+        observed_native = usage.get("service_tier")
+        modes = {"default": "standard", "priority": "fast", "fast": "fast", "flex": "economy"}
+    elif provider == "anthropic":
+        observed_native = usage.get("speed")
+        modes = {"standard": "standard", "fast": "fast"}
+    else:
+        observed_native, modes = None, {}
+    observed_native = observed_native if isinstance(observed_native, str) and observed_native else None
+    if not requested and not submitted_native and not observed_native:
+        return None
+    submitted, observed = modes.get(submitted_native), modes.get(observed_native, "unknown")
+    if reason is None:
+        if requested and not submitted_native:
+            reason = "processing_not_submitted"
+        elif requested and submitted and requested != submitted:
+            reason = "submitted_mode_differs"
+        elif observed != "unknown" and submitted and submitted != observed:
+            reason = "provider_mode_changed"
+    return {"requested": requested or None, "submitted": submitted,
+            "submittedNative": submitted_native or None, "observed": observed,
+            "observedNative": [observed_native] if observed_native else [], "reason": reason,
+            "source": "provider_response" if observed_native else "host_request"}
+
+
 def _reported_token_count(usage: Dict[str, Any], *keys: str) -> Optional[int]:
     """Return the first reported count; absence stays distinct from explicit zero."""
     for key in keys:
         if key in usage and usage.get(key) is not None:
             return max(0, int(usage[key]))
     return None
+
+
+def observed_processing_mode(provider: str, usage: Dict[str, Any]) -> str:
+    """A pricing qualifier from observation; absent explicit-mode proof stays unknown."""
+    receipt = usage.get("processing")
+    if isinstance(receipt, dict):
+        modes = receipt.get("observedNative")
+        return (str(modes[0]) if receipt.get("observed") not in {"unknown", "mixed"}
+                and isinstance(modes, list) and len(modes) == 1 else "unknown")
+    value = usage.get("speed") if provider == "anthropic" else usage.get("service_tier")
+    return value if isinstance(value, str) else ""
+
+
+def _normalized_input_token_usage(raw: Any) -> Optional[Dict[str, Any]]:
+    """The complete native input split, or None; never repair partial evidence."""
+    keys = ("total_tokens", "cache_read_tokens", "cache_write_tokens")
+    if not isinstance(raw, dict) or set(raw) != set(keys):
+        return None
+    normalized: Dict[str, Any] = {}
+    for key in keys:
+        value = raw[key]
+        if value is None:
+            normalized[key] = None
+        elif isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return None
+        else:
+            normalized[key] = value
+    return normalized
 
 
 def usage_from_response(response: Any) -> Tuple[Dict[str, Any], Optional[float], bool]:
@@ -94,6 +154,11 @@ def usage_from_response(response: Any) -> Tuple[Dict[str, Any], Optional[float],
         "cached_tokens": cache_read,
         "cache_write_tokens": cache_write,
     }
+    if isinstance(payload, dict):
+        if "service_tier" in payload:
+            normalized["service_tier"] = payload["service_tier"]
+        if isinstance(payload.get("processing"), dict):
+            normalized["processing"] = dict(payload["processing"])
     creation = usage.get("cache_creation")
     if isinstance(creation, dict):
         split = {

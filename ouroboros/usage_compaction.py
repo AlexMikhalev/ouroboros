@@ -39,7 +39,7 @@ import uuid
 from decimal import Decimal, DecimalException, InvalidOperation
 from typing import Any, Callable, Dict, Iterator, Optional, Tuple
 
-from ouroboros._usage_rows import _breakdown_bucket, _summary
+from ouroboros._usage_rows import _breakdown_bucket, _summary, _processing_summary, _merge_processing_summary
 from ouroboros.usage_ledger import (
     ARCHIVE_SEGMENT_DIR_REL,
     LEDGER_REL,
@@ -469,7 +469,7 @@ def _group_key(row: Dict[str, Any]) -> Tuple[Any, ...]:
 
 
 class _Group:
-    __slots__ = ("count", "cost", "bound", "tokens", "root_limit")
+    __slots__ = ("count", "cost", "bound", "tokens", "root_limit", "processing_summary")
 
     def __init__(self) -> None:
         self.count = 0
@@ -477,10 +477,12 @@ class _Group:
         self.bound: Optional[Decimal] = None
         self.tokens: Dict[str, Optional[int]] = {field: None for field in _TOKEN_SUM_FIELDS}
         self.root_limit: Optional[Decimal] = None
+        self.processing_summary: dict = {}
 
     def absorb(self, row: Dict[str, Any]) -> None:
         """Fold one FINAL decimal-parsed row (attempt final or prior group)."""
         self.count += _row_weight(row)
+        _merge_processing_summary(self.processing_summary, _processing_summary([row], decimal_values=True))
         cost = row.get("cost_usd")
         if cost is not None:
             self.cost = (self.cost or Decimal(0)) + _decimal_of(cost)
@@ -702,6 +704,11 @@ def _build_candidate(
                 row[field] = group.tokens[field]
         if group.root_limit is not None:
             row["root_limit_usd"] = format(group.root_limit, "f")
+        if group.processing_summary:
+            row["processing_summary"] = {
+                name: format(value, "f") if isinstance(value, Decimal) else value
+                for name, value in group.processing_summary.items()
+            }
         group_rows.append(row)
 
     retained_lines: list = []

@@ -82,6 +82,8 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     # Role-owned choices; empty account and zero window mean Auto, not healthy/known.
     "OUROBOROS_MODEL_ACCOUNTS": "{}",
     "OUROBOROS_MODEL_CONTEXT_WINDOWS": "{}",
+    "OUROBOROS_PROCESSING_PREFERENCE": "",
+    "OUROBOROS_MODEL_PROCESSING_PREFERENCES": "{}",
     # Worker lanes; empty means "use OUROBOROS_MODEL" (one model by default, per-lane
     # override optional). HEAVY = mutative first-level subagents; LIGHT = auto/deep bulk.
     "OUROBOROS_MODEL_HEAVY": OPENROUTER_DEFAULTS["heavy"],

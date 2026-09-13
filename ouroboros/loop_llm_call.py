@@ -59,12 +59,8 @@ log = logging.getLogger(__name__)
 MAIN_LOOP_MAX_TOKENS = 65_536
 
 
-# Retrieval transparency (v6.78.0, owner Q20/Q22): native provider web search happens
-# INSIDE the solve model's own request, so `usage["web_search_sources"]` /
-# `usage["server_tool_use"]` are the only host-attested evidence that the answer was
-# grounded in fetched pages. `add_usage` accumulates numeric token keys only, so without
-# this fold the fact dies at the per-call boundary and the acceptance reviewer never
-# learns retrieval-vs-own-knowledge. Counts plus capped URLs only — no titles/snippets.
+# Preserve native retrieval evidence across calls; add_usage only folds numbers.
+# Counts and capped URLs inform review, without retaining titles or snippets here.
 _RETRIEVAL_URL_CAP = 20
 _RETRIEVAL_URL_CHARS = 200
 
@@ -864,9 +860,7 @@ def _normalize_usage_cost(
         cost = 0.0
         display_model = f"{model} (local)"
     elif provider_reported_cost and cost is None:
-        # MISSING falls through to the catalog estimate; a cost the provider DID
-        # send but that cannot be trusted is honestly unknown RIGHT HERE. Shared
-        # predicate: `_usage_response.provider_cost_value` — the lanes cannot fork.
+        # Invalid reported cost stays unknown under the shared trust predicate.
         log.warning(
             "Provider reported an invalid cost (type=%s, value=%s) for %s; recording "
             "cost as unknown and skipping estimation",
@@ -878,6 +872,9 @@ def _normalize_usage_cost(
         usage["cost_final"] = False  # unknown cost is never a closed book
         return None, display_model, provider, bool(usage.get("cost_estimated"))
     elif cost is None and provider != "claudexor":
+        from ouroboros._usage_response import observed_processing_mode
+
+        processing_mode = observed_processing_mode(provider, usage)
         cost = estimate_cost_optional(
             display_model,
             int(usage.get("prompt_tokens") or 0),
@@ -893,6 +890,7 @@ def _normalize_usage_cost(
                 ),
             },
             provider=provider,
+            **({"processing_mode": processing_mode} if processing_mode else {}),
         )
     usage["cost"] = cost
     cost_estimated = bool(usage.get("cost_estimated")) or (cost is not None and not provider_reported_cost)
@@ -1306,13 +1304,11 @@ def call_llm_with_retry(
     tools: Optional[List[Dict[str, Any]]],
     effort: str,
     max_retries: int,
-    drive_logs: pathlib.Path,
-    task_id: str,
+    drive_logs: pathlib.Path, task_id: str,
     round_idx: int,
     event_queue: Optional[queue.Queue],
     accumulated_usage: Dict[str, Any],
-    task_type: str = "",
-    use_local: bool = False,
+    task_type: str = "", use_local: bool = False,
     deadline_ts: Optional[float] = None,
     attempt_cap: Optional[int] = None,
     allow_server_web_search: bool = False,
@@ -1324,9 +1320,14 @@ def call_llm_with_retry(
     initial_messages: Optional[List[Dict[str, Any]]] = None,
     stop_retry_check: Optional[Callable[[], bool]] = None,
     model_role: str = "main", model_turn_state: Any = None,
-    model_account_override: Optional[str] = None,
+
+    model_account_override: Optional[str] = None, processing_preference: Optional[str] = None,
+    model_context_observer: Any = None,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[float]]:
     """Call one model with bounded retries and deadline-aware transport."""
+    from ouroboros.model_slots import resolve_processing_preference
+
+    processing_preference = resolve_processing_preference(model_role, override=processing_preference)
     _replace_response_meta(response_meta_out)
     drive_root = pathlib.Path(drive_logs).parent
     accumulated_usage.pop(RETRY_WALL_EXHAUSTED_KEY, None)  # last-invocation marker (see key)
@@ -1375,14 +1376,12 @@ def call_llm_with_retry(
                 "model": model,
                 "model_role": model_role, "model_turn_state": model_turn_state,
                 "model_account_override": model_account_override,
+                "processing_preference": processing_preference,
                 "reasoning_effort": effort,
                 "max_tokens": MAIN_LOOP_MAX_TOKENS,
                 "stream": True, "caller_deadline_ts": (None if deadline_ts is None
                     else float(deadline_ts) - float(transport_reserve_sec or 0.0)),
                 "use_local": use_local, "cache_affinity": execution_id if provider_for_model(model) == "claudexor" else "",
-                # These are optional host hints, not required tools. This
-                # transport has neither provider-owned web tools nor a bypass
-                # knob; ordinary Ouroboros web tools stay in the schema.
                 "allow_server_web_search": bool(allow_server_web_search) and provider_for_model(model) != "claudexor",
                 "bypass_response_cache": response_cache_bypass_requested and provider_for_model(model) != "claudexor",
                 "timeout": _main_transport_timeout(model, deadline_ts, reserve_sec=transport_reserve_sec),

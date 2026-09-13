@@ -14,7 +14,12 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from ouroboros.llm_attempt import supports_message_cache_control
+
+from ouroboros.llm_attempt import (
+    apply_processing_preference, attach_processing_receipt, supports_message_cache_control,
+)
+from ouroboros.usage_accounting import UsageScope, usage_scope
+from ouroboros.openrouter_attribution import OPENROUTER_APP_HEADERS
 from ouroboros.llm_capability_policy import (
     _EFFORT_CLAMP_CVAR,
     _OPTIONAL_DROPPABLE_PARAMS,
@@ -29,6 +34,7 @@ from ouroboros.request_wire_recovery import (
 )
 from ouroboros.utils import sanitize_tool_result_for_log
 from ouroboros.config import runtime_setting
+from ouroboros._usage_response import observed_processing_mode
 
 
 # The moved warnings keep the logger identity they were emitted under.
@@ -214,6 +220,7 @@ class _OpenAICompatibleLaneMixin:
                 _eb = kwargs.setdefault("extra_body", {})
                 if isinstance(_eb, dict):
                     _eb["cache"] = {"no-cache": True}
+            apply_processing_preference(target, kwargs)
             return kwargs
 
         if any(isinstance(m, dict) and "reasoning_content" in m for m in messages):
@@ -347,6 +354,7 @@ class _OpenAICompatibleLaneMixin:
                 if optional_param not in supported and optional_param in kwargs
             ]
             note_provider_metadata_drop_fields(unsupported)
+        apply_processing_preference(target, kwargs)
         return kwargs
 
     def _normalize_remote_response(
@@ -359,6 +367,9 @@ class _OpenAICompatibleLaneMixin:
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Normalize an OpenAI-compatible response; skip_cost_fetch keeps no_proxy pure."""
         usage = resp_dict.get("usage") or {}
+        if "service_tier" in resp_dict:
+            usage["service_tier"] = resp_dict["service_tier"]
+        attach_processing_receipt(target, usage)
         if isinstance(resp_dict.get("_stream_receipt"), dict):
             usage["stream_receipt"] = dict(resp_dict["_stream_receipt"])
         if isinstance(usage, dict):
@@ -512,6 +523,8 @@ class _OpenAICompatibleLaneMixin:
                 },
                 allow_live_fetch=not skip_cost_fetch,
                 provider=usage["provider"],
+                **({"processing_mode": observed_processing_mode(usage["provider"], usage)}
+                   if usage.get("processing") else {}),
             )
             if estimated_cost is not None:
                 usage["cost"] = estimated_cost
@@ -601,3 +614,48 @@ class _OpenAICompatibleLaneMixin:
                 seen.add(p)
                 deduped.append(p)
         return "\n".join(deduped).strip()
+
+
+
+def openrouter_web_search_server_tool(
+    *,
+    api_key: str,
+    model: str,
+    query: str,
+    search_context_size: str,
+    accounting_scope: Optional[UsageScope] = None,
+    timeout: Optional[float] = None,
+    processing_preference: str | None = None,
+    _recovery: Any,
+) -> Any:
+    """Run OpenRouter's provider-owned web_search server tool."""
+
+    from ouroboros.net_transport import web_search_openai_client
+    from ouroboros.model_slots import resolve_processing_preference
+    from ouroboros.usage_accounting import current_usage_scope
+    from dataclasses import replace
+
+    target = {"provider": "openrouter", "usage_model": model, "resolved_model": model,
+              "processing_preference": resolve_processing_preference("websearch", override=processing_preference)}
+
+    client = web_search_openai_client(
+        api_key=api_key,
+        base_url="https://openrouter.ai/api/v1",
+        timeout=timeout,
+        default_headers=dict(OPENROUTER_APP_HEADERS),
+    )
+    payload = dict(
+        model=model,
+        messages=[{"role": "user", "content": query}],
+        tools=[{
+            "type": "openrouter:web_search",
+            "parameters": {
+                "search_context_size": search_context_size,
+                "max_total_results": 10,
+            },
+        }],
+    )
+    apply_processing_preference(target, payload)
+    scope = replace(accounting_scope or current_usage_scope() or UsageScope(), source="web_search.openrouter")
+    with usage_scope(scope):
+        return _recovery(client.chat.completions.create, payload, target)
