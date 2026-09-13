@@ -2393,7 +2393,7 @@ export function createChatInstance({
             }
         }
 
-        if (!isProgress && !ephemeral && !_historyReplayActive) {
+        if (!isProgress && !ephemeral && !_historyAppending) {
             persistedHistory.push({
                 text,
                 role,
