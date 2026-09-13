@@ -255,8 +255,12 @@ final class AndroidBridge implements Closeable {
                     .setAction(PackageInstallReceiver.ACTION)
                     .putExtra(PackageInstallReceiver.KEY, key)
                     .putExtra(PackageInstallReceiver.SESSION, sessionId);
-            PendingIntent pending = PendingIntent.getBroadcast(context, sessionId, callback,
-                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            int pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT;
+            // PackageInstaller fills status extras into the callback Intent. Mutable PendingIntent is
+            // required for that fill-in on Android 12+, while the explicit non-exported receiver keeps
+            // the callback private to this package.
+            pendingFlags |= Build.VERSION.SDK_INT >= 31 ? PendingIntent.FLAG_MUTABLE : PendingIntent.FLAG_IMMUTABLE;
+            PendingIntent pending = PendingIntent.getBroadcast(context, sessionId, callback, pendingFlags);
             JSONObject receipt = new JSONObject().put("idempotency_key", key)
                     .put("source_uri", source).put("source_sha256", digest.sha256)
                     .put("source_size", digest.size).put("session_id", sessionId)
