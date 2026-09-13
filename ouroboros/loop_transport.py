@@ -265,8 +265,31 @@ def reconcile_transport_wait(
     ``transport_unavailable`` and a pre-dispatch deadline refusal keep the
     latch for the wait/terminal step. A failed local fallback pass
     (``after_local_pass``) never clears the latched remote cause.
+    A granted continuation whose NEW physical attempt is unknown again returns
+    to the SAME episode (work-order §B9 "repeated unknown creates no burst"):
+    the latch keeps its entry facts and growing backoff, only clearing the
+    grant, counting the redial and refreshing the unresolved custody. Any other
+    outcome of a granted continuation ends the latch exactly as before.
     """
     if episode is not None and episode.continuation_granted:
+        if (not msg_present and error_kind == "provider_outcome_unknown"
+                and managed_transport_continuation(ctx)):
+            # §B9: the repeat belongs to the SAME wait owner, so the existing
+            # backoff keeps growing (4->8->16->32->60s) instead of restarting at
+            # 4s with a zero counter. The entry facts (started_at,
+            # started_monotonic, wait_iterations) are deliberately untouched:
+            # the reachability probe's observed_after bound must keep naming
+            # when this outage episode began, not when its latest repeat failed.
+            episode.continuation_granted = False
+            episode.redials += 1
+            episode.outcome_custody = dict(
+                (getattr(ctx, "_accumulated_usage", {}) or {}).get("_pending_transport_outcome") or {})
+            emit_network_wait_event(
+                drive_logs, task_id=task_id, phase="waiting", elapsed_sec=episode.waited_sec,
+                redials=episode.redials, model=model, detail="continuation_outcome_unknown",
+                outcome_custody=episode.outcome_custody,
+            )
+            return episode
         episode = None  # This new physical outcome owns a fresh outage episode.
     if (episode is not None and not after_local_pass and episode.wait_cause != "provider_outcome_unknown"
             and error_kind == "provider_outcome_unknown" and managed_transport_continuation(ctx)):

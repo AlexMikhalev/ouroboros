@@ -9,7 +9,7 @@ import pytest
 from ouroboros import loop as loop_mod, loop_transport as transport
 from ouroboros.loop import run_llm_loop
 from ouroboros.tools.registry import ToolRegistry
-from tests.test_loop_transport_wait import _loop_kwargs
+from tests.test_loop_transport_wait import _loop_kwargs, _read_network_wait_events
 
 
 def test_managed_unknown_waits_for_upstream_then_adds_new_input(tmp_path, monkeypatch):
@@ -44,6 +44,49 @@ def test_managed_unknown_waits_for_upstream_then_adds_new_input(tmp_path, monkey
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     recovered = [row for row in events if row.get("detail") == "new_attempt_after_unknown_outcome"]
     assert recovered[0]["outcome_custody"] == previous
+
+
+def test_repeated_unknown_does_not_restart_backoff(tmp_path, monkeypatch):
+    """Work-order §B9 "repeated unknown creates no burst": a granted continuation
+    that dies unknown AGAIN returns to the SAME wait episode — the backoff keeps
+    growing, the redial counter keeps counting, and exactly one [SYSTEM NOTICE]
+    is appended per real continuation."""
+    sends, probes, sleeps, notes = [], [], [], []
+    def send(_llm, messages, *args, **kwargs):
+        usage = args[8]  # model, tools, effort, retries, logs, task, round, event, usage
+        sends.append([dict(row) for row in messages])
+        if len(sends) <= 2:  # two unknown outcomes in a row -> two continuations
+            usage.update(_last_llm_error_kind="provider_outcome_unknown",
+                         _pending_transport_outcome={"physical_attempt_id": f"paid-attempt-{len(sends)}",
+                                                     "outcome": "unknown"})
+            return None, 0.0
+        usage.pop("_last_llm_error_kind", None)
+        return {"role": "assistant", "content": "continued answer"}, 0.0
+    def reachable(*args, **kwargs):
+        probes.append(kwargs)
+        return {"kind": "upstream_http", "status_code": 200}
+    monkeypatch.setattr(loop_mod, "call_llm_with_retry", send)
+    monkeypatch.setattr(transport, "upstream_transport_reachable", reachable)
+    monkeypatch.setattr(transport, "interruptible_wait_sleep", lambda seconds, wake: sleeps.append(seconds) or False)
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    monkeypatch.setenv("OUROBOROS_MAX_ROUNDS", "1")
+    registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
+    result, usage, _trace = run_llm_loop(**_loop_kwargs(tmp_path, registry, notes))
+
+    assert result == "continued answer" and len(sends) == 3 and len(probes) == 2
+    # The second wait starts where the first left off: no fresh 4s episode.
+    assert len(sleeps) == 2 and sleeps[1] > sleeps[0]
+    notices = [row for row in sends[-1] if "NEW physical model attempt" in str(row.get("content"))]
+    assert len(notices) == 2  # one per real continuation — no burst, no extra
+    assert usage["transport_recovery"]["previous_attempt"]["physical_attempt_id"] == "paid-attempt-2"
+    rows = _read_network_wait_events(tmp_path)
+    assert [row["phase"] for row in rows].count("entered") == 1  # one episode for the whole sequence
+    repeats = [row for row in rows if row.get("detail") == "continuation_outcome_unknown"]
+    assert len(repeats) == 1 and repeats[0]["redials"] == 2
+    assert repeats[0]["outcome_custody"]["physical_attempt_id"] == "paid-attempt-2"
+    waits = [row for row in rows if row["phase"] == "waiting" and "detail" not in row]
+    assert [row["redials"] for row in waits] == [0, 2]  # the counter never reset
+    assert [row["next_sleep_sec"] for row in waits] == [4.0, 8.0] == sleeps
 
 
 @pytest.mark.parametrize("flag", ["is_direct_chat"])
