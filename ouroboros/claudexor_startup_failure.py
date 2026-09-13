@@ -191,11 +191,11 @@ def start_failure_detail(record: Dict[str, Any]) -> str:
 
 
 def start_failure_row(record: Dict[str, Any], *, latched: bool) -> Dict[str, Any]:
-    """The durable supervisor row of one classified failure (``ts`` = when it failed)."""
-    return {"ts": record["at"], "type": "claudexor_daemon_start_failed", "latched": latched,
-            **{key: record[key] for key in ("classification", "exit_code", "exit_signal",
-                                             "descriptor_written", "pin_version", "pin_build",
-                                             "log_path", "log_interval")}}
+    """The durable supervisor row of one classified failure: the record itself, stamped.
+
+    ``ts`` is when it failed (the record's own ``at`` rides along unchanged).
+    """
+    return {"ts": record["at"], "type": "claudexor_daemon_start_failed", "latched": latched, **record}
 
 
 def latch_cleared_row(record: Dict[str, Any], *, cleared_by: str, ts: str) -> Dict[str, Any]:
