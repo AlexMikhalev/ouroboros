@@ -288,6 +288,7 @@ _STRUCTURED_TOOLS = ("read_file", "ext_1_demo_screenshot", "mcp_demo__ping", "ru
 # fails if a producer publishes a code no shape below (and no harvested pair)
 # exercises, which is the assertion that closes that blind spot.
 _PRODUCER_SHAPES = (
+    ("safety_violation", "run_command", "⚠️ SAFETY_VIOLATION: independent assessment refused", "SAFETY_VIOLATION", ()),
     ("shell_ok", "run_command", "exit_code=0\nSTDOUT:\nfine", "OK", (("exit_code", 0),)),
     ("shell_autocorrected", "run_command", "⚠️ SHELL_REGEX_AUTO_CORRECTED: corrected\nexit_code=0\nSTDOUT:\nfine", "SHELL_REGEX_AUTO_CORRECTED", (("exit_code", 0), ("shell_regex_auto_corrected", True))),
     ("shell_no_match", "run_command", "exit_code=1 (no matches)\nSTDOUT:\n", "SHELL_NO_MATCH", (("exit_code", 1),)),

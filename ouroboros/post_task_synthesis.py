@@ -460,8 +460,15 @@ def _run_chat_consolidation(env, memory, llm, task, drive_logs):
             )
 
             with usage_scope(chat_scope):
+                from ouroboros.tools.registry import ToolContext
+                knowledge_context = ToolContext(
+                    repo_dir=getattr(env, "repo_dir", env.drive_root),
+                    drive_root=pathlib.Path(task.get("budget_drive_root") or env.drive_root),
+                    budget_drive_root=str(task.get("budget_drive_root") or env.drive_root),
+                    task_id=str(_id or ""), project_id=str(task.get("project_id") or ""))
                 u = consolidate(chat_path=chat_path, blocks_path=blocks_path,
-                                meta_path=meta_path, llm_client=_llm, identity_text=_ident)
+                                meta_path=meta_path, llm_client=_llm, identity_text=_ident,
+                                knowledge_context=knowledge_context)
             if u:
                 append_jsonl(_logs / "events.jsonl", {"ts": utc_now_iso(),
                     "type": "chat_block_consolidation", "task_id": _id,
@@ -540,6 +547,12 @@ def _run_reflection(env: Any, llm: Any, task: Dict[str, Any],
                 # Reflection's legacy durable cost_usd field now records this
                 # same subtree snapshot instead of silently reverting to own cost.
                 reflection_usage["cost"] = synthesis_cost
+                from ouroboros.tools.registry import ToolContext
+                knowledge_context = ToolContext(
+                    repo_dir=getattr(env, "repo_dir", env.drive_root),
+                    drive_root=pathlib.Path(task.get("budget_drive_root") or env.drive_root),
+                    project_id=str(task.get("project_id") or ""),
+                    task_id=str(task.get("id") or ""))
                 entry = generate_reflection(
                     task, llm_trace, trace_summary,
                     llm, reflection_usage,
@@ -548,6 +561,7 @@ def _run_reflection(env: Any, llm: Any, task: Dict[str, Any],
                     usage_snapshot_text=_synthesis_usage_snapshot_text(usage),
                     sealed_final_text=sealed_final_prompt_section(sealed_final),
                     child_failure_classes=child_classes,
+                    knowledge_context=knowledge_context,
                 )
                 entry = {**entry, **presence_provenance_fields(task)}
                 append_reflection_routed(env, task, entry)

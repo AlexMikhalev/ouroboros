@@ -114,9 +114,9 @@ def test_every_host_acceptance_writer_emits_a_canonical_status_and_typed_reason(
         i for i, line in enumerate(src)
         if "_set_acceptance_decision(" in line and not line.lstrip().startswith("def ")
     ]
-    # 20th writer: advisory author-finality records an honest terminal decision
-    # after the first host panel without manufacturing reviewer PASS.
-    assert len(starts) == 20, f"writer inventory changed: {len(starts)} call sites"
+    # The final writers cover an invalid forced-delivery subject and Cyber
+    # author-finality; neither manufactures a reviewer PASS.
+    assert len(starts) == 22, f"writer inventory changed: {len(starts)} call sites"
     allowed_status = {
         "ACCEPTANCE_ACCEPTED", "ACCEPTANCE_REVISION_REQUESTED",
         "ACCEPTANCE_FINALIZED_UNACCEPTED",
@@ -435,8 +435,10 @@ def _exercise_owner_followup_during_acceptance_panel(monkeypatch, tmp_path, *, d
     assert acceptance_ctx._task_acceptance_reviewed is False
     assert root_id not in queue_mod.ACCEPTANCE_FENCES
     assert trace.get("root_phase_checkpoint") is None
-    assert trace["review_runs"][0]["superseded_by_revision"] is True
-    assert trace["review_runs"][0]["superseded_reason"] == "owner_followup_after_acceptance_evidence"
+    # Arrival is unread input, not Main's judgment that the reviewed subject
+    # changed. Retain the paid result while returning control to consume it.
+    assert trace["review_runs"][0].get("superseded_by_revision") is not True
+    assert trace["review_decision"]["eligibility"] == "pending_owner_followup"
     assert trace["acceptance_decision"]["status"] == "revision_requested"
     assert (direct_agent._busy and direct_agent._accepting_owner_messages) if direct else root_id in running
 

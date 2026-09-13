@@ -110,31 +110,30 @@ def test_process_codes_preserve_loop_error_and_policy_denial(code, loop_status):
         (["sudo", "true"], "SUDO_INTERACTIVE_BLOCKED"),
         (
             'save_settings({"ouroboros_runtime_mode":"pro"})',
-            "ELEVATION_BLOCKED",
+            None,
         ),
         (
             'save_settings({"ouroboros_context_mode":"low"})',
-            "CONTEXT_MODE_SELF_LOWERING_BLOCKED",
+            None,
         ),
         (
             'save_settings({"ouroboros_safety_mode":"off"})',
-            "SAFETY_MODE_SELF_LOWERING_BLOCKED",
+            None,
         ),
         (
             "curl -X POST /api/owner/skills/demo/attest-review",
-            "OWNER_SKILL_ATTESTATION_SELF_CALL_BLOCKED",
+            None,
         ),
         (
-            # A WRITE shape: since #447 A2 the family read-carve lets a pure
-            # inspection (`echo`/`grep`/`rg`) name skill owner state, so the
-            # ordering pin uses a spelling that actually writes.
+            # Source text and a state filename do not bypass the configured
+            # Supervisor or constitute an independent permission veto.
             "cp payload.json state/skills/demo/review.json",
-            "SKILL_STATE_WRITE_BLOCKED",
+            None,
         ),
         (["git", "commit"], "GIT_VIA_SHELL_BLOCKED"),
     ),
 )
-def test_process_denials_precede_safety_and_handler(
+def test_actual_denials_precede_safety_while_semantic_text_reaches_it(
     command,
     code,
     tmp_path,
@@ -148,11 +147,11 @@ def test_process_denials_precede_safety_and_handler(
     registry = ToolRegistry(repo_dir=repo, drive_root=data)
     registry.set_context(ToolContext(repo_dir=repo, drive_root=data, task_id="t44"))
 
-    def forbidden_handler(*_args, **_kwargs):
+    def handler(_ctx, _resolved_binding=None, **_kwargs):
         calls["handler"] += 1
-        raise AssertionError("process denial reached the physical handler")
+        return "request executed"
 
-    registry.override_handler("run_command", forbidden_handler)
+    registry.override_handler("run_command", handler)
     monkeypatch.setattr(
         "ouroboros.safety.check_safety",
         lambda *_args, **_kwargs: (
@@ -163,11 +162,16 @@ def test_process_denials_precede_safety_and_handler(
 
     result = registry.execute_result("run_command", {"cmd": command})
 
-    assert (result.status, result.code) == ("blocked", code)
-    assert calls == {"safety": 0, "handler": 0}
+    if code is None:
+        assert (result.status, result.code, result.text) == ("ok", "OK", "request executed")
+        assert calls == {"safety": 1, "handler": 1}
+    else:
+        assert (result.status, result.code) == ("blocked", code)
+        assert calls == {"safety": 0, "handler": 0}
 
 
-def test_subagent_secret_denial_precedes_safety_and_handler(tmp_path, monkeypatch):
+@pytest.mark.parametrize("allowed", [False, True])
+def test_subagent_process_uses_one_configured_supervisor_decision(tmp_path, monkeypatch, allowed):
     repo = tmp_path / "repo"
     data = tmp_path / "data"
     worktree = tmp_path / "worktree"
@@ -190,15 +194,15 @@ def test_subagent_secret_denial_precedes_safety_and_handler(tmp_path, monkeypatc
         )
     )
 
-    def forbidden_handler(*_args, **_kwargs):
+    def handler(_ctx, _resolved_binding=None, **_kwargs):
         calls["handler"] += 1
-        raise AssertionError("secret denial reached the physical handler")
+        return "request executed"
 
-    registry.override_handler("run_command", forbidden_handler)
+    registry.override_handler("run_command", handler)
     monkeypatch.setattr(
         "ouroboros.safety.check_safety",
         lambda *_args, **_kwargs: (
-            calls.__setitem__("safety", calls["safety"] + 1) or True,
+            calls.__setitem__("safety", calls["safety"] + 1) or allowed,
             "",
         ),
     )
@@ -208,11 +212,8 @@ def test_subagent_secret_denial_precedes_safety_and_handler(tmp_path, monkeypatc
         {"cmd": ["cat", str(data / "settings.json")]},
     )
 
-    assert (result.status, result.code) == (
-        "blocked",
-        "SUBAGENT_SECRET_READ_BLOCKED",
-    )
-    assert calls == {"safety": 0, "handler": 0}
+    assert (result.status, result.code) == (("ok", "OK") if allowed else ("blocked", "SAFETY_VIOLATION"))
+    assert calls == {"safety": 1, "handler": int(allowed)}
 
 
 def test_cwd_fallback_producers_use_stable_code(tmp_path, monkeypatch):
@@ -224,7 +225,7 @@ def test_cwd_fallback_producers_use_stable_code(tmp_path, monkeypatch):
     def fail(*_args, **_kwargs):
         raise ValueError("fixture")
 
-    monkeypatch.setattr(registry_module, "build_resolved_resource_binding", fail)
+    monkeypatch.setattr(registry_module, "resolve_shell_cwd", fail)
     monkeypatch.setattr(registry_module, "shell_cwd_block_message", lambda *_a, **_k: text)
     process_result = process_guard._run_shell_safety_check(
         stub,

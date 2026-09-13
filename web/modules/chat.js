@@ -9,6 +9,8 @@ import { createChatDecision } from './chat_decision.js';
 import { bindProjectWorkPointer } from './project_work_pointer.js';
 import { createModelWaitController, isModelWaitReference } from './model_wait.js';
 import { clientSurfaceField } from './client_surface.js';
+import { createChatHistoryPager } from './chat_history.js';
+import { mergeHistoricalTimelineItem, historyNodeIsProtected, historyRowIds, stampHistoryNode, compareHistoryPosition } from './chat_history_replay.js';
 import { apiClient, apiFetch, fetchTaskDetail, fetchTaskDetailStrict } from './api_client.js';
 import {
     getLogTaskGroupId,
@@ -69,15 +71,14 @@ import {
 import {
     captureLiveCardProjection,
     createHistoryResyncScheduler,
+    createHistoryControls,
     createLiveCardBound,
     createLiveCardTimelineRenderer,
-    createRebuildBatch,
     createTimelineAnchors,
     insertTimelineNode,
     liveCardProjectionChanged,
-    loadOlderControlState,
-    nextQuotaEscalation,
     syncLiveCardToggle,
+    updateLiveTimelineItem,
 } from './chat_render_batch.js';
 import {
     ADDRESSING_ONLY_TOOLS,
@@ -90,6 +91,7 @@ import {
     chatMediaMessageKey,
     chatThreadAccepts,
     clearStickyCardState,
+    clearTransientRoutingAnnotations,
     confirmAndSendPanic,
     computeDerivedChatStatus,
     computeHydratedDirectActivities,
@@ -106,6 +108,7 @@ import {
     loadChatInputHistory,
     liveLineRowToggleKey,
     bindContentButton,
+    bindLiveCardTimeline,
     subagentIdentityTitle,
     subagentTwin,
     mergeStickyCostMeta,
@@ -137,6 +140,7 @@ export {
     boundActivityPreview,
     chatMediaMessageKey,
     clearStickyCardState,
+    clearTransientRoutingAnnotations,
     confirmAndSendPanic,
     computeDerivedChatStatus,
     computeHydratedDirectActivities,
@@ -234,10 +238,7 @@ export function createChatInstance({
                 <div class="chat-toolbar-row">
                     <div class="chat-composer-pills" id="chat-composer-pills">
                         <button class="chat-swarm" id="chat-swarm" type="button" data-armed="false" title="Swarm: route your next message into a new managed task, run a deep plan review with plan_task, then delegate when parallel work helps. Auto-disarms after sending.">Swarm</button>
-                        <div class="chat-context-mode" id="chat-context-mode" data-context-mode="max" role="group" aria-label="Context size mode" title="Context mode (owner setting). Low fits ~200K / local models; Max is full. Saves immediately; lowering to Low requires Ouroboros to be idle.">
-                            <button class="chat-seg" type="button" data-mode="low">Low</button>
-                            <button class="chat-seg" type="button" data-mode="max">Max</button>
-                        </div>
+                        <div class="chat-context-mode" id="chat-context-mode" data-context-mode="max" role="group" aria-label="Context size mode" title="Context mode (owner setting). Nano is the compact owner window, Low fits ~200K / local models, Max is full. Saves immediately; lowering requires Ouroboros to be idle."><button class="chat-seg" type="button" data-mode="nano">Nano</button><button class="chat-seg" type="button" data-mode="low">Low</button><button class="chat-seg" type="button" data-mode="max">Max</button></div>
                     </div>
                 </div>
                 <div class="chat-text-row">
@@ -382,8 +383,6 @@ export function createChatInstance({
         stagePendingFiles(files);
     });
 
-    // Image paste uses the same stager; only image matches call preventDefault().
-    // Timestamped names keep repeated clipboard images distinct.
     input.addEventListener('paste', (e) => {
         const items = e.clipboardData && e.clipboardData.items;
         if (!items) return;
@@ -435,15 +434,10 @@ export function createChatInstance({
         stagePendingFiles(event.dataTransfer?.files || []);
     });
 
-    // Pass 1 builds live cards in memory; pass 2 inserts them in transcript order.
     let _syncPass1Active = false;
-    // Double-fetch fix: true while syncHistory replays the
-    // fetched rows into cards — pass 1, pass 2 AND the terminal-resolution
-    // sweep (both the rebuildAll and the routine branch). Finished transitions
-    // raised inside that replay must not schedule the 700ms post-completion
-    // resync: the data just came from the canonical source. The replay block
-    // is fully synchronous, so no live WS frame can ever observe the flag.
     let _historyReplayActive = false;
+    let _historyRow = null;
+    let _historyAppending = false;
 
     const persistedHistory = [];
     const seenMessageKeys = new Set();
@@ -468,17 +462,14 @@ export function createChatInstance({
     let lastLoadedHistoryRevision = 0;
     // one-shot idle gate for Main's deferred first hydration.
     let hydrationGatePromise = null;
-    // Detached rebuild batch; live/routine syncs leave it null.
-    let _rebuildBatch = null;
-    // server window verdict + the explicit Load-older quotas.
+    // The server retains whole-history coverage independently of the DOM window.
     let historyWindow = null;
-    let historyQuotaOverride = null;
-    let loadingOlderHistory = false;
     let welcomeShown = false;
     // Cross-instance hide/show position; visible mutations use live geometry.
     let _savedScrollTop = Math.max(0, Number(initialScrollState?.scrollTop) || 0);
     let _savedStick = initialScrollState ? initialScrollState.stick !== false : true;
     let _initialScrollPending = Boolean(initialScrollState) && !_savedStick;
+    let _resumeAnchor = initialScrollState?.historyAnchor || null;
     let _hasNewActivity = false;
     let _restoring = false;
     let restoreGeneration = 0;
@@ -508,6 +499,7 @@ export function createChatInstance({
     });
     function disposeLiveCard(id, preserveWaits = false) {
         if (!preserveWaits) modelWaits.forget(id);
+        liveCardRecords.get(id)?.timelineDispose?.();
         liveCardRecords.get(id)?.root?.remove();
         liveCardRecords.delete(id);
     }
@@ -618,7 +610,7 @@ export function createChatInstance({
     function setStatus(kind, text) {
         // replay frames never touch the badge; the reducer
         // (syncChatStatus) writes it once after the batch.
-        if (_rebuildBatch || !statusBadge) return;
+        if (!statusBadge) return;
         statusBadge.className = `status-badge ${kind}`;
         statusBadge.textContent = text;
     }
@@ -643,7 +635,7 @@ export function createChatInstance({
         }
         const ctxBtn = byId('context-mode');
         if (ctxBtn && typeof data?.context_mode === 'string') {
-            ctxBtn.dataset.contextMode = data.context_mode === 'low' ? 'low' : 'max';
+            ctxBtn.dataset.contextMode = ['nano', 'low', 'max'].includes(data.context_mode) ? data.context_mode : 'max';
         }
         const budget = headerBudgetPresentation(data);
         const budgetText = byId('budget-text');
@@ -770,19 +762,12 @@ export function createChatInstance({
         appendTimelineItem,
         patchLastTimelineItem,
         patchTimelineItemAt,
-    } = createLiveCardTimelineRenderer({ withStableViewport, buildTimelineItemHtml });
+    } = createLiveCardTimelineRenderer({
+        withStableViewport, buildTimelineItemHtml, isReplayActive: () => _historyReplayActive,
+    });
 
     function insertMessageNode(node, options = {}) {
         if (!node) return false;
-        // rebuildAll only: collect into the detached batch. One
-        // stable sort + one fragment mount replace per-row chronological
-        // insertion; the end-of-sync anchor restore replaces the per-row
-        // insertedAboveViewport compensation. Routine syncs and live frames
-        // (batch inactive) keep the chronological insertTimelineNode path.
-        if (_rebuildBatch) {
-            _rebuildBatch.collect(node);
-            return true;
-        }
         const isMounted = node.parentNode === messagesDiv;
         if (isMounted && !options.reorderExisting) {
             return false;
@@ -858,7 +843,15 @@ export function createChatInstance({
             return reanchorTaskCard(parent, rawTs, { suppressDomInsert }, seen);
         }
         const movedEarlier = stampNodeTimestamp(record.root, rawTs, { anchor: true });
-        if (!movedEarlier) return false;
+        const position = _historyRow?.history_position;
+        const positionChanged = position && (!record.historyPosition
+            || compareHistoryPosition(position, record.historyPosition) < 0);
+        if (positionChanged) {
+            record.historyPosition = position;
+            record.root.dataset.historySource = position.source;
+            record.root.dataset.historyOffset = String(position.offset);
+        }
+        if (!movedEarlier && !positionChanged) return false;
         if (suppressDomInsert || _syncPass1Active) {
             record._anchorOrderDirty = true;
             return true;
@@ -1007,7 +1000,7 @@ export function createChatInstance({
         const taskState = getTaskUiState(resolvedTaskId, true);
         if (!taskState) return false;
         let changed = reanchorVisibleTaskCard(taskState, rawTs);
-        if (taskState.completed && !isTerminalTaskPhase(summary.phase || '', summary.terminal)) {
+        if (!_historyRow && taskState.completed && !isTerminalTaskPhase(summary.phase || '', summary.terminal)) {
             if (REUSABLE_TASK_IDS.has(resolvedTaskId)) {
                 if (taskState.cleanupTimer) clearTimeout(taskState.cleanupTimer);
                 taskState.completed = false;
@@ -1513,23 +1506,11 @@ export function createChatInstance({
             event.stopPropagation();
             turnTaskIntoProject(record);
         });
-        record.timelineEl?.addEventListener('click', (event) => {
-            const button = event.target.closest('[data-live-line-toggle]');
-            // Row-surface disclosure: any click on the line's
-            // NON-interactive surface toggles it (guards live in the pure
-            // helper: nested interactive elements, active text selection).
-            const lineKey = button
-                ? (button.dataset.liveLineToggle || '')
-                : liveLineRowToggleKey(event.target, window.getSelection?.());
-            if (!lineKey) return;
+        record.timelineDispose = bindLiveCardTimeline(record.timelineEl, (lineKey) => {
             const nowExpanded = !record.expandedLineKeys.has(lineKey);
             if (nowExpanded) record.expandedLineKeys.add(lineKey);
             else record.expandedLineKeys.delete(lineKey);
             renderLiveCardTimeline(record);
-            // Keyboard/AT continuity: focus the rebuilt line's REAL toggle button.
-            record.timelineEl
-                ?.querySelector(`[data-live-line-toggle="${(window.CSS && CSS.escape) ? CSS.escape(lineKey) : lineKey}"]`)
-                ?.focus?.({ preventScroll: true });
             // P3: on expand, lazily fetch the genuinely-full output for a server-truncated
             // line (the WS preview was capped at 4000); cached on the item so a re-render
             // keeps it. Best-effort — the capped preview stays on failure.
@@ -1730,11 +1711,6 @@ export function createChatInstance({
     }
 
     function updateLiveCardCount(record) {
-        // one count render per card at the end of a replay batch.
-        if (_rebuildBatch) {
-            _rebuildBatch.touch(record);
-            return;
-        }
         if (!record?.countEl) return;
         const bits = [];
         if (record.items.length >= 2) bits.push(`${record.items.length} notes`);
@@ -1785,15 +1761,7 @@ export function createChatInstance({
         } finally {
             item._fetchingFull = false;
             if (changed && !destroyed && record.expandedLineKeys.has(item.lineKey)) {
-                const hadFocus = Boolean(
-                    document.activeElement?.closest?.(`[data-live-line-key="${(window.CSS && CSS.escape) ? CSS.escape(item.lineKey) : item.lineKey}"]`),
-                );
                 renderLiveCardTimeline(record);
-                if (hadFocus) {
-                    record.timelineEl
-                        ?.querySelector(`[data-live-line-toggle="${(window.CSS && CSS.escape) ? CSS.escape(item.lineKey) : item.lineKey}"]`)
-                        ?.focus?.({ preventScroll: true });
-                }
             }
         }
     }
@@ -1824,12 +1792,19 @@ export function createChatInstance({
         const typingBefore = typingEl.style.display;
         let timelineChanged = false;
         const nextPhase = summary.phase || '';
+        if (_historyRow?.history_id && record.updates > 0 && !summary.terminal
+                && (record.finished || _historyAppending
+                    || Date.parse(rawTs) < Date.parse(record.latestSourceTs || ''))) {
+            const changed = mergeHistoricalTimelineItem(record, summary, _historyRow, ts);
+            reanchorTaskCard(record, rawTs, { suppressDomInsert });
+            if (changed) { renderLiveCardTimeline(record); updateLiveCardCount(record); }
+            return changed;
+        }
         if (record.finished && !isTerminalTaskPhase(nextPhase, summary.terminal)) {
             if (summary.costProjection || summary.modelExecution) {
                 if (summary.costProjection) record.costMeta = mergeStickyCostMeta(record.costMeta, summary.costProjection);
                 if (summary.modelExecution) record.modelExecution = summary.modelExecution;
-                if (_rebuildBatch) _rebuildBatch.touch(record);
-                else renderLiveCardMeta(record);
+                renderLiveCardMeta(record);
                 return liveCardProjectionChanged(before, record);
             }
             return false;
@@ -1907,67 +1882,11 @@ export function createChatInstance({
         // history. Child-card lifecycle/progress rows also evolve in place.
         let timelineUpdate = 'none';
         let patchIndex = -1;
-        if (shouldRenderLine) {
-            const lastIdx = record.items.length - 1;
-            // Full-array dedup keeps routine history syncs from growing Notes.
-            const existingIdx = record.items.findIndex((it) => it.dedupeKey === syntheticKey);
-            if (existingIdx !== -1 && inPlaceByKey) {
-                const it = record.items[existingIdx];
-                const patch = {
-                    phase: summary.phase || it.phase,
-                    headline: headline || it.headline,
-                    fullHeadline: summary.fullHeadline || headline || it.fullHeadline,
-                    body: summary.body || '',
-                    fullBody: summary.fullBody || summary.body || it.fullBody || '',
-                    fullRef: summary.fullRef || it.fullRef || '',
-                    truncated: summary.truncated || it.truncated || false,
-                    ts: ts || it.ts,
-                };
-                if (Object.entries(patch).some(([key, value]) => it[key] !== value)) {
-                    Object.assign(it, patch);
-                    patchIndex = existingIdx;
-                    timelineUpdate = 'patch-at';
-                } else {
-                    timelineUpdate = 'duplicate-skip';
-                }
-            } else if (existingIdx === lastIdx && existingIdx !== -1) {
-                const it = record.items[existingIdx];
-                const patch = {
-                    ts: ts || it.ts,
-                    fullHeadline: summary.fullHeadline || it.fullHeadline || it.headline,
-                    fullBody: summary.fullBody || it.fullBody || it.body,
-                    fullRef: summary.fullRef || it.fullRef || '',
-                    truncated: summary.truncated || it.truncated || false,
-                };
-                if (Object.entries(patch).every(([key, value]) => it[key] === value)) {
-                    timelineUpdate = 'duplicate-skip';
-                } else {
-                    Object.assign(it, patch);
-                    it.count += 1;
-                    timelineUpdate = 'patch-last';
-                }
-            } else if (existingIdx !== -1) {
-                // An older duplicate only refreshes its timestamp.
-                const it = record.items[existingIdx];
-                it.ts = ts || it.ts;
-                timelineUpdate = 'duplicate-skip';
-            } else {
-                const lineKey = `line-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-                record.items.push({
-                    phase: summary.phase || 'working',
-                    headline: headline || 'Update',
-                    fullHeadline: summary.fullHeadline || headline || 'Update',
-                    body: summary.body || '',
-                    fullBody: summary.fullBody || summary.body || '',
-                    fullRef: summary.fullRef || '',
-                    truncated: summary.truncated || false,
-                    ts: ts || '',
-                    count: 1,
-                    dedupeKey: syntheticKey,
-                    lineKey,
-                });
-                timelineUpdate = 'append';
-            }
+        if (_historyRow?.history_id) {
+            if (mergeHistoricalTimelineItem(record, summary, _historyRow, ts)) timelineUpdate = 'render';
+        } else if (shouldRenderLine) {
+            ({ timelineUpdate, patchIndex } = updateLiveTimelineItem(record, summary,
+                { ts, rawTs, syntheticKey, headline, inPlaceByKey }));
         }
         updateLiveCardCount(record);
         // Cost does not move the activity clock.
@@ -1982,10 +1901,12 @@ export function createChatInstance({
         if (summary.modelExecution) record.modelExecution = summary.modelExecution;
         if (Number.isInteger(summary.toolCalls)) record.toolCalls = summary.toolCalls;
         record._lastFrameMeta = Array.isArray(summary.meta) ? summary.meta : [];
-        if (_rebuildBatch) _rebuildBatch.touch(record);
-        else renderLiveCardMeta(record);
+        if (rawTs) record.latestSourceTs = rawTs;
+        renderLiveCardMeta(record);
         const lastItem = record.items[record.items.length - 1];
-        if (timelineUpdate === 'append' && lastItem) {
+        if (timelineUpdate === 'render') {
+            timelineChanged = renderLiveCardTimeline(record);
+        } else if (timelineUpdate === 'append' && lastItem) {
             timelineChanged = appendTimelineItem(lastItem, record);
         } else if (timelineUpdate === 'patch-last' && lastItem) {
             timelineChanged = patchLastTimelineItem(lastItem, record);
@@ -2285,7 +2206,7 @@ export function createChatInstance({
         }, rawTs);
         if (!summary) return false;
         summary.dedupeKey = `subagent-progress:${childId}`;
-        if (preserveTerminal) {
+        if (preserveTerminal && !_historyReplayActive) {
             summary.phase = String(record.phaseEl?.dataset?.phase || 'done');
             summary.terminal = true;
         }
@@ -2430,7 +2351,7 @@ export function createChatInstance({
         const projectId = opts.projectId || '';
         const projectName = opts.projectName || '';
         const ts = timestamp || new Date().toISOString();
-        const messageKey = buildMessageKey(role, text, ts, {
+        const legacyKey = buildMessageKey(role, text, ts, {
             clientMessageId,
             systemType,
             isProgress,
@@ -2439,9 +2360,32 @@ export function createChatInstance({
             senderSessionId,
             taskId,
         });
-        if (messageKey && seenMessageKeys.has(messageKey)) return false;
+        const messageKey = opts.historyId ? `history:${opts.historyId}` : legacyKey;
+        if (opts.historyId || _historyReplayActive) {
+            const prior = opts.historyId
+                ? historyNodes(opts.historyId).find(node => node.classList.contains('chat-bubble'))
+                : Array.from(messagesDiv.querySelectorAll('.chat-bubble')).find(node => node.dataset.messageKey === legacyKey);
+            if (prior) {
+                rememberMessageKey(messageKey);
+                return chatDecision.renderRoutingDecision(prior, opts.chatAnnotation);
+            }
+        }
+        if (messageKey && seenMessageKeys.has(messageKey)) {
+            return false;
+        }
+        if (opts.historyId) {
+            const prior = Array.from(messagesDiv.querySelectorAll('.chat-bubble')).find(node =>
+                (clientMessageId && node.dataset.clientMessageId === clientMessageId)
+                || (!node.dataset.historyId && node.dataset.messageKey === legacyKey));
+            if (prior) {
+                stampHistoryNode(prior, opts.historyId, opts.historyPosition);
+                rememberMessageKey(messageKey);
+                chatDecision.renderRoutingDecision(prior, opts.chatAnnotation);
+                return false;
+            }
+        }
 
-        if (!isProgress && !ephemeral) {
+        if (!isProgress && !ephemeral && !_historyAppending) {
             persistedHistory.push({
                 text,
                 role,
@@ -2462,9 +2406,7 @@ export function createChatInstance({
             if (persistedHistory.length > 200) {
                 persistedHistory.splice(0, persistedHistory.length - 200);
             }
-            // a rebuildAll replay serializes the sessionStorage
-            // snapshot ONCE at the end of the batch, not per historical row.
-            if (!_rebuildBatch) persistVisibleHistory();
+            if (!_historyReplayActive) persistVisibleHistory();
         }
 
         const bubble = document.createElement('div');
@@ -2475,6 +2417,8 @@ export function createChatInstance({
         if (systemType) bubble.dataset.systemType = systemType;
         if (senderSessionId) bubble.dataset.senderSessionId = senderSessionId;
         if (taskId) bubble.dataset.taskId = taskId;
+        if (legacyKey) bubble.dataset.messageKey = legacyKey;
+        stampHistoryNode(bubble, opts.historyId, opts.historyPosition);
 
         const sender = senderLabel(role, isProgress, systemType, {
             source, senderLabel: senderLabelOverride, senderSessionId,
@@ -2526,19 +2470,6 @@ export function createChatInstance({
         const bubble = Array.from(messagesDiv.querySelectorAll('.chat-bubble.user[data-client-message-id]'))
             .find((candidate) => candidate.dataset.clientMessageId === messageId);
         return chatDecision.renderRoutingDecision(bubble, annotation);
-    }
-
-    function clearTransientRoutingAnnotations() {
-        let changed = false;
-        for (const note of messagesDiv.querySelectorAll(
-            '.msg-routing-annotation[data-annotation-status="pending"]',
-        )) {
-            const bubble = note.closest('.chat-bubble');
-            if (bubble) delete bubble.dataset.chatAnnotationStatus;
-            note.remove();
-            changed = true;
-        }
-        return changed;
     }
 
     function markPendingDelivered(clientMessageId, dropped = false) {
@@ -2605,147 +2536,71 @@ export function createChatInstance({
         return hydrationGatePromise;
     }
 
-    // Apply deferred card/typing/storage work once after the replay batch mounts.
-    function finalizeRebuildBatch(batch) {
-        for (const record of batch.touched) {
-            renderLiveCardMeta(record);
-            updateLiveCardCount(record);
+    const historicalTerminals = new Map();
+    const pendingHistoryUpserts = new Map();
+    const pendingLiveEvictions = new Set();
+    function releaseLiveOverflow() {
+        for (const id of pendingLiveEvictions) {
+            const record = liveCardRecords.get(id);
+            if (!record) { pendingLiveEvictions.delete(id); continue; }
+            if (record.historyIds?.size || activeDirectActivities.has(id)
+                    || (!record.finished && !record.historicalUnavailable)
+                    || historyNodeIsProtected(record.root, messagesDiv)) continue;
+            disposeLiveCard(id);
+            const task = taskUiStates.get(id);
+            if (task?.cleanupTimer) clearTimeout(task.cleanupTimer);
+            taskUiStates.delete(id); subagentChildParents.delete(id); subagentTerminalChildren.delete(id);
+            explicitCardExpansion.delete(id); reviewDisclosureByTask.delete(id);
+            pendingLiveEvictions.delete(id);
         }
-        if (batch.typingHidden) hideTypingIndicatorOnly();
-        persistVisibleHistory();
     }
-
-    async function syncHistory({ includeUser = false, fromReconnect = false, forceRebuild = false } = {}) {
-        if (historySyncPromise) {
-            // Preserve reconnect intent across an in-flight ordinary sync.
-            if (fromReconnect) {
-                pendingReconnectSync = true;
-                return historySyncPromise.then(() => {
-                    // One waiter consumes the queued rebuild; peers await it.
-                    if (pendingReconnectSync) {
-                        pendingReconnectSync = false;
-                        return syncHistory({ includeUser: false, fromReconnect: true });
+    function applyHistoryMessages(messages, { fromReconnect = false, includeUser = true, archived = false } = {}) {
+        const knownCards = new Set(liveCardRecords.keys());
+        _historyReplayActive = true;
+        _historyAppending = archived;
+        liveCardBound.beginReplay();
+        try {
+            withStableViewport(() => {
+                // A formerly unbound final can gain its real child lineage on a
+                // deeper page. Keep a selected old bubble until it can move.
+                messages = messages.filter(row => {
+                    if (!row.history_id || row.delegation_role !== 'subagent' || row.is_progress) return true;
+                    const old = historyNodes(row.history_id).find(node => node.classList.contains('chat-bubble'));
+                    if (!old) return true;
+                    if (historyNodeIsProtected(old, messagesDiv)) {
+                        pendingHistoryUpserts.set(row.history_id, row); return false;
                     }
-                    return historySyncPromise || lastHistorySyncSucceeded;
+                    pendingHistoryUpserts.delete(row.history_id);
+                    chatMedia.release(old); chatDecision.releaseViews(old); destroyChatMarkdown(old); old.remove();
+                    return true;
                 });
-            }
-            return historySyncPromise;
-        }
-        historySyncPromise = (async () => {
-            const armedAtStart = liveCardBound.begin();
-            try {
-                // Server defaults own first-load quotas; Load older overrides them.
-                let historyUrl = `/api/chat/history${isMain ? '' : `?chat_id=${chatId}`}`;
-                if (historyQuotaOverride) {
-                    const sep = historyUrl.includes('?') ? '&' : '?';
-                    historyUrl += `${sep}n_human=${historyQuotaOverride.n_human}`
-                        + `&n_progress=${historyQuotaOverride.n_progress}`;
-                }
-                const resp = await apiFetch(historyUrl, { cache: 'no-store' });
-                if (!resp.ok) {
-                    lastHistorySyncSucceeded = false;
-                    initialHydrationPromise = null;
-                    return false;
-                }
-                const data = await resp.json();
-                // A late continuation on a destroyed instance must not rebuild a
-                // detached DOM subtree or repopulate the cleared collections.
-                if (destroyed) {
-                    lastHistorySyncSucceeded = false;
-                    initialHydrationPromise = null;
-                    return false;
-                }
-                const messages = Array.isArray(data.messages) ? data.messages : [];
-                // the server's window verdict (P3.2 additive field)
-                // drives the Load-older button/notice after this sync lands.
-                historyWindow = (data && typeof data.window === 'object' && data.window)
-                    ? data.window
-                    : null;
-                const scrollBeforeSync = {
-                    top: messagesDiv.scrollTop,
-                    nearBottom: isNearBottom(),
-                    anchor: captureVisibleTimelineAnchor(),
-                };
-
-                // First load/reconnect trusts server history and fully rebuilds the
-                // feed; routine post-completion syncs only fold in new task cards.
-                // Load-older (forceRebuild) and an arm this sync inherited rebuild fully too.
-                const rebuildAll = !historyLoaded || fromReconnect || forceRebuild || armedAtStart;
-                // On a soft reconnect the module (and its dedupe set)
-                // survives: a plain re-sync would dedupe-drop every bubble.
-                // Restore user text and rebuild from durable history on every
-                // rebuild — incl. includeUser=false triggers (clean open /
-                // 700ms resync), since the rebuild clears those too.
-                const renderUser = includeUser || fromReconnect || armedAtStart;
-                // Every rebuild replays everything, so retirement resets with it.
-                if (rebuildAll) retiredTaskIds.clear();
-
-                // the ENTIRE mutation below (clear -> pass 1 ->
-                // pass 2 -> terminal resolution -> sweep) is one synchronous
-                // closure. On rebuildAll it runs inside ONE outer
-                // withStableViewport with a detached batch collecting the
-                // top-level nodes; NO awaits may occur between the feed
-                // clearing and the batch mount. The routine path
-                // (rebuildAll=false) calls it directly — unchanged behavior.
-                const applySyncedMessages = () => {
-                // Server-confirmed rows retire their journal copy; the rest
-                // survive the rebuild below.
+                // Retire only local echoes this source snapshot confirms.
                 const localEcho = partitionLocalEchoJournal(localEchoJournal, new Set(messages
                     .filter((m) => m.role === 'user' && m.client_message_id)
                     .map((m) => String(m.client_message_id))));
                 for (const entry of localEcho.confirmed) {
                     localEchoJournal.delete(entry.clientMessageId);
                 }
-                if (rebuildAll) {
-                    chatMedia.reset();
-                    chatDecision.resetViews(messages);
-                    // The cards below are a new presentation generation. Keep
-                    // hydrator single-flight/pending state, but let an already
-                    // applied durable Plan revision attach to the rebuilt card.
-                    reviewHydrator.invalidateApplied();
-                    modelWaits.resetViews();
-                    for (const id of liveCardRecords.keys()) disposeLiveCard(id, true);
-                    for (const taskState of taskUiStates.values()) {
-                        if (taskState.addressingToolCalls) {
-                            // Rebuild presentation, keeping observed starts and cleanup.
-                            taskState.cardVisible = false;
-                            taskState.bufferedLiveUpdates = [];
-                        } else {
-                            if (taskState.cleanupTimer) clearTimeout(taskState.cleanupTimer);
-                            taskUiStates.delete(taskState.taskId);
-                        }
-                    }
-                    // Rebuild replays the durable truth: stale name buffers and
-                    // cancelable markers from the previous connection are dropped
-                    // and re-learned from history rows (P3 growth caps).
-                    pendingSuggestedNames.clear();
-                    cancelableTaskIds.clear();
-                    activeLiveGroupId = '';
-                    // Atomically drop the standalone message bubbles and the dedupe
-                    // state so the rebuild below cannot produce duplicates even if
-                    // stale bubbles lingered in the DOM. Keep the typing indicator.
-                    for (const bubble of Array.from(messagesDiv.querySelectorAll('.chat-bubble'))) {
-                        if (!bubble.classList.contains('typing-bubble')) {
-                            destroyChatMarkdown(bubble);
-                            bubble.remove();
-                        }
-                    }
-                    seenMessageKeys.clear();
-                    messageKeyOrder.length = 0;
-                    subagentChildParents.clear();
-                    subagentTerminalChildren.clear();
-                    for (const msg of messages) learnSubagentLineage(msg);
-                }
+                for (const msg of messages) learnSubagentLineage(msg);
 
+                for (const msg of messages) if (msg.historical_terminal && msg.task_id) {
+                    historicalTerminals.set(msg.task_id, msg.historical_terminal);
+                }
                 // First pass builds card state without DOM insertion.
                 _syncPass1Active = true;
                 try { for (const msg of messages) {
+                    _historyRow = msg;
+                    if (msg.system_type === 'quiz_answer') {
+                        chatDecision.applyQuizStateFrame(messagesDiv, { ...msg.quiz, task_id: msg.task_id });
+                        continue;
+                    }
+                    if (msg.summary_kind && msg.historical_terminal) continue;
                     if (msg.system_type === 'project_question_pointer') continue;
                     if (handleCardReference(msg) !== undefined) continue;
                     if (attachReviewFromRow(msg, msg.ts || '') !== undefined) continue;
                     const taskId = msg.task_id || '';
                     if (!taskId) continue;
-                    if (retiredTaskIds.has(taskId)) continue;
+                    retiredTaskIds.delete(taskId);
                     if (msg.is_progress) {
                         updateLiveCardFromProgressMessage(msg, { grantCancelAuthority: msg.project_mirror !== true });
                         const historyCard = liveCardRecords.get(taskId);
@@ -2753,11 +2608,10 @@ export function createChatInstance({
                                 && !msg.task_terminal_status && msg.task_phase !== 'finalizing') {
                             if (setHistoricalUnconfirmed(historyCard)) {
                                 syncCancelRunButton(historyCard);
-                                if (_rebuildBatch) _rebuildBatch.touch(historyCard);
-                                else renderLiveCardMeta(historyCard);
+                                renderLiveCardMeta(historyCard);
                             }
                         }
-                        if (msg.historical_terminal && historyCard) historyCard.historicalTerminal = msg.historical_terminal;
+                        if (historyCard && historicalTerminals.has(taskId)) historyCard.historicalTerminal = historicalTerminals.get(taskId);
                         continue;
                     }
                     if (msg.system_type === 'task_summary') {
@@ -2773,7 +2627,7 @@ export function createChatInstance({
                         // Pass 2 inserts this in the right transcript position.
                         appendTaskSummaryToLiveCard(msg, { suppressDomInsert: true });
                     }
-                } } finally { _syncPass1Active = false; }
+                } } finally { _syncPass1Active = false; _historyRow = null; }
 
                 // Pass 2 inserts cards at the first visible task message, then finishes them.
                 const insertedCardTaskIds = new Set();
@@ -2793,8 +2647,10 @@ export function createChatInstance({
                     }
                 }
                 for (const msg of messages) {
+                    _historyRow = msg;
                     const taskId = msg.task_id || '';
                     if (msg.system_type === 'project_question_pointer') { chatDecision.appendQuestionPointer(msg); continue; }
+                    if (msg.system_type === 'quiz_answer' || (msg.summary_kind && msg.historical_terminal)) continue;
                     // Owner-bound reviews attached in pass 1 are not terminal chat bubbles.
                     if (
                         handleCardReference(msg) !== undefined
@@ -2806,7 +2662,7 @@ export function createChatInstance({
                     if (fromReconnect && msg.role === 'user' && msg.client_message_id) {
                         pendingSubmissions.delete(String(msg.client_message_id));
                     }
-                    if (!renderUser && msg.role === 'user') continue;
+                    if (!includeUser && msg.role === 'user') continue;
                     if (msg.is_progress) {
                         // Progress-only/failed tasks still anchor at their first event.
                         insertCardIfNeeded(taskId);
@@ -2817,7 +2673,8 @@ export function createChatInstance({
                     if (msg.system_type === 'task_summary') continue;
                     if (PROJECT_ROW_TYPES.has(msg.system_type)) {
                         addMessage(msg.text, 'system', !!msg.markdown, msg.ts || null, false, {
-                            systemType: msg.system_type,
+                            historyId: msg.history_id, historyPosition: msg.history_position,
+                        systemType: msg.system_type,
                             taskId,
                             projectId: msg.project_id || '',
                             projectName: msg.project_name || '',
@@ -2871,6 +2728,7 @@ export function createChatInstance({
                         pendingSubmissions.delete(String(msg.client_message_id));
                     }
                     addMessage(msg.text, msg.role, !!msg.markdown, msg.ts || null, false, {
+                        historyId: msg.history_id, historyPosition: msg.history_position,
                         systemType: msg.system_type || '',
                         source: msg.source || '',
                         senderLabel: msg.sender_label || '',
@@ -2883,6 +2741,7 @@ export function createChatInstance({
                             : null,
                     });
                 }
+                _historyRow = null;
                 // Resolve cards whose task is already terminal on the server
                 // (crash storm / hard timeout / cancellation write a terminal
                 // status but no task_summary). Without this their progress-only
@@ -2898,6 +2757,7 @@ export function createChatInstance({
                     }
                 }
                 for (const [tid, terminalRecord] of terminalTaskRecords) {
+                    _historyRow = terminalRecord;
                     if (!taskDoneIsTerminal(terminalRecord)) continue;
                     // Subagent terminal status resolves the child card, not the
                     // parent. Otherwise reload can revive a crashed/cancelled child.
@@ -2917,6 +2777,7 @@ export function createChatInstance({
                         }
                     }
                 }
+                _historyRow = null;
 
                 // Append disconnected visible cards after mid-task reload; skip trivial placeholders.
                 for (const [tid, rec] of liveCardRecords) {
@@ -2928,73 +2789,101 @@ export function createChatInstance({
                         else insertMessageNode(rec.root);
                     }
                 }
-                // A rebuild replays only what the server returned; re-render
-                // owner rows a stale snapshot has not confirmed yet.
-                if (rebuildAll) {
-                    for (const entry of localEcho.unconfirmed) {
-                        addMessage(entry.text, 'user', false, entry.ts, false, {
-                            // A still-queued offline row keeps its pending mark.
-                            pending: pendingUserBubbles.has(entry.clientMessageId),
-                            source: 'web',
-                            senderSessionId: chatSessionId,
-                            clientMessageId: entry.clientMessageId,
-                            chatAnnotation: entry.annotation,
-                        });
+
+                for (const [id, record] of liveCardRecords) {
+                    if (!knownCards.has(id) && !record.finished && !activeDirectActivities.has(id)) {
+                        setHistoricalUnconfirmed(record);
+                        syncCancelRunButton(record);
+                        renderLiveCardMeta(record);
                     }
                 }
-                };  // end applySyncedMessages
-
-                // Double-fetch fix: the replay below marks
-                // historical cards finished; those transitions must not
-                // schedule the post-completion resync (the rows just arrived
-                // from this very fetch). The flag spans BOTH branches and is
-                // dropped synchronously, so a real live completion frame can
-                // never land while it is up.
-                _historyReplayActive = true;
-                liveCardBound.beginReplay();
-                try {
-                    if (rebuildAll) {
-                        // one outer withStableViewport for
-                        // the whole rebuild (inner wrappers collapse on the
-                        // _viewportMutationDepth gate — no per-frame layout
-                        // storm); one stable sort, one fragment mount, ONE
-                        // persist, all synchronous: live frames never observe
-                        // "records cleared, fragment not yet mounted".
-                        _rebuildBatch = createRebuildBatch();
-                        try {
-                            withStableViewport(() => {
-                                applySyncedMessages();
-                                const batch = _rebuildBatch;
-                                _rebuildBatch = null;
-                                batch.mount(messagesDiv, messagesDiv.querySelector('.typing-bubble'));
-                                finalizeRebuildBatch(batch);
-                            });
-                        } finally {
-                            _rebuildBatch = null;
-                        }
-                    } else {
-                        // Routine replay is one transaction: repeated rows may
-                        // touch intermediate projections, but only a net height
-                        // or top-level order change owns the viewport.
-                        const beforeHeight = messagesDiv.scrollHeight;
-                        const beforeNodes = Array.from(messagesDiv.children);
-                        withStableViewport(() => {
-                            applySyncedMessages();
-                            const afterNodes = messagesDiv.children;
-                            return beforeHeight !== messagesDiv.scrollHeight
-                                || beforeNodes.length !== afterNodes.length
-                                || beforeNodes.some((node, index) => node !== afterNodes[index]);
-                        });
-                    }
-                } finally {
-                    _historyReplayActive = false;
+                for (const row of messages) {
+                    const record = liveCardRecords.get(row.presentation_owner_task_id || row.task_id);
+                    if (!record) continue;
+                    record.historyIds ||= new Set();
+                    for (const id of historyRowIds(row)) record.historyIds.add(id);
                 }
+                _historyReplayActive = false;
+                for (const record of liveCardRecords.values()) {
+                    if (record._timelineDirty) renderLiveCardTimeline(record);
+                }
+                persistVisibleHistory();
+                return true;
+            });
+        } finally {
+            _historyRow = null;
+            _historyReplayActive = false;
+            _historyAppending = false;
+        }
+        syncChatStatus();
+    }
 
-                // After first load, sync status from live cards/active turns.
+    async function syncHistory({ includeUser = false, fromReconnect = false } = {}) {
+        if (historySyncPromise) {
+            // Preserve reconnect intent across an in-flight ordinary sync.
+            if (fromReconnect) {
+                pendingReconnectSync = true;
+                return historySyncPromise.then(() => {
+                    // One waiter consumes the queued rebuild; peers await it.
+                    if (pendingReconnectSync) {
+                        pendingReconnectSync = false;
+                        return syncHistory({ includeUser: false, fromReconnect: true });
+                    }
+                    return historySyncPromise || lastHistorySyncSucceeded;
+                });
+            }
+            return historySyncPromise;
+        }
+        historySyncPromise = (async () => {
+            const armedAtStart = liveCardBound.begin();
+            const cardsAtStart = new Set(liveCardRecords.keys());
+            try {
+                const data = await apiClient.chatHistory({ chatId });
+                // Closed rooms do not consume late responses.
+                if (destroyed) {
+                    lastHistorySyncSucceeded = false;
+                    initialHydrationPromise = null;
+                    return false;
+                }
+                const messages = Array.isArray(data.messages) ? data.messages : [];
+                if (!historyLoaded && initialScrollState?.history && !historyPager.getState().initialized) {
+                    await historyPager.restore(initialScrollState.history);
+                    if (destroyed) return false;
+                }
+                historyWindow = (data && typeof data.window === 'object' && data.window)
+                    ? data.window
+                    : null;
+                const scrollBeforeSync = {
+                    top: messagesDiv.scrollTop,
+                    nearBottom: isNearBottom(),
+                    anchor: captureVisibleTimelineAnchor(),
+                };
+
+                const oldRecentIds = recentHistoryIds;
+                recentHistoryIds = new Set(messages.flatMap(historyRowIds));
+                const pagerBeforeRecent = historyPager.getState();
+                const rechainRecent = !data.reason_code && pagerBeforeRecent.initialized && !pagerBeforeRecent.canNewer
+                    && [...oldRecentIds].some(id => !recentHistoryIds.has(id));
+                for (const id of oldRecentIds) {
+                    if (data.window?.truncated_by?.includes(`${id.split(':')[0]}_source_unavailable`)) recentHistoryIds.add(id);
+                }
+                if ((!historyPager.getState().initialized && data.page_cursor)
+                        || data.reason_code === 'history_source_unavailable') {
+                    const result = historyPager.acceptRecent(data);
+                    if (result.status !== 'applied') applyHistoryMessages(messages, { fromReconnect, includeUser: true });
+                }
+                else applyHistoryMessages(messages, { fromReconnect, includeUser: true });
+                const recentState = historyPager.getState();
+                const releasableRecentIds = rechainRecent || recentState.canNewer ? [] : oldRecentIds;
+                withStableViewport(() => releaseHistoryIds(releasableRecentIds));
+                if (rechainRecent && !destroyed) void historyPager.latest();
+                if (armedAtStart) {
+                    const represented = new Set(messages.map(row => row.presentation_owner_task_id || row.task_id));
+                    for (const id of cardsAtStart) if (!represented.has(id)) pendingLiveEvictions.add(id);
+                    withStableViewport(releaseLiveOverflow);
+                }
                 syncChatStatus();
 
-                // One-shot server recall seed includes other clients without resetting
-                // ArrowUp during reconnect. Merge [server..., local...], newest wins.
                 if (!inputHistorySeededFromServer) {
                     const serverTexts = [];
                     for (const msg of messages) {
@@ -3021,13 +2910,11 @@ export function createChatInstance({
                 const wasFirstLoad = !historyLoaded;
                 historyLoaded = true;
                 lastHistorySyncSucceeded = true;
-                liveCardBound.settle({ rebuilt: rebuildAll, size: liveCardRecords.size });
+                liveCardBound.settle({ rebuilt: wasFirstLoad || armedAtStart, size: liveCardRecords.size });
                 modelWaits.retainCards(liveCardRecords);
                 // ANY successful sync leaves the instance hydrated
                 // — later hydration triggers ride this sticky promise.
                 initialHydrationPromise = historySyncPromise;
-                // reflect the server's window verdict in the
-                // Load-older control now that the feed matches this response.
                 syncLoadOlderControl();
                 // A recreated project instance restores its predecessor's stashed
                 // mid-history position on first paint instead of pinning to newest.
@@ -3043,12 +2930,8 @@ export function createChatInstance({
                     // the ordinary boundary would not land on the newest row.
                     if (wasFirstLoad) scrollToBottomAfterLayout();
                 } else if (fromReconnect) {
-                    // Rebuild may add rows both ABOVE and BELOW the viewport; a
-                    // scrollHeight delta cannot tell them apart and over-scrolls
-                    // readers. Restore the first visible timestamped node to its
-                    // prior visual offset instead (equal-ts ordinals keep
-                    // arrival-order identity), after two RAF frames so async
-                    // card heights above the anchor cannot move the reader.
+                    // Reconnect can add rows on either side. Restore the same
+                    // nested reading anchor after layout, never a height delta.
                     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
                     const restoredFromAnchor = restoreVisibleTimelineAnchor(scrollBeforeSync.anchor);
                     if (!restoredFromAnchor) messagesDiv.scrollTop = scrollBeforeSync.top;
@@ -3134,10 +3017,7 @@ export function createChatInstance({
             }
         } catch {}
         historyLoaded = true;
-        // this offline fallback sets historyLoaded=true, which would
-        // make the first successful post-outage sync a NON-rebuilding routine
-        // fold over stale sessionStorage bubbles. Flag it so that sync
-        // rebuilds from durable history instead.
+        // The next successful source read reconciles this offline preview.
         if (!lastHistorySyncSucceeded) liveCardBound.arm();
         ensureWelcomeMessage();
     })();
@@ -3323,8 +3203,8 @@ export function createChatInstance({
     contextModeBtn?.addEventListener('click', async (event) => {
         const seg = event.target.closest('.chat-seg');
         if (!seg || contextModeBtn.dataset.disabled === 'true') return;
-        const next = seg.dataset.mode === 'low' ? 'low' : 'max';
-        const current = contextModeBtn.dataset.contextMode === 'low' ? 'low' : 'max';
+        const next = ['nano', 'low', 'max'].includes(seg.dataset.mode) ? seg.dataset.mode : 'max';
+        const current = ['nano', 'low', 'max'].includes(contextModeBtn.dataset.contextMode) ? contextModeBtn.dataset.contextMode : 'max';
         if (next === current) return;
         contextModeBtn.dataset.disabled = 'true';
         const postMode = (mode) => apiFetch('/api/owner/context-mode', {
@@ -3404,7 +3284,8 @@ export function createChatInstance({
         if (scrollActivityDot) scrollActivityDot.hidden = !_hasNewActivity;
         scrollBottomBtn.classList.toggle('visible', isInstanceVisible() && !isNearBottom());
     }
-    scrollBottomBtn?.addEventListener('click', () => {
+    scrollBottomBtn?.addEventListener('click', async () => {
+        if (historyPager.getState().canNewer) await historyPager.latest();
         _savedStick = true;
         scrollToBottomAfterLayout();
         updateScrollButton();
@@ -3417,14 +3298,19 @@ export function createChatInstance({
         const generation = ++restoreGeneration;
         const targetStick = _savedStick;
         const targetTop = _savedScrollTop;
+        const historicalAnchor = _resumeAnchor;
         let frames = 0;
         const apply = () => {
             if (generation !== restoreGeneration) return;
             if (destroyed || !isInstanceVisible()) { _restoring = false; return; }
-            messagesDiv.scrollTop = targetStick ? messagesDiv.scrollHeight : targetTop;
+            const node = !targetStick && historicalAnchor
+                ? historyNodes(historicalAnchor.id)[0] : null;
+            if (node) messagesDiv.scrollTop += node.getBoundingClientRect().top
+                - messagesDiv.getBoundingClientRect().top - historicalAnchor.offset;
+            else messagesDiv.scrollTop = targetStick ? messagesDiv.scrollHeight : targetTop;
             updateScrollButton();
             if (++frames < 12) requestAnimationFrame(apply);
-            else _restoring = false;
+            else { _restoring = false; _resumeAnchor = null; }
         };
         requestAnimationFrame(apply);
     }
@@ -3594,94 +3480,139 @@ export function createChatInstance({
     typingEl.innerHTML = `<div class="typing-dots"><span></span><span></span><span></span></div>`;
     messagesDiv.appendChild(typingEl);
 
-    // "Load older" atop the feed. Server truth (window.complete /
-    // truncated_by, P3.2) picks refetch button vs honest boundary notice;
-    // excluded from viewport anchoring; mounted ONLY with content — a hidden
-    // permanent node would break child-order consumers (ui-smoke chronology).
-    const loadOlderEl = document.createElement('div');
-    loadOlderEl.className = 'chat-load-older';
-    const loadOlderBtn = document.createElement('button');
-    loadOlderBtn.type = 'button';
-    loadOlderBtn.className = 'chat-load-older-btn';
-    loadOlderBtn.textContent = 'Load older messages';
-    const loadOlderNote = document.createElement('span');
-    loadOlderNote.className = 'chat-load-older-note';
-    loadOlderNote.hidden = true;
-    loadOlderEl.append(loadOlderBtn, loadOlderNote);
-    loadOlderBtn.addEventListener('click', () => { loadOlderHistory(); });
+    const pageHistoryIds = new Map();
+    const pageWindows = new Map();
+    let recentHistoryIds = new Set();
+    const pendingHistoryEvictions = new Set();
+    const historyNodes = (id) => Array.from(messagesDiv.querySelectorAll('[data-history-id]'))
+        .filter(node => node.dataset.historyId === id);
+    const retainedHistoryIds = () => new Set([...recentHistoryIds,
+        ...[...pageHistoryIds.values()].flatMap(ids => [...ids])]);
+    function isHistoryPageProtected(descriptor) {
+        const ids = pageHistoryIds.get(descriptor.id) || new Set();
+        if (Array.from(messagesDiv.querySelectorAll('[data-history-id]'))
+            .some(node => ids.has(node.dataset.historyId) && historyNodeIsProtected(node, messagesDiv))) return true;
+        return [...liveCardRecords.values()].some(record =>
+            [...(record.historyIds || [])].some(id => ids.has(id))
+            && [record.summaryButtonEl, record.reviewsHostEl].some(node => historyNodeIsProtected(node, messagesDiv)));
+    }
 
-    function syncLoadOlderControl() {
-        const control = loadOlderControlState(historyWindow, historyQuotaOverride);
-        return withStableViewport(() => {
-            if (control.mode === 'hidden') {
-                if (!loadOlderEl.isConnected) return false;
-                loadOlderEl.remove();
-                return true;
+    function releaseHistoryIds(ids) {
+        if (!(ids.size || ids.length)) return;
+        const retained = retainedHistoryIds();
+        const released = new Set();
+        const byId = new Map();
+        for (const node of messagesDiv.querySelectorAll('[data-history-id]')) {
+            const key = node.dataset.historyId;
+            if (!byId.has(key)) byId.set(key, []);
+            byId.get(key).push(node);
+        }
+        for (const id of ids) {
+            if (retained.has(id)) { pendingHistoryEvictions.delete(id); continue; }
+            const nodes = byId.get(id) || [];
+            if (nodes.some(node => historyNodeIsProtected(node, messagesDiv))) {
+                pendingHistoryEvictions.add(id); continue;
             }
-            const buttonHidden = control.mode !== 'button';
-            const buttonText = loadingOlderHistory
-                ? 'Loading…'
-                : (control.mode === 'button' ? control.label : 'Load older messages');
-            const noteHidden = control.mode !== 'notice';
-            const changed = !loadOlderEl.isConnected
-                || loadOlderBtn.hidden !== buttonHidden
-                || loadOlderBtn.disabled !== loadingOlderHistory
-                || loadOlderBtn.textContent !== buttonText
-                || loadOlderNote.hidden !== noteHidden
-                || (!noteHidden && loadOlderNote.textContent !== control.label);
-            if (!changed) return false;
-            if (!loadOlderEl.isConnected) messagesDiv.prepend(loadOlderEl);
-            loadOlderBtn.hidden = buttonHidden;
-            loadOlderBtn.disabled = loadingOlderHistory;
-            loadOlderBtn.textContent = buttonText;
-            loadOlderNote.hidden = noteHidden;
-            if (!noteHidden) loadOlderNote.textContent = control.label;
+            pendingHistoryEvictions.delete(id);
+            for (const node of nodes) {
+                chatMedia.release(node);
+                chatDecision.releaseViews(node);
+                destroyChatMarkdown(node);
+                const wrapper = node.closest('.chat-bubble');
+                node.remove();
+                if (wrapper && wrapper !== node && !wrapper.querySelector('.chat-gallery-item, .chat-file-item, .chat-quiz-card')) {
+                    chatMedia.release(wrapper); wrapper.remove();
+                }
+            }
+            seenMessageKeys.delete(`history:${id}`);
+            released.add(id);
+        }
+        if (!released.size) return;
+        for (const [id, record] of [...liveCardRecords].reverse()) {
+            let affected = false;
+            for (const key of record.historyIds || []) {
+                if (released.has(key)) affected = record.historyIds.delete(key) || affected;
+            }
+            const items = record.items.filter(item => !released.has(item.historyId || item.sourceHistoryId));
+            if (items.length !== record.items.length) {
+                record.items = items;
+                renderLiveCardTimeline(record);
+                updateLiveCardCount(record);
+            }
+            if (!affected || record.historyIds?.size || activeDirectActivities.has(id)
+                    || record.subagentsEl?.querySelector('.chat-live-card')
+                    || historyNodeIsProtected(record.root, messagesDiv)) continue;
+            if (!record.finished && !record.historicalUnavailable && !record.historicalUnconfirmed) continue;
+            disposeLiveCard(id);
+            const task = taskUiStates.get(id);
+            if (task?.cleanupTimer) clearTimeout(task.cleanupTimer);
+            taskUiStates.delete(id); subagentChildParents.delete(id); subagentTerminalChildren.delete(id);
+            reviewDisclosureByTask.delete(id); explicitCardExpansion.delete(id); historicalTerminals.delete(id);
+        }
+    }
+
+    const historyControls = createHistoryControls(messagesDiv, typingEl);
+    const { olderButton: loadOlderBtn, newerButton: loadNewerBtn } = historyControls;
+
+    const historyPager = createChatHistoryPager({
+        fetchPage: (cursor, { signal }) => apiClient.chatHistory({ chatId, cursor, signal }),
+        isAlive: () => !destroyed,
+        applyPage: (messages, descriptor) => {
+            pageHistoryIds.set(descriptor.id, new Set(messages.flatMap(historyRowIds)));
+            pageWindows.set(descriptor.id, descriptor.window);
+            applyHistoryMessages(messages, { archived: descriptor.direction !== 'recent' && descriptor.direction !== 'latest' });
+        },
+        releasePage: descriptor => {
+            const ids = pageHistoryIds.get(descriptor.id) || [];
+            pageHistoryIds.delete(descriptor.id); pageWindows.delete(descriptor.id);
+            withStableViewport(() => releaseHistoryIds(ids));
+        },
+        isPageProtected: isHistoryPageProtected,
+        onState: snapshot => syncLoadOlderControl(snapshot),
+    });
+
+    function syncLoadOlderControl(snapshot = historyPager.getState()) {
+        if (destroyed) return;
+        withStableViewport(() => {
+            historyWindow = historyControls.render(snapshot, pageWindows.values());
             return true;
         });
     }
-
     async function loadOlderHistory() {
-        if (loadingOlderHistory) return;
-        const next = nextQuotaEscalation(historyQuotaOverride);
-        if (!next) return;
-        loadingOlderHistory = true;
-        syncLoadOlderControl();
-        // Anchor the current first visible timestamped node (the control
-        // itself is excluded from capture, like .typing-bubble) so the reader
-        // does not drift when older rows land above the viewport.
-        const anchor = isNearBottom() ? null : captureVisibleTimelineAnchor();
-        const previousQuota = historyQuotaOverride;
-        historyQuotaOverride = next;
-        try {
-            // Drain EVERY in-flight sync first: coalescing into one would
-            // silently drop forceRebuild and the escalated window, and another
-            // waiter can install a NEW promise right as the previous one
-            // settles — so re-check until the slot is genuinely free. Only
-            // then does syncHistory below start as OUR fetch (its head sees
-            // historySyncPromise === null synchronously).
-            while (historySyncPromise) {
-                try { await historySyncPromise; } catch {}
-                if (destroyed) return;
-            }
-            await syncHistory({ includeUser: true, forceRebuild: true });
-            if (destroyed) return;
-            if (!lastHistorySyncSucceeded) {
-                historyQuotaOverride = previousQuota;
-                return;
-            }
-            // Like the reconnect restore: wait two frames so late card layout
-            // above the anchor cannot move the reader right after this call.
-            await new Promise((resolve) => requestAnimationFrame(
-                () => requestAnimationFrame(resolve)
-            ));
-            if (destroyed) return;
-            if (anchor) restoreVisibleTimelineAnchor(anchor);
-            updateScrollButton();
-        } finally {
-            loadingOlderHistory = false;
-            if (!destroyed) syncLoadOlderControl();
-        }
+        const snapshot = historyPager.getState();
+        if (snapshot.error?.body?.reason_code === 'history_view_changed') return historyPager.latest();
+        return snapshot.error ? historyPager.retry() : loadOlderAtEdge();
     }
+    async function loadOlderAtEdge() {
+        let result;
+        do {
+            result = await historyPager.older();
+        } while (!destroyed && result.status === 'applied' && result.messageCount === 0
+            && isInstanceVisible() && messagesDiv.scrollTop < 80 && historyPager.getState().canOlder);
+        return result;
+    }
+    loadOlderBtn.addEventListener('click', loadOlderHistory);
+    loadNewerBtn.addEventListener('click', () => historyPager.newer());
+
+    function navigateHistoryAtEdge() {
+        if (destroyed || _restoring || !historyLoaded || !isInstanceVisible()) return;
+        let snapshot = historyPager.getState();
+        if (snapshot.loading || snapshot.error || !snapshot.initialized) return;
+        retryHistoricalUpserts();
+        historyPager.trim();
+        if (pendingLiveEvictions.size) withStableViewport(releaseLiveOverflow);
+        if (pendingHistoryEvictions.size) withStableViewport(() => releaseHistoryIds([...pendingHistoryEvictions]));
+        snapshot = historyPager.getState();
+        if (messagesDiv.scrollTop < 80 && snapshot.canOlder) void loadOlderAtEdge();
+        else if (isNearBottom(80) && snapshot.canNewer) void historyPager.newer();
+    }
+    messagesDiv.addEventListener('scroll', navigateHistoryAtEdge, { passive: true });
+    function retryHistoricalUpserts() {
+        const ready = [...pendingHistoryUpserts.values()].filter(row =>
+            !historyNodes(row.history_id).some(node => historyNodeIsProtected(node, messagesDiv)));
+        if (ready.length) applyHistoryMessages(ready, { archived: true });
+    }
+    document.addEventListener('selectionchange', retryHistoricalUpserts);
 
     function hasActiveLiveCard() {
         return Array.from(liveCardRecords.values()).some((r) => isForegroundLiveCard(r) && !r.modelWaiting);
@@ -3755,11 +3686,6 @@ export function createChatInstance({
     }
 
     function hideTypingIndicatorOnly() {
-        // one typing-indicator write per replay batch.
-        if (_rebuildBatch) {
-            _rebuildBatch.typingHidden = true;
-            return true;
-        }
         return setTypingIndicatorVisible(false);
     }
 
@@ -4028,7 +3954,7 @@ export function createChatInstance({
                 changed = appendTaskSummaryToLiveCard(msg) || changed;
             }
             if (!finalizing && typedTerminal) markAssistantReply(explicitTaskId);
-            const routingCleared = clearTransientRoutingAnnotations();
+            const routingCleared = clearTransientRoutingAnnotations(messagesDiv);
             const added = addMessage(msg.content, msg.role, msg.markdown, msg.ts || null, false, {
                 systemType: msg.system_type || '',
                 source: msg.source || '',
@@ -4187,7 +4113,17 @@ export function createChatInstance({
         // upload). app.js must hide, not destroy, an instance holding it.
         hasPendingWork: () => pendingAttachments.length > 0 || attachmentsUploading,
         // Viewport intent stash source for the single-live-panel policy.
-        getScrollState: () => ({ scrollTop: _savedScrollTop, stick: _savedStick }),
+        getScrollState: () => {
+            const captured = captureVisibleTimelineAnchor();
+            const node = captured?.node?.closest?.('[data-history-id]')
+                || captured?.node?.querySelector?.('[data-history-id]') || captured?.topNode;
+            const id = node?.dataset?.historyId || '';
+            const pageId = [...pageHistoryIds].find(([, ids]) => ids.has(id))?.[0];
+            return { scrollTop: _savedScrollTop, stick: _savedStick,
+                history: historyPager.exportResume(pageId),
+                historyAnchor: id ? { id, offset: node.getBoundingClientRect().top
+                    - messagesDiv.getBoundingClientRect().top } : null };
+        },
         // Full teardown (P3): release every resource this instance acquired —
         // ws subscriptions, window/document listeners, the ResizeObserver, all
         // timers — then drop the buffered collections and remove the DOM last.
@@ -4200,6 +4136,9 @@ export function createChatInstance({
                 try { dispose(); } catch {}
             }
             wsDisposers.length = 0;
+            historyPager.destroy();
+            messagesDiv.removeEventListener('scroll', navigateHistoryAtEdge);
+            document.removeEventListener('selectionchange', retryHistoricalUpserts);
             chatMedia.destroy();
             workPointer?.destroy();
             chatDecision.destroy();
@@ -4234,6 +4173,9 @@ export function createChatInstance({
             seenMessageKeys.clear();
             messageKeyOrder.length = 0;
             persistedHistory.length = 0;
+            pageHistoryIds.clear(); pageWindows.clear(); historicalTerminals.clear(); pendingHistoryEvictions.clear();
+            pendingHistoryUpserts.clear();
+            pendingLiveEvictions.clear();
             try { destroyChatMarkdown(page); page.remove(); } catch {}
         },
     };

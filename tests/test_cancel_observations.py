@@ -63,7 +63,12 @@ def test_stale_snapshot_is_unknown_not_the_fail_open_live_hint(tmp_path):
     from ouroboros.task_status import task_has_live_queue_ownership
     assert task_has_live_queue_ownership(tmp_path, "child") is True
     observation = observe_cancellation_target(tmp_path, "child")
-    assert observation["queue_snapshot"] == {"status": "unknown", "ts": "2000-01-01T00:00:00Z", "fresh": False}
+    queue_fact = observation["queue_snapshot"]
+    assert {key: queue_fact[key] for key in ("status", "ts", "fresh")} == {
+        "status": "unknown", "ts": "2000-01-01T00:00:00Z", "fresh": False,
+    }
+    assert queue_fact["freshness"] == "stale" and queue_fact["age_sec"] > 10
+    assert queue_fact["source"] == "state/queue_snapshot.json"
     assert observation["task_result"]["started_at"] is None
 
 

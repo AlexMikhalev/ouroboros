@@ -209,9 +209,51 @@ def publish_plan_review_projection(
     )
 
 
+def completed_historical_feedback(ctx: ToolContext, wave: dict) -> Optional[list[dict]]:
+    """Read a settled historical cycle without changing its original verdict.
+
+    The supplement writer already validated complete producer custody. Resolve
+    its immutable sources again for this read; unavailable bytes are not a reason
+    to buy the same review again or claim that feedback was delivered.
+    """
+    from ouroboros.artifacts import read_actor_source_bytes
+    from ouroboros.tools.plan_review_artifacts import PlanReviewSourceUnavailable
+
+    cycle = wave.get("cycle_index")
+    supplements = [row for row in wave.get("historical_supplements") or []
+                   if row.get("cycle_index") == cycle]
+    if not supplements or not wave.get("paid") or plan_wave_has_in_flight(wave):
+        return None
+    root = pathlib.Path(str(getattr(ctx, "budget_drive_root", "") or ctx.drive_root))
+    task_id = str(ctx.task_id)
+    feedback = []
+    try:
+        for row in supplements:
+            payload = json.loads(read_actor_source_bytes(root, task_id, row["source_ref"]))
+            if not isinstance(payload, dict) or not isinstance(payload.get("result"), dict):
+                raise ValueError("historical feedback has no complete result object")
+            result = payload["result"]
+            if (payload.get("kind") != "plan_review_historical_supplement"
+                    or payload.get("task_id") != task_id
+                    or payload.get("request_fingerprint") != wave.get("request_fingerprint")
+                    or payload.get("cycle_index") != cycle
+                    or payload.get("retry_key") != wave.get("retry_key")
+                    or result.get("operation_id") != row.get("operation_id")
+                    or result.get("slot_id") != row.get("slot_id")
+                    or "text" not in result
+                    or result.get("operation_state") != row.get("operation_state")
+                    or result.get("operation_state") not in {"settled", "late_settled", "not_dispatched"}):
+                raise ValueError("historical feedback does not match its recorded cycle and operation")
+            feedback.append({**row, "result": result})
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise PlanReviewSourceUnavailable(f"PLAN_REVIEW_SOURCE_UNAVAILABLE: {exc}") from exc
+    return feedback
+
+
 def publish_rendered_wave(
     ctx: ToolContext, wave: dict, *, cap, cycles_paid: int, enforcement: str,
     cached: bool = False, notes=None, reminder: str = "", head: str = "",
+    historical_feedback: Optional[list[dict]] = None,
 ) -> str:
     """Render one recorded wave and publish it as the typed plan result (D02).
 
@@ -224,7 +266,7 @@ def publish_rendered_wave(
     outcome, closed = wave_control_state(wave)
     text = head + _render_wave(
         wave, cap=cap, cycles_paid=cycles_paid, enforcement=enforcement,
-        cached=cached, notes=notes, reminder=reminder,
+        cached=cached, notes=notes, reminder=reminder, historical_feedback=historical_feedback,
     )
     return publish_plan_review_projection(
         ctx, {"aggregate_signal": outcome, "closed": closed}, text)
@@ -803,6 +845,9 @@ def emit_plan_review_advisory_open(
            json.dumps(wave.get("health_epoch") or [], sort_keys=True, default=str))
     if key in _ADVISORY_OPEN_SEEN:
         return
+    from ouroboros.config import get_review_enforcement
+    from ouroboros.tools.review_helpers import review_enforcement_blocks
+
     row = {
         "type": "plan_review_advisory_open",
         "surface": "plan_review",
@@ -813,7 +858,8 @@ def emit_plan_review_advisory_open(
         "paid": bool(wave.get("paid")),
         "cycles_paid": int(cycles_paid),
         "cap": cap,
-        "enforcement": "advisory",
+        "enforcement": get_review_enforcement(),
+        "decision_authority": "cyber_pro" if not review_enforcement_blocks("blocking") else "advisory",
         # Bounded per-slot typed facts: who failed, with what code, until when.
         "slots": [
             {"slot_id": a.get("slot_id"), "ok": bool(a.get("ok")),
@@ -1123,6 +1169,18 @@ def plan_wave_replay_decision(slots_fn: Any, existing: Dict[str, Any]) -> tuple:
     return plan_health_epoch(fresh) != normalized, fresh
 
 
+def plan_pending_actors(wave: Dict[str, Any]) -> list[dict]:
+    """Physical pending rows, retaining the original critic records unchanged."""
+    settled = {
+        row.get("operation_id") for row in wave.get("historical_supplements") or []
+        if row.get("cycle_index") == wave.get("cycle_index")
+        and row.get("operation_state") in {"settled", "late_settled", "not_dispatched"}
+    }
+    return [row for row in wave.get("actors") or [] if isinstance(row, dict)
+            and (row.get("late_result_pending") or row.get("operation_state") in {"pending_dispatch", "in_flight"})
+            and row.get("operation_id") not in settled]
+
+
 def plan_wave_has_in_flight(wave: Dict[str, Any]) -> bool:
     """Whether a paid wave must re-enter exact custody reconciliation.
 
@@ -1153,11 +1211,7 @@ def plan_wave_has_in_flight(wave: Dict[str, Any]) -> bool:
             or str(actor.get("status") or "").strip().lower() == "not_dispatched"
         ):
             return True
-    return any(
-        str(actor.get("operation_state") or "") == "in_flight"
-        or bool(actor.get("late_result_pending"))
-        for actor in actors or []
-    )
+    return bool(plan_pending_actors(wave))
 
 
 def plan_in_flight_custody_error(

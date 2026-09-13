@@ -37,11 +37,7 @@ from ouroboros.usage_accounting import (
     invalidate_task_cache_splits,
     last_physical_attempt_capture,  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
 )
-from ouroboros.task_finalization import (  # noqa: F401 -- historical import surface for the L-B leaves
-    TERMINAL_ORIGIN_HOST_NOTICE,
-    TERMINAL_ORIGIN_HOST_SALVAGE,
-    TERMINAL_ORIGIN_MODEL_FINAL,
-)
+from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_NOTICE, TERMINAL_ORIGIN_HOST_SALVAGE, TERMINAL_ORIGIN_MODEL_FINAL  # noqa: F401 -- historical import surface for the L-B leaves
 from supervisor.owner_stop import (
     _mark_owner_stop_control_drained,  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
     _narrow_round_deadline,  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
@@ -123,7 +119,7 @@ from ouroboros.nanny_pacing import (
 )
 
 
-def _setup_dynamic_tools(tools_registry, tool_schemas, messages):
+def _setup_dynamic_tools(tools_registry, tool_schemas, messages, context_mode="max"):
     """Attach list/enable tool handlers and mutate the active schema list."""
     enabled_extra: set = set()
     active_tool_names = {
@@ -138,7 +134,7 @@ def _setup_dynamic_tools(tools_registry, tool_schemas, messages):
             else []
         )
         non_core = [
-            t for t in list_non_core_tools(tools_registry)
+            t for t in list_non_core_tools(tools_registry, context_mode=context_mode)
             if t["name"] not in active_tool_names
         ]
         if not non_core:
@@ -197,7 +193,7 @@ def _setup_dynamic_tools(tools_registry, tool_schemas, messages):
     tools_registry.override_handler("list_available_tools", _handle_list_tools)
     tools_registry.override_handler("enable_tools", _handle_enable_tools)
 
-    non_core_count = len(list_non_core_tools(tools_registry))
+    non_core_count = len(list_non_core_tools(tools_registry, context_mode=context_mode))
     if non_core_count > 0:
         _append_or_merge_user_message(
             messages,
@@ -405,8 +401,10 @@ def run_llm_loop(
     from ouroboros.tools import tool_discovery as _td
     _td.set_registry(tools)
 
-    tool_schemas = saved["tool_schemas"] if saved else initial_tool_schemas(tools)
-    tool_schemas, _enabled_extra_tools = _setup_dynamic_tools(tools, tool_schemas, messages)
+    tool_schemas = saved["tool_schemas"] if saved else initial_tool_schemas(tools, context_mode=active_context_mode)
+    tool_schemas, _enabled_extra_tools = _setup_dynamic_tools(
+        tools, tool_schemas, messages, context_mode=active_context_mode
+    )
     ctx.event_queue, ctx.task_id, ctx.messages = event_queue, task_id, messages
     stateful_executor = StatefulToolExecutor()
     exit_ctx = _LoopExitContext(
@@ -525,20 +523,14 @@ def run_llm_loop(
                 if _compaction_usage:
                     _account_compaction_usage(accumulated_usage, _compaction_usage, event_queue, task_id)
 
+                prepare_acceptance_observation(ctx, llm_trace, incoming_messages, messages, tool_schemas)
                 seal_task_transcript(messages)
 
                 model_call = _RoundModelCallContext(
-                        llm=llm,
-                        messages=messages,
-                        tools=tools,
-                        context_fit_plan=context_fit_plan,
-                        active_model=active_model,
-                        tool_schemas=tool_schemas,
-                        active_effort=active_effort,
-                        max_retries=max_retries,
-                        drive_logs=drive_logs,
-                        task_id=task_id,
-                        round_idx=round_idx,
+                        llm=llm, messages=messages, tools=tools, context_fit_plan=context_fit_plan,
+                        active_model=active_model, tool_schemas=tool_schemas,
+                        active_effort=active_effort, max_retries=max_retries,
+                        drive_logs=drive_logs, task_id=task_id, round_idx=round_idx,
                         event_queue=event_queue,
                         accumulated_usage=accumulated_usage,
                         task_type=task_type,
@@ -626,6 +618,7 @@ def run_llm_loop(
                     _owner_msg_seen, emit_progress,
                 )
                 if final_result is None:
+                    wait_for_acceptance_feedback(tools, limit_ctx, llm_trace, tool_schemas, _owner_msg_seen)
                     continue
                 return final_result
 
@@ -639,6 +632,8 @@ def run_llm_loop(
                 tool_calls, tools, drive_logs, task_id, stateful_executor,
                 messages, llm_trace, emit_progress
             )
+            advance_explicit_acceptance(tools, limit_ctx, llm_trace, incoming_messages,
+                                        _owner_msg_seen, emit_progress)
             wait_after_tools(ctx, messages, llm_trace, accumulated_usage,
                              round_idx, tool_schemas, _owner_msg_seen)
             # Every completed batch rejoins one control/budget tail, warm or cold.
@@ -698,6 +693,9 @@ from ouroboros.loop_acceptance import (  # noqa: E402, F401 -- intentional publi
     terminalize_dangling_revision,
 )
 from ouroboros.loop_acceptance_review import (  # noqa: E402, F401 -- intentional public re-exports
+    wait_for_acceptance_feedback,
+    prepare_acceptance_observation,
+    advance_explicit_acceptance,
     _ACCEPTANCE_REVIEW_CHECKLIST,
     _TaskAcceptanceContext,
     _acceptance_dialogue_quorum,

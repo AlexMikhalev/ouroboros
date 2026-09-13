@@ -109,10 +109,14 @@ A JSON array of 0-3 objects. Each object must have:
 - type: one of "scratchpad_append", "knowledge_write", "identity_update_candidate"
 - content: concise, concrete text to persist
 Optional field:
-- topic: REQUIRED only for knowledge_write (short slug, e.g. "review_process")
+- topic: REQUIRED only for knowledge_write (shelf-relative path, e.g. "review_process")
+- scope: optional global or project:<exact project id>; omission keeps this task's shelf
 Rules for memory actions:
 - scratchpad_append: a durable working-memory note useful for near-future tasks.
-- knowledge_write: a reusable fact/procedure stored in the knowledge base under `topic`.
+- knowledge_write: complete revised Markdown understanding under `topic`. Use
+  knowledge_read to read the whole CURRENT note before replacing it. Preserve
+  evidence, uncertainty and useful links; new topics need no prior read. A repeated
+  interpretation is not new independent evidence. No blind append of fragments.
 - identity_update_candidate: a PROPOSED identity refinement; it is only recorded as a
   review candidate in the scratchpad, never auto-applied to identity.md (avoid drift).
 - Persist only genuinely durable, reusable learning, not task-specific trivia.
@@ -360,15 +364,18 @@ def _validate_memory_actions(raw: Any, task_id: str) -> List[Dict[str, Any]]:
         action_type = str(item.get("type") or "").strip()
         if action_type not in _ALLOWED_MEMORY_ACTION_TYPES:
             continue
-        content = _truncate_with_notice(item.get("content", ""), 1200).strip()
+        content = (str(item.get("content") or "") if action_type == "knowledge_write"
+                   else _truncate_with_notice(item.get("content", ""), 1200)).strip()
         if not content:
             continue
         action: Dict[str, Any] = {"type": action_type, "content": content, "task_id": task_id}
         if action_type == "knowledge_write":
-            topic = _truncate_with_notice(item.get("topic", ""), 80).strip()
+            topic = str(item.get("topic") or "").strip()
             if not topic:
                 continue
             action["topic"] = topic
+            if item.get("scope") is not None:
+                action["scope"] = item["scope"]
         out.append(action)
     return out
 
@@ -383,11 +390,12 @@ def generate_reflection(
     usage_snapshot_text: str = "",
     sealed_final_text: str = "",
     child_failure_classes: Optional[List[str]] = None,
+    knowledge_context: Any = None,
 ) -> Dict[str, Any]:
     """Call the light LLM and return a JSONL-ready reflection entry."""
-    from ouroboros.config import get_light_model
-
     goal = _truncate_with_notice(task.get("text", ""), 200)
+    source_ref = None
+    memory_operation_errors: List[Dict[str, Any]] = []
     error_details = _collect_error_details(llm_trace)
     markers = _detect_markers(llm_trace)
     error_count = sum(
@@ -414,7 +422,7 @@ def generate_reflection(
         prompt_template = _REFLECTION_PROMPT_NONTRIVIAL_FULL
 
     prompt = prompt_template.format(
-        goal=goal or "(no goal text)",
+        goal=str(task.get("text") or "(no goal text)"),
         trace_summary=_truncate_with_notice(trace_summary, 2000),
         tool_usage=_tool_usage_profile(llm_trace),
         error_details=error_details,
@@ -424,22 +432,26 @@ def generate_reflection(
         sealed_final=sealed_final_text or "",
     )
 
-    light_model = get_light_model()
     try:
-        from ouroboros.llm_observability import chat_observed
+        from ouroboros.consolidator import KnowledgeReadContext, KNOWLEDGE_MAINTENANCE_PROMPT, _call_consolidation_llm
+        from ouroboros.tools.registry import ToolContext
 
-        resp_msg, refl_usage = chat_observed(
-            llm_client,
-            drive_root=pathlib.Path(str(task.get("drive_root") or "../data")),
-            task_id=str(task.get("id") or task.get("task_id") or "reflection"),
-            call_type="task_reflection",
-            model_role="light",
-            messages=[{"role": "user", "content": prompt}],
-            model=light_model,
-            reasoning_effort="low",
-            max_tokens=16384,
-        )
-        raw_reflection_text = (resp_msg.get("content") or "").strip()
+        if knowledge_context is None:
+            from ouroboros.config import DATA_DIR
+            root = pathlib.Path(task.get("budget_drive_root") or task.get("drive_root") or DATA_DIR)
+            knowledge_context = ToolContext(repo_dir=root, drive_root=root,
+                project_id=str(task.get("project_id") or ""),
+                task_id=str(task.get("id") or task.get("task_id") or "reflection"))
+        knowledge = KnowledgeReadContext(knowledge_context, "task_reflection")
+        from ouroboros.consolidator import retain_memory_source
+        complete_prompt = KNOWLEDGE_MAINTENANCE_PROMPT + prompt
+        source_ref = retain_memory_source(knowledge_context, "task_input_reflection", complete_prompt.encode("utf-8"))
+        raw_reflection_text, refl_usage = _call_consolidation_llm(
+            llm_client, complete_prompt, "Task reflection", knowledge=knowledge, source_ref=source_ref)
+        raw_reflection_text = raw_reflection_text.strip()
+        memory_operation_errors = refl_usage.get("_consolidation_errors") or []
+        if not raw_reflection_text and memory_operation_errors:
+            raw_reflection_text = "(reflection generation failed: " + str(memory_operation_errors[-1].get("message") or "unknown") + ")"
         task_id_str = str(task.get("id", "") or "")
 
         # Backlog is the last trailing line; peel it first, then memory actions.
@@ -481,9 +493,11 @@ def generate_reflection(
                     "kind": _truncate_with_notice(raw.get("kind", "improvement"), 40).strip() or "improvement",
                 })
         memory_actions = _validate_memory_actions(raw_memory_actions, task_id_str)
+        memory_actions = [bound for action in memory_actions for bound in (
+            knowledge.bind_entries([action]) if action["type"] == "knowledge_write" else [action])]
 
         # Reflection runs outside the tool-event loop; update budget directly.
-        if refl_usage:
+        if any(refl_usage.get(key) is not None for key in ("cost", "prompt_tokens", "completion_tokens")) or refl_usage.get("ledger_attempt_ids"):
             try:
                 from supervisor.state import update_budget_from_usage
                 update_budget_from_usage(refl_usage)
@@ -519,6 +533,8 @@ def generate_reflection(
         "reflection": reflection_text,
         "backlog_candidates": backlog_candidates,
         "memory_actions": memory_actions,
+        **({"source_ref": source_ref} if source_ref else {}),
+        **({"memory_operation_errors": memory_operation_errors} if memory_operation_errors else {}),
     }
 
 
@@ -559,12 +575,22 @@ def apply_memory_actions(env: Any, actions: List[Dict[str, Any]], *, project_id:
                 topic = str(action.get("topic") or "").strip()
                 if not topic:
                     continue
-                from ouroboros.tools.knowledge import _knowledge_write
+                from ouroboros.consolidator import _write_knowledge_entries
                 from ouroboros.tools.registry import ToolContext
 
-                ctx = ToolContext(repo_dir=getattr(env, "repo_dir", env.drive_root), drive_root=env.drive_root, project_id=pid)
-                _knowledge_write(ctx, topic, content, mode="append")
-                applied += 1
+                canonical = str(action.get("canonical_root") or getattr(env, "budget_drive_root", "") or "")
+                root = pathlib.Path(canonical or env.drive_root)
+                ctx = ToolContext(repo_dir=getattr(env, "repo_dir", env.drive_root), drive_root=root,
+                                  budget_drive_root=canonical,
+                                  project_id=pid, task_id=str(action.get("task_id") or ""))
+                outcomes = _write_knowledge_entries(root / "memory" / "knowledge", [action], context=ctx)
+                applied += sum(row["ok"] for row in outcomes)
+                if any(not row["ok"] for row in outcomes):
+                    log.warning("Reflection knowledge update was not published: %s", outcomes)
+                    append_jsonl(root / "memory" / "knowledge_history.jsonl", {
+                        "ts": utc_now_iso(), "type": "reflection_knowledge_write_incomplete",
+                        "task_id": ctx.task_id, "proposal": action, "outcomes": outcomes,
+                    })
             elif atype == "identity_update_candidate":
                 from ouroboros.memory import Memory
 

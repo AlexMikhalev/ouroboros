@@ -2,7 +2,7 @@
 Ouroboros — Shared configuration (single source of truth).
 
 Paths, the settings-file lifecycle (locked load/normalize/save plus environment
-projection) and the owner-only mode ratchets. The vocabularies it reads through —
+projection) and mode-aware write authority. The vocabularies it reads through —
 shipped defaults, closed scales, model slots, reviewer routes, numeric limits —
 live in sibling leaves and are re-exported here, so ``ouroboros.config`` remains
 the one import surface for settings knowledge.
@@ -20,11 +20,12 @@ import time
 from typing import Any, Optional, Sequence  # noqa: F401
 
 from ouroboros.context_mode_compat import (
-    normalize_and_persist_context_mode_compat, normalize_context_mode, owner_declared_low,
+    VALID_CONTEXT_MODES, normalize_and_persist_context_mode_compat, normalize_context_mode, owner_declared_low,
 )
 from ouroboros.platform_layer import pid_lock_acquire as _compat_pid_lock_acquire, pid_lock_release as _compat_pid_lock_release
 from ouroboros.provider_models import compute_direct_review_models_fallback, fallback_candidate_targets, local_only_review_route_env, migrate_model_value, resolve_model_target, review_model_uses_local as review_model_uses_local  # noqa: F401
 from ouroboros.secret_masking import strip_masked_secrets
+from ouroboros.runtime_mode_policy import runtime_mode_at_least
 from ouroboros.settings_defaults import (
     CLAUDEXOR_STARTUP_WAIT_SEC,  # noqa: F401
     CLAUDEXOR_STARTUP_POLL_SEC,  # noqa: F401
@@ -64,6 +65,7 @@ from ouroboros.settings_scales import (
 from ouroboros.model_slots import (
     MODEL_ACCOUNTS_KEY,
     MODEL_CONTEXT_WINDOWS_KEY,
+    MODEL_PROCESSING_PREFERENCES_KEY,
     normalize_model_role_options,
     _LEGACY_SLOT_RENAMES,  # noqa: F401
     ResolvedModelTarget,  # noqa: F401
@@ -341,8 +343,6 @@ def get_allow_mutative_subagents(write_surface: str = "") -> bool:
     # Runtime modes are ordered in settings_scales.  Keep this scheduling
     # decision on the shared rank seam so a higher-power mode such as Cyber Pro
     # cannot silently fall through to Light's self-worktree default.
-    from ouroboros.runtime_mode_policy import runtime_mode_at_least
-
     if runtime_mode_at_least(get_runtime_mode(), "advanced"):
         return True
     surface = str(write_surface or "").strip().lower()
@@ -420,7 +420,7 @@ def get_trust_native_seeded_skills() -> bool:
 
 
 def get_runtime_mode() -> str:
-    """Return the configured runtime mode (light / advanced / pro)."""
+    """Return effective Access, preserving the process's restart-bound baseline."""
     default_val = str(SETTINGS_DEFAULTS["OUROBOROS_RUNTIME_MODE"])
     if _BOOT_RUNTIME_MODE is not None:
         return normalize_runtime_mode(_BOOT_RUNTIME_MODE)
@@ -431,32 +431,30 @@ def get_runtime_mode() -> str:
 
 
 def get_safety_mode() -> str:
-    """Return the owner-selected LLM-safety-supervisor coverage (full | light | off).
+    """Return captured Supervisor coverage (full | light | off).
 
-    Owner-only at the write surface (dropped from the agent-reachable /api/settings POST),
-    so the agent cannot lower its own safety coverage. Deterministic registry sandbox,
-    protected paths and light-mode guards run regardless (BIBLE P3: the LLM supervisor is a
-    layer, not the floor)."""
+    Ordinary modes use the owner writer; Cyber may configure subsequent work
+    through the same settings owner. Coverage is separate from Cyber's advisory
+    decision authority and from the facts of a saved physical request.
+    """
     default_val = str(SETTINGS_DEFAULTS["OUROBOROS_SAFETY_MODE"])
     return normalize_safety_mode(runtime_setting("OUROBOROS_SAFETY_MODE", default_val) or default_val)
 
 
 def get_context_mode() -> str:
-    """The EFFECTIVE working-context mode (low | max) used by context sizing: owner selection or
-    an explicitly forwarded benchmark/operator value. The P3 scope gate reads
-    get_owner_context_mode instead so a bare env Low cannot author owner intent. No boot-pin:
-    hot-applies on the next task; the key is dropped from the agent-reachable /api/settings POST (P1)."""
+    """Working-context choice in the current settings read view.
+
+    Future tasks see a new choice; an active TaskSettingsSnapshot stays captured.
+    """
     default_val = str(SETTINGS_DEFAULTS["OUROBOROS_CONTEXT_MODE"])
     return normalize_context_mode(runtime_setting("OUROBOROS_CONTEXT_MODE", default_val) or default_val)
 
 
 def get_owner_context_mode() -> str:
-    """The OWNER-SELECTED context mode during the auto-Low compatibility window: persistent
-    auto-Low is retired, but a bare forwarded env ``low`` still lacks owner provenance and keeps
-    P3 at Max; only explicit ``low`` + tombstone ``false`` means owner Low. Raw persisted legacy
-    ambiguity is normalized before env projection, so this matters only for env-only runs."""
-    if get_context_mode() != "low":
-        return "max"
+    """Keep legacy auto-Low provenance distinct from an explicit context choice."""
+    mode = get_context_mode()
+    if mode != "low":
+        return mode
     return "low" if owner_declared_low(runtime_setting("OUROBOROS_CONTEXT_MODE_AUTO_LOW", "")) else "max"
 
 
@@ -476,17 +474,16 @@ def _settings_file_value(key: str, default: str) -> str:
 
 
 def _guard_context_mode_lowering(settings: dict, *, allow_context_lowering: bool = False) -> None:
-    """Refuse agent-reachable settings writes that lower the cognitive horizon.
-
-    The mode may not step ``max -> low`` without the dedicated owner endpoint.  During
-    the compatibility window, changing an ambiguous legacy Low marker to false is also
-    refused unless the same write restores Max; that exact Max+false rewrite is the
-    migration and cannot disable the P3 gate."""
+    """Outside Cyber Pro, lowering requires the dedicated owner endpoint.
+    Authoring false on ambiguous Low lowers the horizon unless this same write
+    restores Max; Max+false is the non-lowering compatibility migration."""
+    if runtime_mode_at_least(get_runtime_mode(), "cyber_pro"):
+        return
     previous_mode = normalize_context_mode(_settings_file_value("OUROBOROS_CONTEXT_MODE", "max"))
     next_mode = normalize_context_mode(settings.get("OUROBOROS_CONTEXT_MODE", previous_mode))
-    if previous_mode == "max" and next_mode == "low" and not allow_context_lowering:
+    if VALID_CONTEXT_MODES.index(next_mode) < VALID_CONTEXT_MODES.index(previous_mode) and not allow_context_lowering:
         raise PermissionError(
-            "OUROBOROS_CONTEXT_MODE lowering refused: 'max' -> 'low'. "
+            f"OUROBOROS_CONTEXT_MODE lowering refused: {previous_mode!r} -> {next_mode!r}. "
             "Context mode is owner-controlled — use the dedicated owner endpoint/UI/CLI."
         )
     if allow_context_lowering or "OUROBOROS_CONTEXT_MODE_AUTO_LOW" not in settings:
@@ -502,14 +499,9 @@ def _guard_context_mode_lowering(settings: dict, *, allow_context_lowering: bool
 
 def prepare_settings_for_persist(settings: dict, *, authored_keys: Sequence[str] = (),
         allow_context_lowering: bool = False, allow_safety_lowering: bool = False) -> dict:
-    """THE prologue EVERY writer that persists settings.json must call; returns the dict to write.
-
-    ONE enforcement point: three review rounds found this rule on one path while a sibling bypassed it. Ratchets
-    are enforced here, and SILENCE STAYS SILENCE — a disk-authored key the file does not carry, arriving as nothing
-    but the shipped default, is a gap filled by a defaults merge (load_settings / _owner_read_settings_raw), not
-    authorship: persisting it ends a forwarded env override mid-run and labels a benchmark artifact with a mode it
-    never ran under (mirror: apply_settings_to_env). AUTHORSHIP IS INFORMATION ONLY THE CALLER HAS — one that
-    really authors such a key names it in ``authored_keys``; a POST never about these keys authors nothing."""
+    """Normalize settings writes under existing ratchets. Only the actual writer
+    names authored_keys; a defaults merge preserves absent disk-owned intent,
+    forwarded environment choices and install-time provenance."""
     authored = set(authored_keys or ())
     prepared = {k: v for k, v in settings.items() if not (
         k in _DISK_AUTHORED_SETTINGS and k not in authored and not _settings_file_value(k, "")
@@ -520,7 +512,10 @@ def prepare_settings_for_persist(settings: dict, *, authored_keys: Sequence[str]
         and str(v) == str(SETTINGS_DEFAULTS.get(k, "")))}
     _guard_context_mode_lowering(prepared, allow_context_lowering=allow_context_lowering)
     _guard_safety_mode_lowering(prepared, allow_safety_lowering=allow_safety_lowering)
-    for key in (MODEL_ACCOUNTS_KEY, MODEL_CONTEXT_WINDOWS_KEY):
+    if runtime_mode_at_least(get_runtime_mode(), "cyber_pro") and prepared.get("OUROBOROS_CONTEXT_MODE") == "low":
+        # Cyber may author Low. Keep that explicit choice distinct from retired auto-Low.
+        prepared["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] = "false"
+    for key in (MODEL_ACCOUNTS_KEY, MODEL_CONTEXT_WINDOWS_KEY, MODEL_PROCESSING_PREFERENCES_KEY):
         if key in prepared:
             prepared[key] = normalize_model_role_options(key, prepared[key])[1]
     return strip_masked_secrets(prepared, known_setting_keys=SETTINGS_DEFAULTS)
@@ -530,9 +525,7 @@ def _guard_safety_mode_lowering(settings: dict, *, allow_safety_lowering: bool =
     """Refuse agent-reachable settings writes that lower LLM-safety coverage.
 
     ``full -> light -> off`` is a strictly decreasing coverage ladder; any downward step is
-    owner-only (mirrors the context-mode ratchet, BIBLE P3)."""
-    from ouroboros.runtime_mode_policy import runtime_mode_at_least
-
+    owner-only outside Cyber Pro (mirrors the context-mode ratchet, BIBLE P3)."""
     if runtime_mode_at_least(get_runtime_mode(), "cyber_pro"):
         return
     previous_mode = normalize_safety_mode(_settings_file_value("OUROBOROS_SAFETY_MODE", "full"))
@@ -673,7 +666,7 @@ def _release_settings_lock(fd: Optional[int]) -> None:
 
 def _coerce_setting_value(key: str, value):
     default = SETTINGS_DEFAULTS.get(key)
-    if key in (MODEL_ACCOUNTS_KEY, MODEL_CONTEXT_WINDOWS_KEY):
+    if key in (MODEL_ACCOUNTS_KEY, MODEL_CONTEXT_WINDOWS_KEY, MODEL_PROCESSING_PREFERENCES_KEY):
         return normalize_model_role_options(key, value)[1]
     # Normalize runtime mode on read so all consumers see the closed enum.
     if key == "OUROBOROS_RUNTIME_MODE":
@@ -871,7 +864,7 @@ def save_settings(
     Elevation above the boot baseline is refused after initialization (``allow_elevation`` is then
     inert to agent-reachable subprocesses; production entry points must call
     ``initialize_runtime_mode_baseline`` before agent code). Context-mode lowering likewise
-    requires the explicit owner path; the retired auto-Low key is an inert false tombstone.
+    requires the explicit owner path outside Cyber Pro; the retired auto-Low key is an inert false tombstone.
     ``onboarding_safety_default`` is a NARROW boolean authorizing exactly one transition —
     a FRESH install (no settings file yet) authoring ``OUROBOROS_SAFETY_MODE="light"``."""
     _guard_live_settings_write()
@@ -975,7 +968,7 @@ def apply_settings_to_env(settings: dict, *, environ=None) -> None:
             if val is None or val == "":
                 environ.pop(k, None)
             else:
-                if k in (MODEL_ACCOUNTS_KEY, MODEL_CONTEXT_WINDOWS_KEY):
+                if k in (MODEL_ACCOUNTS_KEY, MODEL_CONTEXT_WINDOWS_KEY, MODEL_PROCESSING_PREFERENCES_KEY):
                     val = normalize_model_role_options(k, val)[1]
                 elif isinstance(val, (dict, list)):
                     val = json.dumps(val, ensure_ascii=False, separators=(",", ":"))

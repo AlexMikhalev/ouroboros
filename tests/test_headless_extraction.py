@@ -5,14 +5,15 @@ from __future__ import annotations
 import ast
 import pathlib
 
-from ouroboros import headless, headless_status, workspace_patch_capture
+from ouroboros import headless, headless_status, workspace_file_outputs, workspace_patch_capture
 
 
 REPO = pathlib.Path(__file__).parents[1]
 
-_LEAVES = (headless_status, workspace_patch_capture)
+_LEAVES = (headless_status, workspace_patch_capture, workspace_file_outputs)
 
 _MOVED_OWNERS = {
+    "_directory_direct_artifacts": workspace_file_outputs,
     "ARTIFACT_STATUS_FAILED": headless_status,
     "ARTIFACT_STATUS_FINALIZING": headless_status,
     "ARTIFACT_STATUS_MISSING": headless_status,

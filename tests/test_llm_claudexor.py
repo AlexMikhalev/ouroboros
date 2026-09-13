@@ -66,26 +66,44 @@ def test_display_redacts_typed_details_without_mutating_custody():
     assert "REDACTED" in error.display_message and error.problem["context"] == context
 
 
-@pytest.mark.parametrize("code,status,unknown,kind,retry,wait", [
-    ("invalid_request", 400, False, "bad_request", False, ""),
-    ("auth_required", 401, False, "auth_error", False, "auth"),
-    ("subscription_window_exhausted", 429, False, "subscription_window_exhausted", True, "quota"),
-    ("invalid_request", 400, True, "provider_outcome_unknown", False, ""),
+@pytest.mark.parametrize("code,status,unknown,kind,retry,wait,vendor", [
+    ("provider_failed", 400, False, "context_overflow", False, "", "context_length_exceeded"),
+    ("invalid_request", 400, False, "context_overflow", False, "", " context_length_exceeded "),
+    ("invalid_request", 400, False, "bad_request", False, "", "string_above_max_length"),
+    ("invalid_request", 400, False, "request_too_large", False, "", "max_tokens_exceeded"),
+    ("invalid_request", 400, False, "auth_error", False, "", "invalid_api_key"),
+    ("invalid_request", 400, False, "provider_transient", True, "", "rate_limit_exceeded"),
+    ("invalid_request", 400, False, "bad_request", False, "", None),
+    ("invalid_request", 400, False, "bad_request", False, "", 42),
+    ("invalid_request", 400, False, "bad_request", False, "", "  "),
+    ("auth_required", 401, False, "auth_error", False, "auth", "context_length_exceeded"),
+    ("subscription_window_exhausted", 429, False, "subscription_window_exhausted", True, "quota", "context_length_exceeded"),
+    ("unsupported_parameter", 400, False, "bad_request", False, "", "context_length_exceeded"),
+    ("invalid_request", 400, True, "provider_outcome_unknown", False, "", "context_length_exceeded"),
 ])
-@pytest.mark.parametrize("vendor,parameter", [("string_above_max_length", "instructions"),
-    ("string_above_max_length", "max_tokens"), ("rate_limit_exceeded", "input"), ("context_length_exceeded", "input")])
-def test_display_never_changes_classification_wait_or_compaction(code, status, unknown, kind, retry, wait, vendor, parameter):
+def test_vendor_facts_reach_shared_readers_without_changing_wrapper_custody(code, status, unknown, kind, retry, wait, vendor):
     from ouroboros.context_compaction import _typed_context_overflow
+    from ouroboros.llm_attempt import _is_structured_context_overflow_exception
     from ouroboros.loop_llm_call import classify_llm_exception
     from ouroboros.model_wait import model_wait_reason
 
-    error = transport.ClaudexorModelError({"code": code, "message": "Controlled model refusal", "retryable": True,
-        "context": {"httpStatus": status, "vendorCode": vendor, "parameter": parameter}}, unknown=unknown)
-    assert error.display_message  # Computing a human view must not mutate behavioral readers.
+    problem = {"code": code, "message": "Controlled model refusal", "retryable": True,
+        "context": {"httpStatus": status, "vendorCode": vendor, "parameter": "input"}}
+    error = transport.ClaudexorModelError(problem, unknown=unknown, operation_id="op-1", route=ROUTE)
     classified = classify_llm_exception(error)
+    assert error.display_message and classify_llm_exception(error) == classified
     assert classified.kind == kind and classified.retry_same_request is retry
     assert model_wait_reason(error) == wait
-    assert not _typed_context_overflow(error)
+    assert _typed_context_overflow(error) is (kind == "context_overflow")
+    assert _is_structured_context_overflow_exception(error) is (kind == "context_overflow")
+    wrapper = "model_outcome_unknown" if unknown else code
+    assert error.code == wrapper and error.problem == problem
+    assert error.body == ({"code": wrapper} if unknown else problem)
+    assert error.operation_id == "op-1" and error.route == ROUTE
+    facts = ua._provider_exception_facts(error)
+    assert facts[1] == wrapper
+    expected_type = vendor.strip() if not unknown and code in {"provider_failed", "invalid_request"} and isinstance(vendor, str) else ""
+    assert facts[2] == (expected_type or "ClaudexorModelError")
     typed = transport.ClaudexorModelError({"code": "context_length_exceeded", "message": "Controlled refusal"})
     assert _typed_context_overflow(typed) and classify_llm_exception(typed).kind == "context_overflow"
 
@@ -359,7 +377,9 @@ def test_confirmed_ordinary_model_failure_keeps_helper_fallback_policy(code):
 
 @pytest.mark.parametrize("code", ["auth_required", "subscription_window_exhausted", "model_outcome_unknown", "model_operation_interrupted"])
 def test_helper_fallback_never_swallows_resource_control_or_unknown(code):
-    error = transport.ClaudexorModelError({"code": code, "message": "Controlled retained outcome"})
+    error = transport.ClaudexorModelError({"code": code, "message": "Controlled retained outcome",
+        "context": {"vendorCode": "context_length_exceeded", "parameter": "input"}})
+    assert not error.type
     with pytest.raises(transport.ClaudexorModelError) as caught:
         transport.propagate_model_error(error)
     assert caught.value is error
@@ -420,10 +440,12 @@ def test_confirmed_provider_failure_settles_real_usage_before_raising(setup):
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
-def test_field_refusal_retains_then_acknowledges_once_with_display(setup, asynchronous):
+@pytest.mark.parametrize("code,vendor", [("invalid_request", "string_above_max_length"),
+    ("invalid_request", "context_length_exceeded"), ("provider_failed", "context_length_exceeded")])
+def test_field_refusal_retains_then_acknowledges_once_with_display(setup, asynchronous, code, vendor):
     root, gateway, client = setup
-    problem = {"code": "invalid_request", "message": "Codex model request was refused (HTTP 400).", "retryable": False,
-               "context": {"httpStatus": 400, "vendorCode": "string_above_max_length", "parameter": "instructions"}}
+    problem = {"code": code, "message": "Codex model request was refused (HTTP 400).", "retryable": False,
+               "context": {"httpStatus": 400, "vendorCode": vendor, "parameter": "input"}}
     gateway.results = [result(outcome="failed", problem=problem)]
     acknowledge = gateway.acknowledge_model_result
 
@@ -438,23 +460,28 @@ def test_field_refusal_retains_then_acknowledges_once_with_display(setup, asynch
         else:
             client.chat([], MODEL, model_role="main")
     error = caught.value
-    assert error.problem == problem and error.body == problem and error.code == "invalid_request"
+    assert error.problem == problem and error.body == problem and error.code == code and error.type == vendor
     assert error.status_code == 400 and error.retryable is False
     assert error.operation_id == "op-0" and error.model_role == "main" and error.route == ROUTE
-    assert "provider_code=string_above_max_length, parameter=instructions" in error.display_message[:220]
+    assert f"provider_code={vendor}, parameter=input" in error.display_message[:220]
     assert error.physical_attempt_capture.state == "settled"
     assert error.usage["claudexor"]["result_custody"]["state"] == "acknowledged"
     assert len(gateway.operations) == len(gateway.creates) == len(gateway.acks) == 1
     assert [row["state"] for row in ledger(root)] == ["reserved", "dispatched", "settled"]
 
 
-def test_proven_not_started_releases_and_never_fabricates_provider_usage(setup):
+@pytest.mark.parametrize("code,vendor", [("unsupported_parameter", ""),
+    ("provider_failed", "context_length_exceeded"), ("invalid_request", "context_length_exceeded")])
+def test_proven_not_started_releases_and_never_fabricates_provider_usage(setup, code, vendor):
     root, gateway, client = setup
-    gateway.results = [result(outcome="failed", problem={"code": "unsupported_parameter", "message": "temperature unsupported"})]
+    gateway.results = [result(outcome="failed", problem={"code": code, "message": "Controlled refusal",
+        "context": {"httpStatus": 400, "vendorCode": vendor, "parameter": "input"}})]
     gateway.dispatch = ["not_started"]
     with pytest.raises(transport.ClaudexorModelNotDispatched) as raised:
         client.chat([{"role": "user", "content": "hi"}], MODEL, temperature=0.2)
     assert raised.value.physical_attempt_capture.state == "released"
+    assert raised.value.physical_attempt_capture.provider_code == code
+    assert raised.value.physical_attempt_capture.provider_error_type == (vendor or "ClaudexorModelNotDispatched")
     assert gateway.uploads[0][0]["options"]["temperature"] == 0.2
     assert [row["state"] for row in ledger(root)] == ["reserved", "dispatched", "released"]
     assert len(gateway.operations) == 1
@@ -720,16 +747,19 @@ def test_pending_operation_has_no_whole_generation_http_deadline(setup, monkeypa
     assert not gateway.cancels and ledger(root)[-1]["state"] == "settled"
 
 
-def test_unknown_engine_outcome_retains_response_without_resend_or_false_zero(setup):
+@pytest.mark.parametrize("code,vendor", [("engine_died", ""), ("provider_failed", "context_length_exceeded"),
+                                      ("invalid_request", "context_length_exceeded")])
+def test_unknown_engine_outcome_retains_response_without_resend_or_false_zero(setup, code, vendor):
     root, gateway, client = setup
     gateway.results = [result(outcome="unknown", cash=0, knowledge="unknown", problem={
-        "code": "engine_died", "message": "Provider outcome is unknown"})]
+        "code": code, "message": "Provider outcome is unknown", "context": {"vendorCode": vendor, "parameter": "input"}})]
     gateway.dispatch = ["unknown"]
     with pytest.raises(transport.ClaudexorModelError) as raised:
         client.chat([{"role": "user", "content": "hi"}], MODEL)
-    assert raised.value.code == "model_outcome_unknown"
+    assert raised.value.code == "model_outcome_unknown" and not raised.value.type
     assert retained(root) == gateway.results[0] and not gateway.acks
     assert len(gateway.operations) == 1 and ledger(root)[-1]["state"] == "unresolved"
+    assert ledger(root)[-1].get("cost_usd") is None
 
 
 def test_continuation_repair_is_bounded_to_one_unstarted_operation(setup):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import bisect
+import hashlib
 import json
 import logging
 import pathlib
@@ -40,7 +41,7 @@ from ouroboros.tools.core_secret_paths import (  # noqa: F401 — re-exported mo
     _filter_subagent_secret_listing,
 )
 from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
-from ouroboros.utils import read_text, safe_relpath
+from ouroboros.utils import safe_relpath
 
 log = logging.getLogger(__name__)
 
@@ -150,13 +151,32 @@ def _render_line_slice(path: str, content: str, max_lines: int = 2000, start_lin
     if not body:
         first_line, line_ends = end + 1, ()  # nothing complete was delivered: an EMPTY range, never an inverted one
     if extent is not None:
+        source_start = sum(len(line) for line in lines[:start - 1]) + min(offset, len(window))
         extent.update({"start_line": start, "end_line": end, "total_lines": total, "start_char": offset,
                        "first_line": first_line, "body_start": len(header), "body_chars": len(body),
-                       "partial_head": partial_head, "line_ends": line_ends})
+                       "partial_head": partial_head, "line_ends": line_ends,
+                       "complete_chars": len(original_content),
+                       "complete_sha256": hashlib.sha256(original_content.encode("utf-8")).hexdigest(),
+                       "source_start_char": source_start, "source_end_char": source_start + len(body),
+                       "range_basis": "unicode_text_universal_newlines", "source_masked": bool(masked)})
     rendered = header + body
     if masked and body != "".join(original_content.splitlines(keepends=True)[start - 1:end])[offset:]:
         rendered += f"\n⚠️ SECRET_BYTES_MASKED: source contains {masked} secret-shaped span(s); matching bytes replaced with *."
     return rendered
+
+
+def _read_source_text(target: pathlib.Path, extent: Optional[Dict[str, Any]]) -> str:
+    """Bind the reader's text projection to the bytes from the same open.
+
+    Keep the existing universal-newline text ABI. Character ranges address that
+    text; source_revision names the actual file bytes, including CRLF. Reopening
+    only to hash could bind a delivered view to a different concurrent revision.
+    """
+    raw = target.read_bytes()
+    content = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    if extent is not None:
+        extent.update(source_revision=hashlib.sha256(raw).hexdigest(), source_bytes=len(raw))
+    return content
 
 
 def _coerce_start_char(start_char: Any = 0) -> int:
@@ -302,7 +322,7 @@ def _repo_read(
             text="⚠️ REPO_READ_BLOCKED: this subagent cannot read repo secret or control files.",
         ))
     try:
-        content = read_text(target)
+        content = _read_source_text(target, extent)
     except FileNotFoundError:
         norm = path.strip().lstrip("./").replace("\\", "/")
         base = norm.rsplit("/", 1)[-1]
@@ -405,7 +425,8 @@ def _data_read(
         if _resolved_binding is not None
         else pathlib.Path(ctx.drive_root)
     )
-    if _is_skill_owner_state_target(target, state_root) and target.name.lower() != "review.json":
+    if (not _raw_owner_secret_access_allowed(ctx)
+            and _is_skill_owner_state_target(target, state_root) and target.name.lower() != "review.json"):
         # Owner item A.20: this refusal was the one in the family that shipped WITHOUT
         # the warning marker, so the adapter read a policy denial as a successful read
         # and the model was handed the refusal as if it were file content. The marker
@@ -416,7 +437,7 @@ def _data_read(
             text="⚠️ DATA_READ_BLOCKED: skill owner state is not readable through generic data tools.",
         ))
     try:
-        content = read_text(target)
+        content = _read_source_text(target, extent)
         start_raw, max_raw = _coerce_line_window(start_line, max_lines)
         # The cognitive full-read shortcut only applies to a DEFAULT read: an explicit
         # start_char is a sub-line cursor request and must be honored, not swallowed.
@@ -626,7 +647,7 @@ def _stamp_read_view(ctx: ToolContext, target: Any, opened: str, opened_root: st
     structural: ``_read_file`` resets it on entry and the episode clears it
     before every dispatch (these are the ONLY writers — a static test pins the
     writer set). Disclosure only — never gates or alters the read."""
-    if extent:
+    if "body_start" in extent:
         ctx.last_read_view = {"target": str(target), "opened_path": str(opened),
                               "opened_root": str(opened_root), **extent}
     return rendered
@@ -722,7 +743,7 @@ def _read_file(
             status="blocked", code="LEGACY_BLOCKED", text=block_msg,
         ))
     try:
-        content = read_text(target)
+        content = _read_source_text(target, extent)
         raw_owner_secret_access = _raw_owner_secret_access_allowed(ctx)
         rendered = _render_line_slice(_root_display_path(normalized, path), content,
                                       max_lines=max_lines, start_line=start_line, start_char=start_char,
@@ -740,6 +761,7 @@ def _read_file(
 
             rendered, masked = mask_secret_bytes(rendered)
             if masked:
+                extent["source_masked"] = True
                 rendered += (
                     f"\n⚠️ SECRET_BYTES_MASKED: {masked} span(s) in this view matched a "
                     "recognized credential format or a PEM block and were replaced with "

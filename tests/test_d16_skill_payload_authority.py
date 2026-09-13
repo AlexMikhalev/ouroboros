@@ -161,8 +161,8 @@ def test_markerless_native_is_user_managed_in_every_runtime_mode(
     )
     assert "BLOCKED" in sidecar_write
     assert "BLOCKED" in sidecar_edit
-    assert "SAFETY_VIOLATION" in sidecar_shell
-    assert "SAFETY_VIOLATION" in existing_sidecar_shell
+    assert "SKILL_PAYLOAD_BLOCKED" in sidecar_shell
+    assert "SKILL_PAYLOAD_BLOCKED" in existing_sidecar_shell
     assert not (user_payload / ".seed-origin").exists()
     assert "real" in (user_payload / ".clawhub.json").read_text(encoding="utf-8")
 

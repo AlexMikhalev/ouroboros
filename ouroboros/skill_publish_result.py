@@ -272,7 +272,7 @@ def validate_skill_publish_receipt(
     expected_snapshot_hash: str = "",
     expected_ruleset_sha256: str = "",
 ) -> Dict[str, Any] | None:
-    """Return the canonical receipt only for an exact expected GitHub PR."""
+    """Validate the exact GitHub effect independently of scanner availability."""
 
     if not isinstance(receipt, Mapping):
         return None
@@ -292,7 +292,7 @@ def validate_skill_publish_receipt(
         wanted_repository = _normalize_repository(expected_repository)
         skill = _bounded_identifier(receipt.get("skill"), field="skill")
         snapshot_hash = _normalized_hash(receipt.get("snapshot_hash"), required=True)
-        ruleset_sha256 = _normalized_hash(receipt.get("ruleset_sha256"), required=True)
+        ruleset_sha256 = _normalized_hash(receipt.get("ruleset_sha256"))
         number = receipt.get("number")
         if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
             return None
@@ -389,13 +389,8 @@ def serialize_skill_publish_result(
     if ok:
         if safe_status != "pr_opened" or safe_stage != "pr_opened":
             raise ValueError("successful publication must finish at pr_opened")
-        if not (
-            safe_snapshot_hash
-            and safe_scanner.get("engine")
-            and safe_scanner.get("version")
-            and safe_scanner.get("ruleset_sha256")
-        ):
-            raise ValueError("successful publication requires captured snapshot and scanner identity")
+        if not safe_snapshot_hash:
+            raise ValueError("successful publication requires a captured snapshot")
         safe_receipt = validate_skill_publish_receipt(
             receipt,
             expected_repository=expected_repository,
@@ -502,6 +497,16 @@ def extract_skill_publish_result_metadata(result: Any) -> Dict[str, Any]:
         github_status = payload.get("github_status")
         if isinstance(github_status, int) and not isinstance(github_status, bool):
             attempt["github_status"] = github_status
+        # Advice remains original evidence even when the requested PR was opened.
+        for key in ("safety_advisory", "review_stale"):
+            if type(payload.get(key)) is bool:
+                attempt[key] = payload[key]
+        for key, limit in (
+            ("scanner_status", 32), ("scanner_errors", 2400), ("review_status", 80),
+            ("review_profile", 80), ("reviewed_content_hash", 64), ("review_record", 1024),
+        ):
+            if key in payload:
+                attempt[key] = _bounded_text(payload[key], limit)
         metadata: Dict[str, Any] = {"skill_publish_attempt": attempt}
         receipt = payload.get("receipt")
         valid_receipt = validate_skill_publish_receipt(
@@ -609,7 +614,6 @@ def apply_skill_publish_receipt_veto(
                     and attempt.get("completed_stage") == "pr_opened"
                     and attempt.get("skill") == target["skill"]
                     and bool(attempt.get("snapshot_hash"))
-                    and bool(attempt.get("ruleset_sha256"))
                 ):
                     # Any valid same-target receipt is sufficient.  Earlier failed
                     # attempts stay in the trace and retain their execution semantics.

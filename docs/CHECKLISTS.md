@@ -6,6 +6,15 @@ multi-model review prompt.
 
 When a new reviewable concern appears, add it here — not in prompts or docs.
 
+**Application follows BIBLE P0/P3.** Review findings and failures are independent
+facts in every mode. In Cyber Pro they inform Ouroboros and never prohibit an
+action or require permission; the agent may configure its own subsequent work.
+Configured enforcement remains recorded as selected, and an author decision does
+not rewrite FAIL, pending, missing source or an unperformed effect as PASS.
+Enforcement requirements below describe ordinary modes; Cyber applies the same
+checks as advice. This product rule does not replace an external developer's
+explicit work-order review obligations.
+
 ---
 
 ## Advisory Pre-Review Workflow
@@ -36,7 +45,8 @@ When a new reviewable concern appears, add it here — not in prompts or docs.
   `advisory_obligations_acknowledged` to `events.jsonl`; stale advisory still
   blocks. Under `blocking`, `commit_reviewed` can proceed only when no open
   obligations or commit-readiness debt remain.
-- **Loud advisory enforcement (BIBLE P3 bound):** the owner chooses enforcement;
+- **Loud advisory enforcement (BIBLE P3 bound):** the owner chooses enforcement
+  outside Cyber Pro; Cyber may configure its own review and continue under P0;
   `advisory` is legitimate ONLY while every decision blocking enforcement would
   have stopped (critical findings, quorum failure, infrastructure failure,
   missing advisory provider) leaves a durable trace: a `review_advisory_override`
@@ -44,11 +54,15 @@ When a new reviewable concern appears, add it here — not in prompts or docs.
   recent-overrides fields in `review_status`. Silent advisory is forbidden.
 - **Author finality remains evidence, not reviewer PASS:** plan, task acceptance,
   skill, and commit owners may record an explicit author disposition against the
-  exact current subject hash under advisory enforcement after actual first feedback.
+  exact current subject hash under ordinary advisory enforcement after actual first feedback.
+  Cyber may decide to continue without prior feedback, keeping the actual missing,
+  failed or pending review separate from its own decision.
   A revised author subject keeps the original critic hash/findings separately;
   author finish precedes any repeat panel. A skill's changed bytes require the
-  existing deterministic preflight; Blocking still needs fresh reviewer authority.
-  Owner/evidence supersession consumes controlling intent, not historical evidence.
+  existing deterministic preflight; ordinary Blocking still needs fresh reviewer authority.
+  Main judges semantic criteria and material evidence after acknowledging the
+  observed owner source; source generation alone is not semantic supersession.
+  Historical feedback remains independently addressable.
 - Once advisory is fresh → call commit_reviewed immediately without further edits.
 - `skip_advisory_review=True` skips only advisory freshness and the
   obligation/debt admission attached to it. Use LLM judgment when this cheap
@@ -180,9 +194,9 @@ Used by `commit_reviewed` for all changes to the Ouroboros repository.
 | 15 | cross_platform | Does the diff use platform-specific APIs (`os.kill`, `os.setsid`, `os.killpg`, `os.getpgid`, `fcntl`, `msvcrt`, `signal.SIGKILL`, `signal.SIGTERM`, `subprocess` with `start_new_session`/`creationflags`, hardcoded `/` or `\\` in filesystem paths) outside of `ouroboros/platform_layer.py`? Does it import Unix-only or Windows-only modules (`fcntl`, `msvcrt`, `winreg`, `resource`) at any level without a platform guard (`sys.platform`/`IS_WINDOWS` check)? | critical |
 | 16 | changelog_accuracy | Do the exact wording, test counts, and minor description details in the README Version History row match what the diff actually does? Wording drift, off-by-one test counts, minor inaccuracies in descriptive prose — these belong here, NOT in `self_consistency` or `changelog_and_badge`. This item exists so reviewers have a dedicated advisory bucket for prose-level changelog imprecision that does not affect release metadata, runtime behavior, or safety contracts. | advisory |
 | 17 | gateway_parity | If the diff changes any browser-facing endpoint, WebSocket message, or frontend API call, are `ouroboros/gateway/contracts.py`, `ouroboros/gateway/router.py`, `web/modules/api_client.js`, `web/modules/api_types.js`, and `tests/test_gateway_parity.py` still aligned? Missing alignment is advisory unless it also breaks a frozen contract, safety guard, release metadata, or runtime behavior. | advisory |
-| 18 | subagent_isolation | If the diff changes `schedule_subagent`, child-task queueing, task constraints, tool discovery/execution, data reads, or memory handoff, does it preserve the accepted live-subagent contract: strict `subagent_id` + `objective` + `expected_output` schema, inferred lineage/workspace/contract/deadline/resource inheritance, `local_readonly_subagent` schema and execute-time allowlist, subagent-scoped secret/control-file denial for data tools, nested readonly delegation only within configured depth/cap limits (depth bounds how deep delegation NESTS, never actor strength; every new call names `subagent_id`, the scheduler snapshots the exact normalized `ConfiguredSubagent` route at task start, and an `agent_session` snapshot executes on the harness by construction — the host starts that exact leaf before the child's first model round without waiting on it, a definite typed start refusal ends the child unrun and typed at $0, and ambiguous start evidence wakes the model rather than terminaling; the model-visible schema must not expose `model_lane`/`executor`, while hidden legacy selectors map deterministically to one migrated row or return `subagent_selection_required`), no arbitrary local writes/commits/review/runtime/tool-expansion/skills-lifecycle/shell (bounded media projection such as `extract_video_frames` may write derived outputs only under `artifact_store/video_frames` through a host-owned command shape), enabled external tools allowed only by owner policy and inherited resources, the subagent browser boundary (external HTTP(S) + `file://` scoped to `workspace_root` + loopback except actual Ouroboros control-service endpoints; concrete private origins require host-established `resource_policy.allowed_origins` with exact scheme/host/port and inherited/subset authority; unavailable identity for a matching recorded endpoint must not become foreign-service permission; apply the same target checks to direct navigation, actions and intercepted subresources, and validate every available redirect hop before returning page content; native browser redirects may send a request before post-navigation validation, so this is not a pre-request isolation or DNS-rebinding guarantee; metadata/link-local and reserved targets remain refused by the existing URL policy; `evaluate` JS unavailable to `local_readonly_subagent`, available to a valid `acting_subagent` on its current page; `vlm_query`/`analyze_screenshot` available), full task-result handoff, new/changed wait/timeout paths for cognitive work using progress-aware/re-decidable waiting rather than a fixed cutoff that discards in-flight work (P5), and tests for both allowed and blocked paths? | critical |
+| 18 | subagent_isolation | If the diff changes `schedule_subagent`, child-task queueing, task constraints, tool discovery/execution, data reads, or memory handoff, does it preserve the accepted live-subagent contract: strict `subagent_id` + `objective` + `expected_output` schema, inferred lineage/workspace/contract/deadline/resource inheritance, `local_readonly_subagent` schema and execute-time allowlist, subagent-scoped secret/control-file denial for data tools, nested readonly delegation only within configured depth/cap limits (depth bounds how deep delegation NESTS, never actor strength; every new call names `subagent_id`, the scheduler snapshots the exact normalized `ConfiguredSubagent` route at task start, and an `agent_session` snapshot executes on the harness by construction — the host starts that exact leaf before the child's first model round without waiting on it, a definite typed start refusal ends the child unrun and typed at $0, and ambiguous start evidence wakes the model rather than terminaling; the model-visible schema must not expose `model_lane`/`executor`, while hidden legacy selectors map deterministically to one migrated row or return `subagent_selection_required`), for an explicitly read-only child, no arbitrary local writes/commits/review/runtime/tool-expansion/skills-lifecycle/shell (bounded media projection such as `extract_video_frames` may write derived outputs only under `artifact_store/video_frames` through a host-owned command shape), ordinary external tools follow owner policy and inherited resources; Cyber acting tools come from the actual registered catalog without inherited name exclusions or default-empty grants, while explicit read-only assignments retain their contract; the restricted subagent browser boundary (external HTTP(S) + `file://` scoped to `workspace_root` + loopback except actual Ouroboros control-service endpoints; concrete private origins require host-established `resource_policy.allowed_origins` with exact scheme/host/port and inherited/subset authority; unavailable identity for a matching recorded endpoint must not become foreign-service permission; apply the same target checks to direct navigation, actions and intercepted subresources, and validate every available redirect hop before returning page content; native browser redirects may send a request before post-navigation validation, so this is not a pre-request isolation or DNS-rebinding guarantee; metadata/link-local and reserved targets remain refused by the existing URL policy; `evaluate` JS unavailable to `local_readonly_subagent`, available to a valid `acting_subagent` on its current page; `vlm_query`/`analyze_screenshot` available), full task-result handoff, new/changed wait/timeout paths for cognitive work using progress-aware/re-decidable waiting rather than a fixed cutoff that discards in-flight work (P5), and tests for both allowed and blocked paths? | critical |
 | 19 | evolution_durability | If the diff touches `supervisor/git_ops.py`, `launcher.py`, `server.py`, `ouroboros/preflight_runner.py`, `ouroboros/tools/review_helpers.py`, `ouroboros/tools/git.py`, tests, review gates, or evolution code, does it preserve hermetic preflight, live repo/data mutation fuses, remote-optional local commit success, and transaction/rescue evidence for interrupted self-modification? | critical |
-| 20 | context_budget_ssot | If the diff changes context-size budgets/constants (`ouroboros/context_budget.py`), the context layout/manifest, a section's tier/policy, or the typed ContextFit deficit/reclaim contract: does it keep the low/max context split coherent (single SSOT + both profiles + docs + drift-guard tests in sync), preserve the tier-0 always-full core (BIBLE/SYSTEM/identity/scratchpad/knowledge-index/recent-dialogue) in EVERY mode, use a visible on-demand pointer instead of silent truncation (P1), and leave the blocking scope-reviewer >=1M floor untouched wherever scope review applies? Since v6.80.0 the owner-only `OUROBOROS_CONTEXT_MODE` ALSO decides scope-review applicability (`max`: blocking ≥1M gate; `low`: declaredly not performed with a typed skip row), so any change that widens what `low` mode implies, or that lets the AGENT reach that setting, is an immune-system change under P3 — not a context-budget tweak. (PASS with "Not applicable" if no context-budget/layout change.) | critical |
+| 20 | context_budget_ssot | If the diff changes context-size budgets/constants (`ouroboros/context_budget.py`), the context layout/manifest, a section's tier/policy, or the typed ContextFit deficit/reclaim contract: does it keep the low/max context split coherent (single SSOT + both profiles + docs + drift-guard tests in sync), preserve the tier-0 always-full core (BIBLE/SYSTEM/identity/scratchpad/knowledge-index/recent-dialogue) in EVERY mode, use a visible on-demand pointer instead of silent truncation (P1), and leave the blocking scope-reviewer >=1M floor untouched wherever scope review applies? The current `OUROBOROS_CONTEXT_MODE` ALSO decides scope-review applicability (`max`: blocking ≥1M gate; `low`: declaredly not performed with a typed skip row), so changes to that coupling are immune-system changes under P3, not incidental budget tweaks. Outside Cyber Pro the owner selects it; Cyber may choose its own context and review settings through the existing writer. (PASS with "Not applicable" if no context-budget/layout change.) | critical |
 | 21 | capability_regression | Does the diff REMOVE or NARROW a previously-supported user-facing behavior or capability — a tool/flag/mode/path that worked before now errors or is gated tighter (e.g. a new `is_dir`/existence guard that blocks a legitimate create, a tightened allowlist that drops a real path, a removed fallback)? If so, is it INTENTIONAL and disclosed as a breaking/capability change in the commit message + changelog? Accidental capability removal is the failure class this item names. Ask whether a golden "from zero" test would have caught it. **Guard-change trigger (executable requirements, not an essay):** ADDING or TIGHTENING a guard, filter, allowlist, or deny rule IS a capability change and fires this item. For such a diff the reviewer must verify two things: (a) the diff STAGES A POSITIVE TEST that exercises a legitimate flow THROUGH the new guard and proves it still succeeds — a negative "it blocks X" test alone is insufficient (a gate can pass its own probe while breaking every real run); (b) the diff or its disclosure NAMES THE SURVIVING POSITIVE PATH — the concrete actor and flow that still work after the change. A guard change that stages no surviving-path test is a capability-regression finding, not a safety improvement. **Owner acceptance:** a narrowing counts as OWNER-ACCEPTED only when a GREEN plan review explicitly names that narrowing; owner acceptance makes the finding advisory (disclosed, non-blocking). Intent wording, a commit-message disclosure, or a changelog row alone is disclosure, NOT acceptance. Severity follows the `Critical surface whitelist` below — silently removing a documented capability or a safety/release contract is critical; an owner-accepted narrowing or an internal-only refactor is advisory. **Standing disclosures for this item live in `docs/CHECKLISTS_ARCHIVE.md`** (owner-accepted removals/narrowings and standing notes); they remain binding on every reviewer — consult that file before raising a removal/narrowing finding on a surface it covers, and do not re-raise anything recorded there. | advisory |
 | 22 | cache_friendliness | If the diff builds or reorders LLM prompt/context content (context builders, review prompt assembly, message construction in `llm.py` callers): does it keep prompt caching intact — stable governance/policy content BEFORE dynamic evidence, no dynamic values (timestamps, hashes, round counters, task ids) injected into a stable cached prefix, and no removal/breakage of existing `cache_control` markers or session/cache affinity keys? A change that silently fragments an existing cached prefix re-bills the full prompt on every repeat call. (PASS with "Not applicable" if no prompt/context assembly changed.) | advisory |
 | 23 | delegated_transport | If the diff touches the delegated execution/review transport (ouroboros/subagents.py dispatch/route-health, ouroboros/tools/delegate.py, ouroboros/delegate_custody.py, ouroboros/delegate_progress.py, ouroboros/review_execution.py session executors, ouroboros/gateways/claudexor.py, ouroboros/claudexor_daemon.py, ouroboros/claudexor_runtime.py), does it preserve the delegation invariants: capability reductions reach all three destinations (durable envelope, child prompt, parent result — D4); a result counts as received only after a hash-bound read to EOF and retries replay the recorded byte-identical body (D7); the exact selected subagent_id snapshot starts its exact session route with custody-durable requested→effective evidence or returns a TYPED refusal, and neither host dispatch nor tool preflight substitutes another session/API/native route — any fallback is a new explicit LLM selection; quota exhaustion needs POSITIVE evidence judged against the route's own model (applies_to_models scoping, absence = unknown = usable); delegated spend settles through custody with unknown-never-rendered-as-zero and root/parent lineage; and no vendor/harness name is ever branched on in core. For direct and configured external work orders, verify complete chosen assignments and host authority across instruction roles, no arbitrary compiler cap or compulsory file/question transport, and no duplicate objective/output copies within instructions. Operative plan normalization and current reviewer inputs must preserve full content and tail-sensitive identity. Real route limits retain original input, cause and execution state. Legacy partial requests retain byte-identical pending recovery, exact renderer/selector/digest/range validation, durable source coverage and apply refusal until complete; reject remains available. Source availability never proves reading or comprehension. (PASS with "Not applicable" if no delegated-transport surface changed.) | critical |
@@ -508,7 +522,7 @@ applicable scope review still run.
 
 Self-authored skills carry payload-local `.self_authored.json` and
 owner-state `data/state/skills/<skill>/self_authored.json` provenance,
-but they do not bypass review on the agent's own initiative. `skill_review` routes them
+but outside Cyber Pro they do not bypass review on the agent's own initiative. `skill_review` routes them
 through the same tri-model skill review as marketplace and user-managed
 skills; no deterministic PASS or enablement is written automatically.
 EXCEPTION (C1, v6.39; narrowed hub extension in v6.43 — owner attestation): the OWNER
@@ -520,8 +534,9 @@ OuroborosHub payloads are not attestable. The DETERMINISTIC preflight floor stil
 (409 on failure); only the LLM phase is skipped. The result is a durable `clean` verdict
 with `review_profile=owner_attested`, `reviewer_models=[owner_attestation]`, bound to
 `content_hash` (a content edit stales it) and valid only while the owner-issued
-`owner_attestation.json` marker is present. The marker remains owner state, blocked from generic agent file writes and raw
-shell/CLI/browser endpoint self-calls. An ordinary task may carry an already
+`owner_attestation.json` marker is present. The marker records owner attestation; outside Cyber Pro it is protected from
+generic agent writes and raw shell/CLI/browser endpoint self-calls. Cyber
+configuration does not turn a self-authored decision into an owner attestation. An ordinary task may carry an already
 expressed owner instruction through `skill_owner_action`; the shared host owner
 checks the actual caller, resolved member source, selected revision and source
 eligibility before invoking this same attestation. The model interprets the
@@ -546,8 +561,9 @@ observed payload revision without claiming exclusive authorship. A known foreign
 change refuses overwrite. No long shell lock, mandatory private Git copy, new
 patch pipeline or automatic rollback is implied. Native seeds with `.seed-origin`
 retain their existing protections. Ordinary user-managed native-directory payloads
-without that marker retain the existing logical-external binding. Generic tools
-cannot write provenance, review, grants, dependencies or other control state.
+without that marker retain the existing logical-external binding. Outside Cyber Pro, generic tools cannot write provenance, review, grants,
+dependencies or other control state. Cyber changes retain their actual source;
+they do not fabricate an independent review or owner action.
 
 UI, CLI and task calls share each existing lifecycle effect owner. An owner-only
 action names its exact action, selected skill and revision, requested grant items,
@@ -618,14 +634,14 @@ and do not return `PASS` for an item that also has a `FAIL` — the concrete
   - `warnings` — one or more advisory FAIL findings, no blocker findings.
   - `blockers` — one or more critical/blocker FAIL findings.
   - `pending` — no reliable completed review verdict.
-- Enforcement maps verdicts to execution:
+- Outside Cyber Pro, enforcement maps verdicts to execution:
   - `OUROBOROS_REVIEW_ENFORCEMENT=blocking`: `clean` and `warnings` are
     executable; `blockers` are not.
   - `OUROBOROS_REVIEW_ENFORCEMENT=advisory`: `clean`, `warnings`, and
     `blockers` are executable by operator choice. This changes
     `executable_review` only; it does not rewrite the verdict, suppress
     findings, or change `skill_review_status` semantics.
-  - `pending` is never executable. A stale critic verdict does not authorize bytes;
+  - Outside Cyber Pro, `pending` is not executable. A stale critic verdict does not authorize bytes;
     under Advisory a separate current author acceptance may admit the payload
     after deterministic preflight. Blocking still requires fresh critic evidence.
 - Review state stores findings and computes the verdict at load time. Agents
@@ -633,8 +649,8 @@ and do not return `PASS` for an item that also has a `FAIL` — the concrete
   not the raw status string, when deciding whether the skill is runnable.
 - A deterministic `skill_preflight` FAIL is a structural gate failure, not an LLM
   verdict: it persists and aggregates to `pending`, which is non-executable under
-  EVERY enforcement mode (advisory included) and in every readiness/execution
-  caller — the strongest fail-closed outcome, stronger than an overridable blocker.
+  ordinary enforcement mode (advisory included). Cyber keeps the failed check
+  and pending verdict visible while leaving the execution decision to Ouroboros.
 - Hard trust-boundary items are blocker findings on any FAIL regardless of
   reviewer-supplied severity: `manifest_schema`,
   `permissions_honesty`, `no_repo_mutation`, `path_confinement`,

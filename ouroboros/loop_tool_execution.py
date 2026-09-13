@@ -1429,6 +1429,11 @@ def process_tool_results(
                     )
                     if deferred_to_host:
                         llm_trace.setdefault("acceptance_evidence_calls", []).append(parsed)
+                        if ctx is not None:
+                            ctx._acceptance_request_pending = {
+                                **(parsed.get("request") or {}),
+                                "acceptance_subject": parsed.get("acceptance_subject"),
+                            }
                     else:
                         llm_trace.setdefault("review_runs", []).append(parsed)
                     # v6.54.4 (review round 2): dissent is recorded on the agent-called

@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from ouroboros.task_results import plan_review_notes_are_annotatable
 from ouroboros.tools.review_synthesis import PLAN_REVIEW_CONTROL_PREFIX
 from ouroboros.tools.plan_spec import MAX_FINDINGS_PER_SLOT
+from ouroboros.tools.review_helpers import review_enforcement_blocks
 
 
 # B2 (honest DEGRADED): every aggregate reaches the control line as itself — the
@@ -128,10 +129,20 @@ def _next_step(wave: dict, *, enforcement: str, cap: Optional[int], cycles_paid:
             f"Author finish recorded as {author.get('disposition')} against this exact "
             "review fingerprint; raw reviewer findings remain evidence. "
         )
-        if enforcement == "blocking":
+        if review_enforcement_blocks(enforcement):
             author_note += "Blocking enforcement still holds the open plan gate. "
+        elif not review_enforcement_blocks("blocking"):
+            author_note += "Cyber Pro preserves final judgment with Ouroboros. "
         else:
             author_note += "Advisory enforcement permits proceeding with the review open. "
+    if not review_enforcement_blocks("blocking"):
+        return (
+            author_note + "Cyber Pro: Ouroboros decides whether and how to continue. "
+            "The recorded verdict, open findings and any unresolved physical reviewers remain "
+            "independent facts; continuation does not close the wave or create a PASS. "
+            f"The existing $0 plan_task(review_disposition={{review_fingerprint: '{fp}', items: [...]}}) "
+            "can collect results or record a disposition without a new panel."
+        )
     if bool(wave.get("closed")):
         if plan_review_notes_are_annotatable(wave):
             return (
@@ -271,6 +282,7 @@ def _dialogue_source_view(wave: dict, *, cached: bool) -> list[str]:
 def _render_wave(
     wave: dict, *, cap: Optional[int], cycles_paid: int, enforcement: str,
     cached: bool = False, notes: Optional[List[str]] = None, reminder: str = "",
+    historical_feedback: Optional[list[dict]] = None,
 ) -> str:
     aggregate = str(wave.get("aggregate") or "")
     closed = bool(wave.get("closed"))
@@ -304,7 +316,7 @@ def _render_wave(
             "", "⚠️ REVIEW CUSTODY PENDING: the received quorum is provisional; "
             "a paid reviewer operation is still in flight and this wave remains open."
         ]
-    elif aggregate == "DEGRADED":
+    elif aggregate == "DEGRADED" and historical_feedback is None:
         # Banner aligned with _next_step: the replay promise depends on whether the
         # wave carries structural snapshot evidence (see _degraded_replay_note).
         lines += ["", "⚠️ DEGRADED: no parseable reviewer quorum — recorded as an OPEN wave; "
@@ -323,7 +335,7 @@ def _render_wave(
             f"- declared reviewer effort: {wave['reviewer_effort']} (this envelope's order; an explicit "
             "per-row effort or a compound route slug outranks it)")
     lines += [
-        "", "### Reviewer slots", "", *actor_lines,
+        "", "### Reviewer slots" + (" (original recorded state)" if historical_feedback is not None else ""), "", *actor_lines,
         "", "### Findings (per slot; finding_id = slot:id)", "", "```json",
         json.dumps(finding_page, ensure_ascii=False, indent=2, default=str), "```",
     ]
@@ -340,6 +352,23 @@ def _render_wave(
         lines += ["", "### Unparseable reviewer output (bounded preview)", ""]
         for actor in previews:
             lines += [f"#### {actor.get('slot_id')}", _quote_control_lines(str(actor.get("raw_text_preview"))), ""]
+    if wave.get("historical_supplements"):
+        lines += ["", "### Historical feedback", "",
+                  "Late responses are retained separately. The original actors, aggregate and closure below "
+                  "have not been recomputed; these sources do not create a new PASS."]
+        resolved = {row["operation_id"]: row for row in historical_feedback or []}
+        for row in wave["historical_supplements"]:
+            ref = row.get("source_ref") or {}
+            lines += [f"#### {row.get('slot_id')} · cycle {row.get('cycle_index')} · {row.get('operation_state')}",
+                      f"Operation: {row.get('operation_id')}. Source SHA256: {ref.get('sha256') or 'unavailable'}.",
+                      f"Source: read_file(root='artifact_store', path='{ref.get('path') or ''}')."]
+            result = (resolved.get(row.get("operation_id")) or {}).get("result")
+            if result is not None:
+                if result.get("error"):
+                    lines += ["Recorded error: " + _quote_control_lines(str(result["error"]))]
+                lines += [_quote_control_lines(str(result.get("text") or "(no reviewer text)"))]
+            else:
+                lines += ["Full source is retained at the reference above; its body was not read for this view."]
     lines += [
         "", f"### Aggregate: {aggregate}" + (" (closed)" if closed else " (open)"),
         "", "Reasons: " + (", ".join(str(r) for r in wave.get("reasons") or []) or "none")
@@ -356,7 +385,10 @@ def _render_wave(
     outcome, closed = wave_control_state(wave)
     lines += [
         "", "## Plan Review Contract", "",
-        _next_step(wave, enforcement=enforcement, cap=cap, cycles_paid=cycles_paid), "",
+        ("This is a free read of the completed historical responses. No reviewer was called and no cycle "
+         "was consumed. Consider the feedback alongside the current task; the original review decision "
+         "remains unchanged." if historical_feedback is not None else
+         _next_step(wave, enforcement=enforcement, cap=cap, cycles_paid=cycles_paid)), "",
         PLAN_REVIEW_CONTROL_PREFIX + json.dumps({"outcome": outcome, "closed": closed}, separators=(",", ":")),
     ]
     return "\n".join(lines)

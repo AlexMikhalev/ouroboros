@@ -284,12 +284,12 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_set_acceptance_decision", "_task_acceptance_eligible", "get_task_review_mode",
     })),
     "ouroboros/loop_acceptance_review.py": ("ouroboros/loop.py", "_loop", frozenset({
-        "_append_or_merge_user_message", "_begin_task_acceptance_fence",
+        "_append_or_merge_user_message", "_arm_delivery_control", "_begin_task_acceptance_fence",
         "_collect_acceptance_obligations", "_dispose_obligations_on_clean_pass",
         "_end_task_acceptance_fence", "_execute_task_acceptance_panel",
         "_extract_plain_text_from_content", "_format_obligations_clause",
         "_latch_final_answer_marker", "_mark_root_acceptance_checkpoint",
-        "_open_acceptance_obligations", "_set_acceptance_decision",
+        "_no_tool_final_answer", "_open_acceptance_obligations", "_replace_delivery_candidate", "_set_acceptance_decision",
         "_supersede_task_acceptance_for_evidence_change",
         "_supersede_task_acceptance_for_owner_followup", "_task_acceptance_eligible",
         "_task_acceptance_owner_generation_changed", "_task_acceptance_subtree_snapshot",
@@ -318,11 +318,11 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     })),
     "ouroboros/loop_delivery.py": ("ouroboros/loop.py", "_loop", frozenset({
         "DeliveryCandidate", "_LoopExitContext",
-        "_append_or_merge_user_message", "_arm_delivery_control",
+        "_append_or_merge_user_message", "_arm_delivery_control", "_begin_task_acceptance_fence",
         "_child_disposition_state", "_current_delivery_candidate",
         "_compute_subagent_handoff", "_delivery_evidence_state",
         "_delivery_replace_required",
-        "_drain_incoming_messages", "_enforce_swarm_actions",
+        "_drain_incoming_messages", "_end_task_acceptance_fence", "_enforce_swarm_actions",
         "_extract_plain_text_from_content", "_finalize_task_services",
         "_force_plan_disclosure", "_forced_orphan_note",
         "_handle_text_response", "_live_delivery_candidate",
@@ -358,12 +358,11 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_record_forced_acceptance_bypass", "_record_forced_finalization",
         "_replace_delivery_candidate", "_run_task_acceptance_review_once",
         "_server_web_allowed_by_task",
-        "_service_finalization_evidence",
+        "_service_finalization_evidence", "_set_acceptance_decision",
         "_supersede_task_acceptance_for_owner_followup",
         "call_llm_with_retry",
-        # Upstream e10b3cf3 replaced this leaf's inline dangling-revision write
-        # with the acceptance leaf's `terminalize_dangling_revision`, so the raw
-        # decision writer is no longer read here.
+        # Forced rails terminalize dangling revisions through the shared owner;
+        # source changes also record their own unaccepted decision through it.
         "terminalize_dangling_revision",
     })),
     "ouroboros/loop_messages.py": ("ouroboros/loop.py", "_loop", frozenset({

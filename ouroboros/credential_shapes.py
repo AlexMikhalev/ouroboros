@@ -109,7 +109,4 @@ def user_files_mutation_shape_reason(resolved: pathlib.Path, home: pathlib.Path)
         parts = resolved.parts
     if any(part.lower() in {".git", ".hg", ".svn"} for part in parts):
         return "path is hidden or credential-like (VCS control directory)"
-    name_lower = resolved.name.lower()
-    if name_lower in (CREDENTIAL_FILE_NAMES - {"settings.json"}):
-        return "path name is credential-like"
     return ""

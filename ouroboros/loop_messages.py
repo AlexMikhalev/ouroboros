@@ -7,6 +7,9 @@ from __future__ import annotations
 
 from ouroboros.config import runtime_setting
 
+import hashlib
+import logging
+from contextlib import nullcontext
 import json
 import pathlib
 import queue
@@ -15,6 +18,9 @@ from typing import Any, Dict, List, Optional
 from ouroboros.llm import LLMClient
 from ouroboros.loop_llm_call import _emit_live_log
 from ouroboros.utils import sanitize_tool_result_for_log
+
+
+log = logging.getLogger("ouroboros.loop")
 
 
 def _loop():
@@ -212,6 +218,105 @@ def _initialize_owner_directives(ctx: Any, messages: List[Dict[str, Any]]) -> No
                 content=message.get("content"),
             )
             return
+
+
+def owner_source_sha256(ctx: Any) -> str:
+    """Address the retained exact owner corpus, independently of its meaning."""
+    rows = getattr(ctx, "_owner_directives", [])
+    return hashlib.sha256(json.dumps(
+        rows if isinstance(rows, list) else [], ensure_ascii=False,
+        sort_keys=True, separators=(",", ":"), default=str,
+    ).encode("utf-8")).hexdigest()
+
+
+def _acceptance_observation_state(ctx: Any) -> Dict[str, Any]:
+    """Current ingress facts; the queue still owns the final compare-and-seal."""
+    agent = getattr(ctx, "owner_message_admission_agent", None)
+    token = getattr(ctx, "_task_acceptance_fence_token", None)
+    inspect = getattr(ctx, "inspect_acceptance_fence", None)
+    state = inspect(token=str(token)) if token is not None and callable(inspect) else {}
+    return {
+        "owner_source_sha256": owner_source_sha256(ctx),
+        "owner_generation": int(getattr(agent, "_owner_message_generation", 0) or 0) if agent else None,
+        "fence_token": token,
+        "queue_generation": int(state.get("owner_message_generation") or 0) if state else None,
+    }
+
+
+def capture_acceptance_observation(
+    ctx: Any, llm_trace: Dict[str, Any], incoming_messages: Any = None,
+) -> Dict[str, Any]:
+    """Call after ingress drain, immediately before Main sees the current turn.
+
+    No source is acknowledged here. A later Main decision must name these exact
+    retained bytes; arrivals during the model call remain unread ingress.
+    """
+    from ouroboros.loop_transport import _owner_signal_pending
+
+    lock = getattr(ctx, "owner_message_admission_lock", None)
+    with lock if lock is not None else nullcontext():
+        observation = {}
+        try:
+            if not _owner_signal_pending(
+                incoming_messages, getattr(ctx, "drive_root", None), str(getattr(ctx, "task_id", "") or ""),
+                getattr(ctx, "_loop_mailbox_seen_ids", None), getattr(ctx, "task_attempt", None) or 1,
+            ):
+                observation = _acceptance_observation_state(ctx)
+                observation["tool_count"] = len(llm_trace.get("tool_calls") or [])
+        except Exception:
+            log.debug("Acceptance source observation unavailable", exc_info=True)
+        ctx._acceptance_observation = observation
+        ctx._acceptance_observation_incoming = incoming_messages
+        return dict(observation)
+
+
+def acknowledge_acceptance_observation(ctx: Any, source_sha256: str) -> bool:
+    """Advance only consumed ingress, never criteria or the review verdict."""
+    observed = getattr(ctx, "_acceptance_observation", None)
+    if not isinstance(observed, dict) or observed.get("owner_source_sha256") != source_sha256:
+        return False
+    try:
+        from ouroboros.loop_transport import _owner_signal_pending
+
+        if _owner_signal_pending(
+            getattr(ctx, "_acceptance_observation_incoming", None), getattr(ctx, "drive_root", None),
+            str(getattr(ctx, "task_id", "") or ""), getattr(ctx, "_loop_mailbox_seen_ids", None),
+            getattr(ctx, "task_attempt", None) or 1,
+        ):
+            return False
+        current = _acceptance_observation_state(ctx)
+    except Exception:
+        return False
+    if any(current[key] != observed.get(key) for key in current):
+        return False
+    ctx._acceptance_ack_source_sha256 = source_sha256
+    ctx._task_acceptance_owner_generation = current["owner_generation"]
+    ctx._task_acceptance_fence_generation = current["queue_generation"]
+    return True
+
+
+def acceptance_observation_prompt(ctx: Any, observation: Dict[str, Any]) -> str:
+    """Fresh exact-source selector for Main, not another semantic classifier."""
+    if not observation:
+        return ""
+    candidate = getattr(ctx, "_delivery_candidate", None)
+    retained = (
+        "The retained complete answer remains available. " if candidate is not None
+        else "When nominating the complete task result for review, use this source selector. "
+    )
+    return (
+        "[ACCEPTANCE_SUBJECT_OBSERVATION]\n"
+        + json.dumps(observation, ensure_ascii=False, sort_keys=True)
+        + "\n" + retained + "In your ordinary decision, "
+        "use acceptance_subject.owner_source_sha256 above to acknowledge this exact source. "
+        "Keep effective_criteria/material_tool_indices when the subject is unchanged; "
+        "supply complete effective_criteria or exact material_tool_indices when it changed, "
+        "even if the answer text is unchanged. New read-only observations can matter. "
+        "Raw owner messages stay evidence; their count is not a change in requirements. "
+        "While review is pending, answer status questions through send_user_message "
+        "and keep the retained deliverable; a short progress reply is not its replacement. "
+        "This observation supersedes an earlier source selector, not the owner's words."
+    )
 
 
 def _visible_round_text(content: Any) -> str:

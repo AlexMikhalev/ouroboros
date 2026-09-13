@@ -5,6 +5,9 @@ import json
 import subprocess
 from pathlib import Path
 
+
+NODE_BIN = str(Path.home() / ".claudexor" / "node" / "bin" / "node") if (Path.home() / ".claudexor" / "node" / "bin" / "node").exists() else "node"
+
 import pytest
 
 from ouroboros.model_slots import MODEL_ACCOUNTS_KEY, apply_model_role_override
@@ -88,7 +91,7 @@ def test_current_attempt_projection_hides_historical_wait_in_real_js(tmp_path, m
     assert snapshot[0]["model_waits"] == task["model_waits"]  # Preserve history.
     assert model_waiting(meta) is False
     result = subprocess.run([
-        "node", "--input-type=module", "-e",
+        NODE_BIN, "--input-type=module", "-e",
         "import {createModelWaitController} from './modules/model_wait.js';"
         "let raw=''; for await (const chunk of process.stdin) raw += chunk;"
         "const activity=JSON.parse(raw)[0];"

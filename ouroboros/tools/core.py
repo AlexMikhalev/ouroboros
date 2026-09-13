@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
 
-import ast
 import fnmatch
-import json
 import logging
 import os
 import pathlib
@@ -148,6 +146,11 @@ def _skill_payload_parts(target: pathlib.Path, data_root: pathlib.Path) -> tuple
 def _native_payload_mutation_block_reason(
     target: pathlib.Path, data_root: pathlib.Path,
 ) -> str:
+    from ouroboros.config import get_runtime_mode
+    from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+
+    if mode_has_unrestricted_agency(get_runtime_mode()):
+        return ""
     payload = _skill_payload_parts(target, data_root)
     if payload is None:
         return ""
@@ -180,20 +183,6 @@ def _data_skill_target(path: str, drive_root: pathlib.Path) -> SkillPayloadTarge
 def _data_skill_path(path: str, drive_root: pathlib.Path) -> pathlib.Path | None:
     target = _data_skill_target(path, drive_root)
     return target.target_path if target is not None else None
-
-
-def _looks_like_serialized_tool_result(content: Any) -> bool:
-    text = str(content or "").lstrip()
-    if not (text.startswith("{'content'") or text.startswith('{"content"')):
-        return False
-    try:
-        parsed = ast.literal_eval(text)
-    except Exception:
-        try:
-            parsed = json.loads(text)
-        except Exception:
-            return False
-    return isinstance(parsed, dict) and isinstance(parsed.get("content"), str)
 
 
 def is_skill_control_plane_path(target: pathlib.Path, data_root: pathlib.Path) -> bool:
@@ -251,7 +240,10 @@ def _check_data_shrink_guard(
     (``git._check_shrink_guard``) but WITHOUT the ``git ls-files`` tracking check — the
     data plane is not a git tree. Skips a non-existent target (a fresh create is any
     size) and appends (the caller only invokes this on overwrite). Never raises."""
-    if force:
+    from ouroboros.config import get_runtime_mode
+    from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+
+    if force or mode_has_unrestricted_agency(get_runtime_mode()):
         return None
     try:
         if not target.exists():
@@ -341,18 +333,13 @@ def _data_write(
         lexical_target = pathlib.Path(p).resolve(strict=False)
     else:
         lexical_target = pathlib.Path(ctx.drive_root).resolve(strict=False) / safe_relpath(write_path)
-    suffix = pathlib.PurePosixPath(str(path or "")).suffix.lower()
-    if suffix in {".py", ".md", ".json", ".sh"} and _looks_like_serialized_tool_result(content):
-        return (
-            "⚠️ DATA_WRITE_BLOCKED: content looks like a serialized tool result "
-            "object (for example {'content': ...}) rather than file text. "
-            "Extract the actual file body before calling write_file."
-        )
+    from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+    cyber = mode_has_unrestricted_agency(_cfg.get_runtime_mode())
     native_block = (
         _native_payload_mutation_block_reason(lexical_target, data_root)
         or _native_payload_mutation_block_reason(target_path, data_root)
     )
-    if native_block:
+    if native_block and not cyber:
         return f"⚠️ DATA_WRITE_BLOCKED: {native_block}."
     skill_owner_state_path = (
         _is_skill_owner_state_target(lexical_target, data_root)
@@ -360,7 +347,7 @@ def _data_write(
     )
     if not skill_owner_state_path:
         skill_owner_state_path = is_skill_owner_state_alias(target_path, data_root)
-    if skill_owner_state_path:
+    if skill_owner_state_path and not cyber:
         return (
             "⚠️ DATA_WRITE_BLOCKED: skill review, enablement, grants, and "
             "marketplace provenance are owner/review controlled state. Edit "
@@ -368,7 +355,7 @@ def _data_write(
             "Skills UI toggle, or the desktop launcher grant flow."
         )
     # Block marketplace/launcher sidecars for every data_write path, not only heal mode.
-    if (
+    if not cyber and (
         (_resolved_binding is not None and _binding_skill_control_plane_path(_resolved_binding))
         or is_skill_control_plane_path(lexical_target, data_root)
         or is_skill_control_plane_path(target_path, data_root)
@@ -379,7 +366,7 @@ def _data_write(
             "SKILL.openclaw.md, .seed-origin) are owner/review controlled. "
             "Edit the payload's user-authored files instead and rerun skill_review."
         )
-    if (
+    if not cyber and (
         _is_workspace_executor_control_state_path(lexical_target, ctx_data_root)
         or _is_workspace_executor_control_state_path(target_path, ctx_data_root)
         or _is_workspace_executor_control_state_path(lexical_target, data_root)
@@ -403,7 +390,7 @@ def _data_write(
             same_parent = False
         if same_parent and target_path.name.lower() == settings_path.name.lower():
             matches = True
-    if matches:
+    if matches and not cyber:
         return (
             "⚠️ DATA_WRITE_BLOCKED: settings.json is the canonical owner-edited "
             "file. Tool-level writes must route through /api/settings (which "
@@ -677,7 +664,7 @@ def _write_file(
                     # Batch items honor the declared mode like the single-file path below:
                     # silently overwriting here destroyed every prior chunk of a chunked
                     # large-file write while reporting success (#447 D2).
-                    with target.open("a", encoding="utf-8") as fh:
+                    with target.open("a", encoding="utf-8", newline="") as fh:
                         fh.write(body)  # append is intentionally NOT atomized
                 else:
                     # Deferral 5: batch items overwrite too — shrink-guard each (parity with the
@@ -702,7 +689,7 @@ def _write_file(
                 return f"⚠️ WRITE_FILE_BLOCKED: artifact_store path blocked: {block_reason}"
         target.parent.mkdir(parents=True, exist_ok=True)
         if mode == "append":
-            with target.open("a", encoding="utf-8") as fh:
+            with target.open("a", encoding="utf-8", newline="") as fh:
                 fh.write(content)  # append is intentionally NOT atomized
         else:
             # Deferral 5: shrink-guard the full overwrite (e.g. active_workspace rewrites)
@@ -731,6 +718,10 @@ def _edit_text(
     force: bool = False,
     _resolved_binding: ResolvedResourceBinding | None = None,
 ) -> str:
+    from ouroboros.config import get_runtime_mode
+    from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+
+    cyber = mode_has_unrestricted_agency(get_runtime_mode())
     normalized, block = _access_or_block(ctx, root, "edit")
     if block:
         return block
@@ -776,7 +767,7 @@ def _edit_text(
     selected_payload = normalized == "skill_payload" or bound_skill_payload
     try:
         target = binding.target_path
-        if selected_payload and (
+        if not cyber and selected_payload and (
             _binding_skill_control_plane_path(binding)
             or is_skill_control_plane_path(target, binding.state_drive_root)
         ):
@@ -785,7 +776,7 @@ def _edit_text(
                 "marketplace, dependency, and self-authored markers are "
                 "control-plane state. Edit user-authored payload files instead."
             )
-        if normalized == "runtime_data":
+        if normalized == "runtime_data" and not cyber:
             if is_skill_control_plane_path(target, binding.state_drive_root):
                 return (
                     "⚠️ EDIT_TEXT_BLOCKED: skill provenance, launcher seed, "

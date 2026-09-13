@@ -28,7 +28,9 @@ def test_tool_policy_defines_no_local_tool_sets():
     import ouroboros.tool_policy as tp
     source = inspect.getsource(tp)
     assert not re.search(r"^(CORE_TOOL_NAMES|META_TOOL_NAMES)\s*[:=]", source, re.MULTILINE)
-    assert "frozenset({" not in source
+    # Nano's schema-residency projection is intentionally a derived set in
+    # this module; capability sets themselves remain owned by tool_capabilities.
+    assert "NANO_SCHEMA_META_NAMES = META_TOOL_NAMES | frozenset" in source
 
 
 def test_loop_execution_imports_from_capabilities():

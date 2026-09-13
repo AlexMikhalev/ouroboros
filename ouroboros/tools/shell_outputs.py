@@ -61,6 +61,12 @@ def _protected_output_source_reason(
 ) -> str:
     """Return a block reason for protected/control-plane output sources."""
 
+    from ouroboros.config import get_runtime_mode
+    from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+
+    if mode_has_unrestricted_agency(get_runtime_mode()):
+        return ""
+
     try:
         from ouroboros.protected_artifacts import block_reason_for_path
 

@@ -182,6 +182,14 @@ def _finish_mutation(
         log.debug("%s: advisory invalidation failed (non-critical)", source_tool, exc_info=True)
     targets_system = binding_targets_system_repo(ctx, binding) if binding is not None else False
     if not targets_system:
+        from ouroboros.workspace_file_outputs import capture_known_workspace_outputs
+
+        capture_note = capture_known_workspace_outputs(
+            ctx, binding.base_path if binding is not None else active_repo_dir_for(ctx),
+            changed_paths, source_tool=source_tool,
+        )
+        if capture_note:
+            return capture_note
         footer = "Files are on disk but NOT committed."
         if ctx.is_workspace_mode():
             footer += " Do not commit; the headless runner will emit a patch artifact."
@@ -219,7 +227,7 @@ def _partial_write_failure(
     """
 
     if changed_paths:
-        _finish_mutation(ctx, changed_paths, source_tool, binding)
+        footer = _finish_mutation(ctx, changed_paths, source_tool, binding)
         # NOT the tools' own *_ERROR prefix: those read as validation refusals
         # (a counted/context miss) and are classified as policy denials. This is a
         # genuine partial mutation from an I/O fault and must stay an execution
@@ -227,7 +235,8 @@ def _partial_write_failure(
         return (
             f"⚠️ EDIT_OPS_PARTIAL_WRITE_FAILED ({tag}): {detail}\n"
             f"PARTIALLY APPLIED — these files WERE written: {', '.join(changed_paths)}. "
-            "Re-read them before retrying; advisory pre-review is now stale."
+            "Re-read them before retrying; advisory pre-review is now stale.\n"
+            + footer
         )
     return f"⚠️ {tag}: {detail}\nNothing was written."
 

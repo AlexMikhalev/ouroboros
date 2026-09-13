@@ -82,6 +82,8 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     # Role-owned choices; empty account and zero window mean Auto, not healthy/known.
     "OUROBOROS_MODEL_ACCOUNTS": "{}",
     "OUROBOROS_MODEL_CONTEXT_WINDOWS": "{}",
+    "OUROBOROS_PROCESSING_PREFERENCE": "",
+    "OUROBOROS_MODEL_PROCESSING_PREFERENCES": "{}",
     # Worker lanes; empty means "use OUROBOROS_MODEL" (one model by default, per-lane
     # override optional). HEAVY = mutative first-level subagents; LIGHT = auto/deep bulk.
     "OUROBOROS_MODEL_HEAVY": OPENROUTER_DEFAULTS["heavy"],
@@ -231,7 +233,7 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_RESTART_DRAIN_MAX_SEC": 120,
     # Runtime mode: light | advanced | pro; pro still requires review gates.
     "OUROBOROS_RUNTIME_MODE": "advanced",
-    # Context mode: low | max. Owner-only working-context size profile. max = full always-on docs +
+    # Context mode: nano | low | max. Owner-only working-context size profile. max = full always-on docs +
     # current memory granularity; low = ARCHITECTURE as a navigation map + deeper memory consolidation,
     # sized for ~200k / local models. Cognitive-horizon knob (BIBLE P1): the agent cannot lower it
     # (owner-only), and it never changes model / reasoning-effort / output-token budgets.

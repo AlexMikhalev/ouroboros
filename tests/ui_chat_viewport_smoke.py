@@ -658,7 +658,8 @@ def run_chat_viewport_smoke(
                     lambda route: route.fulfill(
                         status=200,
                         content_type="application/json",
-                        body=json.dumps({"active_chat_activities": [{
+                        body=json.dumps({"active_chat_activities_complete": True, "supervisor_ready": True,
+                                         "active_chat_activities": [{
                             "activity_id": task_id, "task_id": task_id, "chat_id": 1,
                             "kind": "managed_task", "phase": "working",
                         } for task_id in cancel_active_ids]}),
@@ -933,7 +934,8 @@ def run_chat_viewport_smoke(
                     lambda route: route.fulfill(
                         status=200,
                         content_type="application/json",
-                        body=json.dumps({"active_chat_activities": [{
+                        body=json.dumps({"active_chat_activities_complete": True, "supervisor_ready": True,
+                                         "active_chat_activities": [{
                             "activity_id": task_id, "task_id": task_id, "chat_id": 1,
                             "kind": "managed_task", "phase": "working",
                         } for task_id in active_ids]}),

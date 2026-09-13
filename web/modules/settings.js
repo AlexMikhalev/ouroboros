@@ -2,7 +2,7 @@ import { refreshModelCatalog } from './settings_catalog.js';
 import { bindEffortSegments, syncEffortSegments, readCustomSecretDraft, collectCustomSecretDraft, paintSettingsFieldErrors, settingsWriteFailure } from './settings_controls.js';
 import { bindLocalModelControls } from './settings_local_model.js';
 import { applyMcpSettings, collectMcpSettings, initMcpSettings, validateMcpSettings } from './mcp_settings.js';
-import { adoptSubagentRoster, collectReviewerSlots, initReviewerSlots, reloadReviewerSlots, validateReviewerSlots, noteReviewerSlotsSaveAttempt, discardReviewerSlotsDraft } from './reviewer_slots.js';
+import { adoptSubagentRoster, collectReviewerSlots, initReviewerSlots, reloadReviewerSlots, validateReviewerSlots, noteReviewerSlotsSaveAttempt, discardReviewerSlotsDraft, setReviewerProcessingPreference } from './reviewer_slots.js';
 import {
     applySubagentsSettings,
     availableSubagentsPreviewPayload,
@@ -12,6 +12,7 @@ import {
     reloadSubagentsSection,
     subagentSettingsFingerprint,
     validateSubagentsDraft,
+    setSubagentsProcessingPreference,
 } from './subagents_settings.js';
 import { initHarnessAccounts } from './harness_accounts.js';
 import { openConfirmDialog } from './confirm_dialog.js';
@@ -20,7 +21,8 @@ import { showToast } from './toast.js';
 import { escapeHtmlAttr as escapeHtml, formatDualVersion } from './utils.js';
 import { apiClient, apiFetch, cleanExtensionRoute, extensionRoutePath } from './api_client.js';
 import { claudexorStatus } from './claudexor_status_store.js';
-import { createModelRolesEditor } from './model_roles.js';
+import { createModelRolesEditor, modelRoleMap } from './model_roles.js';
+import { PROCESSING_PREFERENCE_KEY, MODEL_PROCESSING_PREFERENCES_KEY } from './route_editor_primitives.js';
 import { collectSafeFieldValues, renderSafeField, setInlineStatus, revealNewRow } from './ui_helpers.js';
 import { extensionActionStatus } from './extension_status_text.js';
 
@@ -430,12 +432,12 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     const providerTestGenerations = new Map();
     const providerTestsInFlight = new Set();
     const modelRoles = createModelRolesEditor({ hostId: 'settings-model-roles',
-        onChange: () => onSettingsEdited() });
+        onChange: (settings) => { syncProcessingPreference(settings); onSettingsEdited(); } });
     modelRoles.mount();
     initMcpSettings({ onChange: onSettingsEdited });
     initReviewerSlots({ onChange: () => onSettingsEdited() });
     initSubagentsSection({
-        onChange: () => onSettingsEdited(),
+        onChange: (setting) => { adoptSubagentRoster({ OUROBOROS_SUBAGENTS: setting }); onSettingsEdited(); },
         // A judged roster may clear only the validation footer it authored.
         // A cadence or other field error keeps its typed subject and survives.
         onJudged: (clean) => {
@@ -452,6 +454,11 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         ),
     });
     initHarnessAccounts();
+
+    function syncProcessingPreference(settings) {
+        setSubagentsProcessingPreference(settings[PROCESSING_PREFERENCE_KEY]);
+        setReviewerProcessingPreference(settings[PROCESSING_PREFERENCE_KEY], modelRoleMap(settings[MODEL_PROCESSING_PREFERENCES_KEY]));
+    }
 
     function syncSettingsLoadState() {
         const saveBtn = byId('btn-save-settings');
@@ -607,6 +614,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
             ({ true: 'on', false: 'off' }[rawMutative] || (runtimeMode === 'light' ? 'auto' : 'on'));
         // The actor list lives next to it in Agents → Available subagents.
         applySubagentsSettings(s);
+        syncProcessingPreference(s);
         // The Review-lanes «Configured subagent» selects reference the SAME
         // roster; adopt it from the same loaded document.
         adoptSubagentRoster(s);

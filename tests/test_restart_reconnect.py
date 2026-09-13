@@ -38,14 +38,25 @@ def test_chat_marks_pending_messages_until_reconnect():
     assert "result?.status === 'queued'" in source
 
 
+def test_history_replay_does_not_overwrite_recent_session_fallback():
+    source = _read("web/modules/chat.js")
+    assert "if (!isProgress && !ephemeral && !_historyAppending)" in source
+
+
 def test_chat_resyncs_history_after_reconnect():
     source = _read("web/modules/chat.js")
     assert "async function syncHistory" in source
     # perf2 P3: the default history request sends NO quota params — the server's
     # window constants govern; the dead `?limit=1000` placebo is gone.
-    assert "`/api/chat/history${isMain ? '' : `?chat_id=${chatId}`}`" in source
+    client = _read("web/modules/api_client.js")
+    history = client[client.index("chatHistory:"):client.index("health:")]
+    assert "await apiClient.chatHistory({ chatId })" in source
+    assert "if (chatId !== 1) params.set('chat_id', String(chatId));" in history
+    assert "const query = params.toString();" in history
+    assert "fetchJson(`/api/chat/history${query ? `?${query}` : ''}`" in history
+    assert not any(quota in history for quota in ("n_human", "n_progress", "limit"))
     assert "limit=1000" not in source
-    assert "cache: 'no-store'" in source
+    assert "cache: 'no-store'" in history
     assert "syncHistory({ includeUser: !historyLoaded, fromReconnect: isReconnect })" in source
     assert "const expectedDisconnect = socketState !== WebSocket.OPEN" in source
     assert "if (expectedDisconnect && err instanceof TypeError)" in source
@@ -232,12 +243,19 @@ def test_working_live_cards_are_subdued_and_expandable():
 
 
 def test_live_card_blocks_can_expand_to_full_text():
-    """chat.js should preserve expansion state and render per-block toggles."""
+    """Chat keeps expansion state while its activity renderer owns the toggle."""
     source = _read("web/modules/chat.js")
+    activity = _read("web/modules/chat_activity.js")
     assert "expandedLineKeys" in source, "Missing per-line expansion state"
-    assert "data-live-line-toggle" in source, "Missing per-block toggle markup"
-    assert "fullHeadline" in source, "Missing full headline preservation"
-    assert "fullBody" in source, "Missing full body preservation"
+    assert "bindLiveCardTimeline(record.timelineEl," in source
+    assert "record.expandedLineKeys.add(lineKey)" in source
+    assert "renderLiveCardTimeline(record);" in source
+    assert "data-live-line-toggle" in activity, "Missing per-block toggle markup"
+    assert "record.expandedLineKeys.has(item.lineKey)" in activity
+    for field in ("fullHeadline", "fullBody"):
+        assert f"item.{field}" in activity, f"Missing full-text rendering: {field}"
+        assert field in _read("web/modules/chat_render_batch.js"), f"Missing live preservation: {field}"
+        assert field in _read("web/modules/chat_history_replay.js"), f"Missing history preservation: {field}"
 
 
 def test_live_event_summaries_preserve_full_text_for_expansion():

@@ -303,7 +303,8 @@ not move them into the migrated set in section 8.
 - **A markdown heading inside chat is a subsection label**, never a page
   title: in chat bubbles every heading level renders at `--type-body`
   semibold; in a task card's timeline it renders inline, without block
-  margins, at its row's own size. The page-size `md-h1` belongs to non-chat
+  margins, at its row's own size, with a copyable line break before the
+  following paragraph. The page-size `md-h1` belongs to non-chat
   surfaces only.
 - **A task card's summary outranks its details.** The latest-activity line is
   `--type-body`; collapsed timeline rows are a dense log at `--type-meta` in
@@ -327,6 +328,13 @@ not move them into the migrated set in section 8.
   stays unconfirmed; marks and configured routes never manufacture execution.
 
 ### Project work pointer
+
+Main and Project history load older portions at the reading edge, with a
+keyboard-accessible button and a retry on that same portion when reading fails.
+Distant portions may leave the rendered window; newer navigation restores them.
+The visible passage, selected text, focused control and expanded Reviews retain
+their actual nodes. A short or empty portion never claims the beginning of the
+archive; only the source reader establishes that boundary.
 
 A Project keeps its conversation and real nested task cards. One compact pointer
 leads to an unfinished represented root, or the latest represented root when all

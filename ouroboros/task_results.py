@@ -1134,19 +1134,15 @@ def plan_review_gate_projection(
     *,
     hard_rail: str = "",
 ) -> Dict[str, Any]:
-    """Project one plan-review finalization decision from existing authority.
+    """Project finalization permission without changing the durable review facts.
 
-    ``plan_review_state`` is the durable SSOT; the ``current_attempt`` pointer keeps a
-    newer fingerprint from falling back to an older closed wave. Statuses: ``closed``
-    (allow) · ``rail_degraded`` (a task-wide rail released the hold — allow) ·
-    ``advisory_open`` (advisory enforcement proceeds under loud disclosure) ·
-    ``cycles_exhausted`` (the shared cap is spent on an OPEN wave: finalization is
-    released so the task can terminalize honestly as blocked — owner D27 — while
-    the wave itself stays open) · ``open`` / ``unavailable`` / ``pending`` /
-    ``legacy_open_requires_resubmission`` (blocking hold; EXCEPT an ``open`` wave
-    whose ``quorum_unreachable`` typed fact holds — B2b — which releases
-    finalization the same honest-blocked way while staying open) · ``absent``. Accepts a v2
-    state, a loaded v1 wrapper, or a raw v1 record (read-only projection)."""
+    The current-attempt pointer prevents an older closed wave authorizing new
+    work. In ordinary Blocking, open/unavailable/pending/legacy-open reviews hold
+    finalization; spent cycles (D27), unreachable quorum (B2b) or a hard rail
+    release it for an honest blocked outcome. Advisory releases an open review.
+    Cyber retains judgment even with missing evidence: allow never implies closed
+    or PASS. Accepts v2 state, a v1 wrapper or raw v1 as a read-only projection.
+    """
     policy = "blocking" if str(enforcement or "").lower() == "blocking" else "advisory"
     control: Dict[str, Any] = {}
     attempted = False
@@ -1202,8 +1198,13 @@ def plan_review_gate_projection(
 
     status = str(control.get("status") or "unavailable")
     closed = bool(control.get("closed"))
+    from ouroboros.tools.review_helpers import review_enforcement_blocks
+
+    cyber = not review_enforcement_blocks("blocking")
     if status == "closed" and closed:
         gate_status, allow = "closed", True
+    elif cyber:
+        gate_status, allow = "advisory_open", True
     elif hard_rail or status == "rail_degraded":
         gate_status, allow = "rail_degraded", True
     elif policy == "advisory" and status in {
@@ -1225,6 +1226,7 @@ def plan_review_gate_projection(
         gate_status, allow = status, False
     return {
         "enforcement": policy,
+        **({"decision_authority": "cyber_pro", "review_status": status} if cyber else {}),
         "status": gate_status,
         "allow": allow,
         "attempted": attempted,
@@ -1385,27 +1387,9 @@ def _update_plan_review_state(
 
 
 def _compact_plan_review_wave(wave: Dict[str, Any]) -> Dict[str, Any]:
-    """Bounded summary of an older wave (S2): identity, outcome, counts, closure."""
-    findings = wave.get("findings") if isinstance(wave.get("findings"), list) else []
-    return {
-        "compact": True,
-        "cycle_index": wave.get("cycle_index"),
-        "request_fingerprint": str(wave.get("request_fingerprint") or ""),
-        "aggregate": str(wave.get("aggregate") or ""),
-        "counts": {
-            "findings": int(wave.get("findings_total") or len(findings)),
-            "dispositions": len(wave.get("dispositions") or []),
-            "blocking": int(wave["counts"].get("blocking") or 0) if isinstance(wave.get("counts"), dict) and "blocking" in wave["counts"] else sum(1 for f in findings if isinstance(f, dict) and f.get("class") == "blocking"),
-        },
-        "closed": bool(wave.get("closed")),
-        "paid": bool(wave.get("paid")),
-        "wave_artifact": copy.deepcopy(wave.get("wave_artifact") or {}),
-        **({"author_disposition": copy.deepcopy(wave["author_disposition"])}
-           if isinstance(wave.get("author_disposition"), dict) else {}),
-        **({"spec_source_ref": copy.deepcopy(wave["spec_source_ref"])} if wave.get("spec_source_ref") else {}),
-        **{key: copy.deepcopy(wave[key]) for key in ("dialogue_source_ref", "dialogue_chat_id", "author_request_fingerprint") if key in wave},
-        **({"reviewed_at": str(wave["reviewed_at"])} if wave.get("reviewed_at") else {}),
-    }
+    from ouroboros.tools.plan_review_artifacts import compact_wave
+
+    return compact_wave(wave)
 
 
 def plan_review_authority_core(state: Dict[str, Any], *, source_ref: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1424,6 +1408,7 @@ _PLAN_REVIEW_IDENTITY_KEYS = frozenset({
     "model", "request_model", "route", "host_file_read_attestation", "reason", "decision", "kind",
     "goal", "acceptance_claims", "cycle_index", "series_id", "schema_version", "retry_key",
     "wave_artifact", "spec_source_ref", "dialogue_source_ref", "dialogue_chat_id", "author_request_fingerprint",
+    "historical_supplements",
 })
 
 
@@ -1496,7 +1481,13 @@ def record_plan_review_wave(
                 state["need_evidence_seen"] = sorted({str(s) for s in need_evidence_seen if str(s)})
             return state
         waves = [w for w in state.get("waves") or [] if str(w.get("request_fingerprint") or "") != fingerprint]
-        waves.append(copy.deepcopy(wave))
+        recorded = copy.deepcopy(wave)
+        history = [item for prior in previous for item in prior.get("historical_supplements") or []]
+        if history:
+            recorded["historical_supplements"] = copy.deepcopy(history)
+            if any(prior.get("paid") and prior.get("cycle_index") == wave.get("cycle_index") for prior in previous):
+                recorded["paid"] = True
+        waves.append(recorded)
         if not state.get("series_id"):
             state["series_id"] = fingerprint[:16]
         # C-07: replacement writes don't charge again; a fully-rejected wave's
@@ -1526,6 +1517,7 @@ def record_plan_review_wave(
 
     state = _update_plan_review_state(results_drive_root, task_id, _record)
     return plan_review_wave(state, fingerprint) or {}
+
 
 def plan_review_notes_are_annotatable(wave: Dict[str, Any]) -> bool:
     """Optional notes remain discussable after automatic closure, not new authority."""

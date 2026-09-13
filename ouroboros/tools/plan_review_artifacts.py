@@ -57,6 +57,27 @@ def persist_wave(drive_root: Any, task_id: str, wave: Dict[str, Any]) -> Dict[st
     )
 
 
+
+def persist_historical_result(drive_root: Any, task_id: str, wave: dict, result: dict) -> dict:
+    """Full late feedback is a source artifact, not a replacement wave verdict."""
+    from ouroboros.artifacts import store_actor_source_bytes
+    from ouroboros.observability import redact_projection
+    from ouroboros.tools import plan_spec
+
+    findings, error = plan_spec.parse_findings(str(result.get("text") or ""))
+    payload = redact_projection({
+        "kind": "plan_review_historical_supplement", "task_id": task_id,
+        "request_fingerprint": wave["request_fingerprint"], "cycle_index": wave["cycle_index"],
+        "retry_key": wave.get("retry_key"), "original_wave_artifact": wave.get("wave_artifact") or {},
+        "result": result, "parsed_findings": findings, "parse_error": error,
+    }).value
+    return store_actor_source_bytes(
+        drive_root, task_id, category="context_checkpoints",
+        source_id=f"plan-review-late-{result['operation_id']}",
+        data=json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode(),
+        extension="json",
+    )
+
 def read_wave(drive_root: Any, task_id: str, ref: Dict[str, Any]) -> Dict[str, Any]:
     from ouroboros.artifacts import task_artifact_dir_path
 
@@ -84,7 +105,7 @@ def authority_wave(drive_root: Any, task_id: str, hot_wave: Optional[dict]) -> O
         return None
     ref = hot_wave.get("wave_artifact") if isinstance(hot_wave.get("wave_artifact"), dict) else {}
     if not ref:
-        if hot_wave.get("spec_in_artifact") or hot_wave.get("spec_body_truncated"):
+        if hot_wave.get("compact") or hot_wave.get("spec_in_artifact") or hot_wave.get("spec_body_truncated"):
             raise PlanReviewSourceUnavailable("PLAN_REVIEW_SOURCE_UNAVAILABLE: full spec has no artifact reference")
         return hot_wave
     if not drive_root or not task_id:
@@ -417,6 +438,20 @@ def record_exact_wave(
         state_root, task_id, hot_index_wave(wave, page_size=page_size),
         need_evidence_seen=need_evidence_seen,
     )
+    # A slot can settle after the pre-supersede collection but before this
+    # publication. Reconcile just the known history at this existing write seam.
+    from ouroboros.task_results import load_plan_review_state
+    from ouroboros.tools.plan_review_collect import attach_historical_results
+    for prior in load_plan_review_state(state_root, task_id).get("waves") or []:
+        if prior.get("custody_pending") and (prior.get("closed") or
+                prior.get("request_fingerprint") != stored.get("request_fingerprint")):
+            try:
+                attach_historical_results(state_root, task_id, fingerprint=prior["request_fingerprint"])
+            except (OSError, ValueError, TimeoutError):
+                # The new wave is already durable. Missing old source is not a
+                # failure to record it and must not invite duplicate dispatch.
+                import logging
+                logging.getLogger(__name__).warning("historical plan source remains unresolved", exc_info=True)
     return authority_wave(state_root, task_id, stored)
 
 
@@ -610,3 +645,81 @@ def exact_wave(
         "slot_prompt_chars": copy.deepcopy(dispatched["slot_prompt_chars"] if dispatched is not None else slot_prompt_chars),
         "slots": [slot_row(slot) for slot in slots], "reviewer_outputs": outputs,
     }
+
+
+def compact_wave(wave: Dict[str, Any]) -> Dict[str, Any]:
+    """Bounded summary of an older wave (S2): identity, outcome, counts, closure."""
+    findings = wave.get("findings") if isinstance(wave.get("findings"), list) else []
+    return {
+        "compact": True,
+        "cycle_index": wave.get("cycle_index"),
+        "request_fingerprint": str(wave.get("request_fingerprint") or ""),
+        "aggregate": str(wave.get("aggregate") or ""),
+        "counts": {
+            "findings": int(wave.get("findings_total") or len(findings)),
+            "dispositions": len(wave.get("dispositions") or []),
+            "blocking": int(wave["counts"].get("blocking") or 0) if isinstance(wave.get("counts"), dict) and "blocking" in wave["counts"] else sum(1 for f in findings if isinstance(f, dict) and f.get("class") == "blocking"),
+        },
+        "closed": bool(wave.get("closed")),
+        "paid": bool(wave.get("paid")),
+        "wave_artifact": copy.deepcopy(wave.get("wave_artifact") or {}),
+        **{key: copy.deepcopy(wave[key]) for key in ("historical_supplements", "retry_key", "custody_pending") if key in wave},
+        **({"author_disposition": copy.deepcopy(wave["author_disposition"])}
+           if isinstance(wave.get("author_disposition"), dict) else {}),
+        **({"spec_source_ref": copy.deepcopy(wave["spec_source_ref"])} if wave.get("spec_source_ref") else {}),
+        **{key: copy.deepcopy(wave[key]) for key in ("dialogue_source_ref", "dialogue_chat_id", "author_request_fingerprint") if key in wave},
+        **({"reviewed_at": str(wave["reviewed_at"])} if wave.get("reviewed_at") else {}),
+    }
+
+
+def record_plan_review_supplement(
+    results_drive_root: Any, task_id: str, *, wave: dict, result: dict, source_ref: dict,
+) -> bool:
+    """One locked historical write; critic authority and current selection stay intact.
+
+    The caller already verified the original prompt/complete producer CAS. A
+    concurrent new cycle/current-wave change is rechecked here, not restored
+    from a pre-lock snapshot. The full feedback remains in the source artifact.
+    """
+    from ouroboros.task_results import _update_plan_review_state
+
+    attached = False
+    def _attach(state: Dict[str, Any]) -> Dict[str, Any]:
+        nonlocal attached
+        target = next((w for w in state["waves"] if w.get("request_fingerprint") == wave["request_fingerprint"]), None)
+        if target is None or target.get("cycle_index") != wave.get("cycle_index"):
+            return state
+        if str(target.get("retry_key") or "") != str(wave.get("retry_key") or ""):
+            return state
+        if not target.get("closed") and (state.get("current_attempt") or {}).get("fingerprint") == wave["request_fingerprint"]:
+            return state
+        if not any(row.get("slot_id") == result.get("slot_id") and
+                   row.get("operation_id") == result.get("operation_id") for row in wave.get("actors") or []):
+            return state
+        if isinstance(target.get("actors"), list) and not any(
+            row.get("slot_id") == result.get("slot_id") and row.get("operation_id") == result.get("operation_id")
+            for row in target["actors"]
+        ):
+            return state
+        supplements = target.setdefault("historical_supplements", [])
+        if any(row.get("operation_id") == result["operation_id"] for row in supplements):
+            return state
+        supplements.append({
+            key: copy.deepcopy(result.get(key)) for key in
+            ("slot_id", "operation_id", "operation_state", "physical_attempt_state")
+        } | {"source_ref": copy.deepcopy(source_ref), "cycle_index": wave["cycle_index"],
+             "status": "error" if result.get("error") else "ok"})
+        if _row_has_physical_dispatch(result) and not target.get("paid"):
+            target["paid"] = True
+            state["cycles_paid"] = int(state.get("cycles_paid") or 0) + 1
+        settled = {row["operation_id"] for row in supplements}
+        target["custody_pending"] = any(
+            (row.get("late_result_pending") or row.get("operation_state") in
+             {"pending_dispatch", "in_flight", "custody_lost"})
+            and row.get("operation_id") not in settled for row in wave.get("actors") or []
+        )
+        attached = True
+        return state
+
+    _update_plan_review_state(results_drive_root, task_id, _attach)
+    return attached

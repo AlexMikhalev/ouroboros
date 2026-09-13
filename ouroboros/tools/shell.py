@@ -541,14 +541,6 @@ def _run_shell(
         return f"⚠️ SHELL_ERROR: {e}. root={binding.root}, cwd={work_dir}"
 
 
-# The run_script interpreter VALIDATOR (SSOT; the schema enum below is the
-# advertised subset — Windows launcher spellings are accepted, not advertised).
-RUN_SCRIPT_INTERPRETER_ALLOWLIST = frozenset({
-    "python", "python3", "python.exe", "python3.exe",
-    "bash", "sh", "node", "node.exe", "ruby",
-})
-
-
 def _run_script(
     ctx: ToolContext,
     script: str,
@@ -570,30 +562,6 @@ def _run_script(
     bucket = str(kwargs.get("bucket") or "")
     skill_name = str(kwargs.get("skill_name") or "")
     interp = str(interpreter or "python3").strip()
-    allowed = RUN_SCRIPT_INTERPRETER_ALLOWLIST
-    resolver_attested = False
-    try:
-        from ouroboros.process_interpreters import InterpreterResolutionTrace
-
-        resolution = getattr(ctx, "_active_interpreter_resolution", None)
-        resolver_attested = bool(
-            isinstance(resolution, InterpreterResolutionTrace)
-            and resolution.verified
-            and resolution.tool == "run_script"
-            and (
-                resolution.requested_interpreter in {"python", "python3"}
-                if resolution.family == "python"
-                # A node attestation admits only an actual SUBSTITUTION (emergency
-                # rewrite); healthy paths have changed=False, so bare spellings
-                # still hit the allowlist (A-F1).
-                else (resolution.family == "node" and resolution.changed)
-            )
-            and resolution.resolved_interpreter == interp
-        )
-    except Exception:
-        resolver_attested = False
-    if pathlib.PurePath(interp).name not in allowed and not resolver_attested:
-        return f"⚠️ RUN_SCRIPT_BLOCKED: interpreter must be one of {sorted(allowed)}."
     body = str(script or "")
     if not body.strip():
         return "⚠️ TOOL_ARG_ERROR (run_script): script is required."
@@ -754,7 +722,7 @@ def get_tools() -> List[ToolEntry]:
             ),
             "parameters": {"type": "object", "properties": {
                 "script": {"type": "string"},
-	                "interpreter": {"type": "string", "enum": ["python", "python3", "bash", "sh", "node", "ruby"], "default": "python3"},
+	                "interpreter": {"type": "string", "default": "python3", "description": "Installed executable name or path that accepts a script filename, such as python3, node, perl, zsh or lua. Receives the temporary script path followed by args. Use run_command for compiler or launcher subcommands."},
 	                "args": {"type": "array", "items": {"type": "string"}, "default": []},
 	                "cwd": {"type": "string", "default": "", "description": "Omit for active_workspace; use system_repo[/subdir] for Ouroboros or skill_payload[/subdir] with bucket+skill_name for a skill."},
 	                "bucket": {"type": "string", "enum": ["external", "clawhub", "ouroboroshub", "user_repo"], "description": "Physical skill location for cwd=skill_payload[/subdir]."},

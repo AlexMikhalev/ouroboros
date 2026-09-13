@@ -66,7 +66,10 @@ def test_local_preflight_matches_actual_wire_normalization(capacity, monkeypatch
 
     capacity.settings["OUROBOROS_MODEL"] = "local-fixture"
     monkeypatch.setattr(c, "_consolidation_route", lambda: ("local-fixture", True))
-    monkeypatch.setattr(local_model, "get_manager", lambda: SimpleNamespace(get_context_length=lambda: 16384))
+    monkeypatch.setattr(local_model, "get_manager", lambda: SimpleNamespace(
+        get_context_length=lambda: 16384,
+        serving_context_evidence=lambda: {"context_window": 16384, "confirmed": True},
+    ))
     client = LLMClient(api_key="unused")
     sent = []
 

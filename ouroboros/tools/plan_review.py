@@ -59,6 +59,7 @@ from ouroboros.tools.plan_review_runtime import (
     REVIEWER_EFFORT_SCHEMA as _REVIEWER_EFFORT_SCHEMA,
     publish_plan_review_projection as _publish_plan_review_projection,
     publish_rendered_wave as _publish_rendered_wave,
+    completed_historical_feedback as _completed_historical_feedback,
     plan_payload_roots as _plan_payload_roots,
     plan_review_slots as _plan_review_slots,
     plan_reviewer_config_fingerprint as _plan_reviewer_config_fingerprint,
@@ -96,6 +97,7 @@ from ouroboros.tools.plan_review_references import (
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.tools.review_helpers import review_wave_binding_fence, review_wave_budget_gate
 from ouroboros.review_records import build_author_disposition_from_mapping
+from ouroboros.tools.review_helpers import review_enforcement_blocks
 from ouroboros.tools.review_synthesis import (
     PLAN_REVIEW_CONTROL_PREFIX,
 )
@@ -523,17 +525,23 @@ async def _run_plan_review_async(ctx: ToolContext, request: _PlanRequest, *, col
     # The declaration wraps the builder ONLY when non-empty: zero-arg stubs of the builder stay valid.
     slots_fn = (lambda: _plan_review_slots(default_effort=request.reviewer_effort)) if request.reviewer_effort else _plan_review_slots
     existing = plan_review_wave(state, fingerprint)
-    if existing is not None and not isinstance(existing.get("spec"), dict):
-        existing = None  # C-09: a COMPACTED row (no frozen spec) is never authority
     if existing is not None:
         try:
+            # A compact index is not authority; resolve its retained exact source
+            # before deciding that this subject needs another paid review.
             existing = _authority_wave(state_root, task_id, existing)
+            if not isinstance(existing.get("spec"), dict):
+                raise PlanReviewSourceUnavailable("Recorded plan has no complete spec source")
+            historical = _completed_historical_feedback(ctx, existing)
         except (OSError, ValueError, json.JSONDecodeError):
             return _plan_unavailable(
                 ctx,
                 "ERROR: Exact plan-review authority is unreadable; replay and disposition are refused.",
                 "plan_review_exact_artifact_unavailable",
             )
+        if historical is not None:
+            return _publish_rendered_wave(ctx, existing, cap=cap, cycles_paid=cycles_paid,
+                enforcement=enforcement, cached=True, reminder=reminder, historical_feedback=historical)
         resume_in_flight = _plan_wave_has_in_flight(existing)
         # Identical requests replay free unless authority lapsed; fully rejected
         # blocking findings are the one earned-delta exception (4e133c8a).
@@ -556,7 +564,7 @@ async def _run_plan_review_async(ctx: ToolContext, request: _PlanRequest, *, col
         elif not resume_in_flight:  # stale ⇒ identical envelope re-dispatches fresh
             stale, replay_snapshot = _plan_wave_replay_decision(slots_fn, existing)
             if not stale:
-                if enforcement == "advisory":
+                if not review_enforcement_blocks(enforcement):
                     # Still-OPEN wave: re-invoke the emitter so a durable append that FAILED
                     # at record time retries on replay (memo only on success ⇒ landed dedups).
                     _emit_plan_review_advisory_open(ctx, state_root, task_id=task_id,
@@ -730,7 +738,7 @@ async def _run_plan_review_async(ctx: ToolContext, request: _PlanRequest, *, col
     except (OSError, TimeoutError, ValueError) as exc:
         return _typed_refusal(ctx, "TOOL_ERROR", f"ERROR: PLAN_REVIEW_STATE_INVALID: {exc}")
     _emit_plan_review_reference(ctx, task_id, state_root=state_root)
-    if enforcement == "advisory" and not stored.get("closed"):
+    if not review_enforcement_blocks(enforcement) and not stored.get("closed"):
         # B2: loud at the moment — ONE typed owner-visible event per recorded open wave.
         _emit_plan_review_advisory_open(ctx, state_root, task_id=task_id, wave=stored,
                                         cycles_paid=paid_now, cap=cap)
@@ -835,7 +843,7 @@ def _cycles_exhausted(
         f"⚠️ PLAN_REVIEW_CYCLES_EXHAUSTED: {cycles_paid} of {cap} paid plan-review cycles are spent "
         "for this task; no reviewer was called and no cycle was consumed. "
     )
-    if enforcement == "blocking":
+    if review_enforcement_blocks(enforcement):
         head += (
             "Blocking enforcement: the plan review stays OPEN, so implementation stays held — but "
             "finalization is RELEASED so the task can end honestly instead of waiting for a panel it "
@@ -843,6 +851,8 @@ def _cycles_exhausted(
             "revised spec once the owner raises OUROBOROS_REVIEW_MAX_CYCLES, or finalizing now with "
             "outcome_tier=blocked_with_evidence. Do not start the work under an open blocking review."
         )
+    elif not review_enforcement_blocks("blocking"):
+        head += "Cyber Pro permits proceeding by Ouroboros's judgment; the open review and spent cycles remain recorded facts."
     else:
         head += (
             "Advisory enforcement: you may proceed with the review open; the host records and "
@@ -907,7 +917,7 @@ def _apply_disposition(ctx: ToolContext, disposition: dict) -> str:
             text, state, wave = _collect.collect_wave_sync(ctx, state_root=root, task_id=task_id, wave=wave)
         except PlanReviewSourceUnavailable as exc:
             return _plan_unavailable(ctx, str(exc), "plan_review_exact_artifact_unavailable")
-        if not disposition.get("items"):  # a pure $0 peek; items are applied even while slots run
+        if not disposition.get("items") and not disposition.get("author_disposition"):
             return text
         cycles_paid = int(state.get("cycles_paid") or 0)
     if wave.get("closed") and not plan_review_notes_are_annotatable(wave):
@@ -934,9 +944,9 @@ def _apply_disposition(ctx: ToolContext, disposition: dict) -> str:
 
         if review_retry_cancelled(ctx):
             return _bad("ERROR: PLAN_REVIEW_DISPOSITION_INVALID: cancellation prevents author finish")
-        if not wave.get("paid"):
+        if not wave.get("paid") and review_enforcement_blocks("blocking"):
             return _bad("ERROR: PLAN_REVIEW_DISPOSITION_INVALID: author finish requires an actual first review dispatch")
-        if enforcement != "advisory":
+        if review_enforcement_blocks(enforcement):
             return _bad(
                 "ERROR: PLAN_REVIEW_DISPOSITION_INVALID: author_disposition is advisory-only; "
                 "the selected blocking enforcement remains authoritative"
@@ -987,5 +997,3 @@ def _apply_disposition(ctx: ToolContext, disposition: dict) -> str:
     )
     return _publish_rendered_wave(ctx, stored, cap=cap, cycles_paid=cycles_paid,
                                   enforcement=enforcement, notes=list(closure["notes"]))
-
-# ------------------------------------------------------------------------ rendering

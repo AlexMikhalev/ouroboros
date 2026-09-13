@@ -18,11 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from ouroboros.tools.release_sync import check_worktree_version_sync  # noqa: F401 - moved to its version-sync home; compatibility re-export
-from ouroboros.utils import (
-    sanitize_tool_result_for_log,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
-    truncate_review_artifact as _truncate_review_artifact,
-    utc_now_iso,
-)
+from ouroboros.utils import sanitize_tool_result_for_log, truncate_review_artifact as _truncate_review_artifact, utc_now_iso  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
 
 if TYPE_CHECKING:
     # Avoid runtime registry import; this module stays tool-module independent.
@@ -35,6 +31,15 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 # Shared review prompt budget. estimate_tokens under-counts real tokens, so the
 # non-blocking skip gate leaves headroom for default 1M-context reviewer models.
 REVIEW_PROMPT_TOKEN_BUDGET = 920_000
+
+
+def review_enforcement_blocks(enforcement: str | None = None) -> bool:
+    """Project action authority without changing configured policy or review facts."""
+    from ouroboros.config import get_review_enforcement, get_runtime_mode
+    from ouroboros.runtime_mode_policy import runtime_mode_at_least
+
+    selected = get_review_enforcement() if enforcement is None else enforcement
+    return selected == "blocking" and not runtime_mode_at_least(get_runtime_mode(), "cyber_pro")
 
 # Tokenizer-density calibration shared by every review surface (triad, scope, plan,
 # deep self-review). estimate_tokens (chars/4) tracks GPT-style tokenizers, but a
@@ -248,11 +253,11 @@ def review_wave_budget_gate(
     extra: dict | None = None,
     categories: str | list = "",
     slot_ids: str | list = "",
+    processing_preferences: str | list = "",
 ) -> Optional[dict]:
     """Shared review-wave budget admission (v6.69.0).
 
-    Returns the admission dict when the wave must be DECLINED (emitting one
-    typed ``review_wave_budget_insufficient`` event), else None. Every paid
+    Returns admission data when the wave must be declined, else None. Every paid
     review wave is admitted here as a whole — skill/plan/acceptance reviewers
     and, since the owner decision of 2026-09-05, the P3 commit gate
     (``surface="commit_gate"``: scope seats first, then the triad, each seat
@@ -263,9 +268,8 @@ def review_wave_budget_gate(
     every fence ``reserve_attempt`` enforces — the global TOTAL_BUDGET remainder
     (the scope's ``global_limit_usd``) and the task's root fence — the event naming
     the binding axis with both remainders. A wave that fits at admission time is
-    dispatched whole; one that does not is refused BEFORE any seat spends (a read-only
-    pre-check without a wave-level hold: the per-seat reservation stays the
-    enforcement). Fail-open on any error/unknown."""
+    dispatched whole; one that does not is refused before any seat spends.
+    Fail-open on any error/unknown."""
     try:
         from ouroboros.usage_accounting import current_usage_scope, review_wave_admission
 
@@ -283,6 +287,7 @@ def review_wave_budget_gate(
             global_limit_usd=scope.global_limit_usd,
             categories=categories,
             slot_ids=slot_ids,
+            processing_preferences=processing_preferences,
         )
         unpriced = int(admission.get("unpriced_slots") or 0)
         base = {

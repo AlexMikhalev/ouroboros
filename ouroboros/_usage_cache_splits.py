@@ -13,7 +13,7 @@ import time
 from typing import Dict, Optional, Tuple
 
 # (task_id, provider, route identity, review surface) -> (cached tokens, monotonic stamp, horizon)
-_SPLITS: Dict[Tuple[str, str, str, str], Tuple[int, float, float]] = {}
+_SPLITS: Dict[Tuple[str, str, str, str, str], Tuple[int, float, float]] = {}
 _SPLITS_CAP = 64
 
 
@@ -36,7 +36,7 @@ def _surface() -> str:
     )
 
 
-def _key(task_id: str, provider: str, model: str) -> Tuple[str, str, str, str]:
+def _key(task_id: str, provider: str, model: str, processing_mode: str = "") -> Tuple[str, str, str, str, str]:
     """One key per (task, provider, route, surface), normalizing only model spelling.
 
     The two sides of this store reach it by different names for the same model:
@@ -52,14 +52,15 @@ def _key(task_id: str, provider: str, model: str) -> Tuple[str, str, str, str]:
     from ouroboros.provider_models import normalize_model_identity
 
     route = normalize_model_identity(str(model or "").strip().removeprefix("~"))
-    return (str(task_id or "").strip(), str(provider or "").strip().lower(), route, _surface())
+    return (str(task_id or "").strip(), str(provider or "").strip().lower(), route, _surface(), str(processing_mode or ""))
 
 
 def stash_task_cache_split(
-    task_id: str, model: str, cached_tokens: int, *, provider: str = "", ttl_seconds: float
+    task_id: str, model: str, cached_tokens: int, *, provider: str = "", ttl_seconds: float,
+    processing_mode: str = "",
 ) -> None:
     """Remember what one task+provider+model send read from the provider cache."""
-    key = _key(task_id, provider, model)
+    key = _key(task_id, provider, model, processing_mode)
     if not key[0] or not key[2]:
         return
     if key not in _SPLITS and len(_SPLITS) >= _SPLITS_CAP:
@@ -67,12 +68,12 @@ def stash_task_cache_split(
     _SPLITS[key] = (max(0, int(cached_tokens or 0)), time.monotonic(), float(ttl_seconds))
 
 
-def last_task_cache_split(task_id: str, model: str, *, provider: str = "") -> Optional[int]:
+def last_task_cache_split(task_id: str, model: str, *, provider: str = "", processing_mode: str = "") -> Optional[int]:
     """The task's own last observed cached-token count, or None once it lapsed.
 
     None also covers a different provider, model, route, or review surface.
     """
-    split = _SPLITS.get(_key(task_id, provider, model))
+    split = _SPLITS.get(_key(task_id, provider, model, processing_mode))
     if split is None or time.monotonic() - split[1] > split[2]:
         return None
     return split[0]

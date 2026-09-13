@@ -44,9 +44,13 @@ def _accounted_send(
         _candidate_before_dispatch,
         _execute_candidate,
         _physical_candidate,
+        apply_processing_preference,
     )
+    from ouroboros.model_slots import resolve_processing_preference
 
+    target = {**target, "processing_preference": resolve_processing_preference(override=target.get("processing_preference"))}
     final_candidate = _physical_candidate(candidate)
+    apply_processing_preference(target, final_candidate)
     request = _attempt_request(target, final_candidate, source=source)
     return _execute_candidate(
         request,
@@ -307,6 +311,8 @@ def probe_provider_readiness(
     remote_client = None
     try:
         target = client._resolve_remote_target(model, settings=settings)
+        from ouroboros.model_slots import resolve_processing_preference
+        target["processing_preference"] = resolve_processing_preference(settings=dict(settings))
         if not _target_is_configured(target):
             return {
                 "ok": False,
@@ -340,8 +346,9 @@ def probe_provider_readiness(
             }
 
             def send_anthropic(payload):
+                from ouroboros.llm_attempt import processing_contract_headers
                 response = requests.post(
-                    url, headers=headers, json=payload, timeout=float(timeout),
+                    url, headers={**headers, **processing_contract_headers(target, payload)}, json=payload, timeout=float(timeout),
                 )
                 response.raise_for_status()
                 return response

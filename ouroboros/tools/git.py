@@ -16,6 +16,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from ouroboros.config import get_runtime_mode  # noqa: F401
+from ouroboros.tools.review_helpers import review_enforcement_blocks
 from ouroboros.runtime_mode_policy import (
     core_patch_notice,  # noqa: F401
     format_protected_paths,  # noqa: F401
@@ -117,6 +118,8 @@ def _free_cycle_gate(
     disclosure and WITHOUT buying another review."""
     from ouroboros.config import get_review_enforcement
 
+    if getattr(ctx, "_review_cyber_pending", "") and not review_enforcement_blocks("blocking"):
+        return {"advisory_replay": ctx._review_cyber_pending, "replay_reason": "review_pending"}
     fp = pre_fingerprint.get("fingerprint", "")
     rebuttal_sha = compute_rebuttal_sha256(review_rebuttal)
     contract_fp = commit_review_contract_fingerprint()
@@ -169,7 +172,7 @@ def _free_cycle_gate(
             cycles_paid=int(ceiling["cycles_paid"]), cap=int(ceiling["cap"]),
             enforcement=enforcement, root_task_id=root_task_id, fingerprint=str(fp),
         )
-    if enforcement != "blocking":
+    if not review_enforcement_blocks(enforcement):
         # ADVISORY: neither state hard-blocks a commit — disclose loudly (typed
         # event + result message) and reuse the recorded outcome for free.
         # The identical-replay half of this branch is structurally near-dead
@@ -573,6 +576,12 @@ def _advisory_and_tests_gate(
             ctx, runner=lambda c, **kw: _run_review_preflight_tests(c, **kw))
         if test_err:
             msg = _tests_preflight_block_message(_managed_needs_proof, test_err)
+            if not review_enforcement_blocks("blocking"):
+                from ouroboros.tools.review import _handle_review_block_or_warning
+
+                ctx._last_review_block_reason = "tests_preflight_blocked"
+                _handle_review_block_or_warning(ctx, True, msg, "")
+                return None
             try:
                 run_cmd(["git", "reset", "HEAD"], cwd=ctx.repo_dir)
             except Exception:

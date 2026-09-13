@@ -58,6 +58,7 @@ def document(label, *, safety="full", enforcement="blocking"):
         "OPENROUTER_API_KEY": f"test-router-{label}",
         "OUROBOROS_MODEL_ACCOUNTS": json.dumps({"main": f"account-{label}", "light": ""}),
         "OUROBOROS_MODEL_CONTEXT_WINDOWS": json.dumps({"main": 200000 if label == "old" else 400000}),
+        "OUROBOROS_PROCESSING_PREFERENCE": "fast" if label == "old" else "economy",
         "OUROBOROS_EFFORT_TASK": "high" if label == "old" else "low",
         "OUROBOROS_REVIEWER_SLOTS": json.dumps({"triad": [row], "scope": [dict(row, slot_id="scope")],
                                                 "advisory": {"enabled": False}}),
@@ -100,6 +101,7 @@ def observe():
         "window": model_role_option(MODEL_CONTEXT_WINDOWS_KEY, "main"),
         "effort": config.resolve_effort("task"),
         "critic": (row.target_id, row.effort),
+        "processing": row.processing_preference,
         "fit_model": route["model"], "fit_key": settings["OPENAI_API_KEY"],
         "context": config.get_context_mode(), "owner_context": config.get_owner_context_mode(),
         "return_reasoning": config.runtime_setting("OUROBOROS_RETURN_REASONING", "missing"),
@@ -174,6 +176,7 @@ def test_two_overlapping_real_task_entries_keep_readers_and_behavior(monkeypatch
     assert new_value["model"] == new_value["fit_model"] == "openai::new"
     assert new_value["key"] == "test-key-new" and new_value["account"] == "account-new"
     assert new_value["critic"] == ("openai::new", "low") and new_value["root_cap"] == 22
+    assert initial["processing"] == "fast" and new_value["processing"] == "economy"
     assert initial["return_reasoning"] == new_value["return_reasoning"] == "False"
     assert initial["fallbacks"] == new_value["fallbacks"] == []
     assert initial["auto_account"] == new_value["auto_account"] == ""
@@ -481,10 +484,12 @@ def test_vision_child_gets_snapshot_env_without_snapshot_in_ipc(monkeypatch):
 
 def test_bundled_node_child_reads_projected_task_env():
     import subprocess
+    import pathlib
 
     snapshot = task_settings_snapshot({"OPENAI_API_KEY": "old"}, {"OPENAI_API_KEY": "old"})
     with config.task_settings_scope(snapshot):
-        result = subprocess.run(["node", "-e", "process.stdout.write(process.env.OPENAI_API_KEY)"],
+        node = str(pathlib.Path.home() / ".claudexor" / "node" / "bin" / "node") if (pathlib.Path.home() / ".claudexor" / "node" / "bin" / "node").exists() else "node"
+        result = subprocess.run([node, "-e", "process.stdout.write(process.env.OPENAI_API_KEY)"],
                                 env=config.runtime_environ(), text=True, capture_output=True, timeout=10)
     assert result.returncode == 0, result.stderr
     assert result.stdout == "old"

@@ -28,6 +28,10 @@ from ouroboros.llm_attempt import (
     _finalized_physical_candidate,
     preserve_prior_dispatch,
     strongest_dispatch_capture,
+    apply_processing_preference,
+    attach_processing_receipt,
+    processing_contract_headers,
+    processing_refusal,
 )
 from ouroboros.deadline_utils import physical_dispatch_timeout
 from ouroboros.llm_stream import consume_stream
@@ -39,7 +43,9 @@ from ouroboros.request_wire_recovery import (
     plan_next_wire_retry,
     request_wire_scoped,
 )
-from ouroboros.usage_accounting import UsageAccountingError, last_physical_attempt_capture
+
+from ouroboros.usage_accounting import UsageAccountingError, last_physical_attempt_capture, UsageScope, usage_scope
+from ouroboros._usage_response import observed_processing_mode
 
 
 class _AnthropicLaneMixin:
@@ -371,6 +377,10 @@ class _AnthropicLaneMixin:
             "provider": "anthropic",
             "resolved_model": str(target.get("usage_model") or target.get("resolved_model") or ""),
         }
+        for key in ("speed", "service_tier", "processing"):
+            if key in raw_usage:
+                usage[key] = raw_usage[key]
+        attach_processing_receipt(target, usage)
         if isinstance(resp_dict.get("_stream_receipt"), dict):
             usage["stream_receipt"] = dict(resp_dict["_stream_receipt"])
         if prompt_cache_ttl:
@@ -392,6 +402,8 @@ class _AnthropicLaneMixin:
                     "cache_write_tokens_by_ttl": write_split or None,
                 },
                 provider="anthropic",
+                **({"processing_mode": observed_processing_mode("anthropic", usage)}
+                   if usage.get("processing") else {}),
             )
             if estimated_cost is not None:
                 usage["cost"] = estimated_cost
@@ -457,6 +469,7 @@ class _AnthropicLaneMixin:
             choice = self._build_anthropic_tool_choice(tool_choice)
             if choice:
                 payload["tool_choice"] = choice
+        apply_processing_preference(target, payload)
         return payload
 
     @request_wire_scoped
@@ -502,14 +515,18 @@ class _AnthropicLaneMixin:
                 def receive(sent):
                     if sent.status_code >= 400:
                         body_preview = (sent.text or "")[:2000]
-                        raise requests.HTTPError(
+                        error = requests.HTTPError(
                             f"{sent.status_code} {sent.reason} for url {sent.url}: {body_preview}",
                             response=sent,
                         )
+                        refusal = processing_refusal(target, candidate, error)
+                        if refusal is error:
+                            raise error
+                        raise refusal from error
                     return consume_stream(sent, native=True) if candidate.get("stream") else sent
 
                 def post(sender):
-                    return receive(sender(url, headers=headers, json=candidate,
+                    return receive(sender(url, headers={**headers, **processing_contract_headers(target, candidate)}, json=candidate,
                                           timeout=physical_dispatch_timeout(request_timeout),
                                           **({"stream": True} if candidate.get("stream") else {})))
 
@@ -543,7 +560,7 @@ class _AnthropicLaneMixin:
         except UsageAccountingError:
             raise
         except Exception as exc:
-            retry_payload = plan_next_wire_retry(payload, error=exc)
+            retry_payload = plan_next_wire_retry(payload, error=exc, target=target)
             if retry_payload is None:
                 self._pop_effort_clamp_disclosure()
                 raise
@@ -555,7 +572,7 @@ class _AnthropicLaneMixin:
                     raise
                 except Exception as retry_exc:
                     retry_payload = plan_next_wire_retry(
-                        retry_payload, error=retry_exc,
+                        retry_payload, error=retry_exc, target=target,
                     )
                     if retry_payload is None:
                         self._pop_effort_clamp_disclosure()
@@ -568,3 +585,50 @@ class _AnthropicLaneMixin:
             target,
             prompt_cache_ttl=prompt_cache_ttl,
         )
+
+
+
+def anthropic_web_search_server_tool(
+    *,
+    api_key: str,
+    model: str,
+    query: str,
+    accounting_scope: Optional[UsageScope] = None,
+    timeout: Optional[float] = None,
+    processing_preference: str | None = None,
+    _recovery: Any,
+) -> Any:
+    """Run Anthropic's provider-owned web_search server tool."""
+
+    import anthropic
+    from ouroboros.model_slots import resolve_processing_preference
+    from ouroboros.usage_accounting import current_usage_scope
+    from dataclasses import replace
+
+    target = {"provider": "anthropic", "usage_model": model, "resolved_model": model,
+              "processing_preference": resolve_processing_preference("websearch", override=processing_preference)}
+
+    client_kwargs: Dict[str, Any] = {"api_key": api_key, "max_retries": 0}
+    if timeout is not None:
+        client_kwargs["timeout"] = float(timeout)
+    payload = dict(
+        model=model,
+        max_tokens=2048,
+        tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
+        messages=[{"role": "user", "content": query}],
+    )
+    apply_processing_preference(target, payload)
+    headers = processing_contract_headers(target, payload)
+    if headers:
+        client_kwargs["default_headers"] = headers
+    client = anthropic.Anthropic(**client_kwargs)
+    def send(**candidate):
+        # The stable Messages SDK exposes beta speed only through extra_body.
+        # The merged HTTP body still equals the sealed native candidate above.
+        kwargs = {key: value for key, value in candidate.items() if key != "speed"}
+        if "speed" in candidate:
+            kwargs["extra_body"] = {"speed": candidate["speed"]}
+        return client.messages.create(**kwargs)
+    scope = replace(accounting_scope or current_usage_scope() or UsageScope(), source="web_search.anthropic")
+    with usage_scope(scope):
+        return _recovery(send, payload, target)

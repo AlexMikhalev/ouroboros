@@ -12,7 +12,6 @@ predicted authority, and any host-minted shared cooperative tree.
 
 from __future__ import annotations
 
-import json
 import logging
 import shutil
 import time
@@ -161,10 +160,16 @@ def _subagent_slot_note(ctx: ToolContext, root_task_id: str) -> str:
     nothing here gates admission (the supervisor stays authoritative). Counts are
     from the last persisted snapshot, i.e. BEFORE this wave lands."""
     try:
+        from ouroboros.task_status import _load_queue_snapshot, queue_snapshot_observation
+
         status_root = Path(str(getattr(ctx, "budget_drive_root", "") or ctx.drive_root))
-        snap = json.loads((status_root / "state" / "queue_snapshot.json").read_text(encoding="utf-8"))
+        snap = _load_queue_snapshot(status_root)
+        observed = queue_snapshot_observation(snap)
     except Exception:
-        return ""
+        return " [tree slot observation unavailable; current occupancy is unknown]"
+    if (snap.get("_snapshot_missing") or snap.get("_snapshot_invalid")
+            or not isinstance(snap.get("running"), list) or not isinstance(snap.get("pending"), list)):
+        return " [tree slot observation unavailable; current occupancy is unknown]"
 
     def _is_tree_subagent(row: Any) -> bool:
         if not isinstance(row, dict):
@@ -182,8 +187,12 @@ def _subagent_slot_note(ctx: ToolContext, root_task_id: str) -> str:
         cap = int(get_max_active_subagents_per_root())
     except Exception:
         return ""
-    tail = "; children beyond the active cap WAIT for a free slot" if active >= cap else ""
-    return f" [tree slots before this wave: {active}/{cap} active, {queued} queued{tail}]"
+    return (
+        f" [tree slots before this wave: last recorded {active}/{cap} active, {queued} queued; "
+        f"source={status_root / observed['source']}, ts={observed['ts']}, "
+        f"age_sec={observed['age_sec']}, freshness={observed['freshness']}. "
+        "This observation does not reserve or prove current capacity.]"
+    )
 
 
 def _capability_mismatch_message(selected_profile: str, missing_caps: Any) -> str:
@@ -621,6 +630,10 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
     except SubagentSelectionError as exc:
         return f"⚠️ {exc.code}: {exc.detail}"
     route = configured_subagent.get("route") if isinstance(configured_subagent.get("route"), dict) else {}
+    if fields.get("directory_strategy") == "copy" and route.get("kind") != "agent_session":
+        return _publish_scheduling_refusal(
+            ctx, "error", "TOOL_ARG_ERROR",
+            "⚠️ TOOL_ARG_ERROR (schedule_subagent): directory_strategy=copy is unsupported for native/API children, which use shared files directly; select an agent_session actor for copy.")
     requested_model_lane = "auto"  # bounded historical projection only
     requested_executor = "harness" if route.get("kind") == "agent_session" else "native"
 
@@ -773,6 +786,7 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
         "requested_executor": requested_executor,
         "configured_subagent": configured_subagent,
         "parent_cognitive_route": parent_cognitive_route,
+        **{key: fields[key] for key in ("directory_strategy", "scope_paths") if key in fields},
     }
     evt = {
         "type": "schedule_subagent",

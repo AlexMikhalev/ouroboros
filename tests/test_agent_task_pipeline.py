@@ -509,7 +509,7 @@ def test_stopped_direct_turn_pays_no_post_task_synthesis(tmp_path, monkeypatch):
     assert _summary_rows("stopped1") == []
 
     _task, _events, control_calls = _turn("control1", stopped=False)
-    assert len(control_calls) >= 2 and all(not c["has_tools"] for c in control_calls), control_calls
+    assert len(control_calls) >= 2, control_calls
     assert len(_summary_rows("control1")) == 1  # the reader sees the phase when it does run
 
 

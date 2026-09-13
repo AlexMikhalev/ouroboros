@@ -252,6 +252,7 @@ def _rebind_context_fit_plan(
         )
     from ouroboros.capability_evidence import is_known
     from ouroboros.context import _context_fit_route
+    from ouroboros.context_budget import NANO_MIN_HEADROOM_TOKENS, OWNER_NANO_TARGET_TOKENS
     from ouroboros.context_fit import _failed_route_evidence, _route_calibration_ratio
     from ouroboros.provider_models import parse_claudexor_model
 
@@ -282,8 +283,11 @@ def _rebind_context_fit_plan(
 
     def project(projection: Any) -> Any:
         calibrated = int(int(projection.estimated_tokens or 0) * ratio)
+        nano = projection.mode == "nano"
+        reserve = NANO_MIN_HEADROOM_TOKENS if nano else int(plan.output_reserve_tokens or 0)
+        capacity = min(OWNER_NANO_TARGET_TOKENS, window_tokens) if nano else window_tokens
         fits = (
-            calibrated + int(plan.output_reserve_tokens or 0) <= window_tokens
+            calibrated + reserve <= capacity
             if known_window else None
         )
         return replace(
@@ -295,7 +299,11 @@ def _rebind_context_fit_plan(
 
     max_projection = project(plan.max_projection)
     low_projection = project(plan.low_projection)
-    preferred = preferred_mode if preferred_mode in {"low", "max"} else "max"
+    nano_projection = (
+        project(plan.nano_projection)
+        if getattr(plan, "nano_projection", None) is not None else None
+    )
+    preferred = preferred_mode if preferred_mode in {"low", "max", "nano"} else "max"
     initial_mode = preferred
     rebound = replace(
         plan,
@@ -309,6 +317,7 @@ def _rebind_context_fit_plan(
         window_tokens=window_tokens,
         max_projection=max_projection,
         low_projection=low_projection,
+        nano_projection=nano_projection,
         model_role=task["model_role"],
         model_route={
             "source": str(getattr(evidence, "source_id", "") or ""),
@@ -380,6 +389,8 @@ def _context_fit_round_id(ctx: _RoundModelCallContext) -> str:
 
 
 def _main_context_profile(plan: Any, rendered_mode: str) -> str:
+    if rendered_mode == "nano":
+        return "owner_nano"
     if rendered_mode != "low":
         return "owner_max"
     # Effective Low is the sizing authority even when a bare env override
@@ -417,7 +428,7 @@ def _measure_round_main_fit(
         return None
     from ouroboros.context_fit import measure_main_fit
 
-    rendered_mode = "low" if ctx.active_context_mode == "low" else "max"
+    rendered_mode = str(ctx.active_context_mode) if str(ctx.active_context_mode) in {"max", "low", "nano"} else "max"
     disposition = measure_main_fit(
         plan,
         ctx.messages,
@@ -467,7 +478,7 @@ def _dispatch_round_model(
 
     waiter = current_model_wait()
     plan = getattr(ctx, "context_fit_plan", None) or getattr(ctx.tools._ctx, "context_fit_plan", None)
-    from ouroboros.model_slots import task_model_binding
+    from ouroboros.model_slots import task_model_binding, task_processing_preference
     role, account = task_model_binding({
         "model_role": getattr(ctx, "model_role", ""),
         "task_metadata": getattr(ctx.tools._ctx, "task_metadata", {})},
@@ -490,6 +501,8 @@ def _dispatch_round_model(
             allow_server_web_search=_loop()._server_web_allowed_by_task(ctx.tools._ctx),
             physical_context=(_physical_context_for_fit(disposition) if disposition is not None else None),
             candidate_predicate=candidate_predicate, model_role=role, model_account_override=account,
+            processing_preference=task_processing_preference(
+                {"task_metadata": getattr(ctx.tools._ctx, "task_metadata", {})}, model_role=role),
             # The loop's own active-turn slot: a reprepared send keeps this exact
             # owner because the slot survives kwargs deep-copying by identity.
             model_turn_state=getattr(ctx.tools._ctx, "model_turn_state", None),

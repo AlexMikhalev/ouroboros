@@ -46,8 +46,14 @@ from scripts.domain_graph import (  # noqa: E402
     module_name,
     tracked_population,
 )
+from ouroboros.markdown_source import parse_markdown_source  # noqa: E402
+from ouroboros.reference_books import (  # noqa: E402
+    BookView,
+    ReferenceBook,
+    load_reference_book,
+    read_book_section,
+)
 
-ARCHITECTURE = REPO_ROOT / "docs" / "ARCHITECTURE.md"
 OUT_DIR = REPO_ROOT / "docs" / "v7next"
 FROZEN_OUT = OUT_DIR / "FROZEN_CONTRACTS_INVENTORY.md"
 LAYOUT_OUT = OUT_DIR / "DATA_LAYOUT_INVENTORY.md"
@@ -90,11 +96,22 @@ def _split_row(line: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def frozen_section_text(arch_text: str) -> str:
-    m = re.search(r"^### 11\.1 What is frozen$(.*?)^### 11\.2 ",
-                  arch_text, re.MULTILINE | re.DOTALL)
-    if not m:
-        raise ValueError("ARCHITECTURE.md has no `### 11.1 What is frozen` section")
-    return m.group(1)
+    source = parse_markdown_source(arch_text.encode("utf-8"), "docs/ARCHITECTURE.md")
+    sections = [h for h in source.headings if h.title == "11.1 What is frozen"]
+    if len(sections) != 1:
+        raise ValueError("Architecture needs one `11.1 What is frozen` section")
+    heading = sections[0]
+    return source.raw[heading.span.end_byte:heading.section.end_byte].decode("utf-8")
+
+
+def _chapter_source_note(book: ReferenceBook, view: BookView) -> list[str]:
+    # Legacy generation stays byte-identical; after migration the original
+    # physical file and its revision remain independently inspectable.
+    if book.legacy:
+        return []
+    ref = view.sources[0]
+    return [f"Source: `{ref.path}`, physical LF lines {ref.span.start_line}-{ref.span.end_line}; "
+            f"UTF-8 SHA-256 `{ref.sha256}`.", ""]
 
 
 def _row_paths(cell: str) -> list[str]:
@@ -137,10 +154,11 @@ def parse_frozen_rows(section: str) -> list[dict]:
     return rows
 
 
-def build_frozen_inventory() -> tuple[str, list[str]]:
+def build_frozen_inventory(book: ReferenceBook | None = None) -> tuple[str, list[str]]:
     """Returns (rendered document, hard findings)."""
-    arch_text = ARCHITECTURE.read_text(encoding="utf-8")
-    section = frozen_section_text(arch_text)
+    book = book or load_reference_book(REPO_ROOT, "architecture")
+    view = read_book_section(book, "11.1 What is frozen")
+    section = frozen_section_text(view.text)
     rows = parse_frozen_rows(section)
     tracked = _tracked_all()
     findings: list[str] = []
@@ -175,6 +193,7 @@ def build_frozen_inventory() -> tuple[str, list[str]]:
              " resolution invariants (a §11.1 row whose owner or anchor file"
              " disappeared from the tree = red).")
     L.append("")
+    L.extend(_chapter_source_note(book, view))
     L.append(f"- table rows: **{len(rows)}**")
     L.append(f"- browser-envelope prose owners: {', '.join(f'`{p}`' for p in prose_paths)}")
     L.append("")
@@ -215,11 +234,15 @@ _TREE_ENTRY = re.compile(r"[├└]──\s+(.+?)(?:\s+←.*)?$")
 
 
 def layout_block(arch_text: str) -> str:
-    m = re.search(r"^### Data layout \(`~/Ouroboros/`\)$.*?```(.*?)```",
-                  arch_text, re.MULTILINE | re.DOTALL)
-    if not m:
-        raise ValueError("ARCHITECTURE.md has no Data layout fenced tree")
-    return m.group(1)
+    source = parse_markdown_source(arch_text.encode("utf-8"), "docs/ARCHITECTURE.md")
+    sections = [h for h in source.headings if h.title == "Data layout (`~/Ouroboros/`)"]
+    if len(sections) != 1:
+        raise ValueError("Architecture needs one Data layout section")
+    section = sections[0].section
+    blocks = [b for b in source.code_blocks if section.start_byte <= b.start_byte < section.end_byte]
+    if len(blocks) != 1:
+        raise ValueError("Architecture Data layout needs one fenced tree")
+    return source.text_at(blocks[0])
 
 
 def parse_layout_entries(block: str) -> list[str]:
@@ -237,9 +260,10 @@ def _probe_token(entry: str) -> str | None:
     return literal[-1] if literal else None
 
 
-def build_layout_inventory() -> tuple[str, list[str]]:
-    arch_text = ARCHITECTURE.read_text(encoding="utf-8")
-    entries = parse_layout_entries(layout_block(arch_text))
+def build_layout_inventory(book: ReferenceBook | None = None) -> tuple[str, list[str]]:
+    book = book or load_reference_book(REPO_ROOT, "architecture")
+    view = read_book_section(book, "Data layout (`~/Ouroboros/`)")
+    entries = parse_layout_entries(layout_block(view.text))
     tracked = _tracked_all()
     tracked_dirs: set[str] = set()
     for p in tracked:
@@ -285,6 +309,7 @@ def build_layout_inventory() -> tuple[str, list[str]]:
              " removed in code while its tree row survives = red"
              " (`tests/test_generated_inventories.py`).")
     L.append("")
+    L.extend(_chapter_source_note(book, view))
     n_kinds = {}
     for _, _, kind in rows:
         n_kinds[kind] = n_kinds.get(kind, 0) + 1

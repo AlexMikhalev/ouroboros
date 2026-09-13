@@ -47,6 +47,7 @@ def build_scheduled_task_payload(fields: Dict[str, Any]) -> Dict[str, Any]:
     subagent_envelope = fields.get("subagent_envelope") if isinstance(fields.get("subagent_envelope"), dict) else {}
     configured_subagent = fields.get("configured_subagent") if isinstance(fields.get("configured_subagent"), dict) else {}
     parent_cognitive_route = fields.get("parent_cognitive_route") if isinstance(fields.get("parent_cognitive_route"), dict) else {}
+    directory_options = {key: fields[key] for key in ("directory_strategy", "scope_paths") if key in fields}
     task: Dict[str, Any] = {
         "id": tid,
         "type": "task",
@@ -86,6 +87,7 @@ def build_scheduled_task_payload(fields: Dict[str, Any]) -> Dict[str, Any]:
         "subagent_envelope": subagent_envelope,
         "configured_subagent": configured_subagent,
         "parent_cognitive_route": parent_cognitive_route,
+        **directory_options,
         "metadata": {
             "parent_task_id": parent_id,
             "root_task_id": root_task_id,
@@ -111,6 +113,7 @@ def build_scheduled_task_payload(fields: Dict[str, Any]) -> Dict[str, Any]:
             "subagent_envelope": subagent_envelope,
             "configured_subagent": configured_subagent,
             "parent_cognitive_route": parent_cognitive_route,
+            **directory_options,
             "root_cost_ceiling_usd": root_cost_ceiling_usd,
         },
     }

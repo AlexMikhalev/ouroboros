@@ -55,6 +55,7 @@ from ouroboros.tools.review_helpers import (
     format_name_status_for_preflight,
     format_review_history_entry as _format_review_entry,
     REVIEW_PROMPT_TOKEN_BUDGET,  # noqa: F401 — patchable seam (see note above)
+    review_enforcement_blocks,
     single_line as _single_line,
 )
 
@@ -71,8 +72,9 @@ def get_tools():
                 "name": "task_acceptance_review",
                 "description": (
                     "Record a task-result claim, checklist, evidence, and optional agent disposition. "
-                    "For a root task in auto/required mode this is a cheap evidence call: the host runs "
-                    "the only authoritative reviewer panel after the turn becomes structurally eligible. "
+                    "For a root task in auto/required mode, nominate the complete ready task result: "
+                    "after all tool results in this round, the host advances the same review operation "
+                    "used by final delivery. Settling review does not finish the task. "
                     "Child-task and off-mode behavior is unchanged."
                 ),
                 "parameters": {
@@ -82,6 +84,16 @@ def get_tools():
                         "goal": {"type": "string", "description": "Original task goal."},
                         "evidence": {"type": "object", "description": "Relevant tool trace, artifacts, tests, and observed facts. To select earlier tool records from the host's complete retained trajectory, supply tool_trajectory_indices: [zero-based source indices]. The host materializes these records with their corpus-SHA addresses; a bounded or missing record stays partial/unavailable. Your own prose remains agent-supplied evidence."},
                         "checklist": {"type": "string", "default": "", "description": "Optional acceptance checklist."},
+                        "acceptance_subject": {
+                            "type": "object",
+                            "description": "Main's current subject decision, naming the exact owner_source_sha256 from the latest observation; optionally supply complete effective_criteria or material_tool_indices for changed requirements/evidence.",
+                            "properties": {
+                                "owner_source_sha256": {"type": "string"},
+                                "effective_criteria": {"type": "string"},
+                                "material_tool_indices": {"type": "array", "items": {"type": "integer"}},
+                            },
+                            "required": ["owner_source_sha256"],
+                        },
                         "agent_disposition": {
                             "type": "string",
                             "enum": ["accepted", "rejected", "partial", "deferred"],
@@ -126,6 +138,7 @@ def _handle_task_acceptance_review(
     agent_disposition: str = "",
     rationale: str = "",
     obligation_dispositions: Optional[list] = None,
+    acceptance_subject: Optional[dict] = None,
 ) -> str:
     from ouroboros.config import get_task_review_mode
     from ouroboros.review_evidence import (
@@ -281,6 +294,7 @@ def _handle_task_acceptance_review(
                 "provenance": evidence.get("__provenance__") or {},
             },
             "agent_supplied": evidence.get("agent_supplied") or {},
+            "acceptance_subject": acceptance_subject,
         }
         if agent_decision:
             deferred["agent_decision"] = agent_decision
@@ -689,9 +703,12 @@ def _handle_review_block_or_warning(
     blocked_msg: str,
     advisory_prefix: str,
 ) -> Optional[str]:
-    """Either block immediately or downgrade to advisory warning."""
-    if blocking_review:
+    """Apply action authority while preserving the independent review signal."""
+    cyber = not review_enforcement_blocks("blocking")
+    if blocking_review and not cyber:
         return blocked_msg
+    if cyber:
+        advisory_prefix = "Cyber Pro: review does not prohibit action; original signal follows. "
     _record_advisory_override(ctx, blocked_msg)
     _append_review_warning(ctx, advisory_prefix + blocked_msg)
     ctx._review_iteration_count = 0
@@ -712,6 +729,8 @@ def _record_advisory_override(ctx: ToolContext, blocked_msg: str) -> None:
         append_jsonl(ctx.drive_logs() / "events.jsonl", {
             "ts": utc_now_iso(),
             "type": "review_advisory_override",
+            "review_enforcement": _cfg.get_review_enforcement(),
+            "decision_authority": "cyber_pro" if not review_enforcement_blocks("blocking") else "advisory",
             "block_reason": reason,
             "message_head": str(blocked_msg or "")[:600],
             "task_id": str(getattr(ctx, "task_id", "") or ""),
@@ -942,7 +961,7 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
     ctx._triad_withheld_seat_records = []  # reset Q28-dropped seat records
     ctx._review_degraded_reasons = []  # reset degraded participation markers
     review_enforcement = _cfg.get_review_enforcement()
-    blocking_review = review_enforcement == "blocking"
+    blocking_review = review_enforcement_blocks(review_enforcement)
 
     diff_text, subject, capture_block = _capture_triad_staged_diff(ctx, target_repo, blocking_review)
     if diff_text is None:  # capture failed: block (blocking) or advisory-skip (None)
@@ -1194,7 +1213,7 @@ def _review_actor_label(row: dict) -> str:
 
 def _dispatch_unified_review(ctx: ToolContext, commit_message: str, prepared: dict) -> Optional[str]:
     """Dispatch an assembled triad packet and post-process the panel verdict."""
-    blocking_review = prepared["blocking_review"]
+    blocking_review = prepared["blocking_review"] and review_enforcement_blocks("blocking")
     try:
         result_json = _handle_multi_model_review(
             ctx,
@@ -1318,7 +1337,9 @@ def _dispatch_unified_review(ctx: ToolContext, commit_message: str, prepared: di
         _record_advisory_override(ctx, "; ".join(critical_fails[:5]))
         _append_review_warning(
             ctx,
-            "Review enforcement=Advisory: critical review findings did not block commit.",
+            ("Cyber Pro: critical review findings do not prohibit action."
+             if not review_enforcement_blocks("blocking") else
+             "Review enforcement=Advisory: critical review findings did not block commit."),
         )
         for finding in getattr(ctx, "_last_review_critical_findings", []) or []:
             _append_review_warning(ctx, finding)

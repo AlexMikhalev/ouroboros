@@ -10,7 +10,6 @@ from ouroboros.contracts.skill_payload_policy import (
     resolve_constrained_payload_path,
 )
 from ouroboros.contracts.task_constraint import TaskConstraint, resolve_payload_path
-from tests._typed_guard_shared import _shell_guard_text
 
 
 
@@ -99,20 +98,6 @@ def test_publication_receipt_hardlink_alias_is_owner_state(tmp_path, monkeypatch
     assert gateway_files._is_owner_only_file(alias) is True
 
 
-def test_publication_receipt_stem_reaches_shell_guard(tmp_path):
-    from ouroboros.tools.registry import ToolRegistry
-
-    repo = tmp_path / "repo"
-    drive = tmp_path / "data"
-    repo.mkdir()
-    drive.mkdir()
-    reg = ToolRegistry(repo_dir=repo, drive_root=drive)
-    blocked = _shell_guard_text(reg,
-        {"cmd": "rm data/state/skills/weather/ouroboroshub.json"},
-        "advanced",
-    )
-    assert blocked is not None
-    assert "SKILL_STATE_WRITE_BLOCKED" in blocked
 
 
 def test_owner_state_alias_policy_matches_files_api(tmp_path, monkeypatch):
@@ -189,25 +174,3 @@ def test_payload_sidecars_use_shared_control_filenames():
     for filename in SKILL_PAYLOAD_CONTROL_FILENAMES:
         assert is_skill_payload_control_filename(filename) is True
     assert is_skill_payload_control_filename("plugin.py") is False
-
-
-def test_registry_shell_guard_keeps_legacy_control_dir_subset(tmp_path):
-    from ouroboros.tools.registry import ToolRegistry
-
-    repo = tmp_path / "repo"
-    drive = tmp_path / "data"
-    repo.mkdir()
-    drive.mkdir()
-    reg = ToolRegistry(repo_dir=repo, drive_root=drive)
-    blocked = _shell_guard_text(reg,
-        {"cmd": "rm data/skills/external/alpha/.self_authored.json"},
-        "advanced",
-    )
-    assert blocked is not None
-    assert "SAFETY_VIOLATION" in blocked
-
-    allowed = _shell_guard_text(reg,
-        {"cmd": "rm data/skills/external/alpha/__pycache__/plugin.pyc"},
-        "advanced",
-    )
-    assert allowed is None

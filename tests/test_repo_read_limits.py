@@ -82,17 +82,17 @@ def test_data_read_propagates_non_filenotfound_errors(tmp_path, monkeypatch):
     ctx = MagicMock()
     ctx.drive_path.side_effect = lambda p: tmp_path / p
 
-    def _raise_permission(path):
+    def _raise_permission(path, extent=None):
         raise PermissionError(13, "Permission denied", str(path))
 
-    monkeypatch.setattr(core_mod, "read_text", _raise_permission)
+    monkeypatch.setattr(core_mod, "_read_source_text", _raise_permission)
     with pytest.raises(PermissionError):
         _data_read(ctx, "memory/scratchpad.md")
 
-    def _raise_is_dir(path):
+    def _raise_is_dir(path, extent=None):
         raise IsADirectoryError(21, "Is a directory", str(path))
 
-    monkeypatch.setattr(core_mod, "read_text", _raise_is_dir)
+    monkeypatch.setattr(core_mod, "_read_source_text", _raise_is_dir)
     with pytest.raises(IsADirectoryError):
         _data_read(ctx, "memory/knowledge/")
 
@@ -108,10 +108,10 @@ def test_data_read_toctou_race_handled_by_sentinel(tmp_path, monkeypatch):
     ctx = MagicMock()
     ctx.drive_path.side_effect = lambda p: tmp_path / p
 
-    def _raise_file_not_found(path):
+    def _raise_file_not_found(path, extent=None):
         raise FileNotFoundError(2, "No such file or directory", str(path))
 
-    monkeypatch.setattr(core_mod, "read_text", _raise_file_not_found)
+    monkeypatch.setattr(core_mod, "_read_source_text", _raise_file_not_found)
 
     result = _data_read(ctx, "memory/racy.md")
     assert "DATA_NOT_YET_CREATED" in result

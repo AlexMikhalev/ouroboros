@@ -7,10 +7,12 @@ loop.py re-exports every name."""
 from __future__ import annotations
 
 import functools
+import json
+import copy
 import pathlib
 import queue
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from ouroboros import task_pacing
 from ouroboros.config import get_light_model
@@ -55,6 +57,8 @@ class _CompactionRoundContext:
     round_idx: int
     event_queue: Optional[queue.Queue]
     emit_progress: Callable[[str], None]
+    tool_schemas: Optional[List[Dict[str, Any]]] = None
+    fit_candidate: Optional[Callable[[list, list], Dict[str, Any]]] = None
 
 
 def _drain_incoming_messages(
@@ -193,8 +197,11 @@ def _run_round_compaction(
 ) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
     """Run only an explicit manual reclaim; Main fit owns automatic decisions."""
     pending = getattr(ctx.tools._ctx, "_pending_compaction", None)
-    if pending is None:
+    selected_names = getattr(ctx.tools._ctx, "_pending_tool_schema_names", None)
+    if pending is None and selected_names is None:
         return messages, None
+    if isinstance(pending, dict) or pending is None:
+        return _run_authored_context_view(messages, ctx, pending, selected_names), None
     ctx.tools._ctx._pending_compaction = None
     rebuilt, receipt, usage = _loop().compact_tool_history_llm(
         messages,
@@ -220,6 +227,99 @@ def _run_round_compaction(
         invalidate_task_cache_splits(ctx.task_id)
         prune_reclaim_trace_refs(ctx.tools._ctx, rebuilt)
     return rebuilt, usage
+
+
+def _run_authored_context_view(messages, ctx, pending, selected_names):
+    """Apply one source/schema view together at the existing completed boundary."""
+    from ouroboros.context_budget import ContextReclaimRequest
+    from ouroboros.context_compaction import compact_tool_history_llm, context_reclaim_transcript_sha256
+    from ouroboros.tool_policy import request_tool_schema_selection, select_tool_schemas
+
+    tool_ctx = ctx.tools._ctx
+    mode = getattr(tool_ctx, "active_context_mode", "") or "max"
+    current_tools = ctx.tool_schemas
+    if current_tools is None:
+        ctx.emit_progress("Context view kept unchanged: active schema snapshot is unavailable.")
+        return messages
+    proposal = pending or {}
+    names = proposal.get("schema_names")
+    if names is not None:
+        requested = request_tool_schema_selection(tool_ctx, ctx.tools, names,
+                                                  context_mode=mode, current_schemas=current_tools)
+        selected_names = requested.selection.chosen if mode == "nano" else None
+    schemas = (list(select_tool_schemas(ctx.tools.schemas(), context_mode=mode, schema_names=selected_names).schemas)
+               if selected_names is not None else list(current_tools))
+    fit_candidate = ctx.fit_candidate
+    if fit_candidate is None:
+        tool_ctx._pending_compaction = None
+        tool_ctx._pending_tool_schema_names = None
+        ctx.emit_progress("Context view kept unchanged: prospective physical fit is unavailable.")
+        return messages
+    if pending is None:
+        # Schema-only enablement uses the same candidate fit/publication. It
+        # does not fabricate an authored note or rewrite existing history.
+        try:
+            before_sha = context_reclaim_transcript_sha256(messages)
+            fit = fit_candidate(copy.deepcopy(messages), copy.deepcopy(schemas))
+            if context_reclaim_transcript_sha256(messages) != before_sha:
+                fit = {"accepted": False, "reason": "binding_mismatch"}
+        except Exception as exc:
+            fit = {"accepted": False, "reason": type(exc).__name__}
+        changed = schemas != current_tools
+        receipt = {"status": "applied" if fit.get("accepted") is True and changed else
+                   "no_op" if fit.get("accepted") is True else "fit_rejected", "fit": fit,
+                   "schema_names": [s["function"]["name"] for s in schemas]}
+        candidate = messages
+    else:
+        observed = proposal["observed"]
+        request = ContextReclaimRequest(
+            route_fp="actor", round_id=str(ctx.round_idx),
+            transcript_sha256=context_reclaim_transcript_sha256(messages),
+            measurement_basis="cold_estimate", measurement_density=1.0, reclaim_goal_tokens=0,
+            **{key: proposal[key] for key in ("working_note", "expected_view_revision", "keep_unit_ids", "restore_unit_refs", "schema_names")},
+        )
+        candidate, result, _ = compact_tool_history_llm(
+            messages, request=request, observed_messages=observed["messages"],
+            observed_tool_schemas=observed["tool_schemas"], tool_schemas=schemas,
+            fit_candidate=fit_candidate, drive_root=ctx.drive_root or pathlib.Path(ctx.drive_logs).parent,
+            task_id=ctx.task_id, trace_refs_by_tool_call_id=reclaim_trace_refs(tool_ctx),
+        )
+        receipt = asdict(result)
+    if receipt["status"] != "no_op":
+        from ouroboros.artifacts import store_actor_source_bytes
+        import hashlib
+
+        raw = json.dumps({"stage": "candidate_materialization", "published": False,
+                          "receipt": receipt}, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        try:
+            source = store_actor_source_bytes(
+                ctx.drive_root or pathlib.Path(ctx.drive_logs).parent, ctx.task_id,
+                category="context_checkpoints", source_id=hashlib.sha256(raw).hexdigest(),
+                data=raw, extension="json")
+            notice = {"status": receipt["status"], "receipt_source": source}
+        except (OSError, ValueError):
+            notice = {"status": receipt["status"], "receipt_source": "unavailable"}
+        with_receipt = [*candidate, {"role": "user", "content": "[Context view receipt]\n" + json.dumps(notice, ensure_ascii=False)}]
+        try:
+            final_fit = fit_candidate(copy.deepcopy(with_receipt), copy.deepcopy(schemas))
+        except Exception as exc:
+            final_fit = {"accepted": False, "reason": type(exc).__name__}
+        if final_fit.get("accepted") is True:
+            candidate = with_receipt
+        else:
+            receipt.update(status="fit_rejected", fit=final_fit)
+            candidate = messages
+            ctx.emit_progress("Context view kept unchanged: the complete candidate and receipt do not fit.")
+    if receipt["status"] == "applied":
+        current_tools[:] = schemas
+        invalidate_task_cache_splits(ctx.task_id)
+        prune_reclaim_trace_refs(tool_ctx, candidate)
+    tool_ctx._pending_compaction = None
+    tool_ctx._pending_tool_schema_names = None
+    tool_ctx._context_view_receipt = receipt
+    _loop()._emit_checkpoint_event(ctx.event_queue, ctx.task_id, ctx.drive_logs,
+                                   {"checkpoint_kind": "context_view", "round": ctx.round_idx, **receipt})
+    return candidate
 
 
 @dataclass

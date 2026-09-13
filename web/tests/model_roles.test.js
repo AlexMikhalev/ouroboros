@@ -25,6 +25,18 @@ test('Models shows only model-capable sources, keeping a saved missing choice', 
     assert.match(saved[0].options[0].label, /not checked/);
 });
 
+test('Models offers connection only after both source discovery and Accounts were read', () => {
+    for (const facts of [{}, { catalogKnown: true }, { accountsKnown: true }]) {
+        const groups = modelSourceGroups(facts);
+        assert.doesNotMatch(groups[0].options[0].label, /connect one/i);
+    }
+    const empty = modelSourceGroups({ catalogKnown: true, accountsKnown: true });
+    assert.match(empty[0].options[0].label, /No model sources listed/);
+    assert.match(empty[0].options[0].label, /connect one/i);
+    const saved = modelSourceGroups({ current: 'subscription:owner-source' });
+    assert.equal(saved[0].options[0].value, 'subscription:owner-source');
+});
+
 test('role pins and context survive a no-edit save, including identical model names', () => {
     const editor = createModelRolesEditor({ hostId: 'test', doc: () => null });
     const settings = {

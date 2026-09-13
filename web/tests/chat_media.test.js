@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import { createChatMedia, safeHttpUrl } from '../modules/chat_media.js';
-import { createRebuildBatch } from '../modules/chat_render_batch.js';
+import { stampNodeTimestamp } from '../modules/chat_activity.js';
 
 const styleCss = await readFile(new URL('../style.css', import.meta.url), 'utf8');
 
@@ -83,6 +83,9 @@ class NodeStub {
         node.parentNode = null;
     }
     remove() { this.parentNode?.removeChild(this); }
+    contains(node) { return node === this || this.children.some((child) => child.contains(node)); }
+    matches(selector) { return selector.split(',').some((part) => part.trim().startsWith('.')
+        && this.classList.contains(part.trim().slice(1))); }
     before(node) {
         if (!this.parentNode) return;
         const index = this.parentNode.children.indexOf(this);
@@ -162,7 +165,7 @@ function fixture({ insertNode = null } = {}) {
             inserted.push(node);
         },
         senderLabel: () => 'Owner',
-        stampNodeTimestamp(node, raw) { node.dataset.ts = String(raw || ''); },
+        stampNodeTimestamp,
     });
     return { controller, inserted, tracker, restore: () => {
         globalThis.document = prior.document;
@@ -294,7 +297,7 @@ test('live media and quiz-state writes use the injected content boundary', () =>
             documentMessageKey: (msg) => `doc:${msg.task_id}:${msg.ts}`,
             buildQuizCard: () => null,
             applyQuizStateFrame: (_root, msg) => msg.changed === true,
-            messagesRoot: () => ({}),
+            messagesRoot: () => globalThis.document.body,
             deliverContentMutation(mutate) { mutations += 1; return mutate(); },
         });
         handlers.get('photo')({
@@ -336,38 +339,6 @@ test('an intervening message breaks file-card adjacency the same way', () => {
         assert.equal(fx.inserted[0].querySelectorAll('.chat-file-item').length, 1);
         assert.equal(fx.inserted[1].querySelectorAll('.chat-file-item').length, 1);
         assert.deepEqual(globalThis.document.body.children, [fx.inserted[0], text, fx.inserted[1]]);
-    } finally {
-        fx.controller.destroy();
-        fx.restore();
-    }
-});
-
-test('rebuild replay keeps gallery adjacency via the batch holding fragment', () => {
-    let batch = null;
-    const fx = fixture({ insertNode: (node) => batch.collect(node) });
-    try {
-        batch = createRebuildBatch(globalThis.document);
-        const photo = (ts) => ({
-            type: 'photo', role: 'assistant', task_id: 'task-a',
-            image_base64: 'aGVsbG8=', mime: 'image/png', ts,
-        });
-        // Contiguous photos merge even while detached inside the batch.
-        let msg = photo('2026-08-30T00:00:00Z');
-        assert.equal(fx.controller.buildGallery('photos', msg, fx.controller.buildMediaBubble(msg)), true);
-        msg = photo('2026-08-30T00:00:01Z');
-        assert.equal(fx.controller.buildGallery('photos', msg, fx.controller.buildMediaBubble(msg)), true);
-        assert.equal(fx.inserted.length, 1);
-        assert.equal(fx.inserted[0].querySelectorAll('.chat-gallery-item').length, 2);
-        // A text bubble collected between photos breaks adjacency during replay too.
-        const text = new NodeStub('div', fx.tracker);
-        text.className = 'chat-bubble';
-        batch.collect(text);
-        msg = photo('2026-08-30T00:00:03Z');
-        assert.equal(fx.controller.buildGallery('photos', msg, fx.controller.buildMediaBubble(msg)), true);
-        assert.equal(fx.inserted.length, 2, 'replay starts a new gallery after the text bubble');
-        assert.equal(fx.inserted[1].querySelectorAll('.chat-gallery-item').length, 1);
-        // The holding fragment preserves arrival (chronological) order.
-        assert.deepEqual(text.parentNode.children, [fx.inserted[0], text, fx.inserted[1]]);
     } finally {
         fx.controller.destroy();
         fx.restore();
@@ -591,6 +562,92 @@ test('reset disposes listeners, stops players, clears groups, and destroy is fin
         assert.equal(fx.controller.buildMediaBubble(msg), null);
         fx.controller.destroy();
     } finally {
+        fx.restore();
+    }
+});
+
+test('releasing one history subtree stops only its player and leaves another page interactive', async () => {
+    const fx = fixture();
+    try {
+        const roots = ['older', 'newer'].map((id) => {
+            const root = new NodeStub('section', fx.tracker);
+            const bubble = fx.controller.buildMediaBubble({
+                type: 'video', role: 'assistant', task_id: id, history_id: `history:${id}`,
+                video_base64: 'aGVsbG8=', mime: 'video/mp4', ts: '2026-09-12T12:00:00Z',
+            });
+            root.appendChild(bubble);
+            globalThis.document.body.appendChild(root);
+            return { root, bubble, player: bubble.querySelector('video'),
+                play: bubble.querySelector('[data-media-action="play"]') };
+        });
+        const [older, newer] = roots;
+        await older.play.click();
+        await newer.play.click();
+        assert.equal(older.player.paused, false);
+        assert.equal(newer.player.paused, false);
+        const retainedListeners = [...newer.play.listeners.values()].reduce((sum, handlers) => sum + handlers.size, 0);
+        fx.controller.release(older.root);
+        assert.equal(older.player.paused, true);
+        assert.ok(older.player.pauseCalls > 0);
+        assert.equal(newer.player.paused, false);
+        assert.equal(newer.player.pauseCalls, 0);
+        assert.equal(newer.root.parentNode, globalThis.document.body);
+        assert.equal([...newer.play.listeners.values()].reduce((sum, handlers) => sum + handlers.size, 0), retainedListeners);
+        assert.equal(older.play.listeners.get('click').size, 0);
+        await newer.play.click();
+        assert.equal(newer.player.paused, true, 'retained controls still call the surviving player');
+        assert.equal(newer.player.pauseCalls, 1);
+        const removed = fx.tracker.removes;
+        fx.controller.release(older.root);
+        assert.equal(fx.tracker.removes, removed, 'release is idempotent for its own subtree');
+        fx.controller.destroy();
+        assert.equal(fx.tracker.removes, fx.tracker.adds, 'remaining resources close once at final teardown');
+    } finally {
+        fx.controller.destroy();
+        fx.restore();
+    }
+});
+
+test('live gallery items adopt separate history identities and older photos do not join the newer tail', () => {
+    const fx = fixture();
+    try {
+        const seen = new Set();
+        const delivery = fx.controller.wireDeliveries({
+            onWs() {}, isMyThread: () => true, hideTypingIndicatorOnly() {}, syncChatStatus() {},
+            incrementUnreadIfNeeded() {}, seenMessageKeys: seen,
+            rememberMessageKey: (key) => seen.add(key),
+            chatMediaMessageKey: (msg) => `photo:${msg.task_id}:${msg.ts}`,
+            documentMessageKey: (msg) => `file:${msg.task_id}:${msg.ts}`,
+            messagesRoot: () => globalThis.document.body,
+        });
+        const photo = (seconds) => ({ type: 'photo', role: 'assistant', task_id: 'gallery',
+            image_base64: 'aGVsbG8=', mime: 'image/png', ts: `2026-09-12T12:00:0${seconds}Z` });
+        delivery.appendMediaBubble(photo(2));
+        delivery.appendMediaBubble(photo(3));
+        const newerWrapper = fx.inserted[0];
+        const originalItems = newerWrapper.querySelectorAll('.chat-gallery-item');
+        assert.equal(originalItems.length, 2);
+        for (const seconds of [2, 3]) assert.equal(delivery.appendMediaBubble({
+            ...photo(seconds), history_id: `chat:${seconds}`,
+            history_position: { source: 'chat:rotation-1', offset: seconds * 100 },
+        }), false);
+        assert.deepEqual(newerWrapper.querySelectorAll('.chat-gallery-item'), originalItems);
+        assert.deepEqual(originalItems.map((item) => item.dataset.historyId), ['chat:2', 'chat:3']);
+        assert.equal(newerWrapper.dataset.historyId, undefined, 'physical IDs belong to items, not their shared gallery');
+        seen.clear(); // The live-key FIFO can expire while this page stays mounted.
+        for (const seconds of [2, 3]) assert.equal(delivery.appendMediaBubble({
+            ...photo(seconds), history_id: `chat:${seconds}`,
+        }), false);
+        assert.deepEqual(newerWrapper.querySelectorAll('.chat-gallery-item'), originalItems);
+        delivery.appendMediaBubble({ ...photo(1), history_id: 'chat:1' });
+        assert.equal(fx.inserted.length, 2, 'older history obtains its own chronologically placed wrapper');
+        assert.deepEqual(newerWrapper.querySelectorAll('.chat-gallery-item'), originalItems);
+        assert.equal(fx.inserted[1].querySelector('.chat-gallery-item').dataset.historyId, 'chat:1');
+        fx.controller.release(fx.inserted[1]);
+        assert.equal(newerWrapper.parentNode, globalThis.document.body);
+        assert.deepEqual(newerWrapper.querySelectorAll('.chat-gallery-item'), originalItems);
+    } finally {
+        fx.controller.destroy();
         fx.restore();
     }
 });

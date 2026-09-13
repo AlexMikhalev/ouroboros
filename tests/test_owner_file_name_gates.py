@@ -82,10 +82,11 @@ def test_owner_attaches_a_key_deck_and_files_from_dotted_and_library_folders(tmp
     assert {row["label"] for row in manifest} == {"custom.key", "report.md", "deck.pdf"}
 
 
-def test_a_real_credential_directory_is_still_refused_and_names_its_rule(tmp_path):
+def test_a_real_credential_directory_is_still_refused_and_names_its_rule(tmp_path, monkeypatch):
     from ouroboros.artifacts import stage_task_attachments
 
     ssh = tmp_path / "home" / ".ssh"
+    monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: ssh.parent))
     ssh.mkdir(parents=True)
     key = ssh / "id_rsa"
     key.write_text(PEM_PRIVATE_KEY, encoding="utf-8")
@@ -96,7 +97,7 @@ def test_a_real_credential_directory_is_still_refused_and_names_its_rule(tmp_pat
 
     assert manifest[0]["status"] == "rejected"
     assert manifest[0]["reason"] == "secret_source"
-    assert manifest[0]["rule"] == "credential/control directory component '.ssh'"
+    assert manifest[0]["rule"] == "path is hidden or credential-like (owner credential location)"
 
 
 @pytest.mark.serial

@@ -46,7 +46,8 @@ def set_owner_wait(root: Any, task_id: str, wait: dict,
 
 
 def checkpoint_owner_wait(ctx: Any, messages: list, trace: dict, usage: dict,
-                          round_idx: int, tool_schemas: list, seen: set) -> dict:
+                          round_idx: int, tool_schemas: list, seen: set,
+                          *, review_binding: str = "") -> dict:
     """Capture only the live loop's continuation values, never Python handles."""
     wait_id = uuid.uuid4().hex
     candidate = getattr(ctx, "_delivery_candidate", None)
@@ -55,7 +56,9 @@ def checkpoint_owner_wait(ctx: Any, messages: list, trace: dict, usage: dict,
     model_state = model_wait.continuation_state() if model_wait is not None else {}
     state = {
         "task_id": ctx.task_id, "task_attempt": int(ctx.task_attempt or 1),
-        "wait_id": wait_id, "quiz_id": ctx._owner_wait_requested,
+        "wait_id": wait_id, "quiz_id": getattr(ctx, "_owner_wait_requested", ""),
+        "reason": "review" if review_binding else "owner",
+        "review_binding": review_binding,
         "messages": messages, "trace": trace, "usage": usage,
         "cost_ceiling": asdict(cost_ceiling) if cost_ceiling is not None else None,
         "model_wait": model_state,
@@ -70,10 +73,14 @@ def checkpoint_owner_wait(ctx: Any, messages: list, trace: dict, usage: dict,
         "delivery": {key: getattr(ctx, key, None) for key in (
             "_delivery_candidate_revision", "_delivery_control_required",
             "_delivery_evidence_revision", "_delivery_evidence_fingerprint",
-        )},
+            "_delivery_effective_criteria", "_delivery_material_tool_indices",
+            "_acceptance_ack_source_sha256",
+        ) if getattr(ctx, key, None) is not None},
         "acceptance": {
             "_task_acceptance_improvement_passes": int(getattr(ctx, "_task_acceptance_improvement_passes", 0)),
             "_task_acceptance_reviewed": bool(getattr(ctx, "_task_acceptance_reviewed", False)),
+            "_task_acceptance_pending": str(getattr(ctx, "_task_acceptance_pending", "")),
+            "_task_acceptance_reviewed_subject": str(getattr(ctx, "_task_acceptance_reviewed_subject", "")),
         },
     }
     root = pathlib.Path(ctx.budget_drive_root or ctx.drive_root)
@@ -81,7 +88,9 @@ def checkpoint_owner_wait(ctx: Any, messages: list, trace: dict, usage: dict,
                                      source_id="owner-wait-" + wait_id,
                                      data=json.dumps(state, ensure_ascii=False).encode(), extension="json")
     return {
-        "wait_id": wait_id, "quiz_id": ctx._owner_wait_requested,
+        "wait_id": wait_id, "quiz_id": getattr(ctx, "_owner_wait_requested", ""),
+        "reason": "review" if review_binding else "owner",
+        "review_binding": review_binding,
         "source_ref": source, "task_attempt": int(ctx.task_attempt or 1),
         "execution_drive_root": str(ctx.drive_root),
         "started_at": getattr(ctx, "task_started_at", None),
@@ -211,14 +220,16 @@ def direct_owner_wait(ctx: Any, checkpoint: dict) -> None:
 
 
 def wait_after_tools(ctx: Any, messages: list, trace: dict, usage: dict,
-                     round_idx: int, tool_schemas: list, seen: set) -> None:
+                     round_idx: int, tool_schemas: list, seen: set,
+                     *, review_binding: str = "") -> None:
     """Yield only after complete tool results; no model polling or terminal path."""
-    if not getattr(ctx, "_owner_wait_requested", ""):
+    if not getattr(ctx, "_owner_wait_requested", "") and not review_binding:
         return
     callback = getattr(ctx, "owner_wait_callback", None)
     if not callable(callback):
         raise RuntimeError("required owner wait has no worker continuation owner")
-    checkpoint = checkpoint_owner_wait(ctx, messages, trace, usage, round_idx, tool_schemas, seen)
+    checkpoint = checkpoint_owner_wait(ctx, messages, trace, usage, round_idx, tool_schemas, seen,
+                                       review_binding=review_binding)
     callback(ctx, checkpoint)
     ctx._owner_wait_requested = ""
 

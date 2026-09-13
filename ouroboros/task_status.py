@@ -231,19 +231,32 @@ def _load_queue_snapshot(drive_root: pathlib.Path) -> Dict[str, Any]:
 _SNAPSHOT_OWNERSHIP_FRESH_SEC = 10.0
 
 
-def _snapshot_is_stale(snapshot: Dict[str, Any]) -> bool:
-    """Whether the snapshot is too old to prove a dead worker (GR7-1a).
+def queue_snapshot_observation(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    """Date the existing queue observation, without asserting current capacity.
 
-    A missing or unparseable ``ts`` cannot prove freshness either, so it
-    reads as stale.
+    Context, scheduling receipts and cancellation observations share the same
+    freshness bound as live ownership. Counts belong to the captured snapshot;
+    even a fresh observation is not a reservation or a continuously live view.
     """
+    observation = {"source": "state/queue_snapshot.json", "ts": snapshot.get("ts"),
+                   "age_sec": None, "freshness": "unknown", "fresh": False}
+    if snapshot.get("_snapshot_missing") or snapshot.get("_snapshot_invalid"):
+        return observation
     raw = str(snapshot.get("ts") or "").strip().replace("Z", "+00:00")
     try:
         parsed = datetime.fromisoformat(raw)
         stamped = (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).timestamp()
-    except (TypeError, ValueError):
-        return True
-    return (time.time() - stamped) > _SNAPSHOT_OWNERSHIP_FRESH_SEC
+    except (TypeError, ValueError, OverflowError, OSError):
+        return observation
+    age = time.time() - stamped
+    fresh = age <= _SNAPSHOT_OWNERSHIP_FRESH_SEC
+    return {**observation, "age_sec": round(age, 3), "fresh": fresh,
+            "freshness": "fresh" if fresh else "stale"}
+
+
+def _snapshot_is_stale(snapshot: Dict[str, Any]) -> bool:
+    """Missing, unreadable or old observations cannot prove a dead worker."""
+    return not queue_snapshot_observation(snapshot)["fresh"]
 
 
 def task_has_live_queue_ownership(drive_root: pathlib.Path, task_id: str) -> bool:
@@ -324,11 +337,12 @@ def observe_cancellation_target(
         observation["task_result"] = {"status": None, "coverage": "unavailable"}
     try:
         snapshot = _load_queue_snapshot(pathlib.Path(drive_root))
-        fresh = not (snapshot.get("_snapshot_missing") or snapshot.get("_snapshot_invalid") or _snapshot_is_stale(snapshot))
+        queue_observation = queue_snapshot_observation(snapshot)
+        fresh = queue_observation["fresh"]
         state, _task = _queue_task_status(snapshot, target) if fresh else ("unknown", {})
-        observation["queue_snapshot"] = {"status": state or "not_listed", "ts": snapshot.get("ts"), "fresh": fresh}
+        observation["queue_snapshot"] = {**queue_observation, "status": state or "not_listed"}
     except Exception:
-        observation["queue_snapshot"] = {"status": "unknown", "fresh": False}
+        observation["queue_snapshot"] = {**queue_snapshot_observation({}), "status": "unknown"}
     if include_execution:
         try:
             from ouroboros.delegate_evidence import task_execution_evidence
@@ -1047,10 +1061,12 @@ def wait_for_effective_tasks(
     }
     if early is not None:
         out["early_return"] = early
-    # Live per-child status from the queue snapshot — kills the false "starved"/"dead"
-    # claim: the parent sees which children are actually RUNNING/SCHEDULED vs terminal.
+    # Keep the legacy status projection with the date of its queue evidence.
+    # Terminal result and worker ownership can differ during post-task work;
+    # a stale snapshot cannot establish what is still running now.
     try:
         _snap = _load_queue_snapshot(pathlib.Path(drive_root))
+        out["queue_snapshot_observation"] = queue_snapshot_observation(_snap)
         live: Dict[str, str] = {}
         for tid in ids:
             _st, _ = _queue_task_status(_snap, tid)

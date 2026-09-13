@@ -7,9 +7,8 @@ git history instead of an uncommitted pile a later crash/cleanup could lose.
 Boundaries (BIBLE "Leaking secrets: nowhere" + owner-folder ownership):
 - ONLY trees under the subagent-projects root (host-minted); an owner-attached folder
   is NEVER auto-committed.
-- Credential files (the exact leaves of `_sensitive_untracked_reason` plus the
-  content evidence of `pem_private_key_reason`, the same two checks the workspace
-  patch applies) are unstaged before the commit, disclosed in the receipt.
+- Credential policy is shared with workspace capture; PEM observations remain
+  advisory in effective Cyber mode and otherwise cause disclosed unstaging.
 - Skipped while the tree still has live tasks; fail-soft per root; never raises.
 """
 from __future__ import annotations
@@ -18,7 +17,8 @@ import pathlib
 import subprocess
 from typing import Any, Dict, List, Sequence
 
-from ouroboros.headless import _sensitive_untracked_reason, pem_private_key_reason
+from ouroboros.headless import _sensitive_untracked_reason
+from ouroboros.workspace_patch_capture import pem_capture_refusal
 
 def _run_git(cmd: Sequence[str], cwd: pathlib.Path) -> "subprocess.CompletedProcess[str]":
     """Bounded git call returning the full CompletedProcess (checkpoint-commit path).
@@ -114,11 +114,9 @@ def checkpoint_commit_coop_roots(
       owner-attached folder is NEVER auto-committed (the owner owns its history).
     - Skipped entirely while the tree still has live tasks (a racing child could be
       mid-write); children are terminal by root finalization in the normal flow.
-    - A file is NOT staged when its name is a dotenv spelling or an exact
-      credential leaf, or when its head bytes carry a PEM private-key header
-      (`pem_private_key_reason`, name OR content, the same predicate the
-      workspace patch applies) — BIBLE "Leaking secrets: nowhere": this is a
-      refusal to bake secrets into git history, disclosed in the receipt.
+    - Existing credential policy applies; the same PEM observer used by capture
+      records its original finding. Effective Cyber makes that finding advisory,
+      while ordinary modes keep disclosed unstaging.
     - Skipped for a root whose owner is mid merge/rebase/cherry-pick/revert; the
       receipt names the operation (`skipped`) instead of committing their state.
     - Fail-soft per root (index.lock, git errors → logged skip; never raises).
@@ -158,7 +156,8 @@ def checkpoint_commit_coop_roots(
                 rel = rel.strip()
                 if not rel:
                     continue
-                reason = _sensitive_untracked_reason(rel) or pem_private_key_reason(root, rel)
+                reason = _sensitive_untracked_reason(rel) or pem_capture_refusal(
+                    root, rel, warnings=receipt.setdefault("capture_warnings", []))
                 if reason:
                     _run_git(["git", "reset", "-q", "HEAD", "--", rel], root)
                     receipt["skipped_sensitive"].append({"path": rel, "reason": reason})
@@ -183,5 +182,3 @@ def checkpoint_commit_coop_roots(
             receipt["error"] = f"{type(exc).__name__}: {exc}"
         receipts.append(receipt)
     return receipts
-
-

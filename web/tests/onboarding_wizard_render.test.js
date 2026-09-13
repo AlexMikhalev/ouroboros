@@ -32,7 +32,7 @@ function inertElement() {
     const target = {
         innerHTML: '', textContent: '', value: '', hidden: false, disabled: false, checked: false,
         dataset: {}, style: {}, classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
-        children: [], childNodes: [], attributes: [],
+        children: [], childNodes: [], attributes: [], firstElementChild: null,
         addEventListener(type, fn) { listeners.set(type, fn); },
         removeEventListener() {},
         dispatchEvent() { return true; },

@@ -427,7 +427,10 @@ def _install_fakes(stack: contextlib.ExitStack, recorder: _Recorder, spec: Dict[
 
         stack.enter_context(mock.patch.object(
             local_model_module, "get_manager",
-            lambda: types.SimpleNamespace(get_context_length=lambda: int(ctx_len)),
+
+            lambda: types.SimpleNamespace(serving_context_evidence=lambda: {
+                "context_window": int(ctx_len) if ctx_len else None, "confirmed": bool(ctx_len)},
+                measure_prepared_input=lambda payload: {"supported": False}),
         ))
 
 

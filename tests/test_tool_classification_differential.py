@@ -31,6 +31,7 @@ from ouroboros._outcome_tool_errors import (
 from ouroboros.loop_tool_execution import _typed_execution_failure, _typed_result_metadata
 from ouroboros.tools.tool_result import TOOL_CODE_SPECS, LegacyTextResultAdapter
 from tests.tool_classification_corpus import (
+    Case,
     GOLDEN_SOURCE_SHA,
     _MARKER_RE,
     build_corpus,
@@ -304,10 +305,68 @@ def _golden() -> dict[str, dict]:
     return payload["entries"]
 
 
+# New producer contracts have no historical answer: the recorded old SHA is
+# unavailable. Keep the historical corpus intact and assert the new observed
+# outcome explicitly rather than manufacture old evidence (04-AGENCY S1/S3).
+CURRENT_PRODUCER_CONTRACTS = {
+    "SAFETY_ADVICE": (False, "ok"),
+    "LIGHT_MODE_REPO_CHANGED": (False, "ok"),
+    "BROWSER_ACTION_OUTCOME_UNKNOWN": (True, "error"),
+    # The actual skill-metadata target refusal publishes its specific native
+    # code; standalone historical-style text retains the generic blocked code.
+    "SKILL_PAYLOAD_BLOCKED": (True, "blocked"),
+    "native:SKILL_PAYLOAD_BLOCKED:SKILL_PAYLOAD_BLOCKED": (True, "skill_payload_blocked"),
+    # 03-PROJECTS: delegate_directory.integrate_directory_result cannot
+    # acknowledge these requested apply/discard operations as completed.
+    "INTEGRATE_DELEGATED_APPLY_UNCONFIRMED": (True, "integration_blocked"),
+    "INTEGRATE_DELEGATED_DISCARD_UNCONFIRMED": (True, "integration_blocked"),
+    # A reject request cannot undo direct effects already in the folder.
+    # The refusal belongs to this disposition, not to the earlier write.
+    "INTEGRATE_DIRECTORY_ALREADY_APPLIED": (True, "integration_blocked"),
+    "INTEGRATE_DIRECTORY_UNCONFIRMED": (True, "integration_blocked"),
+    # subagent_integration refuses to accept mismatched or unavailable file
+    # evidence, or to integrate direct folder results through another surface.
+    "INTEGRATE_DIRECTORY_OUTPUT_MISMATCH": (True, "integration_blocked"),
+    "INTEGRATE_DIRECTORY_SURFACE_MISMATCH": (True, "integration_blocked"),
+    "INTEGRATE_FILE_OUTPUTS_UNAVAILABLE": (True, "integration_blocked"),
+    # The harvest puts every identifier first. A standalone capture failure
+    # is an error; the actual successful-write suffix is pinned separately.
+    "OUTPUT_CAPTURE_FAILED": (True, "error"),
+    "TOOL_ERROR": (True, "error"),
+    "native:TOOL_REPORTED_FAILURE:TOOL_ERROR": (True, "tool_reported_failure"),
+}
+
+
 def _live_answer(case) -> tuple[bool, str]:
     typed = typed_result(case)
     is_error = _typed_execution_failure(True, typed)
     return is_error, _typed_result_metadata(case.tool, case.text, is_error, typed)["status"]
+
+
+@pytest.mark.parametrize("subject", tuple(CURRENT_PRODUCER_CONTRACTS))
+@pytest.mark.parametrize("detail", [": detail line\nbody line", " (fixture_tool): detail line\nbody line"])
+def test_current_producer_contracts_have_explicit_live_answers(subject, detail):
+    """New producers need present contracts, never fabricated old answers."""
+    code = subject.split(":", 2)[1] if subject.startswith("native:") else ""
+    identifier = subject.rsplit(":", 1)[-1]
+    case = Case("current:" + subject, subject, "read_file", "⚠️ " + identifier + detail, code)
+    assert _live_answer(case) == CURRENT_PRODUCER_CONTRACTS[subject]
+
+
+@pytest.mark.parametrize("tool", ["write_file", "edit_text", "apply_patch", "edit_batch"])
+def test_output_capture_warning_preserves_the_successful_write(tool):
+    """workspace_file_outputs.capture_known_workspace_outputs runs post-write.
+
+    Its failure suffix says the write remains applied. The native writer keeps
+    its successful first line, and the caller must not retry the write itself.
+    """
+    warning = ("⚠️ OUTPUT_CAPTURE_FAILED: out.txt: OSError: artifact destination unavailable. "
+               "The writes remain applied; do not repeat them to retry artifact capture.")
+    text = (f"{tool}: changes are already on disk in the selected folder; "
+            "no separate patch apply is needed.\n" + warning)
+    case = Case("current:capture-suffix:" + tool, "OUTPUT_CAPTURE_FAILED", tool, text)
+    assert _live_answer(case) == (False, "ok")
+    assert _live_answer(case._replace(text=warning)) == CURRENT_PRODUCER_CONTRACTS["OUTPUT_CAPTURE_FAILED"]
 
 
 def test_single_classifier_matches_the_retired_pair_except_approved_deltas() -> None:
@@ -318,6 +377,12 @@ def test_single_classifier_matches_the_retired_pair_except_approved_deltas() -> 
     unexpected: list[tuple[str, dict, tuple[bool, str]]] = []
     unfired = set(APPROVED_DELTAS)
     for case in corpus:
+        marker = _MARKER_RE.match(case.text.strip())
+        identifier = marker.group(1) if marker else ""
+        if case.key not in golden and identifier in CURRENT_PRODUCER_CONTRACTS:
+            contract = CURRENT_PRODUCER_CONTRACTS.get(case.subject, CURRENT_PRODUCER_CONTRACTS[identifier])
+            assert _live_answer(case) == contract, case.key
+            continue
         assert case.key in golden, f"no golden answer for {case.key}: regenerate before trusting this run"
         old = golden[case.key]
         live = _live_answer(case)
@@ -352,7 +417,14 @@ def test_native_golden_answers_have_identical_retired_text_inputs() -> None:
             continue
         plain = corpus[f"ident:{key.split(':', 2)[2]}:plain"]
         assert (native.tool, native.text) == (plain.tool, plain.text)
-        assert golden[key] == golden[plain.key]
+        if key in golden:
+            assert golden[key] == golden[plain.key]
+        else:
+            identifier = native.subject.split(":", 2)[-1]
+            assert identifier in CURRENT_PRODUCER_CONTRACTS
+            contract = CURRENT_PRODUCER_CONTRACTS.get(native.subject, CURRENT_PRODUCER_CONTRACTS[identifier])
+            assert _live_answer(native) == contract
+            assert _live_answer(plain) == CURRENT_PRODUCER_CONTRACTS[identifier]
 
 
 def test_shape_golden_answers_match_their_own_identifier_line() -> None:
@@ -484,7 +556,7 @@ def test_golden_covers_every_harvested_producer() -> None:
     golden = _golden()
     missing = [
         identifier for identifier in harvested_identifiers()
-        if f"ident:{identifier}:plain" not in golden
+        if f"ident:{identifier}:plain" not in golden and identifier not in CURRENT_PRODUCER_CONTRACTS
     ]
     assert not missing, f"new warning identifiers without a golden answer: {missing}"
 

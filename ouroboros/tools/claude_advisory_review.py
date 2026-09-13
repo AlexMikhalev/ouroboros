@@ -769,6 +769,16 @@ def _next_step_guidance(latest: Optional["AdvisoryRunRecord"], state: "AdvisoryR
     one unbindable case stays as before: an uncomputable current hash cannot
     establish a mismatch either way.
     """
+    from ouroboros.tools.review_helpers import review_enforcement_blocks
+
+    if not review_enforcement_blocks("blocking"):
+        return (
+            f"Cyber Pro: preflight status={getattr(latest, 'status', 'missing')}; "
+            f"stale={bool(stale_from_edit or not effective_is_fresh)}. "
+            "Ouroboros decides whether to continue or request more feedback. "
+            "Original findings, missing evidence and pending operations remain recorded; this is not a PASS."
+        )
+
     def _debt_hint() -> str:
         parts = []
         if open_obs:

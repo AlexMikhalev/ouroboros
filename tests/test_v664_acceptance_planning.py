@@ -47,15 +47,15 @@ def test_required_blocking_binds_shared_cycle_cap_but_explicit_cap_always_wins(m
         ) == (False, "improvement_passes_exhausted")
 
 
-def test_system_prompt_describes_root_acceptance_as_evidence_only():
+def test_system_prompt_describes_one_whole_result_acceptance_operation():
     import pathlib
-
-    system = (
-        pathlib.Path(__file__).resolve().parents[1] / "prompts" / "SYSTEM.md"
-    ).read_text(encoding="utf-8")
-    assert "For a root task in `task_review_mode=auto|required`" in system
-    assert "this call is evidence-only" in system
-    assert "single authoritative host panel" in system
+    system = (pathlib.Path(__file__).resolve().parents[1] / "prompts/SYSTEM.md").read_text(encoding="utf-8")
+    normalized = " ".join(system.split())
+    assert "`task_acceptance_review` can nominate my complete task result for review" in normalized
+    assert "After the whole tool-result block, the host advances the same operation as final delivery" in normalized
+    assert "checking an intermediate artifact is not whole-task acceptance" in normalized
+    assert "acknowledge my human's messages" in normalized
+    assert "A status reply need not replace the retained result or buy another panel" in normalized
     assert "Use `task_acceptance_review` for expensive independent critique" not in system
 
 

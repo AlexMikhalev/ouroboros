@@ -31,6 +31,7 @@ import json
 import logging
 import time
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from ouroboros import delegate_custody as custody
@@ -228,7 +229,8 @@ def _presence_delegate_read_refusal(ctx: ToolContext) -> str:
 
 
 def _start_request(ctx: ToolContext, route: "DelegationRoute", authority: "DelegatedRunShape",
-                   root: str, text: str, seconds: int, instructions: str, execution_root: str = "") -> Dict[str, Any]:
+                   root: str, text: str, seconds: int, instructions: str, execution_root: str = "",
+                   *, directory_options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The POST body for one delegated run, built from the derived SHAPE.
 
     Extracted so the caller stays inside the method-size gate, and so the body has ONE
@@ -278,6 +280,8 @@ def _start_request(ctx: ToolContext, route: "DelegationRoute", authority: "Deleg
         # containment hole, so neither is assembled separately.
         request["execution"] = {"isolation": authority.isolation, "delegated": authority.delegated,
                                 **({"workspaceRoot": execution_root} if execution_root else {})}
+    if directory_options:
+        request.setdefault("execution", {}).update(directory_options)
     # credentialProfileId is the account pin (D-U5), reviewer-slot wire contract; strict
     # (D-U6). In the stored canonical body, so a retry_of replay stays byte-identical.
     for key, value in (("model", target.model_id), ("effort", target.effort), ("credentialProfileId", target.credential_ref)):
@@ -288,9 +292,28 @@ def _start_request(ctx: ToolContext, route: "DelegationRoute", authority: "Deleg
     return request
 
 
+def _processing_start_request(request, actor, gateway, route):
+    """Carry only captured actor intent on a route advertising the wire field."""
+    preference = str(actor.get("processing_preference") or "")
+    if not preference:
+        return request, {}
+    try:
+        catalog = gateway.agent_capabilities()
+        row = next((item for item in catalog.get("harnesses", [])
+                    if isinstance(item, dict) and item.get("id") == route.route_id), {})
+    except Exception:
+        row = {}
+    if preference in (row.get("processingPreferences") or []):
+        request["processingPreference"] = preference
+    return request, {"requested": preference, "submitted": request.get("processingPreference"),
+                     "observed": "unknown", "source": "host_request",
+                     "reason": "submitted" if "processingPreference" in request else "processing_not_submitted"}
+
+
 def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = None,
                     retry_of: Optional[str] = None, root: Optional[str] = None,
                     bucket: Optional[str] = None, skill_name: Optional[str] = None,
+                    directory_strategy: Optional[str] = None, scope_paths: Optional[list] = None,
                     _resolved_binding: Any = None,
                     _canonical_work_order_fingerprint: str = "",
                     _work_order_source_request: Any = None,
@@ -318,12 +341,10 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
 
     drive = custody.custody_root(ctx)
     owned_project_id, project_persistent = "", False
-    invocation_id = ""
-    snapshot_id = ""
-    baseline_sha = ""
-    target_root = ""
-    authority_source = ""
+    invocation_id = snapshot_id = baseline_sha = target_root = authority_source = ""
+    processing_info: Dict[str, Any] = {}
     resource_ref: Dict[str, Any] = {}
+    directory_options: Dict[str, Any] = {}
     retry_token = str(retry_of or "").strip()
     source_binding = prepare_work_order_start_binding(
         ctx, drive, retry_token, _canonical_work_order_fingerprint, text,
@@ -350,9 +371,11 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
             return refusal
         (request_body, route, authority, root, key, project_id, owned_project_id,
          project_persistent, seconds, snapshot_id, target_root, baseline_sha,
-         authority_source, resource_ref) = binding
+         authority_source, resource_ref, processing_info) = binding
         invocation_id = retry_token
-        payload_auth = None
+        if directory_strategy is not None or scope_paths is not None:
+            return _fail("delegate_start", "retry_selector_conflict",
+                         "A retry replays its recorded directory strategy and scope; omit new geometry arguments.")
     else:
         route = actor["route"]
         if selector_root:
@@ -366,19 +389,13 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
             if refusal := _presence_delegate_read_refusal(ctx):
                 return refusal
 
-    instructions = ""
+    if (directory_strategy is not None or scope_paths is not None) and (selector_root or authority.access != "workspace_write"):
+        return _fail("delegate_start", "directory_execution_unavailable", "Directory options require an ordinary writable folder.")
     if not recovering:
         assignment = "" if bool(actor.get("compiled_work_order")) else _assignment_instructions(ctx)
-        payload_skill = ""
-        if isinstance(payload_auth, dict):
-            payload_skill = str(
-                (payload_auth.get("resource_ref") or {}).get("skill_name") or ""
-            )
+        payload_skill = str(((payload_auth or {}).get("resource_ref") or {}).get("skill_name") or "")
         instructions = _build_start_instructions(
-            authority,
-            assignment,
-            payload_skill=payload_skill,
-            coordination_context=_coordination_context,
+            authority, assignment, payload_skill=payload_skill, coordination_context=_coordination_context,
         )
 
     access = authority.access
@@ -416,40 +433,48 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
             invocation_id = custody.new_invocation_id()
             root = record_auth["target_root"]
             if authority.access == "workspace_write":
-                # C1: the run executes in a PRIVATE snapshot of the authority target,
-                # never in the shared tree. Provisioned (and durably registered)
-                # BEFORE start; 3.8.1+ separates it from the stable project root.
-                # A payload target gets the STANDALONE snapshot (the live payload
-                # is never initialized as Git); a Git target keeps the worktree
-                # snapshot byte-identically.
+                # Git/payload snapshots are registered before POST; directory
+                # copies belong to the engine, with the stable target kept separate.
                 target_root = record_auth["target_root"]
                 authority_source = record_auth["source"]
                 if authority_source == "skill_payload":
                     snapshot, snap_error = _provision_payload_snapshot(
                         ctx, drive, record_auth, invocation_id)
+                elif not (Path(target_root) / ".git").exists():
+                    from ouroboros.delegate_directory import prepare_directory_execution
+                    try:
+                        authority, directory_options, resource_ref = prepare_directory_execution(
+                            ctx, gateway, target_root, authority, directory_strategy, scope_paths)
+                    except ValueError as exc:
+                        return _fail("delegate_start", "directory_execution_unavailable", str(exc), definitely_unrun=True)
+                    snapshot, snap_error = None, ""
                 else:
+                    if directory_strategy is not None or scope_paths is not None:
+                        return _fail("delegate_start", "directory_execution_unavailable",
+                                     "Directory options apply to ordinary folders; Git workspaces keep their snapshot contract.",
+                                     definitely_unrun=True)
                     snapshot, snap_error = _provision_snapshot(ctx, drive, target_root, invocation_id)
                 if snap_error:
                     return snap_error
-                snapshot_id = snapshot.snapshot_id
-                baseline_sha = snapshot.baseline_sha
-                root = snapshot.path
-                resource_ref = dict(record_auth.get("resource_ref") or {})
-            execution_root = delegated_execution_workspace_root(gateway, authority, root)
-            scope_root = target_root if execution_root else root
+                if snapshot is not None:
+                    snapshot_id, baseline_sha, root = snapshot.snapshot_id, snapshot.baseline_sha, snapshot.path
+                    resource_ref = dict(record_auth.get("resource_ref") or {})
+            execution_root = (root if directory_options.get("isolation") == "live" else "") if directory_options else delegated_execution_workspace_root(gateway, authority, root)
+            scope_root = target_root if execution_root or directory_options else root
             (project_id, owned_project_id, project_persistent) = resolve_registration(
                 gateway, scope_root, execution_root, getattr(authority, "access", ""))
-            # The canonical ASSIGNMENT — prompt plus host-authored instructions —
-            # is digested together: two starts whose prompts agree but whose
-            # contract blocks differ are two different logical starts. The digest
-            # is the LOOKUP identity only; the wire key stays the invocation id,
-            # and a retry replays the STORED body byte-identically regardless.
-            key = custody.idempotency_key(getattr(ctx, "task_id", ""), route.route_id,
-                                          access, authority.mode, authority.isolation,
-                                          root, text, instructions)
+            if directory_options:
+                project_persistent = True
+            # Assignment plus instructions identifies pending work; the invocation
+            # remains the wire key, and retry replays its original complete body.
             seconds = _bounded_max_seconds(ctx, max_seconds)
             request_body = _start_request(ctx, route, authority, scope_root, text,
-                                          seconds, instructions, execution_root)
+                                          seconds, instructions, execution_root,
+                                          **({"directory_options": directory_options} if directory_options else {}))
+            request_body, processing_info = _processing_start_request(request_body, actor, gateway, route)
+            key = custody.idempotency_key(getattr(ctx, "task_id", ""), route.route_id,
+                                          access, authority.mode, authority.isolation,
+                                          root, text, request_body["instructions"])
         lineage = getattr(ctx, "task_metadata", {}) or {}
         lineage = lineage if isinstance(lineage, dict) else {}
         # Fresh payload run: busy check + durable write = ONE atomic claim (fix 5).
@@ -460,24 +485,21 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
             idempotency_key=key, invocation_id=invocation_id,
             max_seconds=seconds, request=request_body, project_id=project_id,
             project_owned=bool(owned_project_id), project_persistent=project_persistent, route=route.route_id,
-            # Lineage rides the request row so a run RECOVERED from a pending
-            # invocation (P34R.2) can still attribute its ledger row to the tree.
+            # Recovered pending invocations retain their original lineage.
             root_task_id=str(lineage.get("root_task_id") or ""),
             parent_task_id=str(lineage.get("parent_task_id") or ""),
-            # The C1 isolation binding, durable BEFORE the POST: these name the
-            # snapshot, baseline and authority target so a retry reproduces the
-            # exact binding and the startup GC can see the pending snapshot.
-            snapshot_id=snapshot_id, execution_root=(root if snapshot_id else ""),
+            # Before POST, persist target/baseline and only known execution paths.
+            snapshot_id=snapshot_id, execution_root=(root if snapshot_id or resource_ref.get("strategy") == "direct" else ""),
             baseline_sha=baseline_sha, target_root=target_root,
             authority_source=authority_source, resource_ref=resource_ref,
-            # Same pre-POST row as the request: crash recovery can prove the
-            # exact configured actor and exact compiled brief before adopting.
+            # Recovery proves the original actor and compiled brief before adoption.
             selected_subagent_id=selected_subagent_id,
             config_fingerprint=config_fingerprint,
             work_order_fingerprint=work_order_fingerprint,
             work_order_coverage=work_order_coverage,
             authority_fingerprint=authority_fingerprint,
             work_order_source_request=work_order_source_request,
+            processing=processing_info,
         )
         if claim_refusal:
             reason = str(claim_refusal.get("reason") or "replacement_custody_unknown")
@@ -575,7 +597,8 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
         authority_fingerprint=authority_fingerprint, snapshot_id=snapshot_id,
         target_root=target_root, baseline_sha=baseline_sha,
         authority_source=authority_source, resource_ref=resource_ref,
-        capture_mode=(_CAPTURE_DELEGATED_SNAPSHOT if snapshot_id else ""),
+        capture_mode=("engine_directory" if resource_ref.get("workspace_kind") == "directory" else
+                      _CAPTURE_DELEGATED_SNAPSHOT if snapshot_id else ""),
     )
     from ouroboros.tools.control import maybe_emit_delegated_run_fanout
     maybe_emit_delegated_run_fanout(ctx, run_id=run_id, route_id=route.route_id, objective=text, durable=durable)
@@ -584,13 +607,15 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
                             invocation_id=invocation_id,
                             snapshot_id=snapshot_id, target_root=target_root,
                             baseline_sha=baseline_sha,
+                            resource_ref=resource_ref,
+                            processing=processing_info,
                             engine_version=str(getattr(gateway, "engine_version", "") or ""))
 
 
 def _started_payload(handle: Dict[str, Any], run_id: str, route: Any, access: str,
                      authority: "DelegatedRunShape", root: str, *, durable: bool,
                      recovering: bool, invocation_id: str, snapshot_id: str, target_root: str,
-                     baseline_sha: str, engine_version: str = "") -> str:
+                     baseline_sha: str, engine_version: str = "", resource_ref=None, processing=None) -> str:
     """The one author of delegate_start's started result (note + payload).
 
     The AUTHORITY guidance and the CUSTODY warning are independent facts about the same
@@ -642,12 +667,26 @@ def _started_payload(handle: Dict[str, Any], run_id: str, route: Any, access: st
     }
     if not durable:
         payload["pending_invocation_id"] = str(invocation_id or "")
+    if processing:
+        payload["processing"] = processing
     if snapshot_id:
         # The C1 binding, stated where the nanny can read it: the run edits the
         # EXECUTION snapshot; the authority target receives nothing until apply.
         payload["execution_root"] = root
         payload["authority_target_root"] = target_root
         payload["baseline_id"] = baseline_sha
+        payload["baseline_manifest_read"] = {"root": "artifact_store", "path": f"delegated_runs/{snapshot_id}/baseline_manifest.json"}
+    if isinstance(resource_ref, dict) and resource_ref.get("workspace_kind") == "directory":
+        direct = resource_ref.get("strategy") == "direct"
+        payload.update(authority_target_root=target_root,
+                       execution_root=target_root if direct else None,
+                       directory_strategy=resource_ref["strategy"], scope_paths=resource_ref["scopePaths"])
+        payload["note"] = (
+            ("CUSTODY IS NOT DURABLE. " if not durable else "")
+            + ("This run writes directly in the selected folder; effects are already on site, without a full rollback promise. "
+               if direct else "The engine prepares a separate copy of the selected inputs; its actual execution directory is not yet observed. ")
+            + "Use delegate_wait for its complete file manifest and result. Copy results use integrate_delegated_patch for apply or reject."
+        )
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
@@ -934,7 +973,8 @@ def _delegate_wait(ctx: ToolContext, run_id: str, wait_sec: Optional[int] = None
                 # nanny explicitly integrates them. Captured HERE, durably, on every
                 # terminal observation (idempotent), cancelled runs included — a
                 # cancelled run's partial work is salvage material, not garbage.
-                capture = _capture_terminal_patch(ctx, entry)
+                capture = _capture_terminal_patch(ctx, entry, **(
+                    {"gateway": gateway} if entry.resource_ref.get("workspace_kind") == "directory" else {}))
                 if capture is not None:
                     payload["workspace_capture"] = capture
                 # The «last delegated run» settings receipt (Subagents section):
@@ -1113,8 +1153,11 @@ def get_tools() -> List[ToolEntry]:
                 "it also costs time, quota and a worker slot. Your working root, "
                 "access profile and route come from YOUR task authority; you cannot widen "
                 "them, and there is no argument here that would let you try. If you hold "
-                "a MUTATING shape the run executes in a PRIVATE SNAPSHOT of your write "
-                "root — it never edits the shared tree in place. Its diff is captured at "
+                "a MUTATING shape a Git workspace uses a PRIVATE SNAPSHOT of your write "
+                "root. For an ordinary folder, choose directory_strategy=direct or copy "
+                "and select copied inputs with scope_paths; omission means direct work. "
+                "Direct changes are already on site and have no full rollback promise. "
+                "A copied result's full file manifest and bytes are captured at "
                 "terminal (delegate_wait's workspace_capture block) and reaches your tree "
                 "ONLY when you explicitly call integrate_delegated_patch(run_id=..., "
                 "decision='apply'|'reject'); read the captured diff before applying, and "
@@ -1164,6 +1207,10 @@ def get_tools() -> List[ToolEntry]:
                     "(external|clawhub|ouroboroshub|user_repo)."},
                 "skill_name": {"type": "string", "description":
                     "With root='skill_payload': the exact skill name."},
+                "directory_strategy": {"type": "string", "enum": ["direct", "copy"], "description":
+                    "Ordinary folders only: direct writes in the selected folder; copy prepares scope_paths separately for explicit result application. Choose according to the task and any owner preference. Omission means direct."},
+                "scope_paths": {"type": "array", "items": {"type": "string"}, "description":
+                    "Relative files/directories to copy, or to capture after direct work (including future output paths); ['.'] explicitly selects the whole folder. Copy needs nonempty scope_paths. Unselected large inputs stay at their source address. Direct work with no selected or observed file paths cannot claim a complete changed-file list."},
                 "max_seconds": {"type": "integer", "description":
                     "Wall-clock cap for the run; narrowed to your own remaining deadline. "
                     "Harness runs routinely need 3-5+ minutes end to end, so do not set a "

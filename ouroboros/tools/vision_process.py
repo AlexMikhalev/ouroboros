@@ -41,8 +41,8 @@ _STRING = {"type": "string"}
 _DICT = {"type": "object"}
 _NULL_INT = {"type": ["integer", "null"]}
 _CONTEXT = _object({
-    "profile": {"enum": ["owner_max", "owner_low", "task_local_low"]},
-    "rendered_mode": {"enum": ["max", "low"]},
+    "profile": {"enum": ["owner_max", "owner_low", "owner_nano", "task_local_low"]},
+    "rendered_mode": {"enum": ["max", "low", "nano"]},
     "measurement_basis": {"enum": ["fresh_route_usage", "fresh_model_usage", "cold_estimate"]},
     "route_fp": _STRING, "round_id": _STRING,
     "target_total_tokens": _NULL_INT, "capacity_total_tokens": _NULL_INT,
@@ -58,6 +58,9 @@ _CAPTURE = _object({
     "candidate_manifest_ref": {"type": ["object", "null"]},
     "physical_context": {"anyOf": [_CONTEXT, {"type": "null"}]},
     "route_is_loopback": {"type": "boolean"},
+    "processing_preference": _STRING,
+    "submitted_processing_mode": _STRING,
+    "processing_basis": {"type": ["object", "null"]},
 })
 _CUSTODY = _object({
     "operation_id": _STRING, "invocation_id": {"type": "string", "minLength": 1},

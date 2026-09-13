@@ -3286,6 +3286,10 @@
   "shape:unknown_tool_extension_down": {
    "is_error": false,
    "status": "ok"
+  },
+  "shape:safety_violation": {
+   "is_error": true,
+   "status": "safety_violation"
   }
  }
 }

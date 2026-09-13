@@ -34,6 +34,7 @@ import {
 } from './subagents_settings.js';
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
 import { modelChooserHtml, bindModelChoosers } from './model_chooser.js';
+import { mergeModelCatalog, catalogReadNote, mergeHarnessModelCatalog } from './settings_catalog.js';
 
 export const ROUTE_KIND_API = 'api_chat';
 export const ROUTE_KIND_SESSION = routeEditor.ROUTE_KIND_AGENT_SESSION;
@@ -47,6 +48,18 @@ export const SUBAGENT_CHOICE_PREFIX = 'subagent:';
 export const API_ROUTE_CHOICE = routeEditor.API_ROUTE_CHOICE;
 
 export const EFFORT_CHOICES = routeEditor.EFFORT_CHOICES;
+
+export function reviewerProcessingInheritance(row, globalPreference, rolePreferences = null, resolved = {}) {
+    if (row.synthesizedFrom && !row.materialized) {
+        if (rolePreferences !== null) return rolePreferences.deep_review || globalPreference;
+        return resolved.deep_review_slot_1 ?? globalPreference;
+    }
+    return globalPreference;
+}
+
+function processingInheritance(row) {
+    return reviewerProcessingInheritance(row, state.processingPreference, state.roleProcessingPreferences, state.resolvedProcessingPreferences);
+}
 
 // ---------------------------------------------------------------------------
 // Pure helpers.
@@ -124,6 +137,7 @@ export function buildReviewerSlotsSetting(state) {
             }),
         };
         if (row.effort) out.effort = String(row.effort);
+        if (row.processing_preference) out.processing_preference = String(row.processing_preference);
         return out;
     };
     const advisory = state.advisory || {};
@@ -147,6 +161,7 @@ export function buildReviewerSlotsSetting(state) {
             effort: advisory.route?.kind === ROUTE_KIND_SESSION
                 ? String(advisory.effort || '') : (advisory.effort || 'low'),
         };
+        if (advisory.processing_preference) advisoryOut.processing_preference = String(advisory.processing_preference);
     }
     const setting = {
         triad: (state.triad || []).map(rowOut),
@@ -300,7 +315,7 @@ export function subagentOptionsFor(roster, savedId, { rosterKnown = true } = {})
     return options;
 }
 
-export function describeSubagentReference(subagentId, roster, { rosterKnown = true } = {}) {
+export function describeSubagentReference(subagentId, roster, { rosterKnown = true, processingPreference = '' } = {}) {
     // The DERIVED facts, disclosed read-only (never editable knobs): the
     // roster row is the SSOT for a referenced reviewer's route/model/effort/
     // account, so this line only reports what that row says.
@@ -324,6 +339,7 @@ export function describeSubagentReference(subagentId, roster, { rosterKnown = tr
     }
     if (routeEditor.routeSupportsAccount(route) && route.credential_profile_id) parts.push(`account ${route.credential_profile_id}`);
     if (row.effort) parts.push(`effort ${row.effort}`);
+    parts.push(`processing ${routeEditor.processingIntentLabel(row.processing_preference, processingPreference)}`);
     return `Runs as ${parts.join(' · ')} — from its roster row under Available subagents`;
 }
 
@@ -355,6 +371,8 @@ export function describeLastExecution(entry) {
     const deltas = Array.isArray(entry.capability_delta) ? entry.capability_delta.length : 0;
     if (deltas) parts.push(`${deltas} capability delta${deltas === 1 ? '' : 's'} disclosed`);
     const when = formatRelativeAge(Date.parse(entry.ts || ''), 'just now');
+    const processing = routeEditor.processingExecutionText(effective.processing || entry.processing);
+    if (processing) parts.push(processing);
     if (when) parts.push(when);
     return parts.join(' · ');
 }
@@ -494,6 +512,10 @@ const state = {
     lastExecutions: {},
     catalogModels: [],
     modelSources: [],
+    modelCatalogNote: '',
+    processingPreference: '',
+    roleProcessingPreferences: null,
+    resolvedProcessingPreferences: {},
     harnesses: [],
     profilesByHarness: {},
     // The configured-subagent roster (OUROBOROS_SUBAGENTS items) the reference
@@ -589,6 +611,7 @@ export function renderReviewerSlotsSection() {
                 task's acceptance panel on the subscription as well.
             </div>
             <div id="reviewer-slots-error" class="ui-status" data-tone="error" hidden></div>
+            <div id="reviewer-model-catalog-status" class="ui-status" data-tone="warn" role="status" hidden></div>
             <div id="reviewer-slots-pins" class="settings-inline-status" data-tone="warn" hidden></div>
             <div class="reviewer-slots-group">
                 <div class="reviewer-slots-head">
@@ -704,7 +727,7 @@ function rowHtml(row, group) {
     if (row.subagent_id) {
         const last = state.lastExecutions[row.slot_id];
         const lastText = last ? describeLastExecution(last) : '';
-        const metaParts = [describeSubagentReference(row.subagent_id, state.roster, { rosterKnown: state.rosterKnown })];
+        const metaParts = [describeSubagentReference(row.subagent_id, state.roster, { rosterKnown: state.rosterKnown, processingPreference: state.processingPreference })];
         if (lastText) metaParts.push(`Last run: ${lastText}`);
         return `
         <div class="reviewer-slot-row" data-slot-group="${group}" data-slot-id="${escapeHtml(row.slot_id)}">
@@ -720,7 +743,7 @@ function rowHtml(row, group) {
     }
     const session = row.route.kind === ROUTE_KIND_SESSION;
     const split = routeEditor.routeModelFields(row.route, state.modelSources);
-    const harness = session ? harnessesById()[split.harness] : null;
+    const harness = session ? routeEditor.accountScopedModelCatalog(harnessesById()[split.harness], row.route.profile_id) : null;
     const modelOptions = sessionModelOptions(harness, split.model, { catalogKnown });
     const profiles = state.profilesByHarness[split.harness] || [];
     const profileOptions = profileOptionsFor(profiles, row.route.profile_id, { accountsKnown: accountsKnown && Boolean(split.harness) });
@@ -745,6 +768,7 @@ function rowHtml(row, group) {
                 ${effortSelectHtml(`data-slot-effort aria-label="${label} reasoning effort"`, row.effort, surfaceDefault)}
                 <button type="button" class="btn btn-default" data-slot-remove title="Remove this slot">Remove</button>
             </div>
+            ${routeEditor.processingDetailsHtml(`data-slot-processing aria-label="${label} processing"`, row.processing_preference, state.processingPreference)}
             <div class="reviewer-slot-meta muted"${last ? ` title="${escapeHtml(lastRunMetaTitle(last))}"` : ''}>${escapeHtml(metaParts.join(' · '))}</div>
         </div>
     `;
@@ -766,7 +790,7 @@ function singletonHtml(spec) {
     const meta = (parts) => `<div class="reviewer-slot-meta muted"${last ? ` title="${escapeHtml(lastRunMetaTitle(last))}"` : ''}>${escapeHtml(parts.join(' · '))}</div>`;
     if (row.subagent_id) {
         const metaParts = [
-            describeSubagentReference(row.subagent_id, state.roster, { rosterKnown: state.rosterKnown }),
+            describeSubagentReference(row.subagent_id, state.roster, { rosterKnown: state.rosterKnown, processingPreference: state.processingPreference }),
             ...(spec.badgeOnReference ? [spec.badge(row)] : []),
             ...spec.extraMeta(row),
         ];
@@ -792,12 +816,12 @@ function singletonHtml(spec) {
     // rewriting it here would lose the "(not in discovery)" guard and let a
     // Save with the daemon down erase the owner's model. Api branch: the same
     // catalog-assisted free-text entry the triad rows use.
-    const modelOptions = session
-        ? sessionModelOptions(harnessesById()[split.harness], split.model, { catalogKnown }) : [];
+    const harness = routeEditor.accountScopedModelCatalog(harnessesById()[split.harness], row.route?.profile_id);
+    const modelOptions = session ? sessionModelOptions(harness, split.model, { catalogKnown }) : [];
     const profiles = state.profilesByHarness[split.harness] || [];
     const profileOptions = profileOptionsFor(profiles, row.route?.profile_id, { accountsKnown: accountsKnown && Boolean(split.harness) });
     const metaParts = [spec.badge(row), ...spec.extraMeta(row)];
-    const modelsGap = session ? modelsGapNote(harnessesById()[split.harness], catalogKnown) : '';
+    const modelsGap = session ? modelsGapNote(harness, catalogKnown) : '';
     if (modelsGap) metaParts.push(modelsGap);
     if (lastText) metaParts.push(`Last run: ${lastText}`);
     return `
@@ -816,6 +840,7 @@ function singletonHtml(spec) {
                     session ? 'route default' : spec.apiEffortLabel,
                 )}
             </div>
+            ${routeEditor.processingDetailsHtml(`data-${a}-processing aria-label="${spec.ariaName} processing"`, row.processing_preference, processingInheritance(row))}
             ${meta(metaParts)}
         </div>
     `;
@@ -825,6 +850,7 @@ function reviewerRowError(row, allowEmpty = false) {
     const none = { message: '', field: '' };
     if (row.subagent_id) return none;
     const route = row.route || {};
+    if (row.processing_preference && !routeEditor.PROCESSING_CHOICES.includes(row.processing_preference)) return { message: 'Choose Standard, Fast, Economy or inherited processing.', field: 'processing' };
     if (!allowEmpty && !String(route.target_id || '').trim()) return { message: 'Choose a model or reviewer source.', field: 'model' };
     if (routeEditor.routeModelFields(route).subscription && !routeEditor.routeModelFields(route).model.trim()) return { message: 'Choose a subscription model.', field: 'model' };
     const conflict = route.kind === ROUTE_KIND_SESSION
@@ -871,6 +897,8 @@ function paintReviewerValidation() {
             || section.querySelector(`[data-${key}-row]`);
         if (!el) continue;
         const { message: error, field: invalidField } = row._uiAttempted ? reviewerRowError(row, allowEmpty) : { message: '', field: '' };
+        const processingSummary = el.querySelector('[data-processing-summary]');
+        if (processingSummary) processingSummary.textContent = routeEditor.processingIntentLabel(row.processing_preference, processingInheritance(row));
         let message = el.querySelector('[data-reviewer-validation]');
         if (!message) { message = document.createElement('div'); message.dataset.reviewerValidation = ''; message.className = 'ui-status ui-field-help'; el.appendChild(message); }
         message.id = `reviewer-${key}-error`;
@@ -883,7 +911,8 @@ function paintReviewerValidation() {
             field.setAttribute('aria-describedby', `${meta?.id || ''} ${message.id}`.trim());
             const isModel = field.hasAttribute('data-model-chooser');
             const isEffort = field.matches('[data-slot-effort], [data-advisory-effort], [data-deep-review-effort]');
-            field.setAttribute('aria-invalid', String(Boolean(error) && (invalidField === 'model' ? isModel : isEffort)));
+            const isProcessing = field.matches('[data-slot-processing], [data-advisory-processing], [data-deep-review-processing]');
+            field.setAttribute('aria-invalid', String(Boolean(error) && (invalidField === 'model' ? isModel : invalidField === 'processing' ? isProcessing : isEffort)));
         });
     }
     if (state.saveAttempted && !state.loadError && !state.configError) {
@@ -894,6 +923,8 @@ function paintReviewerValidation() {
 }
 
 function renderRows({ discoveryOnly = false } = {}) {
+    const catalogStatus = document.getElementById('reviewer-model-catalog-status');
+    if (catalogStatus) Object.assign(catalogStatus, { hidden: !state.modelCatalogNote, textContent: state.modelCatalogNote });
     const active = document.activeElement;
     const owner = active?.closest?.('.reviewer-slot-row');
     const marker = owner && active.getAttributeNames().find((name) => name.startsWith('data-'));
@@ -1011,10 +1042,16 @@ function bindRowEvents() {
         });
         rowEl.querySelector('[data-slot-profile]')?.addEventListener('change', (event) => {
             row.route.profile_id = String(event.target.value || '');
+            renderRows({ discoveryOnly: true });
             state.onChange();
         });
         rowEl.querySelector('[data-slot-effort]')?.addEventListener('change', (event) => {
             row.effort = String(event.target.value || '');
+            state.onChange();
+        });
+        rowEl.querySelector('[data-slot-processing]')?.addEventListener('change', (event) => {
+            if (event.target.value) row.processing_preference = event.target.value;
+            else delete row.processing_preference;
             state.onChange();
         });
         rowEl.querySelector('[data-slot-remove]')?.addEventListener('click', () => {
@@ -1088,6 +1125,7 @@ function bindSingletonEvents(section, spec) {
     });
     el.querySelector(`[data-${a}-profile]`)?.addEventListener('change', (event) => {
         row.route.profile_id = String(event.target.value || '');
+        renderRows({ discoveryOnly: true });
         edited();
     });
     el.querySelector(`[data-${a}-effort]`)?.addEventListener('change', (event) => {
@@ -1097,6 +1135,11 @@ function bindSingletonEvents(section, spec) {
         // route/roster-row default on a session or subagent reference.
         row.effort = selected
             || (row.subagent_id || row.route?.kind === ROUTE_KIND_SESSION ? '' : spec.apiEffortDefault);
+        edited();
+    });
+    el.querySelector(`[data-${a}-processing]`)?.addEventListener('change', (event) => {
+        if (event.target.value) row.processing_preference = event.target.value;
+        else delete row.processing_preference;
         edited();
     });
 }
@@ -1131,6 +1174,7 @@ export function applyReviewerSlotsDraft(data) {
     state.source = String(data.source || '');
     state.limits = data.limits || state.limits;
     state.lastExecutions = data.last_executions || {};
+    state.resolvedProcessingPreferences = data.resolved_processing_preferences || {};
     // Rows spread as-is so a subagent_id reference rides along; a direct
     // route gets its own object. The advisory's non-session kind is
     // normalized to the shared api_chat spelling here — the retired legacy
@@ -1152,6 +1196,7 @@ export function applyReviewerSlotsDraft(data) {
     state.deepReview = {
         route: deep.route?.kind === ROUTE_KIND_SESSION ? deep.route : { ...(deep.route || {}), kind: ROUTE_KIND_API },
         effort: String(deep.effort || ''),
+        processing_preference: String(deep.processing_preference || ''),
         subagent_id: String(deep.subagent_id || ''),
         synthesizedFrom: String(deep.synthesized_from || ''),
         // Only a SAVED row is materialized on load; a synthesized one (or
@@ -1216,7 +1261,8 @@ function adoptStatusSnapshot() {
     state.catalogKnown = state.store.catalogKnown;
     state.accountsKnown = state.store.accountsKnown;
     const snapshot = state.store.snapshot || {};
-    state.harnesses = state.catalogKnown && Array.isArray(snapshot.harnesses) ? snapshot.harnesses : [];
+    state.harnesses = state.catalogKnown && Array.isArray(snapshot.harnesses)
+        ? snapshot.harnesses.map((harness) => mergeHarnessModelCatalog(state.harnesses.find((old) => old.id === harness.id), harness)) : state.harnesses;
     state.profilesByHarness = state.accountsKnown ? indexProfilesByHarness(snapshot) : {};
 }
 
@@ -1229,7 +1275,13 @@ export function adoptSubagentRoster(settings) {
     const parsed = parseAvailableSubagentsSetting(availableSubagentsLoadValue(settings));
     state.roster = parsed.setting ? parsed.setting.items : [];
     state.rosterKnown = Boolean(parsed.setting);
-    renderRows();
+    renderRows({ discoveryOnly: true });
+}
+
+export function setReviewerProcessingPreference(value, rolePreferences) {
+    state.processingPreference = String(value || '');
+    if (rolePreferences !== undefined) state.roleProcessingPreferences = { ...rolePreferences };
+    if (typeof document !== 'undefined') renderRows({ discoveryOnly: true });
 }
 
 export function initReviewerSlots({ onChange, store = claudexorStatus } = {}) {
@@ -1264,9 +1316,10 @@ export function initReviewerSlots({ onChange, store = claudexorStatus } = {}) {
         document.getElementById(cat.addId)?.addEventListener('click', () => addRow(group));
     }
     const onCatalog = (event) => {
-        const items = event?.detail?.items || [];
-        state.modelSources = event?.detail?.model_sources || [];
-        state.catalogModels = items.map((item) => String(item.value || item.id || '')).filter(Boolean);
+        const catalog = mergeModelCatalog({ items: state.catalogModels, model_sources: state.modelSources }, event?.detail);
+        state.modelSources = catalog.model_sources;
+        state.catalogModels = catalog.items;
+        state.modelCatalogNote = catalogReadNote(catalog);
         renderRows({ discoveryOnly: true });
     };
     document.addEventListener('settings-model-catalog:updated', onCatalog);

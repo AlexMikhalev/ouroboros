@@ -32,12 +32,54 @@ def test_retained_terminal_is_history_only_until_client_checks_current_activity(
     response = asyncio.run(make_chat_history_endpoint(tmp_path)(SimpleNamespace(query_params={"chat_id": "1"})))
     rows = json.loads(response.body)["messages"]
     assert len(rows) == 1  # synthetic summary text stays hidden
+    assert rows[0]["is_progress"] is True and rows[0]["history_id"].startswith("progress:")
+    assert "summary_kind" not in rows[0]  # no redundant hidden evidence beside its annotation
     assert rows[0]["historical_terminal"]["status"] == "cancelled"
     assert rows[0]["historical_terminal"]["model_execution"] == model_execution
     assert "task_terminal_status" not in rows[0]
     assert "outcome_axes" not in rows[0]
     assert quarantine.read_bytes() == before
     assert not path.exists()
+
+
+def test_terminal_evidence_survives_when_its_narration_is_on_an_older_page(tmp_path):
+    task = {"id": "archived-root", "chat_id": 1, "root_task_id": "archived-root", "delegation_role": "root"}
+    result = write_task_result(tmp_path, task["id"], "cancelled", result="Preserved work",
+                               **{key: value for key, value in task.items() if key != "id"})
+    assert append_terminal_task_projection(tmp_path, task["id"], task, result, {"chat_id": 1})
+    (task_results_dir(tmp_path) / "archived-root.json").unlink()
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    for index in range(5):
+        (archive / f"progress_2026090{index + 1}T000000.jsonl").write_text(json.dumps({
+            "task_id": task["id"] if index == 0 else f"newer-{index}", "chat_id": 1,
+            "content": "First saved narration" if index == 0 else f"Later work {index}",
+            "ts": f"2026-09-0{index + 1}T00:00:00Z",
+        }) + "\n")
+    endpoint = make_chat_history_endpoint(tmp_path)
+
+    def read(cursor=None):
+        response = asyncio.run(endpoint(SimpleNamespace(query_params={
+            "chat_id": "1", "n_progress": "1", **({"cursor": cursor} if cursor else {}),
+        })))
+        assert response.status_code == 200
+        return json.loads(response.body)
+
+    first = read()
+    [evidence] = [row for row in first["messages"] if row.get("task_id") == task["id"]]
+    assert evidence["text"] == "" and evidence["summary_kind"] == "terminal_root_projection"
+    assert evidence["historical_terminal"]["status"] == "cancelled"
+    assert not {"task_terminal_status", "outcome_axes", "review_projection"} & evidence.keys()
+    later = []
+    page = first
+    while page["has_more"]:
+        page = read(page["next_cursor"])
+        later.extend(page["messages"])
+    [narration] = [row for row in later if row.get("task_id") == task["id"]]
+    assert narration["text"] == "First saved narration"
+    assert narration["history_id"] != evidence["history_id"]
+    assert "historical_terminal" not in narration  # replay joins the earlier evidence
+    assert "task_terminal_status" not in narration
 
 
 def test_unreadable_effective_result_is_not_proven_absent(tmp_path, monkeypatch):

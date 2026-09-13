@@ -559,7 +559,7 @@ def test_native_prompt_names_the_corpus_and_the_lifted_bound_when_the_reading_fi
     corpus and THAT bound (the number the episode applies); the facts carry the
     declaration and no shortfall code."""
     import ouroboros.llm as llm_mod
-    from ouroboros.review_native_episode import native_landing_at, native_mandatory_read_bound
+    from ouroboros.review_native_episode import native_landing_at
 
     monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", "50000")
     _fake_window(monkeypatch, 1_000_000)
@@ -581,13 +581,13 @@ def test_native_prompt_names_the_corpus_and_the_lifted_bound_when_the_reading_fi
     need = len(prompt) + corpus
     assert usage["native_mandatory_read_chars"] == need
     bound = usage["native_transcript_bound"]
-    assert bound == native_mandatory_read_bound(need) > 50_000  # lifted past the 50K ceiling
-    assert "native_mandatory_read_disclosure" not in usage
+    assert bound == 50_000
+    assert usage["native_mandatory_read_disclosure"] == "native_multiple_windows_required"
     task = _sent_task(chat)
     assert prompt in task and "## MANDATORY READ budget" in task
     assert f"name {corpus:,} chars" in task and f"needs {need:,} transcript chars" in task
     assert f"bound is {bound:,} chars" in task and f"landing notice at {native_landing_at(bound):,} chars" in task
-    assert "lands before the landing notice" in task
+    assert "native_multiple_windows_required" in task
     assert "native_mandatory_read_exceeds_bound" not in task
     # Undeclared (the corpus argument left at 0): the prompt and the facts are untouched.
     chat.messages.clear()
@@ -622,11 +622,11 @@ def test_native_prompt_and_facts_carry_the_typed_code_when_the_reading_does_not_
     assert [i["item"] for i in items] == ["correctness"]
     meta = dict(getattr(ctx, "_last_claude_advisory_meta", {}) or {})
     usage = meta["usage"]
-    assert usage["native_mandatory_read_disclosure"] == "native_mandatory_read_exceeds_bound"
+    assert usage["native_mandatory_read_disclosure"] == "native_multiple_windows_required"
     bound = usage["native_transcript_bound"]
     assert 400_000 <= bound <= 460_000 < native_mandatory_read_bound(usage["native_mandatory_read_chars"])
     task = _sent_task(chat)
-    assert "MANDATORY_READ_DISCLOSURE: native_mandatory_read_exceeds_bound" in task
+    assert "MANDATORY_READ_DISCLOSURE: native_multiple_windows_required" in task
     assert f"name {corpus:,} chars" in task and f"bound is {bound:,} chars" in task
     assert "MANDATORY FULL READ" in task and "mark every checklist item you could not ground" in task
 
@@ -685,9 +685,9 @@ def test_local_advisory_model_previews_the_bound_on_its_own_local_window(tmp_pat
     usage = result.usage
     bound = usage["native_transcript_bound"]
     assert 400_000 <= bound <= 460_000 < native_mandatory_read_bound(usage["native_mandatory_read_chars"])
-    assert usage["native_mandatory_read_disclosure"] == "native_mandatory_read_exceeds_bound"
+    assert usage["native_mandatory_read_disclosure"] == "native_multiple_windows_required"
     task = _sent_task(chat)
-    assert "MANDATORY_READ_DISCLOSURE: native_mandatory_read_exceeds_bound" in task
+    assert "MANDATORY_READ_DISCLOSURE: native_multiple_windows_required" in task
     assert f"bound is {bound:,} chars" in task
     # The slot the assignment carried is the dispatch builder's: local route, api_chat, advisory identity.
     rslot = seen["slot"]
@@ -718,20 +718,23 @@ def test_declared_mandatory_reading_lifts_the_bound_past_the_ceiling_up_to_the_w
     assert native_episode.review_native_transcript_bound("openai/big", output_reserve=16_000) == 200_000
     big = native_episode.review_native_transcript_bound(
         "openai/big", output_reserve=16_000, mandatory_read_chars=need)
-    assert big == required  # lifted past the 200K ceiling; far below the 1M window's capacity
-    assert native_episode.native_mandatory_read_disclosure(big, need) == ""
+    assert big == 200_000
+    assert native_episode.native_mandatory_read_disclosure(big, need) == "native_multiple_windows_required"
     # The 200K window carries ≈446K chars: the floor is capped there and typed.
     small = native_episode.review_native_transcript_bound(
         "openai/small", output_reserve=16_000, mandatory_read_chars=need)
-    assert 400_000 <= small <= 460_000 and small < required
-    assert native_episode.native_mandatory_read_disclosure(small, need) == "native_mandatory_read_exceeds_bound"
+    assert small == 200_000 and small < required
+    assert native_episode.native_mandatory_read_disclosure(small, need) == "native_multiple_windows_required"
     assert native_episode.native_mandatory_read_disclosure(small, 0) == ""
     # The facts helper the episode folds into its custody: declared chars, plus the code only when short.
     request = SimpleNamespace(policy={"native_mandatory_read_chars": need})
-    assert native_episode.native_mandatory_read_facts(request, big) == {"native_mandatory_read_chars": need}
+    assert native_episode.native_mandatory_read_facts(request, big) == {
+        "native_mandatory_read_chars": need,
+        "native_mandatory_read_disclosure": "native_multiple_windows_required",
+    }
     assert native_episode.native_mandatory_read_facts(request, small) == {
         "native_mandatory_read_chars": need,
-        "native_mandatory_read_disclosure": "native_mandatory_read_exceeds_bound"}
+        "native_mandatory_read_disclosure": "native_multiple_windows_required"}
     assert native_episode.native_mandatory_read_facts(SimpleNamespace(policy={}), big) == {}
 
 # 5. the shared span-only release-carrier cut on the advisory's live-tree pair

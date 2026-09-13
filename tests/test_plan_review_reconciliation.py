@@ -480,7 +480,8 @@ def _install_barrier_substrate(monkeypatch, calls, *, texts=None, still_pending=
 
     def substrate(request, *, slots, drive_root, llm, usage_ctx=None):
         calls.append({"retry_key": request.retry_key, "slots": [s.slot_id for s in slots],
-                      "reconcile_only": request.reconcile_only, "drain": request.drain_deadline})
+                      "reconcile_only": request.reconcile_only, "drain": request.drain_deadline,
+                      "_request": request, "_slots": list(slots)})
         fresh = request.drain_deadline is not None and not request.reconcile_only
         wave_fp = str((request.reconciliation_identity or {}).get("subject_hash") or "")
         actors = []
@@ -495,7 +496,7 @@ def _install_barrier_substrate(monkeypatch, calls, *, texts=None, still_pending=
                           else "daemon unreachable before physical review dispatch" if refuse else ""),
                 "usage": {"resolved_model": slot.model,
                           **({} if (pending or refuse) else {"physical_attempt_state": "settled"})},
-                "prompt_ref": {}, "response_ref": {}, "operation_id": f"op-{slot.slot_id}",
+                "prompt_ref": {}, "response_ref": {}, "operation_id": f"op-{wave_fp[:8]}-{slot.slot_id}",
                 "operation_state": "pending_dispatch" if pending else ("not_dispatched" if refuse else "settled"),
                 "late_result_pending": pending,
             })
@@ -820,18 +821,47 @@ def _two_waves_in_flight(harness, monkeypatch, calls):
     return ctx, w1, w2
 
 
+def _persist_historical_barrier_outcomes(harness, calls, fingerprint, *, refused=False):
+    """The former synthetic collector had no producer CAS; historical recovery
+    now needs the same exact source a real released worker always writes."""
+    from dataclasses import asdict
+    from ouroboros.observability import persist_call
+    from ouroboros.review_dispatch import review_operation_binding
+    from ouroboros.review_records import ReviewActorRecord
+
+    call = next(c for c in calls if c["_request"].reconciliation_identity["subject_hash"] == fingerprint)
+    request = call["_request"]
+    for slot in call["_slots"]:
+        op = f"op-{fingerprint[:8]}-{slot.slot_id}"
+        binding = review_operation_binding(request, slot, op)
+        actor = ReviewActorRecord(slot.slot_id, slot.model, status="not_dispatched" if refused else "ok",
+                                  error="not started" if refused else "", operation_id=op,
+                                  operation_state="not_dispatched" if refused else "settled", recovery_binding=binding)
+        persist_call(harness.drive, task_id=request.task_id, call_id=op + "_prompt", call_type="review_prompt",
+                     payload={"request": asdict(request), "slot": asdict(slot)},
+                     manifest={"review_operation_binding": binding})
+        persist_call(harness.drive, task_id=request.task_id, call_id=op + "_response", call_type="review_response",
+                     payload={"producer_outcome": asdict(actor), "message": {"content": CLEAN},
+                              "usage": {"physical_attempt_state": "released" if refused else "settled"}},
+                     manifest={"producer_complete": True, "review_operation_binding": binding})
+
+
 def test_a_third_envelope_collects_every_in_flight_wave_and_meets_the_cap_when_both_proved_a_dispatch(harness, monkeypatch):
     """Fix cycle 3, 3c (cap 2): E3 collects W1 AND W2 at $0 (not only the current W2);
     both prove a dispatch, so E3 meets the cap as CYCLES_EXHAUSTED instead of looping
     between a hold that names W1 and a STALE disposition on W1."""
     calls = []
     ctx, w1, w2 = _two_waves_in_flight(harness, monkeypatch, calls)
+    _persist_historical_barrier_outcomes(harness, calls, w1)
     _install_barrier_substrate(monkeypatch, calls)  # every reviewer of both waves has settled
     third = _call(ctx, spec={**DECK_SPEC, "in_scope": ["a 7-slide deck"]})
     assert third.startswith("⚠️ PLAN_REVIEW_CYCLES_EXHAUSTED: 2 of 2 paid plan-review cycles are spent")
     state = _state(harness)
     by_fp = {w["request_fingerprint"]: w for w in state["waves"]}
-    assert by_fp[w1]["closed"] and by_fp[w1]["paid"] and by_fp[w2]["closed"] and by_fp[w2]["paid"]
+    # #789: settlement of a historical wave does not rewrite its original verdict.
+    assert not by_fp[w1]["closed"] and by_fp[w1]["aggregate"] == "DEGRADED"
+    assert by_fp[w1]["paid"] and by_fp[w2]["closed"] and by_fp[w2]["paid"]
+    assert len(by_fp[w1]["historical_supplements"]) == 3
     assert state["cycles_paid"] == 2 and not any(w["custody_pending"] for w in state["waves"])
     assert calls[-1]["reconcile_only"] is True  # nothing new was sent
 
@@ -839,6 +869,7 @@ def test_a_third_envelope_collects_every_in_flight_wave_and_meets_the_cap_when_b
 def test_a_third_envelope_dispatches_when_the_collected_waves_proved_no_dispatch(harness, monkeypatch):
     calls = []
     ctx, w1, w2 = _two_waves_in_flight(harness, monkeypatch, calls)
+    _persist_historical_barrier_outcomes(harness, calls, w1, refused=True)
     _install_barrier_substrate(monkeypatch, calls, refused={"s1", "s2", "s3"})  # both waves: typed $0 refusals
     third = _call(ctx, spec={**DECK_SPEC, "in_scope": ["a 7-slide deck"]})
     assert _control(third) == {"outcome": "DEGRADED", "closed": False}

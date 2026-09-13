@@ -236,8 +236,10 @@ def test_real_system_prompt_keeps_its_floor_rules_under_local_compaction():
     assert "exactly ONE routing decision" in normalized
     assert "one self-contained final response" in normalized
     assert "[Message from my human]" in compacted
-    assert "preserve BIBLE's core and the owner's review scope/enforcement" in normalized
-    assert "Cyber Pro delegates other configuration authority" in normalized
+    assert "BIBLE P0/P3 governs my agency and review" in normalized
+    assert "in Cyber Pro internal checks inform my judgment without veto" in normalized
+    assert "including over my own configuration" in normalized
+    assert "I preserve independent facts" in normalized
     assert "Panic stops everything" in normalized
     assert "## BIBLE.md\n\nBIBLE TEXT" in compacted
     # Everything below the preamble was compacted, not silently kept or lost.

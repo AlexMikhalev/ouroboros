@@ -90,7 +90,7 @@ def test_live_card_timeline_only_follows_when_pinned():
     src = _read("web/modules/chat_render_batch.js")
     renderer = src[
         src.index("export function createLiveCardTimelineRenderer"):
-        src.index('// "Load older" quota escalation ladder')
+        src.index("export function createTimelineAnchors")
     ]
     assert renderer.count("const pinned =") == 2
     assert "const prevTop = el.scrollTop;" in renderer
@@ -98,16 +98,25 @@ def test_live_card_timeline_only_follows_when_pinned():
     assert "record.root.dataset.expanded === '1' && pinned" in renderer
 
 
-# ───────────────────── Bug 3: reconnect feed rebuild ─────────────────────────
+# ───────────────────── Bug 3: reconnect dialogue recovery ───────────────────
 
-def test_reconnect_rebuilds_feed_and_clears_dedupe():
+def test_reconnect_merges_user_rows_without_clearing_visible_history():
     src = _read("web/modules/chat.js")
-    assert "const renderUser = includeUser || fromReconnect || armedAtStart;" in src
-    assert "seenMessageKeys.clear();" in src
-    assert "messageKeyOrder.length = 0;" in src
-    assert "querySelectorAll('.chat-bubble')" in src
-    # User messages are restored on reconnect (not skipped).
-    assert "if (!renderUser && msg.role === 'user') continue;" in src
+    sync = src[src.index("async function syncHistory"):src.index("function cancelHistoryPaint")]
+    replay = src[src.index("function applyHistoryMessages"):src.index("async function syncHistory")]
+    add = src[src.index("function addMessage"):src.index("function updateMessageAnnotation")]
+    # Reconnect still fetches the canonical source and includes owner dialogue.
+    assert "await apiClient.chatHistory({ chatId })" in sync
+    assert "applyHistoryMessages(messages, { fromReconnect, includeUser: true });" in sync
+    assert "if (!includeUser && msg.role === 'user') continue;" in replay
+    # Keyed reconciliation replaces the former clear-and-rebuild requirement:
+    # physical rows dedupe and an offline/local echo is adopted in place.
+    assert "opts.historyId ? `history:${opts.historyId}` : legacyKey" in add
+    assert "if (messageKey && seenMessageKeys.has(messageKey))" in add
+    assert "node.dataset.clientMessageId === clientMessageId" in add
+    assert "stampHistoryNode(prior, opts.historyId, opts.historyPosition);" in add
+    assert "seenMessageKeys.clear();" not in sync + replay
+    assert "messageKeyOrder.length = 0;" not in sync + replay
 
 
 # ──────────────────── Bug 4a: progress widget host race ──────────────────────

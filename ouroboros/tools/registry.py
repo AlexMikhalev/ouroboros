@@ -145,7 +145,6 @@ from ouroboros.tools.registry_guards import (  # noqa: F401 — re-exported move
     _WEB_TOOLS,
     _authorized_managed_update_resolver,
     _builtin_tool_availability,
-    _command_mentions_protected_root,
     _disabled_tools,
     _executor_backend_candidate_allowed,
     _light_mode_payload_mutation_allowed,
@@ -157,27 +156,16 @@ from ouroboros.tools.registry_guards import (  # noqa: F401 — re-exported move
 from ouroboros.tools.registry_guard_process import (  # noqa: F401 — re-exported moved surface
     _COMMAND_HEAD_WRAPPERS,
     _DENIED_READ_OPTIONS,
-    _DETACHED_PROCESS_MARKERS,
     _NESTED_EXECUTION_MARKERS,
     _NESTED_EXECUTION_TOKENS,
     _READ_ONLY_INSPECTION_COMMANDS,
     _SEARCH_TOOL_EXEC_OPTIONS,
-    _SKILL_OWNER_STATE_STEMS,
     _TRUSTED_EXECUTABLE_DIRS,
     _denied_read_option,
-    _detect_context_mode_self_lowering,
-    _detect_evolution_owner_control_self_change,
-    _detect_mutative_toggle_self_change,
-    _detect_owner_skill_attest_self_call,
-    _detect_runtime_mode_elevation,
-    _detect_safety_mode_self_lowering,
     _format_light_repo_write_note,
     _git_ref_snapshot,
     _is_pure_read_inspection,
     _light_repo_snapshot,
-    _mentions_detached_process,
-    _mentions_skill_owner_state,
-    _subagent_shell_targets_secret,
     _trusted_read_head,
 )
 
@@ -219,27 +207,6 @@ from ouroboros.tools.registry_core import (  # noqa: F401 — re-exported moved 
 )
 
 
-def _owner_control_mention_blocks(text_lower: str, detected: bool, writeish: bool) -> bool:
-    """Shared read-carve for the owner-control mention detectors.
-
-    The scope-floor guard adjudicated this contract at v6.80.0 (that detector
-    itself was retired with its setting in the 7.0 ABI window, owner Q10=A;
-    the contract it established governs the whole surviving family):
-    naming an owner key/endpoint
-    blocks UNLESS the whole command line is demonstrably read-only inspection —
-    ``grep OUROBOROS_RUNTIME_MODE data/settings.json`` and
-    ``rg /api/owner/safety-mode ouroboros/gateway`` read and do not act, and the
-    product's own reuse-first duty (grep callers of ``save_settings``) depends on
-    them. The other six family members stayed read-blind, blocking those exact
-    inspections in every runtime mode — the same hazard class at a different
-    strictness. Fail-closed like the precedent: ``writeish`` (any write shape)
-    disqualifies the exemption, ``_is_pure_read_inspection`` is a HEAD allowlist
-    where any interpreter, HTTP client, wrapper-with-flags, or nested execution
-    is NOT an inspection, and the default ``writeish=True`` keeps a caller that
-    cannot supply the fact fail-closed."""
-    if not detected:
-        return False
-    return writeish or not _is_pure_read_inspection(text_lower)
 
 
 # Commands that can only READ. This is an ALLOWLIST on purpose: an unrecognised

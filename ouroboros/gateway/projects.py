@@ -397,12 +397,13 @@ async def api_projects_create(request: Request) -> JSONResponse:
 
         working_dir, provenance, clone_url = "", "none", ""
         init_git_skipped: list = []
+        init_git_warnings: list = []
         if attach_path:
             from ouroboros.project_sources import (
                 attach_snapshot_init,
-                is_git_worktree_root,
                 validate_attach_path,
             )
+            from ouroboros.workspace_admission import WorkspaceRootError, validate_workspace_root
 
             resolved, error = validate_attach_path(
                 attach_path, system_repo_dir=repo_dir, drive_root=drive_root
@@ -410,23 +411,17 @@ async def api_projects_create(request: Request) -> JSONResponse:
             if error:
                 return JSONResponse({"error": error}, status_code=400)
             if bool(body.get("init_git")):
-                init_error, init_git_skipped = await asyncio.to_thread(attach_snapshot_init, resolved)
+                # The explicit choice may create a standalone repository inside
+                # an existing one. Validate that resulting worktree geometry.
+                init_error, init_git_skipped = await asyncio.to_thread(attach_snapshot_init, resolved, warnings=init_git_warnings)
                 if init_error:
                     return JSONResponse({"error": f"init_git failed: {init_error}"}, status_code=400)
-            elif not await asyncio.to_thread(is_git_worktree_root, resolved):
-                # Task admission requires a git worktree root — registering a non-git
-                # folder would create a project whose room tasks are born dead
-                # (triad r5). Actionable refusal BEFORE any registry mutation.
-                return JSONResponse(
-                    {
-                        "error": (
-                            f"{resolved} is not a git repository — enable init_git "
-                            "(makes an attach-snapshot commit) or pick a git worktree root"
-                        ),
-                        "error_code": "attach_requires_git",
-                    },
-                    status_code=400,
+            try:
+                resolved = await asyncio.to_thread(
+                    validate_workspace_root, resolved, system_repo_dir=repo_dir, drive_root=drive_root
                 )
+            except WorkspaceRootError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
             working_dir, provenance = str(resolved), "attached"
         elif git_url:
             from ouroboros.project_sources import clone_project_repo
@@ -465,6 +460,16 @@ async def api_projects_create(request: Request) -> JSONResponse:
             trusted_at=utc_now_iso() if provenance in ("attached", "cloned") else str(entry.get("trusted_at") or ""),
         )
         payload: dict = {"project": stamped or entry}
+        if init_git_warnings:
+            from ouroboros.utils import append_jsonl
+            payload["init_git_warnings"] = init_git_warnings
+            try:
+                append_jsonl(drive_root / "logs" / "events.jsonl", {
+                    "ts": utc_now_iso(), "type": "project_capture_advisory", "project_id": entry["id"],
+                    "findings": init_git_warnings,
+                })
+            except Exception:
+                log.warning("Project capture advisory could not be logged", exc_info=True)
         if init_git_skipped:
             # Disclosed omission (P1): credential-shaped files excluded from the
             # attach snapshot; they stay untracked via .git/info/exclude.

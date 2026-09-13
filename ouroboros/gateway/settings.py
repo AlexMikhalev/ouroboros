@@ -45,6 +45,8 @@ from ouroboros.secret_masking import (
     looks_masked_mcp_secret,
     looks_masked_settings_secret,
     mask_prefixed_secret,
+    mask_mcp_url,
+    rehydrate_mcp_url,
     mask_settings_secret,
 )
 from ouroboros.server_runtime import (
@@ -142,6 +144,8 @@ def _mask_mcp_servers_payload(servers: Any) -> list:
         clone = dict(entry)
         if clone.get("id"):
             clone["id"] = _mcp_canonical_id(clone.get("id"))
+        if "url" in clone:
+            clone["url"] = mask_mcp_url(clone["url"])
         token = str(clone.get("auth_token") or "")
         if token:
             clone["auth_token"] = mask_prefixed_secret(token, visible_chars=8)
@@ -226,9 +230,11 @@ def _rehydrate_mcp_servers_payload(incoming: Any, current: Any) -> list:
         clone = {key: value for key, value in entry.items() if key not in MCP_RESPONSE_ONLY_FIELDS}
         if clone.get("id"):
             clone["id"] = _mcp_canonical_id(clone.get("id"))
+        existing = current_by_id.get(_mcp_canonical_id(clone.get("id"))) or {}
+        if "url" in clone:
+            clone["url"] = rehydrate_mcp_url(clone["url"], existing.get("url"))
         token = str(clone.get("auth_token") or "")
         if looks_masked_mcp_secret(token):
-            existing = current_by_id.get(_mcp_canonical_id(clone.get("id")))
             clone["auth_token"] = str((existing or {}).get("auth_token") or "")
         out.append(clone)
     return out
@@ -273,11 +279,11 @@ def _merge_settings_payload(current: Dict[str, Any], body: Dict[str, Any]) -> Di
     from ouroboros.config import get_runtime_mode
     from ouroboros.runtime_mode_policy import runtime_mode_at_least
 
-    skipped = {"OUROBOROS_CONTEXT_MODE", "OUROBOROS_CONTEXT_MODE_AUTO_LOW"} | _ENDPOINT_AUTHORED_SETTINGS
+    skipped = {"OUROBOROS_CONTEXT_MODE_AUTO_LOW"} | _ENDPOINT_AUTHORED_SETTINGS
     if not runtime_mode_at_least(get_runtime_mode(), "cyber_pro"):
-        skipped |= {"OUROBOROS_RUNTIME_MODE", "OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS", "OUROBOROS_SAFETY_MODE"}
-    # Context/review scope stays owner-controlled. Cyber may configure other
-    # controls through this same writer; install-time provenance remains host-owned.
+        skipped |= {"OUROBOROS_CONTEXT_MODE", "OUROBOROS_RUNTIME_MODE", "OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS", "OUROBOROS_SAFETY_MODE"}
+    # Cyber authors controls through the same writer. Install receipts remain facts;
+    # the retired auto-Low marker is derived from an explicit context choice below.
     for key in _SETTINGS_DEFAULTS:
         if key in skipped:
             continue
@@ -289,6 +295,10 @@ def _merge_settings_payload(current: Dict[str, Any], body: Dict[str, Any]) -> Di
         if key in SECRET_SETTING_KEYS and looks_masked_settings_secret(key, body[key]):
             continue
         merged[key] = body[key]
+    if "OUROBOROS_CONTEXT_MODE" in body and "OUROBOROS_CONTEXT_MODE" not in skipped:
+        from ouroboros.config import normalize_context_mode
+        merged["OUROBOROS_CONTEXT_MODE"] = normalize_context_mode(body["OUROBOROS_CONTEXT_MODE"])
+        merged["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] = "false"
     for key, value in body.items():
         text_key = str(key or "").strip().upper()
         if text_key in _SETTINGS_DEFAULTS or text_key == "OUROBOROS_RUNTIME_MODE":
@@ -727,10 +737,10 @@ def _review_capability_notices(settings: Dict[str, Any]) -> list:
 
 @owner_write_guard
 async def api_owner_context_mode(request: Request) -> JSONResponse:
-    """Persist the owner-selected context mode (low/max).
+    """Persist the owner-selected working context mode.
 
-    Owner-only like runtime mode, but NOT boot-pinned: it hot-applies on the next
-    task (mirrors the auto-grant toggle), so no restart is required.
+    Ordinary modes use this owner path; Cyber can also author a generic save.
+    The choice applies to subsequent tasks, so no restart is required.
     """
     body = await _json_body_or_empty(request)
     # Off the event loop, under the document lock (held inside): a slow
@@ -741,19 +751,21 @@ async def api_owner_context_mode(request: Request) -> JSONResponse:
 
 def _api_owner_context_mode_sync(request: Request, body: Any) -> JSONResponse:
     from ouroboros import config as _config
+    from ouroboros.runtime_mode_policy import runtime_mode_at_least
 
     raw_mode = str((body or {}).get("mode") or "").strip().lower()
     from ouroboros.context_mode_compat import VALID_CONTEXT_MODES
 
     if raw_mode not in set(VALID_CONTEXT_MODES):
-        return unsaved_error("'mode' must be one of: low, max", 400)
+        return unsaved_error("'mode' must be one of: " + ", ".join(VALID_CONTEXT_MODES), 400)
     next_mode = _config.normalize_context_mode(raw_mode)
     digest = settings_document_digest()
     previous_mode = _config.get_owner_context_mode()
-    if previous_mode == "max" and next_mode == "low" and _has_running_agent_tasks():
+    cyber = runtime_mode_at_least(_config.get_runtime_mode(), "cyber_pro")
+    if not cyber and VALID_CONTEXT_MODES.index(next_mode) < VALID_CONTEXT_MODES.index(previous_mode) and _has_running_agent_tasks():
         return unsaved_error(
             "Context mode can only be lowered while Ouroboros is idle. "
-            "Wait until no queued or running work remains, then switch Low/Max.",
+            "Wait until no queued or running work remains, then choose the working context.",
             409,
         )
 
@@ -766,19 +778,15 @@ def _api_owner_context_mode_sync(request: Request, body: Any) -> JSONResponse:
         return current
 
     with settings_document_mutation():
-        # The idle guard is re-proved UNDER the lock: this thread can block on
-        # it behind a long generic save, and a task started in that window
-        # would otherwise be demoted to low mid-flight on a stale idle answer.
-        # BOTH halves of the predicate re-proved under the lock: the pre-lock
-        # answer above is only a fast path, and a writer that committed while
-        # this thread waited can have changed the very mode being lowered FROM.
-        # The digest cannot stand in for this: the queue changes without ever
-        # touching the settings document.
+        # Re-prove the ordinary-mode idle policy under the lock: either the queue
+        # or the previous mode may have changed while this writer waited. The
+        # digest alone cannot attest idleness. Cyber can choose the next mode
+        # during work; existing task snapshots retain their original settings.
         previous_mode = _config.get_owner_context_mode()
-        if previous_mode == "max" and next_mode == "low" and _has_running_agent_tasks():
+        if not cyber and VALID_CONTEXT_MODES.index(next_mode) < VALID_CONTEXT_MODES.index(previous_mode) and _has_running_agent_tasks():
             return unsaved_error(
                 "Context mode can only be lowered while Ouroboros is idle. "
-                "Wait until no queued or running work remains, then switch Low/Max.",
+                "Wait until no queued or running work remains, then choose the working context.",
                 409,
             )
         # This endpoint IS the author of both keys, so they persist even at the shipped default.
@@ -802,7 +810,7 @@ async def api_owner_safety_mode(request: Request) -> JSONResponse:
 
     This dedicated owner path is audited. Ordinary modes skip this control in
     generic settings saves; Cyber also has audited configuration authority there.
-    The independent Access and review-scope/enforcement controls remain in force."""
+    Subsequent operations use the new choice; current task snapshots stay intact."""
     body = await _json_body_or_empty(request)
     # Off the event loop, under the document lock (held inside): a slow
     # generic save must not be able to freeze the loop THROUGH this
@@ -937,9 +945,11 @@ async def api_reviewer_slots(request: Request) -> JSONResponse:
         if getattr(r, "subagent_id", ""):
             return {
                 "slot_id": r.slot_id, "subagent_id": r.subagent_id,
-                "effort": r.effort, "resolved_route": route,
+                "effort": r.effort, "processing_preference": r.processing_preference,
+                "resolved_route": route,
             }
-        return {"slot_id": r.slot_id, "route": route, "effort": r.effort}
+        return {"slot_id": r.slot_id, "route": route, "effort": r.effort,
+                "processing_preference": r.processing_preference}
 
     payload["source"] = config.source
     payload["triad"] = [_row(r) for r in config.triad]
@@ -956,6 +966,7 @@ async def api_reviewer_slots(request: Request) -> JSONResponse:
     payload["advisory"] = {
         "enabled": config.advisory.enabled,
         "effort": config.advisory.effort,
+        "processing_preference": config.advisory.processing_preference,
     }
     if getattr(config.advisory, "subagent_id", ""):
         payload["advisory"]["subagent_id"] = config.advisory.subagent_id
@@ -1191,9 +1202,13 @@ def _network_settings_error(request: Request, current: dict, old_settings: dict)
     """Validate the existing save-time bind/password contract before persistence."""
     try:
         from ouroboros.server_auth import is_loopback_host
+        from ouroboros.config import get_runtime_mode
+        from ouroboros.runtime_mode_policy import runtime_mode_at_least
+
         desired_host = str(current.get("OUROBOROS_SERVER_HOST") or "").strip()
         desired_password = str(current.get("OUROBOROS_NETWORK_PASSWORD") or "").strip()
-        trust_unauth = _trust_nonlocal_bind_without_password_enabled()
+        trust_unauth = (_trust_nonlocal_bind_without_password_enabled()
+                        or runtime_mode_at_least(get_runtime_mode(), "cyber_pro"))
         allowed_saved_hosts = {"", "127.0.0.1", "localhost", "::1", "[::1]", "0.0.0.0", "::", "[::]"}
         if desired_host and desired_host not in allowed_saved_hosts:
             return unsaved_error(
@@ -1373,14 +1388,19 @@ def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
         started_before_save = _has_started_agent_tasks()
         settings_to_save = dict(current)
         settings_to_save["OUROBOROS_RUNTIME_MODE"] = pending_runtime_mode
-        # A generic POST never authors context intent: changing a model/provider leaves
-        # persistent Low/Max untouched and exact-route fitting happens at task dispatch.
+        # Only an explicit Cyber context choice authors the pair; an unrelated save
+        # preserves omission and cannot change a running task's captured settings.
+        authored_keys = tuple(key for key in ("OUROBOROS_SAFETY_MODE",) if key in all_changed)
+        if runtime_mode_at_least(current_runtime_mode, "cyber_pro") and "OUROBOROS_CONTEXT_MODE" in body:
+            authored_keys += tuple(_CONTEXT_MODE_KEYS)
         _owner_write_settings(
             settings_to_save,
-            authored_keys=("OUROBOROS_SAFETY_MODE",) if "OUROBOROS_SAFETY_MODE" in all_changed else (),
+            authored_keys=authored_keys,
             boundary=boundary)
         control_changes = {key: {"old": raw_old_settings.get(key), "new": settings_to_save.get(key)}
-                           for key in ("OUROBOROS_RUNTIME_MODE", "OUROBOROS_SAFETY_MODE", "OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS")
+                           for key in ("OUROBOROS_RUNTIME_MODE", "OUROBOROS_SAFETY_MODE",
+                                       "OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS",
+                                       "OUROBOROS_CONTEXT_MODE", "OUROBOROS_REVIEW_ENFORCEMENT")
                            if key in all_changed}
         if control_changes:
             _owner_audit(request, "settings_controls", {"changes": control_changes})

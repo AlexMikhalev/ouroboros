@@ -236,21 +236,23 @@ def test_api_fs_dirs_confined_to_home(tmp_path):
     assert resp4.status_code == 404
 
 
-def test_api_projects_create_attach_requires_git_unless_init(tmp_path, monkeypatch):
-    """Triad r5: task admission requires a git worktree root, so attaching a
-    non-git folder WITHOUT init_git must refuse (actionable 400) BEFORE any
-    registry mutation — never a project whose room tasks are born dead."""
+@pytest.mark.parametrize("init_git", [False, True])
+def test_api_projects_create_attach_git_is_optional(tmp_path, init_git):
+    """An attached ordinary folder admits room tasks without creating Git state;
+    an explicit init still provisions the existing attach snapshot."""
     import asyncio
     import json
     from types import SimpleNamespace
 
     from ouroboros.gateway.projects import api_projects_create
     from ouroboros.projects_registry import get_project
+    from ouroboros.workspace_admission import resolve_room_workspace
 
     data = tmp_path / "data"
     data.mkdir()
     plain = tmp_path / "plain_folder"
     plain.mkdir()
+    (plain / "notes.txt").write_text("owner notes\n", encoding="utf-8")
 
     class _Req:
         def __init__(self, body):
@@ -260,16 +262,77 @@ def test_api_projects_create_attach_requires_git_unless_init(tmp_path, monkeypat
         async def json(self):
             return self._body
 
-    resp = asyncio.run(api_projects_create(_Req({"name": "Plain", "path": str(plain)})))
+    body = {"name": "Plain", "path": str(plain)}
+    if init_git:
+        body["init_git"] = True
+    resp = asyncio.run(api_projects_create(_Req(body)))
     payload = json.loads(resp.body)
-    assert resp.status_code == 400
-    assert payload["error_code"] == "attach_requires_git"
-    assert get_project(data, "plain") is None  # no registry mutation
-    # With init_git the same folder attaches (snapshot-init makes it a git root).
-    resp2 = asyncio.run(api_projects_create(_Req({"name": "Plain", "path": str(plain), "init_git": True})))
-    payload2 = json.loads(resp2.body)
-    assert resp2.status_code == 200 and payload2["project"]["provenance"] == "attached"
-    assert (plain / ".git").exists()
+    assert resp.status_code == 200 and payload["project"]["provenance"] == "attached"
+    assert get_project(data, "plain")["working_dir"] == str(plain.resolve())
+    assert (plain / ".git").exists() is init_git
+    assert (plain / "notes.txt").read_text(encoding="utf-8") == "owner notes\n"
+    assert resolve_room_workspace(
+        drive_root=data, system_repo_dir=tmp_path / "repo", project_id="plain",
+    ) == (str(plain.resolve()), "")
+
+
+@pytest.mark.parametrize("init_git", [False, True])
+def test_attach_git_subdir_only_initializes_when_explicitly_requested(tmp_path, init_git):
+    """Explicit init can make a selected subdirectory a standalone project;
+    a plain attach never creates that Git boundary implicitly."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from ouroboros.gateway.projects import api_projects_create
+    from ouroboros.projects_registry import get_project
+    from ouroboros.promotion_source import resolve_promote_source
+    from ouroboros.workspace_admission import resolve_room_workspace
+
+    data = tmp_path / "data"
+    data.mkdir()
+    repo = tmp_path / "owner-repo"
+    _init_git_repo(repo)
+    sub = repo / "subdir"
+    sub.mkdir()
+    (sub / "notes.txt").write_text("owner notes\n", encoding="utf-8")
+    parent_head = (repo / ".git" / "HEAD").read_bytes()
+    parent_index = (repo / ".git" / "index").read_bytes()
+    ctx = SimpleNamespace(DRIVE_ROOT=data, REPO_DIR=tmp_path / "system")
+
+    class _Req:
+        app = SimpleNamespace(state=SimpleNamespace(drive_root=data, repo_dir=ctx.REPO_DIR))
+
+        async def json(self):
+            return {"id": "subdir", "path": str(sub), "init_git": init_git}
+
+    ws, _, error, _, created = resolve_promote_source(ctx, str(sub), "subdir")
+    assert not ws and "git worktree root" in error and not created
+    assert get_project(data, "subdir") is None
+    assert not (sub / ".git").exists()
+    resp = asyncio.run(api_projects_create(_Req()))
+    if init_git:
+        assert resp.status_code == 200, resp.body
+        assert get_project(data, "subdir")["working_dir"] == str(sub.resolve())
+        top = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"], cwd=sub,
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert pathlib.Path(top).resolve() == sub.resolve()
+        assert resolve_room_workspace(
+            drive_root=data, system_repo_dir=ctx.REPO_DIR, project_id="subdir",
+        ) == (str(sub.resolve()), "")
+        subject = subprocess.run(
+            ["git", "log", "-1", "--format=%s"], cwd=sub,
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert subject == "ouroboros: attach snapshot"
+    else:
+        assert resp.status_code == 400
+        assert get_project(data, "subdir") is None
+        assert not (sub / ".git").exists()
+    assert (sub / "notes.txt").read_text(encoding="utf-8") == "owner notes\n"
+    assert (repo / ".git" / "HEAD").read_bytes() == parent_head
+    assert (repo / ".git" / "index").read_bytes() == parent_index
 
 
 # --- create: existing id + new source is a 409, checked before any clone -----------
@@ -353,12 +416,13 @@ def test_promote_source_registers_derived_project_and_mirrors_conflict(tmp_path,
     subprocess.run(["git", "init", "-q"], cwd=str(folder), check=True)
     ctx = SimpleNamespace(repo_dir=str(tmp_path / "repo"))
 
-    # A NON-git folder is refused with an actionable error (triad r5: task
-    # admission requires a git worktree root — no born-dead project rooms).
+    # An ordinary folder registers and admits without an implicit git init.
     nogit = tmp_path / "plain_folder"
     nogit.mkdir()
-    ws0, _, err0, _, _ = resolve_promote_source(ctx, str(nogit), "")
-    assert ws0 == "" and "not a git repository" in err0
+    ws0, _, err0, pid0, created0 = resolve_promote_source(ctx, str(nogit), "")
+    assert ws0 == str(nogit.resolve()) and err0 == "" and created0
+    assert get_reg_project(data, pid0)["working_dir"] == ws0
+    assert not (nogit / ".git").exists()
 
     # No pid given: derived from the folder name, registered with provenance facts.
     ws, note, err, pid, created = resolve_promote_source(ctx, str(folder), "")

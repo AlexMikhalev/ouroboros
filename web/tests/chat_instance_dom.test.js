@@ -232,7 +232,7 @@ test('first task-bound review hydrates a progress-created owner once and reconci
             (node) => node.dataset.taskId === 'root-deferred',
         );
         assert.ok(rebuiltDeferredCard, 'reconnect rebuilt the durable review owner');
-        assert.notEqual(rebuiltDeferredCard, oldDeferredCard, 'the old card generation was replaced');
+        assert.equal(rebuiltDeferredCard, oldDeferredCard, 'reconnect preserves the reading card');
         handlers.get('typing')({
             chat_id: 2, activity_id: 'root-deferred', task_id: 'root-deferred',
             kind: 'managed_task', phase: 'working',
@@ -504,10 +504,10 @@ test('Plan invalidation applies terminal task detail to its review-created owner
         await new Promise((resolve) => setTimeout(resolve, 0));
         const rebuiltCard = messages.children.find((node) => node.dataset.taskId === 'root-terminal');
         assert.ok(rebuiltCard, 'the same durable revision reattached after a full reconnect rebuild');
-        assert.notEqual(rebuiltCard, card);
+        assert.equal(rebuiltCard, card, 'reconnect keeps the same review owner node');
         assert.equal(rebuiltCard.querySelector('[data-live-review-summary]')?.textContent, 'Reviews 1');
-        assert.equal(detailCalls.length, 2,
-            'the applied-revision receipt reset for the new card generation');
+        assert.equal(detailCalls.length, 1,
+            'the retained card keeps the applied revision without another detail read');
     } finally {
         instance?.destroy();
         restoreDom(prior);

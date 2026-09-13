@@ -214,7 +214,10 @@ def test_real_task_panel_then_revised_author_finish_preserves_custody(actual_acc
     assert h.state["calls"] == 1 and len(h.physical.calls) == 1
     first = copy.deepcopy(h.trace["review_runs"][-1])
     h.annotate()
-    h.run("Verified revised answer")
+    # A terminal unknown response receives no critic feedback to answer. An
+    # unchanged subject must retain its original no-resend custody; explicitly
+    # nominating different material is a new review, tested separately below.
+    h.run("Initial answer" if unknown else "Verified revised answer")
     assert h.state["calls"] == 1 and len(h.physical.calls) == 1
     assert h.trace["review_runs"][-1]["actors"] == first["actors"]
     decision = h.trace["acceptance_decision"]
@@ -230,3 +233,42 @@ def test_real_task_panel_then_revised_author_finish_preserves_custody(actual_acc
         assert decision["reason"] == "author_finish"
         assert decision["reviewer_binding_hash"] == first["binding_hash"]
         assert decision["author_disposition"]["subject_hash"] != first["binding_hash"]
+
+
+def test_new_subject_after_unknown_review_keeps_the_original_operation(actual_acceptance):
+    h = actual_acceptance
+    h.state["unknown"] = True
+    h.annotate()
+    # This fixture uses a fixed task id. Distinct source text keeps process-local
+    # unknown-operation custody independent from the preceding parametrized case.
+    assert h.run("Original result for explicit new-subject test") is False
+    first = copy.deepcopy(h.trace["review_runs"][-1])
+    h.annotate()
+    h.run("A materially revised complete result")
+    old, new = h.trace["review_runs"]
+    assert len(h.physical.calls) == 2
+    assert old["actors"] == first["actors"]
+    assert old["actors"][0]["operation_state"] == "custody_lost"
+    assert old["request"]["subject"] == "Original result for explicit new-subject test"
+    assert new["request"]["subject"] == "A materially revised complete result"
+    assert new["subject_hash"] != first["subject_hash"]
+    assert new["request"]["retry_key"] != first["request"]["retry_key"]
+    assert new["actors"][0]["operation_id"] != first["actors"][0]["operation_id"]
+
+
+@pytest.mark.parametrize("also_missing_roster", [False, True])
+def test_legacy_settled_review_replays_its_proven_subject_without_key_error(actual_acceptance, also_missing_roster):
+    h = actual_acceptance
+    subject = f"Complete legacy result {also_missing_roster}"
+    assert h.run(subject) is True  # The real critic supplied its improvement note.
+    first = h.trace["review_runs"][-1]
+    old_actors = copy.deepcopy(first["actors"])
+    first.pop("subject_hash")
+    if also_missing_roster:
+        first.pop("slot_roster", None)
+    h.ctx._task_acceptance_reviewed = False
+    h.run(subject)
+    assert len(h.physical.calls) == 1
+    assert h.trace["review_runs"][-1]["actors"] == old_actors
+    assert h.trace["acceptance_decision"]["reason"] != "infra_failure"
+    assert "KeyError" not in json.dumps(h.trace.get("acceptance_decision") or {})

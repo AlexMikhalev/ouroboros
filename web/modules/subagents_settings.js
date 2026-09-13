@@ -1,6 +1,4 @@
-// Available subagents editor shared by Settings and first-run onboarding.
-// Reviewer quorum and role policy stay in reviewer_slots.js; only neutral
-// route/model/account/effort presentation is shared.
+// Settings/onboarding actor editor; reviewer policy stays in reviewer_slots.js.
 
 import {
     FACET_ACCOUNTS, FACET_CATALOG, FACET_QUOTA, READ_OK, accountRows,
@@ -14,8 +12,10 @@ import {
     routeModelInputHtml, routeTargetFromModel, routeSupportsAccount, effortSelectHtml,
     encodeRouteChoice, indexProfilesByHarness, mintStableId, profileOptionsFor,
     routeChoiceGroups, selectHtml, serializeRouteSpec, sessionModelOptions, updateRouteControlOptions,
+    PROCESSING_CHOICES, PROCESSING_PREFERENCE_KEY, processingDetailsHtml, processingIntentLabel, accountScopedModelCatalog,
 } from './route_editor_primitives.js';
 import { modelChooserHtml, bindModelChoosers } from './model_chooser.js';
+import { mergeModelCatalog, catalogReadNote, mergeHarnessModelCatalog } from './settings_catalog.js';
 import { harnessMap, rowMeta, rowStatus, sessionRouteVerdict } from './subagent_status_primitives.js';
 import { revealNewRow } from './ui_helpers.js';
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
@@ -24,7 +24,7 @@ export const MAX_AVAILABLE_SUBAGENTS = 10;
 export const SUBAGENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 
 const SETTING_KEYS = new Set(['enabled', 'items']);
-const ROW_KEYS = new Set(['subagent_id', 'name', 'recommended_use', 'route', 'effort']);
+const ROW_KEYS = new Set(['subagent_id', 'name', 'recommended_use', 'route', 'effort', 'processing_preference']);
 const ROUTE_KEYS = new Set(['kind', 'target_id', 'credential_profile_id']);
 
 function ownUnknownKeys(value, allowed) {
@@ -49,6 +49,7 @@ function canonicalRow(row) {
         recommended_use: String(row?.recommended_use || ''),
         route,
         ...(row?.effort ? { effort: String(row.effort).trim().toLowerCase() } : {}),
+        ...(row?.processing_preference ? { processing_preference: String(row.processing_preference).trim().toLowerCase() } : {}),
     };
 }
 
@@ -113,6 +114,7 @@ export function parseAvailableSubagentsSetting(value) {
         if (row.effort !== undefined && row.effort !== null && typeof row.effort !== 'string') {
             return { setting: null, error: `row ${index + 1} effort must be a string` };
         }
+        if (row.processing_preference != null && typeof row.processing_preference !== 'string') return { setting: null, error: `row ${index + 1} processing must be a string` };
         if (!row.route || typeof row.route !== 'object' || Array.isArray(row.route)) {
             return { setting: null, error: `row ${index + 1} needs a route object` };
         }
@@ -188,6 +190,7 @@ function rowErrors(row, index, ids) {
     if (row?.effort && !EFFORT_CHOICES.includes(String(row.effort))) {
         errors.push('has an unsupported reasoning effort.');
     }
+    if (row?.processing_preference && !PROCESSING_CHOICES.includes(row.processing_preference)) errors.push('needs Standard, Fast, Economy or inherited processing.');
     const encodedEffort = route.kind === ROUTE_KIND_AGENT_SESSION
         ? compoundSessionEffortConflict(route.target_id, row?.effort) : '';
     if (encodedEffort) {
@@ -321,7 +324,7 @@ export function availableSubagentRowMarkup(row, state, index = 0) {
         currentChoice: encodeRouteChoice(row),
         catalogKnown: state.catalogKnown,
     });
-    const modelOptions = sessionModelOptions(harnesses[split.harness], split.model, {
+    const modelOptions = sessionModelOptions(accountScopedModelCatalog(harnesses[split.harness], row.route.credential_profile_id), split.model, {
         catalogKnown: state.catalogKnown,
     });
     const profileOptions = profileOptionsFor(
@@ -372,6 +375,7 @@ export function availableSubagentRowMarkup(row, state, index = 0) {
                     : ''}
                 ${effortSelectHtml(`data-subagent-field="effort" aria-label="Reasoning effort for Subagent ${ordinal}"`, row.effort || '', 'route default')}
             </div>
+            ${processingDetailsHtml(`data-subagent-field="processing_preference" aria-label="Processing for Subagent ${ordinal}"`, row.processing_preference, state.processingPreference)}
             <div id="actor-${escapeHtml(rowKey)}-meta" class="available-subagent-meta ui-field-help" data-subagent-meta${meta.tone ? ` data-tone="${escapeHtml(meta.tone)}"` : ''} title="${escapeHtml(meta.text)}"${meta.text ? '' : ' hidden'}>${escapeHtml(meta.text)}</div>
         </article>`;
 }
@@ -395,7 +399,7 @@ export function availableSubagentsRenderSignature(state, nowMs = Date.now()) {
         state.snapshot?.subagent_last_delegation || null,
         (state.setting?.items || []).map((row) => row?.route?.kind === ROUTE_KIND_AGENT_SESSION
             ? sessionRouteVerdict(row, state, nowMs).text : ''),
-        state.apiModels, state.modelSources,
+        state.apiModels, state.modelSources, state.modelCatalogNote, state.processingPreference,
     ]);
 }
 
@@ -433,7 +437,7 @@ export function createAvailableSubagentsEditor({
         accountsKnown: false,
         quotaKnown: false,
         snapshot: null,
-        apiModels: [], modelSources: [],
+        apiModels: [], modelSources: [], modelCatalogNote: '', processingPreference: '',
         signature: '',
         statusDisposer: null,
         catalogDisposer: null,
@@ -450,7 +454,9 @@ export function createAvailableSubagentsEditor({
         state.catalogKnown = store?.facet?.(FACET_CATALOG) === READ_OK;
         state.accountsKnown = store?.facet?.(FACET_ACCOUNTS) === READ_OK;
         state.quotaKnown = store?.facet?.(FACET_QUOTA) === READ_OK;
-        state.snapshot = store?.snapshot || null;
+        const snapshot = store?.snapshot;
+        state.snapshot = snapshot ? { ...snapshot, harnesses: snapshot.harnesses?.map((harness) =>
+            mergeHarnessModelCatalog(state.snapshot?.harnesses?.find((old) => old.id === harness.id), harness)) } : null;
     }
 
     function validationErrors() {
@@ -467,14 +473,8 @@ export function createAvailableSubagentsEditor({
         return validateAvailableSubagentsSetting(state.setting);
     }
 
-    // The ONE painter of verdicts, patching in place (never innerHTML, so the
-    // caret survives): every row's head status, error tint and meta line, and
-    // the section-level line — reconciled together, so a fix typed into a
-    // field can never clear one and leave the other red, and a keystroke that
-    // makes the draft dirty (or re-routes a session) shows in the head at
-    // once. The section line says: a load/parse problem always; otherwise the
-    // roster's own errors, only for the rows the owner has tried to save —
-    // until then a fresh entry carries its hint.
+    // Patch verdicts and inherited intent in place, preserving the caret.
+    // Structural errors always show; row errors follow an attempted save.
     function renderValidation() {
         const container = host();
         if (!container) return;
@@ -488,6 +488,8 @@ export function createAvailableSubagentsEditor({
             if (judged && !structural) shown.push(...rowErrs);
             const el = container.querySelector(`[data-subagent-row="${row._uiKey || row.subagent_id}"]`);
             if (!el) return;
+            const processingSummary = el.querySelector('[data-processing-summary]');
+            if (processingSummary) processingSummary.textContent = processingIntentLabel(row.processing_preference, state.processingPreference);
             el.toggleAttribute('data-invalid', judged);
             el.querySelectorAll('[data-subagent-field]').forEach((field) => {
                 field.setAttribute('aria-describedby', `actor-${row._uiKey || row.subagent_id}-meta`);
@@ -512,10 +514,7 @@ export function createAvailableSubagentsEditor({
         if (state.saveAttempted) onJudged(!shown.length);
     }
 
-    // The Save/Finish button says the owner tried to commit the draft: the rows
-    // that exist now are judged from here on; an entry added later is fresh
-    // again. Everything is already patched in place, so the signature advances
-    // and the next status tick skips the repaint.
+    // Judge existing rows on Save/Finish; later new rows remain fresh.
     function noteSaveAttempt() {
         state.saveAttempted = true;
         state.setting.items.forEach((row) => { row._uiAttempted = true; });
@@ -528,9 +527,7 @@ export function createAvailableSubagentsEditor({
             state.dirty = true;
             onDirtyChange(true);
         }
-        // Text inputs already paint their own value. Advancing the signature
-        // here lets an unchanged late status settle skip a destructive
-        // innerHTML rewrite; structural changes deliberately request one.
+        // Text and fixed choices hold their draft; status keeps the same nodes.
         state.signature = structural ? '' : availableSubagentsRenderSignature(state);
         renderValidation();
         onChange(buildAvailableSubagentsSetting(state.setting));
@@ -575,6 +572,11 @@ export function createAvailableSubagentsEditor({
                 else delete row.effort;
                 markDirty();
             });
+            rowElement.querySelector('[data-subagent-field="processing_preference"]')?.addEventListener('change', (event) => {
+                if (event.target.value) row.processing_preference = event.target.value;
+                else delete row.processing_preference;
+                markDirty();
+            });
             rowElement.querySelector('[data-subagent-duplicate]')?.addEventListener('click', () => {
                 if (state.setting.items.length >= MAX_AVAILABLE_SUBAGENTS) return;
                 const copy = canonicalRow(row);
@@ -606,8 +608,8 @@ export function createAvailableSubagentsEditor({
         const errors = validationErrors();
         const diagnostics = diagnosticsText(state.diagnostics);
         const source = state.source ? `Source: ${state.source}.` : '';
-        const readProblem = state.statusError
-            ? 'Live agent availability could not be read. Saved rows remain unchanged.' : '';
+        const readProblem = [state.statusError
+            ? 'Live agent availability could not be read. Saved rows remain unchanged.' : '', state.modelCatalogNote].filter(Boolean).join(' ');
         if (discoveryOnly && container.querySelector('.available-subagents-list')) {
             state.setting.items.forEach((row, index) => {
                 const el = container.querySelector(`[data-subagent-row="${row._uiKey || row.subagent_id}"]`);
@@ -668,8 +670,7 @@ export function createAvailableSubagentsEditor({
         return true;
     }
 
-    // After the repaint (whose last act restores the previous focus): the row
-    // that just appeared is scrolled into view and its Description takes the caret.
+    // Reveal the new row after the painter restores previous focus.
     function revealRow(uiKey) {
         const row = host()?.querySelector?.(`[data-subagent-row="${uiKey}"]`);
         revealNewRow(row, row?.querySelector?.('[data-subagent-field="recommended_use"]'));
@@ -808,10 +809,10 @@ export function createAvailableSubagentsEditor({
         if (!state.catalogDisposer) {
             const target = getDoc();
             const onCatalog = (event) => {
-                state.modelSources = event?.detail?.model_sources || [];
-                state.apiModels = (event?.detail?.items || [])
-                    .map((item) => String(item.value || item.id || ''))
-                    .filter(Boolean);
+                const catalog = mergeModelCatalog({ items: state.apiModels, model_sources: state.modelSources }, event?.detail);
+                state.modelSources = catalog.model_sources;
+                state.apiModels = catalog.items;
+                state.modelCatalogNote = catalogReadNote(catalog);
                 state.signature = '';
                 paint({ discoveryOnly: true });
             };
@@ -848,6 +849,7 @@ export function createAvailableSubagentsEditor({
         get loaded() { return state.loaded; },
         get dirty() { return state.dirty; },
         get parseError() { return state.parseError; },
+        setProcessingPreference(value) { state.processingPreference = String(value || ''); paint({ discoveryOnly: true }); },
     };
 }
 
@@ -971,6 +973,7 @@ export function initSubagentsSection({
 export function applySubagentsSettings(settings) {
     if (!settingsEditor) return;
     const meta = settings?._meta?.available_subagents || {};
+    settingsEditor.setProcessingPreference(settings?.[PROCESSING_PREFERENCE_KEY]);
     settingsEditor.load(availableSubagentsLoadValue(settings), {
         source: settingsSource(settings),
         diagnostics: meta.diagnostics || meta.diagnostic || [],
@@ -986,12 +989,11 @@ export function destroySubagentsSection() {
 }
 
 export function collectSubagentsSettings() { return settingsEditor?.collect() || {}; }
+export function setSubagentsProcessingPreference(value) { settingsEditor?.setProcessingPreference(value); }
 
 export function validateSubagentsDraft() { return settingsEditor?.validate() || ['Available subagents editor is not loaded.']; }
 
 /** Settings' Save button: the draft's own errors become visible from here on. */
 export function noteSubagentsSaveAttempt() { settingsEditor?.noteSaveAttempt(); }
-
-// Compatibility name retained for focused callers; the signature now covers
-// the actor list rather than the retired singleton route.
+// Compatibility name for callers of the actor-list signature.
 export const renderSignature = availableSubagentsRenderSignature;

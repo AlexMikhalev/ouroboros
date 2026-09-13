@@ -536,10 +536,7 @@ def test_v5_apply_pending_refused_when_budget_floor_unmet(tmp_path, monkeypatch)
 
 def test_envelope_enable_rides_generic_settings_merge():
     """The post-task self-evolution enable rides the generic owner settings path
-    (like ALLOW_MUTATIVE_SUBAGENTS) so the Settings UI On/Off toggle persists. The
-    AGENT still cannot self-enable it: shell (_detect_evolution_owner_control_self_change),
-    browser JS (_blocks_post_task_evolution_js), POST /api/settings route guard, and
-    data_write (DATA_WRITE_BLOCKED) all block agent-originated changes (see test_acting_subagents)."""
+    (like ALLOW_MUTATIVE_SUBAGENTS) so the Settings UI On/Off toggle persists."""
     from ouroboros.gateway.settings import _merge_settings_payload
 
     merged = _merge_settings_payload(

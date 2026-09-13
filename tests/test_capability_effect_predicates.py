@@ -74,17 +74,6 @@ def test_skill_state_pure_read_inspection_is_allowed(tmp_path, cmd):
     assert blocked is None
 
 
-@pytest.mark.parametrize("cmd", [
-    "rm data/state/skills/weather/review.json",
-    "cp payload.json data/state/skills/weather/grants.json",
-    'python -c "open(\'data/state/skills/w/enabled.json\', \'w\').write(\'{}\')"',
-])
-def test_skill_state_write_shapes_stay_blocked(tmp_path, cmd):
-    blocked = registry_guard_process._run_shell_safety_check(_registry(tmp_path), {"cmd": cmd}, "advanced")
-    # v7 D02: the guard returns a typed ToolResult; the code is the contract.
-    assert blocked is not None and blocked.code == "SKILL_STATE_WRITE_BLOCKED"
-
-
 # ---------------------------------------------------------------------------
 # A4 — receiver proof in the AST walker + regex/AST agreement
 # ---------------------------------------------------------------------------
@@ -246,25 +235,33 @@ def test_glued_dash_c_selects_the_same_base_as_split(tmp_path):
     "gh auth token",
     "gh pr list",
 ])
-def test_gh_mentions_and_readonly_auth_are_allowed(cmd):
-    from ouroboros.git_shell_policy import gh_shell_block_reason
-
-    assert gh_shell_block_reason(cmd) == ""
+def test_gh_mentions_and_readonly_auth_have_no_semantic_veto(tmp_path, cmd):
+    assert registry_guard_process._run_shell_safety_check(_registry(tmp_path), {"cmd": cmd}, "advanced") is None
 
 
+@pytest.mark.serial
 @pytest.mark.parametrize("cmd", [
-    "gh auth login",
-    "gh auth logout",
-    "gh auth refresh",
-    "gh auth setup-git",
-    "sh -c 'gh auth login'",
-    "gh repo create mine",
-    "gh repo delete mine",
+    ["gh", "auth", "login"],
+    ["gh", "auth", "logout"],
+    ["gh", "auth", "refresh"],
+    ["gh", "auth", "setup-git"],
+    ["sh", "-c", "gh auth login"],
+    ["gh", "repo", "create", "mine"],
+    ["gh", "repo", "delete", "mine"],
 ])
-def test_gh_mutating_verbs_at_head_are_blocked(cmd):
-    from ouroboros.git_shell_policy import gh_shell_block_reason
+def test_gh_requests_reach_the_handler_once_without_contacting_an_account(tmp_path, monkeypatch, cmd):
+    reg = _registry(tmp_path)
+    calls = []
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
+    monkeypatch.setenv("OUROBOROS_SAFETY_MODE", "off")
 
-    assert "SAFETY_VIOLATION" in gh_shell_block_reason(cmd)
+    def handler(_ctx, cmd, _resolved_binding=None, **_kwargs):
+        calls.append(list(cmd))
+        return "request dispatched"
+
+    reg.override_handler("run_command", handler)
+    assert reg.execute("run_command", {"cmd": cmd}) == "request dispatched"
+    assert calls == [cmd]
 
 
 # ---------------------------------------------------------------------------

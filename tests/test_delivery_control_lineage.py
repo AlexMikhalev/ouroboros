@@ -628,13 +628,17 @@ def test_forced_historical_keep_after_late_owner_directive_stays_stale(
     assert text.startswith(retained.full_text)
     assert "STALE-EVIDENCE NOTICE — RESUME REQUIRED (host)" in _usage["terminal_host_notice"]
     assert published.evidence_revision == retained.evidence_revision
+    assert published.owner_source_sha256 == retained.owner_source_sha256
     assert published.acceptance_binding["stale_evidence"] is True
-    assert returned_trace["delivery_candidate"]["evidence_current"] is False
+    # The owner corpus changed without a Main acknowledgment. Its meaning is
+    # still undecided, so the material-evidence revision must not be invented.
+    assert returned_trace["delivery_candidate"]["owner_source_current"] is False
+    assert returned_trace["delivery_candidate"]["evidence_current"] is True
     forced = returned_trace["forced_finalization"]
     assert forced["source"] == (
         "model_control_retained_stale_evidence_resume_required"
     )
-    assert forced["current_evidence_revision"] > retained.evidence_revision
+    assert forced["current_evidence_revision"] == retained.evidence_revision
 
 
 @pytest.mark.parametrize(
