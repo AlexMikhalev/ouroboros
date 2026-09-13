@@ -3010,9 +3010,10 @@ crash lands after the startup window, with nobody waiting. Do not add a backoff 
 constant, host-side heap sizing or writer-lease handling, and do not add a second
 retrier: the periodic supervisor sweep (`clear_start_failure_latch`, then its
 own single `ensure_owned_gateway` only when it released a latch —
-`_retry_latched_daemon_start`), a live attach, or a new manager (Restart/Panic)
-are the only releases, and ordinary callers never make the retry; `NODE_OPTIONS`
-passthrough is the operator escape hatch (ARCHITECTURE §9).
+`_retry_latched_daemon_start`, in its own `try` ahead of the reap), a live attach,
+or a new manager (Restart/Panic; a task worker's manager is its own instance with
+its own latch) are the only releases, and ordinary callers never make the retry;
+`NODE_OPTIONS` passthrough is the operator escape hatch (ARCHITECTURE §9).
 
 Ordinary close preserves the shared daemon on every platform, including forced
 worker/server/stray cleanup. Exclusions protect the whole subtree, not merely a

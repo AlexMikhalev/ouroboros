@@ -512,7 +512,31 @@ def test_periodic_sweep_retries_only_after_it_released_a_latch(monkeypatch, rele
         clear_start_failure_latch=lambda *, cleared_by: order.append(f"clear:{cleared_by}") or released)
     monkeypatch.setattr(daemon_mod, "get_owned_daemon", lambda: stub)
     sm._periodic_supervisor_maintenance([0.0], [time.time()])
-    assert order == ["reap", "clear:supervisor_sweep", *(["retry"] if released else []), "reconcile"]
+    assert order == ["clear:supervisor_sweep", *(["retry"] if released else []), "reap", "reconcile"]
+
+
+def test_a_raising_reap_cannot_pin_the_latch(monkeypatch):
+    """The release and retry live in their own try, ahead of the custody reap."""
+    from ouroboros import claudexor_daemon as daemon_mod
+    from ouroboros import process_custody as pc
+    from ouroboros import server_maintenance as sm
+
+    order: list = []
+    monkeypatch.setattr(sm, "_LAST_CANCEL_INTENT_SWEEP", [time.time()])
+    monkeypatch.setattr(sm, "_installed_skill_names", lambda: None)
+
+    def raising_reap(root, **kw):
+        order.append("reap")
+        raise OSError("ledger unreadable")
+
+    monkeypatch.setattr(pc, "reap_orphaned_processes", raising_reap)
+    monkeypatch.setattr(sm, "_retry_latched_daemon_start", lambda: order.append("retry"))
+    monkeypatch.setattr(sm, "_reconcile_delegated_runs", lambda live: order.append("reconcile"))
+    stub = SimpleNamespace(
+        clear_start_failure_latch=lambda *, cleared_by: order.append(f"clear:{cleared_by}") or True)
+    monkeypatch.setattr(daemon_mod, "get_owned_daemon", lambda: stub)
+    sm._periodic_supervisor_maintenance([0.0], [time.time()])
+    assert order == ["clear:supervisor_sweep", "retry", "reap"], "released and retried before the reap raised"
 
 
 def test_the_sweep_retry_swallows_refusals_and_surprises_and_closes_its_gateway(monkeypatch):

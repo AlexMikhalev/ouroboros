@@ -85,7 +85,29 @@ def _periodic_supervisor_maintenance(last_custody_reap: list, last_review_reconc
     if time.time() - last_custody_reap[0] > 600:
         last_custody_reap[0] = time.time()
         try:
-            from ouroboros.claudexor_daemon import CUSTODY_PURPOSE, get_owned_daemon
+            # Issue #844: this sweep is the ONE retrier of a latched owned-daemon
+            # start — in ITS OWN try, ahead of the reap, so a raising reap can
+            # never pin the latch until Restart. Every ordinary caller is refused
+            # typed (no spawn) while the manager's start-failure latch is set;
+            # only when THIS sweep actually released a latch does it make the
+            # single retry itself (the reconcile below ensures only when it has
+            # orphan work, so it cannot be the retrier), so a healthy install
+            # never pays a startup wait here and a persistently crashing engine
+            # costs exactly one spawn per sweep period. The latch is per-manager
+            # state and the manager is a process global: the SERVER process's
+            # latch is the one released and retried here; a task worker's
+            # manager holds its own latch, learned from its own single failed
+            # spawn, never released by this sweep, and released only by a
+            # live-daemon attach or the worker's respawn (one failed spawn per
+            # worker lifetime — D5's "new manager instance").
+            from ouroboros.claudexor_daemon import get_owned_daemon
+
+            if get_owned_daemon().clear_start_failure_latch(cleared_by="supervisor_sweep"):
+                _retry_latched_daemon_start()
+        except Exception:
+            log.debug("Owned daemon latch release failed", exc_info=True)
+        try:
+            from ouroboros.claudexor_daemon import CUSTODY_PURPOSE
             from ouroboros.process_custody import reap_orphaned_processes
             from supervisor.queue import RUNNING as _running_tasks
 
@@ -99,15 +121,6 @@ def _periodic_supervisor_maintenance(last_custody_reap: list, last_review_reconc
                 live_owner_skills=_installed_skill_names(),
                 retained_purposes={CUSTODY_PURPOSE},
             )
-            # Issue #844: this sweep is the ONE retrier of a latched owned-daemon
-            # start. Every ordinary caller is refused typed (no spawn) while the
-            # manager's start-failure latch is set; only when THIS sweep released
-            # a latch does it make the single retry itself (the reconcile below
-            # ensures only when it has orphan work, so it cannot be the retrier),
-            # so a healthy install never pays a startup wait here and a
-            # persistently crashing engine costs exactly one spawn per sweep period.
-            if get_owned_daemon().clear_start_failure_latch(cleared_by="supervisor_sweep"):
-                _retry_latched_daemon_start()
             # A delegated Claudexor run is an orphan under exactly the same predicate:
             # its owning task is no longer running. It has no pid, so the process
             # reaper cannot see it — but it is still spending quota and still writing.
