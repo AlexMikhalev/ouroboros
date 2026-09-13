@@ -316,6 +316,22 @@ def test_identity_conflict_is_forgiven_and_disclosed_in_the_receipt(isolated):
     assert rows(isolated)[-1]["state"] == "settled"
 
 
+def test_finish_frame_without_delta_still_completes_the_choice(isolated):
+    """A terminal frame that carries ``finish_reason`` but no ``delta`` is a shape
+    irregularity, not a missing terminal: the choice finishes, the reply settles, and
+    the forgiven shape is disclosed in the receipt."""
+    terminal = {"id": "gen-test", "object": "chat.completion.chunk", "model": "vendor/test-stream",
+                "choices": [{"index": 0, "finish_reason": "stop"}], "usage": completion()["usage"]}
+    wire = sse(chunk({"role": "assistant", "content": "done"}), terminal)
+    result = run_driver(lambda **kw: WireResponse(wire), payload(stream=True), target()).model_dump()
+    msg, usage = LLMClient()._normalize_remote_response(result, target(), skip_cost_fetch=True)
+    assert msg["content"] == "done" and result["choices"][0]["finish_reason"] == "stop"
+    assert usage["stream_receipt"]["anomalies"] == {"count": 1, "first": [
+        "choice 0: delta is NoneType, not an object; treated as empty",
+    ]}
+    assert rows(isolated)[-1]["state"] == "settled"
+
+
 def test_index_less_tool_call_fragment_continues_the_last_call(isolated):
     """A tool-call delta without ``index`` is a fragment of the last call when its type/id
     are compatible (merged, disclosed); a fresh id is a new call (appended, disclosed)."""

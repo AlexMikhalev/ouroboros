@@ -273,8 +273,11 @@ class ChatAccumulator(_Accumulator):
             self._note(f"choice at position {position}: index {update.get('index')!r}; used {index}")
         delta = update.get("delta")
         if not isinstance(delta, dict):
-            self._note(f"choice {index}: delta is not an object; skipped")
-            return
+            # A choice may legitimately carry only its terminal facts (a
+            # finish_reason frame without a delta); forgive the shape and keep
+            # judging completeness from what the frame does say.
+            self._note(f"choice {index}: delta is {type(delta).__name__}, not an object; treated as empty")
+            delta = {}
         choice = self.choices.setdefault(index, {"index": index, "message": {"role": "assistant", "content": None}})
         # OpenRouter's final usage frame repeats finish_reason and an empty
         # delta. It updates accounting without creating a second answer.
