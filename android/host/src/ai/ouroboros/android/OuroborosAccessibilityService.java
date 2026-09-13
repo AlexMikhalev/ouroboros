@@ -87,12 +87,12 @@ public final class OuroborosAccessibilityService extends AccessibilityService {
             }
             rows.put(row);
             index++;
-            if (budget.exhausted()) break;
+            if (budget.truncated) break;
         }
         JSONObject result = new JSONObject().put("enabled", true).put("windows", rows)
                 .put("coverage", "bounded_interactive_window_tree").put("max_nodes", maxNodes)
                 .put("max_depth", maxDepth).put("max_windows", maxWindows).put("nodes", budget.count);
-        if (budget.truncated) result.put("truncated", true).put("truncation_reason", "max_nodes");
+        if (budget.truncated) result.put("truncated", true).put("truncation_reason", budget.reason);
         else if (windows.size() > maxWindows) result.put("truncated", true).put("truncation_reason", "max_windows");
         return result;
     }
@@ -231,7 +231,7 @@ public final class OuroborosAccessibilityService extends AccessibilityService {
 
     private static void appendNode(JSONObject row, AccessibilityNodeInfo node, String address, int depth,
                                    int maxDepth, SnapshotBudget budget) throws Exception {
-        if (budget.exhausted()) { budget.truncated = true; return; }
+        if (budget.exhausted()) { budget.truncated = true; budget.reason = "max_nodes"; return; }
         budget.count++;
         row.put("node_address", address).put("depth", depth).put("class", text(node.getClassName()))
                 .put("package", text(node.getPackageName())).put("text", boundedText(node.getText()))
@@ -247,6 +247,7 @@ public final class OuroborosAccessibilityService extends AccessibilityService {
         if (depth >= maxDepth || budget.exhausted()) {
             if (node.getChildCount() > 0) {
                 budget.truncated = true;
+                budget.reason = budget.exhausted() ? "max_nodes" : "max_depth";
                 row.put("children_truncated", true);
             }
             return;
@@ -261,7 +262,10 @@ public final class OuroborosAccessibilityService extends AccessibilityService {
                 children.put(childRow);
             } finally { child.recycle(); }
             if (budget.exhausted()) {
-                if (i + 1 < node.getChildCount()) budget.truncated = true;
+                if (i + 1 < node.getChildCount()) {
+                    budget.truncated = true;
+                    budget.reason = "max_nodes";
+                }
                 break;
             }
         }
@@ -287,7 +291,7 @@ public final class OuroborosAccessibilityService extends AccessibilityService {
         return result.length() <= MAX_TEXT_CHARS ? result : result.substring(0, MAX_TEXT_CHARS);
     }
     private static final class SnapshotBudget {
-        final int max; int count; boolean truncated;
+        final int max; int count; boolean truncated; String reason = "max_nodes";
         SnapshotBudget(int max) { this.max = max; }
         boolean exhausted() { return count >= max; }
     }
