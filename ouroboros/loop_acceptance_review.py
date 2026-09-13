@@ -122,6 +122,39 @@ def prepare_acceptance_observation(ctx: Any, trace: dict, incoming: Any, message
     if (_loop().get_task_review_mode() not in {"auto", "required"}
             or not any(row.get("function", {}).get("name") == "task_acceptance_review" for row in tool_schemas)):
         return
+    # Cognitive-only direct turns (for example ``update_identity``) are ordinary
+    # conversation and are explicitly ineligible for task acceptance. Do not
+    # expose the internal source-selector protocol to Main in that case: after a
+    # successful cognitive tool call it can otherwise answer the selector itself,
+    # replacing the natural conversational response with acceptance bookkeeping.
+    from ouroboros.task_results import resolve_task_lineage
+
+    meta = getattr(ctx, "task_metadata", {})
+    meta = meta if isinstance(meta, dict) else {}
+    lineage = resolve_task_lineage(
+        getattr(ctx, "task_id", ""),
+        metadata=meta,
+        root_task_id=getattr(ctx, "root_task_id", None),
+        parent_task_id=getattr(ctx, "parent_task_id", None),
+        delegation_role=getattr(ctx, "delegation_role", None),
+        original_task_id=getattr(ctx, "original_task_id", None),
+        timeout_retry_from=getattr(ctx, "timeout_retry_from", None),
+    )
+    eligible, _reason = _loop()._task_acceptance_eligible(
+        _loop().get_task_review_mode(),
+        trace,
+        bool(getattr(ctx, "is_direct_chat", False)),
+        is_root_task=bool(lineage["is_root_task"]),
+        task_contract=getattr(ctx, "task_contract", None),
+    )
+    has_acceptance_state = bool(
+        getattr(ctx, "_task_acceptance_pending", "")
+        or getattr(ctx, "_task_acceptance_reviewed", False)
+        or getattr(ctx, "_acceptance_request_pending", None)
+        or getattr(ctx, "_delivery_candidate", None)
+    )
+    if not eligible and not has_acceptance_state:
+        return
     note = acceptance_observation_prompt(ctx, observed)
     if note:
         messages[:] = [row for row in messages if not row.get("acceptance_observation")]

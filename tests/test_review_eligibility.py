@@ -84,6 +84,34 @@ def test_cognitive_updates_are_not_effects():
     ]})
 
 
+def test_direct_cognitive_turn_does_not_receive_acceptance_selector(monkeypatch, tmp_path):
+    """A direct identity update must continue as natural conversation.
+
+    Acceptance observations are internal protocol text. Injecting one after a
+    cognitive-only tool call makes Main answer the selector instead of the
+    owner's introduction, even though the turn is ineligible for review.
+    """
+    import queue
+
+    from ouroboros import loop
+    from ouroboros.loop_acceptance_review import prepare_acceptance_observation
+
+    monkeypatch.setattr(loop, "get_task_review_mode", lambda: "required")
+    ctx = SimpleNamespace(
+        task_id="direct-cognitive", task_attempt=1, drive_root=tmp_path,
+        task_metadata={}, task_contract={}, is_direct_chat=True,
+        _loop_mailbox_seen_ids=set(), _owner_directives=[],
+    )
+    messages = [{"role": "user", "content": "Please remember my name."}]
+    trace = {"tool_calls": [_call("update_identity")], "reasoning_notes": []}
+    schemas = [{"function": {"name": "task_acceptance_review"}}]
+
+    prepare_acceptance_observation(ctx, trace, queue.Queue(), messages, schemas)
+
+    assert not any(row.get("acceptance_observation") for row in messages)
+    assert "ACCEPTANCE_SUBJECT_OBSERVATION" not in str(messages)
+
+
 def test_errored_write_is_not_an_effect():
     assert not turn_has_reviewable_effects({"tool_calls": [
         _call("write_file", is_error=True, status="light_mode_blocked", root="user_files"),
