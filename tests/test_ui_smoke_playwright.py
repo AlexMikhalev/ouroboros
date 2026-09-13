@@ -19,6 +19,13 @@ from tests.ui_chat_viewport_smoke import _CAPTURE_TEST_SOCKET, _emit_ws_frame
 REPO_ROOT = os.path.dirname(os.path.dirname(__file__))
 
 
+def _fixture_python() -> str:
+    """Use the real Windows interpreter, bypassing the venv PID redirector."""
+    if os.name == "nt":
+        return str(getattr(sys, "_base_executable", sys.executable))
+    return sys.executable
+
+
 def _open_review_checkpoint(card, *, open_card=True):
     if open_card:
         card.locator(":scope > [data-live-summary-button]").click()
@@ -266,6 +273,10 @@ def direct_server_with_data(tmp_path):
             "OUROBOROS_HOST_SERVICE_PORT": str(port + 1),
             "OUROBOROS_NETWORK_PASSWORD": "ui-smoke-password",
         }
+        if os.name == "nt":
+            site = pathlib.Path(sys.executable).resolve().parent.parent / "Lib" / "site-packages"
+            if site.is_dir():
+                env["PYTHONPATH"] = os.pathsep.join([str(site), env.get("PYTHONPATH", "")])
         url = f"http://127.0.0.1:{port}"
         active_proc = active_container = None
 
@@ -302,7 +313,7 @@ def direct_server_with_data(tmp_path):
             # Reap consumes the token/Job: every restart needs fresh containment.
             active_container = ProcessContainer()
             active_proc = active_container.spawn(
-                [sys.executable, "server.py"],
+                [_fixture_python(), "server.py"],
                 cwd=REPO_ROOT,
                 env=env,
                 stdout=subprocess.DEVNULL,

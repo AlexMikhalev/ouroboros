@@ -23,6 +23,14 @@ from tests import test_ui_smoke_playwright as ui
 
 pytestmark = pytest.mark.serial
 
+
+def _fixture_python() -> str:
+    """Use the real Windows interpreter so Popen.pid names the payload."""
+    if os.name == "nt":
+        return str(getattr(sys, "_base_executable", sys.executable))
+    return sys.executable
+
+
 _TREE_SCRIPT = r"""
 import json, os, pathlib, subprocess, sys, time
 from ouroboros.platform_layer import subprocess_new_group_kwargs
@@ -75,7 +83,7 @@ def fixture_probe(tmp_path, monkeypatch):
     )
     sentinel_ready = tmp_path / "sentinel-ready"
     probe.sentinel = subprocess.Popen(
-        [sys.executable, "-c",
+        [_fixture_python(), "-c",
          "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('ready', encoding='utf-8'); sys.stdin.read()",
          str(sentinel_ready)],
         stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -105,7 +113,7 @@ def fixture_probe(tmp_path, monkeypatch):
             probe.runs.append(run)
             probe.events.append(("spawn", self.index))
             run.proc = super().spawn(
-                [sys.executable, "-c", _TREE_SCRIPT,
+                [_fixture_python(), "-c", _TREE_SCRIPT,
                  str(run.receipt), str(run.entered), str(run.ready), probe.mode],
                 **kwargs,
             )

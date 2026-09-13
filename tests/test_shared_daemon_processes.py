@@ -20,6 +20,13 @@ from ouroboros import platform_layer as pl
 from ouroboros import process_custody as custody
 
 
+def _fixture_python() -> str:
+    """Use the real Windows interpreter, bypassing the venv PID redirector."""
+    if os.name == "nt":
+        return str(getattr(sys, "_base_executable", sys.executable))
+    return sys.executable
+
+
 def test_selective_windows_tree_uses_one_snapshot_without_taskkill_tree(monkeypatch):
     calls, snapshots = [], []
     # Worker 10 owns ordinary 11/12 and shared daemon 20 with client work 21/22.
@@ -272,6 +279,10 @@ def shared_tree(tmp_path, monkeypatch, request):
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     source = str(pathlib.Path(__file__).resolve().parents[1])
     env["PYTHONPATH"] = os.pathsep.join([source, env.get("PYTHONPATH", "")])
+    if os.name == "nt":
+        site = pathlib.Path(sys.executable).resolve().parent.parent / "Lib" / "site-packages"
+        if site.is_dir():
+            env["PYTHONPATH"] = os.pathsep.join([str(site), env["PYTHONPATH"]])
     # Bind the whole fixture process tree before the launcher starts. Setting
     # DATA_DIR only inside _WORKER leaves the launcher and its first imports
     # carrying a caller's real data-plane overrides.
@@ -284,7 +295,7 @@ def shared_tree(tmp_path, monkeypatch, request):
     log_path = tmp_path / "launcher.log"
     with log_path.open("wb") as log:
         parent = subprocess.Popen(
-            [sys.executable, "-u", "-c", _LAUNCHER, str(tmp_path), _WORKER, _ENGINE,
+            [_fixture_python(), "-u", "-c", _LAUNCHER, str(tmp_path), _WORKER, _ENGINE,
              getattr(request, "param", "launcher")], env=env,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log,
             **pl.subprocess_new_group_kwargs(),
