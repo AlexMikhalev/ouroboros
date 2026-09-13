@@ -632,7 +632,7 @@ def _add_settings_parser(subparsers: argparse._SubParsersAction) -> None:
     mode.add_argument("mode", choices=["light", "advanced", "pro", "cyber_pro"])
     mode.set_defaults(func=_owner_runtime_mode_command)
     context_mode = sub.add_parser("context-mode")
-    context_mode.add_argument("mode", choices=["low", "max"])
+    context_mode.add_argument("mode", choices=["nano", "low", "max"])
     context_mode.set_defaults(func=_owner_context_mode_command)
     grant = sub.add_parser("auto-grant")
     grant.add_argument("enabled", choices=["on", "off"])

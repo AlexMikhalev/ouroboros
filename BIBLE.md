@@ -130,7 +130,9 @@ on every restart, but one personality that remembers its path.
   scope reviewer applies at all is governed by this same owner-selected mode as an
   explicit policy coupling under P3 — in `max` the ≥1M blocking scope gate runs, in
   `low` whole-repository scope review is declaredly not performed while the diff
-  reviewers still block — and model quality and reasoning effort are not lowered by
+  reviewers still block; owner-selected `nano` uses the compact projection and
+  records `owner_nano` with `rendered_mode=nano` in physical usage facts — and
+  model quality and reasoning effort are not lowered by
   the mode. Outside Cyber Pro, context mode and review scope/enforcement remain
   owner-controlled. In Cyber Pro, Ouroboros may change its own horizon and
   review policy as part of its configuration authority. A new choice has its

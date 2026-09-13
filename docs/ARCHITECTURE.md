@@ -1987,7 +1987,7 @@ A registry of `config.SETTINGS_DEFAULTS` (exact defaults stay canonical in `conf
 | OUROBOROS_PREFLIGHT_TEST_WORKERS | (unset) | Env-only: xdist worker count for the hermetic parallel pass; floor 2, otherwise `os.cpu_count()`. Read from the OPERATOR environment and scrubbed from the candidate; concurrent-lane sizing rule in `docs/DEVELOPMENT.md` |
 | OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS | true | Auto-grant manifest-declared permissions to cleanly reviewed skills (hash-bound; blocking findings never grant) |
 | OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS | true | Launcher seed/resync writes hash-pinned `native_seed` verdicts; acts only at seed/resync, no runtime grant endpoint |
-| OUROBOROS_CONTEXT_MODE | max | Context mode (`max`/`low`), owner-selected outside Cyber Pro; current scope applicability follows BIBLE P1/P3. Cyber may configure it through the same audited writer. |
+| OUROBOROS_CONTEXT_MODE | max | Context mode (`nano`/`low`/`max`), owner-selected outside Cyber Pro; `nano` is the compact owner projection and is recorded as `owner_nano`/`rendered_mode=nano` in physical usage facts. Current scope applicability follows BIBLE P1/P3. Cyber may configure it through the same audited writer. |
 | OUROBOROS_CONTEXT_MODE_AUTO_LOW | false | Task-local low-mode overflow retry toggle |
 | OUROBOROS_RUNTIME_MODE | advanced | Effective Access light/advanced/pro/cyber_pro; ordinary self-modification boundaries and Cyber agency are defined in §6 Safety and runtime mode. Settings persist the next-boot value; configured review enforcement remains independent evidence. |
 | OUROBOROS_SKILLS_REPO_PATH | "" | Extra skills checkout path (expanded at read time, never cloned/pulled) |

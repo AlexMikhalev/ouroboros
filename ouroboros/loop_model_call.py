@@ -380,6 +380,8 @@ def _context_fit_round_id(ctx: _RoundModelCallContext) -> str:
 
 
 def _main_context_profile(plan: Any, rendered_mode: str) -> str:
+    if rendered_mode == "nano":
+        return "owner_nano"
     if rendered_mode != "low":
         return "owner_max"
     # Effective Low is the sizing authority even when a bare env override
@@ -417,7 +419,7 @@ def _measure_round_main_fit(
         return None
     from ouroboros.context_fit import measure_main_fit
 
-    rendered_mode = "low" if ctx.active_context_mode == "low" else "max"
+    rendered_mode = str(ctx.active_context_mode) if str(ctx.active_context_mode) in {"max", "low", "nano"} else "max"
     disposition = measure_main_fit(
         plan,
         ctx.messages,
