@@ -167,7 +167,7 @@ final class AndroidBridge implements Closeable {
             case "location.state": return locationState(p);
             case "location.get": return locationGet(p);
             case "accessibility.state": return OuroborosAccessibilityService.state();
-            case "accessibility.windows": return OuroborosAccessibilityService.windows();
+            case "accessibility.windows": return OuroborosAccessibilityService.windows(p);
             case "accessibility.perform": return OuroborosAccessibilityService.perform(p);
             case "notifications.state": return OuroborosNotificationListener.state();
             case "notifications.list": return OuroborosNotificationListener.list(p);

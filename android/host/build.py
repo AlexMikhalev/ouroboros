@@ -71,7 +71,8 @@ def main() -> None:
         shutil.copytree(source / "res", res, dirs_exist_ok=True)
     if not args.project:
         (res / "drawable").mkdir(exist_ok=True)
-        shutil.copyfile(source.parents[1] / "assets" / "icon_1024.png", res / "drawable" / "icon.png")
+        # source is <repo>/android/host; the shared asset lives at <repo>/assets.
+        shutil.copyfile(source.parents[2] / "assets" / "icon_1024.png", res / "drawable" / "icon.png")
     run(tools / "aapt2", "compile", "--dir", res, "-o", out / "resources.zip")
     versions = []
     if args.version_code is not None:

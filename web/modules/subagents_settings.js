@@ -590,6 +590,7 @@ export function createAvailableSubagentsEditor({
             rowElement.querySelector('[data-subagent-field="processing_preference"]')?.addEventListener('change', (event) => {
                 if (event.target.value) row.processing_preference = event.target.value;
                 else delete row.processing_preference;
+                markDirty();
             });
             rowElement.querySelector('[data-subagent-field="access"]')?.addEventListener('change', (event) => {
                 if (event.target.value === 'full') row.access = 'full';
