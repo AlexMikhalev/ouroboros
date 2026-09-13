@@ -201,7 +201,8 @@ export const apiClient = {
         const params = new URLSearchParams();
         if (chatId !== 1) params.set('chat_id', String(chatId));
         if (cursor) params.set('cursor', cursor);
-        return fetchJson(`/api/chat/history${params.size ? `?${params}` : ''}`, { cache: 'no-store', signal });
+        const query = params.toString();
+        return fetchJson(`/api/chat/history${query ? `?${query}` : ''}`, { cache: 'no-store', signal });
     },
     /** @returns {Promise<import('./api_types.js').HealthResponse>} */
     health: () => fetchJson('/api/health', { cache: 'no-store' }),

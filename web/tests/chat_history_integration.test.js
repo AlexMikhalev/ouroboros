@@ -158,6 +158,26 @@ test('closing the real chat instance aborts its pending archive fetch', async (t
     await pending;
 });
 
+test('history query construction remains portable when URLSearchParams.size is unavailable', async () => {
+    const source = await import('../modules/api_client.js');
+    const original = Object.getOwnPropertyDescriptor(URLSearchParams.prototype, 'size');
+    Object.defineProperty(URLSearchParams.prototype, 'size', { configurable: true, value: undefined });
+    const priorFetch = globalThis.fetch;
+    let requested;
+    globalThis.fetch = async (url) => {
+        requested = String(url);
+        return { ok: true, json: async () => ({ messages: [], has_more: false, page_cursor: 'p' }) };
+    };
+    try { await source.apiClient.chatHistory({ chatId: 2, cursor: 'c' }); }
+    finally {
+        globalThis.fetch = priorFetch;
+        if (original) Object.defineProperty(URLSearchParams.prototype, 'size', original);
+        else delete URLSearchParams.prototype.size;
+    }
+    assert.match(requested, /chat_id=2/);
+    assert.match(requested, /cursor=c/);
+});
+
 for (const hydrated of [false, true]) test(`an unavailable archive keeps recent messages and a fresh retry (hydrated=${hydrated})`, async (t) => {
     const partial = { messages: [row('chat:10', 'Readable recent answer', {
         history_id: undefined, history_position: undefined,
