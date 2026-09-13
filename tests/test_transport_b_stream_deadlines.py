@@ -298,20 +298,59 @@ def test_terminal_length_with_a_partial_tool_call_returns_like_non_stream(isolat
     assert [row["state"] for row in rows(isolated)] == ["reserved", "dispatched", "settled"]
 
 
+def test_clean_close_after_every_choice_finished_is_terminal_framing(isolated):
+    """The provider closed the body cleanly after the choice's ``finish_reason`` but never sent
+    ``[DONE]``: both witnesses of terminal framing count, so the reply is complete (disclosed in the
+    receipt), settles, and is not an unknown outcome."""
+    wire = sse(chunk({"role": "assistant", "content": "done"}, "stop", usage=completion()["usage"]), done=False)
+    result = run_driver(lambda **kw: WireResponse(wire), payload(stream=True), target()).model_dump()
+    msg, usage = LLMClient()._normalize_remote_response(result, target(), skip_cost_fetch=True)
+    assert msg["content"] == "done" and result["_stream_receipt"]["complete"] is True
+    assert usage["stream_receipt"]["anomalies"] == {"count": 1, "first": [
+        "stream closed without [DONE] after every choice finished"]}
+    assert rows(isolated)[-1]["state"] == "settled"
+
+
+def test_tool_call_without_type_is_structurally_complete(isolated):
+    """``type`` is not part of structural completeness (id, name, arguments are): a call whose
+    fragments never carried it returns exactly as the non-stream path returns it."""
+    wire = sse(chunk({"tool_calls": [{"index": 0, "id": "t", "function": {"name": "lookup", "arguments": '{"q":"x"}'}}]},
+                     "tool_calls", usage=completion()["usage"]))
+    result = run_driver(lambda **kw: WireResponse(wire), payload(stream=True), target()).model_dump()
+    assert result["choices"][0]["message"]["tool_calls"] == [
+        {"id": "t", "function": {"name": "lookup", "arguments": '{"q":"x"}'}}]
+    assert result["_stream_receipt"]["anomalies"]["count"] == 0 and rows(isolated)[-1]["state"] == "settled"
+
+
+def test_later_usage_snapshot_overrides_an_earlier_one(isolated):
+    """Usage frames are cumulative snapshots: the last one read is the one settled, so an early
+    partial snapshot never becomes the attempt's cost."""
+    early = {"id": "gen-test", "object": "chat.completion.chunk", "model": "vendor/test-stream", "choices": [],
+             "usage": {"prompt_tokens": 10, "completion_tokens": 0, "cost": 0.01}}
+    wire = sse(early, chunk({"role": "assistant", "content": "done"}), chunk({}, "stop", usage=completion()["usage"]))
+    result = run_driver(lambda **kw: WireResponse(wire), payload(stream=True), target()).model_dump()
+    assert result["usage"] == completion()["usage"]
+    assert rows(isolated)[-1]["state"] == "settled" and rows(isolated)[-1]["cost_usd"] == 0.25
+
+
 def test_identity_conflict_is_forgiven_and_disclosed_in_the_receipt(isolated):
-    """First value wins for identity scalars (a tool call's ``id``, the envelope ``id``);
-    each conflict is a fact in ``usage["stream_receipt"]["anomalies"]``, never a raise."""
+    """First value wins for identity scalars (a tool call's ``id``, the envelope ``id``) and for a
+    choice's ``finish_reason``; each conflict is a fact in ``usage["stream_receipt"]["anomalies"]``,
+    never a raise."""
     wire = sse(chunk({"tool_calls": [{"index": 0, "id": "call_a", "type": "function",
                                       "function": {"name": "lookup", "arguments": '{"q":'}}]}),
                chunk({"tool_calls": [{"index": 0, "id": "call_b", "function": {"arguments": '"ok"}'}}]},
-                     "tool_calls", usage=completion()["usage"], id="gen-other"))
+                     "tool_calls", usage=completion()["usage"], id="gen-other"),
+               chunk({}, "stop"))
     result = run_driver(lambda **kw: WireResponse(wire), payload(stream=True), target()).model_dump()
     msg, usage = LLMClient()._normalize_remote_response(result, target(), skip_cost_fetch=True)
     assert msg["tool_calls"][0]["id"] == "call_a" and msg["response_id"] == "gen-test"
     assert json.loads(msg["tool_calls"][0]["function"]["arguments"]) == {"q": "ok"}
-    assert usage["stream_receipt"]["anomalies"] == {"count": 2, "first": [
+    assert result["choices"][0]["finish_reason"] == "tool_calls"
+    assert usage["stream_receipt"]["anomalies"] == {"count": 3, "first": [
         "id: 'gen-test' then 'gen-other'; kept first",
         "id: 'call_a' then 'call_b'; kept first",
+        "choice 0: finish_reason 'tool_calls' then 'stop'; kept first",
     ]}
     assert rows(isolated)[-1]["state"] == "settled"
 
@@ -329,6 +368,39 @@ def test_finish_frame_without_delta_still_completes_the_choice(isolated):
     assert usage["stream_receipt"]["anomalies"] == {"count": 1, "first": [
         "choice 0: delta is NoneType, not an object; treated as empty",
     ]}
+    assert rows(isolated)[-1]["state"] == "settled"
+
+
+def test_lone_choice_with_a_foreign_index_is_remapped_on_a_single_choice_stream(isolated):
+    """A single-choice reply whose only choice carries index 1 is a form irregularity after
+    ``[DONE]``: it is remapped to choice 0 and disclosed, never an unknown outcome."""
+    wire = sse(chunk({"role": "assistant", "content": "done"}, "stop", index=1, usage=completion()["usage"]))
+    result = run_driver(lambda **kw: WireResponse(wire), payload(stream=True), target()).model_dump()
+    assert result["choices"][0]["index"] == 0 and result["choices"][0]["message"]["content"] == "done"
+    msg, usage = LLMClient()._normalize_remote_response(result, target(), skip_cost_fetch=True)
+    assert usage["stream_receipt"]["anomalies"]["first"] == ["choice at position 0: index 1; used 0"]
+    assert rows(isolated)[-1]["state"] == "settled"
+
+
+def test_missing_choice_after_done_is_rejected_not_unknown(isolated):
+    """``n=2`` with only one choice at ``[DONE]``: the wire is complete, the body is unusable —
+    a rejection with usage (settled), not an unknown outcome."""
+    wire = sse(chunk({"role": "assistant", "content": "only one"}, "stop", usage=completion()["usage"]))
+    with pytest.raises(RejectedProviderStream) as caught:
+        run_driver(lambda **kw: WireResponse(wire), payload(stream=True, n=2), target())
+    assert "choices [0] present, 2 expected" in str(caught.value) and caught.value.stream_receipt["complete"] is True
+    assert rows(isolated)[-1]["state"] == "settled"
+
+
+def test_non_text_scalar_after_text_keeps_the_first_shape(isolated):
+    """First shape wins in both directions: text established by earlier frames is not
+    overwritten by a later malformed non-text scalar; the conflict is disclosed."""
+    wire = sse(chunk({"role": "assistant", "content": "ok"}), chunk({"content": 7}),
+               chunk({}, "stop", usage=completion()["usage"]))
+    result = run_driver(lambda **kw: WireResponse(wire), payload(stream=True), target()).model_dump()
+    msg, usage = LLMClient()._normalize_remote_response(result, target(), skip_cost_fetch=True)
+    assert msg["content"] == "ok"
+    assert usage["stream_receipt"]["anomalies"] == {"count": 1, "first": ["content: int delta onto str; kept first shape"]}
     assert rows(isolated)[-1]["state"] == "settled"
 
 
@@ -391,6 +463,43 @@ def test_mid_stream_error_chunk_classifies_by_body_and_settles_only_with_usage(i
     classification = classify_llm_exception(exc)
     assert (classification.kind, classification.retry_same_request, classification.status_code) == (
         "provider_transient", True, 502)
+
+
+@pytest.mark.parametrize("usage_first", [False, True])
+@pytest.mark.parametrize("shape", ["finish_reason_error", "code_less_error_frame"])
+def test_code_less_stream_error_is_a_provider_verdict_not_an_unknown_outcome(isolated, usage_first, shape):
+    """An SSE error without an HTTP-shaped code — the provider's own ``finish_reason: "error"``, or an
+    ``{"error": {"type": ...}}`` frame (the overload/api_error shape) — is the provider's terminal verdict on
+    this stream: ``provider_error`` with no same-request repeat, whether or not a usage frame was read
+    first; it never reopens the unknown-outcome continuation. A usage snapshot carried by the error frame
+    itself settles the attempt."""
+    frames = [chunk({"content": "par"})]
+    if usage_first:
+        frames.append({"id": "gen-test", "choices": [], "usage": completion()["usage"]})
+    if shape == "finish_reason_error":
+        frames.append(chunk({"content": ""}, "error"))
+    else:
+        frames.append({"id": "gen-test", "error": {"type": "overloaded_error", "message": "Overloaded"},
+                       **({"usage": completion()["usage"]} if usage_first else {})})
+    with pytest.raises(ProviderStreamError) as caught:
+        run_driver(lambda **kw: WireResponse(sse(*frames, done=False)), payload(stream=True), target())
+    exc = caught.value
+    assert exc.stream_rejected and exc.code == "" and exc.status_code == 200
+    assert rows(isolated)[-1]["state"] == ("settled" if usage_first else "unresolved")
+    classification = classify_llm_exception(exc)
+    assert (classification.kind, classification.retry_same_request) == ("provider_error", False)
+
+
+def test_error_frame_carrying_its_own_usage_settles_the_attempt(isolated):
+    """The usage snapshot on the error frame itself is the latest money fact: it settles the attempt
+    instead of leaving an unresolved upper bound behind a known outcome."""
+    frames = [chunk({"content": "par"}),
+              {"id": "gen-test", "error": {"code": 502, "message": "Upstream provider error"},
+               "usage": completion()["usage"]}]
+    with pytest.raises(ProviderStreamError) as caught:
+        run_driver(lambda **kw: WireResponse(sse(*frames, done=False)), payload(stream=True), target())
+    assert caught.value.stream_usage == completion()["usage"]
+    assert rows(isolated)[-1]["state"] == "settled" and rows(isolated)[-1]["cost_usd"] == 0.25
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
@@ -624,17 +733,52 @@ def test_native_incomplete_blocks_or_message_cannot_return_tools(isolated, monke
     assert rows(isolated)[-1]["state"] == "unresolved"
 
 
+def test_native_unusable_body_after_message_stop_is_rejected_and_settled(isolated, monkeypatch):
+    """A thinking block that never received its signature is unusable, but ``message_stop`` and the
+    usage arrived: the native path judges once after terminal framing exactly like the Chat path —
+    ``RejectedProviderStream`` with the usage, a settled ledger row, and ``provider_error`` (no retry of
+    the same request, no unknown-outcome continuation)."""
+    import requests
+    events, _expected = native_events()
+    events = [(kind, body) for kind, body in events
+              if not (kind == "content_block_delta" and (body.get("delta") or {}).get("type") == "signature_delta")]
+    monkeypatch.setattr(requests, "post", lambda *a, **k: WireResponse(sse(*events, done=False)))
+    with pytest.raises(RejectedProviderStream) as caught:
+        LLMClient()._chat_anthropic(target("anthropic"), MESSAGES, TOOLS, "high", 1024, "auto", stream=True)
+    assert "thinking block lacks its complete signature" in str(caught.value)
+    assert caught.value.stream_usage["input_tokens"] == 5 and not hasattr(caught.value, "code")
+    assert rows(isolated)[-1]["state"] == "settled"
+    verdict = classify_llm_exception(caught.value)
+    assert (verdict.kind, verdict.retry_same_request) == ("provider_error", False)
+
+
+def test_native_max_tokens_with_tool_blocks_returns_like_non_stream(isolated, monkeypatch):
+    """``stop_reason == max_tokens`` beside a complete tool block is a finished reply the loop reads
+    (parity with the non-stream native path, which surfaces ``stop_reason``); it is not a rejection."""
+    import requests
+    events, expected = native_events()
+    for kind, body in events:
+        if kind == "message_delta":
+            body["delta"]["stop_reason"] = "max_tokens"
+    monkeypatch.setattr(requests, "post", lambda *a, **k: WireResponse(sse(*events, done=False)))
+    message, usage = LLMClient()._chat_anthropic(target("anthropic"), MESSAGES, TOOLS, "high", 1024, "auto", stream=True)
+    assert message["stop_reason"] == "max_tokens" and message["tool_calls"][0]["function"]["name"] == "lookup"
+    assert rows(isolated)[-1]["state"] == "settled"
+
+
 @pytest.mark.parametrize("before_content", [False, True])
 @pytest.mark.parametrize("error,status,kind", [
-    ({"type": "overloaded_error", "message": "Overloaded"}, 200, "provider_outcome_unknown"),
+    ({"type": "overloaded_error", "message": "Overloaded"}, 200, "provider_error"),
     ({"type": "api_error", "code": 502, "message": "Bad gateway"}, 502, "provider_transient"),
 ])
 def test_native_http_200_sse_error_keeps_producer_facts_and_custody(isolated, monkeypatch, before_content,
                                                                     error, status, kind):
     """An explicit SSE error is a provider fact, not ``model_outcome_unknown``: a numeric
     body code becomes the status the classifier files (502 → provider_transient); a
-    type-only body keeps status 200, so unresolved custody alone still reads unknown.
-    Custody stays unresolved either way because no usage frame was read."""
+    type-only body (the overload shape) is the provider's own verdict on the stream
+    (``stream_rejected`` → provider_error, no same-request repeat), never an unknown
+    outcome. Custody stays unresolved either way: no final usage frame was read, and
+    ``message_start``'s snapshot is only a lower bound."""
     import requests
     events, _ = native_events()
     event = {"type": "error", "error": error}
@@ -645,6 +789,7 @@ def test_native_http_200_sse_error_keeps_producer_facts_and_custody(isolated, mo
     exc = caught.value
     assert exc.body == event and exc.type == error["type"]
     assert exc.code == "" and exc.status_code == status and exc.stream_usage is None
+    assert exc.stream_rejected is (status == 200)
     assert exc.stream_receipt["generation_id"] == "header-generation" and exc.stream_receipt["complete"] is False
     assert response.closed and rows(isolated)[-1]["state"] == "unresolved"
     assert classify_llm_exception(exc).kind == kind
@@ -799,16 +944,15 @@ def test_actual_sdk_loopback_sse_and_cleanup(isolated, monkeypatch, asynchronous
             operation = lambda: asyncio.run(call_and_close())
         else:
             operation = lambda: client.chat(**kwargs)
-        if terminal:
-            msg, usage = operation()
-            assert msg["content"] == "done"
-            assert usage["stream_receipt"]["generation_id"] == "loopback-generation"
-        else:
-            with pytest.raises(IncompleteProviderStream) as caught:
-                operation()
-            assert caught.value.stream_receipt["generation_id"] == "loopback-generation"
+        msg, usage = operation()
+        assert msg["content"] == "done"
+        assert usage["stream_receipt"]["generation_id"] == "loopback-generation"
+        # A body closed cleanly after every choice finished is terminal framing even without
+        # ``[DONE]`` (a compatible endpoint that omits it must not turn every reply into an
+        # unknown outcome); the missing witness is disclosed in the receipt.
+        assert usage["stream_receipt"]["anomalies"]["count"] == (0 if terminal else 1)
         assert observed[0]["stream"] is True and observed[0]["stream_options"]["include_usage"] is True
-        assert [row["state"] for row in rows(isolated)] == ["reserved", "dispatched", "settled" if terminal else "unresolved"]
+        assert [row["state"] for row in rows(isolated)] == ["reserved", "dispatched", "settled"]
     finally:
         for sdk in client._remote_clients.values():
             sdk.close()

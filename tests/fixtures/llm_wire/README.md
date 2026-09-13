@@ -27,5 +27,22 @@ spacing on frames the redaction did not touch); a redacted `data:` line is re-se
 compactly. Non-stream bodies keep their leading keep-alive whitespace.
 
 Fixture pairs are separate live requests, so parity is structural (message keys, tool
-names, argument key sets, `reasoning_details` type sequence, finish reason, usage keys),
-never exact text.
+names, argument key sets, `reasoning_details` type sequence and per-record key sets,
+finish reason, usage keys), never exact text.
+
+Cases — the same synthetic prompt and `lookup` tool everywhere; what differs is the request
+knob (or simply the reply the model chose to give on that run):
+
+| case | route / model | request knob | what the reply exercises |
+|---|---|---|---|
+| `tool_stream` (+ `tool_nonstream`) | openrouter / gemini-3.8-flash | `reasoning: {"enabled": true}` | one call, a single `reasoning.encrypted` record |
+| `tool_stream_longreasoning` | openrouter / gemini-3.8-flash | `reasoning: {"effort": "low"}` | one call; visible `reasoning.text` then `reasoning.encrypted` — the #856 minimal reproducer (type transition inside one `index`) |
+| `multicall_stream` (+ `multicall_nonstream`) | openrouter / gemini-3.8-flash | `reasoning: {"effort": "high"}` | two calls in one turn |
+| `secondturn_stream` | openrouter / gemini-3.8-flash | `reasoning: {"effort": "high"}`, second turn (assistant reply + `lookup` result replayed) | continuation with replayed reasoning |
+| `tool_stream` | openrouter / grok-4.6 | `reasoning: {"effort": "low"}` | `reasoning.summary` then `reasoning.encrypted` (`rs_…`) |
+| `tool_stream`, `multi_stream` | openrouter / gpt-5.6-sol | `reasoning: {"effort": "low"}` / `{"effort": "medium"}` | one / two calls, one `reasoning.encrypted` |
+| `tool_stream` (+ `tool_nonstream`) | openrouter / claude-sonnet-5 | `reasoning: {"effort": "high"}` | two calls, `reasoning.text` with a signature |
+| `refusal_stream`, `refusal_stream_v2` | openrouter / claude-fable-5 | `reasoning: {"effort": "high"}` | a refusal: `finish_reason: content_filter`, no reasoning |
+| `custom_stream` (+ `custom_nonstream`) | openai / gpt-5.6-terra | `tools[0].type = "custom"` with the runtime's `_CUSTOM_FORMAT` | a custom-tool call |
+| `function_none_stream` | openai / gpt-5.6-terra | `reasoning_effort: "none"` | two function calls, no reasoning |
+| `native_stream` (+ `native_nonstream`) | anthropic / claude-sonnet-5 (Messages) | `thinking: {"type": "adaptive"}` | thinking + text + two `tool_use` blocks |

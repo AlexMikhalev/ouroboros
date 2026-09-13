@@ -13,6 +13,6 @@ requirements-runtime.lock text eol=lf
 # Golden scanner slices are SHA-pinned and must keep identical bytes on Windows.
 tests/fixtures/skill_publish_scanner/*.fixture text eol=lf
 
-# Recorded provider wire (SSE / JSON bodies) is byte-exact evidence with LF framing;
-# keep it LF on every checkout so the replay corpus never sees converted bytes.
-tests/fixtures/llm_wire/** text eol=lf
+# Recorded provider wire (SSE / JSON bodies) is byte-exact evidence: no line-ending
+# conversion at commit or checkout, so the replay corpus always sees the recorded bytes.
+tests/fixtures/llm_wire/** -text

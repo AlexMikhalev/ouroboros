@@ -1338,8 +1338,9 @@ def _terminalize_failed_attempt(reservation: AttemptReservation, exc: BaseExcept
         return "settled"
     elif isinstance(stream_usage, dict) and stream_usage:
         # The usage frame was read before the body was judged unusable: money is
-        # known, so settle exactly as a successful response does (same extractor,
-        # same cost derivation); only the answer is missing.
+        # known, so settle through the success path's extractor and cost derivation
+        # from that frame alone (no assembled-body facts such as service_tier, no
+        # cache-TTL injection or token-density observation); only the answer is missing.
         usage, cost, final = usage_from_response({"usage": stream_usage})
         settle_attempt(reservation, dict(usage or {}), cost_usd=cost, cost_final=final)
         return "settled"

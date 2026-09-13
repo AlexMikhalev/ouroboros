@@ -51,7 +51,7 @@ class ProviderStreamError(IncompleteProviderStream):
 
     A provider fact, not an unknown outcome: no ``code``; the body's numeric
     ``error.code`` becomes ``status_code`` so the classifier files it through
-    its ordinary status ladder.
+    its ordinary status ladder, and a frame without one is ``stream_rejected``.
     """
 
     code = ""
@@ -61,9 +61,13 @@ class ProviderStreamError(IncompleteProviderStream):
         error = body.get("error")
         error = error if isinstance(error, dict) else {}
         code = error.get("code")
-        self.status_code = (
-            code if isinstance(code, int) and not isinstance(code, bool) and 100 <= code <= 599 else 200
-        )
+        numeric = isinstance(code, int) and not isinstance(code, bool) and 100 <= code <= 599
+        self.status_code = code if numeric else 200
+        # Without an HTTP-shaped code the frame is the provider's own terminal
+        # verdict on this stream (an overload/api_error shape, a finish_reason of
+        # "error"): filed like a rejected body — provider_error, no same-request
+        # repeat, the cross-model chain eligible — never an unknown outcome.
+        self.stream_rejected = not numeric
         self.type = str(error.get("type") or error.get("code") or "provider_stream_error")
         self.provider_message = str(error.get("message") or "")
         self.stream_usage = copy.deepcopy(usage) if isinstance(usage, dict) and usage else None
@@ -100,7 +104,13 @@ def _index(value: Any) -> int:
 
 
 def _adjacent(last: Any, item: dict) -> bool:
-    """Continuation of the last record: ``type`` and ``id`` absent on either side or equal."""
+    """Continuation of the last record: ``type`` and ``id`` absent on either side or equal.
+
+    Discreteness of opaque payloads (``reasoning.encrypted`` data, signatures)
+    rides on the provider's ``id``: two id-less records of one type would fuse.
+    Every recorded encrypted record carries an id; text records must stay
+    id-less-mergeable, which is the #856 fix itself.
+    """
     return isinstance(last, dict) and all(
         last.get(key) is None or item.get(key) is None or last.get(key) == item.get(key)
         for key in ("type", "id"))
@@ -146,8 +156,8 @@ def _delta(target: dict, update: dict, note: Callable[[str], None]) -> None:
                 target[key] = copy.deepcopy(value)
             elif current != value:
                 note(f"{key}: {current!r} then {value!r}; kept first")
-        elif isinstance(current, (dict, list)):
-            note(f"{key}: scalar delta onto {type(current).__name__}; kept first shape")
+        elif isinstance(current, (dict, list, str)):
+            note(f"{key}: {type(value).__name__} delta onto {type(current).__name__}; kept first shape")
         else:
             target[key] = copy.deepcopy(value)
 
@@ -192,7 +202,9 @@ def _tool_call_problem(call: Any) -> str:
         return f"is {type(call).__name__}, not an object"
     if not isinstance(call.get("id"), str) or not call["id"]:
         return "id missing"
-    kind = call.get("type")
+    # Structural completeness is id + name + arguments; a fragment set that never
+    # carried ``type`` is the same shape the non-stream path executes.
+    kind = call.get("type") or ("function" if isinstance(call.get("function"), dict) else None)
     if kind not in {"function", "custom"}:
         return f"type {kind!r}"
     payload = call.get(kind)
@@ -246,7 +258,7 @@ class ChatAccumulator(_Accumulator):
         if isinstance(chunk.get("error"), dict):
             _snapshot(self.body, {key: value for key, value in chunk.items()
                                   if key not in {"choices", "usage", "object"}})
-            raise ProviderStreamError(chunk, usage=self.body.get("usage"))
+            raise ProviderStreamError(chunk, usage=chunk.get("usage") or self.body.get("usage"))
         for key, value in chunk.items():
             if key in {"choices", "object", "obfuscation"} or value is None:
                 continue
@@ -268,7 +280,7 @@ class ChatAccumulator(_Accumulator):
             self._note(f"choice at position {position} is not an object; skipped")
             return
         index = update.get("index")
-        if not _valid_index(index):
+        if not _valid_index(index) or (self.expected_choices == 1 and index != 0):
             index = 0 if self.expected_choices == 1 else position
             self._note(f"choice at position {position}: index {update.get('index')!r}; used {index}")
         delta = update.get("delta")
@@ -305,8 +317,16 @@ class ChatAccumulator(_Accumulator):
 
     def result(self) -> dict:
         """Judge once, after terminal framing: unknown outcome vs. unusable body."""
-        if not self.done or set(self.choices) != set(range(self.expected_choices)):
-            raise IncompleteProviderStream("Stream ended without complete terminal framing")
+        if not self.done:
+            # A body the provider closed cleanly after every choice finished is
+            # terminal framing too ([DONE] is the other witness); a close before
+            # that is the one unknown outcome this assembler still reports.
+            if not self.choices or any(not choice.get("finish_reason") for choice in self.choices.values()):
+                raise IncompleteProviderStream("Stream ended without complete terminal framing")
+            self._note("stream closed without [DONE] after every choice finished")
+            self.done = True
+        if set(self.choices) != set(range(self.expected_choices)):
+            self._reject(f"choices {sorted(self.choices)} present, {self.expected_choices} expected")
         body = self.partial()
         for choice in body["choices"]:
             path = f"choice {choice['index']}"
@@ -354,7 +374,8 @@ class AnthropicAccumulator(_Accumulator):
 
     def accept(self, event: str, data: str) -> None:
         if self.done:
-            raise IncompleteProviderStream("Data after native stream terminal")
+            self._note("data after message_stop; ignored")
+            return
         chunk = json.loads(data)
         if not isinstance(chunk, dict):
             raise IncompleteProviderStream("Native stream chunk is not an object")
@@ -362,6 +383,9 @@ class AnthropicAccumulator(_Accumulator):
         if event and event != kind:
             raise IncompleteProviderStream("Native SSE event differs from payload type")
         if kind == "error":
+            # message_start's usage is a lower-bound snapshot (final output tokens
+            # arrive in message_delta): an aborted native stream keeps its
+            # unresolved upper bound rather than settling on an understatement.
             raise ProviderStreamError(chunk)
         if kind == "ping":
             return
@@ -386,9 +410,11 @@ class AnthropicAccumulator(_Accumulator):
             if kind == "content_block_stop":
                 self.open_blocks.remove(index)
                 if index in self.inputs:
-                    block["input"] = json.loads(self.inputs[index])
-                    if not isinstance(block["input"], dict):
-                        raise IncompleteProviderStream("Native tool input is not an object")
+                    try:
+                        block["input"] = json.loads(self.inputs[index])
+                    except ValueError:
+                        self._note(f"block {index}: tool input is not JSON; left for the terminal verdict")
+                        block["input"] = self.inputs[index]
                 return
             delta = chunk.get("delta")
             if not isinstance(delta, dict):
@@ -415,23 +441,32 @@ class AnthropicAccumulator(_Accumulator):
         # Future non-content events are retained in the exact wire evidence.
 
     def result(self) -> dict:
-        if (not self.done or not self.body or self.open_blocks or not self.body.get("stop_reason")
-                or set(self.blocks) != set(range(len(self.blocks)))):
+        """Judge once, after ``message_stop``: unknown outcome vs. unusable body."""
+        if not self.done:
             raise IncompleteProviderStream("Native stream ended without complete terminal framing")
-        if self.body.get("stop_reason") == "max_tokens" and any(
-                block.get("type") == "tool_use" for block in self.blocks.values()):
-            raise IncompleteProviderStream("Native output exhausted while producing tool calls")
-        for block in self.blocks.values():
+        if not self.body:
+            self._reject("message_stop without a message_start")
+        if self.open_blocks:
+            self._reject(f"blocks {sorted(self.open_blocks)} never stopped")
+        if not self.body.get("stop_reason"):
+            self._reject("no stop_reason after message_stop")
+        if set(self.blocks) != set(range(len(self.blocks))):
+            self._reject(f"block indices {sorted(self.blocks)} are not contiguous")
+        for index, block in self.blocks.items():
             kind = block.get("type")
             if kind in {"tool_use", "server_tool_use"} and (
                     not isinstance(block.get("id"), str) or not block["id"]
                     or not isinstance(block.get("name"), str) or not block["name"]
                     or not isinstance(block.get("input"), dict)):
-                raise IncompleteProviderStream("Incomplete native tool block")
+                self._reject(f"block {index}: tool block lacks id, name or an object input")
             if kind == "thinking" and (not isinstance(block.get("thinking"), str)
                                        or not isinstance(block.get("signature"), str) or not block["signature"]):
-                raise IncompleteProviderStream("Native thinking block lacks its complete signature")
+                self._reject(f"block {index}: thinking block lacks its complete signature")
         return self.partial()
+
+    def _reject(self, detail: str) -> None:
+        raise RejectedProviderStream(f"Native stream rejected after message_stop: {detail}",
+                                     usage=self.body.get("usage"), anomalies=self.anomalies)
 
     def partial(self) -> dict:
         return {**copy.deepcopy(self.body), "content": [copy.deepcopy(self.blocks[key]) for key in sorted(self.blocks)]}

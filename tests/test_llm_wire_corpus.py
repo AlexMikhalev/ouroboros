@@ -181,6 +181,10 @@ def test_recorded_stream_matches_its_nonstream_sibling_structurally(stream, sibl
     assert [set(_call_args(call)) for call in streamed_calls] == [set(_call_args(call)) for call in json_calls]
     assert ([detail["type"] for detail in streamed_msg.get("reasoning_details") or []]
             == [detail["type"] for detail in json_msg.get("reasoning_details") or []])
+    # Per-record key sets: a streamed record that lost its opaque continuation payload
+    # (``signature``/``data``/``id``) would differ from the non-stream sibling here.
+    assert ([sorted(detail) for detail in streamed_msg.get("reasoning_details") or []]
+            == [sorted(detail) for detail in json_msg.get("reasoning_details") or []])
     assert streamed_usage["response_finish_reason"] == json_usage["response_finish_reason"]
     assert set(streamed_usage) - {"stream_receipt"} == set(json_usage)
 
