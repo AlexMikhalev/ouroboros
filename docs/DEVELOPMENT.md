@@ -3010,12 +3010,14 @@ P5). Harvest the exit fact at every spawn decision, at attach and at stop
 crash lands after the startup window, with nobody waiting — and take the
 latch under the same lock as the reap, before reading the log. Do not add a
 backoff machine, a retry counter, a cooldown constant, host-side heap sizing
-or writer-lease handling, and do not add a second retrier: the periodic
+or writer-lease handling, and do not add a third retrier: the periodic
 supervisor sweep (`clear_start_failure_latch`, then its own single zero-wait
-ensure only when it released a latch), a live attach, or a new manager
-(Restart/Panic; a task worker's manager is its own instance with its own
-latch) are the only releases, and ordinary callers never make the retry;
-`NODE_OPTIONS` passthrough is the operator escape hatch (ARCHITECTURE §9).
+ensure on a short-lived thread, only when it released a latch), the owner's
+explicit Refresh (`/api/claudexor/wake`: clears, then one ordinary ensure), a
+live attach, or a new manager (Restart/Panic; a task worker's manager is its
+own instance with its own latch) are the only releases, and ordinary callers
+never make the retry; `NODE_OPTIONS` passthrough is the operator escape
+hatch (ARCHITECTURE §9).
 
 Ordinary close preserves the shared daemon on every platform, including forced
 worker/server/stray cleanup. Exclusions protect the whole subtree, not merely a

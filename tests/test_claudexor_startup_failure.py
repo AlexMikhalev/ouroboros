@@ -480,6 +480,57 @@ def test_an_owner_stop_after_an_unwatched_death_still_records_the_failure(monkey
     assert rows[0]["exit_signal"] == 6 and stand.manager._last_start_failure is not None
 
 
+def test_owner_refresh_releases_the_latch_and_makes_one_ordinary_ensure(monkeypatch, tmp_path):
+    """Owner decision D8: the explicit Refresh clears the latch and spawns once; a second press joins."""
+    import asyncio
+
+    from ouroboros import claudexor_daemon as daemon_mod
+    from ouroboros.gateway import claudexor_accounts as accounts
+
+    stand = _Stand(monkeypatch, tmp_path, returncode=-6, banner=_OOM_REACHED)
+    stand.fail_once()
+    assert stand.manager._last_start_failure is not None and len(stand.spawned) == 1
+    monkeypatch.setattr(daemon_mod, "get_owned_daemon", lambda: stand.manager)
+    monkeypatch.setattr(accounts, "_status_payload", lambda include_models: {"daemon": {"state": "stale"}})
+    stand.exit_code = None  # the child the Refresh spawns stays alive (starting)
+    first = asyncio.run(accounts.api_claudexor_wake(object()))
+    assert first.status_code == 503 and "daemon_starting" in json.loads(first.body)["error"]
+    assert len(stand.spawned) == 2 and len(stand.ensures) == 2, "exactly one spawn attempt by the Refresh"
+    assert stand.manager._last_start_failure is None
+    rows = _rows(stand.data_dir)
+    assert [(row["type"], row.get("cleared_by")) for row in rows] == [
+        ("claudexor_daemon_start_failed", None),
+        ("claudexor_daemon_start_latch_cleared", "owner_wake"),
+    ]
+    second = asyncio.run(accounts.api_claudexor_wake(object()))
+    assert second.status_code == 503 and "daemon_starting" in json.loads(second.body)["error"]
+    assert len(stand.spawned) == 2, "a second press joins the live startup: no second spawn"
+    assert len(_rows(stand.data_dir)) == 2, "nothing latched, nothing released"
+
+
+def test_owner_refresh_on_a_still_crashing_engine_costs_one_spawn_and_re_latches(monkeypatch, tmp_path):
+    import asyncio
+
+    from ouroboros import claudexor_daemon as daemon_mod
+    from ouroboros.gateway import claudexor_accounts as accounts
+
+    stand = _Stand(monkeypatch, tmp_path, returncode=-6, banner=_OOM_REACHED)
+    stand.fail_once()
+    monkeypatch.setattr(daemon_mod, "get_owned_daemon", lambda: stand.manager)
+    monkeypatch.setattr(accounts, "_status_payload", lambda include_models: {})
+    response = asyncio.run(accounts.api_claudexor_wake(object()))
+    assert response.status_code == 503
+    error = json.loads(response.body)["error"]
+    assert error.startswith("daemon_spawn_failed") and "startup_failure=heap_exhausted" in error
+    assert len(stand.spawned) == 2, "an explicit owner action costs one spawn"
+    assert stand.manager._last_start_failure is not None, "a still-crashing engine re-latches"
+    assert [(row["type"], row.get("cleared_by")) for row in _rows(stand.data_dir)] == [
+        ("claudexor_daemon_start_failed", None),
+        ("claudexor_daemon_start_latch_cleared", "owner_wake"),
+        ("claudexor_daemon_start_failed", None),
+    ]
+
+
 def test_a_joined_peer_startup_that_vanished_has_no_exit_fact(monkeypatch, tmp_path):
     """Only this manager's own child carries an exit fact; joining never latches."""
     stand = _Stand(monkeypatch, tmp_path, returncode=-6, banner=_OOM_REACHED)

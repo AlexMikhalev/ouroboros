@@ -532,12 +532,16 @@ async def api_claudexor_wake(request: Request) -> JSONResponse:
     call this owner action; background polling and the status GET never do.
 
     Provisioning cost rides here honestly: a cold runtime install happens inside
-    this request rather than behind a silent GET.
+    this request rather than behind a silent GET. Owner decision D8 (#844): the
+    owner's explicit Refresh also releases the start-failure spawn latch, then
+    makes its ONE ordinary ensure through the same funnel — a still-crashing
+    engine re-latches, so each press costs one spawn, an explicit owner action.
     """
-    from ouroboros.claudexor_daemon import ensure_owned_gateway
+    from ouroboros.claudexor_daemon import ensure_owned_gateway, get_owned_daemon
     from ouroboros.gateways.claudexor import ClaudexorUnavailable
 
     def _wake() -> Dict[str, Any]:
+        get_owned_daemon().clear_start_failure_latch(cleared_by="owner_wake")
         gateway = ensure_owned_gateway()
         gateway.close()
         return _status_payload(include_models=False)
