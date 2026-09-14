@@ -314,10 +314,11 @@ def get_tools() -> List[ToolEntry]:
         ToolEntry("update_scratchpad", {
             "name": "update_scratchpad",
             "description": "Append a block to your working memory (scratchpad). Each call adds a "
-                           "timestamped block; oldest blocks are auto-evicted when the cap (10) is reached. "
+                           "timestamped block; oldest blocks are auto-evicted when either cap is reached "
+                           "(10 blocks, 60000 characters of content). "
                            "Write what matters NOW — active tasks, decisions, observations. "
                            "Persists across sessions, read at every task start. "
-                           "No-op on a project-scoped task (no per-project scratchpad); use knowledge_write for project facts.",
+                           "Project rooms included — the scratchpad is the same working memory in every room.",
             "parameters": {"type": "object", "properties": {
                 "content": {"type": "string", "description": "Content for this scratchpad block"},
             }, "required": ["content"]},
@@ -342,7 +343,7 @@ def get_tools() -> List[ToolEntry]:
                            "Use this only after substantive reflection or real experience — not on a "
                            "greeting or trivial turn. This is the only correct way to write identity; "
                            "never write memory/identity.md through write_file/edit_text. "
-                           "No-op on a project-scoped task (identity is global and continuous, never per-project).",
+                           "Project rooms included — identity is the same continuous file in every room.",
             "parameters": {"type": "object", "properties": {
                 "content": {"type": "string", "description": "Full identity content (prefer evolving over rewriting from scratch)"},
             }, "required": ["content"]},

@@ -13,6 +13,17 @@ OWNER_DELIVERY_TOOL_NAMES: frozenset[str] = frozenset({
     "send_user_message", "send_photo", "send_video", "send_file", "send_links",
 })
 
+# One class: an actor's own memory. Reading and revising what I know about my
+# work and about the people I talk with is a cognitive capability of this mind,
+# not an authority over settings, delivery, or anything outside it. Every room
+# carries it — the main chat, a project room, and an admitted presence
+# conversation, whose ceiling compiles this set in
+# ouroboros/presence_authority.py::build_presence_capability_ceiling.
+COGNITIVE_MEMORY_TOOL_NAMES: frozenset[str] = frozenset({
+    "knowledge_read", "knowledge_write", "knowledge_list",
+    "update_scratchpad", "update_identity", "chat_history",
+})
+
 CORE_TOOL_NAMES: frozenset[str] = frozenset({
     "read_file", "list_files", "write_file", "edit_text",
     "apply_patch", "edit_batch",
@@ -41,9 +52,8 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset({
     # set today, this makes the coupling explicit).
     "list_projects", "route_to_project", "promote_chat_to_task", "steer_task",
     "ensure_project_scope",
-    "update_scratchpad", "update_identity",
-    "chat_history", "recent_tasks",
-    "knowledge_read", "knowledge_write", "knowledge_list",
+    *COGNITIVE_MEMORY_TOOL_NAMES,
+    "recent_tasks",
     "web_search",
     "browse_page", "browser_action", "analyze_screenshot", "view_image",
     "ocr_pdf", "youtube_transcript", "extract_video_frames",

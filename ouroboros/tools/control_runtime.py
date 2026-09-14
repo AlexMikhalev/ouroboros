@@ -186,12 +186,6 @@ def _chat_history(
 
 def _update_scratchpad(ctx: ToolContext, content: str) -> str:
     """LLM-driven scratchpad update — appends a timestamped block (Constitution P5: LLM-first)."""
-    if str(getattr(ctx, "project_id", "") or "").strip():
-        # Project-scoped tasks have no per-project scratchpad and must never write
-        # the canonical scratchpad (outbound isolation). Persist project facts via
-        # knowledge_write instead (routed to the per-project store).
-        return ("OK: scratchpad is not used for project-scoped tasks (no per-project "
-                "scratchpad). Persist durable project facts with knowledge_write.")
     if not content or not isinstance(content, str) or len(content.strip()) < 10:
         return (
             _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR", text=("⚠️ REJECTED: content is empty or too short "
@@ -200,7 +194,14 @@ def _update_scratchpad(ctx: ToolContext, content: str) -> str:
             "This likely means the tool call was malformed — check your arguments.")))
         )
     from ouroboros.memory import Memory
-    mem = Memory(drive_root=ctx.drive_root)
+    from ouroboros.tool_access import canonical_data_root
+
+    # One working memory, every room (P1): the scratchpad is the same file in
+    # the main chat, in a project room, and in an external conversation, so a
+    # project-scoped turn writes it like any other turn. The root follows the
+    # same precedence as _chat_history, so a forked execution drive still
+    # remembers into the canonical root the next context reads.
+    mem = Memory(drive_root=canonical_data_root(ctx))
     mem.ensure_files()
     try:
         block = mem.append_scratchpad_block(
@@ -256,11 +257,6 @@ def _send_user_message(ctx: ToolContext, text: str, reason: str = "") -> str:
 
 def _update_identity(ctx: ToolContext, content: str) -> str:
     """Update identity manifest (who you are, who you want to become)."""
-    if str(getattr(ctx, "project_id", "") or "").strip():
-        # Identity is global and continuous (P1); it is never modified from a
-        # project-scoped task. There is no per-project identity.
-        return ("OK: identity is global and is never modified from a project-scoped "
-                "task (identity stays continuous across projects — P1).")
     if not content or not isinstance(content, str) or len(content.strip()) < 50:
         return (
             _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR", text=("⚠️ REJECTED: content is empty or too short "
@@ -269,11 +265,18 @@ def _update_identity(ctx: ToolContext, content: str) -> str:
             "This likely means the tool call was malformed — check your arguments.")))
         )
     from ouroboros.memory import Memory
-    mem = Memory(drive_root=ctx.drive_root)
+    from ouroboros.tool_access import canonical_data_root
+
+    # One identity, every room (P1): who I am does not change with the room I
+    # am speaking in, so a project room or an external conversation revises the
+    # same continuous file. The root follows the same precedence as
+    # _chat_history, so a forked execution drive still writes the identity the
+    # canonical root reads back.
+    mem = Memory(drive_root=canonical_data_root(ctx))
     mem.ensure_files()
 
     old_content = ""
-    path = ctx.drive_root / "memory" / "identity.md"
+    path = mem.identity_path()
     if path.exists():
         try:
             old_content = path.read_text(encoding="utf-8")

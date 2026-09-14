@@ -216,6 +216,69 @@ def _plan_review_note(env: Any, task_id: str) -> str:
         return ""
 
 
+def _memory_health_lines(env: Any) -> List[str]:
+    """Own-memory maintenance signals: the two authored files and the dialogue pipeline.
+
+    Health is where stale memory becomes visible, so a dialogue-consolidation run that
+    failed, or a nomination batch that was accepted and then not published, is named
+    here rather than left to a log nobody reads. Both lines are STATE read from
+    ``memory/dialogue_meta.json``; neither carries a timestamp, because this block is
+    rendered dynamically and the facts are latest-run facts, not events.
+    """
+    import time as _time
+
+    lines: List[str] = []
+    try:
+        identity_path = env.drive_path("memory/identity.md")
+        if identity_path.exists():
+            age_hours = (_time.time() - identity_path.stat().st_mtime) / 3600
+            if age_hours > 8:
+                lines.append(f"WARNING: STALE IDENTITY — identity.md last updated {age_hours:.0f}h ago")
+            else:
+                lines.append("OK: identity.md recent")
+    except Exception:
+        pass
+    try:
+        identity_content = read_text(env.drive_path("memory/identity.md"))
+        if len(identity_content.strip()) < 200:
+            lines.append(f"WARNING: THIN IDENTITY — identity.md is only {len(identity_content)} chars. Cognitive decay signal.")
+    except Exception:
+        pass
+
+    try:
+        sp_len = len(read_text(env.drive_path("memory/scratchpad.md")).strip())
+        if sp_len < 50:
+            lines.append("WARNING: EMPTY SCRATCHPAD — scratchpad is nearly empty. Memory loss signal.")
+        elif sp_len > SCRATCHPAD_BLOAT_WARN_CHARS:
+            lines.append(f"WARNING: BLOATED SCRATCHPAD — {sp_len} chars. Extract durable insights to knowledge base.")
+        else:
+            lines.append(f"OK: scratchpad size ({sp_len} chars)")
+    except Exception:
+        pass
+
+    try:
+        meta = read_json_dict(env.drive_path("memory/dialogue_meta.json")) or {}
+        receipt = meta.get("last_unpublished_nominations")
+        if isinstance(receipt, dict) and int(receipt.get("failed") or 0) > 0:
+            # The recovery route is named because the reader may hold no read_file:
+            # an external-channel turn has the cognitive memory tools and nothing else.
+            lines.append(
+                f"WARNING: LAST DIALOGUE KNOWLEDGE PUBLICATION INCOMPLETE — {receipt.get('failed')} of "
+                f"{receipt.get('total')} nominations from the latest consolidation batch were not published "
+                f"(entry_id {receipt.get('entry_id')}); from the main chat, read_file(root='runtime_data', "
+                "path='memory/knowledge_history.jsonl') and publish what still holds"
+            )
+        error = meta.get("last_consolidation_error")
+        if isinstance(error, dict):
+            lines.append(
+                f"WARNING: LAST DIALOGUE CONSOLIDATION FAILED — kind={error.get('kind') or 'unknown'} "
+                f"at cursor {error.get('cursor_offset')}"
+            )
+    except Exception:
+        pass
+    return lines
+
+
 def build_health_invariants(env: Any, task_id: str = "", active_root: str = "") -> str:
     """Render the health-invariant WARNING block for one reader's context.
 
@@ -235,8 +298,6 @@ def build_health_invariants(env: Any, task_id: str = "", active_root: str = "") 
     of leaving sixteen identical abstract rows. Empty keeps the static wording
     byte-for-byte.
     """
-    import time as _time
-
     checks: List[str] = []
 
     try:
@@ -315,33 +376,7 @@ def build_health_invariants(env: Any, task_id: str = "", active_root: str = "") 
     except Exception:
         checks.append("WARNING: COST ACCOUNTING UNAVAILABLE — high-cost task check skipped")
 
-    try:
-        identity_path = env.drive_path("memory/identity.md")
-        if identity_path.exists():
-            age_hours = (_time.time() - identity_path.stat().st_mtime) / 3600
-            if age_hours > 8:
-                checks.append(f"WARNING: STALE IDENTITY — identity.md last updated {age_hours:.0f}h ago")
-            else:
-                checks.append("OK: identity.md recent")
-    except Exception:
-        pass
-    try:
-        identity_content = read_text(env.drive_path("memory/identity.md"))
-        if len(identity_content.strip()) < 200:
-            checks.append(f"WARNING: THIN IDENTITY — identity.md is only {len(identity_content)} chars. Cognitive decay signal.")
-    except Exception:
-        pass
-
-    try:
-        sp_len = len(read_text(env.drive_path("memory/scratchpad.md")).strip())
-        if sp_len < 50:
-            checks.append("WARNING: EMPTY SCRATCHPAD — scratchpad is nearly empty. Memory loss signal.")
-        elif sp_len > SCRATCHPAD_BLOAT_WARN_CHARS:
-            checks.append(f"WARNING: BLOATED SCRATCHPAD — {sp_len} chars. Extract durable insights to knowledge base.")
-        else:
-            checks.append(f"OK: scratchpad size ({sp_len} chars)")
-    except Exception:
-        pass
+    checks.extend(_memory_health_lines(env))
 
     # state/crash_report.json retired (CPL4-C9, owner 2A): its writer — the
     # crash-rollback path — no longer exists in this tree, so the reader and
