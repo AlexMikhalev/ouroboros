@@ -513,11 +513,12 @@ def _emit_origin_ambiguous(drive_root: Any, key: tuple, candidates: list, chosen
     disclosure = (str(drive_root), key, chosen)
     if disclosure in _DISCLOSED_AMBIGUOUS_ORIGINS:
         return
-    _DISCLOSED_AMBIGUOUS_ORIGINS.add(disclosure)
     try:
         from ouroboros.utils import append_jsonl
 
-        append_jsonl(pathlib.Path(drive_root) / "logs" / "events.jsonl", {
+        # Marked only once the row is durably appended: a failed append must not
+        # silence every later disclosure of the same fact in this process.
+        written = append_jsonl(pathlib.Path(drive_root) / "logs" / "events.jsonl", {
             "ts": utc_now_iso(),
             "type": "project_origin_ambiguous",
             "origin": {"chat_id": key[0], "client_message_id": key[1]},
@@ -527,6 +528,8 @@ def _emit_origin_ambiguous(drive_root: Any, key: tuple, candidates: list, chosen
             ],
             "chosen": chosen,
         })
+        if written:
+            _DISCLOSED_AMBIGUOUS_ORIGINS.add(disclosure)
     except Exception:
         log.debug("project_origin_ambiguous row failed", exc_info=True)
 
