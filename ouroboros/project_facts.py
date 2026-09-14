@@ -7,7 +7,8 @@ A project-scoped task (an external/workspace task, or one given an explicit
   a task's child drive — so it persists across forked/empty runs;
 - OUTSIDE ``memory/knowledge/**`` and any ``_copy_stable_memory`` path — so it
   never leaks into the forked seed or another project (red-team R3.1/guard #2);
-- never identity — there is no per-project identity.
+- facts only — identity and the scratchpad stay canonical and are written from
+  any room through their own tools; there is no per-project copy of either.
 
 This is a thin SSOT helper, NOT a parallel memory subsystem (P7): the existing
 knowledge tool + context loader simply redirect their base dir when a task is
