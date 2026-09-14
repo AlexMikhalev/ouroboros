@@ -100,7 +100,7 @@ test('chat.js hands the card projection to the selector inside hydrateDirectActi
     assert.match(fn, /unconfirmedForegroundCardIds\(/);
     // Census ids ONLY: the live set is a projection of the census, so unioning
     // its keys in shielded cards from durable reconcile for nothing (#866).
-    assert.match(fn, /\n\s+globallyActiveActivityIds,\n\s+\)\) \{/);
+    assert.match(fn, /\r?\n\s+globallyActiveActivityIds,\r?\n\s+\)\) \{/);
     assert.doesNotMatch(fn, /activeDirectActivities\.keys\(\)/);
     // The projection is built from the live card map, not from a DOM query.
     assert.match(fn, /Array\.from\(liveCardRecords, \(\[id, r\]\) =>/);
