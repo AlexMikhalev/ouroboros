@@ -2344,9 +2344,11 @@ by "Provider Independence" above. Call-site imperatives:
   `review_substrate.assert_cache_breakpoint_cap` covers only the review
   builders. Between the sends of ONE execution the transcript is
   append-only: every send is a prefix extension of the previous send;
-  compaction is the one rewrite the loop names as sanctioned, and a
-  context-fit reprojection after a real overflow is recorded as an ordinary
-  break (a real cache cost, expected only there). OpenAI-family caches (the Codex
+  compaction is the one rewrite the loop names as sanctioned (its seams
+  stamp `transcript_prefix.sanction_rewrite`, and the recorder observes the
+  transcript each round actually dispatched), and a context-fit
+  reprojection after a real overflow is recorded as an ordinary break (a
+  real cache cost, expected only there). OpenAI-family caches (the Codex
   subscription backend, the OpenAI API, OpenRouter -> OpenAI) reuse a
   previous request only when that whole request is a byte-prefix of the
   next, so a transient trailing message or an in-place rewrite of an

@@ -1,9 +1,12 @@
 """Append-only transcript invariant between the sends of one loop execution.
 
 Between two sends of one loop execution the transcript is append-only: every
-send is a prefix extension of the previous send.  Compaction is the one rewrite
-the loop names as sanctioned; a context-fit reprojection (actual overflow,
-route rebind) rewrites sent bytes too and is recorded as an ordinary break.
+send is a prefix extension of the previous send.  The loop observes the
+transcript each round actually dispatched; the seams that rewrite it on purpose
+(compaction: the automatic main-fit reclaim, the manual reclaim, the authored
+context view) stamp ``sanction_rewrite`` so the next observation names them,
+while a context-fit reprojection after a real overflow rewrites sent bytes too
+and is recorded as an ordinary break.
 OpenAI-family caches (Codex backend, OpenAI API, OpenRouter->OpenAI) reuse a
 previous request only when it is a byte-prefix of the next; a replaced tail or
 a rewritten earlier message discards the conversation cache (issue #906,
@@ -21,6 +24,14 @@ DIGEST_ATTR = "_transcript_prefix_digests"
 
 #: `task_checkpoint` discriminator of the fact this module returns.
 CHECKPOINT_KIND = "prompt_prefix_break"
+
+#: One-shot attribute a sanctioned rewrite leaves on the slot for the next observation.
+SANCTION_ATTR = "_transcript_rewrite_sanctioned"
+
+
+def sanction_rewrite(slot: Any, by: str = "compaction") -> None:
+    """Name the rewrite the next ``observe_send`` should attribute (one-shot)."""
+    setattr(slot, SANCTION_ATTR, by)
 
 
 def _plain_text(content: Any) -> str:
@@ -87,11 +98,15 @@ def observe_send(
     execution.  Returns ``None`` for the first send and for a pure append;
     otherwise the ``prompt_prefix_break`` fact, whose ``kind`` names WHERE the
     prefix broke and whose ``sanctioned_by`` names the rewrite that was
-    expected (``"compaction"``), or ``None`` for an unexplained break.
+    expected -- the explicit argument or the one-shot ``sanction_rewrite``
+    stamp a rewriting seam left on the slot -- or ``None`` for an
+    unexplained break.  The stamp is consumed by every observation.
     """
     current = [message_digest(message) for message in messages]
     previous = getattr(slot, DIGEST_ATTR, None)
     setattr(slot, DIGEST_ATTR, current)
+    sanction = sanctioned_by or getattr(slot, SANCTION_ATTR, None)
+    setattr(slot, SANCTION_ATTR, None)
     if not isinstance(previous, list):
         return None
     index = next(
@@ -115,5 +130,5 @@ def observe_send(
         "kind": kind,
         "previous_messages": len(previous),
         "current_messages": len(current),
-        "sanctioned_by": sanctioned_by,
+        "sanctioned_by": sanction,
     }

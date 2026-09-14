@@ -23,6 +23,7 @@ from ouroboros.loop_llm_call import TRANSPORT_DEATHS_KEY, _TRANSPORT_DEATH_RETRI
 from ouroboros.loop_tool_execution import prune_reclaim_trace_refs, reclaim_negative_memo, reclaim_trace_refs
 from ouroboros.observability import new_execution_id
 from ouroboros.tools.registry import ToolRegistry
+from ouroboros.transcript_prefix import sanction_rewrite
 from ouroboros.usage_accounting import PhysicalAttemptContext, PhysicalAttemptPreconditionFailed, invalidate_task_cache_splits
 
 
@@ -608,6 +609,7 @@ def _run_main_reclaim(
     if receipt.status == "applied":
         invalidate_task_cache_splits(ctx.task_id)
         ctx.messages[:] = rebuilt
+        sanction_rewrite(ctx.tools._ctx, "compaction")
         ctx.tools._ctx.messages = ctx.messages
         _loop().seal_task_transcript(ctx.messages)
         prune_reclaim_trace_refs(ctx.tools._ctx, ctx.messages)

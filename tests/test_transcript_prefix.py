@@ -13,7 +13,7 @@ import copy
 from types import SimpleNamespace
 
 from ouroboros import loop, transcript_prefix
-from ouroboros.transcript_prefix import CHECKPOINT_KIND, message_digest, observe_send
+from ouroboros.transcript_prefix import CHECKPOINT_KIND, message_digest, observe_send, sanction_rewrite
 
 # The heaviest real harness that injects the per-round acceptance observation.
 from tests.test_acceptance_async_loop import ANSWER, call, full_loop, keep  # noqa: F401
@@ -106,6 +106,16 @@ def test_shorter_transcript_with_an_equal_prefix_is_a_shrink():
     assert (fact["previous_messages"], fact["current_messages"]) == (3, 2)
 
 
+def test_sanction_stamp_is_consumed_by_the_next_observation():
+    slot = SimpleNamespace()
+    observe_send(slot, [SYSTEM, TASK, ASSISTANT], round_idx=1)
+    sanction_rewrite(slot, "compaction")
+    stamped = observe_send(slot, [SYSTEM, TASK, {"role": "assistant", "content": "other"}], round_idx=2)
+    assert stamped["sanctioned_by"] == "compaction"
+    later = observe_send(slot, [SYSTEM, TASK, {"role": "assistant", "content": "third"}], round_idx=3)
+    assert later["sanctioned_by"] is None, "the stamp is one-shot"
+
+
 def test_sanctioned_by_rides_through_unchanged():
     slot = SimpleNamespace()
     observe_send(slot, [SYSTEM, TASK, ASSISTANT], round_idx=1)
@@ -180,28 +190,73 @@ def test_every_send_of_one_execution_extends_the_previous_send(full_loop, monkey
     assert "prompt_prefix_breaks" not in usage
 
 
-def test_compaction_rewrite_is_recorded_as_a_sanctioned_break(full_loop, monkeypatch):  # noqa: F811 -- imported pytest fixture
+def _fake_compaction(messages, *_args, **_kwargs):
+    """Stand in for the summarizer behind both compaction seams: rewrite the
+    first tool result in place and report the pass as applied."""
+    rebuilt = list(messages)
+    for index, message in enumerate(rebuilt):
+        if message.get("role") == "tool":
+            rebuilt[index] = {**message, "content": "[compacted tool result]"}
+            break
+    receipt = SimpleNamespace(status="applied", checkpoint_ref="ckpt-1", reclaimed_tokens=10, goal_reached=True)
+    return rebuilt, receipt, {"prompt_tokens": 1, "completion_tokens": 1}
+
+
+def _after_step(f, step, hook):
+    """Run ``hook`` once the scripted model has answered round ``step``."""
+    inner = _four_tool_rounds(f)
+
+    def main(*args, **kwargs):
+        out = inner(*args, **kwargs)
+        if f.model_step == step:
+            hook()
+        return out
+    return main
+
+
+def _assert_one_sanctioned_rewrite_at_round_three(f, usage):
+    breaks = _prefix_breaks(f.events)
+    assert [b["kind"] for b in breaks] == ["rewritten"], breaks
+    assert breaks[0]["sanctioned_by"] == "compaction" and breaks[0]["round"] == 3, breaks
+    # A sanctioned rewrite is disclosed, never counted as an unexplained break.
+    assert "prompt_prefix_breaks" not in usage
+    # The rounds after the compaction extend the compacted transcript again.
+    _assert_prefix_chain(f.model_inputs[2:])
+
+
+def test_manual_compaction_is_recorded_as_a_sanctioned_break_on_its_round(full_loop, monkeypatch):  # noqa: F811 -- imported pytest fixture
     f = full_loop
-    monkeypatch.setattr(loop, "call_llm_with_retry", _four_tool_rounds(f))
-    original = loop._run_round_compaction
-
-    def compact(messages, context):
-        if context.round_idx != 3:
-            return original(messages, context)
-        rewritten = list(messages)
-        for index, message in enumerate(rewritten):
-            if message.get("role") == "tool":
-                rewritten[index] = {**message, "content": "[compacted tool result]"}
-                break
-        return rewritten, {"prompt_tokens": 1, "completion_tokens": 1}
-
-    monkeypatch.setattr(loop, "_run_round_compaction", compact)
+    monkeypatch.setattr(loop, "compact_tool_history_llm", _fake_compaction)
+    # The owner-requested reclaim is picked up by _run_round_compaction at the top of round 3.
+    monkeypatch.setattr(loop, "call_llm_with_retry", _after_step(
+        f, 2, lambda: setattr(f.ctx, "_pending_compaction", 1)))
 
     result, usage, _trace = f.run()
 
     assert result == ANSWER, (result, f.progress)
-    breaks = _prefix_breaks(f.events)
-    assert [b["kind"] for b in breaks] == ["rewritten"], breaks
-    assert breaks[0]["sanctioned_by"] == "compaction" and breaks[0]["round"] == 3
-    # A sanctioned rewrite is disclosed, never counted as an unexplained break.
-    assert "prompt_prefix_breaks" not in usage
+    _assert_one_sanctioned_rewrite_at_round_three(f, usage)
+
+
+def test_automatic_reclaim_inside_the_model_call_is_a_sanctioned_break_on_its_round(full_loop, monkeypatch):  # noqa: F811 -- imported pytest fixture
+    f = full_loop
+    monkeypatch.setattr(loop, "call_llm_with_retry", _four_tool_rounds(f))
+    monkeypatch.setattr(loop, "compact_tool_history_llm", _fake_compaction)
+    fired = []
+
+    def measure(ctx, *, automatic_pass_used):
+        # ContextFit decides "reclaim_once" exactly once, at round 3, the way the
+        # automatic reclaim runs inside _call_round_model after the round began.
+        if ctx.round_idx != 3 or fired or automatic_pass_used:
+            return None
+        fired.append(True)
+        measurement = SimpleNamespace(route_fp="fp", round_id="r3", measurement_basis="cold_estimate",
+                                      measurement_density=1.0, reclaim_goal_tokens=100)
+        return SimpleNamespace(action="reclaim_once", measurement=measurement, automatic_pass_used=False)
+
+    monkeypatch.setattr(loop, "_measure_round_main_fit", measure)
+
+    result, usage, _trace = f.run()
+
+    assert result == ANSWER, (result, f.progress)
+    assert fired, "the automatic reclaim did not run"
+    _assert_one_sanctioned_rewrite_at_round_three(f, usage)

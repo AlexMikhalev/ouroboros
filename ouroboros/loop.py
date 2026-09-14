@@ -350,21 +350,20 @@ def _resolve_loop_max_rounds(ctx: Any = None) -> int:
     return min(configured, int(getattr(ctx, "inline_max_rounds", configured)))
 
 
-def _record_transcript_prefix(ctx, messages, round_idx, compaction_usage, accumulated_usage,
+def _record_transcript_prefix(ctx, messages, round_idx, accumulated_usage,
                               event_queue, task_id, drive_logs) -> None:
-    """Record whether this send extends the previous one.  Never blocks it.
+    """Record whether the transcript this round dispatched extends the previous one.
 
     Between the sends of ONE execution the transcript is append-only:
     OpenAI-family caches reuse a previous request only when that whole request
     is a byte-prefix of the next, so a transient trailing message or an
     in-place rewrite of an already-sent message discards the entire
-    conversation cache (#906).  Compaction is the sanctioned rewrite and rides
-    as ``sanctioned_by``; every other break (a context-fit reprojection after a
-    real overflow, a replaced tail) is counted in ``prompt_prefix_breaks``.
+    conversation cache (#906).  The compaction seams stamp their sanction
+    (``transcript_prefix.sanction_rewrite``); every other break (a context-fit
+    reprojection after a real overflow, a replaced tail) is counted in
+    ``prompt_prefix_breaks``.  It records and never blocks a send.
     """
-    fact = _observe_transcript_send(
-        ctx, messages, round_idx=round_idx,
-        sanctioned_by="compaction" if compaction_usage else None)
+    fact = _observe_transcript_send(ctx, messages, round_idx=round_idx)
     if not fact:
         return
     _emit_checkpoint_event(event_queue, task_id, drive_logs, fact)
@@ -548,7 +547,6 @@ def run_llm_loop(
 
                 prepare_acceptance_observation(ctx, llm_trace, incoming_messages, messages, tool_schemas)
                 seal_task_transcript(messages)
-                _record_transcript_prefix(tools._ctx, messages, round_idx, _compaction_usage, accumulated_usage, event_queue, task_id, drive_logs)
 
                 model_call = _RoundModelCallContext(
                         llm=llm, messages=messages, tools=tools, context_fit_plan=context_fit_plan,
@@ -627,6 +625,11 @@ def run_llm_loop(
                     interactive=transport_wait.interactive if transport_wait is not None else False)
                 _merge_finalization_trace(llm_trace, forced_trace)
                 return text, accumulated_usage, llm_trace
+
+            # The transcript this round actually dispatched -- in-call reclaim,
+            # overflow reprojection and fallback adoption included -- is the
+            # one the next round must extend.
+            _record_transcript_prefix(tools._ctx, messages, round_idx, accumulated_usage, event_queue, task_id, drive_logs)
 
             from ouroboros.openai_chat_dispatch import CUSTOM_RECEIPTS_USAGE_KEY
 
