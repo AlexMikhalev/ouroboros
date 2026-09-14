@@ -198,21 +198,21 @@ function routeCatalogItems(route, items = []) {
         && (!pin || !item?.credential_profile_id || item.credential_profile_id === pin));
 }
 
-/** Collapse duplicate values for the chooser, retaining account evidence in labels. */
+/**
+ * One suggestion per model: the label names the model and makes no account claim
+ * (DESIGN.md §7). Availability, the reading account and its observation time are
+ * account facts, so they never travel on a model option.
+ */
 export function catalogModelOptions(items = []) {
     const values = new Map();
     for (const item of items) {
         const value = String(item?.value || item?.id || item);
-        const label = String(item?.name || item?.label || value);
-        const account = item?.credential_profile_id;
-        const facts = account ? [account, item.availability, item.observed_at
-            ? formatRelativeAge(Date.parse(item.observed_at), 'just now') : 'date unknown'].filter(Boolean).join(' · ') : '';
-        const current = values.get(value) || { value, label, accounts: [] };
-        if (facts && !current.accounts.includes(facts)) current.accounts.push(facts);
-        values.set(value, current);
+        const name = String(item?.name || item?.label || '');
+        const current = values.get(value);
+        if (!current) values.set(value, { value, label: name || value, named: Boolean(name) });
+        else if (name && !current.named) Object.assign(current, { label: name, named: true });
     }
-    return [...values.values()].map(({ value, label, accounts }) => ({ value,
-        label: accounts.length ? `${label} · ${accounts.join('; ')}` : label }));
+    return [...values.values()].map(({ value, label }) => ({ value, label }));
 }
 
 /** Suggestions carry the model alone; the source select already names the provider. */
