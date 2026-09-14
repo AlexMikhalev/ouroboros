@@ -195,6 +195,7 @@ BAND_PATHS = {
     "tests/test_loop_transport_wait.py": "Contract suite for the transport-wait episode: classification, custody, round-level wait, terminals, and the final-review regression pins live together as one coherent surface.",
     "tests/test_managed_review_subject.py": "Lane L-review contract suite: the managed resolution-delta subject (gate/advisory surfaces, M0 fallback), Q25-A admission, Q28-A yield outcomes and enforcement-honest advisory texts grew past 1000 across the adversarial fix round; one subject, one suite.",
     "tests/test_native_tool_round_executor.py": "One suite per executor contract: the native tool-round episode's bounds, floors, custody facts and delivery shapes are one behaviour pinned together; split at the next natural seam (custody vs bounds), not by size.",
+    "tests/test_nested_rights_depth.py": "Nested-rights depth suite shrank into the band when the semantic duplicate-gate stubs left (#884); one contract, one file; shrink next touch.",
     "tests/test_observability_outcomes_v2.py": None,
     "tests/test_onboarding_wizard.py": None,
     "tests/test_owner_stop_s3.py": "Entered the band from 821 lines: the S3 contract suite now covers retry-root aliasing, graceful-to-immediate hardening, stale-control drain races, hard deadline preservation, descendant settlement failure, and late resweep exactly-once root finalization.",
@@ -227,12 +228,11 @@ BAND_PATHS = {
     "web/modules/chat_activity.js": "Existing task activity renderer consumes the shared quota/auth wait state; no parallel task card or lifecycle.",
     "web/modules/harness_accounts.js": None,
     "web/modules/log_events.js": None,
-    "web/modules/onboarding_wizard.js": "Multi-surface onboarding keeps its step projection and completion payload together.",
-    "web/modules/reviewer_slots.js": "Owner-approved 5A editor: per-row Direct model / Configured subagent source picker with read-only derived disclosure replaces the legacy Claude-SDK advisory input in the same module that owns reviewer-row editing.",
     "web/modules/settings.js": None,
     "web/modules/skills.js": "One installed-skill page controller owns independently settling primary/optional reads and current-generation menu, identity and badge updates; domain lifecycle, cards, hub truth and shared interactions remain separate owners.",
     "web/tests/chat_instance_dom.test.js": "Entered the band from 1000 lines with the alias-free subagent cost pin (stage-2 fix wave): that regression reproduces only through the real createChatInstance card path, and this file owns the DOM harness that drives it; split when the next createChatInstance face lands.",
     "web/tests/harness_login_cards.test.js": "Login-card suite grew past 1000 lines with the name-the-account face cases (agy pickup, issue #232); split when the next face lands.",
+    "web/tests/reviewer_slots.test.js": "Entered the band with the 2026-09-13 reviewer-slots editor: the per-row source picker, its read-only derived disclosure and the persistence cases stay in one module beside the editor they cover; split when a second editor surface lands.",
 }
 
 BYTE_BASELINE_DEBT = {
@@ -246,5 +246,5 @@ BYTE_BASELINE_DEBT = {
 
 BYTE_DEBT = {
     "tests/test_devtools_benchmarks.py": 327840,
-    "web/modules/chat.js": 203048,
+    "web/modules/chat.js": 201090,
 }

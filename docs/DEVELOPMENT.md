@@ -291,6 +291,15 @@ site cannot silently skip the invariant — `tests/test_projects_v6640.py`
 exercises that seam. For fuzzy entities use the LLM-first pattern
 (`semantic_dedup`), never string equality.
 
+The same captured reference is also the IDENTITY OF THE WORK, not just its
+provenance: a new task id minted from the same owner message (a promoted root,
+a mid-run scope call) must INHERIT that origin's project binding
+(`projects_registry.project_id_for_origin`, keyed by value on chat id +
+client message id), never re-derive project membership from its own id — one
+convertible unit per message, not one per task id. A timeout retry COPIES the
+origin ref onto its new id but is deliberately NOT bound at clone time; it joins
+that origin's project when a later implicit act adopts it.
+
 One named exception inside role (b): a verification RECEIPT with no earlier
 ingress point is reconciled by ONE TYPED IDENTITY KEY, matching on the key's
 kind AND value, never across kinds — a per-component fallback chain is not an
@@ -3018,7 +3027,36 @@ purpose-filtered startup custody before and after runtime preparation; caller wa
 engine writer election. Keep startup and normal admission waits independent,
 identify current PID/build/log interval rather than an old log tail, and preserve
 existing malformed/foreign ownership markers. Publish a missing marker atomically
-only after revalidating the home under the shared JSON lock.
+only after revalidating the home under the shared JSON lock. A failed
+owned-daemon start latches on the TYPED exit fact only
+(`ExitFact.failed_without_control`: non-zero or signal exit with no control
+descriptor written during that spawn); `claudexor_startup_failure.py`
+classifies the child's own log interval for the diagnostic label and the one
+`claudexor_daemon_start_failed` supervisor row, never for behaviour (BIBLE
+P5). Harvest the exit fact at every spawn decision, at attach and at stop
+(`_settle_exited_child`), never only on a caller's wait expiry: with the real
+crash cadence (V8 dies after the 20 s startup window) the waiting caller gets
+`daemon_starting` and the child dies with nobody waiting, and the next caller,
+attach or owner stop must still record the row and the latch. Take the latch
+under the same lock as the reap, before reading the log, so a concurrent
+same-process caller meets the latch, not a free spawn slot; `_spawn` re-checks
+the latch under its own lock and never replaces an exited, unsettled child (the
+next settle owns that exit fact). Two residuals are
+disclosed, not closed: the descriptor identity is sampled at the first
+observation of the exit, not at the exit itself, so a foreign publisher in
+that window reads as written and costs at most one extra spawn; and between
+the sweep's release and its retry an ordinary caller can pass the refusal and
+become the spawner, in which case the retry joins that same live child (one
+spawn either way, only who pays the startup wait differs). Do not add a
+backoff machine, a retry counter, a cooldown constant, host-side heap sizing
+or writer-lease handling, and do not add a third retrier: the periodic
+supervisor sweep (`clear_start_failure_latch`, then its own single zero-wait
+ensure on a short-lived thread, only when it released a latch), the owner's
+explicit Refresh (`/api/claudexor/wake`: clears, then one ordinary ensure), a
+live attach, or a new manager (Restart/Panic; a task worker's manager is its
+own instance with its own latch) are the only releases, and ordinary callers
+never make the retry; `NODE_OPTIONS` passthrough is the operator escape
+hatch (ARCHITECTURE §9).
 
 Ordinary close preserves the shared daemon on every platform, including forced
 worker/server/stray cleanup. Exclusions protect the whole subtree, not merely a

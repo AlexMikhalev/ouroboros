@@ -321,3 +321,113 @@ def test_supervisor_handler_treats_an_unreadable_store_as_unbound(monkeypatch, t
     assert bound == {"pid": "cyber-racing"}
     assert running["t1"]["task"]["project_id"] == "cyber-racing"
     assert "project_binding_unreadable" in caplog.text
+
+
+# --- the sibling half: one owner message, one Project -------------------------
+
+_OWNER_TEXT = "Publish and merge the seven pull requests"
+
+
+def _owner_ref(client_message_id: str = "msg-owner", chat_id: int = 1) -> dict:
+    from ouroboros.project_dialogue import build_owner_message_ref
+
+    return build_owner_message_ref(
+        chat_id=chat_id, client_message_id=client_message_id,
+        ts="2026-09-14T12:15:20+00:00", text=_OWNER_TEXT,
+    )
+
+
+def _bind_the_work(tmp_path, ref):
+    """The turn's card was already turned into a Project; T2 is a DIFFERENT task id of
+    the SAME owner message, itself unbound."""
+    from ouroboros.projects_registry import bind_task_to_project, create_project
+
+    room = create_project(tmp_path, "the-work", name="The Work")
+    bind_task_to_project(tmp_path, "t-turn", "the-work", room["chat_id"],
+                         origin={"ref": ref, "text": _OWNER_TEXT})
+    return room
+
+
+def test_tool_guard_keeps_an_explicit_name_as_the_models_own_choice(tmp_path):
+    """P13: the origin answers an IMPLICIT act. A sibling task that explicitly asks for
+    a differently named room gets it - the message's existing project is NOT renamed
+    from a task that never belonged to it, and the guard's answer matches what the
+    supervisor handler will do with the same event."""
+    from ouroboros.project_facts import project_id_from_display_name
+    from ouroboros.projects_registry import get_project, list_projects
+    from ouroboros.tools.control import _ensure_project_scope
+
+    ref = _owner_ref()
+    _bind_the_work(tmp_path, ref)
+    ctx = _ctx(task_id="t-root", task_metadata={"origin_message_ref": dict(ref)})
+    out = _ensure_project_scope(ctx, project_name="Token Observatory")
+
+    assert out.startswith("OK: created/attached")
+    assert ctx.project_id == project_id_from_display_name("Token Observatory")
+    assert [p["id"] for p in list_projects(tmp_path)] == ["the-work"]      # the tool creates nothing
+    assert get_project(tmp_path, "the-work")["name"] == "The Work"         # and renames nothing
+    evs = [e for e in ctx.pending_events if e.get("type") == "ensure_project_scope"]
+    assert len(evs) == 1 and evs[0]["project_id"] == "token-observatory"
+
+
+def test_supervisor_handler_adopts_the_project_the_owner_message_already_has(
+    tmp_path, monkeypatch,
+):
+    """One owner message spawns several task ids. When the turn's card was already
+    turned into a Project and the ROOT's mid-run scope call names that same room, the
+    root JOINS it: one durable binding for this exact task, its live lane moved onto
+    the project it now belongs to, and no second room."""
+    import ouroboros.projects_registry as reg
+    import supervisor.message_bus as mb
+    from supervisor import workers
+
+    monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
+    (tmp_path / "logs").mkdir(parents=True, exist_ok=True)
+    ref = _owner_ref()
+    _bind_the_work(tmp_path, ref)
+    monkeypatch.setattr(mb, "get_bridge", lambda: SimpleNamespace(broadcast=lambda payload: None))
+    monkeypatch.setattr(workers, "_announce_created_project", lambda *a, **kw: None)
+
+    # A bare-workspace promote leaves a DERIVED project id on the row; the adopt owns
+    # the binding it writes, so the lane follows it (authority="binding").
+    running = {"t-root": {"task": {"id": "t-root", "project_id": "proj_deadbeef1234",
+                                   "origin_message_ref": dict(ref),
+                                   "origin_message_text": _OWNER_TEXT}}}
+    workers.ensure_project_scope(
+        {"task_id": "t-root", "project_id": "the-work", "project_name": "The Work"},
+        SimpleNamespace(RUNNING=running, PENDING=[]),
+    )
+
+    assert (reg.project_binding_for_task(tmp_path, "t-root") or {}).get("project_id") == "the-work"
+    assert running["t-root"]["task"]["project_id"] == "the-work"
+    assert [p["id"] for p in reg.list_projects(tmp_path)] == ["the-work"]
+
+
+def test_supervisor_handler_lets_an_explicit_different_name_fork(tmp_path, monkeypatch):
+    """The other half of P13: the same sibling asking for a DIFFERENT room creates it
+    and binds itself there; the message's first project keeps its name and its task."""
+    import ouroboros.projects_registry as reg
+    import supervisor.message_bus as mb
+    from supervisor import workers
+
+    monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
+    (tmp_path / "logs").mkdir(parents=True, exist_ok=True)
+    ref = _owner_ref()
+    _bind_the_work(tmp_path, ref)
+    monkeypatch.setattr(mb, "get_bridge", lambda: SimpleNamespace(broadcast=lambda payload: None))
+    monkeypatch.setattr(workers, "_announce_created_project", lambda *a, **kw: None)
+
+    running = {"t-root": {"task": {"id": "t-root", "project_id": "",
+                                   "origin_message_ref": dict(ref),
+                                   "origin_message_text": _OWNER_TEXT}}}
+    workers.ensure_project_scope(
+        {"task_id": "t-root", "project_id": "token-observatory",
+         "project_name": "Token Observatory"},
+        SimpleNamespace(RUNNING=running, PENDING=[]),
+    )
+
+    assert (reg.project_binding_for_task(tmp_path, "t-root") or {}).get(
+        "project_id") == "token-observatory"
+    assert (reg.project_binding_for_task(tmp_path, "t-turn") or {}).get("project_id") == "the-work"
+    assert reg.get_project(tmp_path, "the-work")["name"] == "The Work"
+    assert sorted(p["id"] for p in reg.list_projects(tmp_path)) == ["the-work", "token-observatory"]

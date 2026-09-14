@@ -3091,3 +3091,189 @@ def test_loud_workspace_failure_names_a_retired_delegated_run_worktree(tmp_path,
     assert "delegated-run worktree" in message and "removed when its run ends" in message
     assert "Projects → this project" not in message
     assert stored["reason_code"] == "workspace_unusable"
+
+
+def test_promote_without_an_explicit_target_inherits_the_binding_then_the_origin(
+    tmp_path, monkeypatch,
+):
+    """The other half of "one owner message, one Project": a turn that was already
+    turned into a Project promotes its work INTO that Project, instead of minting a
+    root in Main that carries its own convert button (the second unit the owner
+    clicked). Order: this task's durable binding (a conversion never reaches the
+    running worker's ctx.project_id), then the Project the owner MESSAGE already has,
+    then the in-memory scope copy."""
+    from ouroboros.project_dialogue import build_owner_message_ref
+    from ouroboros.projects_registry import bind_task_to_project, create_project
+    from ouroboros.tools.control import _promote_chat_to_task
+
+    monkeypatch.setattr("ouroboros.config.DATA_DIR", tmp_path)
+    _confirm_promote(monkeypatch)
+    ref = build_owner_message_ref(
+        chat_id=1, client_message_id="msg-owner", ts="2026-09-14T12:15:20+00:00",
+        text="Publish and merge the seven pull requests",
+    )
+    room = create_project(tmp_path, "the-work", name="The Work")
+    bind_task_to_project(tmp_path, "t-turn", "the-work", room["chat_id"],
+                         origin={"ref": ref, "text": "Publish and merge the seven pull requests"})
+
+    def _ctx(task_id):
+        return types.SimpleNamespace(
+            pending_events=[], event_queue=None, current_chat_id=1, drive_root=tmp_path,
+            project_id="", task_id=task_id,
+            task_metadata={"origin_message_ref": dict(ref)},
+        )
+
+    # (1) the promoter's own binding
+    bound_ctx = _ctx("t-turn")
+    assert _promote_chat_to_task(bound_ctx, "Merge them", predecessor_task_id="").startswith("OK")
+    assert bound_ctx.pending_events[0]["project_id"] == "the-work"
+
+    # (2) a SIBLING task id of the same owner message, itself unbound
+    sibling_ctx = _ctx("t-sibling")
+    assert _promote_chat_to_task(sibling_ctx, "Merge them", predecessor_task_id="").startswith("OK")
+    assert sibling_ctx.pending_events[0]["project_id"] == "the-work"
+
+    # (3) neither: the in-memory scope copy still answers, unchanged
+    free_ctx = _ctx("t-free")
+    free_ctx.task_metadata = {}
+    free_ctx.project_id = "alpha"
+    assert _promote_chat_to_task(free_ctx, "Merge them", predecessor_task_id="").startswith("OK")
+    assert free_ctx.pending_events[0]["project_id"] == "alpha"
+
+    # Explicit intent stays the model's ceiling, and Presence still cannot choose one.
+    explicit_ctx = _ctx("t-turn")
+    _promote_chat_to_task(explicit_ctx, "Merge them", project_id="racer", predecessor_task_id="")
+    assert explicit_ctx.pending_events[0]["project_id"] == "racer"
+    presence_ctx = _ctx("t-turn")
+    presence_ctx.task_metadata["presence"] = {"binding_id": "presence-binding"}
+    presence_ctx.task_contract = {}
+    _promote_chat_to_task(presence_ctx, "Merge them", predecessor_task_id="")
+    assert presence_ctx.pending_events[0]["project_id"] == ""
+
+
+def test_promote_scope_lookup_fails_open_on_an_unreadable_bindings_store(tmp_path, monkeypatch):
+    """The owner is waiting on this routing decision: an unreadable store reads as
+    "no binding" and the in-memory scope copy answers, exactly as before the seam."""
+    from ouroboros.tools.control import _promote_chat_to_task
+
+    monkeypatch.setattr("ouroboros.config.DATA_DIR", tmp_path)
+    _confirm_promote(monkeypatch)
+    (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "state" / "project_task_bindings.json").write_text("{ not json", encoding="utf-8")
+
+    ctx = types.SimpleNamespace(
+        pending_events=[], event_queue=None, current_chat_id=1, drive_root=tmp_path,
+        project_id="alpha", task_id="t-turn", task_metadata={},
+    )
+    assert _promote_chat_to_task(ctx, "Merge them", predecessor_task_id="").startswith("OK")
+    assert ctx.pending_events[0]["project_id"] == "alpha"
+
+
+def test_promote_admission_lands_in_the_project_the_owner_message_already_has(
+    tmp_path, monkeypatch,
+):
+    """The emit -> admission window is real: the tool inherits the scope when it emits
+    the event, but a sibling card of the same message can be turned into a Project in
+    between. The supervisor resolves the origin again under the claim lock, so the
+    promoted root joins that room instead of arriving in Main as a second convertible
+    unit. A Presence promote keeps its empty scope - a public conversation cannot
+    choose a Project."""
+    import supervisor.workers as workers
+    from ouroboros.project_dialogue import build_owner_message_ref
+    from ouroboros.projects_registry import (
+        bind_task_to_project,
+        create_project,
+        list_projects,
+        project_binding_for_task,
+    )
+
+    monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
+    text = "Publish and merge the seven pull requests"
+    ref = build_owner_message_ref(
+        chat_id=1, client_message_id="msg-owner", ts="2026-09-14T12:15:20+00:00", text=text,
+    )
+    room = create_project(tmp_path, "the-work", name="The Work")
+    bind_task_to_project(tmp_path, "t-turn", "the-work", room["chat_id"],
+                         origin={"ref": ref, "text": text})
+    enqueued: list = []
+    ctx = types.SimpleNamespace(
+        enqueue_task=lambda task: enqueued.append(task) or task,
+        persist_queue_snapshot=lambda **_kwargs: True,
+        load_state=lambda: {"owner_chat_id": 1},
+    )
+
+    outcome = workers.promote_chat_to_task({
+        "type": "promote_chat_to_task", "task_id": "root01", "objective": "Merge them",
+        "project_id": "", "chat_id": 1, "client_message_id": "msg-owner",
+        "source_ref": dict(ref), "source_text": text,
+    }, ctx)
+
+    assert outcome["status"] == "scheduled"
+    assert enqueued[0]["project_id"] == "the-work"
+    assert (project_binding_for_task(tmp_path, "root01") or {}).get("project_id") == "the-work"
+    assert [p["id"] for p in list_projects(tmp_path)] == ["the-work"]
+
+    presence_outcome = workers.promote_chat_to_task({
+        "type": "promote_chat_to_task", "task_id": "root02", "objective": "Merge them",
+        "project_id": "", "chat_id": 1, "client_message_id": "msg-owner",
+        "source_ref": dict(ref), "source_text": text,
+        "presence": {"binding_id": "presence-binding"},
+    }, ctx)
+
+    assert presence_outcome["status"] == "scheduled"
+    assert enqueued[1].get("project_id", "") == ""
+    assert project_binding_for_task(tmp_path, "root02") is None
+
+
+def test_the_implicit_promote_claim_creates_and_binds_under_the_claim_lock(
+    tmp_path, monkeypatch,
+):
+    """Resolving the origin under the lock and RELEASING it, then creating and
+    binding a hundred lines later, left the whole window open: a sibling card of the
+    same message converts in between, and the promoted root arrives in Main unscoped
+    - a second convertible card for one piece of work (#895). The origin re-read and
+    the durable bind are ONE transaction against that conversion's claim now."""
+    import ouroboros.projects_registry as registry
+    import supervisor.workers as workers
+    from ouroboros.project_dialogue import build_owner_message_ref
+
+    monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
+    text = "Publish and merge the seven pull requests"
+    ref = build_owner_message_ref(
+        chat_id=1, client_message_id="msg-owner", ts="2026-09-14T12:15:20+00:00", text=text,
+    )
+    room = registry.create_project(tmp_path, "the-work", name="The Work")
+    registry.bind_task_to_project(tmp_path, "t-turn", "the-work", room["chat_id"],
+                                  origin={"ref": ref, "text": text})
+    real_create, real_bind = registry.create_project, registry.bind_task_to_project
+    held: list = []
+
+    def _create(*args, **kwargs):
+        held.append(("create_project", registry._ORIGIN_CLAIM_LOCK._is_owned()))
+        return real_create(*args, **kwargs)
+
+    def _bind(*args, **kwargs):
+        held.append(("bind_task_to_project", registry._ORIGIN_CLAIM_LOCK._is_owned()))
+        return real_bind(*args, **kwargs)
+
+    monkeypatch.setattr(registry, "create_project", _create)
+    monkeypatch.setattr(registry, "bind_task_to_project", _bind)
+    enqueued: list = []
+    ctx = types.SimpleNamespace(
+        enqueue_task=lambda task: enqueued.append(task) or task,
+        persist_queue_snapshot=lambda **_kwargs: True,
+        load_state=lambda: {"owner_chat_id": 1},
+    )
+
+    outcome = workers.promote_chat_to_task({
+        "type": "promote_chat_to_task", "task_id": "root01", "objective": "Merge them",
+        "project_id": "", "chat_id": 1, "client_message_id": "msg-owner",
+        "source_ref": dict(ref), "source_text": text,
+    }, ctx)
+
+    # The CPython RLock answers "is this thread inside the claim?" directly.
+    assert held == [("create_project", True), ("bind_task_to_project", True)]
+    assert outcome["status"] == "scheduled" and outcome["project_id"] == "the-work"
+    assert enqueued[0]["project_id"] == "the-work"
+    assert (registry.project_binding_for_task(tmp_path, "root01") or {}).get(
+        "project_id") == "the-work"

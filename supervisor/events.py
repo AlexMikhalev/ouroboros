@@ -205,13 +205,8 @@ from supervisor.events_runtime_controls import (  # noqa: E402, F401 -- intentio
 )
 from supervisor.events_schedule_task import (  # noqa: E402, F401 -- intentional public re-exports
     VALID_SUBAGENT_MEMORY_MODES,
-    _PARENT_CONTEXT_END,
-    _PARENT_CONTEXT_MARKER,
     _cleanup_rejected_worktree,
-    _extract_task_description_and_context,
-    _find_duplicate_task,
     _handle_schedule_task,
-    _format_task_for_dedup,
     _reject_schedule_task,
 )
 from supervisor.events_subagent_admission import (  # noqa: E402, F401 -- intentional public re-exports

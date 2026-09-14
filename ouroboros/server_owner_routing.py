@@ -239,6 +239,9 @@ def _route_project_chat_to_running_task(
                     return ""
             if not write_owner_message(
                 task_drive, f"{message}{attachment_note}", tid, msg_id=msg_id,
+                # This delivery IS the owner's message; the id is the caller's
+                # parameter, never parsed back out of ``msg_id``.
+                client_message_id=client_message_id,
                 client_surface=(
                     dict(task_metadata["client_surface"])
                     if isinstance(task_metadata, dict) and isinstance(task_metadata.get("client_surface"), dict)
