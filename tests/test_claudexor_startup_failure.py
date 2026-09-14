@@ -475,7 +475,8 @@ def test_a_waiting_caller_whose_child_was_settled_by_another_still_names_the_fac
             thread.join(5)
     assert getattr(outcomes.get("waiting"), "code", None) == "daemon_spawn_failed"
     text = str(outcomes["waiting"])
-    assert "startup_failure=heap_exhausted" in text and "exit_signal=6" in text
+    assert "latched: startup_failure=heap_exhausted" in text and "exit_signal=6" in text, \
+        "the fallback label reads as manager state, not as this startup's own fact"
     assert "joining another manager" not in text and "settled by a concurrent caller" in text
     assert len(stand.spawned) == 1 and len(_rows(stand.data_dir)) == 1
 

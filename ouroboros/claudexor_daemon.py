@@ -744,11 +744,10 @@ class OwnedClaudexorDaemon:
         with self._lock:
             self._check_start_generation(generation)
         failure = self._settle_exited_child()
-        if failure is None:
-            with self._lock:  # a concurrent caller settled our child first: name its fact
-                failure = self._last_start_failure
-        if failure is not None:
-            detail = f"{detail}; {start_failure_label(failure)}"
+        with self._lock:  # no own fact here: name the manager's latched state, marked as such
+            latched = None if failure is not None else self._last_start_failure
+        if failure is not None or latched is not None:
+            detail = f"{detail}; {'' if failure else 'latched: '}{start_failure_label(failure or latched)}"
         self._last_error = f"daemon_spawn_failed: {detail}"
         raise ClaudexorUnavailable(
             "daemon_spawn_failed", f"no live owned startup or authenticated endpoint after {wait:.1f}s; {detail}",
