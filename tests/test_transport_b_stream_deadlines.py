@@ -298,6 +298,58 @@ def test_terminal_length_with_a_partial_tool_call_returns_like_non_stream(isolat
     assert [row["state"] for row in rows(isolated)] == ["reserved", "dispatched", "settled"]
 
 
+_FORGIVEN_SHAPES = {
+    "non_json_frame": (
+        lambda: b"data: {broken}\r\n\r\n" + sse(chunk({"role": "assistant", "content": "done"}, "stop", usage=completion()["usage"])),
+        ["chunk is not JSON; skipped"]),
+    "non_object_chunk": (
+        lambda: sse([1, 2], chunk({"role": "assistant", "content": "done"}, "stop", usage=completion()["usage"])),
+        ["chunk is list, not an object; skipped"]),
+    "choices_not_a_list": (
+        lambda: sse({"id": "gen-test", "choices": {"index": 0}}, chunk({"content": "done"}, "stop", usage=completion()["usage"])),
+        ["choices is dict, not a list; skipped"]),
+    "choice_not_an_object": (
+        lambda: sse({"id": "gen-test", "choices": ["oops"]}, chunk({"content": "done"}, "stop", usage=completion()["usage"])),
+        ["choice at position 0 is not an object; skipped"]),
+    "logprobs_not_an_object": (
+        lambda: sse({"id": "gen-test", "object": "chat.completion.chunk", "model": "vendor/test-stream",
+                     "choices": [{"index": 0, "delta": {"content": "done"}, "finish_reason": "stop", "logprobs": 5}],
+                     "usage": completion()["usage"]}),
+        ["choice 0: logprobs is int, not an object; skipped"]),
+    "reasoning_item_without_type": (
+        lambda: sse(chunk({"reasoning_details": [{"text": "why"}]}), chunk({"content": "done"}, "stop", usage=completion()["usage"])),
+        ["reasoning_details: item without type"]),
+    "tool_call_index_not_an_integer": (
+        lambda: sse(chunk({"tool_calls": [{"index": "zero", "id": "t", "type": "function",
+                                           "function": {"name": "lookup", "arguments": "{}"}}]}, "tool_calls",
+                          usage=completion()["usage"])),
+        ["tool_calls: index 'zero' is not a non-negative integer; treated as absent", "tool_calls: item without index; appended"]),
+    "finish_reason_not_a_string": (
+        lambda: sse(chunk({"content": "done"}, 7), chunk({}, "stop", usage=completion()["usage"])),
+        ["choice 0: finish_reason 7 is not a non-empty string; ignored"]),
+    "content_after_finish": (
+        lambda: sse(chunk({"content": "do"}, "stop"), chunk({"content": "ne"}, None, usage=completion()["usage"])),
+        ["choice 0: content after finish_reason 'stop'; accepted"]),
+    "model_conflict": (
+        lambda: sse(chunk({"content": "do"}), chunk({"content": "ne"}, "stop", usage=completion()["usage"], model="vendor/other")),
+        ["model: 'vendor/test-stream' then 'vendor/other'; kept first"]),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_FORGIVEN_SHAPES))
+def test_form_irregularities_never_raise_before_the_terminal_verdict(isolated, shape):
+    """The #856 class itself: a local form judgment inside ``accept()`` is a note, never a raise.
+    Every forgiven shape assembles a complete reply, settles, and names the forgiven fact in the
+    receipt; none of them is an unknown outcome."""
+    build, expected = _FORGIVEN_SHAPES[shape]
+    result = run_driver(lambda **kw: WireResponse(build()), payload(stream=True), target()).model_dump()
+    receipt = result["_stream_receipt"]
+    assert receipt["complete"] is True
+    assert all(note in receipt["anomalies"]["first"] for note in expected), receipt["anomalies"]
+    assert result["choices"][0]["finish_reason"] in ("stop", "tool_calls")
+    assert rows(isolated)[-1]["state"] == "settled"
+
+
 def test_clean_close_after_every_choice_finished_is_terminal_framing(isolated):
     """The provider closed the body cleanly after the choice's ``finish_reason`` but never sent
     ``[DONE]``: both witnesses of terminal framing count, so the reply is complete (disclosed in the

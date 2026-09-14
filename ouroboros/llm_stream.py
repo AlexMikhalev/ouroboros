@@ -6,7 +6,11 @@ hard requirements; identity, index and shape irregularities are forgiven
 first-wins/skip, and every forgiven fact is disclosed in the stream receipt as
 ``anomalies``. ``tools/search.py`` (the Responses SSE consumer behind
 ``web_search``) is the house precedent: it ignores unknown events, settles only
-on ``response.completed`` and never retries on form.
+on ``response.completed`` and never retries on form. Form forgiveness is the Chat
+assembler's doctrine; the native Messages assembler forgives only post-terminal
+shapes and still reports a malformed mid-stream frame as an unknown outcome — a
+deliberate boundary (Anthropic's SSE is stable; no recorded case exists), not an
+oversight.
 
 Consumption belongs inside the physical send closure. Only protocol-complete
 assemblies leave it as responses; partial bytes stay in private observability
