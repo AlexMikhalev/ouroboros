@@ -23,6 +23,18 @@ from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_SALVAGE
 from ouroboros.utils import append_jsonl, iter_jsonl_objects, jsonl_append_lock_path, replace_atomic, strip_markdown, utc_now_iso
 
 _ANNOTATIONS_NAME = "chat_annotations.jsonl"
+# Receipt id for a routing act that belongs to NO owner message — the agent's
+# own steer of a task it already routed for, or of one it was told about after
+# its origin. The act still needs a durable token-bound receipt (the tool waits
+# on one through ``routing_wait``, and silence there reports a landed delivery
+# as unconfirmed), but it must annotate no owner message: the id is the act's
+# routing token, so nothing in any chat joins to it. Chat-row membership is
+# therefore the wrong retention test for these rows — compaction keeps the
+# latest row per synthetic id (per-id dedupe bounds them like any other) and
+# applies the chat-retention rule only to ids that address a real message. The
+# colon shape cannot collide with a client id: the browser mints
+# ``msg-<epoch_ms>-<n>`` and non-web ingress ``host-<uuid5>``.
+AGENT_RECEIPT_ID_PREFIX = "agent-steer:"
 _COMPACT_AT_BYTES = 800_000
 _RETAINED_ARCHIVES = 3
 log = logging.getLogger(__name__)
@@ -326,7 +338,7 @@ def _compact_annotations_locked(drive_root: Any, path: pathlib.Path) -> None:
     }
     rows = [
         row for message_id, row in _latest_annotations(path).items()
-        if message_id in retained_ids
+        if message_id in retained_ids or message_id.startswith(AGENT_RECEIPT_ID_PREFIX)
     ]
     rows.sort(key=lambda row: str(row.get("ts") or ""))
     tmp = path.with_name(f".{path.name}.tmp.{uuid.uuid4().hex}")
@@ -1180,6 +1192,7 @@ def announce_project_started(
 
 
 __all__ = [
+    "AGENT_RECEIPT_ID_PREFIX",
     "announce_project_started",
     "append_authored_task_summary",
     "append_chat_annotation",

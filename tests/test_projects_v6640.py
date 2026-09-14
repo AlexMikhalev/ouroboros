@@ -282,6 +282,67 @@ def test_chat_annotation_compaction_drops_rows_after_chat_retention(tmp_path):
     assert (logs / "chat_annotations.jsonl").read_text(encoding="utf-8") == ""
 
 
+def test_chat_annotation_compaction_keeps_receipts_that_address_no_message(tmp_path):
+    """A steer the agent authored itself is answered by a receipt keyed on its
+    routing token, and its only reader is the tool waiting on `routing_wait`.
+    Chat-row membership cannot retire it: the append that crosses the threshold
+    used to delete the very row it had just written, so a landed delivery came
+    back as unconfirmed. Stale owner rows still go."""
+    from ouroboros.project_dialogue import (
+        AGENT_RECEIPT_ID_PREFIX, _COMPACT_AT_BYTES, append_chat_annotation,
+        latest_chat_annotations,
+    )
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "chat.jsonl").write_text(
+        json.dumps({
+            "direction": "in", "chat_id": 1,
+            "client_message_id": "msg-1789388120127-2", "text": "publish the skills",
+        }) + "\n",
+        encoding="utf-8",
+    )
+    annotations = logs / "chat_annotations.jsonl"
+    live = {
+        "ts": "2026-09-14T12:37:49Z", "type": "chat_annotation",
+        "client_message_id": "msg-1789388120127-2", "action": "promote_chat_to_task",
+        "target": "a3e646fc62a44015", "status": "scheduled", "detail": "x" * 400,
+    }
+    stale = {**live, "client_message_id": "msg-expired-1"}
+    with annotations.open("w", encoding="utf-8") as stream:
+        while annotations.stat().st_size < _COMPACT_AT_BYTES:
+            stream.write(json.dumps(live) + "\n")
+            stream.write(json.dumps(stale) + "\n")
+            stream.flush()
+    assert annotations.stat().st_size >= _COMPACT_AT_BYTES  # the next append compacts
+
+    receipt_id = f"{AGENT_RECEIPT_ID_PREFIX}f00dtoken"
+    assert append_chat_annotation(
+        tmp_path, receipt_id, action="steer_task", target="a3e646fc62a44015",
+        status="delivered", routing_token="f00dtoken",
+    )
+
+    latest = latest_chat_annotations(tmp_path)
+    assert annotations.stat().st_size < _COMPACT_AT_BYTES  # it really did compact
+    assert latest[receipt_id]["status"] == "delivered"  # survives its own append
+    assert latest[receipt_id]["routing_token"] == "f00dtoken"
+    assert "msg-1789388120127-2" in latest  # the owner's message keeps its receipt
+    assert "msg-expired-1" not in latest  # chat retention still drops the rest
+
+    # Per-id dedupe bounds the synthetic rows exactly like the addressed ones.
+    assert append_chat_annotation(
+        tmp_path, receipt_id, action="steer_task", target="a3e646fc62a44015",
+        status="needs_manual_target", routing_token="f00dtoken",
+    )
+    rows = [
+        json.loads(line) for line in annotations.read_text(encoding="utf-8").splitlines() if line
+    ]
+    assert [row["status"] for row in rows if row["client_message_id"] == receipt_id] == [
+        "delivered", "needs_manual_target",
+    ]
+    assert latest_chat_annotations(tmp_path)[receipt_id]["status"] == "needs_manual_target"
+
+
 def test_project_sidebar_and_menu_static_contracts():
     from pathlib import Path
 
