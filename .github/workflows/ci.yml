@@ -842,15 +842,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ -e /dev/kvm ]; then
-            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
-              | sudo tee /etc/udev/rules.d/99-ouroboros-kvm.rules >/dev/null
-            sudo udevadm control --reload-rules || true
-            sudo udevadm trigger --name-match=kvm || true
-            sudo chmod 0666 /dev/kvm || true
-          else
-            echo 'KVM is unavailable on this runner; emulator action will use its configured fallback.'
-          fi
           sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" \
             "emulator" "system-images;android-${{ matrix.api-level }};default;x86_64"
           echo "no" | avdmanager create avd --force --name "obo-api-${{ matrix.api-level }}" \
@@ -879,6 +870,7 @@ jobs:
           arch: x86_64
           profile: pixel_2
           emulator-options: -no-window -no-audio -no-boot-anim
+          disable-linux-hw-accel: true
           disable-animations: true
           script: |
             set -euo pipefail
