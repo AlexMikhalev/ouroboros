@@ -1148,6 +1148,11 @@ def service_env() -> dict[str, str]:
         "PATH",
         "HOME",
         "USERPROFILE",
+        # Login name, not a secret: keychain/identity lookups need it (a CLI
+        # whose credentials are keyed by account name finds nothing without it).
+        "USER",
+        "LOGNAME",
+        "USERNAME",
         "APPDATA",
         "LOCALAPPDATA",
         "TMPDIR",

@@ -1,6 +1,8 @@
 """Owner-approved managed continuation after upstream recovery, with old custody."""
 from datetime import datetime, timedelta, timezone
+import itertools
 import json
+import time
 from types import SimpleNamespace
 
 import httpx
@@ -9,7 +11,7 @@ import pytest
 from ouroboros import loop as loop_mod, loop_transport as transport
 from ouroboros.loop import run_llm_loop
 from ouroboros.tools.registry import ToolRegistry
-from tests.test_loop_transport_wait import _loop_kwargs
+from tests.test_loop_transport_wait import _loop_kwargs, _read_network_wait_events
 
 
 def test_managed_unknown_waits_for_upstream_then_adds_new_input(tmp_path, monkeypatch):
@@ -44,6 +46,125 @@ def test_managed_unknown_waits_for_upstream_then_adds_new_input(tmp_path, monkey
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     recovered = [row for row in events if row.get("detail") == "new_attempt_after_unknown_outcome"]
     assert recovered[0]["outcome_custody"] == previous
+
+
+def test_repeated_unknown_does_not_restart_backoff(tmp_path, monkeypatch):
+    """Work-order §B9 "repeated unknown creates no burst": a granted continuation
+    that dies unknown AGAIN returns to the SAME wait episode — the backoff keeps
+    growing, the redial counter keeps counting, and exactly one [SYSTEM NOTICE]
+    is appended per real continuation."""
+    sends, probes, sleeps, notes = [], [], [], []
+    def send(_llm, messages, *args, **kwargs):
+        usage = args[8]  # model, tools, effort, retries, logs, task, round, event, usage
+        sends.append([dict(row) for row in messages])
+        if len(sends) <= 2:  # two unknown outcomes in a row -> two continuations
+            usage.update(_last_llm_error_kind="provider_outcome_unknown",
+                         _pending_transport_outcome={"physical_attempt_id": f"paid-attempt-{len(sends)}",
+                                                     "outcome": "unknown"})
+            return None, 0.0
+        usage.pop("_last_llm_error_kind", None)
+        return {"role": "assistant", "content": "continued answer"}, 0.0
+    def reachable(*args, **kwargs):
+        probes.append(kwargs)
+        return {"kind": "upstream_http", "status_code": 200}
+    monkeypatch.setattr(loop_mod, "call_llm_with_retry", send)
+    monkeypatch.setattr(transport, "upstream_transport_reachable", reachable)
+    monkeypatch.setattr(transport, "interruptible_wait_sleep", lambda seconds, wake: sleeps.append(seconds) or False)
+    # A wall clock that advances one second per read: the re-arm below must not depend on the
+    # platform tick (windows-latest time.time() advances in ~15.6 ms steps under mocked sleeps).
+    ticks = itertools.count(time.time() + 1000.0, 1.0)
+    monkeypatch.setattr(transport, "time", SimpleNamespace(monotonic=time.monotonic, time=lambda: next(ticks)))
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    monkeypatch.setenv("OUROBOROS_MAX_ROUNDS", "1")
+    registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
+    result, usage, _trace = run_llm_loop(**_loop_kwargs(tmp_path, registry, notes))
+
+    assert result == "continued answer" and len(sends) == 3 and len(probes) == 2
+    # The freshness bound re-arms at the latest unknown outcome: the second probe
+    # may not accept evidence that only proves recovery from the first failure.
+    assert probes[1]["observed_after"] > probes[0]["observed_after"]
+    # The second wait starts where the first left off: no fresh 4s episode.
+    assert len(sleeps) == 2 and sleeps[1] > sleeps[0]
+    notices = [row for row in sends[-1] if "NEW physical model attempt" in str(row.get("content"))]
+    assert len(notices) == 2  # one per real continuation — no burst, no extra
+    assert usage["transport_recovery"]["previous_attempt"]["physical_attempt_id"] == "paid-attempt-2"
+    rows = _read_network_wait_events(tmp_path)
+    assert [row["phase"] for row in rows].count("entered") == 1  # one episode for the whole sequence
+    repeats = [row for row in rows if row.get("detail") == "continuation_outcome_unknown"]
+    assert len(repeats) == 1 and repeats[0]["phase"] == "continued"
+    assert repeats[0]["redials"] == 1  # the wait iteration that granted the attempt already counted its redial
+    assert repeats[0]["outcome_custody"]["physical_attempt_id"] == "paid-attempt-2"
+    waits = [row for row in rows if row["phase"] == "waiting"]
+    assert [row["redials"] for row in waits] == [0, 1]  # one redial per wait iteration, never reset
+    assert [row["next_sleep_sec"] for row in waits] == [4.0, 8.0] == sleeps
+
+
+def test_alternating_unknown_and_transport_failures_keep_one_episode(tmp_path, monkeypatch):
+    """A granted continuation released before dispatch ($0, ``transport_unavailable``) and a free
+    redial that then crosses dispatch and dies unknown both stay in the SAME episode: one ``entered``
+    row, a backoff that keeps growing across the flap, one redial per wait iteration, and custody
+    that follows the latest unknown attempt."""
+    sends, probes, sleeps, notes = [], [], [], []
+    kinds = ["provider_outcome_unknown", "transport_unavailable", "provider_outcome_unknown"]
+    def send(_llm, messages, *args, **kwargs):
+        usage = args[8]  # model, tools, effort, retries, logs, task, round, event, usage
+        sends.append([dict(row) for row in messages])
+        if len(sends) <= len(kinds):
+            kind = usage["_last_llm_error_kind"] = kinds[len(sends) - 1]
+            if kind == "provider_outcome_unknown":
+                usage["_pending_transport_outcome"] = {"physical_attempt_id": f"paid-attempt-{len(sends)}", "outcome": "unknown"}
+            return None, 0.0
+        usage.pop("_last_llm_error_kind", None)
+        return {"role": "assistant", "content": "continued answer"}, 0.0
+    def reachable(*args, **kwargs):
+        probes.append(kwargs)
+        return {"kind": "upstream_http", "status_code": 200}
+    monkeypatch.setattr(loop_mod, "call_llm_with_retry", send)
+    monkeypatch.setattr(transport, "upstream_transport_reachable", reachable)
+    monkeypatch.setattr(transport, "interruptible_wait_sleep", lambda seconds, wake: sleeps.append(seconds) or False)
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    monkeypatch.setenv("OUROBOROS_MAX_ROUNDS", "1")
+    registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
+    result, usage, _trace = run_llm_loop(**_loop_kwargs(tmp_path, registry, notes))
+
+    assert result == "continued answer" and len(sends) == 4 and len(probes) == 2  # no probe for the free redial
+    assert sleeps == [4.0, 8.0, 16.0]  # one episode: the backoff never restarts across the flap
+    rows = _read_network_wait_events(tmp_path)
+    assert [row["phase"] for row in rows].count("entered") == 1 and not [row for row in rows if row["phase"] == "ended"]
+    assert [row["detail"] for row in rows if row["phase"] == "continued"] == [
+        "continuation_transport_unavailable", "redial_outcome_unknown"]
+    assert [row["redials"] for row in rows if row["phase"] == "waiting"] == [0, 1, 2]
+    assert rows[-1]["detail"] == "new_attempt_after_unknown_outcome"
+    assert rows[-1]["outcome_custody"]["physical_attempt_id"] == "paid-attempt-3"  # custody follows the latest unknown
+    assert usage["transport_recovery"]["previous_attempt"]["physical_attempt_id"] == "paid-attempt-3"
+    notices = [row for row in sends[-1] if "NEW physical model attempt" in str(row.get("content"))]
+    assert len(notices) == 2 and "paid-attempt-3" in str(notices[-1]["content"])
+    # The owner is told that money became unknown when the free redial crossed dispatch (the
+    # entry note said "$0"), not only at the next grant; and that the granted attempt never
+    # reached the provider (the grant note said "continuing").
+    assert sum("another charge is possible" in text for text in notes) >= 2
+    assert any("could not reach the provider" in text for text in notes)
+
+
+def test_grant_without_a_new_attempt_is_not_a_phantom_repeat(tmp_path):
+    """After a grant, a round that made NO new physical attempt (a failed probe, a call that yielded
+    to control) still carries the sticky unknown kind: the episode keeps its grant and its custody
+    untouched and writes no row. Only a fresh unknown attempt — new pending custody — repeats."""
+    ctx = SimpleNamespace(task_id="t", _accumulated_usage={})
+    episode = transport.TransportWaitEpisode(
+        wait_cause="provider_outcome_unknown", started_monotonic=0.0, continuation_granted=True,
+        outcome_custody={"physical_attempt_id": "paid-attempt-1"}, wait_iterations=1, redials=1)
+    kwargs = dict(msg_present=False, error_kind="provider_outcome_unknown", drive_logs=tmp_path, task_id="t",
+                  model="m", emit_progress=lambda *a, **kw: None)
+    assert transport.reconcile_transport_wait(episode, ctx, **kwargs) is episode
+    assert episode.continuation_granted and episode.outcome_custody == {"physical_attempt_id": "paid-attempt-1"}
+    assert _read_network_wait_events(tmp_path) == []
+    ctx._accumulated_usage["_pending_transport_outcome"] = {"physical_attempt_id": "paid-attempt-2", "outcome": "unknown"}
+    assert transport.reconcile_transport_wait(episode, ctx, **kwargs) is episode
+    assert not episode.continuation_granted and episode.redials == 1
+    assert episode.outcome_custody["physical_attempt_id"] == "paid-attempt-2"
+    assert [(row["phase"], row["detail"], row["redials"]) for row in _read_network_wait_events(tmp_path)] == [
+        ("continued", "continuation_outcome_unknown", 1)]
 
 
 @pytest.mark.parametrize("flag", ["is_direct_chat"])

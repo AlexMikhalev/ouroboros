@@ -371,11 +371,12 @@ acquire a hidden OpenRouter or second-provider dependency. (CHECKLISTS item
 Tool-schema changes are provider-contract changes. Every shipped built-in
 schema must pass general JSON Schema and the known cross-provider subset over
 the complete registry; trusted integration CI sends that same registry in one
-bounded tool canary per supported provider family/API surface, while
-pull-request CI remains secretless. Malformed native arguments and invalid
-schemas stay red, with diagnostics limited to structural facts, hashes, and
-parse position. Do not add a prose parser, provider hop, or unbounded retry to
-make that contract green (canary anatomy: ARCHITECTURE "CI topology").
+bounded tool canary per supported provider family/API surface, in the transport
+Main uses (streaming for compatible routes), while pull-request CI remains
+secretless. Malformed native arguments and invalid schemas stay red, with
+diagnostics limited to structural facts, hashes, and parse position. Do not add
+a prose parser, provider hop, or unbounded retry to make that contract green
+(canary anatomy: ARCHITECTURE "CI topology").
 
 When adding or changing a provider, update one coherent route contract:
 
@@ -386,7 +387,12 @@ When adding or changing a provider, update one coherent route contract:
    projection and exact-route recovery delegated to the small transport leaves;
 4. nullable pricing/settlement and truthful capability omissions;
 5. review and scope routing, including sourced context-window evidence;
-6. direct-provider and single-provider regression tests.
+6. direct-provider and single-provider regression tests;
+7. record the route's real streamed wire into `tests/fixtures/llm_wire/`
+   (redacted: opaque reasoning payloads and signatures truncated) and replay it;
+   a hand-written stream fixture is not evidence of a provider dialect. Record
+   with `curl -N` against the route, or export the private `physical_stream`
+   blob the runtime already retains for every stream.
 
 Local-only installs keep their local route. Unreachable shipped remote defaults
 may be cleared, but explicit owner values are not. Scope authority follows
@@ -2168,12 +2174,12 @@ owner, owed terminal delivery, cascade postconditions — lives in ARCHITECTURE
 ### Transport and late-result custody
 
 - `LLMClient.chat` and `chat_async` accept optional `stream=False`, `caller_deadline_ts` (Unix seconds) and `caller_execution_deadline` (the existing quota-adjusted monotonic clock). Main opts into streaming. Subtract finalization reserve once at the caller; every physical recovery send re-checks the inherited bounds. Unset deadlines keep ordinary transport defaults. A socket-phase timeout is not an overall wall-clock promise, and late paid completion retains its original attempt.
-- Stream consumption completes inside physical accounting. Preserve indexed tools, native signatures, complete final framing and cumulative usage snapshots. An EOF/error/cancellation retains private wire evidence and cannot produce a usable partial answer. Only a structural parameter rejection uses the existing wire recovery; never infer a retry from missing stream text or ping cadence. Compatible async tool calls now use the same normalizer/validation path; local, GigaChat and Claudexor retain their separate wire contracts.
+- Stream consumption completes inside physical accounting. The assembler is strict about completeness (terminal framing — `[DONE]` or a clean close after every choice finished — whole tool calls) and tolerant about form (identity scalars and metadata keep their first value, an index gap or repeat no longer condemns a stream, and every forgiven fact is disclosed in the stream receipt). A complete but unusable body settles with its usage and classifies as an ordinary provider error; an explicit SSE error frame is a provider verdict too (a numeric body code files through the status ladder, a code-less frame is a provider error), so unknown outcome is reserved for a stream that never reached its terminal frame. Form forgiveness is the Chat assembler's doctrine; the native Messages assembler judges post-terminal shape (non-contiguous blocks, an unsigned thinking block, an incomplete tool block) as a rejection and still reports a malformed mid-stream frame as unknown (Anthropic's SSE is stable and no recorded case exists). Preserve indexed tools, native signatures, complete final framing and cumulative usage snapshots. An EOF/error/cancellation retains private wire evidence and cannot produce a usable partial answer. Only a structural parameter rejection uses the existing wire recovery; never infer a retry from missing stream text or ping cadence. Compatible async tool calls now use the same normalizer/validation path; local, GigaChat and Claudexor retain their separate wire contracts.
 - Late reviewer reuse resolves the exact operation's complete producer receipt from existing CAS, with original task/root/attempt, slot/route, subject, contract, roster/epoch and delegated invocation where present. The current surface remains the sole wave writer and reducer. Late plan feedback attaches through that writer as an exact-operation historical supplement, preserving the old actors, verdict and current-wave pointer; paid settlement is recorded once. No source file existence, preview or matching prompt prose alone grants authority; missing/partial/error/mismatched custody never buys another same-operation dispatch.
 - Managed unknown-outcome recovery uses the existing network-wait owner, with non-generating upstream observations and an explicit new-attempt notice after connectivity returns. Keep old outcome/cost unknown and apply current budget/Stop/deadline before dispatch. Subscription catalogs prove reachability only with generic `provenance="provider_http"` plus `observedAt` after wait entry and exact source/model/effective account; legacy/static catalogs remain unknown. A control-channel outage first rejoins the same accepted operation. Non-generating HEAD uses the existing connection allowance for every socket phase, narrowed by the owner remainder, rather than inheriting a cognitive read window without its lease. No scheduler, provider/model table, paid readiness probe or automatic manual-restart recovery is introduced.
 - `delegate_wait` supervision's three-second observation beat is separate from its HTTP read allowance. A typed read-only-retryable transport failure (read timeout, connect error or timeout, pool timeout, read/write error, protocol error) is a quiet observation hole carrying its typed reason and the actual elapsed time; the beat does not slow and no durable counter or outage latch is kept. The reason is per class, because our own read bound expiring against a live daemon is not the same fact as a socket that carried no answer: only the second is disclosed to the owner, once per episode with one recovery line, each stamped with that episode. Received auth/protocol failures and owner controls remain meaningful. After terminal cleanup, use the current custody host notice alongside the original answer/narrative. Genuine builtin refusals publish typed non-success at their producer; successful warnings and existing review/Git warning buckets keep their semantics. Acceptance JSON validity and completion cleanliness remain separate decisions.
 
-Focused regressions: `test_review_late_cas_recovery.py`, `test_delivery_control_lineage.py`, `test_terminal_custody_notice.py`, `test_delegate_observation_transport.py`, `test_delegate_hold.py`, `test_configured_session_wake_rail.py`, `test_health_invariants_ownership.py`, `test_transport_b_stream_deadlines.py`, `test_transport_unknown_continuation.py`, `test_builtin_refusal_results.py` and `test_v671_acceptance_convergence.py`. Use the ordinary isolated preflight runner; full provider/renderer smoke remains separate from local fake-provider evidence.
+Focused regressions: `test_review_late_cas_recovery.py`, `test_delivery_control_lineage.py`, `test_terminal_custody_notice.py`, `test_delegate_observation_transport.py`, `test_delegate_hold.py`, `test_configured_session_wake_rail.py`, `test_health_invariants_ownership.py`, `test_transport_b_stream_deadlines.py`, `test_llm_wire_corpus.py`, `test_transport_unknown_continuation.py`, `test_builtin_refusal_results.py` and `test_v671_acceptance_convergence.py`. Use the ordinary isolated preflight runner; full provider/renderer smoke remains separate from local fake-provider evidence.
 
 ### LLM call rules
 

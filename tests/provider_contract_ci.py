@@ -12,6 +12,7 @@ from enum import Enum
 
 import pytest
 
+from ouroboros.llm_stream import ProviderStreamError
 from ouroboros.provider_models import (
     OPENAI_DIRECT_DEFAULTS,
     normalize_deepseek_reasoning_effort,
@@ -222,6 +223,22 @@ def classify_provider_failure(
         return ProviderFailureClassification(
             ProviderFailureKind.INCONCLUSIVE, "transport_timeout",
         )
+    if getattr(exc, "stream_incomplete", False):
+        # Main streams, so the canary's first turn does too. Weather, never
+        # contract: a socket that died before the terminal frame, or the
+        # provider's own SSE error frame without a 4xx code (an overload/
+        # api_error shape; 429/5xx already took the ladder above). A complete
+        # body the host judged unusable falls through to RED — that assembler
+        # contract is what this canary guards.
+        if isinstance(exc, ProviderStreamError):
+            if not (status is not None and 400 <= status <= 499):  # a 4xx SSE error is contract: RED below
+                return ProviderFailureClassification(
+                    ProviderFailureKind.INCONCLUSIVE, "stream_provider_error", status,
+                )
+        elif not getattr(exc, "stream_rejected", False):
+            return ProviderFailureClassification(
+                ProviderFailureKind.INCONCLUSIVE, "stream_transport_loss", status,
+            )
     return ProviderFailureClassification(
         ProviderFailureKind.RED, "provider_contract_or_unclassified", status,
     )
@@ -474,8 +491,18 @@ def assert_canary_usage(usage, canary: ProviderCanary, *, forced_tool_choice: bo
     assert isinstance(usage, dict), failure("usage_not_mapping")
     assert usage.get("provider") == canary.expected_provider, failure("unexpected_accounting_provider")
     assert usage.get("resolved_model") == normalize_model_identity(canary.model), failure("unexpected_accounting_model")
-    assert _safe_nonnegative_int(usage.get("prompt_tokens")) > 0, failure("missing_prompt_tokens")
-    assert _safe_nonnegative_int(usage.get("completion_tokens")) > 0, failure("missing_completion_tokens")
+    if (isinstance(usage.get("stream_receipt"), dict) and not _safe_nonnegative_int(usage.get("prompt_tokens"))
+            and not _safe_nonnegative_int(usage.get("completion_tokens"))):
+        # A complete streamed reply whose route sent no final usage frame (a provider
+        # that drops stream_options under wire recovery, or ignores include_usage):
+        # money is unknown, the contract is not broken — weather, recorded as a
+        # warning through the existing telemetry, never RED.
+        warnings = usage.setdefault("canary_warnings", [])
+        if isinstance(warnings, list) and len(warnings) < 4:
+            warnings.append({**_canary_evidence(canary, None, usage), "code": "streamed_reply_without_usage_frame"})
+    else:
+        assert _safe_nonnegative_int(usage.get("prompt_tokens")) > 0, failure("missing_prompt_tokens")
+        assert _safe_nonnegative_int(usage.get("completion_tokens")) > 0, failure("missing_completion_tokens")
     if canary.reasoning_effort == "medium":
         expected_effort = canary.reasoning_effort
         if canary.expected_provider == "deepseek":
@@ -717,6 +744,13 @@ def run_provider_contract_canary(
             "tool_choice": tool_choice,
             "reasoning_effort": canary.reasoning_effort,
             "max_tokens": CANARY_MAX_TOKENS,
+            # Main sets stream=True on every remote completion, so the canary's
+            # first turn must exercise that transport rather than one Main never
+            # uses. Rows that continue to a final answer keep their second turn
+            # non-stream, so those routes (and GigaChat, whose lane drops the
+            # flag) still cover the non-stream transport at zero extra physical
+            # sends; every other row now covers streaming only.
+            "stream": True,
             "no_proxy": True,
             "timeout": CANARY_TIMEOUT_SEC,
         },
