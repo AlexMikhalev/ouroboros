@@ -3006,9 +3006,18 @@ descriptor written during that spawn); `claudexor_startup_failure.py`
 classifies the child's own log interval for the diagnostic label and the one
 `claudexor_daemon_start_failed` supervisor row, never for behaviour (BIBLE
 P5). Harvest the exit fact at every spawn decision, at attach and at stop
-(`_settle_exited_child`), never only on a caller's wait expiry — the real
-crash lands after the startup window, with nobody waiting — and take the
-latch under the same lock as the reap, before reading the log. Do not add a
+(`_settle_exited_child`), never only on a caller's wait expiry: with the real
+crash cadence (V8 dies after the 20 s startup window) the waiting caller gets
+`daemon_starting` and the child dies with nobody waiting, and the next caller,
+attach or owner stop must still record the row and the latch. Take the latch
+under the same lock as the reap, before reading the log, so a concurrent
+same-process caller meets the latch, not a free spawn slot. Two residuals are
+disclosed, not closed: the descriptor identity is sampled at the first
+observation of the exit, not at the exit itself, so a foreign publisher in
+that window reads as written and costs at most one extra spawn; and between
+the sweep's release and its retry an ordinary caller can pass the refusal and
+become the spawner, in which case the retry joins that same live child (one
+spawn either way, only who pays the startup wait differs). Do not add a
 backoff machine, a retry counter, a cooldown constant, host-side heap sizing
 or writer-lease handling, and do not add a third retrier: the periodic
 supervisor sweep (`clear_start_failure_latch`, then its own single zero-wait
