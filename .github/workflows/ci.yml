@@ -901,7 +901,7 @@ jobs:
           adb shell pm path ai.ouroboros.android
           adb shell dumpsys package ai.ouroboros.android | grep -E 'versionName|versionCode'
           adb shell am force-stop ai.ouroboros.android
-          adb logcat -c
+          adb logcat -c || true
           set +e
           timeout 60s adb shell am instrument -w ai.ouroboros.android.device.smoke/ai.ouroboros.android.device.DeviceSdkSmoke >"$RUNNER_TEMP/android-smoke/instrument.txt" 2>&1
           instrument_status=$?
