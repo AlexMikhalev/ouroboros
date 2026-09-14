@@ -375,6 +375,104 @@ def test_an_own_child_reaped_on_the_attach_path_is_rowed_but_never_latched(monke
     assert len(stand.spawned) == 1
 
 
+def _gate_log_read(monkeypatch):
+    """Hold a harvest inside its log read so something else can happen meanwhile."""
+    import threading
+
+    real = owned.read_startup_log_interval
+    entered, release = threading.Event(), threading.Event()
+
+    def gated(*args, **kwargs):
+        if kwargs.get("limit") == 0:  # the diagnostic's bounds-only read is not the window
+            return real(*args, **kwargs)
+        entered.set()
+        assert release.wait(5), "the test must release the harvest"
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(owned, "read_startup_log_interval", gated)
+    return entered, release
+
+
+def _call_in_thread(manager, outcomes: dict, name: str):
+    import threading
+
+    def call():
+        try:
+            manager.ensure_running()
+            outcomes[name] = "endpoint"
+        except Exception as exc:  # noqa: BLE001 - the typed refusal is the outcome under test
+            outcomes[name] = exc
+
+    thread = threading.Thread(target=call, name=name)
+    thread.start()
+    return thread
+
+
+def test_a_concurrent_caller_in_the_harvest_window_meets_the_latch_not_a_spawn_slot(monkeypatch, tmp_path):
+    """The latch is taken under the pop's lock, before the log is read (H-03 item 1)."""
+    stand = _Stand(monkeypatch, tmp_path, returncode=None, banner=_OOM_REACHED)
+    assert stand.fail_once().code == "daemon_starting"
+    stand.exit_code = -6  # unwatched death
+    entered, release = _gate_log_read(monkeypatch)
+    outcomes: dict = {}
+    first = _call_in_thread(stand.manager, outcomes, "first")
+    assert entered.wait(5), "the first caller is harvesting"
+    second = _call_in_thread(stand.manager, outcomes, "second")
+    second.join(5)
+    assert not second.is_alive(), "the second caller must not wait on the harvest"
+    assert getattr(outcomes["second"], "code", None) == "daemon_spawn_failed"
+    assert "latched" in str(outcomes["second"]) and "startup_failure=unclassified" in str(outcomes["second"])
+    release.set()
+    first.join(5)
+    assert getattr(outcomes["first"], "code", None) == "daemon_spawn_failed"
+    assert "startup_failure=heap_exhausted" in str(outcomes["first"])
+    assert len(stand.spawned) == 1 and len(stand.ensures) == 1, "exactly one spawn"
+    rows = _rows(stand.data_dir)
+    assert [row["type"] for row in rows] == ["claudexor_daemon_start_failed"], "exactly one row"
+    assert rows[0]["classification"] == "heap_exhausted" and rows[0]["latched"] is True
+    latch = stand.manager._last_start_failure
+    assert latch["classification"] == "heap_exhausted" and latch["log_interval"] == [0, len(_OOM_REACHED)]
+
+
+def test_a_sweep_release_during_the_harvest_window_is_never_re_latched(monkeypatch, tmp_path):
+    stand = _Stand(monkeypatch, tmp_path, returncode=None, banner=_LEASE_BUSY)
+    assert stand.fail_once().code == "daemon_starting"
+    stand.exit_code = 1
+    entered, release = _gate_log_read(monkeypatch)
+    outcomes: dict = {}
+    harvesting = _call_in_thread(stand.manager, outcomes, "harvesting")
+    assert entered.wait(5)
+    assert stand.manager._last_start_failure is not None, "provisionally latched before the read"
+    assert stand.manager.clear_start_failure_latch(cleared_by="supervisor_sweep") is True
+    assert stand.manager._last_start_failure is None
+    stand.exit_code = None  # the caller's own retry spawns a child that stays alive
+    release.set()
+    harvesting.join(5)
+    assert getattr(outcomes["harvesting"], "code", None) == "daemon_starting"
+    assert stand.manager._last_start_failure is None, "the classified record never re-takes a released latch"
+    assert len(stand.spawned) == 2
+    rows = _rows(stand.data_dir)
+    assert [(row["type"], row.get("cleared_by")) for row in rows] == [
+        ("claudexor_daemon_start_latch_cleared", "supervisor_sweep"),
+        ("claudexor_daemon_start_failed", None),
+    ]
+    assert rows[0]["classification"] == "unclassified", "released while still provisional"
+    assert rows[1]["classification"] == "writer_lease_contended" and rows[1]["latched"] is True
+
+
+def test_an_owner_stop_after_an_unwatched_death_still_records_the_failure(monkeypatch, tmp_path):
+    """H-03 item 3: Restart/Panic go through _terminate_child; the row must not be lost."""
+    stand = _Stand(monkeypatch, tmp_path, returncode=None, banner=_OOM_REACHED)
+    assert stand.fail_once().code == "daemon_starting"
+    stand.exit_code = -6
+    assert stand.manager.stop_outcome() == "nothing_to_stop"
+    assert stand.manager._proc is None and stand.manager._startup_attempt == {}
+    rows = _rows(stand.data_dir)
+    assert [row["type"] for row in rows] == ["claudexor_daemon_start_failed"]
+    assert rows[0]["latched"] is True and rows[0]["classification"] == "heap_exhausted"
+    assert rows[0]["exit_signal"] == 6 and stand.manager._last_start_failure is not None
+
+
 def test_a_joined_peer_startup_that_vanished_has_no_exit_fact(monkeypatch, tmp_path):
     """Only this manager's own child carries an exit fact; joining never latches."""
     stand = _Stand(monkeypatch, tmp_path, returncode=-6, banner=_OOM_REACHED)

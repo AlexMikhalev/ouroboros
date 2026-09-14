@@ -30,7 +30,7 @@ import enum
 import os
 import pathlib
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 # A dying process writes its refusal or crash banner LAST, so the tail of the
 # interval is the classifying part; a V8 fatal banner with its native stack is
@@ -81,6 +81,10 @@ class ExitFact:
     ``0`` = clean exit, positive = exit code, negative = killed by that signal
     (POSIX). ``descriptor_written`` is whether the control descriptor changed
     identity during this spawn — the manager measures it, this type carries it.
+    It is sampled when the exit is FIRST OBSERVED (the manager's next spawn,
+    attach or stop decision), not at the exit itself: a foreign publisher in
+    that window reads as "written" and costs at most one extra spawn —
+    disclosed, not closed.
     """
 
     returncode: Optional[int]
@@ -167,6 +171,22 @@ def build_start_failure_record(
     }
 
 
+def classified_start_failure_record(
+    pending: Dict[str, Any], *, classification: StartupFailureClass,
+    log_interval: Optional[Tuple[int, int]],
+) -> Dict[str, Any]:
+    """The record taken at first observation, completed with the diagnosis."""
+    return {**pending, "classification": classification.value,
+            "log_interval": list(log_interval) if log_interval else None}
+
+
+def describe_log_interval(log_interval: Optional[Sequence[int]]) -> str:
+    """The one rendering of a recorded interval (diagnostic and refusal alike)."""
+    if log_interval:
+        return f"startup log interval={log_interval[0]}..{log_interval[1]} bytes"
+    return "startup log interval unavailable (log replaced, truncated or unreadable)"
+
+
 def _exit_text(record: Dict[str, Any]) -> str:
     if record.get("exit_signal") is not None:
         return f"exit_signal={record['exit_signal']}"
@@ -181,11 +201,8 @@ def start_failure_label(record: Dict[str, Any]) -> str:
 
 def start_failure_detail(record: Dict[str, Any]) -> str:
     """The self-contained detail of a latched refusal (the diagnostic already passed)."""
-    interval = record.get("log_interval")
-    interval_text = (f"startup log interval={interval[0]}..{interval[1]} bytes" if interval
-                     else "startup log interval unavailable")
     return (f"{start_failure_label(record)}; selected_version={record['pin_version']}; "
-            f"selected_build_sha={record['pin_build']}; {interval_text}; "
+            f"selected_build_sha={record['pin_build']}; {describe_log_interval(record.get('log_interval'))}; "
             f"log={record['log_path']} (shared diagnostic source, not an attributed failure cause); "
             f"failed_at={record['at']}")
 
@@ -209,7 +226,9 @@ __all__ = [
     "ExitFact",
     "StartupFailureClass",
     "build_start_failure_record",
+    "classified_start_failure_record",
     "classify_startup_failure",
+    "describe_log_interval",
     "latch_cleared_row",
     "read_startup_log_interval",
     "start_failure_detail",

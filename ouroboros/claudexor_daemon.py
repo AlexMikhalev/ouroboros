@@ -53,8 +53,11 @@ from typing import Any, Dict, Literal, Optional
 
 from ouroboros.claudexor_startup_failure import (
     ExitFact,
+    StartupFailureClass,
     build_start_failure_record,
+    classified_start_failure_record,
     classify_startup_failure,
+    describe_log_interval,
     latch_cleared_row,
     read_startup_log_interval,
     start_failure_detail,
@@ -130,9 +133,11 @@ def owned_descriptor_path() -> pathlib.Path:
 def _descriptor_identity() -> Optional[tuple]:
     """Stat identity of the control descriptor, ``None`` when absent.
 
-    Recorded at spawn and compared at the exit fact: a changed identity (the
-    engine publishes atomically, so a new inode) means a descriptor was
-    written DURING that spawn — the second half of the latch predicate.
+    Recorded at spawn and compared when the exit is first observed. The engine
+    rewrites ``control-api.json`` IN PLACE (``daemon-startup.ts``), so the tuple
+    relies on ``st_mtime_ns``/``st_size`` changing, not on a new inode; a change
+    means a descriptor was written DURING that spawn — the second half of the
+    latch predicate.
     """
     try:
         stat = owned_descriptor_path().stat()
@@ -533,14 +538,30 @@ class OwnedClaudexorDaemon:
         child died with nobody waiting — the next caller must still find the
         row, the classification and the latch instead of respawning silently.
         A live child, or a joined peer startup (no own handle), settles nothing.
+        The exit fact and the latch are taken under the SAME lock as the pop
+        (descriptor identity sampled right here), so a second caller in the
+        read/classify/row window that follows already meets the latch, never a
+        free spawn slot; the classification completes the record afterwards.
         """
+        from ouroboros.utils import utc_now_iso
+
         with self._lock:
             proc, attempt = self._proc, dict(self._startup_attempt)
-            if proc is None or proc.poll() is None:
+            returncode = proc.poll() if proc is not None else None
+            if returncode is None:
                 return None
-            self._proc = None
-            self._startup_attempt = {}
-        return self._record_start_failure(proc, attempt)
+            self._proc, self._startup_attempt = None, {}
+            exit_status = ExitFact(returncode=returncode,
+                                   descriptor_written=_descriptor_identity() != attempt.get("descriptor"))
+            pending = build_start_failure_record(
+                pin_version=str(attempt.get("version") or "unknown"),
+                pin_build=str(attempt.get("build_sha") or "unknown"),
+                exit_status=exit_status, classification=StartupFailureClass.UNCLASSIFIED,
+                log_path=str(owned_config_dir() / "daemon.log"), log_interval=None, at=utc_now_iso(),
+            )
+            if exit_status.failed_without_control:
+                self._last_start_failure = pending
+        return self._record_start_failure(attempt, exit_status, pending)
 
     def clear_start_failure_latch(self, *, cleared_by: str) -> bool:
         """Release the spawn latch; True when one was set (a durable row names who released it).
@@ -733,31 +754,24 @@ class OwnedClaudexorDaemon:
             status_code=503,
         )
 
-    def _record_start_failure(self, proc: Any, attempt: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Typed exit fact -> diagnostic classification -> durable row; latch on the FACT alone (#844).
+    def _record_start_failure(self, attempt: Dict[str, Any], exit_status: ExitFact,
+                              pending: Dict[str, Any]) -> Dict[str, Any]:
+        """Complete the harvested record: classify (diagnostic), row it, finalize the latch (#844).
 
         Only this manager's own exited child carries an exit fact; a joined
         peer startup that vanished leaves nothing to classify and never latches.
+        The latch, if any, was taken with ``pending`` under the lock; it is
+        replaced by the classified record only while it is still that object —
+        a sweep that released it meanwhile is never re-latched.
         """
-        returncode = proc.poll() if proc is not None and attempt else None
-        if returncode is None:
-            return None
-        from ouroboros.utils import utc_now_iso
-
-        exit_status = ExitFact(returncode=returncode,
-                               descriptor_written=_descriptor_identity() != attempt.get("descriptor"))
-        log_path = owned_config_dir() / "daemon.log"
         interval, written = read_startup_log_interval(
-            log_path, start=int(attempt["log_start"]), identity=attempt["log_identity"])
-        record = build_start_failure_record(
-            pin_version=str(attempt.get("version") or "unknown"),
-            pin_build=str(attempt.get("build_sha") or "unknown"),
-            exit_status=exit_status, classification=classify_startup_failure(written, exit_status),
-            log_path=str(log_path), log_interval=interval, at=utc_now_iso(),
-        )
+            pathlib.Path(pending["log_path"]), start=int(attempt["log_start"]),
+            identity=attempt["log_identity"])
+        record = classified_start_failure_record(
+            pending, classification=classify_startup_failure(written, exit_status), log_interval=interval)
         latched = exit_status.failed_without_control
-        if latched:
-            with self._lock:
+        with self._lock:
+            if latched and self._last_start_failure is pending:
                 self._last_start_failure = record
         log.warning("Owned Claudexor start failed (latched=%s): %s", latched, start_failure_detail(record))
         self._supervisor_row(start_failure_row(record, latched=latched))
@@ -774,30 +788,27 @@ class OwnedClaudexorDaemon:
             details.append(f"spawn_pid={attempt['pid']}; selected_version={attempt['version']}; "
                            f"selected_build_sha={attempt['build_sha']}; "
                            f"exit_code={proc.poll() if proc is not None else 'unknown'}")
-            try:
-                stat = log_path.stat()
-                if (stat.st_dev, stat.st_ino) == attempt["log_identity"] and stat.st_size >= attempt["log_start"]:
-                    details.append(f"startup log interval={attempt['log_start']}..{stat.st_size} bytes")
-                else:
-                    details.append("startup log interval unavailable after file replacement")
-            except OSError:
-                details.append("startup log interval unavailable")
+            interval, _ = read_startup_log_interval(  # identity-checked bounds only, no bytes
+                log_path, start=int(attempt["log_start"]), identity=attempt["log_identity"], limit=0)
+            details.append(describe_log_interval(interval))
         else:
             details.append("joining another manager; its runtime build is not yet authenticated")
         details.append(f"log={log_path} (shared diagnostic source, not an attributed failure cause)")
         return "; ".join(details)
 
     def _terminate_child(self) -> bool:
-        """Stop our captured child outside the lock; clear only its confirmed handle."""
+        """Stop our captured child outside the lock; clear only its confirmed handle.
+
+        An unwatched death is settled first (rowed, latched when it applies), so
+        an owner Restart or Panic that follows it never forgets the failure.
+        """
+        self._settle_exited_child()
         with self._lock:
             proc = self._proc
         if proc is None:
             return False
         if proc.poll() is not None:
-            with self._lock:
-                if self._proc is proc:
-                    self._proc = None
-                    self._startup_attempt = {}
+            self._settle_exited_child()  # exited between the settle above and here
             return False
         from ouroboros.platform_layer import kill_process_tree
 
