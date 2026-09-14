@@ -768,8 +768,9 @@ async def api_project_from_task(request: Request) -> JSONResponse:
         # default id for this task (chat_activity.js::projectIdFromTask) or none at all
         # — and ``raw_id`` already defaults to that same ``task-<task_id>`` — so the
         # request names no particular room and the work's own project answers it. Both
-        # halves go through the SERVER's own sanitizer, so the client's slug rules and
-        # this check cannot drift. An EXPLICIT different id is a caller naming a room.
+        # halves go through the SERVER's own sanitizer (case and single stray characters;
+        # not the client's run-collapsing or dash trimming, which today's hex/sha task ids
+        # never trigger). An EXPLICIT different id is a caller naming a room.
         implicit = sanitize_project_id(raw_id) == sanitize_project_id(f"task-{task_id}")
         disclosed: list = []
 

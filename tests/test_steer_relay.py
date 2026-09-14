@@ -240,7 +240,7 @@ def test_a_drained_entry_without_a_client_id_uses_the_steers_own_receipt_id(tmp_
     monkeypatch.setattr(queue, "DRIVE_ROOT", str(tmp_path))
     notices, emitted = [], []
     ctx = _live_tool_ctx(
-        tmp_path, _supervisor_ctx(tmp_path, notices), emitted, generation=2, delivery={
+        tmp_path, _supervisor_ctx(tmp_path, notices), emitted, generation=0, delivery={
             "msg_id": "legacy-1", "client_message_id": "", "text": "a later owner message",
             "ts": "2026-09-14T12:41:23+00:00",
         }, metadata={
