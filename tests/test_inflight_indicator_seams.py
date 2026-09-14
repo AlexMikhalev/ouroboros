@@ -7,8 +7,9 @@ Pins the three seams the browser contract depends on:
    with the correct ``kind``/``client_message_id``/``project_id``.
 2. ``supervisor.events._handle_typing_start`` stamps ``kind`` and
    ``client_message_id`` from the registry onto the typing action — and leaves
-   them empty for untracked (queued managed) tasks, so the /api/state snapshot
-   never gains deletion authority over managed-task typing entries.
+   them empty for untracked tasks. No in-repo client reads the stamp (wire
+   compatibility): only the /api/state census inserts into the header live-set, so an empty
+   kind exempts nothing from that census's deletion authority.
 3. ``supervisor.message_bus.MessageBus.send_chat_action`` carries the typed
    fields on the broadcast ``typing`` frame, omitting absent optionals.
 """
@@ -236,9 +237,10 @@ def test_typing_start_leaves_kind_empty_for_untracked_managed_task():
     assert len(ctx.bridge.calls) == 1
     call = ctx.bridge.calls[0]
     assert call["activity_id"] == "managed-task-1"
-    # No registry entry => no kind stamp => the client exempts this entry from
-    # /api/state snapshot deletion authority (managed tasks are not in the
-    # direct registry).
+    # No registry entry => no kind stamp (this ctx carries no RUNNING row to
+    # stamp "managed_task" from). No in-repo client reads the stamp; only the
+    # /api/state census inserts into the header live-set, so an absent kind
+    # exempts nothing.
     assert call["kind"] == ""
     assert call["client_message_id"] == ""
 

@@ -98,6 +98,7 @@ from ouroboros.delegate_interactions import (  # noqa: F401
 # facade back); re-exported here because sibling code, the tests and
 # monkeypatch targets name them on THIS surface.
 from ouroboros.deadline_utils import deadline_expired
+from ouroboros.delegate_directory import blocked_geometry_refusal, default_shaped_directory_options
 from ouroboros.delegate_registration_policy import resolve_registration
 from ouroboros.delegate_shared import (  # noqa: F401
     _emit,
@@ -389,8 +390,8 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
             if refusal := _presence_delegate_read_refusal(ctx):
                 return refusal
 
-    if (directory_strategy is not None or scope_paths is not None) and (selector_root or authority.access != "workspace_write"):
-        return _fail("delegate_start", "directory_execution_unavailable", "Directory options require an ordinary writable folder.")
+    if refusal := blocked_geometry_refusal(ctx, authority, selector_root, directory_strategy, scope_paths):
+        return refusal
     if not recovering:
         assignment = "" if bool(actor.get("compiled_work_order")) else _assignment_instructions(ctx)
         payload_skill = str(((payload_auth or {}).get("resource_ref") or {}).get("skill_name") or "")
@@ -449,7 +450,7 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
                         return _fail("delegate_start", "directory_execution_unavailable", str(exc), definitely_unrun=True)
                     snapshot, snap_error = None, ""
                 else:
-                    if directory_strategy is not None or scope_paths is not None:
+                    if not default_shaped_directory_options(directory_strategy, scope_paths):
                         return _fail("delegate_start", "directory_execution_unavailable",
                                      "Directory options apply to ordinary folders; Git workspaces keep their snapshot contract.",
                                      definitely_unrun=True)
@@ -1208,9 +1209,9 @@ def get_tools() -> List[ToolEntry]:
                 "skill_name": {"type": "string", "description":
                     "With root='skill_payload': the exact skill name."},
                 "directory_strategy": {"type": "string", "enum": ["direct", "copy"], "description":
-                    "Ordinary folders only: direct writes in the selected folder; copy prepares scope_paths separately for explicit result application. Choose according to the task and any owner preference. Omission means direct."},
+                    "Ordinary folders only: direct writes in the selected folder; copy prepares scope_paths separately for explicit result application. Choose according to the task and any owner preference. Omission means direct. Write-capable children only: if you are read-only, omit this and scope_paths (direct with no scope is the same as omitting)."},
                 "scope_paths": {"type": "array", "items": {"type": "string"}, "description":
-                    "Relative files/directories to copy, or to capture after direct work (including future output paths); ['.'] explicitly selects the whole folder. Copy needs nonempty scope_paths. Unselected large inputs stay at their source address. Direct work with no selected or observed file paths cannot claim a complete changed-file list."},
+                    "Relative files/directories to copy, or to capture after direct work (including future output paths); ['.'] explicitly selects the whole folder. Copy needs nonempty scope_paths. Write-capable children only: a read-only child omits this and directory_strategy (there is nothing for it to copy back or capture). Unselected large inputs stay at their source address. Direct work with no selected or observed file paths cannot claim a complete changed-file list."},
                 "max_seconds": {"type": "integer", "description":
                     "Wall-clock cap for the run; narrowed to your own remaining deadline. "
                     "Harness runs routinely need 3-5+ minutes end to end, so do not set a "

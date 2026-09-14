@@ -5,18 +5,19 @@ import { clearStickyCardState, computeHydratedDirectActivities, reconcileHydrate
 
 test('partial activity keeps absent direct and managed rows while adding positive observations', () => {
     const existing = new Map([
-        ['direct', { kind: 'direct_chat', startedAt: 1, clientMessageId: 'submitted' }],
-        ['managed', { kind: 'managed_task', startedAt: 1 }],
+        ['direct', { kind: 'direct_chat', clientMessageId: 'submitted' }],
+        ['managed', { kind: 'managed_task' }],
     ]);
     const positive = [{ activity_id: 'new', chat_id: 1, kind: 'managed_task' }];
-    const result = reconcileHydratedDirectActivities(existing, positive, 1, 10, null, 2, false);
+    const result = reconcileHydratedDirectActivities(existing, positive, 1, null, false);
     assert.deepEqual([...result.activities.keys()], ['direct', 'managed', 'new']);
     assert.deepEqual(result.departedManagedTaskIds, []);
     assert.deepEqual(result.disappearedManagedTaskIds, []);
     assert.deepEqual(result.concludedDirectActivities, []);
-    assert.equal(computeHydratedDirectActivities(existing, [], 1, 10, null, 2, true).size, 0);
-    const recent = new Map([['fresh', { kind: 'managed_task', startedAt: 20 }]]);
-    assert.equal(computeHydratedDirectActivities(recent, [], 1, 10, null, 2, true).size, 1);
+    assert.equal(computeHydratedDirectActivities(existing, [], 1, null, true).size, 0);
+    // No wall-clock barrier survives: a complete census is total over every entry.
+    const recent = new Map([['fresh', { kind: 'managed_task' }]]);
+    assert.equal(computeHydratedDirectActivities(recent, [], 1, null, true).size, 0);
 });
 
 test('terminal presentation keeps one task key while new factual reason replaces its body', () => {

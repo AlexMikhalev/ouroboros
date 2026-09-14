@@ -862,7 +862,9 @@ textarea::placeholder {
 
 .available-subagent-route {
   display: grid;
-  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  /* A track minimum yields to the container: the viewport query does not know
+     the wizard column width, so the floor is capped at 100% of the row. */
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 120px), 1fr));
   gap: var(--space-2);
 }
 

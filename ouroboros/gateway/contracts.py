@@ -430,9 +430,9 @@ class TypingOutbound(TypedDict):
     activity_id: NotRequired[str]
     client_message_id: NotRequired[str]
     phase: NotRequired[str]
-    # Stamped only for direct-registry-tracked turns ("direct_chat" /
-    # "ephemeral_decision"); queued managed tasks emit typing without it, so the
-    # client exempts their entries from /api/state snapshot deletion authority.
+    # Stamped for a registry-tracked turn ("direct_chat") or a RUNNING queue
+    # root ("managed_task"); empty for children. No in-repo client reads it
+    # (wire compatibility): only the census inserts into the header live-set.
     kind: NotRequired[str]
 
 

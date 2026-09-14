@@ -70,7 +70,10 @@ def _handle_typing_start(evt: Dict[str, Any], ctx: Any) -> None:
                 from supervisor.active_activity import get_direct_activity_registry
                 # A registry hit identifies a direct/ephemeral turn; queued
                 # managed tasks also emit typing_start but are not tracked here,
-                # so their frames go out without a kind stamp.
+                # so their frames go out without a kind stamp. The stamp is
+                # kept for wire compatibility only: no in-repo client reads a
+                # typing frame's kind, and it carries no authority over any
+                # client-side set.
                 entry = get_direct_activity_registry().get(task_id)
                 if entry:
                     client_msg_id = entry.client_message_id
@@ -78,10 +81,12 @@ def _handle_typing_start(evt: Dict[str, Any], ctx: Any) -> None:
             except Exception:
                 pass
         if not kind and task_row:
-            # A RUNNING queue ROOT is stamped "managed_task" so the client can
-            # reconcile its entry against the /api/state activity snapshot
-            # (which lists queue roots). Subagent typing keeps the legacy
-            # no-kind exemption: no snapshot source enumerates children.
+            # A RUNNING queue ROOT is stamped "managed_task" like the /api/state
+            # activity census names it (that census lists queue roots). The stamp
+            # is kept for wire compatibility only: no in-repo client reads it, and
+            # the web header never admits a typing frame into its live-activity
+            # set, so an empty kind is not an exemption from anything. The census still
+            # does not enumerate children by design — their own task cards do.
             try:
                 from ouroboros.task_results import resolve_task_lineage
 

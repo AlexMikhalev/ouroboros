@@ -193,6 +193,12 @@ integrity and authority boundaries plus truthful receipts; do not add
 task-specific auto-retry, fallback, cleanup, resume, or terminal-flow state
 machines.
 
+Explicitly naming a documented default is never a different request. An argument
+whose value is what omitting it already means (`directory_strategy="direct"` with
+no `scope_paths`) takes the omitted path on a shape that cannot serve the argument
+at all; only values that genuinely ask for something are refused there, typed, at
+the earliest layer holding the authority to judge them, with the repair named.
+
 A producer that already knows its call failed publishes that fact typed: a
 `ToolResult` through `tool_result._publish_tool_result`, or a first-line
 `⚠️ IDENTIFIER` marker the legacy adapter maps to a status. Identifier-less
@@ -3172,6 +3178,28 @@ SPA, not a relocatable-page or multi-instance panel framework.
   `.style.<property>` assignments are review debt (a dynamic measured value
   may update a narrowly named custom property when that is the real runtime
   data flow).
+- Containment: a control never widens its column, and horizontal overflow
+  lives in the wrapper that owns the wide content and declares
+  `overflow-x: auto` (code block, `.md-table-wrap`, tab strip, Costs table
+  cells) — never in a page scroll body, whose `overflow-y: auto` alone
+  already makes `overflow-x` compute to `auto`. The shared
+  `select.ui-control` recipe therefore clips its own value
+  (`overflow: hidden`): WebKit computes `overflow: visible` on a native
+  select, so an unclipped option label becomes scrollable overflow of that
+  page scroller. A grid track holding controls takes a minimum that yields
+  to its container — `minmax(0, …)`, or
+  `repeat(auto-fit, minmax(min(100%, Npx), 1fr))`; a fixed px minimum
+  rescued only by a viewport media query is review debt, because the
+  viewport does not know how wide the content column is. The global webkit
+  scrollbar recipe sizes both axes. Enforced by
+  `tests/test_web_typography_static.py::test_select_control_clips_its_value`,
+  its `::test_webkit_scrollbar_recipe_covers_both_axes` neighbour,
+  `tests/test_ui_settings_overflow_browser.py` (WebKit, the native-select clip)
+  and `tests/test_ui_settings_grid_tracks_browser.py` (Chromium, yielding
+  tracks); two gaps stay open — the
+  wizard document loads `ui.css` without `style.css` and keeps native
+  scrollbars, and an element setting the standard
+  `scrollbar-width`/`scrollbar-color` opts out of the webkit recipe on Blink.
 - One semantic button variant expresses one action role: neutral Settings
   and onboarding controls use the existing `.btn.btn-default`; a one-action
   result row uses the named `.settings-action-row` contract (status first,
@@ -3198,9 +3226,15 @@ SPA, not a relocatable-page or multi-instance panel framework.
   reason phrase or raw code — never from a second producer. A non-terminal diagnostic may add a timeline fact
   but must not promote the whole task; unknown event names never acquire
   Chat severity from `error`/`crash`/`fail` keyword matching. The Chat
-  header reports connection and server-authoritative activity only; failed
-  task status does not synthesize header attention, a toast, unread state,
-  or an owner action.
+  header reports connection, the `/api/state` activity census, the owner's
+  own unconfirmed sends and live task cards only; failed task status does
+  not synthesize header attention, a toast, unread state, or an owner
+  action. Never derive header liveness from a WS frame: a typing frame is
+  a submission receipt, and the `/api/state` census is the only inserter
+  into the client live-activity set (contract and residuals: the
+  `DirectActivityRegistry` / `active_chat_activities` paragraph of
+  ARCHITECTURE.md; enforced by
+  `web/tests/chat_header_census.test.js`).
 - Executor presentation consumes the existing task/run attempt facts. Keep
   `executor_observation` event-local through Agent, supervisor delivery, progress
   history and both Chat metadata paths; ordinary coordinator notes inherit none.
@@ -3240,9 +3274,21 @@ Eviction releases only its own page's media, markdown and decision views, protec
 visible reading, focus and selection. Exact page handles retain return navigation;
 read gaps and sparse empty pages never become false EOF. Readable recent rows survive an
 unavailable archive with explicit gap/retry and no fabricated physical cursor. Flush historical
-timeline changes once per card, and skip idle scroll cleanup when no work is pending. Tests:
-`tests/test_chat_history_paging.py`, `tests/test_chat_history_paging_browser.py`
-and `web/tests/chat_history_integration.test.js`.
+timeline changes once per card, and skip idle scroll cleanup when no work is pending.
+History chrome describes the rendered transcript, not the pager cache: `canNewer` (contiguous
+cached descriptors around `focus`) is never permission to tell the reader that newer messages
+exist. A server page with zero rows for the room is a bounded scan: it advances the cursor and
+keeps `has_more` honest, but it is not a reading position, not `focus`, and not newer.
+Automatic continuation loads pages only at the older edge; at the live edge it only fills the
+gap toward already-mounted rows through exact page handles, never a rebuild. Return to the
+present is the explicit floating button, which rebuilds the chain with `latest()` only while
+non-empty pages above the window are still missing. Distant evicted pages plus retained live
+rows may leave a mid-transcript hole; that residual is disclosed rather than covered by a
+second load-newer control. Tests:
+`tests/test_chat_history_paging.py`, the pass-through cases in
+`web/tests/chat_history_pager.test.js`, the sparse-walk, anti-loop and dense-return cases in
+`web/tests/chat_history_integration.test.js`, and
+`tests/test_chat_history_paging_browser.py`.
 
 The Project work pointer is a navigation component over the existing Chat card
 registry (`project_work_pointer.js`), updated inside the same viewport mutation
@@ -3263,7 +3309,12 @@ stealing usable text space; use the shared responsive component before
 adding a page-specific layout. A visible change is inspected with vision in
 at least one relevant real consumer flow. A stored screenshot alone is not
 verification; mobile or WebKit is not a universal requirement and is
-selected from risk. Review-only: scored by CHECKLISTS items 2(i) and 30
+selected from risk. Containment is the WebKit-sensitive exception — a native
+select is not clipped there — so a change to a control recipe or a page
+scroll body is verified on the engine that shows the class (Playwright
+WebKit for native-control clipping, Chromium for engine-independent track
+geometry), measuring overflow on the scroll body's `scrollWidth` rather than
+on `documentElement`. Review-only: scored by CHECKLISTS items 2(i) and 30
 (`web_design_system`).
 
 ### Browser dialogs

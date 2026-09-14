@@ -602,4 +602,9 @@ def test_web_frames_keep_reference_order_and_one_authored_reply():
     assert "showTaskIncidentToast(msg);" in fanout
     assistant_fanout = fanout[fanout.index("const explicitTaskId"):]
     assert assistant_fanout.count("addMessage(msg.content, msg.role") == 1
-    assert "msg.cancelable === true" in fanout
+    # Stop authority stays host-attested: the fanout hands the progress row to
+    # the card updater, and only the host's `cancelable` flag grants it there
+    # (typing frames are receipts and never register liveness or controls).
+    assert "updateLiveCardFromProgressMessage(msg, { grantCancelAuthority: true })" in fanout
+    updater = chat[chat.index("function updateLiveCardFromProgressMessage"):chat.index("function updateLiveCardFromLogEvent")]
+    assert "grantCancelAuthority && msg?.cancelable === true && msg?.task_id" in updater

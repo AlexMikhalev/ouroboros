@@ -12,7 +12,12 @@ import pathlib
 from typing import Any, Dict
 
 from ouroboros.cost_projection import carry_cost_meta, with_cost_aliases
-from ouroboros.outcomes import EXECUTION_INFRA_FAILED, infra_failed_axes, normalize_outcome_axes
+from ouroboros.outcomes import (
+    EXECUTION_DEGRADED,
+    EXECUTION_INFRA_FAILED,
+    infra_failed_axes,
+    normalize_outcome_axes,
+)
 from ouroboros.post_task_checkpoint import post_task_synthesis_is_open
 from ouroboros.task_finalization import send_provider_death_notice
 from ouroboros.task_results import (
@@ -43,6 +48,31 @@ def _events():
 
 
 log = logging.getLogger(__name__)
+
+# A configured actor that finished without its physical leaf: the lifecycle is
+# `completed`, the execution axis is degraded. The axis is the SSOT
+# (`outcomes._apply_actor_first_terminal_projection` stamps it from these same
+# reason codes); the codes are carried here only so a terminal that reports the
+# reason without axes still reads honestly.
+_DEGRADED_TERMINAL_REASONS = frozenset({"configured_actor_incomplete", "configured_actor_unknown"})
+
+
+def _finished_with_warnings(task_done_event: Dict[str, Any]) -> bool:
+    """True when a `completed` lifecycle carries a degraded execution axis.
+
+    The chat line used to take its icon and verb from the lifecycle alone, so a
+    child that never ran its leaf still read as "✅ … completed" while the web
+    card, computing severity from these same axes, showed a warning. One terminal,
+    one story — for the EXECUTION axis: this mirrors only that axis of
+    `web/modules/log_events.js` `taskOutcomeSeverity`, whose objective and review
+    axes are not read here, so a child degraded on those axes alone still reads
+    as a clean completion in chat.
+    """
+    axes = task_done_event.get("outcome_axes")
+    execution = axes.get("execution") if isinstance(axes, dict) else None
+    if isinstance(execution, dict) and str(execution.get("status") or "") == EXECUTION_DEGRADED:
+        return True
+    return str(task_done_event.get("reason_code") or "") in _DEGRADED_TERMINAL_REASONS
 
 
 def _authoritative_terminal_cost(
@@ -267,6 +297,10 @@ def _finish_task_done_dispatch(
                 STATUS_INTERRUPTED: ("⏹️", STATUS_INTERRUPTED, STATUS_INTERRUPTED),
             }.get(status, ("ℹ️", status or "done", status or "finished"))
             icon, subagent_event, verb = status_display
+            if status == STATUS_COMPLETED and _finished_with_warnings(task_done_event):
+                # Icon and verb only: `subagent_event` and progress_meta `status`
+                # stay the lifecycle values every card and Telegram consumer keys on.
+                icon, verb = "⚠️", "finished with warnings"
             result_text = str(effective_result.get("result") or "")
             trace_text = str(effective_result.get("trace_summary") or "")
             constraint = effective_result.get("task_constraint")

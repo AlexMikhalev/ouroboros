@@ -521,8 +521,8 @@ export function createChatInstance({
     // Local user submissions awaiting server confirmation (clientMessageId
     // -> { clientMessageId, timestamp }).
     const pendingSubmissions = new Map();
-    // Bounded conclusions block late root typing and stale state snapshots; reusable
-    // logical task slots are cleared whenever their cycle settles.
+    // Bounded conclusions block stale state snapshots; reusable logical task
+    // slots are cleared whenever their cycle settles.
     const concludedDirectActivities = new Map();
     const CONCLUDED_ACTIVITY_LEDGER_MAX = 200;
     // Retryable queue-loss candidates plus process-local single-flight reads.
@@ -644,13 +644,13 @@ export function createChatInstance({
         if (budgetFill) budgetFill.style.width = `${budget.fillPct}%`;
     }
 
-    function hydrateStateSnapshot(data, snapshotRequestedAt = Infinity, snapshotGeneration = 0) {
+    function hydrateStateSnapshot(data, snapshotRequestedAt = Infinity) {
         syncHeaderControlState(data);
         const activities = Array.isArray(data?.active_chat_activities)
             ? data.active_chat_activities
             : data?.active_direct_turns;
         if (Array.isArray(activities)) {
-            hydrateDirectActivities(activities, snapshotRequestedAt, snapshotGeneration,
+            hydrateDirectActivities(activities, snapshotRequestedAt,
                 data.active_chat_activities_complete === true && data.supervisor_ready === true);
             for (const activity of activities) {
                 if (activity.required_question) chatDecision.appendQuestionPointer(activity.required_question);
@@ -2662,7 +2662,7 @@ export function createChatInstance({
                     ) continue;
                     // Reconnect: a durably recorded submission must not stay
                     // `Sending...` — history + snapshot are the authorities
-                    // (a live turn re-links via hydration / next typing frame).
+                    // (a live turn re-links via census hydration).
                     if (fromReconnect && msg.role === 'user' && msg.client_message_id) {
                         pendingSubmissions.delete(String(msg.client_message_id));
                     }
@@ -3486,9 +3486,9 @@ export function createChatInstance({
         // "Connecting…" (the one-shot WS `open` already fired before it existed;
         // future reconnects still update it via the shared `open` handler).
         if (ws.isConnected?.()) setStatus('online', 'Online');
-        // 1A a panel created AFTER the socket opened missed the typing frame
-        // and the `open`-driven refresh — hydrate in-flight turns once from
-        // the snapshot (per-instance closure filters to this panel's chat_id).
+        // 1A a panel created AFTER the socket opened missed the `open`-driven
+        // refresh — hydrate in-flight turns once from the census (the
+        // per-instance closure filters to this panel's chat_id).
         refreshHeaderControlState(true);
     } else {
         refreshHeaderControlState(true);
@@ -3575,8 +3575,8 @@ export function createChatInstance({
         }
     }
 
-    const historyControls = createHistoryControls(messagesDiv, typingEl);
-    const { olderButton: loadOlderBtn, newerButton: loadNewerBtn } = historyControls;
+    const historyControls = createHistoryControls(messagesDiv);
+    const { olderButton: loadOlderBtn } = historyControls;
 
     const historyPager = createChatHistoryPager({
         fetchPage: (cursor, { signal }) => apiClient.chatHistory({ chatId, cursor, signal }),
@@ -3616,7 +3616,6 @@ export function createChatInstance({
         return result;
     }
     loadOlderBtn.addEventListener('click', loadOlderHistory);
-    loadNewerBtn.addEventListener('click', () => historyPager.newer());
 
     function navigateHistoryAtEdge() {
         if (destroyed || _restoring || !historyLoaded || !isInstanceVisible()) return;
@@ -3676,37 +3675,6 @@ export function createChatInstance({
             typingEl.style.display = display;
             return true;
         });
-    }
-
-    function showTyping(activityId = '', meta = {}) {
-        const actId = taskKey(activityId) || ('direct-' + chatId);
-        // A typing frame after its turn's keyed final must not resurrect the
-        // concluded turn — but it still carries the activity<->cmid link, so
-        // it settles the linked submission (broadcasts are not ordered).
-        if (concludedDirectActivities.has(actId)) {
-            if (meta.clientMessageId && pendingSubmissions.delete(meta.clientMessageId)) {
-                syncChatStatus();
-            }
-            return;
-        }
-        // Fresh live evidence outranks a task-detail read woken by an older
-        // queue-loss snapshot. The in-flight read may finish, but cannot apply.
-        missingManagedTaskIds.delete(actId);
-        activeDirectActivities.set(actId, {
-            activityId: actId,
-            // '' = not registry-tracked (queued managed task): visible in the
-            // active set but exempt from /api/state snapshot deletion.
-            kind: meta.kind || '',
-            phase: meta.phase || 'thinking',
-            clientMessageId: meta.clientMessageId || '',
-            startedAt: Date.now(),
-        });
-        restoreCardActivity(liveCardRecords.get(actId));
-        markReviewAnchor(liveCardRecords.get(actId));
-        if (meta.clientMessageId) {
-            pendingSubmissions.delete(meta.clientMessageId);
-        }
-        syncChatStatus();
     }
 
     function hideTypingIndicatorOnly() {
@@ -3784,7 +3752,7 @@ export function createChatInstance({
         void reconcileMissingManagedTask(id, onDomWrite);
     }
 
-    function hydrateDirectActivities(turnsList, snapshotBarrierMs = Infinity, snapshotGeneration = 0, complete = false) {
+    function hydrateDirectActivities(turnsList, snapshotBarrierMs = Infinity, complete = false) {
         if (!Array.isArray(turnsList)) return;
         const {
             activities: nextMap,
@@ -3793,8 +3761,8 @@ export function createChatInstance({
             concludedDirectActivities: settledDirectRows,
             globallyActiveActivityIds,
         } = reconcileHydratedDirectActivities(
-            activeDirectActivities, turnsList, chatId, snapshotBarrierMs,
-            concludedDirectActivities, snapshotGeneration, complete,
+            activeDirectActivities, turnsList, chatId,
+            concludedDirectActivities, complete,
         );
         activeDirectActivities.clear();
         for (const [k, v] of nextMap.entries()) {
@@ -3817,9 +3785,15 @@ export function createChatInstance({
             Array.from(liveCardRecords, ([id, r]) => ({
                 id, finished: r.finished, isSubagent: r.isSubagent, connected: r.root?.isConnected,
             })),
-            new Set([...globallyActiveActivityIds, ...activeDirectActivities.keys()]),
+            globallyActiveActivityIds,
         )) {
-            if ((liveCardRecords.get(taskId)?.lastLiveObservedAt || 0) < snapshotBarrierMs) {
+            const observedAt = liveCardRecords.get(taskId)?.lastLiveObservedAt || 0;
+            if (observedAt < snapshotBarrierMs) {
+                // The census is the queue authority: a root the page saw running
+                // live and the census now omits has no PENDING/RUNNING row for
+                // Stop to target. A card replayed from history keeps Stop until
+                // its durable read answers.
+                if (observedAt) revokeManagedTaskCancelAuthority(taskId);
                 observeMissingManagedTask(taskId);
             }
         }
@@ -3846,14 +3820,17 @@ export function createChatInstance({
 
     onWs('typing', (msg) => {
         if (!isMyThread(msg)) return;  // each column shows typing only for its own thread
-        const actId = msg.activity_id || msg.task_id || ('direct-' + (msg.chat_id || chatId));
-        const clientMsgId = msg.client_message_id || '';
-        showTyping(actId, {
-            clientMessageId: clientMsgId,
-            phase: msg.phase || 'thinking',
-            // Server-stamped for registry turns and RUNNING queue roots;
-            // kind-less frames stay outside snapshot deletion authority.
-            kind: msg.kind || '',
+        // A typing frame is a submission receipt, never liveness: it pulls the
+        // authoritative census at once and retires the linked `Sending...`
+        // only once that census has answered, so the header steps from
+        // Sending... straight to Thinking... when the census lists the turn
+        // (hydration retires the cmid itself) and to Online otherwise, never
+        // through a blank in between. The header derives from that census,
+        // pending sends and live cards only.
+        const cmid = String(msg.client_message_id || '');
+        if (!cmid) return;
+        void refreshHeaderControlState(true).then(() => {
+            if (pendingSubmissions.delete(cmid)) syncChatStatus();
         });
     });
 
@@ -3921,16 +3898,6 @@ export function createChatInstance({
             learnSubagentLineage(msg);
             if (msg.is_progress) {
                 showTaskIncidentToast(msg);
-                if (
-                    msg.cancelable === true
-                    && explicitTaskId
-                    && !msg.subagent_event
-                    && !subagentChildParents.has(explicitTaskId)
-                ) {
-                    showTyping(explicitTaskId, {
-                        kind: 'managed_task', phase: msg.phase || 'working',
-                    });
-                }
                 const changed = updateLiveCardFromProgressMessage(msg, { grantCancelAuthority: true });
                 syncChatStatus();
                 return changed;
@@ -4063,11 +4030,6 @@ export function createChatInstance({
 
     onWs('open', (msg) => {
         void chatDecision.refreshQuestions();
-        // Reconnect drops kind-less entries (no snapshot source tracks them);
-        // kind-stamped ones reconcile against the refreshed snapshot below.
-        for (const [aid, entry] of activeDirectActivities) {
-            if (!entry.kind) activeDirectActivities.delete(aid);
-        }
         refreshHeaderControlState(true);
         syncChatStatus();
         // Reconnect truth comes from the ws CLIENT
