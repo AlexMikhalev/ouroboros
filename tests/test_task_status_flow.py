@@ -1929,26 +1929,38 @@ def test_wait_for_task_reports_rejected_duplicate(tmp_path):
     assert "duplicate_of=orig999" in output
 
 
-def test_handle_schedule_task_duplicate_writes_rejected_status(tmp_path, monkeypatch):
+def test_handle_schedule_task_admits_identical_siblings_without_semantic_veto(tmp_path, monkeypatch):
+    """No semantic duplicate judge stands between a parent and its siblings.
+
+    Exact task-id fencing, the active-child cap and cost ceilings are the floor;
+    identical objectives under one parent are the parent's call, so every sibling
+    is admitted as ``scheduled`` and none is stamped ``duplicate_of``.
+    """
     from supervisor import events as ev_module
-    from supervisor import events_schedule_task as schedule_module
-    from ouroboros.task_results import STATUS_REJECTED_DUPLICATE
+    import ouroboros.llm as llm_module
+    from ouroboros.task_results import STATUS_SCHEDULED
 
-    captured_identity = {}
+    # Admission must not consult any model: a judge that merely failed open
+    # (provider unreachable in a keyless run) would make this test pass on a
+    # tree that still carries the veto, so constructing a client is the failure.
+    constructed = []
 
-    def _duplicate(*args, **kwargs):
-        captured_identity.update(kwargs.get("dedupe_identity") or {})
-        return "orig111"
+    def _no_client(*args, **kwargs):
+        constructed.append((args, kwargs))
+        raise AssertionError("admission constructed an LLM client")
 
-    monkeypatch.setattr(schedule_module, "_find_duplicate_task", _duplicate)
+    monkeypatch.setattr(llm_module, "LLMClient", _no_client)
 
     sent = []
+    enqueued = []
 
     class FakeCtx:
         DRIVE_ROOT = tmp_path
-        PENDING = []
-        RUNNING = {}
         WORKERS = {0: SimpleNamespace(busy_task_id=None)}
+
+        def __init__(self):
+            self.PENDING = []
+            self.RUNNING = {}
 
         def load_state(self):
             return {"owner_chat_id": 1}
@@ -1956,302 +1968,61 @@ def test_handle_schedule_task_duplicate_writes_rejected_status(tmp_path, monkeyp
         def send_with_budget(self, chat_id, text, **kwargs):
             sent.append((chat_id, text, kwargs))
 
-    ev_module._handle_schedule_task(
-        {
-            "type": "schedule_subagent",
-            "task_id": "dup222",
-            "objective": "Do the thing",
-            "expected_output": "Duplicate verdict",
-            "context": "Model focus B",
-            "depth": 1,
-            "memory_mode": "forked",
-            "parent_task_id": "parent111",
-            "root_task_id": "root111",
-            "drive_root": str(tmp_path / "state" / "headless_tasks" / "dup222" / "data"),
-            "child_drive_root": str(tmp_path / "state" / "headless_tasks" / "dup222" / "data"),
-            "budget_drive_root": str(tmp_path),
-        },
-        FakeCtx(),
-    )
+        def enqueue_task(self, task):
+            enqueued.append(task)
+            self.PENDING.append(task)
+            return task
 
-    path = tmp_path / "task_results" / "dup222.json"
-    data = json.loads(path.read_text(encoding="utf-8"))
-    assert data["status"] == STATUS_REJECTED_DUPLICATE
-    assert data["duplicate_of"] == "orig111"
-    assert sent and "semantically similar" in sent[0][1]
-    assert sent[0][2]["is_progress"] is True
-    assert sent[0][2]["progress_meta"]["delegation_role"] == "subagent"
-    assert sent[0][2]["progress_meta"]["parent_task_id"] == "parent111"
-    assert sent[0][2]["progress_meta"]["status"] == STATUS_REJECTED_DUPLICATE
-    assert captured_identity == {
-        "delegation_role": "subagent",
-        "task_id": "dup222",
-        "parent_task_id": "parent111",
-        "root_task_id": "root111",
-        "budget_drive_root": str(tmp_path),
-    }
+        def persist_queue_snapshot(self, reason=""):
+            self.snapshot_reason = reason
 
+    ctx = FakeCtx()
 
-def test_find_duplicate_task_includes_subagent_handoff_fields(monkeypatch):
-    from supervisor import events as ev_module
-    import ouroboros.config as config_module
-    import ouroboros.llm as llm_module
-
-    captured = {}
-
-    class FakeClient:
-        def chat(self, messages, **kwargs):
-            captured["prompt"] = messages[0]["content"]
-            return {"content": "NONE"}, {}
-
-    monkeypatch.setattr(config_module, "get_light_model", lambda: "test-light")
-    monkeypatch.setattr(llm_module, "LLMClient", lambda: FakeClient())
-
-    result = ev_module._find_duplicate_task(
-        "Review shared surface",
-        "same context",
-        [
+    def _dispatch(tid, configured_subagent):
+        ev_module._handle_schedule_task(
             {
-                "id": "pending1",
-                "description": "Review shared surface",
-                "context": "same context",
-                "expected_output": "Docs table",
-                "constraints": "docs only",
-                "role": "docs reviewer",
-            }
-        ],
-        {},
-        expected_output="Security table",
-        constraints="security only",
-        role="security reviewer",
-    )
+                "type": "schedule_subagent",
+                "task_id": tid,
+                "objective": "Do the thing",
+                "expected_output": "Duplicate verdict",
+                "context": "Model focus B",
+                "depth": 1,
+                "memory_mode": "forked",
+                "parent_task_id": "parent111",
+                "root_task_id": "root111",
+                "drive_root": str(tmp_path / "state" / "headless_tasks" / tid / "data"),
+                "child_drive_root": str(tmp_path / "state" / "headless_tasks" / tid / "data"),
+                "budget_drive_root": str(tmp_path),
+                "configured_subagent": configured_subagent,
+            },
+            ctx,
+        )
 
-    assert result is None
-    prompt = captured["prompt"]
-    assert "Expected output:\nSecurity table" in prompt
-    assert "Expected output:\nDocs table" in prompt
-    assert "Constraints:\nsecurity only" in prompt
-    assert "Constraints:\ndocs only" in prompt
-    assert "Role:\nsecurity reviewer" in prompt
-    assert "Role:\ndocs reviewer" in prompt
+    # Same objective, same lineage, same (default) role; only the selected
+    # configured subagent differs.
+    _dispatch("sib1", {"selected_subagent_id": "primary-builder"})
+    _dispatch("sib2", {"selected_subagent_id": "fast-scout"})
+    # ... and a pair whose configured subagent is identical too.
+    _dispatch("sib3", {"selected_subagent_id": "primary-builder"})
+    _dispatch("sib4", {"selected_subagent_id": "primary-builder"})
 
-
-def test_find_duplicate_task_allows_distinct_subagent_roles(monkeypatch):
-    from supervisor import events as ev_module
-    import ouroboros.config as config_module
-    import ouroboros.llm as llm_module
-
-    calls = []
-
-    class FakeClient:
-        def chat(self, messages, **kwargs):
-            calls.append(messages[0]["content"])
-            return {"content": "pending1"}, {}
-
-    monkeypatch.setattr(config_module, "get_light_model", lambda: "test-light")
-    monkeypatch.setattr(llm_module, "LLMClient", lambda: FakeClient())
-
-    result = ev_module._find_duplicate_task(
-        "Run nested smoke slot",
-        "",
-        [
-            {
-                "id": "pending1",
-                "description": "Run nested smoke slot",
-                "expected_output": "Smoke handoff",
-                "role": "l1-alpha-coordinator",
-                "delegation_role": "subagent",
-                "parent_task_id": "root1",
-                "root_task_id": "root1",
-            }
-        ],
-        {},
-        expected_output="Smoke handoff",
-        role="l1-beta-coordinator",
-        dedupe_identity={
-            "delegation_role": "subagent",
-            "parent_task_id": "root1",
-            "root_task_id": "root1",
-        },
-    )
-
-    assert result is None
-    assert calls == []
-
-
-def test_find_duplicate_task_keeps_same_role_subagent_dedupe(monkeypatch):
-    from supervisor import events as ev_module
-    import ouroboros.config as config_module
-    import ouroboros.llm as llm_module
-
-    class FakeClient:
-        def chat(self, messages, **kwargs):
-            return {"content": "pending1"}, {}
-
-    monkeypatch.setattr(config_module, "get_light_model", lambda: "test-light")
-    monkeypatch.setattr(llm_module, "LLMClient", lambda: FakeClient())
-
-    result = ev_module._find_duplicate_task(
-        "Run nested smoke slot",
-        "",
-        [
-            {
-                "id": "pending1",
-                "description": "Run nested smoke slot",
-                "expected_output": "Smoke handoff",
-                "role": "l1-alpha-coordinator",
-                "delegation_role": "subagent",
-                "parent_task_id": "root1",
-                "root_task_id": "root1",
-            }
-        ],
-        {},
-        expected_output="Smoke handoff",
-        role="l1-alpha-coordinator",
-        dedupe_identity={
-            "delegation_role": "subagent",
-            "parent_task_id": "root1",
-            "root_task_id": "root1",
-        },
-    )
-
-    assert result == "pending1"
-
-
-def test_find_duplicate_task_allows_distinct_subagent_parent_branches(monkeypatch):
-    from supervisor import events as ev_module
-    import ouroboros.config as config_module
-    import ouroboros.llm as llm_module
-
-    calls = []
-
-    class FakeClient:
-        def chat(self, messages, **kwargs):
-            calls.append(messages[0]["content"])
-            return {"content": "pending1"}, {}
-
-    monkeypatch.setattr(config_module, "get_light_model", lambda: "test-light")
-    monkeypatch.setattr(llm_module, "LLMClient", lambda: FakeClient())
-
-    result = ev_module._find_duplicate_task(
-        "Run nested branch smoke slot",
-        "",
-        [
-            {
-                "id": "pending1",
-                "description": "Run nested branch smoke slot",
-                "expected_output": "Smoke handoff",
-                "role": "shared-l2-role",
-                "delegation_role": "subagent",
-                "parent_task_id": "l1-alpha",
-                "root_task_id": "root1",
-            }
-        ],
-        {},
-        expected_output="Smoke handoff",
-        role="shared-l2-role",
-        dedupe_identity={
-            "delegation_role": "subagent",
-            "parent_task_id": "l1-beta",
-            "root_task_id": "root1",
-        },
-    )
-
-    assert result is None
-    assert calls == []
-
-
-def test_find_duplicate_task_allows_subagent_against_running_root_ancestor(monkeypatch):
-    from supervisor import events as ev_module
-    import ouroboros.config as config_module
-    import ouroboros.llm as llm_module
-
-    calls = []
-
-    class FakeClient:
-        def chat(self, messages, **kwargs):
-            calls.append(messages[0]["content"])
-            return {"content": "root1"}, {}
-
-    monkeypatch.setattr(config_module, "get_light_model", lambda: "test-light")
-    monkeypatch.setattr(llm_module, "LLMClient", lambda: FakeClient())
-
-    result = ev_module._find_duplicate_task(
-        "You are l1-alpha-coordinator; schedule L2 smoke agents",
-        "",
-        [],
-        {
-            "root1": {
-                "task": {
-                    "id": "root1",
-                    "description": "Root coordinator: schedule l1-alpha, l1-beta, l1-gamma subagents",
-                    "delegation_role": "root",
-                    "parent_task_id": "",
-                    "root_task_id": "root1",
-                }
-            }
-        },
-        expected_output="L1 handoff",
-        role="l1-alpha-coordinator",
-        dedupe_identity={
-            "delegation_role": "subagent",
-            "parent_task_id": "root1",
-            "root_task_id": "root1",
-        },
-    )
-
-    assert result is None
-    assert calls == []
-
-
-def test_find_duplicate_task_allows_subagent_against_pending_parent_ancestor(monkeypatch):
-    from supervisor import events as ev_module
-    import ouroboros.config as config_module
-    import ouroboros.llm as llm_module
-
-    calls = []
-
-    class FakeClient:
-        def chat(self, messages, **kwargs):
-            calls.append(messages[0]["content"])
-            return {"content": "parent1"}, {}
-
-    monkeypatch.setattr(config_module, "get_light_model", lambda: "test-light")
-    monkeypatch.setattr(llm_module, "LLMClient", lambda: FakeClient())
-
-    result = ev_module._find_duplicate_task(
-        "You are l1-alpha-coordinator-l2-1; return a smoke handoff",
-        "",
-        [
-            {
-                "id": "parent1",
-                "description": "You are l1-alpha-coordinator; schedule three L2 smoke subagents",
-                "role": "l1-alpha-coordinator",
-                "delegation_role": "subagent",
-                "parent_task_id": "root1",
-                "root_task_id": "root1",
-            }
-        ],
-        {},
-        expected_output="L2 handoff",
-        role="l1-alpha-coordinator-l2-1",
-        dedupe_identity={
-            "delegation_role": "subagent",
-            "parent_task_id": "parent1",
-            "root_task_id": "root1",
-        },
-    )
-
-    assert result is None
-    assert calls == []
+    assert [task["id"] for task in enqueued] == ["sib1", "sib2", "sib3", "sib4"]
+    for tid in ("sib1", "sib2", "sib3", "sib4"):
+        path = tmp_path / "task_results" / f"{tid}.json"
+        assert path.exists(), f"{tid} was not admitted"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data["status"] == STATUS_SCHEDULED
+        assert "duplicate_of" not in data
+    assert not [text for _chat, text, _kw in sent if "semantically similar" in text]
+    # The judge caught every exception and failed open, so a raise alone would
+    # not distinguish a tree that still consults a model: the record does.
+    assert constructed == []
 
 
 def test_handle_schedule_task_accepts_unique_subagent_with_lineage_and_constraint(tmp_path, monkeypatch):
     from supervisor import events as ev_module
-    from supervisor import events_schedule_task as schedule_module
     from ouroboros.task_results import STATUS_SCHEDULED
 
-    monkeypatch.setattr(schedule_module, "_find_duplicate_task", lambda *args, **kwargs: None)
     enqueued = []
     sent = []
 
@@ -2323,10 +2094,8 @@ def test_handle_schedule_task_accepts_unique_subagent_with_lineage_and_constrain
 
 def test_handle_schedule_task_rejects_internal_subagent_without_child_drive_contract(tmp_path, monkeypatch):
     from supervisor import events as ev_module
-    from supervisor import events_schedule_task as schedule_module
     from ouroboros.task_results import STATUS_FAILED
 
-    monkeypatch.setattr(schedule_module, "_find_duplicate_task", lambda *args, **kwargs: None)
     sent = []
 
     class FakeCtx:
@@ -2368,10 +2137,8 @@ def test_handle_schedule_task_rejects_internal_subagent_without_child_drive_cont
 
 def test_handle_schedule_task_uses_event_chat_id_without_owner(tmp_path, monkeypatch):
     from supervisor import events as ev_module
-    from supervisor import events_schedule_task as schedule_module
     from ouroboros.task_results import STATUS_SCHEDULED
 
-    monkeypatch.setattr(schedule_module, "_find_duplicate_task", lambda *args, **kwargs: None)
     enqueued = []
     sent = []
 
@@ -2447,11 +2214,9 @@ def test_handle_schedule_task_uses_event_chat_id_without_owner(tmp_path, monkeyp
 
 def test_handle_schedule_task_depth_rejection_writes_failed_status(tmp_path, monkeypatch):
     from supervisor import events as ev_module
-    from supervisor import events_schedule_task as schedule_module
     from ouroboros.config import get_max_subagent_depth
     from ouroboros.task_results import STATUS_FAILED
 
-    monkeypatch.setattr(schedule_module, "_find_duplicate_task", lambda *args, **kwargs: None)
     sent = []
 
     class FakeCtx:
@@ -2496,7 +2261,6 @@ def test_handle_schedule_task_depth_rejection_writes_failed_status(tmp_path, mon
 def test_configured_zero_subagent_depth_truly_disables_delegation(tmp_path, monkeypatch):
     """A configured depth of zero disables child delegation, not the root task."""
     from supervisor import events as ev_module
-    from supervisor import events_schedule_task as schedule_module
     from ouroboros.config import get_max_subagent_depth
     from ouroboros.task_results import STATUS_FAILED
 
@@ -2527,7 +2291,6 @@ def test_configured_zero_subagent_depth_truly_disables_delegation(tmp_path, monk
         "achieved_depth": None,
     }
 
-    monkeypatch.setattr(schedule_module, "_find_duplicate_task", lambda *args, **kwargs: None)
     enqueued = []
 
     class FakeCtx:
@@ -2607,10 +2370,8 @@ def test_settings_ui_carries_a_configured_zero_subagent_depth():
 
 def test_handle_schedule_task_rejects_legacy_subagent_event_schema(tmp_path, monkeypatch):
     from supervisor import events as ev_module
-    from supervisor import events_schedule_task as schedule_module
     from ouroboros.task_results import STATUS_FAILED
 
-    monkeypatch.setattr(schedule_module, "_find_duplicate_task", lambda *args, **kwargs: None)
     enqueued = []
     sent = []
 
@@ -2657,10 +2418,8 @@ def test_handle_schedule_task_rejects_legacy_subagent_event_schema(tmp_path, mon
 
 def test_handle_schedule_task_queues_when_active_subagent_cap_is_full(tmp_path, monkeypatch):
     from supervisor import events as ev_module
-    from supervisor import events_schedule_task as schedule_module
     from ouroboros.task_results import STATUS_COMPLETED, STATUS_FAILED, STATUS_SCHEDULED, load_task_result, write_task_result
 
-    monkeypatch.setattr(schedule_module, "_find_duplicate_task", lambda *args, **kwargs: None)
     monkeypatch.setenv("OUROBOROS_MAX_ACTIVE_SUBAGENTS_PER_ROOT", "3")  # pin cap (v6.20.0 raised default to 6)
     sent = []
     enqueued = []
@@ -2832,10 +2591,8 @@ def test_handle_schedule_task_fails_fast_when_worker_pool_unavailable(tmp_path, 
     schedule must NOT be left as a 'scheduled' ghost — it gets a terminal
     workers_unavailable result so the parent can act."""
     from supervisor import events as ev_module
-    from supervisor import events_schedule_task as schedule_module
     from ouroboros.task_results import STATUS_FAILED
 
-    monkeypatch.setattr(schedule_module, "_find_duplicate_task", lambda *args, **kwargs: None)
     sent = []
 
     class FakeCtx:
