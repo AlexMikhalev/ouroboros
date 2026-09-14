@@ -564,8 +564,8 @@ class OwnedClaudexorDaemon:
     def clear_start_failure_latch(self, *, cleared_by: str) -> bool:
         """Release the spawn latch; True when one was set (a durable row names who released it).
 
-        Callers: the periodic supervisor sweep (the ONLY retrier), and a
-        successful attach. Restart/Panic clear it by constructing a new manager.
+        Callers: the periodic sweep and the owner's Refresh (the two retriers),
+        and a successful attach. Restart/Panic clear it by constructing a new manager.
         """
         with self._lock:
             record, self._last_start_failure = self._last_start_failure, None
@@ -595,7 +595,7 @@ class OwnedClaudexorDaemon:
         raise ClaudexorUnavailable(
             "daemon_spawn_failed",
             "owned daemon start is latched after a typed startup failure; no new spawn until "
-            f"the periodic supervisor sweep retries or the owner restarts; {detail}",
+            f"the periodic supervisor sweep retries, the owner refreshes or restarts; {detail}",
             status_code=503,
         )
 

@@ -700,7 +700,7 @@ def _run_real_sweep(monkeypatch, manager, order: list) -> list:
 
 
 def test_the_sweep_itself_makes_the_one_retry_after_releasing_the_latch(monkeypatch, tmp_path, caplog):
-    """D5: the sweep is the ONLY retrier — ordinary callers never pay the retry."""
+    """D5: the sweep (with the owner's Refresh) retries — ordinary callers never pay the retry."""
     import logging
 
     stand = _Stand(monkeypatch, tmp_path, returncode=-6, banner=_OOM_REACHED)
