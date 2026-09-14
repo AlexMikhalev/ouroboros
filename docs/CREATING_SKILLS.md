@@ -831,7 +831,9 @@ def register(api):
     # field to show its declared default/first option, and never return a
     # secret. 404/405 means "no current values", so the form renders from
     # defaults; a failed read makes the host disable Save and tell the owner
-    # to reload. Reference: skills/telegram/plugin.py, GET+POST settings/save.
+    # to reload. Password fields are never pre-filled, so treat an empty
+    # password on save as "unchanged". Reference: skills/telegram/plugin.py,
+    # GET+POST settings/save.
     api.register_settings_section(
         "config",
         title="Search settings",

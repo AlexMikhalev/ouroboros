@@ -266,7 +266,10 @@ export async function renderExtensionSettingsSections(root, sections, { isCurren
     await Promise.all(items.flatMap((section) => (Array.isArray(section.render?.components) ? section.render.components : [])
         .map(async (component, idx) => {
             const rawRoute = component.route || component.api_route || '';
+            // Only a component with fields has values to read; an action's route is a
+            // side effect and must not be probed on every Settings load.
             if (!['form', 'action'].includes(String(component.type || '')) || !cleanExtensionRoute(rawRoute)) return;
+            if (!(Array.isArray(component.fields) && component.fields.length)) return;
             hydrated.set(extensionFormKey(section, component, idx),
                 await readExtensionFormValues(section.skill || '', rawRoute));
         })));
