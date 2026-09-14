@@ -1,6 +1,5 @@
 // Available subagents editor shared by Settings and first-run onboarding.
 // Reviewer policy stays in reviewer_slots.js; only route presentation is shared.
-
 import {
     FACET_ACCOUNTS, FACET_CATALOG, FACET_QUOTA, READ_OK, accountRows,
     bindStatusSurface, boundedStatusRefresh, claudexorStatus,
@@ -20,18 +19,14 @@ import { mergeModelCatalog, catalogReadNote, mergeHarnessModelCatalog } from './
 import { harnessMap, rowIdentity, rowMeta, rowStatus, sessionRouteVerdict } from './subagent_status_primitives.js';
 import { revealNewRow } from './ui_helpers.js';
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
-
 export const MAX_AVAILABLE_SUBAGENTS = 10;
 export const SUBAGENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
-
 const SETTING_KEYS = new Set(['enabled', 'items']);
 const ROW_KEYS = new Set(['subagent_id', 'name', 'recommended_use', 'route', 'effort', 'processing_preference', 'access']);
 const ROUTE_KEYS = new Set(['kind', 'target_id', 'credential_profile_id']);
-
 function ownUnknownKeys(value, allowed) {
     return Object.keys(value || {}).filter((key) => !allowed.has(key));
 }
-
 function canonicalRow(row) {
     const route = serializeRouteSpec(row?.route || {}, {
         apiKind: ROUTE_KIND_API_MODEL,
@@ -52,7 +47,6 @@ function canonicalRow(row) {
         ...(row?.access === 'full' ? { access: 'full' } : {}),
     };
 }
-
 function attachUiKeys(setting, previousItems = []) {
     const previous = new Map((previousItems || []).map(
         (row) => [String(row.subagent_id || ''), row._uiKey],
@@ -66,7 +60,6 @@ function attachUiKeys(setting, previousItems = []) {
     });
     return setting;
 }
-
 /** Parse without replacing malformed saved bytes with an empty list. */
 export function parseAvailableSubagentsSetting(value) {
     if (value === undefined || value === null || value === '') {
@@ -160,7 +153,6 @@ export function parseAvailableSubagentsSetting(value) {
         error: '',
     };
 }
-
 // Shared card/list errors; ordered `ids` assigns duplicate errors to the later row.
 function rowErrors(row, index, ids) {
     const errors = [];
@@ -207,12 +199,10 @@ function rowErrors(row, index, ids) {
     }
     return errors.map((text) => `Subagent ${index + 1} ${text}`);
 }
-
 function listLevelErrors(setting) {
     return setting.items.length > MAX_AVAILABLE_SUBAGENTS
         ? [`Available subagents supports at most ${MAX_AVAILABLE_SUBAGENTS} rows.`] : [];
 }
-
 export function validateAvailableSubagentsSetting(setting) {
     if (!setting || typeof setting.enabled !== 'boolean' || !Array.isArray(setting.items)) {
         return ['Available subagents configuration is not loaded.'];
@@ -222,7 +212,6 @@ export function validateAvailableSubagentsSetting(setting) {
     setting.items.forEach((row, index) => errors.push(...rowErrors(row, index, ids)));
     return errors;
 }
-
 export function buildAvailableSubagentsSetting(setting) {
     return {
         enabled: Boolean(setting?.enabled),
@@ -238,19 +227,16 @@ export function buildAvailableSubagentsSetting(setting) {
         }),
     };
 }
-
 export function subagentSettingsFingerprint(value) {
     const parsed = parseAvailableSubagentsSetting(value);
     return parsed.setting
         ? JSON.stringify(buildAvailableSubagentsSetting(parsed.setting))
         : JSON.stringify(value ?? null);
 }
-
 export function availableSubagentsSavePayload({ loaded = false, parseError = '', setting } = {}) {
     if (!loaded || parseError) return {};
     return { OUROBOROS_SUBAGENTS: buildAvailableSubagentsSetting(setting) };
 }
-
 /** Preview the current Settings draft without turning its generated actor rows into owner input. */
 export function availableSubagentsPreviewPayload(settingsDraft, subscriptionsConnected) {
     const payload = {
@@ -260,13 +246,11 @@ export function availableSubagentsPreviewPayload(settingsDraft, subscriptionsCon
     delete payload.OUROBOROS_SUBAGENTS;
     return payload;
 }
-
 export function generatedPreviewCanReplace({
     dirty = false, outerDraftClean = true, parsedSetting = null,
 } = {}) {
     return !dirty && outerDraftClean && Boolean(parsedSetting);
 }
-
 function diagnosticsText(diagnostics, out = []) {
     if (!diagnostics) return out;
     if (typeof diagnostics === 'string') {
@@ -287,14 +271,12 @@ function diagnosticsText(diagnostics, out = []) {
     Object.values(diagnostics).forEach((item) => diagnosticsText(item, out));
     return out;
 }
-
 function connectedHarnessIds(snapshot) {
     return new Set(accountRows(snapshot)
         .filter((row) => row?.enabled !== false
             && String(row?.status?.verification || '') === 'passed')
         .map((row) => String(row.harness || '')));
 }
-
 function focusSnapshot(host, doc) {
     const active = doc?.activeElement;
     if (!active || !host?.contains?.(active)) return null;
@@ -307,7 +289,6 @@ function focusSnapshot(host, doc) {
         scrollTop: host.scrollTop,
     };
 }
-
 function restoreFocus(host, saved) {
     if (!saved) return;
     const rows = host.querySelectorAll?.('[data-subagent-row]') || [];
@@ -319,7 +300,6 @@ function restoreFocus(host, saved) {
     }
     host.scrollTop = saved.scrollTop;
 }
-
 export function availableSubagentRowMarkup(row, state, index = 0) {
     const ordinal = index + 1;
     const rowKey = row._uiKey || row.subagent_id;
@@ -386,7 +366,6 @@ export function availableSubagentRowMarkup(row, state, index = 0) {
             <div id="actor-${escapeHtml(rowKey)}-meta" class="available-subagent-meta ui-field-help" data-subagent-meta${meta.tone ? ` data-tone="${escapeHtml(meta.tone)}"` : ''} title="${escapeHtml(meta.text)}"${meta.text ? '' : ' hidden'}>${escapeHtml(meta.text)}</div>
         </article>`;
 }
-
 export function availableSubagentsRenderSignature(state, nowMs = Date.now()) {
     return JSON.stringify([
         state.loaded,
@@ -410,7 +389,6 @@ export function availableSubagentsRenderSignature(state, nowMs = Date.now()) {
         state.providers, state.providerProfiles,
     ]);
 }
-
 /** One isolated editor instance; Settings keeps a singleton wrapper below. */
 export function createAvailableSubagentsEditor({
     hostId = 'available-subagents-editor',
@@ -454,7 +432,6 @@ export function createAvailableSubagentsEditor({
         previewSignature: '',
         previewGeneration: 0,
     };
-
     function host() {
         return getDoc()?.getElementById?.(hostId) || null;
     }
