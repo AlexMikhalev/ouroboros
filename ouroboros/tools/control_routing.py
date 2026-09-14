@@ -540,25 +540,6 @@ def _route_to_project(
     )
 
 
-def _owner_message_generation(ctx: ToolContext) -> int:
-    """How many owner messages this turn's mailbox admitted AFTER it started.
-
-    The typed counter the acceptance rails already read
-    (``loop_messages._acceptance_observation_state``, ``loop_acceptance``):
-    the agent behind ``ctx`` owns it, and both admission writers
-    (``supervisor/steering.py``, ``ouroboros/server_owner_routing.py``)
-    increment it under that agent's admission lock.  Zero means the turn is
-    still acting on the single message it was started with.
-    """
-    agent = getattr(ctx, "owner_message_admission_agent", None)
-    if agent is None:
-        return 0
-    try:
-        return int(getattr(agent, "_owner_message_generation", 0) or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
 def _origin_already_routed(ctx: ToolContext, client_message_id: str) -> bool:
     """Whether this turn has ALREADY carried its origin message somewhere.
 
@@ -566,10 +547,10 @@ def _origin_already_routed(ctx: ToolContext, client_message_id: str) -> bool:
     ingress bytes.  Once that act landed, the turn's later words are its own —
     a pacing note, a hand-off, an answer to something it learned since — and
     replaying the origin over them delivers a stale message nobody wrote
-    (#896).  Read from the same durable annotation receipts as
-    ``_relayed_owner_message_id``: a LANDED promote/route/steer receipt on the
-    origin message.  A refused or unconfirmed act carried nothing, so the
-    owner's message is still unrouted and the next act still relays it.
+    (#896).  Read from the durable annotation receipts: a LANDED
+    promote/route/steer receipt on the origin message.  A refused or
+    unconfirmed act carried nothing, so the owner's message is still unrouted
+    and the next act still relays it.
     """
     message_id = str(client_message_id or "").strip()
     if not message_id:
@@ -586,42 +567,6 @@ def _origin_already_routed(ctx: ToolContext, client_message_id: str) -> bool:
         str(row.get("action") or "") in {"promote_chat_to_task", "route_to_project", "steer_task"}
         and str(row.get("status") or "") in {"scheduled", "delivered"}
     )
-
-
-def _relayed_owner_message_id(ctx: ToolContext, generation: int) -> str:
-    """The owner message this turn most recently received through its mailbox.
-
-    A durable typed fact, never a parsed mailbox key: every owner follow-up
-    delivered into a live turn leaves a ``mailbox_delivery`` routing receipt
-    naming THIS task as its target (``server_owner_routing``).  Empty when the
-    host holds no such receipt — the steer then carries no annotation target
-    at all rather than borrowing the origin message's.  Resolved once per
-    admitted generation, because the steer's own receipt replaces that
-    message's latest annotation.
-    """
-    task_id = str(getattr(ctx, "task_id", "") or "")
-    if not task_id:
-        return ""
-    cached = getattr(ctx, "_steer_relayed_owner_message", None)
-    if isinstance(cached, tuple) and len(cached) == 2 and cached[0] == generation:
-        return str(cached[1] or "")
-    resolved = ""
-    try:
-        from ouroboros.project_dialogue import latest_chat_annotations
-
-        root = Path(str(getattr(ctx, "budget_drive_root", "") or ctx.drive_root))
-        rows = [
-            row for row in latest_chat_annotations(root).values()
-            if str(row.get("action") or "") == "mailbox_delivery"
-            and str(row.get("target") or "") == task_id
-        ]
-        if rows:
-            newest = max(rows, key=lambda row: str(row.get("ts") or ""))
-            resolved = str(newest.get("client_message_id") or "")
-        ctx._steer_relayed_owner_message = (generation, resolved)
-    except Exception:
-        log.debug("Relayed owner-message receipt lookup failed", exc_info=True)
-    return resolved
 
 
 def _steer_task(ctx: ToolContext, task_id: str, message: str) -> str:
@@ -641,11 +586,11 @@ def _steer_task(ctx: ToolContext, task_id: str, message: str) -> str:
     On the turn's FIRST routing act, while it is still acting on the message
     that started it, the host delivers that owner message's exact ingress bytes
     instead of any paraphrase. Afterwards — once the turn has already routed
-    that message, or has received later owner messages — the message given here
-    is delivered verbatim, so relay the owner's words rather than a summary of
-    them. Delivery stays confirmable either way: a steer that belongs to no
-    owner message earns its receipt under its own id, and no owner message in
-    the chat is labelled with the agent's act.
+    that message, or a later owner message has actually reached it — the message
+    given here is delivered verbatim, so relay the owner's words rather than a
+    summary of them. Delivery stays confirmable either way: a steer that belongs
+    to no owner message earns its receipt under its own id, and no owner message
+    in the chat is labelled with the agent's act.
     """
     target = str(task_id or "").strip()
     msg = str(message or "").strip()
@@ -668,28 +613,34 @@ def _steer_task(ctx: ToolContext, task_id: str, message: str) -> str:
     # still acting on the message it was started with: a model-authored
     # paraphrase must not replace the owner's own steering text.  Two typed
     # facts end that window, and after either one the turn is RELAYING its own
-    # words rather than paraphrasing the owner's — a later owner message
-    # admitted to its mailbox, or its origin message already carried somewhere
-    # by a landed routing receipt.  Replaying the origin past either point
-    # re-sent a twenty-minute-old message and silently dropped what the turn
-    # actually had to say (#896).  So the model's text stands, and the receipt
-    # follows the owner message actually relayed, or — for an agent-authored
-    # steer that belongs to no owner message — the steer's OWN synthetic id:
-    # never again an origin message this turn has already routed.  The receipt
-    # channel is keyed by message id only because that is how `routing_wait`
-    # polls it, so silence there would report a successful delivery as
-    # STEER_UNCONFIRMED and invite the model to retry a message that landed.
-    # Nothing in any chat carries a synthetic id, so no owner message is
-    # labelled by the agent's own act.  Non-owner/internal calls have no origin
-    # text and retain the explicit tool argument.
+    # words rather than paraphrasing the owner's — a later owner message the
+    # turn actually DRAINED from its mailbox (``ctx.last_owner_delivery``,
+    # stamped at the loop's drain seam), or its origin message already carried
+    # somewhere by a landed routing receipt.  A message merely WRITTEN to the
+    # mailbox has not reached the turn and ends nothing: the write-time counter
+    # this used to read closed the window against a turn that was still acting
+    # on its own origin, and took the steer's receipt with it.  Replaying the
+    # origin past either real point re-sent a twenty-minute-old message and
+    # silently dropped what the turn actually had to say (#896).  So the model's
+    # text stands, and the receipt follows the owner message actually relayed —
+    # the drained entry's own client id — or, for an agent-authored steer that
+    # belongs to no owner message, the steer's OWN synthetic id: never again an
+    # origin message this turn has already routed.  The receipt channel is keyed
+    # by message id only because that is how `routing_wait` polls it, so silence
+    # there would report a successful delivery as STEER_UNCONFIRMED and invite
+    # the model to retry a message that landed.  Nothing in any chat carries a
+    # synthetic id, so no owner message is labelled by the agent's own act.
+    # Non-owner/internal calls have no origin text and retain the explicit
+    # tool argument.
     from ouroboros.project_dialogue import AGENT_RECEIPT_ID_PREFIX
 
     routing_token = uuid.uuid4().hex
     agent_authored_receipt_id = f"{AGENT_RECEIPT_ID_PREFIX}{routing_token}"
-    generation = _owner_message_generation(ctx)
-    if generation > 0:
+    delivery = getattr(ctx, "last_owner_delivery", None)
+    if isinstance(delivery, dict) and delivery:
+        # The turn is relaying its own words after a later owner message reached it.
         client_message_id = (
-            _relayed_owner_message_id(ctx, generation) or agent_authored_receipt_id
+            str(delivery.get("client_message_id") or "").strip() or agent_authored_receipt_id
         )
     elif _origin_already_routed(ctx, client_message_id):
         client_message_id = agent_authored_receipt_id

@@ -18,8 +18,14 @@ import types
 import pytest
 
 
-def _tool_ctx(tmp_path, *, generation=None, task_id="turn-1", metadata=None):
-    """A steer-issuing turn: no supervisor, so events land in pending_events."""
+def _tool_ctx(tmp_path, *, generation=None, delivery=None, task_id="turn-1", metadata=None):
+    """A steer-issuing turn: no supervisor, so events land in pending_events.
+
+    ``delivery`` is the typed fact the relay reads: the latest owner message the
+    turn actually DRAINED from its mailbox. ``generation`` is the mailbox WRITE
+    counter the relay must no longer consult; the tests keep setting it so a
+    written-but-undrained message is proven to change nothing.
+    """
     agent = (
         types.SimpleNamespace(_owner_message_generation=generation)
         if generation is not None else None
@@ -32,6 +38,7 @@ def _tool_ctx(tmp_path, *, generation=None, task_id="turn-1", metadata=None):
         task_id=task_id,
         task_metadata=dict(metadata or {}),
         owner_message_admission_agent=agent,
+        last_owner_delivery=dict(delivery) if delivery is not None else None,
     )
 
 
@@ -89,6 +96,25 @@ def test_a_turn_with_no_admission_agent_keeps_the_origin_substitution(tmp_path):
 
     assert ctx.pending_events[0]["message"] == "owner bytes"
     assert ctx.pending_events[0]["client_message_id"] == "cm-origin"
+
+
+def test_an_owner_message_written_but_not_yet_drained_keeps_the_origin_bytes(tmp_path):
+    """The mailbox WRITE counter is not the question. A follow-up appended to the
+    turn's mailbox one millisecond ago has not reached the turn: it is still acting
+    on the message that started it, so the origin bytes are still what a steer
+    transports and the receipt still belongs to that owner message."""
+    from ouroboros.tools.control import _steer_task
+
+    ctx = _tool_ctx(tmp_path, generation=1, delivery=None, metadata={
+        "client_message_id": "cm-origin",
+        "origin_message_text": "publish the seven skills",
+    })
+
+    _steer_task(ctx, "t-target", "model paraphrase")
+
+    evt = ctx.pending_events[0]
+    assert evt["message"] == "publish the seven skills"
+    assert evt["client_message_id"] == "cm-origin"
 
 
 def test_a_turn_that_already_routed_its_origin_speaks_for_itself(tmp_path, monkeypatch):
@@ -182,17 +208,15 @@ def test_another_messages_routing_receipt_does_not_end_this_turns_window(tmp_pat
     assert ctx.pending_events[0]["client_message_id"] == "cm-origin"
 
 
-def test_a_relaying_turn_delivers_the_message_it_was_given(tmp_path):
-    """After a later owner message was admitted, the turn is relaying: its own
-    text is delivered and the receipt moves off the origin message."""
-    from ouroboros.project_dialogue import append_chat_annotation
+def test_a_drained_owner_message_ends_the_window_and_takes_the_receipt(tmp_path):
+    """The turn DRAINED a later owner message, so it is relaying: its own text is
+    delivered as written and the receipt follows the message actually relayed."""
     from ouroboros.tools.control import _steer_task
 
-    append_chat_annotation(
-        tmp_path, "cm-later", action="mailbox_delivery",
-        target="turn-1", status="delivered",
-    )
-    ctx = _tool_ctx(tmp_path, generation=1, metadata={
+    ctx = _tool_ctx(tmp_path, generation=1, delivery={
+        "msg_id": "cm-later:turn-1", "client_message_id": "msg-later",
+        "text": "Anton says you may ask questions", "ts": "2026-09-14T12:41:23+00:00",
+    }, metadata={
         "client_message_id": "cm-origin",
         "origin_message_text": "the twenty-minute-old owner message",
     })
@@ -201,41 +225,42 @@ def test_a_relaying_turn_delivers_the_message_it_was_given(tmp_path):
 
     evt = ctx.pending_events[0]
     assert evt["message"] == "Anton says you may ask questions"
-    assert evt["client_message_id"] == "cm-later"
+    assert evt["client_message_id"] == "msg-later"
 
 
-def test_a_relaying_turn_with_no_delivery_receipt_uses_its_own_receipt_id(tmp_path):
-    """No mailbox-delivery receipt for this task: the steer borrows no owner
-    message id, and still keeps a confirmable receipt of its own."""
+def test_a_drained_entry_without_a_client_id_uses_the_steers_own_receipt_id(tmp_path, monkeypatch):
+    """A drained entry from a producer that knew no owner-message id (a legacy row,
+    or an agent-authored steer) names no owner message: the steer keys its receipt
+    on its own routing token, and the delivery is still durably confirmed."""
+    import supervisor.queue as queue
+    from ouroboros.owner_mailbox import drain_owner_entries
+    from ouroboros.project_dialogue import AGENT_RECEIPT_ID_PREFIX, latest_chat_annotations
     from ouroboros.tools.control import _steer_task
 
-    ctx = _tool_ctx(tmp_path, generation=2, metadata={
-        "client_message_id": "cm-origin",
-        "origin_message_text": "the twenty-minute-old owner message",
-    })
-
-    _steer_task(ctx, "t-target", "the new instruction")
-
-    evt = ctx.pending_events[0]
-    assert evt["message"] == "the new instruction"
-    assert evt["client_message_id"] == f"agent-steer:{evt['routing_token']}"
-
-
-def test_a_mailbox_receipt_for_another_task_is_not_this_turns_message(tmp_path):
-    """The receipt must name THIS task; a sibling turn's follow-up is not ours."""
-    from ouroboros.project_dialogue import append_chat_annotation
-    from ouroboros.tools.control import _steer_task
-
-    append_chat_annotation(
-        tmp_path, "cm-sibling", action="mailbox_delivery",
-        target="another-turn", status="delivered",
+    monkeypatch.setattr(queue, "DRIVE_ROOT", str(tmp_path))
+    notices, emitted = [], []
+    ctx = _live_tool_ctx(
+        tmp_path, _supervisor_ctx(tmp_path, notices), emitted, generation=2, delivery={
+            "msg_id": "legacy-1", "client_message_id": "", "text": "a later owner message",
+            "ts": "2026-09-14T12:41:23+00:00",
+        }, metadata={
+            "client_message_id": "cm-origin",
+            "origin_message_text": "the twenty-minute-old owner message",
+        },
     )
-    ctx = _tool_ctx(tmp_path, generation=1, metadata={"client_message_id": "cm-origin"})
 
-    _steer_task(ctx, "t-target", "the new instruction")
+    out = _steer_task(ctx, "t-target", "the new instruction")
 
-    evt = ctx.pending_events[0]
-    assert evt["client_message_id"] == f"agent-steer:{evt['routing_token']}"
+    assert "durably confirmed" in out and "UNCONFIRMED" not in out
+    evt = emitted[0]
+    assert evt["message"] == "the new instruction"
+    assert evt["client_message_id"] == f"{AGENT_RECEIPT_ID_PREFIX}{evt['routing_token']}"
+    assert [e["text"] for e in drain_owner_entries(tmp_path, "t-target")] == ["the new instruction"]
+    # A synthetic id relays no owner message, so the entry stores none: the target's
+    # own next steer mints a fresh receipt id instead of inheriting this one.
+    assert "client_message_id" not in drain_owner_entries(tmp_path, "t-target", set())[0]
+    assert latest_chat_annotations(tmp_path)[evt["client_message_id"]]["status"] == "delivered"
+    assert notices == []
 
 
 def test_two_relayed_instructions_reach_the_mailbox_as_two_messages(tmp_path, monkeypatch):
@@ -258,9 +283,17 @@ def test_two_relayed_instructions_reach_the_mailbox_as_two_messages(tmp_path, mo
     _handle_steer_task(_evt("pacing checkpoint", "token-a"), ctx)
     _handle_steer_task(_evt("Anton may be asked questions", "token-b"), ctx)
 
-    assert [entry["text"] for entry in drain_owner_entries(tmp_path, "t-target")] == [
+    entries = drain_owner_entries(tmp_path, "t-target")
+    assert [entry["text"] for entry in entries] == [
         "pacing checkpoint", "Anton may be asked questions",
     ]
+    # The exact key: owner message id, target, routing token.
+    assert [entry["msg_id"] for entry in entries] == [
+        "cm-later:t-target:token-a", "cm-later:t-target:token-b",
+    ]
+    # And the relayed owner message rides the entry, so the target's drain can
+    # stamp it as the message that reached THAT turn.
+    assert [entry["client_message_id"] for entry in entries] == ["cm-later", "cm-later"]
 
 
 def test_the_same_steer_retried_is_still_delivered_once(tmp_path, monkeypatch):
