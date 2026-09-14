@@ -644,14 +644,15 @@ def test_the_sweep_retry_swallows_refusals_and_surprises_and_closes_its_gateway(
 
     calls: list = []
 
-    def refused(*, admission_wait_sec):
-        calls.append(admission_wait_sec)
+    def refused(**kwargs):
+        calls.append(kwargs)
         raise ClaudexorUnavailable("daemon_spawn_failed", "latched again")
 
     monkeypatch.setattr(daemon_mod, "ensure_owned_gateway", refused)
-    assert sm._retry_latched_daemon_start() is None and calls == [0]
+    assert sm._retry_latched_daemon_start() is None
+    assert calls == [{"admission_wait_sec": 0, "startup_wait_sec": 0}], "zero admission AND zero startup wait"
 
-    def surprise(*, admission_wait_sec):
+    def surprise(**_kwargs):
         raise RuntimeError("unexpected")
 
     monkeypatch.setattr(daemon_mod, "ensure_owned_gateway", surprise)
@@ -659,6 +660,29 @@ def test_the_sweep_retry_swallows_refusals_and_surprises_and_closes_its_gateway(
 
     closed: list = []
     monkeypatch.setattr(daemon_mod, "ensure_owned_gateway",
-                        lambda *, admission_wait_sec: SimpleNamespace(close=lambda: closed.append(1)))
+                        lambda **_kwargs: SimpleNamespace(close=lambda: closed.append(1)))
     sm._retry_latched_daemon_start()
     assert closed == [1], "an opened gateway is closed at once"
+
+
+def test_the_sweep_retry_never_waits_and_treats_daemon_starting_as_expected(monkeypatch, caplog):
+    """H-03 item 4: the spawn happens under custody; the sweep returns at once, no warning."""
+    import logging
+
+    from ouroboros import claudexor_daemon as daemon_mod
+    from ouroboros import server_maintenance as sm
+    from ouroboros.gateways.claudexor import ClaudexorUnavailable
+
+    seen: list = []
+
+    def starting(**kwargs):
+        seen.append(kwargs)
+        raise ClaudexorUnavailable("daemon_starting", "still starting; retry joins the same startup")
+
+    monkeypatch.setattr(daemon_mod, "ensure_owned_gateway", starting)
+    with caplog.at_level(logging.INFO):
+        assert sm._retry_latched_daemon_start() is None
+    assert seen == [{"admission_wait_sec": 0, "startup_wait_sec": 0}]
+    ours = [rec for rec in caplog.records if "retry after latch release" in rec.getMessage()]
+    assert [rec.levelno for rec in ours] == [logging.INFO], "expected outcome, not a warning"
+    assert "starting under custody" in ours[0].getMessage()

@@ -99,7 +99,11 @@ def _periodic_supervisor_maintenance(last_custody_reap: list, last_review_reconc
             # manager holds its own latch, learned from its own single failed
             # spawn, never released by this sweep, and released only by a
             # live-daemon attach or the worker's respawn (one failed spawn per
-            # worker lifetime — D5's "new manager instance").
+            # worker lifetime — D5's "new manager instance"). Residual, disclosed
+            # not serialized: between this release and the retry an ordinary
+            # caller can pass the refusal and become the spawner; the retry then
+            # joins that same live child (one spawn either way) — only who pays
+            # the startup wait differs.
             from ouroboros.claudexor_daemon import get_owned_daemon
 
             if get_owned_daemon().clear_start_failure_latch(cleared_by="supervisor_sweep"):
@@ -137,18 +141,25 @@ def _retry_latched_daemon_start() -> None:
     """The one retry of a latched owned-daemon start (#844), made by the sweep itself.
 
     Called only after this sweep released the latch: one ``ensure_owned_gateway``
-    with the sweep's zero admission wait (the gateway is closed at once — the
-    reconcile that follows attaches on its own). The typed refusal of a still
-    crashing engine re-latches inside the manager and is logged here, never
-    raised into the supervisor loop; nothing else is retried or scheduled.
+    with ZERO admission and ZERO startup wait, so the supervisor loop never
+    holds a startup wait — the spawn happens, custody keeps the child, and
+    ``daemon_starting`` is the EXPECTED answer (the next ordinary caller joins
+    or settles it). Any other typed refusal (a child that died at once has
+    already re-latched inside the manager) is logged as a warning; nothing is
+    raised into the loop, nothing else is retried or scheduled, and a gateway
+    that did open is closed at once (the reconcile that follows attaches on
+    its own).
     """
     from ouroboros.claudexor_daemon import ensure_owned_gateway
     from ouroboros.gateways.claudexor import ClaudexorUnavailable
 
     try:
-        ensure_owned_gateway(admission_wait_sec=0).close()
+        ensure_owned_gateway(admission_wait_sec=0, startup_wait_sec=0).close()
     except ClaudexorUnavailable as exc:
-        log.warning("Owned daemon retry after latch release refused (%s): %s", exc.code, exc)
+        if exc.code == "daemon_starting":
+            log.info("Owned daemon retry after latch release is starting under custody: %s", exc)
+        else:
+            log.warning("Owned daemon retry after latch release refused (%s): %s", exc.code, exc)
     except Exception:
         log.warning("Owned daemon retry after latch release failed unexpectedly", exc_info=True)
 
