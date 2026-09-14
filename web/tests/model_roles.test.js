@@ -118,3 +118,19 @@ test('the same role sheets are loaded by both actual UI hosts', () => {
         }
     }
 });
+
+test('role disclosures draw a visible open/closed marker on their own line', () => {
+    const css = readFileSync(new URL('../model_roles.css', import.meta.url), 'utf8');
+    const block = (selector) => css.match(new RegExp(`${selector}\\s*\\{([^}]*)\\}`))?.[1] ?? '';
+    // `display` other than list-item drops the native ::marker, so the sheet
+    // must hide it explicitly and draw the house glyph pair itself.
+    const summary = block('\\.model-role-details\\s*>\\s*summary');
+    assert.match(summary, /list-style:\s*none/);
+    assert.match(summary, /color:\s*var\(--text-primary\)/);
+    assert.match(block('\\.model-role-details\\s*>\\s*summary::-webkit-details-marker'), /display:\s*none/);
+    assert.match(block('\\.model-role-details\\s*>\\s*summary::before'), /content:\s*"▸ "/);
+    assert.match(block('\\.model-role-details\\[open\\]\\s*>\\s*summary::before'), /content:\s*"▾ "/);
+    // The disclosure owns a full row under the status text instead of sharing its baseline.
+    assert.match(block('\\.model-role-notes'), /flex-wrap:\s*wrap/);
+    assert.match(block('\\.model-role-notes\\s*>\\s*\\.model-role-details'), /flex-basis:\s*100%/);
+});
