@@ -825,6 +825,7 @@ jobs:
     if: github.event_name != 'schedule'
     name: Android emulator smoke (API ${{ matrix.api-level }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -872,10 +873,16 @@ jobs:
           "$ANDROID_HOME/emulator/emulator" -avd "$AVD" -no-window -no-audio -no-boot-anim \
             -no-snapshot -gpu swiftshader_indirect -accel off >"$LOG" 2>&1 &
           emulator_pid=$!
-          trap 'kill "$emulator_pid" 2>/dev/null || true' EXIT
-          adb wait-for-device
+          trap 'cat "$LOG"; kill "$emulator_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 180); do
+            kill -0 "$emulator_pid" 2>/dev/null || { wait "$emulator_pid"; exit 1; }
+            [ "$(timeout 5s adb -e get-state 2>/dev/null)" = "device" ] && break
+            sleep 2
+          done
+          test "$(timeout 5s adb -e get-state)" = "device"
           for attempt in $(seq 1 120); do
-            [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ] && break
+            kill -0 "$emulator_pid" 2>/dev/null || { wait "$emulator_pid"; exit 1; }
+            [ "$(timeout 5s adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ] && break
             sleep 2
           done
           test "$(adb shell getprop sys.boot_completed | tr -d "\r")" = "1"
