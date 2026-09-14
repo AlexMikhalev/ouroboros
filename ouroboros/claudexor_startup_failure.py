@@ -47,8 +47,7 @@ class StartupFailureClass(str, enum.Enum):
     UNCLASSIFIED = "unclassified"
 
 
-# V8 fatal heap exhaustion: both spellings observed in the live daemon.log
-# (``Reached heap limit`` 27x, ``Ineffective mark-compacts near heap limit`` 3x),
+# V8 fatal heap exhaustion: both spellings observed in the live daemon.log (27x / 3x)
 # plus the common suffix they share.
 _HEAP_MARKERS: Tuple[bytes, ...] = (
     b"JavaScript heap out of memory",
@@ -62,8 +61,7 @@ _LEASE_MARKERS: Tuple[bytes, ...] = (
     b"another claudexor daemon owns ",
     b"could not replace stale daemon writer lease ",
 )
-# Engine root-authority version-floor refusal (root-authority.ts): both forms
-# of ``root_authority_floor_regression``.
+# Engine root-authority floor refusal (root-authority.ts), both forms of the regression.
 _FLOOR_MARKERS: Tuple[bytes, ...] = (
     b"is below the proven serving floor ",
     b"cannot be ordered against the proven serving floor ",
@@ -83,10 +81,9 @@ class ExitFact:
     ``0`` = clean exit, positive = exit code, negative = killed by that signal
     (POSIX). ``descriptor_written`` is whether the control descriptor changed
     identity during this spawn — the manager measures it, this type carries it.
-    It is sampled when the exit is FIRST OBSERVED (the manager's next spawn,
-    attach or stop decision), not at the exit itself: a foreign publisher in
-    that window reads as "written" and costs at most one extra spawn —
-    disclosed, not closed.
+    It is sampled when the exit is FIRST OBSERVED (the next spawn/attach/stop
+    decision), not at the exit itself: a foreign publisher in that window reads
+    as "written" and costs at most one extra spawn — disclosed, not closed.
     """
 
     returncode: Optional[int]
@@ -160,20 +157,22 @@ def read_startup_log_interval(
 
 
 def build_start_failure_record(
-    *, pin_version: str, pin_build: str, exit_status: ExitFact,
-    classification: StartupFailureClass, log_path: str,
-    log_interval: Optional[Tuple[int, int]], at: str,
+    *, pin_version: str, pin_build: str, exit_status: ExitFact, log_path: str, at: str,
 ) -> Dict[str, Any]:
-    """The manager's ``last_start_failure`` record: one failed spawn, typed."""
+    """The record taken at the first observation of the exit: typed, not yet read.
+
+    ``classification``/``log_interval`` stay PENDING (``unclassified``/``None``)
+    until ``classified_start_failure_record`` completes them; ``[]`` = read, unavailable.
+    """
     return {
         "pin_version": pin_version,
         "pin_build": pin_build,
         "exit_code": exit_status.exit_code,
         "exit_signal": exit_status.signal,
         "descriptor_written": exit_status.descriptor_written,
-        "classification": classification.value,
+        "classification": StartupFailureClass.UNCLASSIFIED.value,
         "log_path": log_path,
-        "log_interval": list(log_interval) if log_interval else None,
+        "log_interval": None,
         "at": at,
     }
 
@@ -184,13 +183,15 @@ def classified_start_failure_record(
 ) -> Dict[str, Any]:
     """The record taken at first observation, completed with the diagnosis."""
     return {**pending, "classification": classification.value,
-            "log_interval": list(log_interval) if log_interval else None}
+            "log_interval": list(log_interval) if log_interval else []}
 
 
 def describe_log_interval(log_interval: Optional[Sequence[int]]) -> str:
     """The one rendering of a recorded interval (diagnostic and refusal alike)."""
     if log_interval:
         return f"startup log interval={log_interval[0]}..{log_interval[1]} bytes"
+    if log_interval is None:
+        return "startup log interval pending"
     return "startup log interval unavailable (log replaced, truncated or unreadable)"
 
 
@@ -217,9 +218,11 @@ def start_failure_detail(record: Dict[str, Any]) -> str:
 def start_failure_row(record: Dict[str, Any], *, latched: bool) -> Dict[str, Any]:
     """The durable supervisor row of one classified failure: the record itself, stamped.
 
-    ``ts`` (and the record's own ``at``, which rides along) is when the exit
-    was first observed — harvested at the manager's next spawn, attach or stop
-    decision — not when the child died.
+    ``ts`` (= the record's ``at``) is the harvest time — the exit's first
+    observation at the next spawn/attach/stop decision — not the child's death.
+    ``latched`` = the exit was OF THE LATCHING CLASS (latched at the settle), not
+    "still refusing": an attach can settle such an exit and release it at once,
+    leaving this row ``latched=true`` beside a ``live_daemon_attached`` release.
     """
     return {"ts": record["at"], "type": "claudexor_daemon_start_failed", "latched": latched, **record}
 

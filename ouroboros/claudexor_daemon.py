@@ -53,7 +53,6 @@ from typing import Any, Dict, Literal, Optional
 
 from ouroboros.claudexor_startup_failure import (
     ExitFact,
-    StartupFailureClass,
     build_start_failure_record,
     classified_start_failure_record,
     classify_startup_failure,
@@ -555,9 +554,8 @@ class OwnedClaudexorDaemon:
                                    descriptor_written=_descriptor_identity() != attempt.get("descriptor"))
             pending = build_start_failure_record(
                 pin_version=str(attempt.get("version") or "unknown"),
-                pin_build=str(attempt.get("build_sha") or "unknown"),
-                exit_status=exit_status, classification=StartupFailureClass.UNCLASSIFIED,
-                log_path=str(owned_config_dir() / "daemon.log"), log_interval=None, at=utc_now_iso(),
+                pin_build=str(attempt.get("build_sha") or "unknown"), exit_status=exit_status,
+                log_path=str(owned_config_dir() / "daemon.log"), at=utc_now_iso(),
             )
             if exit_status.failed_without_control:
                 self._last_start_failure = pending
@@ -746,6 +744,9 @@ class OwnedClaudexorDaemon:
         with self._lock:
             self._check_start_generation(generation)
         failure = self._settle_exited_child()
+        if failure is None:
+            with self._lock:  # a concurrent caller settled our child first: name its fact
+                failure = self._last_start_failure
         if failure is not None:
             detail = f"{detail}; {start_failure_label(failure)}"
         self._last_error = f"daemon_spawn_failed: {detail}"
@@ -781,7 +782,7 @@ class OwnedClaudexorDaemon:
         """Name current process evidence and its log interval, never an old tail as cause."""
         with self._lock:
             attempt = dict(self._startup_attempt)
-            proc = self._proc
+            proc, latched = self._proc, self._last_start_failure
         details = [f"stage=waiting_for_control; live_pids={sorted(pids)}"]
         log_path = owned_config_dir() / "daemon.log"
         if attempt:
@@ -790,25 +791,29 @@ class OwnedClaudexorDaemon:
                            f"exit_code={proc.poll() if proc is not None else 'unknown'}")
             interval, _ = read_startup_log_interval(  # identity-checked bounds only, no bytes
                 log_path, start=int(attempt["log_start"]), identity=attempt["log_identity"], limit=0)
-            details.append(describe_log_interval(interval))
-        else:
+            details.append(describe_log_interval(interval or []))
+        elif latched is None:
             details.append("joining another manager; its runtime build is not yet authenticated")
+        else:
+            details.append("no own startup handle left (settled by a concurrent caller, or a joined startup ended)")
         details.append(f"log={log_path} (shared diagnostic source, not an attributed failure cause)")
         return "; ".join(details)
 
     def _terminate_child(self) -> bool:
         """Stop our captured child outside the lock; clear only its confirmed handle.
 
-        An unwatched death is settled first (rowed, latched when it applies), so
-        an owner Restart or Panic that follows it never forgets the failure.
+        A child found exited HERE died of this stop's own signalling (the ledger pass
+        runs first): cleared, not rowed. An earlier death was settled by ``stop_outcome``.
         """
-        self._settle_exited_child()
         with self._lock:
             proc = self._proc
         if proc is None:
             return False
         if proc.poll() is not None:
-            self._settle_exited_child()  # exited between the settle above and here
+            with self._lock:
+                if self._proc is proc:
+                    self._proc = None
+                    self._startup_attempt = {}
             return False
         from ouroboros.platform_layer import kill_process_tree
 
@@ -1001,6 +1006,9 @@ class OwnedClaudexorDaemon:
             purposes = {CUSTODY_PURPOSE}
             stopped, unconfirmed = [], []
             self._last_error = ""
+            # An unwatched death BEFORE this stop is settled first (rowed, latched when
+            # it applies) so Restart/Panic never forget it; a child killed below is not one.
+            self._settle_exited_child()
             ownership_problem = verify_owned_home(require_marker=True)
             endpoint, state = None, ""
             if not ownership_problem:

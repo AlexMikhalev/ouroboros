@@ -429,6 +429,7 @@ def test_a_concurrent_caller_in_the_harvest_window_meets_the_latch_not_a_spawn_s
     assert not second.is_alive(), "the second caller must not wait on the harvest"
     assert getattr(outcomes["second"], "code", None) == "daemon_spawn_failed"
     assert "latched" in str(outcomes["second"]) and "startup_failure=unclassified" in str(outcomes["second"])
+    assert "startup log interval pending" in str(outcomes["second"]), "provisional: the log is not read yet"
     release.set()
     first.join(5)
     assert getattr(outcomes["first"], "code", None) == "daemon_spawn_failed"
@@ -439,6 +440,44 @@ def test_a_concurrent_caller_in_the_harvest_window_meets_the_latch_not_a_spawn_s
     assert rows[0]["classification"] == "heap_exhausted" and rows[0]["latched"] is True
     latch = stand.manager._last_start_failure
     assert latch["classification"] == "heap_exhausted" and latch["log_interval"] == [0, len(_OOM_REACHED)]
+
+
+def test_a_waiting_caller_whose_child_was_settled_by_another_still_names_the_fact(monkeypatch, tmp_path):
+    """H-04 item 5: the child dies inside the waiting caller's window; a concurrent caller
+    settles it first; the waiting caller's wait-expiry refusal still carries the fact."""
+    import threading
+
+    stand = _Stand(monkeypatch, tmp_path, returncode=None, banner=_OOM_REACHED)
+    manager = stand.manager
+    entered, release = threading.Event(), threading.Event()
+
+    def held_probe(*, timeout_sec=None):
+        if stand.spawned:  # only the startup-wait probes, not the pre-spawn re-probe
+            entered.set()
+            assert release.wait(5), "the test must release the waiting caller"
+        return None
+
+    monkeypatch.setattr(manager, "_alive_endpoint", held_probe)
+    outcomes: dict = {}
+    threads = [_call_in_thread(manager, outcomes, "waiting")]
+    try:
+        assert entered.wait(5), "the waiting caller spawned and is inside its startup wait"
+        assert len(stand.spawned) == 1
+        stand.exit_code = -6  # the child dies inside the window
+        monkeypatch.setattr(manager, "_alive_endpoint", lambda *, timeout_sec=None: None)
+        threads.append(_call_in_thread(manager, outcomes, "settler"))
+        threads[-1].join(5)
+        assert getattr(outcomes.get("settler"), "code", None) == "daemon_spawn_failed"
+        assert "startup_failure=heap_exhausted" in str(outcomes["settler"])
+    finally:
+        release.set()
+        for thread in threads:
+            thread.join(5)
+    assert getattr(outcomes.get("waiting"), "code", None) == "daemon_spawn_failed"
+    text = str(outcomes["waiting"])
+    assert "startup_failure=heap_exhausted" in text and "exit_signal=6" in text
+    assert "joining another manager" not in text and "settled by a concurrent caller" in text
+    assert len(stand.spawned) == 1 and len(_rows(stand.data_dir)) == 1
 
 
 def test_a_sweep_release_during_the_harvest_window_is_never_re_latched(monkeypatch, tmp_path):
