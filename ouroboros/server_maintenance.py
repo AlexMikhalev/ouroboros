@@ -85,32 +85,14 @@ def _periodic_supervisor_maintenance(last_custody_reap: list, last_review_reconc
     if time.time() - last_custody_reap[0] > 600:
         last_custody_reap[0] = time.time()
         try:
-            # Issue #844: this sweep is the ONE retrier of a latched owned-daemon
-            # start — in ITS OWN try, ahead of the reap, so a raising reap can
-            # never pin the latch until Restart. Every ordinary caller is refused
-            # typed (no spawn) while the manager's start-failure latch is set;
-            # only when THIS sweep actually released a latch does it make the
-            # single retry itself (the reconcile below ensures only when it has
-            # orphan work, so it cannot be the retrier), so a healthy install
-            # never pays a startup wait here and a persistently crashing engine
-            # costs exactly one spawn per sweep period. The latch is per-manager
-            # state and the manager is a process global: the SERVER process's
-            # latch is the one released and retried here; a task worker's
-            # manager holds its own latch, learned from its own single failed
-            # spawn, never released by this sweep, and released only by a
-            # live-daemon attach or the worker's respawn (one failed spawn per
-            # worker lifetime — D5's "new manager instance"). Residual, disclosed
-            # not serialized: between this release and the retry an ordinary
-            # caller can pass the refusal and become the spawner; the retry then
-            # joins that same live child (one spawn either way) — only who pays
-            # the startup wait differs.
+            # Issue #844: release the owned-daemon start latch in ITS OWN try, ahead of
+            # the reap, so a raising reap can never pin it; retry once — only when THIS
+            # sweep released a latch — on a short-lived thread, as warm_owned_daemon()
+            # does (the reconcile below ensures only with orphan work). Contract, per-
+            # process scope and the residual: DEVELOPMENT.md "Process Custody Rule".
             from ouroboros.claudexor_daemon import get_owned_daemon
 
             if get_owned_daemon().clear_start_failure_latch(cleared_by="supervisor_sweep"):
-                # On a short-lived thread, exactly as warm_owned_daemon() does its
-                # ensure: the release row stays on the loop, and runtime
-                # preparation (a staged pin's seed/download/verify/promote) is
-                # unbounded, so the tick never waits on it.
                 threading.Thread(target=_retry_latched_daemon_start,
                                  name="owned-daemon-latch-retry", daemon=True).start()
         except Exception:
