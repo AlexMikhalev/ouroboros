@@ -1,6 +1,8 @@
 """Owner-approved managed continuation after upstream recovery, with old custody."""
 from datetime import datetime, timedelta, timezone
+import itertools
 import json
+import time
 from types import SimpleNamespace
 
 import httpx
@@ -68,6 +70,10 @@ def test_repeated_unknown_does_not_restart_backoff(tmp_path, monkeypatch):
     monkeypatch.setattr(loop_mod, "call_llm_with_retry", send)
     monkeypatch.setattr(transport, "upstream_transport_reachable", reachable)
     monkeypatch.setattr(transport, "interruptible_wait_sleep", lambda seconds, wake: sleeps.append(seconds) or False)
+    # A wall clock that advances one second per read: the re-arm below must not depend on the
+    # platform tick (windows-latest time.time() advances in ~15.6 ms steps under mocked sleeps).
+    ticks = itertools.count(time.time() + 1000.0, 1.0)
+    monkeypatch.setattr(transport, "time", SimpleNamespace(monotonic=time.monotonic, time=lambda: next(ticks)))
     monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
     monkeypatch.setenv("OUROBOROS_MAX_ROUNDS", "1")
     registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
@@ -133,6 +139,9 @@ def test_alternating_unknown_and_transport_failures_keep_one_episode(tmp_path, m
     assert usage["transport_recovery"]["previous_attempt"]["physical_attempt_id"] == "paid-attempt-3"
     notices = [row for row in sends[-1] if "NEW physical model attempt" in str(row.get("content"))]
     assert len(notices) == 2 and "paid-attempt-3" in str(notices[-1]["content"])
+    # The owner is told that money became unknown when the free redial crossed dispatch (the
+    # entry note said "$0"), not only at the next grant.
+    assert sum("another charge is possible" in text for text in notes) >= 2
 
 
 def test_grant_without_a_new_attempt_is_not_a_phantom_repeat(tmp_path):

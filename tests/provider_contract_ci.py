@@ -230,11 +230,12 @@ def classify_provider_failure(
         # api_error shape; 429/5xx already took the ladder above). A complete
         # body the host judged unusable falls through to RED — that assembler
         # contract is what this canary guards.
-        if isinstance(exc, ProviderStreamError) and not (status is not None and 400 <= status <= 499):
-            return ProviderFailureClassification(
-                ProviderFailureKind.INCONCLUSIVE, "stream_provider_error", status,
-            )
-        if not getattr(exc, "stream_rejected", False):
+        if isinstance(exc, ProviderStreamError):
+            if not (status is not None and 400 <= status <= 499):  # a 4xx SSE error is contract: RED below
+                return ProviderFailureClassification(
+                    ProviderFailureKind.INCONCLUSIVE, "stream_provider_error", status,
+                )
+        elif not getattr(exc, "stream_rejected", False):
             return ProviderFailureClassification(
                 ProviderFailureKind.INCONCLUSIVE, "stream_transport_loss", status,
             )

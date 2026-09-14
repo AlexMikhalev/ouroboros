@@ -321,6 +321,11 @@ def reconcile_transport_wait(
             elapsed_sec=time.monotonic() - episode.started_monotonic, redials=episode.redials, model=model,
             detail="redial_outcome_unknown", outcome_custody=episode.outcome_custody,
         )
+        emit_progress(  # the "$0 redials" framing of the entry note no longer holds
+            "🌐 Provider connection was lost after dispatch. The outcome and any unreported cost remain unknown. "
+            "Waiting for connectivity, then continuing from saved work with a new attempt; another charge is possible.",
+            incident=None,
+        )
         return episode
     if episode is None:
         unknown = error_kind == "provider_outcome_unknown" and managed_transport_continuation(ctx)

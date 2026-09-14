@@ -164,6 +164,14 @@ def test_stream_loss_before_the_terminal_frame_is_inconclusive_but_a_rejected_bo
     rejected = RuntimeError("Stream rejected after terminal framing: choice 0: no finish_reason")
     rejected.stream_incomplete = rejected.stream_rejected = True
     assert classify_provider_failure("provider_canary", rejected).kind is ProviderFailureKind.RED
+    # The assembler files a numeric ``error.code`` as the frame's status: 429/5xx take the ladder
+    # (INCONCLUSIVE), a 4xx inside the stream is contract (RED).
+    for code, expected in ((429, "rate_limit_429"), (502, "provider_5xx"), (400, "provider_contract_or_unclassified")):
+        frame = ProviderStreamError({"error": {"code": code, "message": "provider said so"}})
+        frame.status_code = code
+        verdict = classify_provider_failure("provider_canary", frame)
+        assert (verdict.kind, verdict.reason) == (
+            ProviderFailureKind.RED if code == 400 else ProviderFailureKind.INCONCLUSIVE, expected)
 
 
 def test_provider_alarm_output_sanitizes_token_shaped_evidence(capsys):
