@@ -155,6 +155,9 @@ never the field's only name. Help and validation belong to that field without
 changing the alignment of neighboring controls and their actions.
 
 Short fixed choices keep native selects, including the platform's own popup.
+A control never widens its column: a select shows its chosen label on one
+line, clipped at its own edge, and the full label stays in the platform's
+popup.
 Model selection uses the shared editable chooser: suggestions assist typing
 without becoming an allowlist. A saved unknown model remains editable; a
 catalog refresh preserves the real input, selection and composition. Escape
