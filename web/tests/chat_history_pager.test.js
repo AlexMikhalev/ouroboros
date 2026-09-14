@@ -63,6 +63,67 @@ test('a successful sparse page advances its cursor even with no visible messages
     assert.equal(h.calls.length, 2);
 });
 
+test('empty pages are walked over, never becoming a reading position or a newer gap', async () => {
+    const h = harness({ fetch: cursor => {
+        const index = Number(cursor.split(':').at(-1));
+        return index < 4 ? page(index, { messages: [] }) : page(4);
+    } });
+    h.pager.acceptRecent(page(0));
+    for (let n = 0; n < 3; n += 1) {
+        await h.pager.older();
+        const step = h.pager.getState();
+        assert.equal(step.canNewer, false, 'an empty page above the window is not a gap');
+        assert.equal(step.olderExhausted, false);
+    }
+    assert.deepEqual(h.pager.getState().cachedPages.map(item => item.index), [0],
+        'an empty page leaves the cache at once: its descriptor alone holds the window');
+    assert.deepEqual(h.released.map(item => item.index), [1, 2, 3]);
+    await h.pager.older();
+    const state = h.pager.getState();
+    assert.deepEqual(state.cachedPages.map(item => [item.index, item.rows]), [[0, 1], [4, 1]]);
+    assert.equal(state.pageCount, 5, 'walked-over empty pages keep their descriptors');
+    assert.equal(state.canNewer, false);
+    assert.equal(state.olderExhausted, true);
+    const spent = h.calls.length;
+    assert.equal((await h.pager.newer()).status, 'unavailable');
+    assert.equal(h.calls.length, spent, 'walking back across empty pages costs no request');
+});
+
+test('a resume carries each page row count and tolerates a saved page without one', async () => {
+    const h = harness({ fetch: cursor => cursor === 'before:A:1' ? page(1, { messages: [] }) : page(2) });
+    h.pager.acceptRecent(page(0));
+    await h.pager.older();
+    const saved = h.pager.exportResume();
+    assert.deepEqual(saved.pages.map(item => item.rows), [1, 0]);
+    assert.equal(saved.focus, 0, 'an empty page never becomes the saved reading position');
+    const legacy = harness();
+    const stripped = { focus: saved.focus, pages: saved.pages.map(({ rows: _rows, ...rest }) => rest) };
+    assert.equal((await legacy.pager.restore(stripped)).status, 'applied');
+    assert.equal(legacy.pager.getState().pageCount, 2);
+    assert.equal(legacy.pager.getState().canNewer, false);
+    assert.equal(legacy.pager.getState().firstPage.rows, 1, 'an unknown row count is learned on re-read');
+});
+
+test('a re-read page keeps its frozen boundaries while its row count is refreshed', async () => {
+    let zero = false;
+    const h = harness({ fetch: cursor => cursor === 'replay:A:0'
+        ? page(0, { messages: zero ? [] : undefined })
+        : page(Number(cursor.split(':').at(-1))) });
+    h.pager.acceptRecent(page(0));
+    for (let n = 0; n < 3; n += 1) await h.pager.older();
+    assert.equal(h.pager.getState().canNewer, true, 'a released NON-empty page is still a real gap');
+    zero = true;
+    await h.pager.newer();
+    // The refreshed descriptor lives in the page list; its now-empty cache entry
+    // is released at once, like any other empty page.
+    assert.deepEqual({ ...h.pager.exportResume().pages.find(item => item.index === 0) },
+        { id: 'history-page-1-0', chain: 1, index: 0, requestCursor: 'replay:A:0',
+            nextCursor: 'before:A:1', hasMore: true, rows: 0 });
+    assert.equal(h.pager.getState().cachedPages.some(item => item.index === 0), false);
+    assert.equal(h.pager.getState().pageCount, 4, 'a refreshed row count mints no extra descriptor');
+    assert.equal(h.pager.getState().canNewer, false);
+});
+
 test('evicted newer and older pages replay their exact handles, including page zero', async () => {
     const h = harness();
     h.pager.acceptRecent(page(0));

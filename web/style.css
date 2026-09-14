@@ -1125,8 +1125,8 @@ body.resizing-panels { user-select: none; }
     50% { opacity: 0.5; }
 }
 
-/* History navigation at either edge of the rendered window. */
-.chat-load-older, .chat-load-newer {
+/* History navigation at the top edge of the rendered window. */
+.chat-load-older {
     display: flex;
     justify-content: center;
     align-items: center;
