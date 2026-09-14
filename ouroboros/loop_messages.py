@@ -119,6 +119,11 @@ def _append_or_merge_user_content(messages: List[Dict[str, Any]], content: Any) 
         )
         if incoming_images:
             _evict_stale_image_blocks(messages, incoming=incoming_images)
+    if messages and messages[-1].get("acceptance_observation"):
+        # A sent observation row is byte-frozen: merging into it would rewrite an
+        # already-sent message and break byte-prefix prompt caching (issue #906).
+        messages.append({"role": "user", "content": content})
+        return
     if messages and messages[-1].get("role") == "user":
         prior = messages[-1].get("content")
         if isinstance(content, list):
@@ -304,9 +309,14 @@ def acceptance_observation_prompt(ctx: Any, observation: Dict[str, Any]) -> str:
         "The retained complete answer remains available. " if candidate is not None
         else "When nominating the complete task result for review, use this source selector. "
     )
+    # ``tool_count`` stays on the stored observation (delivery bounds material
+    # tool indices with it) but changes every round; rendering it would rewrite
+    # this message's bytes and break prompt caches that reuse only a byte-prefix
+    # of the previous request (issue #906).
+    facts = {key: value for key, value in observation.items() if key != "tool_count"}
     return (
         "[ACCEPTANCE_SUBJECT_OBSERVATION]\n"
-        + json.dumps(observation, ensure_ascii=False, sort_keys=True)
+        + json.dumps(facts, ensure_ascii=False, sort_keys=True)
         + "\n" + retained + "In your ordinary decision, "
         "use acceptance_subject.owner_source_sha256 above to acknowledge this exact source. "
         "Keep effective_criteria/material_tool_indices when the subject is unchanged; "

@@ -53,6 +53,7 @@ from ouroboros.loop_tool_execution import (
     reclaim_trace_refs,  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
 )
 from ouroboros.loop_llm_call import TRANSPORT_DEATHS_KEY, call_llm_with_retry, emit_llm_usage_event, forced_response_is_incomplete, forced_response_parts, provider_no_call_source  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
+from ouroboros.transcript_prefix import observe_send as _observe_transcript_send
 from ouroboros.delegate_hold import (
     close_hold as _delegate_hold_close,
     hold_step as _delegate_hold_step,
@@ -349,6 +350,28 @@ def _resolve_loop_max_rounds(ctx: Any = None) -> int:
     return min(configured, int(getattr(ctx, "inline_max_rounds", configured)))
 
 
+def _record_transcript_prefix(ctx, messages, round_idx, compaction_usage, accumulated_usage,
+                              event_queue, task_id, drive_logs) -> None:
+    """Record whether this send extends the previous one.  Never blocks it.
+
+    Between the sends of ONE execution the transcript is append-only:
+    OpenAI-family caches reuse a previous request only when that whole request
+    is a byte-prefix of the next, so a transient trailing message or an
+    in-place rewrite of an already-sent message discards the entire
+    conversation cache (#906).  Compaction is the sanctioned rewrite and rides
+    as ``sanctioned_by``; every other break (a context-fit reprojection after a
+    real overflow, a replaced tail) is counted in ``prompt_prefix_breaks``.
+    """
+    fact = _observe_transcript_send(
+        ctx, messages, round_idx=round_idx,
+        sanctioned_by="compaction" if compaction_usage else None)
+    if not fact:
+        return
+    _emit_checkpoint_event(event_queue, task_id, drive_logs, fact)
+    if not fact["sanctioned_by"]:
+        accumulated_usage["prompt_prefix_breaks"] = int(accumulated_usage.get("prompt_prefix_breaks") or 0) + 1
+
+
 def run_llm_loop(
     messages: List[Dict[str, Any]],
     tools: ToolRegistry,
@@ -525,6 +548,7 @@ def run_llm_loop(
 
                 prepare_acceptance_observation(ctx, llm_trace, incoming_messages, messages, tool_schemas)
                 seal_task_transcript(messages)
+                _record_transcript_prefix(tools._ctx, messages, round_idx, _compaction_usage, accumulated_usage, event_queue, task_id, drive_logs)
 
                 model_call = _RoundModelCallContext(
                         llm=llm, messages=messages, tools=tools, context_fit_plan=context_fit_plan,
