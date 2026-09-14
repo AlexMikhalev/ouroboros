@@ -51,7 +51,7 @@ final class AndroidBridge implements Closeable {
     static final String SOCKET = "ai.ouroboros.android.rpc";
     private static final int MAX_REQUEST_BYTES = 4 * 1024 * 1024;
     private static final String[] METHODS = {"capabilities", "packages.list", "packages.inspect", "packages.sessions",
-            "packages.install", "packages.install.status",
+            "packages.install", "packages.install.status", "packages.install.abandon",
             "providers.list", "intent.resolve", "intent.start", "content.query", "content.call",
             "content.insert", "content.update", "content.delete", "content.read", "content.write",
             "location.state", "location.get", "accessibility.state", "accessibility.windows",
@@ -159,6 +159,7 @@ final class AndroidBridge implements Closeable {
             case "packages.sessions": return packageSessions(pm, p);
             case "packages.install": return installPackage(pm, p);
             case "packages.install.status": return installStatus(p);
+            case "packages.install.abandon": return abandonInstall(pm, p);
             case "providers.list": {
                 JSONArray rows = new JSONArray();
                 List<ProviderInfo> providers = pm.queryContentProviders(null, 0, PackageManager.MATCH_DISABLED_COMPONENTS);
@@ -284,6 +285,26 @@ final class AndroidBridge implements Closeable {
         String value = receipts().getString(key, null);
         if (value == null) return new JSONObject().put("known", false).put("idempotency_key", key);
         return new JSONObject(value).put("known", true);
+    }
+
+    /** Abandon one installer-owned session after an unknown or rejected outcome. */
+    private synchronized JSONObject abandonInstall(PackageManager pm, JSONObject p) throws Exception {
+        String key = p.getString("idempotency_key");
+        String value = receipts().getString(key, null);
+        if (value == null) return new JSONObject().put("known", false).put("idempotency_key", key);
+        JSONObject receipt = new JSONObject(value);
+        int sessionId = receipt.optInt("session_id", -1);
+        if (sessionId < 0) return receipt.put("known", true).put("outcome", "unknown")
+                .put("retry_automatically", false);
+        if (pm.getPackageInstaller().getSessionInfo(sessionId) == null)
+            return receipt.put("known", true).put("outcome", "unknown")
+                    .put("retry_automatically", false);
+        pm.getPackageInstaller().abandonSession(sessionId);
+        receipt.put("status", "abandoned").put("outcome", "abandoned")
+                .put("completion_observed", true).put("status_message", "Session abandoned by owner");
+        receipts().edit().putString(key, receipt.toString()).commit();
+        PackageInstallReceiver.cancelNotification(context, sessionId);
+        return receipt.put("known", true);
     }
 
     private android.content.SharedPreferences receipts() {

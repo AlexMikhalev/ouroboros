@@ -244,7 +244,10 @@ package before deciding whether to recover. A pending install posts an Ouroboros
 notification that opens Android's original confirmation screen when tapped;
 it remains incomplete until the system reports success or failure. Keep
 Ouroboros notifications enabled for this handoff. A disabled or failed notification
-is reported in `confirmation_delivery`; it is not successful consent.
+is reported in `confirmation_delivery`; it is not successful consent. Use
+`packages.install.abandon` with the same idempotency key to close a rejected or
+unknown installer session after inspecting it; it records an abandoned terminal
+outcome and never starts a replacement installation.
 For this path, enable **Install unknown apps** for Ouroboros in Android settings;
 `capabilities.can_request_package_installs` reads that special access separately
 from ordinary runtime permissions. The host can read only source URIs available

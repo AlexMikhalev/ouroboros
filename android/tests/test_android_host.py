@@ -83,7 +83,7 @@ class AndroidHostTest(unittest.TestCase):
         receiver = manifest.find("application/receiver[@android:name='.PackageInstallReceiver']", {"android": "http://schemas.android.com/apk/res/android"})
         self.assertIsNotNone(receiver)
         source = (HOST / "src/ai/ouroboros/android/AndroidBridge.java").read_text()
-        for marker in ("\"packages.sessions\"", "\"packages.install\"",
+        for marker in ("\"packages.sessions\"", "\"packages.install\"", "\"packages.install.abandon\"",
                        "idempotency_key", "source_sha256", "completion_observed",
                        "retry_automatically", "rollback"):
             self.assertIn(marker, source)

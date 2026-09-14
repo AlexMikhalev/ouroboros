@@ -13,6 +13,9 @@ To pass a Linux download, use content.write to transfer bytes to a writable
 provider URI (an app-owned MediaStore entry or a granted document), then install
 that URI. mode='wt' replaces contents; mode='wa' appends a subsequent chunk.
 Root android-exec remains a separate native installation path.
+After a rejected or unknown PackageInstaller result, use packages.install.abandon
+with the same idempotency_key to close that installer-owned session; it is a
+cleanup operation and never starts a replacement installation.
 
 location.state reports grants/providers. location.get accepts provider and
 timeout_ms (1000..30000); its result includes age_ms and mock when a fix exists.

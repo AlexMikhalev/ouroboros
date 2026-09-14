@@ -17,6 +17,11 @@ public final class PackageInstallReceiver extends BroadcastReceiver {
     static final String SESSION = "session_id";
     private static final String CHANNEL = "ouroboros_package_installs";
 
+    static void cancelNotification(Context context, int sessionId) {
+        NotificationManager manager = context.getSystemService(NotificationManager.class);
+        if (manager != null) manager.cancel(CHANNEL, sessionId);
+    }
+
     @Override public void onReceive(Context context, Intent intent) {
         if (!ACTION.equals(intent.getAction())) return;
         String key = intent.getStringExtra(KEY);
@@ -67,7 +72,7 @@ public final class PackageInstallReceiver extends BroadcastReceiver {
                         receipt.put("confirmation_delivery", "notification_failed");
                     }
                 } else receipt.put("confirmation_delivery", "unavailable");
-            } else if (manager != null) manager.cancel(CHANNEL, sessionId);
+            } else cancelNotification(context, sessionId);
             prefs.edit().putString(key, receipt.toString()).apply();
         } catch (Exception error) {
             android.util.Log.e("OuroborosHost", "Package install result could not be recorded", error);
