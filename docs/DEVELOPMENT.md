@@ -3035,7 +3035,9 @@ crash cadence (V8 dies after the 20 s startup window) the waiting caller gets
 `daemon_starting` and the child dies with nobody waiting, and the next caller,
 attach or owner stop must still record the row and the latch. Take the latch
 under the same lock as the reap, before reading the log, so a concurrent
-same-process caller meets the latch, not a free spawn slot. Two residuals are
+same-process caller meets the latch, not a free spawn slot; `_spawn` re-checks
+the latch under its own lock and never replaces an exited, unsettled child (the
+next settle owns that exit fact). Two residuals are
 disclosed, not closed: the descriptor identity is sampled at the first
 observation of the exit, not at the exit itself, so a foreign publisher in
 that window reads as written and costs at most one extra spawn; and between

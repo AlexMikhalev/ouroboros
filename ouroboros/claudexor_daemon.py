@@ -579,17 +579,19 @@ class OwnedClaudexorDaemon:
     def _refuse_latched_spawn(self) -> None:
         """Settle an own child that died unwatched; while latched, refuse immediately, spawning nothing.
 
-        Runs at both spawn-decision points (before preparation and right before
-        spawn), so the exit fact is harvested wherever a spawn could otherwise
-        follow — never only on a caller's wait expiry.
+        Runs at both spawn-decision points (before preparation and right before spawn); ``_spawn``
+        re-checks the latch under its own lock, so a peer's settle in between buys no extra spawn.
         """
-        from ouroboros.gateways.claudexor import ClaudexorUnavailable
-
         self._settle_exited_child()
         with self._lock:
-            record = self._last_start_failure
+            self._raise_if_latched()
+
+    def _raise_if_latched(self) -> None:
+        """Under ``self._lock``: the typed refusal while the spawn latch is set."""
+        record = self._last_start_failure
         if record is None:
             return
+        from ouroboros.gateways.claudexor import ClaudexorUnavailable
         detail = start_failure_detail(record)
         self._last_error = f"daemon_spawn_failed: {detail}"
         raise ClaudexorUnavailable(
@@ -693,7 +695,8 @@ class OwnedClaudexorDaemon:
         _write_ownership_marker()
         with self._lock:
             self._check_start_generation(generation)
-            if self._proc is not None and self._proc.poll() is None:
+            self._raise_if_latched()  # a peer may have settled our dead child since the pre-spawn check
+            if self._proc is not None:  # alive: join it; exited and unsettled: the next settle owns its fact
                 return
             with open(log_path, "ab") as sink:
                 attempt = {

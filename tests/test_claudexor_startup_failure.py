@@ -638,6 +638,74 @@ def test_a_latch_taken_during_a_callers_runtime_preparation_still_refuses_its_sp
     assert len(_rows(stand.data_dir)) == 1
 
 
+def _hold_first_spawn_before_its_lock(monkeypatch, stand):
+    """Gate the FIRST caller that enters ``_spawn`` at the marker write, i.e. after its pre-spawn
+    refusal and before the spawn lock; later callers pass through untouched."""
+    import threading
+
+    entered, release = threading.Event(), threading.Event()
+    real_marker = owned._write_ownership_marker
+    held = []
+
+    def gated_marker():
+        real_marker()
+        if not held:
+            held.append(True)
+            entered.set()
+            assert release.wait(5), "the test must release the held caller"
+
+    monkeypatch.setattr(owned, "_write_ownership_marker", gated_marker)
+    return entered, release
+
+
+def test_a_latch_taken_between_the_pre_spawn_check_and_the_spawn_lock_still_refuses(monkeypatch, tmp_path):
+    """Pins the re-check under ``_spawn``'s own lock (R-01 scope finding): caller A passed its
+    pre-spawn refusal with no own child, B then spawned, B's child died and C settled it (latch set)
+    before A took the spawn lock; A must meet the latch, not a free spawn slot."""
+    stand = _Stand(monkeypatch, tmp_path, returncode=None, banner=_OOM_REACHED)
+    manager = stand.manager
+    entered, release = _hold_first_spawn_before_its_lock(monkeypatch, stand)
+    outcomes: dict = {}
+    caller_a = _call_in_thread(manager, outcomes, "A")
+    try:
+        assert entered.wait(5), "caller A is inside _spawn, before its lock"
+        assert stand.fail_once().code == "daemon_starting", "caller B spawned a live child"
+        assert len(stand.spawned) == 1
+        stand.exit_code = -6
+        third = stand.fail_once()  # caller C settles B's dead child: the latch is set
+        assert third.code == "daemon_spawn_failed" and "latched" in str(third)
+        assert manager._last_start_failure is not None
+    finally:
+        release.set()
+        caller_a.join(5)
+    assert getattr(outcomes.get("A"), "code", None) == "daemon_spawn_failed"
+    assert "latched" in str(outcomes["A"]) and "startup_failure=heap_exhausted" in str(outcomes["A"])
+    assert len(stand.spawned) == 1, "A never spawned a second child under the latch"
+    assert len(_rows(stand.data_dir)) == 1
+
+
+def test_an_exited_but_unsettled_child_is_never_overwritten_by_a_spawn(monkeypatch, tmp_path):
+    """Same window, nobody settled yet: A reaches the spawn lock while B's child is dead but
+    unreaped. A must not replace it (its exit fact would be lost); A's own wait settles it."""
+    stand = _Stand(monkeypatch, tmp_path, returncode=None, banner=_OOM_REACHED)
+    manager = stand.manager
+    entered, release = _hold_first_spawn_before_its_lock(monkeypatch, stand)
+    outcomes: dict = {}
+    caller_a = _call_in_thread(manager, outcomes, "A")
+    try:
+        assert entered.wait(5), "caller A is inside _spawn, before its lock"
+        assert stand.fail_once().code == "daemon_starting", "caller B spawned a live child"
+        stand.exit_code = -6  # B's child dies; no caller settles it before A proceeds
+    finally:
+        release.set()
+        caller_a.join(5)
+    assert getattr(outcomes.get("A"), "code", None) == "daemon_spawn_failed"
+    assert "startup_failure=heap_exhausted" in str(outcomes["A"]) and "latched: " not in str(outcomes["A"])
+    assert len(stand.spawned) == 1, "A joined the dead child's fact instead of overwriting it"
+    assert manager._last_start_failure is not None and manager._proc is None
+    assert len(_rows(stand.data_dir)) == 1
+
+
 def test_a_joined_peer_startup_that_vanished_has_no_exit_fact(monkeypatch, tmp_path):
     """Only this manager's own child carries an exit fact; joining never latches."""
     stand = _Stand(monkeypatch, tmp_path, returncode=-6, banner=_OOM_REACHED)
