@@ -3107,8 +3107,8 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     color: var(--amber);
 }
 .chat-context-mode[data-context-mode="nano"] .chat-seg[data-mode="nano"] {
-    background: rgba(168, 85, 247, 0.18);
-    color: var(--purple, #c084fc);
+    background: var(--project-18);
+    color: var(--project);
 }
 
 .chat-send-group {
@@ -7111,13 +7111,27 @@ textarea.chat-input {
 
 /* === design-system:migrated-end === */
 
+/* One line, never a paragraph: the pointer names the card and ellipsizes, so
+   the status bar cannot grow into the reading area (a 400-character plan_task
+   verdict used to wrap it to twelve lines). The 180px basis is the bar's
+   original row policy: a default desktop panel keeps one row while the
+   status pill is short; a longer pill, a narrower panel or a phone wraps the
+   bar to a second row, never a third. The auto margin keeps the pointer left
+   of the status pill. */
 .project-work-pointer {
-    min-width: 0;
-    max-width: 100%;
     flex: 1 1 180px;
+    min-width: 0;
+    max-width: 40ch;
+    margin-right: auto;
     justify-content: flex-start;
     text-align: left;
     overflow: hidden;
+}
+.project-work-pointer-label {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
 }
 .project-work-coverage { font-size: var(--type-meta); color: var(--text-meta); }
 .chat-panel-statusbar { flex-wrap: wrap; gap: var(--space-2); }

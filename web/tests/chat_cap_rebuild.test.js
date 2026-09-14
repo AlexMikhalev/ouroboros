@@ -88,7 +88,7 @@ class ElementStub {
     removeAttribute(name) { this.attributes.delete(name); }
     appendChild(node) { return this.insertBefore(node, null); }
     append(...nodes) { nodes.forEach((node) => this.appendChild(node)); }
-    prepend(node) { return this.insertBefore(node, this.children[0] || null); }
+    prepend(...nodes) { const before = this.children[0] || null; nodes.forEach((node) => this.insertBefore(node, before)); }
     insertAdjacentElement(_position, node) { const list = this.parentNode?.children || []; return this.parentNode?.insertBefore(node, list[list.indexOf(this) + 1] || null); }
     insertBefore(node, before) {
         if (node?.isDocumentFragment) {

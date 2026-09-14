@@ -3,11 +3,17 @@ import { setInlineStatus } from './ui_helpers.js';
 export const MODEL_CATALOG_TIMEOUT_MS = 25000;
 let catalogRefreshSeq = 0;
 
-/** Read provenance belongs to discovery, never to the owner's saved assignment. */
+/**
+ * Read provenance belongs to discovery, never to the owner's saved assignment.
+ * One unreachable source among several is `partial`: the catalogs that did
+ * answer are real, and claiming the whole read failed hid working API models.
+ */
 export function catalogReadState(data = {}) {
     if (data.read_state) return data.read_state;
     if (data.stale || data.freshness === 'stale') return 'stale';
-    if (data.error || data.errors?.length) return 'failed';
+    if (data.error || data.errors?.length) {
+        return Array.isArray(data.items) && data.items.length ? 'partial' : 'failed';
+    }
     if (data.partial) return 'partial';
     return Array.isArray(data.items) ? 'ok' : 'not_read';
 }
@@ -46,14 +52,37 @@ export function mergeHarnessModelCatalog(previous, current) {
     }).items };
 }
 
-export function catalogReadNote(data = {}) {
+/** httpx appends a documentation pointer to every status error; the owner needs the status, not the link. */
+function readErrorText(error) {
+    const text = [error.credential_profile_id, error.error || error.code || error.provider_id]
+        .filter(Boolean).join(': ');
+    return text.split(/\s*For more information check:/)[0].trim();
+}
+
+/**
+ * Name what actually happened: which read failed, and what is usable anyway.
+ * `compact` is the per-row form under a section banner that already lists the
+ * failed reads: one short sentence, never the error list repeated per row.
+ */
+export function catalogReadNote(data = {}, { compact = false } = {}) {
     const state = catalogReadState(data);
     if (state === 'ok') return '';
-    const errors = (data.errors || []).map((error) => [error.credential_profile_id,
-        error.error || error.code || error.provider_id].filter(Boolean).join(': '));
-    const reason = errors.length ? `Model catalog could not be read: ${errors.join('; ')}.`
-        : state === 'stale' ? 'Model catalog is last known.' : state === 'partial' ? 'Some account model lists could not be read.'
-            : ['failed', 'transport'].includes(state) ? 'Model catalog could not be read.' : 'Model catalog has not been read yet.';
+    if (compact) {
+        const short = state === 'partial' ? 'Some model sources could not be read.'
+            : state === 'stale' ? 'Model catalog is last known.'
+                : ['failed', 'transport'].includes(state) ? 'Model catalog could not be read.'
+                    : 'Model catalog has not been read yet.';
+        return `${short} Existing suggestions and your selection are kept.`;
+    }
+    const errors = (data.errors || []).map(readErrorText);
+    const loaded = (Array.isArray(data.items) ? data.items : []).filter(
+        (item) => !String(item?.value || item?.id || '').startsWith('claudexor::')).length;
+    const reason = state === 'partial' && errors.length
+        ? `Some model sources could not be read: ${errors.join('; ')}.${loaded
+            ? ` ${loaded} API model${loaded === 1 ? '' : 's'} loaded.` : ''}`
+        : errors.length ? `Model catalog could not be read: ${errors.join('; ')}.`
+            : state === 'stale' ? 'Model catalog is last known.' : state === 'partial' ? 'Some account model lists could not be read.'
+                : ['failed', 'transport'].includes(state) ? 'Model catalog could not be read.' : 'Model catalog has not been read yet.';
     return `${reason} Existing suggestions and your selection are kept. Refresh Model Catalog in Models to retry.`;
 }
 

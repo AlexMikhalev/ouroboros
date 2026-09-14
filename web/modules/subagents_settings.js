@@ -3,13 +3,13 @@
 
 import {
     FACET_ACCOUNTS, FACET_CATALOG, FACET_QUOTA, READ_OK, accountRows,
-    bindStatusSurface, boundedStatusRefresh, claudexorStatus, familyLabel,
+    bindStatusSurface, boundedStatusRefresh, claudexorStatus,
 } from './claudexor_status_store.js';
 import { renderSegmentedField } from './page_header.js';
 import { harnessIdentityMarkup } from './harness_presentation.js';
 import {
     EFFORT_CHOICES, ROUTE_KIND_AGENT_SESSION, ROUTE_KIND_API_MODEL,
-    compoundSessionEffortConflict, changeRouteChoice, routeModelFields,
+    compoundSessionEffortConflict, configuredApiProviders, changeRouteChoice, routeModelFields,
     routeModelInputHtml, routeTargetFromModel, routeSupportsAccount, effortSelectHtml,
     encodeRouteChoice, indexProfilesByHarness, mintStableId, profileOptionsFor,
     routeChoiceGroups, selectHtml, serializeRouteSpec, sessionModelOptions, updateRouteControlOptions,
@@ -17,7 +17,7 @@ import {
 } from './route_editor_primitives.js';
 import { modelChooserHtml, bindModelChoosers } from './model_chooser.js';
 import { mergeModelCatalog, catalogReadNote, mergeHarnessModelCatalog } from './settings_catalog.js';
-import { harnessMap, rowMeta, rowStatus, sessionRouteVerdict } from './subagent_status_primitives.js';
+import { harnessMap, rowIdentity, rowMeta, rowStatus, sessionRouteVerdict } from './subagent_status_primitives.js';
 import { revealNewRow } from './ui_helpers.js';
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
 
@@ -329,9 +329,9 @@ export function availableSubagentRowMarkup(row, state, index = 0) {
     const harnesses = harnessMap(state.snapshot);
     const routeGroups = routeChoiceGroups({
         harnesses: state.catalogKnown ? (state.snapshot?.harnesses || []) : [],
-        modelSources: state.modelSources,
-        currentChoice: encodeRouteChoice(row),
-        catalogKnown: state.catalogKnown,
+        modelSources: state.modelSources, providers: state.providers,
+        providerProfiles: state.providerProfiles, currentChoice: encodeRouteChoice(row),
+        catalogKnown: state.catalogKnown, accountsKnown: state.accountsKnown,
     });
     const modelOptions = sessionModelOptions(accountScopedModelCatalog(harnesses[split.harness], row.route.credential_profile_id), split.model, {
         catalogKnown: state.catalogKnown,
@@ -345,18 +345,11 @@ export function availableSubagentRowMarkup(row, state, index = 0) {
     const errors = rowErrors(row, index, new Set());
     const meta = rowMeta(row, state, errors);
     const invalid = Boolean(row._uiAttempted) && errors.length > 0;
-    const routeIdentity = session || split.subscription
-        ? harnessIdentityMarkup(split.harness || split.source, {
-            // Use stable presentation labels when the retained catalog is stale.
-            label: split.subscription ? `${split.sourceLabel} model` : familyLabel(split.harness, state.snapshot, {
-                catalogKnown: state.catalogKnown,
-            }),
-            className: 'available-subagent-route-identity',
-        })
-        : harnessIdentityMarkup('api', {
-            channel: 'api',
-            className: 'available-subagent-route-identity',
-        });
+    const identity = rowIdentity(row, state);
+    const routeIdentity = harnessIdentityMarkup(identity.harnessId, {
+        label: identity.label, channel: identity.channel,
+        className: 'available-subagent-route-identity',
+    });
     return `
         <article class="available-subagent-row" data-subagent-row="${escapeHtml(rowKey)}" aria-labelledby="${escapeHtml(headingId)}"${invalid ? ' data-invalid' : ''}>
             <div class="available-subagent-head">
@@ -414,6 +407,7 @@ export function availableSubagentsRenderSignature(state, nowMs = Date.now()) {
         (state.setting?.items || []).map((row) => row?.route?.kind === ROUTE_KIND_AGENT_SESSION
             ? sessionRouteVerdict(row, state, nowMs).text : ''),
         state.apiModels, state.modelSources, state.modelCatalogNote, state.processingPreference,
+        state.providers, state.providerProfiles,
     ]);
 }
 
@@ -452,6 +446,8 @@ export function createAvailableSubagentsEditor({
         quotaKnown: false,
         snapshot: null,
         apiModels: [], modelSources: [], modelCatalogNote: '', processingPreference: '',
+        // Providers with a stored key, named by the contract (setSourceContext).
+        providers: [], providerProfiles: {},
         signature: '',
         statusDisposer: null,
         catalogDisposer: null,
@@ -571,7 +567,7 @@ export function createAvailableSubagentsEditor({
                     const structural = previous !== encodeRouteChoice(row);
                     if (structural) delete row.route.credential_profile_id;
                     markDirty({ structural });
-                    if (structural) paint();
+                    if (structural) paint(); else renderValidation(); // keeps the disclosed id current, caret intact
                 },
             );
             rowElement.querySelector('[data-subagent-field="account"]')?.addEventListener('change', (event) => {
@@ -866,6 +862,11 @@ export function createAvailableSubagentsEditor({
         get dirty() { return state.dirty; },
         get parseError() { return state.parseError; },
         setProcessingPreference(value) { state.processingPreference = String(value || ''); paint({ discoveryOnly: true }); },
+        setSourceContext({ settings = {}, providerProfiles = {} } = {}) {
+            state.providerProfiles = providerProfiles || {};
+            state.providers = configuredApiProviders(settings, state.providerProfiles);
+            paint({ discoveryOnly: true });
+        },
     };
 }
 
@@ -1006,6 +1007,8 @@ export function destroySubagentsSection() {
 
 export function collectSubagentsSettings() { return settingsEditor?.collect() || {}; }
 export function setSubagentsProcessingPreference(value) { settingsEditor?.setProcessingPreference(value); }
+/** The providers the roster picker may offer, from the loaded settings document. */
+export function setSubagentsSourceContext(settings, providerProfiles) { settingsEditor?.setSourceContext({ settings, providerProfiles }); }
 
 export function validateSubagentsDraft() { return settingsEditor?.validate() || ['Available subagents editor is not loaded.']; }
 

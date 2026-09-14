@@ -338,10 +338,17 @@ archive; only the source reader establishes that boundary.
 
 A Project keeps its conversation and real nested task cards. One compact pointer
 leads to an unfinished represented root, or the latest represented root when all
-are finished. It states `Loaded messages only` unless history coverage is complete;
-without a represented card it states that absence and has no action. Navigation
-moves the conversation to the existing card without changing the next message's
-recipient, opening another work pane or manufacturing activity.
+are finished. It occupies one line: it names the card (its coined name, else its
+title) and ellipsizes rather than restating a status headline in full, so the status bar
+never grows into the reading area; the complete text stays on the card itself,
+one click away, not in a mouse-only tooltip. A default desktop panel keeps the
+pointer, the coverage note and the status pill on one row while the pill is
+short (Online, Working, Thinking, Sending, Queued); a longer pill, a narrower
+panel or a phone wraps the bar to a second row, never a third. It states `Loaded messages only`
+unless history coverage is complete; without a represented card the pointer and
+that note are hidden, which is not a claim that the Project has no work.
+Navigation moves the conversation to the existing card without changing the next
+message's recipient, opening another work pane or manufacturing activity.
 
 ### List editors
 
@@ -549,11 +556,11 @@ instead, and let the status text carry the claim.
 Accounts is the common connection surface for subscriptions and API keys.
 Models and Agents edit assignments; adding a connection updates available
 choices without replacing an owner's assignments. A model role uses one compact
-Source / Model / Account row, with a single grouped source select. The account
-is a property of that role: Auto rotates compatible accounts and an explicit
-pin stays pinned. A model inherited from Main remains visibly inherited while
-its account can be pinned independently. Fallbacks use the same row in their
-saved order, with adjacent move/remove controls and the group's Add action.
+Source / Model / Account row. The account is a property of that role: Auto
+rotates compatible accounts and an explicit pin stays pinned. A model inherited
+from Main remains visibly inherited while its account can be pinned
+independently. Fallbacks use the same row in their saved order, with adjacent
+move/remove controls and the group's Add action.
 
 Context details distinguish the exact route's advertised Auto window from a
 manual value labelled "set by you". Changing an account withdraws the previous
@@ -563,19 +570,35 @@ caret in place and never assign a model. `model_roles.js` and `model_roles.css`
 own the shared Settings/wizard editor; `reviewer_slots.css` supplies the same
 reviewer-row layout to both documents.
 
-Available subagents and all review categories use the same grouped source
-choices and Source / Model / Account controls. Subscription model sources and
-agent sessions are distinct groups: neither implies the other's model inventory.
-Source ids are opaque; the model-sources catalog names the credential harness.
-Saved subscription-model account pins survive catalog gaps and unrelated saves;
-direct API-key models do not offer a subscription-account pin. Catalog entries
-are suggestions, not account-specific entitlement or context evidence.
-Changing a model or account never changes the delivery kind: a configured
-subagent reference remains a reference to its native inspection episode, while
-an inline packed-review model remains inline. Catalog refreshes preserve the
-edited value, focus, selection and scroll position.
-Returning to a reviewer's previous source restores that source's model/account
-draft; a source not previously selected starts without another source's pin.
+A source is chosen, never spelled. Every surface that assigns a model — the
+Models roles, Available subagents, every review lane, the first-run wizard and
+the quota-wait picker — offers one grouped source select with the same groups
+in the same order: configured subagents where references are allowed,
+Subscriptions · models, API keys (one entry per provider with a stored
+credential, then one disabled pointer to Accounts; a saved choice without a
+credential stays selectable as "(no key)"), Agents · sessions where a session
+is possible. The model chooser lists only the chosen source's catalog, so a
+suggestion's transport is the selected source; any id can still be typed. The
+stored spellings (`provider::model`, `claudexor::source=model`,
+`harness=model`) are serialization authored by the editor: never required from
+the owner, never a field placeholder or help-text instruction, never the
+primary displayed value; the exact stored id may appear in a meta line or
+tooltip. The route identity chip names the source (API · OpenAI, Codex · model,
+Claude Code · agent), not the channel alone. A last-run receipt is shown
+against the route that produced it: when the row's route changed since, the
+line says so and names the earlier route.
+
+Subscription model sources and agent sessions never imply each other's model
+inventory. Source ids are opaque; the model-sources catalog names the
+credential harness. Saved subscription-model account pins survive catalog gaps
+and unrelated saves; direct API-key models do not offer a subscription-account
+pin. Catalog entries are suggestions, not account-specific entitlement or
+context evidence. Changing a model or account never changes the delivery kind:
+a configured subagent reference remains a reference to its native inspection
+episode, while an inline packed-review model remains inline. Catalog refreshes
+preserve the edited value, focus, selection and scroll position. Returning to a
+reviewer's previous source restores that source's model/account draft; a source
+not previously selected starts without another source's pin.
 
 The wizard has five steps: Accounts, Models, Review, Budget, Summary. Agent
 connection is inside Accounts; Codex is the recommended connection for starting

@@ -4,8 +4,15 @@ import { fetchJson, jsonPost } from './api_client.js';
 import { claudexorStatus } from './claudexor_status_store.js';
 import { startLogin } from './harness_accounts.js';
 import { createModelRolesEditor, MODEL_ACCOUNTS_KEY, modelRolesHost, parseModelSource } from './model_roles.js';
+import { API_PROVIDER_CREDENTIAL_KEYS } from './route_editor_primitives.js';
 import { desiredLiveCardPhase, setLiveCardPhase } from './task_phase_chip.js';
 import { taskDoneIsTerminal } from './log_events.js';
+
+/** Only the provider credential fields; no other setting reaches the picker draft. */
+function providerCredentials(settings = {}) {
+    return Object.fromEntries(API_PROVIDER_CREDENTIAL_KEYS
+        .filter((key) => key in settings).map((key) => [key, settings[key]]));
+}
 
 export function modelWaitRoleLabel(role = '') {
     const labels = { main: 'Main', light: 'Light', vision: 'Vision', consciousness: 'Background consciousness',
@@ -295,7 +302,10 @@ export function createModelWaitController({ getRecord, onDomWrite = (fn) => fn()
                 view.sharedFallbackLocal = settings.USE_LOCAL_FALLBACK === true || settings.USE_LOCAL_FALLBACK === 'true';
                 view.editor = createModelRolesEditor({ hostId: id, store, doc: getDoc, showContext: false,
                     onChange: () => onDomWrite(() => paint(taskId)) });
-                view.editor.load({ model: view.row.model, [MODEL_ACCOUNTS_KEY]: { main: view.row.credential_profile_id || '' } },
+                // The picker offers the same configured API providers as Models,
+                // so the wait panel needs this document's credential fields too.
+                view.editor.load({ ...providerCredentials(settings), model: view.row.model,
+                    [MODEL_ACCOUNTS_KEY]: { main: view.row.credential_profile_id || '' } },
                 { providerProfiles: settings?._meta?.setup_contract?.providerProfiles || {}, modelSlots: [
                     { slot: 'main', settingKey: 'model', inputId: `${id}-model`, settingsToggleId: `${id}-local`, label: modelWaitRoleLabel(view.row.role) },
                 ] });
