@@ -216,6 +216,43 @@ test('configured subagent marks surround native text controls without changing s
     assert.match(apiHtml, /aria-label="API model for Subagent 1"/);
 });
 
+test('a subagent row offers its account under the name the Accounts tab gives it', () => {
+    // The real consumer of the pin index. A unified engine's migrated default
+    // login carries its login email as the registry display name, so a select
+    // that named the row `codex-default` alone read as a missing account beside
+    // an Accounts tab listing the email. The stored id rides the label and
+    // stays the option value — it is what pins the route.
+    const row = {
+        subagent_id: 'builder', name: 'Builder', recommended_use: 'Implement changes.',
+        route: {
+            kind: ROUTE_KIND_AGENT_SESSION,
+            target_id: 'codex=gpt-5.6-sol-high',
+            credential_profile_id: 'codex-default',
+        },
+    };
+    const html = availableSubagentRowMarkup(row, {
+        catalogKnown: true, accountsKnown: true, quotaKnown: true, statusError: '',
+        snapshot: {
+            harnesses: [{
+                id: 'codex', display_name: 'Codex Live', status: 'ok', enabled: true,
+                models: [{ id: 'gpt-5.6-sol-high' }],
+            }],
+            profiles: { profiles: [{
+                profile: {
+                    harness_id: 'codex', profile_id: 'codex-default', enabled: true,
+                    display_name: 'native@example.com',
+                },
+                status: { verification: 'passed' },
+                identity: { email: 'native@example.com' },
+            }] },
+            quota: [],
+        },
+    });
+    const option = html.match(/<option value="codex-default"[^>]*>([^<]*)<\/option>/);
+    assert.ok(option, 'the pinned account is offered');
+    assert.equal(option[1], 'Account: native@example.com · codex-default (pinned)');
+});
+
 test('configured identity ignores stale daemon labels until the catalog read is proven', () => {
     const row = {
         subagent_id: 'builder', recommended_use: 'Implement changes.',

@@ -2156,7 +2156,10 @@ owner, owed terminal delivery, cascade postconditions — lives in ARCHITECTURE
   route; a saved unavailable session stays visible, and dispatch returns its
   typed refusal, never an API fallback. Harness lists come from one catalog
   path (`accountRows` over `/api/claudexor/status`; dual-shape
-  unified/legacy, pins via `indexProfilesByHarness`).
+  unified/legacy; pins via `indexProfilesByHarness`, a projection of the same
+  rows, so a pin option is called what Accounts calls it — `accountName`:
+  display name, else the observed email, else the id — with the stored id
+  appended only when it differs).
 - Install compilation stays linear and split by semantic owner: available
   subagents include every supported connected harness plus truthful API/local
   actors; reviewer defaults independently consume only ratified policies;

@@ -3,6 +3,7 @@
 // `api_chat` + `profile_id`; task actors serialize `api_model` +
 // `credential_profile_id`.
 
+import { accountRows, accountName } from './claudexor_status_store.js';
 import { formatRelativeAge } from './ui_helpers.js';
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
 import { modelChooserHtml, updateModelChooserOptions } from './model_chooser.js';
@@ -427,25 +428,27 @@ export function routeChoiceGroups({
     ];
 }
 
+// The PIN-SIDE projection of `accountRows`: one payload, one reader, so the
+// select that pins a route and the Accounts tab that lists the same account
+// call it one name. A second walk over `profiles.profiles` is how the pin
+// option came to say `codex-default` for the row Accounts calls by its email.
 export function indexProfilesByHarness(payload) {
     const byHarness = {};
-    const profiles = payload?.profiles?.profiles || [];
-    for (const wrapper of Array.isArray(profiles) ? profiles : []) {
-        const profile = wrapper?.profile || {};
-        const harness = String(profile.harness_id || '');
-        const id = String(profile.profile_id || '');
-        if (!harness || !id) continue;
-        (byHarness[harness] = byHarness[harness] || []).push({
-            id,
-            enabled: profile.enabled !== false,
+    for (const row of accountRows(payload)) {
+        if (row.kind !== 'profile' || !row.profile_id) continue;
+        (byHarness[row.harness] = byHarness[row.harness] || []).push({
+            id: row.profile_id,
+            enabled: row.enabled,
+            name: accountName(row),
         });
     }
     return byHarness;
 }
 
 export function profileEntry(entry) {
-    if (typeof entry === 'string') return { id: entry, enabled: true };
-    return { id: String(entry?.id || ''), enabled: entry?.enabled !== false };
+    if (typeof entry === 'string') return { id: entry, enabled: true, name: entry };
+    const id = String(entry?.id || '');
+    return { id, enabled: entry?.enabled !== false, name: String(entry?.name || '') || id };
 }
 
 /** Native model discovery is per account; an unread account is not an empty catalog. */
@@ -488,8 +491,12 @@ export function profileOptionsFor(profiles, savedPin, { accountsKnown = true } =
     const options = [
         { value: '', label: 'Account: automatic rotation' },
         ...(profiles || []).map(profileEntry).filter((profile) => profile.id).map((profile) => ({
+            // The VALUE stays the id — it is what the setting stores and what
+            // pins the route. Only the label speaks the owner's name for the
+            // account, with the stored id appended when they differ.
             value: profile.id,
-            label: `Account: ${profile.id} (pinned)${profile.enabled ? '' : ' (disabled)'}`,
+            label: `Account: ${profile.name}${profile.name !== profile.id ? ` · ${profile.id}` : ''}`
+                + ` (pinned)${profile.enabled ? '' : ' (disabled)'}`,
         })),
     ];
     if (savedPin && !options.some((option) => option.value === savedPin)) {
