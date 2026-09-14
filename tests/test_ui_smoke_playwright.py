@@ -328,7 +328,12 @@ def direct_server_with_data(tmp_path):
 
         try:
             start_server()
-            yield {"url": url, "data_dir": data_dir, "restart_server": restart_server}
+            yield {
+                "url": url, "data_dir": data_dir, "restart_server": restart_server,
+                # A seed that must survive into the next boot (queue snapshot, state files) has to
+                # land while no server runs: the main loop persists its own snapshot every tick.
+                "stop_server": stop_server, "start_server": start_server,
+            }
         finally:
             stop_server()
 

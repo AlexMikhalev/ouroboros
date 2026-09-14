@@ -289,6 +289,15 @@ site cannot silently skip the invariant — `tests/test_projects_v6640.py`
 exercises that seam. For fuzzy entities use the LLM-first pattern
 (`semantic_dedup`), never string equality.
 
+The same captured reference is also the IDENTITY OF THE WORK, not just its
+provenance: a new task id minted from the same owner message (a promoted root,
+a mid-run scope call) must INHERIT that origin's project binding
+(`projects_registry.project_id_for_origin`, keyed by value on chat id +
+client message id), never re-derive project membership from its own id — one
+convertible unit per message, not one per task id. A timeout retry COPIES the
+origin ref onto its new id but is deliberately NOT bound at clone time; it joins
+that origin's project when a later implicit act adopts it.
+
 One named exception inside role (b): a verification RECEIPT with no earlier
 ingress point is reconciled by ONE TYPED IDENTITY KEY, matching on the key's
 kind AND value, never across kinds — a per-component fallback chain is not an

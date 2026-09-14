@@ -18,6 +18,18 @@ from typing import Any, Dict
 log = logging.getLogger(__name__)
 
 
+def _relayed_owner_message(client_message_id: str) -> str:
+    """The OWNER message a steer's bytes relay, stored on the mailbox entry so the
+    target's drain can stamp what reached THAT turn.
+
+    An agent-authored steer belongs to no owner message: it keys its receipt on the
+    host-minted synthetic id, which relays nothing and is not stored — so the target's
+    own next steer mints a fresh receipt id instead of inheriting this one."""
+    from ouroboros.project_dialogue import AGENT_RECEIPT_ID_PREFIX
+
+    return "" if client_message_id.startswith(AGENT_RECEIPT_ID_PREFIX) else client_message_id
+
+
 def _refuse_steering_while_cancelling(
     ctx: Any,
     evt: Dict[str, Any],
@@ -206,8 +218,20 @@ def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
         return
     # Idempotent delivery: a stable msg_id from client_message_id+target dedups
     # retries; without a client id use a unique id (avoid false dedup/collision).
+    # The routing token completes the key: one owner message can produce SEVERAL
+    # distinct steers (a turn relaying successive instructions under one origin
+    # id), and without the token the drain deduplicated every one after the
+    # first into silence (#896). The token rides the event by value and both
+    # producers mint it once per steer — the picker derives it deterministically
+    # from the click — so a retried emit of the SAME steer still collides. The
+    # project-chat delivery (server_owner_routing._route_project_chat_to_running_task)
+    # keys `{client_message_id}:{target}`; the two producers sit on mutually exclusive
+    # ingress branches, so the two key forms never dedupe against each other.
     client_message_id = str(evt.get("client_message_id") or "").strip()
-    msg_id = f"{client_message_id}:{target}" if client_message_id else f"{uuid.uuid4().hex}:{target}"
+    routing_token = str(evt.get("routing_token") or "").strip()
+    base_id = client_message_id or uuid.uuid4().hex
+    msg_id = f"{base_id}:{target}:{routing_token}" if routing_token else f"{base_id}:{target}"
+    relayed_owner_message_id = _relayed_owner_message(client_message_id)
     direct_lock_held = False
     queue_lock_held = False
     fence_generation_changed = False
@@ -293,6 +317,7 @@ def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
                 target,
                 msg_id=msg_id,
                 kind=KIND_OWNER_TEXT,
+                client_message_id=relayed_owner_message_id,
                 client_surface=(
                     dict(evt["client_surface"])
                     if isinstance(evt.get("client_surface"), dict) and evt.get("client_surface")

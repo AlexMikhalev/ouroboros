@@ -894,6 +894,10 @@ def _ensure_project_scope(ctx: ToolContext, project_name: str = "", project_id: 
     # empty one. An unreadable store is DISCLOSED, not fatal - the work continues as
     # it did before this seam existed; what is refused is the measured incident, a
     # readable binding whose project the caller wants to replace with a new one.
+    # The EXACT binding of this task, never its owner message's: a sibling task of the
+    # same message that explicitly asks for a differently named project gets it (the
+    # model's ceiling, P13), and the handler makes the same split - a request that
+    # names the project the message already has simply attaches to it.
     from ouroboros.config import DATA_DIR
     from ouroboros.projects_registry import project_id_for_task
     try:

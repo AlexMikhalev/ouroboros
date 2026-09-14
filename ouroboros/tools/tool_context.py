@@ -64,6 +64,11 @@ class ToolContext:
     # the per-project store under the canonical data dir instead of memory/knowledge.
     project_id: str = ""
     task_metadata: Dict[str, Any] = field(default_factory=dict)
+    # The latest owner message this turn actually DRAINED from its mailbox
+    # (``{"msg_id", "client_message_id", "text", "ts"}``), stamped by the loop's
+    # drain seam; ``None`` while the turn still acts only on the message that
+    # started it.
+    last_owner_delivery: Optional[Dict[str, Any]] = None
     executor_ref: Dict[str, Any] = field(default_factory=dict)
     pending_events: List[Dict[str, Any]] = field(default_factory=list)
     current_chat_id: Optional[int] = None

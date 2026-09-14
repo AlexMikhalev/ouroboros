@@ -172,6 +172,150 @@ def _promoted_force_plan_metadata(evt: dict) -> dict:
     return {"metadata": {"force_plan": True, "force_plan_source": source}}
 
 
+def _promote_project_scope(evt: dict) -> str:
+    """The project an admitted promote lands in: the explicit one the event carries,
+    else the project the OWNER MESSAGE it came from already has.
+
+    The tool already inherits that scope when it emits the event, but the emit →
+    admission window is real: a sibling card of the same message can be turned into a
+    Project in between, and the root would then arrive in Main as a second convertible
+    unit for one piece of work. An IMPLICIT event therefore calls this TWICE: once
+    when the handler starts, so the early admission decisions have a scope, and again
+    under the claim lock that also holds the durable bind — only the second answer can
+    still be true when the bind lands. An event whose scope is already settled returns
+    it unchanged, so the second call re-reads nothing. Presence promotion keeps its
+    empty scope — the tool-side override already decided that a public conversation
+    cannot choose a Project. Fail-open: an unreadable store leaves the scope exactly
+    as the event stated it."""
+    explicit = str(evt.get("project_id") or "")
+    if explicit or evt.get("presence") or not isinstance(evt.get("source_ref"), dict):
+        return explicit
+    try:
+        from ouroboros.projects_registry import origin_claim_lock, project_id_for_origin
+
+        with origin_claim_lock():
+            return str(project_id_for_origin(_pool().DRIVE_ROOT, evt.get("source_ref")) or "")
+    except Exception:
+        log.debug("promote: origin project lookup failed", exc_info=True)
+        return ""
+
+
+def _admit_project_scope(
+    evt: dict, task: dict, tid: str, pid: str, attachment_manifest: list,
+) -> Optional[dict]:
+    """Admit the promoted task into project ``pid``: lifecycle fence, scope on the
+    task record, project row, durable bind, project-thread routing and announcement.
+    Returns the caller's rejection dict, or ``None`` when the task is admitted (and
+    when there is no project to admit it into).
+
+    Held by the caller under ``origin_claim_lock``: for an implicit promote the
+    origin re-read and this bind are ONE transaction against the UI conversion's
+    claim, so a sibling card cannot bind the owner message in between and leave this
+    root in Main as a second convertible unit for one piece of work."""
+    if not pid:
+        return None
+    # Deletion closes admission before cancellation/quiescence begins. Check
+    # the durable lifecycle before creating projects or child drives;
+    # enqueue_task repeats this check atomically under the queue lock.
+    try:
+        from ouroboros.projects_registry import get_reserved_project
+
+        existing_project = get_reserved_project(_pool().DRIVE_ROOT, pid)
+        existing_lifecycle = str((existing_project or {}).get("lifecycle") or "active")
+        if existing_project is not None and existing_lifecycle != "active":
+            return _pool()._reject_promoted_after_attachment_stage({
+                "status": "needs_manual_target",
+                "reason": "project_routing_fence",
+                "project_lifecycle": existing_lifecycle,
+                "task_id": tid,
+            }, attachment_manifest)
+    except Exception:
+        log.warning("promote: project admission lookup failed for %s", pid, exc_info=True)
+        return _pool()._reject_promoted_after_attachment_stage({
+            "status": "needs_manual_target",
+            "reason": "project_routing_fence_lookup_failed",
+            "task_id": tid,
+        }, attachment_manifest)
+    task["project_id"] = pid
+    # When the model is CREATING a named project (project_name set), pass the
+    # human display name so the project isn't named after its bare id (v6.33.0).
+    project_display_name = str(evt.get("project_name") or "").strip()
+    try:
+        from ouroboros.projects_registry import bind_task_to_project, create_project, touch_project
+
+        project = create_project(
+            _pool().DRIVE_ROOT, pid, name=project_display_name, origin="promote_chat_to_task",
+        )
+        touch_project(_pool().DRIVE_ROOT, pid)
+        # Bind the task to its project (durable task->project map). Without this
+        # the task is project-scoped only in its own metadata; the frontend (via
+        # all_task_bindings in /api/state) and the mailbox follow-up router
+        # (project_chat_for_task) can't recognise it as a project task, so it
+        # surfaces in the main chat with a stray "turn into project" button (P2).
+        try:
+            # Absence semantics by PROVENANCE (structural, never keyword):
+            # a chat-born event carries client_message_id, so a missing ref
+            # there is a producer BUG (grep-able producer_missing_ref); an
+            # event from a context with no owner message (headless/scheduled/
+            # consciousness promote) is a DESIGNED absence.
+            absent_reason = (
+                "producer_missing_ref"
+                if str(evt.get("client_message_id") or "").strip()
+                and not evt.get("origin_suppressed")
+                else "mid_task_no_origin"
+            )
+            bind_task_to_project(
+                _pool().DRIVE_ROOT,
+                tid,
+                pid,
+                (project or {}).get("chat_id"),
+                origin=_origin_from_mapping(evt, absent=absent_reason),
+            )
+        except Exception as exc:
+            _report_binding_failure(tid, pid, exc, path="promote_chat_to_task")
+            return _pool()._reject_promoted_after_attachment_stage({
+                "status": "needs_manual_target",
+                "reason": "project_binding_failed",
+                "task_id": tid,
+            }, attachment_manifest)
+        # The promoted task runs in the PROJECT thread: route its live card +
+        # owner mailbox to the project's chat_id (not the main chat it was
+        # promoted from) so follow-ups steer to it via
+        # _route_project_chat_to_running_task and its progress is visible in
+        # the project panel.
+        try:
+            proj_chat = int((project or {}).get("chat_id") or 0)
+        except (TypeError, ValueError):
+            proj_chat = 0
+        if proj_chat:
+            task["chat_id"] = proj_chat
+            # The agent just created/bound this project server-side (no client
+            # round-trip, unlike the UI "Turn into project" flow). Tell the
+            # frontend so it refreshes projectChatIds NOW — otherwise this new
+            # project's live frames render in the main chat until the periodic
+            # /api/state poll catches up (≤20s) and isMyThread misclassifies them.
+            try:
+                from supervisor.message_bus import get_bridge
+
+                get_bridge().broadcast({"type": "projects_changed", "project_id": pid, "chat_id": proj_chat})
+            except Exception:
+                log.debug("promote: projects_changed broadcast failed for %s", pid, exc_info=True)
+        if evt.get("_source_created") and not (project or {}).get("created"):
+            # The source-resolution half of THIS promote registered the
+            # project off-loop (_prepare_promote_source_off_loop) — same
+            # agent-initiated creation, so the announce gate honors it.
+            project = {**(project or {}), "created": True}
+        _pool()._announce_created_project(project, tid, task=task)
+    except Exception:
+        log.warning("promote: project registration failed for %s", pid, exc_info=True)
+        return _pool()._reject_promoted_after_attachment_stage({
+            "status": "needs_manual_target",
+            "reason": "project_registration_failed",
+            "task_id": tid,
+        }, attachment_manifest)
+    return None
+
+
 def promote_chat_to_task(evt: dict, ctx: Any) -> dict:
     """Enqueue a first-class pooled owner task from a conversation-lane promote.
     The task carries the originating ``chat_id`` (its live card and replies
@@ -198,7 +342,16 @@ def promote_chat_to_task(evt: dict, ctx: Any) -> dict:
 
     evt = dict(evt)
     source_note = str(evt.get("_source_note") or "")
-    effective_pid = str(evt.get("project_id") or "")
+    # IMPLICIT scope: the event named no project, so the answer comes from the owner
+    # message's own Project and can still change before the bind (a sibling card
+    # converting in the emit -> admission window). Remembered HERE, before the
+    # assignment below turns that answer into the event's stated scope.
+    implicit_scope = (
+        not str(evt.get("project_id") or "")
+        and not evt.get("presence")
+        and isinstance(evt.get("source_ref"), dict)
+    )
+    effective_pid = evt["project_id"] = _promote_project_scope(evt)
     repair_constraint, constraint_error = _canonical_promoted_repair_constraint(
         evt.get("task_constraint")
     )
@@ -285,106 +438,22 @@ def promote_chat_to_task(evt: dict, ctx: Any) -> dict:
     if isinstance(evt.get("client_surface"), dict) and evt.get("client_surface"):
         task.setdefault("metadata", {})["client_surface"] = dict(evt["client_surface"])
     pid = str(evt.get("project_id") or "").strip()
-    if pid:
-        # Deletion closes admission before cancellation/quiescence begins. Check
-        # the durable lifecycle before creating projects or child drives;
-        # enqueue_task repeats this check atomically under the queue lock.
-        try:
-            from ouroboros.projects_registry import get_reserved_project
+    from ouroboros.projects_registry import origin_claim_lock
 
-            existing_project = get_reserved_project(_pool().DRIVE_ROOT, pid)
-            existing_lifecycle = str((existing_project or {}).get("lifecycle") or "active")
-            if existing_project is not None and existing_lifecycle != "active":
-                return _pool()._reject_promoted_after_attachment_stage({
-                    "status": "needs_manual_target",
-                    "reason": "project_routing_fence",
-                    "project_lifecycle": existing_lifecycle,
-                    "task_id": tid,
-                }, attachment_manifest)
-        except Exception:
-            log.warning("promote: project admission lookup failed for %s", pid, exc_info=True)
-            return _pool()._reject_promoted_after_attachment_stage({
-                "status": "needs_manual_target",
-                "reason": "project_routing_fence_lookup_failed",
-                "task_id": tid,
-            }, attachment_manifest)
-        task["project_id"] = pid
-        # When the model is CREATING a named project (project_name set), pass the
-        # human display name so the project isn't named after its bare id (v6.33.0).
-        project_display_name = str(evt.get("project_name") or "").strip()
-        try:
-            from ouroboros.projects_registry import bind_task_to_project, create_project, touch_project
-
-            project = create_project(
-                _pool().DRIVE_ROOT, pid, name=project_display_name, origin="promote_chat_to_task",
-            )
-            touch_project(_pool().DRIVE_ROOT, pid)
-            # Bind the task to its project (durable task->project map). Without this
-            # the task is project-scoped only in its own metadata; the frontend (via
-            # all_task_bindings in /api/state) and the mailbox follow-up router
-            # (project_chat_for_task) can't recognise it as a project task, so it
-            # surfaces in the main chat with a stray "turn into project" button (P2).
-            try:
-                # Absence semantics by PROVENANCE (structural, never keyword):
-                # a chat-born event carries client_message_id, so a missing ref
-                # there is a producer BUG (grep-able producer_missing_ref); an
-                # event from a context with no owner message (headless/scheduled/
-                # consciousness promote) is a DESIGNED absence.
-                absent_reason = (
-                    "producer_missing_ref"
-                    if str(evt.get("client_message_id") or "").strip()
-                    and not evt.get("origin_suppressed")
-                    else "mid_task_no_origin"
-                )
-                bind_task_to_project(
-                    _pool().DRIVE_ROOT,
-                    tid,
-                    pid,
-                    (project or {}).get("chat_id"),
-                    origin=_origin_from_mapping(evt, absent=absent_reason),
-                )
-            except Exception as exc:
-                _report_binding_failure(tid, pid, exc, path="promote_chat_to_task")
-                return _pool()._reject_promoted_after_attachment_stage({
-                    "status": "needs_manual_target",
-                    "reason": "project_binding_failed",
-                    "task_id": tid,
-                }, attachment_manifest)
-            # The promoted task runs in the PROJECT thread: route its live card +
-            # owner mailbox to the project's chat_id (not the main chat it was
-            # promoted from) so follow-ups steer to it via
-            # _route_project_chat_to_running_task and its progress is visible in
-            # the project panel.
-            try:
-                proj_chat = int((project or {}).get("chat_id") or 0)
-            except (TypeError, ValueError):
-                proj_chat = 0
-            if proj_chat:
-                task["chat_id"] = proj_chat
-                # The agent just created/bound this project server-side (no client
-                # round-trip, unlike the UI "Turn into project" flow). Tell the
-                # frontend so it refreshes projectChatIds NOW — otherwise this new
-                # project's live frames render in the main chat until the periodic
-                # /api/state poll catches up (≤20s) and isMyThread misclassifies them.
-                try:
-                    from supervisor.message_bus import get_bridge
-
-                    get_bridge().broadcast({"type": "projects_changed", "project_id": pid, "chat_id": proj_chat})
-                except Exception:
-                    log.debug("promote: projects_changed broadcast failed for %s", pid, exc_info=True)
-            if evt.get("_source_created") and not (project or {}).get("created"):
-                # The source-resolution half of THIS promote registered the
-                # project off-loop (_prepare_promote_source_off_loop) — same
-                # agent-initiated creation, so the announce gate honors it.
-                project = {**(project or {}), "created": True}
-            _pool()._announce_created_project(project, tid, task=task)
-        except Exception:
-            log.warning("promote: project registration failed for %s", pid, exc_info=True)
-            return _pool()._reject_promoted_after_attachment_stage({
-                "status": "needs_manual_target",
-                "reason": "project_registration_failed",
-                "task_id": tid,
-            }, attachment_manifest)
+    with origin_claim_lock():
+        if implicit_scope:
+            # Re-resolved under the SAME lock that holds the bind below (an RLock, so
+            # the helper's own acquire is free). A sibling card of this owner message
+            # may have created its Project since this handler started; reading the
+            # origin once, a hundred lines before the bind, is what let the promoted
+            # root arrive in Main as a second convertible unit for one message.
+            pid = evt["project_id"] = _promote_project_scope(evt)
+        rejection = _admit_project_scope(evt, task, tid, pid, attachment_manifest)
+    if rejection is not None:
+        return rejection
+    # The answer the task was actually admitted with, so the promote's own receipt
+    # names the room the binding names.
+    effective_pid = pid
     # Workspace admission (v6.58.0 SSOT + the Q10=A auto-provision) lives in one
     # helper so this entry point stays readable and under the method gate.
     workspace_outcome = _admit_promoted_workspace(evt, ctx, task, pid=pid, tid=tid)
@@ -702,73 +771,85 @@ def ensure_project_scope(evt: dict, ctx: Any) -> None:
         from ouroboros.projects_registry import (
             bind_task_to_project,
             create_project,
+            origin_claim_lock,
+            project_id_for_origin,
             project_id_for_task,
             touch_project,
             update_project,
         )
 
-        # The durable binding is the AUTHORITY, read BEFORE any side effect (owner
-        # decision B4=A). create_project runs before bind_task_to_project here, so a
-        # task already bound elsewhere used to mint a second project, mark the lease,
-        # broadcast it and announce it in chat before the immutable bind refused.
-        # An UNREADABLE store is disclosed once and treated as "no binding": the work
-        # continues as it did before this read existed.
-        try:
-            bound = str(project_id_for_task(_pool().DRIVE_ROOT, tid, strict=True) or "")
-        except Exception:
-            bound = ""
-            log.warning("project_binding_unreadable: ensure_project_scope for task %s continues "
-                        "as unbound", tid, exc_info=True)
-        if bound and bound != pid:
-            # Bound elsewhere: the request is a RENAME of the project this task already
-            # belongs to, never a second project. Nothing else happens - no create, no
-            # lease mark, no broadcast, no announcement.
-            if name:
-                try:
-                    from ouroboros.projects_registry import get_project
-
-                    row = get_project(_pool().DRIVE_ROOT, bound) or {}
-                    if str(row.get("name") or "") != name:
-                        update_project(_pool().DRIVE_ROOT, bound, name=name)
-                except Exception:
-                    log.warning("ensure_project_scope: rename of %s to %r failed", bound, name, exc_info=True)
-            _report_binding_failure(
-                tid, pid,
-                ValueError(f"task is already bound to project {bound!r}; it stays there"),
-                path="ensure_project_scope", reason="project_scope_conflict",
-            )
-            return
-
-        project = create_project(_pool().DRIVE_ROOT, pid, name=name, origin="ensure_project_scope")
-        touch_project(_pool().DRIVE_ROOT, pid)
-        try:
-            proj_chat = int((project or {}).get("chat_id") or 0)
-        except (TypeError, ValueError):
-            proj_chat = 0
+        # The task's ingress-captured origin, resolved BEFORE the authority read (it
+        # answers both questions): event metadata, then the live RUNNING task dict
+        # (queued tasks carry no origin in ctx.task_metadata, and this also covers
+        # forked/workspace roots whose running record lives on a CHILD drive), then
+        # the durable task record on the canonical drive — the mid-run "make this a
+        # project named X" path must keep the start message.
         origin = _origin_from_mapping(evt, absent="mid_task_no_origin")
         if "absent" in origin:
-            # Queued tasks carry no origin in ctx.task_metadata — the live
-            # RUNNING task dict does (and covers forked/workspace roots whose
-            # running record lives on a CHILD drive, scope-review r2 advisory).
             running = getattr(ctx, "RUNNING", None)
-            row = running.get(tid) if isinstance(running, dict) else None
-            task_row = row.get("task") if isinstance(row, dict) else None
+            running_row = running.get(tid) if isinstance(running, dict) else None
+            task_row = running_row.get("task") if isinstance(running_row, dict) else None
             candidate = _origin_from_mapping(task_row, absent="mid_task_no_origin")
             if "ref" in candidate and "text" in candidate:
                 origin = candidate
         if "absent" in origin:
-            # Last resort: the durable task record on the canonical drive
-            # (scope-review r1 critical: the mid-run "make this a project
-            # named X" path must keep the start message).
             origin = _origin_from_task_record(tid) or origin
-        try:
-            bind_task_to_project(_pool().DRIVE_ROOT, tid, pid, proj_chat or None, origin=origin)
-        except Exception as exc:
-            # A refused bind leaves the task where it was: stop before the lease
-            # mark, the broadcast and the announcement (the promote path already
-            # rejects this way), instead of publishing a project the task is not in.
-            _report_binding_failure(tid, pid, exc, path="ensure_project_scope")
-            return
+        # The claim lock is the one the UI conversion and the promote handler hold,
+        # so a card of the SAME owner message cannot claim a project between this
+        # read and this bind.
+        with origin_claim_lock():
+            # This task's EXACT binding is the AUTHORITY, read BEFORE any side effect
+            # (owner decision B4=A). create_project runs before bind_task_to_project here,
+            # so a task already bound elsewhere used to mint a second project, mark the
+            # lease, broadcast it and announce it in chat before the immutable bind
+            # refused. An UNREADABLE store is disclosed once and treated as "no binding":
+            # the work continues as it did before this read existed.
+            try:
+                bound = str(project_id_for_task(_pool().DRIVE_ROOT, tid, strict=True) or "")
+                # The project the owner MESSAGE already has answers for a SIBLING task id
+                # of the same message — but only when this act does not name a different
+                # room: an explicit name/id is the model's own choice (P13) and forks.
+                adopted = "" if bound else str(
+                    project_id_for_origin(_pool().DRIVE_ROOT, origin.get("ref"), strict=True) or ""
+                )
+            except Exception:
+                bound, adopted = "", ""
+                log.warning("project_binding_unreadable: ensure_project_scope for task %s continues "
+                            "as unbound", tid, exc_info=True)
+            if bound and bound != pid:
+                # Bound elsewhere: the request is a RENAME of the project this task already
+                # belongs to, never a second project. Nothing else happens - no create, no
+                # lease mark, no broadcast, no announcement.
+                if name:
+                    try:
+                        from ouroboros.projects_registry import get_project
+
+                        row = get_project(_pool().DRIVE_ROOT, bound) or {}
+                        if str(row.get("name") or "") != name:
+                            update_project(_pool().DRIVE_ROOT, bound, name=name)
+                    except Exception:
+                        log.warning("ensure_project_scope: rename of %s to %r failed", bound, name, exc_info=True)
+                _report_binding_failure(
+                    tid, pid,
+                    ValueError(f"task is already bound to project {bound!r}; it stays there"),
+                    path="ensure_project_scope", reason="project_scope_conflict",
+                )
+                return
+
+            project = create_project(_pool().DRIVE_ROOT, pid, name=name, origin="ensure_project_scope")
+            touch_project(_pool().DRIVE_ROOT, pid)
+            try:
+                proj_chat = int((project or {}).get("chat_id") or 0)
+            except (TypeError, ValueError):
+                proj_chat = 0
+            try:
+                bind_task_to_project(_pool().DRIVE_ROOT, tid, pid, proj_chat or None, origin=origin)
+            except Exception as exc:
+                # A refused bind leaves the task where it was: stop before the lease
+                # mark, the broadcast and the announcement (the promote path already
+                # rejects this way), instead of publishing a project the task is not in.
+                _report_binding_failure(tid, pid, exc, path="ensure_project_scope")
+                return
         # Make the one-writer-per-project lease recognize THIS already-running task
         # as a lane occupant: project_lease reads task["project_id"] from the
         # supervisor RUNNING map, which (unlike the promote path that sets it at
@@ -776,6 +857,9 @@ def ensure_project_scope(evt: dict, ctx: Any) -> None:
         # that self-scopes to project X would not hold X's lane and a concurrent
         # X task could be assigned and write the same project. SSOT helper shared
         # with the UI api_project_from_task convert path so the two cannot drift.
+        # A task ADOPTING the project its owner message already has owns the binding
+        # it just wrote, so its lane FOLLOWS that truth (authority="binding") even
+        # when the row still carries a derived id from a bare-workspace promote.
         try:
             from ouroboros.project_lease import mark_task_project
 
@@ -783,7 +867,8 @@ def ensure_project_scope(evt: dict, ctx: Any) -> None:
             pending = getattr(ctx, "PENDING", None)
             if isinstance(running, dict):
                 with _queue_lock:
-                    mark_task_project(running, pending, tid, pid)
+                    mark_task_project(running, pending, tid, pid,
+                                      authority="binding" if adopted == pid else "")
         except Exception:
             log.debug("ensure_project_scope: RUNNING project_id update failed for %s", tid, exc_info=True)
         if proj_chat:
