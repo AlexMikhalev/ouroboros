@@ -440,6 +440,13 @@ def test_project_id_for_origin_resolves_a_legacy_double_binding_and_discloses_it
     assert {row["project_id"] for row in rows[-1]["candidates"]} == {"first-room", "second-room"}
     assert rows[-1]["origin"] == {"chat_id": 1, "client_message_id": "msg-1"}
 
+    # Legacy state is re-read on every promote, admission and convert click, and a
+    # fact that has not changed is not news: the same choice discloses once.
+    assert project_id_for_origin(tmp_path, ref, strict=True) == "second-room"
+    assert len([json.loads(line) for line in
+                (tmp_path / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()]) == len(rows)
+
     # The earlier binding's task is still running: the work is there, so it wins.
     import supervisor.workers as workers
 

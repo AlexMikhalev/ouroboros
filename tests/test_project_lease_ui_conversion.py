@@ -355,6 +355,9 @@ def test_ui_conversion_adopts_a_binding_that_lands_during_the_naming_await(tmp_p
     assert [row["project_id"] for row in broadcasts] == ["token-observatory"]
     assert workers.RUNNING["trace"]["task"]["project_id"] == "token-observatory"
     assert (project_binding_for_task(tmp_path, "trace") or {}).get("project_id") == "token-observatory"
+    # The coined name was discarded with the create branch, so nothing recorded a
+    # naming decision for a project that was never made.
+    assert _events(tmp_path, "project_named") == []
 
 
 def test_ui_conversion_restores_the_lane_when_the_durable_bind_is_refused(tmp_path, monkeypatch):
@@ -527,6 +530,9 @@ def test_converting_the_turn_claims_the_root_it_promoted(tmp_path, monkeypatch, 
     [row] = _events(tmp_path, "project_origin_siblings_bound")
     assert row["task_id"] == "t-turn" and row["project_id"] == pid
     assert row["bound"] == ["t-root"] and row["skipped"] == []
+    # A project that really WAS created still records how it was named.
+    [named] = _events(tmp_path, "project_named")
+    assert named["task_id"] == "t-turn" and named["reason"] == "explicit_task_title"
 
     # The root's card may still be showing its stale button (a mid-air /api/state
     # refresh, the Telegram mini app, a phone). Clicking it ADOPTS the project the
@@ -672,6 +678,49 @@ def test_a_sibling_that_binds_during_the_naming_await_is_adopted_not_duplicated(
     assert resp.status_code == 200 and body["adopted"] is True
     assert body["project"]["id"] == "sibling-room"
     assert [p["id"] for p in list_projects(tmp_path)] == ["sibling-room"]
+
+
+def test_a_conversion_whose_origin_lands_late_still_adopts_the_message_project(
+    tmp_path, monkeypatch, _direct_turns,
+):
+    """The ingress record can persist only AFTER the click starts - the window the
+    convert path already documents for the naming await. Resolving the origin once,
+    before the authority reads, then answering "this work has no project" is exactly
+    how the second Project got minted while a sibling of the SAME message was already
+    bound to the first. The re-read runs inside the claim, ahead of both reads."""
+    import ouroboros.gateway.projects as gateway
+    from ouroboros.projects_registry import (
+        bind_task_to_project,
+        create_project,
+        list_projects,
+        project_binding_for_task,
+    )
+
+    (tmp_path / "logs").mkdir()
+    ref = _origin_ref()
+    _seed_origin_task(tmp_path, "t-turn", ref)
+    room = create_project(tmp_path, "the-work", name="The Work")
+    bind_task_to_project(tmp_path, "t-root", "the-work", room["chat_id"],
+                         origin={"ref": ref, "text": _OWNER_TEXT})
+    _live_queue(monkeypatch, tmp_path, {}, [])
+    real_origin, calls = gateway._owner_task_origin, []
+
+    def _lands_late(drive_root, task_id):
+        calls.append(task_id)
+        if len(calls) == 1:
+            return {"absent": "post_hoc_unresolved"}
+        return real_origin(drive_root, task_id)
+
+    monkeypatch.setattr(gateway, "_owner_task_origin", _lands_late)
+
+    resp = _convert(tmp_path, "t-turn")
+    body = json.loads(resp.body.decode("utf-8"))
+
+    assert resp.status_code == 200 and body["adopted"] is True
+    assert body["project"]["id"] == "the-work"
+    assert [p["id"] for p in list_projects(tmp_path)] == ["the-work"]
+    assert (project_binding_for_task(tmp_path, "t-turn") or {}).get("project_id") == "the-work"
+    assert _events(tmp_path, "project_named") == []
 
 
 def test_two_sibling_cards_converted_at_once_still_yield_one_project(

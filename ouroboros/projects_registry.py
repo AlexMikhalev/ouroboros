@@ -481,6 +481,8 @@ def project_id_for_origin(drive_root: Any, origin_ref: Any, *, strict: bool = Fa
         and str(row.get("project_id") or "").strip()
         and origin_key(row.get("source_ref")) == key
     )
+    if not candidates:
+        return ""  # the common case: no binding names this message, so no registry read
     active = {str(project.get("id") or "") for project in list_projects(drive_root)}
     candidates = [row for row in candidates if row[2] in active]
     if not candidates:
@@ -495,9 +497,23 @@ def project_id_for_origin(drive_root: Any, origin_ref: Any, *, strict: bool = Fa
     return chosen
 
 
+_DISCLOSED_AMBIGUOUS_ORIGINS: set = set()
+
+
 def _emit_origin_ambiguous(drive_root: Any, key: tuple, candidates: list, chosen: str) -> None:
     """Durable disclosure (P1) that one owner message names several projects, and
-    which one the adopt chose. Best-effort; never raises."""
+    which one the adopt chose. Best-effort; never raises.
+
+    ONCE per (store, origin, choice) per process: legacy state is read on every
+    promote tool call, every promote admission and every convert click, and a fact
+    that has not changed is not news — a row per lookup would bury the disclosure in
+    its own repetitions. A restart discloses once more, and a CHANGED choice (the
+    bound task went live, or a candidate's project was deleted) is a new fact and is
+    always written."""
+    disclosure = (str(drive_root), key, chosen)
+    if disclosure in _DISCLOSED_AMBIGUOUS_ORIGINS:
+        return
+    _DISCLOSED_AMBIGUOUS_ORIGINS.add(disclosure)
     try:
         from ouroboros.utils import append_jsonl
 

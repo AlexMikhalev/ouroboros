@@ -101,12 +101,12 @@ def test_ui_two_cards_one_origin_convert_into_one_project(direct_server_with_dat
             assert len(projects) == 1, projects
             first_name = c1.inner_text().strip().splitlines()[0]
 
-            # The sibling card: convert it too (the button may still be rendered until
-            # the next state refresh — the SERVER must adopt, never mint).
+            # The sibling card: its button is still there (this task is completed, so
+            # the sibling claim never bound it), and converting it must ADOPT.
             btn = c2.locator("[data-turn-into-project]")
-            if btn.count():
-                # JS click: a toast from the first conversion can sit over the button.
-                btn.first.evaluate("b => b.click()")
+            assert btn.count() == 1
+            # JS click: a toast from the first conversion can sit over the button.
+            btn.first.evaluate("b => b.click()")
             c2.locator(".chat-live-project-card-btn").first.wait_for(
                 state="visible", timeout=20_000,
             )
@@ -115,6 +115,21 @@ def test_ui_two_cards_one_origin_convert_into_one_project(direct_server_with_dat
             assert len(projects) == 1, [p.get("id") for p in projects]
             second_name = c2.inner_text().strip().splitlines()[0]
             assert first_name == second_name, (first_name, second_name)
+
+            # A card that is already bound can STILL have its button on screen (a phone
+            # that missed the refresh, the Telegram mini app, a second tab). Replay the
+            # exact request the client sends — api_client.js::projectFromTask POSTs
+            # /api/projects/from-task with the default id chat_activity.js derives — and
+            # the server adopts that Project instead of minting one or answering 4xx.
+            replay = page.request.post(f"{url}/api/projects/from-task", data={
+                "task_id": "t2promoted", "id": "task-t2promoted",
+                "name": "", "objective_hint": ORIGIN_TEXT,
+            })
+            assert replay.status == 200, replay.text()
+            replayed = replay.json()
+            assert replayed["adopted"] is True, replayed
+            assert replayed["project"]["id"] == projects[0]["id"]
+            assert len(page.request.get(f"{url}/api/projects").json()["projects"]) == 1
 
             bindings = json.loads((data_dir / "state" / "project_task_bindings.json").read_text())["bindings"]
             assert bindings["t1direct"]["project_id"] == bindings["t2promoted"]["project_id"]

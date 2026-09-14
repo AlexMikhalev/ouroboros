@@ -343,6 +343,54 @@ def test_chat_annotation_compaction_keeps_receipts_that_address_no_message(tmp_p
     assert latest_chat_annotations(tmp_path)[receipt_id]["status"] == "needs_manual_target"
 
 
+def test_synthetic_receipt_retention_is_bounded_by_the_newest_cap(tmp_path):
+    """Every steer mints a fresh token, so per-id dedupe bounds nothing: without a
+    cap the synthetic rows accumulate forever, the file stays permanently above the
+    compaction threshold and every append rewrites the whole of it. The newest cap
+    survives, which is all any live `routing_wait` (15 s of polling) can need."""
+    from ouroboros.project_dialogue import (
+        AGENT_RECEIPT_ID_PREFIX, _COMPACT_AT_BYTES, _RETAINED_AGENT_RECEIPTS,
+        append_chat_annotation, latest_chat_annotations,
+    )
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "chat.jsonl").write_text("", encoding="utf-8")
+    annotations = logs / "chat_annotations.jsonl"
+    seeded = 70
+    with annotations.open("w", encoding="utf-8") as stream:
+        for index in range(seeded):
+            stream.write(json.dumps({
+                "ts": f"2026-09-14T12:{index // 60:02d}:{index % 60:02d}Z",
+                "type": "chat_annotation",
+                "client_message_id": f"{AGENT_RECEIPT_ID_PREFIX}token{index:04d}",
+                "action": "steer_task", "target": "t-target", "status": "delivered",
+                "routing_token": f"token{index:04d}", "detail": "x" * 200,
+            }) + "\n")
+    assert annotations.stat().st_size < _COMPACT_AT_BYTES  # no compaction yet
+    assert len(latest_chat_annotations(tmp_path)) == seeded
+
+    # Cross the threshold with one oversized stale row, then append the newest receipt.
+    with annotations.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({
+            "ts": "2026-07-13T00:00:00Z", "type": "chat_annotation",
+            "client_message_id": "expired", "action": "routed",
+            "target": "x" * _COMPACT_AT_BYTES, "status": "delivered",
+        }) + "\n")
+    newest = f"{AGENT_RECEIPT_ID_PREFIX}tokennewest"
+    assert append_chat_annotation(
+        tmp_path, newest, action="steer_task", target="t-target",
+        status="delivered", routing_token="tokennewest",
+    )
+
+    latest = latest_chat_annotations(tmp_path)
+    assert annotations.stat().st_size < _COMPACT_AT_BYTES  # it really did compact
+    synthetic = [mid for mid in latest if mid.startswith(AGENT_RECEIPT_ID_PREFIX)]
+    assert len(synthetic) <= _RETAINED_AGENT_RECEIPTS
+    assert newest in synthetic          # the row its own append had to keep
+    assert "expired" not in latest      # chat retention still drops addressed rows
+
+
 def test_project_sidebar_and_menu_static_contracts():
     from pathlib import Path
 
