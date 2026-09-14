@@ -9,6 +9,7 @@ import pytest
 pytestmark = pytest.mark.serial
 
 STUBS = {
+    "android/Manifest.java": "package android; public final class Manifest { public static final class permission { public static final String ACCESS_BACKGROUND_LOCATION=\"android.permission.ACCESS_BACKGROUND_LOCATION\", ACCESS_COARSE_LOCATION=\"android.permission.ACCESS_COARSE_LOCATION\", ACCESS_FINE_LOCATION=\"android.permission.ACCESS_FINE_LOCATION\"; }}",
     "android/R.java": "package android; public final class R { public static class drawable { public static final int ic_menu_manage=1; }}",
     "android/content/Intent.java": """package android.content; public class Intent {
         private String action; public Intent() {} public Intent(Object c, Class<?> cls) {}
@@ -18,6 +19,8 @@ STUBS = {
     "android/os/Looper.java": "package android.os; public class Looper {}",
     "android/os/Handler.java": "package android.os; public class Handler { public Handler(Looper l) {} }",
     "android/os/Build.java": "package android.os; public class Build { public static class VERSION { public static int SDK_INT=36; }}",
+    "android/content/pm/PackageManager.java": "package android.content.pm; public class PackageManager { public static final int PERMISSION_GRANTED=0; }",
+    "android/content/pm/ServiceInfo.java": "package android.content.pm; public class ServiceInfo { public static final int FOREGROUND_SERVICE_TYPE_LOCATION=8, FOREGROUND_SERVICE_TYPE_SPECIAL_USE=1073741824; }",
     "android/os/SystemClock.java": """package android.os; public class SystemClock {
         private static long now; public static long elapsedRealtime() { now+=120000; return now; }}""",
     "android/net/Network.java": "package android.net; public class Network {}",
@@ -56,12 +59,15 @@ STUBS = {
     "android/app/Service.java": """package android.app; public class Service {
         public static final int START_STICKY=1, START_NOT_STICKY=2, STOP_FOREGROUND_REMOVE=1, STOP_FOREGROUND_DETACH=2;
         public final NotificationManager notifications=new NotificationManager();
+        public final java.util.Set<String> grants=new java.util.HashSet<>(); public int foregroundType;
+        public int checkSelfPermission(String permission) { return grants.contains(permission) ? 0 : -1; }
         public <T> T getSystemService(Class<T> cls) { return cls.cast(cls==NotificationManager.class
             ? notifications : new android.net.ConnectivityManager()); }
         public android.os.Looper getMainLooper() { return new android.os.Looper(); }
         public void onCreate() {} public void onDestroy() {}
         public int onStartCommand(android.content.Intent i,int flags,int id) { return 0; }
-        public void startForeground(int id,Notification n) { notifications.messages.add(n.text); }
+        public void startForeground(int id,Notification n) { foregroundType=0; notifications.messages.add(n.text); }
+        public void startForeground(int id,Notification n,int type) { foregroundType=type; notifications.messages.add(n.text); }
         public void stopForeground(int flags) {} public void stopSelf(int id) {}
         public android.os.IBinder onBind(android.content.Intent i) { return null; }}""",
     "org/json/JSONObject.java": """package org.json; public class JSONObject {
@@ -153,6 +159,16 @@ public class LifecycleTest {
             } else if (scenario.equals("sticky_status")) {
                 send(service,null,1); work.drain();
                 require(RuntimeClient.calls.stream().noneMatch(c->c.startsWith("start:")),"sticky restoration replayed Start");
+            } else if (scenario.equals("foreground_special_only") || scenario.equals("foreground_location")) {
+                if (scenario.equals("foreground_location")) {
+                    service.grants.add("android.permission.ACCESS_BACKGROUND_LOCATION");
+                    service.grants.add("android.permission.ACCESS_COARSE_LOCATION");
+                }
+                send(service,"status",1); work.drain();
+                int special=android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE;
+                require((service.foregroundType & special) != 0,"special-use foreground type missing");
+                require(((service.foregroundType & android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION) != 0)
+                    == scenario.equals("foreground_location"),"location foreground type did not follow background grant");
             } else {
                 String[] actions=scenario.split("_"); send(service,actions[0],1); send(service,actions[1],2);
                 urgent.drain(); work.drain();
@@ -211,4 +227,9 @@ def test_service_orders_owner_and_automatic_intents(lifecycle_java, scenario):
 @pytest.mark.parametrize("scenario", ["starting_pending", "health_failure", "control_failure",
                                     "panic_during_start_observation"])
 def test_start_observation_is_distinct_from_action_failure(lifecycle_java, scenario):
+    lifecycle_java(scenario)
+
+
+@pytest.mark.parametrize("scenario", ["foreground_special_only", "foreground_location"])
+def test_foreground_service_type_discloses_background_location_grant(lifecycle_java, scenario):
     lifecycle_java(scenario)

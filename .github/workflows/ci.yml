@@ -828,7 +828,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        api-level: [26, 30, 33, 36]
+        api-level: [26, 29, 30, 33, 36]
     permissions:
       contents: read
     steps:
@@ -842,6 +842,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-ouroboros-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
           sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" \
             "emulator" "system-images;android-${{ matrix.api-level }};default;x86_64"
           echo "no" | avdmanager create avd --force --name "obo-api-${{ matrix.api-level }}" \
@@ -858,6 +862,11 @@ jobs:
             --out "$ROOT/build" --keystore "$ROOT/test.keystore" --key-alias ouroboros-host \
             --keystore-pass-file "$ROOT/password" --create-development-key \
             --version-code "$GITHUB_RUN_NUMBER" --version-name "$(cat VERSION)"
+          python android/host/build.py --sdk "$ANDROID_HOME" --java-home "$JAVA_HOME" \
+            --out "$ROOT/device" --project android/tests/device \
+            --keystore "$ROOT/test.keystore" --key-alias ouroboros-host \
+            --keystore-pass-file "$ROOT/password" \
+            --version-code "$GITHUB_RUN_NUMBER" --version-name "$(cat VERSION)"
       - name: Boot emulator and smoke install/start
         uses: reactivecircus/android-emulator-runner@e93c997dcab69054e999e3924af3d21c4a736e13 # v2.9.0
         with:
@@ -867,10 +876,24 @@ jobs:
           emulator-options: -no-window -no-audio -no-boot-anim
           disable-animations: true
           script: |
+            set -euo pipefail
             adb install -r "$RUNNER_TEMP/android-smoke/build/Ouroboros.apk"
+            adb install -r "$RUNNER_TEMP/android-smoke/device/app.apk"
             adb shell am start -n ai.ouroboros.android/.MainActivity
+            sleep 2
             adb shell pm path ai.ouroboros.android
             adb shell dumpsys package ai.ouroboros.android | grep -E 'versionName|versionCode'
+            adb shell am force-stop ai.ouroboros.android
+            adb logcat -c
+            set +e
+            timeout 60s adb shell am instrument -w ai.ouroboros.android.device.smoke/ai.ouroboros.android.device.DeviceSdkSmoke >"$RUNNER_TEMP/android-smoke/instrument.txt" 2>&1
+            instrument_status=$?
+            set -e
+            cat "$RUNNER_TEMP/android-smoke/instrument.txt"
+            adb logcat -d -s OuroborosDeviceSdkSmoke:I '*:S' | tee "$RUNNER_TEMP/android-smoke/device-log.txt"
+            grep -q 'OBO_DEVICE_SDK_SMOKE=PASS' "$RUNNER_TEMP/android-smoke/instrument.txt" \
+              || grep -q 'OBO_DEVICE_SDK_SMOKE=PASS' "$RUNNER_TEMP/android-smoke/device-log.txt"
+            test "$instrument_status" -eq 0
 
   # The publisher key is used only on the trusted tag path. Root/boot/device
   # acceptance is separate from these exact-byte artifact checks.

@@ -5,6 +5,7 @@ BASELINE_SOURCE_SHA = "77d6827b7a72a632899bb6cc64a7e759aabcfaa6"
 GIANT_PATHS = (
     "devtools/benchmarks/osworld/run_cu_bridge_agent.py",
     "devtools/benchmarks/osworld/run_step_agent.py",
+    "ouroboros/loop_acceptance_review.py",
     "ouroboros/tools/git.py",
     "server.py",
     "skills/unix_computer_use/plugin.py",
@@ -99,6 +100,7 @@ BAND_BASELINE_PATHS = (
 )
 
 BAND_PATHS = {
+    "ouroboros/tools/delegate.py": "D07 finisher DEL1 split brought the nanny-verb monolith DOWN from the 1600 hard cap into the band (1600->1263); terminal-evidence family extracted to tools/delegate_terminal_evidence.py, shrink-only direction",
     "devtools/benchmarks/cybergym/cybergym_adapter.py": "Stateful campaign layer after the protocol split (ratchet heal); shrink next touch.",
     "devtools/benchmarks/cybergym/cybergym_docker.py": "Docker runtime layer of the executor split: one container-machinery seam.",
     "devtools/benchmarks/cybergym/cybergym_executor.py": "Executor assembly after docker/lifecycle/wire splits (ratchet heal); shrink next touch.",
@@ -155,7 +157,6 @@ BAND_PATHS = {
     "ouroboros/tools/browser.py": None,
     "ouroboros/tools/commit_gate.py": "Grew INTO the band by the review-wave fix binding the actor reference (delivery class) into the commit review contract fingerprint \u2014 same-module contract identity, splitting it would separate the fingerprint from its gate.",
     "ouroboros/tools/core.py": "D05 ledger split (rows 311-349): read/list and owner-chat delivery spans moved to core_file_tools/core_artifacts; facade re-enters the band from above (2283 -> 1373) and shrinks further when the residual catalog split lands",
-    "ouroboros/tools/delegate.py": "D07 finisher DEL1 split brought the nanny-verb monolith DOWN from the 1600 hard cap into the band (1600->1263); terminal-evidence family extracted to tools/delegate_terminal_evidence.py, shrink-only direction",
     "ouroboros/tools/plan_review_runtime.py": "Entered the band from 986 lines: timeout custody synthesis joined the existing plan-review runtime owner while preserving profile-continuity disclosures and typed health facts during target integration.",
     "ouroboros/tools/registry_core.py": "F3.1 typed-organ re-split (D04 rows 156/167/170/171/174/175): the tip ToolRegistry class body re-homed whole from the protected registry facade; the guard/dispatch surface already left for its sibling leaves, and the class shrinks further only with the ABI-8 post-release handler conversion.",
     "ouroboros/tools/review.py": "D06 F2.3a re-entry by extraction: the multi-model fan-out moved to review_multi_model.py (1550->1269); the remaining single-owner review cycle machinery lands in the 1001-1500 band with headroom",
@@ -225,9 +226,9 @@ BAND_PATHS = {
     "web/modules/api_types.js": "The shared browser contract module now includes issue 265 publication-preflight types alongside the target settings and subagent contracts.",
     "web/modules/chat_activity.js": "Existing task activity renderer consumes the shared quota/auth wait state; no parallel task card or lifecycle.",
     "web/modules/harness_accounts.js": None,
+    "web/modules/subagents_settings.js": "The shared Available subagents editor now carries access choice and grouped source selection; keep this UI seam together while the next extraction shrinks it.",
+    "web/tests/reviewer_slots.test.js": "The reviewer-slot tests keep source selection and access serialization coverage together with their UI contract.",
     "web/modules/log_events.js": None,
-    "web/modules/onboarding_wizard.js": "Multi-surface onboarding keeps its step projection and completion payload together.",
-    "web/modules/reviewer_slots.js": "Owner-approved 5A editor: per-row Direct model / Configured subagent source picker with read-only derived disclosure replaces the legacy Claude-SDK advisory input in the same module that owns reviewer-row editing.",
     "web/modules/settings.js": None,
     "web/modules/skills.js": "One installed-skill page controller owns independently settling primary/optional reads and current-generation menu, identity and badge updates; domain lifecycle, cards, hub truth and shared interactions remain separate owners.",
     "web/tests/chat_instance_dom.test.js": "Entered the band from 1000 lines with the alias-free subagent cost pin (stage-2 fix wave): that regression reproduces only through the real createChatInstance card path, and this file owns the DOM harness that drives it; split when the next createChatInstance face lands.",
@@ -245,5 +246,5 @@ BYTE_BASELINE_DEBT = {
 
 BYTE_DEBT = {
     "tests/test_devtools_benchmarks.py": 327840,
-    "web/modules/chat.js": 203362,
+    "web/modules/chat.js": 204824,
 }

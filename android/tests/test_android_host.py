@@ -38,6 +38,11 @@ class AndroidHostTest(unittest.TestCase):
         self.assertIn("android.intent.action.LOCKED_BOOT_COMPLETED", {
             row.get(A + "name") for row in receiver.findall("intent-filter/action")
         })
+        wallpaper = services[".OuroborosWallpaperService"]
+        metadata = wallpaper.find("meta-data")
+        self.assertEqual(metadata.get(A + "name"), "android.service.wallpaper")
+        self.assertEqual(metadata.get(A + "resource"), "@xml/wallpaper_service")
+        self.assertEqual(ET.parse(HOST / "res/xml/wallpaper_service.xml").getroot().tag, "wallpaper")
 
     def test_location_bridge_has_state_and_bounded_current_fix_methods(self):
         source = (HOST / "src/ai/ouroboros/android/AndroidBridge.java").read_text()
@@ -45,6 +50,8 @@ class AndroidHostTest(unittest.TestCase):
         self.assertIn('"location.get"', source)
         self.assertIn("getCurrentLocation", source)
         self.assertIn("no_fix_within_timeout", source)
+        self.assertIn("provider_returned_null", source)
+        self.assertIn("permission_background", source)
 
     def test_cleartext_is_loopback_only(self):
         manifest = ET.parse(HOST / "AndroidManifest.xml").getroot()
@@ -85,11 +92,28 @@ class AndroidHostTest(unittest.TestCase):
         self.assertIn("pending_user_action", callback)
         self.assertNotIn("startActivity", callback)
 
+    def test_device_sdk_smoke_harness_has_target_and_explicit_pass_marker(self):
+        device = Path(__file__).resolve().parents[1] / "tests" / "device"
+        manifest = ET.parse(device / "AndroidManifest.xml").getroot()
+        instrumentation = manifest.find("instrumentation")
+        self.assertIsNotNone(instrumentation)
+        self.assertEqual(instrumentation.get(A + "targetPackage"), "ai.ouroboros.android")
+        self.assertEqual(instrumentation.get(A + "name"),
+                         "ai.ouroboros.android.device.DeviceSdkSmoke")
+        source = (device / "src/ai/ouroboros/android/device/DeviceSdkSmoke.java").read_text()
+        self.assertIn("OBO_DEVICE_SDK_SMOKE=PASS", source)
+        self.assertIn("packages.sessions", source)
+        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
+        self.assertIn("api-level: [26, 29, 30, 33, 36]", workflow)
+        self.assertIn("OBO_DEVICE_SDK_SMOKE=PASS", workflow)
+
     def test_alarm_and_initial_data_capabilities_are_declared(self):
         manifest = ET.parse(HOST / "AndroidManifest.xml").getroot()
         permissions = {row.get(A + "name"): row for row in manifest.findall("uses-permission")}
         self.assertIn("com.android.alarm.permission.SET_ALARM", permissions)
         self.assertIn("android.permission.ACCESS_NETWORK_STATE", permissions)
+        self.assertIn("android.permission.ACCESS_BACKGROUND_LOCATION", permissions)
+        self.assertIn("android.permission.FOREGROUND_SERVICE_LOCATION", permissions)
         self.assertEqual(permissions["android.permission.READ_EXTERNAL_STORAGE"].get(A + "maxSdkVersion"), "32")
         for permission in ("READ_CONTACTS", "WRITE_CONTACTS", "READ_CALENDAR", "WRITE_CALENDAR",
                            "CAMERA", "RECORD_AUDIO", "ACCESS_COARSE_LOCATION", "ACCESS_FINE_LOCATION"):

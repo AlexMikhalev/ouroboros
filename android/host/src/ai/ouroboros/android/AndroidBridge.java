@@ -230,6 +230,7 @@ final class AndroidBridge implements Closeable {
         PackageInstaller.SessionParams params = new PackageInstaller.SessionParams(
                 PackageInstaller.SessionParams.MODE_FULL_INSTALL);
         params.setInstallReason(PackageManager.INSTALL_REASON_USER);
+        params.setSize(digest.size);
         int sessionId = installer.createSession(params);
         PackageInstaller.Session session = installer.openSession(sessionId);
         boolean commitSubmitted = false;
@@ -295,8 +296,9 @@ final class AndroidBridge implements Closeable {
                 .put("package", nullable(info.getAppPackageName())).put("label", nullable(info.getAppLabel()))
                 .put("active", info.isActive()).put("sealed", info.isSealed())
                 .put("staged", Build.VERSION.SDK_INT >= 29 && info.isStaged())
-                .put("progress", info.getProgress()).put("size_bytes", info.getSize());
-        if (Build.VERSION.SDK_INT >= 29) result.put("created_ms", info.getCreatedMillis());
+                .put("progress", info.getProgress());
+        result.put("size_bytes", Build.VERSION.SDK_INT >= 27 ? info.getSize() : JSONObject.NULL);
+        if (Build.VERSION.SDK_INT >= 30) result.put("created_ms", info.getCreatedMillis());
         return result;
     }
 
@@ -330,6 +332,7 @@ final class AndroidBridge implements Closeable {
         return new JSONObject().put("protocol", 1).put("sdk", Build.VERSION.SDK_INT)
                 .put("package", context.getPackageName()).put("uid", android.os.Process.myUid())
                 .put("methods", new JSONArray(Arrays.asList(METHODS))).put("permissions", permissions(own, pm))
+                .put("can_request_package_installs", pm.canRequestPackageInstalls())
                 .put("typed_values", "null,string,boolean,int,long,float,double,uri,bytes,string[],int[],long[],bundle")
                 .put("provider_authority", "host_app_uid; root caller does not bypass Android provider permissions")
                 .put("root_commands", "android-exec").put("source_total_known", false)
@@ -351,6 +354,8 @@ final class AndroidBridge implements Closeable {
                         android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED)
                 .put("permission_coarse", context.checkSelfPermission(
                         android.Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED)
+                .put("permission_background", Build.VERSION.SDK_INT < 29 || context.checkSelfPermission(
+                        android.Manifest.permission.ACCESS_BACKGROUND_LOCATION) == PackageManager.PERMISSION_GRANTED)
                 .put("providers", providers).put("source_total_known", false);
     }
 
@@ -382,9 +387,16 @@ final class AndroidBridge implements Closeable {
         manager.getCurrentLocation(provider, cancellation, calls, location -> {
             result.set(location); done.countDown();
         });
-        boolean completed = done.await(timeoutMs, TimeUnit.MILLISECONDS);
-        if (!completed) cancellation.cancel();
-        return locationResult(result.get(), completed, provider);
+        boolean completed;
+        try { completed = done.await(timeoutMs, TimeUnit.MILLISECONDS); }
+        finally { cancellation.cancel(); }
+        Location location = result.get();
+        if (location == null) return new JSONObject().put("provider", provider)
+                .put("available", false).put("fresh", false)
+                .put("reason", completed ? "provider_returned_null" : "no_fix_within_timeout")
+                .put("permission_background", Build.VERSION.SDK_INT < 29 || context.checkSelfPermission(
+                        android.Manifest.permission.ACCESS_BACKGROUND_LOCATION) == PackageManager.PERMISSION_GRANTED);
+        return locationResult(location, true, provider);
     }
 
     private static JSONObject locationResult(Location location, boolean fresh, String provider) throws Exception {
@@ -393,7 +405,9 @@ final class AndroidBridge implements Closeable {
         if (location == null) return result.put("reason", fresh ? "no_fix_within_timeout" : "no_last_known_fix");
         return result.put("latitude", location.getLatitude()).put("longitude", location.getLongitude())
                 .put("accuracy_m", location.hasAccuracy() ? location.getAccuracy() : JSONObject.NULL)
-                .put("time_ms", location.getTime());
+                .put("time_ms", location.getTime()).put("mock", location.isFromMockProvider())
+                .put("age_ms", Math.max(0L, (android.os.SystemClock.elapsedRealtimeNanos()
+                        - location.getElapsedRealtimeNanos()) / 1000000L));
     }
 
     private static JSONArray permissions(PackageInfo info, PackageManager pm) throws Exception {

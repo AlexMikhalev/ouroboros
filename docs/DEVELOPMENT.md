@@ -3137,8 +3137,17 @@ Keep reusable large downloads in the installer's durable cache.
 `android-test` explicitly collects `android/tests`; ordinary `pytest tests/` does
 not cover that directory. Portable source/transport fixtures and host compilation
 are separate from physical root, boot, permissions, hardware and battery evidence.
+The same-key instrumentation under `android/tests/device` owns a temporary SDK
+bridge and an uncommitted PackageInstaller session. The emulator job executes
+session readback on API 26/29/30/33/36 and accepts its explicit PASS only after
+abandon and bridge cleanup. It requires neither root nor a provisioned Linux
+core; it does not certify the phone bootstrap or owner consent UI.
 Android release source/APK SBOMs describe those shipped bytes; installed dependency
 pins/package inventories describe the provisioned phone. Neither invents the other.
+The trusted tag-only `android-build` job reads `ANDROID_KEYSTORE_BASE64`,
+`ANDROID_KEYSTORE_PASSWORD`, and `ANDROID_KEY_ALIAS` from repository secrets;
+the branch/PR Android jobs use a disposable key and never publish it. A PR is
+therefore source/build evidence, not a publisher-signed release claim.
 
 ## Platform Abstraction Rule
 
@@ -3322,8 +3331,11 @@ and `web/tests/chat_history_integration.test.js`.
 
 The Project work pointer is a navigation component over the existing Chat card
 registry (`project_work_pointer.js`), updated inside the same viewport mutation
-transaction. Preserve its loaded-window coverage disclosure; a represented
-unfinished card is not independent proof of current execution. Its click changes
+transaction. Its label names the card on one line (`projectWorkLabel`: coined
+name, else title, capped; the `.project-work-pointer-label` CSS ellipsizes) and
+never restates the card's full status headline; without a represented root card it is
+hidden, not shown disabled. Preserve its loaded-window coverage disclosure; a
+represented unfinished card is not independent proof of current execution. Its click changes
 only the messages container's scroll position and existing reading intent, never
 message routing. Dispose it with the chat; do not add a second card tree, poller
 or task-state store for this navigation affordance.

@@ -92,7 +92,7 @@ public final class CoreService extends Service {
         // A late automatic check must not cancel a queued owner Start or Panic.
         int request = ("start".equals(action) || "panic".equals(action))
                 ? operation.incrementAndGet() : operation.get();
-        startForeground(1, notification("Проверяю состояние ядра"));
+        startForegroundOwnerNotification();
         if (!"panic".equals(action)) {
             currentNetwork = connectivity.getActiveNetwork();
             updateNetworkDns(currentNetwork == null ? null : connectivity.getLinkProperties(currentNetwork));
@@ -157,6 +157,21 @@ public final class CoreService extends Service {
             }
         });
         return "panic".equals(action) ? START_NOT_STICKY : START_STICKY;
+    }
+
+    private void startForegroundOwnerNotification() {
+        Notification value = notification("Проверяю состояние ядра");
+        if (android.os.Build.VERSION.SDK_INT >= 34) {
+            int type = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE;
+            boolean background = checkSelfPermission(android.Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+                    == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            if (background && (checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION)
+                    == android.content.pm.PackageManager.PERMISSION_GRANTED
+                    || checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION)
+                    == android.content.pm.PackageManager.PERMISSION_GRANTED))
+                type |= android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION;
+            startForeground(1, value, type);
+        } else startForeground(1, value);
     }
 
     @Override public void onDestroy() {

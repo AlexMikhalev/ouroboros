@@ -441,9 +441,6 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
             invocation_id = custody.new_invocation_id()
             root = record_auth["target_root"]
             if is_mutating_delegated_access(authority.access):
-                # C1: the run executes in a private snapshot of the authority target.
-                # Git/payload snapshots are registered before POST; directory copies
-                # belong to the engine, with the stable target kept separate.
                 target_root = record_auth["target_root"]
                 authority_source = record_auth["source"]
                 if authority_source == "skill_payload":
@@ -472,13 +469,9 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
             scope_root = target_root if execution_root or directory_options else root
             (project_id, owned_project_id, project_persistent) = resolve_registration(
                 gateway, scope_root, execution_root, getattr(authority, "access", ""))
-            if directory_options:
-                project_persistent = True
+            project_persistent |= bool(directory_options)
             if authority.access == "full":
                 gateway.ensure_full_access(scope_root)
-            # Assignment plus host-authored instructions identify the invocation;
-            # retries replay the stored body byte-identically.
-
             seconds = _bounded_max_seconds(ctx, max_seconds)
             request_body = _start_request(ctx, route, authority, scope_root, text,
                                           seconds, instructions, execution_root,

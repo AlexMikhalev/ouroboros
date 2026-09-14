@@ -143,7 +143,7 @@ def test_android_ci_is_fork_safe_and_required_for_publication():
 def test_android_ci_has_representative_emulator_matrix_without_calling_it_device_qualification():
     workflow = (REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     smoke = workflow.split("  android-emulator-smoke:", 1)[1].split("  # The publisher key", 1)[0]
-    assert "api-level: [26, 30, 33, 36]" in smoke
+    assert "api-level: [26, 29, 30, 33, 36]" in smoke
     assert "adb install -r" in smoke
     assert "dumpsys package ai.ouroboros.android" in smoke
     assert "SELinux" not in smoke

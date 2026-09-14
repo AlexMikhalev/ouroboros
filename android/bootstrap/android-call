@@ -8,6 +8,24 @@ Examples: {"method":"capabilities"}, {"method":"packages.inspect","params":{
 Package installs are asynchronous: a successful call proves bytes were staged and commit was submitted,
 not that Android completed the install. Query packages.install.status and packages.sessions. A lost response
 is unknown and is never retried automatically.
+source_uri must be readable by the Android app UID, not just Linux root.
+To pass a Linux download, use content.write to transfer bytes to a writable
+provider URI (an app-owned MediaStore entry or a granted document), then install
+that URI. mode='wt' replaces contents; mode='wa' appends a subsequent chunk.
+Root android-exec remains a separate native installation path.
+
+location.state reports grants/providers. location.get accepts provider and
+timeout_ms (1000..30000); its result includes age_ms and mock when a fix exists.
+accessibility.windows accepts max_windows, max_nodes and max_depth; node_address
+identifies a path in that snapshot, so inspect the current UI before acting.
+accessibility.perform accepts action=click/set_text/scroll plus node_address;
+set_text also needs text; scroll uses direction=forward/backward. Global actions
+are back/home/notifications/quick_settings. action=gesture accepts gesture=tap/swipe,
+x/y, and for swipe x2/y2 and duration_ms.
+notifications.list defaults to metadata; include_text=true requests title/text.
+packages.inspect on the host package lists declared activities/services. A declared
+Quick Settings tile or wallpaper service is not proof that it is added or selected.
+
 Intent params: action, data, type (MIME), package, component (package/class),
 categories, numeric flags, extras. Extras and ContentValues use {"type":...,"value":...}
 per key, e.g. {"length":{"type":"int","value":900}}. Bytes are base64, long values

@@ -202,8 +202,20 @@ Three independent permissions are involved:
   setup and the native menu reopens it. Android settings retain denial, revocation
   and available limited-access choices. Root-side tools retain their separate,
   broader authority.
+- On Android 10 and later, unattended location needs the separate
+  **Allow all the time** grant. After granting it, start or refresh native
+  status so its foreground-service type includes location. Without that grant,
+  Android may restrict background requests; foreground queries remain available.
 - **Provider/account authorization** permits model and service access through
   the accounts you configure. Neither root nor an APK certificate supplies it.
+
+`location.get` reports the location's timestamp, age and mock-provider flag so a
+cached or test fix is distinguishable from a hardware observation. A timed-out
+current request reports `no_fix_within_timeout`; a completed request without a
+fix reports `provider_returned_null` and includes the background-grant state.
+Neither result diagnoses the sensor or platform policy. Older last-known-only
+reads can report `no_last_known_fix`. An SDK test-provider fix exercises callback
+delivery but does not qualify GPS reception on a physical device.
 
 In Settings → Available subagents, each coding session has its own access choice:
 **Working files** (`workspace_write`, the default) or **Full system access** (`full`).
@@ -233,6 +245,12 @@ notification that opens Android's original confirmation screen when tapped;
 it remains incomplete until the system reports success or failure. Keep
 Ouroboros notifications enabled for this handoff. A disabled or failed notification
 is reported in `confirmation_delivery`; it is not successful consent.
+For this path, enable **Install unknown apps** for Ouroboros in Android settings;
+`capabilities.can_request_package_installs` reads that special access separately
+from ordinary runtime permissions. The host can read only source URIs available
+to its app UID. A Linux download can be written to a writable Android provider
+URI with `content.write` and installed from that URI; a root-readable chroot path
+does not itself grant the Android app access.
 
 The manifest intentionally declares `QUERY_ALL_PACKAGES` for general installed-app
 discovery and component inspection through Android's PackageManager. This is a
