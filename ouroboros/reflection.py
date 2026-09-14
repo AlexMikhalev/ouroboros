@@ -102,8 +102,9 @@ Be concrete — cite specific file names, tool names, decision points. No platit
 # Shared tail with {format} fields.
 _REFLECTION_PROMPT_TAIL = """
 
-Then, if this task produced durable, reusable self-knowledge worth persisting now,
-append a line:
+Then, if this task produced durable, reusable learning worth persisting now — about
+my own work, and about the people I worked with (what mattered to them, how we
+worked together, an interpretation worth testing) — append a line:
 MEMORY_ACTIONS_JSON: [...]
 A JSON array of 0-3 objects. Each object must have:
 - type: one of "scratchpad_append", "knowledge_write", "identity_update_candidate"
@@ -546,10 +547,10 @@ def apply_memory_actions(env: Any, actions: List[Dict[str, Any]], *, project_id:
     recorded in the scratchpad for review, never auto-written to identity.md, so
     autonomous learning cannot silently drift the personality.
 
-    For a project-scoped task (``project_id`` set, Phase 3b) only KNOWLEDGE facts
-    are persisted — redirected to the per-project store via ``ToolContext.project_id``
-    — while scratchpad/identity actions are skipped (no per-project scratchpad or
-    identity; this prevents project facts from contaminating canonical memory).
+    For a project-scoped task (``project_id`` set) only KNOWLEDGE actions are
+    applied: they default to that project's store through ``ToolContext.project_id``,
+    while an explicit ``global`` scope on the action still reaches the shared shelf.
+    Scratchpad and identity-candidate actions are skipped there.
     Returns the count of actions applied.
     """
     pid = str(project_id or "").strip()
