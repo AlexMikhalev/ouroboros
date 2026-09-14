@@ -210,7 +210,9 @@ def start_failure_detail(record: Dict[str, Any]) -> str:
 def start_failure_row(record: Dict[str, Any], *, latched: bool) -> Dict[str, Any]:
     """The durable supervisor row of one classified failure: the record itself, stamped.
 
-    ``ts`` is when it failed (the record's own ``at`` rides along unchanged).
+    ``ts`` (and the record's own ``at``, which rides along) is when the exit
+    was first observed — harvested at the manager's next spawn, attach or stop
+    decision — not when the child died.
     """
     return {"ts": record["at"], "type": "claudexor_daemon_start_failed", "latched": latched, **record}
 
