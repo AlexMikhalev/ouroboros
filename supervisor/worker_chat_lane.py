@@ -357,10 +357,10 @@ def _run_chat_task(
         attach_task_contract(task)
 
         # Announce the authoritative start immediately (owner decision 2A):
-        # the client's `Sending...` retires on this frame, not on a socket
-        # echo, and the frame carries the activity<->client_message_id link
-        # so even a turn that fails before its first LLM round concludes
-        # cleanly via its keyed error final.
+        # the client's `Sending...` retires on this receipt (once the census
+        # read it triggers has answered), not on a socket echo; the census row
+        # carries the same activity<->client_message_id link, and a turn the
+        # census never lists is still settled by that read.
         try:
             from supervisor.message_bus import get_bridge
 
@@ -405,10 +405,9 @@ def _run_chat_task(
             # Key the error final with the turn's activity id so the client
             # concludes exactly this turn (active set, 4A) instead of leaving
             # its `Sending.../Thinking...` state to an unkeyed sweep. If the
-            # failure happened before the start announce was broadcast, the
-            # client has no activity<->client_message_id link yet, so announce
-            # it first: the keyed final right after then retires both the
-            # activity and its linked `Sending...` submission.
+            # failure happened before the start announce was broadcast, announce
+            # it first: the receipt's census read settles the linked `Sending...`
+            # and the keyed final right after concludes the turn's census row.
             failed_task_id = str(task.get("id") or "") if isinstance(task, dict) else ""
             if failed_task_id and client_msg_id:
                 try:

@@ -57,7 +57,7 @@
  * @property {number} chat_id
  * @property {string} project_id
  * @property {string} client_message_id  // empty for managed queue rows
- * @property {string} kind  // direct_chat | ephemeral_decision | managed_task
+ * @property {string} kind  // direct_chat | managed_task — presentational label; membership in this census, not kind, decides liveness
  * @property {string} phase  // managed rows: queued | working | finalizing
  * @property {number} started_at
  */
@@ -399,7 +399,7 @@
  * @property {string=} activity_id
  * @property {string=} client_message_id
  * @property {string=} phase
- * @property {string=} kind  // stamped only for direct-registry-tracked turns; absent for queued managed tasks (snapshot has no deletion authority over them)
+ * @property {string=} kind  // direct_chat | managed_task, empty for children and untracked tasks; kept for wire compatibility, no in-repo client reads it. A typing frame is a submission receipt, never liveness: only the /api/state census inserts into the header live-set
  */
 
 /**

@@ -8,7 +8,9 @@ Pins the four server seams of the continuity contract:
    ``finalizing``), deriving ``finalizing`` from the durable
    ``root_phase_checkpoint``.
 2. ``supervisor.events._handle_typing_start`` stamps ``kind="managed_task"``
-   on typing from RUNNING queue ROOTS (subagents keep the kind-less legacy).
+   on typing from RUNNING queue ROOTS (children stay kind-less). No in-repo
+   client reads the stamp (wire compatibility); it is not authority over any
+   client-side set.
 3. ``agent_task_pipeline.emit_task_results`` marks a root's early final answer
    with ``progress_meta.task_phase="finalizing"`` exactly while post-task
    synthesis is still owed.
@@ -115,8 +117,9 @@ def test_chat_activities_snapshot_projects_queue_roots_with_phases(tmp_path, mon
     assert rows["running-root"]["phase"] == "working"
     assert rows["running-root"]["started_at"] == 111.0
     assert rows["finalizing-root"]["phase"] == "finalizing"
-    # Subagents are never snapshot activities: no snapshot source may gain
-    # deletion authority over their kind-less client entries.
+    # Subagents are never census activities: the census enumerates direct
+    # turns and managed ROOTS by design, and their own task cards carry the
+    # children.
     assert "queued-child" not in rows
     assert "running-child" not in rows
 
