@@ -182,11 +182,18 @@ def test_mark_task_project_is_fill_only_over_a_different_project():
     assert running["t1"]["task"]["project_id"] == "token-observatory"
 
 
-def test_ui_conversion_of_a_bound_task_refuses_before_any_side_effect(tmp_path, monkeypatch):
+def test_ui_conversion_of_a_bound_task_adopts_it_and_still_refuses_another_room(
+    tmp_path, monkeypatch,
+):
     """B4=A + R14: converting a task that already belongs to a project creates no
-    second project, marks no lane and broadcasts nothing, and the refusal NAMES the
-    project (id + display name) in one human sentence - the only text the toast has
-    on the desktop shell, the Telegram mini app and the mobile layout."""
+    second project and marks no new lane.
+
+    The ONE-CLICK act (the id the browser derives for this task, or none) is now
+    ANSWERED with that project instead of refused: after a sibling conversion binds
+    a card, its button can still be on screen for a moment on every surface with no
+    reload affordance, and an error toast on a card that is already correctly bound
+    is a lie. An EXPLICIT different id is a caller naming another room, and it keeps
+    the refusal that NAMES the project (id + display name) in one human sentence."""
     import json
 
     from ouroboros.gateway.projects import api_project_from_task
@@ -204,11 +211,20 @@ def test_ui_conversion_of_a_bound_task_refuses_before_any_side_effect(tmp_path, 
     )))
     body = json.loads(resp.body.decode("utf-8"))
 
-    assert resp.status_code == 409
-    assert "Token Atlas" in body["error"] and "token-atlas" in body["error"]
-    assert "open it there or start a new task" in body["error"]
+    assert resp.status_code == 200 and body["adopted"] is True
+    assert body["project"]["id"] == "token-atlas"
     assert [p["id"] for p in list_projects(tmp_path)] == ["token-atlas"]
     assert workers.RUNNING["tbound"]["task"]["project_id"] == "token-atlas"
+
+    explicit = asyncio.run(api_project_from_task(_request(
+        tmp_path, {"task_id": "tbound", "id": "token-observatory", "objective_hint": "build it"},
+    )))
+    refusal = json.loads(explicit.body.decode("utf-8"))
+
+    assert explicit.status_code == 409
+    assert "Token Atlas" in refusal["error"] and "token-atlas" in refusal["error"]
+    assert "open it there or start a new task" in refusal["error"]
+    assert [p["id"] for p in list_projects(tmp_path)] == ["token-atlas"]
 
 
 def test_ui_conversion_with_an_unreadable_bindings_store_proceeds_and_discloses(
@@ -289,13 +305,14 @@ def test_ui_conversion_of_a_scoped_but_unbound_task_moves_its_lane(tmp_path, mon
     assert saved["pending"][0]["task"]["project_id"] == "task-tpend"
 
 
-def test_ui_conversion_refuses_a_binding_that_lands_during_the_naming_await(tmp_path, monkeypatch):
+def test_ui_conversion_adopts_a_binding_that_lands_during_the_naming_await(tmp_path, monkeypatch):
     """Scope review round 1: the durable binding was read BEFORE the naming step, and
     that step can await a model call for seconds. A running task that scoped itself in
     that window came back to a created project row, a moved lane and a durable bind
     that then raised - binding B, lane A, orphan row A, the exact split state P4
-    removes. The authority is re-read at the side-effect boundary, so the conversion
-    answers the same 409 and touches nothing."""
+    removes. The authority is re-read at the side-effect boundary, so no row is
+    created; the one-click act then ANSWERS with the project the task now belongs to
+    and the coined name is discarded."""
     import json
 
     from ouroboros.gateway.projects import api_project_from_task
@@ -330,14 +347,13 @@ def test_ui_conversion_refuses_a_binding_that_lands_during_the_naming_await(tmp_
     )))
     body = json.loads(resp.body.decode("utf-8"))
 
-    assert resp.status_code == 409
-    assert "Token Observatory" in body["error"] and "token-observatory" in body["error"]
-    assert "open it there or start a new task" in body["error"]
-    # The refusal lands before create_project, so the requested row never exists and
-    # nothing was published about it: only the project the task actually belongs to.
+    assert resp.status_code == 200 and body["adopted"] is True
+    assert body["project"]["id"] == "token-observatory"
+    # The claim lands before create_project, so the requested row never exists: only
+    # the project the task actually belongs to, and the one broadcast names it.
     assert [p["id"] for p in list_projects(tmp_path)] == ["token-observatory"]
-    assert broadcasts == []
-    assert workers.RUNNING["trace"]["task"]["project_id"] == ""
+    assert [row["project_id"] for row in broadcasts] == ["token-observatory"]
+    assert workers.RUNNING["trace"]["task"]["project_id"] == "token-observatory"
     assert (project_binding_for_task(tmp_path, "trace") or {}).get("project_id") == "token-observatory"
 
 
@@ -409,3 +425,297 @@ def test_ui_conversion_restores_the_lane_when_the_durable_bind_is_refused(tmp_pa
     assert "task-tlate" not in {
         str(row.get("project_id") or "") for row in registry.project_task_bindings(tmp_path).values()
     }
+
+
+# --- one owner message, one Project (origin-keyed adopt + sibling claim) ------
+#
+# The measured incident: one Main message spawned a direct turn AND the root that
+# turn promoted. Both carried the same ingress origin, both were separately
+# convertible because every guard was keyed by task_id, and converting each card
+# minted its own Project for one piece of work.
+
+_OWNER_TEXT = "Publish and merge the seven pull requests"
+
+
+def _origin_ref(client_message_id: str = "msg-owner", text: str = _OWNER_TEXT, chat_id: int = 1) -> dict:
+    from ouroboros.project_dialogue import build_owner_message_ref
+
+    return build_owner_message_ref(
+        chat_id=chat_id, client_message_id=client_message_id,
+        ts="2026-09-14T12:15:20+00:00", text=text,
+    )
+
+
+def _seed_origin_task(tmp_path, task_id: str, ref: dict, title: str = "Ship the queue") -> None:
+    """Persist the ingress-captured origin the convert path reads by value. An empty
+    title leaves the naming step to the (patchable) model call."""
+    from ouroboros.task_results import write_task_result
+
+    write_task_result(
+        tmp_path, task_id, "running",
+        origin_message_ref=ref, origin_message_text=_OWNER_TEXT, **({"title": title} if title else {}),
+    )
+
+
+def _live_queue(monkeypatch, tmp_path, running: dict, pending: list) -> None:
+    import supervisor.queue as queue
+    import supervisor.workers as workers
+
+    for mod in (workers, queue):
+        monkeypatch.setattr(mod, "RUNNING", running)
+        monkeypatch.setattr(mod, "PENDING", pending)
+    monkeypatch.setattr(queue, "DRIVE_ROOT", tmp_path)
+    monkeypatch.setattr(queue, "QUEUE_SEQ_COUNTER_REF", {"value": 0})
+
+
+def _root(task_id: str, ref: dict, project_id: str = "") -> dict:
+    return {"id": task_id, "project_id": project_id, "type": "task",
+            "delegation_role": "root", "chat_id": 1, "origin_message_ref": dict(ref)}
+
+
+def _convert(tmp_path, task_id: str, **body):
+    payload = {"task_id": task_id, "id": f"task-{task_id}", "objective_hint": _OWNER_TEXT}
+    payload.update(body)
+    from ouroboros.gateway.projects import api_project_from_task
+
+    return asyncio.run(api_project_from_task(_request(tmp_path, payload)))
+
+
+def _events(tmp_path, kind: str) -> list:
+    path = tmp_path / "logs" / "events.jsonl"
+    if not path.exists():
+        return []
+    return [row for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+            if (row := json.loads(line)).get("type") == kind]
+
+
+@pytest.fixture
+def _direct_turns():
+    """The in-process registry of live direct turns is a module singleton."""
+    from supervisor.active_activity import get_direct_activity_registry
+
+    registry = get_direct_activity_registry()
+    registry.clear()
+    try:
+        yield registry
+    finally:
+        registry.clear()
+
+
+def test_converting_the_turn_claims_the_root_it_promoted(tmp_path, monkeypatch, _direct_turns):
+    """The incident, in order: the owner converts the live DIRECT TURN while the
+    root it promoted is still running in Main. One Project is created, and the
+    root joins it instead of keeping a convert button that mints a second one."""
+    from ouroboros.projects_registry import list_projects, project_binding_for_task
+
+    (tmp_path / "logs").mkdir()
+    ref = _origin_ref()
+    _seed_origin_task(tmp_path, "t-turn", ref)
+    _seed_origin_task(tmp_path, "t-root", ref)
+    running = {"t-root": {"task": _root("t-root", ref)}}
+    _live_queue(monkeypatch, tmp_path, running, [])
+    _direct_turns.register("t-turn", 1, origin_message_ref=ref)
+
+    resp = _convert(tmp_path, "t-turn")
+    pid = json.loads(resp.body.decode("utf-8"))["project"]["id"]
+
+    assert resp.status_code == 200
+    assert [p["id"] for p in list_projects(tmp_path)] == [pid]
+    assert (project_binding_for_task(tmp_path, "t-turn") or {}).get("project_id") == pid
+    assert (project_binding_for_task(tmp_path, "t-root") or {}).get("project_id") == pid
+    assert running["t-root"]["task"]["project_id"] == pid   # the lane followed the bind
+    [row] = _events(tmp_path, "project_origin_siblings_bound")
+    assert row["task_id"] == "t-turn" and row["project_id"] == pid
+    assert row["bound"] == ["t-root"] and row["skipped"] == []
+
+    # The root's card may still be showing its stale button (a mid-air /api/state
+    # refresh, the Telegram mini app, a phone). Clicking it ADOPTS the project the
+    # work already has and answers with that row - never a second project, never an
+    # error toast on a card that is already correctly bound.
+    again = _convert(tmp_path, "t-root")
+    body = json.loads(again.body.decode("utf-8"))
+    assert again.status_code == 200 and body["adopted"] is True
+    assert body["project"]["id"] == pid
+    assert [p["id"] for p in list_projects(tmp_path)] == [pid]
+
+
+def test_one_origin_with_three_live_roots_converts_to_one_project_in_any_order(
+    tmp_path, monkeypatch, _direct_turns,
+):
+    """Swarm shape: one owner message, several live roots. Whichever card the owner
+    clicks first creates the room; the others join it, in any order."""
+    from ouroboros.projects_registry import list_projects, project_task_bindings
+
+    (tmp_path / "logs").mkdir()
+    ref = _origin_ref()
+    for tid in ("r1", "r2", "r3"):
+        _seed_origin_task(tmp_path, tid, ref)
+    running = {tid: {"task": _root(tid, ref)} for tid in ("r1", "r2")}
+    pending = [_root("r3", ref)]
+    _live_queue(monkeypatch, tmp_path, running, pending)
+
+    first = _convert(tmp_path, "r2")
+    pid = json.loads(first.body.decode("utf-8"))["project"]["id"]
+    second = _convert(tmp_path, "r1")
+    third = _convert(tmp_path, "r3")
+
+    assert first.status_code == second.status_code == third.status_code == 200
+    assert json.loads(second.body.decode("utf-8"))["adopted"] is True
+    assert json.loads(third.body.decode("utf-8"))["adopted"] is True
+    assert [p["id"] for p in list_projects(tmp_path)] == [pid]
+    bindings = project_task_bindings(tmp_path)
+    assert {tid: row["project_id"] for tid, row in bindings.items()} == {
+        "r1": pid, "r2": pid, "r3": pid,
+    }
+    assert pending[0]["project_id"] == pid   # a PENDING sibling is scoped too
+
+
+def test_an_explicitly_named_project_is_adopted_by_the_turn_that_asked_for_it(
+    tmp_path, monkeypatch, _direct_turns,
+):
+    """P13: an explicit project_name/route_to_project is the model's choice and the
+    origin lookup never overrides it - it ADOPTS it. The turn whose message created
+    that room joins it, instead of minting a second one beside it."""
+    from ouroboros.projects_registry import (
+        bind_task_to_project,
+        create_project,
+        list_projects,
+        project_binding_for_task,
+    )
+
+    (tmp_path / "logs").mkdir()
+    ref = _origin_ref()
+    _seed_origin_task(tmp_path, "t-turn", ref)
+    _seed_origin_task(tmp_path, "t-root", ref)
+    # The promote chose a named project and bound the root to it, carrying the same
+    # ingress origin onto the binding (supervisor/worker_promotion.py).
+    other = create_project(tmp_path, "other-room", name="Other Room")
+    bind_task_to_project(tmp_path, "t-root", "other-room", other["chat_id"],
+                         origin={"ref": ref, "text": _OWNER_TEXT})
+    running = {"t-root": {"task": _root("t-root", ref, project_id="other-room")}}
+    _live_queue(monkeypatch, tmp_path, running, [])
+    _direct_turns.register("t-turn", 1, origin_message_ref=ref)
+
+    resp = _convert(tmp_path, "t-turn")
+    body = json.loads(resp.body.decode("utf-8"))
+
+    assert resp.status_code == 200 and body["adopted"] is True
+    assert body["project"]["id"] == "other-room"
+    assert [p["id"] for p in list_projects(tmp_path)] == ["other-room"]
+    assert (project_binding_for_task(tmp_path, "t-turn") or {}).get("project_id") == "other-room"
+    assert _events(tmp_path, "project_named") == []      # adoption names nothing
+    assert _events(tmp_path, "project_origin_siblings_bound") == []
+
+
+def test_a_sibling_bound_elsewhere_is_skipped_and_disclosed(tmp_path, monkeypatch, _direct_turns):
+    """A live sibling whose OWN binding names another project (a pre-origin row, or
+    one bound through a path that carried no ref) keeps it: the binding is immutable,
+    so the claim skips it, restores its lane and says so durably - never a 4xx for
+    the owner, never a silent divergence."""
+    from ouroboros.projects_registry import (
+        bind_task_to_project,
+        create_project,
+        list_projects,
+        project_binding_for_task,
+    )
+
+    (tmp_path / "logs").mkdir()
+    ref = _origin_ref()
+    _seed_origin_task(tmp_path, "t-turn", ref)
+    _seed_origin_task(tmp_path, "t-root", ref)
+    legacy = create_project(tmp_path, "legacy-room", name="Legacy Room")
+    bind_task_to_project(tmp_path, "t-root", "legacy-room", legacy["chat_id"],
+                         origin={"absent": "producer_missing_ref"})
+    running = {"t-root": {"task": _root("t-root", ref, project_id="legacy-room")}}
+    _live_queue(monkeypatch, tmp_path, running, [])
+
+    resp = _convert(tmp_path, "t-turn")
+    pid = json.loads(resp.body.decode("utf-8"))["project"]["id"]
+
+    assert resp.status_code == 200 and pid != "legacy-room"
+    assert sorted(p["id"] for p in list_projects(tmp_path)) == sorted([pid, "legacy-room"])
+    assert (project_binding_for_task(tmp_path, "t-root") or {}).get("project_id") == "legacy-room"
+    assert running["t-root"]["task"]["project_id"] == "legacy-room"   # lane restored
+    [row] = _events(tmp_path, "project_origin_siblings_bound")
+    assert row["bound"] == [] and [item["task_id"] for item in row["skipped"]] == ["t-root"]
+
+
+def test_a_sibling_that_binds_during_the_naming_await_is_adopted_not_duplicated(
+    tmp_path, monkeypatch, _direct_turns,
+):
+    """Naming can await a model call for seconds, and a second card of the same
+    message (another tab, the desktop shell and the mini app at once) can claim the
+    origin inside that window. The authority is re-read after naming, so the second
+    conversion adopts instead of minting the duplicate."""
+    from ouroboros.projects_registry import (
+        bind_task_to_project,
+        create_project,
+        list_projects,
+    )
+
+    (tmp_path / "logs").mkdir()
+    ref = _origin_ref()
+    _seed_origin_task(tmp_path, "t-turn", ref, title="")
+    _live_queue(monkeypatch, tmp_path, {}, [])
+
+    async def _sibling_converts_meanwhile(*_args, **_kwargs):
+        room = create_project(tmp_path, "sibling-room", name="Sibling Room")
+        bind_task_to_project(tmp_path, "t-root", "sibling-room", room["chat_id"],
+                             origin={"ref": ref, "text": _OWNER_TEXT})
+        return "Coined by the model"
+
+    monkeypatch.setattr("ouroboros.project_naming.llm_project_name_async", _sibling_converts_meanwhile)
+
+    resp = _convert(tmp_path, "t-turn", objective_hint="")
+    body = json.loads(resp.body.decode("utf-8"))
+
+    assert resp.status_code == 200 and body["adopted"] is True
+    assert body["project"]["id"] == "sibling-room"
+    assert [p["id"] for p in list_projects(tmp_path)] == ["sibling-room"]
+
+
+def test_two_sibling_cards_converted_at_once_still_yield_one_project(
+    tmp_path, monkeypatch, _direct_turns,
+):
+    """The owner has the same work on two surfaces (a second tab, the desktop shell
+    and the mini app) and clicks both cards inside one naming window. Naming runs
+    OUTSIDE the claim lock because it can await a model for seconds, so both
+    conversions reach the decision together; the lock makes the second one adopt what
+    the first created instead of minting the duplicate."""
+    import threading
+
+    from ouroboros.projects_registry import list_projects, project_task_bindings
+
+    (tmp_path / "logs").mkdir()
+    ref = _origin_ref()
+    for tid in ("r1", "r2"):
+        _seed_origin_task(tmp_path, tid, ref, title="")
+    running = {tid: {"task": _root(tid, ref)} for tid in ("r1", "r2")}
+    _live_queue(monkeypatch, tmp_path, running, [])
+    barrier = threading.Barrier(2, timeout=10)
+
+    async def _both_finish_naming_together(*_args, **_kwargs):
+        barrier.wait()
+        return "Coined by the model"
+
+    monkeypatch.setattr("ouroboros.project_naming.llm_project_name_async", _both_finish_naming_together)
+    answers: dict = {}
+
+    def _convert_in_thread(task_id):
+        answers[task_id] = _convert(tmp_path, task_id, objective_hint="")
+
+    threads = [threading.Thread(target=_convert_in_thread, args=(tid,)) for tid in ("r1", "r2")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert {tid: resp.status_code for tid, resp in answers.items()} == {"r1": 200, "r2": 200}
+    projects = [p["id"] for p in list_projects(tmp_path)]
+    assert len(projects) == 1, projects
+    bound = {tid: row["project_id"] for tid, row in project_task_bindings(tmp_path).items()}
+    assert bound == {"r1": projects[0], "r2": projects[0]}
+    # Exactly one of them created the room; the other was told it was adopted.
+    adopted = [tid for tid, resp in answers.items()
+               if json.loads(resp.body.decode("utf-8")).get("adopted")]
+    assert len(adopted) == 1

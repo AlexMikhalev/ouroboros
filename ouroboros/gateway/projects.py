@@ -289,6 +289,133 @@ def _emit_naming_reason(drive_root: object, task_id: str, name: str, reason: str
         log.debug("_emit_naming_reason failed", exc_info=True)
 
 
+def _mark_task_lane(task_id: str, pid: str) -> str:
+    """Point the live queue/lease copy of ``task_id`` at ``pid`` under the queue lock
+    and persist the snapshot; returns the value the lane held BEFORE the call, so a
+    refused durable bind can put it back. SSOT for every post-hoc convert path here
+    (fresh bind, origin adopt, sibling claim) and the twin of the in-task
+    ``ensure_project_scope`` mark, so they cannot drift apart again.
+
+    The lease + assignment read ``task["project_id"]`` from the supervisor's in-memory
+    RUNNING map and PENDING list, NOT the durable bindings — so this mark, not
+    ``bind_task_to_project``, is a conversion's effective commit point for one-writer
+    serialization, and the caller makes it BEFORE the durable bind (an assign pass and
+    the mark are mutually exclusive on the queue RLock, so once the mark lands the next
+    pass already sees the lane; the bind's relative timing is irrelevant because
+    assignment never reads it). ``authority="binding"`` because the caller OWNS the
+    binding it is about to write, so the in-memory copy follows the truth even when the
+    row carries a derived id from a bare-workspace promote. The snapshot write keeps a
+    still-PENDING converted task scoped across a restart. No-op when the task is
+    neither running nor pending — the durable bind alone is then correct."""
+    from ouroboros.project_lease import mark_task_project, task_lane_project_id
+    from supervisor.queue import _queue_lock, persist_queue_snapshot
+    from supervisor.workers import PENDING, RUNNING
+
+    with _queue_lock:
+        previous = task_lane_project_id(RUNNING, PENDING, task_id)
+        marked = mark_task_project(RUNNING, PENDING, task_id, pid, authority="binding")
+    if marked:
+        persist_queue_snapshot(reason="project_from_task")
+    return previous
+
+
+def _live_origin_siblings(origin_ref: Any, clicked_task_id: str) -> list:
+    """Live task ids OTHER than ``clicked_task_id`` carrying the same owner-message
+    origin: RUNNING/PENDING ROOTS (a subagent is never bound itself — it inherits its
+    root's project by lineage) and in-flight direct turns. Never raises."""
+    from ouroboros.projects_registry import origin_key
+
+    key = origin_key(origin_ref)
+    if key is None:
+        return []
+    found: list = []
+    try:
+        from supervisor.queue import _queue_lock
+        from supervisor.workers import PENDING, RUNNING
+
+        with _queue_lock:
+            rows = [meta.get("task") for meta in list(RUNNING.values()) if isinstance(meta, dict)]
+            rows += list(PENDING or ())
+            for row in rows:
+                if not isinstance(row, dict) or str(row.get("delegation_role") or "") == "subagent":
+                    continue
+                if origin_key(row.get("origin_message_ref")) == key:
+                    found.append(str(row.get("id") or ""))
+    except Exception:
+        log.debug("_live_origin_siblings: queue scan failed", exc_info=True)
+    try:
+        from supervisor.active_activity import get_direct_activity_registry
+
+        for entry in get_direct_activity_registry().actors():
+            if origin_key(getattr(entry, "origin_message_ref", None)) == key:
+                found.append(str(getattr(entry, "activity_id", "") or ""))
+    except Exception:
+        log.debug("_live_origin_siblings: direct activity scan failed", exc_info=True)
+    return [tid for tid in dict.fromkeys(found) if tid and tid != str(clicked_task_id)]
+
+
+def _claim_origin_siblings(
+    drive_root: object, project: dict, origin_ref: Any, clicked_task_id: str,
+) -> dict:
+    """Bind the FRESHLY created project's live origin siblings to it, so one owner
+    message cannot keep a second convertible unit. A sibling already bound elsewhere
+    (an explicit ``route_to_project``/``project_name`` root) is SKIPPED — its binding
+    is immutable and the model's explicit choice stays the ceiling — with its lane
+    restored and a DEBUG line; the owner never sees a 4xx for it. Returns
+    ``{"bound": [...], "skipped": [...]}`` for the disclosure row. Never raises."""
+    from ouroboros.projects_registry import bind_task_to_project, project_id_for_task
+    outcome: dict = {"bound": [], "skipped": []}
+    pid = str(project.get("id") or "")
+    for tid in _live_origin_siblings(origin_ref, clicked_task_id):
+        try:
+            existing = str(project_id_for_task(drive_root, tid) or "")
+        except Exception:
+            existing = ""
+            log.debug("_claim_origin_siblings: binding read failed for %s", tid, exc_info=True)
+        if existing:
+            # Bound already: an explicit choice, or an earlier claim. Immutable either
+            # way - read it BEFORE the lane mark so nothing has to be rolled back.
+            outcome["skipped"].append({"task_id": tid, "reason": f"already_bound:{existing}"})
+            continue
+        try:
+            previous = _mark_task_lane(tid, pid)
+        except Exception:
+            previous = ""
+            log.debug("_claim_origin_siblings: lane mark failed for %s", tid, exc_info=True)
+        try:
+            bind_task_to_project(
+                drive_root, tid, pid, project.get("chat_id"),
+                origin=_owner_task_origin(drive_root, tid),
+            )
+            outcome["bound"].append(tid)
+        except Exception as exc:
+            try:
+                _mark_task_lane(tid, previous)
+            except Exception:
+                log.debug("_claim_origin_siblings: lane restore failed for %s", tid, exc_info=True)
+            outcome["skipped"].append({"task_id": tid, "reason": f"{type(exc).__name__}: {exc}"})
+            log.debug("_claim_origin_siblings: %s keeps its own binding", tid, exc_info=True)
+    if outcome["bound"] or outcome["skipped"]:
+        try:  # durable disclosure (P1) of who else joined, and who could not
+            import pathlib
+
+            from ouroboros.utils import append_jsonl, utc_now_iso
+
+            append_jsonl(
+                pathlib.Path(str(drive_root)) / "logs" / "events.jsonl",
+                {
+                    "ts": utc_now_iso(),
+                    "type": "project_origin_siblings_bound",
+                    "task_id": str(clicked_task_id),
+                    "project_id": pid,
+                    **outcome,
+                },
+            )
+        except Exception:
+            log.debug("project_origin_siblings_bound row failed", exc_info=True)
+    return outcome
+
+
 async def api_projects_list(request: Request) -> JSONResponse:
     try:
         from ouroboros.projects_registry import (
@@ -615,6 +742,8 @@ async def api_project_from_task(request: Request) -> JSONResponse:
             bind_task_to_project,
             create_project,
             get_project,
+            origin_claim_lock,
+            project_id_for_origin,
             project_id_for_task,
             touch_project,
         )
@@ -632,6 +761,14 @@ async def api_project_from_task(request: Request) -> JSONResponse:
                 status_code=400,
             )
         drive_root = request_drive_root(request)
+        # An IMPLICIT conversion is the one-click owner act: the browser sends the
+        # default id for this task (chat_activity.js::projectIdFromTask) or none at
+        # all, so the request names no particular room and the work's own project
+        # answers it. An EXPLICIT different id is an API caller naming a room.
+        implicit = str(body.get("id") or body.get("project_id") or "").strip().lower() in (
+            "", f"task-{task_id}".lower()[:64],
+        )
+        disclosed: list = []
 
         def _conflicting_binding(*, disclose: bool) -> Any:
             """The 409 answer when the task is READABLY bound to another project, None
@@ -663,9 +800,120 @@ async def api_project_from_task(request: Request) -> JSONResponse:
                 status_code=409,
             )
 
-        refusal = _conflicting_binding(disclose=True)
-        if refusal is not None:
-            return refusal
+        # The owner's message identity, read ONCE: the same value answers "which
+        # project does this WORK already have" below and rides the durable bind at
+        # the end. Never re-derived from content (DEVELOPMENT.md anti-pattern).
+        origin = _owner_task_origin(drive_root, task_id)
+        origin_ref = origin.get("ref") if isinstance(origin, dict) else None
+
+        def _bind_and_answer(project: dict, *, adopted: bool) -> Any:
+            """Mark the lane, write the durable bind, answer. Called with the claim
+            lock held."""
+            nonlocal origin, origin_ref
+            pid = str(project["id"])
+            try:
+                previous_lane = _mark_task_lane(task_id, pid)
+            except Exception:
+                previous_lane = ""
+                log.debug("api_project_from_task: in-memory project_id update failed for %s",
+                          task_id, exc_info=True)
+            if "absent" in origin:
+                # The record may have persisted during the naming await; re-read before
+                # the bind so a conversion clicked a second after the message still
+                # keeps the start message (and can still claim that message's siblings).
+                origin = _owner_task_origin(drive_root, task_id)
+                origin_ref = origin.get("ref")
+            try:
+                binding = bind_task_to_project(
+                    drive_root, task_id, pid, project.get("chat_id"), origin=origin,
+                )
+            except Exception:
+                # The lane mark anticipates a bind the immutable store can still
+                # refuse. Put the lane back where it was (its previous project, or
+                # none) before answering, so the durable binding stays the one truth
+                # and no lane points at a project that binds nothing.
+                try:
+                    _mark_task_lane(task_id, previous_lane)
+                except Exception:
+                    log.debug("api_project_from_task: lane restore failed for %s", task_id, exc_info=True)
+                refusal = _conflicting_binding(disclose=False)
+                if refusal is None:
+                    raise
+                return refusal
+            touch_project(drive_root, pid)
+            if not adopted:
+                # This conversion minted the project for THIS owner message, so the
+                # message's other live task ids join it now instead of each keeping a
+                # convert button of its own (that second button is what minted the
+                # duplicate Project).
+                _claim_origin_siblings(drive_root, project, origin_ref, task_id)
+            # Broadcast so every open tab + the live WS fan-out learns the project
+            # immediately, instead of waiting for the periodic /api/state poll
+            # (mirrors the promote path in supervisor/workers.py).
+            _broadcast_projects_changed(pid, project.get("chat_id"))
+            payload = {"project": project, "binding": binding}
+            if adopted:
+                payload["adopted"] = True
+            return JSONResponse(payload)
+
+        def _claim(project_name: str = "") -> Any:
+            """The whole claim under the ONE process-local claim lock: re-read the
+            authority, ADOPT the project this work already has, or — once a name is
+            settled — CREATE the requested one and bind to it. ``None`` when there is
+            nothing to adopt and no name has been coined yet.
+
+            One message spawns several task ids (the direct turn that received it, the
+            root it promoted); each was separately convertible, so converting the
+            second one minted a second Project for one piece of work. Adoption creates
+            nothing and names nothing: the task joins the project its own origin
+            already names, and a stale button on a card that is already bound answers
+            with its project instead of an error toast. The lock is what makes two
+            cards of one message clicked in two tabs (or the desktop shell and the mini
+            app) yield ONE project; the naming step, which may await a model for
+            seconds, stays outside it and its result is simply discarded on adopt.
+
+            An EXPLICIT different project id is an API caller naming a specific room,
+            never the one-click owner act: it is not adopted away, and the task-keyed
+            409 still answers it (P13)."""
+            with origin_claim_lock():
+                try:
+                    bound = str(project_id_for_task(drive_root, task_id, strict=True) or "")
+                    adopted = str(project_id_for_origin(drive_root, origin_ref, strict=True) or "")
+                except Exception:
+                    bound, adopted = "", ""
+                    if not disclosed:
+                        disclosed.append(True)
+                        log.warning(
+                            "project_binding_unreadable: convert of task %s continues as unbound",
+                            task_id, exc_info=True,
+                        )
+                target = (bound or adopted) if implicit else ""
+                project = get_project(drive_root, target) if target else None
+                if project is not None:
+                    return _bind_and_answer(project, adopted=True)
+                if not project_name:
+                    return None
+                # Re-validated BEFORE the first side effect: the naming step can await
+                # a model for seconds, and a running task that scopes itself in that
+                # window binds durably to ANOTHER project.
+                refusal = _conflicting_binding(disclose=False)
+                if refusal is not None:
+                    return refusal
+                return _bind_and_answer(
+                    create_project(
+                        drive_root, sanitize_project_id(raw_id), name=project_name,
+                        origin="task_card",
+                    ),
+                    adopted=False,
+                )
+
+        claimed = _claim()
+        if claimed is not None:
+            return claimed
+        if not implicit:
+            refusal = _conflicting_binding(disclose=True)
+            if refusal is not None:
+                return refusal
         # Auto-name from the task's own title/objective when the caller sends none
         # (the one-click convert path), so no human input and no extra LLM call
         # are needed (owner P1). An explicit name still wins. Order: explicit name ->
@@ -731,104 +979,11 @@ async def api_project_from_task(request: Request) -> JSONResponse:
                     reason = "hint_or_fallback"
             project_name = _cap_name(project_name)
             _emit_naming_reason(drive_root, task_id, project_name, reason)
-        # Re-validate the authority now that the name is settled and BEFORE the first
-        # side effect. The naming step above can await a model call for seconds, and a
-        # running task that scopes itself in that window binds durably to ANOTHER
-        # project; without this second read the conversion created its own project row,
-        # moved the lane onto it and only then met the immutable bind, leaving the
-        # binding on one project and the lane on another.
-        refusal = _conflicting_binding(disclose=False)
-        if refusal is not None:
-            return refusal
-        project = create_project(
-            drive_root,
-            sanitize_project_id(raw_id),
-            name=project_name,
-            origin="task_card",
-        )
-        # Scope the live task to its new project's one-writer lane BEFORE the durable
-        # bind. The lease + assignment read task["project_id"] from the supervisor's
-        # in-memory RUNNING map and PENDING list, NOT the durable bindings — so this
-        # in-memory mark, not bind_task_to_project, is the conversion's effective commit
-        # point for one-writer serialization. Without it a UI conversion could let a
-        # concurrent same-project task be assigned (two writers), AND a still-PENDING
-        # converted task would start unscoped and miss its lane. Marking BEFORE the
-        # durable bind closes the interleaving where assign_tasks runs AFTER the bind but
-        # BEFORE the mark (an assign pass and mark are mutually exclusive on the same
-        # queue RLock, so once the mark lands the next pass already sees the lane): the
-        # bind's relative timing is irrelevant since assignment never reads it. The
-        # supervisor runs in-process (a thread), so we take its queue lock and use the
-        # SSOT helper shared with the in-task ensure_project_scope path. No-op if the task
-        # is neither running nor pending (the durable bind alone is then correct — there
-        # is no live lane to occupy).
-        def _mark_lane(pid: str) -> str:
-            """Point the live queue/lease copy of this task at ``pid`` under the queue
-            lock and persist the snapshot; returns the value the lane held BEFORE the
-            call, so a refused durable bind can put it back."""
-            from ouroboros.project_lease import mark_task_project, task_lane_project_id
-            from supervisor.queue import _queue_lock, persist_queue_snapshot
-            from supervisor.workers import PENDING, RUNNING
-
-            with _queue_lock:
-                previous = task_lane_project_id(RUNNING, PENDING, task_id)
-                # This conversion OWNS the binding it is about to write (a task bound
-                # elsewhere was already refused above), so the in-memory copy follows
-                # it even when the row carries a derived project id from a
-                # bare-workspace promote; fill-only alone left that lane behind.
-                marked = mark_task_project(RUNNING, PENDING, task_id, pid, authority="binding")
-            # Persist the snapshot so a still-PENDING converted task survives a restart
-            # STILL scoped: restore_pending_from_snapshot rebuilds PENDING from
-            # state/queue_snapshot.json (assignment reads task['project_id'] from there,
-            # NOT the durable bindings), and that snapshot is otherwise only rewritten on
-            # the next queue event — so without this a restart in the window would restore
-            # the task unscoped. Mirrors api_task_create persisting after enqueue.
-            if marked:
-                persist_queue_snapshot(reason="project_from_task")
-            return previous
-
-        try:
-            previous_lane = _mark_lane(str(project["id"]))
-        except Exception:
-            previous_lane = ""
-            log.debug("api_project_from_task: in-memory project_id update failed for %s", task_id, exc_info=True)
-        try:
-            binding = bind_task_to_project(
-                drive_root,
-                task_id,
-                str(project["id"]),
-                project.get("chat_id"),
-                origin=_owner_task_origin(drive_root, task_id),
-            )
-        except Exception:
-            # The window between the re-read above and this bind is microseconds, but a
-            # bind that loses it is refused by the immutable store while the lane mark
-            # already anticipated it. Put the lane back where it was (its previous
-            # project, or none) before answering, so the durable binding stays the one
-            # truth and no lane points at a project that binds nothing. A bind that
-            # failed for any other reason keeps its old answer.
-            try:
-                _mark_lane(previous_lane)
-            except Exception:
-                log.debug("api_project_from_task: lane restore failed for %s", task_id, exc_info=True)
-            refusal = _conflicting_binding(disclose=False)
-            if refusal is None:
-                raise
-            return refusal
-        touch_project(drive_root, str(project["id"]))
-        # Broadcast so every open tab + the live WS fan-out learns the new project
-        # immediately, instead of waiting for the periodic /api/state poll (mirrors
-        # the promote path in supervisor/workers.py).
-        try:
-            from supervisor.message_bus import get_bridge
-
-            get_bridge().broadcast({
-                "type": "projects_changed",
-                "project_id": str(project["id"]),
-                "chat_id": project.get("chat_id"),
-            })
-        except Exception:
-            log.debug("api_project_from_task: projects_changed broadcast failed", exc_info=True)
-        return JSONResponse({"project": project, "binding": binding})
+        # The naming step ran OUTSIDE the claim lock because it can await a model
+        # call for seconds. Claim again: if a sibling card of this same owner
+        # message won the race meanwhile, the coined name is simply discarded and
+        # the task joins the project that work already has.
+        return _claim(project_name or "New project")
     except Exception as exc:
         return json_exception(exc)
 

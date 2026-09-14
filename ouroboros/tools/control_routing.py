@@ -60,6 +60,37 @@ def _attach_origin_from_metadata(ctx: ToolContext, evt: Dict[str, Any]) -> None:
         evt["origin_suppressed"] = True
 
 
+def _inherited_project_scope(ctx: ToolContext) -> str:
+    """The project a promote with NO explicit target should land in.
+
+    Order: (1) the promoting task's own DURABLE binding — the one truth about a
+    task's project, which a "Turn into project" conversion writes without ever
+    reaching the live worker's ``ctx.project_id``; (2) the project the OWNER
+    MESSAGE this turn came from already has, so a root promoted out of an
+    already-converted message joins it instead of appearing in Main as a second
+    convertible unit; (3) the in-memory scope copy, unchanged behaviour.
+
+    Both durable reads fail OPEN exactly like ``project_facts._bound_project_id``
+    (one DEBUG line, then the copy): this runs on a routing decision the owner is
+    waiting for, and an unreadable store must not stop the work. Explicit
+    ``project_id``/``project_name`` never reach here — they stay the model's
+    ceiling (BIBLE P13)."""
+    metadata = getattr(ctx, "task_metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    try:
+        from ouroboros.config import DATA_DIR
+        from ouroboros.projects_registry import project_id_for_origin, project_id_for_task
+
+        inherited = str(project_id_for_task(DATA_DIR, str(getattr(ctx, "task_id", "") or "")) or "")
+        if not inherited:
+            inherited = str(project_id_for_origin(DATA_DIR, metadata.get("origin_message_ref")) or "")
+        if inherited:
+            return inherited
+    except Exception:
+        log.debug("promote: durable project scope lookup failed", exc_info=True)
+    return str(getattr(ctx, "project_id", "") or "")
+
+
 def _attach_predecessor_authority_from_metadata(
     ctx: ToolContext, evt: Dict[str, Any], predecessor_task_id: str = "",
 ) -> str:
@@ -196,7 +227,9 @@ def _promote_chat_to_task(
         # No explicit arg: inherit the CURRENT project scope so a project-chat
         # task that promotes follow-up work stays in its own project (the model
         # still chose to promote — scope is contextual, never a keyword gate).
-        pid = sanitize_project_id(getattr(ctx, "project_id", "") or "")
+        # The durable binding of this task, then of the owner message it came
+        # from, outrank the in-memory copy; see _inherited_project_scope.
+        pid = sanitize_project_id(_inherited_project_scope(ctx))
     try:
         current_chat_id = int(getattr(ctx, "current_chat_id", None) or 0)
     except (TypeError, ValueError):
