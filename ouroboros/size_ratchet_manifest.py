@@ -228,7 +228,6 @@ BAND_PATHS = {
     "web/modules/log_events.js": None,
     "web/modules/settings.js": None,
     "web/modules/skills.js": "One installed-skill page controller owns independently settling primary/optional reads and current-generation menu, identity and badge updates; domain lifecycle, cards, hub truth and shared interactions remain separate owners.",
-    "web/modules/subagents_settings.js": "The shared Available subagents editor now carries access choice and grouped source selection; keep this UI seam together while the next extraction shrinks it.",
     "web/tests/chat_instance_dom.test.js": "Entered the band from 1000 lines with the alias-free subagent cost pin (stage-2 fix wave): that regression reproduces only through the real createChatInstance card path, and this file owns the DOM harness that drives it; split when the next createChatInstance face lands.",
     "web/tests/harness_login_cards.test.js": "Login-card suite grew past 1000 lines with the name-the-account face cases (agy pickup, issue #232); split when the next face lands.",
     "web/tests/reviewer_slots.test.js": "The reviewer-slot tests keep source selection and access serialization coverage together with their UI contract.",
