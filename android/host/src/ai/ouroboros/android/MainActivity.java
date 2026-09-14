@@ -234,6 +234,9 @@ public final class MainActivity extends Activity {
             String[] declared = pm.getPackageInfo(getPackageName(),
                     android.content.pm.PackageManager.GET_PERMISSIONS).requestedPermissions;
             if (declared != null) for (String permission : declared) {
+                // Android 11+ requires background location to be granted separately in Settings.
+                if (Build.VERSION.SDK_INT >= 30 && android.Manifest.permission.ACCESS_BACKGROUND_LOCATION.equals(permission))
+                    continue;
                 try {
                     android.content.pm.PermissionInfo info = pm.getPermissionInfo(permission, 0);
                     if ((info.protectionLevel & android.content.pm.PermissionInfo.PROTECTION_MASK_BASE)
