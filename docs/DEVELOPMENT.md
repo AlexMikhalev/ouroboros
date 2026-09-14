@@ -193,6 +193,12 @@ integrity and authority boundaries plus truthful receipts; do not add
 task-specific auto-retry, fallback, cleanup, resume, or terminal-flow state
 machines.
 
+Explicitly naming a documented default is never a different request. An argument
+whose value is what omitting it already means (`directory_strategy="direct"` with
+no `scope_paths`) takes the omitted path on a shape that cannot serve the argument
+at all; only values that genuinely ask for something are refused there, typed, at
+the earliest layer holding the authority to judge them, with the repair named.
+
 A producer that already knows its call failed publishes that fact typed: a
 `ToolResult` through `tool_result._publish_tool_result`, or a first-line
 `⚠️ IDENTIFIER` marker the legacy adapter maps to a status. Identifier-less
