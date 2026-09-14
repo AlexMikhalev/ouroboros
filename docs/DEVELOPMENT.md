@@ -3184,8 +3184,10 @@ SPA, not a relocatable-page or multi-instance panel framework.
   viewport does not know how wide the content column is. The global webkit
   scrollbar recipe sizes both axes. Enforced by
   `tests/test_web_typography_static.py::test_select_control_clips_its_value`,
-  its `::test_webkit_scrollbar_recipe_covers_both_axes` neighbour, and
-  `tests/test_ui_settings_overflow_browser.py`; two gaps stay open — the
+  its `::test_webkit_scrollbar_recipe_covers_both_axes` neighbour,
+  `tests/test_ui_settings_overflow_browser.py` (WebKit, the native-select clip)
+  and `tests/test_ui_settings_grid_tracks_browser.py` (Chromium, yielding
+  tracks); two gaps stay open — the
   wizard document loads `ui.css` without `style.css` and keeps native
   scrollbars, and an element setting the standard
   `scrollbar-width`/`scrollbar-color` opts out of the webkit recipe on Blink.
@@ -3282,9 +3284,10 @@ at least one relevant real consumer flow. A stored screenshot alone is not
 verification; mobile or WebKit is not a universal requirement and is
 selected from risk. Containment is the WebKit-sensitive exception — a native
 select is not clipped there — so a change to a control recipe or a page
-scroll body is verified on Playwright WebKit as well as Chromium, measuring
-overflow on the scroll body's `scrollWidth` rather than on
-`documentElement`. Review-only: scored by CHECKLISTS items 2(i) and 30
+scroll body is verified on the engine that shows the class (Playwright
+WebKit for native-control clipping, Chromium for engine-independent track
+geometry), measuring overflow on the scroll body's `scrollWidth` rather than
+on `documentElement`. Review-only: scored by CHECKLISTS items 2(i) and 30
 (`web_design_system`).
 
 ### Browser dialogs
