@@ -485,11 +485,16 @@ def test_partial_block_failure_does_not_start_era_work(tmp_path, fit, unknown):
                 error.physical_attempt_capture = SimpleNamespace(state="unresolved")
             raise error
     llm = _LLM(effect=fail_second)
-    c.consolidate(chat, blocks, meta, llm)
+    usage = c.consolidate(chat, blocks, meta, llm)
     assert len(llm.calls) == 2
     assert json.loads(blocks.read_text())[:10] == originals
     assert len(json.loads(blocks.read_text())) == 11
-    assert json.loads(meta.read_text())["last_consolidated_offset"] == 100
+    saved = json.loads(meta.read_text())
+    assert saved["last_consolidated_offset"] == 100
+    # The successful PREFIX advanced the cursor, but the failed suffix is this run's
+    # OWN fresh error: advancing must not clear the very failure just recorded.
+    assert saved["last_consolidation_error"]["cursor_offset"] == 100
+    assert usage["_blocks_written"] == 1
 
 
 def test_unavailable_capacity_reader_retains_ordinary_call(monkeypatch):

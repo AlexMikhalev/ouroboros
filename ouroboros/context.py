@@ -598,6 +598,15 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
     return out
 
 
+# An unauthored common orientation is a VISIBLE GAP, never silence. Static text: this
+# section is cached with the semi-stable block, so it carries no timestamp.
+_SHARED_UNDERSTANDING_GAP = (
+    "## Shared understanding\n\nNot authored yet. "
+    "knowledge_write(topic='overview', scope='global', content=...) creates it; "
+    "it is then loaded here in every context."
+)
+
+
 def build_knowledge_sections(
     env: Any,
     *,
@@ -622,8 +631,10 @@ def build_knowledge_sections(
         if overview_text.strip():
             authored_overview = overview.source is not None
             sections.append(f"## Shared understanding\n\nSource: knowledge_read(topic='{OVERVIEW_TOPIC}', scope='global').\n\n" + overview_text)
+        else:
+            sections.append(_SHARED_UNDERSTANDING_GAP)  # present but empty is still unauthored
     except FileNotFoundError:
-        pass  # The generated index retains prior orientation until one is authored.
+        sections.append(_SHARED_UNDERSTANDING_GAP)
     except (OSError, UnicodeDecodeError) as exc:
         sections.append(f"Shared understanding source unavailable: knowledge_read(topic='{OVERVIEW_TOPIC}', scope='global'). {type(exc).__name__}.")
     knowledge_indexes = [(global_address.shelf / INDEX_FILE,
@@ -637,7 +648,10 @@ def build_knowledge_sections(
     if include_pattern_body:
         knowledge_indexes.append((env.drive_path("memory/knowledge/patterns.md"), pattern_header, "patterns register"))
     for path, header, label in knowledge_indexes:
-        text = (render_knowledge_index(inventory_knowledge(global_address), include_summaries=False)
+        # The authored summary is the resident face of a note, so the index carries it
+        # whether or not a common orientation exists; the fresh inventory render stays
+        # for the case where a note was written but its index rebuild did not land.
+        text = (render_knowledge_index(inventory_knowledge(global_address), include_summaries=True)
                 if authored_overview and path == global_address.shelf / INDEX_FILE else safe_read(path))
         if not text.strip():
             continue

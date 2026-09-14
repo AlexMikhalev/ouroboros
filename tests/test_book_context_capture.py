@@ -108,7 +108,8 @@ def test_large_nano_task_retains_exact_owner_source_without_changing_max(tmp_pat
     assert plan.nano_projection.estimated_tokens < 81920
 
 
-def test_authored_common_understanding_is_resident_without_every_note_summary(tmp_path):
+def test_authored_common_understanding_is_resident_with_every_note_summary(tmp_path):
+    """The authored summary is the resident face of a note, common orientation or not."""
     from ouroboros.knowledge import resolve_knowledge_address, write_knowledge_note
 
     env, _core, task = _capture(tmp_path)
@@ -119,5 +120,6 @@ def test_authored_common_understanding_is_resident_without_every_note_summary(tm
     sections = "\n".join(context.build_knowledge_sections(env))
     assert "context-sensitive preferences" in sections
     assert "people/alex" in sections and "Alex" in sections
-    assert "Details belong to their source" not in sections
+    assert "Details belong to their source" in sections
+    assert "Detailed source." not in sections  # the body still belongs to its own note
     assert "scope='global'" in sections
