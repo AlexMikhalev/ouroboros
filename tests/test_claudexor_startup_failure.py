@@ -570,6 +570,29 @@ def test_owner_refresh_on_a_still_crashing_engine_costs_one_spawn_and_re_latches
     ]
 
 
+def test_a_child_the_stop_itself_kills_is_not_a_startup_failure(monkeypatch, tmp_path):
+    """H-05 item 1 (pins the H-04 correction): the settle runs at the head of ``stop_outcome``,
+    BEFORE the stop's own signalling — a live starting child that the ledger pass SIGTERMs
+    must not be rowed or latched. Under the H-03 placement (settle inside ``_terminate_child``)
+    this test fails with one false ``latched=true`` row and a set latch."""
+    import ouroboros.process_custody as custody_mod
+
+    stand = _Stand(monkeypatch, tmp_path, returncode=None, banner=_OOM_REACHED)
+    assert stand.fail_once().code == "daemon_starting"
+    child = stand.spawned[0]
+    monkeypatch.setattr(custody_mod, "process_stop_snapshot", lambda root, purposes: [])
+    monkeypatch.setattr(custody_mod, "pending_process_stops", lambda root, purposes: [])
+
+    def stop_by_signal(root, purposes, *, unconfirmed, expected_entries):
+        stand.exit_code = -15  # the stop's own SIGTERM lands before _terminate_child looks
+        return [child.pid]
+
+    monkeypatch.setattr(custody_mod, "stop_ledgered_processes", stop_by_signal)
+    assert stand.manager.stop_outcome() == "stopped"
+    assert _rows(stand.data_dir) == [], "a deliberate stop is not a startup failure"
+    assert stand.manager._last_start_failure is None and stand.manager._proc is None
+
+
 def test_a_joined_peer_startup_that_vanished_has_no_exit_fact(monkeypatch, tmp_path):
     """Only this manager's own child carries an exit fact; joining never latches."""
     stand = _Stand(monkeypatch, tmp_path, returncode=-6, banner=_OOM_REACHED)
