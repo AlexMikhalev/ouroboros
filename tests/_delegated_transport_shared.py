@@ -159,8 +159,14 @@ def _delegating_ctx(tmp_path, *, acting: bool, task_id: str = "t-nanny"):
 
 
 def _started_request(tmp_path, *, acting: bool, monkeypatch,
-                     engine_version=CLAUDEXOR_DELEGATED_MARKER_MIN_VERSION, expect="started"):
-    """Run _delegate_start against a stubbed gateway and return the wire request."""
+                     engine_version=CLAUDEXOR_DELEGATED_MARKER_MIN_VERSION, expect="started",
+                     start_kwargs=None):
+    """Run _delegate_start against a stubbed gateway and return the wire request.
+
+    ``start_kwargs`` forwards optional model-issued arguments (folder geometry)
+    unchanged, so a caller can compare an explicitly named shape against omission
+    on the SAME transport instead of rebuilding the stub.
+    """
     import ouroboros.tools.delegate as delegate
     from ouroboros.gateways import claudexor as gw
 
@@ -193,7 +199,8 @@ def _started_request(tmp_path, *, acting: bool, monkeypatch,
     delegate._CUSTODY.clear()
     task_id = f"t-nanny-{'write' if acting else 'read'}"
     payload = json.loads(delegate._delegate_start(
-        _delegating_ctx(tmp_path, acting=acting, task_id=task_id), "edit the README"
+        _delegating_ctx(tmp_path, acting=acting, task_id=task_id), "edit the README",
+        **(start_kwargs or {})
     ))
     delegate._CUSTODY.clear()
     assert payload["status"] == expect, payload

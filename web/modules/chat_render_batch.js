@@ -5,46 +5,42 @@ import { compareHistoryPosition } from './chat_history_replay.js';
 const nodePosition = node => node?.dataset?.historySource
     ? { source: node.dataset.historySource, offset: Number(node.dataset.historyOffset) } : null;
 
-/** History chrome only; the chat instance retains navigation and reading state. */
-export function createHistoryControls(messagesDiv, typingEl) {
+/**
+ * History chrome only; the chat instance retains navigation and reading state.
+ *
+ * There is no "Load newer" control. Whether a newer page is cached is a fact
+ * about the bounded page cache, not about what the reader can see, so a button
+ * driven by it appeared under a fully visible transcript and asked for one click
+ * per cached page. Loading newer pages is automatic at the bottom edge; the
+ * floating scroll-to-latest button remains the only return-to-present control.
+ */
+export function createHistoryControls(messagesDiv) {
     const doc = messagesDiv.ownerDocument;
-    const make = className => {
-        const root = doc.createElement('div');
-        root.className = className;
-        const button = doc.createElement('button');
-        button.type = 'button';
-        button.className = 'chat-load-older-btn';
-        root.append(button);
-        return { root, button };
-    };
-    const older = make('chat-load-older');
-    const newer = make('chat-load-newer');
+    const root = doc.createElement('div');
+    root.className = 'chat-load-older';
+    const button = doc.createElement('button');
+    button.type = 'button';
+    button.className = 'chat-load-older-btn';
     const note = doc.createElement('span');
     note.className = 'chat-load-older-note';
-    older.root.append(note);
+    root.append(button, note);
     return {
-        olderButton: older.button,
-        newerButton: newer.button,
+        olderButton: button,
         render(snapshot, windows) {
             const error = snapshot.error;
             const changedView = error?.body?.reason_code === 'history_view_changed';
             const noteText = error ? String(error.message || error)
                 : snapshot.olderExhausted ? 'Beginning of saved history' : '';
             const fields = [
-                [older.button, { textContent: snapshot.loading ? 'Loading…'
+                [button, { textContent: snapshot.loading ? 'Loading…'
                     : changedView ? 'Refresh history' : error ? 'Retry loading messages' : 'Load older messages',
                     disabled: Boolean(snapshot.loading), hidden: !error && !snapshot.canOlder }],
-                [newer.button, { textContent: snapshot.loading === 'newer' ? 'Loading…' : 'Load newer messages',
-                    disabled: Boolean(snapshot.loading) }],
                 [note, { textContent: noteText, hidden: !noteText }],
             ];
             for (const [node, values] of fields) {
                 for (const [key, value] of Object.entries(values)) if (node[key] !== value) node[key] = value;
             }
-            if ((snapshot.initialized || error) && !older.root.isConnected) messagesDiv.prepend(older.root);
-            if (snapshot.canNewer) {
-                if (!newer.root.isConnected) messagesDiv.insertBefore(newer.root, typingEl);
-            } else newer.root.remove();
+            if ((snapshot.initialized || error) && !root.isConnected) messagesDiv.prepend(root);
             const hasGaps = [...windows].some(value => (value?.truncated_by || [])
                 .some(cause => !['quota', 'archive_floor', 'lineage_cap', 'page'].includes(cause)));
             return { complete: Boolean(snapshot.initialized && snapshot.olderExhausted

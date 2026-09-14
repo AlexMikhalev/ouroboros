@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { accountRows } from '../modules/harness_accounts.js';
-import { nextUpAccount } from '../modules/claudexor_status_store.js';
+import { accountName, nextUpAccount } from '../modules/claudexor_status_store.js';
 import { indexProfilesByHarness } from '../modules/reviewer_slots.js';
 
 // Source pins below delimit across line breaks; normalize CRLF so a Windows
@@ -171,13 +171,17 @@ test('both consumers of the credential-profiles wire read the SAME shape', () =>
     )) };
     const fromAccounts = accountRows(payload)
         .filter((row) => row.kind === 'profile')
-        .map((row) => `${row.harness}/${row.profile_id}`)
+        .map((row) => `${row.harness}/${row.profile_id}/${accountName(row)}`)
         .sort();
     const index = indexProfilesByHarness(payload);
     const fromSlots = Object.entries(index)
-        .flatMap(([harness, entries]) => entries.map((entry) => `${harness}/${entry.id}`))
+        .flatMap(([harness, entries]) => entries
+            .map((entry) => `${harness}/${entry.id}/${entry.name}`))
         .sort();
     assert.ok(fromAccounts.length > 0, 'fixture carries no profile rows');
+    // Name included: the pin select offers the account under the name the
+    // Accounts tab gives it, which is true by construction only while both
+    // sides read these rows through the one reader.
     assert.deepEqual(fromSlots, fromAccounts);
 });
 
@@ -202,6 +206,15 @@ test('the UNIFIED wire shape feeds the same readers: all rows named, pools carry
     // rows read — the reviewer-side half of the unification.
     const index = indexProfilesByHarness(payload);
     assert.ok((index.codex || []).some((entry) => entry.id === 'codex-default'));
+    // …under its own name, not its machine id: the migrated default login is
+    // called by its login email on both surfaces.
+    assert.equal((index.codex || []).find((entry) => entry.id === 'codex-default').name,
+        'native@example.com');
+    const namesById = Object.fromEntries(Object.values(index).flat()
+        .map((entry) => [entry.id, entry.name]));
+    for (const row of rows.filter((entry) => entry.kind === 'profile')) {
+        assert.equal(namesById[row.profile_id], accountName(row));
+    }
     // The enabled projection reaches both consumers from one reader.
     const byId = Object.fromEntries(rows.map((row) => [row.profile_id, row.enabled]));
     assert.deepEqual(byId, { 'codex-default': true, koshak: false });

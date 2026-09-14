@@ -25,10 +25,11 @@
 // Pure helpers live at the top and are node-tested without a DOM.
 
 import { apiFetch } from './api_client.js';
-import { bindStatusSurface, boundedStatusRefresh, claudexorStatus } from './claudexor_status_store.js';
+import { accountRows, bindStatusSurface, boundedStatusRefresh, claudexorStatus } from './claudexor_status_store.js';
 import { harnessIdentityMarkup, harnessPresentation } from './harness_presentation.js';
 import { formatRelativeAge, revealNewRow } from './ui_helpers.js';
 import * as routeEditor from './route_editor_primitives.js';
+import { sessionRouteVerdict } from './subagent_status_primitives.js';
 import {
     availableSubagentsLoadValue,
     parseAvailableSubagentsSetting,
@@ -118,8 +119,9 @@ export function indexProfilesByHarness(payload) {
 }
 
 // One index entry, whichever spelling it arrived in: the index emits
-// `{id, enabled}` objects; older call sites and tests still hand plain id
-// strings, which read as enabled (the same fail-open rule as the index).
+// `{id, enabled, name}` objects; older call sites and tests still hand plain id
+// strings, which read as enabled and named by their id (the same fail-open
+// rule as the index).
 function profileEntry(entry) {
     return routeEditor.profileEntry(entry);
 }
@@ -207,7 +209,7 @@ export function deepReviewMetaNotes(row) {
     return notes;
 }
 
-export function deepReviewDeliveryNote(row, { roster = [], rosterKnown = true, harnesses = {}, catalogKnown = true } = {}) {
+export function deepReviewDeliveryNote(row, { roster = [], rosterKnown = true, harnesses = {}, catalogKnown = true, routeStatus = true } = {}) {
     // The deep-review row's ONE difference from the advisory, said where the
     // owner picks: an API MODEL here is the packed review (one large-context
     // call carrying the Atlas + memory), not an inspection episode; only a
@@ -224,7 +226,7 @@ export function deepReviewDeliveryNote(row, { roster = [], rosterKnown = true, h
             : 'Native inspection episode — reads the repository with host read-only tools (reads host-observed); the memory whitelist reaches it inline byte-exact';
     }
     if (row?.route?.kind === ROUTE_KIND_SESSION) {
-        return `${capabilityBadge(row, harnesses, { catalogKnown })} — reads not host-observed`;
+        return `${capabilityBadge(row, harnesses, { catalogKnown, routeStatus })} — reads not host-observed`;
     }
     return 'One packed review — the repository Atlas plus the full memory whitelist in a single large-context call (the advisory’s API model runs an inspection episode instead)';
 }
@@ -528,7 +530,7 @@ export function pinnedAccountWarning({ triad = [], scope = [], advisory = null, 
 }
 
 export function capabilityBadge(row, harnessesById, {
-    catalogKnown = true, modelSources = [], providerProfiles = {},
+    catalogKnown = true, modelSources = [], providerProfiles = {}, routeStatus = true,
 } = {}) {
     // DISPLAY-only facts: never a control (6.2).
     if (row.route.kind === ROUTE_KIND_SESSION) {
@@ -538,7 +540,8 @@ export function capabilityBadge(row, harnessesById, {
         if (!catalogKnown) return 'agent session — retrieves context with its own tools';
         const harness = harnessesById?.[splitSessionTarget(row.route.target_id).harness];
         const status = harness ? (harness.status || 'unknown') : 'not discovered';
-        return `agent session — retrieves context with its own tools · route ${status}`;
+        // The harness status tail yields to a row verdict: one availability claim per line.
+        return `agent session — retrieves context with its own tools${routeStatus ? ` · route ${status}` : ''}`;
     }
     // An API row names the credential it spends, not a generic channel: the
     // owner chose a provider, so the badge says which key pays for the call.
@@ -549,9 +552,9 @@ export function capabilityBadge(row, harnessesById, {
 
 /** The advisory's one delivery difference, said beside the row that picks it. */
 export function advisoryDeliveryNote(row, harnessesById, {
-    catalogKnown = true, modelSources = [], providerProfiles = {},
+    catalogKnown = true, modelSources = [], providerProfiles = {}, routeStatus = true,
 } = {}) {
-    const badge = capabilityBadge(row, harnessesById, { catalogKnown, modelSources, providerProfiles });
+    const badge = capabilityBadge(row, harnessesById, { catalogKnown, modelSources, providerProfiles, routeStatus });
     return row?.route?.kind === ROUTE_KIND_SESSION ? badge
         : `${badge} — runs a bounded inspection episode`;
 }
@@ -623,6 +626,9 @@ const state = {
     // "(not in discovery)" label.
     catalogKnown: false,
     accountsKnown: false,
+    // The live session verdict reads accounts and quota, not just the catalog.
+    quotaKnown: false,
+    snapshot: null,
     store: claudexorStatus,
     disposers: [],
     disposeChoosers: () => {},
@@ -648,9 +654,9 @@ const SINGLETONS = {
         // placeholder says that instead of dictating an id spelling.
         modelPlaceholder: 'Empty uses the default model',
         memory: advisoryRouteMemory, badgeOnReference: false,
-        badge: (row) => advisoryDeliveryNote({ route: row.route || {} }, harnessesById(), {
+        badge: (row, opts = {}) => advisoryDeliveryNote({ route: row.route || {} }, harnessesById(), {
             catalogKnown: state.catalogKnown, modelSources: state.modelSources,
-            providerProfiles: state.providerProfiles,
+            providerProfiles: state.providerProfiles, ...opts,
         }),
         extraMeta: () => [],
     },
@@ -659,8 +665,8 @@ const SINGLETONS = {
         rowId: 'reviewer-deep-review-row', enabledToggle: false, apiEffortDefault: '', apiEffortLabel: 'deep self-review effort',
         modelPlaceholder: 'Choose a model',
         memory: deepReviewRouteMemory, badgeOnReference: true, materializeOnEdit: true,
-        badge: (row) => deepReviewDeliveryNote(row, {
-            roster: state.roster, rosterKnown: state.rosterKnown, harnesses: harnessesById(), catalogKnown: state.catalogKnown,
+        badge: (row, opts = {}) => deepReviewDeliveryNote(row, {
+            roster: state.roster, rosterKnown: state.rosterKnown, harnesses: harnessesById(), catalogKnown: state.catalogKnown, ...opts,
         }),
         extraMeta: deepReviewMetaNotes,
     },
@@ -882,6 +888,20 @@ function subagentIdentityMarkup(row) {
     return reviewerRouteIdentityMarkup(route, harnessesById(), identityContext());
 }
 
+/** Everything a status tick can change on screen: facets, catalogs, pins, and each session row's verdict. */
+export function repaintSignature(view = state) {
+    const rows = [...(view.triad || []), ...(view.scope || []), view.advisory, view.deepReview];
+    return JSON.stringify([view.catalogKnown, view.accountsKnown, view.quotaKnown, view.harnesses, view.profilesByHarness,
+        accountRows(view.snapshot), view.snapshot?.quota || [], rows.map((row) => sessionVerdictNote(row, view))]);
+}
+
+/** The same live verdict the Available-subagents cards show, for a session row. */
+export function sessionVerdictNote(row, view = state) {
+    if (row?.route?.kind !== ROUTE_KIND_SESSION) return '';
+    return sessionRouteVerdict(row, { snapshot: { ...(view.snapshot || {}), harnesses: view.harnesses },
+        catalogKnown: view.catalogKnown, accountsKnown: view.accountsKnown, quotaKnown: view.quotaKnown }).text;
+}
+
 function rowHtml(row, group) {
     const { catalogKnown, accountsKnown } = state;
     const label = `${group === 'triad' ? 'Triad' : 'Scope'} reviewer ${categoryRows(group).indexOf(row) + 1}`;
@@ -912,9 +932,10 @@ function rowHtml(row, group) {
     // ONE quiet meta line per row (owner feedback): the delivery badge, the
     // exact stored id and the last-run projection share it; nothing is dropped
     // — the raw route + ISO timestamp live in the tooltip.
+    const verdict = sessionVerdictNote(row);
     const metaParts = [capabilityBadge(row, harnessesById(), {
-        catalogKnown, modelSources: state.modelSources, providerProfiles: state.providerProfiles,
-    })];
+        catalogKnown, modelSources: state.modelSources, providerProfiles: state.providerProfiles, routeStatus: !verdict,
+    }), verdict].filter(Boolean);
     const modelsGap = session ? modelsGapNote(harness, catalogKnown) : '';
     if (modelsGap) metaParts.push(modelsGap);
     const surfaceDefault = CATEGORIES[group]?.surfaceDefault || 'review effort';
@@ -979,7 +1000,8 @@ function singletonHtml(spec) {
     const modelOptions = session ? sessionModelOptions(harness, split.model, { catalogKnown }) : [];
     const profiles = state.profilesByHarness[split.harness] || [];
     const profileOptions = profileOptionsFor(profiles, row.route?.profile_id, { accountsKnown: accountsKnown && Boolean(split.harness) });
-    const metaParts = [spec.badge(row), ...spec.extraMeta(row)];
+    const verdict = sessionVerdictNote(row);
+    const metaParts = [spec.badge(row, { routeStatus: !verdict }), verdict, ...spec.extraMeta(row)].filter(Boolean);
     const modelsGap = session ? modelsGapNote(harness, catalogKnown) : '';
     if (modelsGap) metaParts.push(modelsGap);
     return `
@@ -1418,7 +1440,9 @@ function adoptStatusSnapshot() {
     // sentence about it; a facet that WAS read keeps its authoritative list.
     state.catalogKnown = state.store.catalogKnown;
     state.accountsKnown = state.store.accountsKnown;
+    state.quotaKnown = state.store.quotaKnown;
     const snapshot = state.store.snapshot || {};
+    state.snapshot = snapshot;
     state.harnesses = state.catalogKnown && Array.isArray(snapshot.harnesses)
         ? snapshot.harnesses.map((harness) => mergeHarnessModelCatalog(state.harnesses.find((old) => old.id === harness.id), harness)) : state.harnesses;
     state.profilesByHarness = state.accountsKnown ? indexProfilesByHarness(snapshot) : {};
@@ -1475,8 +1499,7 @@ export function initReviewerSlots({ onChange, store = claudexorStatus } = {}) {
         includeModels: true,
         listener: () => {
             adoptStatusSnapshot();
-            const next = JSON.stringify([state.catalogKnown, state.accountsKnown,
-                state.harnesses, state.profilesByHarness]);
+            const next = repaintSignature();
             if (next === signature) return;
             signature = next;
             renderRows({ discoveryOnly: true });

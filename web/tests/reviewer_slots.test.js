@@ -29,9 +29,11 @@ import {
     pinnedAccountWarning,
     profileOptionsFor,
     renderReviewerSlotsSection,
+    repaintSignature,
     reviewerRouteIdentityMarkup,
     routeChoiceGroups,
     sessionModelOptions,
+    sessionVerdictNote,
     splitSessionTarget,
     subagentOptionsFor,
     SUBAGENT_CHOICE_PREFIX,
@@ -258,6 +260,30 @@ test('a disabled account is offered with a "(disabled)" label, still selectable'
     assert.ok(options.every((o) => !o.disabled), 'every account stays selectable');
 });
 
+test('an account is offered under the name the Accounts tab gives it', () => {
+    // The index carries the Accounts-tab name beside the id, so the migrated
+    // default login — named by its login email there — stopped reading as a
+    // missing account here. The id still rides the label (it is what the
+    // setting stores) and stays the option VALUE.
+    const options = profileOptionsFor([
+        { id: 'codex-default', enabled: true, name: 'owner@example.com' },
+        { id: 'koshak', enabled: true, name: 'koshak' },
+        'koshak',
+    ], '');
+    assert.deepEqual(options.map((o) => o.value), ['', 'codex-default', 'koshak', 'koshak']);
+    assert.equal(options[1].label, 'Account: owner@example.com · codex-default (pinned)');
+    // A name that IS the id says it once.
+    assert.equal(options[2].label, 'Account: koshak (pinned)');
+    // A plain id string carries no name of its own and reads unchanged.
+    assert.equal(options[3].label, 'Account: koshak (pinned)');
+
+    const disabled = profileOptionsFor([
+        { id: 'codex-default', enabled: false, name: 'owner@example.com' },
+    ], '');
+    assert.equal(disabled[1].label,
+        'Account: owner@example.com · codex-default (pinned) (disabled)');
+});
+
 test('the provider shown for a delegated row is the harness name, never Claudexor', () => {
     const groups = routeChoiceGroups({
         harnesses: [{ id: 'codex', display_name: 'Codex CLI', status: 'ok', enabled: true }],
@@ -449,6 +475,64 @@ test('capability badges display facts and never configure', () => {
         'OpenAI API key');
     assert.equal(capabilityBadge({ route: { kind: ROUTE_KIND_API, target_id: 'claudexor::codex=gpt' } }, {}),
         'Model call through subscription');
+});
+
+test('a review-lane session row carries the live availability verdict beside its badge', () => {
+    // The quiet meta line used to say only what the harness DOES ("agent
+    // session … route ok") — a fact about the harness, never about whether any
+    // account can actually run the selected model. It now carries the same
+    // sentence the Available-subagents cards show. An API row keeps its line
+    // unchanged: an API model is only ever checked when the call starts.
+    const view = (models) => ({
+        catalogKnown: true, accountsKnown: true, quotaKnown: true,
+        harnesses: [{ id: 'codex', status: 'ok', enabled: true, models }],
+        snapshot: {
+            profiles: { harnessAccounts: [], profiles: [
+                { profile: { harness_id: 'codex', profile_id: 'signed-out', enabled: true }, status: { verification: '' } },
+                { profile: { harness_id: 'codex', profile_id: 'koshak', enabled: true }, status: { verification: 'passed' } },
+            ] },
+            quota: [{ subject: { harness: 'codex', subject_id: 'koshak' }, freshness: 'fresh', constraints: [] }],
+        },
+    });
+    const session = { slot_id: 't1', route: { kind: ROUTE_KIND_SESSION, target_id: 'codex=gpt-x', profile_id: '' } };
+    // Only the signed-out account lists the model, so no ONE account can run it.
+    assert.equal(sessionVerdictNote(session, view([{ id: 'gpt-x', credential_profile_id: 'signed-out' }])),
+        'codex · no usable account currently carries gpt-x');
+    // The verified account carries it: the row says so instead of accusing.
+    assert.equal(sessionVerdictNote(session, view([{ id: 'gpt-x', credential_profile_id: 'koshak' }])),
+        'codex · available now');
+    // The badge beside it is untouched, and says what it always said.
+    assert.match(capabilityBadge(session, { codex: { status: 'ok' } }), /agent session — retrieves context with its own tools · route ok/);
+    // An API row and a configured-subagent reference add no verdict sentence.
+    const empty = view([{ id: 'gpt-x', credential_profile_id: 'koshak' }]);
+    assert.equal(sessionVerdictNote({ slot_id: 't2', route: { kind: ROUTE_KIND_API, target_id: 'openai::gpt-x' } }, empty), '');
+    assert.equal(sessionVerdictNote({ slot_id: 't3', subagent_id: 'scout' }, empty), '');
+});
+
+test('the harness status tail yields to a row verdict, and the repaint gate watches what the verdict reads', () => {
+    const sessionRow = { route: { kind: ROUTE_KIND_SESSION, target_id: 'codex=gpt-x', profile_id: 'koshak' } };
+    // One availability claim per line: with a verdict beside it the badge drops `route ok`.
+    assert.equal(capabilityBadge(sessionRow, { codex: { status: 'ok' } }, { routeStatus: false }),
+        'agent session — retrieves context with its own tools');
+    assert.match(capabilityBadge(sessionRow, { codex: { status: 'ok' } }), / · route ok$/);
+    // A pinned account that logs in, or spends its window, must repaint the row
+    // even though the catalog, the facets and the pin index are unchanged.
+    const view = (verification, constraints) => ({
+        catalogKnown: true, accountsKnown: true, quotaKnown: true, triad: [sessionRow], scope: [],
+        advisory: { route: { kind: ROUTE_KIND_API, target_id: '' } }, deepReview: { route: { kind: ROUTE_KIND_API, target_id: '' } },
+        harnesses: [{ id: 'codex', status: 'ok', enabled: true, models: [{ id: 'gpt-x', credential_profile_id: 'koshak' }] }],
+        profilesByHarness: { codex: [{ id: 'koshak', enabled: true }] },
+        snapshot: {
+            profiles: { harnessAccounts: [], profiles: [{ profile: { harness_id: 'codex', profile_id: 'koshak', enabled: true }, status: { verification } }] },
+            quota: [{ subject: { harness: 'codex', subject_id: 'koshak' }, freshness: 'fresh', constraints }],
+        },
+    });
+    const loggedOut = repaintSignature(view('', []));
+    const loggedIn = repaintSignature(view('passed', []));
+    const spent = repaintSignature(view('passed', [{ id: 'w', used_ratio: 1, window_seconds: 3600, resets_at: '2999-01-01T00:00:00Z' }]));
+    assert.notEqual(loggedOut, loggedIn);
+    assert.notEqual(loggedIn, spent);
+    assert.equal(repaintSignature(view('passed', [])), loggedIn, 'an unchanged tick repaints nothing');
 });
 
 test('the session model-options fragment guards a saved model discovery no longer lists', () => {
