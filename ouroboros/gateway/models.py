@@ -443,8 +443,10 @@ def _subscription_model_catalog(source_id: str = "", profile_id: str = "") -> di
                     result["account_catalogs"].append(catalog)
                     result["partial"] = result["partial"] or catalog.get("partial", False)
                     for account in catalog.get("accounts", []):
-                        problem = account.get("problem") or {}
-                        if problem or account.get("catalog") is None:
+                        # A readable account carrying a problem (spent window, cooldown) is account state,
+                        # already on its items and account_catalogs; only a missing catalog is a read failure.
+                        if account.get("catalog") is None:
+                            problem = account.get("problem") or {}
                             result["errors"].append({"provider_id": "claudexor", "source_id": identifier,
                                 "credential_profile_id": account.get("credentialProfileId"),
                                 "code": problem.get("code", "catalog_unavailable"),

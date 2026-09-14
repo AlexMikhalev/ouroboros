@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { catalogReadNote, catalogReadState, mergeModelCatalog, refreshModelCatalog } from '../modules/settings_catalog.js';
+import { catalogReadNote, catalogReadState, mergeModelCatalog, refreshModelCatalog, summarizeReadErrors } from '../modules/settings_catalog.js';
 
 const first = {
     items: [{ value: 'claudexor::opaque=owner-model', source_id: 'opaque', credential_profile_id: 'personal', observed_at: 'earlier' }],
@@ -149,4 +149,88 @@ test('read errors drop the httpx documentation pointer and rows get the compact 
     assert.equal(catalogReadNote({ errors: [{ error: 'boom' }] }, { compact: true }),
         'Model catalog could not be read. Existing suggestions and your selection are kept.');
     assert.equal(catalogReadNote({ items: [] }, { compact: true }), '');
+});
+
+const QUOTA_LIMIT = 'The account has an active quota limit';
+const quotaProfiles = ['polina', 'chatgptpro1_anton', 'proton3', 'proton2', 'gptpro1',
+    'gptpro2', 'gptpro3', 'gptpro4', 'gptpro6'];
+const liveAccountErrors = [
+    ...quotaProfiles.map((credential_profile_id) => ({ provider_id: 'claudexor', source_id: 'codex',
+        credential_profile_id, code: 'quota_exhausted', error: QUOTA_LIMIT })),
+    { provider_id: 'claudexor', source_id: 'codex', credential_profile_id: 'proton4',
+        code: 'sign_in_required', error: 'The selected managed Codex account requires sign-in.' },
+    { provider_id: 'claudexor', source_id: 'codex', credential_profile_id: 'gptopro6',
+        code: 'no_credential', error: 'The account has no verified current catalog credential' },
+];
+
+test('accounts sharing one cause are one clause with the profiles named, not one line each', () => {
+    const note = catalogReadNote({
+        items: [{ value: 'openai::gpt-5.6-terra' }, { value: 'anthropic::claude-fable-5' },
+            { value: 'claudexor::codex=owner-model' }],
+        errors: liveAccountErrors,
+    });
+    assert.equal(note, 'Some model sources could not be read: polina, chatgptpro1_anton, proton3 and 6 more:'
+        + ' The account has an active quota limit; proton4: The selected managed Codex account requires'
+        + ' sign-in; gptopro6: The account has no verified current catalog credential.'
+        + ' 2 API models loaded. Existing suggestions and your selection are kept.'
+        + ' Refresh Model Catalog in Models to retry.');
+    // Every cause is still named: only the repeated subjects are counted.
+    for (const cause of [QUOTA_LIMIT, 'requires sign-in', 'no verified current catalog credential']) {
+        assert.ok(note.includes(cause), cause);
+    }
+    assert.equal(note.split('; ').length, 3, 'one clause per cause, not one per error');
+});
+
+test('an account cause and an API-provider cause each get their own clause', () => {
+    const note = catalogReadNote({
+        items: [{ value: 'openai::gpt-x' }],
+        errors: [
+            { provider_id: 'claudexor', source_id: 'codex', credential_profile_id: 'polina',
+                code: 'quota_exhausted', error: QUOTA_LIMIT },
+            { provider_id: 'openai', error: "Client error '401 Unauthorized' for url 'https://api.openai.com/v1/models'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401" },
+        ],
+    });
+    assert.match(note, /^Some model sources could not be read: polina: The account has an active quota limit; Client error '401 Unauthorized' for url 'https:\/\/api\.openai\.com\/v1\/models'\. 1 API model loaded\./);
+    assert.doesNotMatch(note, /For more information/);
+    assert.doesNotMatch(note, /openai: Client error/, 'a source without a profile is not named');
+});
+
+test('repeated causes collapse and shared causes name every distinct profile', () => {
+    assert.equal(summarizeReadErrors([]), '');
+    assert.equal(summarizeReadErrors([
+        { credential_profile_id: 'polina', error: QUOTA_LIMIT },
+        { credential_profile_id: 'polina', error: QUOTA_LIMIT },
+    ]), `polina: ${QUOTA_LIMIT}`);
+    assert.equal(summarizeReadErrors([
+        { credential_profile_id: 'polina', error: QUOTA_LIMIT },
+        { credential_profile_id: 'proton3', error: QUOTA_LIMIT },
+    ]), `polina, proton3: ${QUOTA_LIMIT}`);
+    // A source without a profile is folded into the named clause for the same cause; it adds no name.
+    assert.equal(summarizeReadErrors([
+        { provider_id: 'claudexor', error: QUOTA_LIMIT },
+        { credential_profile_id: 'polina', error: QUOTA_LIMIT },
+    ]), `polina: ${QUOTA_LIMIT}`);
+    assert.equal(summarizeReadErrors([{ provider_id: 'claudexor', code: 'daemon_unreachable' }]), 'daemon_unreachable');
+    // A profile with no stated cause is still named, never rendered as "x: ".
+    assert.equal(summarizeReadErrors([{ credential_profile_id: 'x' }, {}]), 'x');
+});
+
+test('the vendor does not own the banner length: one cause is clamped', () => {
+    const long = 'The vendor returned a very long diagnostic. '.padEnd(220, 'x');
+    assert.equal(long.length, 220);
+    const clause = summarizeReadErrors([{ error: long }]);
+    assert.equal(clause, `${long.slice(0, 159)}…`);
+    assert.equal(clause.length, 160);
+    assert.doesNotMatch(clause, /…./, 'exactly one ellipsis, at the end');
+    assert.match(catalogReadNote({ items: [], errors: [{ error: long }] }),
+        /^Model catalog could not be read: The vendor returned .*…\. Existing suggestions/);
+});
+
+test('a vendor message that ends in a period does not produce a double stop', () => {
+    const note = catalogReadNote({
+        items: [{ value: 'openai::gpt-x' }],
+        errors: [{ credential_profile_id: 'proton4', error: 'The selected managed Codex account requires sign-in.' }],
+    });
+    assert.match(note, /proton4: The selected managed Codex account requires sign-in\. 1 API model loaded\./);
+    assert.doesNotMatch(note, /sign-in(\.\.|\.;|;)/);
 });
