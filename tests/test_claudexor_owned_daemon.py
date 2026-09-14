@@ -2714,7 +2714,7 @@ def test_exited_spawn_times_out_cleanly_with_bounded_liveness_probes(
         manager.ensure_running()
 
     assert err.value.code == "daemon_spawn_failed"
-    assert "exit_code=1" in str(err.value)
+    assert "poll=1" in str(err.value)
     assert "startup log interval=0..18 bytes" in str(err.value)
     assert handshake_bounds
     assert clock.now == pytest.approx(owned._SPAWN_WAIT_SEC)

@@ -149,10 +149,10 @@ class _Stand:
     """
 
     def __init__(self, monkeypatch, tmp_path, *, returncode, banner, write_descriptor=False):
+        import ouroboros.process_custody as custody_mod
         from ouroboros import claudexor_runtime as runtime
         from ouroboros.gateways import claudexor as gateway_mod
         from ouroboros.gateways.claudexor import ClaudexorUnavailable, DaemonEndpoint
-        import ouroboros.process_custody as custody_mod
 
         self.data_dir = tmp_path / "data"
         self.config_dir = self.data_dir / "claudexor"
@@ -609,9 +609,9 @@ def test_a_joined_peer_startup_that_vanished_has_no_exit_fact(monkeypatch, tmp_p
 @pytest.mark.skipif(os.name == "nt", reason="POSIX signal exit")
 def test_a_real_child_killed_by_a_signal_carries_the_raw_return_code(monkeypatch, tmp_path):
     """Real ``Popen``: a child that dies by SIGTERM after writing the banner into the sink."""
+    import ouroboros.process_custody as custody_mod
     from ouroboros import claudexor_runtime as runtime
     from ouroboros.gateways.claudexor import ClaudexorUnavailable
-    import ouroboros.process_custody as custody_mod
 
     data_dir = tmp_path / "data"
     config_dir = data_dir / "claudexor"
@@ -653,7 +653,7 @@ def test_a_real_child_killed_by_a_signal_carries_the_raw_return_code(monkeypatch
     assert (config_dir / "daemon.log").read_bytes() == _OOM_REACHED
 
 
-# --- the supervisor sweep is the one retrier ------------------------------------
+# --- the supervisor sweep and the owner's Refresh are the retriers --------------
 
 def _track_sweep_threads(monkeypatch) -> list:
     """Capture the threads the sweep starts (the retry runs on one) so tests can join them."""

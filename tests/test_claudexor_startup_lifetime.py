@@ -383,7 +383,7 @@ def test_crashed_startup_reports_current_pid_build_and_log_interval(startup):
     elected = _read_json(startup.home / "elected.json")
     assert failed.value.code == "daemon_spawn_failed"
     text = str(failed.value)
-    assert f"spawn_pid={elected['pid']}" in text and "exit_code=7" in text
+    assert f"spawn_pid={elected['pid']}" in text and "poll=7" in text
     assert "version=9.9.9" in text and "build_sha=" + "c" * 40 in text
     assert f"startup log interval={len(old)}.." in text
     assert "old runtime" not in text and str(startup.home / "daemon.log") in text

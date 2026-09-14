@@ -787,7 +787,7 @@ class OwnedClaudexorDaemon:
         if attempt:
             details.append(f"spawn_pid={attempt['pid']}; selected_version={attempt['version']}; "
                            f"selected_build_sha={attempt['build_sha']}; "
-                           f"exit_code={proc.poll() if proc is not None else 'unknown'}")
+                           f"poll={proc.poll() if proc is not None else 'unknown'}")
             interval, _ = read_startup_log_interval(  # identity-checked bounds only, no bytes
                 log_path, start=int(attempt["log_start"]), identity=attempt["log_identity"], limit=0)
             details.append(describe_log_interval(interval or []))
