@@ -303,12 +303,15 @@ def test_auto_catalog_keeps_every_account_and_independent_capabilities(account_e
             for row in shared] == [("a", 272000, ["medium"], ["standard"]), ("b", 1000000, ["high"], ["standard", "fast"])]
     assert {row["id"] for row in payload["items"]} == {"shared", "only-a", "only-b"}
     assert shared[1]["availability"] == "unavailable" and shared[1]["observed_at"] is None
+    assert shared[1]["problem"]["code"] == "subscription_window_exhausted"
     assert shared[1]["processing"]["eligible"] is None
     assert payload["account_catalogs"] == [{"source": "codex", "accounts": accounts, "partial": True}]
+    assert payload["account_catalogs"][0]["accounts"][1]["problem"]["code"] == "subscription_window_exhausted"
     assert payload["partial"] is True
     assert payload["model_sources"][0]["processingPreferences"] == ["standard", "fast"]
+    # A spent window on a READABLE account is account state, not a catalog read failure.
     assert [(row["credential_profile_id"], row["code"]) for row in payload["errors"]] == [
-        ("b", "subscription_window_exhausted"), ("c", "model_catalog_unavailable")]
+        ("c", "model_catalog_unavailable")]
     assert gateway.calls == [("codex", None, {"view": "accounts"})]
 
 

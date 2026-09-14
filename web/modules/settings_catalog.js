@@ -52,15 +52,46 @@ export function mergeHarnessModelCatalog(previous, current) {
     }).items };
 }
 
-/** httpx appends a documentation pointer to every status error; the owner needs the status, not the link. */
-function readErrorText(error) {
-    const text = [error.credential_profile_id, error.error || error.code || error.provider_id]
-        .filter(Boolean).join(': ');
-    return text.split(/\s*For more information check:/)[0].trim();
+const READ_ERROR_CAUSE_MAX = 160;
+const READ_ERROR_NAMES_MAX = 3;
+
+/**
+ * One clause per cause, with the profiles that hit it named in front: nine
+ * accounts sharing one quota limit is one fact, not nine. Every distinct cause
+ * survives; repeated subjects collapse, names past three become a count, and a
+ * cause past 160 characters is clamped with a visible ellipsis. httpx appends a
+ * documentation pointer to every status error; the owner needs the status, not
+ * the link. The vendor owns the message text, so its length is bounded here
+ * rather than trusted.
+ */
+export function summarizeReadErrors(errors = []) {
+    const groups = new Map();
+    const seen = new Set();
+    for (const error of errors) {
+        const text = String(error?.error || error?.code || error?.provider_id || '')
+            .split(/\s*For more information check:/)[0].trim().replace(/[.;,\s]+$/, '');
+        const cause = text.length > READ_ERROR_CAUSE_MAX
+            ? `${text.slice(0, READ_ERROR_CAUSE_MAX - 1)}…` : text;
+        const subject = String(error?.credential_profile_id || '').trim();
+        const identity = `${subject}\u0000${cause}`;
+        if (seen.has(identity)) continue;
+        seen.add(identity);
+        if (!groups.has(cause)) groups.set(cause, []);
+        if (subject) groups.get(cause).push(subject);
+    }
+    return [...groups].map(([cause, subjects]) => {
+        if (!subjects.length) return cause;
+        const names = subjects.length > READ_ERROR_NAMES_MAX
+            ? `${subjects.slice(0, READ_ERROR_NAMES_MAX).join(', ')} and ${subjects.length - READ_ERROR_NAMES_MAX} more`
+            : subjects.join(', ');
+        return cause ? `${names}: ${cause}` : names;
+    }).filter(Boolean).join('; ');
 }
 
 /**
  * Name what actually happened: which read failed, and what is usable anyway.
+ * Read failures are stated one clause per cause, with the profiles named per
+ * cause, so a shared vendor limit reads as one sentence instead of a list.
  * `compact` is the per-row form under a section banner that already lists the
  * failed reads: one short sentence, never the error list repeated per row.
  */
@@ -74,13 +105,14 @@ export function catalogReadNote(data = {}, { compact = false } = {}) {
                     : 'Model catalog has not been read yet.';
         return `${short} Existing suggestions and your selection are kept.`;
     }
-    const errors = (data.errors || []).map(readErrorText);
+    const errors = data.errors || [];
+    const clauses = summarizeReadErrors(errors);
     const loaded = (Array.isArray(data.items) ? data.items : []).filter(
         (item) => !String(item?.value || item?.id || '').startsWith('claudexor::')).length;
     const reason = state === 'partial' && errors.length
-        ? `Some model sources could not be read: ${errors.join('; ')}.${loaded
+        ? `Some model sources could not be read: ${clauses}.${loaded
             ? ` ${loaded} API model${loaded === 1 ? '' : 's'} loaded.` : ''}`
-        : errors.length ? `Model catalog could not be read: ${errors.join('; ')}.`
+        : errors.length ? `Model catalog could not be read: ${clauses}.`
             : state === 'stale' ? 'Model catalog is last known.' : state === 'partial' ? 'Some account model lists could not be read.'
                 : ['failed', 'transport'].includes(state) ? 'Model catalog could not be read.' : 'Model catalog has not been read yet.';
     return `${reason} Existing suggestions and your selection are kept. Refresh Model Catalog in Models to retry.`;
