@@ -107,7 +107,12 @@ def _periodic_supervisor_maintenance(last_custody_reap: list, last_review_reconc
             from ouroboros.claudexor_daemon import get_owned_daemon
 
             if get_owned_daemon().clear_start_failure_latch(cleared_by="supervisor_sweep"):
-                _retry_latched_daemon_start()
+                # On a short-lived thread, exactly as warm_owned_daemon() does its
+                # ensure: the release row stays on the loop, and runtime
+                # preparation (a staged pin's seed/download/verify/promote) is
+                # unbounded, so the tick never waits on it.
+                threading.Thread(target=_retry_latched_daemon_start,
+                                 name="owned-daemon-latch-retry", daemon=True).start()
         except Exception:
             log.debug("Owned daemon latch release failed", exc_info=True)
         try:
@@ -140,9 +145,10 @@ def _periodic_supervisor_maintenance(last_custody_reap: list, last_review_reconc
 def _retry_latched_daemon_start() -> None:
     """The one retry of a latched owned-daemon start (#844), made by the sweep itself.
 
-    Called only after this sweep released the latch: one ``ensure_owned_gateway``
-    with ZERO admission and ZERO startup wait, so the supervisor loop never
-    holds a startup wait — the spawn happens, custody keeps the child, and
+    Runs on its own short-lived daemon thread, only after this sweep released
+    the latch: one ``ensure_owned_gateway`` with ZERO admission and ZERO
+    startup wait, so the supervisor loop never holds a startup wait (nor the
+    unbounded runtime preparation) — the spawn happens, custody keeps the child, and
     ``daemon_starting`` is the EXPECTED answer (the next ordinary caller joins
     or settles it). Any other typed refusal (a child that died at once has
     already re-latched inside the manager) is logged as a warning; nothing is

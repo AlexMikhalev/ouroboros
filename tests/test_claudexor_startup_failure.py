@@ -541,18 +541,37 @@ def test_a_real_child_killed_by_a_signal_carries_the_raw_return_code(monkeypatch
 
 # --- the supervisor sweep is the one retrier ------------------------------------
 
-def _run_real_sweep(monkeypatch, manager, order: list) -> None:
+def _track_sweep_threads(monkeypatch) -> list:
+    """Capture the threads the sweep starts (the retry runs on one) so tests can join them."""
+    import threading
+
+    from ouroboros import server_maintenance as sm
+
+    threads: list = []
+
+    def tracked(**kwargs):
+        thread = threading.Thread(**kwargs)
+        threads.append(thread)
+        return thread
+
+    monkeypatch.setattr(sm, "threading", SimpleNamespace(Thread=tracked))
+    return threads
+
+
+def _run_real_sweep(monkeypatch, manager, order: list) -> list:
     """Drive the real 600 s tick against ``manager`` with NO delegated-run work.
 
     The reconcile step is a recorder: the real one ensures a gateway only when
     it has orphan work, so with none it is exactly a no-op here — which is why
-    the retry must be the sweep's own.
+    the retry must be the sweep's own. The retry thread is joined before
+    returning, so callers assert on a settled state.
     """
     from ouroboros import claudexor_daemon as daemon_mod
     from ouroboros import process_custody as pc
     from ouroboros import server_maintenance as sm
     from supervisor import queue
 
+    threads = _track_sweep_threads(monkeypatch)
     monkeypatch.setattr(sm, "_LAST_CANCEL_INTENT_SWEEP", [time.time()])  # 20 s cadence idle
     monkeypatch.setattr(sm, "_installed_skill_names", lambda: None)
     monkeypatch.setattr(pc, "reap_orphaned_processes", lambda root, **kw: order.append("reap") or [])
@@ -561,6 +580,10 @@ def _run_real_sweep(monkeypatch, manager, order: list) -> None:
     monkeypatch.setattr(queue, "RUNNING", {})
     monkeypatch.setattr(daemon_mod, "get_owned_daemon", lambda: manager)
     sm._periodic_supervisor_maintenance([0.0], [time.time()])
+    for thread in threads:
+        thread.join(5)
+    assert all(not thread.is_alive() for thread in threads)
+    return threads
 
 
 def test_the_sweep_itself_makes_the_one_retry_after_releasing_the_latch(monkeypatch, tmp_path, caplog):
@@ -572,8 +595,9 @@ def test_the_sweep_itself_makes_the_one_retry_after_releasing_the_latch(monkeypa
     assert len(stand.spawned) == 1 and stand.manager._last_start_failure is not None
     order: list = []
     with caplog.at_level(logging.WARNING):
-        _run_real_sweep(monkeypatch, stand.manager, order)
+        threads = _run_real_sweep(monkeypatch, stand.manager, order)
     assert order == ["reap", "reconcile"], "the swallowed refusal never skips the reconcile"
+    assert [thread.name for thread in threads] == ["owned-daemon-latch-retry"]
     assert len(stand.spawned) == 2 and len(stand.ensures) == 2, "exactly one retry, made by the sweep"
     assert stand.manager._last_start_failure is not None, "the failed retry re-latched"
     assert any("retry after latch release refused (daemon_spawn_failed)" in rec.getMessage()
@@ -591,21 +615,22 @@ def test_the_sweep_itself_makes_the_one_retry_after_releasing_the_latch(monkeypa
 def test_a_healthy_sweep_never_ensures_or_spawns(monkeypatch, tmp_path):
     stand = _Stand(monkeypatch, tmp_path, returncode=-6, banner=_OOM_REACHED)
     order: list = []
-    _run_real_sweep(monkeypatch, stand.manager, order)
-    assert order == ["reap", "reconcile"]
+    threads = _run_real_sweep(monkeypatch, stand.manager, order)
+    assert order == ["reap", "reconcile"] and threads == [], "nothing released: no retry thread"
     assert stand.spawned == [] and stand.ensures == [] and not _rows(stand.data_dir)
     assert stand.manager._last_start_failure is None
 
 
 @pytest.mark.parametrize("released", [True, False])
 def test_periodic_sweep_retries_only_after_it_released_a_latch(monkeypatch, released):
-    """EXECUTED wiring: release → (retry only if released) → reconcile, in that order."""
+    """EXECUTED wiring: release first; the retry (on its thread) only if released; reap then reconcile."""
     from ouroboros import claudexor_daemon as daemon_mod
     from ouroboros import process_custody as pc
     from ouroboros import server_maintenance as sm
     from supervisor import queue
 
     order: list = []
+    threads = _track_sweep_threads(monkeypatch)
     monkeypatch.setattr(sm, "_LAST_CANCEL_INTENT_SWEEP", [time.time()])  # 20 s cadence idle
     monkeypatch.setattr(sm, "_installed_skill_names", lambda: None)
     monkeypatch.setattr(pc, "reap_orphaned_processes", lambda root, **kw: order.append("reap") or [])
@@ -617,7 +642,10 @@ def test_periodic_sweep_retries_only_after_it_released_a_latch(monkeypatch, rele
         clear_start_failure_latch=lambda *, cleared_by: order.append(f"clear:{cleared_by}") or released)
     monkeypatch.setattr(daemon_mod, "get_owned_daemon", lambda: stub)
     sm._periodic_supervisor_maintenance([0.0], [time.time()])
-    assert order == ["clear:supervisor_sweep", *(["retry"] if released else []), "reap", "reconcile"]
+    for thread in threads:
+        thread.join(5)
+    assert order[0] == "clear:supervisor_sweep" and order.index("reap") < order.index("reconcile")
+    assert ("retry" in order) is released and len(threads) == (1 if released else 0)
 
 
 def test_a_raising_reap_cannot_pin_the_latch(monkeypatch):
@@ -627,6 +655,7 @@ def test_a_raising_reap_cannot_pin_the_latch(monkeypatch):
     from ouroboros import server_maintenance as sm
 
     order: list = []
+    threads = _track_sweep_threads(monkeypatch)
     monkeypatch.setattr(sm, "_LAST_CANCEL_INTENT_SWEEP", [time.time()])
     monkeypatch.setattr(sm, "_installed_skill_names", lambda: None)
 
@@ -641,7 +670,48 @@ def test_a_raising_reap_cannot_pin_the_latch(monkeypatch):
         clear_start_failure_latch=lambda *, cleared_by: order.append(f"clear:{cleared_by}") or True)
     monkeypatch.setattr(daemon_mod, "get_owned_daemon", lambda: stub)
     sm._periodic_supervisor_maintenance([0.0], [time.time()])
-    assert order == ["clear:supervisor_sweep", "retry", "reap"], "released and retried before the reap raised"
+    for thread in threads:
+        thread.join(5)
+    assert order[0] == "clear:supervisor_sweep" and "retry" in order and "reconcile" not in order
+    assert "reap" in order, "released and retried regardless of the raising reap"
+
+
+def test_the_sweep_retry_runs_on_its_own_thread_and_never_blocks_the_tick(monkeypatch):
+    """H-04 item 4: runtime preparation inside the ensure is unbounded; the tick returns at once."""
+    import threading
+
+    from ouroboros import claudexor_daemon as daemon_mod
+    from ouroboros import process_custody as pc
+    from ouroboros import server_maintenance as sm
+    from supervisor import queue
+
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_ensure(**_kwargs):
+        entered.set()
+        assert release.wait(5), "the test must release the ensure"
+        return SimpleNamespace(close=lambda: None)
+
+    monkeypatch.setattr(daemon_mod, "ensure_owned_gateway", slow_ensure)
+    threads = _track_sweep_threads(monkeypatch)
+    monkeypatch.setattr(sm, "_LAST_CANCEL_INTENT_SWEEP", [time.time()])
+    monkeypatch.setattr(sm, "_installed_skill_names", lambda: None)
+    monkeypatch.setattr(pc, "reap_orphaned_processes", lambda root, **kw: [])
+    monkeypatch.setattr(sm, "_reconcile_delegated_runs", lambda live: None)
+    monkeypatch.setattr(sm, "_cursor_refresh_settled_terminals", lambda: None)
+    monkeypatch.setattr(queue, "RUNNING", {})
+    monkeypatch.setattr(daemon_mod, "get_owned_daemon",
+                        lambda: SimpleNamespace(clear_start_failure_latch=lambda *, cleared_by: True))
+    try:
+        sm._periodic_supervisor_maintenance([0.0], [time.time()])  # returns while the ensure is held
+        assert entered.wait(5), "the retry thread reached the ensure"
+        assert [thread.name for thread in threads] == ["owned-daemon-latch-retry"]
+        assert threads[0].daemon and threads[0].is_alive(), "exactly one retry thread, still in the ensure"
+    finally:
+        release.set()
+        for thread in threads:
+            thread.join(5)
+    assert all(not thread.is_alive() for thread in threads)
 
 
 def test_the_sweep_retry_swallows_refusals_and_surprises_and_closes_its_gateway(monkeypatch):
