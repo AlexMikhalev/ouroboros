@@ -854,7 +854,7 @@ jobs:
           echo "no" | avdmanager create avd --force --name "obo-api-${{ matrix.api-level }}" \
             --package "system-images;android-${{ matrix.api-level }};default;x86_64" \
             --device "pixel_2"
-          emulator -list-avds
+          "$ANDROID_HOME/emulator/emulator" -list-avds
       - name: Build disposable test APK
         shell: bash
         run: |
