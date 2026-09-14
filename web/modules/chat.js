@@ -4,7 +4,7 @@ import { renderPageHeader } from './page_header.js';
 import { PAGE_ICONS } from './page_icons.js';
 import { showToast } from './toast.js';
 import { createSystemMessageAction, renderProjectChip } from './ui_helpers.js';
-import { cleanupUploadedAttachments, createChatMedia, showTaskIncidentToast } from './chat_media.js';
+import { bindComposerFileTargets, cleanupUploadedAttachments, createChatMedia, showTaskIncidentToast } from './chat_media.js';
 import { createChatDecision } from './chat_decision.js';
 import { bindProjectWorkPointer } from './project_work_pointer.js';
 import { createModelWaitController, isModelWaitReference } from './model_wait.js';
@@ -101,7 +101,6 @@ import {
     getOrCreateChatSessionId,
     headerBudgetPresentation,
     isBackgroundTaskId,
-    isFileDrag,
     isForegroundLiveCard,
     isNonTerminalMediaHistoryRow,
     isTerminalTaskPhase,
@@ -383,56 +382,7 @@ export function createChatInstance({
         stagePendingFiles(files);
     });
 
-    input.addEventListener('paste', (e) => {
-        const items = e.clipboardData && e.clipboardData.items;
-        if (!items) return;
-        const pastedImages = [];
-        for (let i = 0; i < items.length; i += 1) {
-            const item = items[i];
-            if (item && item.kind === 'file' && typeof item.type === 'string' && item.type.startsWith('image/')) {
-                const blob = item.getAsFile();
-                if (!blob) continue;
-                const ext = (item.type.split('/')[1] || 'png').split(';')[0].trim() || 'png';
-                const ts = Date.now() + i;
-                const safeBlob = blob instanceof File
-                    ? new File([blob], `clipboard-${ts}.${ext}`, { type: blob.type })
-                    : new File([blob], `clipboard-${ts}.${ext}`, { type: item.type });
-                pastedImages.push(safeBlob);
-            }
-        }
-        if (!pastedImages.length) return;
-        e.preventDefault();
-        stagePendingFiles(pastedImages);
-    });
-
-    let fileDragDepth = 0;
-    function setFileDragActive(active) {
-        inputArea.classList.toggle('drag-active', Boolean(active));
-    }
-    page.addEventListener('dragenter', (event) => {
-        if (!isFileDrag(event)) return;
-        event.preventDefault();
-        fileDragDepth += 1;
-        setFileDragActive(true);
-    });
-    page.addEventListener('dragover', (event) => {
-        if (!isFileDrag(event)) return;
-        event.preventDefault();
-        if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
-        setFileDragActive(true);
-    });
-    page.addEventListener('dragleave', (event) => {
-        if (!isFileDrag(event)) return;
-        fileDragDepth = Math.max(0, fileDragDepth - 1);
-        if (fileDragDepth === 0) setFileDragActive(false);
-    });
-    page.addEventListener('drop', (event) => {
-        if (!isFileDrag(event)) return;
-        event.preventDefault();
-        fileDragDepth = 0;
-        setFileDragActive(false);
-        stagePendingFiles(event.dataTransfer?.files || []);
-    });
+    bindComposerFileTargets({ page, inputArea, input, stagePendingFiles });
 
     let _syncPass1Active = false;
     let _historyReplayActive = false;

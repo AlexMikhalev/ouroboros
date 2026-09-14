@@ -85,6 +85,19 @@ def _periodic_supervisor_maintenance(last_custody_reap: list, last_review_reconc
     if time.time() - last_custody_reap[0] > 600:
         last_custody_reap[0] = time.time()
         try:
+            # Issue #844: release the owned-daemon start latch in ITS OWN try, ahead of
+            # the reap, so a raising reap can never pin it; retry once — only when THIS
+            # sweep released a latch — on a short-lived thread, as warm_owned_daemon()
+            # does (the reconcile below ensures only with orphan work). Contract, per-
+            # process scope and the residual: DEVELOPMENT.md "Process Custody Rule".
+            from ouroboros.claudexor_daemon import get_owned_daemon
+
+            if get_owned_daemon().clear_start_failure_latch(cleared_by="supervisor_sweep"):
+                threading.Thread(target=_retry_latched_daemon_start,
+                                 name="owned-daemon-latch-retry", daemon=True).start()
+        except Exception:
+            log.debug("Owned daemon latch release failed", exc_info=True)
+        try:
             from ouroboros.claudexor_daemon import CUSTODY_PURPOSE
             from ouroboros.process_custody import reap_orphaned_processes
             from supervisor.queue import RUNNING as _running_tasks
@@ -109,6 +122,34 @@ def _periodic_supervisor_maintenance(last_custody_reap: list, last_review_reconc
     if time.time() - last_review_reconcile[0] > 300:
         last_review_reconcile[0] = time.time()
         _periodic_zombie_reconcile()
+
+
+def _retry_latched_daemon_start() -> None:
+    """The one retry of a latched owned-daemon start (#844), made by the sweep itself.
+
+    Runs on its own short-lived daemon thread, only after this sweep released
+    the latch: one ``ensure_owned_gateway`` with ZERO admission and ZERO
+    startup wait, so the supervisor loop never holds a startup wait (nor the
+    unbounded runtime preparation) — the spawn happens, custody keeps the child, and
+    ``daemon_starting`` is the EXPECTED answer (the next ordinary caller joins
+    or settles it). Any other typed refusal (a child that died at once has
+    already re-latched inside the manager) is logged as a warning; nothing is
+    raised into the loop, nothing else is retried or scheduled, and a gateway
+    that did open is closed at once (the reconcile that follows attaches on
+    its own).
+    """
+    from ouroboros.claudexor_daemon import ensure_owned_gateway
+    from ouroboros.gateways.claudexor import ClaudexorUnavailable
+
+    try:
+        ensure_owned_gateway(admission_wait_sec=0, startup_wait_sec=0).close()
+    except ClaudexorUnavailable as exc:
+        if exc.code == "daemon_starting":
+            log.info("Owned daemon retry after latch release is starting under custody: %s", exc)
+        else:
+            log.warning("Owned daemon retry after latch release refused (%s): %s", exc.code, exc)
+    except Exception:
+        log.warning("Owned daemon retry after latch release failed unexpectedly", exc_info=True)
 
 
 def _reconcile_delegated_runs(running_task_ids: set) -> None:

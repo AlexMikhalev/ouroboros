@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-import { createChatMedia, safeHttpUrl } from '../modules/chat_media.js';
+import { bindComposerFileTargets, createChatMedia, safeHttpUrl } from '../modules/chat_media.js';
 import { stampNodeTimestamp } from '../modules/chat_activity.js';
 
 const styleCss = await readFile(new URL('../style.css', import.meta.url), 'utf8');
@@ -793,4 +793,75 @@ test('a task-incident toast carries the frame tone; absent tone keeps the alarm 
         globalThis.document = priorDocument;
         globalThis.setTimeout = priorTimeout;
     }
+});
+
+// The two implicit file routes into the composer. The Playwright smoke drives
+// the real drop path in a browser; the paste path has no clipboard case there,
+// so it is pinned here instead.
+function composerTargetStub() {
+    const listeners = new Map();
+    const classes = new Set();
+    return {
+        classes,
+        classList: {
+            toggle(name, force) {
+                if (force) classes.add(name); else classes.delete(name);
+            },
+        },
+        addEventListener(type, fn) { listeners.set(type, fn); },
+        fire(type, event) {
+            const fn = listeners.get(type);
+            assert.ok(fn, `no ${type} listener bound`);
+            fn(event);
+            return event;
+        },
+    };
+}
+
+test('bindComposerFileTargets stages pasted images and dropped files', () => {
+    const page = composerTargetStub();
+    const inputArea = composerTargetStub();
+    const input = composerTargetStub();
+    const staged = [];
+    bindComposerFileTargets({ page, inputArea, input, stagePendingFiles: (files) => staged.push(...Array.from(files)) });
+
+    // A clipboard image is staged under a generated name; the browser's own
+    // paste is suppressed so the image never lands in the textarea as text.
+    let prevented = 0;
+    const pasteEvent = (items) => ({ preventDefault() { prevented += 1; }, clipboardData: { items } });
+    input.fire('paste', pasteEvent([{
+        kind: 'file', type: 'image/png', getAsFile: () => new File(['x'], 'pasted.png', { type: 'image/png' }),
+    }]));
+    assert.equal(prevented, 1);
+    assert.equal(staged.length, 1);
+    assert.match(staged[0].name, /^clipboard-\d+\.png$/);
+
+    // Ordinary text keeps the native paste: nothing staged, nothing prevented.
+    input.fire('paste', pasteEvent([{ kind: 'string', type: 'text/plain', getAsFile: () => null }]));
+    assert.equal(prevented, 1);
+    assert.equal(staged.length, 1);
+
+    // A file drag arms the input-area affordance and disarms on leave.
+    const fileDrag = (files = []) => ({
+        preventDefault() {}, dataTransfer: { types: ['Files'], files, dropEffect: '' },
+    });
+    page.fire('dragenter', fileDrag());
+    assert.ok(inputArea.classes.has('drag-active'));
+    assert.equal(page.fire('dragover', fileDrag()).dataTransfer.dropEffect, 'copy');
+    page.fire('dragleave', fileDrag());
+    assert.ok(!inputArea.classes.has('drag-active'));
+
+    // The drop stages its files and always clears the affordance.
+    page.fire('dragenter', fileDrag());
+    page.fire('drop', fileDrag([new File(['y'], 'dropped.txt', { type: 'text/plain' })]));
+    assert.ok(!inputArea.classes.has('drag-active'));
+    assert.equal(staged.length, 2);
+    assert.equal(staged[1].name, 'dropped.txt');
+
+    // A drag carrying no files is not ours: never captured, never armed.
+    page.fire('dragenter', {
+        preventDefault() { throw new Error('a text drag must keep its default'); },
+        dataTransfer: { types: ['text/plain'] },
+    });
+    assert.ok(!inputArea.classes.has('drag-active'));
 });

@@ -5,6 +5,7 @@ import { MAX_LINK_ACTIONS } from './api_types.js';
 import { apiFetch, taskArtifactDownloadUrl } from './api_client.js';
 import { bindMenu } from './ui_interactions.js';
 import { stampHistoryNode } from './chat_history_replay.js';
+import { isFileDrag } from './chat_activity.js';
 
 const MIME_RE = /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/;
 const BASE64_RE = /^[A-Za-z0-9+/=\s]+$/;
@@ -112,6 +113,64 @@ export function safeHttpUrl(value) {
     } catch {
         return '';
     }
+}
+
+export function bindComposerFileTargets({ page, inputArea, input, stagePendingFiles }) {
+    // The two implicit routes a file takes into the composer beside the
+    // paperclip: an image pasted into the textarea, and a file dropped
+    // anywhere on the page. Both end in the caller's local stager, so
+    // nothing uploads before Send, and the drop target is the whole page
+    // while only the input area shows the active state.
+    input.addEventListener('paste', (e) => {
+        const items = e.clipboardData && e.clipboardData.items;
+        if (!items) return;
+        const pastedImages = [];
+        for (let i = 0; i < items.length; i += 1) {
+            const item = items[i];
+            if (item && item.kind === 'file' && typeof item.type === 'string' && item.type.startsWith('image/')) {
+                const blob = item.getAsFile();
+                if (!blob) continue;
+                const ext = (item.type.split('/')[1] || 'png').split(';')[0].trim() || 'png';
+                const ts = Date.now() + i;
+                const safeBlob = blob instanceof File
+                    ? new File([blob], `clipboard-${ts}.${ext}`, { type: blob.type })
+                    : new File([blob], `clipboard-${ts}.${ext}`, { type: item.type });
+                pastedImages.push(safeBlob);
+            }
+        }
+        if (!pastedImages.length) return;
+        e.preventDefault();
+        stagePendingFiles(pastedImages);
+    });
+
+    let fileDragDepth = 0;
+    function setFileDragActive(active) {
+        inputArea.classList.toggle('drag-active', Boolean(active));
+    }
+    page.addEventListener('dragenter', (event) => {
+        if (!isFileDrag(event)) return;
+        event.preventDefault();
+        fileDragDepth += 1;
+        setFileDragActive(true);
+    });
+    page.addEventListener('dragover', (event) => {
+        if (!isFileDrag(event)) return;
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+        setFileDragActive(true);
+    });
+    page.addEventListener('dragleave', (event) => {
+        if (!isFileDrag(event)) return;
+        fileDragDepth = Math.max(0, fileDragDepth - 1);
+        if (fileDragDepth === 0) setFileDragActive(false);
+    });
+    page.addEventListener('drop', (event) => {
+        if (!isFileDrag(event)) return;
+        event.preventDefault();
+        fileDragDepth = 0;
+        setFileDragActive(false);
+        stagePendingFiles(event.dataTransfer?.files || []);
+    });
 }
 
 export function createChatMedia({
