@@ -258,6 +258,30 @@ test('a disabled account is offered with a "(disabled)" label, still selectable'
     assert.ok(options.every((o) => !o.disabled), 'every account stays selectable');
 });
 
+test('an account is offered under the name the Accounts tab gives it', () => {
+    // The index carries the Accounts-tab name beside the id, so the migrated
+    // default login — named by its login email there — stopped reading as a
+    // missing account here. The id still rides the label (it is what the
+    // setting stores) and stays the option VALUE.
+    const options = profileOptionsFor([
+        { id: 'codex-default', enabled: true, name: 'owner@example.com' },
+        { id: 'koshak', enabled: true, name: 'koshak' },
+        'koshak',
+    ], '');
+    assert.deepEqual(options.map((o) => o.value), ['', 'codex-default', 'koshak', 'koshak']);
+    assert.equal(options[1].label, 'Account: owner@example.com · codex-default (pinned)');
+    // A name that IS the id says it once.
+    assert.equal(options[2].label, 'Account: koshak (pinned)');
+    // A plain id string carries no name of its own and reads unchanged.
+    assert.equal(options[3].label, 'Account: koshak (pinned)');
+
+    const disabled = profileOptionsFor([
+        { id: 'codex-default', enabled: false, name: 'owner@example.com' },
+    ], '');
+    assert.equal(disabled[1].label,
+        'Account: owner@example.com · codex-default (pinned) (disabled)');
+});
+
 test('the provider shown for a delegated row is the harness name, never Claudexor', () => {
     const groups = routeChoiceGroups({
         harnesses: [{ id: 'codex', display_name: 'Codex CLI', status: 'ok', enabled: true }],
