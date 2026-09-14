@@ -55,6 +55,8 @@ _HEAP_MARKERS: Tuple[bytes, ...] = (
     b"Reached heap limit Allocation failed",
     b"Ineffective mark-compacts near heap limit",
 )
+# The general V8 fatal form regardless of spelling: ONE line carrying both halves.
+_HEAP_LINE_PAIR: Tuple[bytes, bytes] = (b"FATAL ERROR", b"Allocation failed")
 # Engine single-writer election refusal (writer-lease.ts): the exact texts.
 _LEASE_MARKERS: Tuple[bytes, ...] = (
     b"another claudexor daemon owns ",
@@ -124,6 +126,11 @@ def classify_startup_failure(log_interval: bytes, exit_status: ExitFact) -> Star
             offset = log_interval.rfind(marker)
             if offset > best_offset:
                 best, best_offset = kind, offset
+    offset = 0
+    for line in log_interval.splitlines(keepends=True):  # the general V8 form, any spelling
+        if offset > best_offset and all(half in line for half in _HEAP_LINE_PAIR):
+            best, best_offset = StartupFailureClass.HEAP_EXHAUSTED, offset
+        offset += len(line)
     return best
 
 
