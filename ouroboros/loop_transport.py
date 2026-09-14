@@ -143,10 +143,9 @@ def emit_network_wait_event(
 
 
 def managed_transport_continuation(ctx: Any) -> bool:
-    """Owner-selected continuation applies to ordinary managed cognition."""
+    """Managed cognition may recover; a live delegated-leaf hold takes priority."""
     return bool(ctx is not None and getattr(ctx, "task_id", "")
-                and not getattr(ctx, "is_direct_chat", False)
-                and getattr(ctx, "_configured_subagent_route_kind", "") != "agent_session")
+                and not getattr(ctx, "is_direct_chat", False))
 
 
 def continue_unknown_transport(episode: TransportWaitEpisode, *, llm: Any, tools: Any,

@@ -93,11 +93,11 @@ def test_native_wait_switch_rechecks_bound_before_send_and_never_replays_read(li
         with pytest.raises(ReviewRouteUnavailable) as raised:
             executor.execute()
         assert raised.value.code == "native_transcript_cap_exceeded"
-        assert len(gateway.operations) == 2
+        assert len(gateway.accepted_operations) == 2
         assert executor.failure_custody()["native_transcript_bound"] == 0
         with pytest.raises(ReviewRouteUnavailable):
             executor.execute()
-        assert len(gateway.operations) == 2
+        assert len(gateway.accepted_operations) == 2
     else:
         answer = executor.execute()
         assert answer.raw_text == final["message"]["content"]
@@ -106,7 +106,7 @@ def test_native_wait_switch_rechecks_bound_before_send_and_never_replays_read(li
         sent = gateway.uploads[-1][0]
         assert sent["account"] == {"mode": "pin", "profileId": "account-b"}
         assert any(message.get("role") == "tool" and "completed original read" in message["content"] for message in sent["messages"])
-        assert answer.usage["native_rounds"] == 2 and len(gateway.operations) == 3
+        assert answer.usage["native_rounds"] == 2 and len(gateway.accepted_operations) == 3
     assert len(reads) == len(decisions) == 1
     assert controller.overrides.keys() == {"reviewer:critic"}
     assert [row["state"] for row in ledger(root)].count("settled") == (1 if narrow else 2)

@@ -18,10 +18,11 @@ Eligibility is deliberately narrow (owner Q8=A): configured-session/exact
 actor routes with EXACTLY one open, non-terminal delegated run and no pending
 invocations. The liveness probe is a READ-ONLY engine poll requiring a
 positive non-terminal engine state — a refusal, fault, empty state, or open
-containment fault is not evidence of a live leaf and takes today's terminal
-path. A terminal-but-unsettled leaf also takes today's terminal path, whose
-completion-wins reconciliation already preserves the leaf's output — holding
-there would spin an instant-wake paid loop.
+containment fault is not evidence of a live leaf. When no hold applies, the
+supervising model uses ordinary managed transport recovery; external custody
+remains unchanged. A terminal-but-unsettled leaf must not hold, since an
+instant terminal wake would buy repeated model calls. A successful hold takes
+over any existing transport episode, so its wake alone permits the next round.
 """
 
 from __future__ import annotations
@@ -151,12 +152,12 @@ def _unknown_attempt_id() -> str:
 
 def latch_after_unknown(
     tools: Any, *, error_kind: str, drive_logs: pathlib.Path, task_id: str,
-    emit_progress: Any,
+    emit_progress: Any, transport_episode: Any = None,
 ) -> bool:
-    """Round-gate entry: latch a hold instead of terminalizing.
+    """Round-gate entry: prefer a live leaf to a new model recovery episode.
 
     Returns True when the caller should ``continue`` to the next round top,
-    where the durable latch parks the task in ``hold_step``.
+    clearing its transport episode; the durable latch parks in ``hold_step``.
     """
     if str(error_kind or "") != "provider_outcome_unknown":
         return False
@@ -178,6 +179,15 @@ def latch_after_unknown(
         **({"unknown_attempt_id": attempt_id} if attempt_id else {}),
     }
     write_unknown_hold(ctx, run_id, hold)
+    if transport_episode is not None:
+        from ouroboros.loop_transport import emit_network_wait_event
+
+        emit_network_wait_event(
+            drive_logs, task_id=task_id, phase="ended",
+            elapsed_sec=transport_episode.waited_sec, redials=transport_episode.redials,
+            model=str(getattr(ctx, "active_model", "") or ""), detail="hold_latched",
+            outcome_custody=transport_episode.outcome_custody,
+        )
     _emit_hold_event(
         drive_logs, task_id=task_id, phase="entered", run_id=run_id,
         hold_cycles=hold["hold_cycles"], attempt_id=attempt_id,
@@ -300,6 +310,7 @@ def hold_step(
         return "terminal"
 
     if controls.get("finalize_now"):
+        ctx._transport_repeat_control_reason = str(controls["finalize_now"]).splitlines()[0].strip()
         return _exit_terminal("finalize_now")
     if new_input:
         # The round-top drain already appended owner/task dialogue: that IS the
@@ -336,6 +347,9 @@ def hold_step(
         pend_payload = None
     if (_wake_is_control(payload) or _control_wakes(ctx)
             or (isinstance(pend_payload, dict) and _wake_is_control(pend_payload))):
+        from ouroboros.loop_transport import transport_repeat_stop_requested
+
+        transport_repeat_stop_requested(ctx)  # Preserve a current owner cause without delivering/ACKing it.
         return _exit_terminal("control_wake")
     if str(payload.get("status") or "") in _NON_WAKE_STATUSES:
         # A refusal/fault is a daemon statement, not a leaf wake: no proof of a

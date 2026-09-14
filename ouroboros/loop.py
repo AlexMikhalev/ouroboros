@@ -553,6 +553,11 @@ def run_llm_loop(
             tools._ctx._current_llm_call_meta = dict(accumulated_usage.get("_last_llm_call_meta") or {})
 
             last_error_kind = str(accumulated_usage.get("_last_llm_error_kind") or "")
+            if msg is None and _delegate_hold_latch(
+                    tools, error_kind=last_error_kind, drive_logs=drive_logs,
+                    task_id=task_id, emit_progress=emit_progress, transport_episode=transport_wait):
+                transport_wait = None  # The leaf wake owns resumption, without a provider probe.
+                continue
             transport_wait = _reconcile_transport_wait(
                 transport_wait, ctx, msg_present=msg is not None, error_kind=last_error_kind,
                 drive_logs=drive_logs, task_id=task_id, model=active_model, emit_progress=emit_progress)
@@ -588,10 +593,6 @@ def run_llm_loop(
                 drive_root=drive_root, drive_logs=drive_logs, task_id=task_id, model=active_model,
                 emit_progress=emit_progress, incoming_messages=incoming_messages, owner_msg_seen=_owner_msg_seen):
                 free_redial = True
-                continue
-            if msg is None and _delegate_hold_latch(
-                    tools, error_kind=last_error_kind, drive_logs=drive_logs,
-                    task_id=task_id, emit_progress=emit_progress):  # hold latched -> next round top parks
                 continue
             if msg is None:
                 # Exact actor routes skip generic substitution and fail as infrastructure.

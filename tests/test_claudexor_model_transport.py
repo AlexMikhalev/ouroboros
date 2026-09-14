@@ -427,3 +427,32 @@ def test_operation_identity_mismatch_is_not_an_accepted_response(gateway_factory
     with pytest.raises(cx.ClaudexorUnavailable) as raised:
         gateway.get_model_operation("op-one", timeout_sec=0.3)
     assert raised.value.code == "malformed_response"
+
+
+@pytest.mark.parametrize("capture", [False, True])
+def test_failure_evidence_opt_in_preserves_create_body(gateway_factory, capture):
+    wire = ModelWire()
+    gateway = gateway_factory(wire)
+    ref = gateway.upload_model_request(_request(), idempotency_key="evidence")
+    gateway.create_model_operation(ref, idempotency_key="evidence", capture_failure_evidence=capture)
+    request = wire.calls[-1]
+    assert request.url.query == (b"captureFailureEvidence=true" if capture else b"")
+    assert json.loads(request.content) == {"request": ref}
+    assert wire.payload == _bytes(_request())
+    assert wire.generation_count == 1
+
+
+def test_query_negotiation_uses_exact_wire_descriptor():
+    parameter = {"name": "captureFailureEvidence", "location": "query", "enum": ["true", "false"]}
+    operation = {"method": "POST", "path": "/v2/model-operations", "parameters": [parameter]}
+    assert cx.model_failure_evidence_supported([operation])
+    assert not cx.model_failure_evidence_supported([])
+    for change in ({"method": "GET"}, {"path": "/v2/model-operations/:id"}, {"parameters": []}):
+        assert not cx.model_failure_evidence_supported([{**operation, **change}])
+    for change in ({"name": "other"}, {"location": "header"}, {"enum": ["false"]}, {"enum": "true"}):
+        assert not cx.model_failure_evidence_supported([{**operation, "parameters": [{**parameter, **change}]}])
+    accounts = {"method": "GET", "path": "/v2/model-sources", "parameters": [
+        {"name": "view", "location": "query", "enum": ["accounts"]}]}
+    assert cx.account_catalog_supported([accounts], accounts["path"])
+    assert not cx.account_catalog_supported([operation], accounts["path"])
+    assert not cx.model_failure_evidence_supported([accounts])

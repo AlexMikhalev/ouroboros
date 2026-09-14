@@ -54,7 +54,9 @@ from ouroboros._usage_response import provider_cost_value
 from ouroboros.anthropic_native_custody import scrub_native_custody
 from ouroboros.claudexor_daemon import ensure_owned_gateway, owned_engine_version, read_owned_gateway
 from ouroboros.deadline_utils import llm_transport_timeout_sec
-from ouroboros.gateways.claudexor import ClaudexorUnavailable, engine_at_least, _READ_TIMEOUT_SEC
+from ouroboros.gateways.claudexor import (
+    ClaudexorUnavailable, engine_at_least, model_failure_evidence_supported, _READ_TIMEOUT_SEC,
+)
 from ouroboros.llm_attempt import _attempt_request, _candidate_before_dispatch
 from ouroboros.model_slots import MODEL_ACCOUNTS_KEY, model_role_option
 from ouroboros.model_wait import ModelWaitInterrupted, current_model_wait, prepared_call_scope
@@ -148,6 +150,11 @@ class ClaudexorModelError(RuntimeError):
         self.status_code = 0 if unknown else int(context.get("httpStatus") or 0)
         self.reset_at = str(context.get("resetsAt") or "")
         self.retryable = False if unknown else problem.get("retryable") is True
+        if self.code == "response_rejected":
+            # Reconstructed process-boundary errors retain the same local
+            # rejection: no unknown outcome or same-request wire repair.
+            self.stream_rejected = self.stream_incomplete = True
+            self.retryable = False
         self.model_role = model_role
         self.operation_id = operation_id
         self.route = copy.deepcopy(route or {})
@@ -156,9 +163,12 @@ class ClaudexorModelError(RuntimeError):
     def display_message(self) -> str:
         """Show typed provider details without changing exception classification text."""
         context = self.problem.get("context") or {}
-        details = [] if self.code == "model_outcome_unknown" else [
+        fields = (("stage", "stage"), ("errorCode", "cause"))
+        if self.code != "model_outcome_unknown":
+            fields += (("vendorCode", "provider_code"), ("parameter", "parameter"))
+        details = [
             f"{label}={value.strip()}"
-            for key, label in (("vendorCode", "provider_code"), ("parameter", "parameter"))
+            for key, label in fields
             if isinstance(value := context.get(key), str) and value.strip()
         ]
         # Details lead so the existing terminal preview can name the refusal.
@@ -280,6 +290,8 @@ def adopt_turn_state(slot: ModelTurnState | None, payload: dict, result: dict) -
 
 
 def _remember_failed_profile(target: dict, parameters: dict, error: ClaudexorModelError) -> None:
+    if getattr(error, "stream_rejected", False):
+        return  # Local message normalization says nothing about account readiness.
     route = error.route or {}
     key = (parameters.get("cache_affinity"), route.get("source"), route.get("model"))
     if (key == (parameters.get("cache_affinity"), target["source"], target["resolved_model"])
@@ -391,6 +403,7 @@ class _ModelInvocation:
         self.request_manifest_ref: dict = {}
         self.interrupt_reason = ""
         self.create_attempted = False
+        self.capture_failure_evidence = False
         self.defer_close = False
         self.io_active = False
         self.io_lock = threading.Lock()
@@ -429,11 +442,15 @@ class _ModelInvocation:
         self.check_control()
         try:
             self.gateway = ensure_owned_gateway()
+            # Freeze once before create. A lost create reply or replaced gateway
+            # must reuse this same operation's diagnostic/idempotency contract.
+            self.capture_failure_evidence = model_failure_evidence_supported(self.gateway.operations())
             self.request_ref = self.gateway.upload_model_request(self.payload, idempotency_key=self.invocation_id)
             self.request_manifest_ref = persist_call(self.root, task_id=self.task_id, call_id=f"{self.invocation_id}_model_request",
                          call_type="llm_claudexor_request", payload=self.payload, keep_raw=True,
                          manifest={"invocation_id": self.invocation_id, "request_ref": self.request_ref,
-                                   "model_role": self.role})["manifest_ref"]
+                                   "model_role": self.role,
+                                   "capture_failure_evidence": self.capture_failure_evidence})["manifest_ref"]
         except ClaudexorUnavailable as error:
             raise ClaudexorModelError({"code": error.code, "message": str(error)}, model_role=self.role) from None
 
@@ -447,7 +464,8 @@ class _ModelInvocation:
                     self.root, task_id=self.task_id, call_id=f"{self.invocation_id}_model_request",
                     call_type="llm_claudexor_request", payload=self.payload, keep_raw=True,
                     manifest={"invocation_id": self.invocation_id, "request_ref": self.request_ref,
-                              "model_role": self.role, "operation_id": self.operation_id})["manifest_ref"]
+                              "model_role": self.role, "operation_id": self.operation_id,
+                              "capture_failure_evidence": self.capture_failure_evidence})["manifest_ref"]
             except Exception as error:
                 self.request_manifest_ref = {}
                 log.warning("Model custody checkpoint unavailable: %s", type(error).__name__)
@@ -475,7 +493,8 @@ class _ModelInvocation:
                 if not self.operation_id:
                     self.create_attempted = True
                     self.observe_operation()
-                    detail = self.gateway.create_model_operation(self.request_ref, idempotency_key=self.invocation_id)
+                    detail = self.gateway.create_model_operation(self.request_ref, idempotency_key=self.invocation_id,
+                        **({"capture_failure_evidence": True} if self.capture_failure_evidence else {}))
                     self.operation_id = detail["id"]
                     self.observe_operation(accepted=True)
                 else:
@@ -664,7 +683,10 @@ class _ModelInvocation:
             raise error
         message = result.get("message")
         if not isinstance(message, dict):
-            error = self.error({"code": "malformed_response", "message": "The provider returned no model message."}, unknown=True)
+            error = ClaudexorModelError(result.get("problem") or {
+                "code": "response_rejected", "message": "The terminal provider response contained no usable model message."},
+                model_role=self.role, operation_id=self.operation_id, route=route)
+            error.stream_rejected = error.stream_incomplete = True
             error.physical_attempt_capture = self.capture
             error.usage = usage
             raise error

@@ -63,7 +63,7 @@ def test_raw_default_hint_defers_but_explicit_temperature_stays_strict(setup, mo
         assert raised.value.code == "unsupported_parameter"
         assert gateway.uploads[0][0]["options"]["temperature"] == explicit
         assert ledger(root)[-1]["state"] == "released"
-    assert len(gateway.operations) == 1
+    assert len(gateway.accepted_operations) == 1
     assert "default_temperature" not in gateway.uploads[0][0]["options"]
     assert kwargs["temperature"] is explicit and kwargs["default_temperature"] == 0.2
 
@@ -132,7 +132,7 @@ def test_wait_switch_restores_api_hint_and_later_override_defers_again(live_wait
     # A reused caller originally naming API must not carry its resolved 0.2 as explicit.
     kwargs["model"] = "anthropic::other-model"
     _message, usage = call()
-    assert usage["prompt_tokens"] == 20 and len(gateway.operations) == 2
+    assert usage["prompt_tokens"] == 20 and len(gateway.accepted_operations) == 2
     assert all("temperature" not in payload["options"] for payload, _key in gateway.uploads)
     assert [row["state"] for row in ledger(root)].count("released") == 1
 
@@ -179,7 +179,7 @@ def test_actual_review_authors_reach_strict_raw_dispatch(setup, monkeypatch, sur
     assert "temperature" not in payload["options"]
     assert "default_temperature" not in payload["options"]
     assert payload["account"] == {"mode": "pin", "profileId": "account-a"}
-    assert len(gateway.operations) == 1 and ledger(root)[-1]["state"] == "settled"
+    assert len(gateway.accepted_operations) == 1 and ledger(root)[-1]["state"] == "settled"
 
 
 def test_review_custody_distinguishes_hint_from_explicit_without_changing_old_keys():
@@ -212,4 +212,4 @@ def test_explicit_review_temperature_beats_both_host_hints(setup, monkeypatch, n
         client.chat(**kwargs)
     assert raised.value.code == "unsupported_parameter"
     assert gateway.uploads[0][0]["options"]["temperature"] == expected
-    assert len(gateway.operations) == 1 and ledger(root)[-1]["state"] == "released"
+    assert len(gateway.accepted_operations) == 1 and ledger(root)[-1]["state"] == "released"
