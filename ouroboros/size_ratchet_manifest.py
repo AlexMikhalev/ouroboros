@@ -195,6 +195,7 @@ BAND_PATHS = {
     "tests/test_loop_transport_wait.py": "Contract suite for the transport-wait episode: classification, custody, round-level wait, terminals, and the final-review regression pins live together as one coherent surface.",
     "tests/test_managed_review_subject.py": "Lane L-review contract suite: the managed resolution-delta subject (gate/advisory surfaces, M0 fallback), Q25-A admission, Q28-A yield outcomes and enforcement-honest advisory texts grew past 1000 across the adversarial fix round; one subject, one suite.",
     "tests/test_native_tool_round_executor.py": "One suite per executor contract: the native tool-round episode's bounds, floors, custody facts and delivery shapes are one behaviour pinned together; split at the next natural seam (custody vs bounds), not by size.",
+    "tests/test_nested_rights_depth.py": "Nested-rights depth suite shrank into the band when the semantic duplicate-gate stubs left (#884); one contract, one file; shrink next touch.",
     "tests/test_observability_outcomes_v2.py": None,
     "tests/test_onboarding_wizard.py": None,
     "tests/test_owner_stop_s3.py": "Entered the band from 821 lines: the S3 contract suite now covers retry-root aliasing, graceful-to-immediate hardening, stale-control drain races, hard deadline preservation, descendant settlement failure, and late resweep exactly-once root finalization.",

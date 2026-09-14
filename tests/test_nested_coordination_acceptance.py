@@ -378,11 +378,6 @@ def test_depth3_control_plane_reaches_root_acceptance(tmp_path, monkeypatch):
     monkeypatch.setenv("OUROBOROS_MAX_SUBAGENT_DEPTH", "3")
     monkeypatch.setenv("OUROBOROS_MAX_ACTIVE_SUBAGENTS_PER_ROOT", "6")
     monkeypatch.setattr(control, "load_settings", lambda: settings)
-    monkeypatch.setattr(
-        events,
-        "_find_duplicate_task",
-        lambda *_args, **_kwargs: None,
-    )
     monkeypatch.setattr(task_tree_ledger, "DATA_DIR", tmp_path)
 
     monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
