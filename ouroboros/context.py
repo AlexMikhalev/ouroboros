@@ -649,8 +649,9 @@ def build_knowledge_sections(
         knowledge_indexes.append((env.drive_path("memory/knowledge/patterns.md"), pattern_header, "patterns register"))
     for path, header, label in knowledge_indexes:
         # The authored summary is the resident face of a note, so the index carries it
-        # whether or not a common orientation exists; the fresh inventory render stays
-        # for the case where a note was written but its index rebuild did not land.
+        # whether or not a common orientation exists; the fresh inventory render also
+        # covers the case where the index file is absent (a note landed before any
+        # rebuild); an existing stale index is still read as written.
         is_global_index = path == global_address.shelf / INDEX_FILE
         text = (render_knowledge_index(inventory_knowledge(global_address), include_summaries=True)
                 if is_global_index and (authored_overview or not path.exists()) else safe_read(path))
