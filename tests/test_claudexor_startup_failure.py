@@ -594,6 +594,44 @@ def test_a_child_the_stop_itself_kills_is_not_a_startup_failure(monkeypatch, tmp
     assert stand.manager._last_start_failure is None and stand.manager._proc is None
 
 
+def test_a_latch_taken_during_a_callers_runtime_preparation_still_refuses_its_spawn(monkeypatch, tmp_path):
+    """Pins the second refusal, right before ``_spawn``: caller A is held inside runtime
+    preparation while B's child dies and C settles it (latch set); A must not spawn."""
+    import threading
+
+    stand = _Stand(monkeypatch, tmp_path, returncode=None, banner=_OOM_REACHED)
+    manager = stand.manager
+    real_ensure = stand.runtime.ensure
+    entered, release = threading.Event(), threading.Event()
+
+    def gated_ensure():
+        command = real_ensure()
+        if len(stand.ensures) == 1:  # caller A: the first preparation is held open
+            entered.set()
+            assert release.wait(5), "the test must release caller A"
+        return command
+
+    monkeypatch.setattr(stand.runtime, "ensure", gated_ensure)
+    outcomes: dict = {}
+    caller_a = _call_in_thread(manager, outcomes, "A")
+    try:
+        assert entered.wait(5), "caller A is inside runtime preparation"
+        assert stand.fail_once().code == "daemon_starting", "caller B spawned a live child"
+        assert len(stand.spawned) == 1 and len(stand.ensures) == 2
+        stand.exit_code = -6
+        third = stand.fail_once()  # caller C settles B's dead child: the latch is set
+        assert third.code == "daemon_spawn_failed" and "latched" in str(third)
+        assert manager._last_start_failure is not None
+    finally:
+        release.set()
+        caller_a.join(5)
+    assert getattr(outcomes.get("A"), "code", None) == "daemon_spawn_failed"
+    assert "latched" in str(outcomes["A"]) and "startup_failure=heap_exhausted" in str(outcomes["A"])
+    assert len(stand.spawned) == 1, "A never spawned a second child"
+    assert len(stand.ensures) == 2, "A's own preparation plus B's; C was refused before preparing"
+    assert len(_rows(stand.data_dir)) == 1
+
+
 def test_a_joined_peer_startup_that_vanished_has_no_exit_fact(monkeypatch, tmp_path):
     """Only this manager's own child carries an exit fact; joining never latches."""
     stand = _Stand(monkeypatch, tmp_path, returncode=-6, banner=_OOM_REACHED)
