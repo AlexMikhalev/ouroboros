@@ -306,9 +306,12 @@ def reconcile_transport_wait(
                         else "continuation_transport_unavailable"),
                 outcome_custody=episode.outcome_custody,
             )
+            if error_kind == "transport_unavailable":  # the grant note said "continuing"; the owner must hear otherwise
+                emit_progress("🌐 The new attempt could not reach the provider — waiting and redialing "
+                              "automatically (that attempt was $0).", incident=None)
             return episode
-    if (episode is not None and not after_local_pass and episode.wait_cause != "provider_outcome_unknown"
-            and unknown_again):
+    if (episode is not None and not msg_present and not after_local_pass
+            and episode.wait_cause != "provider_outcome_unknown" and unknown_again):
         # A formerly free redial crossed dispatch and died unknown: the same
         # episode now needs upstream proof before its next attempt; the clock,
         # backoff and redial count carry over instead of a fresh 4s episode.

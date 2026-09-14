@@ -69,17 +69,17 @@ class WireResponse:
     reason = "OK"
     url = "https://provider.invalid/v1/messages"
 
-    def __init__(self, wire, *, failure=None, step=None):
-        self.wire, self.failure, self.step = wire, failure, step
+    def __init__(self, wire, *, failure=None, step=None, chunk_size=13):
+        self.wire, self.failure, self.step, self.chunk_size = wire, failure, step, chunk_size
         self.headers = {"x-generation-id": "header-generation"}
         self.closed = False
 
     def iter_bytes(self):
-        # Fragment through UTF-8, CRLF and JSON boundaries.
-        for offset in range(0, len(self.wire), 13):
+        # Fragment through UTF-8, CRLF and JSON boundaries (13 bytes by default).
+        for offset in range(0, len(self.wire), self.chunk_size):
             if self.step:
                 self.step()
-            yield self.wire[offset:offset + 13]
+            yield self.wire[offset:offset + self.chunk_size]
         if self.failure:
             raise self.failure
 
@@ -333,6 +333,20 @@ _FORGIVEN_SHAPES = {
     "model_conflict": (
         lambda: sse(chunk({"content": "do"}), chunk({"content": "ne"}, "stop", usage=completion()["usage"], model="vendor/other")),
         ["model: 'vendor/test-stream' then 'vendor/other'; kept first"]),
+    "object_delta_onto_text": (
+        lambda: sse(chunk({"content": "done"}), chunk({"content": {"x": 1}}, "stop", usage=completion()["usage"])),
+        ["content: object delta onto str; kept first shape"]),
+    "list_delta_onto_text": (
+        lambda: sse(chunk({"content": "done"}), chunk({"content": [1]}, "stop", usage=completion()["usage"])),
+        ["content: list delta onto str; kept first shape"]),
+    "text_delta_onto_scalar": (
+        lambda: sse(chunk({"content": 7}), chunk({"content": "done"}, "stop", usage=completion()["usage"])),
+        ["content: text delta onto int; kept first shape"]),
+    # [DONE] and a later frame in ONE network read: the assembler drains the whole chunk.
+    "data_after_done": (
+        lambda: WireResponse(sse(chunk({"content": "done"}, "stop", usage=completion()["usage"]))
+                             + b"data: {\"id\": \"late\"}\r\n\r\n", chunk_size=1 << 16),
+        ["data after [DONE]; ignored"]),
 }
 
 
@@ -342,7 +356,9 @@ def test_form_irregularities_never_raise_before_the_terminal_verdict(isolated, s
     Every forgiven shape assembles a complete reply, settles, and names the forgiven fact in the
     receipt; none of them is an unknown outcome."""
     build, expected = _FORGIVEN_SHAPES[shape]
-    result = run_driver(lambda **kw: WireResponse(build()), payload(stream=True), target()).model_dump()
+    wire = build()
+    response = wire if isinstance(wire, WireResponse) else WireResponse(wire)
+    result = run_driver(lambda **kw: response, payload(stream=True), target()).model_dump()
     receipt = result["_stream_receipt"]
     assert receipt["complete"] is True
     assert all(note in receipt["anomalies"]["first"] for note in expected), receipt["anomalies"]
@@ -363,15 +379,24 @@ def test_clean_close_after_every_choice_finished_is_terminal_framing(isolated):
     assert rows(isolated)[-1]["state"] == "settled"
 
 
-def test_tool_call_without_type_is_structurally_complete(isolated):
+@pytest.mark.parametrize("payload_key,field", [("function", "arguments"), ("custom", "input")])
+def test_tool_call_without_type_is_structurally_complete(isolated, payload_key, field):
     """``type`` is not part of structural completeness (id, name, arguments are): a call whose
-    fragments never carried it returns exactly as the non-stream path returns it."""
-    wire = sse(chunk({"tool_calls": [{"index": 0, "id": "t", "function": {"name": "lookup", "arguments": '{"q":"x"}'}}]},
-                     "tool_calls", usage=completion()["usage"]))
+    fragments never carried it returns exactly as the non-stream path returns it, for either payload."""
+    call = {"index": 0, "id": "t", payload_key: {"name": "lookup", field: '{"q":"x"}'}}
+    wire = sse(chunk({"tool_calls": [call]}, "tool_calls", usage=completion()["usage"]))
     result = run_driver(lambda **kw: WireResponse(wire), payload(stream=True), target()).model_dump()
-    assert result["choices"][0]["message"]["tool_calls"] == [
-        {"id": "t", "function": {"name": "lookup", "arguments": '{"q":"x"}'}}]
+    assert result["choices"][0]["message"]["tool_calls"] == [{"id": "t", payload_key: {"name": "lookup", field: '{"q":"x"}'}}]
     assert result["_stream_receipt"]["anomalies"]["count"] == 0 and rows(isolated)[-1]["state"] == "settled"
+
+
+def test_clean_close_with_a_missing_expected_choice_stays_unknown(isolated):
+    """``n=2``, one choice finished, the body closes without ``[DONE]`` and without the second
+    choice: the wire is genuinely incomplete, so this is the unknown outcome, not a rejection."""
+    wire = sse(chunk({"role": "assistant", "content": "only one"}, "stop", usage=completion()["usage"]), done=False)
+    with pytest.raises(IncompleteProviderStream):
+        run_driver(lambda **kw: WireResponse(wire), payload(stream=True, n=2), target())
+    assert rows(isolated)[-1]["state"] == "unresolved"
 
 
 def test_later_usage_snapshot_overrides_an_earlier_one(isolated):
@@ -802,6 +827,35 @@ def test_native_unusable_body_after_message_stop_is_rejected_and_settled(isolate
     assert rows(isolated)[-1]["state"] == "settled"
     verdict = classify_llm_exception(caught.value)
     assert (verdict.kind, verdict.retry_same_request) == ("provider_error", False)
+
+
+def test_native_rejection_without_message_delta_keeps_money_unknown(isolated, monkeypatch):
+    """``message_stop`` arrived but no ``message_delta`` did (no stop_reason, no final counters): the
+    body is rejected, and the ledger keeps its unresolved upper bound instead of settling on
+    ``message_start``'s lower-bound snapshot — the same policy as the mid-stream error frame."""
+    import requests
+    events, _expected = native_events()
+    events = [(kind, body) for kind, body in events if kind != "message_delta"]
+    monkeypatch.setattr(requests, "post", lambda *a, **k: WireResponse(sse(*events, done=False)))
+    with pytest.raises(RejectedProviderStream) as caught:
+        LLMClient()._chat_anthropic(target("anthropic"), MESSAGES, TOOLS, "high", 1024, "auto", stream=True)
+    assert "no stop_reason after message_stop" in str(caught.value) and caught.value.stream_usage is None
+    assert rows(isolated)[-1]["state"] == "unresolved"
+    assert classify_llm_exception(caught.value).kind == "provider_error"
+
+
+def test_native_non_json_frame_is_the_typed_unknown_outcome(isolated, monkeypatch):
+    """A truncated ``data:`` line in a native stream is ``IncompleteProviderStream`` (typed
+    ``model_outcome_unknown``), never a raw ``JSONDecodeError`` whose classification would rest
+    on custody state alone."""
+    import requests
+    events, _expected = native_events()
+    wire = sse(*events[:3], done=False) + b"data: {broken\r\n\r\n"
+    monkeypatch.setattr(requests, "post", lambda *a, **k: WireResponse(wire))
+    with pytest.raises(IncompleteProviderStream) as caught:
+        LLMClient()._chat_anthropic(target("anthropic"), MESSAGES, TOOLS, "high", 1024, "auto", stream=True)
+    assert "not JSON" in str(caught.value) and caught.value.code == "model_outcome_unknown"
+    assert rows(isolated)[-1]["state"] == "unresolved"
 
 
 def test_native_max_tokens_with_tool_blocks_returns_like_non_stream(isolated, monkeypatch):

@@ -174,6 +174,24 @@ def test_stream_loss_before_the_terminal_frame_is_inconclusive_but_a_rejected_bo
             ProviderFailureKind.RED if code == 400 else ProviderFailureKind.INCONCLUSIVE, expected)
 
 
+def test_streamed_reply_without_usage_frame_is_a_warning_not_a_contract_violation():
+    """Main streams and so does the canary's first turn; a route may answer completely without a
+    final usage frame (stream_options dropped by wire recovery, include_usage ignored): money is
+    unknown, the contract is not broken — a warning, never RED. The non-stream shape still demands tokens."""
+    import dataclasses
+
+    from ouroboros.provider_models import normalize_model_identity
+    from tests.provider_contract_ci import assert_canary_usage
+
+    canary = dataclasses.replace(next(iter(provider_canary_matrix())), expected_provider="openrouter", reasoning_effort="high")
+    usage = {"provider": "openrouter", "resolved_model": normalize_model_identity(canary.model),
+             "stream_receipt": {"complete": True, "anomalies": {"count": 0, "first": []}}, "canary_warnings": []}
+    assert_canary_usage(usage, canary)
+    assert [warning["code"] for warning in usage["canary_warnings"]] == ["streamed_reply_without_usage_frame"]
+    with pytest.raises(AssertionError):
+        assert_canary_usage({**usage, "stream_receipt": None, "canary_warnings": []}, canary)
+
+
 def test_provider_alarm_output_sanitizes_token_shaped_evidence(capsys):
     sentinel = "sk-proj-" + ("A" * 40)
     exc = _http_error(429, f'{{"error":{{"token":"{sentinel}"}}}}')

@@ -208,7 +208,7 @@ def _tool_call_problem(call: Any) -> str:
         return "id missing"
     # Structural completeness is id + name + arguments; a fragment set that never
     # carried ``type`` is the same shape the non-stream path executes.
-    kind = call.get("type") or ("function" if isinstance(call.get("function"), dict) else None)
+    kind = call.get("type") or next((k for k in ("function", "custom") if isinstance(call.get(k), dict)), None)
     if kind not in {"function", "custom"}:
         return f"type {kind!r}"
     payload = call.get(kind)
@@ -325,7 +325,8 @@ class ChatAccumulator(_Accumulator):
             # A body the provider closed cleanly after every choice finished is
             # terminal framing too ([DONE] is the other witness); a close before
             # that is the one unknown outcome this assembler still reports.
-            if not self.choices or any(not choice.get("finish_reason") for choice in self.choices.values()):
+            if (set(self.choices) != set(range(self.expected_choices))
+                    or any(not choice.get("finish_reason") for choice in self.choices.values())):
                 raise IncompleteProviderStream("Stream ended without complete terminal framing")
             self._note("stream closed without [DONE] after every choice finished")
             self.done = True
@@ -374,13 +375,17 @@ class AnthropicAccumulator(_Accumulator):
         self.body: dict = {}
         self.blocks: dict[int, dict] = {}
         self.open_blocks: set[int] = set()
+        self.usage_final = False  # message_delta folded its final counters into body["usage"]
         self.inputs: dict[int, str] = {}
 
     def accept(self, event: str, data: str) -> None:
         if self.done:
             self._note("data after message_stop; ignored")
             return
-        chunk = json.loads(data)
+        try:
+            chunk = json.loads(data)
+        except ValueError:
+            raise IncompleteProviderStream("Native stream chunk is not JSON") from None
         if not isinstance(chunk, dict):
             raise IncompleteProviderStream("Native stream chunk is not an object")
         kind = chunk.get("type")
@@ -440,6 +445,7 @@ class AnthropicAccumulator(_Accumulator):
                 raise IncompleteProviderStream("Native message delta before blocks finished")
             _snapshot(self.body, chunk.get("delta") or {})
             _snapshot(self.body.setdefault("usage", {}), chunk.get("usage") or {})
+            self.usage_final = True
         elif kind == "message_stop":
             self.done = True
         # Future non-content events are retained in the exact wire evidence.
@@ -469,8 +475,11 @@ class AnthropicAccumulator(_Accumulator):
         return self.partial()
 
     def _reject(self, detail: str) -> None:
+        # message_start's usage is a lower-bound snapshot: without message_delta the
+        # attempt keeps its unresolved upper bound (same policy as the error branch).
         raise RejectedProviderStream(f"Native stream rejected after message_stop: {detail}",
-                                     usage=self.body.get("usage"), anomalies=self.anomalies)
+                                     usage=self.body.get("usage") if self.usage_final else None,
+                                     anomalies=self.anomalies)
 
     def partial(self) -> dict:
         return {**copy.deepcopy(self.body), "content": [copy.deepcopy(self.blocks[key]) for key in sorted(self.blocks)]}

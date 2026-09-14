@@ -140,8 +140,10 @@ def test_alternating_unknown_and_transport_failures_keep_one_episode(tmp_path, m
     notices = [row for row in sends[-1] if "NEW physical model attempt" in str(row.get("content"))]
     assert len(notices) == 2 and "paid-attempt-3" in str(notices[-1]["content"])
     # The owner is told that money became unknown when the free redial crossed dispatch (the
-    # entry note said "$0"), not only at the next grant.
+    # entry note said "$0"), not only at the next grant; and that the granted attempt never
+    # reached the provider (the grant note said "continuing").
     assert sum("another charge is possible" in text for text in notes) >= 2
+    assert any("could not reach the provider" in text for text in notes)
 
 
 def test_grant_without_a_new_attempt_is_not_a_phantom_repeat(tmp_path):

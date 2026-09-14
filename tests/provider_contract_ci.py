@@ -491,8 +491,18 @@ def assert_canary_usage(usage, canary: ProviderCanary, *, forced_tool_choice: bo
     assert isinstance(usage, dict), failure("usage_not_mapping")
     assert usage.get("provider") == canary.expected_provider, failure("unexpected_accounting_provider")
     assert usage.get("resolved_model") == normalize_model_identity(canary.model), failure("unexpected_accounting_model")
-    assert _safe_nonnegative_int(usage.get("prompt_tokens")) > 0, failure("missing_prompt_tokens")
-    assert _safe_nonnegative_int(usage.get("completion_tokens")) > 0, failure("missing_completion_tokens")
+    if (isinstance(usage.get("stream_receipt"), dict) and not _safe_nonnegative_int(usage.get("prompt_tokens"))
+            and not _safe_nonnegative_int(usage.get("completion_tokens"))):
+        # A complete streamed reply whose route sent no final usage frame (a provider
+        # that drops stream_options under wire recovery, or ignores include_usage):
+        # money is unknown, the contract is not broken — weather, recorded as a
+        # warning through the existing telemetry, never RED.
+        warnings = usage.setdefault("canary_warnings", [])
+        if isinstance(warnings, list) and len(warnings) < 4:
+            warnings.append({**_canary_evidence(canary, None, usage), "code": "streamed_reply_without_usage_frame"})
+    else:
+        assert _safe_nonnegative_int(usage.get("prompt_tokens")) > 0, failure("missing_prompt_tokens")
+        assert _safe_nonnegative_int(usage.get("completion_tokens")) > 0, failure("missing_completion_tokens")
     if canary.reasoning_effort == "medium":
         expected_effort = canary.reasoning_effort
         if canary.expected_provider == "deepseek":

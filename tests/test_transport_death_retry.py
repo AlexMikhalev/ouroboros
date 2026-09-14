@@ -1152,3 +1152,69 @@ def test_rejected_stream_settles_and_walks_the_fallback_chain_without_a_wait_epi
     for transcript in (messages, kwargs["tools"]._ctx.messages):
         assert not any("[SYSTEM NOTICE]" in str(m.get("content") or "") for m in transcript)
     assert any("⚡ Fallback: test-model → other/model" in note and "provider_error" in note for note in notes)
+
+
+def test_code_less_stream_error_without_usage_keeps_the_upper_bound_and_still_walks_the_chain(
+    data_root, tmp_path, monkeypatch, no_sleep,
+):
+    """An explicit SSE error frame without an HTTP-shaped code (the native overload shape) read
+    before any usage frame is the provider's own terminal verdict: ``provider_error`` with no
+    same-model repeat, the cross-model fallback dialed, no wait episode — while the first attempt
+    keeps its unresolved upper bound (message_start's snapshot is deliberately not settled), so the
+    budget fence still counts that money."""
+    from ouroboros import fallback_cooldown
+    from ouroboros.llm_stream import ProviderStreamError
+
+    fallback_cooldown.reset_for_tests()
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    monkeypatch.setenv("OUROBOROS_MODEL_FALLBACKS", "other/model")
+    monkeypatch.delenv("USE_LOCAL_FALLBACK", raising=False)
+    monkeypatch.setattr(loop_mod, "_rebind_context_fit_plan", lambda *a, **k: (None, "max"))
+
+    class _OverloadedPrimaryLLM:
+        def __init__(self, root):
+            self.root = root
+            self.models = []
+
+        def default_model(self):
+            return "test-model"
+
+        def chat(self, **kwargs):
+            model = kwargs["model"]
+            self.models.append(model)
+
+            def send():
+                if model == "test-model":
+                    raise ProviderStreamError({"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}})
+                return {"content": "done"}
+
+            request = ua.AttemptRequest(
+                model=model, provider="anthropic", reservation_usd=1.0,
+                drive_root=self.root, task_id="t-death", root_task_id="t-death", source="test.overloaded",
+            )
+            ua.execute_physical_attempt(
+                request, send, extractor=lambda _resp: ({"prompt_tokens": 1, "completion_tokens": 1}, 0.01, True),
+            )
+            return OK_RESPONSE
+
+    llm = _OverloadedPrimaryLLM(data_root)
+    notes = []
+    kwargs = _loop_kwargs(tmp_path, llm, notes)
+    result, usage, _trace = run_llm_loop(**kwargs)
+
+    assert result == "done"
+    assert llm.models == ["test-model", "other/model"]
+    by_attempt = {}
+    for row in _ledger(data_root):
+        by_attempt.setdefault(row["attempt_id"], []).append(row)
+    assert [[row["state"] for row in rows] for rows in by_attempt.values()] == [
+        ["reserved", "dispatched", "unresolved"],
+        ["reserved", "dispatched", "settled"],
+    ]
+    assert ua.usage_projection(data_root)["unresolved_upper_bound_usd"] == 1.0
+    api_errors = _events(tmp_path, "llm_api_error")
+    assert [(row["error_kind"], row["retry_same_request"], row["attempt_custody_state"]) for row in api_errors] == [
+        ("provider_error", False, "unresolved"),
+    ]
+    assert _events(tmp_path, "network_wait") == []
+    assert "transport_recovery" not in usage and "_pending_transport_outcome" not in usage
