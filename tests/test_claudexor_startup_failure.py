@@ -115,9 +115,15 @@ def test_log_interval_reader_returns_only_this_spawns_bytes(tmp_path):
     # Bounded: only the tail of a long interval is read, and it still classifies.
     interval, data = read_startup_log_interval(log, start=len(old), identity=identity, limit=64)
     assert interval == (len(old), len(old) + len(_OOM_REACHED)) and data == _OOM_REACHED[-64:]
-    # A replaced file is never read as this spawn's interval.
-    log.unlink()
-    log.write_bytes(old + _OOM_REACHED)
+    # A replaced file is never read as this spawn's interval. The replacement
+    # is written beside the live file and renamed over it (the shape every log
+    # rotation takes), so its inode is allocated while the old one still exists
+    # and differs on every filesystem; unlink-then-create would let ext4 hand
+    # the recycled inode number back and make the two files indistinguishable.
+    replacement = tmp_path / "daemon.log.rotated"
+    replacement.write_bytes(old + _OOM_REACHED)
+    os.replace(replacement, log)
+    assert log.stat().st_ino != identity[1]
     assert read_startup_log_interval(log, start=len(old), identity=identity) == (None, b"")
     assert read_startup_log_interval(tmp_path / "missing.log", start=0, identity=identity) == (None, b"")
 

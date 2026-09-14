@@ -140,8 +140,12 @@ def read_startup_log_interval(
     The file is identity-checked on the open descriptor (``st_dev, st_ino`` as
     recorded when the spawn's sink was opened) so a rotated or replaced log
     yields ``(None, b"")`` instead of an older generation's tail — the same
-    invariant ``_startup_diagnostic`` keeps for its interval line. ``data`` is
-    at most the last ``limit`` bytes of the interval.
+    invariant ``_startup_diagnostic`` keeps for its interval line. Rotation by
+    rename always changes the inode; a file unlinked and re-created under the
+    same name may get its inode number back on filesystems that recycle them,
+    and is then read as this spawn's bytes (a diagnostic label, never a
+    behaviour selector). ``data`` is at most the last ``limit`` bytes of the
+    interval.
     """
     try:
         with open(path, "rb") as sink:
