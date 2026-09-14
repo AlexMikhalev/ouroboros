@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from ouroboros import delegate_custody as custody
 from ouroboros.subagents import envelope_from_task
 
@@ -453,6 +455,60 @@ class TestTerminalFrameDelivery:
             task_done_event=task_done_event,
         )
         return task_done_event
+
+    def _dispatch_text(self, tmp_path, monkeypatch, **terminal_facts):
+        """Dispatch one subagent terminal and return its chat ``(text, meta)``."""
+        from types import SimpleNamespace
+
+        from supervisor import events as events_mod
+
+        monkeypatch.setattr(
+            events_mod, "_bound_project_chat_id", lambda *_a, **_k: 0)
+        seen: list = []
+        ctx = SimpleNamespace(
+            DRIVE_ROOT=tmp_path, RUNNING={}, PENDING=[], WORKERS={},
+            send_with_budget=lambda _cid, text, **kw: seen.append(
+                (text, kw.get("progress_meta") or {})),
+            persist_queue_snapshot=lambda **_k: True,
+            bridge=SimpleNamespace(push_log=lambda _e: None),
+        )
+        events_mod._finish_task_done_dispatch(
+            {}, ctx, task_id="child-1", worker_id=0,
+            task={"id": "child-1", "chat_id": 7, "parent_task_id": "root-1",
+                  "root_task_id": "root-1", "delegation_role": "subagent",
+                  "role": "publication-auditor"},
+            final_task_result=self._result(),
+            task_done_event={"type": "task_done", "task_id": "child-1",
+                             "status": "completed", **terminal_facts},
+        )
+        return seen[0]
+
+    def test_a_clean_completion_still_reads_as_a_clean_completion(
+            self, tmp_path, monkeypatch):
+        text, meta = self._dispatch_text(tmp_path, monkeypatch)
+        assert text == "✅ Subagent child-1 completed (publication-auditor)."
+        assert meta["subagent_event"] == "completed" and meta["status"] == "completed"
+
+    @pytest.mark.parametrize("terminal_facts", [
+        {"outcome_axes": {"execution": {"status": "degraded"}}},
+        {"reason_code": "configured_actor_incomplete"},
+        {"reason_code": "configured_actor_unknown"},
+    ])
+    def test_a_degraded_completion_reads_as_a_warning(
+            self, tmp_path, monkeypatch, terminal_facts):
+        """The chat line and the card told two stories about ONE terminal.
+
+        A configured actor that never started its leaf ends `completed` on the
+        lifecycle axis and `degraded` on the execution axis. The web card computes
+        `warn` from those axes; the server-emitted progress text read the lifecycle
+        alone and said "✅ … completed", so the owner's first signal was a green
+        check over a child that had done nothing. Only icon and verb move —
+        `subagent_event` and `status` are what Telegram cards and the web consumers
+        key on, and a terminal must not change identity to change its wording.
+        """
+        text, meta = self._dispatch_text(tmp_path, monkeypatch, **terminal_facts)
+        assert text == "⚠️ Subagent child-1 finished with warnings (publication-auditor)."
+        assert meta["subagent_event"] == "completed" and meta["status"] == "completed"
 
     def test_panel_chat_zero_receives_the_terminal_evidence_frame(
             self, tmp_path, monkeypatch):

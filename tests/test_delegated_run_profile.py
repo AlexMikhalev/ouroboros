@@ -55,6 +55,81 @@ def test_a_read_only_child_uses_the_same_transport_with_a_narrower_profile(tmp_p
     assert payload["access"] == "readonly"
 
 
+@pytest.mark.parametrize("named_default", [
+    {"directory_strategy": "direct"},
+    {"scope_paths": []},
+    {"directory_strategy": "direct", "scope_paths": []},
+])
+def test_naming_the_documented_default_starts_exactly_like_omitting_it(
+    tmp_path, monkeypatch, named_default,
+):
+    """#882: `direct` IS what omission means, and `[]` selects nothing.
+
+    A read-only child never opens an ordinary-folder session, so neither argument
+    can change its run — yet the presence test they used to meet refused the start
+    before any POST, and the startup receipt forbade the child any other substrate.
+    The first real use of the parameter (a read-only auditor naming the documented
+    default) died unrun and still cost two paid rounds. Naming a default is not a
+    different request.
+    """
+    roots = [tmp_path / "omit", tmp_path / "named"]
+    for root in roots:
+        root.mkdir()
+    omitted, _ = _started_request(roots[0], acting=False, monkeypatch=monkeypatch)
+    explicit, payload = _started_request(
+        roots[1], acting=False, monkeypatch=monkeypatch, start_kwargs=named_default)
+    assert "execution" not in explicit
+    assert payload["access"] == "readonly"
+    assert {key: value for key, value in explicit.items() if key != "scope"} == {
+        key: value for key, value in omitted.items() if key != "scope"}
+
+
+@pytest.mark.parametrize("geometry", [
+    {"scope_paths": ["src"]},
+    {"directory_strategy": "direct", "scope_paths": ["src"]},
+    {"directory_strategy": "copy", "scope_paths": ["."]},
+])
+def test_real_geometry_on_a_read_only_child_refuses_before_the_daemon(
+    tmp_path, monkeypatch, geometry,
+):
+    """A REAL geometry request still refuses — typed, unrun, and repairable.
+
+    `copy` or a selected footprint asks for something a read-only child cannot do,
+    so the refusal stands. What it must carry: `definitely_unrun` (the host provably
+    started nothing, so the child ends at $0 instead of waking the model with a fault
+    it cannot act on), a durable start-blocked row (the child's own evidence used to
+    read "delegate_start never attempted" over a call the registry saw), and a repair
+    the parent can apply — omit the arguments — rather than "an ordinary writable
+    folder", which sends an auditor looking for a mutating session it never needed.
+    """
+    from ouroboros import delegate_custody as custody
+    from ouroboros.delegate_evidence import START_BLOCKED
+    from ouroboros.gateways import claudexor as _gw
+    from ouroboros.tools import delegate
+
+    reached = []
+
+    class _NeverReached:
+        def handshake(self, **_kw): reached.append("handshake"); return {}
+        def close(self): pass
+
+    monkeypatch.setattr(_gw, "ClaudexorGateway", lambda *a, **k: _NeverReached())
+    monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "some-route=weak-model:low")
+    ctx = _delegating_ctx(tmp_path, acting=False, task_id="t-geometry")
+    refused = json.loads(delegate._delegate_start(ctx, "audit the folder", **geometry))
+    assert refused["status"] == "refused"
+    assert refused["reason"] == "directory_execution_unavailable"
+    assert refused["definitely_unrun"] is True
+    assert "omit directory_strategy and scope_paths" in refused["detail"]
+    assert reached == [], "an argument refusal never reaches the daemon"
+    custody._CUSTODY.clear()
+    rows = [json.loads(line) for line in
+            custody.event_log_path(tmp_path).read_text(encoding="utf-8").splitlines()]
+    blocked = [row for row in rows if row.get("type") == START_BLOCKED]
+    assert [row["reason"] for row in blocked] == ["directory_execution_unavailable"]
+    assert blocked[0]["task_id"] == "t-geometry"
+
+
 def test_the_host_states_its_prohibitions_on_every_delegated_run(tmp_path, monkeypatch):
     request, _ = _started_request(tmp_path, acting=True, monkeypatch=monkeypatch)
     instructions = request["instructions"].lower()
