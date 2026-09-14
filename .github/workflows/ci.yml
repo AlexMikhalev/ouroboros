@@ -843,11 +843,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          AVD_HOME="$RUNNER_TEMP/android-avd"
+          USER_HOME="$RUNNER_TEMP/android-user-home"
+          mkdir -p "$AVD_HOME" "$USER_HOME"
+          echo "ANDROID_AVD_HOME=$AVD_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_USER_HOME=$USER_HOME" >> "$GITHUB_ENV"
+          export ANDROID_AVD_HOME="$AVD_HOME" ANDROID_USER_HOME="$USER_HOME"
           sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" \
             "emulator" "system-images;android-${{ matrix.api-level }};default;x86_64"
           echo "no" | avdmanager create avd --force --name "obo-api-${{ matrix.api-level }}" \
             --package "system-images;android-${{ matrix.api-level }};default;x86_64" \
             --device "pixel_2"
+          emulator -list-avds
       - name: Build disposable test APK
         shell: bash
         run: |
@@ -868,6 +875,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/android-avd" ANDROID_USER_HOME="$RUNNER_TEMP/android-user-home"
           AVD="obo-api-${{ matrix.api-level }}"
           LOG="$RUNNER_TEMP/android-smoke/emulator.log"
           "$ANDROID_HOME/emulator/emulator" -avd "$AVD" -no-window -no-audio -no-boot-anim \
