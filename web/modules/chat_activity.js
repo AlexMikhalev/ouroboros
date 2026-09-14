@@ -586,19 +586,12 @@ export function isTerminalTaskPhase(phase = '', terminal = false) {
 // In-flight chat activity status (owner decisions 1A-5A; managed continuity).
 // ---------------------------------------------------------------------------
 
-// Snapshot-authoritative activity kinds: only kinds the server's activity
-// snapshot actually enumerates may be deleted by /api/state hydration.
-// "managed_task" rows come from the supervisor queue (PENDING/RUNNING roots),
-// so their absence from a snapshot is authoritative conclusion. Typing frames
-// without a kind stamp (legacy frames, subagents) stay exempt — they are
-// concluded by their own final/summary frames, as before.
-const SNAPSHOT_AUTHORITATIVE_KINDS = new Set(['direct_chat', 'managed_task']);
-
 /**
  * One request/apply clock for every /api/state consumer on a page. Responses
  * may finish in either order; once generation N applies, an older generation
  * can no longer mutate any projection. requestedAt stays tied to request start
- * so activity hydration keeps its WS-arrival barrier.
+ * and is the barrier for the CARD scan (`lastLiveObservedAt`) only — activity
+ * hydration is a plain projection of the census and has no barrier.
  */
 export function createStateSnapshotSequencer(onApply, now = () => Date.now()) {
     let requestedGeneration = 0;
@@ -873,85 +866,50 @@ export function routingAnnotationText(annotation) {
 }
 
 /**
- * Reconcile the client's active-activity map against one /api/state snapshot
- * (owner decision 1A). The snapshot is authoritative ONLY over kinds it
- * enumerates (direct registry turns and queue-listed managed roots)
- * that existed before it was requested; it must never delete (a) an activity
- * registered by a WS typing frame AFTER the request started (the barrier), or
- * (b) a kind-less typing entry (legacy frames, subagents), which no snapshot
- * source tracks.
+ * Project one /api/state activity census onto the client's active-activity map.
+ *
+ * This map is a PROJECTION of the census: the client never inserts into it from
+ * a WS frame (a typing frame is a submission receipt, not liveness), so the
+ * census is its only inserter (finals and the census delete). Deletion
+ * authority follows from that — on a
+ * `complete` snapshot every id the census does not list is gone, whatever its
+ * kind, with no wall-clock barrier and no generation marker. An incomplete
+ * snapshot (supervisor not ready, or a source failed) is a partial listing and
+ * deletes nothing.
  *
  * `concludedIds` (Set/Map with .has) is the client-side conclusion ledger: a
  * turn already concluded by its keyed final must never be re-inserted by a
- * snapshot that was captured while it still ran (activity ids are unique task
- * ids and never restart, so conclusion is final). Without this, a one-shot
- * hydration (project panels) could resurrect a finished turn indefinitely.
+ * snapshot captured while it still ran (activity ids are unique task ids and
+ * never restart, so conclusion is final).
  */
-export function computeHydratedDirectActivities(
-    existingMap,
-    turnsList,
-    chatId,
-    snapshotBarrierMs = Infinity,
-    concludedIds = null,
-    snapshotGeneration = 0,
-    complete = true,
-) {
+export function computeHydratedDirectActivities(existingMap, turnsList, chatId, concludedIds = null, complete = true) {
     const nextMap = new Map(existingMap || []);
     if (!Array.isArray(turnsList)) return nextMap;
-    const currentSnapshotGeneration = Number(snapshotGeneration) || 0;
-    const currentChatTurns = turnsList.filter((t) => Number(t?.chat_id ?? 1) === chatId);
-    const activeIdsInSnapshot = new Set();
-    for (const turn of currentChatTurns) {
+    const listed = new Set();
+    for (const turn of turnsList) {
+        if (Number(turn?.chat_id ?? 1) !== chatId) continue;
         const aid = String(turn?.activity_id || '').trim();
-        if (!aid) continue;
-        if (concludedIds && concludedIds.has(aid)) continue;
-        activeIdsInSnapshot.add(aid);
-        const hadExisting = nextMap.has(aid);
-        const existing = nextMap.get(aid) || {};
-        const hydrated = {
+        if (!aid || (concludedIds && concludedIds.has(aid))) continue;
+        listed.add(aid);
+        nextMap.set(aid, {
             activityId: aid,
             kind: turn.kind || 'direct_chat',
             phase: turn.phase || 'thinking',
-            clientMessageId: turn.client_message_id || existing.clientMessageId || '',
-            // Strictly CLIENT-clock "first observed" time: the snapshot's
-            // server-clock started_at must never enter the barrier comparison
-            // below (clock skew would let finished activities linger).
-            startedAt: existing.startedAt || Date.now(),
-        };
-        // Snapshot-only rows carry HTTP provenance. A live frame overwrites
-        // the row without this marker and keeps request-start barrier authority.
-        if (existing.snapshotGeneration || (!hadExisting && currentSnapshotGeneration)) {
-            hydrated.snapshotGeneration = currentSnapshotGeneration || existing.snapshotGeneration;
-        }
-        nextMap.set(aid, hydrated);
+            clientMessageId: turn.client_message_id || nextMap.get(aid)?.clientMessageId || '',
+        });
     }
-    for (const [aid, entry] of nextMap.entries()) {
-        if (!complete) break;
-        if (activeIdsInSnapshot.has(aid)) continue;
-        // Deletion authority is scoped to snapshot-enumerated kinds: a
-        // kind-less typing entry is invisible to every snapshot source and is
-        // concluded by its own final/summary frame instead.
-        if (!SNAPSHOT_AUTHORITATIVE_KINDS.has(String(entry?.kind || ''))) continue;
-        const entrySnapshotGeneration = Number(entry?.snapshotGeneration) || 0;
-        if (
-            currentSnapshotGeneration
-            && entrySnapshotGeneration
-            && entrySnapshotGeneration < currentSnapshotGeneration
-        ) {
-            nextMap.delete(aid);
-            continue;
-        }
-        const startedAt = Number(entry?.startedAt) || 0;
-        if (startedAt >= snapshotBarrierMs) continue;
-        nextMap.delete(aid);
-    }
+    // The census is the only inserter into this map, so on a complete snapshot
+    // every id it does not list is gone, whatever its kind. An incomplete
+    // snapshot (supervisor not ready / a source failed) deletes nothing.
+    if (complete) for (const aid of nextMap.keys()) if (!listed.has(aid)) nextMap.delete(aid);
     return nextMap;
 }
 
 /**
- * Hydrate one authoritative activity snapshot and identify the narrower event
- * that can wake durable task-detail convergence: a host-stamped managed root
- * observed before this request, now absent from the GLOBAL snapshot. A root
+ * Hydrate one authoritative activity census (see
+ * computeHydratedDirectActivities for the projection contract) and identify the
+ * narrower event that can wake durable task-detail convergence: a host-stamped
+ * managed root the client held, now absent from the GLOBAL snapshot. A root
  * still listed under another chat merely departed locally. Direct/ephemeral
  * removals carry no task-detail/card authority, but they ARE conclusions
  * (#369): the caller records them so a late frame cannot resurrect the
@@ -961,13 +919,11 @@ export function reconcileHydratedDirectActivities(
     existingMap,
     turnsList,
     chatId,
-    snapshotBarrierMs = Infinity,
     concludedIds = null,
-    snapshotGeneration = 0,
     complete = true,
 ) {
     const activities = computeHydratedDirectActivities(
-        existingMap, turnsList, chatId, snapshotBarrierMs, concludedIds, snapshotGeneration, complete,
+        existingMap, turnsList, chatId, concludedIds, complete,
     );
     const globallyActiveActivityIds = new Set();
     for (const turn of Array.isArray(turnsList) ? turnsList : []) {

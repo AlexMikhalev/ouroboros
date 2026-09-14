@@ -3195,9 +3195,15 @@ SPA, not a relocatable-page or multi-instance panel framework.
   reason phrase or raw code — never from a second producer. A non-terminal diagnostic may add a timeline fact
   but must not promote the whole task; unknown event names never acquire
   Chat severity from `error`/`crash`/`fail` keyword matching. The Chat
-  header reports connection and server-authoritative activity only; failed
-  task status does not synthesize header attention, a toast, unread state,
-  or an owner action.
+  header reports connection, the `/api/state` activity census, the owner's
+  own unconfirmed sends and live task cards only; failed task status does
+  not synthesize header attention, a toast, unread state, or an owner
+  action. Never derive header liveness from a WS frame: a typing frame is
+  a submission receipt, and the `/api/state` census is the only inserter
+  into the client live-activity set (contract and residuals: the
+  `DirectActivityRegistry` / `active_chat_activities` paragraph of
+  ARCHITECTURE.md; enforced by
+  `web/tests/chat_header_census.test.js`).
 - Executor presentation consumes the existing task/run attempt facts. Keep
   `executor_observation` event-local through Agent, supervisor delivery, progress
   history and both Chat metadata paths; ordinary coordinator notes inherit none.

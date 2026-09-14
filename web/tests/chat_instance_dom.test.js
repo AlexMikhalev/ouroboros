@@ -2,6 +2,18 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createChatInstance } from '../modules/chat.js';
 import { installDom, restoreDom, walkCard } from './chat_dom_fixture.js';
+
+// A typing frame no longer writes the client live-set: liveness is a projection
+// of the /api/state census. A PARTIAL census listing is the census-shaped
+// equivalent of the old typing-frame write — it inserts the activity and
+// concludes nothing else.
+let censusGeneration = 0;
+const listActivity = (instance, activityId, chatId, phase = 'working', kind = 'managed_task') =>
+    instance.hydrateStateSnapshot({
+        active_chat_activities: [{ activity_id: activityId, chat_id: chatId, kind, phase }],
+        active_chat_activities_complete: false,
+        supervisor_ready: true,
+    }, Infinity, ++censusGeneration);
 test('createChatInstance renders a real assistant bubble without senderLabel shadowing', () => {
     const { prior, mount } = installDom();
     const handlers = new Map();
@@ -119,10 +131,8 @@ test('first task-bound review hydrates a progress-created owner once and reconci
             asPanel: true,
         });
         await new Promise((resolve) => setTimeout(resolve, 0));
-        handlers.get('typing')({
-            chat_id: 2, activity_id: 'root-review', task_id: 'root-review',
-            kind: 'managed_task', phase: 'working',
-        });
+        // Liveness comes from the /api/state census, never from a typing frame.
+        listActivity(instance, 'root-review', 2);
         handlers.get('chat')({
             chat_id: 2, role: 'system', is_progress: true,
             task_id: 'root-review', content: 'Owner work is already visible',
@@ -233,16 +243,13 @@ test('first task-bound review hydrates a progress-created owner once and reconci
         );
         assert.ok(rebuiltDeferredCard, 'reconnect rebuilt the durable review owner');
         assert.equal(rebuiltDeferredCard, oldDeferredCard, 'reconnect preserves the reading card');
-        handlers.get('typing')({
-            chat_id: 2, activity_id: 'root-deferred', task_id: 'root-deferred',
-            kind: 'managed_task', phase: 'working',
-        });
+        listActivity(instance, 'root-deferred', 2);
         messages.scrollHeight = 1000; messages.clientHeight = 400; messages.scrollTop = 500;
         messages.listeners.get('scroll')[0]();
         resolveDeferredDetail();
         await new Promise((resolve) => setTimeout(resolve, 0));
         assert.equal(calls.filter((url) => url.startsWith('/api/tasks/root-deferred')).length, 1,
-            'typing during the detail read did not trigger a second GET');
+            'a census listing during the detail read did not trigger a second GET');
         const deferredCard = messages.children.find((node) => node.dataset.taskId === 'root-deferred');
         assert.equal(deferredCard?.dataset.finished, '0');
         assert.equal(deferredCard?.querySelector('.chat-live-phase')?.textContent, 'Finalizing…',
@@ -251,10 +258,7 @@ test('first task-bound review hydrates a progress-created owner once and reconci
         assert.equal(jump.getAttribute('aria-label'), 'New activity — scroll to latest message');
         messages.scrollTop = 600;
         messages.listeners.get('scroll')[0]();
-        handlers.get('typing')({
-            chat_id: 2, activity_id: 'root-terminal-active', task_id: 'root-terminal-active',
-            kind: 'managed_task', phase: 'working',
-        });
+        listActivity(instance, 'root-terminal-active', 2);
         handlers.get('chat')({
             chat_id: 2,
             role: 'system',
@@ -430,10 +434,7 @@ test('review-only reconnect anchors stay inert until task truth arrives', async 
         assert.equal(terminalWsCard.dataset.finished, '1');
         assert.equal(terminalWsCard.querySelector('[data-live-phase]')?.textContent, 'Done');
         const anchoredCard = card('review-root');
-        handlers.get('typing')({
-            chat_id: 2, activity_id: 'review-root', task_id: 'review-root',
-            kind: 'managed_task', phase: 'working',
-        });
+        listActivity(instance, 'review-root', 2);
         assert.equal(card('review-root'), anchoredCard, 'task activity promotes the same card');
         assert.equal(anchoredCard.querySelector('[data-live-phase]')?.hidden, false);
         assert.equal(anchoredCard.querySelector('[data-live-phase]')?.textContent, 'Working');
@@ -1349,7 +1350,7 @@ for (const source of ['missing', 'failed-read']) {
             instance = createChatInstance({ ws, state: { activePage: 'chat', projectChatIds: new Set(), unreadCount: 0 },
                 updateUnreadBadge() {}, stateSnapshots: { begin: () => ({ generation: 1, requestedAt: Date.now() }),
                     isCurrent: () => true, apply() {} }, chatId: 1, idPrefix: 'chat', mountEl: mount });
-            handlers.get('typing')({ chat_id: 1, task_id: 'old-root', activity_id: 'old-root', kind: 'managed_task' });
+            listActivity(instance, 'old-root', 1);
             handlers.get('chat')({ chat_id: 1, task_id: 'old-root', role: 'assistant', is_progress: true,
                 content: 'Inspecting the old source', ts: '2026-09-09T09:00:00Z' });
             const card = walkCard(globalThis.document.byId.get('chat-messages'), 'old-root');
@@ -1363,7 +1364,7 @@ for (const source of ['missing', 'failed-read']) {
             assert.equal(card.querySelector('[data-live-phase]').hidden, source === 'missing');
             assert.equal(card.dataset.finished, '0', 'unavailable is not a fabricated lifecycle outcome');
             if (source === 'missing') assert.match(card.querySelector('[data-live-meta]').innerHTML, /Outcome unavailable/);
-            handlers.get('typing')({ chat_id: 1, task_id: 'old-root', activity_id: 'old-root', kind: 'managed_task' });
+            listActivity(instance, 'old-root', 1);
             assert.equal(card.querySelector('[data-live-phase]').hidden, false, 'fresh live evidence restores activity');
         } finally { instance?.destroy(); restoreDom(prior); }
     });

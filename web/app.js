@@ -237,10 +237,10 @@ const ctx = {
 mainChat = initChat(ctx);
 initFiles(ctx);
 
-function hydrateOpenChatsFromState(data, snapshotRequestedAt, snapshotGeneration) {
-    mainChat?.hydrateStateSnapshot?.(data, snapshotRequestedAt, snapshotGeneration);
+function hydrateOpenChatsFromState(data, snapshotRequestedAt) {
+    mainChat?.hydrateStateSnapshot?.(data, snapshotRequestedAt);
     for (const instance of projectInstances.values()) {
-        instance.hydrateStateSnapshot?.(data, snapshotRequestedAt, snapshotGeneration);
+        instance.hydrateStateSnapshot?.(data, snapshotRequestedAt);
     }
 }
 

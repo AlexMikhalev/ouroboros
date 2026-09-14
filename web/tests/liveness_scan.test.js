@@ -26,7 +26,7 @@ test('unconfirmedForegroundCardIds: a mounted unfinished foreground card the sna
     );
 });
 
-test('unconfirmedForegroundCardIds: snapshot and request-barrier live evidence block detail reconcile', () => {
+test('unconfirmedForegroundCardIds: only census evidence blocks detail reconcile', () => {
     assert.deepEqual(
         unconfirmedForegroundCardIds([live('running-root'), live('orphan')], new Set(['running-root'])),
         ['orphan'],
@@ -36,21 +36,30 @@ test('unconfirmedForegroundCardIds: snapshot and request-barrier live evidence b
 
     const existing = new Map([[
         'fresh-root',
-        { activityId: 'fresh-root', kind: 'managed_task', phase: 'working', startedAt: 9_000 },
+        { activityId: 'fresh-root', kind: 'managed_task', phase: 'working' },
     ]]);
-    const stale = reconcileHydratedDirectActivities(existing, [], 1, 5_000);
-    const staleConfirmed = new Set([
-        ...stale.globallyActiveActivityIds, ...stale.activities.keys(),
-    ]);
-    assert.deepEqual(stale.departedManagedTaskIds, []);
-    assert.deepEqual(unconfirmedForegroundCardIds([live('fresh-root')], staleConfirmed), []);
+    // A partial census vouches for nothing it does not list, but concludes nothing.
+    const partial = reconcileHydratedDirectActivities(existing, [], 1, null, false);
+    assert.deepEqual(partial.departedManagedTaskIds, []);
+    assert.deepEqual(
+        unconfirmedForegroundCardIds([live('fresh-root')], partial.globallyActiveActivityIds),
+        ['fresh-root'],
+    );
 
-    const fresh = reconcileHydratedDirectActivities(existing, [], 1, 10_000);
-    const freshConfirmed = new Set([
-        ...fresh.globallyActiveActivityIds, ...fresh.activities.keys(),
-    ]);
-    assert.deepEqual(fresh.departedManagedTaskIds, ['fresh-root']);
-    assert.deepEqual(unconfirmedForegroundCardIds([live('fresh-root')], freshConfirmed), ['fresh-root']);
+    const complete = reconcileHydratedDirectActivities(existing, [], 1);
+    assert.deepEqual(complete.departedManagedTaskIds, ['fresh-root']);
+    assert.deepEqual(
+        unconfirmedForegroundCardIds([live('fresh-root')], complete.globallyActiveActivityIds),
+        ['fresh-root'],
+    );
+
+    const listed = reconcileHydratedDirectActivities(
+        existing, [{ activity_id: 'fresh-root', chat_id: 1, kind: 'managed_task' }], 1,
+    );
+    assert.deepEqual(
+        unconfirmedForegroundCardIds([live('fresh-root')], listed.globallyActiveActivityIds),
+        [],
+    );
 });
 
 test('unconfirmedForegroundCardIds: finished cards are skipped', () => {
@@ -89,10 +98,10 @@ test('chat.js hands the card projection to the selector inside hydrateDirectActi
         chatSource.indexOf('const isKnownProjectFrame ='),
     );
     assert.match(fn, /unconfirmedForegroundCardIds\(/);
-    assert.match(
-        fn,
-        /new Set\(\[\.\.\.globallyActiveActivityIds, \.\.\.activeDirectActivities\.keys\(\)\]\)/,
-    );
+    // Census ids ONLY: the live set is a projection of the census, so unioning
+    // its keys in shielded cards from durable reconcile for nothing (#866).
+    assert.match(fn, /\n\s+globallyActiveActivityIds,\n\s+\)\) \{/);
+    assert.doesNotMatch(fn, /activeDirectActivities\.keys\(\)/);
     // The projection is built from the live card map, not from a DOM query.
     assert.match(fn, /Array\.from\(liveCardRecords, \(\[id, r\]\) =>/);
     assert.match(fn, /connected: r\.root\?\.isConnected/);
