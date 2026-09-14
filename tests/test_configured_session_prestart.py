@@ -24,6 +24,10 @@ from tests.test_available_subagents_runtime import _session_row, _settings, _sna
     # engine-reason frozenset still terminal at $0.
     ("task_deadline_expired", {"definitely_unrun": True}),
     ("start_request_row_unwritable", {"definitely_unrun": True}),
+    # #882: an argument the host judged BEFORE the daemon call. The reason stays
+    # OUT of the frozenset on purpose — the same string is also returned after a
+    # gateway call, where a run may exist and only the marker separates the two.
+    ("directory_execution_unavailable", {"definitely_unrun": True}),
 ])
 def test_definite_configured_session_start_refusal_terminalizes_before_llm(
     monkeypatch, tmp_path, reason, extra,

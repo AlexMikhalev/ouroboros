@@ -365,3 +365,125 @@ def test_apply_memory_actions_canonical_when_unscoped(tmp_path):
     ])
     assert applied == 1
     assert (drive / "memory" / "knowledge" / "gfacts.md").exists()
+
+
+# --- origin-keyed project lookup (one owner message, one Project) -------------
+
+def _owner_ref(client_message_id: str = "msg-1", text: str = "ship it", chat_id: int = 1) -> dict:
+    from ouroboros.project_dialogue import build_owner_message_ref
+
+    return build_owner_message_ref(
+        chat_id=chat_id, client_message_id=client_message_id,
+        ts="2026-09-14T12:15:20+00:00", text=text,
+    )
+
+
+def test_project_id_for_origin_matches_by_value_and_ignores_ts_and_hash(tmp_path):
+    """Identity of the owner's message is (chat_id, client_message_id) BY VALUE:
+    the binding already validated ts/text_sha256 at write time, so a later reader
+    must not re-derive identity from content (DEVELOPMENT.md anti-pattern)."""
+    from ouroboros.projects_registry import (
+        bind_task_to_project,
+        origin_key,
+        project_id_for_origin,
+    )
+
+    ref = _owner_ref()
+    bind_task_to_project(tmp_path, "t-turn", "one-work", 1, origin={"ref": ref})
+
+    assert project_id_for_origin(tmp_path, ref) == "one-work"
+    # The same message seen through another producer's copy: same chat + client id,
+    # a different capture timestamp and a rewritten text (the LLM-first normal path).
+    drifted = dict(ref, ts="2026-09-14T12:37:49+00:00", text_sha256="0" * 64)
+    assert project_id_for_origin(tmp_path, drifted) == "one-work"
+    assert origin_key(drifted) == (1, "msg-1")
+    # Another message, no project; an absent/typed-absence origin asks nothing.
+    assert project_id_for_origin(tmp_path, _owner_ref("msg-2")) == ""
+    assert project_id_for_origin(tmp_path, None) == ""
+    assert project_id_for_origin(tmp_path, {}) == ""
+    assert project_id_for_origin(tmp_path, {"chat_id": 1}) == ""
+    assert origin_key({"chat_id": "nope", "client_message_id": "m"}) is None
+
+
+def test_project_id_for_origin_resolves_a_legacy_double_binding_and_discloses_it(
+    tmp_path, monkeypatch,
+):
+    """Legacy state (the measured incident) has ONE origin on TWO projects. The lookup
+    never raises - a refusal would either block the owner or re-mint the duplicate it
+    exists to end. It prefers the project whose task is still LIVE (that is where the
+    work continued), else the LATEST binding, and says so durably."""
+    import json
+
+    from ouroboros.projects_registry import (
+        bind_task_to_project,
+        create_project,
+        project_id_for_origin,
+    )
+
+    ref = _owner_ref()
+    create_project(tmp_path, "first-room", name="First")
+    create_project(tmp_path, "second-room", name="Second")
+    bind_task_to_project(tmp_path, "t-turn", "first-room", 1, origin={"ref": ref})
+    bind_task_to_project(tmp_path, "t-root", "second-room", 1, origin={"ref": ref})
+    # bound_at has whole-microsecond resolution; pin the order explicitly.
+    path = tmp_path / "state" / "project_task_bindings.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["bindings"]["t-turn"]["bound_at"] = "2026-09-14T12:38:22+00:00"
+    data["bindings"]["t-root"]["bound_at"] = "2026-09-14T12:41:23+00:00"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    assert project_id_for_origin(tmp_path, ref, strict=True) == "second-room"
+    rows = [json.loads(line) for line in
+            (tmp_path / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert rows[-1]["type"] == "project_origin_ambiguous"
+    assert rows[-1]["chosen"] == "second-room"
+    assert {row["project_id"] for row in rows[-1]["candidates"]} == {"first-room", "second-room"}
+    assert rows[-1]["origin"] == {"chat_id": 1, "client_message_id": "msg-1"}
+
+    # Legacy state is re-read on every promote, admission and convert click, and a
+    # fact that has not changed is not news: the same choice discloses once.
+    assert project_id_for_origin(tmp_path, ref, strict=True) == "second-room"
+    assert len([json.loads(line) for line in
+                (tmp_path / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()]) == len(rows)
+
+    # The earlier binding's task is still running: the work is there, so it wins.
+    import supervisor.workers as workers
+
+    monkeypatch.setattr(workers, "RUNNING", {"t-turn": {"task": {"id": "t-turn"}}})
+    monkeypatch.setattr(workers, "PENDING", [])
+    assert project_id_for_origin(tmp_path, ref, strict=True) == "first-room"
+
+
+def test_project_id_for_origin_ignores_a_project_that_can_no_longer_accept_bindings(tmp_path):
+    """A deleting/tombstoned project would refuse the bind anyway, so adopting it
+    would answer with a room the task can never join."""
+    from ouroboros.projects_registry import (
+        begin_project_deletion,
+        bind_task_to_project,
+        create_project,
+        project_id_for_origin,
+    )
+
+    ref = _owner_ref()
+    create_project(tmp_path, "gone-room", name="Gone")
+    bind_task_to_project(tmp_path, "t-turn", "gone-room", 1, origin={"ref": ref})
+    assert project_id_for_origin(tmp_path, ref, strict=True) == "gone-room"
+
+    begin_project_deletion(tmp_path, "gone-room")
+    assert project_id_for_origin(tmp_path, ref, strict=True) == ""
+
+
+def test_project_id_for_origin_strict_raises_only_for_the_creating_callers(tmp_path):
+    """Same split as project_id_for_task: the hot path reads "" from an unreadable
+    store, while a caller that would CREATE a project must not do that blind."""
+    import pytest
+
+    from ouroboros.projects_registry import project_id_for_origin
+
+    (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "state" / "project_task_bindings.json").write_text("{ not json", encoding="utf-8")
+
+    assert project_id_for_origin(tmp_path, _owner_ref()) == ""
+    with pytest.raises(ValueError):
+        project_id_for_origin(tmp_path, _owner_ref(), strict=True)

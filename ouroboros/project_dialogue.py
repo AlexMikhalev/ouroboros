@@ -23,6 +23,24 @@ from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_SALVAGE
 from ouroboros.utils import append_jsonl, iter_jsonl_objects, jsonl_append_lock_path, replace_atomic, strip_markdown, utc_now_iso
 
 _ANNOTATIONS_NAME = "chat_annotations.jsonl"
+# Receipt id for a routing act that belongs to NO owner message — the agent's
+# own steer of a task it already routed for, or of one it was told about after
+# its origin. The act still needs a durable token-bound receipt (the tool waits
+# on one through ``routing_wait``, and silence there reports a landed delivery
+# as unconfirmed), but it must annotate no owner message: the id is the act's
+# routing token, so nothing in any chat joins to it. Chat-row membership is
+# therefore the wrong retention test for these rows — compaction applies the
+# chat-retention rule only to ids that address a real message, and bounds these
+# by the newest-N cap below. Per-id dedupe cannot bound them: every steer mints
+# a fresh token, so each act has an id of its own. The colon shape cannot
+# collide with a client id: the browser mints ``msg-<epoch_ms>-<n>`` and non-web
+# ingress ``host-<uuid5>``.
+AGENT_RECEIPT_ID_PREFIX = "agent-steer:"
+# How many synthetic receipts survive a compaction. ``routing_wait`` polls for at
+# most 15 seconds, so every live waiter's row is far inside this window; without a
+# cap a long-lived install would keep the file permanently above the threshold and
+# rewrite the whole of it on every append.
+_RETAINED_AGENT_RECEIPTS = 64
 _COMPACT_AT_BYTES = 800_000
 _RETAINED_ARCHIVES = 3
 log = logging.getLogger(__name__)
@@ -324,9 +342,14 @@ def _compact_annotations_locked(drive_root: Any, path: pathlib.Path) -> None:
         for row in iter_jsonl_objects(chat_path)
         if row.get("client_message_id")
     }
+    latest = _latest_annotations(path)
+    kept_receipts = set(sorted(
+        (message_id for message_id in latest if message_id.startswith(AGENT_RECEIPT_ID_PREFIX)),
+        key=lambda message_id: str(latest[message_id].get("ts") or ""),
+    )[-_RETAINED_AGENT_RECEIPTS:])
     rows = [
-        row for message_id, row in _latest_annotations(path).items()
-        if message_id in retained_ids
+        row for message_id, row in latest.items()
+        if message_id in retained_ids or message_id in kept_receipts
     ]
     rows.sort(key=lambda row: str(row.get("ts") or ""))
     tmp = path.with_name(f".{path.name}.tmp.{uuid.uuid4().hex}")
@@ -1180,6 +1203,7 @@ def announce_project_started(
 
 
 __all__ = [
+    "AGENT_RECEIPT_ID_PREFIX",
     "announce_project_started",
     "append_authored_task_summary",
     "append_chat_annotation",

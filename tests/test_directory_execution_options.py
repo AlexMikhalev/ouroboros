@@ -24,9 +24,64 @@ def test_directory_options_have_one_public_parameter_surface(options):
     assert properties["scope_paths"]["type"] == "array"
     assert {"directory_strategy", "scope_paths"} <= schedule_subagent_param_names()
     assert "REAL external Git" not in properties["write_root"]["description"]
-    fields, error = _validated_schedule_fields({"objective": "Edit", "expected_output": "Files", **options})
+    fields, error = _validated_schedule_fields({
+        "objective": "Edit", "expected_output": "Files",
+        "write_surface": "external_workspace", **options})
     assert not error
     assert {key: fields[key] for key in ("directory_strategy", "scope_paths") if key in fields} == options
+
+
+@pytest.mark.parametrize("surface", [{}, {"write_surface": "read_only"}])
+@pytest.mark.parametrize("options", [
+    {}, {"directory_strategy": "direct"}, {"scope_paths": []},
+    {"directory_strategy": "direct", "scope_paths": []},
+])
+def test_a_read_only_child_may_name_the_documented_default(surface, options):
+    """#882: `direct` with no footprint is what omitting both already means.
+
+    Nothing is normalized away here — the attested value is stored exactly as the
+    parent passed it, because the same field carries a write-capable child's real
+    choice. It simply is not a contradiction, so it is not refused.
+    """
+    fields, error = _validated_schedule_fields({
+        "objective": "Audit", "expected_output": "Findings", **surface, **options})
+    assert not error
+    assert {key: fields[key] for key in ("directory_strategy", "scope_paths") if key in fields} == options
+
+
+@pytest.mark.parametrize("surface", [{}, {"write_surface": "read_only"}])
+@pytest.mark.parametrize("options", [
+    {"directory_strategy": "copy", "scope_paths": ["."]},
+    {"directory_strategy": "direct", "scope_paths": ["out"]},
+    {"scope_paths": ["out"]},
+])
+def test_a_read_only_child_asking_for_real_geometry_is_refused_at_schedule_time(surface, options):
+    """The contradiction is caught where the parent can still fix it in one move.
+
+    Accepted here, it used to ride the envelope into the child's bootstrap and die
+    at the host's pre-start — after a worker, a queue row and a paid round — with a
+    receipt that forbade the child any other substrate. The message names the repair
+    the parent can actually apply.
+    """
+    fields, error = _validated_schedule_fields({
+        "objective": "Audit", "expected_output": "Findings", **surface, **options})
+    assert not fields
+    assert "TOOL_ARG_ERROR (schedule_subagent)" in error
+    assert "omit directory_strategy and scope_paths" in error
+
+
+@pytest.mark.parametrize("options", [
+    {"directory_strategy": "copy", "scope_paths": ["."]},
+    {"directory_strategy": "direct", "scope_paths": ["out"]},
+])
+def test_a_write_capable_child_keeps_real_geometry(options):
+    """Unchanged for every acting surface: geometry is exactly what they are for."""
+    for surface in ("self_worktree", "external_workspace", "genesis"):
+        fields, error = _validated_schedule_fields({
+            "objective": "Edit", "expected_output": "Files",
+            "write_surface": surface, **options})
+        assert not error, surface
+        assert {key: fields[key] for key in ("directory_strategy", "scope_paths")} == options
 
 
 @pytest.mark.parametrize("options", [
@@ -41,7 +96,7 @@ def test_directory_options_refuse_an_unusable_scope_shape(options):
     assert not fields and "TOOL_ARG_ERROR" in error
 
 
-def _schedule(tmp_path, monkeypatch, *, kind, options):
+def _schedule(tmp_path, monkeypatch, *, kind, options, surface="external_workspace"):
     from ouroboros.tools.control_scheduling import _schedule_task
     from ouroboros.tools.registry import ToolContext
     from tests._shared import configure_test_subagent
@@ -61,9 +116,10 @@ def _schedule(tmp_path, monkeypatch, *, kind, options):
                       workspace_root=folder, workspace_mode="external")
     ctx.event_queue = event_queue
     ctx.task_metadata = {"root_task_id": "parent", "budget_drive_root": str(data)}
+    acting = {"write_surface": surface, "write_root": str(folder)} if surface else {}
     response = _schedule_task(
         ctx, subagent_id=actor, objective="Revise draft.txt", expected_output="Updated draft",
-        memory_mode="empty", write_surface="external_workspace", write_root=str(folder), **options,
+        memory_mode="empty", **acting, **options,
     )
     return ctx, event_queue, response
 
@@ -77,6 +133,56 @@ def test_native_copy_refusal_precedes_child_side_effects(tmp_path, monkeypatch):
     assert events.empty()
     assert not list((ctx.drive_root / "task_results").glob("*.json"))
     assert not (ctx.workspace_root / ".git").exists()
+
+
+@pytest.mark.parametrize("options", [
+    {"directory_strategy": "copy", "scope_paths": ["."]},
+    {"scope_paths": ["draft.txt"]},
+])
+def test_read_only_geometry_refusal_precedes_child_side_effects(tmp_path, monkeypatch, options):
+    """The whole point of moving the check here: nothing is created to clean up."""
+    ctx, events, response = _schedule(
+        tmp_path, monkeypatch, kind="agent_session", options=options, surface="")
+    assert "TOOL_ARG_ERROR" in response and "omit directory_strategy and scope_paths" in response
+    assert events.empty()
+    assert not list((ctx.drive_root / "task_results").glob("*.json"))
+
+
+@pytest.mark.parametrize("options", [{}, {"directory_strategy": "direct"}, {"scope_paths": []}])
+def test_a_read_only_child_naming_the_default_still_schedules(tmp_path, monkeypatch, options):
+    """The surviving positive path: a read-only auditor is queued, not refused."""
+    ctx, events, response = _schedule(
+        tmp_path, monkeypatch, kind="agent_session", options=options, surface="")
+    assert "Subagent request queued" in response, response
+    event = events.get_nowait()
+    assert event["write_surface"] == ""
+    assert {key: event[key] for key in ("directory_strategy", "scope_paths") if key in event} == options
+
+
+def test_a_read_only_native_child_may_no_longer_name_a_capture_footprint(tmp_path, monkeypatch):
+    """The one capability this change narrows, pinned so it cannot drift unnoticed.
+
+    A read-only NATIVE/API child used to schedule and run with `scope_paths`: the
+    keys were inert there, because a native child never calls `delegate_start`. The
+    new schedule-time guard keys on the write surface, not on the route, so that
+    spelling is now a typed argument error that names the repair. Nothing documented
+    is lost — the schema already said native children declare process outputs on
+    their file/process tools — and a write-capable native child keeps the footprint
+    verbatim, which is the half that must not move.
+    """
+    for case in ("read-only", "acting"):
+        (tmp_path / case).mkdir()
+    _, read_only_events, refused = _schedule(
+        tmp_path / "read-only", monkeypatch, kind="api_model",
+        options={"scope_paths": ["out"]}, surface="")
+    assert "TOOL_ARG_ERROR (schedule_subagent)" in refused
+    assert "omit directory_strategy and scope_paths" in refused
+    assert read_only_events.empty()
+    _, acting_events, queued = _schedule(
+        tmp_path / "acting", monkeypatch, kind="api_model",
+        options={"scope_paths": ["out"]}, surface="external_workspace")
+    assert "Subagent request queued" in queued, queued
+    assert acting_events.get_nowait()["scope_paths"] == ["out"]
 
 
 @pytest.mark.parametrize("kind,options", [

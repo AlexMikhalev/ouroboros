@@ -27,7 +27,8 @@ log = logging.getLogger(__name__)
 NANNY_NUDGE_STAMP = "delegate_run_nanny_nudge_injected"
 
 # A delegate_start attempt the substrate REFUSED before any invocation was
-# minted (typed route_health blocker). Task-scoped like the stamp above (no
+# minted (a typed route_health blocker or a pre-POST argument refusal).
+# Task-scoped like the stamp above (no
 # run_id/invocation_id — pending-invocation recovery must never sweep it);
 # the ``delegate_run`` prefix keeps the custody scan prefilter yielding it.
 # Post-preflight attempts already leave durable START_REQUESTED rows, so the

@@ -155,6 +155,9 @@ never the field's only name. Help and validation belong to that field without
 changing the alignment of neighboring controls and their actions.
 
 Short fixed choices keep native selects, including the platform's own popup.
+A control never widens its column: a select shows its chosen label on one
+line, clipped at its own edge, and the full label stays in the platform's
+popup.
 Model selection uses the shared editable chooser: suggestions assist typing
 without becoming an allowlist. A saved unknown model remains editable; a
 catalog refresh preserves the real input, selection and composition. Escape
@@ -290,6 +293,14 @@ not move them into the migrated set in section 8.
   visually grouped with their own rows, their own add action in the head
   (List editors, below). A heading that floats equidistant between two groups
   belongs to neither.
+- **A collapsed disclosure shows that it opens.** A `<details>` summary always
+  carries a visible open/closed marker — the native triangle, the `▸`/`▾`
+  glyph pair, or button/card chrome. A summary that sits beside a help line at
+  the same size takes control ink (`--text-primary`) and its own line, so it
+  does not read as one more note; a summary that already reads as a control
+  through its own chrome or placement may stay in meta ink. Overriding
+  `display` on a summary drops the native marker, so the glyph must be drawn
+  explicitly.
 - Spacing comes from the 8pt tokens (`--space-*`); a new visual dimension
   becomes a CSS variable before it becomes a page-local literal.
 - An item in a popup menu or a picker list highlights with
@@ -327,14 +338,21 @@ not move them into the migrated set in section 8.
   facts, not a claim that their union is the current actor. Missing identity
   stays unconfirmed; marks and configured routes never manufacture execution.
 
-### Project work pointer
+### History edges
 
-Main and Project history load older portions at the reading edge, with a
-keyboard-accessible button and a retry on that same portion when reading fails.
-Distant portions may leave the rendered window; newer navigation restores them.
-The visible passage, selected text, focused control and expanded Reviews retain
-their actual nodes. A short or empty portion never claims the beginning of the
-archive; only the source reader establishes that boundary.
+A paged transcript loads older portions automatically at the reading edge and
+keeps a keyboard-reachable `Load older messages` button that retries the same
+portion when reading fails. A short or empty portion never claims the beginning
+of the archive; only the source reader establishes that boundary, and an empty
+portion is never a reading position. Distant portions may leave the rendered
+window and return quietly as the reader nears the live edge. There is no
+`load newer` control: the one explicit return to the present is the floating
+`Scroll to latest message` button. An edge control states a fact about the
+rendered transcript, never about an internal cache or cursor. The visible
+passage, selected text, focused control and expanded Reviews retain their
+actual nodes.
+
+### Project work pointer
 
 A Project keeps its conversation and real nested task cards. One compact pointer
 leads to an unfinished represented root, or the latest represented root when all

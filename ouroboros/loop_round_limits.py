@@ -61,6 +61,24 @@ class _CompactionRoundContext:
     fit_candidate: Optional[Callable[[list, list], Dict[str, Any]]] = None
 
 
+def _stamp_owner_delivery(
+    owner_ctx: Any, *, msg_id: str, client_message_id: str, text: str, ts: str,
+) -> None:
+    """Record the latest owner message this turn actually DRAINED (latest wins).
+
+    The steer relay reads this typed fact to tell "still acting on the message
+    that started me" from "relaying my own words after a later owner message
+    reached me". Only owner DIALOGUE stamps it: typed controls (task messages,
+    quiz answers, hurry, finalize-now, revocations) are not the owner's steering
+    text, and a message merely WRITTEN to a mailbox has not been delivered at all.
+    """
+    if owner_ctx is None:
+        return
+    owner_ctx.last_owner_delivery = {
+        "msg_id": msg_id, "client_message_id": client_message_id, "text": text, "ts": ts,
+    }
+
+
 def _drain_incoming_messages(
     messages: List[Dict[str, Any]],
     incoming_messages: queue.Queue,
@@ -87,10 +105,20 @@ def _drain_incoming_messages(
                         or ""
                     ),
                 )
+                _stamp_owner_delivery(
+                    owner_ctx,
+                    msg_id=str(injected.get("msg_id") or ""),
+                    client_message_id=str(injected.get("client_message_id") or ""),
+                    text=str(injected.get("text") or ""),
+                    ts=str(injected.get("ts") or ""),
+                )
                 _loop()._append_or_merge_user_content(messages, _loop()._owner_marked_content(owner_content))
             else:
                 _loop()._record_owner_directive(
                     owner_ctx, source="direct_incoming", content=injected,
+                )
+                _stamp_owner_delivery(
+                    owner_ctx, msg_id="", client_message_id="", text=str(injected), ts="",
                 )
                 _loop()._append_or_merge_user_message(messages, _loop()._owner_marked_content(injected))
         except queue.Empty:
@@ -150,6 +178,13 @@ def _drain_incoming_messages(
                 source="owner_mailbox",
                 content=dmsg,
                 msg_id=str(entry.get("msg_id") or ""),
+            )
+            _stamp_owner_delivery(
+                owner_ctx,
+                msg_id=str(entry.get("msg_id") or ""),
+                client_message_id=str(entry.get("client_message_id") or ""),
+                text=dmsg,
+                ts=str(entry.get("ts") or ""),
             )
             from ouroboros.client_surface import noted_owner_text
 

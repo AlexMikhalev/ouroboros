@@ -83,7 +83,6 @@ def test_supervisor_stamps_only_a_locally_allocated_id(tmp_path, monkeypatch, su
     from tests.test_nested_rights_depth import _fake_ctx, _schedule_event
 
     monkeypatch.setattr(events_schedule_task, "utc_now_iso", lambda: CREATED)
-    monkeypatch.setattr(events_schedule_task, "_find_duplicate_task", lambda *args, **kwargs: None)
     event = _schedule_event("supplied-task" if supplied_id else "", "", depth=0, drive_root=tmp_path)
     event["delegation_role"] = "root"
     enqueued = []

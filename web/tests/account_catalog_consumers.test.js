@@ -25,21 +25,38 @@ test('API-model and reviewer pins filter per-account entries; Auto keeps every m
         assert.deepEqual(routeModelSuggestions({ ...route, [pinKey]: '' }, entries), ['only-a', 'only-b']);
         const html = routeModelInputHtml('data-model', route, entries, 'models');
         assert.match(html, /value="owner-custom"/);
-        assert.match(html, /personal/);
+        assert.match(html, /value="only-a"/);
+        assert.doesNotMatch(html, /personal|work|available|date unknown/);
         assert.doesNotMatch(html, /only-b|work/);
         assert.equal(route[pinKey], 'personal');
     }
 });
 
-test('duplicate chooser values retain both account facts without a maximum capability promise', () => {
+test('duplicate chooser values collapse to one model suggestion that makes no account claim', () => {
     const repeated = entries.map((item) => ({ ...item, value: 'same', id: 'same', name: 'Same model' }));
     const options = catalogModelOptions(repeated);
     assert.equal(options.length, 1);
     assert.equal(options[0].value, 'same');
-    assert.match(options[0].label, /personal.*available/);
-    assert.match(options[0].label, /work.*unavailable.*date unknown/);
-    assert.doesNotMatch(options[0].label, /272000|1000000|Fast|free/);
+    assert.equal(options[0].label, 'Same model');
+    assert.doesNotMatch(options[0].label, /personal|work|available|unavailable|date unknown|272000|1000000|Fast|free/);
     assert.deepEqual(repeated.map((item) => item.context_window), [272000, 1000000]);
+});
+
+test('an option label is byte-identical with one account and with eighteen', () => {
+    const eighteen = Array.from({ length: 18 }, (_, index) => ({
+        value: 'same', id: 'same', name: 'Same model', credential_profile_id: `acct-${index + 1}`,
+        availability: index % 2 ? 'unavailable' : 'available', observed_at: null,
+    }));
+    const many = catalogModelOptions(eighteen);
+    assert.equal(many.length, 1);
+    assert.equal(many[0].label, catalogModelOptions([eighteen[0]])[0].label);
+    assert.equal(many[0].label.length, 'Same model'.length);
+});
+
+test('a nameless first duplicate yields to a later name, and otherwise the value is the label', () => {
+    const nameless = { value: 'same', id: 'same', name: undefined, label: undefined, credential_profile_id: 'personal' };
+    assert.equal(catalogModelOptions([nameless, { ...nameless, name: 'Named' }])[0].label, 'Named');
+    assert.equal(catalogModelOptions([nameless, { ...nameless, credential_profile_id: 'work' }])[0].label, 'same');
 });
 
 test('native pins select exact catalog and a missing account read does not prove model absence', () => {

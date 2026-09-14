@@ -647,9 +647,12 @@ class LocalChatBridge:
         """Send typing indicator to UI/event subscribers.
 
         ``kind`` is stamped only for registry-tracked direct turns
-        (``direct_chat``); queued managed tasks emit
-        typing without it, so the client knows the /api/state snapshot has no
-        deletion authority over their entries.
+        (``direct_chat``); RUNNING queue roots are stamped ``managed_task`` at
+        the event handler, and children and untracked tasks stay empty. The
+        stamp is kept for wire compatibility only (no in-repo client reads it)
+        and grants nothing: the web header never admits a typing frame into its
+        live-activity set, into which only the /api/state census inserts. Telegram's
+        native typing consumer ignores ``kind`` entirely.
         """
         if is_a2a_chat_id(chat_id):
             return True
