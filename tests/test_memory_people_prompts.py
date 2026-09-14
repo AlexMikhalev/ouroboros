@@ -56,6 +56,8 @@ def test_system_memory_section_makes_people_a_subject_of_knowledge():
     assert any("overview" in c and "context" in c for c in claims)
     # Understanding of people is global, whatever room the work happens in.
     assert any("people" in c and "global" in c for c in claims)
+    # What I learn about a person is written in the same turn, not left to a later summary.
+    assert any("same turn" in c and "person" in c for c in claims)
     # The old scoping, which is what made the knowledge base operational-only.
     assert "Durable operational facts, recipes, and gotchas go to knowledge topics" not in memory
 
