@@ -111,9 +111,9 @@ public final class DeviceSdkSmoke extends Instrumentation {
     private static JSONObject rpc(String method) throws Exception {
         LocalSocket socket = new LocalSocket();
         try {
-            socket.setSoTimeout(10000);
             socket.connect(new LocalSocketAddress("ai.ouroboros.android.rpc",
                     LocalSocketAddress.Namespace.ABSTRACT));
+            socket.setSoTimeout(10000);
             socket.getOutputStream().write((new JSONObject().put("id", 1).put("method", method)
                     .put("params", new JSONObject()).toString() + "\n").getBytes("UTF-8"));
             socket.getOutputStream().flush();
