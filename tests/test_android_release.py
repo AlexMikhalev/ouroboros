@@ -103,7 +103,12 @@ def test_final_archive_inspection_checks_bundle_and_installer_before_receipt(tmp
     else:
         assert builder.inspect_archive(args, archive, tmp_path / "extracted") == identity
         assert any(argv[:2] == ["git", "clone"] for argv in calls)
-        assert any(str(argv[1]).endswith("android/install.py") and argv[-1] == "--help" for argv in calls)
+        assert any(
+            Path(argv[1]).name == "install.py"
+            and Path(argv[1]).parent.name == "android"
+            and argv[-1] == "--help"
+            for argv in calls
+        )
 
 
 def test_release_builder_refuses_missing_key_before_source_or_compiler_work(tmp_path, monkeypatch):
