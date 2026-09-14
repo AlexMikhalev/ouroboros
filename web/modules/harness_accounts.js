@@ -50,6 +50,7 @@ import {
     READ_TRANSPORT,
     READ_UNREAD,
     STATUS_FACETS,
+    accountName,
     accountRows,
     bindStatusSurface,
     claudexorPreparationLine,
@@ -600,20 +601,10 @@ export function nextUpBadge(payload, harness, { accountsRead = READ_OK } = {}) {
     return 'Next up: unknown';
 }
 
-export function accountName(row) {
-    // The account's OWN name, in this order: the registry row's display name,
-    // the identity the daemon observed (email), the machine id. The old
-    // "Default CLI login" label claimed a TYPE — under the unified model every
-    // account is a named row of one type, and even on a legacy engine the
-    // honest name for the unnamed default is who it is signed in as. The
-    // legacy pseudo-row keeps a neutral fallback when the daemon observed no
-    // identity for it.
-    const identity = row.identity || {};
-    const named = String(row.display_name || '') || String(identity.email || '');
-    if (named) return named;
-    if (row.kind === 'native') return 'Default account';
-    return String(row.profile_id || '') || 'Account';
-}
+// Re-exported on the same rule as `accountRows`: one import path for the row
+// projection this surface renders, one definition in the store that owns the
+// payload — the account pin selects name their options through it too.
+export { accountName };
 
 // The quota-subject LEGACY ALIASES one row may inherit (see quotaSummary's
 // dual-keyed fallback): only the unified engine's migrated default row — the

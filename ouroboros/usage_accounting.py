@@ -1329,23 +1329,20 @@ def _terminalize_failed_attempt(reservation: AttemptReservation, exc: BaseExcept
         _release_physical_dispatch_claim(reservation.attempt_id)
         return "released"
     provider = str(reservation.provider or "").strip().lower()
+    stream_usage = getattr(exc, "stream_usage", None)
     if provider == "openrouter" and _is_pre_routing_rejection(exc):
-        _transition(
-            reservation,
-            "settled",
-            cost_usd=0.0,
-            cost_final=True,
-            settle_reason="pre_routing_rejection",
-        )
+        _transition(reservation, "settled", cost_usd=0.0, cost_final=True, settle_reason="pre_routing_rejection")
         return "settled"
     elif provider == "openrouter" and _is_tos_rejection(exc):
-        _transition(
-            reservation,
-            "settled",
-            cost_usd=0.0,
-            cost_final=True,
-            settle_reason="tos_rejection",
-        )
+        _transition(reservation, "settled", cost_usd=0.0, cost_final=True, settle_reason="tos_rejection")
+        return "settled"
+    elif isinstance(stream_usage, dict) and stream_usage:
+        # The usage frame was read before the body was judged unusable: money is
+        # known, so settle through the success path's extractor and cost derivation
+        # from that frame alone (no assembled-body facts such as service_tier, no
+        # cache-TTL injection or token-density observation); only the answer is missing.
+        usage, cost, final = usage_from_response({"usage": stream_usage})
+        settle_attempt(reservation, dict(usage or {}), cost_usd=cost, cost_final=final)
         return "settled"
     else:
         from ouroboros.transport_custody import attempt_custody_event_fields

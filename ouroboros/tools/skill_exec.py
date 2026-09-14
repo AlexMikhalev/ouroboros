@@ -73,6 +73,10 @@ _ALWAYS_FORWARDED_ENV = frozenset({
     # never writes __pycache__/*.pyc into a signed macOS bundle (parity with
     # isolated_deps._SAFE_ENV_KEYS and extension_process_runner._child_env).
     "PYTHONDONTWRITEBYTECODE", "PYTHONPYCACHEPREFIX",
+    # Login identity: CLIs a skill may call (gh, claude, codex, cursor-agent) key
+    # their keychain/credential lookups on it (parity with
+    # workspace_executor.service_env()); a secret-shaped sibling is not forwarded.
+    "USER", "LOGNAME", "USERNAME",
 })
 
 _FORBIDDEN_ENV_FORWARD_KEYS = FORBIDDEN_SKILL_SETTINGS

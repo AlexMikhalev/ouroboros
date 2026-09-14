@@ -418,6 +418,25 @@ export function accountRows(payload) {
     return rows.filter((row) => row.harness);
 }
 
+export function accountName(row) {
+    // The account's OWN name, in this order: the registry row's display name,
+    // the identity the daemon observed (email), the machine id. The old
+    // "Default CLI login" label claimed a TYPE — under the unified model every
+    // account is a named row of one type, and even on a legacy engine the
+    // honest name for the unnamed default is who it is signed in as. The
+    // legacy pseudo-row keeps a neutral fallback when the daemon observed no
+    // identity for it.
+    //
+    // Lives beside `accountRows` for the same reason: the Accounts tab and the
+    // pin selects both name the rows this store projects, and a second namer is
+    // how one of them ends up printing a raw profile id at the owner.
+    const identity = row.identity || {};
+    const named = String(row.display_name || '') || String(identity.email || '');
+    if (named) return named;
+    if (row.kind === 'native') return 'Default account';
+    return String(row.profile_id || '') || 'Account';
+}
+
 export function nextUpAccount(payload, harness) {
     // WHO an unpinned run of this harness would route to next — the DUAL-WIRE
     // reader (one per app, same rule as accountRows): the unified engine's

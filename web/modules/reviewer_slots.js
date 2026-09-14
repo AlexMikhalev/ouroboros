@@ -118,8 +118,9 @@ export function indexProfilesByHarness(payload) {
 }
 
 // One index entry, whichever spelling it arrived in: the index emits
-// `{id, enabled}` objects; older call sites and tests still hand plain id
-// strings, which read as enabled (the same fail-open rule as the index).
+// `{id, enabled, name}` objects; older call sites and tests still hand plain id
+// strings, which read as enabled and named by their id (the same fail-open
+// rule as the index).
 function profileEntry(entry) {
     return routeEditor.profileEntry(entry);
 }
