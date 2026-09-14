@@ -173,6 +173,12 @@ This entry opens the ordinary Ouroboros Activity. It does not provide a
 WebView is available over a locked keyguard. The core and other background work
 can continue after the phone has been unlocked once; a cold reboot before the
 first unlock is a separate Direct Boot case and is not promised by this APK.
+The rooted Linux tree lives under `/data/local/ouroboros-phone`, so its files
+are physically present before unlock; the startup policy still waits for the
+normal post-unlock Android boot event before starting the credential-dependent
+core. The Direct Boot receiver records the locked-boot marker in Android's
+device-protected app storage, but that marker does not make the Linux tree
+credential-encrypted or start the core before unlock.
 
 ### Optional Android control surfaces
 
@@ -222,7 +228,11 @@ and is never retried automatically; a duplicate key with the same digest returns
 the original receipt. Android may still return `pending_user_action` when the
 installer policy requires owner consent. The adapter does not claim rollback
 support, so an update caller must preserve the prior APK and verify the installed
-package before deciding whether to recover.
+package before deciding whether to recover. A pending install posts an Ouroboros
+notification that opens Android's original confirmation screen when tapped;
+it remains incomplete until the system reports success or failure. Keep
+Ouroboros notifications enabled for this handoff. A disabled or failed notification
+is reported in `confirmation_delivery`; it is not successful consent.
 
 The manifest intentionally declares `QUERY_ALL_PACKAGES` for general installed-app
 discovery and component inspection through Android's PackageManager. This is a

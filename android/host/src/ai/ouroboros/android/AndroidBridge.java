@@ -50,7 +50,6 @@ import org.json.JSONObject;
 final class AndroidBridge implements Closeable {
     static final String SOCKET = "ai.ouroboros.android.rpc";
     private static final int MAX_REQUEST_BYTES = 4 * 1024 * 1024;
-    private static final long MAX_INSTALL_BYTES = 512L * 1024L * 1024L;
     private static final String[] METHODS = {"capabilities", "packages.list", "packages.inspect", "packages.sessions",
             "packages.install", "packages.install.status",
             "providers.list", "intent.resolve", "intent.start", "content.query", "content.call",
@@ -202,7 +201,7 @@ final class AndroidBridge implements Closeable {
      * the returned receipt proves only that bytes were staged and commit submitted.
      * packages.install.status or packages.sessions is required to observe completion.
      */
-    private JSONObject installPackage(PackageManager pm, JSONObject p) throws Exception {
+    private synchronized JSONObject installPackage(PackageManager pm, JSONObject p) throws Exception {
         String source = p.getString("source_uri");
         Uri uri = Uri.parse(source);
         if (!uri.isAbsolute()) throw new IllegalArgumentException("source_uri must be an absolute URI");
@@ -243,7 +242,6 @@ final class AndroidBridge implements Closeable {
                     long copied = 0;
                     while ((count = input.read(buffer)) != -1) {
                         copied += count;
-                        if (copied > MAX_INSTALL_BYTES) throw new IOException("APK exceeds 512 MiB install limit");
                         stagedDigest.update(buffer, 0, count); output.write(buffer, 0, count);
                     }
                     if (copied != digest.size || !digest.sha256.equals(hex(stagedDigest.digest())))
@@ -259,7 +257,7 @@ final class AndroidBridge implements Closeable {
             // PackageInstaller fills status extras into the callback Intent. Mutable PendingIntent is
             // required for that fill-in on Android 12+, while the explicit non-exported receiver keeps
             // the callback private to this package.
-            pendingFlags |= Build.VERSION.SDK_INT >= 31 ? PendingIntent.FLAG_MUTABLE : PendingIntent.FLAG_IMMUTABLE;
+            if (Build.VERSION.SDK_INT >= 31) pendingFlags |= PendingIntent.FLAG_MUTABLE;
             PendingIntent pending = PendingIntent.getBroadcast(context, sessionId, callback, pendingFlags);
             JSONObject receipt = new JSONObject().put("idempotency_key", key)
                     .put("source_uri", source).put("source_sha256", digest.sha256)
@@ -268,13 +266,14 @@ final class AndroidBridge implements Closeable {
                     .put("completion_observed", false).put("retry_automatically", false)
                     .put("rollback", new JSONObject().put("supported", false)
                             .put("reason", "PackageInstaller commit does not expose a rollback handle here"));
-            receipts.edit().putString(key, receipt.toString()).apply();
+            if (!receipts.edit().putString(key, receipt.toString()).commit())
+                throw new IOException("Install receipt could not be saved; commit was not submitted");
             commitSubmitted = true;
             session.commit(pending.getIntentSender());
             return receipt;
         } catch (Exception error) {
             if (!commitSubmitted) receipts.edit().remove(key).apply();
-            try { session.abandon(); } catch (Exception ignored) { }
+            if (!commitSubmitted) try { session.abandon(); } catch (Exception ignored) { }
             throw error;
         } finally { session.close(); }
     }
@@ -309,7 +308,6 @@ final class AndroidBridge implements Closeable {
             byte[] buffer = new byte[64 * 1024]; int count;
             while ((count = input.read(buffer)) != -1) {
                 size += count;
-                if (size > MAX_INSTALL_BYTES) throw new IOException("APK exceeds 512 MiB install limit");
                 digest.update(buffer, 0, count);
             }
         }

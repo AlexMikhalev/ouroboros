@@ -11,13 +11,17 @@ case "$intent" in owner|automatic) ;; *) echo 'Invalid launch intent' >&2; exit 
 port=8765
 if [ -f "$port_file" ]; then port=$(cat "$port_file"); fi
 case "$port" in ''|*[!0-9]*) echo 'Invalid runtime port' >&2; exit 2;; esac
+probe_core() {
+  unshare -m sh "$entry" python3 -c \
+    'import json,sys,urllib.request; r=urllib.request.urlopen("http://127.0.0.1:"+sys.argv[1]+"/api/health",timeout=2); assert json.load(r)["status"]=="ok"' "$port" 2>/dev/null
+}
 case "$action" in
   port) echo "$port" ;;
   status)
     if [ -f "$data/state/panic_stop.flag" ] && [ "$(cat "$data/state/panic_stop.flag")" = panic ]; then
       echo 'Stopped with Panic. Use Start to resume.'
     else
-      echo "Runtime URL: http://127.0.0.1:$port"
+      echo "Recorded runtime endpoint: http://127.0.0.1:$port"
       # Report the host APK the update receipt last verified as installed. The
       # receipt is written after a proven install, so it is neither Git HEAD nor
       # evidence that every live process already runs that code.
@@ -28,7 +32,24 @@ case "$action" in
         echo "Android host APK: ${host_name:-unknown} (versionCode ${host_code:-unknown})"
         echo 'Last verified installed APK from the update receipt; not Git HEAD, and not proof that every process already runs this code.'
       fi
-      if [ -f "$data/state/server_process.json" ]; then cat "$data/state/server_process.json"; fi
+      # A saved server receipt is historical state.  Probe the actual loopback
+      # endpoint before describing the core as live; a reboot can leave the
+      # receipt behind after its PID has disappeared.
+      probe="unavailable"
+      if [ -x "$entry" ] && probe_core; then
+        probe="healthy"
+      elif [ -x "$entry" ]; then
+        probe="not_healthy"
+      fi
+      case "$probe" in
+        healthy) echo "Live core probe: healthy at http://127.0.0.1:$port" ;;
+        not_healthy) echo 'Live core probe: no healthy core at the recorded endpoint.' ;;
+        *) echo 'Live core probe: unavailable (Linux entry is not installed).' ;;
+      esac
+      if [ -f "$data/state/server_process.json" ]; then
+        echo 'Saved server receipt (historical; not proof of a live process):'
+        cat "$data/state/server_process.json"
+      fi
       if [ -f "$base/bootstrap/host-launch.log" ]; then tail -n 15 "$base/bootstrap/host-launch.log"; fi
     fi ;;
   start)
@@ -38,8 +59,7 @@ case "$action" in
     fi
     # Attach to the already running install, including the initial source-mode
     # server. Never start a launcher that would reap a healthy current task.
-    if unshare -m sh "$entry" python3 -c \
-      'import json,sys,urllib.request; r=urllib.request.urlopen("http://127.0.0.1:"+sys.argv[1]+"/api/health",timeout=2); assert json.load(r)["status"]=="ok"' "$port" 2>/dev/null; then
+    if probe_core; then
       echo running; exit 0
     fi
     test -f "$base/rootfs/opt/ouroboros/launcher/current/launcher.py" || {
