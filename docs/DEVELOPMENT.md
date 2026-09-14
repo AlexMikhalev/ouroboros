@@ -3172,6 +3172,28 @@ SPA, not a relocatable-page or multi-instance panel framework.
   `.style.<property>` assignments are review debt (a dynamic measured value
   may update a narrowly named custom property when that is the real runtime
   data flow).
+- Containment: a control never widens its column, and horizontal overflow
+  lives in the wrapper that owns the wide content and declares
+  `overflow-x: auto` (code block, `.md-table-wrap`, tab strip, Costs table
+  cells) — never in a page scroll body, whose `overflow-y: auto` alone
+  already makes `overflow-x` compute to `auto`. The shared
+  `select.ui-control` recipe therefore clips its own value
+  (`overflow: hidden`): WebKit computes `overflow: visible` on a native
+  select, so an unclipped option label becomes scrollable overflow of that
+  page scroller. A grid track holding controls takes a minimum that yields
+  to its container — `minmax(0, …)`, or
+  `repeat(auto-fit, minmax(min(100%, Npx), 1fr))`; a fixed px minimum
+  rescued only by a viewport media query is review debt, because the
+  viewport does not know how wide the content column is. The global webkit
+  scrollbar recipe sizes both axes. Enforced by
+  `tests/test_web_typography_static.py::test_select_control_clips_its_value`,
+  its `::test_webkit_scrollbar_recipe_covers_both_axes` neighbour,
+  `tests/test_ui_settings_overflow_browser.py` (WebKit, the native-select clip)
+  and `tests/test_ui_settings_grid_tracks_browser.py` (Chromium, yielding
+  tracks); two gaps stay open — the
+  wizard document loads `ui.css` without `style.css` and keeps native
+  scrollbars, and an element setting the standard
+  `scrollbar-width`/`scrollbar-color` opts out of the webkit recipe on Blink.
 - One semantic button variant expresses one action role: neutral Settings
   and onboarding controls use the existing `.btn.btn-default`; a one-action
   result row uses the named `.settings-action-row` contract (status first,
@@ -3275,7 +3297,12 @@ stealing usable text space; use the shared responsive component before
 adding a page-specific layout. A visible change is inspected with vision in
 at least one relevant real consumer flow. A stored screenshot alone is not
 verification; mobile or WebKit is not a universal requirement and is
-selected from risk. Review-only: scored by CHECKLISTS items 2(i) and 30
+selected from risk. Containment is the WebKit-sensitive exception — a native
+select is not clipped there — so a change to a control recipe or a page
+scroll body is verified on the engine that shows the class (Playwright
+WebKit for native-control clipping, Chromium for engine-independent track
+geometry), measuring overflow on the scroll body's `scrollWidth` rather than
+on `documentElement`. Review-only: scored by CHECKLISTS items 2(i) and 30
 (`web_design_system`).
 
 ### Browser dialogs

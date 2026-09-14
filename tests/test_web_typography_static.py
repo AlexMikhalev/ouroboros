@@ -452,3 +452,63 @@ def test_every_focus_visible_selector_gets_the_canonical_ring() -> None:
         "focus there is either invisible or a second colour vocabulary "
         "(docs/DESIGN.md 'Focus'):\n" + "\n".join(f"  {s}" for s in unringed)
     )
+
+
+# ---------------------------------------------------------------------------
+# Horizontal overflow: the red scrollbar on Settings -> Advanced
+# ---------------------------------------------------------------------------
+
+
+def test_select_control_clips_its_value() -> None:
+    """Pins the owner-visible defect "Settings -> Advanced paints a horizontal
+    scrollbar in the desktop app": WebKit computes `overflow: visible` on a
+    native select (Blink's UA sheet clips it), so a long selected option leaks
+    out of the control and into the page scroller."""
+    css = _decommented(_read("web/ui.css"))
+    bodies = [
+        body for selector, body in RULE.findall(css)
+        if selector.strip() == "select.ui-control"
+    ]
+    assert bodies, "no `select.ui-control` rule in web/ui.css"
+    values = [
+        part.split(":", 1)[1].strip().lower()
+        for body in bodies
+        for part in body.split(";")
+        if part.strip() and part.split(":", 1)[0].strip() == "overflow"
+    ]
+    assert values, (
+        "`select.ui-control` declares no `overflow`, so WebKit lets a long "
+        "selected option paint past the control's own box and widen the "
+        "settings scroller"
+    )
+    assert all(value != "visible" for value in values), (
+        f"`select.ui-control` re-opens the clip: overflow {values}"
+    )
+
+
+def test_webkit_scrollbar_recipe_covers_both_axes() -> None:
+    """Pins the owner-visible defect "the scrollbar is thick and red": the
+    global `::-webkit-scrollbar` recipe sized only `width`, which is the
+    VERTICAL bar, so any horizontal bar kept the 16-17px UA thickness while
+    still wearing the accent thumb."""
+    css = _decommented(_read("web/style.css"))
+    bodies = [
+        body for selector, body in RULE.findall(css)
+        if selector.strip() == "::-webkit-scrollbar"
+    ]
+    assert bodies, "no global `::-webkit-scrollbar` rule in web/style.css"
+    declarations: dict[str, str] = {}
+    for body in bodies:
+        for part in body.split(";"):
+            if ":" not in part:
+                continue
+            name, _, value = part.partition(":")
+            declarations[name.strip().lower()] = value.strip().lower()
+    assert "width" in declarations and "height" in declarations, (
+        "the global scrollbar recipe must size both axes; it declares "
+        f"{sorted(declarations)}"
+    )
+    assert declarations["width"] == declarations["height"], (
+        "the horizontal bar must be as thin as the vertical one: "
+        f"width {declarations['width']} vs height {declarations['height']}"
+    )

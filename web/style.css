@@ -3503,8 +3503,11 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     gap: 6px;
 }
 
-::-webkit-scrollbar { width: 6px; }
+/* `width` is the vertical bar, `height` the horizontal one: without the height
+   a horizontal bar falls back to the 16-17px UA default and paints thick. */
+::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-corner { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--accent-18); border-radius: var(--radius-xs); }
 ::-webkit-scrollbar-thumb:hover { background: var(--accent-35); }
 
