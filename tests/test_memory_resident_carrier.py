@@ -77,6 +77,15 @@ def test_note_summaries_are_resident_without_any_authored_orientation(tmp_path):
     assert "Details belong to their source." in sections
 
 
+def test_note_summaries_are_resident_when_the_generated_index_is_absent(tmp_path):
+    env = _env(tmp_path)
+    _note(env)
+    index = resolve_knowledge_address(env.drive_root, "overview", "global").shelf / "index-full.md"
+    index.unlink()  # a note landed but its index rebuild did not
+    sections = "\n".join(context.build_knowledge_sections(env))
+    assert "Details belong to their source." in sections
+
+
 @pytest.mark.parametrize("project_id", ["", "proj-1"])
 def test_the_gap_travels_into_every_room(tmp_path, project_id):
     env = _env(tmp_path)

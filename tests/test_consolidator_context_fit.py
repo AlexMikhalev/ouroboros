@@ -110,6 +110,9 @@ def test_oversized_logical_block_splits_complete_source_and_advances_once(tmp_pa
     assert not c.should_consolidate(meta, chat)
     refused = usage["_consolidation_errors"][0]
     assert refused["kind"] == "context_overflow" and not refused["preflight_only"]
+    # A refusal that was split and then fully summarized is a recovered attempt, not a
+    # failed run: the block was written, so no stale error may outlive the advance.
+    assert "last_consolidation_error" not in json.loads(meta.read_text())
     assert refused["capacity_tokens"] is None and refused["input_limit"] is None
     sizes = [len(call["messages"][0]["content"].encode("utf-8")) for call in llm.calls]
     for index, size in enumerate(sizes[:-1]):

@@ -166,6 +166,10 @@ def test_admitted_external_turn_writes_global_knowledge_and_nothing_else(tmp_pat
                     "content": "Alex asked for short answers today; I read it as a preference to test.",
                 },
             )
+            seen["scratchpad"] = registry.execute(
+                "update_scratchpad", {"content": "Alex's room: brevity today, worth testing next time."})
+            seen["identity"] = registry.execute(
+                "update_identity", {"content": "I am Ouroboros. " + "I keep one memory in every room. " * 4})
             seen["refused"] = {
                 name: registry.execute(name, args)
                 for name, args in (
@@ -189,6 +193,10 @@ def test_admitted_external_turn_writes_global_knowledge_and_nothing_else(tmp_pat
     note = (data / "memory" / "knowledge" / "people" / "alex.md").read_text(encoding="utf-8")
     assert "short answers" in note
     assert "PRESENCE_CAPABILITY_BLOCKED" not in str(seen["write"])
+    assert str(seen["scratchpad"]).startswith("OK")
+    assert str(seen["identity"]).startswith("OK")
+    assert "brevity today" in (data / "memory" / "scratchpad_blocks.json").read_text(encoding="utf-8")
+    assert "one memory in every room" in (data / "memory" / "identity.md").read_text(encoding="utf-8")
     assert COGNITIVE_MEMORY_TOOL_NAMES <= seen["schemas"]
     for name, refusal in seen["refused"].items():
         assert name not in seen["schemas"]

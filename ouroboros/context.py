@@ -651,8 +651,9 @@ def build_knowledge_sections(
         # The authored summary is the resident face of a note, so the index carries it
         # whether or not a common orientation exists; the fresh inventory render stays
         # for the case where a note was written but its index rebuild did not land.
+        is_global_index = path == global_address.shelf / INDEX_FILE
         text = (render_knowledge_index(inventory_knowledge(global_address), include_summaries=True)
-                if authored_overview and path == global_address.shelf / INDEX_FILE else safe_read(path))
+                if is_global_index and (authored_overview or not path.exists()) else safe_read(path))
         if not text.strip():
             continue
         if warn_large and len(text) > _LARGE_CONTEXT_SECTION_CHARS:

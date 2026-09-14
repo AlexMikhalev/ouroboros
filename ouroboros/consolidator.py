@@ -158,8 +158,8 @@ def consolidate(
                 and not (pressure_fits is not None and pressure_fits())):
             reduced = _compact_chronicle(blocks_path, llm_client, identity_text, knowledge_context)
             merged = _merge_consolidation_usage(*([usage] if usage else []), reduced)
-            if usage and "_blocks_written" in usage:  # a fixed-key merge would drop this receipt
-                merged["_blocks_written"] = usage["_blocks_written"]
+            # A fixed-key merge would drop this receipt; a chronicle-only pass wrote no block.
+            merged["_blocks_written"] = (usage or {}).get("_blocks_written", 0)
             usage = merged
         return usage
     finally:
@@ -322,7 +322,9 @@ def _run_block_consolidation(
             meta.pop("consolidation_retry", None)
         if not content and usage.get("_consolidation_retry"):
             meta["consolidation_retry"] = {"source_sha256": source_hash, "input_limit": usage["_consolidation_retry"]}
-        if usage.get("_consolidation_errors"):
+        # A refused part that was split and then fully summarized still carries its
+        # attempt errors in usage; only a chunk that produced NO content failed.
+        if usage.get("_consolidation_errors") and not (content and content.strip()):
             run_failed = True
             meta["last_consolidation_error"] = dict(
                 usage["_consolidation_errors"][-1], cursor_offset=last_offset + processed,
@@ -654,7 +656,9 @@ unknown metadata and useful links. A new observation may correct an old interpre
 do not merely repeat fragments. New topics may be created without a prior read.
 Understanding of the people involved — preferences, recurring reactions, shared history,
 tentative interpretations with their source — is ordinary knowledge to nominate in global scope;
-a pattern across several moments is worth more than one; revise the existing note rather than minting a rule.
+a pattern across several moments is worth more than one; revise the existing note rather than minting a rule,
+and an explicit standing request stays explicit. Author a YAML summary for a new or meaningfully revised note —
+the summary is what stays resident in the index — and revise it when the note's meaning changes.
 The note overview (scope global) is the shared orientation loaded into every future context; keep it
 current, and when none exists and this episode gives real understanding, create it after reading the index.
 Scope is a separate field, never a topic prefix.

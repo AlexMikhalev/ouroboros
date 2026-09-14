@@ -13,7 +13,7 @@ A project-scoped task (an external/workspace task, or one given an explicit
 This is a thin SSOT helper, NOT a parallel memory subsystem (P7): the existing
 knowledge tool + context loader simply redirect their base dir when a task is
 project-scoped, and the post-task canonical dual-run is suppressed for such tasks
-so project facts cannot contaminate the global memory.
+so the automatic post-task writers cannot contaminate the global memory.
 """
 from __future__ import annotations
 

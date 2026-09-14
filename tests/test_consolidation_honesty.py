@@ -31,6 +31,42 @@ def _health_env(tmp_path):
 # --- stale error is retired only by a run that recorded none of its own -----------
 
 
+def test_a_chronicle_only_pass_still_reports_zero_written_blocks(tmp_path, fit, monkeypatch):
+    chat, blocks, meta = _paths(tmp_path)
+    _write_chat(chat, count=5, text_size=0)  # below the block size: nothing to consolidate
+    monkeypatch.setattr(c, "_compact_chronicle", lambda *a, **k: {"prompt_tokens": 1, "completion_tokens": 1,
+                                                                   "total_tokens": 2, "cost": 0.0})
+    usage = c.consolidate(chat, blocks, meta, _LLM(), compact_chronicle=True, pressure_fits=lambda: False)
+    assert usage["_blocks_written"] == 0
+
+
+def test_a_chronicle_pass_after_a_real_run_keeps_the_written_count(tmp_path, fit, monkeypatch):
+    chat, blocks, meta = _paths(tmp_path)
+    _write_chat(chat, text_size=0)
+    monkeypatch.setattr(c, "_compact_chronicle", lambda *a, **k: {"prompt_tokens": 1, "completion_tokens": 1,
+                                                                   "total_tokens": 2, "cost": 0.0})
+    usage = c.consolidate(chat, blocks, meta, _LLM(), compact_chronicle=True, pressure_fits=lambda: False)
+    assert usage["_blocks_written"] == 1
+
+
+def test_light_is_told_to_author_summaries_and_keep_explicit_requests_explicit():
+    # Light never sees the knowledge_write schema, so the maintenance prompt is its only carrier.
+    assert "YAML summary" in c.KNOWLEDGE_MAINTENANCE_PROMPT
+    assert "resident in the index" in c.KNOWLEDGE_MAINTENANCE_PROMPT
+    assert "explicit standing request stays explicit" in c.KNOWLEDGE_MAINTENANCE_PROMPT
+
+
+def test_a_nominated_note_with_a_summary_becomes_resident_in_the_index(tmp_path):
+    from ouroboros.knowledge import inventory_knowledge, render_knowledge_index, resolve_knowledge_address
+    ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, budget_drive_root=str(tmp_path), task_id="t")
+    entry = {"topic": "people/alex", "scope": "global", "expected_revision": None,
+             "content": "---\ntype: understanding\nsummary: Alex asks for brevity; an interpretation to test.\n---\nEvidence."}
+    outcomes = c._write_knowledge_entries(tmp_path / "memory" / "knowledge", [entry], context=ctx)
+    assert outcomes and outcomes[0]["ok"]
+    rendered = render_knowledge_index(inventory_knowledge(resolve_knowledge_address(tmp_path, "overview", "global")))
+    assert "Alex asks for brevity" in rendered
+
+
 def test_clean_run_clears_a_stale_error_from_an_earlier_run(tmp_path, fit):
     chat, blocks, meta = _paths(tmp_path)
     _write_chat(chat, text_size=0)

@@ -7,9 +7,9 @@ or a pattern, and reflection nominated "self-knowledge". The observable result
 on a live install was that everything ever written about the human had been
 dictated word for word, never noticed and never inferred.
 
-These assertions are about what the prompts MEAN — which memory each kind of
-understanding has, and where it lives — not about a particular turn of phrase.
-Rewording is free; dropping one of these contracts is not.
+These are vocabulary pins for the memory contract — which memory each kind of
+understanding has, and where it lives. They pin the words that carry each
+contract, not a model's behaviour; dropping one of these contracts is the defect.
 """
 
 from __future__ import annotations

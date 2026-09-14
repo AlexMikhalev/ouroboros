@@ -271,7 +271,7 @@ def test_forked_project_child_skips_global_knowledge_seed(tmp_path):
 def test_d5_project_scoped_shared_preserves_mode_but_isolates_drive(tmp_path, monkeypatch):
     """D5 (Option A) gateway contract: a project-scoped `shared` task keeps its RECORDED
     memory_mode 'shared', yet the drive is MATERIALIZED isolated (effective mode 'forked')
-    so project facts can never leak into global/shared memory. Guards against a future
+    so the automatic writers can never leak project facts into global/shared memory. Guards against a future
     'simplification' back to passing memory_mode straight through to prepare_task_drive."""
     import asyncio
     import json
