@@ -20,6 +20,10 @@ pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
 MAIN = "#chat-messages"
 HISTORY_URL = "/api/chat/history"
 _FRAMES = "() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))"
+_EDGE_SCROLL = """(root, direction) => {
+    root.scrollTop = direction === 'older' ? 0 : root.scrollHeight;
+    root.dispatchEvent(new Event('scroll'));
+}"""
 _OBSERVE_HISTORY = """() => {
     const fetch = window.fetch.bind(window);
     window.__historyReads = [];
@@ -125,11 +129,9 @@ def _reads(page, chat_id=1):
 def _step(page, feed, direction="older", *, automatic=False):
     before = page.evaluate("() => window.__historyReads.length")
     if automatic:
-        page.locator(feed).evaluate("""(root, direction) => {
-            root.scrollTop = direction === 'older' ? 0 : root.scrollHeight;
-            root.dispatchEvent(new Event('scroll'));
-        }""", direction)
+        page.locator(feed).evaluate(_EDGE_SCROLL, direction)
     else:
+        assert direction == "older", "`Load older messages` is the only paging button"
         # This exercises the visible button's handler without changing a reader's
         # selection or forcing an off-screen control into the reading viewport.
         page.locator(f"{feed} .chat-load-{direction} button").evaluate("node => node.click()")
@@ -237,6 +239,7 @@ def test_history_archive_navigation_rotation_retry_and_sparse_project(
                     _idle(page, MAIN)
                     assert page.locator(f"{MAIN} .message").filter(has_text=live_text).count() == 1
                     _to_beginning(page, MAIN)
+                    assert page.locator(f"{MAIN} .chat-load-newer").count() == 0
                     page.locator(f"{MAIN} .message").filter(has_text="history-human-0000").wait_for(state="attached")
                     _assert_main_beginning_visible(page)
                     records = [row for read in _reads(page) if read.get("body", {}).get("messages")
@@ -255,10 +258,16 @@ def test_history_archive_navigation_rotation_retry_and_sparse_project(
                     _screenshot(page, tmp_path, f"archive-beginning-{browser_engine}-{width}")
                     assert len(mounted) == len(set(mounted)), "physical source rows must not duplicate"
                     assert len(mounted) < 1200, "distant page bodies must leave the rendered window"
-                    _step(page, MAIN, "newer")
-                    replay_cursors = {read["cursor"] for read in _reads(page) if read.get("cursor")}
-                    assert any(read.get("body", {}).get("page_cursor") in replay_cursors
-                               for read in _reads(page)), "return navigation must use an exact page handle"
+                    handles = {read["body"]["page_cursor"] for read in _reads(page)
+                               if read.get("body", {}).get("page_cursor")}
+                    seen = len(_reads(page))
+                    # The live edge only refills the gap toward mounted rows; every
+                    # read it makes replays an exact page handle, never a rebuild.
+                    _step(page, MAIN, "newer", automatic=True)
+                    returning = _reads(page)[seen:]
+                    assert all(read.get("cursor") in handles for read in returning), returning
+                    assert page.locator(f"{MAIN} .chat-load-newer").count() == 0
+                    assert page.locator(f"{MAIN} .message").filter(has_text=live_text).count() == 1
                     page.reload(wait_until="domcontentloaded")
                     _idle(page, MAIN)
                     assert page.locator(f"{MAIN} .message").filter(has_text=live_text).count() == 1
@@ -273,6 +282,15 @@ def test_history_archive_navigation_rotation_retry_and_sparse_project(
                     _open(page, url)
                     feed = _open_project(page, project)
                     _to_beginning(page, feed)
+                    # Every row of this room is mounted, so no edge control may claim
+                    # that something newer waits beyond the rendered transcript, and
+                    # further edge scrolling must not rescan the foreign-room pages.
+                    assert page.locator(f"{feed} .chat-load-newer").count() == 0
+                    settled = len(_reads(page, project["chat_id"]))
+                    for direction in ("newer", "newer", "older"):
+                        page.locator(feed).evaluate(_EDGE_SCROLL, direction)
+                        _idle(page, feed)
+                    assert len(_reads(page, project["chat_id"])) == settled, "a settled sparse room must not refetch"
                     assert page.locator(f"{feed} .message").filter(has_text="SPARSE_FIRST_SAVED_MESSAGE").count() == 1
                     assert "OTHER_ROOM_ONLY" not in page.locator(feed).inner_text()
                     assert any(read.get("body", {}).get("messages") == [] and read["body"]["has_more"]

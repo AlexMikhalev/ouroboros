@@ -3,12 +3,34 @@ import test from 'node:test';
 import { readFileSync } from 'node:fs';
 
 import {
+    createHistoryControls,
     createHistoryResyncScheduler,
     createLiveCardBound,
     createTimelineAnchors,
 } from '../modules/chat_render_batch.js';
+import { ElementStub } from './chat_dom_fixture.js';
 
 const chatSource = readFileSync(new URL('../modules/chat.js', import.meta.url), 'utf8');
+
+test('the history chrome is one Load-older control; no Load-newer element is ever built', () => {
+    const doc = { byId: new Map(), createElement: (tag) => new ElementStub(tag, doc) };
+    const messages = new ElementStub('div', doc);
+    messages.isConnected = true;
+    const controls = createHistoryControls(messages);
+    assert.equal('newerButton' in controls, false);
+    const snapshot = { initialized: true, canOlder: true, canNewer: true,
+        olderExhausted: false, loading: '', error: null };
+    assert.deepEqual(controls.render(snapshot, []), { complete: false, truncated_by: [] });
+    assert.deepEqual(messages.children.map((node) => node.className), ['chat-load-older']);
+    assert.equal(messages.querySelector('.chat-load-newer'), null);
+    // A cache with no newer page is the only thing that ever made one appear.
+    const exhausted = { ...snapshot, canOlder: false, canNewer: false, olderExhausted: true };
+    assert.deepEqual(controls.render(exhausted, []), { complete: true, truncated_by: [] });
+    assert.deepEqual(messages.children.map((node) => node.className), ['chat-load-older']);
+    assert.equal(messages.querySelector('.chat-load-older')
+        .querySelector('.chat-load-older-note').textContent, 'Beginning of saved history');
+    assert.equal(controls.olderButton.hidden, true);
+});
 
 // ─────────────── sticky hydration / replay contracts ──────────────────────
 

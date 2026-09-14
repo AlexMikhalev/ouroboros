@@ -338,14 +338,21 @@ not move them into the migrated set in section 8.
   facts, not a claim that their union is the current actor. Missing identity
   stays unconfirmed; marks and configured routes never manufacture execution.
 
-### Project work pointer
+### History edges
 
-Main and Project history load older portions at the reading edge, with a
-keyboard-accessible button and a retry on that same portion when reading fails.
-Distant portions may leave the rendered window; newer navigation restores them.
-The visible passage, selected text, focused control and expanded Reviews retain
-their actual nodes. A short or empty portion never claims the beginning of the
-archive; only the source reader establishes that boundary.
+A paged transcript loads older portions automatically at the reading edge and
+keeps a keyboard-reachable `Load older messages` button that retries the same
+portion when reading fails. A short or empty portion never claims the beginning
+of the archive; only the source reader establishes that boundary, and an empty
+portion is never a reading position. Distant portions may leave the rendered
+window and return quietly as the reader nears the live edge. There is no
+`load newer` control: the one explicit return to the present is the floating
+`Scroll to latest message` button. An edge control states a fact about the
+rendered transcript, never about an internal cache or cursor. The visible
+passage, selected text, focused control and expanded Reviews retain their
+actual nodes.
+
+### Project work pointer
 
 A Project keeps its conversation and real nested task cards. One compact pointer
 leads to an unfinished represented root, or the latest represented root when all

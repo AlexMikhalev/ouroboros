@@ -3262,9 +3262,21 @@ Eviction releases only its own page's media, markdown and decision views, protec
 visible reading, focus and selection. Exact page handles retain return navigation;
 read gaps and sparse empty pages never become false EOF. Readable recent rows survive an
 unavailable archive with explicit gap/retry and no fabricated physical cursor. Flush historical
-timeline changes once per card, and skip idle scroll cleanup when no work is pending. Tests:
-`tests/test_chat_history_paging.py`, `tests/test_chat_history_paging_browser.py`
-and `web/tests/chat_history_integration.test.js`.
+timeline changes once per card, and skip idle scroll cleanup when no work is pending.
+History chrome describes the rendered transcript, not the pager cache: `canNewer` (contiguous
+cached descriptors around `focus`) is never permission to tell the reader that newer messages
+exist. A server page with zero rows for the room is a bounded scan: it advances the cursor and
+keeps `has_more` honest, but it is not a reading position, not `focus`, and not newer.
+Automatic continuation loads pages only at the older edge; at the live edge it only fills the
+gap toward already-mounted rows through exact page handles, never a rebuild. Return to the
+present is the explicit floating button, which rebuilds the chain with `latest()` only while
+non-empty pages above the window are still missing. Distant evicted pages plus retained live
+rows may leave a mid-transcript hole; that residual is disclosed rather than covered by a
+second load-newer control. Tests:
+`tests/test_chat_history_paging.py`, the pass-through cases in
+`web/tests/chat_history_pager.test.js`, the sparse-walk, anti-loop and dense-return cases in
+`web/tests/chat_history_integration.test.js`, and
+`tests/test_chat_history_paging_browser.py`.
 
 The Project work pointer is a navigation component over the existing Chat card
 registry (`project_work_pointer.js`), updated inside the same viewport mutation

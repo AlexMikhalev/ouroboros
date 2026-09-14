@@ -3575,8 +3575,8 @@ export function createChatInstance({
         }
     }
 
-    const historyControls = createHistoryControls(messagesDiv, typingEl);
-    const { olderButton: loadOlderBtn, newerButton: loadNewerBtn } = historyControls;
+    const historyControls = createHistoryControls(messagesDiv);
+    const { olderButton: loadOlderBtn } = historyControls;
 
     const historyPager = createChatHistoryPager({
         fetchPage: (cursor, { signal }) => apiClient.chatHistory({ chatId, cursor, signal }),
@@ -3616,7 +3616,6 @@ export function createChatInstance({
         return result;
     }
     loadOlderBtn.addEventListener('click', loadOlderHistory);
-    loadNewerBtn.addEventListener('click', () => historyPager.newer());
 
     function navigateHistoryAtEdge() {
         if (destroyed || _restoring || !historyLoaded || !isInstanceVisible()) return;
