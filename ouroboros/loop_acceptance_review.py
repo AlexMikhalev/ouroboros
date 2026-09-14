@@ -114,6 +114,23 @@ def announce_acceptance_settlement(usage_ctx: Any, request: Any, wave: dict) -> 
         log.warning("Acceptance settlement wake failed for %s", request.task_id, exc_info=True)
 
 
+def _resolve_ctx_lineage(ctx: Any, task_id: str = "") -> Dict[str, Any]:
+    """One reader of a live tool context's lineage facts, shared by both
+    eligibility sites so the observation seam and the entrypoint agree."""
+    from ouroboros.task_results import resolve_task_lineage
+
+    meta = getattr(ctx, "task_metadata", {})
+    return resolve_task_lineage(
+        task_id or getattr(ctx, "task_id", ""),
+        metadata=meta if isinstance(meta, dict) else {},
+        root_task_id=getattr(ctx, "root_task_id", None),
+        parent_task_id=getattr(ctx, "parent_task_id", None),
+        delegation_role=getattr(ctx, "delegation_role", None),
+        original_task_id=getattr(ctx, "original_task_id", None),
+        timeout_retry_from=getattr(ctx, "timeout_retry_from", None),
+    )
+
+
 def prepare_acceptance_observation(ctx: Any, trace: dict, incoming: Any, messages: list, tool_schemas: list) -> None:
     """Present the current owner-source selector immediately before Main's send."""
     from ouroboros.loop_acceptance import capture_acceptance_observation, acceptance_observation_prompt
@@ -127,19 +144,7 @@ def prepare_acceptance_observation(ctx: Any, trace: dict, incoming: Any, message
     # expose the internal source-selector protocol to Main in that case: after a
     # successful cognitive tool call it can otherwise answer the selector itself,
     # replacing the natural conversational response with acceptance bookkeeping.
-    from ouroboros.task_results import resolve_task_lineage
-
-    meta = getattr(ctx, "task_metadata", {})
-    meta = meta if isinstance(meta, dict) else {}
-    lineage = resolve_task_lineage(
-        getattr(ctx, "task_id", ""),
-        metadata=meta,
-        root_task_id=getattr(ctx, "root_task_id", None),
-        parent_task_id=getattr(ctx, "parent_task_id", None),
-        delegation_role=getattr(ctx, "delegation_role", None),
-        original_task_id=getattr(ctx, "original_task_id", None),
-        timeout_retry_from=getattr(ctx, "timeout_retry_from", None),
-    )
+    lineage = _resolve_ctx_lineage(ctx)
     eligible, _reason = _loop()._task_acceptance_eligible(
         _loop().get_task_review_mode(),
         trace,
@@ -574,6 +579,36 @@ def _execute_task_acceptance_panel(ctx: _TaskAcceptanceContext) -> Any:
     return result
 
 
+def _end_acceptance_terminal(ctx: Any, status: str, *, outcome: str = "terminal") -> None:
+    """Latch the reviewed flag, close the admission fence and checkpoint the
+    root at ONE terminal status: the shared tail of every non-revision exit."""
+    ctx.tools._ctx._task_acceptance_reviewed = True
+    _loop()._end_task_acceptance_fence(ctx.tools._ctx, outcome=outcome)
+    _loop()._mark_root_acceptance_checkpoint(
+        ctx.tools._ctx, ctx.llm_trace, status=status, pass_index=ctx.passes_done,
+    )
+
+
+def _clean_enforcement_impact(result: Any) -> str:
+    """Whether this panel result lets completion through or degrades it."""
+    from ouroboros.review_substrate import task_acceptance_is_clean
+
+    return "allows_completion" if task_acceptance_is_clean(result) else "degrades_completion"
+
+
+def _remember_host_acceptance_run(ctx: Any, run_record: Dict[str, Any]) -> Dict[str, Any]:
+    """Stamp the attempt, append the authoritative host run to the trace and
+    index it in the process-local binding cache."""
+    if type(getattr(ctx.tools._ctx, "task_attempt", None)) is int:
+        run_record["task_attempt"] = ctx.tools._ctx.task_attempt
+    ctx.llm_trace.setdefault("review_runs", []).append(run_record)
+    seen = getattr(ctx.tools._ctx, "_task_acceptance_seen_bindings", None)
+    binding_hash = str(run_record.get("binding_hash") or "")
+    if isinstance(seen, dict) and binding_hash:
+        seen[binding_hash] = run_record
+    return run_record
+
+
 def _record_host_acceptance_run(ctx: _TaskAcceptanceContext, result: Any) -> Dict[str, Any]:
     """Append the authoritative host result after demoting agent-tool evidence."""
     _mark_agent_acceptance_runs_advisory(ctx.llm_trace)
@@ -593,20 +628,9 @@ def _record_host_acceptance_run(ctx: _TaskAcceptanceContext, result: Any) -> Dic
         if key not in run_record and hasattr(result, key):
             run_record[key] = getattr(result, key)
     run_record["authority"] = "host_root"
-    if type(getattr(ctx.tools._ctx, "task_attempt", None)) is int:
-        run_record["task_attempt"] = ctx.tools._ctx.task_attempt
     run_record.update(ctx.review_binding or {})
-    from ouroboros.review_substrate import task_acceptance_is_clean
-
-    run_record["enforcement_impact"] = (
-        "allows_completion" if task_acceptance_is_clean(result) else "degrades_completion"
-    )
-    ctx.llm_trace.setdefault("review_runs", []).append(run_record)
-    seen = getattr(ctx.tools._ctx, "_task_acceptance_seen_bindings", None)
-    binding_hash = str(run_record.get("binding_hash") or "")
-    if isinstance(seen, dict) and binding_hash:
-        seen[binding_hash] = run_record
-    return run_record
+    run_record["enforcement_impact"] = _clean_enforcement_impact(result)
+    return _remember_host_acceptance_run(ctx, run_record)
 
 
 def _set_applied_host_acceptance_impact(
@@ -621,11 +645,7 @@ def _set_applied_host_acceptance_impact(
     if requires_revision:
         run_record["enforcement_impact"] = "requires_revision"
         return
-    from ouroboros.review_substrate import task_acceptance_is_clean
-
-    run_record["enforcement_impact"] = (
-        "allows_completion" if task_acceptance_is_clean(result) else "degrades_completion"
-    )
+    run_record["enforcement_impact"] = _clean_enforcement_impact(result)
 
 
 
@@ -776,11 +796,7 @@ def _apply_task_acceptance_result(
             dialogue=dialogue, dissent=bool(dissent), open_obligations=open_obligations,
         )
     if task_acceptance_is_clean(result):
-        ctx.tools._ctx._task_acceptance_reviewed = True
-        _loop()._end_task_acceptance_fence(ctx.tools._ctx, outcome="terminal")
-        _loop()._mark_root_acceptance_checkpoint(
-            ctx.tools._ctx, ctx.llm_trace, status="pass", pass_index=ctx.passes_done,
-        )
+        _end_acceptance_terminal(ctx, "pass")
         if not _loop()._dispose_obligations_on_clean_pass(
             ctx.llm_trace, result, open_obligations, bool(dissent),
         ):
@@ -814,12 +830,7 @@ def _apply_task_acceptance_result(
     # review_degraded path below, which preserves per-slot failure causes (P1).
     if dialogue_terminal and str(result.aggregate_signal or "DEGRADED").upper() != "DEGRADED":
         # Quorum judged the dialogue unreachable/stable; record both positions.
-        ctx.tools._ctx._task_acceptance_reviewed = True
-        _loop()._end_task_acceptance_fence(ctx.tools._ctx, outcome="terminal")
-        _loop()._mark_root_acceptance_checkpoint(
-            ctx.tools._ctx, ctx.llm_trace,
-            status=str(result.aggregate_signal or "DEGRADED").lower(), pass_index=ctx.passes_done,
-        )
+        _end_acceptance_terminal(ctx, str(result.aggregate_signal or "DEGRADED").lower())
         _loop()._set_acceptance_decision(ctx.llm_trace, {
             # Open obligations live in their ID list, not a different status token.
             "status": ACCEPTANCE_FINALIZED_UNACCEPTED,
@@ -883,12 +894,7 @@ def _apply_task_acceptance_result(
         )
         return True
 
-    ctx.tools._ctx._task_acceptance_reviewed = True
-    _loop()._end_task_acceptance_fence(ctx.tools._ctx, outcome="terminal")
-    _loop()._mark_root_acceptance_checkpoint(
-        ctx.tools._ctx, ctx.llm_trace,
-        status=str(result.aggregate_signal or "DEGRADED").lower(), pass_index=ctx.passes_done,
-    )
+    _end_acceptance_terminal(ctx, str(result.aggregate_signal or "DEGRADED").lower())
     if _loop()._dispose_obligations_on_clean_pass(
         ctx.llm_trace, result, open_obligations, bool(dissent),
     ):
@@ -993,14 +999,7 @@ def _apply_task_acceptance_result(
 
 def _record_acceptance_infra_failure(ctx: _TaskAcceptanceContext, exc: Exception) -> bool:
     """Finish an eligible mandatory panel as DEGRADED, never as a silent skip."""
-    ctx.tools._ctx._task_acceptance_reviewed = True
-    _loop()._end_task_acceptance_fence(ctx.tools._ctx, outcome="degraded")
-    _loop()._mark_root_acceptance_checkpoint(
-        ctx.tools._ctx,
-        ctx.llm_trace,
-        status="review_degraded",
-        pass_index=ctx.passes_done,
-    )
+    _end_acceptance_terminal(ctx, "review_degraded", outcome="degraded")
     safe_error = _loop()._extract_plain_text_from_content(str(exc))[:2000]
     _mark_agent_acceptance_runs_advisory(ctx.llm_trace)
     run_record = {
@@ -1019,13 +1018,7 @@ def _record_acceptance_infra_failure(ctx: _TaskAcceptanceContext, exc: Exception
         **(ctx.review_binding or {}),
         "enforcement_impact": "degrades_completion",
     }
-    if type(getattr(ctx.tools._ctx, "task_attempt", None)) is int:
-        run_record["task_attempt"] = ctx.tools._ctx.task_attempt
-    ctx.llm_trace.setdefault("review_runs", []).append(run_record)
-    seen = getattr(ctx.tools._ctx, "_task_acceptance_seen_bindings", None)
-    binding_hash = str(run_record.get("binding_hash") or "")
-    if isinstance(seen, dict) and binding_hash:
-        seen[binding_hash] = run_record
+    _remember_host_acceptance_run(ctx, run_record)
     if not review_enforcement_blocks("blocking"):
         from types import SimpleNamespace
         return _finish_cyber_acceptance(ctx, SimpleNamespace(**run_record))
@@ -1149,14 +1142,7 @@ def _refuse_identical_acceptance(
     record and the decision row still land, so the replay stays auditable."""
     from ouroboros.outcomes import REASON_IDENTICAL_ACCEPTANCE_REFUSED
 
-    ctx.tools._ctx._task_acceptance_reviewed = True
-    _loop()._end_task_acceptance_fence(ctx.tools._ctx, outcome="terminal")
-    _loop()._mark_root_acceptance_checkpoint(
-        ctx.tools._ctx,
-        ctx.llm_trace,
-        status=str(result.aggregate_signal or "DEGRADED").lower(),
-        pass_index=ctx.passes_done,
-    )
+    _end_acceptance_terminal(ctx, str(result.aggregate_signal or "DEGRADED").lower())
     _loop()._set_acceptance_decision(ctx.llm_trace, {
         "status": ACCEPTANCE_FINALIZED_UNACCEPTED,
         "reason": REASON_IDENTICAL_ACCEPTANCE_REFUSED,
@@ -1334,19 +1320,8 @@ def _run_task_acceptance_review_once(
             return False
         tools._ctx._task_acceptance_reviewed = False
     from ouroboros.review_evidence import acceptance_packet_budget_chars
-    from ouroboros.task_results import resolve_task_lineage
 
-    meta = getattr(tools._ctx, "task_metadata", {})
-    meta = meta if isinstance(meta, dict) else {}
-    lineage = resolve_task_lineage(
-        task_id or getattr(tools._ctx, "task_id", ""),
-        metadata=meta,
-        root_task_id=getattr(tools._ctx, "root_task_id", None),
-        parent_task_id=getattr(tools._ctx, "parent_task_id", None),
-        delegation_role=getattr(tools._ctx, "delegation_role", None),
-        original_task_id=getattr(tools._ctx, "original_task_id", None),
-        timeout_retry_from=getattr(tools._ctx, "timeout_retry_from", None),
-    )
+    lineage = _resolve_ctx_lineage(tools._ctx, task_id)
     eligible, trigger = _loop()._task_acceptance_eligible(
         mode,
         llm_trace,
