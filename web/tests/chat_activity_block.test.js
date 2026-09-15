@@ -108,17 +108,18 @@ test('a wait with zero tools opens a block with the controls and leaves with the
     } finally { f.close(); }
 });
 
-test('a tool frame stamped with the lane fact mints a direct block before any census lists the turn', () => {
+test('a tool frame mints the task card before any census lists the turn: a tool row is content', () => {
     const f = fixture();
     try {
         f.log({ type: 'tool_call_started', tool: 'read_file', tool_call_id: 'c1', args: { path: 'README.md' }, _is_direct_chat: true });
         assert.ok(f.card(), 'the first tool call mints the block');
-        assert.equal(f.card().dataset.direct, '1', 'the frame carries the lane, the census is not awaited');
-        assert.equal(f.card().querySelector('[data-turn-into-project]'), null, 'no conversion control in the pre-census window');
+        assert.equal(f.card().dataset.chrome, 'task', 'a tool row is content: the task card, whatever the lane');
+        assert.ok(f.card().querySelector('[data-turn-into-project]'), 'conversion is offered in Main from the first content row');
+        assert.equal(f.card().querySelector('[data-live-title]').textContent, 'Working...', 'the placeholder title of a running task card');
         f.log({ type: 'tool_call_finished', tool: 'read_file', tool_call_id: 'c1', args: { path: 'README.md' }, duration_sec: 0.3, _is_direct_chat: true });
         f.census(direct());
-        assert.equal(f.card().dataset.direct, '1');
-        assert.equal(f.card().querySelector('[data-turn-into-project]'), null);
+        assert.equal(f.card().dataset.chrome, 'task', 'the census lane fact does not change chrome');
+        assert.ok(f.card().querySelector('[data-turn-into-project]'));
     } finally { f.close(); }
 });
 
@@ -130,7 +131,7 @@ test('a tool-only direct turn offers Stop from its stamped tool frame, without a
         f.log({ type: 'tool_call_started', tool: 'read_file', tool_call_id: 'c1', args: { path: 'README.md' }, _is_direct_chat: true, cancelable: true });
         assert.ok(f.card(), 'the tool row mints the block');
         assert.ok(f.card().querySelector('[data-cancel-run]'), 'the host marker on the work frame offers Stop');
-        assert.equal(f.card().dataset.direct, '1');
+        assert.equal(f.card().dataset.chrome, 'task');
         f.census(direct());
         assert.ok(f.card().querySelector('[data-cancel-run]'));
         f.log({ ...final, type: 'task_done', status: 'completed', _is_direct_chat: true });
@@ -138,7 +139,7 @@ test('a tool-only direct turn offers Stop from its stamped tool frame, without a
     } finally { f.close(); }
 });
 
-test('a direct turn with two successful tools shows two compact rows live and the summary row after a reload', async () => {
+test('a direct turn with two successful tools is the task card: two compact rows live and the summary row after a reload', async () => {
     const f = fixture();
     try {
         f.census(direct());
@@ -147,9 +148,9 @@ test('a direct turn with two successful tools shows two compact rows live and th
         f.log({ type: 'tool_call_started', tool: 'web_search', tool_call_id: 'c2', args: { query: 'ouroboros' } });
         f.log({ type: 'tool_call_finished', tool: 'web_search', tool_call_id: 'c2', args: { query: 'ouroboros' }, duration_sec: 1.2 });
         assert.ok(f.card(), 'the first tool call mints the block live');
-        assert.equal(f.card().dataset.direct, '1', 'direct chrome from the census fact');
-        assert.equal(f.card().querySelector('[data-turn-into-project]'), null, 'no conversion on a direct block');
-        assert.equal(f.card().querySelector('[data-live-title]').textContent, '', 'no placeholder title');
+        assert.equal(f.card().dataset.chrome, 'task', 'tool rows are content: the task card');
+        assert.ok(f.card().querySelector('[data-turn-into-project]'), 'a working direct turn is offered conversion in Main');
+        assert.equal(f.card().querySelector('[data-live-title]').textContent, 'Working...', 'the running placeholder title');
         assert.equal(f.rows().length, 2, 'start and finish of one call share a row');
         assert.match(f.rows()[0].innerHTML, /read_file · README\.md/);
         assert.match(f.rows()[1].innerHTML, /web_search · ouroboros/);
@@ -173,8 +174,9 @@ test('a direct turn with two successful tools shows two compact rows live and th
     try {
         await g.instance.refreshHistory({ revision: 1 });
         assert.ok(g.card(), 'the same turn shows the block after a reload');
-        assert.equal(g.card().dataset.direct, '1', 'replay reads the same host fact from the summary row');
-        assert.equal(g.card().querySelector('[data-turn-into-project]'), null);
+        assert.equal(g.card().dataset.chrome, 'task', 'replay: the recorded tool count is content');
+        assert.ok(g.card().querySelector('[data-turn-into-project]'), 'conversion survives a reload');
+        assert.notEqual(g.card().querySelector('[data-live-title]').textContent, '', 'a finished task card carries a title');
         // Per-tool rows are live-only: replay carries the summary row and the completion note.
         assert.equal(g.rows().length, 2);
         assert.ok(g.rows().some((n) => /2 tool calls/.test(n.innerHTML)));
@@ -213,7 +215,7 @@ test('a managed Swarm root keeps the task card with Turn into project; an origin
         f.census(managed());
         f.emit('chat', { task_id: TASK, role: 'assistant', is_progress: true, content: 'Planning the swarm.' });
         assert.ok(f.card());
-        assert.equal(f.card().dataset.direct, '0');
+        assert.equal(f.card().dataset.chrome, 'task');
         assert.ok(f.card().querySelector('[data-turn-into-project]'));
         assert.equal(f.status(), 'Working...');
         globalThis.window.__ouroTaskBindings = { 'bound-root': { project_id: 'p1', chat_id: 7 } };
@@ -286,6 +288,9 @@ test('a zero-tool turn that ended failed keeps its block live and after a reload
         f.log({ ...failed, type: 'task_done', status: 'failed' });
         assert.ok(f.card(), 'a terminal outcome other than Done is its own reason to exist');
         assert.equal(phaseOf(f.card()), 'error');
+        assert.equal(f.card().dataset.chrome, 'task', 'a non-Done outcome is content: the task card');
+        assert.equal(f.card().querySelector('[data-live-title]').textContent, 'Task activity');
+        assert.ok(f.card().querySelector('[data-turn-into-project]'));
         assert.equal(f.rows().length, 1, 'only the terminal note, which the predicate never counts as content');
         assert.match(f.rows()[0].innerHTML, />Failed</);
     } finally { f.close(); }
@@ -299,6 +304,7 @@ test('a zero-tool turn that ended failed keeps its block live and after a reload
         await g.instance.refreshHistory({ revision: 1 });
         assert.ok(g.card(), 'presence is the same on reload, with no replay-only force branch');
         assert.equal(phaseOf(g.card()), 'error');
+        assert.equal(g.card().dataset.chrome, 'task');
     } finally { g.close(); }
 });
 
@@ -310,6 +316,7 @@ test('an acceptance review row keeps a block for a zero-tool turn', () => {
             { surface: 'task_acceptance', panel_id: 'p1', aggregate_signal: 'PASS', reason: 'Answer matches the ask.' },
         ] } });
         assert.ok(f.card(), 'the review is content the block stands on');
+        assert.equal(f.card().dataset.chrome, 'task', 'a review group is content: the task card');
         assert.equal(f.card().dataset.finished, '1');
         assert.match(f.card().querySelector('[data-live-review-summary]')?.textContent || '', /Reviews 1/);
     } finally { f.close(); }
@@ -399,8 +406,63 @@ test('Stop stays reachable on a census-vouched root, managed card and direct blo
             const stop = f.card('live-root').querySelector('[data-cancel-run]');
             assert.ok(stop, `the census restores Stop on a ${kind} root`);
             assert.equal(stop.textContent, 'Stop…');
-            assert.equal(f.card('live-root').dataset.direct, kind === 'managed_task' ? '0' : '1');
+            assert.equal(f.card('live-root').dataset.chrome, 'task', `narration is content on a ${kind} root`);
             assert.doesNotMatch(f.meta('live-root'), /unconfirmed|unavailable/);
         } finally { f.close(); }
     }
+});
+
+// Owner decision 16.09 (Q1=A): chrome follows content, not the lane. A block
+// that exists only for open attention is compact; its first content row makes
+// it the task card. The header pill keeps reading the lane fact (Thinking…).
+test('a wait-only block is compact until its first content row makes it the task card', () => {
+    const f = fixture();
+    try {
+        f.census(direct());
+        f.emit('chat', wait({ role: 'system' }));
+        const card = f.card();
+        assert.equal(card.dataset.chrome, 'compact', 'open attention alone is not content');
+        assert.equal(card.querySelector('[data-live-title]').textContent, '', 'no placeholder title on a compact block');
+        assert.equal(card.querySelector('[data-turn-into-project]'), null, 'nothing to convert yet');
+        f.emit('chat', wait({ role: 'system', revision: 2, state: 'resolved', resolution: 'quota_restored' }));
+        assert.equal(f.card(), null, 'the block leaves with its attention');
+        f.log({ type: 'tool_call_started', tool: 'read_file', tool_call_id: 'c1', args: { path: 'README.md' } });
+        assert.equal(f.card().dataset.chrome, 'task', 'the first tool row makes it the task card');
+        assert.equal(f.card().querySelector('[data-live-title]').textContent, 'Working...');
+        assert.ok(f.card().querySelector('[data-turn-into-project]'));
+        assert.equal(f.status(), 'Thinking...', 'the header keeps the census verdict for a direct turn');
+    } finally { f.close(); }
+});
+
+test('a managed root waiting for access before its first row is compact under its admission name, then the task card', () => {
+    const f = fixture();
+    try {
+        f.census(managed());
+        f.emit('task_named', { task_id: TASK, suggested_name: 'Ship release' });
+        f.emit('chat', wait({ role: 'system' }));
+        const card = f.card();
+        assert.equal(card.dataset.chrome, 'compact', 'a managed root with nothing but a wait is compact too');
+        assert.equal(card.querySelector('[data-live-title]').textContent, 'Ship release', 'the admission name is still the title');
+        assert.equal(card.querySelector('[data-turn-into-project]'), null);
+        f.emit('chat', { task_id: TASK, role: 'assistant', is_progress: true, content: 'Working on it.' });
+        assert.equal(card.dataset.chrome, 'task', 'narration is content');
+        assert.ok(card.querySelector('[data-turn-into-project]'));
+        assert.equal(card.querySelector('[data-live-title]').textContent, 'Ship release');
+    } finally { f.close(); }
+});
+
+test('a coined name titles a direct task card live and stays after its final', () => {
+    const f = fixture();
+    try {
+        f.census(direct());
+        f.log({ type: 'tool_call_started', tool: 'read_file', tool_call_id: 'c1', args: { path: 'README.md' } });
+        assert.equal(f.card().querySelector('[data-live-title]').textContent, 'Working...');
+        f.emit('task_named', { task_id: TASK, suggested_name: 'Проверка карточки' });
+        assert.equal(f.card().querySelector('[data-live-title]').textContent, 'Проверка карточки');
+        f.emit('chat', { ...final, tool_calls: 1 });
+        assert.equal(f.card().dataset.finished, '1');
+        assert.equal(f.card().querySelector('[data-live-title]').textContent, 'Проверка карточки');
+        assert.equal(f.card().querySelector('[data-live-phase]').textContent, 'Done', 'the Done chip is the card\'s own');
+        assert.ok(f.card().querySelector('[data-turn-into-project]'));
+    } finally { f.close(); }
 });

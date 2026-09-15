@@ -762,24 +762,31 @@ export function createChatInstance({
     // mutation, no sticky flag; the completion note and receipt rows are not content.
     function blockVisible(record) {
         if (!record || record.isSubagent) return true;
+        return blockHasContent(record)
+            || !!(record.modelWaiting || record.cancelPendingPolicy || record.reviewAnchor)
+            || stopEligible(record);
+    }
+
+    // The host's lane fact (census kind, rebuilt task_done, history rows) is
+    // kept on the record for the header pill only: a direct turn keeps the
+    // census verdict (Thinking…) beside its block. It never chooses chrome.
+    function noteDirectTurn(record, direct) {
+        if (record && typeof direct === 'boolean') record.direct = direct;
+    }
+
+    // Content the block stands on — the same facts that make it exist, minus
+    // open attention. It also selects the chrome (owner decision 16.09): a
+    // content block is the task card whatever lane produced it; a block that
+    // exists only for open attention is compact. The host's lane fact
+    // (`_is_direct_chat`) keeps its host jobs and never chooses chrome.
+    function blockHasContent(record) {
         const id = record.groupId;
         return shouldAlwaysShowTaskCard(id)
-            || !!(record.modelWaiting || record.cancelPendingPolicy || record.reviewAnchor)
-            || stopEligible(record)
             || record.reviewController?.groups.size > 0
             || [...subagentChildParents.values()].some((info) => info.parentId === id)
             || record.items.some((item) => !item.receipt && !String(item.dedupeKey || '').startsWith('task_done|'))
             || record.toolErrors > 0
             || (record.finished && record.phaseEl?.dataset?.phase !== 'done');
-    }
-
-    // The host's direct-turn fact (census kind, rebuilt task_done, history
-    // rows) selects the block's chrome; it never decides presence.
-    function noteDirectTurn(record, direct) {
-        if (!record || typeof direct !== 'boolean' || record.direct === direct) return;
-        record.direct = direct;
-        if (direct && !record.suggestedName && !record.lastHumanHeadline) record.titleEl.textContent = '';
-        ensureLiveCardVisible(record);
     }
 
     // Tool accounting from a metrics or terminal fact: the meta counts and, with
@@ -888,16 +895,23 @@ export function createChatInstance({
         }
     }
 
-    // The block's chrome from the record's facts: a direct conversation turn
-    // renders the compact activity block (no title placeholder, no status
-    // chip, no conversion); a managed/Swarm root keeps the task card with
-    // "Turn into project" unless its origin is already bound to a Project —
-    // the one binding fact the /api/state sweep in app.js reads too.
+    // The block's chrome from the record's facts: a block with content is the
+    // task card (title, status chip, "Turn into project" in Main unless its
+    // origin is already bound to a Project — the one binding fact the
+    // /api/state sweep in app.js reads too); a block that exists only for open
+    // attention is compact (no title placeholder, chip hidden by CSS).
     function syncBlockChrome(record) {
         if (record.isSubagent || record.root.dataset.projectCreated === '1') return;
-        const direct = record.direct ? '1' : '0';
-        if (record.root.dataset.direct !== direct) record.root.dataset.direct = direct;
-        const wanted = isMain && !record.direct && record.root.dataset.projectBound !== '1'
+        const compact = !blockHasContent(record);
+        const chrome = compact ? 'compact' : 'task';
+        if (record.root.dataset.chrome !== chrome) record.root.dataset.chrome = chrome;
+        // A block that just became the task card gets its placeholder title;
+        // the title writers keep it current from here on.
+        if (!compact && !record.titleEl.textContent) {
+            record.titleEl.textContent = record.suggestedName || record.lastHumanHeadline
+                || (record.finished ? 'Task activity' : 'Working...');
+        }
+        const wanted = isMain && !compact && record.root.dataset.projectBound !== '1'
             && !(window.__ouroTaskBindings || {})[record.groupId];
         if (wanted === Boolean(record.turnProjectBtn)) return;
         if (!wanted) {
@@ -1296,8 +1310,8 @@ export function createChatInstance({
             // The proactively-coined LLM name; becomes the card title when set.
             suggestedName: '',
             reviewOwnerDetailObserved: false,
-            // Host fact: a direct conversation turn (census kind, rebuilt
-            // task_done, history rows) vs a managed/Swarm root.
+            // Host fact for the header pill: a direct conversation turn (census
+            // kind, rebuilt task_done, history rows) vs a managed/Swarm root.
             direct: String(activeDirectActivities.get(normalizedGroupId)?.kind || 'managed_task') !== 'managed_task',
         };
         const reviewDisclosure = reviewDisclosureByTask.get(normalizedGroupId) || {
@@ -1485,7 +1499,7 @@ export function createChatInstance({
         // P1: last bounded activity projection (remembered even while
         // the collapsed line is suppressed on unnamed root cards) + sticky cost.
         clearStickyCardState(record);
-        record.titleEl.textContent = record.direct ? '' : 'Working...';
+        record.titleEl.textContent = record.suggestedName || (blockHasContent(record) ? 'Working...' : '');
         setLiveCardPhase(record, 'working');
         record.countEl.hidden = true;
         record.countEl.textContent = '0 notes';
@@ -1678,10 +1692,10 @@ export function createChatInstance({
         const desiredPhase = desiredLiveCardPhase(record, activePhase);
         setLiveCardPhase(record, desiredPhase.phase, desiredPhase.text, desiredPhase.className);
         // A coined project name takes the title slot (the activity headline stays in the
-        // timeline); a child's title is its lineage identity; a direct block carries only
-        // a real narration headline; otherwise the activity headline.
+        // timeline); a child's title is its lineage identity; an attention-only block
+        // carries no title; otherwise the activity headline.
         const title = record.suggestedName || (record.isSubagent ? childTitle(record)
-            : record.direct ? record.lastHumanHeadline
+            : !blockHasContent(record) ? ''
                 : (record.finished ? record.lastHumanHeadline || 'Task activity' : activeHeadline));
         if (record.titleEl.textContent !== title) record.titleEl.textContent = title;
         // The collapsed line is a compact presentation projection, while the
@@ -1791,7 +1805,7 @@ export function createChatInstance({
         if (record.isSubagent) record.titleEl.textContent = childTitle(record);
         else if (!record.suggestedName && !record.lastHumanHeadline
                 && record.titleEl.textContent !== presentation.headline) {
-            record.titleEl.textContent = record.direct ? '' : 'Task activity';
+            record.titleEl.textContent = blockHasContent(record) ? 'Task activity' : '';
         }
         settleLiveCard(record, activePhase, wasFinished);
         ensureLiveCardVisible(record);
@@ -2120,9 +2134,9 @@ export function createChatInstance({
         if (childInfo) return Boolean(changed || queued);
         const subagentChanged = updateSubagentCardFromEvent(evt, rawTs);
         // The host stamps the lane on the turn's own frames (task_done always,
-        // a direct turn's tool frames too), so chrome never waits for a census;
-        // the host-attested Stop marker rides a direct turn's tool frames the
-        // way it rides its narration rows, so a tool-only turn offers Stop.
+        // a direct turn's tool frames too), so the header pill never waits for
+        // a census; the host-attested Stop marker rides a direct turn's tool
+        // frames the way it rides its narration rows, so a tool-only turn offers Stop.
         if (typeof evt._is_direct_chat === 'boolean') noteDirectTurn(liveCardRecords.get(taskId), evt._is_direct_chat);
         if (evt.cancelable === true) markTaskCancelable(taskId);
         if (eventType === 'task_done' && summary.terminal) {
@@ -3395,7 +3409,7 @@ export function createChatInstance({
 
     // Mounted, unfinished, not waiting: the blocks that host their own running
     // indicator. Only a managed root among them drives the header's Working…;
-    // a direct block keeps the census verdict (Thinking…).
+    // a direct turn's block keeps the census verdict (Thinking…).
     const foregroundCards = () => Array.from(liveCardRecords.values()).filter((r) => isForegroundLiveCard(r) && !r.modelWaiting);
     function hasActiveLiveCard() {
         return foregroundCards().some((r) => !r.direct);

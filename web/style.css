@@ -308,20 +308,21 @@ body.resizing-panels { user-select: none; }
 }
 
 
-/* A direct conversation turn renders the same component as a compact activity
-   block (docs/DESIGN.md "Conversation activity block"): no Task/Working/Done
-   chip while it runs or once it is Done (Cancelling…/Finalizing…/Waiting and a
-   non-Done outcome stay visible), no title placeholder, the typing dots as its
-   running indicator; the collapsed header carries the count, cost and duration. */
-.chat-live-card[data-direct="1"] {
+/* A block that exists only for open attention (a model wait, a pending or
+   host-offered Stop) is the same component in its compact form (docs/DESIGN.md
+   "Conversation activity block"): no Working/Done chip (Cancelling…/Finalizing…/
+   Waiting stay visible), no title placeholder, the typing dots as its running
+   indicator. The first content row — a tool call, narration, a child, a review,
+   an error, a non-Done outcome — makes it the task card, whatever lane ran it. */
+.chat-live-card[data-chrome="compact"] {
     border-color: var(--accent-08);
 }
 
-.chat-live-card[data-direct="1"] > .chat-live-summary-button [data-live-phase]:is(.done, .working:not(.cancelling):not(.finalizing):not(.waiting)) {
+.chat-live-card[data-chrome="compact"] > .chat-live-summary-button [data-live-phase]:is(.done, .working:not(.cancelling):not(.finalizing):not(.waiting)) {
     display: none;
 }
 
-.chat-live-card[data-direct="1"] > .chat-live-summary-button .chat-live-title:empty {
+.chat-live-card[data-chrome="compact"] > .chat-live-summary-button .chat-live-title:empty {
     display: none;
 }
 

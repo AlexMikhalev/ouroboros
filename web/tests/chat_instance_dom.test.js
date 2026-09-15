@@ -3,6 +3,11 @@ import test from 'node:test';
 import { createChatInstance } from '../modules/chat.js';
 import { installDom, restoreDom, walkCard } from './chat_dom_fixture.js';
 
+// The stub's querySelector reads direct children only; the conversion button
+// lives inside the card's actions row, so find it by walking the subtree.
+const convertButton = (node) => (node?.dataset && Object.hasOwn(node.dataset, 'turnIntoProject') ? node
+    : (node?.children || []).map(convertButton).find(Boolean) || null);
+
 // A typing frame no longer writes the client live-set: liveness is a projection
 // of the /api/state census. A PARTIAL census listing is the census-shaped
 // equivalent of the old typing-frame write — it inserts the activity and
@@ -1073,8 +1078,9 @@ test('history rebuild keeps a lineage-known branch nested, never appended top-le
 });
 
 // ---------------------------------------------------------------------------
-// Direct-turn tool work, typed conclusions and accounting render the compact
-// activity block: no conversion, no title placeholder, the same card component.
+// Direct-turn tool work, typed conclusions and accounting render the same task
+// card as a managed root (chrome follows content, owner decision 16.09); Cancel
+// still needs the host's marker.
 // ---------------------------------------------------------------------------
 test('a direct turn renders tool work as an activity block and needs host authority for Cancel', async () => {
     const { prior, mount } = installDom(async () => ({ ok: true, json: async () => ({ active_direct_turns: [] }) }));
@@ -1090,7 +1096,7 @@ test('a direct turn renders tool work as an activity block and needs host author
     };
     let instance;
     try {
-        // Main chat: the only surface that offers "Turn into project" — to managed roots.
+        // Main chat: the only surface that offers "Turn into project" — to content blocks of either lane.
         instance = createChatInstance({
             ws, state: { activePage: 'chat', projectChatIds: new Set(), unreadCount: 0 },
             updateUnreadBadge() {}, stateSnapshots, chatId: 1, idPrefix: 'chat', mountEl: mount,
@@ -1107,9 +1113,9 @@ test('a direct turn renders tool work as an activity block and needs host author
         } });
         const card = walkCard(messages, 'eph-1');
         assert.ok(card, 'real tool work reveals the activity block');
-        assert.equal(card.dataset.direct, '1', 'the block wears the direct chrome');
-        assert.equal(card.querySelector('[data-turn-into-project]'), null, 'a direct turn is never offered conversion');
-        assert.equal(card.querySelector('[data-live-title]').textContent, '', 'no Task/Working placeholder title');
+        assert.equal(card.dataset.chrome, 'task', 'a tool row is content: the block wears the task card chrome');
+        assert.ok(convertButton(card), 'a working direct turn is offered conversion in Main');
+        assert.equal(card.querySelector('[data-live-title]').textContent, 'Working...', 'the running placeholder title');
         assert.equal(card.querySelector('[data-cancel-run]'), null, 'no host cancelable marker: no Cancel');
         handlers.get('chat')({
             chat_id: 1, role: 'assistant', is_progress: true,
@@ -1140,7 +1146,7 @@ test('a direct turn renders tool work as an activity block and needs host author
         } });
         assert.equal(card.dataset.finished, '1');
         assert.match(card.querySelector('[data-live-meta]').innerHTML, /\$2\.70/);
-        assert.equal(card.querySelector('[data-turn-into-project]'), null);
+        assert.ok(convertButton(card), 'conversion stays on the finished card');
         // A direct turn without tool work or progress stays a plain answer.
         handlers.get('log')({ chat_id: 1, data: {
             type: 'task_started', task_id: 'eph-2', ts: '2026-09-05T11:00:00Z',
@@ -1204,8 +1210,8 @@ test(`history replay of a direct turn preserves ${execution}`, async () => {
         assert.equal(card.querySelector('[data-live-phase]').dataset.phase, phase);
         assert.doesNotMatch(card.querySelector('[data-live-meta]').innerHTML, /\$0(?:\.00)?(?:\s|<|$)/);
         if (execution === 'ok') assert.match(card.querySelector('[data-live-meta]').innerHTML, /\$0\.75/);
-        assert.equal(card.dataset.direct, '1', 'replay reads the same host fact');
-        assert.equal(card.querySelector('[data-turn-into-project]'), null);
+        assert.equal(card.dataset.chrome, 'task', 'replayed narration is content: the task card');
+        assert.ok(convertButton(card), 'replayed content is offered conversion in Main');
         assert.equal(card.querySelector('[data-cancel-run]'), null);
         assert.equal(messages.children.filter((n) => /resets on Monday/.test(n.innerHTML)).length, 1);
     } finally {

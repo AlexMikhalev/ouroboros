@@ -111,13 +111,17 @@ def test_bound_direct_task_header_and_review_cost_survive_reopen(
 
             def assert_running(amount):
                 card = page.locator(card_selector)
-                # The subject is a DIRECT turn, so the block wears the compact
-                # chrome (DESIGN.md "Conversation activity block"): no
-                # Working/Done chip, a running indicator while the turn runs.
-                # The phase therefore survives as the record's fact the block
-                # logic reads, not as a visible chip.
-                expect(card).to_have_attribute("data-direct", "1", timeout=10_000)
+                # The subject is a DIRECT turn with narration rows: content, so
+                # the block wears the task-card chrome (DESIGN.md "Conversation
+                # activity block", owner decision 16.09) — a visible Working
+                # chip, the coined title, a running indicator while it runs —
+                # and, inside a Project panel, no conversion control.
+                expect(card).to_have_attribute("data-chrome", "task", timeout=10_000)
                 expect(card.locator("[data-live-phase]")).to_have_attribute("data-phase", "working")
+                expect(card.locator("[data-live-phase]")).to_be_visible()
+                expect(card.locator("[data-live-phase]")).to_have_text("Working")
+                expect(card.locator("[data-live-title]")).to_have_text("Analyze greeting context")
+                expect(card.locator("[data-turn-into-project]")).to_have_count(0)
                 expect(card.locator("[data-live-typing]")).to_be_visible()
                 expect(card.locator("[data-live-meta]")).not_to_contain_text("Activity unconfirmed")
                 expect(card.locator("[data-live-meta]")).to_contain_text(f"up to ${amount}")
@@ -158,6 +162,8 @@ def test_bound_direct_task_header_and_review_cost_survive_reopen(
             card = page.locator(card_selector)
             expect(card).to_have_attribute("data-finished", "1", timeout=15_000)
             expect(card.locator("[data-live-phase]")).to_have_attribute("data-phase", "done")
+            expect(card.locator("[data-live-phase]")).to_be_visible()
+            expect(card.locator("[data-live-phase]")).to_have_text("Done")
             expect(card.locator("[data-live-typing]")).not_to_be_visible()
             page.evaluate(
                 "row => window.__ouroWs.emit('log', {chat_id: row.chat_id, data: row})",
