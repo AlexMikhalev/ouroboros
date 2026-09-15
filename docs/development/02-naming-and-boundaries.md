@@ -399,8 +399,7 @@ deliberate exception states its reason.
 This table is a maintenance inventory, not a second runtime authority. External
 facts change independently of Ouroboros releases; prefer live metadata or a
 bounded probe where that can answer the exact question, and otherwise keep the
-current conservative behavior visible. v6.67.0 documents these facts but does
-not migrate their runtime representations. No automated surface checks these
+current conservative behavior visible. This inventory documents these facts but does not migrate their runtime representations. No automated surface checks these
 rows — review-only maintenance.
 
 | Location | Fact | Mutability | Current authority | Live/probe option | Risk | Recommendation |

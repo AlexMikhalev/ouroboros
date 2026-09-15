@@ -9,8 +9,7 @@ The multipart request's worker owns both copying and closing its spool, so HTTP
 cancellation waits for both and cannot interrupt cleanup. Host uploads use the
 same settled wait before releasing their existing in-flight slot; the skill keeps
 ownership of its source. `store_chat_upload` keeps
-its Path return. The old 50 MiB chat upload rejection is removed on both ingresses;
-Host's existing 25-file request count and the separate Files-browser upload policy
+its Path return. Neither chat-upload ingress rejects a file for its size; Host's existing 25-file request count and the separate Files-browser upload policy
 retain their own contracts.
 
 Telegram document mirroring resolves the captured `file_ref` and streams an owned
