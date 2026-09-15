@@ -1,6 +1,6 @@
 # MCP Client Integration
 
-This chapter owns the boundary for configured MCP servers: the base runtime is a client and never a server, descriptions and results are untrusted data rather than policy, and a stdio entry passes one executable and an exact argument list without a shell. It also fixes how referenced settings values reach a process environment, because a value's secret classification decides whether it is masked in diagnostics and logs.
+This chapter owns the boundary for configured MCP servers: the base runtime is a client and never a server, descriptions and results are untrusted data rather than policy, and the owner alone selects which settings references a server may receive. It also fixes how referenced settings values reach a process environment, because a value's secret classification decides whether it is masked in diagnostics and logs.
 
 The base runtime is an optional CLIENT for trusted HTTP/SSE and local stdio MCP
 servers — never an MCP server (structure, transport validation, the stdio

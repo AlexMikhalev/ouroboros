@@ -1,6 +1,6 @@
 # Managed Update Rule
 
-This chapter owns what a managed update may do to the live tree: how one exact official target is chosen and bound, which windows refuse conversation, how dirty local work is stashed rather than merged into history, what the authorized resolver may stage, and why every destructive rollback takes a fresh rescue first. It exists because the pre-update snapshot predates the merge and holds none of the resolver's work, so this ordering is what keeps a failed update recoverable.
+This chapter owns what a managed update may do to the live tree: how one exact official target is chosen and bound, which windows refuse conversation, how dirty local work is stashed rather than merged into history, what the authorized resolver may stage, and when a fresh rescue must precede destruction. It exists because a managed update is the one path that rewrites the live tree in place, so every step of it needs a stated custody rule.
 
 - Keep the local work branch and the official update feed separate; the
   channel and branch topology live in ARCHITECTURE "8. Git Branching, CI,

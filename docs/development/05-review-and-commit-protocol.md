@@ -1,6 +1,6 @@
 # Review & Commit Protocol
 
-This chapter owns the three stages of a reviewed commit — prepared preflight, the authoritative gate, and publication binding — together with the shared paid-cycle cap, the free-replay rules, the external-review evidence contract and the release-sync carriers a pull request must leave untouched. It exists because technical failure and commit permission are separate facts, and every rule here keeps a missing review from becoming a PASS.
+This chapter owns the three stages of a reviewed commit — prepared preflight, the authoritative gate, and publication binding — together with the shared paid-cycle cap, the free-replay rules, the external-review evidence contract and the release-sync rule a pull request must obey. It exists because technical failure and commit permission are separate facts, and every rule here keeps a missing review from becoming a PASS.
 
 Keep optional task evidence outside the stable governance prefix; shrink its excerpt before reducing existing review material. A source pointer gives a packet-only model no retrieval capability. Rejoin preserves the original hash and project-local view while any physical reviewer may still read it. Removing an ignored view never deletes the canonical source; no separate notes corpus, blanket ToolResult metadata or mandatory whole-history read belongs to this evidence.
 

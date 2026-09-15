@@ -1,6 +1,6 @@
 # Process Custody Rule
 
-This chapter owns the durable ledger every long-lived child process must enter, the strict fingerprint the reaper kills by, the single worker tree-kill seam, and the separate contracts for stopping an installation-owned daemon and for latching a failed start. It exists because an unledgered process survives the death of its owner invisibly, and because a command-line-class match would let one instance reap another's children.
+This chapter owns the spawn chokepoint every long-lived child process must pass and its custody scopes, the single worker tree-kill seam, the rules a change to the daemon stop must keep, and the harvest cadence and disclosed residuals of the failed-start latch. It exists because an unledgered process survives the death of its owner invisibly, and because a command-line-class match would let one instance reap another's children.
 
 Long-lived OS processes (anything `subprocess.Popen`-ed or `mp.Process`-ed
 without a bounded wait in the same call) MUST be spawned through

@@ -1,6 +1,6 @@
 # Build & CI
 
-This chapter owns the build and test topology: the one dependency-lock authority and its packaging projections, the seven opt-in pytest marker lanes, the parallel and serial split CI actually runs, the hermetic commit gate that mirrors that split in a disposable checkout, and the GitHub Actions secret-gating shape. It exists because the gate's verdict has to be reproducible and un-weakenable by the candidate it is judging.
+This chapter owns the build and test topology: the dependency-lock change procedure, the seven opt-in pytest marker lanes, the parallel and serial split CI actually runs, the hermetic commit gate that mirrors that split in a disposable checkout, and the GitHub Actions secret-gating shape. It exists because the gate's verdict has to be reproducible and un-weakenable by the candidate it is judging.
 
 ### Python dependency locks
 
