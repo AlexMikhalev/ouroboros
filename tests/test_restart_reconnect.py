@@ -287,13 +287,21 @@ def test_task_done_live_summary_distinguishes_typed_failure():
     assert "headline: presentation.headline" in source
 
 
-def test_chat_warning_task_summaries_force_visible_cards():
+def test_chat_warning_task_summaries_keep_a_visible_block():
+    """A task that ended warn/error/cancelled keeps its block in the transcript.
+
+    No writer forces that any more (the sticky `forceCard` flag and the replay's
+    `needsVisibleTerminal` branch are gone): the ONE presence predicate admits
+    any terminal outcome whose phase chip is not `done`, so the same summary
+    row mounts the block live, after a reload and after a reconnect, while a
+    zero-tool Done turn leaves nothing behind.
+    """
     source = _read("web/modules/chat.js")
-    assert "summary.terminal && summary.phase === 'warn'" in source
-    assert (
-        "const needsVisibleTerminal = severity === 'error' || severity === 'warn'"
-        " || severity === 'cancelled';"
-    ) in source
+    predicate = source[source.index("function blockVisible(record) {"):source.index("function noteDirectTurn")]
+    assert "|| (record.finished && record.phaseEl?.dataset?.phase !== 'done');" in predicate
+    # The completion note itself is not content, so Done alone admits nothing.
+    assert "|| record.items.some((item) => !String(item.dedupeKey || '').startsWith('task_done|'))" in predicate
+    assert "forceCard" not in source
 
 
 def test_chat_scrolls_to_bottom_after_first_history_load():
@@ -319,7 +327,13 @@ def test_chat_scrolls_to_bottom_after_first_history_load():
         "The anchors factory must receive the live-card registry it reads"
     assert "liveCardRecords.get(entry.taskId)" in anchor_source, \
         "A rebuilt live card whose earliest timestamp changed needs canonical task lookup"
-    assert "reorderExisting: anchorMovedEarlier" in source, \
+    # One reanchor owner: a card is re-sorted only when its own anchor actually
+    # moved earlier (or its history position did), never on every mutation.
+    assert "const movedEarlier = stampNodeTimestamp(record.root, rawTs, { anchor: true });" in source, \
+        "The reanchor owner must read the node's own anchor move"
+    assert "if (!movedEarlier && !positionChanged) return false;" in source, \
+        "An unmoved anchor must not re-sort a mounted card"
+    assert "ensureLiveCardVisible(record, { reorderExisting: true });" in source, \
         "A mounted task card must be re-sorted if a later event lowers its anchor"
     assert "record._anchorOrderDirty = true;" in source
     assert "reorderDirtyCardIfNeeded(rec);" in source, \
