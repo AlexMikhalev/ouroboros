@@ -681,7 +681,8 @@ def new_invocation_id() -> str:
     return uuid.uuid4().hex
 
 
-def invocation_record(drive_root: Any, invocation_id: str) -> Optional[Dict[str, Any]]:
+def invocation_record(drive_root: Any, invocation_id: str, *,
+                      rows: Optional[List[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
     """One invocation's durable fate: who requested it, the EXACT body it sent,
     the resources that attempt bound, and how it resolved.
     ``state`` is ``pending`` (requested, never bound, never definitely refused —
@@ -700,13 +701,14 @@ def invocation_record(drive_root: Any, invocation_id: str) -> Optional[Dict[str,
     context wrote a durable record contradicting the body it actually POSTed.
     First-request lineage, usage attribution (category/source/skill/wave/slot),
     and isolation facts are likewise replayed rather than re-derived.
+    ``rows`` reuses a caller's single event snapshot, as the other replay views do.
     """
     target = str(invocation_id or "").strip()
     if not target:
         return None
     found: Optional[Dict[str, Any]] = None
     state, run_id = "pending", ""
-    for row in _iter_rows(event_log_path(drive_root)):
+    for row in rows if rows is not None else _iter_rows(event_log_path(drive_root)):
         if str(row.get("invocation_id") or "") != target:
             continue
         kind = str(row.get("type") or "")

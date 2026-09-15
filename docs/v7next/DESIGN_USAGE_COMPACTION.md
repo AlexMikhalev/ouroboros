@@ -615,9 +615,13 @@ the live replay, so this lane ships the join surface the sweep must use:
     chain hash still binds every segment the answer depends on, and any
     process that starts, or asks a minute later, re-hashes;
   - the union over a whole chain is cached by the chain's identity
-    ((`archive_rel`, sha) per hop), so a bulk reverse sweep of H seals costs
-    H cheap stat-checked walks and ONE union, not H unions over the whole
-    archived id set. Honest about the rest of the per-question cost: the epoch
+    ((`archive_rel`, sha) per hop). A bulk seal audit selects its manifests
+    before reading live attempts, then lazily obtains ONE validated archived-id
+    set for that pass. It retains an UNKNOWN archive answer for the rest of the
+    reverse pass without suppressing independent forward checks. The next pass
+    reads anew with the existing fingerprint, hash and TTL checks; TTL expiry
+    inside a batch does not multiply the history read by its seal count.
+    Honest about the rest of each archive query's cost: the epoch
     anchor runs on every question, ahead of that cache — one directory listing
     plus a bounded first-row read per entry the chain did not walk, and a full
     read only of an entry that claims a newer generation. The union cache is

@@ -222,12 +222,12 @@ test('restart refresh waits for a real reconnect before honoring boot status', (
 
     phase = '';
     ws.emit('update_status_ready');
-    assert.equal(ordinaryReads, 1, 'ordinary ready refresh remains intact');
+    assert.equal(ordinaryReads, 2, 'idle reconnect and ordinary ready both refresh status');
     binding.dispose();
     ws.emit('open', { previouslyConnected: true });
     ws.emit('update_status_ready');
     assert.equal(restartReads.length, 2, 'disposed restart listeners are inert');
-    assert.equal(ordinaryReads, 1, 'disposed ordinary listener is inert');
+    assert.equal(ordinaryReads, 2, 'disposed ordinary listener is inert');
 });
 
 test('restart reconciliation waits only for boot-owned transaction phases', () => {

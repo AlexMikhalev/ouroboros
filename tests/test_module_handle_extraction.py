@@ -72,7 +72,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         # and patched sibling calls must remain late-bound through that facade.
         "DRIVE_ROOT", "MAX_WORKERS", "REPO_DIR", "RUNNING", "WORKERS", "Worker", "_WORKER_PIDS_FILENAME",
         "_WORKER_POOL_DISABLED_REASON", "_worker_pool_execution_state", "disable_exhausted_worker_pool",
-        "_get_ctx", "_reconcile_confirmed_dead_review_owner",
+        "_get_ctx",
         "_verify_worker_sha_after_spawn", "get_event_q", "kill_workers", "load_state",
         "reconstruct_task_cost", "send_with_budget",
     })),

@@ -564,6 +564,11 @@ class UpdateApplyErrorResponse(TypedDict):
     remaining_usd: NotRequired[Optional[float]]
 
 
+class UpdateProgressChangedOutbound(TypedDict):
+    """Invalidation only; never proof that boot finalization completed."""
+    type: Literal["update_progress_changed"]
+
+
 class UpdateStatusReadyOutbound(TypedDict):
     type: Literal["update_status_ready"]
     available: bool
@@ -1477,6 +1482,7 @@ WS_MESSAGE_TYPES: tuple[str, ...] = (
     "projects_changed",
     "task_named",
     "update_status_ready",
+    "update_progress_changed",
 )
 
 
@@ -1510,6 +1516,7 @@ __all__ = [
     "UpdateApplySuccessResponse",
     "UpdateApplyErrorResponse",
     "UpdateStatusReadyOutbound",
+    "UpdateProgressChangedOutbound",
     "ProjectCreateRequest",
     "ProjectEntry",
     "ProjectDeleteResponse",
