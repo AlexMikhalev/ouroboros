@@ -491,3 +491,37 @@ def test_supervisor_handler_lets_an_explicit_different_name_fork(tmp_path, monke
     assert (reg.project_binding_for_task(tmp_path, "t-turn") or {}).get("project_id") == "the-work"
     assert reg.get_project(tmp_path, "the-work")["name"] == "The Work"
     assert sorted(p["id"] for p in reg.list_projects(tmp_path)) == ["the-work", "token-observatory"]
+
+
+def test_the_retry_an_unconfirmed_bind_asks_for_reads_the_durable_outcome_not_its_own_scope():
+    """The unconfirmed result tells the model to call again; that call must not
+    turn the optimistic in-memory scope into "already scoped" — it binds again
+    (the handler attaches to the same project) or reports the durable truth."""
+    from ouroboros.tools.control import _ensure_project_scope
+
+    ctx = _ctx()
+    first = _ensure_project_scope(ctx, project_name="Cyber Racing")
+    assert first.startswith("⚠️ SCOPE_UNCONFIRMED")
+    second = _ensure_project_scope(ctx, project_name="Cyber Racing")
+    assert "already scoped" not in second and second.startswith("⚠️ SCOPE_UNCONFIRMED")
+    assert len([e for e in ctx.pending_events if e.get("type") == "ensure_project_scope"]) == 2
+    # a different project while the first is pending is a re-scope of a pending scope, refused as before
+    third = _ensure_project_scope(ctx, project_name="Other Racing")
+    assert "cannot be re-scoped" in third
+
+
+def test_a_conflict_receipt_names_the_project_the_task_is_actually_bound_to():
+    """A conversion that won after the tool read the binding: the supervisor's
+    receipt carries the real target; the worker scope follows it and the text
+    never renders a rename status as a project id."""
+    from ouroboros.tools.control_delegation import _scope_outcome_text
+
+    ctx = _ctx(project_id="requested")
+    out = _scope_outcome_text(
+        ctx, {"status": "rejected", "reason": "project_scope_conflict", "detail": "renamed", "target": "existing"},
+        mode="live", tid="t1", pid="requested", bound="", display_name="Cyber Racing", previous_scope="",
+    )
+    assert "durably bound to project 'existing'" in out and "'renamed'" not in out
+    assert "applied to it as a rename" in out
+    assert ctx.project_id == "existing"
+

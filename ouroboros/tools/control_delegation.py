@@ -907,12 +907,18 @@ def _ensure_project_scope(ctx: ToolContext, project_name: str = "", project_id: 
         log.warning("project_binding_unreadable: ensure_project_scope for task %s continues "
                     "as unbound", tid, exc_info=True)
     current = bound or sanitize_project_id(getattr(ctx, "project_id", "") or "")
-    if current == pid:
+    # A scope this tool set optimistically for an UNCONFIRMED bind is not a
+    # binding: the retry the unconfirmed result asks for must read the durable
+    # outcome (or bind again), never report "already scoped" on its own word.
+    pending = str(getattr(ctx, "_scope_pending_project", "") or "")
+    if current == pid and (bound or pending != pid):
         ctx.project_id = pid
         return f"OK: this task is already scoped to project '{pid}' (no change)."
-    if current and not bound:
-        # Project-SCOPED but not project-BOUND (headless/CLI): there is no durable
-        # project to rename, so the old refusal stands.
+    if current and not bound and current != pid:
+        # Project-SCOPED but not project-BOUND (headless/CLI, or a bind still
+        # pending confirmation): there is no durable project to rename, so the
+        # old refusal stands; the same project while its bind is pending falls
+        # through and binds again.
         return (f"⚠️ TOOL_ERROR (ensure_project_scope): this task is already scoped to project "
                 f"'{current}'; it cannot be re-scoped to '{pid}'.")
     # Bound elsewhere: the request becomes a RENAME of the project this task already
@@ -927,6 +933,7 @@ def _ensure_project_scope(ctx: ToolContext, project_name: str = "", project_id: 
 
     previous_scope = str(getattr(ctx, "project_id", "") or "")
     ctx.project_id = bound or pid
+    ctx._scope_pending_project = "" if bound else pid
     routing_token = uuid.uuid4().hex
     evt = {
         "type": "ensure_project_scope", "task_id": tid, "project_id": pid,
@@ -960,18 +967,29 @@ def _durable_scope_sentence(tid: str) -> str:
 def _scope_outcome_text(ctx: ToolContext, receipt: Dict[str, Any], *, mode: str, tid: str, pid: str,
                         bound: str, display_name: str, previous_scope: str) -> str:
     """Render the supervisor's ensure receipt; the transport mode names no success."""
+    from ouroboros.project_facts import sanitize_project_id
+
     status, reason, detail = (str(receipt.get(k) or "") for k in ("status", "reason", "detail"))
     if status == "delivered":
+        ctx._scope_pending_project = ""
         how = {"created": "created", "adopted": "joined", "attached": "attached to"}.get(reason, "bound to")
         return (f"OK: this task is now durably bound to project '{pid}'{f' ({display_name})' if display_name else ''} "
                 f"({how} it; {_durable_scope_sentence(tid)}). journal_write and project knowledge target it; "
                 "its live progress routes to the project thread.")
     if status in {"rejected", "needs_manual_target"} and reason == "project_scope_conflict":
+        # The supervisor names the project this task is ACTUALLY bound to (a
+        # conversion may have won after this tool read the binding): the worker
+        # scope follows that target, and the rename status is rendered apart.
+        actual = sanitize_project_id(str(receipt.get("target") or "")) or bound
+        if actual:
+            ctx.project_id = actual
+        ctx._scope_pending_project = ""
         rename = {"renamed": f"; the requested name '{display_name}' was applied to it as a rename",
                   "rename_failed": f"; renaming it to '{display_name}' FAILED"}.get(detail, "")
-        return (f"OK: this task stays durably bound to project '{bound or detail}' and no second "
+        return (f"OK: this task stays durably bound to project '{actual or 'it already had'}' and no second "
                 f"project was created{rename} ({_durable_scope_sentence(tid)}).")
     if status in {"rejected", "needs_manual_target"}:
+        ctx._scope_pending_project = ""
         ctx.project_id = previous_scope
         return (f"⚠️ SCOPE_REJECTED ({reason or 'refused'}): this task was NOT bound to project '{pid}'"
                 f"{f' -- {detail}' if detail else ''}; {_durable_scope_sentence(tid)} and its scope is unchanged.")
