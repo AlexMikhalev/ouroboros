@@ -345,6 +345,20 @@ only (a nudge and a disclosed reviewer flag, never a gate); fixing it means
 changing the durable store and deserves its own scope. Beyond the typed seams
 and tests above, this section is review-only.
 
+### Anti-pattern: an open default behind a closed exception list
+
+A behaviour that is "on by default, except for these names" keeps its real
+rule in a list that can only go stale. The retired `ADDRESSING_ONLY_TOOLS`
+(`web/modules/chat_activity.js`) decided whether a chat turn had a card by
+subtracting three tool names from the tool count: every new addressing tool
+would have minted an empty card, every renamed one would have silently left
+the list, and the list restated a fact the host already carried as the typed
+routing annotation. Derive presence from the facts the record already holds
+(`web/modules/chat.js::blockVisible`) and let the host name the special case
+(`typed_routing_action`), never a client-side exception list. The same shape
+hides in "hide unless kind ∈ {…}" and "count unless name ∈ {…}": when the
+list is the rule, the rule is missing.
+
 ### Anti-pattern: a chat id tested for truth
 
 A chat id is a VALUE, not a boolean. `HIDDEN_CHAT_ID` (0) is the hidden

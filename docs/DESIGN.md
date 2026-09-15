@@ -474,6 +474,44 @@ Required Project questions appear in Main as one neutral System pointer with `Op
 
 History with no current execution or known outcome keeps its expandable content under `Outcome unavailable`, without a task chip, typing or Stop. Before complete live-source reconciliation, it is `Activity unconfirmed`. Positive current activity restores only its proven controls. A delivery warning may coexist with a preserved task-acceptance PASS. Model metadata says `Last solve response`, naming the initial request only when the route changed.
 
+### Conversation activity block
+
+A task's activity block is in the transcript exactly when the record already
+holds something to show — one predicate (`web/modules/chat.js::blockVisible`),
+re-read at every mutation, with no sticky flag: an always-shown kind
+(Background consciousness, Presence); open owner attention (a model wait, a
+pending stop, a host-attested Stop); a child card; a review group; a content
+row; a terminal outcome other than Done. The completion note is not content:
+a turn that ran no tool and finished Done leaves no block — live, after a
+reload and after a reconnect. Successful tool calls are compact one-line rows
+(`tool · target`, then `✓ duration`; a failure or timeout evolves the same
+row), collapsed by default inside the block, so a tool-using turn shows its
+block from its first call and a long turn always shows progress. Per-tool rows
+are live-only; a reload shows the block with one summary row from the recorded
+per-tool counts (`N tool calls · M errors`), which is also the only replay
+evidence of a recovered tool failure. Block presence is the same live, on
+reload and on reconnect; only the row content differs by source.
+
+The block is one component with two chromes, chosen by the host's
+`_is_direct_chat` fact (census kind, the rebuilt terminal event, history rows),
+never by the client. A managed or Swarm root keeps the task card: `Task` title,
+Working/Done chip, `Turn into project` unless its origin is already bound. A
+direct conversation turn renders a compact activity block: no `Task` title, no
+Working/Done chip, a small running indicator and Stop while the turn runs, the
+wait controls while a wait is open, and the tool count, cost and duration in
+the collapsed header once the turn ends. A direct turn is never offered `Turn
+into project`; conversion happens only through the model's own scope tools. A
+block whose only reason to exist was open attention leaves when that attention
+closes: a wait-only block disappears when the wait resolves, and the resolved
+episode's no-reopen ledger survives with the record, so a stale revision cannot
+bring the block back.
+
+An addressing-only turn (the model called only `promote_chat_to_task`,
+`route_to_project` or `steer_task`) is represented by the typed routing receipt
+on the owner's message; when the call is a row, the block shows that call
+honestly. No client list of tool names decides presence (`docs/DEVELOPMENT.md`
+"an open default behind a closed exception list").
+
 ### Subscription waits inside task cards
 
 Quota exhaustion and a confirmed need to sign in again use the same component,

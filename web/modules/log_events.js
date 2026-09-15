@@ -344,6 +344,24 @@ function extractCommandText(args) {
     return '';
 }
 
+// The compact row for one tool call: the command, else the first string
+// argument (a path, a query, a url — whatever the tool names first), lexical
+// only. The complete arguments stay behind the row's expand.
+function toolCallTarget(args) {
+    const cmd = extractCommandText(args);
+    if (cmd) return cmd;
+    for (const value of Object.values(args && typeof args === 'object' ? args : {})) {
+        if (typeof value === 'string' && value.trim()) return value;
+    }
+    return '';
+}
+
+// Start, finish, failure and timeout of one call share a row: the call id when
+// the producer stamped one, else the tool with its target.
+function toolCallKey(evt, groupId) {
+    return `tool:${groupId}:${evt.tool_call_id || `${evt.tool || ''}|${toolCallTarget(evt.args)}`}`;
+}
+
 function describeStartupChecks(checks) {
     if (!checks || typeof checks !== 'object') return '';
     const parts = [];
@@ -1198,8 +1216,19 @@ export function summarizeChatLiveEvent(evt) {
         return chatView({ phase: 'thinking', headline: 'Thinking', dedupeKey: key(evt.round || '', evt.attempt || '') });
     }
 
-    if (t === 'tool_call_started') {
-        return chatView({ headline: 'Working through the next step', dedupeKey: key(evt.tool || '') });
+    if (t === 'tool_call_started' || (t === 'tool_call_finished' && !evt.is_error)) {
+        // A successful call is a compact one-line row: `tool · target`, then
+        // `✓ duration` when it finishes — content the block can stand on.
+        const target = describeText(toolCallTarget(evt.args), 60);
+        const finished = t === 'tool_call_finished';
+        return chatView({
+            phase: finished ? 'done' : 'start',
+            headline: [evt.tool || 'tool', target.preview, finished ? `✓ ${formatLogDuration(evt.duration_sec)}`.trim() : '']
+                .filter(Boolean).join(' · '),
+            fullBody: compactJson(evt.args, 260),
+            visible: true,
+            dedupeKey: toolCallKey(evt, groupId),
+        });
     }
 
     if (t === 'task_checkpoint') {
@@ -1253,9 +1282,9 @@ export function summarizeChatLiveEvent(evt) {
     if (t === 'tool_call_timeout' || t === 'tool_timeout') {
         return chatView({
             phase: 'error',
-            headline: 'One of the steps took too long',
+            headline: `One of the steps took too long${evt.tool ? ` · ${evt.tool}` : ''}`,
             visible: true,
-            dedupeKey: key(evt.tool || ''),
+            dedupeKey: toolCallKey(evt, groupId),
         });
     }
 
@@ -1276,16 +1305,16 @@ export function summarizeChatLiveEvent(evt) {
                 body: shortText(bodyParts.join(' '), 220),
                 fullBody: fullBodyParts.join('\n\n'),
                 visible: true,
-                dedupeKey: key(evt.tool || '', evt.status || '', evt.exit_code || '', commandText.full || errorResult.full),
+                dedupeKey: toolCallKey(evt, groupId),
             });
         }
         return chatView({
             phase: 'error',
-            headline: 'One of the steps failed',
+            headline: `One of the steps failed${evt.tool ? ` · ${evt.tool}` : ''}`,
             body: shortText(bodyParts.join(' '), 220),
             fullBody: fullBodyParts.join('\n\n'),
             visible: true,
-            dedupeKey: key(evt.tool || '', evt.status || '', evt.exit_code || '', commandText.full || errorResult.full),
+            dedupeKey: toolCallKey(evt, groupId),
         });
     }
 
