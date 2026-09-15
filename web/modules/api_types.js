@@ -720,7 +720,7 @@
  * @typedef {Object} TaskNamedOutbound
  * @property {"task_named"} type
  * @property {string} task_id
- * @property {string} suggested_name  // proactively-coined project name; client sets the live card title (v6.40.0)
+ * @property {string} suggested_name  // admission-coined name of a managed task; client sets the live card title
  */
 
 /**
