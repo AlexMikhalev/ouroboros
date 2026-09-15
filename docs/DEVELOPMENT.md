@@ -566,11 +566,18 @@ Interactive read cost must be O(response), achieved through a maintained
 projection, a cursor, rotation, or a bounded tail — never a full-history scan
 filtered down to the answer.
 
-- **Per interaction is the unit.** Work that runs once per boot or per explicit
-  owner action may scan history; work on a request/message/poll-tick/task-turn
-  path may not. A scan that is cheap today is not the point — every growing
-  store crosses the threshold eventually, and the reader degrades exactly when
-  the system is most used.
+- **Evaluate the whole operation as the project grows.** For changed data
+  readers, consider growth in history, object count and project size, including
+  nested repetition, cold caches and concurrent users of shared resources.
+  A once-per-boot or explicit-owner scan is still allowed; its cost belongs to
+  the whole operation, not separately to every child, file or lookup it visits.
+  Where growth can materially hurt responsiveness, show evidence at a
+  representative scale on the affected path. First remove redundant work or
+  reuse a validated view within one operation; add a projection, cache or other
+  mechanism only when that simpler change is insufficient. A batch names its
+  observation boundary; the next batch refreshes it, and unknown evidence
+  never becomes an empty answer. This is advisory reasoning, not a universal
+  time limit, mandatory heavy benchmark for every PR, or a new approval gate.
 - **Storage-agnostic.** A full-table read filtered in code IS a replay (a
   `SELECT *` narrowed in Python is the same failure as parsing a whole JSONL
   file for its tail), including unbounded collections INSIDE snapshot/state
@@ -614,7 +621,8 @@ filtered down to the answer.
   handles without changing descriptor ownership.
 
 Enforcement: Repo Commit Checklist item 24 (advisory) triggers on diffs that
-add or change an endpoint/poller/subscription/timer or read a growing store;
+change data readers, startup/shutdown or other batch operations, or an
+endpoint/poller/subscription/timer;
 the hot-store growth health invariant
 (`agent_startup_checks.py::hot_store_growth_notes`, surfaced by
 `context_health.py::build_health_invariants`, thresholds justified in

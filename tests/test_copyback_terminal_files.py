@@ -302,7 +302,8 @@ def test_native_model_send_reverse_reader_accepts_retired_alias(tmp_path, monkey
     facts = []
     report = {"seals": 0, "sealed_attempts": 0, "orphan_seals": 0, "unlogged_attempts": 0}
     seal._reconcile_seal_directions(root, {"attempt": {"state": "settled", "task_id": "copyback",
-                                                    "candidate_manifest_ref": ref}}, facts.append, report, 20)
+                                                    "candidate_manifest_ref": ref}}, facts.append, report,
+                                    seal._seal_manifest_paths(root, 20))
     assert report["seals"] == report["sealed_attempts"] == 1
     assert report["orphan_seals"] == report["unlogged_attempts"] == 0
     assert facts == []

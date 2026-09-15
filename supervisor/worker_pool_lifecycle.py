@@ -25,6 +25,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 from ouroboros.config import WORKER_READY_MAX_ATTEMPTS, WORKER_READY_WINDOW_SEC
+from ouroboros.review_owner_custody import reconcile_confirmed_dead_review_owners
 from supervisor.state import append_jsonl
 from ouroboros.outcomes import EXECUTION_INFRA_FAILED, terminal_outcome_axes
 from ouroboros.utils import utc_now_iso
@@ -551,12 +552,14 @@ def kill_workers_for_update(
             disable_reason="managed_update",
             preserve_pending=True,
             preserve_running_task_ids=set(preserve_running_task_ids or ()),
+            reconcile_review_custody=False,  # Final death proof below owns this batch.
         )
         if kill_ok is False:
             teardown_error = "teardown:queue_snapshot_persist_failed"
     except Exception as exc:
         teardown_error = f"teardown:{type(exc).__name__}: {exc}"
     survivors: List[str] = []
+    dead_review_pids: set[int] = set()
     for worker in fenced:
         try:
             if worker.proc.is_alive() and worker.proc.pid:
@@ -565,11 +568,10 @@ def kill_workers_for_update(
             if worker.proc.is_alive():
                 survivors.append(f"worker:{worker.proc.pid or worker.wid}")
             else:
-                _pool()._reconcile_confirmed_dead_review_owner(
-                    int(getattr(worker.proc, "pid", 0) or 0)
-                )
+                dead_review_pids.add(int(getattr(worker.proc, "pid", 0) or 0))
         except Exception as exc:
             survivors.append(f"worker:{worker.wid}:{type(exc).__name__}")
+    reconcile_confirmed_dead_review_owners(_pool().DRIVE_ROOT, dead_review_pids)
     if teardown_error:
         survivors.append(teardown_error)
     return survivors

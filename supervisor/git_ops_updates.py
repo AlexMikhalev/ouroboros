@@ -218,7 +218,9 @@ def compute_managed_update_status(fetch: bool = False) -> Dict[str, Any]:
     elif err:
         state["warnings"].append(f"head_error:{err}")
 
-    rc, dirty, err = _go().git_capture(["git", "status", "--porcelain"])
+    # Progress notifications can trigger this read during checkout/reset/stash.
+    # Do not refresh the index under its optional write lock from a status read.
+    rc, dirty, err = _go().git_capture(["git", "--no-optional-locks", "status", "--porcelain"])
     if rc == 0:
         dirty_lines = [line for line in dirty.splitlines() if line.strip()]
         state["dirty"] = bool(dirty_lines)

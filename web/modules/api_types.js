@@ -1343,6 +1343,25 @@
  */
 
 /**
+ * Process-local execution observation on /api/update/status; not recovery authority.
+ * @typedef {Object} UpdateProgress
+ * @property {string} operation_id
+ * @property {string} generation
+ * @property {string} stage
+ * @property {string} started_at
+ * @property {string} stage_started_at
+ * @property {boolean} active
+ * @property {string} result
+ * @property {string} error
+ * @property {boolean} restart_required
+ */
+
+/**
+ * @typedef {Object} UpdateProgressChangedOutbound
+ * @property {'update_progress_changed'} type
+ */
+
+/**
  * @typedef {Object} UpdateStatusReadyOutbound
  * @property {'update_status_ready'} type
  * @property {boolean} available
