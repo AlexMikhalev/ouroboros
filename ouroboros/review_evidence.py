@@ -919,11 +919,18 @@ def format_review_evidence_for_prompt(
             "TASK ACCEPTANCE PANELS:\n"
             + json.dumps(projection, ensure_ascii=False, indent=2)
         )
+    if foreign_section and max_chars > 0:
+        # The attributing section is part of the same budget, but it is ANOTHER
+        # task's record: it takes at most a quarter of the bound, so the task's
+        # own evidence (what the reflection and the Pattern Register learn from)
+        # keeps the rest. Charging the untruncated section first let three long
+        # foreign runs squeeze the own body down to one character.
+        foreign_cap = max(1, max_chars // 4)
+        if len(foreign_section) > foreign_cap:
+            foreign_section = truncate_review_artifact(foreign_section, limit=foreign_cap)
     if evidence and evidence.get("has_evidence"):
         rendered_evidence = json.dumps(evidence, ensure_ascii=False, indent=2)
         prefix_chars = len(sections[0]) + 2 if sections else 0
-        # The attributing section is part of the same budget: it may shorten the
-        # body, never ride beyond the bound the caller asked for.
         prefix_chars += len(foreign_section) + 2 if foreign_section else 0
         limit = max_chars - prefix_chars if max_chars > 0 else 0
         if source_ref and max_chars > 0 and len(rendered_evidence) > max(1, limit):

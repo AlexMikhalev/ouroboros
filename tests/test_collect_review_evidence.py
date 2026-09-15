@@ -258,3 +258,32 @@ def test_collect_review_evidence_includes_commit_readiness_debt(tmp_path):
     assert evidence["current_repo"]["repo_commit_ready"] is False
     assert len(evidence["commit_readiness_debts"]) >= 1
     assert evidence["commit_readiness_debts"][0]["category"] in {"obligation_repeat", "readiness_warning"}
+
+
+def test_the_foreign_section_takes_a_bounded_share_of_the_prompt_budget():
+    """Three long foreign advisory runs must not squeeze the task's OWN evidence out
+    of a bounded prompt: the attributing section is capped at a quarter of the bound,
+    and the own body keeps the rest (WP-D repair, owner Q2A)."""
+    from ouroboros.review_evidence import format_review_evidence_for_prompt
+
+    own_reason = "OWN-FINDING " * 600  # ~7,200 chars of this task's own record
+    foreign = [
+        {"task_id": f"task-{n}", "findings": [{"reason": "FOREIGN-FINDING " * 250}]}
+        for n in ("b", "c", "d")
+    ]
+    evidence = {
+        "task_id": "task-a", "has_evidence": True,
+        "recent_advisory_runs": [{"task_id": "task-a", "findings": [{"reason": own_reason}]}],
+        "foreign_advisory_runs": foreign,
+    }
+    rendered = format_review_evidence_for_prompt(evidence, max_chars=8000)
+    heading = rendered.find("ADVISORY RUNS OF OTHER TASKS")
+    assert heading > 0
+    own_body, foreign_body = rendered[:heading], rendered[heading:]
+    # The own record keeps at least half of the bound; the foreign section at most a quarter
+    # (plus its omission marker).
+    assert own_body.count("OWN-FINDING") >= 300
+    assert len(foreign_body) <= 8000 // 4 + 200
+    assert "OMISSION NOTE" in foreign_body
+    assert "FOREIGN-FINDING" not in own_body
+
