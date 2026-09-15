@@ -499,6 +499,7 @@ def _delegate_answer(
                 # pending and the SAME answers stay valid.
                 return delegate_result({
                     "status": "subscription_window_exhausted",
+                    "ok": False, "host_code": "TOOL_REPORTED_FAILURE",
                     "run_id": rid, "interaction_id": iid,
                     "accepted": False,
                     "reset_at": str(getattr(exc, "reset_at", "") or "") or None,

@@ -9,7 +9,7 @@ import uuid
 from typing import Any, Callable, Optional
 
 from ouroboros import delegate_custody as custody
-from ouroboros.delegate_shared import _fail, delegate_result
+from ouroboros.delegate_shared import _fail, delegate_result, refusal_host_code
 from ouroboros.owner_mailbox import (
     KIND_FINALIZE_NOW,
     KIND_HURRY,
@@ -695,7 +695,7 @@ def _schema_1_envelope(payload: dict[str, Any]) -> dict[str, Any]:
     """
     if "ok" in payload or str(payload.get("status") or "") != "refused":
         return dict(payload)
-    return {**payload, "ok": False, "host_code": "TOOL_REPORTED_FAILURE"}
+    return {**payload, "ok": False, "host_code": refusal_host_code(str(payload.get("reason") or ""))}
 
 
 def _pending_payload(ctx: Any, state: dict[str, Any]) -> dict[str, Any]:
