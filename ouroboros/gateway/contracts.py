@@ -19,10 +19,9 @@ except ImportError:  # pragma: no cover - CI supports Python 3.10.
 
 
 class ChatAttachmentInbound(TypedDict, total=False):
-    """One uploaded chat attachment reference (file already stored by
-    /api/chat/upload under data/uploads/; ``filename`` is the stored
-    basename). Image attachments are delivered to vision models as native
-    image blocks (v6.26.0)."""
+    """Reference to a file stored by /api/chat/upload under data/uploads/.
+    ``filename`` is its stored basename. Images reach vision models as
+    native image blocks."""
 
     filename: str
     display_name: str
@@ -862,6 +861,7 @@ class OwnerSafetyModeResponse(TypedDict):
 class OwnerSkillPresenceRuntimeRequest(TypedDict):
     expected_state_fingerprint: str
     runtime_overrides: Dict[str, Any]
+    workspace_root: NotRequired[str]
 
 
 class OwnerSkillPresenceRuntimeResponse(TypedDict):
