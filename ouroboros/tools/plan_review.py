@@ -2,7 +2,7 @@
 
 Owner-approved redesign (2026-08-15, plan §6/§7): the agent submits a SPEC (goal,
 in_scope, non_goals, acceptance_claims, invariants, decisions, deferred,
-affected_resources, evidence) plus prose; the host normalizes it (``plan_spec``),
+affected_paths, affected_resources, evidence) plus prose; the host normalizes it (``plan_spec``),
 resolves ONE structural fact (``constitutional``), attaches the declared evidence
 bounded with every omission named, builds the lean packet (``plan_packet``), fans it
 across the configured reviewer rows through the shared review substrate (api_chat
@@ -181,11 +181,21 @@ _SPEC_SCHEMA = {
             },
             "description": "Deliberately deferred until the work is underway; ids deferred_1..N — a blocking finding may name any spec id it breaks: goal, claim_N, invariant_N, decision_N or deferred_N itself.",
         },
+        "affected_paths": {
+            "type": "array", "items": {"type": "string"},
+            "description": (
+                "REQUIRED. The FILES the work will CHANGE — paths relative to the subject "
+                "workspace root, absolute, or file://; send [] when this work changes no files. "
+                "A path under the Ouroboros system repository makes the plan constitutional "
+                "(BIBLE + ARCHITECTURE go to reviewers), whether or not the file exists yet. "
+                "This is the ONLY field read as file paths."
+            ),
+        },
         "affected_resources": {
             "type": "array", "items": {"type": "string"},
             "description": (
-                "What the work will CHANGE (paths, systems, services). Paths resolving under "
-                "the Ouroboros system repository make the plan constitutional (BIBLE goes to reviewers)."
+                "What else the work will CHANGE, described in words: systems, services, projects, "
+                "people. Descriptions only — never file paths; nothing here is resolved as a path."
             ),
         },
         "evidence": {
@@ -193,12 +203,12 @@ _SPEC_SCHEMA = {
             "description": (
                 "What reviewers should LOOK AT: file paths, task:<id> of a prior task, URLs. "
                 "The host attaches files bounded (never fetching URLs) and names every omission. "
-                "An EXISTING path here that resolves under the Ouroboros system repository also "
-                "makes the plan constitutional (BIBLE + ARCHITECTURE go to reviewers); a path that "
-                "does not exist does not, and the skip is disclosed."
+                "Reading a repository file here is not changing it and does not make the plan "
+                "constitutional; only listing it under affected_paths does."
             ),
         },
     },
+    "required": ["affected_paths"],
 }
 
 _DISPOSITION_SCHEMA = {
@@ -252,7 +262,8 @@ def get_tools():
                     "new; a different reviewer_effort re-dispatches a paid panel). Under blocking enforcement an "
                     "open review holds finalization; under advisory you may proceed with the "
                     "review open and the host discloses it. Declare evidence reviewers need; "
-                    "declare affected_resources so a self-modification gets the constitutional pack."
+                    "affected_paths is required — the files the work will change ([] when none) — "
+                    "and is what gives a self-modification the constitutional pack."
                 ),
                 "parameters": {
                     "type": "object",
@@ -407,6 +418,34 @@ def _reviewer_requested_locators(ctx: ToolContext, state_root: pathlib.Path) -> 
             seen.append(loc)
     return seen, dropped
 
+def _resource_form_refusal(ctx: ToolContext, state_root: pathlib.Path) -> str:
+    """The old-form refusal text: name the missing field, show it, and protect an open wave.
+
+    Nothing durable is written, so a task whose previous wave is still open keeps it — and is
+    told how to close it at $0 instead of re-buying a panel it cannot afford."""
+    detail = ""
+    try:
+        _root, task_id = _planning_state_location(ctx)
+        wave = current_plan_review_wave(load_plan_review_state(state_root, task_id)) or {}
+    except (OSError, TimeoutError, ValueError):
+        wave = {}
+    if wave and not wave.get("closed"):
+        detail = (
+            "\nThe open plan-review wave "
+            f"{wave.get('request_fingerprint') or '(fingerprint not recorded)'} is untouched: answer "
+            "it first with review_disposition naming that fingerprint (free, no reviewer call), or "
+            "re-send this spec in the form above."
+        )
+    return (
+        "ERROR: PLAN_RESOURCE_FORM_REQUIRED: spec.affected_paths is required — the FILES this work "
+        "will change, as their own list; send [] when it changes no files. affected_resources is "
+        "now prose (systems, services, projects, people) and is never resolved as a path. "
+        "For example:\n"
+        '  "affected_paths": ["ouroboros/tools/plan_review.py"],\n'
+        '  "affected_resources": ["the plan-review organ", "the owner\'s review budget"]\n'
+        "No reviewer was called and nothing was recorded." + detail
+    )
+
 def _prepare_plan_inputs(ctx: ToolContext, request: "_PlanRequest", state_root: pathlib.Path, *, persist: bool = False) -> dict:
     """The ONE preamble the paid path and the dry-run seam share: normalize the spec (with the
     envelope's goal injected), resolve the subject roots, derive `constitutional`, attach the
@@ -423,21 +462,29 @@ def _prepare_plan_inputs(ctx: ToolContext, request: "_PlanRequest", state_root: 
     if errors:
         return {"error": "ERROR: PLAN_SPEC_INVALID: " + "; ".join(errors) + ". No reviewer was called.",
                 "code": "TOOL_ARG_ERROR"}
+    if isinstance(raw_spec, dict) and "affected_paths" not in raw_spec:
+        # Owner 9=A: a spec in the old mixed form is refused BEFORE any paid dispatch, because
+        # `affected_resources` used to be read as a path list — a prose item became "a file under
+        # the Ouroboros repo" and bought every reviewer the whole constitution (~470k tokens/cycle)
+        # for a deck. The refusal carries its OWN code: a message containing `PLAN_SPEC_INVALID`
+        # takes the durable superseding-attempt path below and would orphan an open wave.
+        return {"error": _resource_form_refusal(ctx, state_root), "code": "TOOL_ARG_ERROR"}
     from ouroboros.review_substrate import review_repo_dirs_for
     try:
         system_root, active_root = review_repo_dirs_for(ctx)
     except ValueError as exc:
         return {"error": f"ERROR: PLAN_SUBJECT_ROOT_INVALID: {exc}", "code": "TOOL_ERROR"}
-    locators = list(spec["affected_resources"]) + list(spec["evidence"])
+    affected_paths = list(spec.get("affected_paths") or [])
+    locators = affected_paths + list(spec["evidence"])
     constitutional, constitutional_note = plan_spec.resolve_constitutional(
         active_root=active_root, system_repo_root=system_root,
-        affected_resources=spec["affected_resources"], evidence=spec["evidence"],
+        affected_paths=affected_paths, evidence=spec["evidence"],
         payload_roots=_plan_payload_roots(ctx, locators),
     )
     reminder = (
-        "REMINDER: affected_resources is empty; if this work will change Ouroboros's own body, "
-        "declare those paths so reviewers receive the constitutional pack (BIBLE)."
-        if active_root == system_root and not spec["affected_resources"] else ""
+        "REMINDER: affected_paths is empty; if this work will change Ouroboros's own body, "
+        "list those files so reviewers receive the constitutional pack (BIBLE)."
+        if active_root == system_root and not affected_paths else ""
     )
     declared_evidence = list(spec["evidence"])  # W3: earlier-cycle need_evidence is HOST-attached
     try:

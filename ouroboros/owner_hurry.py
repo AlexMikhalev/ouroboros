@@ -537,7 +537,8 @@ def plan_review_reminder(decision: Dict[str, Any]) -> str:
     if status == "legacy_open_requires_resubmission":
         return (
             f"{tag} An open plan review from a previous schema cannot be honored. Re-call "
-            "plan_task with your goal, plan and spec to start a fresh review before finalizing."
+            "plan_task with your goal, plan and spec — including affected_paths, the files the "
+            "work will change ([] when none) — to start a fresh review before finalizing."
         )
     from ouroboros.review_cycles import review_max_cycles
 
@@ -578,13 +579,15 @@ def plan_review_reminder(decision: Dict[str, Any]) -> str:
         )
     if outcome == "REVISE_PLAN":
         return (
-            f"{tag} Blocking plan review requires a revised spec. Change the spec and call "
+            f"{tag} Blocking plan review requires a revised spec. Change the spec — it carries "
+            "affected_paths, the files the work will change ([] when none) — and call "
             "plan_task again (or reject the blocking findings with a rationale via "
             "review_disposition). Continue analysis and non-mutating preparation, but do not "
             "begin the work before the review closes or a real task-wide rail fires."
         )
     return (
-        f"{tag} Call plan_task with a concrete goal, plan and spec. If review infrastructure "
+        f"{tag} Call plan_task with a concrete goal, plan and spec, whose affected_paths lists "
+        "the files the work will change ([] when none). If review infrastructure "
         "is unavailable, continue analysis and non-mutating preparation, but do not begin the "
         "work before the review closes or a real task-wide rail fires."
     )

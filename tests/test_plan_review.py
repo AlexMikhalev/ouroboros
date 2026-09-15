@@ -355,7 +355,7 @@ def test_malformed_reviewer_slots_block_plan_review_before_any_dispatch(tmp_path
         patch.object(pr, "_run_plan_review_slots",
                      side_effect=AssertionError("no reviewer dispatch")),
     ):
-        result = pr._handle_plan_task(ctx, plan="P", goal="G", spec={"in_scope": ["x"]})
+        result = pr._handle_plan_task(ctx, plan="P", goal="G", spec={"in_scope": ["x"], "affected_paths": []})
 
     assert "Invalid reviewer-slot configuration blocks plan review" in result
     assert "not valid JSON" in result
@@ -410,7 +410,7 @@ def test_expired_explicit_deadline_skips_before_any_reviewer(monkeypatch, tmp_pa
     monkeypatch.setattr(pr, "_plan_review_slots",
                         lambda: (_ for _ in ()).throw(AssertionError("expired deadline must skip")))
     out = asyncio.run(pr._run_plan_review_async(
-        ctx, pr._PlanRequest(goal="G", plan="P", spec={"in_scope": ["x"]}),
+        ctx, pr._PlanRequest(goal="G", plan="P", spec={"in_scope": ["x"], "affected_paths": []}),
     ))
 
     assert out.startswith("PLAN_TASK_SKIPPED_DEADLINE: the task deadline has expired")
@@ -437,7 +437,7 @@ def test_expired_deadline_replays_a_recorded_wave_but_never_pays(monkeypatch, tm
     monkeypatch.setattr(pr, "_plan_review_slots",
                         lambda: (_ for _ in ()).throw(AssertionError("no panel under a dead deadline")))
     out = asyncio.run(pr._run_plan_review_async(
-        ctx, pr._PlanRequest(goal="G", plan="P", spec={"in_scope": ["x"]}),
+        ctx, pr._PlanRequest(goal="G", plan="P", spec={"in_scope": ["x"], "affected_paths": []}),
     ))
     assert out.startswith("PLAN_TASK_SKIPPED_DEADLINE:")
     attempt = load_plan_review_state(tmp_path, ctx.task_id)["current_attempt"]
@@ -512,8 +512,10 @@ class TestPlanReviewToolRegistration(unittest.TestCase):
         spec = params["spec"]["properties"]
         self.assertEqual(set(spec), {
             "in_scope", "non_goals", "acceptance_claims", "invariants", "decisions",
-            "deferred", "affected_resources", "evidence",
+            "deferred", "affected_paths", "affected_resources", "evidence",
         })
+        # The ONE list the host resolves as file paths, and the one a submitted spec must carry.
+        self.assertEqual(params["spec"]["required"], ["affected_paths"])
         disposition = params["review_disposition"]
         self.assertEqual(disposition["required"], ["review_fingerprint", "items"])
         decision = disposition["properties"]["items"]["items"]["properties"]["decision"]
