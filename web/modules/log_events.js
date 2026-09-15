@@ -401,21 +401,50 @@ export function taskStoppedWithSummary(evt) {
     return String(evt?.reason_code || '') === 'owner_requested_finalization';
 }
 
-// The typed degradation causes a card can state in the owner's words. The record
-// keeps the machine code (Logs, task detail, benchmark ledgers); only the card
-// speaks. An UNKNOWN code stays raw on purpose: a reason we have no sentence for
-// must read as itself rather than as a wrong sentence.
-const TASK_REASON_PHRASES = {
-    plan_review_advisory: 'plan review never closed; the work continued under advisory enforcement',
-    host_child_status_suffix: 'a child task had not settled when the answer was delivered',
-    invalid_delivery_control_after_repair: 'the delivery control object was still malformed after repair',
-    budget_exhausted: 'the task ran out of budget before it could finish cleanly',
-    delivery_control_degraded: 'delivery finished in a degraded control state',
+// The typed causes a card can state in the owner's words, keyed on the CODE
+// alone. The record keeps the machine code (Logs, task detail, benchmark
+// ledgers); only the card speaks. An UNKNOWN code stays raw on purpose: a
+// reason we have no sentence for must read as itself rather than as a wrong
+// sentence. The byte-identical twin of project_dialogue.TASK_CAUSE_PHRASES;
+// web/tests/fixtures/outcome_phase_parity.json pins both.
+const TASK_CAUSE_PHRASES = {
+    author_finish: "The answer was delivered on Main's own judgement; the reviewers had not signed it off.",
+    review_degraded: "Not enough reviewer verdicts could be read to settle the answer.",
+    infra_failure: "The review could not run: it failed before any reviewer answered.",
+    dialogue_terminal: "The reviewers and Main could not agree, and both positions were kept.",
+    improvement_capsule: "The reviewers asked for one more pass and Main was given their notes.",
+    fence_reopen_failed: "The requested extra pass could not be started, so the answer stands as it was.",
+    review_cycles_exhausted: "The task used up its review rounds before the answer was signed off.",
+    open_obligations: "The answer was delivered with reviewer requests still open.",
+    improvement_window_closed: "There was no room left for another pass, so the answer stands as it was.",
+    capsule_spent: "The one allowed improvement pass was already used.",
+    reviewer_fail_no_capsule: "A reviewer rejected the answer and suggested nothing to change.",
+    no_actionable_changes: "The re-review was not clean and suggested nothing to change.",
+    identical_acceptance_refused: "Nothing had changed since the last review, so the recorded verdict stands.",
+    review_skipped_deadline_reserve: "There was not enough time left to review the answer.",
+    delivery_binding_superseded: "The answer changed after it was reviewed, so the review no longer covered it.",
+    owner_followup: "A new message from you arrived, so the review was set aside for it.",
+    evidence_refresh: "The work changed after the review was frozen, so it no longer covered the answer.",
+    revision_unavailable_on_forced_rail: "The task had to stop, so the requested rework never happened.",
+    owner_hurry: "You asked me to hurry, so the review was skipped.",
+    unspecified: "The answer was not signed off, and no cause was recorded.",
+    acceptance_bypassed_budget_exhausted: "The task ran out of budget before the answer could be reviewed.",
+    acceptance_bypassed_round_limit: "The task hit its round limit before the answer could be reviewed.",
+    acceptance_bypassed_deadline: "The task ran out of time before the answer could be reviewed.",
+    acceptance_bypassed_provider_unavailable: "The model provider was unavailable, so the answer was never reviewed.",
+    acceptance_bypassed_context_overflow: "The task outgrew its context before the answer could be reviewed.",
+    acceptance_bypassed_children_unabsorbed: "Some sub-tasks had not been folded in, so the answer was never reviewed.",
+    plan_review_advisory: "plan review never closed; the work continued under advisory enforcement",
+    host_child_status_suffix: "a child task had not settled when the answer was delivered",
+    invalid_delivery_control_after_repair: "the delivery control object was still malformed after repair",
+    budget_exhausted: "the task ran out of budget before it could finish cleanly",
+    delivery_control_degraded: "delivery finished in a degraded control state",
+    delegated_custody_unreconciled: "Some delegated work was never reconciled.",
 };
 
 export function taskReasonPhrase(code) {
     const raw = String(code || '');
-    return TASK_REASON_PHRASES[raw] || raw;
+    return TASK_CAUSE_PHRASES[raw] || raw;
 }
 
 // The custody overlay stamps this code as the row's reason_code while a
@@ -454,8 +483,9 @@ export function taskReasonDetail(evt) {
         ?? record.review_status?.acceptance_decision;
     const severity = taskOutcomeSeverity(evt);
     if (severity !== 'error' && severity !== 'cancelled' && decision?.status && decision.status !== 'accepted') {
-        const rationale = String(decision.rationale || '').split(/\s+/).filter(Boolean).join(' ');
-        return `Acceptance: ${decision.status}${rationale ? ` — ${rationale}` : ''}`;
+        // The decision's own typed reason speaks; the stored reviewer rationale
+        // stays in the card body, the task result and Logs.
+        return taskReasonPhrase(String(decision.reason || ''));
     }
     if (!evt?.reason_code || evt.reason_code === 'final_message') return '';
     // A healed debt is never restored: naming it again would state a debt the
@@ -463,12 +493,12 @@ export function taskReasonDetail(evt) {
     // there is one, otherwise the row states no cause and leaves the headline
     // to the frozen outcome axis that owns it.
     const [reason, custody] = custodyDebtReason(record);
-    if (!reason) return custody ? `Reason: ${custody}` : '';
+    if (!reason) return taskReasonPhrase(custody);
     const receiptVeto = record.outcome_axes?.objective?.receipt_veto;
     const cause = receiptVeto?.reason === reason && receiptVeto.detail
         ? String(receiptVeto.detail).split(/\s+/).filter(Boolean).join(' ')
         : taskReasonPhrase(reason);
-    return `Reason: ${cause}${custody ? ` (${custody})` : ''}`;
+    return `${cause}${custody ? ` (${taskReasonPhrase(custody)})` : ''}`;
 }
 
 // S3 (HQ1): the ONE shared projection of a typed owner_hurry event for the

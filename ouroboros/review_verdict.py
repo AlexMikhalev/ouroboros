@@ -34,6 +34,15 @@ def _sub():
 
 _TIER_ORDER = {OUTCOME_TIER_SOLVED: 0, OUTCOME_TIER_BEST_EFFORT: 1, OUTCOME_TIER_BLOCKED: 2}
 
+# The reviewers' JSON keeps the identifier; the note the model READS (and may
+# echo to its human) says the assessment in words — the v6.61.4 token-parroting
+# class, where a ledger token becomes owner-facing prose by being quoted back.
+TIER_WORDS = {
+    OUTCOME_TIER_SOLVED: "a verified solution",
+    OUTCOME_TIER_BEST_EFFORT: "a partial result",
+    OUTCOME_TIER_BLOCKED: "blocked, with the evidence recorded",
+}
+
 
 _CRITERION_STATUSES = frozenset({"supported", "missing", "partial", "rejected"})
 
@@ -425,7 +434,7 @@ def build_improvement_capsule(
     # the agent sees WHAT failed instead of a bare ledger label.
     header = f"[Final improvement note] Review verdict: {aggregate_signal or 'UNKNOWN'}"
     if tier:
-        header += f" (tier: {tier})"
+        header += f" — rated {TIER_WORDS.get(tier, tier)}"
     header += f" — {panel_reason(result)}."
     lines = [header]
     open_ids = [

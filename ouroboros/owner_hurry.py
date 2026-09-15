@@ -701,8 +701,8 @@ def plan_review_disclosure(decision: Dict[str, Any], forced_reason: str = "") ->
     if decision.get("status") == "cycles_exhausted" and decision.get("enforcement") == "blocking":
         return (
             f"\n\n⚠️ Blocking plan review stayed open ({outcome or 'open'}) with the review-cycle "
-            f"cap spent ({decision.get('cycles_paid')} paid cycle(s)); the task is finalized as "
-            "blocked_with_evidence — the planned work must not be treated as done."
+            f"cap spent ({decision.get('cycles_paid')} paid cycle(s)); the task ends blocked "
+            "with its evidence recorded; the planned work must not be treated as done."
         )
     if decision.get("quorum_unreachable") and decision.get("enforcement") == "blocking":
         # B2b: the agent chose the honest blocked terminal while the reviewer quorum
@@ -712,8 +712,8 @@ def plan_review_disclosure(decision: Dict[str, Any], forced_reason: str = "") ->
             f"\n\n⚠️ Blocking plan review stayed open ({outcome or 'open'}) with its reviewer "
             "quorum structurally unreachable (typed window-exhausted reviewer lanes"
             + (f"; earliest recorded reset {reset}" if reset else "")
-            + "); the task is finalized as blocked_with_evidence — the planned work must "
-            "not be treated as done."
+            + "); the task ends blocked with its evidence recorded; the planned work "
+            "must not be treated as done."
         )
     if decision.get("allow"):
         return (

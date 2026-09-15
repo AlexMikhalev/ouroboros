@@ -1106,7 +1106,7 @@ def test_project_completion_enqueues_once_for_root_and_never_for_child_or_direct
         "type": "send_message",
         "chat_id": 1,
         "task_id": "root-project",
-        "text": "Launch 🚀 › Ship release · Done\nRelease shipped.",
+        "text": "Launch 🚀 › Ship release · Done\nOpen the Project for details.",
         "role": "system",
         "system_type": "project_completion_summary",
         "delivery_id": "project-completion:root-project",

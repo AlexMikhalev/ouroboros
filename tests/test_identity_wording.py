@@ -64,14 +64,21 @@ def test_live_task_message_marker_uses_my_human_wording():
 
 
 def test_system_prompt_carries_outcome_honesty_and_capability_acquisition():
-    """v6.29.0 doctrine pins: the three-tier outcome lexicon and the capability-
-    acquisition boldness clause must stay in SYSTEM.md. v6.60.0: the FINAL ANSWER
-    marker doctrine deliberately MOVED to the per-task contract (answer_protocol) —
-    the default prompt must NOT carry it (ordinary tasks never see the marker)."""
+    """v6.29.0 doctrine pins: the outcome-honesty doctrine and the capability-
+    acquisition boldness clause must stay in SYSTEM.md. The doctrine now says
+    the three endings in WORDS: the ledger identifiers belong to the reviewers'
+    JSON contract, and a prompt that spells them is a prompt the model parrots
+    back to its human. v6.60.0: the FINAL ANSWER marker doctrine deliberately
+    MOVED to the per-task contract (answer_protocol) — the default prompt must
+    NOT carry it (ordinary tasks never see the marker)."""
     import pathlib
 
     text = (pathlib.Path(__file__).parent.parent / "prompts" / "SYSTEM.md").read_text(encoding="utf-8")
-    assert "blocked_with_evidence" in text
+    assert "### Outcome honesty" in text
+    # Whitespace-normalized: the doctrine sentence is line-wrapped in the file.
+    assert "the only real failure mode" in " ".join(text.split())
+    assert "blocked_with_evidence" not in text
+    assert "best_effort" not in text
     # Whitespace-normalized: a line-wrapped "FINAL\nANSWER" must not slip past.
     assert "FINAL ANSWER" not in " ".join(text.split())
     assert "## Capability Acquisition" in text

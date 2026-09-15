@@ -139,9 +139,7 @@ def test_project_started_row_rides_outbox_pins_main_and_dedupes_durably(tmp_path
     assert queued[0]["system_type"] == "project_started"
     assert queued[0]["role"] == "system"
     assert queued[0]["chat_id"] == 1
-    assert queued[0]["text"] == (
-        "Launch 🚀 › Ship release · Started\nWork is running in this Project."
-    )
+    assert queued[0]["text"] == "Launch 🚀 › Ship release · Started"
     assert queued[0]["progress_meta"] == {
         "project_id": "launch",
         "project_name": "Launch 🚀",

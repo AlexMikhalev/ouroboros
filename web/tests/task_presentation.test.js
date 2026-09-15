@@ -64,7 +64,10 @@ test('live task_done and replay/log task truth have phase and headline parity', 
         assert.deepEqual({ phase: replay.phase, headline: replay.headline }, expected, `${name}/replay`);
         assert.doesNotMatch(`${live.headline} ${replay.headline}`, /Issue|Notice|delegated_custody_unreconciled/);
         if (payload.reason_code) {
-            assert.match(live.body, /Reason: delegated_custody_unreconciled/);
+            // The card body says the cause in words; the raw code stays in the
+            // record half (Logs meta), which is where a machine code belongs.
+            assert.match(live.body, /Some delegated work was never reconciled\./);
+            assert.doesNotMatch(live.body, /delegated_custody_unreconciled/);
             assert.ok(replay.meta.includes('delegated_custody_unreconciled'));
         }
     }
@@ -156,7 +159,7 @@ test('failed child remains a compact local fact without owner-alarm semantics', 
     // Identity only; the chip carries `Failed` (DESIGN.md §4), the headline never does.
     assert.equal(child.headline, 'researcher');
     assert.doesNotMatch(child.body, /delegated_custody_unreconciled/);
-    assert.match(child.fullBody, /Reason: delegated_custody_unreconciled/);
+    assert.match(child.fullBody, /Reason: Some delegated work was never reconciled\./);
     assert.equal('ownerAlarm' in child, false);
     assert.equal('notification' in child, false);
     const adapter = chatSource.slice(
@@ -406,6 +409,7 @@ test('a review-caused warning names the acceptance decision on the card and in L
                 status: 'degraded',
                 acceptance_decision: {
                     status: 'finalized_unaccepted',
+                    reason: 'review_degraded',
                     rationale: 'Acceptance reviewers did not reach a valid quorum.',
                 },
             },
@@ -414,8 +418,10 @@ test('a review-caused warning names the acceptance decision on the card and in L
     const live = summarizeChatLiveEvent(evt);
     const replay = summarizeLogEvent(evt);
     assert.deepEqual({ phase: live.phase, headline: live.headline }, { phase: 'warn', headline: 'Done with warnings' });
-    assert.match(live.body, /Acceptance: finalized_unaccepted — Acceptance reviewers did not reach a valid quorum\./);
+    assert.match(live.body, /Not enough reviewer verdicts could be read to settle the answer\./);
     assert.doesNotMatch(live.body, /final_message/);
+    // The raw code lives on in the record half, never in the card body.
+    assert.doesNotMatch(live.body, /finalized_unaccepted/);
     assert.ok(replay.meta.includes('review degraded'));
     assert.ok(replay.meta.includes('acceptance finalized_unaccepted'));
 });

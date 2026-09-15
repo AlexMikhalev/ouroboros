@@ -10,18 +10,20 @@ import {
 // keeps the machine code; the card says what actually happened.
 
 test('a typed cause is stated in the owner\'s words', () => {
+    // No 'Reason:' / 'Acceptance:' prefix: a label naming an internal machine
+    // concept in front of an owner sentence is the same leak in a politer font.
     assert.equal(
         taskReasonDetail({ reason_code: 'plan_review_advisory' }),
-        'Reason: plan review never closed; the work continued under advisory enforcement',
+        'plan review never closed; the work continued under advisory enforcement',
     );
     assert.equal(
         taskReasonDetail({ reason_code: 'delivery_control_degraded' }),
-        'Reason: delivery finished in a degraded control state',
+        'delivery finished in a degraded control state',
     );
 });
 
 test('an unknown cause stays raw rather than becoming a wrong sentence', () => {
-    assert.equal(taskReasonDetail({ reason_code: 'some_future_code' }), 'Reason: some_future_code');
+    assert.equal(taskReasonDetail({ reason_code: 'some_future_code' }), 'some_future_code');
     assert.equal(taskReasonPhrase('some_future_code'), 'some_future_code');
 });
 
@@ -52,8 +54,55 @@ test('every typed cause the loop can record has a sentence', () => {
     for (const code of literals) {
         assert.notEqual(
             taskReasonPhrase(code), code,
-            `no owner-facing sentence for degraded_reason "${code}" — add one to TASK_REASON_PHRASES`,
+            `no owner-facing sentence for degraded_reason "${code}" — add one to TASK_CAUSE_PHRASES`,
         );
+    }
+});
+
+test('every acceptance reason the host can record has a sentence', () => {
+    // The second half of the same gate. Acceptance reasons are written as
+    // `"reason": "<code>"` inside the three acceptance/finalization leaves; the
+    // bypass family is a dict of literals in outcomes.py and four more arrive
+    // through named constants, so both are read explicitly.
+    const pkg = new URL('../../ouroboros/', import.meta.url);
+    const read = (name) => readFileSync(new URL(name, pkg), 'utf8');
+    const decisions = ['loop_acceptance_review.py', 'loop_acceptance.py', 'loop_forced_finalization.py']
+        .map(read).join('\n');
+    const outcomes = read('outcomes.py');
+    const acceptance = new Set([
+        ...[...decisions.matchAll(/"reason":\s*(?:\n\s*)?"([a-z_]+)"/g)].map((m) => m[1]),
+        ...[...outcomes.matchAll(/"(acceptance_bypassed_[a-z_]+)"/g)].map((m) => m[1]),
+        ...[...outcomes.matchAll(
+            /^REASON_(?:REVIEW_CYCLES_EXHAUSTED|IDENTICAL_ACCEPTANCE_REFUSED|ACCEPTANCE_REVIEW_SKIPPED_DEADLINE_RESERVE|ACCEPTANCE_SKIPPED_OWNER_HURRY) = "([a-z_]+)"$/gm,
+        )].map((m) => m[1]),
+    ]);
+    // An ACCEPTED decision renders no clause, the owner stop carries its own
+    // marker instead, and queue_inspection_failed is a `{status, reason}` probe
+    // shape rather than an acceptance reason.
+    const exempt = new Set([
+        'clean_pass', 'clean_pass_obligations_closed', 'queue_inspection_failed',
+        'acceptance_bypassed_owner_requested_finalization',
+    ]);
+    assert.ok(acceptance.size >= 20, `expected the acceptance vocabulary, saw ${acceptance.size}`);
+    for (const code of acceptance) {
+        if (exempt.has(code)) continue;
+        assert.notEqual(
+            taskReasonPhrase(code), code,
+            `no owner-facing sentence for acceptance reason "${code}" — add one to TASK_CAUSE_PHRASES`,
+        );
+    }
+});
+
+test('the host and the card carry the same cause table', () => {
+    // ONE table, two languages. The fixture pins the sentences a record can
+    // reach; this pins the table itself, so an entry added on one side only
+    // fails here instead of silently drifting.
+    const py = readFileSync(new URL('../../ouroboros/project_dialogue.py', import.meta.url), 'utf8');
+    const block = py.split('TASK_CAUSE_PHRASES = {')[1].split('\n}')[0];
+    const entries = [...block.matchAll(/^ {4}"([a-z_]+)": "((?:[^"\\]|\\.)*)",$/gm)];
+    assert.ok(entries.length >= 30, `expected the host table, saw ${entries.length}`);
+    for (const [, code, sentence] of entries) {
+        assert.equal(taskReasonPhrase(code), sentence, code);
     }
 });
 
@@ -90,6 +139,7 @@ const A4 = {
             status: 'degraded',
             acceptance_decision: {
                 status: 'finalized_unaccepted',
+                reason: 'review_degraded',
                 rationale: 'Acceptance reviewers did not reach a valid quorum.',
             },
         },
@@ -99,9 +149,12 @@ const A4 = {
 test('an unaccepted decision explains the warning in its own words', () => {
     assert.equal(
         taskReasonDetail(A4),
-        'Acceptance: finalized_unaccepted — Acceptance reviewers did not reach a valid quorum.',
+        'Not enough reviewer verdicts could be read to settle the answer.',
     );
     assert.doesNotMatch(taskReasonDetail(A4), /final_message/);
+    // The stored reviewer rationale belongs to the card body, the task result
+    // and Logs; the row states one sentence and never the machine words.
+    assert.doesNotMatch(taskReasonDetail(A4), /quorum|finalized_unaccepted/);
 });
 
 test('an accepted decision omits neutral final_message and preserves substantive reasons', () => {
@@ -113,21 +166,26 @@ test('an accepted decision omits neutral final_message and preserves substantive
         },
     };
     assert.equal(taskReasonDetail(accepted), '');
-    assert.equal(taskReasonDetail({ ...accepted, reason_code: 'custom_reason' }), 'Reason: custom_reason');
+    assert.equal(taskReasonDetail({ ...accepted, reason_code: 'custom_reason' }), 'custom_reason');
 });
 
-test('a decision without a rationale states its status alone', () => {
+test('a decision carrying no typed reason states no cause at all', () => {
+    // A status word is not a cause, and the collapsed status is already the
+    // headline; a historical record without a reason therefore says nothing.
     const record = {
         outcome_axes: { review: { acceptance_decision: { status: 'revision_requested' } } },
         status: 'completed',
     };
-    assert.equal(taskReasonDetail(record), 'Acceptance: revision_requested');
+    assert.equal(taskReasonDetail(record), '');
 });
 
 test('a decision with no reason code still reaches the acceptance branch', () => {
     // The old single early return swallowed this frame before the branch.
-    const record = { status: 'completed', review_status: { acceptance_decision: { status: 'revision_requested' } } };
-    assert.equal(taskReasonDetail(record), 'Acceptance: revision_requested');
+    const record = {
+        status: 'completed',
+        review_status: { acceptance_decision: { status: 'revision_requested', reason: 'owner_followup' } },
+    };
+    assert.equal(taskReasonDetail(record), 'A new message from you arrived, so the review was set aside for it.');
 });
 
 test('a hard failure keeps explaining itself by its execution reason', () => {
@@ -140,17 +198,28 @@ test('a hard failure keeps explaining itself by its execution reason', () => {
         ...A4, status: 'failed', reason_code: 'delegated_custody_unreconciled',
         delegated_runs_unreconciled: ['run-a1'],
     };
-    assert.equal(taskReasonDetail(failed), 'Reason: delegated_custody_unreconciled');
+    assert.equal(taskReasonDetail(failed), 'Some delegated work was never reconciled.');
 });
 
-test('a multi-line rationale is flattened into one sentence', () => {
+test('a stored rationale never reaches the row, however it is written', () => {
+    // The rationale used to be flattened into the line; it is free reviewer
+    // text up to 500 characters and belongs where the full copy lives.
     const noisy = {
         status: 'completed',
         outcome_axes: {
-            review: { acceptance_decision: { status: 'revision_requested', rationale: 'Two\n\nlines   here.' } },
+            review: {
+                acceptance_decision: {
+                    status: 'revision_requested', reason: 'evidence_refresh',
+                    rationale: 'Two\n\nlines   here.',
+                },
+            },
         },
     };
-    assert.equal(taskReasonDetail(noisy), 'Acceptance: revision_requested — Two lines here.');
+    assert.equal(
+        taskReasonDetail(noisy),
+        'The work changed after the review was frozen, so it no longer covered the answer.',
+    );
+    assert.doesNotMatch(taskReasonDetail(noisy), /lines/);
 });
 
 // The custody overlay stamps `delegated_custody_unreconciled` as the row's
@@ -167,7 +236,7 @@ test('a healed custody debt yields the current execution reason on the card', ()
         reason_code: 'delegated_custody_unreconciled',
         delegated_runs_unreconciled: [],
         outcome_axes: { execution: { status: 'degraded', reason_code: 'tool_failure' } },
-    }), 'Reason: tool_failure');
+    }), 'tool_failure');
 });
 
 test('an open custody debt is still named on the card', () => {
@@ -176,7 +245,7 @@ test('an open custody debt is still named on the card', () => {
         reason_code: 'delegated_custody_unreconciled',
         delegated_runs_unreconciled: ['run-a1'],
         outcome_axes: { execution: { status: 'ok' } },
-    }), 'Reason: delegated_custody_unreconciled');
+    }), 'Some delegated work was never reconciled.');
 });
 
 test('a real debt beside a real execution cause is one card line', () => {
@@ -185,7 +254,7 @@ test('a real debt beside a real execution cause is one card line', () => {
         reason_code: 'delegated_custody_unreconciled',
         delegated_runs_unreconciled: ['run-a1', 'run-b2'],
         outcome_axes: { execution: { status: 'failed', reason_code: 'provider_unavailable' } },
-    }), 'Reason: provider_unavailable (delegated_custody_unreconciled)');
+    }), 'provider_unavailable (Some delegated work was never reconciled.)');
 });
 
 // A LIVE task_done event carries the row's own debt list too
@@ -200,7 +269,7 @@ test('a live event carrying an open debt list names the debt through the list', 
         reason_code: 'delegated_custody_unreconciled',
         delegated_runs_unreconciled: ['run-a1'],
         outcome_axes: { execution: { status: 'ok', reason_code: 'tool_failure' } },
-    }), 'Reason: tool_failure (delegated_custody_unreconciled)');
+    }), 'tool_failure (Some delegated work was never reconciled.)');
 });
 
 test('a record carrying no debt list states nothing about the debt', () => {
@@ -208,7 +277,7 @@ test('a record carrying no debt list states nothing about the debt', () => {
         status: 'failed',
         reason_code: 'delegated_custody_unreconciled',
         outcome_axes: { execution: { status: 'failed', reason_code: 'provider_unavailable' } },
-    }), 'Reason: provider_unavailable');
+    }), 'provider_unavailable');
     assert.equal(taskReasonDetail({
         status: 'completed',
         reason_code: 'delegated_custody_unreconciled',

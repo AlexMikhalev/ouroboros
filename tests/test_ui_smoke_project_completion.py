@@ -39,7 +39,7 @@ def test_ui_project_completion_pointer_keeps_project_history_scoped(direct_serve
     task_id = "tower-root-1"
     append_jsonl(logs / "chat.jsonl", {
         "ts": "2026-08-22T10:00:00+00:00", "direction": "out", "chat_id": 1,
-        "user_id": 1, "text": f"{target_label} · Completed\nRelease shipped.",
+        "user_id": 1, "text": f"{target_label} · Completed\nOpen the Project for details.",
         "type": "project_completion_summary", "task_id": task_id,
         "project_id": project["id"], "project_name": project["name"],
         "target_label": target_label, "status": "completed",

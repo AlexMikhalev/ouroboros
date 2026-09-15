@@ -692,7 +692,6 @@ def _finish_cyber_acceptance(ctx: _TaskAcceptanceContext, result: Any) -> bool:
         "status": ACCEPTANCE_ACCEPTED if clean else ACCEPTANCE_FINALIZED_UNACCEPTED,
         "reason": "clean_pass" if clean else "author_finish", "source": "task_acceptance_review",
         "author_disposition": author, "review_pending": pending,
-        "rationale": "The author chose delivery; recorded critic outcomes and unfinished review work are unchanged.",
     })
     ctx.emit_progress("Task acceptance feedback remains advisory; Main chose delivery."
                       + (" Review is still running." if pending else ""))
@@ -735,7 +734,6 @@ def _finish_advisory_author(ctx: _TaskAcceptanceContext) -> bool:
     _loop()._set_acceptance_decision(ctx.llm_trace, {
         "status": ACCEPTANCE_FINALIZED_UNACCEPTED, "reason": "author_finish",
         "source": "task_acceptance_review", "author_disposition": author,
-        "rationale": "The author finished after independent feedback; the current subject is author-accepted, not reviewer PASS.",
         "reviewer_signal": author["reviewer_signal"],
         "reviewer_binding_hash": feedback.get("binding_hash"),
     })
