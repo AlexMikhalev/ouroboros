@@ -87,12 +87,13 @@ def _payload_ctx(tmp_path: pathlib.Path, monkeypatch):
 
 
 def _exact_payload_start(ctx, prompt: str, **params):
+    """The start's own JSON payload, read off the family's native result."""
     from ouroboros.subagent_runtime import exact_start
 
     return exact_start(ctx, prompt, {
         "snapshot": ctx._payload_subagent_snapshot,
         **params,
-    })
+    }).text
 
 
 class _StartStub:
@@ -220,7 +221,7 @@ def test_selector_argument_shapes_refuse_typed(tmp_path, monkeypatch):
         (dict(root="skill_payload", bucket="external"), "payload_selector_incomplete"),
         (dict(bucket="external", skill_name="alpha"), "payload_selector_incomplete"),
     ):
-        out = json.loads(delegate._delegate_start(ctx, "x", **kwargs))
+        out = json.loads(delegate._delegate_start(ctx, "x", **kwargs).text)
         assert out["status"] == "refused" and out["reason"] == reason, out
 
 
@@ -309,7 +310,7 @@ def test_markerless_native_delegates_as_external_and_rebinds_by_marker(
         context="test",
     )
     assert rebound is None
-    assert "payload_target_unresolved" in refusal
+    assert "payload_target_unresolved" in refusal.text
     custody._CUSTODY.clear()
 
 
