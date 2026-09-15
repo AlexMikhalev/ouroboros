@@ -548,6 +548,7 @@ review.
 
 When changing shared behavior or data flow, identify the owning authority,
 the identity and scope of its facts, and the affected producers and consumers.
+Include unchanged consumers whose inputs or assumptions the change alters.
 Preserve the promised semantics across relevant live and recovery paths at
 comparable freshness; make legitimate scope or freshness differences explicit.
 Verify preservation with falsifiable checks at real consumer boundaries, not

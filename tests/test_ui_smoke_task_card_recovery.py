@@ -140,8 +140,8 @@ def test_bound_direct_task_header_and_review_cost_survive_reopen(
             assert_running("3.50")
             screenshot("reopened")
 
-            # Deliver the ordinary terminal fact, then prove cold history keeps
-            # its completed phase after the direct activity has left the census.
+            # A lost terminal event must recover from the durable result when
+            # the direct activity leaves the census; absence alone is not Done.
             terminal = write_task_result(
                 data_dir, task_id, STATUS_COMPLETED, chat_id=1, project_id="",
                 suggested_name="Analyze greeting context", result="Context analysis completed.",
@@ -149,15 +149,16 @@ def test_bound_direct_task_header_and_review_cost_survive_reopen(
                 accounted_upper_bound_usd_with_children=3.50,
             )
             active["running"] = False
-            page.evaluate(
-                "row => window.__ouroWs.emit('log', {chat_id: row.chat_id, data: row})",
-                {**terminal, "type": "task_done", "chat_id": chat_id},
-            )
+            page.evaluate("() => window.__ouroWs.emit('projects_changed', {})")
             card = page.locator(card_selector)
             expect(card).to_have_attribute("data-finished", "1", timeout=15_000)
             expect(card.locator("[data-live-phase]")).to_be_visible()
             expect(card.locator("[data-live-phase]")).to_have_text("Done")
             expect(card.locator("[data-live-typing]")).not_to_be_visible()
+            page.evaluate(
+                "row => window.__ouroWs.emit('log', {chat_id: row.chat_id, data: row})",
+                {**terminal, "type": "task_done", "chat_id": chat_id},
+            )
             close_project()
             open_project()
             expect(card).to_have_attribute("data-finished", "1")

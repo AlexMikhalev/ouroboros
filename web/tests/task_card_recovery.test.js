@@ -22,7 +22,10 @@ const reference = (amount, final = false) => ({
 });
 
 function fixture(rows = [progress]) {
-    const data = { rows };
+    const data = { rows, detail: { task_id: taskId, status: 'running',
+        review_projection: { panels: [{ panel_id: 'accept', surface: 'task_acceptance',
+            aggregate_signal: 'PASS', actors: [] }] },
+    } };
     const calls = [];
     const snapshot = {
         supervisor_ready: true, active_chat_activities_complete: true,
@@ -35,10 +38,8 @@ function fixture(rows = [progress]) {
             return { ok: true, json: async () => ({ messages: data.rows }) };
         }
         if (String(url).startsWith('/api/tasks/')) {
-            return { ok: true, json: async () => ({ task_id: taskId, status: 'running',
-                review_projection: { panels: [{ panel_id: 'accept', surface: 'task_acceptance',
-                    aggregate_signal: 'PASS', actors: [] }] },
-            }) };
+            if (data.detailError) throw new Error('task detail unavailable');
+            return { ok: true, json: async () => data.detail };
         }
         return { ok: true, json: async () => snapshot };
     });
@@ -97,6 +98,34 @@ test('a bound direct activity restores its Project card and survives progress/hi
         assert.equal(fx.card().querySelector('[data-live-phase]').textContent, 'Done');
     } finally { fx.destroy(); }
 });
+
+for (const firstDetail of ['completed', 'running', 'unavailable']) {
+    test(`a vanished direct activity reconciles its visible card from durable detail: ${firstDetail}`, async () => {
+        const fx = fixture();
+        try {
+            await fx.replay();
+            fx.hydrate();
+            fx.send(progress);
+            fx.snapshot.active_chat_activities = [];
+            fx.data.detail.status = firstDetail === 'completed' ? 'completed' : 'running';
+            fx.data.detailError = firstDetail === 'unavailable';
+            fx.hydrate();
+            await new Promise((resolve) => setImmediate(resolve));
+            assert.ok(fx.calls.some((url) => url.startsWith('/api/tasks/')),
+                'census absence must not suppress the existing durable-result reader');
+            if (firstDetail !== 'completed') {
+                assert.equal(fx.card().dataset.finished, '0', 'absence/failure is not a terminal fact');
+                fx.data.detail.status = 'completed';
+                fx.data.detailError = false;
+                fx.hydrate();
+                await new Promise((resolve) => setImmediate(resolve));
+            }
+            assert.equal(fx.card().dataset.finished, '1');
+            assert.equal(fx.card().querySelector('[data-live-phase]').textContent, 'Done');
+            assert.equal(fx.card().querySelector('[data-live-typing]').style.display, 'none');
+        } finally { fx.destroy(); }
+    });
+}
 
 for (const channel of ['history', 'chat', 'log']) {
     test(`${channel} consumes review-reference cost without changing activity or note count`, async () => {

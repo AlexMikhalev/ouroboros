@@ -3722,7 +3722,9 @@ export function createChatInstance({
         }
         for (const taskId of globallyActiveActivityIds) missingManagedTaskIds.delete(taskId);
         for (const row of settledDirectRows) {
-            if (!REUSABLE_TASK_IDS.has(row.activityId)) recordConcludedActivity(row.activityId);
+            // Visible task cards settle from durable detail in the scan below.
+            if (!REUSABLE_TASK_IDS.has(row.activityId)
+                    && !isForegroundLiveCard(liveCardRecords.get(row.activityId))) recordConcludedActivity(row.activityId);
             if (row.clientMessageId) pendingSubmissions.delete(row.clientMessageId);
         }
         for (const taskId of departedManagedTaskIds) revokeManagedTaskCancelAuthority(taskId);
@@ -3735,10 +3737,7 @@ export function createChatInstance({
         )) {
             const observedAt = liveCardRecords.get(taskId)?.lastLiveObservedAt || 0;
             if (observedAt < snapshotBarrierMs) {
-                // The census is the queue authority: a root the page saw running
-                // live and the census now omits has no PENDING/RUNNING row for
-                // Stop to target. A card replayed from history keeps Stop until
-                // its durable read answers.
+                // Census absence revokes a live card's Stop; history cards await detail.
                 if (observedAt) revokeManagedTaskCancelAuthority(taskId);
                 observeMissingManagedTask(taskId);
             }
