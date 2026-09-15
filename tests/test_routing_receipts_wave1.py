@@ -164,9 +164,10 @@ def test_a_task_authored_steer_refused_by_a_pending_cancel_reports_the_cause(
 def test_a_delivered_task_authored_steer_is_confirmed_under_its_own_id(tmp_path, monkeypatch):
     """The capability half of the same fix: the synthetic id must confirm a
     LANDED delivery too, or every task-authored steer would invite a retry of a
-    message that already arrived."""
+    message that already arrived. A task speaking for itself is told its message
+    was WRITTEN (wave 2: it lands as a task message, never as owner text)."""
     import supervisor.queue as queue
-    from ouroboros.owner_mailbox import drain_owner_entries
+    from ouroboros.owner_mailbox import KIND_TASK_MESSAGE, drain_owner_entries
     from ouroboros.tools.control import _steer_task
 
     monkeypatch.setattr(queue, "DRIVE_ROOT", str(tmp_path))
@@ -178,10 +179,12 @@ def test_a_delivered_task_authored_steer_is_confirmed_under_its_own_id(tmp_path,
 
     out = _steer_task(ctx, "t-target", "keep the PR small")
 
-    assert out.startswith("✉️ Steering task t-target: mailbox delivery is durably confirmed")
-    assert [entry["text"] for entry in drain_owner_entries(tmp_path, "t-target")] == [
-        "keep the PR small",
-    ]
+    assert out.startswith("✉️ Message to task t-target written to its mailbox (durably confirmed")
+    assert "UNCONFIRMED" not in out
+    [entry] = drain_owner_entries(tmp_path, "t-target")
+    assert (entry["text"], entry["kind"], entry["provenance"], entry["source_task_id"]) == (
+        "keep the PR small", KIND_TASK_MESSAGE, "independent_task", "turn-1",
+    )
 
 
 # --- (c) a routing refusal is a recorded failure, not a successful call -------

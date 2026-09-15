@@ -784,6 +784,31 @@ export function summarizeLogEvent(evt) {
         });
     }
 
+    if (t === 'task_message_injected') {
+        // A message from another task landed in THIS task's transcript (its
+        // timeline groups on task_id). The sender is named by value; the
+        // provenance says how it was framed (ancestor / relayed peer /
+        // independent task / system / escalation).
+        const source = evt.source_task_id ? String(evt.source_task_id) : 'another task';
+        return view('info', `Message from task ${source}`, {
+            meta: taskMeta(
+                evt.provenance ? `provenance=${evt.provenance}` : '',
+                evt.relayed_from_task_id ? `relayed=${evt.relayed_from_task_id}` : '',
+            ),
+        });
+    }
+
+    if (t === 'task_message_routed') {
+        // The SENDER's row for a task-authored message (task_id is the author):
+        // written to the target's mailbox, or refused with the host's reason.
+        const target = evt.target_task_id ? String(evt.target_task_id) : 'task';
+        const written = String(evt.status || '') === 'written';
+        return view(written ? 'info' : 'warn', written ? `Message sent to task ${target}` : `Message to task ${target} refused`, {
+            body: written ? '' : shortText(evt.reason, 160),
+            meta: taskMeta(`target=${target}`, evt.status ? String(evt.status) : ''),
+        });
+    }
+
     if (t === 'task_metrics_event' || t === 'task_eval') {
         return view('metrics', 'Task metrics', {
             meta: taskMeta(

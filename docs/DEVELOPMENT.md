@@ -359,6 +359,28 @@ routing annotation. Derive presence from the facts the record already holds
 hides in "hide unless kind ∈ {…}" and "count unless name ∈ {…}": when the
 list is the rule, the rule is missing.
 
+### Task-authored messages are never owner text
+
+Who is speaking through a routing act is ONE fact the host mints by value
+(`control_routing._routing_issuer`): an owner turn (a direct chat turn — its
+ingress stamped `client_message_id` — or a task relaying the owner message it
+just drained) or a task speaking for itself (a pooled, Swarm, project or
+headless root). Never derive it again from a proxy — a routing contract only
+chat turns carry, an empty client id, the chat id of the event — and never give
+the model an argument for it. A task's own words are delivered as a task
+message (`KIND_TASK_MESSAGE`, provenance `independent_task`), never as
+`KIND_OWNER_TEXT`, and the provenance value lands at three seams in one change:
+the writer's closed set (`owner_mailbox.TASK_MESSAGE_PROVENANCES`), the render
+ladder (`deliver_task_message`: `[Message from independent task <id>]`, never
+the ancestor fallback) and the drain mapping (`loop_round_limits`): an
+independent task's words are context the receiving model judges, so they enter
+no owner corpus — `owner_source_sha256`, the post-drain growth check that
+supersedes a paid acceptance panel and the acceptance premises stay the
+owner's (owner 4=A). A refusal or delivery to a task issuer is typed in its
+tool result ("written", never "read") and in one `task_message_routed` Logs
+row naming author and target; no chat is told and no picker options are
+attached. Enforcement: `tests/test_task_authored_messages.py`.
+
 ### Anti-pattern: a chat id tested for truth
 
 A chat id is a VALUE, not a boolean. `HIDDEN_CHAT_ID` (0) is the hidden

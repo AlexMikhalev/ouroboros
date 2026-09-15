@@ -196,10 +196,10 @@ def handle_routing_decision(
             "message": origin_text,
             "chat_id": chat_id,
             "client_message_id": client_message_id,
-            # The option list was host-built for this exact message's lane and
-            # the owner picked the row explicitly — global root addressing is
-            # the validated intent, not a widening.
-            "allow_global_root": True,
+            # The owner clicked: an owner turn by construction. The option list
+            # was host-built for this exact message's lane, and the room veto
+            # reads that lane from the origin chat (Main sees every root).
+            "issuer": {"kind": "owner_turn"},
             "attachment_uploads": attachment_uploads,
             **provenance,
             "ts": utc_now_iso(),

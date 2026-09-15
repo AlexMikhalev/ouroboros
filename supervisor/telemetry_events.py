@@ -49,6 +49,7 @@ def _handle_task_message_injected(evt: Dict[str, Any], ctx: Any) -> None:
             "task_id": evt.get("task_id", ""),
             "source_task_id": evt.get("source_task_id", ""),
             "provenance": evt.get("provenance", ""),
+            "relayed_from_task_id": evt.get("relayed_from_task_id", ""),
         })
     except Exception:
         log.warning("Failed to log task_message_injected event", exc_info=True)

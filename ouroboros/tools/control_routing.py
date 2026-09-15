@@ -145,6 +145,40 @@ def _attach_client_surface(ctx: ToolContext, evt: Dict[str, Any]) -> None:
         evt["client_surface"] = dict(fact)
 
 
+ISSUER_OWNER_TURN = "owner_turn"
+ISSUER_TASK = "task"
+
+
+def _routing_issuer(ctx: ToolContext) -> Dict[str, Any]:
+    """WHO speaks through this routing act -- minted by value where the host knows.
+
+    An OWNER TURN is a direct chat turn (the host stamps ``client_message_id``
+    on its metadata at ingress; ``is_direct_chat`` names the lane) or a task
+    relaying the owner message it just DRAINED (``ctx.last_owner_delivery``,
+    stamped at the loop's mailbox drain).  Everything else is a TASK speaking
+    for itself -- a pooled, Swarm, project or headless root -- and its words are
+    its own.  The 14.09 incident decided this five times from proxies (a routing
+    contract a Swarm root never has, an empty client id read as "agent-issued",
+    a room veto keyed on the chat): the host now states it once, and the model
+    has no argument to claim otherwise.
+    """
+    metadata = getattr(ctx, "task_metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    delivery = getattr(ctx, "last_owner_delivery", None)
+    if (
+        bool(getattr(ctx, "is_direct_chat", False))
+        or str(metadata.get("client_message_id") or "").strip()
+        or (isinstance(delivery, dict) and delivery)
+    ):
+        return {"kind": ISSUER_OWNER_TURN}
+    task_id = str(getattr(ctx, "task_id", "") or "").strip()
+    return {
+        "kind": ISSUER_TASK,
+        "task_id": task_id,
+        "root_task_id": str(metadata.get("root_task_id") or task_id),
+    }
+
+
 def _finish_swarm_handoff(
     ctx: ToolContext,
     evt: Dict[str, Any],
@@ -598,27 +632,32 @@ def _origin_already_routed(ctx: ToolContext, client_message_id: str) -> bool:
 
 
 def _steer_task(ctx: ToolContext, task_id: str, message: str) -> str:
-    """Deliver a follow-up to a host-listed RUNNING/PENDING owner root.
+    """Deliver a message to a host-listed RUNNING/PENDING independent root.
 
-    Project rooms are limited to ``current_chat.addressable_root_tasks``; Main
-    may also choose a Project-bound root from ``main_routing_manifest.root_tasks``.
+    Who speaks decides how the message travels (``_routing_issuer``). An OWNER
+    TURN steers with owner text: the message lands as ``[Message from my
+    human]``, enters the owner corpus and supersedes a reviewed answer; the room
+    veto and the owner acknowledgement apply. A TASK speaking for itself never
+    travels as owner text: its words land as ``[Message from independent task
+    <id>]`` -- context the receiving model judges -- through the same writer
+    ``forward_to_worker`` uses, and any host-listed active independent root is
+    addressable (owner 6C), the hidden partition included.
 
     A conversation sees the running tasks as structural context and chooses
-    which one to steer. This verb transports the message to that task's owner-mailbox
-    (the running task drains it at its next safe checkpoint). LLM-first (BIBLE P5):
-    the code never decides which task a message belongs to — it only validates the
-    transport (task exists, same chat, idempotent delivery) and the supervisor
-    performs the mailbox write on the task's active drive. When unsure which task
-    (or none) fits, spawn a fresh task with ``promote_chat_to_task`` instead.
+    which one to steer. LLM-first (BIBLE P5): the code never decides which task
+    a message belongs to — it only validates the transport (task exists,
+    idempotent delivery) and the supervisor performs the mailbox write on the
+    task's active drive. When unsure which task (or none) fits, spawn a fresh
+    task with ``promote_chat_to_task`` instead.
 
-    On the turn's FIRST routing act, while it is still acting on the message
-    that started it, the host delivers that owner message's exact ingress bytes
-    instead of any paraphrase. Afterwards — once the turn has already routed
-    that message, or a later owner message has actually reached it — the message
-    given here is delivered verbatim, so relay the owner's words rather than a
-    summary of them. Delivery stays confirmable either way: a steer that belongs
-    to no owner message earns its receipt under its own id, and no owner message
-    in the chat is labelled with the agent's act.
+    On an owner turn's FIRST routing act, while it is still acting on the
+    message that started it, the host delivers that owner message's exact
+    ingress bytes instead of any paraphrase. Afterwards — once the turn has
+    already routed that message, or a later owner message has actually reached
+    it — the message given here is delivered verbatim, so relay the owner's
+    words rather than a summary of them. Delivery stays confirmable either way:
+    a steer that belongs to no owner message earns its receipt under its own
+    id, and no owner message in the chat is labelled with the agent's act.
     """
     target = str(task_id or "").strip()
     msg = str(message or "").strip()
@@ -633,6 +672,9 @@ def _steer_task(ctx: ToolContext, task_id: str, message: str) -> str:
         current_chat_id = int(getattr(ctx, "current_chat_id", None) or 0)
     except (TypeError, ValueError):
         current_chat_id = 0
+    issuer = _routing_issuer(ctx)
+    if issuer["kind"] == ISSUER_TASK:
+        return _send_task_message(ctx, issuer, target, msg, current_chat_id)
     _md = getattr(ctx, "task_metadata", None)
     _md = _md if isinstance(_md, dict) else {}
     client_message_id = str(_md.get("client_message_id") or "").strip()
@@ -687,11 +729,6 @@ def _steer_task(ctx: ToolContext, task_id: str, message: str) -> str:
     # labelled with the agent's act (``_relayed_owner_message`` relays nothing
     # under this prefix, and compaction bounds these rows by their own cap).
     client_message_id = client_message_id or agent_authored_receipt_id
-    routing_contract = (
-        _md.get("routing_contract")
-        if isinstance(_md.get("routing_contract"), dict)
-        else {}
-    )
     evt: Dict[str, Any] = {
         "type": "steer_task",
         "routing_token": routing_token,
@@ -699,10 +736,10 @@ def _steer_task(ctx: ToolContext, task_id: str, message: str) -> str:
         "message": msg,
         "chat_id": current_chat_id,
         "client_message_id": client_message_id,
-        # Main sees the global root manifest, including Project-bound roots.  The
-        # flag is derived from host metadata (not a model argument), allowing the
-        # supervisor to validate that exact documented addressability.
-        "allow_global_root": routing_contract.get("source_lane") == "main",
+        # The issuer fact by value: the supervisor keys the room veto, the
+        # owner acknowledgement and the mailbox kind on it, never on a chat id
+        # or an empty client id.
+        "issuer": issuer,
         "attachment_uploads": list(_md.get("chat_attachment_uploads") or []),
         "ts": utc_now_iso(),
     }
@@ -718,6 +755,12 @@ def _steer_task(ctx: ToolContext, task_id: str, message: str) -> str:
         if detail:
             confirmation += f"\n\n[ATTACHMENTS]\n{detail}\n[END_ATTACHMENTS]"
         return confirmation
+    return _steer_refusal_text(target, mode, receipt)
+
+
+def _steer_refusal_text(target: str, mode: str, receipt: Dict[str, Any]) -> str:
+    """The typed refusal/unconfirmed sentence for one steer receipt."""
+    status = str(receipt.get("status") or "unconfirmed")
     if status in {"rejected", "needs_manual_target"}:
         return (
             f"⚠️ STEER_REJECTED: task {target} was not steered "
@@ -730,3 +773,38 @@ def _steer_task(ctx: ToolContext, task_id: str, message: str) -> str:
         f"({mode}, {str(receipt.get('reason') or 'confirmation_timeout')}). "
         "Do not report the message as delivered."
     )
+
+
+def _send_task_message(
+    ctx: ToolContext, issuer: Dict[str, Any], target: str, msg: str, current_chat_id: int,
+) -> str:
+    """A task's own words to another host-listed root, never as owner text.
+
+    The event rides the same supervisor rail as an owner steer (the target is
+    revalidated live under the queue lock, the receipt is token-bound), keyed
+    under the act's own synthetic receipt id: a task belongs to no owner message.
+    No origin-bytes substitution -- the task is not relaying anybody -- no
+    attachments (tasks cannot attach files to peer messages), no client surface.
+    The result says WRITTEN: the target reads it at its next checkpoint.
+    """
+    from ouroboros.project_dialogue import AGENT_RECEIPT_ID_PREFIX
+
+    routing_token = uuid.uuid4().hex
+    evt: Dict[str, Any] = {
+        "type": "steer_task",
+        "routing_token": routing_token,
+        "target_task_id": target,
+        "message": msg,
+        "chat_id": current_chat_id,
+        "client_message_id": f"{AGENT_RECEIPT_ID_PREFIX}{routing_token}",
+        "issuer": dict(issuer),
+        "ts": utc_now_iso(),
+    }
+    mode, receipt = _emit_and_wait_for_routing(ctx, evt)
+    if str(receipt.get("status") or "") == "delivered":
+        return (
+            f"✉️ Message to task {target} written to its mailbox (durably confirmed, {mode}). "
+            "It reads it at its next checkpoint as a message from this task, not as owner "
+            "text. Files cannot be attached to messages between tasks."
+        )
+    return _steer_refusal_text(target, mode, receipt)
