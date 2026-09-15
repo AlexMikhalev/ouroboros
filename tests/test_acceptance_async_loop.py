@@ -290,6 +290,52 @@ def test_reauthored_answer_collects_the_stranded_panel_before_paying_again(full_
     assert project_task_acceptance_review_capacity(f.ctx, task_id=f.ctx.task_id)["claimed_cycles"] == 2
 
 
+def test_reauthored_answer_on_a_one_cycle_install_is_refused_after_its_panel_was_collected(full_loop, monkeypatch):
+    """The live incident shape (task 4525349b, OUROBOROS_REVIEW_MAX_CYCLES=1): the
+    paid panel settles while Main is still working, Main re-authors, and the
+    one-cycle cap refuses a second panel. The refusal is the product rule (owner
+    14A) and stays; what the reconcile changes is that the paid verdicts are read
+    BEFORE it — recorded as settled, present in the next evidence's dialogue
+    history — and the decision carries no prose rationale claiming a quorum
+    failure that never happened."""
+    f = full_loop
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "1")
+    reauthored = ANSWER + " Budget: $12."
+
+    def main(_llm, messages, *_a, **_kw):
+        f.model_inputs.append(copy.deepcopy(messages))
+        f.model_step += 1
+        if f.model_step == 1:
+            return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": ANSWER}, "first-review")]}, 0.0
+        if f.model_step == 2:
+            assert f.entered.wait(5)
+            f.release.set()
+            with f.condition:
+                assert f.condition.wait_for(lambda: f.settled_count >= 1, timeout=10)
+            return {"content": "", "tool_calls": [call("send_user_message", {"text": "Still writing the report."}, "status")]}, 0.0
+        if f.model_step == 3:
+            return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": reauthored}, "reauthored-review")]}, 0.0
+        assert f.model_step < 8, f.progress
+        return keep(f), 0.0
+
+    monkeypatch.setattr(loop, "call_llm_with_retry", main)
+    result, _usage, trace = f.run()
+    assert result == reauthored
+    # One paid dispatch only: the cap refused the re-authored subject.
+    assert len(f.review_sends) == 1
+    host = [r for r in trace["review_runs"] if r.get("authority") == "host_root"]
+    assert len(host) == 2
+    # The paid panel was read at $0 before the refusal, not left as pending stubs.
+    assert not acceptance_run_pending(host[0]), host[0]["actors"]
+    assert host[0]["actors"][0]["parsed"]["verdict"] == "PASS"
+    assert any("review_cycles_exhausted" in str(reason) for reason in host[1].get("degraded_reasons") or [])
+    decision = trace.get("acceptance_decision") or {}
+    assert decision.get("reason") == "review_degraded"
+    assert "rationale" not in decision
+    from ouroboros.task_results import project_task_acceptance_review_capacity
+    assert project_task_acceptance_review_capacity(f.ctx, task_id=f.ctx.task_id)["claimed_cycles"] == 1
+
+
 @pytest.mark.parametrize("pending_first", [False, True])
 @pytest.mark.parametrize("changed_requirement", [False, True])
 def test_explicit_renomination_replaces_the_held_answer_without_control_repair(
