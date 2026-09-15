@@ -492,7 +492,10 @@ block from its first call and a long turn always shows progress. Per-tool rows
 are live-only; a reload shows the block with one summary row from the recorded
 per-tool counts (`N tool calls · M errors`), which is also the only replay
 evidence of a recovered tool failure. Block presence is the same live, on
-reload and on reconnect; only the row content differs by source.
+reload and on reconnect (a turn that moved itself into a Project with
+`ensure_project_scope` is the exception: its block and answer live in the
+Project room, and Main replays only the owner message and the Started
+annotation); only the row content differs by source.
 
 The block is one component with two chromes, chosen by the host's
 `_is_direct_chat` fact (census kind, the rebuilt terminal event, history rows),
@@ -501,7 +504,8 @@ Working/Done chip, `Turn into project` unless its origin is already bound. A
 direct conversation turn renders a compact activity block: no `Task` title, no
 Working/Done chip, a small running indicator and Stop while the turn runs, the
 wait controls while a wait is open, and the tool count, cost and duration in
-the collapsed header once the turn ends. A direct turn is never offered `Turn
+the collapsed header once the turn ends (a replayed header carries the count
+and cost; duration is a live fact). A direct turn is never offered `Turn
 into project`; conversion happens only through the model's own scope tools. A
 block whose only reason to exist was open attention leaves when that attention
 closes: a wait-only block disappears when the wait resolves, and the resolved
