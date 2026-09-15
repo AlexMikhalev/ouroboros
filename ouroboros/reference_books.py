@@ -56,14 +56,27 @@ def _whole(source: MarkdownSource) -> SourceRange:
 
 
 def _preamble(source: MarkdownSource) -> SourceRange:
+    """The authored introduction: the FIRST paragraph after a source's H1.
+
+    It must open the chapter — a source whose H1 is followed straight by a
+    subsection has no introduction and is refused, which is the property that
+    keeps an overview from quoting body prose as if someone had written it for
+    that purpose. What it deliberately does NOT require is that the
+    introduction be the only paragraph before the first subsection: a chapter
+    carries its relocated section body at the heading level that body already
+    had, and most sections open with prose, so demanding a single paragraph
+    would force either a rewritten heading level or an invented sub-heading.
+    The overview says in its own words that it holds introductions, not
+    complete chapters, and carries each chapter's physical path beside them.
+    """
     first = source.headings[0] if source.headings else None
     if first is None or first.level != 1 or not first.title:
         raise ValueError(f"{source.source_path}: chapter needs a nonempty H1")
-    stop = next((h.span.start_byte for h in source.headings[1:] if h.level <= 2), len(source.raw))
-    paragraphs = [p for p in source.paragraphs if first.span.end_byte <= p.start_byte < stop]
-    if len(paragraphs) != 1 or not source.text_at(paragraphs[0]).strip():
-        raise ValueError(f"{source.source_path}: chapter needs one authored introductory paragraph before its first H2")
-    return paragraphs[0]
+    stop = next((h.span.start_byte for h in source.headings[1:]), len(source.raw))
+    intro = next((p for p in source.paragraphs if first.span.end_byte <= p.start_byte < stop), None)
+    if intro is None or not source.text_at(intro).strip():
+        raise ValueError(f"{source.source_path}: chapter needs an authored introductory paragraph under its H1")
+    return intro
 
 
 def _member_paths(entrypoint: MarkdownSource, book_id: str) -> tuple[str, ...] | None:
