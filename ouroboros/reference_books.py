@@ -22,6 +22,35 @@ BOOK_ENTRYPOINTS = {
 }
 
 
+def book_path_role(path: str) -> str:
+    """``"entrypoint"``, ``"chapter"`` or ``""`` for a repository path.
+
+    Pure path shape and no I/O, so every consumer that must treat a relocated
+    chapter exactly as it treated the monolith it came out of — canonical
+    requiredness, untruncated reads, pack duplicate suppression, the
+    new-module documentation gate — asks ONE question instead of carrying its
+    own copy of the chapter population.
+    """
+    normalized = str(path or "").replace("\\", "/").lstrip("./")
+    if normalized in set(BOOK_ENTRYPOINTS.values()):
+        return "entrypoint"
+    for book_id in BOOK_ENTRYPOINTS:
+        if normalized.startswith(f"docs/{book_id}/") and normalized.endswith(".md"):
+            return "chapter"
+    return ""
+
+
+def book_entrypoint_for(path: str) -> str:
+    """The entrypoint of the book this path belongs to, else ``""``."""
+    normalized = str(path or "").replace("\\", "/").lstrip("./")
+    role = book_path_role(normalized)
+    if role == "entrypoint":
+        return normalized
+    if role == "chapter":
+        return BOOK_ENTRYPOINTS[normalized.split("/")[1]]
+    return ""
+
+
 @dataclass(frozen=True)
 class ReferenceBook:
     book_id: str

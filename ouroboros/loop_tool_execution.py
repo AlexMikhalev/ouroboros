@@ -31,6 +31,7 @@ from ouroboros.tool_capabilities import (
 )
 from ouroboros.tool_capabilities import (
     UNTRUNCATED_REPO_READ_PATHS as _UNTRUNCATED_REPO_READ_PATHS,
+    UNTRUNCATED_REPO_READ_PREFIXES as _UNTRUNCATED_REPO_READ_PREFIXES,
 )
 from ouroboros.tool_capabilities import (
     UNTRUNCATED_TOOL_RESULTS as _UNTRUNCATED_TOOL_RESULTS,
@@ -325,7 +326,8 @@ def _path_is_cognitive_artifact(tool_name: str, tool_args: Optional[Dict[str, An
         return normalized.startswith("memory/") and "/_backup/" not in normalized
 
     if tool_name == "read_file":
-        return normalized.startswith("prompts/") or normalized in _UNTRUNCATED_REPO_READ_PATHS
+        return (normalized.startswith(_UNTRUNCATED_REPO_READ_PREFIXES)
+                or normalized in _UNTRUNCATED_REPO_READ_PATHS)
 
     return False
 

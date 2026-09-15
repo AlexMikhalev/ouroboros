@@ -206,6 +206,18 @@ UNTRUNCATED_REPO_READ_PATHS: frozenset[str] = frozenset({
     "docs/DEVELOPMENT.md",
 })
 
+# Whole DIRECTORIES whose repository reads keep the same guarantee: the runtime
+# prompts, and the two reference books' chapters. A prefix rather than a list
+# of the current chapter filenames, because a hand-maintained population is
+# exactly what goes stale when a book gains, splits or renames a chapter -- and
+# a silently capped chapter read is a partial governance source that reads like
+# a complete one. Four chapters exceed the 80,000-char `read_file` result cap.
+UNTRUNCATED_REPO_READ_PREFIXES: tuple[str, ...] = (
+    "prompts/",
+    "docs/architecture/",
+    "docs/development/",
+)
+
 # Per-tool char caps; omitted tools use DEFAULT_TOOL_RESULT_LIMIT.
 TOOL_RESULT_LIMITS: dict[str, int] = {
     "read_file": 80_000,
