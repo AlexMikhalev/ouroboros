@@ -157,7 +157,7 @@ def test_manual_target_preserves_valid_predecessor_and_rejects_unreadable_one(tm
     (result_dir / "previous.json").write_text(json.dumps({"_schema_version": 1, **predecessor}), encoding="utf-8")
     preview = server._task_result_ground_truth(predecessor)
     events = []
-    metadata = {"main_routing_manifest": {"final_results": [preview]}}
+    metadata = {"client_message_id": "owner-4", "main_routing_manifest": {"final_results": [preview]}}
 
     out = _route_to_project(
         _ctx(tmp_path, events, task_metadata=metadata),
@@ -173,7 +173,7 @@ def test_manual_target_preserves_valid_predecessor_and_rejects_unreadable_one(tm
         "kind": "task_result", "task_id": "gone", "tool": "get_task_result",
         "arguments": {"task_id": "gone", "include_authority": True},
     }
-    unreadable_metadata = {"main_routing_manifest": {"final_results": [{
+    unreadable_metadata = {"client_message_id": "owner-4", "main_routing_manifest": {"final_results": [{
         "task_id": "gone", "authority_source": unreadable_source,
     }]}}
     rejected_events = []
@@ -188,10 +188,28 @@ def test_manual_target_preserves_valid_predecessor_and_rejects_unreadable_one(tm
 
 def test_route_rejects_dirty_project_id(tmp_path):
     events = []
-    out = _route_to_project(_ctx(tmp_path, events), "Bad Name!", "msg", predecessor_task_id="")
+    metadata = {"client_message_id": "owner-3"}
+    out = _route_to_project(_ctx(tmp_path, events, task_metadata=metadata), "Bad Name!", "msg", predecessor_task_id="")
     assert "ROUTING_UNCONFIRMED" in out
     assert events[0]["routing_token"]
     assert events[0]["reason"] == "invalid_project_id"
+
+
+def test_a_task_issuer_gets_a_typed_refusal_and_no_owner_picker(tmp_path):
+    """7=A: a pooled or Swarm root routing to a missing, malformed or unnamed project gets
+    ROUTE_REJECTED in its own result; no manual-target event is emitted, so no picker or ack
+    can reach an owner surface under an empty message id (the 14.09 incident's class)."""
+    events = []
+    for target, failure in (("ghost", "target_not_found"), ("Bad Name!", "invalid_project_id"), ("", "target_unspecified")):
+        ctx = _ctx(tmp_path, events, task_id="root-1", task_metadata={
+            "root_task_id": "root-1",
+            "routing_contract": {"manual_options": [{"task_id": "task-1", "title": "Fix it"}]},
+        })
+        out = _route_to_project(ctx, target, "continue the work there", predecessor_task_id="")
+        assert out.startswith(f"⚠️ ROUTE_REJECTED ({failure})"), out
+        assert "list_projects" in out
+        assert not hasattr(ctx, "_typed_routing_action_emitted")
+    assert events == []
 
 
 def test_route_empty_target_is_the_typed_abstention_path(tmp_path):

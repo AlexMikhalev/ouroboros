@@ -541,6 +541,20 @@ def _route_to_project(
     requested_pid = str(project_id or "").strip()
     pid = sanitize_project_id(requested_pid) if requested_pid and explicit_project_id_ok(requested_pid) else ""
     proj = get_project(Path(ctx.drive_root), pid) if pid else None
+    failure = (
+        "target_unspecified" if not requested_pid
+        else "invalid_project_id" if not pid
+        else "target_not_found"
+    )
+    if not proj and _routing_issuer(ctx)["kind"] == ISSUER_TASK:
+        # A picker is an owner surface (7=A): a task speaking for itself gets
+        # the typed refusal in its own result, and no ack travels to a chat under
+        # an empty message id. `list_projects` names the ids it may route to.
+        return (
+            f"⚠️ ROUTE_REJECTED ({failure}): no route was dispatched. A task-authored route "
+            "needs an existing project id (see list_projects); the manual-target picker is "
+            "an owner surface and is not offered to a task."
+        )
     if not proj:
         # The decision actor cannot manufacture a UI payload by returning prose.
         # An empty, malformed, or stale target becomes the typed manual-target
@@ -566,11 +580,6 @@ def _route_to_project(
             ]
             ranked_ids = {id(row) for row in ranked}
             options = ranked + [row for row in options if id(row) not in ranked_ids]
-        failure = (
-            "target_unspecified" if not requested_pid
-            else "invalid_project_id" if not pid
-            else "target_not_found"
-        )
         routing_token = uuid.uuid4().hex
         manual_event: Dict[str, Any] = {
             "type": "routing_manual_target",
