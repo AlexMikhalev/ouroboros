@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { categorizeLogEvent, getLogTaskGroupId, isGroupedTaskEvent, summarizeLogEvent } from '../modules/log_events.js';
+import { categorizeLogEvent, getLogTaskGroupId, isGroupedTaskEvent, summarizeChatLiveEvent, summarizeLogEvent } from '../modules/log_events.js';
 
 test('a task message landing in a task names its sender in that task timeline', () => {
     const evt = { type: 'task_message_injected', task_id: 'receiver-1', source_task_id: 'sender-9', provenance: 'independent_task' };
@@ -34,3 +34,15 @@ test('a refused task-authored message carries the host reason and warns', () => 
     assert.equal(view.body, 'target_finished');
     assert.equal(categorizeLogEvent(evt, view), 'tasks');
 });
+
+
+test('a task message landing in a task is a visible row in the receiver\'s chat block, with its preview', () => {
+    const evt = { type: 'task_message_injected', task_id: 'receiver-1', source_task_id: 'sender-9',
+        provenance: 'independent_task', text_preview: 'the PR is ready; please review it', ts: '2026-09-15T12:00:00Z' };
+    const view = summarizeChatLiveEvent(evt);
+    assert.equal(view.visible, true);
+    assert.equal(view.headline, 'Message from task sender-9');
+    assert.equal(view.body, 'the PR is ready; please review it');
+    assert.ok(summarizeLogEvent(evt).body.includes('the PR is ready'));
+});
+

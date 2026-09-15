@@ -467,7 +467,10 @@ def test_turn_event_queue_stamps_by_value_at_the_producer():
     # The lane fact rides the same events by the same rule (a stamped
     # task_done keeps its own value; other tasks' events are untouched).
     assert captured[-1]["data"]["_is_direct_chat"] is True
+    assert "cancelable" not in captured[-1]["data"]  # not a work frame
     assert proxy.stamp({"type": "task_done", "task_id": "turn1", "_is_direct_chat": False})["_is_direct_chat"] is False
+    tool = proxy.stamp({"type": "log_event", "data": {"type": "tool_call_started", "task_id": "turn1", "tool": "read_file"}})
+    assert tool["data"]["cancelable"] is True and tool["data"]["_is_direct_chat"] is True
 
     # Another task's event and an already-addressed event are left alone.
     other = {"type": "log_event", "data": {"type": "x", "task_id": "other"}}

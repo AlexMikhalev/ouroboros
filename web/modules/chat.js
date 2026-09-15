@@ -2120,8 +2120,11 @@ export function createChatInstance({
         if (childInfo) return Boolean(changed || queued);
         const subagentChanged = updateSubagentCardFromEvent(evt, rawTs);
         // The host stamps the lane on the turn's own frames (task_done always,
-        // a direct turn's tool frames too), so chrome never waits for a census.
+        // a direct turn's tool frames too), so chrome never waits for a census;
+        // the host-attested Stop marker rides a direct turn's tool frames the
+        // way it rides its narration rows, so a tool-only turn offers Stop.
         if (typeof evt._is_direct_chat === 'boolean') noteDirectTurn(liveCardRecords.get(taskId), evt._is_direct_chat);
+        if (evt.cancelable === true) markTaskCancelable(taskId);
         if (eventType === 'task_done' && summary.terminal) {
             recordTerminalActivity(taskId);
             syncChatStatus();

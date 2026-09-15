@@ -122,6 +122,22 @@ test('a tool frame stamped with the lane fact mints a direct block before any ce
     } finally { f.close(); }
 });
 
+test('a tool-only direct turn offers Stop from its stamped tool frame, without a narration row', () => {
+    const f = fixture();
+    try {
+        f.log({ type: 'llm_round_started', model: 'm', round: 1, _is_direct_chat: true });
+        assert.equal(f.card(), null, 'a round frame is not content and carries no marker');
+        f.log({ type: 'tool_call_started', tool: 'read_file', tool_call_id: 'c1', args: { path: 'README.md' }, _is_direct_chat: true, cancelable: true });
+        assert.ok(f.card(), 'the tool row mints the block');
+        assert.ok(f.card().querySelector('[data-cancel-run]'), 'the host marker on the work frame offers Stop');
+        assert.equal(f.card().dataset.direct, '1');
+        f.census(direct());
+        assert.ok(f.card().querySelector('[data-cancel-run]'));
+        f.log({ ...final, type: 'task_done', status: 'completed', _is_direct_chat: true });
+        assert.equal(f.card()?.querySelector('[data-cancel-run]') ?? null, null, 'no Stop on a finished turn');
+    } finally { f.close(); }
+});
+
 test('a direct turn with two successful tools shows two compact rows live and the summary row after a reload', async () => {
     const f = fixture();
     try {

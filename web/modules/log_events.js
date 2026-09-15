@@ -791,6 +791,7 @@ export function summarizeLogEvent(evt) {
         // independent task / system / escalation).
         const source = evt.source_task_id ? String(evt.source_task_id) : 'another task';
         return view('info', `Message from task ${source}`, {
+            body: shortText(evt.text_preview, 200),
             meta: taskMeta(
                 evt.provenance ? `provenance=${evt.provenance}` : '',
                 evt.relayed_from_task_id ? `relayed=${evt.relayed_from_task_id}` : '',
@@ -1244,6 +1245,21 @@ export function summarizeChatLiveEvent(evt) {
 
     if (t === 'llm_round_started') {
         return chatView({ phase: 'thinking', headline: 'Thinking', dedupeKey: key(evt.round || '', evt.attempt || '') });
+    }
+
+    if (t === 'task_message_injected') {
+        // A message from another task landed in this task's transcript: a
+        // visible row in the receiver's block (owner 5=A), named by value.
+        const source = evt.source_task_id ? String(evt.source_task_id) : 'another task';
+        const preview = String(evt.text_preview || '');
+        return chatView({
+            phase: 'info',
+            headline: `Message from task ${source}`,
+            body: shortText(preview, 200),
+            fullBody: preview,
+            visible: true,
+            dedupeKey: key(source, evt.ts || ''),
+        });
     }
 
     if (t === 'tool_call_started' || (t === 'tool_call_finished' && !evt.is_error)) {

@@ -202,6 +202,13 @@ class TurnEventQueue:
                 # the chat block never wears managed chrome (a Task title, a
                 # conversion control) in the window before the census lists it.
                 data.setdefault("_is_direct_chat", True)
+                # The host-attested Stop marker rides the turn's WORK frames as
+                # it rides its narration rows (events_chat_delivery stamps those
+                # through the same registry): a turn that only calls tools
+                # offers Stop on the block its rows already justify, and a turn
+                # that does neither keeps no block to hang a Stop on.
+                if data.get("type") in ("tool_call_started", "tool_call_finished"):
+                    data.setdefault("cancelable", True)
         return item
 
     def put(self, item: Any, *args: Any, **kwargs: Any) -> Any:

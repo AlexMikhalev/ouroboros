@@ -329,6 +329,10 @@
  * @property {string=} task_group_id
  * @property {string=} task_event
  * @property {string=} status
+ * @property {boolean=} _is_direct_chat
+ *   The lane fact of a direct conversation turn, stamped by the host on the
+ *   turn's own progress/tool frames and on every task_done; the chat block
+ *   reads it before any census lists the turn.
  * @property {boolean=} cancelable
  *   v6.82 (P5): host-attested — this frame's task is a supervisor-queue task that
  *   POST /api/tasks/{id}/cancel can force-cancel: a lineage-resolved pooled root or

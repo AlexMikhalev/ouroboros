@@ -186,7 +186,8 @@ def _handle_send_message(evt: Dict[str, Any], ctx: Any) -> None:
         if is_progress and evt.get("_is_direct_chat") is True:
             # Stamped by value on the turn's own queue (TurnEventQueue); the live
             # frame is built from progress_meta, so the fact rides along.
-            progress_meta = {**(progress_meta or {}), "_is_direct_chat": True}
+            progress_meta = dict(progress_meta or {})
+            progress_meta["_is_direct_chat"] = True
         _running = getattr(ctx, "RUNNING", None)
         task_row: Dict[str, Any] = {}
         if task_id and isinstance(_running, dict):

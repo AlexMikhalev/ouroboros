@@ -357,6 +357,9 @@ def deliver_task_message(
                 "type": "task_message_injected", "task_id": task_id,
                 "source_task_id": source, "provenance": provenance,
                 "relayed_from_task_id": relayed,
+                # A bounded preview for the receiver's visible timeline row
+                # (owner 5=A); the full text is in the receiver's transcript.
+                "text_preview": str(entry.get("text") or "")[:200],
             })
         except Exception:
             pass
