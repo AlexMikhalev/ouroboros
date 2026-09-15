@@ -917,7 +917,6 @@ def _apply_task_acceptance_result(
             "status": ACCEPTANCE_FINALIZED_UNACCEPTED,
             "reason": "review_degraded",
             "source": "task_acceptance_review",
-            "collected_rounds": acceptance_dialogue_history(ctx.llm_trace, limit=1),
             "degraded_reasons": list(getattr(result, "degraded_reasons", []) or []),
             "open_obligations": [str(item.get("id")) for item in open_obligations],
         })
