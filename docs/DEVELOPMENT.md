@@ -211,6 +211,17 @@ reads it. A wrapper over an inner producer (`view_image` over the local image
 loader, the publication transaction over the GitHub transport) carries the inner
 failure and its safe cause forward instead of a stage-only word.
 
+Inside the external-executor family (`delegate_start`, `delegate_wait`,
+`delegate_cancel`, `delegate_answer`) the result IS the `ToolResult`: one refusal
+author (`delegate_shared._fail`) writes `ok: false` plus `host_code` beside the
+domain payload, the producers, decorators and host consumers (bootstrap, recovery,
+the unknown-provider hold, the pending-wake replay) pass that value around, and the
+four registered entries publish it once, after every decoration, immediately before
+returning its text. Publishing earlier is silently discarded: the registry accepts a
+published result only when its text IS the string the handler returned. The
+acknowledgement of a supervising wake is keyed on the `supervision_wake_id` that
+result publishes, not on the tool's name.
+
 Enforcement: the prompt-edit discipline is scored by CHECKLISTS item 13(b)
 (a prompt edit never restates a tool schema and is never an incident patch);
 the recoverable-failure boundary has no automated surface — review-only; the
