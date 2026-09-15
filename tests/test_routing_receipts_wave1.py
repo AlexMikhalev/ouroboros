@@ -13,6 +13,9 @@ sentence, and each is pinned here against the PRODUCER's own output:
   nothing counted as a SUCCESSFUL tool call in the outcome classifier;
 * an admitted promote named the project it ASKED for rather than the one
   admission put the task in.
+
+Plus the sibling projection (#902): after an ADOPTING conversion the message's
+other live cards still offered a second "turn into project".
 """
 
 from __future__ import annotations
@@ -361,3 +364,104 @@ def test_an_unconfirmed_promote_names_what_was_requested_as_a_request(tmp_path, 
     assert out.startswith("⚠️ PROMOTE_UNCONFIRMED")
     assert "the requested destination was new project 'Dinosaurs'" in out
     assert "the effective one is unknown" in out
+
+
+# --- (e) one owner message keeps one convertible unit (#902) ------------------
+
+_OWNER_TEXT = "turn the seven skills into a project"
+
+
+def _origin_ref(client_message_id="cm-1", chat_id=1):
+    """An ingress-shaped owner-message ref; the binding validates its integrity."""
+    from ouroboros.project_dialogue import build_owner_message_ref
+
+    return build_owner_message_ref(
+        chat_id=chat_id, client_message_id=client_message_id,
+        ts="2026-09-15T00:00:00+00:00", text=_OWNER_TEXT,
+    )
+
+
+def _request(tmp_path):
+    return types.SimpleNamespace(
+        app=types.SimpleNamespace(state=types.SimpleNamespace(drive_root=tmp_path)),
+    )
+
+
+def test_a_live_task_whose_owner_message_has_a_project_offers_no_second_conversion(
+    tmp_path, monkeypatch,
+):
+    """An ADOPTING conversion (#900) binds only the clicked card. The sibling task
+    of the SAME owner message stayed task-unbound, so the client gate — which is
+    task-keyed — kept offering "Turn into project" for work that already has one."""
+    import supervisor.workers as workers
+    from ouroboros.gateway.state import _task_bindings_safe
+    from ouroboros.projects_registry import bind_task_to_project, create_project
+
+    project = create_project(tmp_path, "dinosaurs", name="Dinosaurs")
+    bind_task_to_project(
+        tmp_path, "clicked-root", "dinosaurs", project["chat_id"],
+        origin={"ref": _origin_ref(), "text": _OWNER_TEXT},
+    )
+    monkeypatch.setattr(workers, "PENDING", [
+        {"id": "sibling-root", "origin_message_ref": _origin_ref()},
+        {"id": "other-work", "origin_message_ref": _origin_ref("cm-OTHER")},
+        {"id": "child", "delegation_role": "subagent", "origin_message_ref": _origin_ref()},
+    ])
+    monkeypatch.setattr(workers, "RUNNING", {})
+
+    bindings = _task_bindings_safe(_request(tmp_path))
+
+    assert bindings["clicked-root"] == {
+        "project_id": "dinosaurs", "chat_id": project["chat_id"],
+    }
+    assert bindings["sibling-root"] == {
+        "project_id": "dinosaurs", "chat_id": project["chat_id"], "origin_bound": True,
+    }
+    # A different message's work keeps its own convert button, and a delegated
+    # child is never bound itself — it inherits its root's project by lineage.
+    assert "other-work" not in bindings and "child" not in bindings
+
+
+def test_an_origin_bound_card_is_not_moved_out_of_the_chat_it_runs_in(tmp_path, monkeypatch):
+    """A DURABLE binding re-homes a converted card; an origin-bound row is a gate
+    fact only. Moving the live card into the project room would strand it from its
+    own chat rows, which no conversion ever wrote."""
+    import supervisor.queue as queue_mod
+    from ouroboros.gateway.state import _chat_activities_snapshot_safe
+
+    monkeypatch.setattr(queue_mod, "PENDING", [{
+        "id": "sibling-root", "root_task_id": "sibling-root",
+        "delegation_role": "root", "chat_id": 1,
+    }])
+    monkeypatch.setattr(queue_mod, "RUNNING", {})
+    bindings = {
+        "sibling-root": {"project_id": "dinosaurs", "chat_id": 77, "origin_bound": True},
+    }
+
+    rows = _chat_activities_snapshot_safe(tmp_path, bindings, direct_turns=[])
+
+    [row] = [entry for entry in rows if entry["activity_id"] == "sibling-root"]
+    assert (row["chat_id"], row["project_id"]) == (1, "")
+
+
+def test_an_unreadable_live_queue_still_answers_the_durable_bindings(tmp_path, monkeypatch):
+    """The enrichment fails OPEN: its residual is the stray button it was added to
+    remove, never a wrong or missing durable binding."""
+    import ouroboros.projects_registry as registry
+    from ouroboros.gateway.state import _task_bindings_safe
+    from ouroboros.projects_registry import bind_task_to_project, create_project
+
+    project = create_project(tmp_path, "dinosaurs", name="Dinosaurs")
+    bind_task_to_project(
+        tmp_path, "clicked-root", "dinosaurs", project["chat_id"],
+        origin={"ref": _origin_ref(), "text": _OWNER_TEXT},
+    )
+
+    def _boom():
+        raise OSError("supervisor unreadable")
+
+    monkeypatch.setattr(registry, "live_origin_lanes", _boom)
+
+    assert _task_bindings_safe(_request(tmp_path)) == {
+        "clicked-root": {"project_id": "dinosaurs", "chat_id": project["chat_id"]},
+    }

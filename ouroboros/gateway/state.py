@@ -343,6 +343,12 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
 
         def _activity(task_id: str, row: Dict[str, Any], phase: str, started_at: float) -> Dict[str, Any]:
             binding = bindings.get(task_id) if isinstance(bindings.get(task_id), dict) else {}
+            if binding.get("origin_bound"):
+                # A DURABLE binding re-homes a converted card; an origin-bound one
+                # is a gate fact only (#902) — this task was never bound, and its
+                # chat rows are still where it was started, so moving its live card
+                # into the project room would strand the card from its own history.
+                binding = {}
             return {
                 "activity_id": task_id,
                 "chat_id": int(binding.get("chat_id") or row.get("chat_id") or 0),
@@ -535,18 +541,49 @@ def _task_bindings_safe(request: Request, *, availability=None) -> dict:
     project_id for lease and memory without ever being bound (that stays the
     owner-facing convert/promote act), so it is absent here BY DESIGN. It needs
     no button gate either — such a run is addressed to its project thread at
-    admission, so it never mints a card in Main. Never raises."""
+    admission, so it never mints a card in Main. Never raises.
+
+    ORIGIN-bound tasks are included too (#902). One owner message spawns several
+    task ids, and an ADOPTING conversion (#900) binds only the card that was
+    clicked: the message's other live cards stayed task-unbound and went on
+    offering "Turn into project" for work that already has one. The project an
+    origin already has is resolved by ``project_id_for_origin`` — the one owner of
+    that fact, including its legacy several-projects-per-origin tie-break — over
+    the SAME live lanes the sibling claim walks; the room id comes from the
+    binding that names the chosen project, so no second source can disagree.
+    Such a row carries ``origin_bound``: it closes the convert gate and points at
+    the project, and deliberately does NOT re-home the task's live card, whose
+    chat rows are still in the chat the task was started from."""
     try:
         from ouroboros.projects_registry import all_task_project_bindings
 
-        return {
+        drive_root = request_drive_root(request)
+        bindings = {
             str(k): {"project_id": str(v.get("project_id") or ""), "chat_id": int(v.get("chat_id") or 0)}
-            for k, v in (all_task_project_bindings(request_drive_root(request), strict=True) or {}).items()
+            for k, v in (all_task_project_bindings(drive_root, strict=True) or {}).items()
         }
     except Exception:
         if availability is not None:
             availability["complete"] = False
         return {}
+    try:
+        from ouroboros.projects_registry import live_origin_lanes, project_id_for_origin
+
+        rooms = {row["project_id"]: row["chat_id"] for row in bindings.values()}
+        for task_id, origin_ref in live_origin_lanes():
+            if task_id in bindings:
+                continue
+            project_id = str(project_id_for_origin(drive_root, origin_ref) or "")
+            room = rooms.get(project_id)
+            if room:
+                bindings[task_id] = {
+                    "project_id": project_id, "chat_id": room, "origin_bound": True,
+                }
+    except Exception:
+        # Fail OPEN on the enrichment only: the durable task-keyed answer above is
+        # complete on its own, and the residual is the stray button, not a wrong one.
+        log.debug("origin-bound task projection unavailable", exc_info=True)
+    return bindings
 
 
 def _project_chat_ids_safe(request: Request) -> list:
