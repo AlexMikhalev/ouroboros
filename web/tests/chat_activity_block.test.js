@@ -125,7 +125,7 @@ test('a direct turn with two successful tools shows two compact rows live and th
         const started = summarizeChatLiveEvent({ type: 'tool_call_started', task_id: TASK, tool: 'read_file', tool_call_id: 'c1', args: { path: 'README.md' } });
         const finished = summarizeChatLiveEvent({ type: 'tool_call_finished', task_id: TASK, tool: 'read_file', tool_call_id: 'c1', args: { path: 'README.md' }, duration_sec: 0.3 });
         assert.equal(started.dedupeKey, finished.dedupeKey);
-        assert.deepEqual([started.phase, started.visible, finished.phase, finished.headline], ['start', true, 'done', 'read_file · README.md · ✓ 0.3s']);
+        assert.deepEqual([started.phase, started.visible, finished.phase, finished.headline], ['calling', true, 'ok', 'read_file · README.md · ✓ 0.3s']);
         f.emit('chat', { ...final, tool_calls: 2 });
         assert.equal(f.card().dataset.finished, '1');
         assert.match(f.meta(), /2 tool calls/);

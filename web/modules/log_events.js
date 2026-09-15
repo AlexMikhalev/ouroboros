@@ -1246,8 +1246,11 @@ export function summarizeChatLiveEvent(evt) {
         // `✓ duration` when it finishes — content the block can stand on.
         const target = describeText(toolCallTarget(evt.args), 60);
         const finished = t === 'tool_call_finished';
+        // `done` is the TASK's terminal phase (`isTerminalTaskPhase`): a row that
+        // carried it marked a still-running card finished after its first
+        // successful call. A finished CALL is `ok`, a running one `calling`.
         return chatView({
-            phase: finished ? 'done' : 'start',
+            phase: finished ? 'ok' : 'calling',
             headline: [evt.tool || 'tool', target.preview, finished ? `✓ ${formatLogDuration(evt.duration_sec)}`.trim() : '']
                 .filter(Boolean).join(' · '),
             fullBody: compactJson(evt.args, 260),
