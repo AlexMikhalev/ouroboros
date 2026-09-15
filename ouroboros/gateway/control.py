@@ -13,6 +13,7 @@ from starlette.responses import JSONResponse
 from ouroboros import get_version
 from ouroboros.gateway._helpers import json_error, json_exception, request_drive_root, request_json_or, request_repo_dir
 from ouroboros.gateway.ws import broadcast_ws_sync
+from ouroboros.gateway import update_progress
 from ouroboros.outcomes import public_task_result
 from ouroboros.utils import utc_now_iso
 
@@ -93,6 +94,7 @@ def _managed_update_payload(*, fetch: bool, include_tags: bool) -> dict[str, Any
         "latest_version": latest_version,
         "official_tags": official_tags,
         "update_tx": update_tx,
+        "update_progress": update_progress.snapshot(),
         "letter": letter,
         **status,
     }
@@ -336,6 +338,9 @@ async def api_update_check(_request: Request) -> JSONResponse:
             fetch=True,
             include_tags=True,
         )
+        if payload.get("check_ok") is True:
+            update_progress.acknowledge_failure()
+            payload["update_progress"] = update_progress.snapshot()
         return JSONResponse(payload)
     except Exception as exc:
         return json_exception(exc)
@@ -401,6 +406,7 @@ def _quiesce_repo_writers(reason: str) -> list[str]:
     )
 
     close_repo_writer_admission(f"managed_update:{reason}")
+    update_progress.advance("draining_writers")
     blocked = drain_repo_writers()
     if blocked:
         open_repo_writer_admission()
@@ -428,6 +434,7 @@ def _quiesce_repo_writers(reason: str) -> list[str]:
             open_repo_writer_admission()
             log.warning("Managed update owner-wait handoff preparation failed", exc_info=True)
             return [f"owner_wait_handoff:{type(exc).__name__}: {exc}"]
+    update_progress.advance("stopping_workers")
     survivors = kill_workers_for_update(
         result_reason="Task interrupted by an owner-requested managed update.",
         terminal_status="interrupted",
@@ -438,6 +445,7 @@ def _quiesce_repo_writers(reason: str) -> list[str]:
     try:
         from ouroboros.tools.services import kill_all_services
 
+        update_progress.advance("stopping_services")
         stopped = kill_all_services(DRIVE_ROOT, wait=True, include_keep_alive=True)
     except Exception as exc:
         return [f"services:{type(exc).__name__}: {exc}"]
@@ -476,6 +484,7 @@ def _fence_failure(blockers: list[str], stash_note: str = "") -> JSONResponse:
 def _rollback_fenced_update(reason: str, error: str, **extra: Any) -> JSONResponse:
     from supervisor.update_merge import mark_update_tx_gate_blocked, rollback_managed_update
 
+    update_progress.advance("rolling_back")
     ok, message = rollback_managed_update(reason)
     if ok:
         _respawn_workers_after_failed_update()
@@ -521,6 +530,7 @@ def _restart_response(request: Request, *, strategy: str, plan: dict) -> JSONRes
                 "merge_plan": plan,
             }
         )
+    update_progress.advance("restart_requested")
     return JSONResponse(
         {"status": "ok", "restarting": True, "strategy": strategy, "merge_plan": plan}
     )
@@ -869,6 +879,7 @@ def _start_assisted_merge_fenced(plan: dict, tx: dict) -> JSONResponse:
             status_code=409,
         )
     write_update_tx(tx)
+    update_progress.advance("applying")
     ok, msg, m0_tree = materialize_assisted_merge_live(branch, local_snapshot, target_sha, base_sha)
     if not ok:
         return _rollback_fenced_update(
@@ -946,11 +957,13 @@ def _apply_clean_merge_fenced(request: Request, plan: dict, tx: dict) -> JSONRes
         "rollback_attempted": False,
     })
     write_update_tx(tx)
+    update_progress.advance("applying")
     ok, msg = apply_managed_merge_update(branch, merge_commit)
     if not ok:
         return _rollback_fenced_update(
             "merge_apply_failed", f"merge apply failed: {msg}"
         )
+    update_progress.advance("checking")
     smoke = update_restart_smoke()
     if not smoke.get("ok"):
         return _rollback_fenced_update(
@@ -963,6 +976,7 @@ def _apply_clean_merge_fenced(request: Request, plan: dict, tx: dict) -> JSONRes
     return _restart_response(request, strategy="auto_merge", plan=plan)
 
 
+@update_progress.observe_result
 def _apply_smart_update_fenced(
     request: Request,
     *,
@@ -995,6 +1009,7 @@ def _apply_smart_update_fenced(
     try:
         if active_update_tx():
             return JSONResponse({"error": "a managed update is already in progress"}, status_code=409)
+        update_progress.begin()
         blockers = _quiesce_repo_writers("smart")
         if blockers:
             return _fence_failure(blockers)
@@ -1004,6 +1019,7 @@ def _apply_smart_update_fenced(
         # will actually run on.
         from supervisor.git_ops import BRANCH_DEV as _branch_dev
 
+        update_progress.advance("preparing")
         tx, stash_failure = _stash_local_work_fenced(
             branch=_branch_dev,
             base_sha=expected_base_sha,
@@ -1079,6 +1095,7 @@ async def _apply_smart_update(
     )
 
 
+@update_progress.observe_result
 def _apply_replace_recovery_fenced(
     request: Request,
     *,
@@ -1118,9 +1135,11 @@ def _apply_replace_recovery_fenced(
     try:
         if active_update_tx():
             return JSONResponse({"error": "a managed update is already in progress"}, status_code=409)
+        update_progress.begin()
         blockers = _quiesce_repo_writers("replace_recovery")
         if blockers:
             return _fence_failure(blockers)
+        update_progress.advance("preparing")
         plan2 = plan_managed_update_merge(fetch=False, build=False)
         if (
             str(plan2.get("kind") or "") not in (_KNOWN_UPDATE_PLAN_KINDS | {"current"})
@@ -1158,6 +1177,7 @@ def _apply_replace_recovery_fenced(
         write_update_tx(tx)
         _write_update_intent(dict(payload["update_intent"]))
         try:
+            update_progress.advance("applying")
             checkout_ok, checkout_msg = checkout_and_reset(
                 BRANCH_DEV,
                 reason="ui_update_apply",
@@ -1173,6 +1193,7 @@ def _apply_replace_recovery_fenced(
             )
         tx["phase"] = "pending_boot_smoke"
         write_update_tx(tx)
+        update_progress.advance("checking")
         smoke = update_restart_smoke()
         if not smoke.get("ok"):
             return _rollback_fenced_update(

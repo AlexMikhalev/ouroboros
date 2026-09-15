@@ -300,3 +300,25 @@ one was. No byte-equality promise is made for the current tree.
 | File | Heading | Disposition | Retained owner | What changed |
 |---|---|---|---|---|
 | `tests/test_v652_scratch_and_masking.py` | (test docstring) | reference re-pointed | docs/development/06-rules-by-change-class.md § "Loop / State-Machine Changes" | line-number reference replaced by the heading |
+
+### Ported upstream edits (b6a7702b0)
+
+Not part of the split or the subtraction: this records ordinary target drift.
+Merging `managed/ouroboros` at `b6a7702b0` brought ten hunks that upstream wrote
+into the two monoliths, which are entrypoints here. The entrypoints were kept
+byte-for-byte and each hunk was applied once, at the chapter that owns the
+section its surrounding text belongs to. None of the ten landed on a sentence
+the subtraction had merged, so no hunk had to choose between two copies.
+
+| Upstream hunk | Destination chapter | Heading |
+|---|---|---|
+| `review_owner_custody.py` module-tree row: owner-death batching, one off-lock event read, locked reconcile | `docs/architecture/01-high-level-architecture.md` | High-Level Architecture (module tree, `ouroboros/`) |
+| new `ouroboros/gateway/update_progress.py` module-tree row | `docs/architecture/01-high-level-architecture.md` | High-Level Architecture (module tree, `ouroboros/gateway/`) |
+| Updates page: the executor's process-local stage observations, `update_progress_changed` invalidation, lock-free passive Git reads | `docs/architecture/03-web-ui-pages-and-buttons.md` | Dashboard |
+| outbound envelope list gains `update_progress_changed` and its non-authority sentence | `docs/architecture/04-server-api-endpoints.md` | WebSocket protocol |
+| new paragraph: the startup seal audit's bounded manifest set and shared archive-ID observation | `docs/architecture/06-agent-core.md` | Usage ledger substrate vs. accounting policy |
+| paid-attempt locked write: the confirmed-dead PID batch, the empty-custody skip, one event snapshot then a locked reread | `docs/architecture/06-agent-core.md` | Review stack |
+| Managed update ABI row gains `update_progress` and `update_progress_changed` | `docs/architecture/11-frozen-contracts-v1.md` | 11.1 What is frozen |
+| new subsection "Shared behavior and data-flow changes" with its review-only enforcement | `docs/development/03-module-size-and-complexity.md` | Shared behavior and data-flow changes |
+| projection-over-replay first bullet rewritten as whole-operation growth reasoning | `docs/development/03-module-size-and-complexity.md` | Invariant: Projection over replay (hot readers of growing stores) |
+| item-24 trigger wording: data readers, startup/shutdown and other batch operations | `docs/development/03-module-size-and-complexity.md` | Invariant: Projection over replay (hot readers of growing stores) |

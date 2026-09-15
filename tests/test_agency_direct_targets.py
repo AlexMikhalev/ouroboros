@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import pathlib
 import shlex
+import shutil
 import sys
 import tarfile
 
@@ -58,6 +59,11 @@ def test_light_direct_target_matches_resource_authority(resources, monkeypatch, 
         "rm": ["rm", str(target)], "sort": ["sort", "-o", str(target), str(source)],
         "redirect": ["sh", "-c", f"printf x > {shlex.quote(str(target))}"],
     }
+    if utility == "sort":
+        # Windows searches System32 before PATH for a bare executable name.
+        executable = shutil.which("sort")
+        assert executable is not None
+        commands[utility][0] = executable
     result = registry.execute_result("run_command", {"cmd": commands[utility], "cwd": str(workspace),
         "outputs": [str(target)] if utility != "rm" else []})
     if destination == "desktop":

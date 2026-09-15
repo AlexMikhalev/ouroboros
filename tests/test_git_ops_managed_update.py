@@ -41,7 +41,7 @@ def test_compute_managed_update_status_passive_does_not_ensure_remote(monkeypatc
             return 0, "ouroboros", ""
         if cmd == ["git", "rev-parse", "HEAD"]:
             return 0, "abc123", ""
-        if cmd == ["git", "status", "--porcelain"]:
+        if cmd == ["git", "--no-optional-locks", "status", "--porcelain"]:
             return 0, "", ""
         raise AssertionError(cmd)
 

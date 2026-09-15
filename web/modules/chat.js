@@ -1219,7 +1219,10 @@ export function createChatInstance({
             const anchored = anchor && markReviewAnchor(record, true);
             ensureLiveCardVisible(record);
             hydrateCardReviews(owner, reference.stateRevision);
-            return Boolean((!wasVisible && Boolean(record.root?.isConnected)) || anchored);
+            // Task money follows its carrier, not the review owner.
+            const costChanged = renderLiveCardMeta(liveCardRecords.get(taskKey(row.task_id)),
+                taskCostProjection(row, row.ts || row.timestamp || ''));
+            return Boolean((!wasVisible && Boolean(record.root?.isConnected)) || anchored || costChanged);
         });
     }
 
@@ -1626,13 +1629,9 @@ export function createChatInstance({
             return changed;
         }
         if (record.finished && !isTerminalTaskPhase(nextPhase, summary.terminal)) {
-            if (summary.costProjection || summary.modelExecution) {
-                if (summary.costProjection) record.costMeta = mergeStickyCostMeta(record.costMeta, summary.costProjection);
-                if (summary.modelExecution) record.modelExecution = summary.modelExecution;
-                renderLiveCardMeta(record);
-                return liveCardProjectionChanged(before, record);
-            }
-            return false;
+            if (summary.modelExecution) record.modelExecution = summary.modelExecution;
+            renderLiveCardMeta(record, summary.costProjection);
+            return liveCardProjectionChanged(before, record);
         }
         if (summary.terminal || (!_historyReplayActive && !_syncPass1Active
                 && ['working', 'thinking'].includes(summary.phase))) {
@@ -1716,9 +1715,6 @@ export function createChatInstance({
         updateLiveCardCount(record);
         // Cost does not move the activity clock.
         if (ts && (summary.human || activityCandidate)) record.latestActivityTs = ts;
-        if (summary.costProjection) {
-            record.costMeta = mergeStickyCostMeta(record.costMeta, summary.costProjection);
-        }
         if (summary.executorChip
                 && !keepStickyExecutorChip(record.executorChip, summary.executorChip)) {
             record.executorChip = summary.executorChip;
@@ -1727,7 +1723,7 @@ export function createChatInstance({
         if (Number.isInteger(summary.toolCalls)) record.toolCalls = summary.toolCalls;
         record._lastFrameMeta = Array.isArray(summary.meta) ? summary.meta : [];
         if (rawTs) record.latestSourceTs = rawTs;
-        renderLiveCardMeta(record);
+        renderLiveCardMeta(record, summary.costProjection);
         const lastItem = record.items[record.items.length - 1];
         if (timelineUpdate === 'render') {
             timelineChanged = renderLiveCardTimeline(record);
@@ -1741,9 +1737,8 @@ export function createChatInstance({
         ensureLiveCardVisible(record, { suppressDomInsert });
         hideTypingIndicatorOnly();
         const drivesComposerStatus = !isBackgroundTaskId(nextGroupId);
-        // P5: a finished card must not keep offering "Cancel run". A log-channel
-        // task_done terminates the card HERE without passing finishLiveCard, so
-        // the cancelable marker must be dropped on this path too (P3 growth cap).
+        // A log-channel task_done settles here without finishLiveCard: remove
+        // its Cancel run action and retained cancelable marker.
         if (record.finished) {
             settleLiveCard(record, summary.phase || 'done', wasFinished);
             if (drivesComposerStatus) syncChatStatus();
@@ -1837,7 +1832,8 @@ export function createChatInstance({
     // Late progress must not revive a terminal child.
     const subagentTerminalChildren = new Set();
 
-    function renderLiveCardMeta(record) {
+    function renderLiveCardMeta(record, costProjection = null) {
+        if (record && costProjection) record.costMeta = mergeStickyCostMeta(record.costMeta, costProjection);
         return renderCardMeta(record, { agentModel: record?.isSubagent
             ? subagentChildParents.get(record.groupId)?.model : record?.agentModel });
     }
@@ -3535,7 +3531,9 @@ export function createChatInstance({
         }
         for (const taskId of globallyActiveActivityIds) missingManagedTaskIds.delete(taskId);
         for (const row of settledDirectRows) {
-            if (!REUSABLE_TASK_IDS.has(row.activityId)) recordConcludedActivity(row.activityId);
+            // Visible task cards settle from durable detail in the scan below.
+            if (!REUSABLE_TASK_IDS.has(row.activityId)
+                    && !isForegroundLiveCard(liveCardRecords.get(row.activityId))) recordConcludedActivity(row.activityId);
             if (row.clientMessageId) pendingSubmissions.delete(row.clientMessageId);
         }
         for (const taskId of departedManagedTaskIds) revokeManagedTaskCancelAuthority(taskId);
@@ -3548,10 +3546,7 @@ export function createChatInstance({
         )) {
             const observedAt = liveCardRecords.get(taskId)?.lastLiveObservedAt || 0;
             if (observedAt < snapshotBarrierMs) {
-                // The census is the queue authority: a root the page saw running
-                // live and the census now omits has no PENDING/RUNNING row for
-                // Stop to target. A card replayed from history keeps Stop until
-                // its durable read answers.
+                // Census absence revokes a live card's Stop; history cards await detail.
                 if (observedAt) revokeManagedTaskCancelAuthority(taskId);
                 observeMissingManagedTask(taskId);
             }
