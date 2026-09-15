@@ -102,9 +102,12 @@ export function updateVerdict(data = {}, phase = '') {
 
     const warnings = extraWarnings(data);
     const base = { chips, warnings, checkedAgo };
-    const recovery = data.update_tx?.active && ['corrupt', 'gate_blocked', 'marker_cleanup_retry'].includes(data.update_tx.phase);
+    const recovery = data.update_tx?.active && (
+        ['corrupt', 'gate_blocked', 'marker_cleanup_retry'].includes(data.update_tx.phase)
+        || (!data.update_progress?.active && data.update_progress?.result === 'failed')
+    );
     if (recovery) phase = ''; // Durable recovery always outranks an older progress observation.
-    if (!recovery && phase !== 'restarting') {
+    if (!recovery && !['restarting', 'restart_needed', 'restart_required'].includes(phase)) {
         const progress = progressVerdict(data, base);
         if (progress) return progress;
     }
@@ -393,7 +396,7 @@ export function bindUpdateRefreshEvents({ ws, getPhase, reconcileRestart, loadSt
             restartReconnected = true;
             reconcileRestart({ afterBootNotice: false });
         } else {
-            loadStatus({ fetchRemote: false });
+            loadStatus({ fetchRemote: false, preservePhase: ['preflighting', 'updating'].includes(getPhase()) });
         }
     });
     listen('update_progress_changed', () => {
@@ -639,7 +642,7 @@ export function initUpdates({ mount, state, ws, openSettingsTab }) {
 
     let statusRefreshPromise = null;
     let statusRefreshNext = null;
-    function loadStatus({ fetchRemote = false, preservePhase = false } = {}) {
+    function loadStatus({ fetchRemote = false, preservePhase = !fetchRemote && ['preflighting', 'updating'].includes(phase) } = {}) {
         statusRefreshNext = {
             fetchRemote: fetchRemote || Boolean(statusRefreshNext?.fetchRemote),
             preservePhase: preservePhase && (statusRefreshNext?.preservePhase ?? true),
@@ -652,14 +655,18 @@ export function initUpdates({ mount, state, ws, openSettingsTab }) {
                 if (!options.preservePhase) setPhase(options.fetchRemote ? 'checking' : 'loading');
                 try {
                     const data = await (options.fetchRemote ? apiClient.updateCheck() : apiClient.updateStatus());
+                    // The explicit check owns release discovery. A queued progress
+                    // refresh has no tags and must not erase that successful read.
+                    if (options.fetchRemote || officialTagsDiv.childElementCount === 0) {
+                        renderOfficialTags(data.official_tags || []);
+                    }
                     if (statusRefreshNext) continue; // A newer notice owns the next read.
                     latestStatus = data;
                     // Keep an outstanding apply/restart await. Server progress refines
-                    // its label, and a reconnect's ordinary read replaces old local state.
-                    if (!options.preservePhase || !['updating', 'restarting'].includes(phase)) {
+                    // its label; a fresh page starts with no old local phase.
+                    if (!options.preservePhase || !['updating', 'restarting', 'preflighting'].includes(phase)) {
                         setPhase(restartNeeded && !data?.update_tx?.active ? 'restart_needed' : '');
                     } else render();
-                    renderOfficialTags(data.official_tags || []);
                 } catch (err) {
                     if (statusRefreshNext) continue;
                     latestStatus = { ...latestStatus, managed: true, warnings: [`status_error:${err.message || err}`], check_ok: false };

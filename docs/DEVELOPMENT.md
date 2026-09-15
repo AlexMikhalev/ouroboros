@@ -607,7 +607,8 @@ filtered down to the answer.
   handles without changing descriptor ownership.
 
 Enforcement: Repo Commit Checklist item 24 (advisory) triggers on diffs that
-add or change an endpoint/poller/subscription/timer or read a growing store;
+change data readers, startup/shutdown or other batch operations, or an
+endpoint/poller/subscription/timer;
 the hot-store growth health invariant
 (`agent_startup_checks.py::hot_store_growth_notes`, surfaced by
 `context_health.py::build_health_invariants`, thresholds justified in

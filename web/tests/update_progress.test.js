@@ -35,6 +35,28 @@ test('terminal failure without a transaction remains actionable after reopen', (
     assert.equal(updateVerdict(retry).action.id, 'check');
 });
 
+test('current restart outcomes and surviving transactions outrank an old failed observation', () => {
+    const old = observed('preparing', { active: false, result: 'failed', error: 'old refusal' });
+    for (const phase of ['restart_needed', 'restart_required']) {
+        assert.equal(updateVerdict(old, phase).state, phase);
+    }
+    const stashing = { ...old, update_tx: { active: true, phase: 'stashing_local_work' } };
+    assert.equal(updateVerdict(stashing).state, 'resolving');
+    assert.match(updateVerdict(stashing).hint, /stashing_local_work/);
+});
+
+test('reconnect preserves a preflight or apply whose request is still pending', () => {
+    for (const phase of ['preflighting', 'updating']) {
+        const listeners = new Map(), reads = [];
+        const ws = { on(name, fn) { listeners.set(name, fn); return () => listeners.delete(name); } };
+        const binding = bindUpdateRefreshEvents({ ws, getPhase: () => phase,
+            loadStatus: (value) => reads.push(value), reconcileRestart: () => assert.fail('not restarting') });
+        listeners.get('open')({ previouslyConnected: true });
+        assert.deepEqual(reads, [{ fetchRemote: false, preservePhase: true }]);
+        binding.dispose();
+    }
+});
+
 test('assisted handoff and fresh generation use existing durable state', () => {
     const data = { ...observed('applying', { active: false, result: 'assisted_started' }),
         update_tx: { active: true, phase: 'assisted_resolution', task_id: 'resolver-a' } };

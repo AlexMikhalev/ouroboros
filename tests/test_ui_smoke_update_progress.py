@@ -40,6 +40,7 @@ def test_update_progress_pending_reopen_and_failure(direct_server, tmp_path, wid
             page.route("**/api/update/apply", lambda route: pending_apply.append(route))
             page.goto(direct_server, wait_until="domcontentloaded")
             page.wait_for_selector("#page-chat")
+            page.wait_for_function("window.__testSockets?.some(s => s.readyState === 1)")
             if width < 980:
                 page.click("[data-mobile-nav-toggle]")
             page.click('[data-nav-page="dashboard"]')
@@ -48,6 +49,19 @@ def test_update_progress_pending_reopen_and_failure(direct_server, tmp_path, wid
             page.click("[data-confirm-ok]")
             expect(page.locator("#updates-summary")).to_have_text("Applying the update…")
             page.screenshot(path=str(evidence / f"updates-{width}-before.png"), full_page=True)
+            # Reconnect while the first apply is pending but the server has not
+            # begun its observable executor yet. It must not offer another Apply.
+            with page.expect_response("**/api/update/status"):
+                page.evaluate("window.__testSockets[0].close()")
+                page.wait_for_function("window.__testSockets.length > 1 && window.__testSockets.at(-1).readyState === 1")
+            page.evaluate("() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))")
+            expect(page.locator("#updates-summary")).to_have_text("Applying the update…")
+            expect(page.locator("#btn-update-primary")).to_be_disabled()
+            page.evaluate("window.__testSockets = [window.__testSockets.at(-1)]")
+            page.click('[data-dashboard-tab="logs"]')
+            page.click('[data-dashboard-tab="updates"]')
+            expect(page.locator("#updates-summary")).to_have_text("Applying the update…")
+            expect(page.locator("#btn-update-primary")).to_be_disabled()
             status["update_progress"] = {
                 "operation_id": "pending-apply", "generation": "server-a",
                 "stage": "stopping_workers", "active": True,
@@ -71,6 +85,7 @@ def test_update_progress_pending_reopen_and_failure(direct_server, tmp_path, wid
                 route.abort()
             pending_apply.clear()
             page.reload(wait_until="domcontentloaded")
+            page.wait_for_function("window.__testSockets?.some(s => s.readyState === 1)")
             if width < 980:
                 page.click("[data-mobile-nav-toggle]")
             page.click('[data-nav-page="dashboard"]')
@@ -86,4 +101,42 @@ def test_update_progress_pending_reopen_and_failure(direct_server, tmp_path, wid
         finally:
             for route in pending_apply:
                 route.abort()
+            browser.close()
+
+
+@pytest.mark.ui_browser
+def test_successful_recheck_keeps_release_tags_when_failure_ack_refreshes_status(direct_server):
+    """The acknowledgement notice must not discard the explicit check's tags."""
+    from playwright.sync_api import expect, sync_playwright
+
+    status = {
+        "managed": True, "check_ok": True, "available": True, "safe_to_apply": True,
+        "update_tx": {"active": False}, "official_tags": [],
+        "update_progress": {"operation_id": "failed-attempt", "active": False,
+                            "result": "failed", "error": "The target changed."},
+    }
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        try:
+            page.add_init_script(f"({_CAPTURE_TEST_SOCKET})();")
+            page.route("**/api/update/status**", lambda route: route.fulfill(json=status))
+
+            def recheck(route):
+                status["update_progress"] = {}
+                # Real api_update_check publishes this before returning its
+                # fresh payload; the follow-up passive read carries no tags.
+                _emit_ws_frame(page, {"type": "update_progress_changed"})
+                route.fulfill(json={**status, "official_tags": [{"tag": "v7.0.0-test", "sha": "a" * 40}]})
+
+            page.route("**/api/update/check", recheck)
+            page.goto(direct_server, wait_until="domcontentloaded")
+            page.wait_for_selector("#page-chat")
+            page.wait_for_function("window.__testSockets?.some(s => s.readyState === 1)")
+            page.click('[data-nav-page="dashboard"]')
+            page.click('[data-dashboard-tab="updates"]')
+            expect(page.locator("#btn-update-primary")).to_have_text("Check for updates")
+            page.click("#btn-update-primary")
+            expect(page.locator("#updates-official-tags")).to_contain_text("v7.0.0-test")
+        finally:
             browser.close()
