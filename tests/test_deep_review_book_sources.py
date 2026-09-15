@@ -11,7 +11,7 @@ from ouroboros.reference_books import compose_book, load_reference_book
 from tests.test_deep_review_slot import _native_row, _ScriptedLLM, _tool_call
 
 
-def _corpus(root):
+def _corpus(root, *, newline="\n"):
     files = {
         "BIBLE.md": "# Constitution\n\nThe constitutional source.\n",
         "docs/CHECKLISTS.md": "# Checklists\n\n## Review\n\nCheck the actual contract.\n",
@@ -22,10 +22,11 @@ def _corpus(root):
         for name in ("flow", "state"):
             files[f"docs/{book_id}/{name}.md"] = (
                 f"# {name.title()}\n\nIntroduction to {book_id} {name}.\n\n## Contract\n\nExact {book_id} {name} contract body.\n")
+    files = {rel: text.replace("\n", newline) for rel, text in files.items()}
     for rel, text in files.items():
         target = root / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text)
+        target.write_bytes(text.encode("utf-8"))
     return files
 
 
@@ -37,13 +38,14 @@ def _required(root, rel):
             "range_basis": "unicode_text_universal_newlines"}
 
 
-def test_packed_chaptered_books_are_complete_once_and_stable_before_atlas(tmp_path, monkeypatch):
+@pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
+def test_packed_chaptered_books_are_complete_once_and_stable_before_atlas(tmp_path, monkeypatch, newline):
     monkeypatch.setattr(deep, "get_context_mode", lambda: "max")
     monkeypatch.setattr(deep, "_compute_graph_centrality", lambda *a: {})
     prefixes = []
     for name in ("first", "second"):
         repo, data = tmp_path / name, tmp_path / f"{name}-data"
-        files = _corpus(repo)
+        files = _corpus(repo, newline=newline)
         monkeypatch.setattr(deep, "_dulwich_tracked_paths", lambda *a: (list(files), []))
         monkeypatch.chdir(tmp_path)
         pack, stats = deep.build_review_pack(repo, data)

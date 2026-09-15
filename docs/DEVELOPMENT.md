@@ -1940,6 +1940,10 @@ both critical. The imperatives:
   invariant and the tool description; every other guard (owner terminality,
   top-level principal, proven drift, protected paths, staged-never-committed)
   is unchanged (`tests/test_delegated_run_isolation_orphans.py`).
+  Snapshot tests compare raw LF/CRLF inputs under Git checkout filters, require
+  zero patch before child edits, and retain normal Git apply semantics afterwards.
+  Copy failures or a source change against the baseline leave no registered
+  snapshot or pinned ref (`tests/test_snapshot_file_inputs.py`).
 - Outcome honesty: a delegating parent must not produce a clean no-tool
   final answer while direct children run undecided — one bounded absorption
   reminder, then best-effort (`children_unabsorbed`); while that gate is

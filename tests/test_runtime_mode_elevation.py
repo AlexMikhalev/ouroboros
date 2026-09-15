@@ -1793,10 +1793,12 @@ def test_run_shell_writes_skill_state_examples(shape, filename, tmp_path, monkey
         # ``bash`` on hosted Windows resolves to WSL, which has no distro in
         # the GitHub runner image. Exercise the same redirect/copy shapes via
         # the native command interpreter instead of depending on WSL setup.
+        # Separate operands let subprocess quote paths without backslash-escaping
+        # the inner quotes of a prequoted cmd body.
         cmd = (
-            ["cmd.exe", "/d", "/c", f'type "{payload}" > "{target}"']
+            ["cmd.exe", "/d", "/c", "type", str(payload), ">", str(target)]
             if shape == "redirect"
-            else ["cmd.exe", "/d", "/c", f'copy /Y "{payload}" "{target}" >NUL']
+            else ["cmd.exe", "/d", "/c", "copy", "/Y", str(payload), str(target), ">NUL"]
         )
     else:
         cmd = (

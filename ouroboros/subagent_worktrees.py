@@ -477,7 +477,9 @@ def provision_execution_snapshot(
 
     Baseline construction never touches the target's own index, HEAD or working
     files: a TEMPORARY index is seeded from HEAD and stages the eligible
-    tracked/staged/text inputs (``.gitignore`` respected). Binary and large
+    tracked/staged/text inputs (``.gitignore`` respected). The execution copy
+    retains original regular-file bytes despite Git checkout filters; a Git
+    comparison binds the copied content to that same baseline. Binary and large
     untracked inputs are streamed into the execution root outside Git's ODB,
     with exact preimages retained in the existing snapshot record. The Git tree
     is committed as a synthetic baseline pinned by a ref under
@@ -583,6 +585,24 @@ def provision_execution_snapshot(
         try:
             wt_path.parent.mkdir(parents=True, exist_ok=True)
             _git(target, "worktree", "add", "--detach", str(wt_path), baseline_sha)
+            from ouroboros.artifacts import copy_artifact_file
+
+            # Git owns the baseline representation, but the child must see the
+            # source's actual working bytes, not checkout's CRLF/smudge rewrite.
+            # Read the existing tree inventory so deletions, links and gitlinks
+            # keep Git's semantics and excluded paths can never enter the copy.
+            for item in manifest_raw.split(b"\0"):
+                metadata, separator, raw_path = item.partition(b"\t")
+                if separator and metadata.split()[0] in (b"100644", b"100755"):
+                    relative = raw_path.decode("utf-8", errors="surrogateescape")
+                    original = target / relative
+                    if original.is_symlink():
+                        raise OSError(f"snapshot input changed from a regular file: {relative}")
+                    copy_artifact_file(original, wt_path / relative)
+            # A concurrent source edit must not appear as the child's work.
+            # Use the same Git representation as ordinary patch capture, once
+            # for the whole tree, before the separately tracked file inputs.
+            _git(wt_path, "diff", "--quiet", "--no-ext-diff", baseline_sha, "--")
             from ouroboros.workspace_file_outputs import copy_snapshot_file_inputs
             file_baseline = copy_snapshot_file_inputs(target, wt_path, file_inputs)
             if file_baseline:
