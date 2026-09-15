@@ -115,6 +115,9 @@ test('a direct turn with two successful tools shows two compact rows live and th
         f.log({ type: 'tool_call_started', tool: 'web_search', tool_call_id: 'c2', args: { query: 'ouroboros' } });
         f.log({ type: 'tool_call_finished', tool: 'web_search', tool_call_id: 'c2', args: { query: 'ouroboros' }, duration_sec: 1.2 });
         assert.ok(f.card(), 'the first tool call mints the block live');
+        assert.equal(f.card().dataset.direct, '1', 'direct chrome from the census fact');
+        assert.equal(f.card().querySelector('[data-turn-into-project]'), null, 'no conversion on a direct block');
+        assert.equal(f.card().querySelector('[data-live-title]').textContent, '', 'no placeholder title');
         assert.equal(f.rows().length, 2, 'start and finish of one call share a row');
         assert.match(f.rows()[0].innerHTML, /read_file · README\.md/);
         assert.match(f.rows()[1].innerHTML, /web_search · ouroboros/);
@@ -138,6 +141,8 @@ test('a direct turn with two successful tools shows two compact rows live and th
     try {
         await g.instance.refreshHistory({ revision: 1 });
         assert.ok(g.card(), 'the same turn shows the block after a reload');
+        assert.equal(g.card().dataset.direct, '1', 'replay reads the same host fact from the summary row');
+        assert.equal(g.card().querySelector('[data-turn-into-project]'), null);
         // Per-tool rows are live-only: replay carries the summary row and the completion note.
         assert.equal(g.rows().length, 2);
         assert.ok(g.rows().some((n) => /2 tool calls/.test(n.innerHTML)));
@@ -176,6 +181,7 @@ test('a managed Swarm root keeps the task card with Turn into project; an origin
         f.census(managed());
         f.emit('chat', { task_id: TASK, role: 'assistant', is_progress: true, content: 'Planning the swarm.' });
         assert.ok(f.card());
+        assert.equal(f.card().dataset.direct, '0');
         assert.ok(f.card().querySelector('[data-turn-into-project]'));
         assert.equal(f.status(), 'Working...');
         globalThis.window.__ouroTaskBindings = { 'bound-root': { project_id: 'p1', chat_id: 7 } };

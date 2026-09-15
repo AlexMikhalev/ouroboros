@@ -523,9 +523,6 @@ export function createChatInstance({
             }).catch(() => {}).finally(() => managedTaskDetailReads.delete(childId));
         }
     }
-    // The owner's last main-chat request, handed to the next live card it spawns so a
-    // "turn into project" conversion can name the project from it (P1).
-    let _pendingCardObjective = '';
     let activeLiveGroupId = '';
     let pendingReconnectSync = false;  // Set when a fromReconnect sync arrives while one is already in-flight.
     let pendingReconnectBannerText = '';
@@ -781,6 +778,7 @@ export function createChatInstance({
     function noteDirectTurn(record, direct) {
         if (!record || typeof direct !== 'boolean' || record.direct === direct) return;
         record.direct = direct;
+        if (direct && !record.suggestedName && !record.lastHumanHeadline) record.titleEl.textContent = '';
         ensureLiveCardVisible(record);
     }
 
@@ -864,36 +862,60 @@ export function createChatInstance({
         }
         try {
             // One-click convert (owner P1): no name prompt, no extra LLM call.
-            // The SERVER derives the project name (gateway/projects.py
-            // _derive_project_name: title -> objective -> queue snapshot). We also
-            // hand it the owner's original request as a fallback hint so a still
-            // in-progress DIRECT chat task — which has no server-side title/objective
-            // yet — is named from what the owner asked, not "New project".
-            const payload = await apiClient.projectFromTask(taskId, projectId, '', record.objectiveHint || '');
+            // The SERVER names the project (gateway/projects.py: explicit
+            // title, coined name, then the task's own origin text) and adopts
+            // the project the task's owner message already has.
+            const payload = await apiClient.projectFromTask(taskId, projectId, '');
             const project = payload.project || { id: projectId, name: projectId };
-            showToast(`Project created: ${project.name || project.id}`, 'ok');
+            showToast(`${payload.adopted ? 'Project opened' : 'Project created'}: ${project.name || project.id}`, 'ok');
             window.dispatchEvent(new CustomEvent('ouro:project-created', { detail: { project } }));
             markCardConverted(record, project);
         } catch (exc) {
             showToast(`Project creation failed: ${exc.message || exc}`, 'error');
             delete record.root.dataset.projectCreating;
-            if (actions) {
-                withStableViewport(() => {
-                    actions.innerHTML = '<button type="button" class="btn btn-xs btn-default" data-turn-into-project>Turn into project</button>';
-                    record.turnProjectBtn = actions.querySelector('[data-turn-into-project]');
-                    // Re-wire the click handler — innerHTML replaced the original node,
-                    // so without this the restored button would be dead after a
-                    // transient failure (T5).
-                    record.turnProjectBtn?.addEventListener('click', (event) => {
-                        event.stopPropagation();
-                        turnTaskIntoProject(record);
-                    });
-                    // P5: innerHTML also dropped a rendered "Cancel run" — restore it.
-                    record.cancelRunBtn = null;
-                    syncCancelRunButton(record);
-                });
-            }
+            // innerHTML replaced both controls: the chrome and cancel writers
+            // put back exactly what the record's facts still call for.
+            if (actions) withStableViewport(() => {
+                actions.innerHTML = '';
+                record.turnProjectBtn = null;
+                record.cancelRunBtn = null;
+                syncBlockChrome(record);
+                syncCancelRunButtonMutation(record);
+                return true;
+            });
         }
+    }
+
+    // The block's chrome from the record's facts: a direct conversation turn
+    // renders the compact activity block (no title placeholder, no status
+    // chip, no conversion); a managed/Swarm root keeps the task card with
+    // "Turn into project" unless its origin is already bound to a Project —
+    // the one binding fact the /api/state sweep in app.js reads too.
+    function syncBlockChrome(record) {
+        if (record.isSubagent || record.root.dataset.projectCreated === '1') return;
+        const direct = record.direct ? '1' : '0';
+        if (record.root.dataset.direct !== direct) record.root.dataset.direct = direct;
+        const wanted = isMain && !record.direct && record.root.dataset.projectBound !== '1'
+            && !(window.__ouroTaskBindings || {})[record.groupId];
+        if (wanted === Boolean(record.turnProjectBtn)) return;
+        if (!wanted) {
+            record.turnProjectBtn.remove();
+            record.turnProjectBtn = null;
+            return;
+        }
+        const actions = ensureLiveActionsEl(record);
+        if (!actions) return;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn btn-xs btn-default';
+        btn.dataset.turnIntoProject = '1';
+        btn.textContent = 'Turn into project';
+        btn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            turnTaskIntoProject(record);
+        });
+        actions.prepend(btn);
+        record.turnProjectBtn = btn;
     }
 
     function syncCancelRunButton(record) {
@@ -1218,17 +1240,6 @@ export function createChatInstance({
             ? explicitCardExpansion.get(normalizedGroupId)
             : Boolean(options.isSubagent && nestedSubagentsExpanded);
         root.dataset.expanded = initialExpanded ? '1' : '0';
-        // No "Turn into project" for: subagent cards, non-main panels, or a task that
-        // is ALREADY bound to a project (a project-chat follow-up) — see task_bindings
-        // from /api/state, surfaced on window.__ouroTaskBindings (P2).
-        const alreadyBound = !!(window.__ouroTaskBindings || {})[normalizedGroupId];
-        const projectActionHtml = (
-            isMain
-            && !options.isSubagent
-            && !alreadyBound
-        )
-            ? `<div class="chat-live-actions"><button type="button" class="btn btn-xs btn-default" data-turn-into-project>Turn into project</button></div>`
-            : '';
         root.innerHTML = `
             <div class="chat-live-summary-button" role="button" tabindex="0" data-live-summary-button aria-expanded="false" aria-controls="${escapeHtmlAttr(timelineId)}">
                 <div class="chat-live-summary">
@@ -1251,7 +1262,6 @@ export function createChatInstance({
                 <div class="chat-live-meta" data-live-meta></div>
                 <div class="chat-live-review-summary" data-live-review-summary hidden></div>
             </div>
-            ${projectActionHtml}
             <div class="chat-live-timeline" data-live-timeline id="${escapeHtmlAttr(timelineId)}"></div>
             <div data-live-reviews-host></div>
         `;
@@ -1267,9 +1277,10 @@ export function createChatInstance({
             metaEl: root.querySelector('[data-live-meta]'),
             reviewSummaryEl: root.querySelector('[data-live-review-summary]'),
             toggleEl: root.querySelector('[data-live-toggle]'),
-            turnProjectBtn: root.querySelector('[data-turn-into-project]'),
-            // P5: "Cancel run" button element (rendered lazily by syncCancelRunButton
-            // once the host-attested cancelable marker is known for this task).
+            // Both actions render lazily from the record's facts: "Turn into
+            // project" by syncBlockChrome, Stop by syncCancelRunButton once the
+            // host-attested cancelable marker is known.
+            turnProjectBtn: null,
             cancelRunBtn: null,
             timelineEl: root.querySelector('[data-live-timeline]'),
             reviewsHostEl: root.querySelector('[data-live-reviews-host]'),
@@ -1278,10 +1289,6 @@ export function createChatInstance({
             parentGroupId: String(options.parentGroupId || ''),
             subagentRole: String(options.role || ''),
             subagentsEl: null,
-            // The owner's request that spawned this card (main, non-subagent only),
-            // used to name a project on "turn into project" when the server has no
-            // title/objective yet (P1, direct-chat conversion). One-shot handoff.
-            objectiveHint: (isMain && !options.isSubagent) ? _pendingCardObjective : '',
             // The proactively-coined LLM name; becomes the card title when set.
             suggestedName: '',
             reviewOwnerDetailObserved: false,
@@ -1311,16 +1318,11 @@ export function createChatInstance({
             ),
             onDomWrite: withStableViewport,
         });
-        if (isMain && !options.isSubagent) _pendingCardObjective = '';
         bindContentButton(record.summaryButtonEl, () => {
             const nowExpanded = record.root.dataset.expanded !== '1';
             explicitCardExpansion.set(record.groupId, nowExpanded);
             setLiveCardExpanded(record, nowExpanded);
             if (nowExpanded) hydrateCardReviews(record.groupId);
-        });
-        record.turnProjectBtn?.addEventListener('click', (event) => {
-            event.stopPropagation();
-            turnTaskIntoProject(record);
         });
         record.timelineDispose = bindLiveCardTimeline(record.timelineEl, (lineKey) => {
             const nowExpanded = !record.expandedLineKeys.has(lineKey);
@@ -1479,7 +1481,7 @@ export function createChatInstance({
         // P1: last bounded activity projection (remembered even while
         // the collapsed line is suppressed on unnamed root cards) + sticky cost.
         clearStickyCardState(record);
-        record.titleEl.textContent = 'Working...';
+        record.titleEl.textContent = record.direct ? '' : 'Working...';
         setLiveCardPhase(record, 'working');
         record.countEl.hidden = true;
         record.countEl.textContent = '0 notes';
@@ -1510,6 +1512,7 @@ export function createChatInstance({
             updateLiveCardCount(parentRecord);
             return;
         }
+        syncBlockChrome(record);
         if (blockVisible(record)) insertMessageNode(record.root, { reorderExisting });
         else if (record.root.parentNode === messagesDiv) record.root.remove();
     }
@@ -1675,9 +1678,11 @@ export function createChatInstance({
         const desiredPhase = desiredLiveCardPhase(record, activePhase);
         setLiveCardPhase(record, desiredPhase.phase, desiredPhase.text, desiredPhase.className);
         // A coined project name takes the title slot (the activity headline stays in the
-        // timeline); a child's title is its lineage identity; otherwise the activity headline.
+        // timeline); a child's title is its lineage identity; a direct block carries only
+        // a real narration headline; otherwise the activity headline.
         const title = record.suggestedName || (record.isSubagent ? childTitle(record)
-            : (record.finished ? record.lastHumanHeadline || 'Task activity' : activeHeadline));
+            : record.direct ? record.lastHumanHeadline
+                : (record.finished ? record.lastHumanHeadline || 'Task activity' : activeHeadline));
         if (record.titleEl.textContent !== title) record.titleEl.textContent = title;
         // The collapsed line is a compact presentation projection, while the
         // complete latest activity remains independently reachable through the
@@ -1790,7 +1795,7 @@ export function createChatInstance({
         if (record.isSubagent) record.titleEl.textContent = childTitle(record);
         else if (!record.suggestedName && !record.lastHumanHeadline
                 && record.titleEl.textContent !== presentation.headline) {
-            record.titleEl.textContent = 'Task activity';
+            record.titleEl.textContent = record.direct ? '' : 'Task activity';
         }
         settleLiveCard(record, activePhase, wasFinished);
         ensureLiveCardVisible(record);
@@ -2841,11 +2846,6 @@ export function createChatInstance({
     async function sendMessage(planMode = false) {
         if (sendBtn.disabled) return;  // guard against Enter re-entry during async upload
         let text = input.value.trim();
-        // The owner's pure typed request (before attachment lines) — captured so a
-        // live card spawned by this message can name a project from it on a "turn
-        // into project" conversion even before the task records its objective (P1,
-        // direct-chat case: the server has no title/objective/queue source yet).
-        const objectiveText = text;
         const hasAttachments = pendingAttachments.length > 0;
         let uploadedAttachments = [];
         let attachmentMeta = [];
@@ -2920,8 +2920,6 @@ export function createChatInstance({
         }
         // One-shot: disarm Swarm now that the message is sent.
         if (planMode) setSwarm(false);
-        // Hand the objective to the NEXT main-chat live card this message spawns.
-        if (isMain && objectiveText) _pendingCardObjective = objectiveText;
         if (hasAttachments) {
             pendingAttachments = [];
             updateAttachmentPreview();
