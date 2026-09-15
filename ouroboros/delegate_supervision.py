@@ -682,11 +682,27 @@ def _render_wake_payload(ctx: Any, payload: dict[str, Any]) -> ToolResult:
     return _wake_result(envelope)
 
 
+def _schema_1_envelope(payload: dict[str, Any]) -> dict[str, Any]:
+    """Carry a schema-1 ``pending_wake.payload`` forward without rewriting it.
+
+    Rows written before this family carried ``ok``/``host_code`` replay exactly as
+    stored; only the two classification keys are derived, and only when they are
+    ABSENT. ``refused`` was the one status the old writer used for a refused
+    observation, so it replays as the recorded tool failure it always was and
+    everything else replays as the ordinary observation it always was. No prose is
+    read, no word is matched, no terminal/success/zero-spend fact is invented, and
+    an unknown or corrupt shape keeps its whole body.
+    """
+    if "ok" in payload or str(payload.get("status") or "") != "refused":
+        return dict(payload)
+    return {**payload, "ok": False, "host_code": "TOOL_REPORTED_FAILURE"}
+
+
 def _pending_payload(ctx: Any, state: dict[str, Any]) -> dict[str, Any]:
     pending = state.get("pending_wake") if isinstance(state.get("pending_wake"), dict) else {}
     payload = pending.get("payload") if isinstance(pending.get("payload"), dict) else {}
     if pending and not pending.get("acknowledged_at") and payload:
-        replay = dict(payload)
+        replay = _schema_1_envelope(payload)
         if str(pending.get("attempt_key") or "") != _attempt_key(ctx):
             events = replay.get("wake_events")
             if isinstance(events, list):
