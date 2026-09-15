@@ -356,6 +356,11 @@ CURRENT_PRODUCER_CONTRACTS = {
     # asserted here instead of borrowing an old tree's answer for a text it never saw.
     "PROMOTE_REJECTED": (True, "tool_reported_failure"),
     "PROMOTE_UNCONFIRMED": (True, "tool_reported_failure"),
+    # ensure_project_scope joined the receipt rail (15.09): its refused / unconfirmed
+    # bind outcomes are new identifiers, registered beside the routing family and
+    # asserted live here for the same reason as the promotion receipts above.
+    "SCOPE_REJECTED": (True, "tool_reported_failure"),
+    "SCOPE_UNCONFIRMED": (True, "tool_reported_failure"),
     "TOOL_ERROR": (True, "error"),
     "native:TOOL_REPORTED_FAILURE:TOOL_ERROR": (True, "tool_reported_failure"),
 }
