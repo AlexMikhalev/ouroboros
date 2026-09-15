@@ -77,6 +77,7 @@ TERMINAL_WRITERS = {
     ('ouroboros/mutation_attribution.py::record_terminal_mutation_candidates', 'status'): 'dynamic',
     ('ouroboros/post_task_checkpoint.py::set_root_post_task_checkpoint', 'str(existing.get("status") or task.get("status") or STATUS_COMPLETED)'): 'terminal',
     ('ouroboros/project_dialogue.py::_append_terminal_task_projection', 'status'): 'dynamic',
+    ('ouroboros/project_naming.py::spawn_turn_namer._work', 'status'): 'dynamic',
     ('ouroboros/project_dialogue.py::persist_continuation_narrative', 'requested_status'): 'dynamic',
     # The locked field projector preserves the existing status, including a
     # terminal one; publishing review evidence never completes the task itself.

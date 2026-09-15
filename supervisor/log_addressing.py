@@ -7,7 +7,7 @@ Split out of ``supervisor/events.py`` at the module-size boundary;
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from typing import Any, Callable, Dict, Optional
 
 from ouroboros.contracts.chat_id_policy import HIDDEN_CHAT_ID, WEB_UI_CHAT_ID
 
@@ -186,10 +186,15 @@ class TurnEventQueue:
     capture rule of DEVELOPMENT.md). Wraps the turn's real queue and stamps
     the turn chat onto its own still-unaddressed task-scoped payloads."""
 
-    def __init__(self, inner: Any, task_id: Any, chat_id: Any) -> None:
+    def __init__(self, inner: Any, task_id: Any, chat_id: Any,
+                 on_first_work: Optional[Callable[[], None]] = None) -> None:
         self._inner = inner
         self._task_id = str(task_id or "")
         self._chat_id = int(chat_id or 0)
+        # Fired once, on the first frame this proxy stamps as WORK (below):
+        # the lane hangs the turn namer on it, so a turn is named exactly
+        # when its block becomes a task card and never for a greeting.
+        self._on_first_work = on_first_work
 
     def stamp(self, item: Any) -> Any:
         if isinstance(item, dict):
@@ -214,6 +219,12 @@ class TurnEventQueue:
                     and not data.get("routing_action")
                 ):
                     data.setdefault("cancelable", True)
+                    if self._on_first_work is not None:
+                        callback, self._on_first_work = self._on_first_work, None
+                        try:
+                            callback()
+                        except Exception:
+                            log.debug("first-work callback failed for %s", self._task_id, exc_info=True)
         return item
 
     def put(self, item: Any, *args: Any, **kwargs: Any) -> Any:

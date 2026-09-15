@@ -481,6 +481,20 @@ def test_turn_event_queue_stamps_by_value_at_the_producer():
     zero = {"type": "log_event", "data": {"type": "x", "task_id": "turn1", "chat_id": 0}}
     assert proxy.stamp(zero)["data"]["chat_id"] == 0
 
+    # The first-work callback (the lane hangs the turn namer on it) fires
+    # exactly once, on the first frame stamped as work — never on a receipt.
+    fired = []
+    named = _TurnEventQueue(SimpleNamespace(put=captured.append, put_nowait=captured.append), "turn2", 42,
+                            on_first_work=lambda: fired.append(1))
+    named.put_nowait({"type": "log_event", "data": {
+        "type": "tool_call_started", "task_id": "turn2", "tool": "promote_chat_to_task", "routing_action": "promote_chat_to_task"}})
+    named.put_nowait({"type": "log_event", "data": {"type": "llm_round_error", "task_id": "turn2"}})
+    assert fired == []
+    named.put_nowait({"type": "log_event", "data": {"type": "tool_call_started", "task_id": "turn2", "tool": "read_file"}})
+    named.put_nowait({"type": "log_event", "data": {"type": "tool_call_finished", "task_id": "turn2", "tool": "read_file"}})
+    named.put_nowait({"type": "log_event", "data": {"type": "tool_call_started", "task_id": "turn2", "tool": "run_command"}})
+    assert fired == [1]
+
     # _run_chat_task installs the proxy around agent.handle_task.
     import inspect
 
