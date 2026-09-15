@@ -43,7 +43,7 @@ from starlette.routing import Route
 from starlette.testclient import TestClient
 
 from tests._shared import SETTINGS_WRITERS, calls_function
-from tests._governance_docs_shared import architecture_text, development_text
+from tests._governance_docs_shared import architecture_text
 
 # One owner-authored document, written entirely under keys a release renamed or
 # retired. Every value differs from both its legacy default and its current one,

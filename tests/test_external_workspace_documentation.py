@@ -1,7 +1,7 @@
 """The public workspace contract must keep ordinary folders visible."""
 
 from pathlib import Path
-from tests._governance_docs_shared import architecture_text, development_text
+from tests._governance_docs_shared import architecture_text
 
 
 ROOT = Path(__file__).resolve().parents[1]

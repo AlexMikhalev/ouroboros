@@ -10,7 +10,7 @@ Also covers the core governance artifact invariants introduced in the
 """
 
 from unittest.mock import MagicMock
-from tests._governance_docs_shared import architecture_text, development_text
+from tests._governance_docs_shared import development_text
 
 
 def _make_ctx(tmp_path):

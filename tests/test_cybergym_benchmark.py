@@ -13,7 +13,7 @@ from pathlib import Path
 from devtools.benchmarks.common import launcher_audit
 from ouroboros.configured_subagents import parse_configured_subagents
 from ouroboros.reviewer_slot_config import parse_reviewer_slots
-from tests._governance_docs_shared import architecture_text, development_text
+from tests._governance_docs_shared import architecture_text
 
 REPO = Path(__file__).resolve().parents[1]
 PROFILE = REPO / "devtools" / "benchmarks" / "cybergym" / "settings_base.json"

@@ -230,6 +230,35 @@ language-tagged fences (the untagged module-tree fence in ARCHITECTURE §1 IS
 scanned — an owner decision); semantically equivalent historical prose stays
 review-only under CHECKLISTS item 7.
 
+Both of those documents are reference BOOKS: an entrypoint carrying its H1, one
+authored introductory paragraph and an ordered `## Chapters` membership list,
+plus one chapter file per subject under `docs/architecture/` or
+`docs/development/`. Four rules keep that shape honest, and
+`tests/test_reference_book_validation.py` runs the validator over the tracked
+tree so a breach is red rather than discovered by the next review:
+
+- **One membership list.** The entrypoint's `## Chapters` list IS the book.
+  Adding a chapter file without listing it, or listing one that is not tracked,
+  fails the validator; there is no second manifest, registry or JSON index to
+  keep in step.
+- **Every source carries one authored introduction.** The first paragraph under
+  a chapter's H1 says what that chapter owns and why it exists. It is the
+  compact view — there is no second editable summary corpus — so a chapter whose
+  H1 is followed straight by a subsection is refused rather than having body
+  prose quoted as if someone had written it for that purpose.
+- **WHY stays where the reader is.** A chapter keeps the rationale for what it
+  owns; moving prose between chapters is a documentation change like any other
+  and REPLACES the description at its destination.
+- **Readers ask for a view, not for a file.** `load_governance_doc` composes a
+  book for a surface that owes it in full, `context_layout.book_navigation`
+  renders the compact chapter-addressed view, and
+  `reference_books.book_path_role` answers whether a path is part of a book.
+  Never read an entrypoint with `read_text()` and treat the result as the book
+  — that is a membership list, and a substring pin over it passes while testing
+  nothing (`tests/_governance_docs_shared.py` is the one reader tests use).
+  `docs/reference-books-migration.md` is the operator record of the original
+  split and is deliberately not a member of either book.
+
 ### Generality and emergence (P13)
 
 Every non-trivial change picks a level: patch the case in front of you, solve

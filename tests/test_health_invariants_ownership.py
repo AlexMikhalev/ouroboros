@@ -14,7 +14,7 @@ import types
 
 import ouroboros.context_health as context_health
 from ouroboros.delegate_custody import RunCustody
-from tests._governance_docs_shared import architecture_text, development_text
+from tests._governance_docs_shared import architecture_text
 
 
 def _env(tmp_path):

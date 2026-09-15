@@ -1,8 +1,11 @@
 """Two reference books composed from one explicit Markdown membership list.
 
-Legacy monoliths remain a single physical source during the coordinated migration.
-Chapter bytes are never copied to a second editable corpus. Full composition has
-no runtime paths or revision stamps; selected views carry physical refs separately.
+Each entrypoint carries its H1, one authored introduction and the ordered
+`## Chapters` list; each member carries its own H1, one authored introduction
+and its subject body. An exact historical revision that predates the split is
+still read as the one physical source it was. Chapter bytes are never copied to
+a second editable corpus, full composition has no runtime paths or revision
+stamps, and selected views carry physical refs separately.
 """
 
 from __future__ import annotations

@@ -2,7 +2,7 @@ import pathlib
 import re
 
 import pytest
-from tests._governance_docs_shared import architecture_text, development_text
+from tests._governance_docs_shared import architecture_text
 
 from ouroboros.tools.release_sync import (
     RELEASE_ASSET_TEMPLATES,

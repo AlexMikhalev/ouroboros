@@ -18,7 +18,7 @@ import subprocess
 import pytest
 
 from ouroboros import delegate_custody as custody
-from tests._governance_docs_shared import architecture_text, development_text
+from tests._governance_docs_shared import architecture_text
 from ouroboros.subagent_worktrees import (
     find_execution_snapshot,
     provision_payload_snapshot,

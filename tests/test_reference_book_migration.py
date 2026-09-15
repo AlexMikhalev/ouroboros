@@ -1,23 +1,29 @@
 """The chapter split moved bytes, not meaning: a reversible byte proof.
 
-Each chapter file is exactly a two-line prologue plus the old `##` section body:
+Each chapter file was written as a two-line prologue plus the old `##` section
+body:
 
     # <the old section title>
     <blank>
     <one authored introductory paragraph>
     <the old section body, byte for byte, starting with its own newline>
 
-So the move is INVERTIBLE, and the inverse is this test's whole method:
+So the move is INVERTIBLE, and the inverse is this module's whole method:
 
     first  = raw.index(b"\\n\\n")               -> the H1 line is raw[:first]
     second = raw.index(b"\\n\\n", first + 2)    -> the introduction is between them
     section = b"## " + raw[2:first] + raw[second:]
 
 Concatenating those sections in membership order must reproduce the old
-monolith from its first `## ` heading to EOF, byte for byte. The recorded
-digests below make that a complete proof without Git; when the base commit is
-reachable the same reconstruction is compared against `git show` as well, so a
-recorded digest can never stand in for bytes nobody checked.
+monolith from its first `## ` heading to EOF, byte for byte.
+
+That is a claim about HISTORY, so it is checked against history: the base
+commit's monolith against the migration commit's chapters, both resolved from
+Git (`quick-test` and `full-test` check out with `fetch-depth: 0`). The
+migration commit is found by content — the commit that added the transfer
+table — so a rebase cannot strand the proof on a rewritten SHA, and a later
+ordinary edit to a chapter cannot turn a historical fact red. The structural
+half below has no such bound and holds on the working tree forever.
 
 The entrypoint preamble is deliberately NOT part of the byte proof: it was
 replaced by one merged/authored paragraph plus the `## Chapters` membership
@@ -38,9 +44,13 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 # The integration base this migration was cut from.
 MIGRATION_BASE = "5585133db86419c1a28673e498de4fb13c6b2d1e"
 
-# Recorded at the base commit by the split itself (and mirrored in
-# docs/reference-books-migration.md): the whole old file, and the part of it
-# that moved -- everything from the first `## ` heading to EOF.
+# Found by content, not pinned: the commit that ADDED the operator transfer
+# table is the split commit.
+TRANSFER_TABLE = "docs/reference-books-migration.md"
+
+# Recorded at the base commit by the split itself (and mirrored in the transfer
+# table): the whole old file, and the part of it that moved -- everything from
+# the first `## ` heading to EOF.
 OLD_MONOLITHS = {
     "architecture": {
         "old_bytes": 724691,
@@ -61,6 +71,21 @@ OLD_MONOLITHS = {
 }
 
 
+def _git(*args: str) -> bytes | None:
+    try:
+        return subprocess.run(
+            ["git", *args], cwd=REPO, check=True, capture_output=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def _migration_commit() -> str | None:
+    out = _git("log", "--diff-filter=A", "--format=%H", "--", TRANSFER_TABLE)
+    lines = [line for line in (out or b"").decode().split("\n") if line.strip()]
+    return lines[-1] if lines else None
+
+
 def _restore_section(raw: bytes) -> bytes:
     """Undo one chapter's prologue and return the old `## ` section bytes."""
     first = raw.index(b"\n\n")
@@ -72,36 +97,56 @@ def _restore_section(raw: bytes) -> bytes:
     return b"## " + h1[2:] + raw[second:]
 
 
-def _reconstruct(book_id: str) -> bytes:
-    book = load_reference_book(REPO, book_id)
-    assert not book.legacy, f"{book_id} is not chaptered"
-    return b"".join(_restore_section(chapter.raw) for chapter in book.chapters)
+@pytest.mark.parametrize("book_id", sorted(BOOK_ENTRYPOINTS))
+def test_the_migration_commit_reconstructs_the_base_monolith_byte_for_byte(book_id):
+    recorded = OLD_MONOLITHS[book_id]
+    rel = BOOK_ENTRYPOINTS[book_id]
+    split = _migration_commit()
+    old = _git("show", f"{MIGRATION_BASE}:{rel}")
+    if split is None or old is None:
+        pytest.fail(
+            f"the migration proof needs Git history: base {MIGRATION_BASE} "
+            f"{'unreachable' if old is None else 'ok'}, the commit that added "
+            f"{TRANSFER_TABLE} {'unreachable' if split is None else 'ok'}. "
+            "CI checks out with fetch-depth: 0 for exactly this."
+        )
 
+    assert len(old) == recorded["old_bytes"]
+    assert hashlib.sha256(old).hexdigest() == recorded["old_sha256"]
+    assert old[:recorded["preamble_bytes"]].startswith(recorded["h1"].encode("utf-8"))
 
-def _base_bytes(rel: str) -> bytes | None:
-    try:
-        return subprocess.run(
-            ["git", "show", f"{MIGRATION_BASE}:{rel}"],
-            cwd=REPO, check=True, capture_output=True,
-        ).stdout
-    except (OSError, subprocess.CalledProcessError):
-        return None  # shallow clone or exported tree: the digests still bind
+    book = load_reference_book(
+        REPO, book_id,
+        read_bytes=lambda path: _git("show", f"{split}:{path}"),
+    )
+    assert not book.legacy, f"{book_id} was not chaptered by the migration commit"
+    moved = b"".join(_restore_section(chapter.raw) for chapter in book.chapters)
+
+    assert len(moved) == recorded["moved_bytes"]
+    assert hashlib.sha256(moved).hexdigest() == recorded["moved_sha256"]
+    assert moved == old[recorded["preamble_bytes"]:]
 
 
 @pytest.mark.parametrize("book_id", sorted(BOOK_ENTRYPOINTS))
-def test_chapters_reconstruct_the_old_monolith_body_byte_for_byte(book_id):
-    recorded = OLD_MONOLITHS[book_id]
-    moved = _reconstruct(book_id)
-    assert len(moved) == recorded["moved_bytes"]
-    assert hashlib.sha256(moved).hexdigest() == recorded["moved_sha256"]
-
-    old = _base_bytes(BOOK_ENTRYPOINTS[book_id])
+def test_every_base_section_is_still_exactly_one_chapter(book_id):
+    """The structural half, unbounded in time: the base's `##` titles are the
+    chapters' H1 titles, in order, one each. A later edit to a chapter body
+    cannot make this red, and a lost, merged or re-titled chapter still can."""
+    old = _git("show", f"{MIGRATION_BASE}:{BOOK_ENTRYPOINTS[book_id]}")
     if old is None:
         pytest.skip(f"base commit {MIGRATION_BASE} is unreachable in this checkout")
-    assert len(old) == recorded["old_bytes"]
-    assert hashlib.sha256(old).hexdigest() == recorded["old_sha256"]
-    assert old[recorded["preamble_bytes"]:] == moved
-    assert old[:recorded["preamble_bytes"]].startswith(recorded["h1"].encode("utf-8"))
+    in_fence = False
+    base_titles = []
+    for line in old.decode("utf-8").split("\n"):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if not in_fence and line.startswith("## "):
+            base_titles.append(line[3:].strip())
+
+    book = load_reference_book(REPO, book_id)
+    chapter_titles = [chapter.headings[0].title for chapter in book.chapters]
+    assert chapter_titles == base_titles
 
 
 @pytest.mark.parametrize("book_id", sorted(BOOK_ENTRYPOINTS))
@@ -132,13 +177,13 @@ def test_no_chapter_body_was_reheaded_into_a_duplicate_title():
 
 
 def test_the_transfer_table_is_committed_and_is_not_a_book_member():
-    table = REPO / "docs" / "reference-books-migration.md"
+    table = REPO / TRANSFER_TABLE
     assert table.is_file(), "the operator transfer table must be reviewable"
     text = table.read_text(encoding="utf-8")
     assert MIGRATION_BASE in text
     for book_id in BOOK_ENTRYPOINTS:
         book = load_reference_book(REPO, book_id)
-        assert str(table.relative_to(REPO)) not in [c.source_path for c in book.chapters]
+        assert TRANSFER_TABLE not in [c.source_path for c in book.chapters]
         for chapter in book.chapters:
             assert f"`{chapter.source_path}`" in text, chapter.source_path
         assert OLD_MONOLITHS[book_id]["moved_sha256"] in text

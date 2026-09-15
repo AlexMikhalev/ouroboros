@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 import yaml
-from tests._governance_docs_shared import architecture_text, development_text
+from tests._governance_docs_shared import architecture_text
 
 REPO = Path(__file__).resolve().parents[1]
 RELEASE_VERSION = "6.92.1"
