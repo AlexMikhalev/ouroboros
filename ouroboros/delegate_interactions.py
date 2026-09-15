@@ -20,7 +20,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from ouroboros.delegate_output import _PAYLOAD_ENVELOPE_HEADROOM, _stage_full_output
-from ouroboros.delegate_shared import _emit, _fail, _owned_run, delegate_result
+from ouroboros.delegate_shared import AGENT_FAULT_CODE, SUBSTRATE_REFUSAL_CODE, _emit, _fail, _owned_run, delegate_result
 from ouroboros.tool_capabilities import tool_result_limit
 from ouroboros.tools.registry import ToolContext
 from ouroboros.tools.tool_result import ToolResult
@@ -499,7 +499,7 @@ def _delegate_answer(
                 # pending and the SAME answers stay valid.
                 return delegate_result({
                     "status": "subscription_window_exhausted",
-                    "ok": False, "host_code": "TOOL_REPORTED_FAILURE",
+                    "ok": False, "host_code": SUBSTRATE_REFUSAL_CODE,
                     "run_id": rid, "interaction_id": iid,
                     "accepted": False,
                     "reset_at": str(getattr(exc, "reset_at", "") or "") or None,
@@ -523,7 +523,8 @@ def _delegate_answer(
                 # A bodyless 404 is the daemon's own "no such run" — a definite
                 # absence, not an ambiguous transport.
                 return delegate_result({
-                    "status": "not_found", "run_id": rid, "interaction_id": iid,
+                    "status": "not_found", "ok": False, "host_code": SUBSTRATE_REFUSAL_CODE,
+                    "run_id": rid, "interaction_id": iid,
                     "accepted": False, "detail": str(exc),
                     "note": _ANSWER_NOTES["not_found"],
                 })
@@ -536,7 +537,10 @@ def _delegate_answer(
                 # through to delivery_unknown below, whose re-read correctly
                 # advises retrying the SAME answers while the row is pending.
                 return delegate_result({
-                    "status": "rejected", "run_id": rid, "interaction_id": iid,
+                    # The engine answered about these bytes: a definite refusal of
+                    # the model's own rows, recorded as the agent fault it is.
+                    "status": "rejected", "ok": False, "host_code": AGENT_FAULT_CODE,
+                    "run_id": rid, "interaction_id": iid,
                     "accepted": False, "detail": str(exc),
                     "note": _ANSWER_NOTES["rejected"] + (
                         f" This was a definite engine refusal (HTTP {status_code}): "
@@ -604,6 +608,9 @@ def _delegate_answer(
             "detail": str(body.get("message") or ""),
             "note": _ANSWER_NOTES.get(status, ""),
         }
+        if status == "rejected":
+            # The daemon's typed refusal of these rows: an agent fault, recorded.
+            result.update({"ok": False, "host_code": AGENT_FAULT_CODE})
         if source_receipt is not None:
             result["work_order_verification"] = source_receipt
         return delegate_result(result)

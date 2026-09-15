@@ -1031,3 +1031,18 @@ def test_expiry_notes_teach_the_escalation_verb():
                        "escalated a question to its human",
                        "goes to your human", "surface it to your human"):
             assert phrase not in text, (module.__name__, phrase)
+
+
+def test_definite_answer_refusals_publish_as_recorded_refusals(tmp_path, monkeypatch):
+    """Owner Q8A: a refusal the engine confirmed (rejected rows) is an agent fault,
+    an absent run a substrate refusal; neither is an OK observation."""
+    import ouroboros.tools.delegate as delegate
+    from ouroboros.delegate_shared import AGENT_FAULT_CODE
+
+    ctx = _answer_ctx(tmp_path)
+    _answer_stub(monkeypatch, result={"accepted": False, "status": "rejected", "message": "bad rows"})
+    _own_run(delegate)
+    out = delegate._delegate_answer(ctx, "run-1", "int-1", [{"question_id": "q1", "free_text": "x"}])
+    assert out.code == AGENT_FAULT_CODE and out.status != "ok"
+    assert json.loads(out.text)["status"] == "rejected"
+
