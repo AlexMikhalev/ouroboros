@@ -224,6 +224,19 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
+      - name: Set up Windows POSIX test utilities
+        if: runner.os == 'Windows'
+        id: posix-tools
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
+        with:
+          msystem: MSYS
+          release: false
+          update: true
+          install: rsync
+      - name: Select Windows POSIX test utilities
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: '"${{ steps.posix-tools.outputs.msys2-location }}\usr\bin" >> $env:GITHUB_PATH'
       # The hermetic commit gate runs this exact suite (ouroboros/preflight_node.py);
       # `shell: bash` keeps the glob working on the Windows runner too.
       - name: Run browser-module tests (node --test — mirrored by the hermetic commit gate)

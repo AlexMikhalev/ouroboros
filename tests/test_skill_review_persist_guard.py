@@ -340,6 +340,16 @@ def test_direct_review_ignores_historical_completed_job_hash(tmp_path, monkeypat
     assert load_review_state(drive_root, "alpha").content_hash == content_hash
 
 
+async def _wait_for_reconcile(task, started):
+    # Preparation includes filesystem work and imports, not a two-second contract.
+    # Still surface early lifecycle completion instead of waiting for a phase it skipped.
+    while not started.is_set():
+        if task.done():
+            result = await task
+            raise AssertionError(f"lifecycle finished before extension reconcile: {result!r}")
+        await asyncio.sleep(0.01)
+
+
 def test_cancellation_during_extension_reconcile_keeps_lifecycle_lane(tmp_path, monkeypatch):
     from ouroboros.skill_review import SkillReviewOutcome
     from ouroboros.skill_review_runner import run_skill_review_lifecycle
@@ -375,7 +385,7 @@ def test_cancellation_during_extension_reconcile_keeps_lifecycle_lane(tmp_path, 
 
     def fake_reconcile(*_args, **_kwargs):
         reconcile_started.set()
-        release_reconcile.wait(2)
+        release_reconcile.wait()
         return reconcile_receipt("extension_loaded", "ok")
 
     monkeypatch.setattr(runner, "_reconcile_extension_payload", fake_reconcile)
@@ -384,30 +394,33 @@ def test_cancellation_during_extension_reconcile_keeps_lifecycle_lane(tmp_path, 
         task = asyncio.create_task(
             run_skill_review_lifecycle(ctx, "alpha", source="test", review_impl=fake_review)
         )
-        assert await asyncio.to_thread(reconcile_started.wait, 2)
-        task.cancel()
-        await asyncio.sleep(0.05)
-        task.cancel()
-        await asyncio.sleep(0.05)
-        active = lifecycle_queue.queue_snapshot()["active"]
-        assert active is not None
-        assert active["target"] == "alpha"
-        quick = asyncio.create_task(
-            lifecycle_queue.run_lifecycle_job(
-                kind="review",
-                target="beta",
-                dedupe_key="review:beta:hash",
-                runner=lambda: asyncio.sleep(0, result={"quick": True}),
-                options=lifecycle_queue.LifecycleJobOptions(drive_root=drive_root),
+        try:
+            await _wait_for_reconcile(task, reconcile_started)
+            task.cancel()
+            await asyncio.sleep(0.05)
+            task.cancel()
+            await asyncio.sleep(0.05)
+            active = lifecycle_queue.queue_snapshot()["active"]
+            assert active is not None
+            assert active["target"] == "alpha"
+            quick = asyncio.create_task(
+                lifecycle_queue.run_lifecycle_job(
+                    kind="review",
+                    target="beta",
+                    dedupe_key="review:beta:hash",
+                    runner=lambda: asyncio.sleep(0, result={"quick": True}),
+                    options=lifecycle_queue.LifecycleJobOptions(drive_root=drive_root),
+                )
             )
-        )
-        await asyncio.sleep(0.05)
-        assert not quick.done()
-        release_reconcile.set()
-        result = await asyncio.wait_for(task, timeout=2)
-        assert result["status"] == "clean"
-        assert await asyncio.wait_for(quick, timeout=2) == {"quick": True}
-        assert lifecycle_queue.queue_snapshot()["active"] is None
+            await asyncio.sleep(0.05)
+            assert not quick.done()
+            release_reconcile.set()
+            result = await asyncio.wait_for(task, timeout=2)
+            assert result["status"] == "clean"
+            assert await asyncio.wait_for(quick, timeout=2) == {"quick": True}
+            assert lifecycle_queue.queue_snapshot()["active"] is None
+        finally:
+            release_reconcile.set()
 
     asyncio.run(main())
 
@@ -451,7 +464,7 @@ def test_heartbeat_continues_during_extension_reconcile(tmp_path, monkeypatch):
 
     def fake_reconcile(*_args, **_kwargs):
         reconcile_started.set()
-        release_reconcile.wait(2)
+        release_reconcile.wait()
         return reconcile_receipt("extension_loaded", "ok")
 
     monkeypatch.setattr(runner, "_reconcile_extension_payload", fake_reconcile)
@@ -460,22 +473,25 @@ def test_heartbeat_continues_during_extension_reconcile(tmp_path, monkeypatch):
         task = asyncio.create_task(
             run_skill_review_lifecycle(ctx, "alpha", source="test", review_impl=fake_review)
         )
-        assert await asyncio.to_thread(reconcile_started.wait, 2)
-        job_path = review_job_state_path(drive_root, "alpha")
-        before = json.loads(job_path.read_text(encoding="utf-8"))["last_heartbeat_at"]
-        # A bounded wait, not 20 x 10 ms: on windows-latest the heartbeat's atomic replace can
-        # lose a few rounds to this very poll holding the file open (sharing violation, logged
-        # and retried by the beat), and the clock ticks at ~15.6 ms — 200 ms saw no change.
-        for _ in range(60):
-            await asyncio.sleep(0.05)
-            after = json.loads(job_path.read_text(encoding="utf-8"))["last_heartbeat_at"]
-            if after != before:
-                break
-        assert after != before, "no heartbeat within 3 s while the reconcile blocks"
-        release_reconcile.set()
-        result = await asyncio.wait_for(task, timeout=2)
-        assert result["status"] == "clean"
-        final = json.loads(job_path.read_text(encoding="utf-8"))
-        assert final["status"] == "completed"
+        try:
+            await _wait_for_reconcile(task, reconcile_started)
+            job_path = review_job_state_path(drive_root, "alpha")
+            before = json.loads(job_path.read_text(encoding="utf-8"))["last_heartbeat_at"]
+            # A bounded wait, not 20 x 10 ms: on windows-latest the heartbeat's atomic replace can
+            # lose a few rounds to this very poll holding the file open (sharing violation, logged
+            # and retried by the beat), and the clock ticks at ~15.6 ms — 200 ms saw no change.
+            for _ in range(60):
+                await asyncio.sleep(0.05)
+                after = json.loads(job_path.read_text(encoding="utf-8"))["last_heartbeat_at"]
+                if after != before:
+                    break
+            assert after != before, "no heartbeat within 3 s while the reconcile blocks"
+            release_reconcile.set()
+            result = await asyncio.wait_for(task, timeout=2)
+            assert result["status"] == "clean"
+            final = json.loads(job_path.read_text(encoding="utf-8"))
+            assert final["status"] == "completed"
+        finally:
+            release_reconcile.set()
 
     asyncio.run(main())

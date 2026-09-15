@@ -121,14 +121,14 @@ def test_pinned_wait_rejects_other_catalog_account_before_new_generation(live_wa
     polls = []
 
     def catalog(source, profile=None, **kwargs):
-        assert profile == "account-a" and len(gateway.operations) == 1
+        assert profile == "account-a" and len(gateway.accepted_operations) == 1
         polls.append(profile)
         return {"source": source, "credentialProfileId": "account-b" if len(polls) == 1 else "account-a",
                 "models": [{"id": "exact-model"}]}
 
     monkeypatch.setattr(client, "claudexor_model_catalog", catalog)
     client.chat([], MODEL, model_role="light")
-    assert len(polls) == 2 and len(gateway.operations) == 2
+    assert len(polls) == 2 and len(gateway.accepted_operations) == 2
     assert all(payload["account"] == {"mode": "pin", "profileId": "account-a"} for payload, _key in gateway.uploads)
 
 
@@ -170,7 +170,7 @@ def test_main_wait_does_not_call_configured_api_fallback_before_owner_switch(mai
                                            before_dispatch=_candidate_before_dispatch(request_body, request))
 
     def catalog(*args, **kwargs):
-        assert api_calls == [] and len(gateway.operations) == 1
+        assert api_calls == [] and len(gateway.accepted_operations) == 1
         row = next(event for event in reversed(list(events.queue)) if event.get("type") == "task_model_wait")
         response = decide({"request_id": "switch-api", "decision_id": f"model_wait:task-one:{row['wait_id']}",
                            "revision": row["revision"], "action": "switch", "model": "openai::alternate",
@@ -184,7 +184,7 @@ def test_main_wait_does_not_call_configured_api_fallback_before_owner_switch(mai
         ctx.messages, tools, ctx.llm, ctx.drive_logs, lambda *_args, **_kwargs: None, queue.Queue(),
         task_id="task-one", drive_root=ctx.drive_root, event_queue=events)
     assert text == "Finished" and api_calls == ["openai"]
-    assert usage["_model_route"] == {} and len(gateway.operations) == 1
+    assert usage["_model_route"] == {} and len(gateway.accepted_operations) == 1
     assert any(message.get("content") == "verified read A" for message in ctx.messages)
     assert any(message.get("content") == "completed review B" for message in ctx.messages)
 
@@ -437,7 +437,7 @@ def test_real_main_control_preserves_candidate_without_new_summary(main_call, mo
         task_id="task-one", drive_root=ctx.drive_root, event_queue=events)
     assert len(held) == 1 and text == completed["message"]["content"]
     assert usage["reason_code"] == trace["forced_finalization"]["reason_code"] == expected_reason
-    assert len(gateway.operations) == 2  # Paid answer + interrupted call, never a summary retry.
+    assert len(gateway.accepted_operations) == 2  # Paid answer + interrupted call, never a summary retry.
     assert trace["forced_finalization"]["source"].startswith("model_wait_retained_candidate")
     if stop == "wrap_unknown":
         assert usage["_last_llm_error_kind"] == "provider_outcome_unknown"
@@ -510,7 +510,7 @@ def test_hard_cancel_returns_empty_events_to_real_worker_loop_and_keeps_queue_ow
             return None  # End the test's worker only after verifying retained ownership.
 
     worker_process.worker_main(1, Input(), events, str(ctx.drive_root), str(ctx.drive_root))
-    assert len(reads) == 2 and len(gateway.operations) == 1 and not crashes
+    assert len(reads) == 2 and len(gateway.accepted_operations) == 1 and not crashes
     assert ledger(ctx.drive_root)[-1]["state"] == "unresolved"
 
 

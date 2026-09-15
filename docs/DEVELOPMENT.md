@@ -1944,6 +1944,10 @@ both critical. The imperatives:
   invariant and the tool description; every other guard (owner terminality,
   top-level principal, proven drift, protected paths, staged-never-committed)
   is unchanged (`tests/test_delegated_run_isolation_orphans.py`).
+  Snapshot tests compare raw LF/CRLF inputs under Git checkout filters, require
+  zero patch before child edits, and retain normal Git apply semantics afterwards.
+  Copy failures or a source change against the baseline leave no registered
+  snapshot or pinned ref (`tests/test_snapshot_file_inputs.py`).
 - Outcome honesty: a delegating parent must not produce a clean no-tool
   final answer while direct children run undecided — one bounded absorption
   reminder, then best-effort (`children_unabsorbed`); while that gate is
@@ -2210,7 +2214,14 @@ Focused regressions: `test_review_late_cas_recovery.py`, `test_delivery_control_
   operation; never inject its credentials, run its tools, compact inside the
   adapter or silently repeat a generation. Recover a local connection loss using
   the same operation ID; record unknown outcomes as unknown. ACK only after the
-  existing private CAS owns the exact result. Optional host hints must be chosen
+  existing private CAS owns the exact result. Failed-response capture uses the
+  operation catalog's optional query, frozen before create and reused with the
+  same idempotency key; absence preserves the strict legacy result shape. Keep
+  full received bytes/exception chains private and compact diagnostics in the
+  ordinary problem context. A known terminal with unusable output is a settled
+  provider result plus local rejection, never unknown or not-dispatched: preserve
+  both existing stream-rejection markers across sync, async and process boundaries.
+  Local rejection must not rotate accounts. Optional host hints must be chosen
   by their caller according to transport capability; explicit unsupported options
   refuse, rather than being silently removed and retried. Record submitted model
   options beside the engine's applied options on the usage row; an absent report
@@ -2428,8 +2439,11 @@ by "Provider Independence" above. Call-site imperatives:
   on the wire before a later reservation can be refused), so the record keeps
   the attempt booked and the budget terminal, not the provider terminal, ends
   the round; the bounded repeat rail belongs to interactive primary rounds. Ordinary managed
-  tasks and native API children use upstream-observed continuation, while exact
-  session nanny routes keep their independent hold. Every other caller — forced-final, fallback
+  tasks and native API children use upstream-observed continuation. Exact
+  session supervisors first try the live-leaf hold and otherwise use ordinary
+  managed recovery for their own model; no consumed/terminal/patch-disposition
+  predicate gates cognition. A successful hold closes and clears any prior
+  transport episode, so its acknowledged wake alone resumes the model. Every other caller — forced-final, fallback
   candidates, review actors, safety, external-harness delegated runs — keeps
   `transport_death_retries=0`. A round that holds a transport-death repeat
   record sends nothing further except the typed-death repeats — a repeat that

@@ -127,7 +127,7 @@ class Gateway:
         self.results = results or [result()]
         self.dispatch = dispatch or ["response_received"] * len(self.results)
         self.uploads = []
-        self.operations = {}
+        self.accepted_operations = {}
         self.creates = []
         self.reads = []
         self.acks = []
@@ -138,17 +138,25 @@ class Gateway:
         self.pending = False
         self.read_error = False
         self.raw_result = None
+        self.operation_catalog = []
+        self.catalog_reads = 0
+        self.capture_requests = []
+
+    def operations(self):
+        self.catalog_reads += 1
+        return deepcopy(self.operation_catalog)
 
     def upload_model_request(self, payload, *, idempotency_key):
         self.uploads.append((deepcopy(payload), idempotency_key))
         return REF
 
-    def create_model_operation(self, ref, *, idempotency_key):
+    def create_model_operation(self, ref, *, idempotency_key, **options):
         assert ref == REF
+        self.capture_requests.append(deepcopy(options))
         self.creates.append(idempotency_key)
-        if idempotency_key not in self.operations:
-            self.operations[idempotency_key] = len(self.operations)
-        index = self.operations[idempotency_key]
+        if idempotency_key not in self.accepted_operations:
+            self.accepted_operations[idempotency_key] = len(self.accepted_operations)
+        index = self.accepted_operations[idempotency_key]
         if self.lose_create:
             self.lose_create = False
             raise ClaudexorUnavailable("daemon_unreachable", "lost create reply")
@@ -162,7 +170,8 @@ class Gateway:
 
     def detail(self, index):
         value = self.results[index]
-        return {"id": f"op-{index}", "state": "running" if self.pending else "succeeded" if value["outcome"] == "completed" else "failed",
+        succeeded = value["outcome"] == "completed" and value["message"] is not None
+        return {"id": f"op-{index}", "state": "running" if self.pending else "succeeded" if succeeded else "failed",
                 "dispatch": {"state": "started" if self.pending else self.dispatch[index], "route": value["route"]},
                 "response": {"state": "absent"} if self.pending else {"state": "ready", "ref": REF},
                 "problem": value["problem"]}
@@ -307,7 +316,7 @@ def test_lost_create_reply_rejoins_without_second_physical_attempt(setup):
     answer, usage = client.chat([{"role": "user", "content": "hi"}], MODEL)
     assert answer["content"] == "Ответ 🐍"
     assert len(gateway.creates) == 2 and gateway.creates[0] == gateway.creates[1]
-    assert len(gateway.operations) == 1 and len(usage["ledger_attempt_ids"]) == 1
+    assert len(gateway.accepted_operations) == 1 and len(usage["ledger_attempt_ids"]) == 1
     assert [row["state"] for row in ledger(root)] == ["reserved", "dispatched", "settled"]
 
 
@@ -393,7 +402,7 @@ def test_control_connect_failure_after_acceptance_stays_unknown(setup):
     error = raised.value
     assert error.code == "model_outcome_unknown" and error.operation_id == "op-0"
     assert not is_pre_dispatch_transport_failure(error) and not is_retryable_transport_death(error)
-    assert ledger(root)[-1]["state"] == "unresolved" and len(gateway.operations) == 1
+    assert ledger(root)[-1]["state"] == "unresolved" and len(gateway.accepted_operations) == 1
     assert not gateway.acks
 
 
@@ -408,7 +417,7 @@ def test_proven_never_started_quota_attempts_do_not_spend_generation_limit(setup
         client.chat([], MODEL)
         with pytest.raises(ua.PhysicalAttemptLimitExceeded):
             client.chat([], MODEL)
-    assert len(gateway.operations) == 4
+    assert len(gateway.accepted_operations) == 4
     assert [r['state'] for r in ledger(root)].count('settled') == 1
 
 
@@ -420,7 +429,7 @@ def test_unknown_outcome_keeps_its_generation_limit_claim(setup):
             client.chat([], MODEL)
         with pytest.raises(ua.PhysicalAttemptLimitExceeded):
             client.chat([], MODEL)
-    assert len(gateway.operations) == 1
+    assert len(gateway.accepted_operations) == 1
 
 
 def test_confirmed_provider_failure_settles_real_usage_before_raising(setup):
@@ -466,7 +475,7 @@ def test_field_refusal_retains_then_acknowledges_once_with_display(setup, asynch
     assert f"provider_code={vendor}, parameter=input" in error.display_message[:220]
     assert error.physical_attempt_capture.state == "settled"
     assert error.usage["claudexor"]["result_custody"]["state"] == "acknowledged"
-    assert len(gateway.operations) == len(gateway.creates) == len(gateway.acks) == 1
+    assert len(gateway.accepted_operations) == len(gateway.creates) == len(gateway.acks) == 1
     assert [row["state"] for row in ledger(root)] == ["reserved", "dispatched", "settled"]
 
 
@@ -484,7 +493,7 @@ def test_proven_not_started_releases_and_never_fabricates_provider_usage(setup, 
     assert raised.value.physical_attempt_capture.provider_error_type == (vendor or "ClaudexorModelNotDispatched")
     assert gateway.uploads[0][0]["options"]["temperature"] == 0.2
     assert [row["state"] for row in ledger(root)] == ["reserved", "dispatched", "released"]
-    assert len(gateway.operations) == 1
+    assert len(gateway.accepted_operations) == 1
 
 
 def test_typed_subject_refusal_suppresses_next_auto_preference(setup):
@@ -519,7 +528,7 @@ def test_native_reset_requires_actual_account_change_and_keeps_canonical_tools(s
     if not set(change) & {"credentialProfileId", "accountFingerprint"}:
         with pytest.raises(transport.ClaudexorModelNotDispatched):
             client.chat(messages, MODEL)
-        assert len(gateway.operations) == 1
+        assert len(gateway.accepted_operations) == 1
     else:
         _, usage = client.chat(messages, MODEL)
         assert len(usage["ledger_attempt_ids"]) == 2
@@ -540,7 +549,7 @@ def test_ack_failure_preserves_paid_result_and_does_not_repeat(setup, error):
     answer, usage = client.chat([{"role": "user", "content": "hi"}], MODEL)
     assert answer == result()["message"] and retained(root) == result()
     assert usage["claudexor"]["result_custody"]["state"] == "pending"
-    assert len(gateway.operations) == 1 and ledger(root)[-1]["state"] == "settled"
+    assert len(gateway.accepted_operations) == 1 and ledger(root)[-1]["state"] == "settled"
 
 
 def test_failed_local_result_retention_withholds_ack_but_keeps_answer(setup, monkeypatch):
@@ -586,7 +595,7 @@ def test_async_tools_and_capture_remain_in_callers_context(setup):
         assert answer == result()["message"]
 
     asyncio.run(run())
-    assert len(gateway.operations) == 1 and ledger(root)[-1]["state"] == "settled"
+    assert len(gateway.accepted_operations) == 1 and ledger(root)[-1]["state"] == "settled"
 
 
 def test_gigachat_async_tools_still_refuse_before_provider_io(setup, monkeypatch):
@@ -685,7 +694,7 @@ def test_observer_failure_does_not_lose_response_or_repeat_generation(setup):
 
     answer, _ = client.chat([], MODEL, model_operation_observer=failed)
     assert answer == result()["message"] and retained(root) == result()
-    assert len(gateway.operations) == 1 and ledger(root)[-1]["state"] == "settled"
+    assert len(gateway.accepted_operations) == 1 and ledger(root)[-1]["state"] == "settled"
 
 
 def test_async_local_switch_projects_its_new_capture_to_the_caller(setup, monkeypatch):
@@ -758,7 +767,7 @@ def test_unknown_engine_outcome_retains_response_without_resend_or_false_zero(se
         client.chat([{"role": "user", "content": "hi"}], MODEL)
     assert raised.value.code == "model_outcome_unknown" and not raised.value.type
     assert retained(root) == gateway.results[0] and not gateway.acks
-    assert len(gateway.operations) == 1 and ledger(root)[-1]["state"] == "unresolved"
+    assert len(gateway.accepted_operations) == 1 and ledger(root)[-1]["state"] == "unresolved"
     assert ledger(root)[-1].get("cost_usd") is None
 
 
@@ -770,7 +779,7 @@ def test_continuation_repair_is_bounded_to_one_unstarted_operation(setup):
     gateway.dispatch = ["not_started", "not_started"]
     with pytest.raises(transport.ClaudexorModelNotDispatched):
         client.chat([result()["message"]], MODEL)
-    assert len(gateway.operations) == 2
+    assert len(gateway.accepted_operations) == 2
     assert [row["state"] for row in ledger(root)] == ["reserved", "dispatched", "released"] * 2
 
 
@@ -783,7 +792,7 @@ def test_unreleased_attempt_cannot_authorize_continuation_repair(setup, monkeypa
     with pytest.raises(transport.ClaudexorModelNotDispatched) as raised:
         client.chat([result()["message"]], MODEL)
     assert raised.value.physical_attempt_capture.state == "unresolved"
-    assert len(gateway.operations) == 1 and ledger(root)[-1]["state"] == "unresolved"
+    assert len(gateway.accepted_operations) == 1 and ledger(root)[-1]["state"] == "unresolved"
 
 
 def test_model_switch_strips_native_envelope_but_not_tool_results():
@@ -802,7 +811,7 @@ def test_caller_control_interrupts_pending_operation_without_false_success(setup
     gateway.pending = True
     with pytest.raises(transport.ClaudexorModelError) as raised:
         client.chat([{"role": "user", "content": "hi"}], MODEL,
-                    model_poll_control=lambda: "deadline_exceeded" if gateway.operations else None)
+                    model_poll_control=lambda: "deadline_exceeded" if gateway.accepted_operations else None)
     assert raised.value.control_reason == "deadline_exceeded"
     assert gateway.cancels == [("op-0", "host_cancelled")]
     assert ledger(root)[-1]["state"] == "unresolved" and not gateway.acks
@@ -873,7 +882,7 @@ def test_missing_old_account_does_not_authorize_native_reset(setup):
     gateway.dispatch = ["not_started"]
     with pytest.raises(transport.ClaudexorModelNotDispatched):
         client.chat([message], MODEL)
-    assert len(gateway.operations) == 1
+    assert len(gateway.accepted_operations) == 1
 
 
 def test_caller_control_before_create_proves_no_dispatch(setup):

@@ -66,7 +66,7 @@ def test_response_received_with_proved_no_generation_reprepares_standard(setup, 
     _message, usage = asyncio.run(client.chat_async(**kwargs)) if asynchronous else client.chat(**kwargs)
     first, second = [row[0] for row in gateway.uploads]
     assert {**first, "options": {**first["options"], "processingPreference": "standard"}} == second
-    assert len(calls) == 1 and len(gateway.operations) == 2 and len(gateway.acks) == 2
+    assert len(calls) == 1 and len(gateway.accepted_operations) == 2 and len(gateway.acks) == 2
     finals = list({row["attempt_id"]: row for row in ledger(root)}.values())
     assert [row["state"] for row in finals] == ["released", "settled"]
     assert finals[0]["candidate_raw_sha256"] != finals[1]["candidate_raw_sha256"]
@@ -94,7 +94,7 @@ def test_only_explicit_no_start_advisory_proof_allows_retry(setup, axis):
             cx.chat_claudexor(target, [], None, service_tier="flex")
         else:
             client.chat([], MODEL, **kwargs)
-    assert len(gateway.operations) == 1
+    assert len(gateway.accepted_operations) == 1
     if axis.startswith("unknown"):
         assert raised.value.code == "model_outcome_unknown" and ledger(root)[-1]["state"] == "unresolved"
     if axis == "exact_native":
@@ -143,7 +143,7 @@ def test_one_repair_on_each_axis_uses_the_same_bounded_preparation_loop(setup, o
     gateway.results = [value for value, _dispatch in pair] + [{**result(), "processing": receipt()}]
     gateway.dispatch = [dispatch for _value, dispatch in pair] + ["response_received"]
     client.chat([result()["message"]], MODEL, processing_preference="economy")
-    assert len(gateway.operations) == 3
+    assert len(gateway.accepted_operations) == 3
     assert [row["state"] for row in {r["attempt_id"]: r for r in ledger(root)}.values()] == ["released", "released", "settled"]
 
 
@@ -167,7 +167,7 @@ def test_standard_must_be_supported_before_emitting_a_processing_retry(setup, mo
     gateway.results = [refusal()]
     with pytest.raises(cx.ClaudexorModelNotDispatched):
         client.chat([], MODEL, processing_preference="economy")
-    assert len(gateway.operations) == 1, "Do not retry by omitting unsupported Standard and inheriting native premium"
+    assert len(gateway.accepted_operations) == 1, "Do not retry by omitting unsupported Standard and inheriting native premium"
 
 
 def test_old_facade_does_not_send_new_query_parameter(monkeypatch):

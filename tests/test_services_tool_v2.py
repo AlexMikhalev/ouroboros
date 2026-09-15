@@ -790,7 +790,7 @@ def test_light_service_python_body_executes_once_with_bound_environment(tmp_path
     monkeypatch.setattr("ouroboros.safety.check_safety", supervisor)
     body = ("import os, time\nfrom pathlib import Path\n"
             f"p = Path({selected_path!r})\np.parent.mkdir(parents=True, exist_ok=True)\n"
-            "with p.open('a') as output: output.write('once\\n')\n"
+            "with p.open('a', newline='') as output: output.write('once\\n')\n"
             + "\n".join(f"assert os.environ[{key!r}] == {child_env[key]!r}" for key in
                         ("HOME", "USERPROFILE", "OUROBOROS_DATA_DIR", "OUROBOROS_SETTINGS_PATH"))
             + "\nprint('READY', flush=True)\ntime.sleep(60)\n")

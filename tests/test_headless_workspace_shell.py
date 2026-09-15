@@ -229,7 +229,7 @@ def test_workspace_shell_blocks_nested_symlink_escape_absolute_path(tmp_path, mo
     ctx.task_constraint = TaskConstraint(mode="acting_subagent", surface="external_workspace", write_root=str(workspace))
     registry.set_context(ctx)
 
-    result = registry.execute("run_command", {"cmd": f"touch {outlink / 'escaped.txt'}"})
+    result = registry.execute("run_command", {"cmd": ["touch", str(outlink / "escaped.txt")]})
     relative_result = registry.execute("run_command", {"cmd": "touch outlink/escaped-relative.txt"})
     bare_result = registry.execute("run_command", {"cmd": "touch outlink"})
     executable_name_result = registry.execute("run_command", {"cmd": ["touch", "touch"]})

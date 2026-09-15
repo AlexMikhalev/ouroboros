@@ -97,7 +97,7 @@ def test_wide_route_switch_sends_once_and_reports_actual_model(packed):
     assert text.endswith(REPORT)
     assert any(model == MODEL_B for model, _, _ in packed.windows)
     assert packed.engine.uploads[-1][0]["messages"][-1]["content"] == PACK
-    assert len(packed.engine.operations) == 2
+    assert len(packed.engine.accepted_operations) == 2
     assert sum(row["state"] == "settled" for row in ledger(packed.root)) == 1
     assert packed.records[-1][0].model == MODEL_B
     assert packed.records[-1][0].session_profile == "account-b"
@@ -110,7 +110,7 @@ def test_subfloor_switch_refuses_before_new_send_and_keeps_prior_custody(packed,
     text, usage = packed.run()
     assert usage["execution_status"] == "infra_failed"
     assert "200,000" in text and "1,000,000" in text
-    assert len(packed.engine.operations) == 1
+    assert len(packed.engine.accepted_operations) == 1
     assert sum(row["state"] == "settled" for row in ledger(packed.root)) == int(prior_dispatch == "response_received")
     assert any(path.name.endswith("_model_response.json")
                for path in (packed.root / "observability" / "calls").rglob("*.json"))
@@ -125,7 +125,7 @@ def test_observed_only_subfloor_keeps_paid_report_with_actual_account(packed):
     assert "incomplete=none" not in text and text.endswith(REPORT)
     assert packed.windows[-1][2]["accountFingerprint"] == "identity-b"
     assert packed.records[-1][2]["status"] == "error"
-    assert len(packed.engine.operations) == 2
+    assert len(packed.engine.accepted_operations) == 2
     assert sum(row["state"] == "settled" for row in ledger(packed.root)) == 1
     custody = usage["claudexor"]["result_custody"]
     assert custody["state"] == "acknowledged"
@@ -147,7 +147,7 @@ def test_auto_actual_account_is_revalidated_without_another_generation(packed, w
     assert packed.engine.uploads[0][0]["account"] == {"mode": "auto"}
     assert packed.windows[-1][1] == "account-b"
     assert packed.windows[-1][2]["accountFingerprint"] == "identity-b"
-    assert len(packed.engine.operations) == 1
+    assert len(packed.engine.accepted_operations) == 1
     assert sum(row["state"] == "settled" for row in ledger(packed.root)) == 1
 
 
@@ -166,7 +166,7 @@ def test_changed_wide_route_still_checks_full_input_cap(packed, monkeypatch):
     text, usage = packed.run()
     assert usage["execution_status"] == "infra_failed"
     assert "input" in text.lower() and MODEL_B in text
-    assert len(packed.engine.operations) == 1
+    assert len(packed.engine.accepted_operations) == 1
 
 
 def test_resolve_packed_window_forwards_observed_account(monkeypatch):

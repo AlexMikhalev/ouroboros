@@ -34,6 +34,9 @@ def _install_child_fixture(mode, events_path):
         polls = 0
         lost = False
 
+        def operations(self):
+            return []  # Legacy model-operation catalog.
+
         def upload_model_request(self, payload, *, idempotency_key):
             event("upload", key=idempotency_key, payload=payload)
             return REF

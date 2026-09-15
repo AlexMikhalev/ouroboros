@@ -14,12 +14,12 @@ from ouroboros.tools.registry import ToolContext, ToolRegistry
 
 pytestmark = pytest.mark.serial
 
-_PYTHON = "import sys\nfrom pathlib import Path\nprint(*sys.argv[1:], sep='\\n')\nwith Path('once.txt').open('a') as f: f.write('once\\n')\n"
+_PYTHON = "import sys\nfrom pathlib import Path\nprint(*sys.argv[1:], sep='\\n')\nwith Path('once.txt').open('a', newline='') as f: f.write('once\\n')\n"
 _SCRIPTS = {
     "python3": _PYTHON,
     "python_absolute": _PYTHON,
     "node": "console.log(process.argv.slice(2).join('\\n')); require('node:fs').appendFileSync('once.txt', 'once\\n');",
-    "perl": "print join(\"\\n\", @ARGV), \"\\n\"; open(my $f, '>>', 'once.txt') or die $!; print {$f} \"once\\n\"; close($f);",
+    "perl": "print join(\"\\n\", @ARGV), \"\\n\"; open(my $f, '>>', 'once.txt') or die $!; binmode($f); print {$f} \"once\\n\"; close($f);",
     "zsh": "printf '%s\\n' \"$@\"\nprintf '%s\\n' once >> once.txt\n",
     "lua": "print(table.concat(arg, '\\n')); local f = assert(io.open('once.txt', 'a')); f:write('once\\n'); f:close()",
 }
