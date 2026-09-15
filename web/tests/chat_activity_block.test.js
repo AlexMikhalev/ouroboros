@@ -349,3 +349,28 @@ test('addressing beside real work keeps the block: the receipt row renders insid
         assert.ok(g.rows().some((n) => /2 tool calls/.test(n.innerHTML)));
     } finally { g.close(); }
 });
+
+// V1: Stop stays reachable while a turn runs. A replayed progress row with the
+// host-attested marker is "Activity unconfirmed" until a live source vouches
+// for the root; the census that lists it restores Stop — on the managed card
+// and on the direct block alike — and the same reading is the block's own
+// Stop term, so a block never stands on a Stop it hides.
+test('Stop stays reachable on a census-vouched root, managed card and direct block alike', async () => {
+    const progress = { task_id: 'live-root', role: 'assistant', is_progress: true, text: 'Working on the big thing',
+        content: 'Working on the big thing', cancelable: true, ts: TS, chat_id: 1 };
+    for (const kind of ['managed_task', 'direct_chat']) {
+        const f = fixture([progress]);
+        try {
+            await f.instance.refreshHistory({ revision: 1 });
+            assert.ok(f.card('live-root'), 'the narration is content');
+            assert.equal(f.card('live-root').querySelector('[data-cancel-run]'), null, 'unconfirmed until a live source answers');
+            assert.match(f.meta('live-root'), /Activity unconfirmed/);
+            f.census([{ activity_id: 'live-root', chat_id: 1, kind, phase: kind === 'managed_task' ? 'working' : 'thinking' }]);
+            const stop = f.card('live-root').querySelector('[data-cancel-run]');
+            assert.ok(stop, `the census restores Stop on a ${kind} root`);
+            assert.equal(stop.textContent, 'Stop…');
+            assert.equal(f.card('live-root').dataset.direct, kind === 'managed_task' ? '0' : '1');
+            assert.doesNotMatch(f.meta('live-root'), /unconfirmed|unavailable/);
+        } finally { f.close(); }
+    }
+});

@@ -480,8 +480,9 @@ A task's activity block is in the transcript exactly when the record already
 holds something to show — one predicate (`web/modules/chat.js::blockVisible`),
 re-read at every mutation, with no sticky flag: an always-shown kind
 (Background consciousness, Presence); open owner attention (a model wait, a
-pending stop, a host-attested Stop); a child card; a review group; a content
-row; a terminal outcome other than Done. The completion note is not content:
+pending stop, a host-attested Stop the record still offers — the same reading
+the control uses, so a block never stands on a Stop it hides); a child card; a
+review group; a content row; a terminal outcome other than Done. The completion note is not content:
 a turn that ran no tool and finished Done leaves no block — live, after a
 reload and after a reconnect. Successful tool calls are compact one-line rows
 (`tool · target`, then `✓ duration`; a failure or timeout evolves the same

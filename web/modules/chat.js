@@ -759,14 +759,13 @@ export function createChatInstance({
 
     // The ONE rule for a task's block being in the transcript (docs/DESIGN.md
     // "Conversation activity block"): facts the record holds, re-read at every
-    // mutation, no sticky flag. The completion note and a receipt row (a
-    // host-stamped addressing call, or its replay summary) are not content.
+    // mutation, no sticky flag; the completion note and receipt rows are not content.
     function blockVisible(record) {
         if (!record || record.isSubagent) return true;
         const id = record.groupId;
         return shouldAlwaysShowTaskCard(id)
             || !!(record.modelWaiting || record.cancelPendingPolicy || record.reviewAnchor)
-            || (!record.finished && cancelableTaskIds.has(id))
+            || stopEligible(record)
             || record.reviewController?.groups.size > 0
             || [...subagentChildParents.values()].some((info) => info.parentId === id)
             || record.items.some((item) => !item.receipt && !String(item.dedupeKey || '').startsWith('task_done|'))
@@ -925,19 +924,21 @@ export function createChatInstance({
         return withStableViewport(() => syncCancelRunButtonMutation(record));
     }
 
+    // The one reading of "this record offers Stop": the block predicate and the
+    // control share it, so a block never stands on a Stop it hides.
+    const stopEligible = (record) => cancelRunEligibility({
+        groupId: record.groupId, isSubagent: record.isSubagent, finished: record.finished,
+        cancelable: !record.historicalUnavailable && !record.historicalUnconfirmed && cancelableTaskIds.has(record.groupId),
+        converted: record.root.dataset.projectCreated === '1',
+    });
+
     function syncCancelRunButtonMutation(record) {
         if (!record?.root) return false;
-        const eligible = cancelRunEligibility({
-            groupId: record.groupId,
-            isSubagent: record.isSubagent,
-            finished: record.finished,
-            cancelable: !record.historicalUnavailable && !record.historicalUnconfirmed && cancelableTaskIds.has(record.groupId),
-            converted: record.root.dataset.projectCreated === '1',
-        });
+        const eligible = stopEligible(record);
         const existing = record.root.querySelector('[data-cancel-run]');
         if (!eligible) {
             if (!existing) return false;
-            existing?.remove();
+            existing.remove();
             record.cancelRunBtn = null;
             return true;
         }
@@ -1037,9 +1038,7 @@ export function createChatInstance({
         } catch (exc) {
             if (exc?.status === 404 || record.finished) {
                 // Completion won: remove the dead action, then reconcile detail.
-                cancelableTaskIds.delete(taskId);
-                record.cancelable = false;
-                syncCancelRunButton(record);
+                revokeManagedTaskCancelAuthority(taskId);
                 try {
                     reconcileCancelCardFromDetail(record, taskId, await fetchTaskDetail(taskId));
                 } catch {
@@ -1283,9 +1282,8 @@ export function createChatInstance({
             metaEl: root.querySelector('[data-live-meta]'),
             reviewSummaryEl: root.querySelector('[data-live-review-summary]'),
             toggleEl: root.querySelector('[data-live-toggle]'),
-            // Both actions render lazily from the record's facts: "Turn into
-            // project" by syncBlockChrome, Stop by syncCancelRunButton once the
-            // host-attested cancelable marker is known.
+            // Both actions render lazily from the record's facts (syncBlockChrome,
+            // syncCancelRunButton).
             turnProjectBtn: null,
             cancelRunBtn: null,
             timelineEl: root.querySelector('[data-live-timeline]'),
@@ -3441,9 +3439,7 @@ export function createChatInstance({
     function revokeManagedTaskCancelAuthority(taskId) {
         cancelableTaskIds.delete(taskId);
         const record = liveCardRecords.get(taskId);
-        if (!record) return;
-        record.cancelable = false;
-        syncCancelRunButton(record);
+        if (record) syncCancelRunButton(record);
     }
 
     async function reconcileMissingManagedTask(taskId, onDomWrite = withStableViewport) {
