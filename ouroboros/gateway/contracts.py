@@ -199,11 +199,7 @@ class ChatOutbound(TypedDict):
     # endpoint uses, supervisor.workers.direct_chat_turn); never a subagent
     # frame, never an ephemeral decision turn. Gates the UI "Cancel run" action.
     cancelable: NotRequired[bool]
-    # The lane fact of a direct conversation turn, stamped by value on the
-    # turn's own frames (supervisor/log_addressing.py TurnEventQueue) so the
-    # chat block reads it before any census: present and true only for a
-    # direct turn's progress/tool frames and on every task_done.
-    _is_direct_chat: NotRequired[bool]
+    _is_direct_chat: NotRequired[bool]  # lane fact stamped on a direct turn's own frames
     # Monetary projections are nullable when the physical-attempt ledger cannot
     # be read.  ``None`` is deliberately distinct from a confirmed $0 result.
     # C2 (owner 10=B) named these the HONEST names — accounted upper bounds,
@@ -645,11 +641,10 @@ class FsDirsResponse(TypedDict):
 
 
 class TaskNamedOutbound(TypedDict):
-    """Outbound notice that a project name was coined for a task's card (the inline
-    naming of a turn-into-project conversion; direct turns are not named in the
-    background). The client sets the live card's title to ``suggested_name``. Not
-    chat-scoped — carries only ``task_id`` and is a no-op unless a thread already
-    holds that card."""
+    """Outbound notice that a project name was coined for a task's card (inline naming of
+    a turn-into-project conversion; direct turns are not named in the background). The
+    client sets the live card's title to ``suggested_name``. Not chat-scoped — carries
+    only ``task_id`` and is a no-op unless a thread already holds that card."""
 
     type: Literal["task_named"]
     task_id: str

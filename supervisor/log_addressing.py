@@ -206,8 +206,13 @@ class TurnEventQueue:
                 # it rides its narration rows (events_chat_delivery stamps those
                 # through the same registry): a turn that only calls tools
                 # offers Stop on the block its rows already justify, and a turn
-                # that does neither keeps no block to hang a Stop on.
-                if data.get("type") in ("tool_call_started", "tool_call_finished"):
+                # that does neither keeps no block to hang a Stop on. An
+                # addressing call (``routing_action``) is a receipt, not work:
+                # it carries no marker, so an addressing-only turn keeps no block.
+                if (
+                    data.get("type") in ("tool_call_started", "tool_call_finished")
+                    and not data.get("routing_action")
+                ):
                     data.setdefault("cancelable", True)
         return item
 

@@ -471,6 +471,9 @@ def test_turn_event_queue_stamps_by_value_at_the_producer():
     assert proxy.stamp({"type": "task_done", "task_id": "turn1", "_is_direct_chat": False})["_is_direct_chat"] is False
     tool = proxy.stamp({"type": "log_event", "data": {"type": "tool_call_started", "task_id": "turn1", "tool": "read_file"}})
     assert tool["data"]["cancelable"] is True and tool["data"]["_is_direct_chat"] is True
+    receipt = proxy.stamp({"type": "log_event", "data": {
+        "type": "tool_call_started", "task_id": "turn1", "tool": "promote_chat_to_task", "routing_action": "promote_chat_to_task"}})
+    assert "cancelable" not in receipt["data"] and receipt["data"]["_is_direct_chat"] is True
 
     # Another task's event and an already-addressed event are left alone.
     other = {"type": "log_event", "data": {"type": "x", "task_id": "other"}}
