@@ -1,6 +1,7 @@
 """Protected operands follow real file roles and independent shell redirections."""
 from __future__ import annotations
 
+import os
 import pathlib
 import shlex
 import sys
@@ -95,8 +96,11 @@ def test_execute_output_capture_and_ordinary_input_remain_usable(protected):
     assert result.status == "ok" and (workspace / "copy.txt").read_bytes() == (workspace / "driver.txt").read_bytes(), result.text
 
 
-def test_literal_argv_operators_globs_and_descriptors_keep_their_roles(protected):
+def test_literal_argv_operators_globs_and_descriptors_keep_their_roles(protected, monkeypatch):
     registry, _ctx, reference, _workspace = protected
+    # Native Windows parents otherwise trigger MSYS/Cygwin globbing before rm sees argv.
+    for name in ("MSYS", "CYGWIN"):
+        monkeypatch.setenv(name, f"{os.environ.get(name, '')} noglob".strip())
     original = reference.read_bytes()
     for cmd in (["echo", "<", "reference"], ["echo", ">", "reference"], ["rm", "-f", "ref*"]):
         result = registry.execute_result("run_command", {"cmd": cmd})

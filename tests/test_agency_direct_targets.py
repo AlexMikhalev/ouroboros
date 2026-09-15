@@ -1,6 +1,7 @@
 """Certain utility writes use resource authority without interpreting program bodies."""
 from __future__ import annotations
 
+import os
 import pathlib
 import shlex
 import sys
@@ -189,7 +190,9 @@ def test_explicit_utility_roles_preserve_source_and_destination(resources, monke
         "tar_archive_first": ["tar", "-xf", str(archive), "-C", str(target)],
         "tar_directory_first": ["tar", "-C", str(target), "-xf", str(archive)],
         "gzip": ["gzip", str(output)],
-        "rsync": ["rsync", str(source), str(output)],
+        # A Windows drive colon selects an rsync remote host; these operands are local.
+        "rsync": ["rsync", pathlib.Path(os.path.relpath(source, workspace)).as_posix(),
+                  pathlib.Path(os.path.relpath(output, workspace)).as_posix()],
     }
     declared = target if utility.startswith("tar_") else pathlib.Path(str(output) + ".gz") if utility == "gzip" else output
     result = registry.execute_result("run_command", {"cmd": commands[utility], "outputs": [str(declared)]})

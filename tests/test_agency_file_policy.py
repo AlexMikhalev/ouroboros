@@ -120,7 +120,7 @@ def test_declared_outputs_are_created_once_and_captured_with_exact_bytes(files):
     registry, ctx, _home, _work, data = files
     payloads = {"report.log": "Log deliverable\n", "build.manifest": "Manifest deliverable\n", "tokens.json": '{"count":7}\n'}
     body = "from pathlib import Path\n"
-    body += "for name, text in " + repr(payloads) + ".items():\n Path(name).write_text(text, encoding='utf-8')\n"
+    body += "for name, text in " + repr(payloads) + ".items():\n Path(name).write_bytes(text.encode('utf-8'))\n"
     body += "with Path('executions.txt').open('a') as out: out.write('once\\n')\n"
     result = registry.execute_result("run_command", {"cmd": [sys.executable, "-c", body],
         "cwd": "task_drive", "outputs": list(payloads)})
@@ -145,7 +145,7 @@ def test_workspace_patch_keeps_log_manifest_and_token_report(files, tmp_path):
         subprocess.run(["git", *args], cwd=work, check=True, capture_output=True)
     payloads = {"report.log": "LOG_PAYLOAD\n", "build.manifest": "MANIFEST_PAYLOAD\n", "tokens.json": '{"report":7}\n'}
     for name, content in payloads.items():
-        (work / name).write_text(content, encoding="utf-8")
+        (work / name).write_bytes(content.encode("utf-8"))
     output = tmp_path / "captured"
     _records, manifest = write_workspace_patch_artifacts(work, output, task={})
     assert set(payloads) <= set(manifest["untracked_included"]), manifest

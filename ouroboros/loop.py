@@ -551,7 +551,6 @@ def run_llm_loop(
                 active_model, active_use_local = model_call.active_model, model_call.active_use_local
                 context_fit_plan = model_call.context_fit_plan
             tools._ctx._current_llm_call_meta = dict(accumulated_usage.get("_last_llm_call_meta") or {})
-
             last_error_kind = str(accumulated_usage.get("_last_llm_error_kind") or "")
             if msg is None and _delegate_hold_latch(
                     tools, error_kind=last_error_kind, drive_logs=drive_logs,

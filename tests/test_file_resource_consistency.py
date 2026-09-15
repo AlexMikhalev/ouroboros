@@ -383,7 +383,7 @@ def test_wrapped_inline_read_uses_the_configured_supervisor(environment, monkeyp
     reg, ctx, _home, work, _data = environment
     ctx.task_constraint = TaskConstraint(mode='acting_subagent', surface='external_workspace', write_root=str(work))
     (work / '.env').write_text('FIXTURE_SECRET_MUST_NOT_REACH_OUTPUT', encoding='utf-8')
-    command = [sys.executable, '-c', "print(open('.env').read())"]
+    command = [sys.executable, '-c', "print(open('.env', encoding='utf-8').read())"]
     if wrapper in {'env', 'sh_env'}:
         command = ['env', *command]
     if wrapper in {'sh', 'sh_env'}:

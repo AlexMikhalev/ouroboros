@@ -392,9 +392,9 @@ def test_readonly_python_string_method_executes_without_a_false_write(tmp_path, 
 @pytest.mark.serial
 @pytest.mark.parametrize("body", [
     "from pathlib import Path\np = Path('.')\nprint((p / '.git').exists())\n"
-    "with (p / 'result.txt').open('a') as f: f.write('once\\n')\n",
+    "with (p / 'result.txt').open('a', newline='') as f: f.write('once\\n')\n",
     "from pathlib import Path\np = Path('nested')\np.mkdir(exist_ok=True)\n"
-    "with (p / 'result.txt').open('a') as f: f.write('once\\n')\n",
+    "with (p / 'result.txt').open('a', newline='') as f: f.write('once\\n')\n",
 ])
 def test_path_join_code_executes_once_without_guessing_a_control_write(tmp_path, monkeypatch, body):
     reg = _light_registry(tmp_path)

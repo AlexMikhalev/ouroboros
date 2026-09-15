@@ -371,7 +371,7 @@ def test_run_shell_blocks_actual_self_authored_marker_write_pre_exec(tmp_path, m
 
     result = registry.execute(
         "run_command",
-        {"cmd": ["bash", "-c", f"printf '{{}}' > {marker}"]},
+        {"cmd": ["bash", "-c", f"printf '{{}}' > {shlex.quote(str(marker))}"]},
     )
 
     assert "WORKSPACE_SHELL_BLOCKED" in result and "process was not started" in result
