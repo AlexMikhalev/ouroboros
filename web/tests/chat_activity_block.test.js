@@ -108,6 +108,20 @@ test('a wait with zero tools opens a block with the controls and leaves with the
     } finally { f.close(); }
 });
 
+test('a tool frame stamped with the lane fact mints a direct block before any census lists the turn', () => {
+    const f = fixture();
+    try {
+        f.log({ type: 'tool_call_started', tool: 'read_file', tool_call_id: 'c1', args: { path: 'README.md' }, _is_direct_chat: true });
+        assert.ok(f.card(), 'the first tool call mints the block');
+        assert.equal(f.card().dataset.direct, '1', 'the frame carries the lane, the census is not awaited');
+        assert.equal(f.card().querySelector('[data-turn-into-project]'), null, 'no conversion control in the pre-census window');
+        f.log({ type: 'tool_call_finished', tool: 'read_file', tool_call_id: 'c1', args: { path: 'README.md' }, duration_sec: 0.3, _is_direct_chat: true });
+        f.census(direct());
+        assert.equal(f.card().dataset.direct, '1');
+        assert.equal(f.card().querySelector('[data-turn-into-project]'), null);
+    } finally { f.close(); }
+});
+
 test('a direct turn with two successful tools shows two compact rows live and the summary row after a reload', async () => {
     const f = fixture();
     try {

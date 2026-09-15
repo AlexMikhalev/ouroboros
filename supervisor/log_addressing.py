@@ -194,12 +194,14 @@ class TurnEventQueue:
     def stamp(self, item: Any) -> Any:
         if isinstance(item, dict):
             data = item.get("data") if item.get("type") == "log_event" else item
-            if (
-                isinstance(data, dict)
-                and str(data.get("task_id") or "") == self._task_id
-                and data.get("chat_id") is None
-            ):
-                data["chat_id"] = self._chat_id
+            if isinstance(data, dict) and str(data.get("task_id") or "") == self._task_id:
+                if data.get("chat_id") is None:
+                    data["chat_id"] = self._chat_id
+                # The lane fact rides the same events by the same rule: a live
+                # tool or progress frame names its direct turn on arrival, so
+                # the chat block never wears managed chrome (a Task title, a
+                # conversion control) in the window before the census lists it.
+                data.setdefault("_is_direct_chat", True)
         return item
 
     def put(self, item: Any, *args: Any, **kwargs: Any) -> Any:

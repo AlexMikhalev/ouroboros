@@ -464,9 +464,14 @@ def test_turn_event_queue_stamps_by_value_at_the_producer():
     # Returned top-level event (llm_usage shape) is stamped the same way.
     assert proxy.stamp({"type": "llm_usage", "task_id": "turn1", "usage": {}})["chat_id"] == 42
 
+    # The lane fact rides the same events by the same rule (a stamped
+    # task_done keeps its own value; other tasks' events are untouched).
+    assert captured[-1]["data"]["_is_direct_chat"] is True
+    assert proxy.stamp({"type": "task_done", "task_id": "turn1", "_is_direct_chat": False})["_is_direct_chat"] is False
+
     # Another task's event and an already-addressed event are left alone.
     other = {"type": "log_event", "data": {"type": "x", "task_id": "other"}}
-    assert "chat_id" not in proxy.stamp(other)["data"]
+    assert "chat_id" not in proxy.stamp(other)["data"] and "_is_direct_chat" not in proxy.stamp(other)["data"]
     zero = {"type": "log_event", "data": {"type": "x", "task_id": "turn1", "chat_id": 0}}
     assert proxy.stamp(zero)["data"]["chat_id"] == 0
 

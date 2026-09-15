@@ -2119,7 +2119,9 @@ export function createChatInstance({
         );
         if (childInfo) return Boolean(changed || queued);
         const subagentChanged = updateSubagentCardFromEvent(evt, rawTs);
-        if (eventType === 'task_done') noteDirectTurn(liveCardRecords.get(taskId), evt._is_direct_chat);
+        // The host stamps the lane on the turn's own frames (task_done always,
+        // a direct turn's tool frames too), so chrome never waits for a census.
+        if (typeof evt._is_direct_chat === 'boolean') noteDirectTurn(liveCardRecords.get(taskId), evt._is_direct_chat);
         if (eventType === 'task_done' && summary.terminal) {
             recordTerminalActivity(taskId);
             syncChatStatus();

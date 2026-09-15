@@ -479,7 +479,8 @@ History with no current execution or known outcome keeps its expandable content 
 A task's activity block is in the transcript exactly when the record already
 holds something to show — one predicate (`web/modules/chat.js::blockVisible`),
 re-read at every mutation, with no sticky flag: an always-shown kind
-(Background consciousness, Presence); open owner attention (a model wait, a
+(Background consciousness; a Presence turn is a direct turn and follows the
+same rules); open owner attention (a model wait, a
 pending stop, a host-attested Stop the record still offers — the same reading
 the control uses, so a block never stands on a Stop it hides); a child card; a
 review group; a content row; a terminal outcome other than Done. The completion note is not content:
