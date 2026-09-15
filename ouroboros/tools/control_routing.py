@@ -170,6 +170,36 @@ def _finish_swarm_handoff(
     return response
 
 
+def _effective_scope_note(ctx: ToolContext, project_id: str) -> str:
+    """Where an admitted promote ACTUALLY landed, read from the admission receipt.
+
+    The requested ``project_name``/``project_id`` is the model's ask, not the
+    destination: an implicit promote's scope is re-resolved by the admission
+    handler under the origin claim lock, so a sibling card converted in the
+    emit → admission window moves the root into a project the tool never named.
+    Reporting the request as the outcome told the owner the work was in a room it
+    was not in. Empty project id means Main, which is also the truth when a
+    project scope was requested and admission granted none."""
+    pid = str(project_id or "").strip()
+    if not pid:
+        return ""
+    name = ""
+    try:
+        from ouroboros.projects_registry import get_project
+
+        name = str((get_project(Path(ctx.drive_root), pid) or {}).get("name") or "").strip()
+    except Exception:
+        log.debug("promote: effective project name lookup failed", exc_info=True)
+    return f" in project '{name}' ({pid})" if name and name != pid else f" in project '{pid}'"
+
+
+def _requested_scope_label(display_name: str, project_id: str) -> str:
+    """What the caller ASKED for, named only where the outcome is unknown."""
+    if display_name:
+        return f"new project '{display_name}'"
+    return f"project '{project_id}'" if project_id else "the main chat"
+
+
 def _promote_chat_to_task(
     ctx: ToolContext,
     objective: str,
@@ -239,7 +269,7 @@ def _promote_chat_to_task(
     disabled_reason = _promotion_pool_disabled_from_snapshot(ctx)
     if disabled_reason:
         response = (
-            f"PROMOTE_REJECTED: task {tid} was not scheduled "
+            f"⚠️ PROMOTE_REJECTED: task {tid} was not scheduled "
             f"(worker_pool_unavailable: {disabled_reason}). No project/workspace "
             "admission side effects were started."
         )
@@ -303,18 +333,15 @@ def _promote_chat_to_task(
         )
     _attach_client_surface(ctx, evt)
     mode, confirmation = _emit_and_wait_for_routing(ctx, evt)
-    if display_name:
-        scope_note = f" in new project '{display_name}'"
-    elif pid:
-        scope_note = f" in project '{pid}'"
-    else:
-        scope_note = ""
     confirmation_status = str(confirmation.get("status") or "unconfirmed")
     reason = str(confirmation.get("reason") or "")
     detail = str(confirmation.get("detail") or "")
     disabled_reason = str(confirmation.get("worker_pool_disabled_reason") or "")
     if confirmation_status == "scheduled":
         source_confirmation = f" [{detail}]" if detail else ""
+        scope_note = _effective_scope_note(
+            ctx, str(confirmation.get("effective_project_id") or ""),
+        )
         response = (
             f"OK: task {tid}{scope_note} accepted and durably scheduled ({mode}).{source_confirmation} "
             "The task now runs independently, and follow-up chat can steer it. "
@@ -329,7 +356,7 @@ def _promote_chat_to_task(
         if detail:
             shown_reason = f"{shown_reason}: {detail}" if shown_reason else detail
         response = (
-            f"PROMOTE_REJECTED: task {tid} was not scheduled"
+            f"⚠️ PROMOTE_REJECTED: task {tid} was not scheduled"
             f"{f' ({shown_reason})' if shown_reason else ''}. "
             "Do not report this task as created."
         )
@@ -357,8 +384,9 @@ def _promote_chat_to_task(
         else f"because the event transport returned {mode}"
     )
     response = (
-        f"PROMOTE_UNCONFIRMED: task {tid} admission was not confirmed {confirmation_window}. "
-        "Do not report this task as "
+        f"⚠️ PROMOTE_UNCONFIRMED: task {tid} admission was not confirmed {confirmation_window}; "
+        f"the requested destination was {_requested_scope_label(display_name, pid)} and the "
+        "effective one is unknown until the admission is reconciled. Do not report this task as "
         "created and do not retry automatically; keep this task id for reconciliation."
     )
     return _finish_swarm_handoff(
@@ -648,6 +676,17 @@ def _steer_task(ctx: ToolContext, task_id: str, message: str) -> str:
         exact_owner_text = str(_md.get("origin_message_text") or "")
         if exact_owner_text.strip():
             msg = exact_owner_text
+    # A task-authored steer belongs to no owner message at all (a managed task or
+    # a project root has no chat ingress id), and the receipt channel is keyed by
+    # message id ONLY because that is how ``routing_wait`` polls it. Left empty,
+    # the supervisor wrote no annotation and the wait answered
+    # `client_message_id_missing` before the handler even ran, so EVERY such steer
+    # came back STEER_UNCONFIRMED — including the ones the host had already
+    # refused in writing. The steer's own synthetic id gives it a receipt of its
+    # own; it addresses no message in any chat, so nothing the owner wrote is
+    # labelled with the agent's act (``_relayed_owner_message`` relays nothing
+    # under this prefix, and compaction bounds these rows by their own cap).
+    client_message_id = client_message_id or agent_authored_receipt_id
     routing_contract = (
         _md.get("routing_contract")
         if isinstance(_md.get("routing_contract"), dict)
@@ -684,7 +723,10 @@ def _steer_task(ctx: ToolContext, task_id: str, message: str) -> str:
             f"⚠️ STEER_REJECTED: task {target} was not steered "
             f"({str(receipt.get('reason') or 'target_not_steerable')})."
         )
+    # Only "no receipt exists yet" reaches here: a settled refusal is returned
+    # above with its reason, so UNCONFIRMED never disguises a known rejection.
     return (
         f"⚠️ STEER_UNCONFIRMED: mailbox delivery to task {target} was not durably confirmed "
-        f"({mode}). Do not report the message as delivered."
+        f"({mode}, {str(receipt.get('reason') or 'confirmation_timeout')}). "
+        "Do not report the message as delivered."
     )

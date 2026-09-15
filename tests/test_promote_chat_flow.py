@@ -24,10 +24,10 @@ def _isolated_projects_root(tmp_path_factory, monkeypatch):
     )
 
 
-def _confirm_promote(monkeypatch):
-    monkeypatch.setattr(
+def _confirm_promote(monkeypatch, effective_project_id: str = ""):
+    monkeypatch.setattr(  # the receipt names where admission actually put the task
         "ouroboros.tools.control_events._wait_for_promotion_admission",
-        lambda *_args, **_kwargs: {"status": "scheduled"},
+        lambda *_a, **_k: {"status": "scheduled", "effective_project_id": effective_project_id},
     )
 
 
@@ -602,7 +602,7 @@ def test_managed_swarm_can_choose_a_named_project_for_later_work(tmp_path, monke
     from ouroboros.project_facts import project_id_from_display_name
     from ouroboros.tools.control import _promote_chat_to_task
 
-    _confirm_promote(monkeypatch)
+    _confirm_promote(monkeypatch, project_id_from_display_name("Slime Lab Escape"))
     ctx = _managed_swarm_ctx(tmp_path)  # project_id="" — projectless main chat
 
     out = _promote_chat_to_task(
@@ -615,7 +615,7 @@ def test_managed_swarm_can_choose_a_named_project_for_later_work(tmp_path, monke
     )
 
     assert out.startswith("OK: task")
-    assert "new project 'Slime Lab Escape'" in out
+    assert f"in project '{project_id_from_display_name('Slime Lab Escape')}'" in out
     evt = ctx.pending_events[0]
     assert evt["project_name"] == "Slime Lab Escape"
     assert evt["project_id"] == project_id_from_display_name("Slime Lab Escape")
@@ -630,7 +630,7 @@ def test_managed_swarm_can_choose_an_existing_project_for_later_work(tmp_path, m
     the project_name drop)."""
     from ouroboros.tools.control import _promote_chat_to_task
 
-    _confirm_promote(monkeypatch)
+    _confirm_promote(monkeypatch, "racer")
     ctx = _managed_swarm_ctx(tmp_path)  # project_id="" — projectless main chat
 
     out = _promote_chat_to_task(ctx, "Continue the racer build", project_id="racer", predecessor_task_id="")
@@ -869,7 +869,7 @@ def test_presence_unconfirmed_promotion_records_handoff_for_reconciliation(tmp_p
     )
     ctx = _managed_swarm_ctx(tmp_path, task_metadata={"presence": {"binding_id": "presence-binding"}})
     out = _promote_chat_to_task(ctx, "Audit and fix the issue", predecessor_task_id="")
-    assert out.startswith("PROMOTE_UNCONFIRMED")
+    assert out.startswith("⚠️ PROMOTE_UNCONFIRMED")
     assert len(ctx.pending_events) == 1
     assert ctx._swarm_handoff_attempt["task_id"] == ctx.pending_events[0]["task_id"]
     assert ctx._swarm_handoff_attempt["status"] == "unconfirmed"
@@ -900,7 +900,7 @@ def test_presence_rejected_promotion_records_handoff_without_event(tmp_path, mon
     )
     ctx = _managed_swarm_ctx(tmp_path, task_metadata={"presence": {"binding_id": "presence-binding"}})
     out = _promote_chat_to_task(ctx, "Audit and fix the issue", predecessor_task_id="")
-    assert out.startswith("PROMOTE_REJECTED")
+    assert out.startswith("⚠️ PROMOTE_REJECTED")
     assert ctx.pending_events == []
     assert ctx._swarm_handoff_attempt["status"] == "rejected"
 
@@ -926,7 +926,7 @@ def test_managed_swarm_can_steer_through_the_ordinary_receipt_path(tmp_path, mon
     )
     ctx = _managed_swarm_ctx(tmp_path)
     out = _steer_task(ctx, "existing-root", "do this there")
-    assert "durably confirmed" in out
+    assert out.startswith("✉️ Steering task existing-root: mailbox delivery is durably confirmed")
     assert ctx.pending_events[0]["type"] == "steer_task"
     assert ctx.pending_events[0]["target_task_id"] == "existing-root"
     assert not hasattr(ctx, "_swarm_handoff_attempt")
@@ -948,7 +948,7 @@ def test_promote_tool_project_name_creates_named_project_event(tmp_path, monkeyp
     derives a clean id, carries the human display name, and rides title."""
     from ouroboros.tools.control import _promote_chat_to_task
 
-    _confirm_promote(monkeypatch)
+    _confirm_promote(monkeypatch, "airi-research")
     events = []
     ctx = types.SimpleNamespace(
         pending_events=events, event_queue=None, current_chat_id=1, drive_root=tmp_path,
@@ -959,7 +959,7 @@ def test_promote_tool_project_name_creates_named_project_event(tmp_path, monkeyp
         predecessor_task_id="",
     )
     assert out.startswith("OK: task")
-    assert "new project 'Airi Research'" in out
+    assert "in project 'airi-research'" in out   # the receipt's destination, not the ask
     evt = events[0]
     assert evt["project_name"] == "Airi Research"
     assert evt["project_id"] == "airi-research"   # derived, filesystem-clean
