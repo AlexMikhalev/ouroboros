@@ -182,7 +182,9 @@ carry it; before removing one, check that they do (or add the missing fact to
 the schema without growing it into a paragraph). Local-model compaction keeps
 only the text before the first `## ` heading (plus the BIBLE section), so the
 load-bearing floor rules stay in that preamble. Every prompt change reports the before/after byte size
-in the commit or PR.
+in the commit or PR. The memory contract's resident rule: a note's authored
+summary is its resident face in the knowledge index, and a resident memory
+carrier that is absent renders as a visible gap, never as silence.
 
 Recoverable tool failures are evidence for the next LLM turn, not triggers for
 a host-authored recovery workflow. Return a typed, redacted result naming the
@@ -1438,9 +1440,11 @@ Enforcement: `tests/test_protected_artifacts_policy.py` and
   prompt promise: admission requires the owner-created binding plus an
   installed, enabled, freshly executable behavior skill and every required
   selection, then freezes skill/profile/state/selection fingerprints, exact
-  grants, argument bindings, runtime slot, and round limit into
-  `task_contract.capability_ceiling`; schema discovery and execution enforce
-  the same ceiling for built-ins, extensions, MCP tools, scripts, and
+  grants (the profile's selections plus the constant cognitive-memory
+  baseline from `tool_capabilities.COGNITIVE_MEMORY_TOOL_NAMES`; a selected
+  grant keeps its bindings), argument bindings, runtime slot, and round limit
+  into `task_contract.capability_ceiling`; schema discovery and execution
+  enforce the same ceiling for built-ins, extensions, MCP tools, scripts, and
   resource roots.
 - `state/presence_bindings.json` is host-owned authority: a transport token
   resolves only bindings naming that exact transport skill, and the submitted

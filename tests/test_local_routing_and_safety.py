@@ -20,7 +20,11 @@ def test_prepare_messages_for_local_context_preserves_core_and_compacts_non_core
                 {
                     "type": "text",
                     "text": (
-                        "## Identity\n\nIDENTITY\n\n"
+                        # The production heading carries a provenance suffix (context.py),
+                        # so an exact-only preserve match would compact it away.
+                        "## Identity (from `memory/identity.md` — already loaded; do not re-read via "
+                        "read_file(root='runtime_data', path='memory/identity.md'))\n\nIDENTITY\n\n"
+                        "## Shared understanding\n\nORIENTATION\n\n"
                         "## Knowledge base\n\nKB\n\n"
                         "## Last Deep Self-Review\n\nDEEP\n\n"
                         "## Known error patterns (Pattern Register)\n\nPATTERNS"
@@ -49,6 +53,9 @@ def test_prepare_messages_for_local_context_preserves_core_and_compacts_non_core
     assert "ARCHITECTURE.md" in system_blocks[0]["text"]
     assert "[Compacted for local-model context" in system_blocks[0]["text"]
     assert "## Identity" in system_blocks[1]["text"]
+    # Heading text survives compaction as a placeholder, so assert on the BODY.
+    assert "IDENTITY" in system_blocks[1]["text"]
+    assert "ORIENTATION" in system_blocks[1]["text"]
     assert "## Knowledge base" in system_blocks[1]["text"]
     assert "## Last Deep Self-Review" in system_blocks[1]["text"]
     assert "## Scratchpad" not in system_blocks[1]["text"]

@@ -470,8 +470,15 @@ def _run_chat_consolidation(env, memory, llm, task, drive_logs):
                                 meta_path=meta_path, llm_client=_llm, identity_text=_ident,
                                 knowledge_context=knowledge_context)
             if u:
+                # A run that produced no block and a run that never happened look the
+                # same in this stream without a written count; last_error_kind names the
+                # LAST error any attempt recorded (recovered splits keep theirs), which
+                # is weaker than "the run failed" and is reported under that honest name.
+                errors = u.get("_consolidation_errors") or []
                 append_jsonl(_logs / "events.jsonl", {"ts": utc_now_iso(),
                     "type": "chat_block_consolidation", "task_id": _id,
+                    "blocks_written": u.get("_blocks_written"),
+                    "last_error_kind": (errors[-1] or {}).get("kind") if errors else None,
                     "cost_usd": (
                         round(float(u["cost"]), 6)
                         if u.get("cost") is not None

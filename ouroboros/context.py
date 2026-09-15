@@ -598,6 +598,15 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
     return out
 
 
+# An unauthored common orientation is a VISIBLE GAP, never silence. Static text: this
+# section is cached with the semi-stable block, so it carries no timestamp.
+_SHARED_UNDERSTANDING_GAP = (
+    "## Shared understanding\n\nNot authored yet. "
+    "knowledge_write(topic='overview', scope='global', content=...) creates it; "
+    "it is then loaded here in every context."
+)
+
+
 def build_knowledge_sections(
     env: Any,
     *,
@@ -622,8 +631,10 @@ def build_knowledge_sections(
         if overview_text.strip():
             authored_overview = overview.source is not None
             sections.append(f"## Shared understanding\n\nSource: knowledge_read(topic='{OVERVIEW_TOPIC}', scope='global').\n\n" + overview_text)
+        else:
+            sections.append(_SHARED_UNDERSTANDING_GAP)  # present but empty is still unauthored
     except FileNotFoundError:
-        pass  # The generated index retains prior orientation until one is authored.
+        sections.append(_SHARED_UNDERSTANDING_GAP)
     except (OSError, UnicodeDecodeError) as exc:
         sections.append(f"Shared understanding source unavailable: knowledge_read(topic='{OVERVIEW_TOPIC}', scope='global'). {type(exc).__name__}.")
     knowledge_indexes = [(global_address.shelf / INDEX_FILE,
@@ -637,8 +648,13 @@ def build_knowledge_sections(
     if include_pattern_body:
         knowledge_indexes.append((env.drive_path("memory/knowledge/patterns.md"), pattern_header, "patterns register"))
     for path, header, label in knowledge_indexes:
-        text = (render_knowledge_index(inventory_knowledge(global_address), include_summaries=False)
-                if authored_overview and path == global_address.shelf / INDEX_FILE else safe_read(path))
+        # The authored summary is the resident face of a note, so the index carries it
+        # whether or not a common orientation exists; the fresh inventory render also
+        # covers the case where the index file is absent (a note landed before any
+        # rebuild); an existing stale index is still read as written.
+        is_global_index = path == global_address.shelf / INDEX_FILE
+        text = (render_knowledge_index(inventory_knowledge(global_address), include_summaries=True)
+                if is_global_index and (authored_overview or not path.exists()) else safe_read(path))
         if not text.strip():
             continue
         if warn_large and len(text) > _LARGE_CONTEXT_SECTION_CHARS:
