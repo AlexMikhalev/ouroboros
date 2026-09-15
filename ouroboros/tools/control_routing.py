@@ -158,8 +158,9 @@ def _routing_issuer(ctx: ToolContext) -> Dict[str, Any]:
 
     An OWNER TURN is a direct chat turn (the host stamps ``client_message_id``
     on its metadata at ingress; ``is_direct_chat`` names the lane) or a task
-    relaying the owner message it just DRAINED (``ctx.last_owner_delivery``,
-    stamped at the loop's mailbox drain).  Everything else is a TASK speaking
+    relaying the owner message THIS ROUND drained (``ctx.last_owner_delivery``,
+    stamped at the loop's mailbox drain and cleared by the next drain, so the
+    relay window is one round).  Everything else is a TASK speaking
     for itself -- a pooled, Swarm, project or headless root -- and its words are
     its own.  The 14.09 incident decided this five times from proxies (a routing
     contract a Swarm root never has, an empty client id read as "agent-issued",
@@ -633,6 +634,10 @@ def _route_to_project(
     _attach_origin_from_metadata(ctx, evt)
     evt.update(predecessor_event)
     _attach_client_surface(ctx, evt)
+    # Owner 3=A holds on this verb too: a route starts a NEW root exactly like a
+    # promote, so an unmet Swarm planning obligation follows the work into the
+    # project instead of staying with a sender that keeps none of it.
+    _attach_unmet_obligation(ctx, evt)
     mode, receipt = _emit_and_wait_for_routing(ctx, evt)
     name = str(proj.get("name") or pid)
     status = str(receipt.get("status") or "unconfirmed")
@@ -640,6 +645,7 @@ def _route_to_project(
         response = (
             f"✉️ Routed to project '{name}' ({pid}) as task {tid}; admission is durably "
             f"scheduled ({mode}). I'll continue there; this chat stays free for you."
+            + _obligation_moved_note(ctx, tid, receipt.get("force_plan_transfer"))
         )
         return _finish_swarm_handoff(ctx, evt, response, status="scheduled")
     reason_text = str(receipt.get("reason") or "confirmation_timeout")

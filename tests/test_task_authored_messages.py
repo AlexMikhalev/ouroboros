@@ -617,3 +617,21 @@ def test_a_promote_into_another_project_discloses_the_second_project(_projects_r
     out = _promote_chat_to_task(ctx, "Do it elsewhere", project_id="second-room", predecessor_task_id="")
 
     assert "already has project 'first-room'" in out and "a second project 'second-room' now holds this promote" in out
+
+
+def test_a_transfer_admitted_after_the_wait_returned_still_releases_the_worker(tmp_path):
+    """Late admission: the supervisor recorded the transfer on the promoter's task
+    result while the tool had already returned unconfirmed; the worker's own
+    obligation readers reconcile from that durable record instead of holding
+    finalization for a plan the new root owes."""
+    from ouroboros.owner_hurry import force_plan_decision, unmet_force_plan_obligation
+    from ouroboros.task_results import STATUS_RUNNING, write_task_result
+
+    write_task_result(tmp_path, "swarm-root", STATUS_RUNNING, result="running",
+                      force_plan_transfer={"from": "swarm-root", "to": "new-root", "released": True})
+    ctx = _pooled_root_ctx(tmp_path)
+    assert unmet_force_plan_obligation(ctx) == {"unmet": False, "reason": "transferred"}
+    assert ctx.task_metadata["force_plan"] is False
+    assert ctx.task_metadata["force_plan_transferred_to"] == "new-root"
+    assert force_plan_decision(ctx, {}, enforcement="blocking")["status"] == "not_required"
+

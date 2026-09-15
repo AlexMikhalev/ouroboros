@@ -256,3 +256,25 @@ def test_route_tool_uncertainty_contract_requires_manual_target():
     assert "needs_manual_target" in description
     assert "New task in Project" in description
     assert "answer inline and offer" not in description
+
+
+def test_a_task_issuer_with_an_unmet_obligation_moves_it_through_route_to_project(tmp_path, monkeypatch):
+    """Owner 3=A on the sibling verb: a Swarm root routing new work into an existing
+    project carries its unmet planning obligation on the promote event it emits, so
+    the new root owes the plan and the sender is told the obligation moved."""
+    create_project(tmp_path, "racer", name="Racer")
+    monkeypatch.setattr(
+        "ouroboros.tools.control_events._wait_for_promotion_admission",
+        lambda *_args, **_kwargs: {"status": "scheduled", "force_plan_transfer": {"from": "swarm-root", "released": True}},
+    )
+    monkeypatch.setattr("ouroboros.owner_hurry.release_force_plan_obligation", lambda *_a, **_k: None)
+    events = []
+    ctx = _ctx(tmp_path, events, task_id="swarm-root", task_metadata={
+        "force_plan": True, "force_plan_source": "swarm", "root_task_id": "swarm-root",
+    })
+    out = _route_to_project(ctx, "racer", "Implement it in Racer", predecessor_task_id="")
+    assert "durably scheduled" in out and "planning obligation (force_plan) moved to task" in out
+    assert events[0]["type"] == "promote_chat_to_task"
+    assert events[0]["force_plan"] is True and events[0]["force_plan_source"] == "swarm"
+    assert events[0]["force_plan_transferred_from"] == "swarm-root"
+

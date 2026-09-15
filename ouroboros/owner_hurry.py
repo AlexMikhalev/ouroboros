@@ -474,6 +474,7 @@ def force_plan_decision(
     ``enforcement`` is supplied by the loop wrapper from ITS module namespace so
     the existing ``loop.get_review_enforcement`` test/monkeypatch seam holds.
     """
+    reconcile_transferred_obligation(ctx)
     metadata = getattr(ctx, "task_metadata", {})
     metadata = metadata if isinstance(metadata, dict) else {}
     not_required = {"required": False, "allow": True, "status": "not_required"}
@@ -528,6 +529,35 @@ def force_plan_decision(
     return decision
 
 
+def reconcile_transferred_obligation(ctx: Any) -> str:
+    """Release the worker's copy of an obligation the supervisor already moved.
+
+    A promote/route admitted AFTER the tool's wait returned unconfirmed still
+    records the transfer durably (the promoter's task result carries
+    ``force_plan_transfer.to``); without this read the worker's metadata kept
+    ``force_plan`` and its finalization held for a plan the new root owes.
+    Returns the task id the obligation moved to, or '' when nothing moved."""
+    metadata = getattr(ctx, "task_metadata", {})
+    metadata = metadata if isinstance(metadata, dict) else {}
+    if metadata.get("force_plan") is not True:
+        return ""
+    task_id = str(getattr(ctx, "task_id", "") or "").strip()
+    root = _canonical_root(ctx)
+    if not task_id or root is None:
+        return ""
+    try:
+        from ouroboros.task_results import load_task_result
+
+        transfer = (load_task_result(root, task_id) or {}).get("force_plan_transfer")
+    except Exception:
+        log.debug("force_plan transfer read failed for %s", task_id, exc_info=True)
+        return ""
+    moved_to = str((transfer or {}).get("to") or "").strip() if isinstance(transfer, dict) else ""
+    if moved_to:
+        release_force_plan_obligation(ctx, moved_to)
+    return moved_to
+
+
 def unmet_force_plan_obligation(ctx: Any) -> Dict[str, Any]:
     """Does THIS task still owe a plan review nobody has started (owner 3=A)?
 
@@ -539,6 +569,8 @@ def unmet_force_plan_obligation(ctx: Any) -> Dict[str, Any]:
     state is not proof of anything and transfers nothing (I-17: a gate that
     cannot read its authority is engaged, not absent).
     """
+    if reconcile_transferred_obligation(ctx):
+        return {"unmet": False, "reason": "transferred"}
     metadata = getattr(ctx, "task_metadata", {})
     metadata = metadata if isinstance(metadata, dict) else {}
     if metadata.get("force_plan") is not True:
