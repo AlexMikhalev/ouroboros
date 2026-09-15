@@ -40,17 +40,15 @@ P7 makes context fit a maintenance constraint, not a line-count aesthetic.
   alarm with ample headroom; raising it requires a one-line campaign rationale
   in the same commit.
 - Enforcement: the OFFICIAL repository's CI runs the dedicated `size_ratchet`
-  pytest lane as a blocking third step in quick-test and full-test — manifest
-  exactness against the tip tree plus the pairwise shrink-only transition
-  against the event base (`OURO_SIZE_RATCHET_BASE_REF`). Local surfaces never
-  block on size: the default pytest lanes exclude the marker, and
-  `check_worktree_readiness` plus `codebase_health` report the same
-  `validate_size_ratchet` findings as "official CI will enforce" warnings.
-  There is no committed-history replay: the previous manifest resolves
-  merge-aware from `HEAD` or any of its parents, and a checkout with no
-  committed manifest anywhere bootstraps from its own tree — so a locally
-  evolved fork can always take an official update without being trapped by
-  structural debt it inherited, while the official line keeps ratcheting.
+  pytest lane as a blocking step (`OURO_SIZE_RATCHET_BASE_REF` names the event
+  base; lane placement and base fallback:
+  `docs/architecture/08-git-branching-ci-and-build.md` § "CI topology"). Local
+  surfaces never block on size: the default pytest lanes exclude the marker,
+  and `check_worktree_readiness` plus `codebase_health` report the same
+  `validate_size_ratchet` findings as "official CI will enforce" warnings. Why
+  a locally evolved fork is never trapped by inherited debt (no
+  committed-history replay): `docs/architecture/06-agent-core.md` § "Review
+  stack".
 
 ### Pragmatic SOLID
 
@@ -110,26 +108,12 @@ filtered down to the answer.
   projection replaces it; the fingerprint-keyed
   render cache in `ouroboros/_usage_rows_memo.py` — a projection cached while
   its input is unchanged, invalidated only by advance/refold, never by TTL.
-  Interactive result discovery reuses `gateway/task_list_scan.py`'s compact
-  stat-invalidated facts; decode changed/new files, never cache failed or torn
-  reads, and fetch selected full rows through the existing schema owner. Live
-  event followers retain per-file proven lineage across failed reads only; valid
-  moves, role/schema changes and deletion remove it. Disclose incomplete discovery
-  with nonfatal history_gap coverage, never client-root trust or a global error
-  for one unrelated bad file. Diagnostics do not advance legacy ranks or bytes.
-  Task-event v2 cursors advance after each consumed row; preserve physical byte
-  positions through rotation and disclose replay/gaps rather than resetting an
-  unavailable cursor. Keep the legacy GET rank contract separate.
-  Bound native handle lifetime independently of network backpressure: close
-  each JSONL read buffer before yielding its per-row cursors. Stamp creation
-  only where the host allocates a fresh id, before preparation; neither a
-  supplied id nor a legacy/final result timestamp proves task creation.
-  Pin each source's logical EOF and helper-built chain metadata until the pass
-  ends; select subsequent buffers without rescanning the archive prefix. Rebind
-  the original live inode after rotation; later appends belong to the next pass,
-  without truncating history or imposing an event-count cap. Whole-chain callers
-  retain their ordered handle list and share JSONL parsing through borrowed
-  handles without changing descriptor ownership.
+  The `gateway/task_list_scan.py` stat-invalidated result memo and the
+  task-event SSE v2 cursor discipline are further precedents; their rules
+  (never cache failed or torn reads, physical byte positions through rotation,
+  per-source logical EOF per pass, buffers closed before delivery, creation
+  stamped only at fresh id allocation, nonfatal `history_gap` disclosure) are
+  stated once in ARCHITECTURE "Chat and Projects".
 
 Enforcement: Repo Commit Checklist item 24 (advisory) triggers on diffs that
 add or change an endpoint/poller/subscription/timer or read a growing store;
@@ -199,11 +183,9 @@ executed. Admission is source-complete: an incomplete row is omitted, never
 guessed from chat, repository, timestamps, model, tool name, or activity.
 Reuse the existing chat-history, task-detail, and canonical physical-attempt
 readers; do not add a review ledger, endpoint, persisted UI state, cost copy,
-or enforcement layer. Compact review rows carry no dollars; exact Skill
-attempt money appears only in the lazy detail when the history row declares
-`physical_attempt_v1`, joining the canonical ledger by exact wave and slot.
-Reconnect and folded-group bounds exist so one history rebuild cannot fan out
-unbounded task-detail reads. Pin these contracts in
+or enforcement layer. Money presentation and the folded-group bounds follow ARCHITECTURE "Chat and
+Projects" (card cost is sticky task-scope evidence; compact review rows copy or
+sum no money). Pin these contracts in
 `web/tests/review_presentation.test.js` and
 `web/tests/harness_presentation.test.js`; module headers carry the per-module
 contracts.
@@ -220,22 +202,18 @@ contracts.
 
 ### Invariant: Continuation authority and bounded Main projection
 
-Continuation is an explicit relation, not an inferred chat-memory feature. The
-router contract requires `predecessor_task_id`: an empty string means a fresh
-task, a non-empty value means continuation, and omission or `null` is a typed
-refusal before any lookup, enqueue, or provider spend. Queue snapshot/restore
-retains the predecessor source, so a restart cannot silently turn the selected
-task into a fresh one.
-
+Continuation is an explicit relation, not an inferred chat-memory feature: the
+router contract requires `predecessor_task_id` (`""` = fresh; omission or
+`null` is a typed refusal before any lookup, enqueue, or provider spend), and
+Main receives only a defensive provider projection of the predecessor authority
+— never a raw head/tail slice, an invented summary, or a mutation of the
+canonical result (the contract and the projection rules:
+`docs/architecture/01-high-level-architecture.md` § "CLI / Headless Boundary").
 The authored continuation narrative is written at the result owner together
-with its exact `get_task_result(include_authority=True)` source. Main's
-provider projection is defensive: it deep-copies the authority, removes only
-the current task's duplicate nested predecessor, and thresholds only the
-closed raw keys `result` and `final_answer` using
-`context_budget.PREDECESSOR_RESULT_INLINE_CHARS`; oversized values resolve as
-persisted narrative, bounded exact-key legacy lookup, or an explicit
-source-resolvable gap — never a raw head/tail slice, an invented summary, or a
-mutation of the canonical result.
+with its exact `get_task_result(include_authority=True)` source; the projection
+deep-copies the authority, removes only the current task's duplicate nested
+predecessor, and thresholds only the closed raw keys `result` and
+`final_answer` using `context_budget.PREDECESSOR_RESULT_INLINE_CHARS`.
 
 The startup injection is a bounded continuation ENVELOPE, not a body copy,
 minted by the one producer `contracts.task_contract.bounded_continuation_envelope`:
@@ -274,13 +252,10 @@ Stop / unload / reload / shutdown remain force-destroy boundaries; the reason
 is re-evaluated at the instance's next lifecycle point, not continuously. The
 untyped shape "hide the DOM node, keep the handlers" remains the leak this
 invariant forbids. Late async continuations check a `destroyed` flag before
-touching state or re-arming loops. A module widget's disposer is the ordered
-dispose with acknowledgement (ARCHITECTURE "Skills and Widgets"): post the
-dispose message, keep the bridge answering the child's hooks, then abort,
-unlisten and remove the iframe on the acknowledgement or after
-`WIDGET_DISPOSE_ACK_TIMEOUT_MS`; a route iframe disposes synchronously; the
-masonry's `applyMasonry` returns an idempotent disposer for its observers and
-pending frame. That bounded wait is not the forbidden shape: the handlers live
+touching state or re-arming loops. A module widget's disposer is the ordered dispose with acknowledgement
+(ARCHITECTURE "Skills and Widgets" owns the sequence and
+`WIDGET_DISPOSE_ACK_TIMEOUT_MS`); the masonry's `applyMasonry` returns an
+idempotent disposer for its observers and pending frame. That bounded wait is not the forbidden shape: the handlers live
 only until the settle promise the page tracks per card key resolves.
 
 Enforcement (honest disclosure): the deterministic leak test runs in the
@@ -304,10 +279,8 @@ content measurement includes the measured document's bottom padding and border
 Feedback-sensitive verification is event-driven on the relevant engine: it
 proves temporal convergence to a quiet fixed point with a real consumer or
 production-derived fixture that crosses the known wrapping threshold, rather
-than comparing two snapshots. A module widget's own faults are declared error semantics, not silence: an
-in-frame script error, an unhandled rejection or a CSP refusal reaches the
-card's status slot as one bounded, deduplicated line, while the lifecycle
-state stays running because the frame really is still mounted. There is no
+than comparing two snapshots. A module widget's own faults are declared error semantics, not silence (the
+`ouro-widget-error` channel: ARCHITECTURE "Skills and Widgets"). There is no
 server-side widget fault ledger, so those faults are visible only while the
 Widgets page is open; that is safe to defer because the browser is the
 verification path for a widget in the first place.

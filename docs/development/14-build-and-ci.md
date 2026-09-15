@@ -4,13 +4,10 @@ This chapter owns the build and test topology: the one dependency-lock authority
 
 ### Python dependency locks
 
-`pyproject.toml` is the direct-dependency SSOT and `uv.lock` the reviewed
-cross-platform resolution; local and CI use `uv sync --locked`, and no
-independent hand-written requirements authority exists. Release packaging
-exports build requirements ephemerally and commits
-`requirements-runtime.lock` for embedded pip; `requirements.txt` is a
-generated pointer for older managed updaters, never an authority. A
-dependency change updates the metadata, runs `uv lock`, regenerates the
+The one dependency authority and its packaging projections are ARCHITECTURE
+"Build scripts" (`pyproject.toml` + `uv.lock`; `requirements-runtime.lock` and
+`requirements.txt` are generated projections, never authorities). A dependency
+change updates the metadata, runs `uv lock`, regenerates the
 runtime export with the exact README command, and leaves the CI clean-diff
 check green. The pinned `tool.uv.required-version` and digest-pinned
 `setup-uv` action make resolver changes deliberate rather than an ambient
@@ -54,17 +51,14 @@ topology"):
   catalog (list in `tests/test_skill_smoke_official.py`) and runs as the
   dedicated 3-OS CI job in serial pytest invocations with real network and
   real pip; red means investigate — there is deliberately no fallback-skip.
-  Its paid review tier runs as a SEPARATE pytest step (fresh process) that
-  alone carries the provider key, ORDERED FIRST and ubuntu-only: the other
-  tiers import downloaded plugin code in-process, and running the secret
-  step first means the runner has never executed payload code while the
-  secret was present. A missing key is a hard red, not a skip.
+  Its paid review tier runs as a SEPARATE pytest step, ORDERED FIRST and
+  ubuntu-only, alone carrying the provider key (why: ARCHITECTURE "CI
+  topology"); a missing key is a hard red, not a skip.
 - `size_ratchet` carries the live-repo size gates and is the ONLY blocking
-  surface for repository size (rules under "Module Size & Complexity"; only
-  checks against the live repo carry the marker). The base fallback
-  verifies the parent manifest against the parent's own tree — accepting a
-  copied manifest would allow debt laundering, so a resolvable base that
-  lost its manifest fails closed.
+  surface for repository size (rules under "Module Size & Complexity"; the
+  base fallback and why a resolvable base without a manifest fails closed:
+  ARCHITECTURE "CI topology"; only checks against the live repo carry the
+  marker).
 
 `skill_smoke` and `size_ratchet` tests must NOT also carry the `serial`
 marker or join `_SERIAL_TEST_FILES`: the `and not <lane>` markexprs in
@@ -139,22 +133,14 @@ Contributor rules:
   rollback leaves `gate_blocked` so boot retries recovery instead of
   promoting the rejected merge.
 - The managed mandate is "the full suite provably ran green on the exact
-  committed tree", not "run it twice": the reuse authority is the
-  process-held runner proof (`ctx._preflight_test_proof`) covering the tested
-  tree, installed index, effective passes and execution environment. Equivalent
-  ordinary preflights and post-commit runs reuse it too, after distinct baseline
-  checks. Every workload binds HEAD: equal file trees do not establish
-  equivalence for history-sensitive tests, including ordinary unmarked tests.
-  A newly created commit therefore requires a new run; repeated preflights with
-  unchanged HEAD still reuse the existing proof. A skip, no applicable
-  suite or a mocked `None` return cannot mint a proof. The
-  durable `tests_evidence` record is forensic telemetry the gate never
-  consults, so a restart forces a rerun. Review-binding and tag-binding
-  mismatches use the same managed failure route.
-  Creation/reuse observations use the existing event log with the exact subject
-  and workload fingerprint; logs never become reuse authority. Preserve the
-  executable's invocation path as well as its resolved binary identity, because
-  separate Python environments may symlink the same binary.
+  committed tree", not "run it twice": the reuse authority is the process-held
+  runner proof (`ctx._preflight_test_proof`), never the durable
+  `tests_evidence` record or the event log (what the proof binds, when it is
+  reused and why every workload binds HEAD: ARCHITECTURE "Git and commit
+  review"). A newly created commit therefore requires a new run, a restart
+  forces a rerun, and a skip, no applicable suite or a mocked `None` return
+  cannot mint a proof. Review-binding and tag-binding mismatches use the same
+  managed failure route.
 - Process containment is unconditional, including after a green pass:
   Windows uses a kill-on-close Job Object; POSIX uses an environment
   membership token plus a process-group enumeration backstop and promises

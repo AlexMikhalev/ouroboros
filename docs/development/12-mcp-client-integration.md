@@ -2,28 +2,18 @@
 
 This chapter owns the boundary for configured MCP servers: the base runtime is a client and never a server, descriptions and results are untrusted data rather than policy, and a stdio entry passes one executable and an exact argument list without a shell. It also fixes how referenced settings values reach a process environment, because a value's secret classification decides whether it is masked in diagnostics and logs.
 
-The base runtime is an optional CLIENT for trusted HTTP/SSE and local stdio
-MCP servers — never an MCP server (structure and module ownership:
+The base runtime is an optional CLIENT for trusted HTTP/SSE and local stdio MCP
+servers — never an MCP server (structure, transport validation, the stdio
+`command`/`args`/`cwd`/`env`/`env_from_settings` contract and the masking rule:
 ARCHITECTURE "MCP and browser-facing external tools";
 `ouroboros/mcp_client.py`). MCP descriptions and results are untrusted data,
-not policy: configuration trust must not turn remote prose into policy.
-Enabled tools join the initial capability envelope, still pass runtime
-safety and the caller's ordinary capability ceiling; discovery failure
-becomes a visible capability omission. Stdio accepts one executable command
-and an exact string argument list without a shell. Optional `cwd`, literal
-`env`, and `env_from_settings` (environment names mapped to existing string-valued
-setting keys) apply to listing and calling through the same manager configuration.
-References override matching literal names. The owner chooses MCP references in
-Settings; a caller's existing MCP tool grant does not authorize new references.
-Unknown fields remain saved and show a not-applied warning without disabling a
-valid server. Invalid known fields, missing references and incompatible transport
-fields produce `MCP_CONFIG_ERROR`. Response-only `auth_configured` is discarded at
-the configuration boundary. Omission preserves SDK environment/cwd defaults.
-Settings' existing built-in/custom-secret classification determines masking:
-ordinary selected values remain readable, while exact secret values (including
-short values and JSON-escaped echoes) are masked in descriptions/results/stderr.
-Executable schema properties, required fields, enum and default values stay intact.
-Resources, prompts, and MCP server behavior remain separate architecture changes.
+not policy: configuration trust must not turn remote prose into policy. Enabled
+tools join the initial capability envelope, still pass runtime safety and the
+caller's ordinary capability ceiling; discovery failure becomes a visible
+capability omission. The owner chooses MCP references in Settings; a caller's
+existing MCP tool grant does not authorize new references. Executable schema
+properties, required fields, enum and default values stay intact. Resources,
+prompts, and MCP server behavior remain separate architecture changes.
 Enforcement: `tests/test_mcp_client.py`, `tests/test_process_environment.py`.
 
 `start_service` overlays ordinary literal `env` on the existing minimal host

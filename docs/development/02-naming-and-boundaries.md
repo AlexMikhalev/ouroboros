@@ -63,34 +63,23 @@ rules have no automated surface — review-only.
   mode". Explicit task resources and actual Git targets remain distinct from
   semantic judgment; this does not promise an SSH or OS sandbox.
 - Do not infer credential authority from ordinary source/config directory
-  names. Reads and searches share ONE byte masker in every scope: known token
-  formats and PEM private-key blocks are masked, ordinary long source, hashes
-  and identifiers are preserved, so search and read deliver the same bytes to
-  the owner. A runtime data
-  directory inside a project retains its actual secret/control path rules,
-  including a forked child's canonical parent (`core_secret_paths.restricted_data_roots`).
+  names, and never refuse owner input or owner output on a SUFFIX or a WORD
+  inside a file name — on attachment ingest, on export or Deliverables, on a
+  `user_files` mutation, or in the git lanes — with one surviving tail rule:
+  dotenv spellings (`.env`, `.env.local`, `prod.env`) still refuse on ingest,
+  on export, in the git lanes and in the skill/review packs. Which locations
+  the owner credential fence covers, how the one byte masker and the PEM
+  content evidence work, and why unlisted stores such as `.cargo`,
+  `.terraform.d` and `.kaggle` get no dotted-directory default-deny:
+  `docs/architecture/06-agent-core.md` § "Tool capability and execution".
   Prepare invariant credential/root locations once per list/search/query call
-  through `make_subagent_secret_target_check`; never retain that predicate across
-  calls. Target resolution and owner-state/file-identity checks remain per target.
-  A SUFFIX or a WORD inside a file name never refuses owner input or owner
-  output on attachment ingest, on export or Deliverables, on a `user_files`
-  mutation, or in the git lanes, with one surviving tail rule: dotenv
-  spellings (`.env`, `.env.local`, `prod.env`) still refuse on ingest, on
-  export, in the git lanes and in the skill/review packs. Path-selected
-  attachment ingest otherwise checks exact credential leaves and credential/control
-  directory components; enumerated physical owner stores are mutation-fence
-  authority, while the git lanes also check content evidence (the bounded PEM
-  head read, `workspace_patch_capture.pem_private_key_reason`). The capture,
-  snapshot and cooperative checkpoint consumers use `pem_capture_refusal`:
-  effective Cyber preserves the original finding as advisory and includes the
-  requested bytes; ordinary modes retain the existing exclusion.
-  Restricted file readers mask complete private-key blocks before
-  selecting a window, preserving character positions and line breaks. The
-  owner credential fence covers the enumerated locations in
-  `credential_shapes.owner_credential_locations`, credential leaves and VCS
-  control directories. The exact SSH config exception does not permit key writes
-  under `.ssh`; unlisted stores such as `.cargo`, `.terraform.d` and `.kaggle`
-  are not protected by an arbitrary dotted-directory default-deny.
+  through `make_subagent_secret_target_check`; never retain that predicate
+  across calls — target resolution and owner-state/file-identity checks remain
+  per target. The capture, snapshot and cooperative checkpoint consumers use
+  `pem_capture_refusal`: effective Cyber preserves the original finding as
+  advisory and includes the requested bytes; ordinary modes retain the existing
+  exclusion. The exact SSH config exception does not permit key writes under
+  `.ssh`.
 - An unlaunchable sole cmd element gets an actionable argv/shell hint, never
   automatic splitting or an implicit shell. Repo-only edit tools reject their
   unsupported roots through their existing argument categories.
@@ -214,10 +203,9 @@ and WHY it is so. Every important WHY — cross-module, gate-level or module-loc
 — stays in the map, at least briefly (a second line under a module row or one
 sentence in the owning section); mechanism detail beyond that lives in the
 module's docstring, which the map points to by name and never copies.
-`docs/DEVELOPMENT.md` is how the body is changed: imperative rules grouped by
-change class, each naming the surface that enforces it (test, gate, CI lane) or
-stating honestly that none does; mechanisms, reviewer criteria, constitutional
-text and defaults belong to their owners (ARCHITECTURE, CHECKLISTS, BIBLE,
+`docs/DEVELOPMENT.md` is how the body is changed (its authority and shape:
+"Role and authority"); mechanisms, reviewer criteria, constitutional text and
+defaults belong to their owners (ARCHITECTURE, CHECKLISTS, BIBLE,
 `config.py`) and are pointed to, not restated — the ARCHITECTURE settings and
 endpoint tables are test-checked registries of those owners, not second
 authorities. A change REPLACES the description of the node it touched; release
@@ -307,17 +295,10 @@ a mid-run scope call, the timeout retry that replaces a dead attempt) must
 INHERIT that origin's project binding (`projects_registry.project_id_for_origin`,
 keyed by value on chat id + client message id), never re-derive project
 membership from its own id — one convertible unit per message, not one per task
-id. A timeout retry is bound at RETRY ADMISSION, inside the same transaction and
-under the same claim lock that admits it
-(`worker_promotion.bind_retry_to_origin_project`, called from the reaper's
-`_run_retry_admission_transaction`): the predecessor's own binding answers first,
-then that origin's, and the new row reuses the predecessor's stored origin by
-value, so the retried work stays in its room instead of painting a Main card that
-offers to turn it into a project. The bind lands ONLY once cancellation can no
-longer win the boundary — a binding is immutable, so a bound-but-never-admitted
-retry id would answer `project_id_for_task` forever — and a retry suppressed by a
-cancelled or already-terminal root is therefore never bound. Enforced by
-`tests/test_retry_project_binding.py`.
+id. A timeout retry is bound at RETRY ADMISSION, inside the transaction that admits
+it, and only once cancellation can no longer win the boundary (the mechanism
+and its WHY: `docs/architecture/06-agent-core.md` § "Durable memory and project
+focus"). Enforced by `tests/test_retry_project_binding.py`.
 
 One named exception inside role (b): a verification RECEIPT with no earlier
 ingress point is reconciled by ONE TYPED IDENTITY KEY, matching on the key's
@@ -372,10 +353,9 @@ list is the rule, the rule is missing.
 ### Task-authored messages are never owner text
 
 Who is speaking through a routing act is ONE fact the host mints by value
-(`control_routing._routing_issuer`): an owner turn (a direct chat turn — its
-ingress stamped `client_message_id` — or a task relaying the owner message it
-just drained) or a task speaking for itself (a pooled, Swarm, project or
-headless root). Never derive it again from a proxy — a routing contract only
+(`control_routing._routing_issuer`; the owner-turn/task-turn distinction and
+what each may carry: `docs/architecture/06-agent-core.md` § "Durable memory and
+project focus"). Never derive it again from a proxy — a routing contract only
 chat turns carry, an empty client id, the chat id of the event — and never give
 the model an argument for it. A task's own words are delivered as a task
 message (`KIND_TASK_MESSAGE`, provenance `independent_task`), never as
@@ -386,17 +366,14 @@ the ancestor fallback) and the drain mapping (`loop_round_limits`): an
 independent task's words are context the receiving model judges, so they enter
 no owner corpus — `owner_source_sha256`, the post-drain growth check that
 supersedes a paid acceptance panel and the acceptance premises stay the
-owner's (owner 4=A). A refusal or delivery to a task issuer is typed in its
-tool result ("written", never "read") and in one `task_message_routed` Logs
-row naming author and target; no chat is told and no picker options are
-attached. Enforcement: `tests/test_task_authored_messages.py`.
+owner's (owner 4=A). Enforcement: `tests/test_task_authored_messages.py`.
 
 ### Anti-pattern: a chat id tested for truth
 
-A chat id is a VALUE, not a boolean. `HIDDEN_CHAT_ID` (0) is the hidden
-partition — the Skill Review panel plus every headless task admitted without a
-registered project — a REAL destination that no browser surface reads; absence
-is `None`, and a negative id is synthetic A2A traffic. `if chat_id:` therefore
+A chat id is a VALUE, not a boolean. `HIDDEN_CHAT_ID` (0) is a REAL
+destination, the hidden partition
+(`docs/architecture/12-host-service-companions-and-chat-ids.md`); absence is
+`None`, and a negative id is synthetic A2A traffic. `if chat_id:` therefore
 does two wrong things at once: it drops a partition-bound notice AND re-routes
 hidden work to the owner's main chat, which is how a whole `ouroboros run`
 went invisible while its children surfaced in Main as a nameless card. Use the
@@ -408,8 +385,10 @@ the value downstream; a producer that sends to the owner DIRECTLY (nothing
 re-addresses it later) resolves the task's durable project binding AT EMISSION
 through `log_addressing.resolve_project_chat` and puts it ahead of the row's
 chat, because a task bound to a project after admission still carries the chat
-it was born in. Explicit browser-source Main addressing is distinct from
-the ordinary hidden API default; task type is never source provenance. Enforcement: `tests/test_chat_id_truthiness_guard.py` is the
+it was born in. The admission contract — one destination per registered project, the hidden
+default for ordinary API tasks, browser-declared Main — is
+`docs/architecture/05-supervisor-loop.md`; task type is never source
+provenance. Enforcement: `tests/test_chat_id_truthiness_guard.py` is the
 source lint that keeps the class closed; it also sees the id read straight off a
 mapping inside a condition (`if row.get("chat_id") and ...`), the form where no
 local exists for the other alternatives to match; its allowlist is where a
@@ -492,21 +471,16 @@ provider, but the core loop must degrade explicitly rather than crash or
 silently reroute.
 
 Canonical assistant history and tool schemas are function-shaped across
-providers; do not add a second stored transcript for a provider dialect. Direct
-OpenAI tool conversations stay on Chat Completions — custom-first when
-non-`none` reasoning is requested, an exact custom rejection may fall back to
-function with the same effort, and explicit `none` is a task-local last resort
-— and send `reasoning_effort` and `max_completion_tokens` provider-wide;
-model-name prefixes are not admission authority. DeepSeek is the second
-effort-carrying route (`reasoning_effort` beside the compatible-lane
-`max_tokens` carrier): the canonical tiers are projected onto its documented
-`low`/`high`/`max` enum at the send boundary (`minimal`→`low`,
-`medium`/`xhigh`→`high`, `ultra`→`max`), `none` becomes
-`extra_body.thinking.type=disabled`, a forced tool choice (`required`/named) is
-served with thinking disabled because thinking mode accepts only `auto`/`none`
-(live-probed 2026-09-03), and every projection that changes the tier is
-disclosed on usage as `reasoning_effort_clamped`. The carriage is keyed on the
-provider id, never a model-name prefix or a target capability field, so a
+providers; do not add a second stored transcript for a provider dialect. Direct OpenAI tool conversations stay on Chat Completions (the
+custom/function/`none` ladder and the provider-wide
+`reasoning_effort`/`max_completion_tokens` carriage:
+`docs/architecture/06-agent-core.md` § "Context fitting, retry, and compaction"
+and `docs/architecture/07-configuration.md` § "LLM output token budgets");
+model-name prefixes are not admission authority. DeepSeek is the second effort-carrying route (`reasoning_effort` beside the
+compatible-lane `max_tokens` carrier; the tier projection, the
+forced-tool-choice thinking rule and the `reasoning_effort_clamped` disclosure:
+`docs/architecture/07-configuration.md`, DeepSeek provider specifics). The
+carriage is keyed on the provider id, never a model-name prefix or a target capability field, so a
 hand-built target cannot silently drop it.
 
 Apply static, semantics-preserving wire normalization before request-wire
@@ -516,10 +490,8 @@ All learned request-shape adaptation goes through the one provider-neutral
 request-wire driver (`ouroboros/request_wire_contract.py`: exact-route
 identity, closed action vocabulary, shared TTL, never executes provider prose
 or switches route); do not add a second driver, and explicit `none` is never
-durable. Direct Anthropic is the deliberate exception to a purely
-reconstructed provider transcript: one private, route-bound byte-for-byte
-replay receipt of the unfinished native tool turn
-(`ouroboros/anthropic_native_custody.py`), scrubbed on any
-provider/endpoint/API/model change and fenced from compaction. Do not
-synthesize an effort-to-`budget_tokens` policy.
+durable. Direct Anthropic is the deliberate exception to a purely reconstructed provider
+transcript (its route-bound replay receipt:
+`docs/architecture/06-agent-core.md` § "Context fitting, retry, and
+compaction"); do not synthesize an effort-to-`budget_tokens` policy.
 

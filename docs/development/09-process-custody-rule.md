@@ -6,19 +6,11 @@ Long-lived OS processes (anything `subprocess.Popen`-ed or `mp.Process`-ed
 without a bounded wait in the same call) MUST be spawned through
 `ouroboros.process_custody.spawn_supervised(cmd, drive_root=..., purpose=...,
 scope=...)` — or, when an existing manager owns the Popen call, registered
-via `record_process(...)` write-through immediately after spawn. The custody
-ledger (`data/state/process_ledger.jsonl`) is what lets the orphan reaper
-find children after an abrupt worker/server death; an unledgered process may
-evade durable generation-aware reaping (custody complements the in-process
-tracking, port sweeps, and Windows Job Objects — it does not replace them).
-Scopes are `task`, `session`, and `daemon`; skill companions are the
-documented daemon-scope exception, reaped only when the owning skill is
-uninstalled or the entry is from a foreign dead server generation — log-only
-by default and fail-safe: an unknown install set means keep-all, never a
-mass-kill, and same-session companions of installed skills are always kept.
-The reaper kills strictly by (pid, start_time, cmd_sha256) fingerprint —
-never add command-line-class matching, which would let a dev instance reap a
-packaged instance's processes. `tests/test_process_custody.py` enforces the
+via `record_process(...)` write-through immediately after spawn. An unledgered process may evade durable generation-aware reaping (the ledger,
+the reaper's strict fingerprint and the skill-companion exception:
+`docs/architecture/01-high-level-architecture.md` § "Runtime topology"). Scopes
+are `task`, `session`, and `daemon`. Never add command-line-class matching to
+the reaper — it would let a dev instance reap a packaged instance's processes. `tests/test_process_custody.py` enforces the
 chokepoint with an explicit allowlist for bounded synchronous helpers.
 An installation-owned daemon uses `daemon` scope, with legacy purpose retention
 provided by its lifecycle owner and checked against the existing ledger identity;
@@ -29,43 +21,32 @@ and timeout custody alike — which spares the ledger's live `daemon`-scope root
 (`process_custody.live_daemon_root_pids`, including the owner's retained legacy
 purposes) and, for one task's cancel or timeout only, the kept services; a direct `kill_pid_tree` on a worker anywhere else in
 `supervisor/` is a defect. The explicit stop (`OwnedClaudexorDaemon.stop_outcome`, used by Panic and
-Restart) separates authenticated cooperative shutdown from forced signalling.
-A valid owned marker and authenticated same-home endpoint permit the already
-installed managed CLI `daemon stop --json`; read-only resolution must not ensure
-or install a runtime, start a daemon, probe accounts or inherit another home's
-socket override. Pure operator commands select the existing exact Node with
-`resolve_cli_command(require_npm=False)`; npm-dependent installation retains its
-separate toolchain requirement, so ordinary stop works on Windows and bundled-only installs. Require exit0 and a terminal stop receipt, then observe known
-root/child exits. RPC acknowledgement and lease release alone are not physical
-exit proof. A surviving endpoint is disclosed, never chased as the old target.
-Capture existing custody before the request; forced fallback may signal only
-those unchanged rows with both measured birth and command, or the manager's own
-Popen. Legacy Windows empty-birth rows retain their old permissive keep and cannot
-be re-attested from a later observation, but a healthy daemon can stop through CLI.
+Restart) separates authenticated cooperative shutdown from forced signalling;
+its protocol — what proves an exit, what forced fallback may signal, what never
+grants that authority — is
+`docs/architecture/09-shutdown-and-process-cleanup.md`. The rules a change must
+keep: read-only resolution must not ensure or install a runtime, start a
+daemon, probe accounts or inherit another home's socket override; pure operator
+commands select the existing exact Node with
+`resolve_cli_command(require_npm=False)` so ordinary stop works on Windows and
+bundled-only installs; RPC acknowledgement and lease release alone are never
+physical exit proof; a matching error-code string alone gives no right to
+signal; manager-lock acquisition stays bounded with preparation/network/exit
+waits outside it, and Stop retires delayed spawns; the operator CLI and
+captured-exit bounds are `config.CLAUDEXOR_OPERATOR_STOP_TIMEOUT_SEC` and
+`config.CLAUDEXOR_STOP_EXIT_WAIT_SEC`, defined once in runtime_limits. Join
+existing purpose-filtered startup custody before and after runtime preparation;
+caller wait expiry never kills it or replaces engine writer election. Keep
+startup and normal admission waits independent, identify current PID/build/log
+interval rather than an old log tail, and preserve existing malformed/foreign
+ownership markers. Publish a missing marker atomically only after revalidating
+the home under the shared JSON lock.
 
-Preserve received HTTP refusals before reading the body: token/protocol/decoded
-response failures and invalid discovery are not transport-unavailability evidence.
-A typed network failure or positively absent descriptor for marked startup keeps
-its existing fallback meaning; a matching error-code string alone gives no right
-to signal. Unknown/missing CLI does not relax that rule. Confirmed signal-stop
-exit permits `process_stopped` and pruning; concurrent or unreadable ledger bytes
-survive the append lock and exact-prefix compaction. Partial success stays
-unconfirmed, with the existing critical supervisor row and retained custody.
-Manager-lock acquisition is bounded; preparation/network/exit waits remain outside
-it, and Stop retires delayed spawns. The existing operator CLI and captured-exit
-bounds are `config.CLAUDEXOR_OPERATOR_STOP_TIMEOUT_SEC` and
-`config.CLAUDEXOR_STOP_EXIT_WAIT_SEC`, defined once in runtime_limits. Join existing
-purpose-filtered startup custody before and after runtime preparation; caller wait expiry never kills it or replaces
-engine writer election. Keep startup and normal admission waits independent,
-identify current PID/build/log interval rather than an old log tail, and preserve
-existing malformed/foreign ownership markers. Publish a missing marker atomically
-only after revalidating the home under the shared JSON lock. A failed
-owned-daemon start latches on the TYPED exit fact only
-(`ExitFact.failed_without_control`: non-zero or signal exit with no control
-descriptor written during that spawn); `claudexor_startup_failure.py`
+A failed owned-daemon start latches on the TYPED exit fact only
+(`ExitFact.failed_without_control`), and `claudexor_startup_failure.py`
 classifies the child's own log interval for the diagnostic label and the one
-`claudexor_daemon_start_failed` supervisor row, never for behaviour (BIBLE
-P5). Harvest the exit fact at every spawn decision, at attach and at stop
+supervisor row, never for behaviour (BIBLE P5); the classes, the rows and the
+releases of the latch are ARCHITECTURE §9. Harvest the exit fact at every spawn decision, at attach and at stop
 (`_settle_exited_child`), never only on a caller's wait expiry: with the real
 crash cadence (V8 dies after the 20 s startup window) the waiting caller gets
 `daemon_starting` and the child dies with nobody waiting, and the next caller,
@@ -82,12 +63,9 @@ become the spawner, in which case the retry joins that same live child (one
 spawn either way, only who pays the startup wait differs). Do not add a
 backoff machine, a retry counter, a cooldown constant, host-side heap sizing
 or writer-lease handling, and do not add a third retrier: the periodic
-supervisor sweep (`clear_start_failure_latch`, then its own single zero-wait
-ensure on a short-lived thread, only when it released a latch), the owner's
-explicit Refresh (`/api/claudexor/wake`: clears, then one ordinary ensure), a
-live attach, or a new manager (Restart/Panic; a task worker's manager is its
-own instance with its own latch) are the only releases, and ordinary callers
-never make the retry; `NODE_OPTIONS` passthrough is the operator escape
+sweep, the owner's explicit Refresh, a live attach, or a new manager (a task
+worker's manager is its own instance with its own latch) are the only releases
+(each named in ARCHITECTURE §9), and ordinary callers never make the retry; `NODE_OPTIONS` passthrough is the operator escape
 hatch (ARCHITECTURE §9).
 
 Ordinary close preserves the shared daemon on every platform, including forced

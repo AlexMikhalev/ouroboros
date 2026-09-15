@@ -106,10 +106,8 @@ SPA, not a relocatable-page or multi-instance panel framework.
   `project_dialogue.outcome_phase`, pinned to the browser by one shared
   fixture (`web/tests/fixtures/outcome_phase_parity.json`): a new axis, reason
   or acceptance status is added to both sides in the same commit, with a row
-  in that fixture. The detail line under the headline comes from
-  `taskReasonDetail` in the order soft stop, hard failure or cancellation
-  reason, host acceptance decision (status plus stored rationale), typed
-  reason phrase or raw code — never from a second producer. A non-terminal diagnostic may add a timeline fact
+  in that fixture. The detail line under the headline comes from `taskReasonDetail` alone (its
+  precedence: ARCHITECTURE "Chat and Projects") — never from a second producer. A non-terminal diagnostic may add a timeline fact
   but must not promote the whole task; unknown event names never acquire
   Chat severity from `error`/`crash`/`fail` keyword matching. The Chat
   header reports connection, the `/api/state` activity census, the owner's
@@ -117,9 +115,8 @@ SPA, not a relocatable-page or multi-instance panel framework.
   not synthesize header attention, a toast, unread state, or an owner
   action. Never derive header liveness from a WS frame: a typing frame is
   a submission receipt, and the `/api/state` census is the only inserter
-  into the client live-activity set (contract and residuals: the
-  `DirectActivityRegistry` / `active_chat_activities` paragraph of
-  ARCHITECTURE.md; enforced by
+  into the client live-activity set (contract and residuals: ARCHITECTURE "Chat and Projects", the
+  `DirectActivityRegistry` / `active_chat_activities` paragraph; enforced by
   `web/tests/chat_header_census.test.js`).
 - Executor presentation consumes the existing task/run attempt facts. Keep
   `executor_observation` event-local through Agent, supervisor delivery, progress
@@ -141,9 +138,9 @@ SPA, not a relocatable-page or multi-instance panel framework.
   emissions and wall-clock intervals, never inferred execution waves.
 - Chat viewport invariant: sample live-edge intent before an ordinary
   transcript mutation — native scroll anchoring is not proof the owner's
-  visible message stays stable, so focused regressions disable it. Follow
-  only inside the 48 CSS-pixel zone, otherwise preserve the visible keyed
-  message, nested-card, or Reviews anchor; route late
+  visible message stays stable, so focused regressions disable it. The stable-viewport seam (ARCHITECTURE "Chat and Projects") decides when the
+  transcript follows the bottom; otherwise preserve the visible keyed message,
+  nested-card, or Reviews anchor; route late
   application-controlled DOM writes through the existing stable-viewport
   seam, keeping awaited Load-older, reconnect reconciliation, and
   cross-instance restoration as explicit lifecycle transactions. Browser
@@ -212,26 +209,17 @@ Image-reader regressions must include a real PNG under a synthetic user home wit
 Browser-boundary regressions run the installed Chromium and WebKit (`PLAYWRIGHT_BROWSERS_PATH`; a test never installs a browser, and `OUROBOROS_EXPECT_BROWSER_ENGINES` turns a missing engine from a skip into a failure) against real loopback servers bound through `server_entrypoint.bound_service_socket`, so the control endpoint under test is an actual recorded binding rather than a fixed port. The redirect residual is one strict xfail (`tests/test_browser_private_service.py`, the server-side dispatch counter) beside the passing content-refusal proof (`tests/test_browser_redirect_chain.py`); do not turn either into the other. The private-service proof takes its LAN target from `OUROBOROS_TEST_PRIVATE_BROWSER_HOST`/`_ADDRESS` (`OUROBOROS_EXPECT_PRIVATE_BROWSER=1` fails instead of skipping) and writes the images it viewed to `OUROBOROS_BROWSER_EVIDENCE_OUT`.
 
 `window.prompt`, `window.confirm`, and `window.alert` are forbidden in
-`web/modules`: PyWebView shells implement them inconsistently, native
-dialogs bypass the design system and browser tests, and the macOS shell has
-no prompt delegate, so `window.prompt` silently returns `null`. Use
-`confirm_dialog.js::openConfirmDialog` — confirm mode returns a strict
-boolean, input mode returns `{confirmed, value}`, alert mode renders one
-acknowledgement action; Close, Cancel, backdrop, Escape, and supersession
-are always non-confirming. Critical actions test the exact confirmed result
+`web/modules`; use `confirm_dialog.js::openConfirmDialog` (why, and its mode
+contract: ARCHITECTURE "Navigation and shared UI contracts"). Critical actions test the exact confirmed result
 and keep the confirmation plus side effect in one injectable flow.
 `tests/test_web_dialogs_static.py` keeps the native-dialog class closed.
 
-`ui_interactions.js::bindDialogFocus` owns the modal keyboard boundary and
-conditional restoration; callers mount first and dispose before removal,
-keeping their own result/cancel contracts. `bindMenu` adds action-menu keyboard
-and dismissal behavior over `bindPopoverPosition`; editable suggestion lists
-use positioning alone, preserving native input and domain route serialization.
-Mount `.ui-popup` outside clipping ancestors and
-consume its measured `--ui-popup-*` properties in shared CSS. The owner retains
-markup, portal removal and action dispatch; no overlay registry is needed.
-Dispose before removing a popup, and close/restore a menu before opening a
-dialog from its action. `web/tests/ui_interactions.test.js` pins callbacks,
+`ui_interactions.js` owns the modal keyboard boundary, menus and popup geometry
+(the three binders and their teardown: ARCHITECTURE "Navigation and shared UI
+contracts"); callers mount first and dispose before removal, keep their own
+result/cancel contracts, mount `.ui-popup` outside clipping ancestors, dispose
+before removing a popup, and close/restore a menu before opening a dialog from
+its action. `web/tests/ui_interactions.test.js` pins callbacks,
 focus, geometry and cleanup; actual menu/chooser/dialog browser consumers
 remain necessary for viewport and engine-sensitive behavior.
 
@@ -260,20 +248,12 @@ action's result. Preserve the existing job identity, bounded retries and
 disposal contracts. Escape text and attributes for their actual HTML contexts,
 constrain media to extension
 routes or safe data URLs, and keep charts accessible through a semantic
-table. Rare `kind: "module"` UI runs only in a sandboxed opaque-origin
-iframe with no `allow-same-origin`; its document policy admits scripts,
-images, media and fonts only from the skill's own prefix (plus
-`data:`/`blob:`; `connect-src` closed) and its parent bridge proxies only the
-owning extension route — never load skill JavaScript into the SPA origin.
-Both framed mounts live in `web/modules/widget_module.js` (the child-side
-bootstrap is `widget_frame.js`) and return their disposer to the `mountTab`
-dispatcher in `widgets.js`; the framed card chrome — launch policy (owner
-override > author `render.start` > kind default), `retain`, Start/Stop, the
-policy menu, the facade — lives in `widget_card.js`, reorder handles in
-`widget_reorder.js`, chart/table helpers in `widget_chart.js`, the pure
-list-signature and keyed-patch helpers in `widget_list.js`; the page
-compares the list signature after every `GET /api/widgets` and touches no
-card node when it is unchanged. A failed list read exposes contextual Retry
+table. Rare `kind: "module"` UI runs only in the sandboxed opaque-origin iframe whose
+CSP and bridge ARCHITECTURE "Skills and Widgets" states — never load skill
+JavaScript into the SPA origin. The module ownership of the Widgets page (the
+two framed mounts, the child bootstrap, the card chrome, reorder, chart and
+list helpers) and the keyed list reconciliation are that section and the §1
+module tree. A failed list read exposes contextual Retry
 through that same reconciliation; it preserves unchanged frames and the
 owner's Stop choices. Do not turn Retry into a global refresh/remount.
 Long-running actions use a durable job id and resumable status polling.
@@ -299,14 +279,11 @@ new mount, not at extension registration; the request root is propagated by
 both in-process and out-of-process dispatch. No bundle cache, new endpoint or
 auth exception belongs in the helper.
 
-`docs/examples/author_ui_kit/` contains the two ordinary extension recipes:
-a module gets source text from its own route through `OuroborosWidget.fetch`,
-adds CSS and imports the self-contained module from a frame-local Blob URL;
-a route iframe embeds the same source safely in its initial HTML under its
-own CSP. Revoke temporary Blob URLs. These paths need no opaque `/static`
-request, new bridge message or widget schema flag. Keep the kit optional and
-author-overridable; retained mounts keep their loaded source, with no theme
-poller or forced remount. Tests `test_author_ui_kit.py` and
+`docs/examples/author_ui_kit/` contains the two ordinary extension recipes
+(ARCHITECTURE "Skills and Widgets" describes them). Revoke temporary Blob URLs;
+keep the kit optional and author-overridable, with no theme poller or forced
+remount; add no opaque `/static` request, bridge message or widget schema flag.
+Tests `test_author_ui_kit.py` and
 `test_author_ui_kit_browser.py` cover source-root delivery and actual framed
 consumers; they do not certify an arbitrary author's CSP or application.
 

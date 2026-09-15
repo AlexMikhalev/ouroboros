@@ -13,11 +13,11 @@ MUST include these artifacts as **first-class context sections** — not as
 optional or opportunistic inclusions via touched-file packs.
 
 Plan review is the one flow whose governance pack is tiered, and by ONE
-structural fact — whether a declared `affected_paths` target (a file the work
-will CHANGE) resolves under the Ouroboros system repository; `affected_resources`
-is prose the host never resolves, and an `evidence` path is a read, not a change —
-never by prose and never by a plan-kind
-taxonomy, which is what keeps classification un-gameable. This is a tiering,
+structural fact — whether a declared `affected_paths` target resolves under the
+Ouroboros system repository (the classification, and what never counts as a
+change: `docs/architecture/06-agent-core.md` § "Plan construction and review")
+— never by prose and never by a plan-kind taxonomy, which is what keeps
+classification un-gameable. This is a tiering,
 not an omission: before any work exists the reviewer's subject is the
 INTENTION, and every absence is a named pointer or a typed `need_evidence`
 finding the host attaches on the next cycle under the same evidence policy —
@@ -60,8 +60,8 @@ The context-delivery registry:
 | Advisory pre-review (`tools/claude_advisory_review.py`) | Two delivery classes: an `api_chat` row runs the bounded NATIVE inspection episode (governance docs reached through its read-only tools); an `agent_session` row receives a resolvable pointer marked MANDATORY FULL READ and the session reads the full doc itself — retrieval is disclosed (native reads are host-observed; vendor-session reads are not) | same two delivery classes | same two delivery classes |
 | Scope review (`tools/scope_review.py`) | full canonical doc + Atlas accounting; a size terminal or a degradation rung under a cold density cap takes the shared cold-start density rung above (one probe, one rebuild, `density_probe` ladder step) | full canonical doc + Atlas accounting | full canonical doc + Atlas accounting |
 | Skill review (`skill_review.py`) | full inline (`api_chat`) / mandatory full source-root read (`agent_session`) | full inline (`api_chat`) / mandatory full source-root read (`agent_session`) | full inline (`api_chat`) / mandatory full source-root read (`agent_session`) |
-| Plan review (`tools/plan_review.py`) | full for a SELF-MODIFICATION plan (structural path fact: a declared `affected_paths` target resolves under the system repo, whether or not the file exists yet; an `evidence` read of a repo file does not); otherwise a heading-derived navigation map of BIBLE.md generated at runtime (never a copy) | inline, in full, for a self-modification plan; otherwise the book navigation (per chapter: introduction, physical path, heading index) + a resolvable pointer (W3) | named on-demand pointer; a reviewer that needs it returns `need_evidence` (an exact `::lines=A-B` range for one section) and the host attaches what the evidence policy allows on the next cycle, naming every absence |
-| Deep self-review (`deep_self_review.py`) | Three deliveries on the `deep_review` row. Packed api row: full canonical doc + Atlas accounting; a required set unfit under a cold density cap gets one bounded probe send and one rebuild, and a pack still unfit is the typed `deep_self_review_pack_unfit` refusal asking the owner to switch the row (no automatic fallback). Native inspection episode / agent session: MANDATORY full read at the repository root, named with its size in the task; the native episode's `read_file` receipts carry the delivered line extent and the host merges the repository-root intervals for BIBLE.md afterwards — `read` only on full coverage, else `partial`/`missing`/`unobserved` — disclosed in the report header and as a typed `capability_delta` (host-observed reads); a session's reads are `unobserved`. Memory (up to seven whitelisted files) is INLINED byte-exact on every delivery, each entry's disposition disclosed (task text, `deep_review_memory`, header `memory=n/7`) — never receipt-checked | Packed: composed in full (max) / the authored chapter introductions with their physical paths (low) + Atlas accounting. Retrieving rows: those same introductions, chapters read on demand by path | Packed: full composed book + Atlas accounting. Retrieving rows: the authored chapter introductions, chapters read on demand (CHECKLISTS.md keeps its single-doc `generate_doc_nav_map`) |
+| Plan review (`tools/plan_review.py`) | full for a SELF-MODIFICATION plan (the structural path fact above); otherwise a heading-derived navigation map of BIBLE.md generated at runtime (never a copy) | inline, in full, for a self-modification plan; otherwise the book navigation (per chapter: introduction, physical path, heading index) + a resolvable pointer | named on-demand pointer; a reviewer that needs it returns `need_evidence` (an exact `::lines=A-B` range for one section) and the host attaches what the evidence policy allows on the next cycle, naming every absence |
+| Deep self-review (`deep_self_review.py`) | Three deliveries on the `deep_review` row (`docs/architecture/06-agent-core.md` § "Deep self-review"). Packed api row: full canonical doc + Atlas accounting, with the shared cold-start density rung and the typed `deep_self_review_pack_unfit` refusal (no automatic fallback). Native inspection episode / agent session: MANDATORY full read at the repository root — host-observed and coverage-derived on the native episode, `unobserved` for a session — disclosed in the report header and as a typed `capability_delta`. Memory (up to seven whitelisted files) is INLINED byte-exact on every delivery with each entry's disposition disclosed, never receipt-checked | Packed: composed in full (max) / the authored chapter introductions with their physical paths (low) + Atlas accounting. Retrieving rows: those same introductions, chapters read on demand by path | Packed: full composed book + Atlas accounting. Retrieving rows: the authored chapter introductions, chapters read on demand (CHECKLISTS.md keeps its single-doc `generate_doc_nav_map`) |
 
 Skill Review keeps the full stable governance/host prefix for cache-friendly
 API rows; a retrieving session reads those same canonical files from its
@@ -69,52 +69,32 @@ source-repository root and receives the byte-exact dynamic tail inline, so the
 payload snapshot and per-chunk quorum stay identical without rebilling or
 crowding the session window.
 
-Planning has two distinct roots: governance documents are always loaded from
-the system repository, while declared targets and evidence locators resolve
-against `active_repo_dir_for(ctx)`. Exact user-managed installed-skill payload
-paths are the one data-plane exception for CLASSIFICATION only — they never
-make a plan a self-modification — and are not attachable as evidence: the
-resolver allows only the active workspace and the system repository, so a
-payload locator comes back as a named `denied_path` omission. Any declared
-path escaping the active subject, a workspace/subject mismatch, or an
-unavailable root fails loudly with a named omission. Do not fall back to
-reviewing the Ouroboros repo for an external plan.
+Planning has two distinct roots — governance documents from the system
+repository; declared targets and evidence against `active_repo_dir_for(ctx)` —
+and a path escaping the active subject or an unavailable root is a named
+omission (the same ARCHITECTURE section). Exact user-managed installed-skill
+payload paths are the one data-plane exception for CLASSIFICATION only — they
+never make a plan a self-modification — and are not attachable as evidence (a
+payload locator comes back as a named `denied_path` omission). Do not fall back
+to reviewing the Ouroboros repo for an external plan.
 
-The SPEC must state the goal, acceptance claims, invariants, in-scope and
-non-goals, the load-bearing decisions with their rejected alternatives, and
-what is consciously deferred. Plan review publishes exactly `GREEN`,
-`REVIEW_REQUIRED`, `REVISE_PLAN`, or the honest `DEGRADED` (no quorum,
-or a paid actor still in flight);
-findings are inputs the main agent may accept, reject, or defer. A
-`need_evidence` finding names a locator the host attaches on the next cycle
-or, as a question to the author, the spec id it is about in `breaks`; the
-author answers it in the disposition (accept), rejects it, or defers it
-openly, and its answer reaches the reviewers only on the next paid cycle.
-Optional
-`note` findings, including useful premise criticism and simpler alternatives,
-remain readable but need no adoption or disposition; a note-only wave closes
-immediately under both enforcement modes. The same `review_disposition` call may
-voluntarily annotate a current closed note-only wave; it keeps the verdict and
-spec unchanged, retains the previous immutable artifact, and never reopens the
-review or buys another panel. Outstanding `need_evidence` can close
-without a second LLM call through a separate `plan_task` call containing `review_disposition` only —
-`{review_fingerprint, items: [{finding_id, decision, rationale}]}` — covering
-each required finding exactly once; duplicates, contradictions, unknown, stale, or
-incomplete required dispositions fail closed, and mixed or vacuous calls fail before an
+The SPEC shape, the finding vocabulary (`blocking` with a `breaks` id, `note`,
+`need_evidence`), the verdicts (`GREEN`, `REVIEW_REQUIRED`, `REVISE_PLAN`, the
+honest `DEGRADED`) and the closure rules per finding class and enforcement mode
+are stated once in `docs/architecture/06-agent-core.md` § "Plan construction
+and review"; findings are inputs the main agent may accept, reject, or defer.
+Outstanding `need_evidence` closes without a second LLM call through a separate
+`plan_task` call containing `review_disposition` only — `{review_fingerprint,
+items: [{finding_id, decision, rationale}]}` — covering each required finding
+exactly once; duplicates, contradictions, unknown, stale, or incomplete
+required dispositions fail closed, and mixed or vacuous calls fail before an
 attempt is recorded as typed argument errors — an optional field that carries
 no meaning beside a disposition (a blank `goal`/`plan`; a `spec` holding only
 declared keys whose values are `None`, `""` or `[]`) is ignored, never mistaken
 for a second operation, while any non-empty list, undeclared key or non-blank
-string is meaning and makes the call mixed. Never replay the plan envelope with
-the disposition.
-Outside Cyber Pro, a real blocking finding, including one below quorum, stays open pending a paid
-delta review of a changed spec or justified rejection, when capacity remains; advice
-does not become a blocker through repetition. Blocking `REVISE_PLAN` likewise
-requires another panel when another paid cycle is available; advisory
-may proceed only under loud host disclosure and the agent's rationale.
-Reviewers return findings, including optional alternatives, not a required
-competing plan. A blocking finding must name the spec id it breaks, and there
-is never a required number of findings.
+string is meaning and makes the call mixed. The same call may voluntarily
+annotate a current closed note-only wave without reopening the review or buying
+another panel. Never replay the plan envelope with the disposition.
 
 Force-plan is an LLM-first pre-implementation obligation on the admitted
 managed root, not a mechanical permission check. `plan_review_state` owns
@@ -127,24 +107,17 @@ slots, and `quorum_unreachable` release live in ARCHITECTURE "Plan
 construction and review"; paid cycles are bounded by the shared
 `OUROBOROS_REVIEW_MAX_CYCLES`.
 
-**Context mode (Nano / Low / Max).** `OUROBOROS_CONTEXT_MODE` controls the
-Architecture projection in the agent's own context: Max keeps `ARCHITECTURE.md`
-full for every task class, while Low and Nano supply the book navigation: the
-authored chapter introductions plus each chapter's own heading index, addressed
-to the physical chapter file it indexes — a composed-book line number is never
-a `read_file` locator.
-`DEVELOPMENT.md` is mode-independent and follows the active repository
-binding — the signal is the repo binding, a path fact, never a guess from
-message text (full for system-repo work including a project room with no
-external binding; a bound external workspace, subagent, or API/CLI/scheduled
-external surface receives a visible on-demand pointer; explicit structured
-overrides win). Tier-0 identity and constitutional context stays full in every
-mode. `context_fit.py` renders Max and Low from one immutable captured core on
-one labelled density basis; Owner Low has an elastic 200K total-context target
-whose miss is non-terminal. Predicted Max pressure never swaps in Low
-documents — only actual provider overflow may use a task-local Low projection,
-followed by at most one same-route strictly-smaller call, and this never
-changes owner mode or P3 commit/scope review.
+**Context mode (Nano / Low / Max).** The projection each mode gives the two
+books — Max composes `ARCHITECTURE.md` in full for every task class; Low and
+Nano supply the book navigation addressed to the physical chapter files;
+`DEVELOPMENT.md` is mode-independent and follows the active repository binding,
+a path fact, never a guess from message text — is the Main task context row
+above and `docs/architecture/06-agent-core.md` § "Context fitting, retry, and
+compaction". The rule: tier-0 identity and constitutional context stays full in
+every mode; predicted Max pressure never swaps in Low documents — only actual
+provider overflow may use a task-local Low projection, followed by at most one
+same-route strictly-smaller call — and this never changes owner mode or P3
+commit/scope review.
 
 ### Invariant: Exact premises with explicit source ownership
 
@@ -169,14 +142,10 @@ in `tests/test_loop_misc.py`.
 ### Invariant: Compaction must earn its rewrite
 
 Context compaction is a deficit-requested materializer, not an independent
-threshold, timer, route, or retry policy. It first performs pure selection
-over completed atomic units (one assistant tool-call message plus all and only
-its contiguous matching results); user turns are hard boundaries; malformed,
-missing, delayed, duplicated, visually opaque, or corrupt-capsule units remain
-byte-identical. No eligible positive reclaim means no checkpoint, summarizer
-call, or transcript mutation.
-
-For a non-empty selection, persist the exact actor-visible checkpoint before
+threshold, timer, route, or retry policy (selection over completed atomic
+units, hard user-turn boundaries, the no-reclaim-no-mutation rule and the
+route+round latch: `docs/architecture/06-agent-core.md` § "Context fitting,
+retry, and compaction"). For a non-empty selection, persist the exact actor-visible checkpoint before
 calling the summarizer. Summary input covers complete stable hashed chunks
 with gap-free offsets; only typed summarizer context overflow may split a
 source recursively. A replacement publishes only after transcript/unit

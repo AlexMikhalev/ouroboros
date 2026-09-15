@@ -41,13 +41,11 @@ This chapter owns what a managed update may do to the live tree: how one exact o
   tree back and best-effort preserves the attempt on the deterministic
   failed-update branch; the fresh rescue snapshot, not that branch, is the
   carrier rollback itself depends on.
-- Take a fresh rescue before every destructive rollback and before
-  boot-resume re-materialization — the pre-update snapshot predates the
-  merge and holds none of the resolution. The hook is fail-open (never block
-  a rollback on it), but its outcome is disclosed durably at capture time,
-  before the destruction; record the pointer in the update transaction so a
-  replayed rollback does not re-snapshot and a retry rescues what appeared
-  since.
+- Take a fresh rescue before every destructive rollback and before boot-resume
+  re-materialization, fail-open but disclosed durably at capture time, with its
+  pointer recorded in the update transaction (the choke point and why the
+  pre-update snapshot is not enough:
+  `docs/architecture/02-startup-onboarding-flow.md`).
 - Manual Restore reuses the same writer fence and pins the previous HEAD on
   a local recovery branch before reset. Promotion resolves the development
   SHA once and uses that exact SHA for both the local QA ref and any remote

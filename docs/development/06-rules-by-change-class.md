@@ -551,9 +551,9 @@ both critical. The imperatives:
   messages, hurry controls, checkpoints, and parallel auxiliary children
   live for the whole run.
 - Grow `subagent_bootstrap._DEFINITE_UNRUN_REASONS` only with reasons that
-  PROVE no run can exist; everything ambiguous wakes the model — a false
-  "spent nothing" terminal over a possibly-live run is the one direction
-  this classification must never fail toward. Zero-run receipts write only
+  PROVE no run can exist; everything ambiguous wakes the model (why: `docs/architecture/06-agent-core.md`
+  § "Delegated subagents (Claudexor transport + the nanny)"). Zero-run receipts
+  write only
   `incomplete | unknown` (a zero-run "complete" is unverifiable
   self-report); a substrate swap is a disclosed incomplete execution, never
   a silent vendor/API fallback
@@ -584,21 +584,14 @@ both critical. The imperatives:
   quality, never the execution route — and an unreadable custody log reads
   `evidence_read_failed`, never a proven-empty substrate.
 - The coordination poll is READ-ONLY of task state: it observes the budget
-  profile and snapshot rather than resolving and latching them, so a
-  metadata-poor task (no `created_at`/`started_at` and no anchor latched yet)
-  honestly reports `time.state = "not_set"` until a path that owns a mutation
-  — the acceptance launch — latches the anchor, and a poll can never change
-  its own next answer. Polling writes nothing of its own; it inherits the
-  canonical usage-ledger reader's own bounded maintenance — today: the
-  torn-tail quarantine after a SINGLE crash mid-append, which every reader
-  performs identically (a crash inside that repair itself — a torn quarantine
-  sink — is a known residual, issue #586), the empty
-  `state/` directory the reader's lock lives in on a never-initialized root,
-  and recovery of `usage_attempts.lock` through `usage_ledger._locked` →
-  `platform_layer.acquire_exclusive_file_lock` (confirmed owner death permits
-  immediate kernel/inode recovery; unknown metadata retains the 90 s grace,
-  and the caller's 45 s budget is unchanged) — each pinned by a regression.
-  Every ledger state, including absence, uses the canonical reader.
+  profile and snapshot rather than resolving and latching them, so a poll can
+  never change its own next answer, and it writes nothing of its own beyond the
+  canonical usage-ledger reader's bounded maintenance (what that maintenance
+  is, and the torn-quarantine residual #586: the `delegate_supervision.py` row
+  of `docs/architecture/01-high-level-architecture.md`; `usage_attempts.lock`
+  recovery after confirmed owner death is immediate, unknown metadata retains
+  the 90 s grace, and the caller's 45 s budget is unchanged). Every ledger
+  state, including absence, uses the canonical reader.
 - `task_constraint` boolean parsing is strict (`"false"` is false); deadlines
   only narrow, delegation budgets only reduce, absent depth requests stay
   unknown rather than inferred from prose; preserve the persisted
@@ -642,12 +635,9 @@ both critical. The imperatives:
   current task/root lineage).
 - The DELEGATED Git/payload lane is the other half of that rule: it edits a
   private execution snapshot and reaches a tree only through
-  `integrate_delegated_patch`, whose apply normally requires the caller's
-  active root to EQUAL the run's recorded target. A terminal owner's orphan
-  relaxes that to containment: a swarm fanning into
-  `<project>/contributions/<track>` may dispose its dead children's captures
-  from the parent root, provided target and root both live under the
-  host-minted subagent-projects root. One predicate
+  `integrate_delegated_patch` (the apply/reject authority and the orphan
+  containment relaxation: `docs/architecture/06-agent-core.md` § "Delegated
+  subagents (Claudexor transport + the nanny)"). One predicate
   (`delegate_shared.orphan_apply_target_ok`) serves the apply gate, the health
   invariant and the tool description; every other guard (owner terminality,
   top-level principal, proven drift, protected paths, staged-never-committed)
@@ -705,42 +695,31 @@ owner, owed terminal delivery, cascade postconditions — lives in ARCHITECTURE
   atomic snapshot. Caller reason and request origin are distinct; an HTTP client
   is not proof of personal owner intent. A later target mismatch is disclosed.
   Keep cancellation authority and completion-wins independent of these observations.
-- Cancel INTENT is never a status value. Every cancel ingress writes a durable
-  intent through `ouroboros/cancel_intents.request_cancel` and FAILS CLOSED
-  when that write fails: a cancel without a durable, watchdog-replayable
-  intent is refused with a typed error, never run unfenced (an evolution-stop
-  whose intent write fails keeps the task and reports INCOMPLETE). A settled
-  RESULT does not mean a dead WORKER: every ingress checks live physical
-  ownership and passes `allow_settled_target` while a live row remains; the
-  recorded scope is widen-only.
-- Natural completion WINS a late cancel: a completed result is never
-  overwritten or stripped — discarding is the parent's separate explicit
-  `discard_child_result`. Timeout reaping is deliberately NOT a cancel
-  ingress: the reaper keeps its own custody over the shared `reaping` slot
-  marker and mints no intents.
-- The intent and delivery registries read STRICT to rows: a malformed row
-  refuses the mutation (bytes kept), and enforcement reads disclose once and
-  quarantine. `task_done` validates through the DURABLE result
-  unconditionally for every event; only `interrupted` keeps its
-  restore-path exemption, and the legacy `cancel_requested` status survives
-  on a read-path only.
-- `stop_policy` is an axis on the durable intent (absence = IMMEDIATE;
-  `finalize_then_cancel` = 202-pending plus one bounded episode owned by
-  `supervisor/owner_stop.py`; transitions are monotonic — immediate hardens,
-  graceful never softens). The owner hurry control is typed and TASK-LOCAL:
-  `kind=hurry` through the owner mailbox only — never a chat message, a
-  global settings mutation, or a review-gate weakening; its durable
-  projection writes only through `update_json_locked` on the `owner_hurry`
-  keys, keyed by `task["_attempt"]`, and every same-id requeue producer calls
-  the ONE shared `owner_hurry.retry_reset`. UI surfaces share
-  `web/modules/task_control_menu.js`; the `owner_hurry` event family stays
-  non-chat (`log_events.js` `visible=false`).
-  Before that projection, queue-owned hurry admission initializes only an absent
-  pooled result, using the observed PENDING/RUNNING lifecycle. The existing
-  task-result writer's atomic `create_only` branch preserves any racing stored
-  row byte-for-byte; strict validation still rejects unknown authority. Direct
-  turns stay outside this initialization, and no model/start/cost/grant facts
-  are inferred from the click.
+- Cancel INTENT is never a status value: every cancel ingress writes a durable
+  intent through `ouroboros/cancel_intents.request_cancel`, fails closed when
+  that write fails, checks live physical ownership (a settled RESULT does not
+  mean a dead WORKER) and keeps the recorded scope widen-only — the skeleton is
+  ARCHITECTURE "5. Supervisor Loop", the invariant "10. Key Invariants" 14.
+- Natural completion WINS a late cancel — discarding is the parent's separate
+  explicit `discard_child_result` — and timeout reaping is NOT a cancel ingress
+  (both: the same section).
+- The intent and delivery registries read STRICT to rows and `task_done`
+  validates through the DURABLE result unconditionally (ARCHITECTURE "10. Key
+  Invariants" 15 and "5. Supervisor Loop"); only `interrupted` keeps its
+  restore-path exemption, and the legacy `cancel_requested` status survives on
+  a read-path only.
+- `stop_policy` is an axis on the durable intent and the owner hurry control is
+  a typed TASK-LOCAL owner-mailbox control, never a chat message, a global
+  settings mutation, or a review-gate weakening (semantics: ARCHITECTURE "5.
+  Supervisor Loop"; the `owner_hurry.py` and `task_hurry.py` rows of its §1).
+  Every same-id requeue producer calls the ONE shared
+  `owner_hurry.retry_reset`; the durable hurry projection writes only through
+  `update_json_locked` on the `owner_hurry` keys, never `write_task_result`; UI
+  surfaces share `web/modules/task_control_menu.js`. Queue-owned hurry
+  admission initializes only an absent pooled result through the task-result
+  writer's atomic `create_only` branch, which preserves any racing stored row
+  byte-for-byte; direct turns stay outside this initialization, and no
+  model/start/cost/grant facts are inferred from the click.
 - Code owners stay narrow behind one public queue/lifecycle surface:
   retry-aware target/subtree-liveness in `supervisor/queue_transitions.py`,
   capture-miss terminalization/publication in
@@ -767,11 +746,11 @@ owner, owed terminal delivery, cascade postconditions — lives in ARCHITECTURE
   provenance and honest write receipts. Permission is not a review verdict.
 
 
-- One five-step wizard serves subscriptions, API keys and mixed installs:
-  Accounts → Models → Review → Budget → Summary. Quick Review & start runs the
-  same proposal compiler for skipped steps; Finish atomically commits the visible
-  draft. Accounts is shared, while Models and Agents edit roles. Only declared
-  raw-model sources can supply Main; an Agent-only connection cannot invent one.
+- One five-step wizard serves subscriptions, API keys and mixed installs (its
+  steps and the completion transaction:
+  `docs/architecture/02-startup-onboarding-flow.md`). Quick Review & start runs
+  the same proposal compiler for skipped steps; Finish atomically commits the
+  visible draft. Only declared raw-model sources can supply Main; an Agent-only connection cannot invent one.
   Subscription copy says "without an API key", never guaranteed free. Provider
   credits/spend settings are not enabled or changed by connecting an account.
 - Settings validates the complete draft before any Save request; never omit an
@@ -781,11 +760,10 @@ owner, owed terminal delivery, cascade postconditions — lives in ARCHITECTURE
   Preserve saved/unsaved/unknown write receipts and the independent owner-only
   endpoints. Tests: `web/tests/settings_validation.test.js` and the real
   `tests/test_ui_smoke_settings_drafts.py` consumer.
-- Model-role and actor/reviewer adapters use `model_chooser.js`; the chooser
-  owns suggestions/keyboard/position only, never route identity or entitlement.
-  Update options in place and dispose bindings before replacing inputs. Short
-  source/account choices stay native; retain arbitrary API ids and saved
-  undiscovered choices. Tests: `web/tests/model_chooser.test.js`,
+- Model-role and actor/reviewer adapters use `model_chooser.js` (its contract:
+  ARCHITECTURE "Navigation and shared UI contracts"); the chooser owns
+  suggestions/keyboard/position only, never route identity or entitlement.
+  Update options in place and dispose bindings before replacing inputs. Tests: `web/tests/model_chooser.test.js`,
   `tests/test_model_chooser_browser.py`, `tests/test_subscription_role_routes_browser.py`.
 - Models, actors and reviewers share source/model/account controls. Preserve
   exact pins on ordinary save/reload and catalog failure; a source's credential
@@ -806,14 +784,12 @@ owner, owed terminal delivery, cascade postconditions — lives in ARCHITECTURE
   saved-but-undiscovered choices stay visible and editable; a compound effort
   slug plus a conflicting separate effort is a validation error, never two
   applied efforts.
-  On the Auto lane, the host may prefer the last successful same-route account.
-  After a status-null or typed per-subject refusal, only the next matching-route dispatch in the
-  same execution omits that preference and lets the engine choose, and a prospective pricing copy
-  of that request reads the fact without spending it; without an
-  engine refusal fact, selecting a sibling is possible, not guaranteed. Pin
-  remains exact and never rotates. `OUROBOROS_FALLBACK_ATTEMPTS_PER_MODEL=1`
-  and `OUROBOROS_FALLBACK_COOLDOWN_SEC=120` keep their existing escalation
-  budget and do not turn preference suppression into a retry or cooldown.
+  The Auto-lane account preference and its one-request suppression after a
+  typed refusal are `docs/architecture/06-agent-core.md` § "Caller-owned
+  subscription model calls"; a prospective pricing copy of that request reads
+  the fact without spending it, pin never rotates, and preference suppression
+  is never turned into a retry or cooldown (`OUROBOROS_FALLBACK_ATTEMPTS_PER_MODEL`
+  and `OUROBOROS_FALLBACK_COOLDOWN_SEC` keep their existing escalation budget).
 - Saved intent, generated drafts, and live status are different axes: a
   status/catalog failure annotates a loaded row and never erases it; GET may
   return an unsaved candidate but only explicit Save or onboarding completion
@@ -823,19 +799,15 @@ owner, owed terminal delivery, cascade postconditions — lives in ARCHITECTURE
   `OUROBOROS_ALLOW_MUTATIVE_SUBAGENTS`, Settings presents Off / Auto / On —
   Auto IS the unset, surface-aware runtime-mode default and saves the empty
   value (semantics: `config.get_allow_mutative_subagents`).
-- Onboarding completes in ONE transaction: `POST /api/onboarding/complete`
-  persists settings, the next-boot runtime mode, the fresh-install safety
-  default, and the subscription preset in a single write; `GET
-  /api/onboarding` normalizes for display and must never persist — a read
-  that authors `settings.json` destroys the fresh-install latch. There is no
+- Onboarding completes in ONE transaction and `GET /api/onboarding` must never
+  persist (the transaction, the install-time proofs and the 503 unknown
+  outcome: `docs/architecture/02-startup-onboarding-flow.md`). There is no
   second completion path on any host, and the client treats only the exact
   success envelope (`ok`/`runtime_mode`/`restart_required`) as completion: a
-  2xx whose body will not parse is a failure the wizard shows, because a
-  silent success discards the restart receipt. A failure after the bytes
-  reach disk says so rather than claiming nothing was saved.
-- There is ONE wizard host: the `GET /onboarding` page served by the gateway
-  and loaded as an ES module from `/static`; do not reintroduce a pre-server
-  or inlined copy. The frame is sandboxed WITH
+  2xx whose body will not parse is a failure the wizard shows, because a silent
+  success discards the restart receipt.
+- There is ONE wizard host, the served `GET /onboarding` page; do not
+  reintroduce a pre-server or inlined copy. The frame is sandboxed WITH
   `allow-popups allow-popups-to-escape-sandbox` — a sandbox without those
   tokens blocks the sign-in click silently — and this is asserted
   behaviourally from the login card's own markup
@@ -843,13 +815,11 @@ owner, owed terminal delivery, cascade postconditions — lives in ARCHITECTURE
   share the setup contract; diagnostics must account for unsaved in-memory
   wizard values.
 - Install-time defaults are compiled from LIVE discovery with typed refusals,
-  never guessed, never half-applied, never re-derived after onboarding.
-  Install time is a conjunction of three proofs — no recorded completion
-  (`OUROBOROS_ONBOARDING_COMPLETED_AT`), no preset generation, no
-  `settings.json` — because "no working provider" is a state an old install
-  reaches too. A once-only decision is never taken on a moment-in-time
-  reading: a subscription whose window is spent during onboarding stays in
-  the preset, and the `next_up` verdict is read dual-wire (unified
+  never guessed, never half-applied, never re-derived after onboarding; install
+  time is the conjunction of three proofs stated in
+  `docs/architecture/02-startup-onboarding-flow.md`. A once-only decision is
+  never taken on a moment-in-time reading (a spent subscription window stays in
+  the preset), and the `next_up` verdict is read dual-wire (unified
   `accountPools` first, legacy per-harness second, never re-derived from the
   profile list; an unknown kind is a fail-safe refusal).
 - Agent sign-in consumes the harness row's `setupLogin` field as four states
@@ -864,14 +834,11 @@ owner, owed terminal delivery, cascade postconditions — lives in ARCHITECTURE
   additive response fields in Python TypedDicts and
   `web/modules/api_types.js`, and extend field parity plus fixtures together
   (`tests/test_gateway_parity.py`).
-- Owner settings writes go through `gateway/owner_settings.py`. The settings
-  lock is a PRECONDITION of the write, not a hint: `_acquire_settings_lock`
-  answers `None` on timeout, and a writer that proceeds anyway is unlocked
-  while claiming to be atomic. Once the bytes land, the response says so —
-  carry a `CommitBoundary` through the write and report a later failure as
-  that step failing, never as a failed save (BIBLE P1); `saved` is a FIELD on
-  both sides, and pre-commit refusals answer through `unsaved_error`.
-  `owner_write_guard` belongs only on endpoints that call
+- Owner settings writes go through `gateway/owner_settings.py` (the
+  lock-as-precondition and `CommitBoundary` contract:
+  `docs/architecture/01-high-level-architecture.md` § "Gateway Boundary v1");
+  pre-commit refusals answer through `unsaved_error`. `owner_write_guard`
+  belongs only on endpoints that call
   `_owner_update_settings` — directly with a transform, or through
   `_owner_write_settings` with a whole document; anywhere else it translates
   unraisable exceptions while advertising a lock the endpoint never takes.
@@ -891,12 +858,9 @@ owner, owed terminal delivery, cascade postconditions — lives in ARCHITECTURE
   rows, so a pin option is called what Accounts calls it — `accountName`:
   display name, else the observed email, else the id — with the stored id
   appended only when it differs).
-- Install compilation stays linear and split by semantic owner: available
-  subagents include every supported connected harness plus truthful API/local
-  actors; reviewer defaults independently consume only ratified policies;
-  fresh-install reviewer slots are `subagent_id` references into the shipped
-  roster (unmatched seats mint `review-<harness>` rows) while an
-  owner-configured roster is validate-only. API-only/local-only compilation
+- Install compilation stays linear and split by semantic owner (the compiler's
+  emission rules: `docs/architecture/02-startup-onboarding-flow.md` and
+  `ouroboros/subscription_install_presets.py`); API-only/local-only compilation
   performs zero Claudexor reads; never fabricate diversity or build a
   harness/account/model powerset. `POST /api/onboarding/subagents/preview` is
   the read-only compiler surface; completion commits the visible owner-edited
@@ -908,10 +872,36 @@ owner, owed terminal delivery, cascade postconditions — lives in ARCHITECTURE
 ### Transport and late-result custody
 
 - `LLMClient.chat` and `chat_async` accept optional `stream=False`, `caller_deadline_ts` (Unix seconds) and `caller_execution_deadline` (the existing quota-adjusted monotonic clock). Main opts into streaming. Subtract finalization reserve once at the caller; every physical recovery send re-checks the inherited bounds. Unset deadlines keep ordinary transport defaults. A socket-phase timeout is not an overall wall-clock promise, and late paid completion retains its original attempt.
-- Stream consumption completes inside physical accounting. The assembler is strict about completeness (terminal framing — `[DONE]` or a clean close after every choice finished — whole tool calls) and tolerant about form (identity scalars and metadata keep their first value, an index gap or repeat no longer condemns a stream, and every forgiven fact is disclosed in the stream receipt). A complete but unusable body settles with its usage and classifies as an ordinary provider error; an explicit SSE error frame is a provider verdict too (a numeric body code files through the status ladder, a code-less frame is a provider error), so unknown outcome is reserved for a stream that never reached its terminal frame. Form forgiveness is the Chat assembler's doctrine; the native Messages assembler judges post-terminal shape (non-contiguous blocks, an unsigned thinking block, an incomplete tool block) as a rejection and still reports a malformed mid-stream frame as unknown (Anthropic's SSE is stable and no recorded case exists). Preserve indexed tools, native signatures, complete final framing and cumulative usage snapshots. An EOF/error/cancellation retains private wire evidence and cannot produce a usable partial answer. Only a structural parameter rejection uses the existing wire recovery; never infer a retry from missing stream text or ping cadence. Compatible async tool calls now use the same normalizer/validation path; local, GigaChat and Claudexor retain their separate wire contracts.
-- Late reviewer reuse resolves the exact operation's complete producer receipt from existing CAS, with original task/root/attempt, slot/route, subject, contract, roster/epoch and delegated invocation where present. The current surface remains the sole wave writer and reducer. Late plan feedback attaches through that writer as an exact-operation historical supplement, preserving the old actors, verdict and current-wave pointer; paid settlement is recorded once. No source file existence, preview or matching prompt prose alone grants authority; missing/partial/error/mismatched custody never buys another same-operation dispatch.
-- Managed unknown-outcome recovery uses the existing network-wait owner, with non-generating upstream observations and an explicit new-attempt notice after connectivity returns. Keep old outcome/cost unknown and apply current budget/Stop/deadline before dispatch. Subscription catalogs prove reachability only with generic `provenance="provider_http"` plus `observedAt` after wait entry and exact source/model/effective account; legacy/static catalogs remain unknown. A control-channel outage first rejoins the same accepted operation. Non-generating HEAD uses the existing connection allowance for every socket phase, narrowed by the owner remainder, rather than inheriting a cognitive read window without its lease. No scheduler, provider/model table, paid readiness probe or automatic manual-restart recovery is introduced.
-- `delegate_wait` supervision's three-second observation beat is separate from its HTTP read allowance. A typed read-only-retryable transport failure (read timeout, connect error or timeout, pool timeout, read/write error, protocol error) is a quiet observation hole carrying its typed reason and the actual elapsed time; the beat does not slow and no durable counter or outage latch is kept. The reason is per class, because our own read bound expiring against a live daemon is not the same fact as a socket that carried no answer: only the second is disclosed to the owner, once per episode with one recovery line, each stamped with that episode. Received auth/protocol failures and owner controls remain meaningful. After terminal cleanup, use the current custody host notice alongside the original answer/narrative. Genuine builtin refusals publish typed non-success at their producer; successful warnings and existing review/Git warning buckets keep their semantics. Acceptance JSON validity and completion cleanliness remain separate decisions.
+- Stream consumption completes inside physical accounting; the assembler
+  doctrine — strict about completeness, tolerant about form on the Chat path,
+  post-terminal shape rejected on the native Messages path, unknown outcome
+  reserved for a stream that never reached its terminal frame — is
+  `docs/architecture/06-agent-core.md` § "Review delivery". Preserve indexed
+  tools, native signatures, complete final framing and cumulative usage
+  snapshots. An EOF/error/cancellation retains private wire evidence and cannot
+  produce a usable partial answer. Only a structural parameter rejection uses
+  the existing wire recovery; never infer a retry from missing stream text or
+  ping cadence. Compatible async tool calls use the same normalizer/validation
+  path; local, GigaChat and Claudexor retain their separate wire contracts.
+- Late reviewer reuse resolves the exact operation's complete producer receipt
+  from existing CAS (the binding it must carry: the same section); the current
+  surface remains the sole wave writer and reducer, late plan feedback attaches
+  as an exact-operation historical supplement with paid settlement recorded
+  once, and no source file existence, preview or matching prompt prose alone
+  grants authority; missing/partial/error/mismatched custody never buys another
+  same-operation dispatch.
+- Managed unknown-outcome recovery uses the existing network-wait owner with
+  non-generating upstream observations (what proves recovery and what cannot:
+  the same section). Keep old outcome/cost unknown and apply current
+  budget/Stop/deadline before dispatch; a control-channel outage first rejoins
+  the same accepted operation. No scheduler, provider/model table, paid
+  readiness probe or automatic manual-restart recovery is introduced.
+- `delegate_wait` supervision's observation beat is separate from its HTTP read
+  allowance, and a typed read-only-retryable transport failure is a quiet
+  observation hole, not a wake (the per-class reasons and the once-per-episode
+  owner line: `docs/architecture/06-agent-core.md` § "Delegated subagents
+  (Claudexor transport + the nanny)"); no durable counter or outage latch is
+  kept. Received auth/protocol failures and owner controls remain meaningful. After terminal cleanup, use the current custody host notice alongside the original answer/narrative. Genuine builtin refusals publish typed non-success at their producer; successful warnings and existing review/Git warning buckets keep their semantics. Acceptance JSON validity and completion cleanliness remain separate decisions.
 
 Focused regressions: `test_review_late_cas_recovery.py`, `test_delivery_control_lineage.py`, `test_terminal_custody_notice.py`, `test_delegate_observation_transport.py`, `test_delegate_hold.py`, `test_configured_session_wake_rail.py`, `test_health_invariants_ownership.py`, `test_transport_b_stream_deadlines.py`, `test_llm_wire_corpus.py`, `test_transport_unknown_continuation.py`, `test_builtin_refusal_results.py` and `test_v671_acceptance_convergence.py`. Use the ordinary isolated preflight runner; full provider/renderer smoke remains separate from local fake-provider evidence.
 
@@ -993,19 +983,16 @@ by "Provider Independence" above. Call-site imperatives:
   one call's terminal candidate; nested aggregation preserves ordered
   `request_wire_history` with explicit omission accounting.
 - Every core-mediated physical provider send goes through
-  `usage_accounting.execute_physical_attempt[_async]` (reserve → dispatched
-  → settle/unresolve; `tests/test_usage_accounting.py`). A marked dispatch
-  is released only by a typed pre-dispatch failure proving no request bytes
-  were sent; a transport retry is a new attempt; projections carry attempt
-  ids and are never a second monetary authority; unknown price reserves
-  `None` and never blocks a model. An external skill bypassing core
-  transport is unknown/unmetered, never `$0`. Custody classifiers use the
+  `usage_accounting.execute_physical_attempt[_async]`
+  (`tests/test_usage_accounting.py`; the attempt lifecycle, what may release a
+  dispatch, and the unknown/unmetered rule for external skills:
+  `docs/architecture/06-agent-core.md` § "Budget tracking"). Custody
+  classifiers use the
   explicit `__cause__` chain, never Python's implicit `__context__`; an
   ambiguous timeout remains unresolved (`tests/test_transport_custody.py`).
 - Hold the usage-ledger cross-process lock only for budget check, validated
-  append, and fsync — never over network I/O; preserve a paid response when
-  settlement persistence fails and leave an honest dispatched/unresolved
-  bound. Callers that own a finalization reserve pass it explicitly so
+  append, and fsync — never over network I/O (the lock discipline and
+  failed-settlement custody: the same section). Callers that own a finalization reserve pass it explicitly so
   admission and the transport bound cannot disagree.
 - Keep root ceilings explicitly unreserved under the shared pool. Persist the
   actual applied global limit and its supplied source/revision on the same
@@ -1016,30 +1003,17 @@ by "Provider Independence" above. Call-site imperatives:
   not inferred sleeping/polling time or a new behavior gate. Tests:
   `tests/test_budget_resource_facts.py`.
 - Tree-spend pacing decides on root-subtree ledger spend including in-flight
-  holds; own cost is a disclosed lower-bound fallback, and unavailable is
-  unknown, never `$0`. Resolve the original early threshold at the root and
-  retain it across enabled descendants, forwarding the existing root carrier.
-  A legacy child's local fallback is not proof of the original root threshold.
-  Keep explicit disabled profiles and real monetary fences independent. Publish
-  the same CostCeiling object the loop decides on. Reuse the existing bounded-stale
-  tree snapshot; refresh at its bound or when final preparation requires it.
-  Price the final call with the fence's own cache-aware reservation and compare
-  every known root/global remainder, including tasks with only a global bound.
-  Read the current wallet once per priced phase through the existing cached
-  usage projection, reuse it across candidate probes, and leave final admission
-  to the atomic fence. A check reserves no share; other tasks can spend before
-  dispatch (`tests/test_network_budget_wallet.py`). Read the
-  configured global budget through the one resolver rather than an
-  inline default, so the loop axis, the bound scope and the ledger fence
-  cannot disagree about the same install. Post-task
-  consolidation/synthesis reads `usage_breakdown` once per root subtree and
-  passes the same snapshot to summary and reflection; both prompts also
-  receive the task's own acceptance-panel projection (typed counts plus a
-  bounded reason preview, never full reviewer prose), and a host-supplied
-  absence statement names the lens it describes; it is explicitly
-  non-final because those flows have not spent yet — treating a read
-  failure as `$0` would create false accounting certainty. No second
-  ledger, no reconciliation LLM call.
+  holds, publishes the same `CostCeiling` object the loop decides on, and
+  prices the wrap-up with the fence's own cache-aware reservation (the
+  threshold resolution, the root carrier, the wallet read and why a check
+  reserves no share: `docs/architecture/06-agent-core.md` § "Budget tracking";
+  `tests/test_network_budget_wallet.py`). Keep explicit disabled profiles and
+  real monetary fences independent, and read the configured global budget
+  through the one resolver rather than an inline default, so the loop axis, the
+  bound scope and the ledger fence cannot disagree about the same install.
+  Post-task consolidation/synthesis reads one frozen `usage_breakdown` snapshot
+  per root subtree (never `$0` on a read failure); no second ledger, no
+  reconciliation LLM call.
 - Runtime notices after the first user/assistant/tool turn are user notices
   (`[SYSTEM NOTICE]`), not new `role=system` messages; `LLMClient`
   defensively demotes non-leading system messages at the provider boundary.
@@ -1065,24 +1039,15 @@ by "Provider Independence" above. Call-site imperatives:
   execution-scoped cache affinity only for subscription transport; API-compatible
   lanes retain their prefix-derived session identity;
   `review_substrate.assert_cache_breakpoint_cap` covers only the review
-  builders. Between the sends of ONE execution the transcript is
-  append-only: every send is a prefix extension of the previous send;
-  compaction is the one rewrite the loop names as sanctioned (its seams
-  stamp `transcript_prefix.sanction_rewrite`, and the recorder observes the
-  transcript each round actually dispatched), and a context-fit
-  reprojection after a real overflow is recorded as an ordinary break (a
-  real cache cost, expected only there). OpenAI-family caches (the Codex
-  subscription backend, the OpenAI API, OpenRouter -> OpenAI) reuse a
-  previous request only when that whole request is a byte-prefix of the
-  next, so a transient trailing message or an in-place rewrite of an
-  already-sent message discards the entire conversation cache (measured
-  2026-09-14, issue #906). The per-round acceptance observation is
-  therefore an append-only row and `_append_or_merge_user_content` never
-  merges into it. `ouroboros/transcript_prefix.py` records the breaks as
-  `prompt_prefix_break` checkpoints (`kind` in system_rewritten |
-  tail_replaced | rewritten | shrunk, plus `sanctioned_by`) and never
-  blocks a send; `tests/test_transcript_prefix.py` pins the loop-level
-  invariant on the real `run_llm_loop`. Review gate: CHECKLISTS item 22
+  builders. Between the sends of ONE execution the transcript is append-only —
+  compaction is the one sanctioned rewrite, and OpenAI-family caches discard
+  the whole conversation on any other break (why, and the
+  `prompt_prefix_break` record: the `transcript_prefix.py` row of
+  `docs/architecture/01-high-level-architecture.md`, issue #906). The
+  per-round acceptance observation is therefore an append-only row and
+  `_append_or_merge_user_content` never merges into it;
+  `tests/test_transcript_prefix.py` pins the loop-level invariant on the real
+  `run_llm_loop`. Review gate: CHECKLISTS item 22
   (`cache_friendliness`).
 - Provider fallback is disabled only when the transcript carries a SEALED
   reasoning artifact
@@ -1096,22 +1061,15 @@ by "Provider Independence" above. Call-site imperatives:
   BIBLE/ARCHITECTURE/DEVELOPMENT/CHECKLISTS to fit argv or transport limits.
 - Delegated (subscription-harness) work is accounted on its OWN ledger row —
   `usage_accounting.record_subscription_session`, never
-  `record_unmetered_external_dispatch` (it drops the sessions/quota axis).
-  Its cash has three states and only the first is final: a disclosed zero
-  settles `cost_usd=0.0, cost_final=True`; an estimate rides as money but
-  never as finality; an undisclosed spend is `cost_usd: None`, counted
-  unknown/unmetered, never a confident `0.0` — and token `None` means no
-  harness reported it, not a run that used zero
-  (`tests/test_gateway_usage_accounting.py`). Skill Review waves attribute
-  every canonical usage row with the exact wave/slot identity; pre-marker
-  waves stay "exact attribution unavailable" and are never reconstructed by
-  time/model (`tests/test_skill_review_usage_accounting.py`). The engine's
-  normalized input split rides that same row as the optional
-  `input_token_usage` object, validated only in `record_subscription_session`:
-  an unreported or incomplete object stays unknown as a whole rather than being
-  clamped or repaired, it is outside the row's idempotent identity so a replay
-  keeps the original bytes, and an optional-statistic problem never fails or
-  retries a completed paid run (`tests/test_delegated_run_custody.py`).
+  `record_unmetered_external_dispatch` (it drops the sessions/quota axis); the
+  four cash cases and the `input_token_usage` validation rule are
+  `docs/architecture/06-agent-core.md` § "Delegated subagents (Claudexor
+  transport + the nanny)" (`tests/test_gateway_usage_accounting.py`,
+  `tests/test_delegated_run_custody.py`); token `None` means no harness
+  reported it, not a run that used zero. Skill Review waves attribute every
+  canonical usage row with the exact wave/slot identity; pre-marker waves stay
+  "exact attribution unavailable" and are never reconstructed by time/model
+  (`tests/test_skill_review_usage_accounting.py`).
 - `cost_final` on a projection is a COUNT of open rows (`non_final_rows`),
   never a truthiness test on a dollar sum. A spent subscription window is
   `subscription_window_exhausted` — a TRANSIENT class carrying `reset_at` —
@@ -1124,79 +1082,50 @@ by "Provider Independence" above. Call-site imperatives:
   classifiers, without requiring the input alone to exceed the window.
   quota/auth/billing, hard bad-request, and request-too-large failures are
   non-retryable as-is (record the exact category and surface a recovery
-  hint); a typed 408/429/5xx or a failure proven pre-dispatch may retry; a
-  dispatched request with no terminal provider outcome stops same-model and
-  cross-model sends until reconciled — with caller-owned continuation: ordinary managed cognition waits for upstream
-  recovery before adding a marked new-attempt input (see Transport and late-result
-  custody). The interactive primary
-  main-loop round dispatch may repeat a request that died with a typed
-  transport death (`transport_custody.is_retryable_transport_death`) at most
-  twice per round, each repeat a NEW physical attempt on its own ledger row
-  and never a resend of the unresolved one, deciding the `retry_same_request`
-  flag before the durable row is written
-  (`tests/test_transport_death_retry.py`): the flag records that a repeat
-  was granted when the row was written. Only a proven refusal takes a never-sent
-  grant back off the round record: deadline admission (`llm_not_dispatched`),
-  deadline backoff (`llm_retry_deadline_exhausted`), or a current typed finalization
-  control during the paid-repeat wait (`llm_not_dispatched`, `finalize_control_pending`).
-  Reuse the interruptible sleep and execution mailbox/current-intent readers;
-  peek without delivery or ACK, and leave ordinary input/hurry/revoked controls
-  alone. Generic transient/empty-response backoffs retain their own contract.
-  A budget refusal does NOT un-count: the
-  budget rail cannot prove the repeat never left the host (`llm.chat` retries
-  on the wire before a later reservation can be refused), so the record keeps
+  hint); a typed 408/429/5xx or a failure proven pre-dispatch may retry; a dispatched request with no terminal provider outcome stops same-model and
+  cross-model sends until reconciled. Which callers may repeat a request after
+  a typed transport death, how many times, on whose ledger row, and what ends
+  a round that holds such a record are stated once in
+  `docs/architecture/06-agent-core.md` § "Context fitting, retry, and
+  compaction" (`tests/test_transport_death_retry.py` pins the interactive
+  primary rail). Call-site rules: decide the `retry_same_request` flag before
+  the durable row is written — only a proven refusal (deadline admission
+  `llm_not_dispatched`, deadline backoff `llm_retry_deadline_exhausted`, or a
+  current typed finalization control during the paid-repeat wait,
+  `finalize_control_pending`) takes a never-sent grant back off the round
+  record; reuse the interruptible sleep and execution mailbox/current-intent
+  readers, peek without delivery or ACK, and leave ordinary
+  input/hurry/revoked controls alone; generic transient/empty-response
+  backoffs retain their own contract; a budget refusal does NOT un-count (the
+  budget rail cannot prove the repeat never left the host — `llm.chat` retries
+  on the wire before a later reservation can be refused — so the record keeps
   the attempt booked and the budget terminal, not the provider terminal, ends
-  the round; the bounded repeat rail belongs to interactive primary rounds. Ordinary managed
-  tasks and native API children use upstream-observed continuation. Exact
-  session supervisors first try the live-leaf hold and otherwise use ordinary
-  managed recovery for their own model; no consumed/terminal/patch-disposition
-  predicate gates cognition. A successful hold closes and clears any prior
-  transport episode, so its acknowledged wake alone resumes the model. Every other caller — forced-final, fallback
-  candidates, review actors, safety, external-harness delegated runs — keeps
-  `transport_death_retries=0`. A round that holds a transport-death repeat
-  record sends nothing further except the typed-death repeats — a repeat that
-  fails with any other class (a provider status, a transient, an empty
-  response, a context overflow) ends the round on the unknown no-resend
-  terminal with no compaction retry (a released $0 repeat stays the free wait
-  episode's to redial, and an exhausted episode on such a round still ends on
-  the unknown terminal, worded as both the wait and the unresolved attempt;
-  a wait episode's local-only pass that ends unknown writes no record, so the
-  episode keeps its latched cause and its free redials while that dispatched
-  local attempt is never resent).
+  the round); every caller outside the interactive primary rail keeps
+  `transport_death_retries=0`; no consumed/terminal/patch-disposition
+  predicate gates a session supervisor's cognition, and a successful
+  live-leaf hold closes any prior transport episode so its acknowledged wake
+  alone resumes the model.
 
 #### Timeout & Wait Control
 
-- Required owner waiting retains the original execution. Pooled work stays in RUNNING.
-  Persist the completed-tool source, task wait and queue snapshot before lending
-  active capacity; grant the original worker only after reserving active capacity.
-  Keep attempt, start time, completed effects and usage unchanged across a warm
-  wake. Idle replacement retirement uses the existing lifecycle serializer and
-  readiness owner, with process start outside the queue lock. A confirmed-dead
-  exhausted replacement may transfer its reservation to that same original worker;
-  persist the resume before dispatch, restoring both capacity marks on failure.
-  Booting/temporary-reaping slots still reserve capacity: excluding all reaping
-  would buy an extra child beyond MAX_WORKERS. Waiting exempts only
-  idle timeout; Stop, deadline, absolute ceiling and monetary admission still bind.
-  Cold recovery requires the acknowledged planned-restart handoff through every
-  shutdown cleanup. Restore the original CostCeiling before Runtime/ContextFit
-  construction so the model sees the same threshold the loop uses. Rebind fit to the
-  saved model and gives preparation a current progress timestamp without resetting
-  hard clocks. Consumed resume authority is removed from the queue task; saved
-  source evidence still prevents blind crash/timeout replay. Before advancing a cold
-  round or applying queued route overrides, finish its existing post-tool budget
-  decision after the ordinary control/deadline checks. Preserve TaskModelWait
-  role overrides, explicit Auto, auto-continue and completed quota union through
-  that owner's continuation methods; seed the same clock/revision in the supervisor.
-  Ordinary Main/Project actors use the same completed-tool checkpoint and mailbox
-  through their live continuation callback; they hold no pooled capacity to lend.
-  They retain the browser/stack while waiting, leave answer delivery to the loop,
-  and use existing task controls/clocks without a quota pause. After either kind
-  of wait, control/deadline handling precedes the saved round's budget decision.
-  A direct-actor checkpoint alone grants no automatic cold-restart authority.
-  Calendar deadlines and ordinary owner-wait time retain their meaning
+- Required owner waiting retains the original execution: pooled work stays
+  RUNNING, the worker lends only active capacity, and waiting exempts only the
+  idle timeout — Stop, deadline, absolute ceiling and monetary admission still
+  bind (the capacity transfer, the warm/cold wake and what a grant consumes:
+  ARCHITECTURE "5. Supervisor Loop"). Persist the completed-tool source, task
+  wait and queue snapshot before lending active capacity; grant the original
+  worker only after reserving active capacity, restoring both capacity marks on
+  failure; keep attempt, start time, completed effects and usage unchanged
+  across a warm wake. Cold recovery requires the acknowledged planned-restart
+  handoff through every shutdown cleanup, and a direct-actor checkpoint alone
+  grants no automatic cold-restart authority. After either kind of wait,
+  control/deadline handling precedes the saved round's budget decision;
+  preserve TaskModelWait role overrides, explicit Auto, auto-continue and
+  completed quota union through that owner's continuation methods. Calendar
+  deadlines and ordinary owner-wait time retain their meaning
   (`tests/test_owner_wait_pool.py`, `tests/test_owner_wait_restart.py`,
   `tests/test_owner_wait_cold_loop.py`, `tests/test_owner_wait_budget_tail.py`,
-  `tests/test_owner_wait_model_context.py`; ARCHITECTURE §5).
+  `tests/test_owner_wait_model_context.py`).
 - For a session nanny, `delegate_wait` is event-only at the model surface:
   host supervision renews bounded transport windows with zero LLM calls,
   journal progress streams to the owner without waking the model, and only
@@ -1248,20 +1177,14 @@ by "Provider Independence" above. Call-site imperatives:
   the one import surface. Register the env key; do not scatter magic wait
   numbers across call sites (`tests/test_timeout_policy.py`).
 - Worker readiness has its own structural `WORKER_READY_WINDOW_SEC` and
-  `WORKER_READY_MAX_ATTEMPTS` in `runtime_limits.py`, re-exported by config.
-  The shared spawn/readiness owner distinguishes temporary reaping from the final
-  `Worker.readiness_exhausted` fact bound to the current worker object. Temporary
-  slots reserve capacity without accepting assignment; late ready/error events
-  must not reopen exhausted slots or affect a newer pool. Busy/booting capacity
-  and a valid live owner-wait stack keep queue admission available. Reuse the
-  lifecycle-owned execution-state reader (workers facade) at reserve/final enqueue
-  and snapshot; retain the separate repository-writer policy at public admission and internal boot/update
-  exceptions. True exhaustion refuses new pooled work; after existing RUNNING
-  file custody settles, the ordinary stop owner fails unstarted PENDING work with
-  the Restart hint. Failed writes retain terminalization retry, never false Done
-  or an automatic fresh startup budget. Watcher errors release still-booting
-  non-exhausted slots with `worker_ready_released`; missing events are an empty
-  read. Readiness, process liveness and task idle deadlines stay independent.
+  `WORKER_READY_MAX_ATTEMPTS` in `runtime_limits.py`, re-exported by config
+  (the readiness/exhaustion lifecycle: ARCHITECTURE "5. Supervisor Loop").
+  Reuse the lifecycle-owned execution-state reader (workers facade) at
+  reserve/final enqueue and snapshot; retain the separate repository-writer
+  policy at public admission and internal boot/update exceptions. Readiness,
+  process liveness and task idle deadlines stay independent; failed writes
+  retain terminalization retry, never false Done or an automatic fresh startup
+  budget.
 - Nested process wrappers are ordered, never tied: the provider bound settles
   before its killable child, the child before the generic ToolEntry envelope
   (fixed structural settlement margin from `config.py`), so a child or
@@ -1291,48 +1214,26 @@ by "Provider Independence" above. Call-site imperatives:
   reviewer never counts as final quorum, under either enforcement mode; a
   `pending_dispatch` row (released at the dispatch barrier) is neither quorum
   nor a paid fact until its settled row proves the physical send.
-- Every zero-physical acceptance refusal takes that same shape — an
-  unresolvable partial source, an immutable-core overflow, and a slot whose
-  window cannot hold the rendered prompt all record a typed `$0
-  not_dispatched` row that carries its cause in `error`. The panel transport
-  folds to `not_dispatched` and the aggregate stays `DEGRADED` through those
-  typed rows: a refusal that spent nothing is recorded as `not_dispatched`
-  plus its cause and never wears a verdict.
+- Every zero-physical acceptance refusal — an unresolvable partial source, an
+  immutable-core overflow, a slot whose window cannot hold the rendered prompt
+  — records a typed `$0 not_dispatched` row that carries its cause in `error`
+  and folds the aggregate to `DEGRADED` (the one $0 exit shape: ARCHITECTURE
+  "Review stack"; the acceptance instances: "Task lifecycle").
 - A returned provider response (including an empty body) or typed terminal
   408/429/5xx is settled and may use the surface's bounded retry rail;
   `dispatched`/`unresolved` without a typed terminal status stays under the
-  custody-lost/no-resend classification. Positive capture evidence outranks a
-  contradictory synthetic `not_dispatched` label; across one bounded rail,
-  retain the strongest earlier capture — on side-effect surfaces (review
-  actors, external-harness delegated runs, forced-final, fallback candidates)
-  any unknown prior outcome
-  monotonically forces no-resend. A dispatched request whose socket or
-  stream ends without terminal provider evidence is
-  `provider_outcome_unknown`: its `unresolved` ledger row is terminal and
-  THAT physical attempt is never resent by any route; an interactive primary
-  completion may repeat the same logical request only after a typed transport
-  death, at most twice per round, as a new physical attempt with its own row,
-  re-prepared at send time (a transport retry is literally a new attempt, so a
-  non-deterministic projection such as a vision caption that failed on the
-  first attempt may differ and may cost its own preparation call); a NEW
-  logical request needs a unique host-attested input absent from the unknown
-  one: the managed upstream-recovery notice or the separate nanny-leaf wake
-  contract in `ouroboros/delegate_hold.py`.
-- A custody retry key names semantic material and an admitted cycle, not its
-  rendered prompt: prior-round scaffolding may change while the same physical
-  operation settles and must still join it; changed snapshots, owner intent,
-  route/model rows, or a genuinely new cycle mint a new key. Skill Review
-  keys bind the exact skill, logical wave, content and frozen chunk digest/index.
-  Reserve the entire chunk/operation roster in `review_job.review_wave` before
-  paid dispatch and carry it into terminal history. A new authorized lifecycle
-  may record `review_resume_of` for its exact unsuperseded predecessor and
-  reaggregate complete CAS without a paid stamp; leave the predecessor terminal
-  unchanged and apply the current lifecycle's own persistence and postconditions.
-  Changed task/root/attempt, group, content, contract, rebuttal or explicit
-  cancellation never inherits that wave; an unstarted chunk cannot authorize PASS. Commit review writes `paid=True`, the exact retry key,
-  and both complete slot rosters with reserved operation ids in one locked
-  write before either parallel surface starts; a window with no dispatch
-  capacity leaves an unpaid `$0` wave and no paid stamp.
+  custody-lost/no-resend classification (the custody vocabulary, capture
+  precedence and no-resend rules: ARCHITECTURE "Review stack"; the interactive
+  repeat rail: "Context fitting, retry, and compaction"). A NEW logical request
+  needs a unique host-attested input absent from the unknown one: the managed
+  upstream-recovery notice or the separate nanny-leaf wake contract in
+  `ouroboros/delegate_hold.py`.
+- A custody retry key names semantic material and an admitted cycle, never its
+  rendered prompt (the identity rule, the write-ahead paid stamp and Skill
+  Review's wave reservation/`review_resume_of` rejoin: ARCHITECTURE "Review
+  stack" and "Review delivery"); an unstarted chunk cannot authorize PASS, and
+  a window with no dispatch capacity leaves an unpaid `$0` wave and no paid
+  stamp.
 - A reviewed mutative wrapper retains foreground custody until the workflow
   settles; never use the generic 600s tool default or a guessed hard ceiling
   to abandon a still-live reviewer or commit pipeline.
@@ -1342,15 +1243,8 @@ by "Provider Independence" above. Call-site imperatives:
   has an id is an unknown outcome — retain the durable invocation token and
   replay that started run on the permitted retry instead of posting a second
   paid run; a supplied retry token with no valid durable invocation is
-  `review_custody_lost`, never permission for a fresh paid session. Late
-  settlement stays in custody: while the process lives, unknown local
-  custody is a no-resend tombstone; a later process startup settles a
-  tokenless local waiter as a typed paid infrastructure failure, while rows
-  with durable delegated tokens stay pending for exact rejoin. Elapsed TTL
-  alone never authorizes a resend, and a paid process-local review belongs
-  to its exact process identity (server session + pid) — a new Agent, a
-  sibling worker boot, heartbeat silence, or elapsed time is not owner
-  death.
+  `review_custody_lost`, never permission for a fresh paid session. Elapsed TTL alone never authorizes a resend, and owner death is proven only by
+  pid death (ARCHITECTURE "Review stack").
 
 ### Loop and acceptance state machines
 
@@ -1395,14 +1289,11 @@ by "Provider Independence" above. Call-site imperatives:
   not outcome — it stays visible as cancel-pending until custody settles it.
 - Host task acceptance is root-only; eligibility uses structured facts
   (`outcomes.turn_has_reviewable_effects` plus a typed
-  deliverable/criterion), never keywords (BIBLE P3/P5). The agent-callable
-  `task_acceptance_review` records the full result nomination and returns
-  `deferred_to_host_acceptance`, `authoritative=false`. After the complete
-  tool-result block, the host advances the same operation as final delivery.
-  Freeze its request and resolved roster; use existing review custody and
-  mailbox continuation for pending work and free collection. The worker never
-  writes Main's live candidate or author decision. Early settlement does not
-  seal task ingress; actual final delivery does. Keep subtree/status facts
+  deliverable/criterion), never keywords (BIBLE P3/P5). The agent-callable nomination is never authoritative (ARCHITECTURE "Task
+  lifecycle"). Freeze its request and resolved roster; use existing review
+  custody and mailbox continuation for pending work and free collection. The
+  worker never writes Main's live candidate or author decision. Keep
+  subtree/status facts
   separate from reviewer findings and Cyber's authority under BIBLE P0.
 - Delivery-control JSON applies only to a final response with no tool calls.
   Retaining an answer leaves tools available for further work. Main may keep
@@ -1413,14 +1304,11 @@ by "Provider Independence" above. Call-site imperatives:
   does not imply a universal commit-or-revert rule. Self-modification keeps its
   reviewed-commit contract under BIBLE P0/P3.
 - Post-task synthesis receives `completion_observations` from the existing
-  terminal result writer: per-send-tool counts and latest recorded returns,
-  task-related skill readiness plus coverage, and a full redacted artifact for
-  later readers. Counts come from `OWNER_DELIVERY_TOOL_NAMES`, not prose parsing.
-  Packet-only summary/reflection use the inline observations; a source reference
-  is not evidence they read. Tool success is not a chat/owner-receipt guarantee,
-  and empty or omitted material never proves that no delivery happened. Recovery
-  uses the stored snapshot; global skill state never attributes an owner click
-  to the task. Task-summary calls use the existing `chat_observed` custody seam.
+  terminal result writer (what the sealed package carries and what it cannot
+  prove: ARCHITECTURE "Post-task reflection"). Counts come from
+  `OWNER_DELIVERY_TOOL_NAMES`, not prose parsing. Recovery uses the stored
+  snapshot; global skill state never attributes an owner click to the task;
+  task-summary calls use the existing `chat_observed` custody seam.
 - Promoted tasks carry their host-minted root id and role on the queue payload.
   RUNNING writes preserve the actual `_task_started_ts` as `started_at` and an
   existing `queued_at`; terminal `ts` remains its own field. Missing historical
@@ -1432,71 +1320,51 @@ by "Provider Independence" above. Call-site imperatives:
   These are observation links, not new accounting or zero-price rules.
 - Acceptance evidence identity hashes source facts before history-dependent
   budgeting; recording a review must not change the facts it reviewed. Complete
-  applied host records (including resolved criteria, decisions and supersession)
-  are saved by `review_projection.publish_acceptance_checkpoint` through the
-  existing write-once source handles before compact publication. Ordinary artifact
-  registration keeps its short locked manifest merge; copying/hashing finishes
-  before that lock, which never acquires a task-result lock. The live
-  publication changes only `review_projection`, preserving lifecycle and other
-  writers' fields. Test delayed snapshots and child replicas through the same
+  applied host records are saved by
+  `review_projection.publish_acceptance_checkpoint` through the existing
+  write-once source handles before compact publication (the copy-back,
+  CURRENT-basis and same-store rules: ARCHITECTURE "10. Key Invariants", the
+  paragraphs after the continuity map; the completion-source reader: "Post-task
+  reflection"). Ordinary artifact registration keeps its short locked manifest
+  merge; copying/hashing finishes before that lock, which never acquires a
+  task-result lock. Test delayed snapshots and child replicas through the same
   central merge, and verify that the full source downloads while the task is
-  still running. Review/completion sources use `source_handles/context_checkpoints`,
-  outside deliverables and the acceptance artifact manifest. Canonical-first
-  persistence (`task.budget_drive_root or drive_root`) and the existing published-ref
-  closure preserve them before child cleanup. Give native readers an
-  executable get_task_result selector for that source task; reuse explicit character
-  ranges and complete-source hashes so a split or later task never resolves the
-  basename against its own artifact directory. Preserve that
-  distinction through effective reads and child copy-back; terminal references must
-  carry the task's chat id, including zero. A missing source is disclosed, never reconstructed from a
+  still running. Review/completion sources use
+  `source_handles/context_checkpoints`, outside deliverables and the acceptance
+  artifact manifest, and terminal references must carry the task's chat id,
+  including zero. A missing source is disclosed, never reconstructed from a
   bounded preview. Source/capacity, publication order and paid identity are
   separate contracts; changing history or presentation must not mint work.
-  Verify the persisted consumer after the actual snapshot merge and child cleanup,
-  not just the copy result. Select the current publication before relocating its
-  references; relocation must not advance semantic publication counters or make a
-  stale child replace a newer review. Select the CURRENT publication/ref basis,
-  prepare bulk bytes outside result locks, then compare that basis in the current
-  field projector before publishing prepared refs. A changed basis retries outside
-  the lock; unrelated CURRENT fields survive. Pending retry starts from CURRENT,
-  not an old child body. One operation-scoped memo may reuse verified work; it
-  must not cache failure as success or survive as a second store.
-- Pooled terminal file preparation belongs to `headless.prepare_terminal_task_files`
-  at the worker's own task_done boundary, after blocking post-task
-  work and before releasing the slot. Earlier answer/metrics delivery stays early.
-  `_files_prepared_attempt` is a private attempt observation, not a saved-result
-  receipt. The event owner re-reads CURRENT and uses `terminal_task_files_ready`;
-  an early completed post-task checkpoint does not prove split-drive body adoption.
-  Existing pending refs may remain after the first attempt; required artifact
-  finalization must have an outcome. Neither an I/O exception nor a lost event
-  authorizes model replay. The transient `terminal_source_present` distinguishes
-  known source, known absence and unknown read; never persist it as a new anchor.
+  Verify the persisted consumer after the actual snapshot merge and child
+  cleanup, not just the copy result; one operation-scoped memo may reuse
+  verified work but must not cache failure as success or survive as a second
+  store.
+- Pooled terminal file preparation belongs to
+  `headless.prepare_terminal_task_files` at the worker's own task_done
+  boundary, after blocking post-task work and before releasing the slot;
+  earlier answer/metrics delivery stays early (the attempt/readiness split and
+  the transient `terminal_source_present`: ARCHITECTURE "5. Supervisor Loop").
+  Neither an I/O exception nor a lost event authorizes model replay; never
+  persist `terminal_source_present` as a new anchor.
 - Health owns captured terminal-file preparation/recovery; the existing reaper
-  owns queue execution and deferred-job replay on the health cadence. Preserve
-  worker/meta/task/attempt/root identity across each off-lock operation. Unknown
-  source or incomplete CURRENT publication retains the same job/reservation;
-  confirmed absence reaches the existing fault/crash policy. A sticky early
-  completed status stays intact while a publication fault sets execution
-  `infra_failed`, preserving answer/review/objective/cost. A ready CURRENT or
-  cancellation winner must not receive the fault. Keep the normal terminal event
-  owner for queue release and project/evolution hooks; no separate crash executor.
-  Host crash terminals withdraw their captured RUNNING owner before emission;
-  drain yields only to a recovery job that actually accepted ownership. Cancel
-  checks file readiness before source removal, preserving fully adopted CURRENT
-  bytes. Deferred timeout jobs keep their original worker/attempt/root binding;
-  old file recovery cannot kill, requeue or replace a newer execution.
+  owns queue execution and deferred-job replay on the health cadence (the
+  recovery flow and fault policy: ARCHITECTURE "5. Supervisor Loop"). Preserve
+  worker/meta/task/attempt/root identity across each off-lock operation; keep
+  the normal terminal event owner for queue release and project/evolution hooks
+  — no separate crash executor; host crash terminals withdraw their captured
+  RUNNING owner before emission, cancel checks file readiness before source
+  removal, and deferred timeout jobs keep their original worker/attempt/root
+  binding so old file recovery cannot kill, requeue or replace a newer
+  execution.
 - Same physical observability store means verified reuse of original manifest
-  bytes and canonical path spelling, not a rewrite or native promotion marker.
-  Distinct-root copying keeps its existing marker and filename. Missing aliases
-  resolve only through the exact verified canonical CAS/call readers; corruption,
-  wrong scope and identity mismatch never use that fallback. Do not add digest
+  bytes and canonical path spelling, never a rewrite or native promotion
+  marker; missing aliases resolve only through the exact verified canonical
+  CAS/call readers (ARCHITECTURE "10. Key Invariants"). Do not add digest
   filenames, an initial-adoption anchor or a persistent transfer store.
-- Pooled mailbox cleanup follows the file helper, using the existing settled
-  cleanup predicate also used at startup. Accepted pending attachment refs and
-  open post-task work protect the source; direct canonical cleanup remains direct.
-  Recover terminal child sources before the actual startup prune, including a
-  restarted supervisor. The transient recovery report defers task-source pruning
-  for that pass when any protected/unresolved source or ownership/read error
-  remains; no saved anchor is required. Never race unknown prior worker ownership.
+- Pooled mailbox cleanup follows the file helper's settled-cleanup predicate,
+  and startup recovers terminal child sources before the actual prune
+  (ARCHITECTURE "5. Supervisor Loop"); direct canonical cleanup remains direct,
+  never race unknown prior worker ownership, and no saved anchor is required.
 - Acceptance payment follows the semantic subject and substantive disposition
   identity defined in ARCHITECTURE "Task lifecycle". Source generations,
   read repetition or narration alone do not create paid authority; changed
@@ -1505,58 +1373,30 @@ by "Provider Independence" above. Call-site imperatives:
   introduce a second hash or rely on cosmetic answer edits.
 - Task-acceptance actors are the configured triad rows (owner R0–R2,
   2026-09-01; `reviewer_slot_config.triad_delivery_slots`, malformed config
-  refuses typed) and receive one substantive interaction on their own
-  delivery: a packet row at most two physical attempts total, a native
-  inspection row one bounded episode, an agent-session row one delegated
-  session. A retrieving row receives the route-owned work order
-  (`loop_acceptance_review.acceptance_retrieving_work_order`: a session the FULL
-  packet plus absolute pointers and the access disclosure; a native row the
-  packet without its freely degradable tail plus the real data root) over the
-  task's ACTIVE workspace, and its `evidence_refs` resolve against the FULL
-  packet — never the rendered projection. The wave budget gate prices API
-  money only (session rows excluded) and DECIDES on one work-order send per
-  paid row — that is the whole money rule, with no rounds multiplier and no
-  second read-only pricing pass; the per-send wallet binding at dispatch is
-  the fence. The host predicts no review duration (owner R52): the launch rule
-  (`task_pacing.review_launch_allowed`, spendable > the configured floor) is
-  evaluated ONCE per panel, at loop admission (owner R55, 2026-09-03), and the
-  separate post-panel improvement gate adds only that floor × `_window_scale`;
-  the paid claim (`task_acceptance_paid_dispatch_stamp._claim`) checks
-  cancellation and the paid-cycle wallet only, and the read-only capacity
-  projection is WALLET and cancellation only and reads no time axis. A RUNNING
-  panel is bounded by the R23 deadline clamps and the per-send wallet fence (a
-  deadline-cut review is a typed degraded outcome). Disclosed residual: a
-  panel whose evidence build consumed the margin after admission dispatches
-  and may be cut by the deadline — one ADMITTED panel: admission prices one
-  work-order send per paid row, but packet rows may use the permitted
-  repair/retry send and native rows may run several rounds — every send
-  remains deadline- and wallet-fenced where pricing exists, so the total is
-  NOT bounded to one floor wave; a panel the deadline actually cuts is
-  DEGRADED, a panel that finishes keeps its normal verdict; never a free skip.
-  Format-repair resends are packet-row only; child/`off` acceptance runs
-  packet rows only.
+  refuses typed) and receive one substantive interaction on their own delivery;
+  the retrieving work order, the `evidence_refs` resolution against the FULL
+  packet, the money rule (one work-order send per paid row, no rounds
+  multiplier, no second pricing pass), the once-per-panel launch floor (owner
+  R52/R55, 2026-09-03; `task_pacing.review_launch_allowed`,
+  `task_acceptance_paid_dispatch_stamp._claim`), the R23 clamps on a running
+  panel and the disclosed deadline-cut residual are stated once in ARCHITECTURE
+  "Task lifecycle". Format-repair resends are packet-row only; child/`off`
+  acceptance runs packet rows only.
 - The host acceptance decision is written ONLY by
-  `loop_acceptance._set_acceptance_decision` (re-exported from `loop`), with
-  exactly three
-  owner-facing states (`accepted | revision_requested |
-  finalized_unaccepted`), each with a typed reason from the closed set; an
-  unknown status fails closed. When you add a writer, add its reason to the
+  `loop_acceptance._set_acceptance_decision` (re-exported from `loop`), with exactly three
+  owner-facing states, each with a typed reason from the closed set; an unknown
+  status fails closed. When you add a writer, add its reason to the
   closed set AND check every value-keyed reader —
   `outcomes.derive_loop_outcome` keys degradations and blocked terminals on
   status+reason PAIRS, and breaking a pairing is a silent false green.
   Every forced rail closes a dangling `revision_requested` through
-  `loop_acceptance.terminalize_dangling_revision`: it promises a pass the
-  rail cannot take. `accepted` and `finalized_unaccepted` are never
-  overwritten, no bypass reason is stamped over a panel that ran, and the
-  resulting pair stays outside `_ACCEPTANCE_BLOCKED_TERMINAL_REASONS`.
-  The reviewer verdict vocabulary `PASS|FAIL|DEGRADED` is NOT narrowable;
+  `loop_acceptance.terminalize_dangling_revision` (what it stamps and never
+  overwrites: ARCHITECTURE "Task lifecycle"). The reviewer verdict vocabulary `PASS|FAIL|DEGRADED` is NOT narrowable;
   `adaptive_quorum` applies, any contributing FAIL fails, DEGRADED abstains,
-  and no quorum is a terminal HOST decision. Chat, Logs, the
-  durable Project lifecycle rows and the Telegram notifier use the same phase
-  (`taskOutcomeSeverity`/`taskTerminalPhase` mirrored by
-  `project_dialogue.outcome_phase`); degraded review or a best-effort
-  objective must never render as green solved on any of them. Do not add task scope review or reuse the commit
-  gate.
+  and no quorum is a terminal HOST decision. Degraded review or a best-effort objective must never render as green solved
+  on any surface (the shared phase projection: "Design System"; its host
+  mirror: ARCHITECTURE "Chat and Projects"). Do not add task scope review or
+  reuse the commit gate.
 - The acceptance improvement loop is a reviewer-authored DIALOGUE: obligation
   identity comes from the reviewer's typed
   `disposition_kind`/`obligation_id` (an unknown re-raise id fails closed to
@@ -1567,12 +1407,10 @@ by "Provider Independence" above. Call-site imperatives:
   panel, including a revised answer. Keep critic and author hashes separate;
   bind controlling intent through the existing delivery-evidence fingerprint and
   consume it on owner/evidence supersession. No semantic host counters or
-  keyword gates (P5). One contributing reviewer may hold the
-  loop open only WITH MATERIAL (a `continue_actionable` vote without a
-  concrete finding is disclosed and abstains); missing/invalid votes abstain
-  and never default to continue; zero well-formed votes reduce to the typed
-  `inconclusive`, which grants the dialogue no authority and falls through
-  to the existing terminals. Changes here must cover malformed reviewer
+  keyword gates (P5). The vote reduction — one contributing reviewer holds the loop open only WITH
+  MATERIAL, missing/invalid votes abstain and never default to continue, zero
+  well-formed votes reduce to the typed `inconclusive` — is ARCHITECTURE "Task
+  lifecycle". Changes here must cover malformed reviewer
   output, unknown/stale re-raise ids, partial panel failure, multi-slot
   status disagreement, replay/restart durability of obligation rows, false
   completion, and the backward-compatible default when new fields are

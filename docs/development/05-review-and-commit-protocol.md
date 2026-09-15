@@ -23,11 +23,9 @@ ARCHITECTURE "Review delivery" owns the dataflow.
    reviewer backend is available. Explicit test skips are not green proof.
 2. **Authoritative gate.** Independently configured deterministic test policy,
    staged fingerprinting, triad review, applicable scope review, aggregation,
-   and pre/post revalidation. The fingerprint binds `git write-tree`, ordered
-   `HEAD`/`MERGE_HEAD` parents, indexed VERSION, expected `v{VERSION}` tag and
-   existing target, plus the binary staged-diff hash.
-3. **Publication binding.** The created commit/tag is checked against the same
-   tree, parents, VERSION, tag, and reviewed fingerprint before push. Any
+   and pre/post revalidation. The exact binding: `docs/architecture/06-agent-core.md` § "Git and commit
+   review".
+3. **Publication binding.** The created commit/tag is checked against that same binding before push. Any
    mutation, rebase, conflict resolution, or changed landing parent
    invalidates exact-candidate authority and requires the applicable final
    gate again.
@@ -43,36 +41,25 @@ Diagnostic
 `repo_commit_ready` projects this permission only from an exact repo/hash match;
 it does not change the failed review's status or freshness.
 
-Pending triad/scope reconciliation retains the prepared index and never restages
-or reconstructs a lost index. Pending delegated preflight binds the existing
-`delegate_custody` invocation in `AdvisoryRunRecord.execution` before POST and
-replays its canonical request, without another prompt store or physical run.
-An explicit audited preflight skip releases only logical admission: retain the
-old invocation, source and unknown physical work. It neither cancels that work
-nor posts a replacement. A late result updates its original record without
-invalidating the newer bypass. Only the existing definite start-failure producer
-can automatically discharge a stranded checkpoint; elapsed time cannot.
-Both commit and review-only entry points forward the explicit skip. A subsequent
-standalone request can rejoin exact historical custody or check new evidence;
-released unrelated history is not a logical lock. Pending refusals explain the
-audited skip without claiming that it cancels physical work or its cost.
-Native preflight uses the existing executor's end/failure events and monetary
-ledger, without a new advisory operation checkpoint or exact-rejoin protocol.
-An ambiguous returned native outcome remains failed evidence; explicit skip
-does not erase its cost or custody. The external review wrapper uses
-the same cycle and retains its candidate
-checkout/index while custody remains unresolved; its existing outcome records
-the checkout, drive root, reason and invocation for reconciliation.
+Pending triad/scope reconciliation retains the prepared index and never
+restages or reconstructs a lost index; pending delegated preflight rejoins its
+exact durable invocation rather than posting a replacement, and an explicit
+audited preflight skip releases only logical admission — it neither cancels
+physical work nor erases its cost or custody (the custody mechanics, late
+results and the definite start-failure discharge:
+`docs/architecture/06-agent-core.md` § "Review delivery"). Both commit and
+review-only entry points forward the explicit skip; a subsequent standalone
+request can rejoin exact historical custody or check new evidence, and released
+unrelated history is not a logical lock. The external review wrapper uses the
+same cycle and retains its candidate checkout/index while custody remains
+unresolved.
 
 Triad slots review the staged diff against `docs/CHECKLISTS.md`; duplicate
-model ids remain independent slots and `config.adaptive_quorum` owns quorum. A
-managed-update resolution commit reviews the declared M0→S resolution delta
-(`tools/review_subject.py`), bound to the index write-tree the fingerprint
-pins. Scope slots inspect touched context plus the repository Atlas; the
-assembler reduces optional and unchanged-diff context, records every
-degradation, and fails closed when its irreducible pack cannot fit — an
-artifact owed in full is reached only after the `-U0` rung and cannot buy fit
-by degrading into an invalid review. Owner-selected Low records the distinct
+model ids remain independent slots and `config.adaptive_quorum` owns quorum. A managed-update resolution commit reviews the declared M0→S resolution delta
+(the managed exception: `docs/architecture/06-agent-core.md` § "Git and commit
+review"). Scope slots inspect touched context plus the repository Atlas through the
+guaranteed-fit ladder (`docs/architecture/06-agent-core.md` § "Review stack");
+an artifact owed in full cannot buy fit by degrading into an invalid review. Owner-selected Low records the distinct
 BIBLE P3 scope skip; other route or assembly failure is not a clean verdict.
 An agent-session scope slot delivers by retrieval: its verdict is
 authoritative once its window is sourced at ≥200K, and "the host did not
@@ -81,69 +68,43 @@ missing-authority finding. The gate is one logical reviewer interaction per
 API slot, with at most one bounded second physical send on a same-route
 transport rail for a PACKET api row; a hosted agent-session slot is one
 multistep execution whose local extraction reuses its collected transcript.
-A native tool-round slot (an api
-row bound to a configured subagent) is likewise one multistep episode with no
-send count: its bounds are the window-derived transcript bound (measured on
-the serialized messages of the next send — each appended element charged as
-envelope plus list separator, so the counter equals the wire size), the owner
-deadline together with the slot's logical window (each send's transport
-timeout is clamped to the remainder and a spent window refuses before
-dispatch; each internal recovery send re-reads the same caller deadlines), and the paid ledger; exhaustion is a typed
-refusal (`native_transcript_cap_exceeded`) for verdict shapes or a disclosed
-`native_incomplete` product for the report shape, and every end leaves its
-facts on the actor usage and custody row. A retrieving delivery canonicalizes
+A native tool-round slot (an api row bound to a configured subagent) is
+likewise one multistep episode with no send count; its bounds and typed ends:
+`docs/architecture/06-agent-core.md` § "Review delivery". A retrieving delivery canonicalizes
 its answer by the surface's output SHAPE (`triad_review.review_output_shape`:
 `array` | `object` | `report`), never by surface-name branches inside the
 canonicalizer: the shape table is form only, and a new object- or
 report-shaped surface registers there instead of teaching the extraction rail
 another `if`.
 
-Advisory validates its own row enums through the shared canonicalizer's optional
-array validator. Unknown verdicts or unknown/missing FAIL severity remain unparsed
-unless the existing extraction can faithfully recover them; neither path invents
-critical severity or downgrades a finding from identifier presence. Preserve the
-full raw result, ordinary PASS rows and genuine empty-clean responses in tests.
-Hosted-review model/harness/profile evidence comes from the same final attempt in
-`final/telemetry.yaml`, not requested values or cross-attempt summary projections.
-Missing observations remain unknown; the exact contributor checker still refuses
-unconfirmed model identity, including a display label that cannot prove the pin.
-Ordinary delegation requests no extra engine panel; the start receipt names the
-serving engine version, and historical runs can retain older review behavior.
+Advisory row parsing and hosted-review identity evidence are mechanism
+(`docs/architecture/06-agent-core.md` § "Review delivery"); what a change must
+preserve: the full raw result, ordinary PASS rows and genuine empty-clean
+responses in tests, and the exact contributor checker's refusal of unconfirmed
+model identity, including a display label that cannot prove the pin.
 
 Paid review cycles across the gates are bounded by one shared owner knob,
 `OUROBOROS_REVIEW_MAX_CYCLES` — a STRING, positive integer or `unlimited`,
-default `"2"` (Settings → Behavior → "Max Review Cycles"). Its SSOT is
-`ouroboros/review_cycles.py`, whose docstring defines the per-gate meaning
-(the retired legacy key is migrated at settings load). `unlimited` removes only the local count —
+default `"2"` (Settings → Behavior → "Max Review Cycles"). Its SSOT is `ouroboros/review_cycles.py`; the four per-gate meanings are stated
+once in `docs/architecture/06-agent-core.md` § "Review stack" (the retired
+legacy key is migrated at settings load). `unlimited` removes only the local count —
 deadline, budget, and lifecycle rails still bind — and a malformed value fails
 closed to the default, logged once.
 
 For task acceptance, the exact-binding tree-wallet claim is a strict
-write-ahead stamp bound to every delivery the panel's rows run (owner R11,
-2026-09-01: the paid identity is material, not route): a packet row fires it
-when the API usage ledger crosses into physical dispatch, a native inspection
-row on each paid send of its episode, an agent-session row before its
-replayable `START_REQUESTED` — one idempotent claim per panel. Panel assembly,
-an unavailable route, or another pre-transport refusal consumes no claim and
-leaves the binding retryable. The paid claim itself checks cancellation and
-the paid-cycle wallet only (owner R55): the launch floor is evaluated ONCE per
-panel, at loop admission, and a RUNNING panel is bounded by the R23 deadline
-clamps and the per-send wallet fence. Disclosed residual: a panel whose
-evidence build consumed the margin after admission dispatches and may be cut
-by the deadline — one ADMITTED panel: admission prices one work-order send per
-paid row, but packet rows may use the permitted repair/retry send and native
-rows may run several rounds — every send remains deadline- and wallet-fenced
-where pricing exists, so the total is NOT bounded to one floor wave; a panel
-the deadline actually cuts is DEGRADED, a panel that finishes keeps its normal
-verdict; never a free skip. An unavailable claim releases the usage
+write-ahead stamp bound to every delivery the panel's rows run — one idempotent
+claim per panel (owner R11, 2026-09-01: the paid identity is material, not
+route). The per-delivery stamp points, the once-per-panel launch floor (owner
+R55), the R23 clamps on a running panel and the disclosed deadline-cut residual
+are stated once in `docs/architecture/06-agent-core.md` § "Task lifecycle" and
+the `review_dispatch.py` row of
+`docs/architecture/01-high-level-architecture.md`. Panel assembly, an
+unavailable route, or another pre-transport refusal consumes no claim and
+leaves the binding retryable; an unavailable claim releases the usage
 reservation and blocks every parallel panel slot before reviewer transport
-rather than degrading hard authority into fail-open cost telemetry. Disclosed
-residual (pre-existing release behaviour, b9bcc2da; issue #588; out of
-this change's scope): a compatibility transport
-that raises with positive physical capture invokes the paid stamp after the
-send; if the tree's last paid cycle is consumed concurrently at that late
-stamp, the wallet refusal replaces the captured exception and the substrate
-may resend.
+rather than degrading hard authority into fail-open cost telemetry. The
+compatibility positive-capture residual (issue #588) is disclosed at its owner,
+the `review_execution.py` row of the same map.
 
 Never pay for byte-identical review material (`ouroboros/tools/commit_gate.py` owns
 the mechanism): the commit gate refuses a byte-identical staged diff for free
@@ -156,14 +117,9 @@ refusal-streak eligibility is about VERDICTS (a rebuttal is spent only by the
 substantive verdict it bought), while money is about DISPATCH (every
 physically dispatched wave counts whatever its terminal; infra facts refused
 at assembly never dispatched and stay outside the count; the paid fact is
-recorded write-ahead). A free refusal never wears the form of a verdict: a
-refusal that spent nothing is recorded as a typed `not_dispatched` fact plus
-its reason, never as a DEGRADED panel, a synthetic actor, or a verdict. That
-holds for a plan-review locator the evidence policy cannot attach (a named
-omission row the panel is dispatched with), an acceptance packet that
-overflows (the ladder, not a verdict), a truncated or self-pageable row (the
-cut is named), and a request that was never sent (one
-`operation_state='not_dispatched'` seat that stays in the denominator).
+recorded write-ahead). A refusal that spent nothing is a typed `not_dispatched` fact, never a verdict
+(the one shape of every $0 exit: `docs/architecture/06-agent-core.md` § "Review
+stack").
 Exhaustion is always the typed
 `review_cycles_exhausted` event with honest exits — under advisory
 enforcement a commit after exhaustion proceeds as a free replay with a loud
@@ -203,23 +159,14 @@ preserve authorship, and run the normal final exact-candidate gate.
 ### Release sync
 
 A pull request into `ouroboros` leaves every version carrier byte-identical to
-its target: `VERSION`, `pyproject.toml`, the editable root version in
-`uv.lock`, `web/package.json`, `web/package-lock.json` (both root entries),
-`web/modules/api_types.js::GATEWAY_CONTRACT_VERSION`, the README badge and
-latest Version History row, the named direct-download links in README and both
-install pages, and the Architecture header. At integration,
+its target (the carrier list and the one projection that writes them:
+`docs/architecture/10-key-invariants.md`, invariant 2). At integration,
 `ouroboros/tools/release_sync.py::sync_release_metadata()` projects the chosen
-version and `version_carrier_desyncs()` verifies the file carriers (the
-history row is pinned by the packaging-sync test); changelog prose remains a
-deliberate maintainer edit. The same projection owns the seven public
-installer filename templates and rewrites the named direct-download links.
-Those links use the immutable exact tag
-(`/releases/download/v{VERSION}/...`), never
-`/releases/latest/download/...`: prereleases are excluded from GitHub's latest
-release, so a latest-style link would fail during an RC. The integration
-branch may name installers that are not published yet; public onboarding uses
-`main` and `main:/docs`, and stable promotion advances `main` only after the
-release and all seven installers are public.
+version and `version_carrier_desyncs()` verifies the file carriers (the history
+row is pinned by the packaging-sync test); changelog prose remains a deliberate
+maintainer edit. The installer filename templates, the immutable exact-tag
+download links and the stable promotion of `main` are
+`docs/architecture/08-git-branching-ci-and-build.md` § "Build scripts".
 
 Hermetic preflight uses a disposable worktree, temporary
 data/settings/pycache, and scrubbed runtime/secret-class environment. Tests
