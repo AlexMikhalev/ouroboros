@@ -428,11 +428,15 @@ def _reviewer_requested_locators(ctx: ToolContext, state_root: pathlib.Path) -> 
             seen.append(loc)
     return seen, dropped
 
-def _resource_form_refusal(ctx: ToolContext, state_root: pathlib.Path) -> str:
-    """The old-form refusal text: name the missing field, show it, and protect an open wave.
+def _resource_form_refusal(ctx: ToolContext, state_root: pathlib.Path) -> dict:
+    """The old-form refusal, text AND code: name the missing field, show it, protect an open wave.
 
     Nothing durable is written, so a task whose previous wave is still open keeps it — and is
-    told how to close it at $0 instead of re-buying a panel it cannot afford."""
+    told how to close it at $0 instead of re-buying a panel it cannot afford. The code travels
+    with the text because `_typed_refusal` reads it to publish the typed ToolResult: a producer
+    that already knows it refused must never hand a caller a bare `ERROR:` string, which the
+    registry types by its first line and records as a successful call
+    (`tests/test_typed_tool_refusals.py`)."""
     detail = ""
     try:
         _root, task_id = _planning_state_location(ctx)
@@ -446,15 +450,18 @@ def _resource_form_refusal(ctx: ToolContext, state_root: pathlib.Path) -> str:
             "it first with review_disposition naming that fingerprint (free, no reviewer call), or "
             "re-send this spec in the form above."
         )
-    return (
-        "ERROR: PLAN_RESOURCE_FORM_REQUIRED: spec.affected_paths is required — the FILES this work "
-        "will change, as their own list; send [] when it changes no files. affected_resources is "
-        "now prose (systems, services, projects, people) and is never resolved as a path. "
-        "For example:\n"
-        '  "affected_paths": ["ouroboros/tools/plan_review.py"],\n'
-        '  "affected_resources": ["the plan-review organ", "the owner\'s review budget"]\n'
-        "No reviewer was called and nothing was recorded." + detail
-    )
+    return {
+        "error": (
+            "ERROR: PLAN_RESOURCE_FORM_REQUIRED: spec.affected_paths is required — the FILES this work "
+            "will change, as their own list; send [] when it changes no files. affected_resources is "
+            "now prose (systems, services, projects, people) and is never resolved as a path. "
+            "For example:\n"
+            '  "affected_paths": ["ouroboros/tools/plan_review.py"],\n'
+            '  "affected_resources": ["the plan-review organ", "the owner\'s review budget"]\n'
+            "No reviewer was called and nothing was recorded." + detail
+        ),
+        "code": "TOOL_ARG_ERROR",
+    }
 
 def _prepare_plan_inputs(ctx: ToolContext, request: "_PlanRequest", state_root: pathlib.Path, *, persist: bool = False) -> dict:
     """The ONE preamble the paid path and the dry-run seam share: normalize the spec (with the
@@ -476,9 +483,9 @@ def _prepare_plan_inputs(ctx: ToolContext, request: "_PlanRequest", state_root: 
         # Owner 9=A: a spec in the old mixed form is refused BEFORE any paid dispatch, because
         # `affected_resources` used to be read as a path list — a prose item became "a file under
         # the Ouroboros repo" and bought every reviewer the whole constitution (~470k tokens/cycle)
-        # for a deck. The refusal carries its OWN code: a message containing `PLAN_SPEC_INVALID`
+        # for a deck. The refusal owns its code: a message containing `PLAN_SPEC_INVALID`
         # takes the durable superseding-attempt path below and would orphan an open wave.
-        return {"error": _resource_form_refusal(ctx, state_root), "code": "TOOL_ARG_ERROR"}
+        return _resource_form_refusal(ctx, state_root)
     from ouroboros.review_substrate import review_repo_dirs_for
     try:
         system_root, active_root = review_repo_dirs_for(ctx)
