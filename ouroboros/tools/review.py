@@ -914,7 +914,13 @@ def _triad_session_task(ctx: ToolContext, **sections) -> str:
     same session task text; a managed subject inlines its authoritative delta."""
     from ouroboros.tools.review_subject import build_triad_session_task
 
-    return build_triad_session_task(**sections)
+    # Governance always comes from the system repository, and the nav maps must
+    # address the physical chapter a section lives in.
+    governance_root = getattr(ctx, "repo_dir", None)
+    return build_triad_session_task(
+        governance_repo_dir=pathlib.Path(governance_root) if governance_root else None,
+        **sections,
+    )
 
 
 def _capture_triad_staged_diff(

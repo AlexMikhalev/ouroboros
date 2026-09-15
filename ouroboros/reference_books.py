@@ -226,7 +226,17 @@ def compose_book(book: ReferenceBook) -> str:
     return "\n\n".join(source.text for source in (book.entrypoint, *book.chapters))
 
 
-def overview_book(book: ReferenceBook) -> BookView:
+def overview_book(
+    book: ReferenceBook,
+    chapter_navigation: Callable[[MarkdownSource], str] | None = None,
+) -> BookView:
+    """The compact view: authored introductions plus physical source addresses.
+
+    ``chapter_navigation`` is INJECTED rather than imported, because the one
+    heading mapper lives in the doc-layout owner above this module. A compact
+    view that lost the subsection index the monolith's map carried would be a
+    capability regression for every reader that navigates before reading.
+    """
     read_instruction = (
         'Full chapter text is available through `read_file(root="system_repo", path=...)`; '
         'use the physical Source path listed below, with `start_line` and `max_lines` '
@@ -245,6 +255,9 @@ def overview_book(book: ReferenceBook) -> BookView:
         preamble = _preamble(chapter)
         rows.extend((f"# {chapter.headings[0].title}",
                      f"Source: `{chapter.source_path}`", chapter.text_at(preamble)))
+        navigation = chapter_navigation(chapter) if chapter_navigation is not None else ""
+        if navigation.strip():
+            rows.append(navigation)
         refs.extend((_ref(book, chapter, chapter.headings[0].span), _ref(book, chapter, preamble)))
     return BookView("\n\n".join(rows), tuple(refs), False)
 

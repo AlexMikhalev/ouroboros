@@ -223,3 +223,75 @@ def test_the_mandatory_read_pointer_measures_the_book_not_its_membership_page():
         f"for their chapters; measured {measured} against {entrypoints} of membership"
     )
     assert set(prompt._MANDATORY_READ_DOCS) >= set(BOOK_ENTRYPOINTS.values())
+
+
+# --- physical reference and coverage readers -------------------------------
+
+def test_the_triad_session_task_addresses_chapters_never_the_membership_page():
+    """A session receives no assembled evidence, so its map IS its addressing.
+    Built from the supplied composed text against the entrypoint path it would
+    hand out offsets into a 20-line file."""
+    from ouroboros.tools.review_helpers import load_governance_doc
+    from ouroboros.tools.review_subject import build_triad_session_task
+
+    sections = dict(
+        goal_section="## Goal\n\nx", scope_section="## Scope\n\nx",
+        checklist_section="## Checklist\n\nx", rebuttal_section="",
+        review_history_section="",
+        dev_guide_text=load_governance_doc(REPO, "docs/DEVELOPMENT.md"),
+        architecture_text=load_governance_doc(REPO, "docs/ARCHITECTURE.md"),
+    )
+    with_book = build_triad_session_task(governance_repo_dir=REPO, **sections)
+    assert "Source: `docs/architecture/06-agent-core.md`" in with_book
+    assert "Source: `docs/development/14-build-and-ci.md`" in with_book
+    assert "## ARCHITECTURE.md (navigation map)" not in with_book
+
+    # No governance root: an explicitly historical or synthetic input is still
+    # mapped, as the one source it was handed.
+    without = build_triad_session_task(**sections)
+    assert "## ARCHITECTURE.md (navigation map)" in without
+
+
+def test_a_non_constitutional_plan_pointer_maps_the_chapters(tmp_path):
+    from ouroboros.tools.plan_review_runtime import _architecture_navigation
+
+    mapped = _architecture_navigation(REPO, "unused")
+    assert "Source: `docs/architecture/01-high-level-architecture.md`" in mapped
+    assert "Devtools boundary" in mapped
+    # An unreadable book falls back to mapping the supplied text rather than
+    # dropping the architecture pointer entirely.
+    fallback = _architecture_navigation(tmp_path, "# Doc\n\n## Section\n\nBody\n")
+    assert "## ARCHITECTURE.md (navigation map)" in fallback and "Section" in fallback
+
+
+def test_the_scope_session_governance_map_addresses_chapters():
+    from ouroboros.tools.scope_review_session import governance_nav_maps
+
+    maps = governance_nav_maps(REPO, ("docs/ARCHITECTURE.md", "docs/CHECKLISTS.md"))
+    assert "Source: `docs/architecture/10-key-invariants.md`" in maps
+    # A non-book governance document keeps the single-source map.
+    assert "## docs/CHECKLISTS.md (navigation map)" in maps
+
+
+def test_a_mandatory_full_read_pointer_enumerates_the_chapter_closure(tmp_path):
+    from ouroboros.reference_books import load_reference_book
+    from ouroboros.tools.claude_advisory_review import _mandatory_read_pointer
+
+    pointer = _mandatory_read_pointer(REPO, "docs/DEVELOPMENT.md")
+    chapters = load_reference_book(REPO, "development").chapters
+    assert "membership page, NOT the book" in pointer
+    for chapter in chapters:
+        assert str((REPO / chapter.source_path).resolve()) in pointer, chapter.source_path
+    assert f"({len(chapters[0].raw):,} bytes)" in pointer
+
+    # A non-book document and a sectioned pointer keep their existing form.
+    assert "membership page" not in _mandatory_read_pointer(REPO, "BIBLE.md")
+    sectioned = _mandatory_read_pointer(REPO, "docs/CHECKLISTS.md", section="Repo Commit Checklist")
+    assert "'## Repo Commit Checklist' section" in sectioned
+
+    # An unassemblable book says its coverage is unknown; it never reports a
+    # membership page as the whole book.
+    _chaptered_corpus(tmp_path)
+    (tmp_path / "docs/development/only.md").unlink()
+    broken = _mandatory_read_pointer(tmp_path, "docs/DEVELOPMENT.md")
+    assert "coverage is UNKNOWN" in broken
