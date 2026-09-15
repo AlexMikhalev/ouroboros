@@ -468,3 +468,49 @@ def test_an_unreadable_live_queue_still_answers_the_durable_bindings(tmp_path, m
     assert _task_bindings_safe(_request(tmp_path)) == {
         "clicked-root": {"project_id": "dinosaurs", "chat_id": project["chat_id"]},
     }
+
+
+# --- (f) receipts: one owner message, several acts, every receipt readable ---
+
+def test_two_roots_under_one_owner_message_keep_two_readable_receipts_after_compaction(tmp_path):
+    """One owner message becomes a root, then a later steer relays the same
+    message: two acts, two tokens. The retained set is keyed per (message,
+    token), so compaction keeps the older act's receipt readable by its token
+    while the message's LATEST row stays what the UI paints."""
+    import json
+
+    from ouroboros.project_dialogue import (
+        _COMPACT_AT_BYTES, append_chat_annotation, chat_annotation_receipt, latest_chat_annotations,
+    )
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "chat.jsonl").write_text(
+        json.dumps({"direction": "in", "chat_id": 1, "client_message_id": "cm-1", "text": "go"}) + "\n",
+        encoding="utf-8",
+    )
+    assert append_chat_annotation(
+        tmp_path, "cm-1", action="promote_chat_to_task", target="root-a", status="scheduled",
+        routing_token="tok-promote",
+    )
+    assert append_chat_annotation(
+        tmp_path, "cm-1", action="steer_task", target="root-b", status="delivered",
+        routing_token="tok-steer",
+    )
+    annotations = logs / "chat_annotations.jsonl"
+    filler = {"ts": "2026-09-15T00:00:00Z", "type": "chat_annotation", "client_message_id": "msg-expired",
+              "action": "routed", "status": "delivered", "detail": "x" * 400}
+    with annotations.open("a", encoding="utf-8") as stream:
+        while annotations.stat().st_size < _COMPACT_AT_BYTES:
+            stream.write(json.dumps(filler) + "\n")
+    assert append_chat_annotation(tmp_path, "cm-1", action="steer_task", target="root-b",
+                                  status="delivered", routing_token="tok-steer-2")
+
+    assert annotations.stat().st_size < _COMPACT_AT_BYTES  # it compacted
+    assert chat_annotation_receipt(tmp_path, "cm-1", "tok-promote")["target"] == "root-a"
+    assert chat_annotation_receipt(tmp_path, "cm-1", "tok-steer")["target"] == "root-b"
+    assert chat_annotation_receipt(tmp_path, "cm-1", "tok-steer-2")["status"] == "delivered"
+    assert chat_annotation_receipt(tmp_path, "cm-1", "tok-unknown") == {}
+    assert latest_chat_annotations(tmp_path)["cm-1"]["routing_token"] == "tok-steer-2"
+    assert "msg-expired" not in latest_chat_annotations(tmp_path)
+

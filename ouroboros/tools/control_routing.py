@@ -60,35 +60,39 @@ def _attach_origin_from_metadata(ctx: ToolContext, evt: Dict[str, Any]) -> None:
         evt["origin_suppressed"] = True
 
 
-def _inherited_project_scope(ctx: ToolContext) -> str:
-    """The project a promote with NO explicit target should land in.
+def _durable_project_of_request(ctx: ToolContext) -> str:
+    """The project this request's work ALREADY has, durably: the promoting task's
+    own binding — the one truth about a task's project, which a "Turn into
+    project" conversion writes without ever reaching the live worker's
+    ``ctx.project_id`` — else the project the OWNER MESSAGE it came from has.
 
-    Order: (1) the promoting task's own DURABLE binding — the one truth about a
-    task's project, which a "Turn into project" conversion writes without ever
-    reaching the live worker's ``ctx.project_id``; (2) the project the OWNER
-    MESSAGE this turn came from already has, so a root promoted out of an
-    already-converted message joins it instead of appearing in Main as a second
-    convertible unit; (3) the in-memory scope copy, unchanged behaviour.
-
-    Both durable reads fail OPEN exactly like ``project_facts._bound_project_id``
-    (one DEBUG line, then the copy): this runs on a routing decision the owner is
-    waiting for, and an unreadable store must not stop the work. Explicit
-    ``project_id``/``project_name`` never reach here — they stay the model's
-    ceiling (BIBLE P13)."""
+    Both reads fail OPEN exactly like ``project_facts._bound_project_id`` (one
+    DEBUG line, then ""): this runs on a routing decision the owner is waiting
+    for, and an unreadable store must not stop the work."""
     metadata = getattr(ctx, "task_metadata", None)
     metadata = metadata if isinstance(metadata, dict) else {}
     try:
         from ouroboros.config import DATA_DIR
         from ouroboros.projects_registry import project_id_for_origin, project_id_for_task
 
-        inherited = str(project_id_for_task(DATA_DIR, str(getattr(ctx, "task_id", "") or "")) or "")
-        if not inherited:
-            inherited = str(project_id_for_origin(DATA_DIR, metadata.get("origin_message_ref")) or "")
-        if inherited:
-            return inherited
+        return str(
+            project_id_for_task(DATA_DIR, str(getattr(ctx, "task_id", "") or ""))
+            or project_id_for_origin(DATA_DIR, metadata.get("origin_message_ref"))
+            or ""
+        )
     except Exception:
         log.debug("promote: durable project scope lookup failed", exc_info=True)
-    return str(getattr(ctx, "project_id", "") or "")
+        return ""
+
+
+def _inherited_project_scope(ctx: ToolContext) -> str:
+    """The project a promote with NO explicit target should land in: the durable
+    project of the request (own binding, then the owner message's), so a root
+    promoted out of an already-converted message joins it instead of appearing
+    in Main as a second convertible unit; else the in-memory scope copy,
+    unchanged behaviour. Explicit ``project_id``/``project_name`` never reach
+    here — they stay the model's ceiling (BIBLE P13)."""
+    return _durable_project_of_request(ctx) or str(getattr(ctx, "project_id", "") or "")
 
 
 def _attach_predecessor_authority_from_metadata(
@@ -366,6 +370,8 @@ def _promote_chat_to_task(
             + predecessor_error
         )
     _attach_client_surface(ctx, evt)
+    _attach_unmet_obligation(ctx, evt)
+    already_bound = _durable_project_of_request(ctx)
     mode, confirmation = _emit_and_wait_for_routing(ctx, evt)
     confirmation_status = str(confirmation.get("status") or "unconfirmed")
     reason = str(confirmation.get("reason") or "")
@@ -373,14 +379,15 @@ def _promote_chat_to_task(
     disabled_reason = str(confirmation.get("worker_pool_disabled_reason") or "")
     if confirmation_status == "scheduled":
         source_confirmation = f" [{detail}]" if detail else ""
-        scope_note = _effective_scope_note(
-            ctx, str(confirmation.get("effective_project_id") or ""),
-        )
+        effective_pid = str(confirmation.get("effective_project_id") or "")
+        scope_note = _effective_scope_note(ctx, effective_pid)
         response = (
             f"OK: task {tid}{scope_note} accepted and durably scheduled ({mode}).{source_confirmation} "
             "The task now runs independently, and follow-up chat can steer it. "
             "Use wait_task/get_task_result if its result "
             "is needed in this conversation."
+            + _second_project_note(ctx, already_bound, effective_pid)
+            + _obligation_moved_note(ctx, tid, confirmation.get("force_plan_transfer"))
         )
         return _finish_swarm_handoff(ctx, evt, response, status="scheduled")
     if confirmation_status in {"rejected", "needs_manual_target"}:
@@ -425,6 +432,49 @@ def _promote_chat_to_task(
     )
     return _finish_swarm_handoff(
         ctx, evt, response, status="unconfirmed", reason=reason or "confirmation_timeout",
+    )
+
+
+def _attach_unmet_obligation(ctx: ToolContext, evt: Dict[str, Any]) -> None:
+    """Owner 3=A: a task whose Swarm planning obligation is still UNMET carries it
+    onto the root it promotes (the existing admission seam stamps the new root
+    and releases the promoter in the same transaction). An owner turn has no
+    obligation of its own; a met or unreadable one stays where it is."""
+    if _routing_issuer(ctx)["kind"] != ISSUER_TASK:
+        return
+    from ouroboros.owner_hurry import unmet_force_plan_obligation
+
+    obligation = unmet_force_plan_obligation(ctx)
+    if obligation.get("unmet"):
+        evt.update({
+            "force_plan": True,
+            "force_plan_source": str(obligation.get("source") or "operator"),
+            "force_plan_transferred_from": str(getattr(ctx, "task_id", "") or ""),
+        })
+
+
+def _obligation_moved_note(ctx: ToolContext, new_task_id: str, transfer: Any) -> str:
+    """Tell the promoter its obligation moved, and release the worker's own copy."""
+    if not isinstance(transfer, dict) or str(transfer.get("from") or "") != str(getattr(ctx, "task_id", "") or ""):
+        return ""
+    from ouroboros.owner_hurry import release_force_plan_obligation
+
+    release_force_plan_obligation(ctx, new_task_id)
+    return (
+        f" Your planning obligation (force_plan) moved to task {new_task_id}: it now owes the "
+        "plan review, and this task no longer does. If you meant to move THIS task into a "
+        "project, use ensure_project_scope; any work you keep doing here yourself is unplanned."
+    )
+
+
+def _second_project_note(ctx: ToolContext, already_bound: str, effective_pid: str) -> str:
+    """Owner 5A: promote stays a free choice, so when the request's work already had
+    a Project and this promote landed in another one, say so instead of hiding it."""
+    if not already_bound or not effective_pid or effective_pid == already_bound:
+        return ""
+    return (
+        f" Note: the request that started this work already has project '{already_bound}'; "
+        f"a second project '{effective_pid}' now holds this promote (your choice)."
     )
 
 

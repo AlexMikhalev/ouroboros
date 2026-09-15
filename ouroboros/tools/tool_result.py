@@ -731,6 +731,10 @@ _EXACT_IDENTIFIER_CODES = MappingProxyType(
         "ROUTE_UNCONFIRMED": "TOOL_REPORTED_FAILURE",
         "ROUTING_UNCONFIRMED": "TOOL_REPORTED_FAILURE",
         "NEEDS_MANUAL_TARGET": "TOOL_REPORTED_FAILURE",
+        # ensure_project_scope joined the same rail: a refused or unconfirmed
+        # bind scoped nothing durably.
+        "SCOPE_REJECTED": "TOOL_REPORTED_FAILURE",
+        "SCOPE_UNCONFIRMED": "TOOL_REPORTED_FAILURE",
         "TOOL_ERROR": "TOOL_ERROR",
         "TOOL_INTERNAL_ERROR": "TOOL_INTERNAL_ERROR",
         "EXECUTOR_UNAVAILABLE": "LEGACY_UNAVAILABLE",

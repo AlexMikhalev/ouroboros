@@ -20,27 +20,78 @@ def _hermetic_bindings(tmp_path, monkeypatch):
 
 
 def _ctx(**kw):
-    base = dict(project_id="", task_metadata={}, task_contract={}, task_id="t1", event_queue=None, pending_events=[])
+    base = dict(project_id="", task_metadata={}, task_contract={}, task_id="t1", event_queue=None,
+                pending_events=[], drive_root=_hermetic_root())
     base.update(kw)
     return SimpleNamespace(**base)
 
 
-def test_creates_named_project_and_scopes_current_task():
+def _hermetic_root():
+    import ouroboros.config as cfg
+
+    return cfg.DATA_DIR
+
+
+def _live_ctx(supervisor, **kw):
+    """The tool wired to the REAL supervisor handler, so its receipt wait reads
+    exactly what the handler persisted (the rail contract)."""
+    from supervisor.events_project_routing import _handle_ensure_project_scope
+
+    ctx = _ctx(**kw)
+    ctx.event_queue = SimpleNamespace(put_nowait=lambda event: _handle_ensure_project_scope(event, supervisor))
+    return ctx
+
+
+def _supervisor(tmp_path, running=None):
+    from ouroboros.utils import append_jsonl
+
+    return SimpleNamespace(DRIVE_ROOT=tmp_path, RUNNING=dict(running or {}), PENDING=[], append_jsonl=append_jsonl)
+
+
+def test_scope_call_emits_the_event_and_reports_unconfirmed_without_a_supervisor():
+    """The deferred transport (no live supervisor) means NO processing, which is
+    not success: the tool used to say "OK: created/attached" here before any
+    bind existed. The in-memory scope moves so journal writes target the
+    project meanwhile; the durable outcome is what the result reports."""
     from ouroboros.tools.control import _ensure_project_scope
     from ouroboros.project_facts import project_id_from_display_name
 
     ctx = _ctx()
     out = _ensure_project_scope(ctx, project_name="Cyber Racing")
-    assert out.startswith("OK")
+    assert out.startswith("⚠️ SCOPE_UNCONFIRMED")
+    assert "durably bound to no project" in out and "OK" not in out
     expected_pid = project_id_from_display_name("Cyber Racing")
     # the rest of THIS task is scoped immediately (journal/knowledge work now)
     assert ctx.project_id == expected_pid
-    # a durable ensure_project_scope event is emitted for the supervisor
+    # a durable ensure_project_scope event is emitted for the supervisor, on the rail
     evs = [e for e in ctx.pending_events if e.get("type") == "ensure_project_scope"]
     assert len(evs) == 1
     assert evs[0]["task_id"] == "t1"
     assert evs[0]["project_id"] == expected_pid
     assert evs[0]["project_name"] == "Cyber Racing"
+    assert evs[0]["client_message_id"] == f"agent-steer:{evs[0]['routing_token']}"
+
+
+def test_a_landed_bind_is_reported_from_the_durable_binding(tmp_path, monkeypatch):
+    import supervisor.message_bus as mb
+    from ouroboros.project_facts import project_id_from_display_name
+    from ouroboros.projects_registry import project_binding_for_task
+    from ouroboros.tools.control import _ensure_project_scope
+    from supervisor import workers
+
+    monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
+    (tmp_path / "logs").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(mb, "get_bridge", lambda: SimpleNamespace(broadcast=lambda payload: None))
+    monkeypatch.setattr(workers, "_announce_created_project", lambda *a, **kw: None)
+    pid = project_id_from_display_name("Cyber Racing")
+    supervisor = _supervisor(tmp_path, running={"t1": {"task": {"id": "t1", "project_id": ""}}})
+
+    out = _ensure_project_scope(_live_ctx(supervisor), project_name="Cyber Racing")
+
+    assert out.startswith(f"OK: this task is now durably bound to project '{pid}'")
+    assert "created it" in out and f"durably bound to project '{pid}'" in out
+    assert (project_binding_for_task(tmp_path, "t1") or {}).get("project_id") == pid
+    assert supervisor.RUNNING["t1"]["task"]["project_id"] == pid
 
 
 def test_idempotent_same_project_and_refuses_different():
@@ -75,8 +126,10 @@ def test_bound_task_renames_its_project_instead_of_creating_a_second(tmp_path):
     ctx = _ctx()
     out = _ensure_project_scope(ctx, project_name="Token Observatory")
 
-    assert "token-atlas" in out and "no second project" in out
-    assert "Token Observatory" in out and "rename" in out
+    # No supervisor processed it, so the tool claims nothing about the rename:
+    # the durable binding is what it states, and the event carries the request.
+    assert out.startswith("⚠️ SCOPE_UNCONFIRMED")
+    assert "durably bound to project 'token-atlas'" in out
     assert ctx.project_id == "token-atlas"
     evs = [e for e in ctx.pending_events if e.get("type") == "ensure_project_scope"]
     assert len(evs) == 1
@@ -85,19 +138,24 @@ def test_bound_task_renames_its_project_instead_of_creating_a_second(tmp_path):
     assert [p["id"] for p in list_projects(tmp_path)] == ["token-atlas"]
 
 
-def test_bound_task_scope_text_claims_no_rename_when_the_name_is_unchanged(tmp_path):
+def test_bound_task_scope_text_claims_no_rename_when_the_name_is_unchanged(tmp_path, monkeypatch):
     """The text must be TRUE: a request that names the project it is already called
-    says nothing about a rename."""
+    says nothing about a rename -- read from the handler's receipt, not guessed."""
     from ouroboros.projects_registry import bind_task_to_project, create_project
     from ouroboros.tools.control import _ensure_project_scope
+    from supervisor import workers
 
+    monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
+    (tmp_path / "logs").mkdir(parents=True, exist_ok=True)
     # The bound project already carries the requested display name, while the id the
     # name derives to is a different one.
     create_project(tmp_path, "token-atlas", name="Token Observatory")
     bind_task_to_project(tmp_path, "t1", "token-atlas", 5150, origin={"absent": "system"})
+    supervisor = _supervisor(tmp_path, running={"t1": {"task": {"id": "t1", "project_id": "token-atlas"}}})
 
-    out = _ensure_project_scope(_ctx(), project_name="Token Observatory")
+    out = _ensure_project_scope(_live_ctx(supervisor), project_name="Token Observatory")
 
+    assert out.startswith("OK: this task stays durably bound to project 'token-atlas'")
     assert "no second project" in out
     assert "rename" not in out
 
@@ -122,17 +180,16 @@ def test_bound_task_rename_reaches_the_registry_through_the_real_handler(tmp_pat
     monkeypatch.setattr(workers, "_announce_created_project",
                         lambda *a, **kw: announced.append(True))
 
-    ctx = _ctx()
-    out = _ensure_project_scope(ctx, project_name="Token Observatory")
-    event = [e for e in ctx.pending_events if e.get("type") == "ensure_project_scope"][0]
-    running = {"t1": {"task": {"id": "t1", "project_id": "token-atlas"}}}
-    workers.ensure_project_scope(event, SimpleNamespace(RUNNING=running, PENDING=[]))
+    supervisor = _supervisor(tmp_path, running={"t1": {"task": {"id": "t1", "project_id": "token-atlas"}}})
+    out = _ensure_project_scope(_live_ctx(supervisor), project_name="Token Observatory")
 
     assert get_project(tmp_path, "token-atlas")["name"] == "Token Observatory"
     assert [p["id"] for p in reg.list_projects(tmp_path)] == ["token-atlas"]
     assert broadcasts == [] and announced == []
-    assert running["t1"]["task"]["project_id"] == "token-atlas"
-    assert "rename" in out  # the text was true
+    assert supervisor.RUNNING["t1"]["task"]["project_id"] == "token-atlas"
+    # The text is true because it is the handler's receipt: the rename LANDED.
+    assert out.startswith("OK: this task stays durably bound to project 'token-atlas'")
+    assert "the requested name 'Token Observatory' was applied to it as a rename" in out
 
 
 def test_binding_outranks_a_stale_ctx_scope_and_stays_idempotent(tmp_path):
@@ -161,7 +218,10 @@ def test_unreadable_bindings_are_disclosed_and_do_not_block(tmp_path, caplog):
     with caplog.at_level(logging.WARNING):
         out = _ensure_project_scope(ctx, project_name="Cyber Racing")
 
-    assert out.startswith("OK")
+    # Not blocked: the event went out and the scope moved; with no supervisor
+    # the outcome is honestly unconfirmed and the unreadable store is disclosed.
+    assert out.startswith("⚠️ SCOPE_UNCONFIRMED") and "could not be read" in out
+    assert [e["type"] for e in ctx.pending_events] == ["ensure_project_scope"]
     assert ctx.project_id == project_id_from_display_name("Cyber Racing")
     assert "project_binding_unreadable" in caplog.text
 
@@ -362,7 +422,7 @@ def test_tool_guard_keeps_an_explicit_name_as_the_models_own_choice(tmp_path):
     ctx = _ctx(task_id="t-root", task_metadata={"origin_message_ref": dict(ref)})
     out = _ensure_project_scope(ctx, project_name="Token Observatory")
 
-    assert out.startswith("OK: created/attached")
+    assert out.startswith("⚠️ SCOPE_UNCONFIRMED")  # no supervisor here: nothing landed yet
     assert ctx.project_id == project_id_from_display_name("Token Observatory")
     assert [p["id"] for p in list_projects(tmp_path)] == ["the-work"]      # the tool creates nothing
     assert get_project(tmp_path, "the-work")["name"] == "The Work"         # and renames nothing

@@ -528,6 +528,51 @@ def force_plan_decision(
     return decision
 
 
+def unmet_force_plan_obligation(ctx: Any) -> Dict[str, Any]:
+    """Does THIS task still owe a plan review nobody has started (owner 3=A)?
+
+    A Swarm-admitted root carries ``force_plan`` in its metadata; the obligation
+    is MET once the task entered the plan-review gate (a wave recorded for it --
+    ``_plan_review_engaged`` on the same durable state ``force_plan_decision``
+    projects), because from then on the gate binds the task itself. Only an
+    UNMET obligation follows the work a promote moves elsewhere. An unreadable
+    state is not proof of anything and transfers nothing (I-17: a gate that
+    cannot read its authority is engaged, not absent).
+    """
+    metadata = getattr(ctx, "task_metadata", {})
+    metadata = metadata if isinstance(metadata, dict) else {}
+    if metadata.get("force_plan") is not True:
+        return {"unmet": False, "reason": "not_required"}
+    task_id = str(getattr(ctx, "task_id", "") or "").strip()
+    root = _canonical_root(ctx)
+    if not task_id or root is None:
+        return {"unmet": False, "reason": "no_task_identity"}
+    from ouroboros.task_results import load_plan_review_state
+
+    try:
+        state = load_plan_review_state(root, task_id)
+    except (OSError, TimeoutError, ValueError):
+        log.warning("Unable to read durable force-plan review state", exc_info=True)
+        return {"unmet": False, "reason": "plan_review_state_unreadable"}
+    if _plan_review_engaged(state):
+        return {"unmet": False, "reason": "plan_review_engaged"}
+    return {
+        "unmet": True,
+        "source": str(metadata.get("force_plan_source") or "operator").strip() or "operator",
+    }
+
+
+def release_force_plan_obligation(ctx: Any, transferred_to: str) -> None:
+    """The worker's copy of the fact the supervisor released in the promote
+    transaction: ``force_plan_decision`` reads this metadata, so the promoter's
+    own finalization stops requiring a plan the new root now owes."""
+    metadata = getattr(ctx, "task_metadata", None)
+    if not isinstance(metadata, dict):
+        return
+    metadata["force_plan"] = False
+    metadata["force_plan_transferred_to"] = str(transferred_to or "")
+
+
 def plan_review_reminder(decision: Dict[str, Any]) -> str:
     """The user-turn reminder appended while a blocking plan review holds finalization
     (text moved out of the pinned ``loop.py``)."""

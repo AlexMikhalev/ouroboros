@@ -916,46 +916,66 @@ def _ensure_project_scope(ctx: ToolContext, project_name: str = "", project_id: 
         return (f"⚠️ TOOL_ERROR (ensure_project_scope): this task is already scoped to project "
                 f"'{current}'; it cannot be re-scoped to '{pid}'.")
     # Bound elsewhere: the request becomes a RENAME of the project this task already
-    # belongs to (B4=A), never a second project. The event keeps the REQUESTED id,
-    # because the supervisor handler reads the same binding and owns that turn:
-    # rewriting the id here made its rename branch unreachable and the rename
-    # silently disappeared while this text claimed it had happened.
-    # Scope the REST of this task immediately so journal_write and per-project
-    # knowledge target the project now; the emitted event makes the supervisor
-    # create the registry project, bind THIS task durably, and broadcast.
+    # belongs to (B4=A), never a second project; the event keeps the REQUESTED id
+    # because the supervisor handler reads the same binding and owns that turn.
+    # The REST of this task is scoped immediately (journal_write, project knowledge)
+    # while the act rides the receipt rail under its own synthetic id and the RESULT
+    # states only the durable outcome the supervisor recorded -- confirmed, refused
+    # or unconfirmed like every other routing verb, never "OK" before a bind exists.
+    from ouroboros.project_dialogue import AGENT_RECEIPT_ID_PREFIX
+    from ouroboros.tools.control import _attach_origin_from_metadata, _emit_and_wait_for_routing
+
+    previous_scope = str(getattr(ctx, "project_id", "") or "")
     ctx.project_id = bound or pid
+    routing_token = uuid.uuid4().hex
     evt = {
-        "type": "ensure_project_scope",
-        "task_id": tid,
-        "project_id": pid,
-        "project_name": display_name,
-        "ts": utc_now_iso(),
+        "type": "ensure_project_scope", "task_id": tid, "project_id": pid,
+        "project_name": display_name, "routing_token": routing_token,
+        "client_message_id": f"{AGENT_RECEIPT_ID_PREFIX}{routing_token}", "ts": utc_now_iso(),
     }
-    # Lazy import avoids a control.py <-> control_delegation.py cycle (control is
-    # fully loaded by the time any tool handler runs).
-    from ouroboros.tools.control import _attach_origin_from_metadata, _emit_control_event
-
-    # A direct-chat task carries its ingress-captured origin in task_metadata;
-    # for a QUEUED task the supervisor-side handler falls back to the persisted
-    # task record (workers._origin_from_task_record), so the durable bind keeps
-    # the project's start-message identity on this mid-run scoping path too.
+    # A direct-chat task carries its ingress-captured origin in task_metadata; a
+    # QUEUED task's handler falls back to the persisted record, so the durable bind
+    # keeps the project's start-message identity on this mid-run path too.
     _attach_origin_from_metadata(ctx, evt)
+    mode, receipt = _emit_and_wait_for_routing(ctx, evt)
+    return _scope_outcome_text(ctx, receipt, mode=mode, tid=tid, pid=pid, bound=bound,
+                               display_name=display_name, previous_scope=previous_scope)
 
-    mode = _emit_control_event(ctx, evt)
-    if bound:
-        from ouroboros.projects_registry import get_project
 
-        # Say only what is true: a rename is claimed exactly when one was requested
-        # AND the bound project does not already carry that name.
-        bound_name = str((get_project(DATA_DIR, bound) or {}).get("name") or "")
-        renaming = bool(display_name) and display_name != bound_name
-        named = (f"; the requested name '{display_name}' was sent to that project as a rename"
-                 if renaming else "")
-        return (f"OK: this task is durably bound to project '{bound}'"
-                f"{f' ({bound_name})' if bound_name else ''}, so it stays there and no second "
-                f"project was created{named} ({mode}).")
-    return (
-        f"OK: created/attached project '{display_name or pid}' (id={pid}) and scoped this "
-        f"task into it ({mode}). journal_write and project knowledge now target this "
-        "project; its live progress now routes to the project thread."
-    )
+def _durable_scope_sentence(tid: str) -> str:
+    """What the bindings store says NOW -- the one truth about this task's project."""
+    from ouroboros.config import DATA_DIR
+    from ouroboros.projects_registry import get_project, project_id_for_task
+
+    try:
+        current = str(project_id_for_task(DATA_DIR, tid, strict=True) or "")
+    except Exception:
+        return "its durable binding could not be read"
+    if not current:
+        return "it is durably bound to no project"
+    name = str((get_project(DATA_DIR, current) or {}).get("name") or "")
+    return f"it is durably bound to project '{current}'" + (f" ({name})" if name and name != current else "")
+
+
+def _scope_outcome_text(ctx: ToolContext, receipt: Dict[str, Any], *, mode: str, tid: str, pid: str,
+                        bound: str, display_name: str, previous_scope: str) -> str:
+    """Render the supervisor's ensure receipt; the transport mode names no success."""
+    status, reason, detail = (str(receipt.get(k) or "") for k in ("status", "reason", "detail"))
+    if status == "delivered":
+        how = {"created": "created", "adopted": "joined", "attached": "attached to"}.get(reason, "bound to")
+        return (f"OK: this task is now durably bound to project '{pid}'{f' ({display_name})' if display_name else ''} "
+                f"({how} it; {_durable_scope_sentence(tid)}). journal_write and project knowledge target it; "
+                "its live progress routes to the project thread.")
+    if status in {"rejected", "needs_manual_target"} and reason == "project_scope_conflict":
+        rename = {"renamed": f"; the requested name '{display_name}' was applied to it as a rename",
+                  "rename_failed": f"; renaming it to '{display_name}' FAILED"}.get(detail, "")
+        return (f"OK: this task stays durably bound to project '{bound or detail}' and no second "
+                f"project was created{rename} ({_durable_scope_sentence(tid)}).")
+    if status in {"rejected", "needs_manual_target"}:
+        ctx.project_id = previous_scope
+        return (f"⚠️ SCOPE_REJECTED ({reason or 'refused'}): this task was NOT bound to project '{pid}'"
+                f"{f' -- {detail}' if detail else ''}; {_durable_scope_sentence(tid)} and its scope is unchanged.")
+    return (f"⚠️ SCOPE_UNCONFIRMED: binding this task to project '{pid}' was not confirmed "
+            f"({mode}, {reason or 'confirmation_timeout'}); do not report it as scoped. Right now "
+            f"{_durable_scope_sentence(tid)}. journal_write targets '{pid}' meanwhile; call "
+            "ensure_project_scope again with the same project to read the durable outcome.")

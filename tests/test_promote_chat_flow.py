@@ -603,7 +603,7 @@ def test_managed_swarm_can_choose_a_named_project_for_later_work(tmp_path, monke
     from ouroboros.tools.control import _promote_chat_to_task
 
     _confirm_promote(monkeypatch, project_id_from_display_name("Slime Lab Escape"))
-    ctx = _managed_swarm_ctx(tmp_path)  # project_id="" — projectless main chat
+    ctx = _managed_swarm_ctx(tmp_path, task_id="swarm-root")  # project_id="" — projectless main chat
 
     out = _promote_chat_to_task(
         ctx,
@@ -621,7 +621,10 @@ def test_managed_swarm_can_choose_a_named_project_for_later_work(tmp_path, monke
     assert evt["project_id"] == project_id_from_display_name("Slime Lab Escape")
     assert evt["workspace_root"] == "/tmp/foreign"
     assert evt["source"] == "https://example.invalid/repo.git"
-    assert "force_plan" not in evt
+    # Owner 3=A: the root's still-unmet Swarm obligation follows the promoted work.
+    assert (evt["force_plan"], evt["force_plan_source"], evt["force_plan_transferred_from"]) == (
+        True, "swarm", "swarm-root",
+    )
 
 
 def test_managed_swarm_can_choose_an_existing_project_for_later_work(tmp_path, monkeypatch):
@@ -646,11 +649,11 @@ def test_managed_swarm_promotes_in_current_project_without_explicit_target(tmp_p
     from ouroboros.tools.control import _promote_chat_to_task
 
     _confirm_promote(monkeypatch)
-    ctx = _managed_swarm_ctx(tmp_path, project_id="alpha")
+    ctx = _managed_swarm_ctx(tmp_path, project_id="alpha", task_id="swarm-root")
     out = _promote_chat_to_task(ctx, "Audit the issue", predecessor_task_id="")
     assert out.startswith("OK: task")
     assert ctx.pending_events[0]["project_id"] == "alpha"
-    assert "force_plan" not in ctx.pending_events[0]
+    assert ctx.pending_events[0]["force_plan_transferred_from"] == "swarm-root"
     assert not hasattr(ctx, "_swarm_handoff_attempt")
 
 
@@ -905,16 +908,28 @@ def test_presence_rejected_promotion_records_handoff_without_event(tmp_path, mon
     assert ctx._swarm_handoff_attempt["status"] == "rejected"
 
 
-def test_managed_swarm_does_not_recursively_propagate_routing_intent(tmp_path, monkeypatch):
+def test_an_unmet_swarm_obligation_follows_the_promoted_work(tmp_path, monkeypatch):
+    """Owner 3=A supersedes the old "no recursive propagation" rule: a Swarm root
+    that never entered plan review and promotes its work hands the obligation to
+    the new root (the admission seam stamps it and releases the promoter). A root
+    whose obligation is already met -- a plan wave recorded -- transfers nothing."""
+    import ouroboros.task_results as task_results
     from ouroboros.tools.control import _promote_chat_to_task
 
     _confirm_promote(monkeypatch)
-    ctx = _managed_swarm_ctx(tmp_path)
+    ctx = _managed_swarm_ctx(tmp_path, task_id="swarm-root")
 
     _promote_chat_to_task(ctx, "A later task chosen during execution", predecessor_task_id="")
 
-    assert "force_plan" not in ctx.pending_events[0]
+    evt = ctx.pending_events[0]
+    assert evt["force_plan"] is True and evt["force_plan_transferred_from"] == "swarm-root"
     assert not hasattr(ctx, "_swarm_handoff_attempt")
+
+    monkeypatch.setattr(task_results, "load_plan_review_state",
+                        lambda _root, _tid: {"schema_version": 2, "waves": [{"request_fingerprint": "f1"}]})
+    engaged = _managed_swarm_ctx(tmp_path, task_id="swarm-root")
+    _promote_chat_to_task(engaged, "Another later task", predecessor_task_id="")
+    assert "force_plan" not in engaged.pending_events[0]
 
 
 def test_managed_swarm_can_steer_through_the_ordinary_receipt_path(tmp_path, monkeypatch):

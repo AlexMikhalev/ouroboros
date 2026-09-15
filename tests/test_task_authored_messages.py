@@ -435,3 +435,185 @@ def test_the_direct_roots_fragment_never_blocks_on_a_held_actor_lock(tmp_path, m
     assert roster["roots"][0]["direct_chat"] is True and roster["incomplete"] is True
     direct_roots.clear_direct_roots(tmp_path)
     assert independent_roots(tmp_path)["roots"] == []
+
+
+# --- wave 3: ensure on the rail, obligation follows the work ------------------
+
+def _ensure_live(tmp_path, supervisor, **ctx_kw):
+    from supervisor.events_project_routing import _handle_ensure_project_scope
+
+    ctx = types.SimpleNamespace(
+        project_id="", task_metadata={}, task_contract={}, task_id="t-root", pending_events=[],
+        drive_root=tmp_path, event_queue=None,
+    )
+    for key, value in ctx_kw.items():
+        setattr(ctx, key, value)
+    ctx.event_queue = types.SimpleNamespace(
+        put_nowait=lambda event: _handle_ensure_project_scope(event, supervisor),
+    )
+    return ctx
+
+
+@pytest.fixture
+def _projects_root(tmp_path, monkeypatch):
+    import ouroboros.config as cfg
+    import supervisor.message_bus as mb
+    from supervisor import workers
+
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
+    monkeypatch.setattr(mb, "get_bridge", lambda: types.SimpleNamespace(broadcast=lambda payload: None))
+    monkeypatch.setattr(workers, "_announce_created_project", lambda *a, **kw: None)
+    (tmp_path / "logs").mkdir(parents=True, exist_ok=True)
+    return tmp_path
+
+
+def test_a_refused_bind_reaches_the_ensure_caller_as_a_typed_refusal(_projects_root, monkeypatch):
+    """(f) The bind is forced to fail: the tool says so, restores its scope, and
+    never says OK; the receipt is readable under the act's own id."""
+    import ouroboros.projects_registry as reg
+    from ouroboros.project_dialogue import latest_chat_annotations
+    from ouroboros.tools.control import _ensure_project_scope
+
+    tmp_path = _projects_root
+
+    def _refuse(*_a, **_k):
+        raise ValueError("project 'cyber-racing' is deleting; it cannot accept bindings")
+
+    monkeypatch.setattr(reg, "bind_task_to_project", _refuse)
+    supervisor = _supervisor(tmp_path, running={"t-root": {"task": {"id": "t-root", "project_id": ""}}})
+    ctx = _ensure_live(tmp_path, supervisor, project_id="")
+
+    out = _ensure_project_scope(ctx, project_name="Cyber Racing")
+
+    assert out.startswith("⚠️ SCOPE_REJECTED (project_binding_failed)")
+    assert "OK" not in out and "durably bound to no project" in out
+    assert ctx.project_id == ""  # scope unchanged
+    assert supervisor.RUNNING["t-root"]["task"]["project_id"] == ""
+    [receipt] = [row for row in latest_chat_annotations(tmp_path).values() if row["action"] == "ensure_project_scope"]
+    assert (receipt["status"], receipt["reason"]) == ("rejected", "project_binding_failed")
+    assert receipt["client_message_id"].startswith("agent-steer:")
+
+
+def test_a_bind_that_lands_after_a_lost_ack_is_discoverable_from_the_durable_binding(
+    _projects_root, monkeypatch,
+):
+    """(f) The wait times out while the handler still binds: the tool reports
+    unconfirmed (never scoped), and the next call reads the durable truth."""
+    import ouroboros.tools.control_events as control_events
+    from ouroboros.project_facts import project_id_from_display_name
+    from ouroboros.projects_registry import project_id_for_task
+    from ouroboros.tools.control import _ensure_project_scope
+
+    tmp_path = _projects_root
+    monkeypatch.setattr(
+        control_events, "_wait_for_routing_annotation",
+        lambda *_a, **_k: {"status": "unconfirmed", "reason": "confirmation_timeout"},
+    )
+    supervisor = _supervisor(tmp_path, running={"t-root": {"task": {"id": "t-root", "project_id": ""}}})
+    ctx = _ensure_live(tmp_path, supervisor)
+    pid = project_id_from_display_name("Cyber Racing")
+
+    out = _ensure_project_scope(ctx, project_name="Cyber Racing")
+
+    assert out.startswith("⚠️ SCOPE_UNCONFIRMED") and "do not report it as scoped" in out
+    assert ctx.project_id == pid  # journal writes target it meanwhile
+    assert project_id_for_task(tmp_path, "t-root") == pid  # the bind did land
+    again = _ensure_project_scope(_ensure_live(tmp_path, supervisor), project_name="Cyber Racing")
+    assert "already scoped" in again
+
+
+def _promote_supervisor(tmp_path, running, enqueued):
+    from ouroboros.utils import append_jsonl
+
+    return types.SimpleNamespace(
+        DRIVE_ROOT=tmp_path, RUNNING=running, PENDING=[],
+        WORKERS={0: types.SimpleNamespace()},
+        bridge=types.SimpleNamespace(send_routing_ack=lambda *a, **k: None, broadcast=lambda *a, **k: None),
+        enqueue_task=lambda task: enqueued.append(task),
+        persist_queue_snapshot=lambda **_k: True,
+        load_state=lambda: {"owner_chat_id": 1},
+        append_jsonl=append_jsonl,
+    )
+
+
+def test_an_unmet_swarm_obligation_moves_to_the_promoted_root(_projects_root, monkeypatch):
+    """(h) Through the real admission handler: the new root carries force_plan,
+    the promoter is released with a transferred receipt on its live row and its
+    task details, the tool result names the move, and the worker's own copy of
+    the flag is released so force_plan_decision stops requiring a plan."""
+    import supervisor.queue as queue_mod
+    from ouroboros.owner_hurry import force_plan_decision
+    from ouroboros.task_results import load_task_result
+    from ouroboros.tools.control import _promote_chat_to_task
+    from supervisor.events_project_routing import _handle_promote_chat_to_task
+
+    tmp_path = _projects_root
+    monkeypatch.setattr(queue_mod, "DRIVE_ROOT", str(tmp_path))
+    enqueued: list = []
+    running = {"swarm-root": {"task": {"id": "swarm-root", "chat_id": 1,
+                                       "metadata": {"force_plan": True, "force_plan_source": "swarm"}}}}
+    supervisor = _promote_supervisor(tmp_path, running, enqueued)
+    ctx = _pooled_root_ctx(tmp_path)
+    ctx.event_queue = types.SimpleNamespace(put_nowait=lambda event: _handle_promote_chat_to_task(event, supervisor))
+
+    out = _promote_chat_to_task(ctx, "Implement the plan in a new root", predecessor_task_id="")
+
+    assert out.startswith("OK: task")
+    [new_root] = enqueued
+    assert new_root["metadata"]["force_plan"] is True and new_root["metadata"]["force_plan_source"] == "swarm"
+    assert f"Your planning obligation (force_plan) moved to task {new_root['id']}" in out
+    assert "use ensure_project_scope" in out and "unplanned" in out
+    promoter_row = running["swarm-root"]["task"]["metadata"]
+    assert promoter_row["force_plan"] is False and promoter_row["force_plan_transferred_to"] == new_root["id"]
+    admission = load_task_result(tmp_path, new_root["id"])["promotion_admission"]
+    assert admission["force_plan_transfer"]["from"] == "swarm-root"
+    assert admission["force_plan_transfer"]["released"] is True
+    assert load_task_result(tmp_path, "swarm-root")["force_plan_transfer"]["to"] == new_root["id"]
+    # The worker's copy is released too: no plan is required of the promoter now.
+    assert ctx.task_metadata["force_plan"] is False
+    assert ctx.task_metadata["force_plan_transferred_to"] == new_root["id"]
+    assert force_plan_decision(ctx, {})["status"] == "not_required"
+
+
+def test_ensure_keeps_the_obligation_and_a_met_one_transfers_nothing(_projects_root, monkeypatch):
+    import ouroboros.task_results as task_results
+    from ouroboros.owner_hurry import unmet_force_plan_obligation
+    from ouroboros.tools.control import _ensure_project_scope
+
+    tmp_path = _projects_root
+    supervisor = _supervisor(tmp_path, running={"swarm-root": {"task": {"id": "swarm-root", "project_id": ""}}})
+    ctx = _ensure_live(tmp_path, supervisor, task_id="swarm-root",
+                       task_metadata={"force_plan": True, "force_plan_source": "swarm"})
+
+    out = _ensure_project_scope(ctx, project_name="Cyber Racing")
+
+    assert out.startswith("OK: this task is now durably bound")
+    assert ctx.task_metadata["force_plan"] is True  # same task: the obligation stays
+    assert unmet_force_plan_obligation(ctx) == {"unmet": True, "source": "swarm"}
+    monkeypatch.setattr(task_results, "load_plan_review_state",
+                        lambda _root, _tid: {"schema_version": 2, "waves": [{"request_fingerprint": "f1"}]})
+    assert unmet_force_plan_obligation(ctx) == {"unmet": False, "reason": "plan_review_engaged"}
+    assert unmet_force_plan_obligation(_owner_turn_ctx(tmp_path)) == {"unmet": False, "reason": "not_required"}
+
+
+def test_a_promote_into_another_project_discloses_the_second_project(_projects_root, monkeypatch):
+    """(13) Owner 5A: promote stays free, so the result says a second Project
+    now holds the work when the request already had one."""
+    import ouroboros.tools.control_events as control_events
+    from ouroboros.projects_registry import bind_task_to_project, create_project
+    from ouroboros.tools.control import _promote_chat_to_task
+
+    tmp_path = _projects_root
+    create_project(tmp_path, "first-room", name="First Room")
+    create_project(tmp_path, "second-room", name="Second Room")
+    bind_task_to_project(tmp_path, "swarm-root", "first-room", origin={"absent": "system"})
+    monkeypatch.setattr(
+        control_events, "_wait_for_promotion_admission",
+        lambda *_a, **_k: {"status": "scheduled", "effective_project_id": "second-room"},
+    )
+    ctx = _pooled_root_ctx(tmp_path)
+
+    out = _promote_chat_to_task(ctx, "Do it elsewhere", project_id="second-room", predecessor_task_id="")
+
+    assert "already has project 'first-room'" in out and "a second project 'second-room' now holds this promote" in out

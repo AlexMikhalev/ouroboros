@@ -564,6 +564,12 @@ def promote_chat_to_task(evt: dict, ctx: Any) -> dict:
             "project_lifecycle": str(admitted.get("_project_lifecycle") or ""),
             "task_id": tid,
         }, attachment_manifest)
+    # Owner 3=A: the promoter's unmet planning obligation now belongs to this root
+    # (stamped by _promoted_force_plan_metadata above); release it on the promoter's
+    # live row BEFORE the snapshot persist below, so one persist shows both facts.
+    from supervisor.plan_obligation import transfer_promoter_obligation
+
+    obligation_transfer = transfer_promoter_obligation(ctx, evt, tid)
     # A positive promote confirmation is allowed only after the durable queue
     # projection exists.  The event handler writes the scheduled task result
     # after the routing receipt; keeping that last step outside this function
@@ -605,6 +611,8 @@ def promote_chat_to_task(evt: dict, ctx: Any) -> dict:
         outcome["project_id"] = effective_pid
     if source_note:
         outcome["source_note"] = source_note
+    if obligation_transfer:
+        outcome["force_plan_transfer"] = obligation_transfer
     return outcome
 
 
@@ -823,16 +831,19 @@ def _fail_promoted_task_loudly(
         log.debug("promote loud-fail: chat message failed for %s", tid, exc_info=True)
 
 
-def ensure_project_scope(evt: dict, ctx: Any) -> None:
+def ensure_project_scope(evt: dict, ctx: Any) -> dict:
     """Create/attach the registry project for an in-task ensure_project_scope call
     and bind the CURRENT (already-running) task to it, then broadcast so the UI moves
     the card into the project thread. Mirrors the project-registration half of
     promote_chat_to_task, but for a task that already exists (the worker has already
-    set ctx.project_id locally; this makes it durable + visible)."""
+    set ctx.project_id locally; this makes it durable + visible). Returns the typed
+    outcome the receipt rail reports: ``delivered`` with the bound project, or
+    ``rejected`` with the reason (bound elsewhere, a refused bind, a registration
+    failure) -- the tool never says "OK" for a bind that did not land."""
     tid = str(evt.get("task_id") or "").strip()
     pid = str(evt.get("project_id") or "").strip()
     if not tid or not pid:
-        return
+        return {"status": "rejected", "reason": "missing_task_or_project"}
     name = str(evt.get("project_name") or "").strip()
     try:
         from ouroboros.projects_registry import (
@@ -887,6 +898,7 @@ def ensure_project_scope(evt: dict, ctx: Any) -> None:
                 # Bound elsewhere: the request is a RENAME of the project this task already
                 # belongs to, never a second project. Nothing else happens - no create, no
                 # lease mark, no broadcast, no announcement.
+                rename = "name_unchanged"
                 if name:
                     try:
                         from ouroboros.projects_registry import get_project
@@ -894,14 +906,17 @@ def ensure_project_scope(evt: dict, ctx: Any) -> None:
                         row = get_project(_pool().DRIVE_ROOT, bound) or {}
                         if str(row.get("name") or "") != name:
                             update_project(_pool().DRIVE_ROOT, bound, name=name)
+                            rename = "renamed"
                     except Exception:
+                        rename = "rename_failed"
                         log.warning("ensure_project_scope: rename of %s to %r failed", bound, name, exc_info=True)
                 _report_binding_failure(
                     tid, pid,
                     ValueError(f"task is already bound to project {bound!r}; it stays there"),
                     path="ensure_project_scope", reason="project_scope_conflict",
                 )
-                return
+                return {"status": "rejected", "reason": "project_scope_conflict",
+                        "project_id": bound, "detail": rename}
 
             project = create_project(_pool().DRIVE_ROOT, pid, name=name, origin="ensure_project_scope")
             touch_project(_pool().DRIVE_ROOT, pid)
@@ -916,7 +931,8 @@ def ensure_project_scope(evt: dict, ctx: Any) -> None:
                 # mark, the broadcast and the announcement (the promote path already
                 # rejects this way), instead of publishing a project the task is not in.
                 _report_binding_failure(tid, pid, exc, path="ensure_project_scope")
-                return
+                return {"status": "rejected", "reason": "project_binding_failed",
+                        "project_id": pid, "detail": f"{type(exc).__name__}: {exc}"}
         # Make the one-writer-per-project lease recognize THIS already-running task
         # as a lane occupant: project_lease reads task["project_id"] from the
         # supervisor RUNNING map, which (unlike the promote path that sets it at
@@ -950,5 +966,9 @@ def ensure_project_scope(evt: dict, ctx: Any) -> None:
         _pool()._announce_created_project(
             project, tid, task=row.get("task") if isinstance(row, dict) else None,
         )
-    except Exception:
-        log.debug("ensure_project_scope: project registration failed for %s", pid, exc_info=True)
+        return {"status": "delivered", "project_id": pid, "chat_id": proj_chat,
+                "reason": "created" if (project or {}).get("created") else ("adopted" if adopted == pid else "attached")}
+    except Exception as exc:
+        log.warning("ensure_project_scope: project registration failed for %s", pid, exc_info=True)
+        return {"status": "rejected", "reason": "project_registration_failed",
+                "project_id": pid, "detail": f"{type(exc).__name__}: {exc}"}
