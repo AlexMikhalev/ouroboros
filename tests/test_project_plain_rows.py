@@ -504,7 +504,7 @@ def test_host_verdict_leads_both_lifecycle_rows(tmp_path, monkeypatch):
     ) is True
     assert queued[0]["text"] == (
         "Launch 🚀 › Ship release · Done with warnings\n"
-        "Not enough reviewer verdicts could be read to settle the answer. "
+        "No reviewer verdict was established for this answer. "
         "Open the Project for details."
     )
     assert "final_message" not in queued[0]["text"]
@@ -533,7 +533,7 @@ def test_host_verdict_leads_both_lifecycle_rows(tmp_path, monkeypatch):
     projection = next(row for row in rows if row.get("summary_kind") == "terminal_root_projection")
     assert projection["text"] == (
         "Done with warnings. Root task root-project. "
-        "Not enough reviewer verdicts could be read to settle the answer."
+        "No reviewer verdict was established for this answer."
     )
     assert "final_message" not in projection["text"]
     # The room is the project and result_ref is the reader, so neither the id

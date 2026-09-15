@@ -418,7 +418,7 @@ test('a review-caused warning names the acceptance decision on the card and in L
     const live = summarizeChatLiveEvent(evt);
     const replay = summarizeLogEvent(evt);
     assert.deepEqual({ phase: live.phase, headline: live.headline }, { phase: 'warn', headline: 'Done with warnings' });
-    assert.match(live.body, /Not enough reviewer verdicts could be read to settle the answer\./);
+    assert.match(live.body, /No reviewer verdict was established for this answer\./);
     assert.doesNotMatch(live.body, /final_message/);
     // The raw code lives on in the record half, never in the card body.
     assert.doesNotMatch(live.body, /finalized_unaccepted/);

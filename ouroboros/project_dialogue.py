@@ -543,8 +543,8 @@ TASK_CAUSE_PHRASES = {
     # Acceptance-decision reasons. An accepted decision renders no clause at
     # all, so clean_pass and clean_pass_obligations_closed carry no sentence.
     "author_finish": "The answer was delivered on Main's own judgement; the reviewers had not signed it off.",
-    "review_degraded": "Not enough reviewer verdicts could be read to settle the answer.",
-    "infra_failure": "The review could not run: it failed before any reviewer answered.",
+    "review_degraded": "No reviewer verdict was established for this answer.",
+    "infra_failure": "A review infrastructure failure prevented a settled verdict.",
     "dialogue_terminal": "The reviewers and Main could not agree, and both positions were kept.",
     "improvement_capsule": "The reviewers asked for one more pass and Main was given their notes.",
     "fence_reopen_failed": "The requested extra pass could not be started, so the answer stands as it was.",
@@ -556,11 +556,11 @@ TASK_CAUSE_PHRASES = {
     "no_actionable_changes": "The re-review was not clean and suggested nothing to change.",
     "identical_acceptance_refused": "Nothing had changed since the last review, so the recorded verdict stands.",
     "review_skipped_deadline_reserve": "There was not enough time left to review the answer.",
-    "delivery_binding_superseded": "The answer changed after it was reviewed, so the review no longer covered it.",
+    "delivery_binding_superseded": "The answer or its evidence changed, so the earlier review no longer covered it.",
     "owner_followup": "A new message from you arrived, so the review was set aside for it.",
     "evidence_refresh": "The work changed after the review was frozen, so it no longer covered the answer.",
     "revision_unavailable_on_forced_rail": "The task had to stop, so the requested rework never happened.",
-    "owner_hurry": "You asked me to hurry, so the review was skipped.",
+    "owner_hurry": "You asked me to hurry, so no further review was started.",
     "unspecified": "The answer was not signed off, and no cause was recorded.",
     # The rail that ended the task before an owed acceptance panel could run.
     "acceptance_bypassed_budget_exhausted": "The task ran out of budget before the answer could be reviewed.",

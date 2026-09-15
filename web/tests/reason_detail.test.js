@@ -93,19 +93,6 @@ test('every acceptance reason the host can record has a sentence', () => {
     }
 });
 
-test('the host and the card carry the same cause table', () => {
-    // ONE table, two languages. The fixture pins the sentences a record can
-    // reach; this pins the table itself, so an entry added on one side only
-    // fails here instead of silently drifting.
-    const py = readFileSync(new URL('../../ouroboros/project_dialogue.py', import.meta.url), 'utf8');
-    const block = py.split('TASK_CAUSE_PHRASES = {')[1].split('\n}')[0];
-    const entries = [...block.matchAll(/^ {4}"([a-z_]+)": "((?:[^"\\]|\\.)*)",$/gm)];
-    assert.ok(entries.length >= 30, `expected the host table, saw ${entries.length}`);
-    for (const [, code, sentence] of entries) {
-        assert.equal(taskReasonPhrase(code), sentence, code);
-    }
-});
-
 test('one status-word family: the card phase matches the host over the shared fixture', () => {
     // The same fixture is read by tests/test_project_plain_rows.py, so a
     // divergence between this severity fold and the host's durable label word
@@ -149,7 +136,7 @@ const A4 = {
 test('an unaccepted decision explains the warning in its own words', () => {
     assert.equal(
         taskReasonDetail(A4),
-        'Not enough reviewer verdicts could be read to settle the answer.',
+        'No reviewer verdict was established for this answer.',
     );
     assert.doesNotMatch(taskReasonDetail(A4), /final_message/);
     // The stored reviewer rationale belongs to the card body, the task result

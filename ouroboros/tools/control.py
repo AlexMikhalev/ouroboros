@@ -102,10 +102,10 @@ log = logging.getLogger(__name__)
 # 300-line function gate; v6.70.0 added the ground-truth-probe contract).
 _PROMOTE_CHAT_DESCRIPTION = (
     "Promote real work out of this conversation into a supervised pooled task "
-    "while the conversation remains available. This conversation keeps its own "
-    "tools, files and multi-step work; promote when the work is better as an "
-    "independent task — its own card, queue slot, admission and reviews, steerable "
-    "from chat — or when the owner asked for a task or a project. "
+    "while the conversation remains available. Tools, files and several steps can "
+    "stay in the conversation; promote when independent work is useful — its own "
+    "queue slot, admission and reviews, steerable from chat — or when the owner "
+    "explicitly asks for a separate task. "
     "Before framing the objective around an EXISTING artifact "
     "('check/fix/extend the X skill/file'), ground-truth its existence with one cheap probe "
     "first (skills: list_skills; files: list_files) — memory of past work is not evidence "
@@ -341,7 +341,7 @@ def get_tools() -> List[ToolEntry]:
                            "line of longer work (what I am about to do and why), or a mid-work "
                            "insight, a question, or an invitation to collaborate. It appears in "
                            "the conversation as a normal reply and leaves the work running; later "
-                           "progress stays in the activity block and the final answer is delivered "
+                           "progress stays in the card and the final answer is delivered "
                            "automatically.",
             "parameters": {"type": "object", "properties": {
                 "text": {"type": "string", "description": "Message text"},

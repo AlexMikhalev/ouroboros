@@ -111,7 +111,7 @@
       },
       "phase": "warn",
       "headline": "Done with warnings",
-      "acceptance_clause": "Not enough reviewer verdicts could be read to settle the answer."
+      "acceptance_clause": "No reviewer verdict was established for this answer."
     },
     {
       "name": "an accepted decision leaves the execution reason standing",
@@ -211,14 +211,14 @@
       "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "review_degraded"}}}},
       "phase": "warn",
       "headline": "Done with warnings",
-      "acceptance_clause": "Not enough reviewer verdicts could be read to settle the answer."
+      "acceptance_clause": "No reviewer verdict was established for this answer."
     },
     {
       "name": "acceptance reason infra_failure says its own sentence",
       "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "infra_failure"}}}},
       "phase": "warn",
       "headline": "Done with warnings",
-      "acceptance_clause": "The review could not run: it failed before any reviewer answered."
+      "acceptance_clause": "A review infrastructure failure prevented a settled verdict."
     },
     {
       "name": "acceptance reason dialogue_terminal says its own sentence",
@@ -302,7 +302,7 @@
       "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "delivery_binding_superseded"}}}},
       "phase": "warn",
       "headline": "Done with warnings",
-      "acceptance_clause": "The answer changed after it was reviewed, so the review no longer covered it."
+      "acceptance_clause": "The answer or its evidence changed, so the earlier review no longer covered it."
     },
     {
       "name": "acceptance reason owner_followup says its own sentence",
@@ -330,7 +330,7 @@
       "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "owner_hurry"}}}},
       "phase": "warn",
       "headline": "Done with warnings",
-      "acceptance_clause": "You asked me to hurry, so the review was skipped."
+      "acceptance_clause": "You asked me to hurry, so no further review was started."
     },
     {
       "name": "acceptance reason unspecified says its own sentence",
