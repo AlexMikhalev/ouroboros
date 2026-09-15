@@ -420,13 +420,11 @@ def canonical_governance_sources(repo_dir: Path) -> tuple[str, ...]:
     root = Path(repo_dir)
     resolved = [doc for doc in CANONICAL_GOVERNANCE_DOCS if (root / doc).is_file()]
     for book_id, entrypoint in BOOK_ENTRYPOINTS.items():
-        if entrypoint not in resolved:
-            continue
-        try:
-            book = load_reference_book(root, book_id)
-        except (OSError, ValueError):
-            continue
-        resolved.extend(chapter.source_path for chapter in book.chapters)
+        if entrypoint in resolved:
+            try:
+                resolved.extend(c.source_path for c in load_reference_book(root, book_id).chapters)
+            except (OSError, ValueError):
+                pass
     return tuple(dict.fromkeys(resolved))
 
 
@@ -442,22 +440,17 @@ def load_governance_doc(
     A reference-book entrypoint resolves to the COMPOSED book. The entrypoint
     alone is an orientation page and a membership list: handing it to a review
     surface that believes it received the architecture map would deliver zero
-    chapters while every caller's contract says "in full".
+    chapters while every caller's contract says "in full". An unassemblable
+    book takes the SAME miss policy as an unreadable file — one ladder, so a
+    failed book cannot render as a delivered one through a second wording.
     """
     from ouroboros.reference_books import BOOK_ENTRYPOINTS, compose_book, load_reference_book
 
     path = Path(repo_dir) / rel_path
     book_id = next((key for key, entry in BOOK_ENTRYPOINTS.items() if entry == rel_path), None)
-    if book_id is not None:
-        try:
-            return compose_book(load_reference_book(Path(repo_dir), book_id))
-        except (OSError, ValueError) as exc:
-            if on_missing == "silent":
-                return fallback
-            if on_missing == "placeholder":
-                return fallback if fallback else f"({rel_path} could not be assembled: {exc})"
-            return f"[⚠️ OMISSION: {rel_path} could not be assembled from its chapters ({path}): {exc}]"
     try:
+        if book_id is not None:
+            return compose_book(load_reference_book(Path(repo_dir), book_id))
         if path.is_file():
             return path.read_text(encoding="utf-8")
     except Exception as exc:

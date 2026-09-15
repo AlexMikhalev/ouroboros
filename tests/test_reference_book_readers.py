@@ -77,7 +77,7 @@ def test_an_unassemblable_book_is_a_named_omission_not_a_short_entrypoint(tmp_pa
     _chaptered_corpus(tmp_path)
     (tmp_path / "docs/architecture/only.md").unlink()
     explicit = load_governance_doc(tmp_path, "docs/ARCHITECTURE.md")
-    assert "OMISSION" in explicit and "could not be assembled" in explicit
+    assert "OMISSION" in explicit and "only.md" in explicit, explicit
     assert "## Chapters" not in explicit, "a failure must not look like a delivered book"
     assert load_governance_doc(tmp_path, "docs/ARCHITECTURE.md", on_missing="silent") == ""
 
