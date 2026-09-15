@@ -26,6 +26,7 @@ from ouroboros.outcomes import REASON_OWNER_REQUESTED_FINALIZATION
 from ouroboros.pricing import estimate_cost_optional
 from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_NOTICE, TERMINAL_ORIGIN_HOST_SALVAGE
 from ouroboros.tools.registry import ToolRegistry
+from ouroboros.transcript_prefix import sanction_rewrite
 from ouroboros.usage_accounting import invalidate_task_cache_splits
 from supervisor.owner_stop import REASON_OWNER_STOPPED_DIRECT_TURN, _narrow_round_deadline, _owner_stop_control_is_current, _owner_stop_window_elapsed, handle_finalize_now_entry  # noqa: F401 -- _owner_stop_control_is_current stays a facade surface
 
@@ -261,6 +262,7 @@ def _run_round_compaction(
     if receipt.status == "applied":
         invalidate_task_cache_splits(ctx.task_id)
         prune_reclaim_trace_refs(ctx.tools._ctx, rebuilt)
+        sanction_rewrite(ctx.tools._ctx, "compaction")
     return rebuilt, usage
 
 
@@ -349,6 +351,7 @@ def _run_authored_context_view(messages, ctx, pending, selected_names):
         current_tools[:] = schemas
         invalidate_task_cache_splits(ctx.task_id)
         prune_reclaim_trace_refs(tool_ctx, candidate)
+        sanction_rewrite(tool_ctx, "compaction")
     tool_ctx._pending_compaction = None
     tool_ctx._pending_tool_schema_names = None
     tool_ctx._context_view_receipt = receipt

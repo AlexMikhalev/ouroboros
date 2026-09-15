@@ -132,7 +132,13 @@ def _resolve_ctx_lineage(ctx: Any, task_id: str = "") -> Dict[str, Any]:
 
 
 def prepare_acceptance_observation(ctx: Any, trace: dict, incoming: Any, messages: list, tool_schemas: list) -> None:
-    """Present the current owner-source selector immediately before Main's send."""
+    """Present the current owner-source selector as an append-only transcript row.
+
+    A new row is appended only when the rendered facts changed; earlier rows stay,
+    because rewriting or removing an already-sent message breaks provider prompt
+    caches that only reuse a previous request when it is a byte-prefix of the next
+    (issue #906).
+    """
     from ouroboros.loop_acceptance import capture_acceptance_observation, acceptance_observation_prompt
 
     observed = capture_acceptance_observation(ctx, trace, incoming)
@@ -161,9 +167,12 @@ def prepare_acceptance_observation(ctx: Any, trace: dict, incoming: Any, message
     if not eligible and not has_acceptance_state:
         return
     note = acceptance_observation_prompt(ctx, observed)
-    if note:
-        messages[:] = [row for row in messages if not row.get("acceptance_observation")]
-        messages.append({"role": "user", "content": note, "acceptance_observation": True})
+    if not note:
+        return
+    latest = next((row for row in reversed(messages) if row.get("acceptance_observation")), None)
+    if isinstance(latest, dict) and latest.get("content") == note:
+        return  # the transcript already ends its observation history with these exact facts
+    messages.append({"role": "user", "content": note, "acceptance_observation": True})
 
 
 def wait_for_acceptance_feedback(tools: Any, limit_ctx: Any, trace: dict,
