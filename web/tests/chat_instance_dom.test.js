@@ -1113,7 +1113,6 @@ test('a direct turn renders tool work as an activity block and needs host author
         } });
         const card = walkCard(messages, 'eph-1');
         assert.ok(card, 'real tool work reveals the activity block');
-        assert.equal(card.dataset.chrome, 'task', 'a tool row is content: the block wears the task card chrome');
         assert.ok(convertButton(card), 'a working direct turn is offered conversion in Main');
         assert.equal(card.querySelector('[data-live-title]').textContent, 'Working...', 'the running placeholder title');
         assert.equal(card.querySelector('[data-cancel-run]'), null, 'no host cancelable marker: no Cancel');
@@ -1210,7 +1209,6 @@ test(`history replay of a direct turn preserves ${execution}`, async () => {
         assert.equal(card.querySelector('[data-live-phase]').dataset.phase, phase);
         assert.doesNotMatch(card.querySelector('[data-live-meta]').innerHTML, /\$0(?:\.00)?(?:\s|<|$)/);
         if (execution === 'ok') assert.match(card.querySelector('[data-live-meta]').innerHTML, /\$0\.75/);
-        assert.equal(card.dataset.chrome, 'task', 'replayed narration is content: the task card');
         assert.ok(convertButton(card), 'replayed content is offered conversion in Main');
         assert.equal(card.querySelector('[data-cancel-run]'), null);
         assert.equal(messages.children.filter((n) => /resets on Monday/.test(n.innerHTML)).length, 1);

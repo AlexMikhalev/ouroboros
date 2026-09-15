@@ -163,7 +163,6 @@ def test_ordinary_addressing_card_tracks_real_work_through_metrics_and_reload(
                         # wears the task card (chrome follows content, owner
                         # decision 16.09) — a visible chip, a title, and the
                         # Main conversion control on an unbound turn.
-                        assert card.get_attribute("data-chrome") == "task"
                         assert card.locator("[data-live-phase]").is_visible()
                         assert card.locator("[data-live-title]").inner_text().strip() != ""
                         assert card.locator("[data-turn-into-project]").count() == 1

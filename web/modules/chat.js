@@ -762,9 +762,10 @@ export function createChatInstance({
     // mutation, no sticky flag; the completion note and receipt rows are not content.
     function blockVisible(record) {
         if (!record || record.isSubagent) return true;
-        return blockHasContent(record)
+        return blockHasWork(record)
             || !!(record.modelWaiting || record.cancelPendingPolicy || record.reviewAnchor)
-            || stopEligible(record);
+            || stopEligible(record)
+            || (record.finished && record.phaseEl?.dataset?.phase !== 'done');
     }
 
     // The host's lane fact (census kind, rebuilt task_done, history rows) is
@@ -774,19 +775,19 @@ export function createChatInstance({
         if (record && typeof direct === 'boolean') record.direct = direct;
     }
 
-    // Content the block stands on — the same facts that make it exist, minus
-    // open attention. It also selects the chrome (owner decision 16.09): a
-    // content block is the task card whatever lane produced it; a block that
-    // exists only for open attention is compact. The host's lane fact
-    // (`_is_direct_chat`) keeps its host jobs and never chooses chrome.
-    function blockHasContent(record) {
+    // The work the block stands on — the presence facts minus open attention and
+    // minus a bare terminal outcome. It selects the chrome (owner decision 16.09):
+    // a block with work is the task card whatever lane produced it (a title, the
+    // conversion control in Main); a block that exists only for open attention or
+    // a non-Done ending keeps no title placeholder and offers no conversion. The
+    // host's lane fact (`_is_direct_chat`) keeps its host jobs and never chooses chrome.
+    function blockHasWork(record) {
         const id = record.groupId;
         return shouldAlwaysShowTaskCard(id)
             || record.reviewController?.groups.size > 0
             || [...subagentChildParents.values()].some((info) => info.parentId === id)
             || record.items.some((item) => !item.receipt && !String(item.dedupeKey || '').startsWith('task_done|'))
-            || record.toolErrors > 0
-            || (record.finished && record.phaseEl?.dataset?.phase !== 'done');
+            || record.toolErrors > 0;
     }
 
     // Tool accounting from a metrics or terminal fact: the meta counts and, with
@@ -895,23 +896,20 @@ export function createChatInstance({
         }
     }
 
-    // The block's chrome from the record's facts: a block with content is the
-    // task card (title, status chip, "Turn into project" in Main unless its
-    // origin is already bound to a Project — the one binding fact the
-    // /api/state sweep in app.js reads too); a block that exists only for open
-    // attention is compact (no title placeholder, chip hidden by CSS).
+    // The conversion control from the record's facts: a block with work in Main
+    // offers "Turn into project" unless its origin is already bound to a Project
+    // (the one binding fact the /api/state sweep in app.js reads too); the title
+    // writers apply the same work predicate.
     function syncBlockChrome(record) {
         if (record.isSubagent || record.root.dataset.projectCreated === '1') return;
-        const compact = !blockHasContent(record);
-        const chrome = compact ? 'compact' : 'task';
-        if (record.root.dataset.chrome !== chrome) record.root.dataset.chrome = chrome;
-        // A block that just became the task card gets its placeholder title;
-        // the title writers keep it current from here on.
-        if (!compact && !record.titleEl.textContent) {
+        const work = blockHasWork(record);
+        // The first row of work lands after the title writers ran for its frame:
+        // an empty title takes the placeholder here, the writers own it from then on.
+        if (work && !record.titleEl.textContent) {
             record.titleEl.textContent = record.suggestedName || record.lastHumanHeadline
                 || (record.finished ? 'Task activity' : 'Working...');
         }
-        const wanted = isMain && !compact && record.root.dataset.projectBound !== '1'
+        const wanted = isMain && work && record.root.dataset.projectBound !== '1'
             && !(window.__ouroTaskBindings || {})[record.groupId];
         if (wanted === Boolean(record.turnProjectBtn)) return;
         if (!wanted) {
@@ -1499,7 +1497,7 @@ export function createChatInstance({
         // P1: last bounded activity projection (remembered even while
         // the collapsed line is suppressed on unnamed root cards) + sticky cost.
         clearStickyCardState(record);
-        record.titleEl.textContent = record.suggestedName || (blockHasContent(record) ? 'Working...' : '');
+        record.titleEl.textContent = record.suggestedName || (blockHasWork(record) ? 'Working...' : '');
         setLiveCardPhase(record, 'working');
         record.countEl.hidden = true;
         record.countEl.textContent = '0 notes';
@@ -1692,10 +1690,11 @@ export function createChatInstance({
         const desiredPhase = desiredLiveCardPhase(record, activePhase);
         setLiveCardPhase(record, desiredPhase.phase, desiredPhase.text, desiredPhase.className);
         // A coined project name takes the title slot (the activity headline stays in the
-        // timeline); a child's title is its lineage identity; an attention-only block
-        // carries no title; otherwise the activity headline.
+        // timeline); a child's title is its lineage identity; a block without work
+        // (open attention, a bare non-Done ending) carries no title; otherwise the
+        // activity headline.
         const title = record.suggestedName || (record.isSubagent ? childTitle(record)
-            : !blockHasContent(record) ? ''
+            : !blockHasWork(record) ? ''
                 : (record.finished ? record.lastHumanHeadline || 'Task activity' : activeHeadline));
         if (record.titleEl.textContent !== title) record.titleEl.textContent = title;
         // The collapsed line is a compact presentation projection, while the
@@ -1805,7 +1804,7 @@ export function createChatInstance({
         if (record.isSubagent) record.titleEl.textContent = childTitle(record);
         else if (!record.suggestedName && !record.lastHumanHeadline
                 && record.titleEl.textContent !== presentation.headline) {
-            record.titleEl.textContent = blockHasContent(record) ? 'Task activity' : '';
+            record.titleEl.textContent = blockHasWork(record) ? 'Task activity' : '';
         }
         settleLiveCard(record, activePhase, wasFinished);
         ensureLiveCardVisible(record);

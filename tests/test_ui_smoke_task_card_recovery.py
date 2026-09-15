@@ -116,8 +116,7 @@ def test_bound_direct_task_header_and_review_cost_survive_reopen(
                 # activity block", owner decision 16.09) — a visible Working
                 # chip, the coined title, a running indicator while it runs —
                 # and, inside a Project panel, no conversion control.
-                expect(card).to_have_attribute("data-chrome", "task", timeout=10_000)
-                expect(card.locator("[data-live-phase]")).to_have_attribute("data-phase", "working")
+                expect(card.locator("[data-live-phase]")).to_have_attribute("data-phase", "working", timeout=10_000)
                 expect(card.locator("[data-live-phase]")).to_be_visible()
                 expect(card.locator("[data-live-phase]")).to_have_text("Working")
                 expect(card.locator("[data-live-title]")).to_have_text("Analyze greeting context")

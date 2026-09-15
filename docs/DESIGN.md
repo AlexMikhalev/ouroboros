@@ -497,30 +497,29 @@ reload and on reconnect (a turn that moved itself into a Project with
 Project room, and Main replays only the owner message and the Started
 annotation); only the row content differs by source.
 
-The block is one component with two chromes, chosen by the same content the
-presence predicate reads (`web/modules/chat.js::blockHasContent`), never by the
-lane that ran the turn (owner decision 16.09: real work is a task card, a
-greeting is nothing). A block with content — an always-shown kind, a review
-group, a child card, a tool or narration row, a tool error, a terminal outcome
-other than Done — is the task card whether a managed root or a direct
+The block's chrome follows the work it stands on
+(`web/modules/chat.js::blockHasWork`, the presence facts minus open attention
+and minus a bare terminal outcome), never the lane that ran the turn (owner
+decision 16.09: real work is a task card, a greeting is nothing). A block with
+work — an always-shown kind, a review group, a child card, a tool or narration
+row, a tool error — is the task card whether a managed root or a direct
 conversation turn produced it: a title (the coined name, the latest narration
-headline, or the `Working…`/`Task activity` placeholder), the Working/Done
-chip, Stop while the host attests it, and `Turn into project` in Main unless
-its origin is already bound (a direct turn's later rows then route to the
-Project room like a turn that called `ensure_project_scope`). A block that
-exists only for open attention — a model wait, a pending or host-offered Stop —
-is the compact form (`data-chrome="compact"`): no title placeholder, no
-Working/Done chip (Cancelling…/Finalizing…/Waiting stay visible), the running
-indicator, the wait controls, and its first content row makes it the task
-card. The collapsed header carries the tool count, cost and duration once the
-turn ends (a replayed header carries the count and cost; duration is a live
-fact). The host's `_is_direct_chat` fact keeps its host jobs (routing, census
-`kind`, Stop custody, terminal rows) and, on the client, only the header pill
-(a direct turn keeps the census verdict beside its block). A block whose only
-reason to exist was open attention leaves when that attention closes: a
-wait-only block disappears when the wait resolves, and the resolved episode's
-no-reopen ledger survives with the record, so a stale revision cannot bring
-the block back.
+headline, or the `Working…`/`Task activity` placeholder), the status chip, Stop
+while the host attests it, and `Turn into project` in Main unless its origin is
+already bound (a direct turn's later rows then route to the Project room like a
+turn that called `ensure_project_scope`). A block that exists only for open
+attention — a model wait, a pending or host-offered Stop — or only for a
+non-Done ending of a turn that did no work carries no title placeholder and no
+conversion; its chip says the state it is in (Waiting…, Cancelling…, Failed),
+the wait controls stay, and its first row of work gives it the title. The
+collapsed header carries the tool count, cost and duration once the turn ends
+(a replayed header carries the count and cost; duration is a live fact). The
+host's `_is_direct_chat` fact keeps its host jobs (routing, census `kind`, Stop
+custody, terminal rows) and, on the client, only the header pill (a direct turn
+keeps the census verdict beside its block). A block whose only reason to exist
+was open attention leaves when that attention closes: a wait-only block
+disappears when the wait resolves, and the resolved episode's no-reopen ledger
+survives with the record, so a stale revision cannot bring the block back.
 
 An addressing call (`promote_chat_to_task`, `route_to_project`, `steer_task`, `ensure_project_scope` —
 the routing-verb family `ouroboros/tool_capabilities.py::ROUTING_VERBS` owns) is stamped by
@@ -541,7 +540,7 @@ open default behind a closed exception list").
 
 Quota exhaustion and a confirmed need to sign in again use the same component,
 `model_wait.js` with `model_wait.css`, inside the turn's existing host: the task
-card of a turn with content, the compact block of a turn without it. Each
+card of a turn that has done work, the bare block of a turn that has not. Each
 waiting role has its own row; the model, account and reason are separate facts.
 The controls stay visible when the task's timeline is collapsed. Waiting carries
 a quiet warning status and no computation animation, activity counter or invented
