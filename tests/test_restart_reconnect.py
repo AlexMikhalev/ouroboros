@@ -287,21 +287,23 @@ def test_task_done_live_summary_distinguishes_typed_failure():
     assert "headline: presentation.headline" in source
 
 
-def test_chat_warning_task_summaries_keep_a_visible_block():
-    """A task that ended warn/error/cancelled keeps its block in the transcript.
+def test_no_severity_keyed_visibility_writer_survives_restart_paths():
+    """A warn/error/cancelled task keeps its block WITHOUT any writer forcing it.
 
-    No writer forces that any more (the sticky `forceCard` flag and the replay's
-    `needsVisibleTerminal` branch are gone): the ONE presence predicate admits
-    any terminal outcome whose phase chip is not `done`, so the same summary
-    row mounts the block live, after a reload and after a reconnect, while a
-    zero-tool Done turn leaves nothing behind.
+    Card presence used to be a sticky flag written from two places for exactly
+    this case: the live terminal frame (`summary.terminal && summary.phase ===
+    'warn'`) and the history replay's `needsVisibleTerminal` branch. Two
+    writers for one fact is how a cancelled root could come back from a reload
+    as Done, so both are gone and the ONE predicate decides from the record's
+    own facts. The predicate's clauses are pinned in the static contract
+    fixture, and the BEHAVIOUR (a zero-tool failed turn keeps its block live
+    and after a reload, a done one does not) in
+    `web/tests/chat_activity_block.test.js`; this guards only that no
+    severity-keyed visibility writer comes back on either restart path.
     """
     source = _read("web/modules/chat.js")
-    predicate = source[source.index("function blockVisible(record) {"):source.index("function noteDirectTurn")]
-    assert "|| (record.finished && record.phaseEl?.dataset?.phase !== 'done');" in predicate
-    # The completion note itself is not content, so Done alone admits nothing.
-    assert "|| record.items.some((item) => !String(item.dedupeKey || '').startsWith('task_done|'))" in predicate
-    assert "forceCard" not in source
+    assert "needsVisibleTerminal" not in source
+    assert "summary.phase === 'warn'" not in source
 
 
 def test_chat_scrolls_to_bottom_after_first_history_load():

@@ -239,6 +239,37 @@ test('a recovered tool error on replay keeps a block that names the error', asyn
     } finally { f.close(); }
 });
 
+// The old client forced a card whenever a terminal summary looked warn, error
+// or cancelled (a sticky flag written from two places, live and on replay).
+// The predicate needs no such writer: a terminal outcome other than Done is
+// itself a reason to exist, so the honest chip survives every source.
+test('a zero-tool turn that ended failed keeps its block live and after a reload', async () => {
+    const failed = { ...final, task_terminal_status: 'failed',
+        outcome_axes: { lifecycle: { status: 'failed' }, execution: { status: 'failed' } } };
+    const phaseOf = (card) => card?.querySelector('[data-live-phase]')?.dataset?.phase;
+    const f = fixture();
+    try {
+        f.census(direct());
+        f.emit('chat', failed);
+        f.log({ ...failed, type: 'task_done', status: 'failed' });
+        assert.ok(f.card(), 'a terminal outcome other than Done is its own reason to exist');
+        assert.equal(phaseOf(f.card()), 'error');
+        assert.equal(f.rows().length, 1, 'only the terminal note, which the predicate never counts as content');
+        assert.match(f.rows()[0].innerHTML, />Failed</);
+    } finally { f.close(); }
+    const g = fixture([
+        { role: 'user', text: 'run it', ts: TS, chat_id: 1 },
+        { ...failed, ts: '2026-09-15T12:00:05Z', chat_id: 1 },
+        { ...failed, role: 'system', system_type: 'task_summary', text: 'It failed.', rounds: 1,
+            tool_calls: 0, tool_errors: 0, tool_call_counts: {}, ts: '2026-09-15T12:00:06Z', chat_id: 1 },
+    ]);
+    try {
+        await g.instance.refreshHistory({ revision: 1 });
+        assert.ok(g.card(), 'presence is the same on reload, with no replay-only force branch');
+        assert.equal(phaseOf(g.card()), 'error');
+    } finally { g.close(); }
+});
+
 test('an acceptance review row keeps a block for a zero-tool turn', () => {
     const f = fixture();
     try {
