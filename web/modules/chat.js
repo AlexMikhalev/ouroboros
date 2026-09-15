@@ -758,18 +758,19 @@ export function createChatInstance({
     }
 
     // The ONE rule for a task's block being in the transcript (docs/DESIGN.md
-    // "Conversation activity block"). No sticky flag: every input is a fact the
-    // record already holds, re-read at every mutation. The completion note
-    // (`task_done|…`) is not content — a zero-tool done turn keeps no block.
+    // "Conversation activity block"): facts the record holds, re-read at every
+    // mutation, no sticky flag. The completion note and a receipt row (a
+    // host-stamped addressing call, or its replay summary) are not content.
     function blockVisible(record) {
         if (!record || record.isSubagent) return true;
         const id = record.groupId;
         return shouldAlwaysShowTaskCard(id)
-            || Boolean(record.modelWaiting || record.cancelPendingPolicy || record.reviewAnchor)
+            || !!(record.modelWaiting || record.cancelPendingPolicy || record.reviewAnchor)
             || (!record.finished && cancelableTaskIds.has(id))
             || record.reviewController?.groups.size > 0
-            || Array.from(subagentChildParents.values()).some((info) => info.parentId === id)
-            || record.items.some((item) => !String(item.dedupeKey || '').startsWith('task_done|'))
+            || [...subagentChildParents.values()].some((info) => info.parentId === id)
+            || record.items.some((item) => !item.receipt && !String(item.dedupeKey || '').startsWith('task_done|'))
+            || record.toolErrors > 0
             || (record.finished && record.phaseEl?.dataset?.phase !== 'done');
     }
 
@@ -782,19 +783,20 @@ export function createChatInstance({
         ensureLiveCardVisible(record);
     }
 
-    // Tool accounting from a metrics or terminal fact: the meta counts and, when
-    // no live per-tool row exists (replay), the one summary row that stands in
-    // for them — the only replay evidence of a recovered tool failure.
+    // Tool accounting from a metrics or terminal fact: the meta counts and, with
+    // no live per-tool row (replay), one summary row — a receipt row when the
+    // host counted every call as an addressing call (`routing_tool_calls`).
     function noteToolMetrics(taskId, metrics, rawTs, { suppressDomInsert = false } = {}) {
-        const calls = Number.isInteger(metrics?.tool_calls) ? metrics.tool_calls : 0;
-        const errors = Number.isInteger(metrics?.tool_errors) ? metrics.tool_errors : 0;
+        const count = (key) => (Number.isInteger(metrics?.[key]) ? metrics[key] : 0);
+        const [calls, errors, routing] = ['tool_calls', 'tool_errors', 'routing_tool_calls'].map(count);
         if ((calls <= 0 && errors <= 0) || subagentChildParents.has(taskId)) return false;
         return withStableViewport(() => {
             const record = getLiveCardRecord(taskId);
             const before = captureLiveCardProjection(record);
             record.toolCalls = calls;
             record.toolErrors = errors;
-            if (Number.isFinite(Number(metrics.duration_sec))) record.durationSec = Number(metrics.duration_sec);
+            const duration = Number(metrics.duration_sec);
+            if (Number.isFinite(duration)) record.durationSec = duration;
             const counts = metrics.tool_call_counts;
             const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
             const summary = {
@@ -803,6 +805,7 @@ export function createChatInstance({
                 body: counts && typeof counts === 'object'
                     ? Object.entries(counts).map(([name, n]) => (n > 1 ? `${name} ×${n}` : name)).join(' · ') : '',
                 visible: true,
+                receipt: !errors && routing >= calls,
             };
             let changed = false;
             if (!record.items.some((item) => String(item.dedupeKey || '').startsWith('tool:'))) {
@@ -810,7 +813,7 @@ export function createChatInstance({
                     ts: normalizeLogTs(rawTs), rawTs, syntheticKey: `tools|${taskId}`,
                     headline: summary.headline, inPlaceByKey: true,
                 });
-                if (timelineUpdate !== 'none' && timelineUpdate !== 'duplicate-skip') changed = renderLiveCardTimeline(record);
+                if (!['none', 'duplicate-skip'].includes(timelineUpdate)) changed = renderLiveCardTimeline(record);
                 updateLiveCardCount(record);
             }
             renderLiveCardMeta(record);

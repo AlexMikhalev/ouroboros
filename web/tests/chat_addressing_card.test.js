@@ -1,10 +1,13 @@
 // A turn's block is one predicate over facts the record already holds
-// (docs/DESIGN.md "Conversation activity block"): every tool call is a compact
-// row and therefore content, whatever the tool's name; an addressing action is
-// represented on the owner's message by the typed routing receipt, and the
-// block beside it shows the call honestly. No client tool-name list decides
-// presence, no sticky flag survives the facts, and a recovered tool failure
-// stays visible after a reload through the summary row's error term.
+// (docs/DESIGN.md "Conversation activity block"). An addressing call
+// (promote_chat_to_task / route_to_project / steer_task) is stamped by the
+// host on its live frames (`routing_action`) and counted in the task metrics
+// (`routing_tool_calls`); its receipt is the typed routing annotation on the
+// owner's message, so the call is a RECEIPT row — rendered inside a block that
+// exists for other reasons, never content the block stands on. A turn that ran
+// only such calls, without error, keeps no block live or after a reload; a
+// failed addressing call is an error row and therefore content. No client
+// tool-name list decides any of this, and no sticky flag survives the facts.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createChatInstance } from '../modules/chat.js';
@@ -32,6 +35,7 @@ Object.defineProperty(ElementStub.prototype, 'innerHTML', {
 
 const TS = '2026-09-12T12:00:00Z';
 const TASK = 'ordinary-turn';
+const VERBS = ['promote_chat_to_task', 'route_to_project', 'steer_task'];
 
 function fixture(history = []) {
     const { prior, mount } = installDom(async (url) => ({ ok: true, json: async () =>
@@ -53,6 +57,8 @@ function fixture(history = []) {
         card: () => walkCard(messages, TASK),
         rows: () => nodes(walkCard(messages, TASK)).filter((n) => n.classList?.contains('chat-live-line')),
         meta: () => walkCard(messages, TASK)?.querySelector('[data-live-meta]')?.innerHTML || '',
+        owner: () => messages.children.find((node) => node.dataset.clientMessageId === 'owner-message'),
+        answerVisible: () => messages.children.some((node) => /The task is scheduled/.test(node.innerHTML)),
         emit: (type, row) => handlers.get(type)({ chat_id: 1, ts: TS, ...row }),
         log: (row) => handlers.get('log')({ chat_id: 1, data: { task_id: TASK, ts: TS, ...row } }),
         close() { instance.destroy(); restoreDom(prior); },
@@ -68,31 +74,28 @@ const final = { task_id: TASK, role: 'assistant', content: 'The task is schedule
     text: 'The task is scheduled.', task_terminal_status: 'completed', tool_calls: 1,
     outcome_axes: { execution: { status: 'ok' } }, reason_code: 'final_message',
     accounted_upper_bound_usd: 0.75, cost_final: true, cost_accounting_status: 'available' };
+// The host stamps every frame of an addressing call with the action it represents.
+const stamped = (tool, row = {}) => ({ tool, routing_action: tool, ...row });
 
-for (const tool of ['promote_chat_to_task', 'route_to_project', 'steer_task']) {
-    test(`${tool} is a compact row beside the owner annotation, live and after the terminal aggregate`, () => {
+for (const tool of VERBS) {
+    test(`${tool} alone is a receipt: no block live, the annotation on the owner message, the answer intact`, () => {
         const f = fixture();
         try {
             f.emit('chat', ownerRow);
             f.log({ type: 'task_started' });
-            assert.equal(Boolean(f.card()), false, 'a plain start is not content');
-            f.log({ type: 'tool_call_started', tool, tool_call_id: 'call-1' });
-            assert.ok(f.card(), 'the first tool call is the block');
-            assert.equal(f.rows().length, 1);
-            assert.match(f.rows()[0].innerHTML, new RegExp(tool));
+            f.log({ type: 'tool_call_started', ...stamped(tool, { tool_call_id: 'call-1' }) });
+            assert.equal(f.card(), null, 'a stamped addressing call is not content');
             f.emit('message_annotation', { ...annotation, action: tool });
-            f.log({ type: 'tool_call_finished', tool, tool_call_id: 'call-1', is_error: false, duration_sec: 0.4 });
-            assert.equal(f.rows().length, 1, 'start and finish evolve one row');
-            assert.match(summarizeChatLiveEvent({ type: 'tool_call_finished', task_id: TASK, tool, tool_call_id: 'call-1', duration_sec: 0.4 }).headline, /✓ 0\.4s/);
-            const owner = f.messages.children.find((node) => node.dataset.clientMessageId === 'owner-message');
-            assert.ok(owner?.querySelector('.msg-routing-annotation'), 'the receipt is on the original message');
+            assert.ok(f.owner()?.querySelector('.msg-routing-annotation'), 'the receipt is on the original message');
+            f.log({ type: 'tool_call_finished', ...stamped(tool, { tool_call_id: 'call-1', is_error: false, duration_sec: 0.4 }) });
+            const finished = summarizeChatLiveEvent({ type: 'tool_call_finished', task_id: TASK, ...stamped(tool, { tool_call_id: 'call-1', duration_sec: 0.4 }) });
+            assert.deepEqual([finished.visible, finished.receipt, finished.phase], [true, true, 'ok'], 'the row exists for a block that has other reasons');
+            assert.match(finished.headline, /✓ 0\.4s/);
             f.emit('chat', final);
             f.log({ ...final, type: 'task_done', status: 'completed' });
-            assert.equal(f.card().dataset.finished, '1');
-            assert.equal(f.card().querySelector('[data-live-phase]').dataset.phase, 'done');
-            assert.match(f.meta(), /1 tool call/);
-            assert.equal(f.messages.children.filter((n) => n.classList.contains('assistant')
-                && /The task is scheduled/.test(n.innerHTML)).length, 1, 'authored answer remains visible');
+            f.log({ type: 'task_metrics_event', tool_calls: 1, tool_errors: 0, routing_tool_calls: 1, tool_call_counts: { [tool]: 1 } });
+            assert.equal(f.card(), null, 'the completion note and the receipt summary add no reason to exist');
+            assert.ok(f.answerVisible(), 'authored answer remains visible');
         } finally { f.close(); }
     });
 }
@@ -104,8 +107,9 @@ test('read_file followed by promote keeps one block with both rows, the full cou
         const card = f.card();
         assert.ok(card);
         assert.match(f.rows()[0].innerHTML, /read_file · docs\/plan\.md/);
-        f.log({ type: 'tool_call_started', tool: 'promote_chat_to_task' });
-        assert.equal(f.rows().length, 2);
+        f.log({ type: 'tool_call_started', ...stamped('promote_chat_to_task') });
+        assert.equal(f.rows().length, 2, 'the receipt row shows inside a block that stands on real work');
+        assert.match(f.rows()[1].innerHTML, /promote_chat_to_task/);
         f.emit('chat', { ...final, tool_calls: 2 });
         assert.equal(f.card(), card);
         assert.equal(card.dataset.finished, '1');
@@ -114,16 +118,17 @@ test('read_file followed by promote keeps one block with both rows, the full cou
     } finally { f.close(); }
 });
 
-test('failed steer turns its row into the error row and the terminal keeps the failure', () => {
+test('a failed steer turns its receipt row into the error row and the terminal keeps the failure', () => {
     const f = fixture();
     try {
-        f.log({ type: 'tool_call_started', tool: 'steer_task', tool_call_id: 'steer-1' });
-        assert.ok(f.card());
-        f.log({ type: 'tool_call_finished', tool: 'steer_task', tool_call_id: 'steer-1', is_error: true, error: 'Target unavailable' });
+        f.log({ type: 'tool_call_started', ...stamped('steer_task', { tool_call_id: 'steer-1' }) });
+        assert.equal(f.card(), null, 'still a receipt while it runs');
+        f.log({ type: 'tool_call_finished', ...stamped('steer_task', { tool_call_id: 'steer-1', is_error: true, error: 'Target unavailable' }) });
+        assert.ok(f.card(), 'a failure is content');
         assert.equal(f.rows().length, 1, 'the failure lands on the call\'s own row');
-        const failure = summarizeChatLiveEvent({ type: 'tool_call_finished', task_id: TASK, tool: 'steer_task', tool_call_id: 'steer-1', is_error: true, error: 'Target unavailable' });
-        assert.equal(failure.dedupeKey, summarizeChatLiveEvent({ type: 'tool_call_started', task_id: TASK, tool: 'steer_task', tool_call_id: 'steer-1' }).dedupeKey);
-        assert.deepEqual([failure.phase, failure.visible], ['error', true]);
+        const failure = summarizeChatLiveEvent({ type: 'tool_call_finished', task_id: TASK, ...stamped('steer_task', { tool_call_id: 'steer-1', is_error: true, error: 'Target unavailable' }) });
+        assert.equal(failure.dedupeKey, summarizeChatLiveEvent({ type: 'tool_call_started', task_id: TASK, ...stamped('steer_task', { tool_call_id: 'steer-1' }) }).dedupeKey);
+        assert.deepEqual([failure.phase, failure.visible, Boolean(failure.receipt)], ['error', true, false]);
         f.log({ type: 'task_done', status: 'failed', reason_code: 'tool_failure',
             outcome_axes: { execution: { status: 'failed' } } });
         assert.equal(f.card().querySelector('[data-live-phase]').dataset.phase, 'error');
@@ -131,18 +136,19 @@ test('failed steer turns its row into the error row and the terminal keeps the f
 });
 
 for (const type of ['task_metrics_event', 'task_eval']) {
-    test(`a late ${type} aggregate mints the summary row for a turn whose calls were never seen`, () => {
+    test(`a late ${type} aggregate is a receipt for an addressing-only turn and content once real work is counted`, () => {
         const f = fixture();
         try {
             f.emit('chat', { ...final, tool_calls: undefined });
-            assert.equal(Boolean(f.card()), false, 'a final that reports no calls is a plain answer');
-            f.log({ ...final, type, tool_calls: 1, tool_call_counts: { promote_chat_to_task: 1 } });
-            assert.ok(f.card(), 'the aggregate is the only evidence of the call');
-            // The summary row beside the completion note the final already left.
+            assert.equal(f.card(), null, 'a final that reports no calls is a plain answer');
+            f.log({ ...final, type, tool_calls: 1, tool_errors: 0, routing_tool_calls: 1, tool_call_counts: { promote_chat_to_task: 1 } });
+            assert.equal(f.card(), null, 'the aggregate of one addressing call is a receipt');
+            f.log({ ...final, type, tool_calls: 2, tool_errors: 0, routing_tool_calls: 1, outcome_axes: undefined,
+                tool_call_counts: { promote_chat_to_task: 1, read_file: 1 } });
+            assert.ok(f.card(), 'the aggregate is the only evidence of the real call');
+            // The summary row beside the completion note the final already left
+            // (the stub cannot repaint an in-place patch; the meta carries the count).
             assert.equal(f.rows().length, 2);
-            assert.ok(f.rows().some((n) => /1 tool call/.test(n.innerHTML)));
-            f.log({ ...final, type, tool_calls: 2, outcome_axes: undefined, tool_call_counts: { promote_chat_to_task: 1, read_file: 1 } });
-            assert.equal(f.rows().length, 2, 'a larger aggregate updates the same row');
             assert.match(f.meta(), /2 tool calls/);
         } finally { f.close(); }
     });
@@ -151,7 +157,7 @@ for (const type of ['task_metrics_event', 'task_eval']) {
 test('a history rebuild keeps a live block whose evidence the window does not carry', async () => {
     const f = fixture([{ ...ownerRow, chat_annotation: annotation }]);
     try {
-        f.log({ type: 'tool_call_started', tool: 'promote_chat_to_task' });
+        f.log({ type: 'tool_call_started', tool: 'read_file' });
         await f.instance.refreshHistory({ revision: 1 });
         assert.ok(f.card(), 'the rebuilt transcript keeps the live rows');
         f.log({ type: 'task_metrics_event', tool_calls: 2 });
@@ -162,19 +168,22 @@ test('a history rebuild keeps a live block whose evidence the window does not ca
 test('an aggregate that recorded a tool error keeps the error in view when the finish frame was missed', () => {
     const f = fixture();
     try {
-        f.log({ type: 'tool_call_started', tool: 'steer_task' });
-        f.log({ type: 'task_metrics_event', tool_calls: 1, tool_errors: 1 });
-        assert.ok(f.card());
+        f.log({ type: 'tool_call_started', ...stamped('steer_task') });
+        assert.equal(f.card(), null);
+        f.log({ type: 'task_metrics_event', tool_calls: 1, tool_errors: 1, routing_tool_calls: 1 });
+        assert.ok(f.card(), 'an error is content whatever the tool');
         assert.match(f.meta(), /1 error/);
     } finally { f.close(); }
 });
 
-test('ordinary authored progress and runtime failures stay visible', () => {
+test('ordinary authored progress and runtime failures stay visible beside a receipt row', () => {
     const f = fixture();
     try {
-        f.log({ type: 'tool_call_started', tool: 'promote_chat_to_task' });
+        f.log({ type: 'tool_call_started', ...stamped('promote_chat_to_task') });
+        assert.equal(f.card(), null);
         f.emit('chat', { task_id: TASK, role: 'assistant', is_progress: true, content: 'Inspecting the source.' });
-        assert.ok(f.card(), 'real narration keeps its existing card');
+        assert.ok(f.card(), 'real narration is content');
+        assert.equal(f.rows().length, 2, 'the receipt row renders inside the block narration opened');
         f.emit('chat', { role: 'system', system_type: 'terminal_incident', content: 'Provider outcome unknown.' });
         assert.ok(f.messages.children.some((node) => /Provider outcome unknown/.test(node.innerHTML)));
     } finally { f.close(); }
@@ -187,9 +196,8 @@ test('a window without the summary row keeps the annotation and the answer and m
     try {
         await f.instance.refreshHistory({ revision: 1 });
         assert.equal(Boolean(f.card()), false);
-        assert.ok(f.messages.children.some((node) => /The task is scheduled/.test(node.innerHTML)));
-        const owner = f.messages.children.find((node) => node.dataset.clientMessageId === 'owner-message');
-        assert.ok(owner?.querySelector('.msg-routing-annotation'));
+        assert.ok(f.answerVisible());
+        assert.ok(f.owner()?.querySelector('.msg-routing-annotation'));
         await f.instance.refreshHistory({ revision: 2 });
         assert.equal(Boolean(f.card()), false);
         assert.equal(f.messages.children.filter((node) => node.dataset.clientMessageId === 'owner-message').length, 1);
@@ -201,33 +209,40 @@ test('an old ephemeral marker cannot manufacture terminal status', () => {
     assert.equal(taskTerminalSummary({ type: 'task_done', task_id: TASK, status: 'completed' }).terminal, true);
 });
 
-for (const [label, counts, total, errors, row] of [
-    ['promotion only', { promote_chat_to_task: 1 }, 1, 0, /1 tool call/],
-    ['several addressing calls', { promote_chat_to_task: 2, steer_task: 1 }, 3, 0, /3 tool calls/],
-    ['read and promote', { read_file: 1, promote_chat_to_task: 1 }, 2, 0, /read_file · promote_chat_to_task/],
-    ['failed steering', { steer_task: 1 }, 1, 1, /1 tool call · 1 error/],
-    ['unknown errors', { promote_chat_to_task: 1 }, 1, null, /1 tool call/],
-    ['legacy summary', undefined, 1, undefined, /1 tool call/],
+// Cold history: the summary row is a receipt exactly when the host counted
+// every call as an addressing call and no error; otherwise it is the block's
+// content, and a late aggregate with the same numbers changes nothing.
+for (const [label, counts, total, routing, errors, row] of [
+    ['promotion only', { promote_chat_to_task: 1 }, 1, 1, 0, null],
+    ['several addressing calls', { promote_chat_to_task: 2, steer_task: 1 }, 3, 3, 0, null],
+    ['read and promote', { read_file: 1, promote_chat_to_task: 1 }, 2, 1, 0, /read_file · promote_chat_to_task/],
+    ['failed steering', { steer_task: 1 }, 1, 1, 1, /1 tool call · 1 error/],
+    ['unknown errors', { promote_chat_to_task: 1 }, 1, undefined, null, /1 tool call/],
+    ['legacy summary', undefined, 1, undefined, undefined, /1 tool call/],
 ]) {
-    test(`cold history shows the summary row and a late aggregate keeps it: ${label}`, async () => {
+    test(`cold history: ${label} ${row ? 'shows the summary row and a late aggregate keeps it' : 'keeps no block; the receipt stays on the owner message'}`, async () => {
         const summary = { ...final, role: 'system', system_type: 'task_summary',
             text: 'Recorded task summary.', rounds: 2, tool_calls: total,
             ...(counts === undefined ? {} : { tool_call_counts: counts }),
+            ...(routing === undefined ? {} : { routing_tool_calls: routing }),
             ...(errors === undefined ? {} : { tool_errors: errors }) };
         const f = fixture([{ ...ownerRow, chat_annotation: annotation }, final, summary]);
         try {
             await f.instance.refreshHistory({ revision: 1 });
-            assert.ok(f.card());
-            assert.equal(f.card().dataset.finished, '1');
-            assert.match(f.rows().map((n) => n.innerHTML).join('\n'), row);
+            const expectCard = () => {
+                if (!row) { assert.equal(f.card(), null); return; }
+                assert.ok(f.card());
+                assert.equal(f.card().dataset.finished, '1');
+                assert.match(f.rows().map((n) => n.innerHTML).join('\n'), row);
+            };
+            expectCard();
             f.log({ ...summary, type: 'task_metrics_event' });
-            assert.ok(f.card(), 'late totals preserve the historical evidence');
+            expectCard();
             await f.instance.refreshHistory({ revision: 2 });
-            assert.ok(f.card());
-            const owner = f.messages.children.find((node) => node.dataset.clientMessageId === 'owner-message');
-            assert.ok(owner?.querySelector('.msg-routing-annotation'));
-            assert.ok(f.messages.children.some((node) => /The task is scheduled/.test(node.innerHTML)));
-            assert.match(f.meta(), /\$0\.75/);
+            expectCard();
+            assert.ok(f.owner()?.querySelector('.msg-routing-annotation'));
+            assert.ok(f.answerVisible());
+            if (row) assert.match(f.meta(), /\$0\.75/);
             assert.equal(summary.tool_calls, total, 'presentation never rewrites the accounting aggregate');
         } finally { f.close(); }
     });
@@ -235,7 +250,7 @@ for (const [label, counts, total, errors, row] of [
 
 test('a zero-tool summary mints nothing on a cold client', async () => {
     const summary = { ...final, role: 'system', system_type: 'task_summary', text: 'Recorded.',
-        rounds: 1, tool_calls: 0, tool_errors: 0, tool_call_counts: {} };
+        rounds: 1, tool_calls: 0, tool_errors: 0, routing_tool_calls: 0, tool_call_counts: {} };
     const f = fixture([{ ...ownerRow, chat_annotation: annotation }, { ...final, tool_calls: 0 }, summary]);
     try {
         await f.instance.refreshHistory({ revision: 1 });
@@ -249,7 +264,7 @@ test('recorded narration stays visible beside complete addressing-only counts', 
     const f = fixture([
         { task_id: TASK, role: 'assistant', is_progress: true, text: 'Inspecting the source.', ts: TS },
         { ...final, role: 'system', system_type: 'task_summary', text: 'Recorded summary.',
-            rounds: 2, tool_errors: 0, tool_call_counts: { promote_chat_to_task: 1 } },
+            rounds: 2, tool_errors: 0, routing_tool_calls: 1, tool_call_counts: { promote_chat_to_task: 1 } },
     ]);
     try {
         await f.instance.refreshHistory({ revision: 1 });
@@ -261,13 +276,13 @@ for (const [status, phase] of [['completed', 'done'], ['failed', 'error']]) {
     test(`late metrics update counts and cost on a finished ${status} block without moving its phase`, () => {
         const f = fixture();
         try {
-            f.log({ type: 'tool_call_started', tool: 'promote_chat_to_task' });
+            f.log({ type: 'tool_call_started', tool: 'read_file' });
             f.emit('chat', { ...final, task_terminal_status: status,
                 outcome_axes: { execution: { status: status === 'failed' ? 'failed' : 'ok' } } });
             assert.equal(f.card().dataset.finished, '1');
             f.log({ type: 'task_metrics_event',
                 outcome_axes: { lifecycle: { status: 'completed' }, execution: { status: 'ok' } },
-                tool_calls: 2, tool_errors: 0,
+                tool_calls: 2, tool_errors: 0, routing_tool_calls: 1,
                 tool_call_counts: { promote_chat_to_task: 1, read_file: 1 },
                 accounted_upper_bound_usd: 0.75, cost_final: true, cost_accounting_status: 'available' });
             assert.equal(f.card().dataset.finished, '1');

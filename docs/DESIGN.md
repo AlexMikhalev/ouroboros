@@ -506,11 +506,20 @@ closes: a wait-only block disappears when the wait resolves, and the resolved
 episode's no-reopen ledger survives with the record, so a stale revision cannot
 bring the block back.
 
-An addressing-only turn (the model called only `promote_chat_to_task`,
-`route_to_project` or `steer_task`) is represented by the typed routing receipt
-on the owner's message; when the call is a row, the block shows that call
-honestly. No client list of tool names decides presence (`docs/DEVELOPMENT.md`
-"an open default behind a closed exception list").
+An addressing call (`promote_chat_to_task`, `route_to_project`, `steer_task` —
+the routing-verb family `ouroboros/tools/control_events.py` owns) is stamped by
+the host on its live tool-call frames (`routing_action`) and counted in the
+task metrics (`routing_tool_calls`); its receipt is the typed routing
+annotation on the owner's message. Such a call is a receipt row: it renders
+inside a block that exists for other reasons but is never content the block
+stands on, and the replay summary of a turn whose recorded calls were all
+addressing calls, without error, is a receipt row too. So a turn that only
+addressed work («turn this into a project») draws no block, live or on reload:
+the annotation on the owner message and the managed root's own card are its
+whole record (owner decision 11.09). A failed addressing call is an error row
+and therefore content, as is any recorded tool error. No client list of tool
+names decides presence (`docs/development/02-naming-and-boundaries.md`, "an
+open default behind a closed exception list").
 
 ### Subscription waits inside task cards
 

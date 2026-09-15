@@ -162,3 +162,78 @@ def test_census_keeps_the_direct_kind_for_a_post_task_wait(tmp_path, monkeypatch
     assert rows["direct-wait"]["kind"] == "direct_chat"
     assert rows["direct-wait"]["phase"] == "finalizing"
     assert rows["managed-wait"]["kind"] == "managed_task"
+
+
+# --- The receipt row (WP-G2, owner decision 11.09 = 2A) ------------------------
+#
+# A turn that only addressed work draws no block: the annotation on the owner's
+# message is the receipt. The host stamps the addressing calls on the live
+# tool-call frames (`routing_action`) and counts them in the task metrics
+# (`routing_tool_calls`), from the ONE routing-verb table control_events owns,
+# so the client never keeps a list of tool names.
+
+
+def test_the_routing_verb_table_is_the_one_owner_of_the_family():
+    from ouroboros.tools.control_events import (
+        ROUTING_VERBS, _emit_control_event, routing_action_for_tool,
+    )
+
+    assert set(ROUTING_VERBS) == {"promote_chat_to_task", "route_to_project", "steer_task"}
+    assert routing_action_for_tool(" steer_task ") == "steer_task"
+    assert routing_action_for_tool("read_file") == "" and routing_action_for_tool(None) == ""
+    # The typed action on task_done is keyed by the events those same tools emit.
+    for tool, events in ROUTING_VERBS.items():
+        for event_type in events:
+            ctx = SimpleNamespace(event_queue=None, pending_events=[], drive_root=".")
+            assert _emit_control_event(ctx, {"type": event_type, "routed_from_main": tool == "route_to_project"}) == "deferred"
+            assert ctx._typed_routing_action_emitted == (tool if event_type == "promote_chat_to_task" else event_type)
+    ctx = SimpleNamespace(event_queue=None, pending_events=[], drive_root=".")
+    _emit_control_event(ctx, {"type": "cancel_task"})
+    assert not hasattr(ctx, "_typed_routing_action_emitted")
+
+
+def test_live_tool_call_frames_carry_the_routing_action_stamp(tmp_path):
+    from ouroboros.loop_tool_execution import _execute_with_timeout
+    from ouroboros.tools.tool_result import ToolResult
+
+    drive_logs = tmp_path / "logs"
+    drive_logs.mkdir()
+    live: list = []
+    tools = SimpleNamespace(
+        CODE_TOOLS=set(),
+        _ctx=SimpleNamespace(event_queue=SimpleNamespace(put_nowait=live.append)),
+        execute_result=lambda _name, _args: ToolResult(status="ok", code="OK", text="OK"),
+    )
+    for index, tool in enumerate(("promote_chat_to_task", "read_file")):
+        _execute_with_timeout(
+            tools, {"id": f"call-{index}", "function": {"name": tool, "arguments": "{}"}},
+            drive_logs, timeout_sec=5, task_id="turn-1",
+        )
+    frames = [event.get("data") or {} for event in live]
+    by_call = {(row["tool_call_id"], row["type"]): row for row in frames
+               if row.get("type") in {"tool_call_started", "tool_call_finished"}}
+    assert by_call[("call-0", "tool_call_started")]["routing_action"] == "promote_chat_to_task"
+    assert by_call[("call-0", "tool_call_finished")]["routing_action"] == "promote_chat_to_task"
+    assert "routing_action" not in by_call[("call-1", "tool_call_started")]
+    assert "routing_action" not in by_call[("call-1", "tool_call_finished")]
+
+
+def test_task_metrics_count_the_addressing_calls_from_the_same_table(tmp_path):
+    from ouroboros.post_task_synthesis import task_tool_metrics
+    from ouroboros.utils import append_jsonl
+    from supervisor.events_worker_reports import _handle_task_metrics
+
+    metrics = task_tool_metrics({"tool_calls": [
+        {"tool": "promote_chat_to_task"}, {"tool": "read_file"}, {"tool": "steer_task", "is_error": True},
+    ]})
+    assert (metrics["tool_calls"], metrics["tool_errors"], metrics["routing_tool_calls"]) == (3, 1, 2)
+    assert task_tool_metrics({"tool_calls": [], "loop_evidence_unavailable": True})["routing_tool_calls"] is None
+    wire: list = []
+    ctx = SimpleNamespace(DRIVE_ROOT=tmp_path, RUNNING={}, PENDING=[], append_jsonl=append_jsonl,
+                          bridge=SimpleNamespace(push_log=wire.append))
+    (tmp_path / "logs").mkdir()
+    _handle_task_metrics({"task_id": "turn-1", **metrics}, ctx)
+    assert wire[0]["routing_tool_calls"] == 2
+    rec: dict = {}
+    _copy_task_summary_metadata(rec, {"type": "task_summary", "tool_calls": 1, "routing_tool_calls": 1})
+    assert rec["routing_tool_calls"] == 1

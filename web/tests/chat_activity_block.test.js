@@ -2,9 +2,11 @@
 // block"): one predicate over the record's facts decides whether a turn's block
 // is in the transcript — always-shown kinds, open attention (a model wait, a
 // pending stop, a host-attested Stop), children, reviews, content rows, a
-// terminal outcome other than Done. Presence is the same live, on reload and
-// on reconnect; a wait-only block leaves with its wait and its resolved episode
-// cannot reopen it; the header keeps the census verdict beside a block.
+// terminal outcome other than Done. A receipt row (a host-stamped addressing
+// call, or the replay summary of a turn that ran only such calls) is not
+// content. Presence is the same live, on reload and on reconnect; a wait-only
+// block leaves with its wait and its resolved episode cannot reopen it; the
+// header keeps the census verdict beside a block.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createChatInstance } from '../modules/chat.js';
@@ -281,4 +283,69 @@ test('an acceptance review row keeps a block for a zero-tool turn', () => {
         assert.equal(f.card().dataset.finished, '1');
         assert.match(f.card().querySelector('[data-live-review-summary]')?.textContent || '', /Reviews 1/);
     } finally { f.close(); }
+});
+
+// Owner decision 11.09 (2A): a turn that only addressed work draws no block —
+// the annotation on the owner's message is the receipt. The host stamps the
+// call (`routing_action`) and counts it (`routing_tool_calls`); no client list.
+const ownerRow = { role: 'user', content: 'Turn this into a project', text: 'Turn this into a project',
+    client_message_id: 'owner-1', ts: TS, chat_id: 1 };
+const receipt = { annotation_type: 'routing_ack', client_message_id: 'owner-1', action: 'promote_chat_to_task',
+    status: 'scheduled', target: 'managed-root', target_title: 'Requested work' };
+const promote = (row = {}) => ({ tool: 'promote_chat_to_task', routing_action: 'promote_chat_to_task', tool_call_id: 'p1', ...row });
+
+test('an addressing-only turn keeps no block live or on reload; the owner message carries the receipt', async () => {
+    const f = fixture();
+    try {
+        f.census(direct());
+        f.emit('chat', ownerRow);
+        f.log({ type: 'tool_call_started', ...promote({ args: { objective: 'the project' } }) });
+        f.emit('message_annotation', receipt);
+        f.log({ type: 'tool_call_finished', ...promote({ duration_sec: 0.4 }) });
+        f.emit('chat', { ...final, tool_calls: 1 });
+        f.log({ ...final, type: 'task_done', status: 'completed', _is_direct_chat: true });
+        f.log({ type: 'task_metrics_event', tool_calls: 1, tool_errors: 0, routing_tool_calls: 1, tool_call_counts: { promote_chat_to_task: 1 } });
+        assert.equal(f.card(), null);
+        assert.equal(f.messages.children.filter((n) => n.classList.contains('chat-live-card')).length, 0);
+        const owner = f.messages.children.find((n) => n.dataset.clientMessageId === 'owner-1');
+        assert.match(owner?.querySelector('.msg-routing-annotation')?.textContent || '', /Started task/);
+    } finally { f.close(); }
+    const g = fixture([
+        { ...ownerRow, chat_annotation: receipt },
+        { ...final, tool_calls: 1, ts: '2026-09-15T12:00:05Z', chat_id: 1, _is_direct_chat: true },
+        { ...final, role: 'system', system_type: 'task_summary', text: 'Started the project task.', rounds: 2,
+            tool_calls: 1, tool_errors: 0, routing_tool_calls: 1, tool_call_counts: { promote_chat_to_task: 1 },
+            addressing_only: 'promote_chat_to_task', _is_direct_chat: true, ts: '2026-09-15T12:00:06Z', chat_id: 1 },
+    ]);
+    try {
+        await g.instance.refreshHistory({ revision: 1 });
+        assert.equal(g.card(), null, 'the replay summary of receipt-only calls is a receipt row');
+        const owner = g.messages.children.find((n) => n.dataset.clientMessageId === 'owner-1');
+        assert.match(owner?.querySelector('.msg-routing-annotation')?.textContent || '', /Started task/);
+        assert.ok(g.messages.children.some((n) => /Here is the answer/.test(n.innerHTML)), 'the reply is a plain bubble');
+    } finally { g.close(); }
+});
+
+test('addressing beside real work keeps the block: the receipt row renders inside it live, the summary row on reload', async () => {
+    const f = fixture();
+    try {
+        f.census(direct());
+        f.log({ type: 'tool_call_started', tool: 'read_file', tool_call_id: 'c1', args: { path: 'README.md' } });
+        f.log({ type: 'tool_call_started', ...promote() });
+        assert.ok(f.card());
+        assert.equal(f.rows().length, 2, 'the receipt row is shown honestly once the block exists');
+        assert.match(f.rows()[1].innerHTML, /promote_chat_to_task/);
+    } finally { f.close(); }
+    const g = fixture([
+        { role: 'user', text: 'read it and start the work', ts: TS, chat_id: 1 },
+        { ...final, ts: '2026-09-15T12:00:05Z', chat_id: 1, _is_direct_chat: true },
+        { ...final, role: 'system', system_type: 'task_summary', text: 'Read and started.', rounds: 2,
+            tool_calls: 2, tool_errors: 0, routing_tool_calls: 1, tool_call_counts: { read_file: 1, promote_chat_to_task: 1 },
+            addressing_only: 'promote_chat_to_task', _is_direct_chat: true, ts: '2026-09-15T12:00:06Z', chat_id: 1 },
+    ]);
+    try {
+        await g.instance.refreshHistory({ revision: 1 });
+        assert.ok(g.card());
+        assert.ok(g.rows().some((n) => /2 tool calls/.test(n.innerHTML)));
+    } finally { g.close(); }
 });

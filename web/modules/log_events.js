@@ -996,6 +996,7 @@ function chatView({
     truncated = false,
     chip = null,
     model = '',
+    receipt = false,
 } = {}) {
     const out = {
         phase,
@@ -1007,6 +1008,10 @@ function chatView({
         human,
         dedupeKey,
     };
+    // A receipt row renders inside a block but is not content the block can
+    // stand on: the fact it reports lives elsewhere (the owner message's
+    // routing annotation for an addressing call).
+    if (receipt) out.receipt = true;
     if (fullBody) out.fullBody = fullBody;
     if (fullHeadline) out.fullHeadline = fullHeadline;
     // Explicit emptiness is part of the presentation contract: a review-only
@@ -1243,7 +1248,10 @@ export function summarizeChatLiveEvent(evt) {
 
     if (t === 'tool_call_started' || (t === 'tool_call_finished' && !evt.is_error)) {
         // A successful call is a compact one-line row: `tool · target`, then
-        // `✓ duration` when it finishes — content the block can stand on.
+        // `✓ duration` when it finishes — content the block can stand on,
+        // unless the host stamped it as an addressing act (`routing_action`):
+        // the owner message's annotation is that call's receipt, so the row is
+        // one too (owner decision 11.09). A failure keeps its own error row.
         const target = describeText(toolCallTarget(evt.args), 60);
         const finished = t === 'tool_call_finished';
         // `done` is the TASK's terminal phase (`isTerminalTaskPhase`): a row that
@@ -1255,6 +1263,7 @@ export function summarizeChatLiveEvent(evt) {
                 .filter(Boolean).join(' · '),
             fullBody: compactJson(evt.args, 260),
             visible: true,
+            receipt: Boolean(evt.routing_action),
             dedupeKey: toolCallKey(evt, groupId),
         });
     }

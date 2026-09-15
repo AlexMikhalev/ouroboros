@@ -38,11 +38,33 @@ _PROMOTE_CONFIRM_TIMEOUT_SEC = 15.0
 _PROMOTE_CONFIRM_POLL_SEC = 0.05
 
 
+# The routing-verb family: each control tool whose call IS an addressing act,
+# keyed by the tool the model calls, with the control event types it emits.
+# The one owner of that membership: the typed action stamped on task_done reads
+# the event side (``_mark_typed_routing_action``), the receipt stamp on the live
+# tool-call frames reads the tool side (``routing_action_for_tool``), and the
+# task metrics count the calls through the same table. The owner's message
+# carries the routing receipt for such a call; the turn's activity block shows
+# the call as a receipt row, never as content of its own (owner decision 11.09).
+ROUTING_VERBS: Dict[str, frozenset] = {
+    "promote_chat_to_task": frozenset({"promote_chat_to_task"}),
+    "route_to_project": frozenset({"promote_chat_to_task", "routing_manual_target"}),
+    "steer_task": frozenset({"steer_task"}),
+}
+_ROUTING_EVENT_TYPES: frozenset = frozenset().union(*ROUTING_VERBS.values())
+
+
+def routing_action_for_tool(name: Any) -> str:
+    """The addressing action one tool call represents; '' for ordinary work."""
+    tool = str(name or "").strip()
+    return tool if tool in ROUTING_VERBS else ""
+
+
 def _emit_control_event(ctx: ToolContext, evt: Dict[str, Any]) -> str:
     """Emit a control event live when possible, preserving legacy fallback."""
     def _mark_typed_routing_action() -> None:
         event_type = str(evt.get("type") or "")
-        if event_type not in {"promote_chat_to_task", "routing_manual_target", "steer_task"}:
+        if event_type not in _ROUTING_EVENT_TYPES:
             return
         # Keep a turn-local fact on the existing ToolContext so finalization can
         # expose the typed action on task_done. The supervisor receipt remains the

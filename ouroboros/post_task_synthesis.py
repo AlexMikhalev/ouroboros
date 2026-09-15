@@ -43,12 +43,19 @@ def _atp():
 
 def task_tool_metrics(llm_trace: dict) -> dict:
     """Project recorded calls once; unknown names never become an empty census."""
+    from ouroboros.tools.control_events import routing_action_for_tool
+
     unavailable = bool(llm_trace.get("loop_evidence_unavailable"))
     calls = llm_trace.get("tool_calls") or []
     metrics = {
         "tool_calls": None if unavailable else len(calls),
         "tool_errors": None if unavailable else sum(
             1 for call in calls if isinstance(call, dict) and call.get("is_error")),
+        # The addressing calls among them (control_events owns the family), so
+        # a replayed block can tell a receipt-only turn from real work without
+        # a client list of tool names.
+        "routing_tool_calls": None if unavailable else sum(
+            1 for call in calls if isinstance(call, dict) and routing_action_for_tool(call.get("tool"))),
         "tool_call_counts": None,
     }
     if unavailable or llm_trace.get("recovered_post_task_synthesis") or not isinstance(llm_trace.get("tool_calls"), list):

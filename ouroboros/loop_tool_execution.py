@@ -39,6 +39,7 @@ from ouroboros.tool_capabilities import (
 from ouroboros.tool_capabilities import (
     tool_result_limit as _tool_result_limit,
 )
+from ouroboros.tools.control_events import routing_action_for_tool
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.tools.tool_result import (
     TOOL_CODE_SPECS,
@@ -926,13 +927,12 @@ def _execute_with_timeout(
     started_at = time.perf_counter()
     correlation = _tool_correlation(tools)
     tool_ctx = getattr(tools, "_ctx", None)
-    args_for_log = {}
-    try:
-        args = json.loads(tc["function"]["arguments"] or "{}")
-        if isinstance(args, dict):
-            args_for_log = sanitize_tool_args_for_log(fn_name, args)
-    except Exception:
-        pass
+    args_for_log = sanitize_tool_args_for_log(fn_name, _tc_args(tc))
+    # The addressing stamp of the live frames: the routing action this call
+    # represents (control_events owns the family); the chat block renders a
+    # stamped call as a receipt row, never as content the block stands on.
+    action = routing_action_for_tool(fn_name)
+    receipt = {"routing_action": action} if action else {}
     _emit_live_log(tools, _with_correlation({
         "type": "tool_call_started",
         "task_id": task_id,
@@ -940,6 +940,7 @@ def _execute_with_timeout(
         "timeout_sec": None if is_reviewed_mutative else timeout_sec,
         "terminal_wait": is_reviewed_mutative,
         "args": args_for_log,
+        **receipt,
     }, correlation, tool_call_id=tool_call_id))
 
     if use_stateful:
@@ -960,6 +961,7 @@ def _execute_with_timeout(
                 "type": "tool_call_finished",
                 "task_id": task_id,
                 "tool": fn_name,
+                **receipt,
                 "args": result.get("args_for_log", args_for_log),
                 "duration_sec": round(time.perf_counter() - started_at, 3),
                 "is_error": bool(result.get("is_error")),
@@ -1013,9 +1015,7 @@ def _execute_with_timeout(
             stateful_executor.retire()
             reset_msg = "Browser state has been reset. "
             timeout_result = _make_timeout_result(
-                fn_name, tool_call_id, is_code_tool, tc, drive_logs,
-                timeout_sec, task_id, reset_msg, correlation=correlation
-            )
+                fn_name, tool_call_id, is_code_tool, tc, drive_logs, timeout_sec, task_id, reset_msg, correlation=correlation)
             _emit_live_log(tools, _with_correlation({
                 "type": "tool_call_timeout",
                 "task_id": task_id,
@@ -1040,6 +1040,7 @@ def _execute_with_timeout(
                     "type": "tool_call_finished",
                     "task_id": task_id,
                     "tool": fn_name,
+                    **receipt,
                     "args": result.get("args_for_log", args_for_log),
                     "duration_sec": round(time.perf_counter() - started_at, 3),
                     "is_error": bool(result.get("is_error")),
@@ -1075,6 +1076,7 @@ def _execute_with_timeout(
                         "type": "tool_call_finished",
                         "task_id": task_id,
                         "tool": fn_name,
+                        **receipt,
                         "args": result.get("args_for_log", args_for_log),
                         "duration_sec": round(time.perf_counter() - started_at, 3),
                         "is_error": bool(result.get("is_error")),
@@ -1090,9 +1092,7 @@ def _execute_with_timeout(
                         correlation={**correlation, "tool": fn_name},
                     )
                     timeout_result = _make_timeout_result(
-                        fn_name, tool_call_id, is_code_tool, tc, drive_logs,
-                        timeout_sec, task_id, reset_msg="", correlation=correlation
-                    )
+                        fn_name, tool_call_id, is_code_tool, tc, drive_logs, timeout_sec, task_id, correlation=correlation)
                     _emit_live_log(tools, _with_correlation({
                         "type": "tool_call_timeout",
                         "task_id": task_id,
