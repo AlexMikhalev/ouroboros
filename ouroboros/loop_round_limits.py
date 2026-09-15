@@ -67,11 +67,14 @@ def _stamp_owner_delivery(
 ) -> None:
     """Record the latest owner message this turn actually DRAINED (latest wins).
 
-    The steer relay reads this typed fact to tell "still acting on the message
-    that started me" from "relaying my own words after a later owner message
-    reached me". Only owner DIALOGUE stamps it: typed controls (task messages,
-    quiz answers, hurry, finalize-now, revocations) are not the owner's steering
-    text, and a message merely WRITTEN to a mailbox has not been delivered at all.
+    The steer relay and the routing issuer read this typed fact to tell "acting
+    on the owner message this round delivered" from "speaking for myself".
+    Only owner DIALOGUE stamps it: typed controls (task messages, quiz answers,
+    hurry, finalize-now, revocations) are not the owner's steering text, and a
+    message merely WRITTEN to a mailbox has not been delivered at all. The fact
+    lives for one drain: ``_drain_incoming_messages`` clears it before reading
+    the mailbox, so a task that relayed one owner message is a task again on its
+    next round rather than an owner turn for the rest of its life.
     """
     if owner_ctx is None:
         return
@@ -91,6 +94,8 @@ def _drain_incoming_messages(
 ) -> Dict[str, Any]:
     """Injects dialogue; returns typed controls."""
     controls: Dict[str, Any] = {}
+    if owner_ctx is not None and getattr(owner_ctx, "last_owner_delivery", None) is not None:
+        owner_ctx.last_owner_delivery = None
     while not incoming_messages.empty():
         try:
             injected = incoming_messages.get_nowait()
