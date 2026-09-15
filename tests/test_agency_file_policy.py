@@ -152,7 +152,9 @@ def test_workspace_patch_keeps_log_manifest_and_token_report(files, tmp_path):
     patch = (output / "workspace.patch").read_text()
     restored = tmp_path / "restored"
     restored.mkdir()
-    subprocess.run(["git", "apply", str(output / "workspace.patch")], cwd=restored, check=True, capture_output=True)
+    # Assert captured bytes independently of the receiver's newline preference.
+    subprocess.run(["git", "-c", "core.autocrlf=false", "apply", str(output / "workspace.patch")],
+                   cwd=restored, check=True, capture_output=True)
     for name, content in payloads.items():
         assert f"b/{name}" in patch and content.strip() in patch
         assert (restored / name).read_bytes() == (work / name).read_bytes() == content.encode()

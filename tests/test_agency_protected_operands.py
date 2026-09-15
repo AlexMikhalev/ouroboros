@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import pathlib
 import shlex
+import shutil
 import sys
 
 import pytest
@@ -55,6 +56,11 @@ def protected(tmp_path, monkeypatch):
 def test_search_patterns_and_programs_do_not_become_file_targets(protected, cmd):
     registry, _ctx, reference, _workspace = protected
     original = reference.read_bytes()
+    if cmd[0] == "find":
+        # Bind the PATH-selected utility instead of Windows' System32 FIND.
+        executable = shutil.which("find")
+        assert executable is not None
+        cmd = [executable, *cmd[1:]]
     result = registry.execute_result("run_command", {"cmd": cmd})
     assert result.status == "ok", result.text
     assert reference.read_bytes() == original
