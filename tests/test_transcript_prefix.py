@@ -116,6 +116,15 @@ def test_sanction_stamp_is_consumed_by_the_next_observation():
     assert later["sanctioned_by"] is None, "the stamp is one-shot"
 
 
+def test_a_compaction_stamp_never_explains_a_system_rewrite():
+    slot = SimpleNamespace()
+    observe_send(slot, [SYSTEM, TASK, ASSISTANT], round_idx=1)
+    sanction_rewrite(slot, "compaction")
+    fact = observe_send(slot, [{"role": "system", "content": "reprojected"}, TASK, ASSISTANT], round_idx=2)
+    assert fact["kind"] == "system_rewritten" and fact["sanctioned_by"] is None
+    assert getattr(slot, transcript_prefix.SANCTION_ATTR) is None, "the stamp is still consumed"
+
+
 def test_sanctioned_by_rides_through_unchanged():
     slot = SimpleNamespace()
     observe_send(slot, [SYSTEM, TASK, ASSISTANT], round_idx=1)

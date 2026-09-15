@@ -100,7 +100,9 @@ def observe_send(
     prefix broke and whose ``sanctioned_by`` names the rewrite that was
     expected -- the explicit argument or the one-shot ``sanction_rewrite``
     stamp a rewriting seam left on the slot -- or ``None`` for an
-    unexplained break.  The stamp is consumed by every observation.
+    unexplained break.  The stamp is consumed by every observation and
+    explains a break below the system row only: compaction never touches the
+    system row, while a context-fit reprojection touches nothing else.
     """
     current = [message_digest(message) for message in messages]
     previous = getattr(slot, DIGEST_ATTR, None)
@@ -118,7 +120,7 @@ def observe_send(
             return None
         kind, index = "shrunk", len(previous)
     elif index == 0:
-        kind = "system_rewritten"
+        kind, sanction = "system_rewritten", None  # compaction never touches the system row
     elif index == len(previous) - 1:
         kind = "tail_replaced"
     else:

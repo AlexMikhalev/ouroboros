@@ -354,7 +354,10 @@ def _record_transcript_prefix(ctx, messages, round_idx, accumulated_usage,
                               event_queue, task_id, drive_logs) -> None:
     """Record whether the transcript this round dispatched extends the previous one.
 
-    Between the sends of ONE execution the transcript is append-only:
+    Called once per successful dispatch, after the model call and the fallback
+    chain and before the assistant row is appended, so an in-call reclaim,
+    an overflow reprojection or a fallback adoption is part of what the next
+    round must extend.  Between the sends of ONE execution the transcript is append-only:
     OpenAI-family caches reuse a previous request only when that whole request
     is a byte-prefix of the next, so a transient trailing message or an
     in-place rewrite of an already-sent message discards the entire
@@ -626,11 +629,7 @@ def run_llm_loop(
                 _merge_finalization_trace(llm_trace, forced_trace)
                 return text, accumulated_usage, llm_trace
 
-            # The transcript this round actually dispatched -- in-call reclaim,
-            # overflow reprojection and fallback adoption included -- is the
-            # one the next round must extend.
             _record_transcript_prefix(tools._ctx, messages, round_idx, accumulated_usage, event_queue, task_id, drive_logs)
-
             from ouroboros.openai_chat_dispatch import CUSTOM_RECEIPTS_USAGE_KEY
 
             tool_calls = msg.get("tool_calls") or []
