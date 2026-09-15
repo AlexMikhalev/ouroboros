@@ -451,12 +451,14 @@ def triad_pack_exclusions(
         if not prefix_text:
             continue
         try:
-            # Exact bytes, like the composed book the prefix carries (a CRLF
-            # checkout keeps its CRLF there); a newline-translating read would
-            # never find the chapter inside the composition on Windows.
             current = (repo_dir / rel).read_bytes().decode("utf-8")
         except Exception:
             continue
+        # Duplication is a fact about TEXT: the prefix copy of a plain document
+        # came through a newline-translating read while a composed book keeps
+        # its sources' exact bytes, so on a CRLF checkout the two sides differ
+        # only in newline style. Compare with newlines normalized on both sides.
+        current, prefix_text = current.replace("\r\n", "\n"), prefix_text.replace("\r\n", "\n")
         if current == prefix_text or (member_of and current and current in prefix_text):
             duplicated.append(rel)
     return set(carriers) | set(duplicated), pack_exclusion_note(carriers, duplicated)
