@@ -1193,15 +1193,20 @@ by "Provider Independence" above. Call-site imperatives:
 - Nested process wrappers are ordered, never tied: the provider bound settles
   before its killable child, the child before the generic ToolEntry envelope
   (fixed structural settlement margin from `config.py`), so a child or
-  provider result cannot arrive after its owner has abandoned custody. The
-  one deliberate early return is plan review's dispatch barrier
-  (`ReviewRequest.drain_deadline`): the wrapper returns while its workers run,
-  but custody is not abandoned — the workers settle into process-local custody
-  and announce the wave through the task mailbox (`plan_review_collect`).
-  Before its effective blocking verdict, `owner_hurry.force_plan_decision`
-  collects once at zero wait and projects the returned state. Context health
-  only reads the canonical wave; its pending count/time describe the recorded
-  snapshot, not live worker progress. Neither path dispatches a second panel.
+  provider result cannot arrive after its owner has abandoned custody. The two
+  deliberate early returns are plan review's and task acceptance's shared
+  dispatch barrier (`ReviewRequest.drain_deadline`): the wrapper returns while
+  its workers run, but custody is not abandoned — the workers settle into
+  process-local custody and announce the wave through the task mailbox
+  (`plan_review_collect`; `announce_acceptance_settlement`). Before its
+  effective blocking verdict, `owner_hurry.force_plan_decision` collects once at
+  zero wait and projects the returned state. Task acceptance collects the same
+  way, but through the host's own reconcile at the top of the acceptance seam
+  (`review_dispatch.reconcile_pending_acceptance_runs`) rather than a
+  model-callable verb: it replays the recorded request and roster and sends
+  nothing. Context health only reads the canonical wave; its pending count/time
+  describe the recorded snapshot, not live worker progress. Neither path
+  dispatches a second panel.
 - Every physical LLM/review/VLM/tool operation that can outlive a logical
   wait emits typed `cognitive_operation` start and terminal facts; the
   supervisor uses the active-operation map only to spare the idle rail, and a
@@ -1296,7 +1301,14 @@ by "Provider Independence" above. Call-site imperatives:
   (`outcomes.turn_has_reviewable_effects` plus a typed
   deliverable/criterion), never keywords (BIBLE P3/P5). The agent-callable nomination is never authoritative (ARCHITECTURE "Task
   lifecycle"). Freeze its request and resolved roster; use existing review
-  custody and mailbox continuation for pending work and free collection. The
+  custody and mailbox continuation for pending work and free collection. Before
+  it assembles evidence for a NEW panel and before any capacity refusal
+  (`review_cycles_exhausted`), the host reconciles every already-paid panel of
+  the same root still recorded as running, at $0 over the recorded request and
+  roster — a panel whose subject was re-authored mid-flight would otherwise have
+  its bought verdicts discarded. The settlement wake names that free route (the
+  keep control), and the keep contract is re-offered on every acceptance wake
+  rather than once per candidate chain. The
   worker never writes Main's live candidate or author decision. Keep
   subtree/status facts
   separate from reviewer findings and Cyber's authority under BIBLE P0.

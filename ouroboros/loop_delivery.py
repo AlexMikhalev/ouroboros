@@ -77,6 +77,9 @@ _DELIVERY_HOLD_CONTROLS = frozenset({
     _SKILL_ACTION_HOLD_CONTROL,
     _CHILD_ABSORPTION_HOLD_CONTROL,
 })
+# Header of the host's own rendered control block; identifies the transcript's
+# control history the way ``acceptance_observation`` marks the observation rows.
+_DELIVERY_CONTROL_MARKER = "[DELIVERY_FINALIZATION_CONTROL]"
 
 
 def _swarm_handoff_attempt(ctx: Any) -> Dict[str, Any]:
@@ -603,7 +606,7 @@ def _delivery_control_prompt(candidate: DeliveryCandidate, *, keep_allowed: bool
         else "keep is NOT allowed because owner/tool/child/verification evidence changed."
     )
     return (
-        "[DELIVERY_FINALIZATION_CONTROL]\n"
+        f"{_DELIVERY_CONTROL_MARKER}\n"
         f"A complete answer candidate (revision {candidate.revision}, sha256 "
         f"{candidate.content_sha256[:12]}) is retained by the loop; do not replace it with a "
         f"service notice. {keep_line}\n"
@@ -645,6 +648,7 @@ def _arm_delivery_control(
     llm_trace: Dict[str, Any],
     *,
     control: str = "awaiting_control",
+    skip_if_unchanged: bool = False,
 ) -> None:
     candidate = getattr(tools._ctx, "_delivery_candidate", None)
     if not isinstance(candidate, _loop().DeliveryCandidate):
@@ -653,21 +657,27 @@ def _arm_delivery_control(
     candidate.finalization_control = control
     candidate.repair_attempted = False
     tools._ctx._delivery_control_required = True
-    _loop()._append_or_merge_user_message(
-        ctx.messages,
-        _delivery_control_prompt(
-            candidate,
-            keep_allowed=_delivery_keep_allowed(
-                candidate, evidence_revision, evidence_fingerprint,
-            ),
-        ),
+    control_prompt = _delivery_control_prompt(
+        candidate,
+        keep_allowed=_delivery_keep_allowed(candidate, evidence_revision, evidence_fingerprint),
     )
+    # ``skip_if_unchanged`` is the repeated re-offer (every acceptance wake shows
+    # the keep contract): an unchanged candidate renders identical bytes, so the
+    # transcript's control history is not repeated, the way
+    # ``prepare_acceptance_observation`` skips an unchanged observation. Every
+    # other caller arms because something changed and always appends. ``slot``
+    # keeps an already-sent tail row byte-frozen rather than rewritten (#906).
+    latest = next((row for row in reversed(ctx.messages)
+                   if _DELIVERY_CONTROL_MARKER in str(row.get("content") or "")), None)
+    if not (skip_if_unchanged and latest is not None
+            and control_prompt in str(latest.get("content") or "")):
+        _loop()._append_or_merge_user_message(ctx.messages, control_prompt, slot=tools._ctx)
     candidate.control_episode_seen = True
     from ouroboros.loop_acceptance import capture_acceptance_observation, acceptance_observation_prompt
 
     observed = capture_acceptance_observation(tools._ctx, llm_trace, getattr(ctx, "incoming_messages", None))
     if prompt := acceptance_observation_prompt(tools._ctx, observed):
-        _loop()._append_or_merge_user_message(ctx.messages, prompt)
+        _loop()._append_or_merge_user_message(ctx.messages, prompt, slot=tools._ctx)
     _loop()._publish_delivery_candidate(tools, candidate, llm_trace)
 
 

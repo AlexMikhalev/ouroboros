@@ -100,14 +100,13 @@ def announce_acceptance_settlement(usage_ctx: Any, request: Any, wave: dict) -> 
     if usage_ctx is None or not getattr(usage_ctx, "drive_root", None):
         return
     from ouroboros.owner_mailbox import write_task_message
+    from ouroboros.review_dispatch import ACCEPTANCE_SETTLEMENT_WAKE
 
     try:
         slots = wave.get("slots") or {}
         write_task_message(
             pathlib.Path(usage_ctx.drive_root),
-            f"Task acceptance operation {request.retry_key} settled "
-            f"({len(slots)} released reviewer slots). Its recorded results are ready "
-            "for collection; this notification is not a verdict.",
+            ACCEPTANCE_SETTLEMENT_WAKE.format(retry_key=request.retry_key, slots=len(slots)),
             request.task_id, source_task_id=request.task_id, provenance="system",
         )
     except Exception:
@@ -182,8 +181,9 @@ def wait_for_acceptance_feedback(tools: Any, limit_ctx: Any, trace: dict,
     binding = getattr(ctx, "_task_acceptance_pending", "")
     if not binding:
         return
-    if not getattr(getattr(ctx, "_delivery_candidate", None), "control_episode_seen", False):
-        _loop()._arm_delivery_control(tools, limit_ctx, trace)
+    # Re-offered on EVERY wake: a replacement candidate inherits
+    # ``control_episode_seen``, which hid the one free route back to the verdicts.
+    _loop()._arm_delivery_control(tools, limit_ctx, trace, skip_if_unchanged=True)
     from ouroboros.owner_wait import wait_after_tools
 
     wait_after_tools(ctx, limit_ctx.messages, trace, limit_ctx.accumulated_usage,
@@ -917,7 +917,7 @@ def _apply_task_acceptance_result(
             "status": ACCEPTANCE_FINALIZED_UNACCEPTED,
             "reason": "review_degraded",
             "source": "task_acceptance_review",
-            "rationale": "Acceptance reviewers did not reach a valid quorum.",
+            "collected_rounds": acceptance_dialogue_history(ctx.llm_trace, limit=1),
             "degraded_reasons": list(getattr(result, "degraded_reasons", []) or []),
             "open_obligations": [str(item.get("id")) for item in open_obligations],
         })
@@ -1441,6 +1441,10 @@ def _run_task_acceptance_review_once(
         packet_budget_chars=acceptance_packet_budget_chars(_acceptance_delivery_slots()),
     )
     try:
+        from ouroboros.review_dispatch import reconcile_pending_acceptance_runs
+
+        reconcile_pending_acceptance_runs(
+            llm_trace, drive_root=drive_root or tools._ctx.drive_root, usage_ctx=tools._ctx)
         from types import SimpleNamespace
 
         from ouroboros.review_substrate import build_review_binding
@@ -1515,17 +1519,7 @@ def _run_task_acceptance_review_once(
         passes_before_apply = int(
             getattr(tools._ctx, "_task_acceptance_improvement_passes", 0) or 0
         )
-        if prior_run is not None and acceptance_run_pending(prior_run):
-            from ouroboros.review_dispatch import collect_task_acceptance_run
-
-            panel_result = collect_task_acceptance_run(
-                prior_run, drive_root=drive_root or tools._ctx.drive_root, usage_ctx=tools._ctx,
-            )
-            # Keep the paid operation's request; only its producer facts advance.
-            prior_run.update({key: value for key, value in vars(panel_result).items()
-                              if key != "request"})
-        else:
-            panel_result = reused_result or _loop()._execute_task_acceptance_panel(review_ctx)
+        panel_result = reused_result or _loop()._execute_task_acceptance_panel(review_ctx)
         run_record = prior_run if reused_result is not None else _record_host_acceptance_run(review_ctx, panel_result)
         if acceptance_run_pending(panel_result):
             tools._ctx._task_acceptance_pending = str(run_record.get("binding_hash") or "")

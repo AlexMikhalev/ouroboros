@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from ouroboros import loop, review_substrate
+from ouroboros.loop_acceptance_review import acceptance_run_pending
 from ouroboros.review_records import ReviewSlot
 from ouroboros.tools.registry import ToolRegistry
 from tests.test_loop_acceptance_gate import _seed_acceptance_root
@@ -230,6 +231,62 @@ def test_new_criterion_same_answer_gets_one_new_panel_and_keeps_prior_request(fu
     assert host[0]["candidate_hash"] == host[1]["candidate_hash"]
     assert host[0]["subject_hash"] != host[1]["subject_hash"]
     from ouroboros.task_results import project_task_acceptance_review_capacity
+    assert project_task_acceptance_review_capacity(f.ctx, task_id=f.ctx.task_id)["claimed_cycles"] == 2
+    # The superseded panel was paid for: its verdicts must have been read, not stranded.
+    assert not acceptance_run_pending(host[0])
+    assert host[0]["actors"][0]["parsed"]["verdict"] == "PASS"
+
+
+def test_reauthored_answer_collects_the_stranded_panel_before_paying_again(full_loop, monkeypatch):
+    """A re-authored answer moves the paid identity, so the free-replay lookup no
+    longer sees the running panel. Its verdicts were bought; the host collects
+    them at $0 before assembling evidence for, or refusing, anything new."""
+    f = full_loop
+    reauthored = ANSWER + " Budget: $12."
+    recorded = []
+
+    def main(_llm, messages, *_a, **_kw):
+        f.model_inputs.append(copy.deepcopy(messages))
+        f.model_step += 1
+        if f.model_step == 1:
+            return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": ANSWER}, "first-review")]}, 0.0
+        if f.model_step == 2:
+            assert f.entered.wait(5)
+            # The paid panel settles while Main is still working; nothing has
+            # read its verdicts yet and the settlement wake is the only signal.
+            f.release.set()
+            with f.condition:
+                assert f.condition.wait_for(lambda: f.settled_count >= 1, timeout=10)
+            return {"content": "", "tool_calls": [call("send_user_message", {"text": "Still writing the report."}, "status")]}, 0.0
+        if f.model_step == 3:
+            pending = [r for r in f.ctx._execution_trace["review_runs"] if r.get("authority") == "host_root"]
+            recorded.append(pending[0]["actors"][0]["operation_id"])
+            return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": reauthored}, "reauthored-review")]}, 0.0
+        assert f.model_step < 8, f.progress
+        return keep(f), 0.0
+
+    monkeypatch.setattr(loop, "call_llm_with_retry", main)
+    result, _usage, trace = f.run()
+    assert result == reauthored
+    # The re-authored subject still buys its own panel: no new refusal gate.
+    assert len(f.review_sends) == len(set(f.review_sends)) == 2
+    host = [r for r in trace["review_runs"] if r.get("authority") == "host_root"]
+    assert len(host) == 2
+    assert not acceptance_run_pending(host[0]), host[0]["actors"]
+    # The EXACT recorded producer advanced, not a re-run.
+    assert host[0]["actors"][0]["parsed"]["verdict"] == "PASS"
+    assert host[0]["actors"][0]["operation_id"] == recorded[0]
+    # The collected verdicts reached the next panel's dialogue history.
+    history = f.review_requests[1].evidence["acceptance_dialogue_history"]
+    assert history and history[0]["aggregate_signal"] == "PASS"
+    # And the published projection, instead of a transport error on a row nobody read.
+    from ouroboros.task_results import load_task_result, project_task_acceptance_review_capacity
+    panels = {p["panel_id"]: p for p in
+              load_task_result(f.ctx.drive_root, f.ctx.task_id)["review_projection"]["panels"]}
+    collected = panels[host[0]["panel_id"]]
+    assert collected["actors"][0]["transport_status"] == "success"
+    assert collected["actors"][0]["parse_status"] == "valid"
+    # Collection is free: exactly the two dispatched panels were ever claimed.
     assert project_task_acceptance_review_capacity(f.ctx, task_id=f.ctx.task_id)["claimed_cycles"] == 2
 
 
