@@ -300,7 +300,9 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
     with an open post-task checkpoint) — instead of relying on transient
     typing frames. ``task_bindings`` (the same projection the snapshot already
     serves) re-homes a mid-run "turn into project" conversion, whose queue row
-    still carries the original chat. Never raises.
+    still carries the original chat. A post-task wait keeps the task row's own
+    ``_is_direct_chat`` fact as its ``kind``, so a direct turn waiting for a
+    model after its answer is never relabelled a managed task. Never raises.
     """
     activities = list(direct_turns) if direct_turns is not None else _direct_turns_snapshot_safe()
     try:
@@ -354,7 +356,7 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
                 "chat_id": int(binding.get("chat_id") or row.get("chat_id") or 0),
                 "project_id": str(binding.get("project_id") or row.get("project_id") or ""),
                 "client_message_id": "",
-                "kind": "managed_task",
+                "kind": "direct_chat" if row.get("_is_direct_chat") else "managed_task",
                 "phase": phase,
                 "started_at": started_at,
                 "task_attempt": int(row.get("_attempt") or 1),
