@@ -174,11 +174,10 @@ def test_census_keeps_the_direct_kind_for_a_post_task_wait(tmp_path, monkeypatch
 
 
 def test_the_routing_verb_table_is_the_one_owner_of_the_family():
-    from ouroboros.tools.control_events import (
-        ROUTING_VERBS, _emit_control_event, routing_action_for_tool,
-    )
+    from ouroboros.tool_capabilities import ROUTING_VERBS, routing_action_for_tool
+    from ouroboros.tools.control_events import _emit_control_event
 
-    assert set(ROUTING_VERBS) == {"promote_chat_to_task", "route_to_project", "steer_task"}
+    assert set(ROUTING_VERBS) == {"promote_chat_to_task", "route_to_project", "steer_task", "ensure_project_scope"}
     assert routing_action_for_tool(" steer_task ") == "steer_task"
     assert routing_action_for_tool("read_file") == "" and routing_action_for_tool(None) == ""
     # The typed action on task_done is keyed by the events those same tools emit.

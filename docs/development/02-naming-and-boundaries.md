@@ -346,7 +346,7 @@ would have minted an empty card, every renamed one would have silently left
 the list, and the list restated a fact the host already carried as the typed
 routing annotation. Derive presence from the facts the record already holds
 (`web/modules/chat.js::blockVisible`) and let the host name the special case
-from the one table it owns (`ouroboros/tools/control_events.py::ROUTING_VERBS`:
+from the one table it owns (`ouroboros/tool_capabilities.py::ROUTING_VERBS`:
 `routing_action` on the live tool-call frames, `routing_tool_calls` in the task
 metrics, `typed_routing_action` on the terminal event), never a client-side
 exception list. The same shape hides in "hide unless kind ∈ {…}" and "count

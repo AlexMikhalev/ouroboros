@@ -22,6 +22,7 @@ from ouroboros.llm_claudexor import propagate_model_error
 from ouroboros.outcomes import normalize_outcome_axes
 from ouroboros.synthesis_cost_text import _summary_row_cost_fields, _synthesis_cost_text, _synthesis_cost_usd, _synthesis_usage_snapshot_text
 from ouroboros.task_finalization import sealed_final_prompt_section
+from ouroboros.tool_capabilities import routing_action_for_tool
 from ouroboros.utils import append_jsonl, truncate_review_artifact as _truncate_with_notice, utc_now_iso
 
 
@@ -43,15 +44,13 @@ def _atp():
 
 def task_tool_metrics(llm_trace: dict) -> dict:
     """Project recorded calls once; unknown names never become an empty census."""
-    from ouroboros.tools.control_events import routing_action_for_tool
-
     unavailable = bool(llm_trace.get("loop_evidence_unavailable"))
     calls = llm_trace.get("tool_calls") or []
     metrics = {
         "tool_calls": None if unavailable else len(calls),
         "tool_errors": None if unavailable else sum(
             1 for call in calls if isinstance(call, dict) and call.get("is_error")),
-        # The addressing calls among them (control_events owns the family), so
+        # The addressing calls among them (tool_capabilities owns the family), so
         # a replayed block can tell a receipt-only turn from real work without
         # a client list of tool names.
         "routing_tool_calls": None if unavailable else sum(

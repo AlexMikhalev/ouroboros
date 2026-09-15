@@ -36,10 +36,10 @@ from ouroboros.tool_capabilities import (
 from ouroboros.tool_capabilities import (
     UNTRUNCATED_TOOL_RESULTS as _UNTRUNCATED_TOOL_RESULTS,
 )
+from ouroboros.tool_capabilities import routing_action_for_tool
 from ouroboros.tool_capabilities import (
     tool_result_limit as _tool_result_limit,
 )
-from ouroboros.tools.control_events import routing_action_for_tool
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.tools.tool_result import (
     TOOL_CODE_SPECS,
@@ -929,7 +929,7 @@ def _execute_with_timeout(
     tool_ctx = getattr(tools, "_ctx", None)
     args_for_log = sanitize_tool_args_for_log(fn_name, _tc_args(tc))
     # The addressing stamp of the live frames: the routing action this call
-    # represents (control_events owns the family); the chat block renders a
+    # represents (tool_capabilities owns the family); the chat block renders a
     # stamped call as a receipt row, never as content the block stands on.
     action = routing_action_for_tool(fn_name)
     receipt = {"routing_action": action} if action else {}

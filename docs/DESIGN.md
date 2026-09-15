@@ -507,8 +507,8 @@ closes: a wait-only block disappears when the wait resolves, and the resolved
 episode's no-reopen ledger survives with the record, so a stale revision cannot
 bring the block back.
 
-An addressing call (`promote_chat_to_task`, `route_to_project`, `steer_task` —
-the routing-verb family `ouroboros/tools/control_events.py` owns) is stamped by
+An addressing call (`promote_chat_to_task`, `route_to_project`, `steer_task`, `ensure_project_scope` —
+the routing-verb family `ouroboros/tool_capabilities.py::ROUTING_VERBS` owns) is stamped by
 the host on its live tool-call frames (`routing_action`) and counted in the
 task metrics (`routing_tool_calls`); its receipt is the typed routing
 annotation on the owner's message. Such a call is a receipt row: it renders

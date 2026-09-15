@@ -271,3 +271,28 @@ REVIEWED_MUTATIVE_TOOLS: frozenset[str] = frozenset({
 FOREGROUND_MUTATIVE_TOOLS: frozenset[str] = frozenset({
     "submit_skill_to_hub",
 })
+
+
+# The routing-verb family: each control tool whose call IS an addressing act,
+# keyed by the tool the model calls, with the control event types it emits.
+# The one owner of that membership: the typed action stamped on task_done reads
+# the event side (``control_events._mark_typed_routing_action``), the receipt
+# stamp on the live tool-call frames reads the tool side
+# (``routing_action_for_tool`` in the tool executor), and the task metrics count
+# the calls through the same table. The owner's message carries the routing
+# receipt for such a call; the turn's activity block shows the call as a
+# receipt row, never as content of its own (owner decision 11.09). The scope
+# verb rides the same receipt rail (``ensure_project_scope`` moves THIS task;
+# its receipt is the Started annotation and the project pointer).
+ROUTING_VERBS: dict[str, frozenset[str]] = {
+    "promote_chat_to_task": frozenset({"promote_chat_to_task"}),
+    "route_to_project": frozenset({"promote_chat_to_task", "routing_manual_target"}),
+    "steer_task": frozenset({"steer_task"}),
+    "ensure_project_scope": frozenset({"ensure_project_scope"}),
+}
+
+
+def routing_action_for_tool(name: object) -> str:
+    """The addressing action one tool call represents; '' for ordinary work."""
+    tool = str(name or "").strip()
+    return tool if tool in ROUTING_VERBS else ""
