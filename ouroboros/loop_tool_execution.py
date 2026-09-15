@@ -1369,7 +1369,8 @@ def process_tool_results(
             "tool_call_id": exec_result["tool_call_id"],
             "content": truncated_result
         })
-        if fn_name == "delegate_wait" and ctx is not None:
+        # Keyed on the wake the RESULT published, not on a tool name: a call that published none has nothing to ack.
+        if ctx is not None and ((exec_result.get("result_meta") or {}).get("tool_result_meta") or {}).get("supervision_wake_id"):
             try:
                 from ouroboros.delegate_supervision import acknowledge_pending_wake
 
