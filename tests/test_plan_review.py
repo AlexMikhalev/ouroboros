@@ -225,10 +225,10 @@ def test_invalid_new_plan_attempts_do_not_reuse_old_green(tmp_path):
     ctx.system_repo_dir = tmp_path
     ctx.emit_progress_fn = lambda _message: None
     cases = [
-        ({"plan": "", "goal": "G", "spec": {"in_scope": ["x"]}}, "plan: required non-empty prose"),
-        ({"plan": "P", "goal": "", "spec": {"in_scope": ["x"]}}, "goal: required non-empty string"),
+        ({"plan": "", "goal": "G", "spec": {"in_scope": ["x"], "affected_paths": []}}, "plan: required non-empty prose"),
+        ({"plan": "P", "goal": "", "spec": {"in_scope": ["x"], "affected_paths": []}}, "goal: required non-empty string"),
         ({"plan": "P", "goal": "G", "spec": "not-an-object"}, "spec: must be an object"),
-        ({"plan": "P", "goal": "G", "spec": {"bogus": 1}}, "unknown fields: bogus"),
+        ({"plan": "P", "goal": "G", "spec": {"bogus": 1, "affected_paths": []}}, "unknown fields: bogus"),
     ]
     for params, error_text in cases:
         record_plan_review_attempt(tmp_path, "root1", fingerprint=old_fingerprint)
@@ -467,21 +467,21 @@ class TestPlanReviewInputValidation(unittest.TestCase):
         self.ctx.emit_progress_fn = lambda _m: None
 
     def test_missing_plan_returns_error(self):
-        result = self.handler(self.ctx, plan="", goal="some goal", spec={"in_scope": ["x"]})
+        result = self.handler(self.ctx, plan="", goal="some goal", spec={"in_scope": ["x"], "affected_paths": []})
         self.assertIn("ERROR: PLAN_SPEC_INVALID", result)
         self.assertIn("plan", result.lower())
 
     def test_missing_goal_returns_error(self):
-        result = self.handler(self.ctx, plan="some plan", goal="", spec={"in_scope": ["x"]})
+        result = self.handler(self.ctx, plan="some plan", goal="", spec={"in_scope": ["x"], "affected_paths": []})
         self.assertIn("ERROR: PLAN_SPEC_INVALID", result)
         self.assertIn("goal", result.lower())
 
     def test_whitespace_plan_returns_error(self):
-        result = self.handler(self.ctx, plan="   ", goal="some goal", spec={"in_scope": ["x"]})
+        result = self.handler(self.ctx, plan="   ", goal="some goal", spec={"in_scope": ["x"], "affected_paths": []})
         self.assertIn("ERROR", result)
 
     def test_whitespace_goal_returns_error(self):
-        result = self.handler(self.ctx, plan="some plan", goal="   ", spec={"in_scope": ["x"]})
+        result = self.handler(self.ctx, plan="some plan", goal="   ", spec={"in_scope": ["x"], "affected_paths": []})
         self.assertIn("ERROR", result)
 
     def test_missing_spec_is_a_typed_refusal(self):

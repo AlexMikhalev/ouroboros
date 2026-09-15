@@ -199,6 +199,24 @@ def test_a_legacy_form_submission_is_refused_and_records_nothing(harness):  # no
     assert json.dumps(_state(harness), sort_keys=True, ensure_ascii=False) == before
 
 
+def test_a_legacy_form_with_another_error_is_still_refused_before_the_superseding_path(harness):  # noqa: F811
+    """A legacy-form spec that ALSO fails ordinary validation must take the non-superseding
+    refusal, not the `PLAN_SPEC_INVALID` path that records a new attempt over an open wave."""
+    ask = json.dumps([_finding("f1", "need_evidence", breaks="goal", summary="who signs off?")])
+    substrate = harness.install({"s1": ask, "s2": CLEAN, "s3": CLEAN})
+    ctx = harness.make_ctx()
+    assert _control(_call(ctx)) == {"outcome": "REVIEW_REQUIRED", "closed": False}
+    before = json.dumps(_state(harness), sort_keys=True, ensure_ascii=False)
+    calls_before = len(substrate.calls)
+
+    legacy = {key: value for key, value in DECK_SPEC.items() if key != "affected_paths"}
+    out = _call(ctx, spec=legacy, reviewer_effort="galactic")
+
+    assert "PLAN_RESOURCE_FORM_REQUIRED" in out and "PLAN_SPEC_INVALID" not in out
+    assert len(substrate.calls) == calls_before
+    assert json.dumps(_state(harness), sort_keys=True, ensure_ascii=False) == before
+
+
 def test_a_legacy_form_submission_over_an_open_wave_points_at_the_free_exit(harness):  # noqa: F811
     """The expensive mistake this prevents: re-submitting into a refusal while an OPEN wave is
     still the live obligation. The refusal names that wave and the $0 way to answer it."""

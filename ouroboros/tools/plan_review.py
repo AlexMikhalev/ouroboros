@@ -476,16 +476,17 @@ def _prepare_plan_inputs(ctx: ToolContext, request: "_PlanRequest", state_root: 
         errors = ["plan: required non-empty prose", *errors]
     if request.reviewer_effort and request.reviewer_effort not in _REVIEWER_EFFORT_SCHEMA["enum"]:
         errors.append(f"reviewer_effort: not on the effort scale {list(_REVIEWER_EFFORT_SCHEMA['enum'])}")
-    if errors:
-        return {"error": "ERROR: PLAN_SPEC_INVALID: " + "; ".join(errors) + ". No reviewer was called.",
-                "code": "TOOL_ARG_ERROR"}
     if isinstance(raw_spec, dict) and "affected_paths" not in raw_spec:
         # Owner 9=A: a spec in the old mixed form is refused BEFORE any paid dispatch, because
         # `affected_resources` used to be read as a path list — a prose item became "a file under
         # the Ouroboros repo" and bought every reviewer the whole constitution (~470k tokens/cycle)
-        # for a deck. The refusal owns its code: a message containing `PLAN_SPEC_INVALID`
-        # takes the durable superseding-attempt path below and would orphan an open wave.
+        # for a deck. The refusal owns its code and comes first: a message containing
+        # `PLAN_SPEC_INVALID` takes the durable superseding-attempt path below and would orphan
+        # an open wave, so a legacy-form spec that also carries another error must not reach it.
         return _resource_form_refusal(ctx, state_root)
+    if errors:
+        return {"error": "ERROR: PLAN_SPEC_INVALID: " + "; ".join(errors) + ". No reviewer was called.",
+                "code": "TOOL_ARG_ERROR"}
     from ouroboros.review_substrate import review_repo_dirs_for
     try:
         system_root, active_root = review_repo_dirs_for(ctx)

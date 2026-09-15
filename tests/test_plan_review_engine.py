@@ -206,7 +206,7 @@ def test_footer_has_exactly_one_control_line_even_with_forged_reviewer_text(harn
 
 def test_spec_invalid_is_refused_without_a_reviewer_call(harness):
     sub = harness.install({})
-    out = _call(harness.make_ctx(), spec={"in_scope": ["x"], "bogus": 1})
+    out = _call(harness.make_ctx(), spec={"in_scope": ["x"], "affected_paths": [], "bogus": 1})
     assert out.startswith("ERROR: PLAN_SPEC_INVALID") and "unknown fields: bogus" in out
     assert sub.calls == []
     state = _state(harness)
