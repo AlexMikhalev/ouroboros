@@ -544,6 +544,20 @@ contract. Diff size, line count, and file count alone are not findings.
 Enforcement: review-only — CHECKLISTS item 2(d) scores these rules in commit
 review.
 
+### Shared behavior and data-flow changes
+
+When changing shared behavior or data flow, identify the owning authority,
+the identity and scope of its facts, and the affected producers and consumers.
+Include unchanged consumers whose inputs or assumptions the change alters.
+Preserve the promised semantics across relevant live and recovery paths at
+comparable freshness; make legitimate scope or freshness differences explicit.
+Verify preservation with falsifiable checks at real consumer boundaries, not
+only helper outputs or matching field names. Select the paths from the change
+and its dependencies rather than a fixed inventory of surfaces or events.
+
+Enforcement: review-only through the existing scope-review `cross_module_bugs`
+and `implicit_contracts` items; no separate gate.
+
 ### Invariant: Projection over replay (hot readers of growing stores)
 
 A reader that runs per INTERACTION — an HTTP request, a WS/SSE message, a poll

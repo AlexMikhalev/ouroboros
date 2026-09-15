@@ -299,15 +299,16 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
     ``queued`` (PENDING), ``working`` (RUNNING), or ``finalizing`` (RUNNING
     with an open post-task checkpoint) — instead of relying on transient
     typing frames. ``task_bindings`` (the same projection the snapshot already
-    serves) re-homes a mid-run "turn into project" conversion, whose queue row
-    still carries the original chat. Never raises.
+    serves) re-homes direct and managed activities after a mid-run project
+    conversion, while their source records retain the original chat. Never raises.
     """
-    activities = list(direct_turns) if direct_turns is not None else _direct_turns_snapshot_safe()
+    direct_rows = direct_turns if direct_turns is not None else _direct_turns_snapshot_safe()
+    activities = [dict(row) for row in direct_rows]
+    bindings = task_bindings if isinstance(task_bindings, dict) else {}
     try:
         from supervisor import queue as queue_mod
         from ouroboros.task_results import resolve_task_lineage
 
-        bindings = task_bindings if isinstance(task_bindings, dict) else {}
         with queue_mod._queue_lock:
             pending_rows = [dict(task) for task in queue_mod.PENDING]
             fence_rows = {
@@ -342,11 +343,10 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
                 return False
 
         def _activity(task_id: str, row: Dict[str, Any], phase: str, started_at: float) -> Dict[str, Any]:
-            binding = bindings.get(task_id) if isinstance(bindings.get(task_id), dict) else {}
             return {
                 "activity_id": task_id,
-                "chat_id": int(binding.get("chat_id") or row.get("chat_id") or 0),
-                "project_id": str(binding.get("project_id") or row.get("project_id") or ""),
+                "chat_id": int(row.get("chat_id") or 0),
+                "project_id": str(row.get("project_id") or ""),
                 "client_message_id": "",
                 "kind": "managed_task",
                 "phase": phase,
@@ -381,6 +381,14 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
         if availability is not None:
             availability["complete"] = False
         log.debug("Managed-activity snapshot unavailable for /api/state", exc_info=True)
+    # Bindings are already the gateway's {project_id, chat_id} projection.
+    # Apply them to every copied activity before resolving Project questions.
+    for activity in activities:
+        binding = bindings.get(str(activity.get("activity_id") or ""))
+        if isinstance(binding, dict):
+            for key in ("chat_id", "project_id"):
+                if binding.get(key):
+                    activity[key] = binding[key]
     try:
         from ouroboros.project_dialogue import project_question_pointer
         from ouroboros.projects_registry import list_reserved_projects
