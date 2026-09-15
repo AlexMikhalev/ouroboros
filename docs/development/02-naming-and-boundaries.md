@@ -237,6 +237,10 @@ tree so a breach is red rather than discovered by the next review:
 - **WHY stays where the reader is.** A chapter keeps the rationale for what it
   owns; moving prose between chapters is a documentation change like any other
   and REPLACES the description at its destination.
+- **One line ending.** `.gitattributes` pins `docs/**/*.md` to LF, so the
+  physical line ranges and SHA-256 digests the generated inventories and the
+  transfer table carry mean the same bytes on every platform; a CRLF checkout
+  would move every cited line.
 - **Readers ask for a view, not for a file.** `load_governance_doc` composes a
   book for a surface that owes it in full, `context_layout.book_navigation`
   renders the compact chapter-addressed view, and

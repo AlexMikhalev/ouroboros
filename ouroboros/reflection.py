@@ -662,7 +662,9 @@ def append_reflection_routed(env: Any, task: Dict[str, Any], entry: Dict[str, An
     full text, which feeds future global context and would leak project facts
     across projects. A non-project root reflects on the canonical budget drive
     directly. The Pattern Register update stays on the canonical drive in both
-    cases (general error patterns are cross-project cognition)."""
+    cases and reads the WHOLE reflection plus the exact goal (owner decision
+    Q2A: general error patterns are cross-project cognition, and the register
+    is the one global consumer of that text)."""
     canonical = pathlib.Path(str(task.get("budget_drive_root") or "").strip() or str(env.drive_root))
     try:
         from ouroboros.project_facts import resolve_project_id

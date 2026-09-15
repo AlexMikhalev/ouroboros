@@ -525,7 +525,8 @@ open default behind a closed exception list").
 ### Subscription waits inside task cards
 
 Quota exhaustion and a confirmed need to sign in again use the same component,
-`model_wait.js` with `model_wait.css`, inside the existing task card. Each
+`model_wait.js` with `model_wait.css`, inside the turn's existing host: the task
+card of a managed root, the activity block of a direct turn. Each
 waiting role has its own row; the model, account and reason are separate facts.
 The controls stay visible when the task's timeline is collapsed. Waiting carries
 a quiet warning status and no computation animation, activity counter or invented

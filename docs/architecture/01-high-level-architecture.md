@@ -571,7 +571,7 @@ Bundled resources use the §1 CLI/headless lookup order rather than assuming the
 │   ├── ouroboros/                 ← core package (module map above)
 │   ├── supervisor/                ← supervisor package
 │   ├── web/                       ← Web UI; ES-module pages under web/modules/
-│   ├── docs/                      ← ARCHITECTURE.md (this map), DEVELOPMENT.md (engineering handbook), CHECKLISTS.md (review checklists SSOT), CHECKLISTS_ARCHIVE.md, CREATING_SKILLS.md, DESIGN.md, DEPLOYMENT.md
+│   ├── docs/                      ← ARCHITECTURE.md + architecture/ (this map: entrypoint + chapters), DEVELOPMENT.md + development/ (engineering handbook: entrypoint + chapters), CHECKLISTS.md (review checklists SSOT), CHECKLISTS_ARCHIVE.md, CREATING_SKILLS.md, DESIGN.md, DEPLOYMENT.md
 │   └── prompts/                   ← SYSTEM.md, SAFETY.md, CONSCIOUSNESS.md
 ├── data/
 │   ├── settings.json              ← user settings (API keys, models, budget)
