@@ -300,10 +300,20 @@ def _vacuous(name: str, value: object) -> bool:
 
 def _vacuous_disposition(value: object) -> bool:
     """A schema-shaped but empty disposition (models fill optional objects with defaults).
-    An UNKNOWN key or a non-empty items list is never vacuous: refused, not ignored."""
-    if not isinstance(value, dict) or set(value) - {"review_fingerprint", "items"}:
+    An UNKNOWN key or a non-empty items list is never vacuous: refused, not ignored.
+    A default-filled ``author_disposition`` ({"disposition": "accepted", "rationale": ""})
+    beside an EMPTY fingerprint names no wave and answers no finding, so it carries
+    nothing either: without this a model that fills every schema key sent it with
+    its first plan and looped on PLAN_REVIEW_DISPOSITION_MIXED_ENVELOPE (seen live)."""
+    if not isinstance(value, dict) or set(value) - {"review_fingerprint", "items", "author_disposition"}:
         return False
-    return not str(value.get("review_fingerprint") or "").strip() and not value.get("items")
+    author = value.get("author_disposition")
+    author_vacuous = author is None or (
+        isinstance(author, dict) and set(author) <= {"disposition", "rationale"}
+        and not str(author.get("rationale") or "").strip()
+    )
+    return (author_vacuous and not str(value.get("review_fingerprint") or "").strip()
+            and not value.get("items"))
 
 def _typed_refusal(ctx: ToolContext, code: str, text: str) -> str:
     """Publish a refusal the producer ALREADY knows about (D02). The text ABI is

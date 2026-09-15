@@ -752,6 +752,29 @@ class TestPlanReviewDispositionEnvelope(unittest.TestCase):
         self.assertEqual(out, "reviewed")
         run.assert_called_once()
 
+    def test_default_filled_author_disposition_beside_a_plan_is_ignored(self):
+        """Seen live: a model that fills every schema key sent
+        {"author_disposition": {"disposition": "accepted", "rationale": ""},
+         "items": [], "review_fingerprint": ""} with its FIRST plan and looped on
+        MIXED_ENVELOPE. No fingerprint names no wave, so it carries nothing."""
+        import ouroboros.tools.plan_review as pr
+        from ouroboros.tools.registry import ToolContext
+
+        ctx = ToolContext(repo_dir=pathlib.Path("."), drive_root=pathlib.Path("."))
+        ctx.task_id = "parent"
+        filler = {"author_disposition": {"disposition": "accepted", "rationale": ""},
+                  "items": [], "review_fingerprint": ""}
+        with patch.object(pr, "_run_plan_review_async", return_value="reviewed") as run:
+            out = pr._handle_plan_task(ctx, plan="P", goal="G", spec={}, review_disposition=filler)
+        self.assertEqual(out, "reviewed")
+        run.assert_called_once()
+        # A rationale is a statement; with it the disposition is real and still refused beside a plan.
+        spoken = {**filler, "author_disposition": {"disposition": "rejected", "rationale": "no"}}
+        with patch.object(pr, "_run_plan_review_async") as run:
+            out = pr._handle_plan_task(ctx, plan="P", goal="G", spec={}, review_disposition=spoken)
+        self.assertIn("PLAN_REVIEW_DISPOSITION_MIXED_ENVELOPE", out)
+        run.assert_not_called()
+
     def test_duplicate_plan_calls_use_existing_sequential_tool_lane(self):
         from ouroboros.loop_tool_execution import tool_calls_can_run_parallel
 
