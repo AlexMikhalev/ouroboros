@@ -293,12 +293,21 @@ exercises that seam. For fuzzy entities use the LLM-first pattern
 
 The same captured reference is also the IDENTITY OF THE WORK, not just its
 provenance: a new task id minted from the same owner message (a promoted root,
-a mid-run scope call) must INHERIT that origin's project binding
-(`projects_registry.project_id_for_origin`, keyed by value on chat id +
-client message id), never re-derive project membership from its own id — one
-convertible unit per message, not one per task id. A timeout retry COPIES the
-origin ref onto its new id but is deliberately NOT bound at clone time; it joins
-that origin's project when a later implicit act adopts it.
+a mid-run scope call, the timeout retry that replaces a dead attempt) must
+INHERIT that origin's project binding (`projects_registry.project_id_for_origin`,
+keyed by value on chat id + client message id), never re-derive project
+membership from its own id — one convertible unit per message, not one per task
+id. A timeout retry is bound at RETRY ADMISSION, inside the same transaction and
+under the same claim lock that admits it
+(`worker_promotion.bind_retry_to_origin_project`, called from the reaper's
+`_run_retry_admission_transaction`): the predecessor's own binding answers first,
+then that origin's, and the new row reuses the predecessor's stored origin by
+value, so the retried work stays in its room instead of painting a Main card that
+offers to turn it into a project. The bind lands ONLY once cancellation can no
+longer win the boundary — a binding is immutable, so a bound-but-never-admitted
+retry id would answer `project_id_for_task` forever — and a retry suppressed by a
+cancelled or already-terminal root is therefore never bound. Enforced by
+`tests/test_retry_project_binding.py`.
 
 One named exception inside role (b): a verification RECEIPT with no earlier
 ingress point is reconciled by ONE TYPED IDENTITY KEY, matching on the key's

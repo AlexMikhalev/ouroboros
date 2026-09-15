@@ -72,19 +72,24 @@ def _origin_from_task_record(task_id: str) -> Optional[dict]:
 
 def _report_binding_failure(
     task_id: str, project_id: str, exc: Exception, *, path: str, reason: str = "",
+    drive_root: Any = None,
 ) -> None:
     """A failed durable bind is LOUD (BIBLE P1: silent linkage loss is memory
     loss): warning log + typed events.jsonl row; the task itself keeps running.
 
-    ``reason`` names a REFUSAL that never reached the bind (today only
+    ``reason`` names a REFUSAL that never reached the bind (today
     ``project_scope_conflict``: the task is already bound elsewhere, so no second
-    project is created); the row is otherwise the same shape a raising bind writes.
+    project is created; ``project_binding_unreadable``: the store could not be
+    read at all); the row is otherwise the same shape a raising bind writes.
+    ``drive_root`` names the store the failure belongs to for a caller that does
+    not own the pool root — the reaper passes the queue's drive.
     """
     # A refusal carries no live traceback, so only a real bind failure logs one.
     log.warning("%s for %s/%s (%s)", reason or "bind_task_to_project failed",
                 task_id, project_id, path, exc_info=not reason)
     try:
-        append_jsonl(_pool().DRIVE_ROOT / "logs" / "events.jsonl", {
+        root = _pool().DRIVE_ROOT if drive_root is None else drive_root
+        append_jsonl(root / "logs" / "events.jsonl", {
             "ts": utc_now_iso(),
             "type": "project_binding_failed",
             "task_id": str(task_id or ""),
@@ -314,6 +319,68 @@ def _admit_project_scope(
             "task_id": tid,
         }, attachment_manifest)
     return None
+
+
+def bind_retry_to_origin_project(
+    drive_root: Any, task: dict, task_id: str, retry_task_id: str,
+) -> str:
+    """Carry a timed-out root's Project onto the retry that replaces it.
+
+    A retry is the SAME work under a new physical id, so it belongs to the room
+    the work already has (DEVELOPMENT "the captured reference is the identity of
+    the work"). Before this, the new id copied the origin ref but carried no
+    binding, and the retried work painted a Main card offering "Turn into
+    project" until some later implicit act adopted it. The predecessor's own
+    binding answers first — it is the SSOT for that task's project — and the
+    origin-keyed lookup covers a root that was never bound itself while another
+    task id of the same owner message was. The new row reuses the predecessor's
+    stored origin BY VALUE, so the retry joins that message's one convertible
+    unit instead of starting a second.
+
+    The reaper calls this INSIDE its retry admission transaction, under the same
+    ``origin_claim_lock`` every implicit claim holds, and only once cancellation
+    can no longer win the boundary: ``bind_task_to_project`` is immutable, so a
+    bound-but-never-admitted retry id would answer ``project_id_for_task``
+    forever. Creates no project and never raises — a refused bind (a project that
+    stopped accepting them) or an unreadable store leaves the retry unbound and
+    is disclosed as ``project_binding_failed``. Returns the project the retry was
+    bound to, "" when there was nothing to inherit.
+    """
+    tid = str(retry_task_id or "").strip()
+    origin_id = str(task_id or "").strip()
+    if not tid or not origin_id or tid == origin_id:
+        return ""
+    from ouroboros.projects_registry import (
+        bind_task_to_project,
+        project_binding_for_task,
+        project_id_for_origin,
+    )
+
+    origin = _origin_from_mapping(task, absent="mid_task_no_origin")
+    try:
+        predecessor = project_binding_for_task(drive_root, origin_id) or {}
+        pid = str(predecessor.get("project_id") or "") or str(
+            project_id_for_origin(drive_root, origin.get("ref"), strict=True) or ""
+        )
+    except Exception as exc:
+        _report_binding_failure(tid, "", exc, path="timeout_retry_admission",
+                                reason="project_binding_unreadable", drive_root=drive_root)
+        return ""
+    if not pid:
+        return ""
+    if isinstance(predecessor.get("source_ref"), dict):
+        origin = {"ref": dict(predecessor["source_ref"])}
+        if isinstance(predecessor.get("source_text"), str):
+            origin["text"] = predecessor["source_text"]
+    elif predecessor.get("origin_absent"):
+        origin = {"absent": str(predecessor["origin_absent"])}
+    try:
+        bind_task_to_project(drive_root, tid, pid, origin=origin)
+    except Exception as exc:
+        _report_binding_failure(tid, pid, exc, path="timeout_retry_admission",
+                                drive_root=drive_root)
+        return ""
+    return pid
 
 
 def promote_chat_to_task(evt: dict, ctx: Any) -> dict:
