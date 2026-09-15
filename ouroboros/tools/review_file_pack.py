@@ -451,7 +451,10 @@ def triad_pack_exclusions(
         if not prefix_text:
             continue
         try:
-            current = (repo_dir / rel).read_text(encoding="utf-8")
+            # Exact bytes, like the composed book the prefix carries (a CRLF
+            # checkout keeps its CRLF there); a newline-translating read would
+            # never find the chapter inside the composition on Windows.
+            current = (repo_dir / rel).read_bytes().decode("utf-8")
         except Exception:
             continue
         if current == prefix_text or (member_of and current and current in prefix_text):

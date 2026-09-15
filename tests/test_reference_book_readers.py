@@ -295,3 +295,24 @@ def test_a_mandatory_full_read_pointer_enumerates_the_chapter_closure(tmp_path):
     (tmp_path / "docs/development/only.md").unlink()
     broken = _mandatory_read_pointer(tmp_path, "docs/DEVELOPMENT.md")
     assert "coverage is UNKNOWN" in broken
+
+
+def test_a_crlf_checkout_still_withholds_the_chapter_its_composed_book_carries(tmp_path):
+    """Windows: a checkout that rewrote the chapter files with CRLF (no LF pin, or a
+    fixture written with the platform newline) composes the book from those exact
+    bytes, so the pack's duplicate check must compare the touched chapter's exact
+    bytes too — a newline-translating read never finds it inside the composition."""
+    from ouroboros.tools.review_file_pack import triad_pack_exclusions
+    from ouroboros.tools.review_helpers import load_governance_doc
+
+    files = _chaptered_corpus(tmp_path)
+    for rel, text in files.items():
+        (tmp_path / rel).write_bytes(text.replace("\n", "\r\n").encode("utf-8"))
+    composed = load_governance_doc(tmp_path, "docs/ARCHITECTURE.md")
+    assert composed == "\n\n".join(
+        files[rel].replace("\n", "\r\n") for rel in ("docs/ARCHITECTURE.md", "docs/architecture/only.md")
+    )
+    excluded, _note = triad_pack_exclusions(
+        tmp_path, ["docs/architecture/only.md"], prefix_texts={"docs/ARCHITECTURE.md": composed},
+    )
+    assert "docs/architecture/only.md" in excluded
