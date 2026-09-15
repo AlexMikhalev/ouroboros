@@ -45,6 +45,15 @@ test('current restart outcomes and surviving transactions outrank an old failed 
     assert.match(updateVerdict(stashing).hint, /stashing_local_work/);
 });
 
+test('retained failure does not replace a new request that is still pending', () => {
+    const old = observed('preparing', { active: false, result: 'failed', error: 'old refusal' });
+    for (const phase of ['checking', 'preflighting', 'updating']) {
+        const verdict = updateVerdict(old, phase);
+        assert.equal(verdict.state, phase);
+        assert.equal(verdict.action.disabled, true);
+    }
+});
+
 test('reconnect preserves a preflight or apply whose request is still pending', () => {
     for (const phase of ['preflighting', 'updating']) {
         const listeners = new Map(), reads = [];

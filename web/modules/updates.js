@@ -108,7 +108,9 @@ export function updateVerdict(data = {}, phase = '') {
     );
     if (recovery) phase = ''; // Durable recovery always outranks an older progress observation.
     if (!recovery && !['restarting', 'restart_needed', 'restart_required'].includes(phase)) {
-        const progress = progressVerdict(data, base);
+        const pendingRequest = ['checking', 'preflighting', 'updating'].includes(phase);
+        const currentExecution = data.update_progress?.active || data.update_progress?.result === 'restart_requested';
+        const progress = !pendingRequest || currentExecution ? progressVerdict(data, base) : null;
         if (progress) return progress;
     }
 
@@ -848,7 +850,7 @@ export function initUpdates({ mount, state, ws, openSettingsTab }) {
             // survived (writer-fence refusals leave none) keep an honest
             // restart continuation instead of restoring the ordinary action.
             if (err?.body?.restart_required) restartNeeded = true;
-            await loadStatus();
+            await loadStatus({ preservePhase: false });
         }
     }
 
@@ -888,7 +890,7 @@ export function initUpdates({ mount, state, ws, openSettingsTab }) {
             // Fail-closed: ANY replace failure (the tx-active 409 included)
             // re-reads durable state, and render() alone owns the Replace
             // gate — the catch never re-enables it over stale/unknown state.
-            await loadStatus();
+            await loadStatus({ preservePhase: false });
         } finally {
             replaceInFlight = false;
             render();

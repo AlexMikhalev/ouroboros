@@ -35,6 +35,14 @@ def test_update_progress_pending_reopen_and_failure(direct_server, tmp_path, wid
         pending_apply = []
         try:
             page.add_init_script(f"({_CAPTURE_TEST_SOCKET})();")
+            def source_install_state(route):
+                response = route.fetch()
+                # This test owns pending-request recovery, not served-SHA
+                # reload policy (covered by the WS reconnect unit tests). Use the
+                # supported unversioned-source state during forced reconnect.
+                route.fulfill(response=response, json={**response.json(), "sha": ""})
+
+            page.route("**/api/state", source_install_state)
             page.route("**/api/update/status**", lambda route: route.fulfill(json=status))
             page.route("**/api/update/preflight", lambda route: route.fulfill(json={"merge_plan": plan}))
             page.route("**/api/update/apply", lambda route: pending_apply.append(route))
@@ -118,18 +126,12 @@ def test_successful_recheck_keeps_release_tags_when_failure_ack_refreshes_status
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
         page = browser.new_page(viewport={"width": 1280, "height": 900})
+        pending_check = []
         try:
             page.add_init_script(f"({_CAPTURE_TEST_SOCKET})();")
             page.route("**/api/update/status**", lambda route: route.fulfill(json=status))
 
-            def recheck(route):
-                status["update_progress"] = {}
-                # Real api_update_check publishes this before returning its
-                # fresh payload; the follow-up passive read carries no tags.
-                _emit_ws_frame(page, {"type": "update_progress_changed"})
-                route.fulfill(json={**status, "official_tags": [{"tag": "v7.0.0-test", "sha": "a" * 40}]})
-
-            page.route("**/api/update/check", recheck)
+            page.route("**/api/update/check", lambda route: pending_check.append(route))
             page.goto(direct_server, wait_until="domcontentloaded")
             page.wait_for_selector("#page-chat")
             page.wait_for_function("window.__testSockets?.some(s => s.readyState === 1)")
@@ -137,6 +139,56 @@ def test_successful_recheck_keeps_release_tags_when_failure_ack_refreshes_status
             page.click('[data-dashboard-tab="updates"]')
             expect(page.locator("#btn-update-primary")).to_have_text("Check for updates")
             page.click("#btn-update-primary")
+            expect(page.locator("#updates-summary")).to_have_text("Checking the official channel…")
+            expect(page.locator("#btn-update-primary")).to_be_disabled()
+            status["update_progress"] = {}
+            # Real api_update_check publishes this before returning its fresh
+            # payload; the follow-up passive read carries no tags.
+            _emit_ws_frame(page, {"type": "update_progress_changed"})
+            assert len(pending_check) == 1
+            pending_check.pop().fulfill(json={**status, "official_tags": [{"tag": "v7.0.0-test", "sha": "a" * 40}]})
             expect(page.locator("#updates-official-tags")).to_contain_text("v7.0.0-test")
+        finally:
+            for route in pending_check:
+                route.abort()
+            browser.close()
+
+
+@pytest.mark.serial
+@pytest.mark.ui_browser
+@pytest.mark.parametrize('failed_stage', ['preflight', 'apply'])
+def test_definite_failed_request_releases_local_phase(direct_server, failed_stage):
+    from playwright.sync_api import sync_playwright, expect
+    status = {'managed': True, 'check_ok': True, 'available': True, 'safe_to_apply': True,
+              'current_version': '7.0.0', 'latest_version': '7.0.0',
+              'current_short_sha': 'aaaaaaaa', 'latest_short_sha': 'bbbbbbbb',
+              'update_tx': {'active': False}, 'update_progress': {}, 'warnings': []}
+    plan = {'available': True, 'kind': 'clean', 'local_dirty_count': 0,
+            'base_sha': 'a' * 40, 'target_sha': 'b' * 40,
+            'code_conflict_paths': [], 'doc_conflict_paths': [], 'hot_code_paths': []}
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        page = browser.new_page(viewport={'width': 1280, 'height': 900})
+        try:
+            page.route('**/api/update/status**', lambda route: route.fulfill(json=status))
+            page.route('**/api/update/preflight', lambda route: route.fulfill(
+                status=409 if failed_stage == 'preflight' else 200,
+                json={'error': 'network check failed'} if failed_stage == 'preflight' else {'merge_plan': plan}))
+            page.route('**/api/update/apply', lambda route: route.fulfill(
+                status=409, json={'error': 'the update changed after preflight; check again', 'reason': 'release_moved'}))
+            page.goto(direct_server, wait_until='domcontentloaded')
+            page.wait_for_selector('#page-chat')
+            page.click('[data-nav-page="dashboard"]')
+            page.click('[data-dashboard-tab="updates"]')
+            expect(page.locator('#btn-update-primary')).to_be_enabled()
+            if failed_stage == 'preflight':
+                with page.expect_response('**/api/update/status'):
+                    page.click('#btn-update-primary')
+            else:
+                page.click('#btn-update-primary')
+                with page.expect_response('**/api/update/status'):
+                    page.click('[data-confirm-ok]')
+            page.evaluate('() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))')
+            expect(page.locator('#btn-update-primary')).to_be_enabled(timeout=2000)
         finally:
             browser.close()
