@@ -868,7 +868,7 @@ def _ensure_project_scope(ctx: ToolContext, project_name: str = "", project_id: 
     )
     from ouroboros.project_naming import clean_model_title
 
-    # Run the agent-supplied name through the SAME lexical cleaner the proactive namer and
+    # Run the agent-supplied name through the SAME lexical cleaner admission naming and
     # turn-into-project conversion use (project_naming SSOT) so every project-naming path
     # produces consistent titles (quote/emoji strip, length cap); fall back to the raw value.
     display_name = clean_model_title(project_name) or str(project_name or "").strip()

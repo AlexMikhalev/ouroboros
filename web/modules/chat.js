@@ -3745,10 +3745,10 @@ export function createChatInstance({
         withRemoteActivity(() => updateLiveCardFromLogEvent(msg.data));
     });
 
-    // the proactive namer coined a project name for a fresh card — show it
-    // as the card title up front (turn-into-project then reuses the same name). Not
-    // thread-gated on chat_id: the broadcast carries only task_id, and applySuggestedName
-    // no-ops unless THIS thread already holds that card.
+    // Admission naming (a promoted root, a headless run) coined a name for a
+    // managed card — show it as the card title up front (turn-into-project then
+    // reuses the same name). Not thread-gated on chat_id: the broadcast carries
+    // only task_id, and applySuggestedName no-ops unless THIS thread holds that card.
     onWs('task_named', (msg) => {
         withRemoteActivity(
             () => applySuggestedName(msg?.task_id || '', msg?.suggested_name || ''),
