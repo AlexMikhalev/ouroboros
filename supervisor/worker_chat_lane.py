@@ -280,6 +280,7 @@ def _admit_chat_task(
             agent = _pool()._get_chat_agent()
             activity.actor = agent
             admitted["agent"] = agent
+        from ouroboros.consciousness_authority import apply_consciousness_authority
         from ouroboros.contracts.task_contract import attach_task_contract
 
         if task_constraint:
@@ -387,6 +388,9 @@ def _admit_chat_task(
         # a titled task card, and joins a Project only through the model's own
         # scope tools (owner decision 14=A). Managed promotes keep their
         # admission names (worker_promotion._admitted_suggested_name).
+        # A consciousness wake-up derives its level's disabled_tools and mode cap
+        # here, before the contract reads them (consciousness_authority).
+        apply_consciousness_authority(task)
         attach_task_contract(task)
 
         # Announce the authoritative start immediately (owner decision 2A):

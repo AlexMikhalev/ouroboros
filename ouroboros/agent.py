@@ -47,6 +47,7 @@ from ouroboros.agent_task_pipeline import (
 )
 from ouroboros.task_results import STATUS_RUNNING, write_task_result
 from ouroboros.contracts.task_constraint import normalize_task_constraint
+from ouroboros.consciousness_authority import apply_consciousness_authority
 from ouroboros.contracts.task_contract import attach_task_contract
 from ouroboros.outcomes import infra_failed_axes
 from ouroboros import subagent_bootstrap, subagent_runtime
@@ -480,7 +481,7 @@ class OuroborosAgent:
         if authority_refusal:
             return None, [], {"authority_source_unavailable": authority_refusal}
         drive_logs = self.env.drive_path("logs")
-        task = attach_task_contract(task)
+        task = attach_task_contract(apply_consciousness_authority(task))
         # THE resolution, before anything durable is written about this run: the
         # RUNNING record below is the single atomic write that states model, effort,
         # route, profile, effective executor and the one `capability_delta` together.

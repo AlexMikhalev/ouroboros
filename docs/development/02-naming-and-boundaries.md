@@ -356,6 +356,22 @@ metrics, `typed_routing_action` on the terminal event), never a client-side
 exception list. The same shape hides in "hide unless kind ∈ {…}" and "count
 unless name ∈ {…}": when the list is the rule, the rule is missing.
 
+The one sanctioned exception list of this shape is the Observe level of a
+consciousness wake-up (`ouroboros/tool_capabilities.py::OBSERVE_WORLD_MUTATION_TOOLS`,
+compiled by `ouroboros/consciousness_authority.py`): it names the verbs that
+START work or CHANGE the world so that a new READ tool is available to Observe
+by default, and a test pins it against the catalog's own `mutates_worktree`
+marker so it cannot drift. The same module owns the two consequences a level
+has — the contract's `disabled_tools` and the per-task `runtime_mode_cap`
+(Act/Observe run the tool dispatcher's light gates even on an advanced/pro/
+cyber_pro install, the stricter of the install mode and the cap) — and the
+origin keys everything a wake starts inherits. For a consciousness-origin task
+`disabled_tools` is enforced at DISPATCH ONLY (`registry_guards._disabled_tools`,
+`disabled_tools_dispatch_only`): the schema filters and the capability-omission
+manifest skip it so the wake's provider request shares an owner turn's cached
+prefix byte for byte; the typed dispatch refusal is the mechanism, and the wake
+message names the level. Every other contract keeps both enforcement halves.
+
 ### Task-authored messages are never owner text
 
 Who is speaking through a routing act is ONE fact the host mints by value
@@ -363,7 +379,11 @@ Who is speaking through a routing act is ONE fact the host mints by value
 what each may carry: `docs/architecture/06-agent-core.md` § "Durable memory and
 project focus"). Never derive it again from a proxy — a routing contract only
 chat turns carry, an empty client id, the chat id of the event — and never give
-the model an argument for it. A task's own words are delivered as a task
+the model an argument for it. A consciousness wake-up runs on the direct lane
+but nobody typed it: its `is_direct_chat` fact does not make it an owner turn
+(`metadata.initiator == "consciousness"` — it speaks as a task), while a
+consciousness root that relays a REAL owner message it drained keeps the
+owner's provenance through the two other triggers. A task's own words are delivered as a task
 message (`KIND_TASK_MESSAGE`, provenance `independent_task`), never as
 `KIND_OWNER_TEXT`, and the provenance value lands at three seams in one change:
 the writer's closed set (`owner_mailbox.TASK_MESSAGE_PROVENANCES`), the render
