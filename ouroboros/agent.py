@@ -60,7 +60,7 @@ from ouroboros.subagents import (
     resolve_subagent_dispatch,  # noqa: F401 -- the agent module keeps its historical import surface for the dispatch leaf
 )
 from ouroboros.settings_setup_contract import resolve_total_budget_usd
-from ouroboros.subagent_messages import subagent_message_meta
+from ouroboros.subagent_messages import initiator_meta, subagent_message_meta
 
 
 _worker_boot_logged = False
@@ -1175,7 +1175,10 @@ class OuroborosAgent:
     def _subagent_progress_meta(self, event: str) -> Dict[str, Any]:
         metadata = self._current_task_metadata if isinstance(self._current_task_metadata, dict) else {}
         task_id = str(self._current_task_id or metadata.get("subagent_task_id") or metadata.get("task_id") or "")
-        return subagent_message_meta(metadata, task_id=task_id, event=event or "progress")
+        meta = subagent_message_meta(metadata, task_id=task_id, event=event or "progress")
+        # The origin label rides every progress/heartbeat frame of the turn.
+        meta.update(initiator_meta(metadata))
+        return meta
 
     def _start_task_heartbeat_loop(self, task_id: str) -> Optional[threading.Event]:
         if not task_id.strip():

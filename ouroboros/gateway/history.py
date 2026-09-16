@@ -26,7 +26,7 @@ from ouroboros.cost_projection import carry_cost_meta, live_root_cost_projection
 from ouroboros.outcomes import normalize_outcome_axes
 from ouroboros.post_task_checkpoint import post_task_synthesis_is_open
 from ouroboros.project_dialogue import historical_terminal_projection
-from ouroboros.subagent_messages import SUBAGENT_MESSAGE_FIELDS, executor_observation_meta, subagent_message_meta
+from ouroboros.subagent_messages import SUBAGENT_MESSAGE_FIELDS, executor_observation_meta, initiator_meta, subagent_message_meta
 from ouroboros.task_results import TASK_COST_META_FIELDS as _TASK_COST_META_FIELDS
 from ouroboros.utils import JsonlChainUnreadable, strip_markdown, utc_now_iso
 
@@ -99,6 +99,7 @@ _PROGRESS_META_FIELDS = (
     # A duplicate lifecycle call is a typed pointer/ack, not a task. Preserve
     # the pointer on reload while its outer task_id stays empty.
     "lifecycle_pointer",
+    "initiator",  # the turn's origin label (a consciousness wake-up)
 )
 
 _SKILL_REVIEW_STRING_FIELDS = (
@@ -363,9 +364,9 @@ def _copy_task_summary_metadata(rec: Dict[str, Any], entry: Dict[str, Any]) -> N
     # file survives (row = fallback only). ABI-3: CONVERTED, not copied — a
     # stored legacy pair resolves deprecated-wins under the honest names only.
     rec.update(carry_cost_meta(entry))
-    # Live-card outcome axes ride the summary row too (the pruned-result
-    # fallback); persisted task_results values still override them below.
-    rec.update({key: entry[key] for key in ("outcome_phase", "outcome_final") if key in entry})
+    # Live-card outcome axes and the origin label ride the summary row too (the
+    # pruned-result fallback); persisted task_results values still override them below.
+    rec.update({key: entry[key] for key in ("outcome_phase", "outcome_final", "initiator") if key in entry})
 
 
 def _load_terminal_result(
@@ -495,7 +496,7 @@ def _annotate_terminal_task_truth(
                 terminal_truth: Dict[str, Any] = {
                     "outcome_axes": normalize_outcome_axes(result), "_is_direct_chat": bool(result.get("_is_direct_chat")),
                     "outcome_phase": outcome_phase(result, {}), "outcome_final": task_id not in finalizing_tasks,
-                }
+                    **initiator_meta(result)}  # + the origin label, from the persisted metadata
                 if isinstance(result.get("model_execution"), dict):
                     terminal_truth["model_execution"] = dict(result["model_execution"])
                 if result.get("reason_code"):
@@ -891,7 +892,7 @@ def _collect_chat_rows(
             if "task_terminal_status" in entry:
                 rec["task_terminal_status"] = str(entry.get("task_terminal_status") or "")
             _copy_task_summary_metadata(rec, entry)
-            for field in SUBAGENT_MESSAGE_FIELDS:
+            for field in (*SUBAGENT_MESSAGE_FIELDS, "initiator"):  # lineage + the origin label
                 if field in entry:
                     rec[field] = entry[field]
             combined.append(rec)

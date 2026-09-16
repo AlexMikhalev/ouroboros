@@ -20,6 +20,7 @@ from typing import Any, Dict
 from ouroboros.dialogue_provenance import presence_provenance_fields
 from ouroboros.llm_claudexor import propagate_model_error
 from ouroboros.outcomes import normalize_outcome_axes
+from ouroboros.subagent_messages import initiator_meta
 from ouroboros.synthesis_cost_text import _summary_row_cost_fields, _synthesis_cost_text, _synthesis_cost_usd, _synthesis_usage_snapshot_text
 from ouroboros.task_finalization import sealed_final_prompt_section
 from ouroboros.tool_capabilities import routing_action_for_tool
@@ -372,9 +373,9 @@ def _run_task_summary(env, llm, task, usage, llm_trace, drive_logs, review_evide
                 "project_id": str(task.get("project_id") or ""), "chat_id": int(task.get("chat_id") or 0), "delegation_role": str(task.get("delegation_role") or ""), "role": str(task.get("role") or ""),
                 "status": str(stored_result.get("status") or "completed"), "outcome": completion_status_label(stored_result, usage), "outcome_phase": outcome_phase(stored_result, usage),
                 "outcome_final": False, "outcome_authority": "pre_finalization_narrative_context",
-                # The chat block reads its chrome and the addressing fact from
-                # this row when the task result has been pruned.
-                "_is_direct_chat": bool(task.get("_is_direct_chat")),
+                # The chat block reads its chrome, the addressing fact and the
+                # origin label from this row when the task result has been pruned.
+                "_is_direct_chat": bool(task.get("_is_direct_chat")), **initiator_meta(task),
                 **({"typed_routing_action": str(usage["typed_routing_action"])} if usage.get("typed_routing_action") else {}),
                 "text": value, **tool_metrics, "rounds": rounds, "outcome_axes": outcome_axes, "reason_code": reason_code,
                 "result_ref": result_ref, "source_coverage": {"task_result": result_ref}, **_summary_row_cost_fields(usage), **presence_fields,

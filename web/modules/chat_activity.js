@@ -53,6 +53,9 @@ export function senderLabel(role, isProgress = false, systemType = '', opts = {}
         return '📋 System';
     }
     if (isProgress) return '💬 Thought';
+    // A self-initiated turn (a consciousness wake-up) signs its final bubble
+    // through the same sender line the user bubble uses for its source.
+    if (opts.initiator === 'consciousness') return 'Ouroboros · Consciousness';
     return 'Ouroboros';
 }
 
@@ -1079,7 +1082,7 @@ export function costMetaKeys(src) {
 
 const CARD_META_KEYS = [
     ...COST_META_KEYS, 'executor_route', 'execution_evidence', 'actual_substrate',
-    'executor_observation', 'model_execution', 'tool_calls', 'model', 'ts',
+    'executor_observation', 'model_execution', 'tool_calls', 'model', 'ts', 'initiator',
 ];
 export function cardMetaKeys(src) {
     return Object.fromEntries(CARD_META_KEYS.map((key) => [key, src?.[key]]));
@@ -1091,6 +1094,7 @@ export function renderLiveCardMeta(record, { agentModel = record?.agentModel || 
     if (!record?.metaEl) return false;
     const html = executorIdentityMarkup(record.executorChip, { agentModel: compactModel(agentModel) }) + [
         record.groupId === 'bg-consciousness' ? 'Background thinking' : '',
+        record.initiator === 'consciousness' ? 'Consciousness' : '',
         record.historicalUnavailable ? 'Outcome unavailable' : (record.historicalUnconfirmed ? 'Activity unconfirmed' : ''),
         modelExecutionLabel(record.modelExecution),
         Number.isInteger(record.toolCalls) ? `${record.toolCalls} tool ${record.toolCalls === 1 ? "call" : "calls"}` : '',

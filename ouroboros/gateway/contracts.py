@@ -199,6 +199,9 @@ class ChatOutbound(TypedDict):
     # frame, never an ephemeral decision turn. Gates the UI "Cancel run" action.
     cancelable: NotRequired[bool]
     _is_direct_chat: NotRequired[bool]  # lane fact stamped on a direct turn's own frames
+    # The turn's origin label: "consciousness" on every frame and row of a
+    # self-initiated wake-up (and the roots it starts); absent on an owner's turn.
+    initiator: NotRequired[str]
     # Monetary projections are nullable when the physical-attempt ledger cannot
     # be read.  ``None`` is deliberately distinct from a confirmed $0 result.
     # C2 (owner 10=B) named these the HONEST names — accounted upper bounds,

@@ -39,7 +39,7 @@ from ouroboros.outcomes import (
 from ouroboros.outcome_receipt_store import task_verification_receipts
 from ouroboros.contracts.task_contract import build_task_contract
 from ouroboros.subagents import envelope_from_task, substrate_result_fields
-from ouroboros.subagent_messages import subagent_message_meta
+from ouroboros.subagent_messages import initiator_meta, subagent_message_meta
 from ouroboros.utils import utc_now_iso, append_jsonl, truncate_review_artifact as _truncate_with_notice
 from ouroboros.utils import in_worker_process
 from ouroboros.llm_claudexor import propagate_model_error
@@ -531,7 +531,9 @@ def emit_task_results(
         task["_skip_post_task_synthesis"] = True
     _presence = is_presence_task(task)
     _typed_routing_action = str(getattr(ctx, "_typed_routing_action_emitted", "") or "").strip()
-    _message_meta = subagent_message_meta(task, task_id=str(task.get("id") or ""))
+    # The final frame's durable identity: the child lineage and the turn's
+    # origin label (a wake-up's "consciousness"), so the chat row keeps both.
+    _message_meta = {**subagent_message_meta(task, task_id=str(task.get("id") or "")), **initiator_meta(task)}
     from ouroboros.post_task_synthesis import task_tool_metrics
     tool_metrics = task_tool_metrics(llm_trace)
     send_event = {

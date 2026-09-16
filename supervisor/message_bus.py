@@ -1312,6 +1312,10 @@ def log_chat(
                     record[key] = meta[key]
         if "task_terminal_status" in meta:
             record["task_terminal_status"] = str(meta.get("task_terminal_status") or "")
+        # The turn's origin label (a consciousness wake-up) survives the row
+        # like the terminal status: a final bubble is labelled on reload too.
+        if meta.get("initiator"):
+            record["initiator"] = str(meta.get("initiator") or "")
         if isinstance(meta.get("origin_message_ref"), dict):
             record["origin_message_ref"] = dict(meta["origin_message_ref"])
         if filename:

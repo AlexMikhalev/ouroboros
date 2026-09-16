@@ -333,6 +333,9 @@
  *   The lane fact of a direct conversation turn, stamped by the host on the
  *   turn's own progress/tool frames and on every task_done; the chat block
  *   reads it before any census lists the turn.
+ * @property {string=} initiator
+ *   The turn's origin label: "consciousness" on every frame and row of a
+ *   self-initiated wake-up (and the roots it starts); absent on an owner's turn.
  * @property {boolean=} cancelable
  *   v6.82 (P5): host-attested — this frame's task is a supervisor-queue task that
  *   POST /api/tasks/{id}/cancel can force-cancel: a lineage-resolved pooled root or

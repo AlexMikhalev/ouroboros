@@ -315,3 +315,23 @@ test('Dashboard binds stored, keyboard and programmatic selection to the same na
     await strip.fire('click', { target: costs });
     assertSelected('logs');
 });
+
+test('Logs files a wake-up group under Consciousness with its label, from the origin fact on its frames', async (t) => {
+    const { mount, routes, ws } = setup(t);
+    for (const name of ['events', 'tools', 'progress', 'supervisor']) routes.set(logUrl(name), response({ entries: [] }));
+    initLogs({ mount, ws, state: { activePage: 'dashboard', dashboardActiveSubtab: 'logs' } });
+    ws.emit('log', { data: { type: 'tool_call_finished', tool: 'read_file', is_error: false, task_id: 'wake-1',
+        initiator: 'consciousness', ts: '2026-09-16T12:00:00Z' } });
+    ws.emit('log', { data: { type: 'tool_call_finished', tool: 'read_file', is_error: false, task_id: 'turn-2',
+        ts: '2026-09-16T12:00:01Z' } });
+    // A later frame of the same wake without the stamp (a supervisor-rebuilt
+    // row) keeps the group's label: the fact is sticky once seen.
+    ws.emit('log', { data: { type: 'task_heartbeat', task_id: 'wake-1', phase: 'running', ts: '2026-09-16T12:00:02Z' } });
+    await settle();
+    const entries = mount.querySelector('#log-entries');
+    const card = (id) => entries.children.find((node) => node.dataset.taskGroup === id);
+    assert.equal(card('wake-1').dataset.category, 'consciousness');
+    assert.equal(card('wake-1').querySelector('[data-task-kind]').textContent, 'Consciousness');
+    assert.equal(card('turn-2').dataset.category, 'tasks');
+    assert.equal(card('turn-2').querySelector('[data-task-kind]').textContent, 'task turn-2');
+});

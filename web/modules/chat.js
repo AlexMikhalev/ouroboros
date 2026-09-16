@@ -1664,6 +1664,8 @@ export function createChatInstance({
             record.lastHumanHeadline = headline;
         }
         if (summary.model) record.agentModel = summary.model;
+        // The origin label (a consciousness wake-up) is sticky once any frame names it.
+        if (summary.initiator) record.initiator = summary.initiator;
 
         const shouldPromote = Boolean(summary.promote) || record.finished;
         const activeHeadline = shouldPromote
@@ -2139,6 +2141,7 @@ export function createChatInstance({
         const senderLabelOverride = opts.senderLabel || '';
         const senderSessionId = opts.senderSessionId || '';
         const source = opts.source || '';
+        const initiator = opts.initiator || '';
         const systemType = opts.systemType || '';
         const taskId = opts.taskId || '';
         const projectId = opts.projectId || '';
@@ -2186,6 +2189,7 @@ export function createChatInstance({
                 markdown: !!markdown,
                 systemType,
                 source,
+                initiator,
                 senderLabel: senderLabelOverride,
                 senderSessionId,
                 clientMessageId,
@@ -2214,7 +2218,7 @@ export function createChatInstance({
         stampHistoryNode(bubble, opts.historyId, opts.historyPosition);
 
         const sender = senderLabel(role, isProgress, systemType, {
-            source, senderLabel: senderLabelOverride, senderSessionId,
+            source, senderLabel: senderLabelOverride, senderSessionId, initiator,
         }, chatSessionId);
         const rendered = role === 'user'
             ? escapeHtml(text)
@@ -2505,6 +2509,7 @@ export function createChatInstance({
                         historyId: msg.history_id, historyPosition: msg.history_position,
                         systemType: msg.system_type || '',
                         source: msg.source || '',
+                        initiator: msg.initiator || '',
                         senderLabel: msg.sender_label || '',
                         senderSessionId: msg.sender_session_id || '',
                         clientMessageId: msg.client_message_id || '',
@@ -2795,6 +2800,7 @@ export function createChatInstance({
                 addMessage(msg.text, msg.role, !!msg.markdown, msg.ts || null, false, {
                     systemType: msg.systemType || '',
                     source: msg.source || '',
+                    initiator: msg.initiator || '',
                     senderLabel: msg.senderLabel || '',
                     senderSessionId: msg.senderSessionId || '',
                     clientMessageId: msg.clientMessageId || '',
@@ -3704,6 +3710,7 @@ export function createChatInstance({
             const added = addMessage(msg.content, msg.role, msg.markdown, msg.ts || null, false, {
                 systemType: msg.system_type || '',
                 source: msg.source || '',
+                initiator: msg.initiator || '',
                 taskId: explicitTaskId,
             });
             if (added || changed) incrementUnreadIfNeeded(msg);

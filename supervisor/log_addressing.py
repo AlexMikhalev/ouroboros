@@ -186,10 +186,11 @@ class TurnEventQueue:
     capture rule of DEVELOPMENT.md). Wraps the turn's real queue and stamps
     the turn chat onto its own still-unaddressed task-scoped payloads."""
 
-    def __init__(self, inner: Any, task_id: Any, chat_id: Any) -> None:
+    def __init__(self, inner: Any, task_id: Any, chat_id: Any, initiator: Any = "") -> None:
         self._inner = inner
         self._task_id = str(task_id or "")
         self._chat_id = int(chat_id or 0)
+        self._initiator = str(initiator or "")
 
     def stamp(self, item: Any) -> Any:
         if isinstance(item, dict):
@@ -202,6 +203,11 @@ class TurnEventQueue:
                 # the chat block never wears managed chrome (a Task title, a
                 # conversion control) in the window before the census lists it.
                 data.setdefault("_is_direct_chat", True)
+                # The turn's origin label (a consciousness wake-up) rides the
+                # same events, so a tool-only wake is filed and labelled from
+                # its first frame; an owner's turn carries no initiator.
+                if self._initiator:
+                    data.setdefault("initiator", self._initiator)
                 # The host-attested Stop marker rides the turn's WORK frames as
                 # it rides its narration rows (events_chat_delivery stamps those
                 # through the same registry): a turn that only calls tools

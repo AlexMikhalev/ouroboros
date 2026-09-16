@@ -30,12 +30,16 @@ const ERROR_LOG_PHASES = new Set(['error', 'timeout', 'lifecycle_error']);
 
 export function categorizeLogEvent(evt, view = summarizeLogEvent(evt)) {
     const t = evt.type || evt.event || '';
+    // A wake-up's rows carry the turn's origin label (`initiator`); the
+    // literal bg-consciousness id is the legacy loop's slot.
+    const wake = evt.initiator === 'consciousness';
     if (evt.is_progress) {
-        return evt.task_id === 'bg-consciousness' ? 'consciousness' : 'tasks';
+        return evt.task_id === 'bg-consciousness' || wake ? 'consciousness' : 'tasks';
     }
     // Severity comes from the typed projection, never from the event name; the
     // name substrings below only pick the domain family of a non-error row.
     if (ERROR_LOG_PHASES.has(String(view?.phase || ''))) return 'errors';
+    if (wake) return 'consciousness';
     if (t.includes('llm') || t.includes('model')) return 'llm';
     if (t.includes('tool') || evt.tool) return 'tools';
     if (t.includes('task') || t.includes('evolution') || t.includes('review')) return 'tasks';
@@ -1049,6 +1053,7 @@ export function taskTerminalSummary(evt = {}) {
         ...(evt.model_execution && typeof evt.model_execution === 'object'
             ? { modelExecution: evt.model_execution } : {}),
         ...(Number.isInteger(evt.tool_calls) ? { toolCalls: evt.tool_calls } : {}),
+        ...(evt.initiator ? { initiator: String(evt.initiator) } : {}),
     };
 }
 
@@ -1071,7 +1076,16 @@ export function modelExecutionLabel(fact) {
 
 }
 
+// The turn's origin label rides every projected frame of the turn (progress,
+// tool, heartbeat, terminal) so the block's meta line can name it whichever
+// frame minted the card; the projection branches below stay label-blind.
 export function summarizeChatLiveEvent(evt) {
+    const view = summarizeChatLiveEventView(evt);
+    if (view && evt?.initiator) view.initiator = String(evt.initiator);
+    return view;
+}
+
+function summarizeChatLiveEventView(evt) {
     const t = evt.type || evt.event || 'unknown';
     const groupId = getLogTaskGroupId(evt);
     const progressText = describeText(String(evt.content || evt.text || '').replace(/^💬\s*/, ''), 240, { markdown: true });
