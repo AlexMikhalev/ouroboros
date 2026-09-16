@@ -322,7 +322,11 @@ def test_cap_reached_returns_typed_exhausted_result_hold_and_event(harness, monk
     assert gate["status"] == "cycles_exhausted" and gate["allow"] is True and gate["closed"] is False
     decision = force_plan_decision(ctx, {}, enforcement="blocking")
     assert decision["required"] and decision["self_opened"] and decision["status"] == "cycles_exhausted"
-    assert "blocked_with_evidence" in plan_review_disclosure(decision)
+    # Owner-readable prose says the ending in words; the ledger identifier
+    # stays on the typed objective axis asserted below.
+    disclosure = plan_review_disclosure(decision)
+    assert "the task ends blocked with its evidence recorded" in disclosure
+    assert "blocked_with_evidence" not in disclosure
     events = []
     while not harness.events.empty():
         events.append(harness.events.get_nowait())

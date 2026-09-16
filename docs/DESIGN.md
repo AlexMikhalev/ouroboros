@@ -219,8 +219,10 @@ That row keeps a neutral owner anchor visible, but hides task status and typing
 until a real task status or activity arrives; review presence alone never means
 `Working`, `Done`, or owner attention.
 
-Local diagnostic failures remain inspectable in details and Logs, but do not
-relabel the whole still-working task. A failed child keeps a compact factual
+A reviewer panel that settles after its task already ended adds one System
+row to the task's room naming the verdict and which revision it covered; it
+never changes the finished card. Local diagnostic failures remain inspectable
+in details and Logs, but do not relabel the whole still-working task. A failed child keeps a compact factual
 `Failed` marker inside its parent while the root continues under its own
 authoritative status. Internal reason codes belong in details and diagnostics,
 not compact headlines. Where a card does show a cause, it says it in the owner's
@@ -501,20 +503,29 @@ reload and on reconnect (a turn that moved itself into a Project with
 Project room, and Main replays only the owner message and the Started
 annotation); only the row content differs by source.
 
-The block is one component with two chromes, chosen by the host's
-`_is_direct_chat` fact (census kind, the rebuilt terminal event, history rows),
-never by the client. A managed or Swarm root keeps the task card: `Task` title,
-Working/Done chip, `Turn into project` unless its origin is already bound. A
-direct conversation turn renders a compact activity block: no `Task` title, no
-Working/Done chip, a small running indicator and Stop while the turn runs, the
-wait controls while a wait is open, and the tool count, cost and duration in
-the collapsed header once the turn ends (a replayed header carries the count
-and cost; duration is a live fact). A direct turn is never offered `Turn
-into project`; conversion happens only through the model's own scope tools. A
-block whose only reason to exist was open attention leaves when that attention
-closes: a wait-only block disappears when the wait resolves, and the resolved
-episode's no-reopen ledger survives with the record, so a stale revision cannot
-bring the block back.
+The block's chrome follows the work it stands on
+(`web/modules/chat.js::blockHasWork`, the presence facts minus open attention
+and minus a bare terminal outcome), never the lane that ran the turn (owner
+decision 16.09: real work is a task card, a greeting is nothing). A block with
+work — an always-shown kind, a review group, a child card, a tool or narration
+row, a tool error — is the task card whether a managed root or a direct
+conversation turn produced it: a title (the coined name, the latest narration
+headline, or the `Working…`/`Task activity` placeholder), the status chip, Stop
+while the host attests it, and `Turn into project` in Main unless its origin is
+already bound (a direct turn's later rows then route to the Project room like a
+turn that called `ensure_project_scope`). A block that exists only for open
+attention — a model wait, a pending or host-offered Stop — or only for a
+non-Done ending of a turn that did no work carries no title placeholder and no
+conversion; its chip says the state it is in (Waiting…, Cancelling…, Failed),
+the wait controls stay, and its first row of work gives it the title. The
+collapsed header carries the tool count, cost and duration once the turn ends
+(a replayed header carries the count and cost; duration is a live fact). The
+host's `_is_direct_chat` fact keeps its host jobs (routing, census `kind`, Stop
+custody, terminal rows) and, on the client, only the header pill (a direct turn
+keeps the census verdict beside its block). A block whose only reason to exist
+was open attention leaves when that attention closes: a wait-only block
+disappears when the wait resolves, and the resolved episode's no-reopen ledger
+survives with the record, so a stale revision cannot bring the block back.
 
 An addressing call (`promote_chat_to_task`, `route_to_project`, `steer_task`, `ensure_project_scope` —
 the routing-verb family `ouroboros/tool_capabilities.py::ROUTING_VERBS` owns) is stamped by
@@ -547,7 +558,7 @@ open default behind a closed exception list").
 
 Quota exhaustion and a confirmed need to sign in again use the same component,
 `model_wait.js` with `model_wait.css`, inside the turn's existing host: the task
-card of a managed root, the activity block of a direct turn. Each
+card of a turn that has done work, the bare block of a turn that has not. Each
 waiting role has its own row; the model, account and reason are separate facts.
 The controls stay visible when the task's timeline is collapsed. Waiting carries
 a quiet warning status and no computation animation, activity counter or invented

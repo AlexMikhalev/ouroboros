@@ -646,6 +646,53 @@ def routing_option_label(option: Any) -> str:
 OUTCOME_PHASE_HEADLINE = {"working": "Working", "done": "Done", "warn": "Done with warnings",
                           "error": "Failed", "cancelled": "Cancelled"}
 
+# One owner sentence per typed cause, for BOTH lifecycle writers and the card.
+# Keyed on the CODE only — never on (status × reason): the status word already
+# speaks, and a product of the two would be a matrix nobody maintains. A code
+# with no sentence stays raw (docs/DESIGN.md "Status and chips"), and the raw
+# code stays typed on the row. web/modules/log_events.js carries the twin;
+# web/tests/fixtures/outcome_phase_parity.json pins both.
+TASK_CAUSE_PHRASES = {
+    # Acceptance-decision reasons. A clean accepted decision renders no clause,
+    # so clean_pass and clean_pass_obligations_closed carry no sentence; an
+    # accepted decision with a sentence here still states its cause.
+    "previous_revision_accepted": "The reviewers approved the earlier version of this answer; it changed before they finished.",
+    "author_finish": "The answer was delivered on Main's own judgement; the reviewers had not signed it off.",
+    "review_degraded": "No reviewer verdict was established for this answer.",
+    "infra_failure": "A review infrastructure failure prevented a settled verdict.",
+    "dialogue_terminal": "The reviewers and Main could not agree, and both positions were kept.",
+    "improvement_capsule": "The reviewers asked for one more pass and Main was given their notes.",
+    "fence_reopen_failed": "The requested extra pass could not be started, so the answer stands as it was.",
+    "review_cycles_exhausted": "The task used up its review rounds before the answer was signed off.",
+    "open_obligations": "The answer was delivered with reviewer requests still open.",
+    "improvement_window_closed": "There was no room left for another pass, so the answer stands as it was.",
+    "capsule_spent": "The one allowed improvement pass was already used.",
+    "reviewer_fail_no_capsule": "A reviewer rejected the answer and suggested nothing to change.",
+    "no_actionable_changes": "The re-review was not clean and suggested nothing to change.",
+    "identical_acceptance_refused": "Nothing had changed since the last review, so the recorded verdict stands.",
+    "review_skipped_deadline_reserve": "There was not enough time left to review the answer.",
+    "delivery_binding_superseded": "The answer or its evidence changed, so the earlier review no longer covered it.",
+    "owner_followup": "A new message from you arrived, so the review was set aside for it.",
+    "evidence_refresh": "The work changed after the review was frozen, so it no longer covered the answer.",
+    "revision_unavailable_on_forced_rail": "The task had to stop, so the requested rework never happened.",
+    "owner_hurry": "You asked me to hurry, so no further review was started.",
+    "unspecified": "The answer was not signed off, and no cause was recorded.",
+    # The rail that ended the task before an owed acceptance panel could run.
+    "acceptance_bypassed_budget_exhausted": "The task ran out of budget before the answer could be reviewed.",
+    "acceptance_bypassed_round_limit": "The task hit its round limit before the answer could be reviewed.",
+    "acceptance_bypassed_deadline": "The task ran out of time before the answer could be reviewed.",
+    "acceptance_bypassed_provider_unavailable": "The model provider was unavailable, so the answer was never reviewed.",
+    "acceptance_bypassed_context_overflow": "The task outgrew its context before the answer could be reviewed.",
+    "acceptance_bypassed_children_unabsorbed": "Some sub-tasks had not been folded in, so the answer was never reviewed.",
+    # Execution reason codes, carried verbatim from the card's own old table.
+    "plan_review_advisory": "Plan review never closed; the work continued under advisory enforcement",
+    "host_child_status_suffix": "A child task had not settled when the answer was delivered",
+    "invalid_delivery_control_after_repair": "The delivery control object was still malformed after repair",
+    "budget_exhausted": "The task ran out of budget before it could finish cleanly",
+    "delivery_control_degraded": "Delivery finished in a degraded control state",
+    "delegated_custody_unreconciled": "Some delegated work was never reconciled.",
+}
+
 
 def outcome_phase(result: Dict[str, Any], event: Dict[str, Any]) -> str:
     """The host mirror of the browser's terminality gate and severity fold.
@@ -979,20 +1026,18 @@ def _append_terminal_task_projection(
         phase = outcome_phase(effective, event)
         outcome = OUTCOME_PHASE_HEADLINE[phase]
         row_chat_id = int(event.get("chat_id") or task.get("chat_id") or 0)
-        excerpt = _completion_excerpt(effective, chat_id=row_chat_id)
-        details = f'Details: get_task_result(task_id="{tid}")'
-        text = (
-            f"{outcome}. role={role}; parent={parent_id or 'unknown'}; "
-            f"root={root_id}; project={project_id or 'none'}."
-        )
-        if excerpt:
-            text += f" {excerpt}"
+        # The room IS the project and ``result_ref`` IS the pointer, so the row
+        # says in words only what the model cannot read off the typed fields:
+        # ``memory._format_chat_line`` renders the text and drops every other
+        # key, leaving lineage as the one fact that must stay prose.
+        text = (f"{outcome}. Root task {tid}." if is_root
+                else f"{outcome}. {role} (child {tid} of {parent_id or 'unknown'}).")
         verdict = _completion_verdict(effective, event)
         if verdict:
             text += f" {verdict}"
-        depth = (effective.get("swarm_efficiency") or {}).get("depth") if isinstance(effective.get("swarm_efficiency"), dict) else None
-        if isinstance(depth, dict) and depth.get("requested_depth") is not None:
-            text += f" Depth requested={depth['requested_depth']}, permitted={depth.get('permitted_depth')}, achieved={depth.get('achieved_depth')} ({depth.get('status')})."
+        excerpt = _completion_excerpt(effective, chat_id=row_chat_id, salvage_only=True)
+        if excerpt:
+            text += f" {excerpt}"
         result_ref = {"kind": "task_result", "task_id": tid, "reader": "get_task_result"}
         row = {
             "ts": str(event.get("ts") or effective.get("ts") or utc_now_iso()),
@@ -1007,7 +1052,7 @@ def _append_terminal_task_projection(
             "outcome_authority": "canonical_task_result_after_finalization",
             "outcome_axes": effective.get("outcome_axes") or event.get("outcome_axes") or {},
             "reason_code": reason, "result_ref": result_ref,
-            "text": f"{text} {details}",
+            "text": text,
         }
         if isinstance(effective.get("model_execution"), dict):
             row["model_execution"] = dict(effective["model_execution"])
@@ -1079,7 +1124,8 @@ def _stop_receipt_reached_chat(result: Dict[str, Any], chat_id: Any) -> bool:
     return lineage is not None and str(lineage) == str(chat_id)
 
 
-def _completion_excerpt(result: Dict[str, Any], *, chat_id: Any = None) -> str:
+def _completion_excerpt(result: Dict[str, Any], *, chat_id: Any = None,
+                        salvage_only: bool = False) -> str:
     """One plain-text excerpt for BOTH lifecycle writers (event + task_summary).
 
     Markdown markers are stripped BEFORE whitespace flattening: the stripper's
@@ -1093,7 +1139,14 @@ def _completion_excerpt(result: Dict[str, Any], *, chat_id: Any = None) -> str:
     the caller's own pointer keeps owning the untruncated copy. ``chat_id`` is
     the row's destination: only there can the stop receipt already have
     published the same text, and only there does the label stand alone.
+
+    ``salvage_only`` is how the durable rows ask for that ONE excerpt and
+    nothing else: a cut of the model's own answer is already in the room the
+    row lives in, while salvaged bytes exist nowhere else.
     """
+    salvaged = str(result.get("terminal_origin") or "") == TERMINAL_ORIGIN_HOST_SALVAGE
+    if salvage_only and not salvaged:
+        return ""
     body = ""
     for key in ("summary", "result", "error"):
         body = " ".join(strip_markdown(str(result.get(key) or "")).split())
@@ -1102,7 +1155,7 @@ def _completion_excerpt(result: Dict[str, Any], *, chat_id: Any = None) -> str:
     if not body:
         return ""
     excerpt = body if len(body) <= 240 else body[:239].rstrip() + "…"
-    if str(result.get("terminal_origin") or "") != TERMINAL_ORIGIN_HOST_SALVAGE:
+    if not salvaged:
         return excerpt
     if _stop_receipt_reached_chat(result, chat_id):
         return f"{SALVAGE_EXCERPT_LABEL}."
@@ -1141,11 +1194,15 @@ def _completion_verdict(result: Dict[str, Any], event: Dict[str, Any]) -> str:
     """One TERMINATED host clause for BOTH lifecycle rows.
 
     A host row must not present an unaccepted claim as the whole story: a
-    non-accepted decision leads with its full upstream-bounded rationale;
-    otherwise the execution reason stands. The Python twin of
-    ``taskReasonDetail``'s acceptance branch; callers add no punctuation.
+    non-accepted decision speaks through the owner sentence of its own typed
+    reason, otherwise the execution reason speaks. The stored reviewer
+    rationale never reaches the row — it stays in the card, the task result and
+    Logs, which is the complete text this pointer resolves to. The Python twin
+    of ``taskReasonDetail``; callers add no punctuation.
     """
-    from ouroboros.outcomes import ACCEPTANCE_ACCEPTED, REASON_OWNER_REQUESTED_FINALIZATION
+    from ouroboros.outcomes import (
+        ACCEPTANCE_ACCEPTED, REASON_FINAL_MESSAGE, REASON_OWNER_REQUESTED_FINALIZATION,
+    )
 
     decision: Dict[str, Any] = {}
     veto: Dict[str, Any] = {}
@@ -1158,30 +1215,31 @@ def _completion_verdict(result: Dict[str, Any], event: Dict[str, Any]) -> str:
             if isinstance(holder, dict) and isinstance(holder.get("acceptance_decision"), dict):
                 decision = holder["acceptance_decision"]
     status = str(decision.get("status") or "").strip()
+    cause = str(decision.get("reason") or "")
     reason = str(result.get("reason_code") or event.get("reason_code") or "")
-    # A healed debt is never restored here. The objective warning the overlay
-    # froze keeps the headline at "Done with warnings" and the refresh may not
-    # rewrite it, but that is the axis speaking about what was true at write
-    # time; naming the code again would state a debt the same record shows as
-    # empty. The current execution reason speaks when there is one, otherwise
-    # the row states no cause and leaves the headline to the axis that owns it.
-    reason, custody = _custody_debt_reason(reason, result, event)
-    if (reason != REASON_OWNER_REQUESTED_FINALIZATION and status != ACCEPTANCE_ACCEPTED
-            and status and outcome_phase(result, event) in {"done", "warn"}):
-        clause = f"Acceptance: {status}"
-        rationale = " ".join(strip_markdown(str(decision.get("rationale") or "")).split())
-        if rationale:
-            clause += " — " + rationale
-    elif reason and reason != REASON_OWNER_REQUESTED_FINALIZATION:
-        detail = veto.get("detail") if veto.get("reason") == reason else ""
-        clause = f"Reason: {' '.join(strip_markdown(str(detail)).split()) if detail else reason}"
-        if custody:
-            clause += f" ({custody})"
-    elif custody:
-        clause = f"Reason: {custody}"
-    else:
+    if (reason != REASON_OWNER_REQUESTED_FINALIZATION and status
+            and (status != ACCEPTANCE_ACCEPTED or cause in TASK_CAUSE_PHRASES)
+            and outcome_phase(result, event) in {"done", "warn"}):
+        clause = TASK_CAUSE_PHRASES.get(cause, cause)
+    elif reason in {REASON_OWNER_REQUESTED_FINALIZATION, REASON_FINAL_MESSAGE}:
         return ""
-    return clause if clause.endswith((".", "!", "?", "…")) else clause + "."
+    else:
+        # A healed debt is never restored here. The objective warning the
+        # overlay froze keeps the headline and the refresh may not rewrite it,
+        # but naming the code again would state a debt the same record shows as
+        # empty. The debt is a warning BESIDE the rail cause, and a row with
+        # neither states no cause and leaves the headline to its own axis.
+        reason, custody = _custody_debt_reason(reason, result, event)
+        detail = veto.get("detail") if veto.get("reason") == reason else ""
+        clause = (" ".join(strip_markdown(str(detail)).split()) if detail
+                  else TASK_CAUSE_PHRASES.get(reason, reason))
+        if clause and custody:
+            clause += f" ({TASK_CAUSE_PHRASES.get(custody, custody)})"
+        elif custody:
+            clause = TASK_CAUSE_PHRASES.get(custody, custody)
+    if not clause:
+        return ""
+    return clause if clause.endswith((".", "!", "?", "…", ")")) else clause + "."
 
 
 def _run_lives_in_its_project(
@@ -1263,14 +1321,15 @@ def enqueue_project_completion_summary(
             # Offering "Open the Project" would reproduce the reported defect —
             # a Main row leading into an empty room.
             return False
-        excerpt = _completion_excerpt(result, chat_id=1)
+        # Only the salvage excerpt survives here: a cut of the model's own
+        # answer repeats bytes the Project already holds, while salvaged bytes
+        # exist nowhere else. This writer's only pointer is the invitation, so
+        # a salvage may never displace it — preserved bytes named with no way
+        # to reach them are worse than the plain invitation.
+        excerpt = _completion_excerpt(result, chat_id=1, salvage_only=True)
         verdict = _completion_verdict(result, task_done_event)
         lead = f"{verdict} " if verdict else ""
-        # This writer's only pointer is the invitation below, so a salvage may
-        # never displace it: preserved bytes named with no way to reach them are
-        # worse than the plain invitation. Both salvage forms keep it, the
-        # labelled excerpt and the label that stands alone.
-        if excerpt.startswith(SALVAGE_EXCERPT_LABEL):
+        if excerpt:
             excerpt = f"{excerpt} Open the Project for details."
         event = {
             "type": "send_message", "chat_id": 1, "task_id": tid,
@@ -1319,8 +1378,7 @@ def announce_project_started(
         )
         event = {
             "type": "send_message", "chat_id": 1, "task_id": tid,
-            "text": (f"{snapshot['target_label']} · Started\n"
-                     "Work is running in this Project."),
+            "text": f"{snapshot['target_label']} · Started",
             "role": "system", "system_type": "project_started",
             "delivery_id": f"project-start:{pid}",
             "progress_meta": {

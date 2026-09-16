@@ -249,7 +249,7 @@ const PLAIN_ROW = {
     role: 'system',
     system_type: 'project_completion_summary',
     markdown: false,
-    content: 'Launch › Ship · Completed\nPlain excerpt line.',
+    content: 'Launch › Ship · Completed\nOpen the Project for details.',
     project_id: 'launch',
     project_name: 'Launch',
     ts: '2026-08-31T00:00:00Z',
@@ -267,7 +267,7 @@ test('plain project row renders escaped text with Open Project and no markdown m
         // Escaped plain text: the raw newline survives (pre-wrap), so the row
         // did NOT pass through the markdown renderer (whose no-parser fallback
         // rewrites \n to <br>) and produced no heading elements.
-        assert.match(bubble.innerHTML, /Launch › Ship · Completed\nPlain excerpt line\./);
+        assert.match(bubble.innerHTML, /Launch › Ship · Completed\nOpen the Project for details\./);
         assert.doesNotMatch(bubble.innerHTML, /<br>|<h1|<h2|md-h1|md-h2/);
         // Bug report #9: no enhancement pass — Mermaid/Chart/KaTeX/code-copy
         // only ever activate behind enhanceChatMarkdown's enhanced stamp.

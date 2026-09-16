@@ -1,7 +1,9 @@
 """Host facts behind the conversation activity block (WP-G).
 
-The chat block keys its chrome on ``_is_direct_chat`` (a direct conversation
-turn vs a managed/Swarm root) and represents an addressing-only turn by the
+``_is_direct_chat`` (a direct conversation turn vs a managed/Swarm root) is a
+host fact for routing, the census kind, Stop custody and the header pill; the
+chat block's chrome follows the work it holds, never this fact. The block
+represents an addressing-only turn by the
 typed routing action, never by a client tool-name list. Live frames learn the
 fact from the activity census and the rebuilt ``task_done``; replay learns it
 from the terminal truth annotation and the authored summary row. These tests

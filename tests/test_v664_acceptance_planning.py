@@ -907,7 +907,7 @@ def test_only_task_acceptance_fail_with_correction_rail_is_a_valid_veto(tmp_path
     )
     assert tier_veto.aggregate_signal == "FAIL"
     assert tier_veto.actors[2]["signal"] == "FAIL"
-    assert "best_effort" in build_improvement_capsule(tier_veto)
+    assert "rated a partial result" in build_improvement_capsule(tier_veto)  # the tier in words, never the identifier
 
     unanimous_minimal_fail = run_review_request(
         request,

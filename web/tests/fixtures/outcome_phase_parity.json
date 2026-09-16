@@ -1,5 +1,5 @@
 {
-  "purpose": "One status-word family across the browser and the host. Every case is a terminal-or-not task record read by log_events.js (taskDoneIsTerminal + taskTerminalPhase + taskPresentation) and by ouroboros.project_dialogue (outcome_phase + OUTCOME_PHASE_HEADLINE + _completion_verdict). A new axis, reason or acceptance status is added to both sides in the same commit, with a row here.",
+  "purpose": "One status-word family across the browser and the host. Every case is a terminal-or-not task record read by log_events.js (taskDoneIsTerminal + taskTerminalPhase + taskPresentation) and by ouroboros.project_dialogue (outcome_phase + OUTCOME_PHASE_HEADLINE + _completion_verdict). Every typed cause with an owner sentence carries a case here, so the two TASK_CAUSE_PHRASES twins cannot drift apart unnoticed. A new axis, reason or acceptance status is added to both sides in the same commit, with a row here.",
   "cases": [
     {
       "name": "definite pre-branch publication failure stays Failed beside degraded review",
@@ -20,7 +20,7 @@
       },
       "phase": "error",
       "headline": "Failed",
-      "acceptance_clause": "Reason: PR not created; publication stopped before creating a submission branch."
+      "acceptance_clause": "PR not created; publication stopped before creating a submission branch."
     },
     {
       "name": "clean completed root",
@@ -93,7 +93,7 @@
       "acceptance_clause": ""
     },
     {
-      "name": "degraded review with an unaccepted acceptance decision",
+      "name": "an unaccepted decision speaks through its typed reason, never through the stored rationale",
       "record": {
         "status": "completed",
         "reason_code": "final_message",
@@ -103,6 +103,7 @@
             "status": "degraded",
             "acceptance_decision": {
               "status": "finalized_unaccepted",
+              "reason": "review_degraded",
               "rationale": "Acceptance reviewers did not reach a valid quorum."
             }
           }
@@ -110,7 +111,7 @@
       },
       "phase": "warn",
       "headline": "Done with warnings",
-      "acceptance_clause": "Acceptance: finalized_unaccepted — Acceptance reviewers did not reach a valid quorum."
+      "acceptance_clause": "No reviewer verdict was established for this answer."
     },
     {
       "name": "an accepted decision leaves the execution reason standing",
@@ -127,7 +128,7 @@
       "acceptance_clause": ""
     },
     {
-      "name": "a revision request without a rationale states the status alone",
+      "name": "a decision carrying no typed reason states no cause at all",
       "record": {
         "status": "completed",
         "outcome_axes": {
@@ -137,7 +138,7 @@
       },
       "phase": "warn",
       "headline": "Done with warnings",
-      "acceptance_clause": "Acceptance: revision_requested."
+      "acceptance_clause": ""
     },
     {
       "name": "a hard failure explains itself by its execution reason, not by the decision",
@@ -173,7 +174,7 @@
       },
       "phase": "error",
       "headline": "Failed",
-      "acceptance_clause": "Reason: provider_unavailable (delegated_custody_unreconciled)."
+      "acceptance_clause": "provider_unavailable (Some delegated work was never reconciled.)"
     },
     {
       "name": "a healed custody debt names the current execution cause alone",
@@ -185,7 +186,7 @@
       },
       "phase": "error",
       "headline": "Failed",
-      "acceptance_clause": "Reason: provider_unavailable."
+      "acceptance_clause": "provider_unavailable."
     },
     {
       "name": "a record carrying no debt list states nothing about the debt",
@@ -196,7 +197,252 @@
       },
       "phase": "error",
       "headline": "Failed",
-      "acceptance_clause": "Reason: provider_unavailable."
+      "acceptance_clause": "provider_unavailable."
+    },
+    {
+      "name": "acceptance reason author_finish says its own sentence",
+      "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "author_finish"}}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "The answer was delivered on Main's own judgement; the reviewers had not signed it off."
+    },
+    {
+      "name": "acceptance reason review_degraded says its own sentence",
+      "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "review_degraded"}}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "No reviewer verdict was established for this answer."
+    },
+    {
+      "name": "acceptance reason infra_failure says its own sentence",
+      "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "infra_failure"}}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "A review infrastructure failure prevented a settled verdict."
+    },
+    {
+      "name": "acceptance reason dialogue_terminal says its own sentence",
+      "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "dialogue_terminal"}}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "The reviewers and Main could not agree, and both positions were kept."
+    },
+    {
+      "name": "acceptance reason improvement_capsule says its own sentence",
+      "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "improvement_capsule"}}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "The reviewers asked for one more pass and Main was given their notes."
+    },
+    {
+      "name": "acceptance reason fence_reopen_failed says its own sentence",
+      "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "fence_reopen_failed"}}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "The requested extra pass could not be started, so the answer stands as it was."
+    },
+    {
+      "name": "acceptance reason review_cycles_exhausted says its own sentence",
+      "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "review_cycles_exhausted"}}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "The task used up its review rounds before the answer was signed off."
+    },
+    {
+      "name": "acceptance reason open_obligations says its own sentence",
+      "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "open_obligations"}}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "The answer was delivered with reviewer requests still open."
+    },
+    {
+      "name": "acceptance reason improvement_window_closed says its own sentence",
+      "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "improvement_window_closed"}}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "There was no room left for another pass, so the answer stands as it was."
+    },
+    {
+      "name": "acceptance reason capsule_spent says its own sentence",
+      "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "capsule_spent"}}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "The one allowed improvement pass was already used."
+    },
+    {
+      "name": "acceptance reason reviewer_fail_no_capsule says its own sentence",
+      "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "reviewer_fail_no_capsule"}}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "A reviewer rejected the answer and suggested nothing to change."
+    },
+    {
+      "name": "acceptance reason no_actionable_changes says its own sentence",
+      "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "no_actionable_changes"}}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "The re-review was not clean and suggested nothing to change."
+    },
+    {
+      "name": "acceptance reason identical_acceptance_refused says its own sentence",
+      "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "identical_acceptance_refused"}}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "Nothing had changed since the last review, so the recorded verdict stands."
+    },
+    {
+      "name": "acceptance reason review_skipped_deadline_reserve says its own sentence",
+      "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "review_skipped_deadline_reserve"}}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "There was not enough time left to review the answer."
+    },
+    {
+      "name": "acceptance reason delivery_binding_superseded says its own sentence",
+      "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "delivery_binding_superseded"}}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "The answer or its evidence changed, so the earlier review no longer covered it."
+    },
+    {
+      "name": "acceptance reason owner_followup says its own sentence",
+      "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "owner_followup"}}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "A new message from you arrived, so the review was set aside for it."
+    },
+    {
+      "name": "acceptance reason evidence_refresh says its own sentence",
+      "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "evidence_refresh"}}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "The work changed after the review was frozen, so it no longer covered the answer."
+    },
+    {
+      "name": "acceptance reason revision_unavailable_on_forced_rail says its own sentence",
+      "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "revision_unavailable_on_forced_rail"}}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "The task had to stop, so the requested rework never happened."
+    },
+    {
+      "name": "acceptance reason owner_hurry says its own sentence",
+      "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "owner_hurry"}}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "You asked me to hurry, so no further review was started."
+    },
+    {
+      "name": "acceptance reason unspecified says its own sentence",
+      "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "unspecified"}}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "The answer was not signed off, and no cause was recorded."
+    },
+    {
+      "name": "acceptance reason acceptance_bypassed_budget_exhausted says its own sentence",
+      "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "acceptance_bypassed_budget_exhausted"}}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "The task ran out of budget before the answer could be reviewed."
+    },
+    {
+      "name": "acceptance reason acceptance_bypassed_round_limit says its own sentence",
+      "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "acceptance_bypassed_round_limit"}}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "The task hit its round limit before the answer could be reviewed."
+    },
+    {
+      "name": "acceptance reason acceptance_bypassed_deadline says its own sentence",
+      "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "acceptance_bypassed_deadline"}}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "The task ran out of time before the answer could be reviewed."
+    },
+    {
+      "name": "acceptance reason acceptance_bypassed_provider_unavailable says its own sentence",
+      "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "acceptance_bypassed_provider_unavailable"}}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "The model provider was unavailable, so the answer was never reviewed."
+    },
+    {
+      "name": "acceptance reason acceptance_bypassed_context_overflow says its own sentence",
+      "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "acceptance_bypassed_context_overflow"}}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "The task outgrew its context before the answer could be reviewed."
+    },
+    {
+      "name": "acceptance reason acceptance_bypassed_children_unabsorbed says its own sentence",
+      "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "acceptance_bypassed_children_unabsorbed"}}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "Some sub-tasks had not been folded in, so the answer was never reviewed."
+    },
+    {
+      "name": "execution reason budget_exhausted says its own sentence",
+      "record": {"status": "completed", "reason_code": "budget_exhausted", "outcome_axes": {"execution": {"status": "degraded"}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "The task ran out of budget before it could finish cleanly."
+    },
+    {
+      "name": "execution reason delivery_control_degraded says its own sentence",
+      "record": {"status": "completed", "reason_code": "delivery_control_degraded", "outcome_axes": {"execution": {"status": "degraded"}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "Delivery finished in a degraded control state."
+    },
+    {
+      "name": "execution reason host_child_status_suffix says its own sentence",
+      "record": {"status": "completed", "reason_code": "host_child_status_suffix", "outcome_axes": {"execution": {"status": "degraded"}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "A child task had not settled when the answer was delivered."
+    },
+    {
+      "name": "execution reason invalid_delivery_control_after_repair says its own sentence",
+      "record": {"status": "completed", "reason_code": "invalid_delivery_control_after_repair", "outcome_axes": {"execution": {"status": "degraded"}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "The delivery control object was still malformed after repair."
+    },
+    {
+      "name": "execution reason plan_review_advisory says its own sentence",
+      "record": {"status": "completed", "reason_code": "plan_review_advisory", "outcome_axes": {"execution": {"status": "degraded"}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "Plan review never closed; the work continued under advisory enforcement."
+    },
+    {
+      "name": "an open delegated-custody debt says its own sentence",
+      "record": {"status": "completed", "reason_code": "delegated_custody_unreconciled", "delegated_runs_unreconciled": ["run-a1"], "outcome_axes": {"execution": {"status": "degraded"}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "Some delegated work was never reconciled."
+    },
+    {
+      "name": "spent review cycles stay Done with warnings, never Failed",
+      "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "review_cycles_exhausted"}}}, "reason_code": "final_message"},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "The task used up its review rounds before the answer was signed off."
+    },
+    {
+      "name": "an unknown acceptance reason stays raw rather than borrowing a wrong sentence",
+      "record": {"status": "completed", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "degraded", "acceptance_decision": {"status": "finalized_unaccepted", "reason": "some_future_reason"}}}},
+      "phase": "warn",
+      "headline": "Done with warnings",
+      "acceptance_clause": "some_future_reason."
+    },
+    {
+      "name": "reviewers approved the earlier revision: Done, and the row says which revision",
+      "record": {"status": "completed", "reason_code": "final_message", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "pass", "acceptance_decision": {"status": "accepted", "reason": "previous_revision_accepted"}}, "objective": {"status": "pass", "source": "task_acceptance_review", "review_status": "pass"}}},
+      "phase": "done",
+      "headline": "Done",
+      "acceptance_clause": "The reviewers approved the earlier version of this answer; it changed before they finished."
     }
   ]
 }
