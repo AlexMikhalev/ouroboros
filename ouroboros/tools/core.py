@@ -1460,7 +1460,8 @@ def get_tools() -> List[ToolEntry]:
                 "A live root, including ordinary Main or Project conversation, may set wait_for_answer=true when the answer is necessary: "
                 "after the current tool batch it waits without model calls, preserving its browser "
                 "and freeing active worker capacity. Addressed owner text resumes your judgment. "
-                "Stop and existing task deadlines remain effective; questions expire only at task end."
+                "Stop and existing task deadlines remain effective. The card outlives the task: "
+                "an answer that arrives later reaches the chat as an ordinary owner message."
             ),
             "parameters": {"type": "object", "properties": {
                 "question": {"type": "string", "description": "The decision being escalated (markdown renders in chat)"},
@@ -1472,6 +1473,7 @@ def get_tools() -> List[ToolEntry]:
                 "stake": {"type": "string", "description": "What depends on this decision (optional, max 500)"},
                 "assumption": {"type": "string", "description": "For optional clarification, the assumption you continue under (max 500); may be empty for required waiting."},
                 "wait_for_answer": {"type": "boolean", "default": False, "description": "Live roots: wait for addressed owner input before another model round."},
+                "max_wait_minutes": {"type": "integer", "description": "Optional bound for wait_for_answer: resume with a system notice after N minutes if no answer arrives (the card stays open)."},
             }, "required": ["question", "options"]},
         }, _escalate),
         ToolEntry("forward_to_worker", {

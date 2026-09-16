@@ -62,6 +62,12 @@ def handle_owner_wait(event: dict, ctx: Any) -> None:
         if event.get("phase") == "resume":
             if current.get("wait_id") == wait_id and current.get("state") == "waiting":
                 meta["owner_wait_resume_requested"] = True
+                reason = str(event.get("resume_reason") or "")
+                if reason:
+                    # Carried into the row the grant writes, so the projection
+                    # can say a bound ended the wait. The notice itself is the
+                    # worker's; this is the readable record beside it.
+                    meta["owner_wait"] = {**current, "resume_reason": reason}
             return
         if event.get("phase") != "park":
             return

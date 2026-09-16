@@ -107,6 +107,15 @@ def test_activity_question_uses_same_memo_and_preserves_wait_semantics(tmp_path,
     rows = gs._chat_activities_snapshot_safe(tmp_path, direct_turns=[])
     assert rows[0]["required_question"]["text"] == "Question in Waiting Project"
     assert quiz_states(tmp_path, "t1")["q1"]["state"] == "open"
+    # A wait that ended on its OWN bound resumed without an answer, so the
+    # question is still wanted: no new wait state, just the additive reason.
+    set_owner_wait(tmp_path, "t1", {"quiz_id": "q1", "wait_id": "w1", "state": "resumed",
+                                    "resume_reason": "timeout"}, "w1")
+    gs._FINALIZING_MEMO.clear()
+    rows = gs._chat_activities_snapshot_safe(tmp_path, direct_turns=[])
+    pointer = rows[0]["required_question"]
+    assert pointer["text"] == "Answer needed in Waiting Project"
+    assert pointer["owner_wait_resume_reason"] == "timeout"
 
 
 def test_details_are_immutable_optional_and_length_checked(tmp_path):

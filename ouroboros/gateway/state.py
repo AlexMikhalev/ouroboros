@@ -278,7 +278,8 @@ def _task_activity_facts(drive_root: Any, task_id: str) -> dict:
     quizzes = data.get("owner_quiz") if isinstance(data.get("owner_quiz"), dict) else {}
     quiz = quizzes.get(str(wait.get("quiz_id") or ""), {})
     facts = {"finalizing": post_task_synthesis_is_open(synthesis),
-             "owner_wait": {key: wait[key] for key in ("quiz_id", "state") if key in wait},
+             "owner_wait": {key: wait[key] for key in ("quiz_id", "state", "resume_reason")
+                            if key in wait},
              "quiz": {key: quiz[key] for key in ("quiz_id", "state", "asked_at", "wait_for_answer")
                       if isinstance(quiz, dict) and key in quiz}}
     if len(_FINALIZING_MEMO) >= _FINALIZING_MEMO_MAX:
