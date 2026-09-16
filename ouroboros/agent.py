@@ -1088,9 +1088,18 @@ class OuroborosAgent:
             self._current_task_type = None
 
     def _emit_progress(self, text: str, *, incident: Optional[Dict[str, str]] = None,
-                       executor_observation: Optional[Dict[str, Any]] = None) -> None:
+                       executor_observation: Optional[Dict[str, Any]] = None,
+                       narration: bool = False) -> None:
         """Owner-visible note; ``incident`` is the typed ``task_incident``/``toast_once``
-        pair the browser toasts once."""
+        pair the browser toasts once.
+
+        ``narration`` is the VOICE of the note, not its text: only the model's own
+        round narration (``loop_messages._emit_round_progress``) is the turn's
+        speech. Every other caller — checkpoints, fallback and plan notes, the
+        acceptance, nudge and transport lines, and the whole ToolContext ABI
+        (``emit_progress_fn``) — is the HOST talking about the turn, so it keeps
+        the default. Both voices stay visible rows; the flag decides only whether
+        a note may claim the card title and the collapsed activity line."""
         self._last_progress_ts = time.time()
         if self._event_queue is None or self._current_chat_id is None:
             return
@@ -1113,8 +1122,11 @@ class OuroborosAgent:
                 )
                 if observation:
                     progress_meta["executor_observation"] = observation
-            if progress_meta:
-                event["progress_meta"] = progress_meta
+            # Stamped on EVERY frame, never inferred from the absence of other
+            # metadata: a reader that sees no key is reading an older worker or a
+            # row written before the fact existed, and keeps the legacy reading.
+            progress_meta["narration"] = bool(narration)
+            event["progress_meta"] = progress_meta
             self._event_queue.put(event)
         except Exception:
             log.warning("Failed to emit progress event", exc_info=True)

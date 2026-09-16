@@ -497,24 +497,50 @@ pending stop, a host-attested Stop the record still offers — the same reading
 the control uses, so a block never stands on a Stop it hides); a child card; a
 review group; a content row; a terminal outcome other than Done. The completion note is not content:
 a turn that ran no tool and finished Done leaves no block — live, after a
-reload and after a reconnect. Successful tool calls are compact one-line rows
-(`tool · target`, then `✓ duration`; a failure or timeout evolves the same
-row), collapsed by default inside the block, so a tool-using turn shows its
-block from its first call and a long turn always shows progress. Per-tool rows
-are live-only; a reload shows the block with one summary row from the recorded
-per-tool counts (`N tool calls · M errors`), which is also the only replay
-evidence of a recovered tool failure. Block presence is the same live, on
+reload and after a reconnect.
+
+Narration leads; routine execution evidence stays compact; exceptions keep
+their explanation and controls. The block's title, its collapsed activity line
+and its timeline carry the turn's own narration — the progress frames the
+model itself authored, marked by the typed `narration` fact the worker stamps
+at that one producer (a frame without the fact is a legacy frame and is read
+as narration) — and whatever needs the owner's eyes: a failed or timed-out
+step, a wait, a review, a child. What the host says about how the turn is
+running (a checkpoint, a model fallback, a review verdict, a nudge) is a
+visible timeline row that never claims the title or the collapsed line, so a
+turn whose only notes were the host's keeps its coined or task name and an
+empty activity line. Successful tool calls are not rows at all: they fold into
+ONE evidence row per block — `N tool calls`, or `N tool calls · M errors` once
+a call failed — that stands at the first call's position and time and is
+patched in place; Expand shows the per-tool counts (`read_file ×3 ·
+web_search`); its phase is `calling` while a tracked call is still running,
+`warn` once a call failed, `result` otherwise, and the row says that phase in
+ink rather than in extra words. A failed or timed-out call keeps
+its own error row (content) and is counted in the evidence total.
+`web/modules/chat_activity.js::toolEvidenceView` builds that row for the live
+path and for the recorded metrics alike, so at rest the row carries the same
+counts and names live, on reload and on reconnect; a cold reload mints it from
+the metrics, so it carries the metrics' time and sits where the metrics
+arrived, while a reconnect keeps the live position. Live it derives from the
+observed call frames (once per call identity; identical repeats without an id
+collapse into one), and the host's metrics replace those numbers as they
+arrive, field by field: a fact that states a total says nothing about the
+routing or error count, so it can neither erase one nor reclassify a receipt
+row into content, and a call frame after the terminal changes nothing. Block presence is the same live, on
 reload and on reconnect (a turn that moved itself into a Project with
 `ensure_project_scope` is the exception: its block and answer live in the
 Project room, and Main replays only the owner message and the Started
-annotation); only the row content differs by source.
+annotation); a child card reads the same voice rule for its own notes and folds
+its calls live, but replays no evidence row.
+`N notes` in the collapsed header counts timeline items, the evidence row
+among them.
 
 The block's chrome follows the work it stands on
 (`web/modules/chat.js::blockHasWork`, the presence facts minus open attention
 and minus a bare terminal outcome), never the lane that ran the turn (owner
 decision 16.09: real work is a task card, a greeting is nothing). A block with
-work — an always-shown kind, a review group, a child card, a tool or narration
-row, a tool error — is the task card whether a managed root or a direct
+work — a review group, a child card, an evidence or narration row, a tool
+error — is the task card whether a managed root or a direct
 conversation turn produced it: a title (the coined name, the latest narration
 headline, or the `Working…`/`Task activity` placeholder), the status chip, Stop
 while the host attests it, and `Turn into project` in Main unless its origin is
@@ -524,8 +550,10 @@ attention — a model wait, a pending or host-offered Stop — or only for a
 non-Done ending of a turn that did no work carries no title placeholder and no
 conversion; its chip says the state it is in (Waiting…, Cancelling…, Failed),
 the wait controls stay, and its first row of work gives it the title. The
-collapsed header carries the tool count, cost and duration once the turn ends
-(a replayed header carries the count and cost; duration is a live fact). The
+collapsed header carries the tool count live and, once the turn ends, cost and
+duration (a replayed header carries the count and cost; duration is a live
+fact); its `updated` stamp follows the turn's own narration, never a host note
+and never a tool call. The
 host's `_is_direct_chat` fact keeps its host jobs (routing, census `kind`, Stop
 custody, terminal rows) and, on the client, only the header pill (a direct turn
 keeps the census verdict beside its block). A block whose only reason to exist
@@ -539,8 +567,9 @@ the host on its live tool-call frames (`routing_action`) and counted in the
 task metrics (`routing_tool_calls`); its receipt is the typed routing
 annotation on the owner's message. Such a call is a receipt row: it renders
 inside a block that exists for other reasons but is never content the block
-stands on, and the replay summary of a turn whose recorded calls were all
-addressing calls, without error, is a receipt row too. So a turn that only
+stands on, and the evidence row of a turn whose calls were all addressing
+calls, without error, is a receipt row too — live from the stamped frames, on
+reload from `routing_tool_calls`. So a turn that only
 addressed work («turn this into a project») draws no block, live or on reload:
 the annotation on the owner message and the managed root's own card are its
 whole record (owner decision 11.09). A failed addressing call is an error row
@@ -558,7 +587,11 @@ beside the receipt; the Project start row is announced only once the task is
 really queued. A refusal receipt with neither options nor a cause sentence
 reads «Not routed», never «Choose a target». No client list of tool
 names decides presence (`docs/development/02-naming-and-boundaries.md`, "an
-open default behind a closed exception list").
+open default behind a closed exception list"), and no client reading of a
+note's text decides whether it is narration. A change that draws one row or
+line per event is judged at a realistic burst size — a multi-call turn,
+collapsed and expanded, at desktop and phone width — never at a two-event
+fixture.
 
 ### Subscription waits inside task cards
 

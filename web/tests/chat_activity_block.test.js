@@ -10,8 +10,20 @@
 import assert from 'node:assert/strict';
 import test, { after } from 'node:test';
 import { createChatInstance } from '../modules/chat.js';
+import {
+    clearStickyCardState, noteToolCall, noteToolHostMetrics, toolEvidenceView,
+} from '../modules/chat_activity.js';
+import { upsertToolFoldRow } from '../modules/chat_render_batch.js';
 import { summarizeChatLiveEvent } from '../modules/log_events.js';
 import { ElementStub, installDom, restoreDom, walkCard } from './chat_dom_fixture.js';
+
+// The folded row a sequence of observations produces, with no DOM in the way.
+const fold = (...observations) => {
+    const record = {};
+    for (const observation of observations) noteToolCall(record, observation);
+    return toolEvidenceView(record.toolFold);
+};
+const frame = (type, task, row) => summarizeChatLiveEvent({ type, task_id: task, ...row });
 
 // The flat fixture's querySelector does not descend; the status badge and
 // card internals need a real descendant lookup.
@@ -139,7 +151,7 @@ test('a tool-only direct turn offers Stop from its stamped tool frame, without a
     } finally { f.close(); }
 });
 
-test('a direct turn with two successful tools is the task card: two compact rows live and the summary row after a reload', async () => {
+test('a direct turn with two successful tools is the task card: ONE evidence row live and the same row after a reload', async () => {
     const f = fixture();
     try {
         f.census(direct());
@@ -150,14 +162,20 @@ test('a direct turn with two successful tools is the task card: two compact rows
         assert.ok(f.card(), 'the first tool call mints the block live');
         assert.ok(f.card().querySelector('[data-turn-into-project]'), 'a working direct turn is offered conversion in Main');
         assert.equal(f.card().querySelector('[data-live-title]').textContent, 'Working...', 'the running placeholder title');
-        assert.equal(f.rows().length, 2, 'start and finish of one call share a row');
-        assert.match(f.rows()[0].innerHTML, /read_file · README\.md/);
-        assert.match(f.rows()[1].innerHTML, /web_search · ouroboros/);
-        // The stub cannot repaint an in-place patch; the producer states the finished row.
-        const started = summarizeChatLiveEvent({ type: 'tool_call_started', task_id: TASK, tool: 'read_file', tool_call_id: 'c1', args: { path: 'README.md' } });
-        const finished = summarizeChatLiveEvent({ type: 'tool_call_finished', task_id: TASK, tool: 'read_file', tool_call_id: 'c1', args: { path: 'README.md' }, duration_sec: 0.3 });
+        assert.equal(f.rows().length, 1, 'four frames about two calls are the block\'s one evidence row');
+        // The stub cannot repaint an in-place patch; the producer states the folded row.
+        const c1 = { tool: 'read_file', tool_call_id: 'c1', args: { path: 'README.md' } };
+        const c2 = { tool: 'web_search', tool_call_id: 'c2', args: { query: 'ouroboros' } };
+        const started = frame('tool_call_started', TASK, c1);
+        const finished = frame('tool_call_finished', TASK, { ...c1, duration_sec: 0.3 });
         assert.equal(started.dedupeKey, finished.dedupeKey);
-        assert.deepEqual([started.phase, started.visible, finished.phase, finished.headline], ['calling', true, 'ok', 'read_file · README.md · ✓ 0.3s']);
+        assert.deepEqual([started.phase, started.visible, finished.phase, finished.dedupeKey],
+            ['calling', true, 'ok', `tools|${TASK}`]);
+        const row = fold(started.toolCall, finished.toolCall,
+            frame('tool_call_finished', TASK, { ...c2, duration_sec: 1.2 }).toolCall);
+        assert.deepEqual([row.headline, row.phase, row.body, row.fullBody, row.receipt],
+            ['2 tool calls', 'result', '', 'read_file · web_search', false],
+            'the closed row counts; the tool names wait behind Expand');
         f.emit('chat', { ...final, tool_calls: 2 });
         assert.equal(f.card().dataset.finished, '1');
         assert.match(f.meta(), /2 tool calls/);
@@ -175,7 +193,7 @@ test('a direct turn with two successful tools is the task card: two compact rows
         assert.ok(g.card(), 'the same turn shows the block after a reload');
         assert.ok(g.card().querySelector('[data-turn-into-project]'), 'conversion survives a reload');
         assert.notEqual(g.card().querySelector('[data-live-title]').textContent, '', 'a finished task card carries a title');
-        // Per-tool rows are live-only: replay carries the summary row and the completion note.
+        // The replay row is the same row: the host's totals reach the same builder.
         assert.equal(g.rows().length, 2);
         assert.ok(g.rows().some((n) => /2 tool calls/.test(n.innerHTML)));
         assert.match(g.meta(), /2 tool calls/);
@@ -364,15 +382,19 @@ test('an addressing-only turn keeps no block live or on reload; the owner messag
     } finally { g.close(); }
 });
 
-test('addressing beside real work keeps the block: the receipt row renders inside it live, the summary row on reload', async () => {
+test('addressing beside real work keeps the block: the addressing call joins the same row live and on reload', async () => {
     const f = fixture();
     try {
         f.census(direct());
         f.log({ type: 'tool_call_started', tool: 'read_file', tool_call_id: 'c1', args: { path: 'README.md' } });
         f.log({ type: 'tool_call_started', ...promote() });
         assert.ok(f.card());
-        assert.equal(f.rows().length, 2, 'the receipt row is shown honestly once the block exists');
-        assert.match(f.rows()[1].innerHTML, /promote_chat_to_task/);
+        assert.equal(f.rows().length, 1, 'both calls are counted by the block\'s one row');
+        const row = fold(frame('tool_call_started', TASK, { tool: 'read_file', tool_call_id: 'c1' }).toolCall,
+            frame('tool_call_started', TASK, promote()).toolCall);
+        assert.deepEqual([row.headline, row.fullBody, row.receipt],
+            ['2 tool calls', 'read_file · promote_chat_to_task', false],
+            'the addressing call is counted and named, and real work keeps the row content');
     } finally { f.close(); }
     const g = fixture([
         { role: 'user', text: 'read it and start the work', ts: TS, chat_id: 1 },
@@ -386,6 +408,44 @@ test('addressing beside real work keeps the block: the receipt row renders insid
         assert.ok(g.card());
         assert.ok(g.rows().some((n) => /2 tool calls/.test(n.innerHTML)));
     } finally { g.close(); }
+});
+
+// The host states the turn's totals more than once (the metrics event, the
+// terminal, a replayed summary) and each fact carries its own subset. They
+// merge field-wise: a later fact that states a total says nothing about the
+// routing or error count, so it can neither erase one nor reclassify the row.
+test('a later partial host fact keeps the routing count, the error count and the tool names of a complete one', () => {
+    const addressing = {};
+    noteToolCall(addressing, { key: 'p1', status: 'ok', receipt: true, tool: 'promote_chat_to_task' });
+    noteToolHostMetrics(addressing, { calls: 1, errors: 0, routing: 1, counts: { promote_chat_to_task: 1 } });
+    const later = noteToolHostMetrics(addressing, { calls: 1, errors: null, routing: null, counts: undefined });
+    assert.deepEqual([later.headline, later.fullBody, later.receipt],
+        ['1 tool call', 'promote_chat_to_task', true],
+        'the addressing-only turn keeps its receipt: the second fact states a total, not the absence of routing');
+    // Cold replay: no live frame ever reached this record, so the host's own
+    // memory is the only source the row can read.
+    const cold = {};
+    noteToolHostMetrics(cold, { calls: 4, errors: 1, routing: 0, counts: { read_file: 3, web_search: 1 } });
+    const after = noteToolHostMetrics(cold, { calls: 5, errors: null, routing: null, counts: {} });
+    assert.deepEqual([after.headline, after.phase, after.fullBody, after.receipt],
+        ['5 tool calls · 1 error', 'warn', 'read_file ×3 · web_search', false],
+        'the new total lands; the known error count stays and an empty counts map never empties Expand');
+});
+
+test('a terminal that states the total alone keeps an addressing-only turn blockless when no call frame was seen', () => {
+    const f = fixture();
+    try {
+        f.census(direct());
+        f.emit('chat', ownerRow);
+        f.emit('message_annotation', receipt);
+        f.log({ type: 'task_metrics_event', tool_calls: 1, tool_errors: 0, routing_tool_calls: 1,
+            tool_call_counts: { promote_chat_to_task: 1 } });
+        assert.ok(!f.card(), 'the complete snapshot says the turn\'s one call addressed work');
+        f.log({ ...final, type: 'task_done', status: 'completed', tool_calls: 1, _is_direct_chat: true });
+        assert.ok(!f.card(), 'the terminal states a total; the routing fact it omits is still known');
+        const owner = f.messages.children.find((n) => n.dataset.clientMessageId === 'owner-1');
+        assert.match(owner?.querySelector('.msg-routing-annotation')?.textContent || '', /Started task/);
+    } finally { f.close(); }
 });
 
 // V1: Stop stays reachable while a turn runs. A replayed progress row with the
@@ -481,21 +541,27 @@ test('a refused promote keeps a block with exactly one error row live and on rel
         f.emit('message_annotation', refused);
         f.log({ type: 'tool_call_finished', ...promote({ is_error: true, error: 'workspace_unusable', duration_sec: 0.4 }) });
         assert.ok(f.card(), 'the failed call is content');
-        assert.equal(f.rows().length, 1, 'the failure lands on the call\'s own row');
-        assert.match(f.rows()[0].innerHTML, /promote_chat_to_task/);
+        assert.equal(f.rows().length, 2, 'the failure keeps its own row beside the folded count');
+        assert.match(f.rows()[1].innerHTML, /promote_chat_to_task/);
         // The stub cannot repaint an in-place patch; the producer states the failed row.
         const started = summarizeChatLiveEvent({ type: 'tool_call_started', task_id: TASK, ...promote({ args: { objective: 'the project' } }) });
         const failure = summarizeChatLiveEvent({ type: 'tool_call_finished', task_id: TASK, ...promote({ is_error: true, error: 'workspace_unusable', duration_sec: 0.4 }) });
-        assert.equal(failure.dedupeKey, started.dedupeKey);
+        assert.deepEqual([started.dedupeKey, failure.dedupeKey], [`tools|${TASK}`, `tool:${TASK}:p1`],
+            'the start feeds the folded row; the failure keeps the call\'s own row');
+        assert.equal(failure.toolCall.key, started.toolCall.key, 'both frames report the same invocation');
         assert.deepEqual([started.receipt, failure.phase, failure.visible, Boolean(failure.receipt)], [true, 'error', true, false]);
+        const row = fold(started.toolCall, failure.toolCall);
+        assert.deepEqual([row.headline, row.phase, row.receipt], ['1 tool call · 1 error', 'warn', false],
+            'a failed call counts once in the total and once as the error it explains');
         const owner = f.messages.children.find((n) => n.dataset.clientMessageId === 'owner-1');
         assert.equal(owner?.querySelector('.msg-routing-annotation')?.textContent, cause);
         f.emit('chat', { ...final, tool_calls: 1, tool_errors: 1 });
         f.log({ ...final, type: 'task_done', status: 'completed', tool_calls: 1, tool_errors: 1, _is_direct_chat: true });
         f.log({ type: 'task_metrics_event', tool_calls: 1, tool_errors: 1, routing_tool_calls: 1, tool_call_counts: { promote_chat_to_task: 1 } });
         assert.ok(f.card());
-        assert.equal(f.rows().length, 2, 'the call\'s own error row and the terminal note, no summary row');
-        assert.equal(f.rows().filter((n) => /promote_chat_to_task/.test(n.innerHTML)).length, 1);
+        assert.equal(f.rows().length, 3, 'the folded count, the call\'s own error row and the terminal note');
+        assert.equal(f.rows().filter((n) => /promote_chat_to_task/.test(n.innerHTML)).length, 1,
+            'the failure is explained once; the fold only counts it');
         assert.match(f.meta(), /1 error/);
     } finally { f.close(); }
     const g = fixture([
@@ -515,4 +581,132 @@ test('a refused promote keeps a block with exactly one error row live and on rel
         const owner = g.messages.children.find((n) => n.dataset.clientMessageId === 'owner-1');
         assert.equal(owner?.querySelector('.msg-routing-annotation')?.textContent, cause);
     } finally { g.close(); }
+});
+
+// The fold is a per-invocation state map, not a pair of counters: the transport
+// may deliver a call's frames twice, out of order, or interleaved with another
+// call's, and the row must still read the turn correctly.
+test('the fold counts one invocation once, whatever order and however many frames report it', () => {
+    const observe = (key, status, tool) => ({ key, status, receipt: false, tool });
+    const row = fold(observe('c1', 'ok', 'read_file'), observe('c1', 'calling', 'read_file'),
+        observe('c1', 'ok', 'read_file'));
+    assert.deepEqual([row.headline, row.phase, row.fullBody, row.calls],
+        ['1 tool call', 'result', 'read_file', 1], 'a late start cannot reopen a finished call');
+});
+
+test('concurrent calls keep the row calling until the last one lands', () => {
+    const record = {};
+    const phase = () => toolEvidenceView(record.toolFold).phase;
+    noteToolCall(record, { key: 'a', status: 'calling', receipt: false, tool: 'read_file' });
+    noteToolCall(record, { key: 'b', status: 'calling', receipt: false, tool: 'web_search' });
+    noteToolCall(record, { key: 'b', status: 'ok', receipt: false, tool: 'web_search' });
+    assert.deepEqual([toolEvidenceView(record.toolFold).headline, phase()], ['2 tool calls', 'calling']);
+    noteToolCall(record, { key: 'a', status: 'ok', receipt: false, tool: 'read_file' });
+    assert.equal(phase(), 'result', 'the row rests only when nothing is in flight');
+});
+
+test('a timeout and a failure for one call are one error', () => {
+    const observe = (status) => ({ key: 'a', status, receipt: false, tool: 'bash' });
+    const row = fold(observe('calling'), observe('error'), observe('error'), observe('ok'));
+    assert.deepEqual([row.headline, row.phase, row.errors], ['1 tool call · 1 error', 'warn', 1],
+        'an error is counted once and no later frame can take it back');
+});
+
+test('a recycled card counts no invocation from the cycle before it', () => {
+    const record = {};
+    noteToolCall(record, { key: 'a', status: 'ok', receipt: false, tool: 'read_file' });
+    noteToolHostMetrics(record, { calls: 3, errors: 1, routing: 0, counts: { read_file: 3 } });
+    clearStickyCardState(record);
+    assert.equal(record.toolFold, null);
+    assert.deepEqual([toolEvidenceView(record.toolFold).headline, record.toolCalls, record.toolErrors],
+        ['0 tool calls', null, null]);
+});
+
+// Stationary row (owner decision): the evidence stays at the first call's place
+// and time, so a burst of calls never walks it down past the narration.
+test('the folded row keeps the place and the time of the first frame it counted', () => {
+    const record = { groupId: 'g', items: [] };
+    const view = (headline) => ({ phase: 'calling', headline, body: '', fullBody: '', receipt: false });
+    upsertToolFoldRow(record, view('1 tool call'), '12:00:00', '2026-09-15T12:00:00Z');
+    record.items.push({ dedupeKey: 'progress:note', headline: 'Inspecting the source.', ts: '12:00:30', count: 1 });
+    const second = upsertToolFoldRow(record, view('2 tool calls'), '12:01:00', '2026-09-15T12:01:00Z');
+    assert.deepEqual([second.timelineUpdate, second.patchIndex], ['patch-at', 0]);
+    assert.deepEqual([record.items[0].headline, record.items[0].ts], ['2 tool calls', '12:00:00'],
+        'the count moves with the turn, the timestamp does not');
+    assert.equal(record.items.length, 2, 'and no second row appears');
+});
+
+test('the folded row is one item: the block counts notes, not tool calls', () => {
+    const f = fixture();
+    try {
+        f.census(direct());
+        for (const [id, tool] of [['c1', 'read_file'], ['c2', 'read_file'], ['c3', 'web_search']]) {
+            f.log({ type: 'tool_call_started', tool, tool_call_id: id });
+            f.log({ type: 'tool_call_finished', tool, tool_call_id: id, duration_sec: 0.2 });
+        }
+        assert.equal(f.rows().length, 1, 'six frames about three calls are one row');
+        const count = f.card().querySelector('[data-live-count]');
+        assert.equal(count.hidden, true, 'one item is not a list');
+        f.emit('chat', { task_id: TASK, role: 'assistant', is_progress: true, content: 'Inspecting the source.' });
+        assert.equal(f.rows().length, 2);
+        assert.match(f.rows()[1].innerHTML, /Inspecting the source/, 'the narration lands after the stationary row');
+        assert.equal(count.textContent, '2 notes', 'the fold counts as one note beside the narration');
+    } finally { f.close(); }
+});
+
+// A child card reads the same voice fact its parent's card reads: the worker
+// stamps every progress frame it emits, inside a child's turn as well, so a
+// checkpoint or fallback note there is a visible row and nothing more.
+const CHILD = 'child-1';
+const childNote = (patch = {}) => ({ role: 'assistant', is_progress: true, task_id: CHILD,
+    subagent_task_id: CHILD, parent_task_id: TASK, root_task_id: TASK, delegation_role: 'subagent',
+    subagent_event: 'progress', subagent_role: 'scout', model: 'm', ...patch });
+
+test('a host note inside a child leaves the child\'s collapsed line and title alone; the child\'s own notes lead', () => {
+    const f = fixture();
+    try {
+        f.census(managed());
+        f.emit('chat', { task_id: TASK, role: 'assistant', is_progress: true, content: 'Planning the swarm.' });
+        f.emit('chat', childNote({ content: 'Reading the spec.', narration: true }));
+        const card = f.card(CHILD);
+        assert.ok(card, 'the child frame mints the child card');
+        const activity = () => card.querySelector('[data-live-activity]').textContent;
+        const title = () => card.querySelector('[data-live-title]').textContent;
+        const lineage = title();
+        assert.equal(activity(), 'Reading the spec.', 'the child\'s own note is its collapsed activity');
+        f.emit('chat', childNote({ content: 'Falling back to the second model.', narration: false }));
+        assert.equal(activity(), 'Reading the spec.', 'the host note inside the child claims nothing');
+        assert.equal(title(), lineage, 'and the child keeps its lineage title');
+        f.emit('chat', childNote({ content: 'Comparing the two runs.', narration: true }));
+        assert.equal(activity(), 'Comparing the two runs.', 'the child\'s next note moves the line again');
+        f.emit('chat', childNote({ content: 'A frame from before the fact existed.' }));
+        assert.equal(activity(), 'A frame from before the fact existed.', 'an absent fact stays legacy narration');
+        f.emit('chat', childNote({ subagent_event: 'completed', status: 'completed',
+            result: 'Scouted the module.', narration: false }));
+        assert.equal(activity(), 'Scouted the module.', 'the child\'s terminal is the host\'s own account and leads');
+    } finally { f.close(); }
+});
+
+// The disclosed residual: a child folds its calls while they happen, and the
+// host's at-rest metrics stay the owner's (`noteToolMetrics` skips children),
+// so a reloaded child card carries no evidence row.
+test('a child card folds its own tool calls live and takes no at-rest evidence row', () => {
+    const f = fixture();
+    try {
+        f.census(managed());
+        f.emit('chat', childNote({ content: 'Reading the spec.', narration: true }));
+        assert.ok(f.card(CHILD), 'the child card exists before its first call');
+        f.log({ type: 'tool_call_started', task_id: CHILD, tool: 'read_file', tool_call_id: 'k1' });
+        f.log({ type: 'tool_call_finished', task_id: CHILD, tool: 'read_file', tool_call_id: 'k1', duration_sec: 0.2 });
+        f.log({ type: 'tool_call_started', task_id: CHILD, tool: 'web_search', tool_call_id: 'k2' });
+        // A child card renders its timeline only while it is open.
+        f.card(CHILD).querySelector('[data-live-summary-button]').listeners.get('click')[0]({ detail: 0 });
+        const folded = () => f.rows(CHILD).filter((n) => /tool call/.test(n.innerHTML));
+        assert.equal(folded().length, 1, 'three frames about two calls are the child\'s one evidence row');
+        assert.match(folded()[0].innerHTML, /2 tool calls/);
+        f.log({ type: 'task_metrics_event', task_id: CHILD, tool_calls: 5, tool_errors: 0,
+            tool_call_counts: { read_file: 5 } });
+        assert.equal(folded().length, 1, 'the at-rest fact belongs to the owning turn: a child takes no row from it');
+        assert.doesNotMatch(folded()[0].innerHTML, /5 tool calls/);
+    } finally { f.close(); }
 });
