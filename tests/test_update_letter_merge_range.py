@@ -132,3 +132,47 @@ def test_long_branch_body_is_bounded_without_losing_its_identity(merged_range):
     assert len(entry["body"]) <= ul.COMMIT_BODY_MAX_CHARS
     assert "OMISSION" in entry["body"]
     assert large in ul.material_text(material) and entry["subject"] == "long branch detail"
+
+
+def test_nano_real_fit_keeps_material_for_toolless_author(merged_range, letter_env, monkeypatch):  # noqa: F811
+    import json
+    from types import SimpleNamespace
+
+    from ouroboros import context_fit
+    from ouroboros.context_budget import OWNER_NANO_TARGET_TOKENS
+
+    repo, base, target, *_ = merged_range
+    material = ul.collect_range_material(base, target, git=_capture_for(repo))
+    plans = []
+    monkeypatch.setattr(context_fit, "reference_doc_sections", lambda *a, **k: [])
+
+    def real_plan(env, memory, task):
+        # Production fitting, with deterministic context/evidence instead of owner memory
+        # or a network capability probe. Pressure exercises Nano input fitting.
+        core = context_fit.ContextCore(
+            base_prompt="p", bible_md="b", architecture_md="a", development_md="d",
+            semi_stable_text="s" * (OWNER_NANO_TARGET_TOKENS * 8), dynamic_text="y",
+            user_content_json=json.dumps(task["text"]), docs_need_development=False,
+        )
+        route = lambda task, **kw: (
+            {"provider": "test", "model": "test/light", "base_url": "", "use_local": False},
+            SimpleNamespace(route_fp="test", status="confirmed", stale=False, window_tokens=1_000_000),
+        )
+        plan = context_fit.build_context_fit_plan(env, core, task, preferred_mode="nano", route_resolver=route)
+        plans.append(plan)
+        return plan
+
+    sent = []
+    monkeypatch.setattr(ul, "_fit_plan", real_plan)
+    monkeypatch.setattr(ul, "_chat", lambda client, **kw: (
+        sent.append(kw) or {"content": "A paragraph."}, {"ledger_attempt_ids": ["test-nano"]}))
+    record = ul.write_letter(_status(current_sha=base, latest_sha=target), material, drive_root=letter_env["drive"])
+    assert record["state"] == "ready"
+    plan = plans[0]
+    assert plan.initial_mode == "nano"
+    assert "[Exact task input source]" not in plan.messages_for("nano")[-1]["content"]
+    assert sent[0]["messages"][0] == plan.projection("nano").system_message()
+    assert sent[0]["tools"] is None
+    text = sent[0]["messages"][-1]["content"]
+    assert text == json.loads(plan.user_content_json)
+    assert all(c["sha"] in text and c["subject"] in text for c in material["commits"])
