@@ -79,6 +79,7 @@ import {
     liveCardProjectionChanged,
     syncLiveCardToggle,
     updateLiveTimelineItem,
+    upsertToolFoldRow,
 } from './chat_render_batch.js';
 import {
     COLLAPSED_ACTIVITY_MAX,
@@ -109,6 +110,8 @@ import {
     subagentIdentityTitle,
     subagentTwin,
     mergeStickyCostMeta,
+    applyToolObservation,
+    noteToolHostMetrics,
     partitionLocalEchoJournal,
     projectCollapsedActivity,
     positiveTaskTerminalFact,
@@ -786,39 +789,25 @@ export function createChatInstance({
             || record.toolErrors > 0;
     }
 
-    // Tool accounting from a metrics or terminal fact: the meta counts and, with
-    // no live per-tool row (replay), one summary row — a receipt row when the
-    // host counted every call as an addressing call (`routing_tool_calls`).
+    // Tool accounting from a metrics or terminal fact: the meta counts and the
+    // block's one folded evidence row. A field the fact does not carry stays
+    // absent, so a partial snapshot cannot reclassify the row.
     function noteToolMetrics(taskId, metrics, rawTs, { suppressDomInsert = false } = {}) {
-        const count = (key) => (Number.isInteger(metrics?.[key]) ? metrics[key] : 0);
-        const [calls, errors, routing] = ['tool_calls', 'tool_errors', 'routing_tool_calls'].map(count);
-        if ((calls <= 0 && errors <= 0) || subagentChildParents.has(taskId)) return false;
+        const known = (key) => (Number.isInteger(metrics?.[key]) ? metrics[key] : null);
+        const [calls, errors, routing] = ['tool_calls', 'tool_errors', 'routing_tool_calls'].map(known);
+        if ((!calls && !errors) || subagentChildParents.has(taskId)) return false;
         return withStableViewport(() => {
             const record = getLiveCardRecord(taskId);
             const before = captureLiveCardProjection(record);
-            record.toolCalls = calls;
-            record.toolErrors = errors;
             const duration = Number(metrics.duration_sec);
             if (Number.isFinite(duration)) record.durationSec = duration;
-            const counts = metrics.tool_call_counts;
-            const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
-            const summary = {
-                phase: errors ? 'warn' : 'result',
-                headline: `${plural(calls, 'tool call')}${errors ? ` · ${plural(errors, 'error')}` : ''}`,
-                body: counts && typeof counts === 'object'
-                    ? Object.entries(counts).map(([name, n]) => (n > 1 ? `${name} ×${n}` : name)).join(' · ') : '',
-                visible: true,
-                receipt: !errors && routing >= calls,
-            };
-            let changed = false;
-            if (!record.items.some((item) => String(item.dedupeKey || '').startsWith('tool:'))) {
-                const { timelineUpdate } = updateLiveTimelineItem(record, summary, {
-                    ts: normalizeLogTs(rawTs), rawTs, syntheticKey: `tools|${taskId}`,
-                    headline: summary.headline, inPlaceByKey: true,
-                });
-                if (!['none', 'duplicate-skip'].includes(timelineUpdate)) changed = renderLiveCardTimeline(record);
-                updateLiveCardCount(record);
-            }
+            const summary = noteToolHostMetrics(record, { calls, errors, routing, counts: metrics.tool_call_counts });
+            record.toolCalls = summary.calls;
+            record.toolErrors = summary.errors;
+            const { timelineUpdate } = upsertToolFoldRow(record, summary, normalizeLogTs(rawTs), rawTs);
+            const changed = ['none', 'duplicate-skip'].includes(timelineUpdate)
+                ? false : renderLiveCardTimeline(record);
+            updateLiveCardCount(record);
             renderLiveCardMeta(record);
             reanchorTaskCard(record, rawTs, { suppressDomInsert });
             ensureLiveCardVisible(record, { suppressDomInsert });
@@ -1651,6 +1640,8 @@ export function createChatInstance({
             }
         }
         markReviewAnchor(record);
+        // Routine execution folds into ONE evidence row per block.
+        const foldView = summary.toolCall ? applyToolObservation(record, summary.toolCall) : null;
 
         if (!record.isSubagent) {
             activeLiveGroupId = nextGroupId;
@@ -1661,9 +1652,9 @@ export function createChatInstance({
         const headline = summary.headline || record.lastHumanHeadline || 'Working...';
         const syntheticKey = summary.dedupeKey || dedupeKey || `${summary.phase || 'working'}|${headline}|${summary.body || ''}`;
         const isLegacyParentSubagentKey = syntheticKey.startsWith('parent-subagent:');
-        // One tool call's start, finish, failure and timeout evolve one row.
+        // A call's failure and timeout evolve one row; success feeds the fold.
         const inPlaceByKey = isLegacyParentSubagentKey
-            || ['subagent-lifecycle:', 'subagent-progress:', 'subagent-result:', 'task_done|', 'tool:']
+            || ['subagent-lifecycle:', 'subagent-progress:', 'subagent-result:', 'task_done|', 'tool:', 'tools|']
                 .some((prefix) => syntheticKey.startsWith(prefix));
         if (!isLegacyParentSubagentKey) {
             record.finished = isTerminalTaskPhase(nextPhase, summary.terminal);
@@ -1720,9 +1711,15 @@ export function createChatInstance({
         let patchIndex = -1;
         if (_historyRow?.history_id) {
             if (mergeHistoricalTimelineItem(record, summary, _historyRow, ts)) timelineUpdate = 'render';
-        } else if (shouldRenderLine) {
+        } else if (shouldRenderLine && !syntheticKey.startsWith('tools|')) {
             ({ timelineUpdate, patchIndex } = updateLiveTimelineItem(record, summary,
                 { ts, rawTs, syntheticKey, headline, inPlaceByKey }));
+        }
+        // A failure keeps its own row where it happened AND feeds the fold.
+        if (foldView && !_historyRow?.history_id) {
+            const fold = upsertToolFoldRow(record, foldView, ts, rawTs);
+            if (timelineUpdate === 'none') ({ timelineUpdate, patchIndex } = fold);
+            else if (!['none', 'duplicate-skip'].includes(fold.timelineUpdate)) timelineUpdate = 'render';
         }
         updateLiveCardCount(record);
         // Cost does not move the activity clock.

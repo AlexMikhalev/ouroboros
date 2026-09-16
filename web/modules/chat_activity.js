@@ -113,6 +113,107 @@ export function buildTimelineItemHtml(item, record) {
     `;
 }
 
+// ---------------------------------------------------------------------------
+// Folded tool evidence (docs/DESIGN.md "Conversation activity block").
+// ---------------------------------------------------------------------------
+
+/**
+ * A turn's routine execution is ONE row, whatever a burst costs in calls, so
+ * the narration around it stays readable. The accumulator is a state map keyed
+ * by invocation rather than a pair of counters: duplicate, reordered and
+ * concurrent frames all settle on the same totals, and the host's own numbers
+ * replace them without either side double counting.
+ */
+function ensureToolFold(record) {
+    if (!record.toolFold) record.toolFold = { calls: new Map(), host: null };
+    return record.toolFold;
+}
+
+/**
+ * One frame's fact about one invocation: {key, status, receipt, tool}. Status
+ * never regresses — a start frame that arrives after the finish cannot reopen
+ * the call, and an error stays an error however many frames report that key.
+ */
+export function noteToolCall(record, observation) {
+    const key = observation?.key;
+    if (!record || !key) return record;
+    const { calls } = ensureToolFold(record);
+    const prev = calls.get(key);
+    const status = observation.status === 'error' || prev?.status === 'error' ? 'error'
+        : ((observation.status === 'ok' || prev?.status === 'ok') ? 'ok' : 'calling');
+    calls.set(key, {
+        status,
+        // A call is an addressing receipt only while EVERY frame about it says so
+        // (the host stamps `routing_action`): the first frame without the stamp
+        // makes the call content, and content it stays.
+        receipt: Boolean(observation.receipt) && (prev ? prev.receipt : true),
+        tool: observation.tool || prev?.tool || '',
+    });
+    return record;
+}
+
+/**
+ * The host's totals for the turn. An ABSENT field stays null: a partial
+ * snapshot that carries `tool_calls` alone must not read as "no addressing
+ * calls" and turn a block that only addressed work into content.
+ */
+export function noteToolHostMetrics(record, host) {
+    ensureToolFold(record).host = host;
+    return toolEvidenceView(record.toolFold);
+}
+
+/**
+ * One frame about one invocation, applied to the block's fold: the map first,
+ * then the row it owns, rebuilt from the map and the host's totals together.
+ * The meta counts follow the same reading, so the header never disagrees with
+ * the row while a turn runs.
+ */
+export function applyToolObservation(record, observation) {
+    noteToolCall(record, observation);
+    const view = toolEvidenceView(record.toolFold);
+    record.toolCalls = view.calls;
+    record.toolErrors = view.errors;
+    return view;
+}
+
+const perToolLine = (entries) => entries
+    .filter(([name, n]) => name && n > 0)
+    .map(([name, n]) => (n > 1 ? `${name} ×${n}` : name)).join(' · ');
+
+/**
+ * The block's one tool row, built from the live map and the host's totals
+ * together: the host answers what it stated, the live map answers the rest.
+ * The closed row carries the counts only (summary outranks details); the
+ * per-tool names live behind Expand, so the row stays one line either way.
+ */
+export function toolEvidenceView(fold = null) {
+    const live = fold?.calls instanceof Map ? [...fold.calls.values()] : [];
+    const host = fold?.host || null;
+    const calls = Number.isInteger(host?.calls) ? host.calls : live.length;
+    const errors = Number.isInteger(host?.errors) ? host.errors
+        : live.filter((call) => call.status === 'error').length;
+    const liveCounts = new Map();
+    for (const call of live) liveCounts.set(call.tool, (liveCounts.get(call.tool) || 0) + 1);
+    const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+    return {
+        phase: errors > 0 ? 'warn'
+            : ((!host && live.some((call) => call.status === 'calling')) ? 'calling' : 'result'),
+        headline: `${plural(calls, 'tool call')}${errors > 0 ? ` · ${plural(errors, 'error')}` : ''}`,
+        body: '',
+        fullBody: perToolLine(host?.counts && typeof host.counts === 'object'
+            ? Object.entries(host.counts) : [...liveCounts]),
+        visible: true,
+        // Addressing calls report themselves on the owner's message, so a block
+        // that ran nothing else stands on nothing. The host's count decides when
+        // it stated one; otherwise the live map decides, but only while it
+        // accounts for every counted call. Knowing neither means content.
+        receipt: errors <= 0 && (Number.isInteger(host?.routing) ? host.routing >= calls
+            : live.length >= calls && live.length > 0 && live.every((call) => call.receipt)),
+        calls,
+        errors,
+    };
+}
+
 // Sortable data-ts stamping for timeline nodes; anchor mode only ever moves a
 // node's effective timestamp earlier so replay cannot teleport it downward.
 export function stampNodeTimestamp(node, raw, { anchor = false } = {}) {
@@ -504,6 +605,9 @@ export function clearStickyCardState(record) {
     record.modelExecution = null;
     record.toolCalls = null;
     record.toolErrors = null;
+    // The folded evidence is cycle state too: a recycled slot must not count
+    // the previous cycle's invocations.
+    record.toolFold = null;
     record.durationSec = null;
     record.historicalUnavailable = false;
     record.historicalUnconfirmed = false;
