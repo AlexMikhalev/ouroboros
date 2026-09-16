@@ -409,3 +409,56 @@ test('Stop stays reachable on a census-vouched root, managed card and direct blo
         } finally { f.close(); }
     }
 });
+
+// Promote-refusal placement (Q1=A): a refused addressing call inside a live
+// turn is a FAILED call — an error row, content the block stands on — while
+// the owner message carries the host's sentence (`cause`) as its receipt.
+// Live and on reload the block holds exactly one error row.
+test('a refused promote keeps a block with exactly one error row live and on reload; the owner message carries the cause', async () => {
+    const cause = 'Not started: the working folder can\'t be used';
+    const refused = { annotation_type: 'routing_ack', client_message_id: 'owner-1', action: 'promote_chat_to_task',
+        status: 'needs_manual_target', target: 'never-started', target_label: 'Requested work', cause };
+    const f = fixture();
+    try {
+        f.census(direct());
+        f.emit('chat', ownerRow);
+        f.log({ type: 'tool_call_started', ...promote({ args: { objective: 'the project' } }) });
+        assert.equal(f.card(), null, 'still a receipt while the call runs');
+        f.emit('message_annotation', refused);
+        f.log({ type: 'tool_call_finished', ...promote({ is_error: true, error: 'workspace_unusable', duration_sec: 0.4 }) });
+        assert.ok(f.card(), 'the failed call is content');
+        assert.equal(f.rows().length, 1, 'the failure lands on the call\'s own row');
+        assert.match(f.rows()[0].innerHTML, /promote_chat_to_task/);
+        // The stub cannot repaint an in-place patch; the producer states the failed row.
+        const started = summarizeChatLiveEvent({ type: 'tool_call_started', task_id: TASK, ...promote({ args: { objective: 'the project' } }) });
+        const failure = summarizeChatLiveEvent({ type: 'tool_call_finished', task_id: TASK, ...promote({ is_error: true, error: 'workspace_unusable', duration_sec: 0.4 }) });
+        assert.equal(failure.dedupeKey, started.dedupeKey);
+        assert.deepEqual([started.receipt, failure.phase, failure.visible, Boolean(failure.receipt)], [true, 'error', true, false]);
+        const owner = f.messages.children.find((n) => n.dataset.clientMessageId === 'owner-1');
+        assert.equal(owner?.querySelector('.msg-routing-annotation')?.textContent, cause);
+        f.emit('chat', { ...final, tool_calls: 1, tool_errors: 1 });
+        f.log({ ...final, type: 'task_done', status: 'completed', tool_calls: 1, tool_errors: 1, _is_direct_chat: true });
+        f.log({ type: 'task_metrics_event', tool_calls: 1, tool_errors: 1, routing_tool_calls: 1, tool_call_counts: { promote_chat_to_task: 1 } });
+        assert.ok(f.card());
+        assert.equal(f.rows().length, 2, 'the call\'s own error row and the terminal note, no summary row');
+        assert.equal(f.rows().filter((n) => /promote_chat_to_task/.test(n.innerHTML)).length, 1);
+        assert.match(f.meta(), /1 error/);
+    } finally { f.close(); }
+    const g = fixture([
+        { ...ownerRow, chat_annotation: refused },
+        { ...final, tool_calls: 1, ts: '2026-09-15T12:00:05Z', chat_id: 1, _is_direct_chat: true },
+        { ...final, role: 'system', system_type: 'task_summary', text: 'The working folder could not be used.', rounds: 2,
+            tool_calls: 1, tool_errors: 1, routing_tool_calls: 1, tool_call_counts: { promote_chat_to_task: 1 },
+            addressing_only: 'promote_chat_to_task', _is_direct_chat: true, ts: '2026-09-15T12:00:06Z', chat_id: 1 },
+    ]);
+    try {
+        await g.instance.refreshHistory({ revision: 1 });
+        assert.ok(g.card(), 'a counted error is content, so the replay summary is not a receipt');
+        const errorRows = g.rows().filter((n) => /1 tool call · 1 error/.test(n.innerHTML));
+        assert.equal(errorRows.length, 1);
+        assert.ok(errorRows[0].classList.contains('warn'));
+        assert.match(g.meta(), /1 error/);
+        const owner = g.messages.children.find((n) => n.dataset.clientMessageId === 'owner-1');
+        assert.equal(owner?.querySelector('.msg-routing-annotation')?.textContent, cause);
+    } finally { g.close(); }
+});

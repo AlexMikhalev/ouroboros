@@ -94,7 +94,11 @@ def handle_routing_decision(
     if not client_message_id or not token:
         return 400, {"ok": False, "error": "malformed_decision_id",
                      "decision_id": decision_id}
-    from ouroboros.project_dialogue import append_chat_annotation, latest_chat_annotations
+    from ouroboros.project_dialogue import (
+        append_chat_annotation,
+        latest_chat_annotations,
+        routing_refusal_cause,
+    )
 
     # The card is live only while its token is the message's LATEST act:
     # receipts are kept per token, but a newer routing attempt on the same
@@ -214,6 +218,9 @@ def handle_routing_decision(
             # routing decision on a refused message, so it wears the
             # route_to_project receipt label regardless of source chat.
             "routed_from_main": True,
+            # The owner's click, not a model turn, issued this promote: a
+            # refusal is told by the handler's typed System row (no narrator).
+            "host_initiated": True,
             "client_message_id": client_message_id,
             "attachment_uploads": attachment_uploads,
             **provenance,
@@ -313,9 +320,18 @@ def handle_routing_decision(
         # the latest row — re-assert the refusal under the ORIGINAL token so
         # the card the UI re-opens still validates and replays cleanly.
         _reopen_refusal()
+        reason = str(outcome.get("reason") or outcome_status)
+        # The same act the receipt wore, so the sentence carries its prefix.
+        receipt_action = (
+            "steer_task" if action == "steer_task"
+            else ("route_to_project" if evt.get("routed_from_main") else "promote_chat_to_task")
+        )
         return 409, {"ok": False, "error": "dispatch_rejected",
                      "decision_id": decision_id, "state": "open",
-                     "reason": str(outcome.get("reason") or outcome_status)}
+                     "reason": reason,
+                     # The owner-facing sentence from the host's own table (the
+                     # toast shows it instead of the raw code).
+                     "cause": routing_refusal_cause(receipt_action, "needs_manual_target", reason, None)}
     # Unconfirmed: honestly retriable — the derived identities make a replay
     # of the SAME request byte-identical, so the supervisor dedupes it.
     return 503, {"ok": False, "error": "dispatch_unconfirmed",

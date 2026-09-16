@@ -832,6 +832,11 @@ export function routingOptionLabel(option) {
 /** Human text for a typed routing annotation ('' hides the line). */
 export function routingAnnotationText(annotation) {
     if (!annotation || typeof annotation !== 'object') return '';
+    // A refused act carries the host's own owner-facing sentence (`cause`);
+    // it outranks the status matrix below. Absent on scheduled/delivered/
+    // pending rows and on the picker frame, so those labels are unchanged.
+    const cause = String(annotation.cause || '').trim();
+    if (cause) return cause;
     const action = String(annotation.action || '');
     const status = String(annotation.status || '');
     const target = String(annotation.target || '');
@@ -843,7 +848,11 @@ export function routingAnnotationText(annotation) {
             .map(routingOptionLabel)
             .filter(Boolean);
         if (optionLabels.length) return `Choose a target · ${optionLabels.join(' / ')}`;
-        return targetLabel ? `Choose a target · ${targetLabel}` : 'Choose a target';
+        // No options and (by the guard above) no cause: a receipt written
+        // before the host sentence existed, or by a producer that bypasses
+        // `_emit_routing_receipt`. Nothing can be chosen on such a row, so it
+        // must not invite a choice.
+        return targetLabel ? `Not routed · ${targetLabel}` : 'Not routed';
     }
     if (status === 'project_unavailable') return 'Project is unavailable';
     const labels = {

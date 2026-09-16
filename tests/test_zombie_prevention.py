@@ -534,10 +534,15 @@ def test_managed_update_preserves_pending_tasks_for_the_new_process(tmp_path):
         workers._WORKER_POOL_DISABLED_REASON = orig_disabled
 
 
-def test_managed_update_drops_children_of_interrupted_roots(tmp_path):
+def test_managed_update_drops_children_of_interrupted_roots(tmp_path, monkeypatch):
     import supervisor.queue as queue
     import supervisor.workers as workers
 
+    # A TestClient lifespan earlier in the same xdist worker latches
+    # `_EVENT_Q_SHUTDOWN`; the terminal `task_done` emission below then raises and
+    # the children are never dropped (order-dependent flake, seen once on CI-shape
+    # runs). Reset the process-global latch like the other bus-dependent tests do.
+    monkeypatch.setattr(workers, "_EVENT_Q_SHUTDOWN", False)
     orig_drive = workers.DRIVE_ROOT
     orig_workers = dict(workers.WORKERS)
     orig_running = dict(workers.RUNNING)

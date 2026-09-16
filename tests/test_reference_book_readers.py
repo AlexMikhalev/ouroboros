@@ -316,3 +316,10 @@ def test_a_crlf_checkout_still_withholds_the_chapter_its_composed_book_carries(t
         tmp_path, ["docs/architecture/only.md"], prefix_texts={"docs/ARCHITECTURE.md": composed},
     )
     assert "docs/architecture/only.md" in excluded
+    # A plain document's prefix copy came through a newline-translating read:
+    # the CRLF file on disk is still the same text and is still withheld.
+    (tmp_path / "BIBLE.md").write_bytes(b"# Constitution\r\nOne law.\r\n")
+    excluded, _note = triad_pack_exclusions(
+        tmp_path, ["BIBLE.md"], prefix_texts={"BIBLE.md": "# Constitution\nOne law.\n"},
+    )
+    assert "BIBLE.md" in excluded

@@ -68,6 +68,37 @@ test('legacy routing receipts and manual choices use neutral labels, never raw i
     assert.equal(manual.includes('opaque-'), false);
 });
 
+test('a refusal row with neither options nor a cause reads «Not routed», never «Choose a target»', () => {
+    // Such a row is a receipt written before the host sentence existed (or by a
+    // producer that bypasses the receipt rail): it carries nothing to click, so
+    // inviting a choice would be a lie about what the owner can do.
+    assert.equal(routingAnnotationText({
+        action: 'promote_chat_to_task', status: 'needs_manual_target',
+        target: 'opaque-project-id', target_label: 'Аудит', options: [],
+    }), 'Not routed · Аудит');
+    assert.equal(routingAnnotationText({
+        action: 'manual', status: 'needs_manual_target',
+    }), 'Not routed');
+});
+
+test('a host cause on a refused routing receipt outranks the status matrix; an empty cause changes nothing', () => {
+    // The host authors the owner sentence for a REFUSED act (`cause`); the
+    // client never derives one from `reason`. The field is absent/empty on
+    // scheduled, delivered and pending rows and on the picker frame, so those
+    // keep their labels (the options case above stays «Choose a target · …»).
+    const cause = 'Not started: the working folder can\'t be used';
+    const refused = routingAnnotationText({
+        action: 'promote_chat_to_task', status: 'needs_manual_target',
+        target: 'x', target_label: 'Аудит', cause,
+    });
+    assert.equal(refused, cause);
+    assert.equal(refused.includes('Choose a target'), false);
+    assert.equal(routingAnnotationText({
+        action: 'steer_task', status: 'delivered', target: 'opaque-task-id',
+        target_label: 'Launch', cause: '',
+    }), 'Steered task · Launch');
+});
+
 test('state snapshots and failure authority stay monotonic across reversed completion', () => {
     const applied = [];
     const requestTimes = [100, 200];

@@ -157,10 +157,13 @@ task-specific auto-retry, fallback, cleanup, resume, or terminal-flow state
 machines.
 
 Explicitly naming a documented default is never a different request. An argument
-whose value is what omitting it already means (`directory_strategy="direct"` with
-no `scope_paths`) takes the omitted path on a shape that cannot serve the argument
-at all; only values that genuinely ask for something are refused there, typed, at
-the earliest layer holding the authority to judge them, with the repair named.
+whose value is what omitting it already means — `directory_strategy="direct"` with
+no `scope_paths` on a shape that cannot serve the argument at all, or a value
+whose meaning equals the omitted path's documented meaning (`workspace_root`
+naming the Ouroboros repository itself, where a workspace-less task already
+works) — takes the omitted path, disclosed in the result; only values that
+genuinely ask for something are refused there, typed, at the earliest layer
+holding the authority to judge them, with the repair named.
 
 A producer that already knows its call failed publishes that fact typed: a
 `ToolResult` through `tool_result._publish_tool_result`, or a first-line
@@ -356,7 +359,11 @@ from the one table it owns (`ouroboros/tool_capabilities.py::ROUTING_VERBS`:
 `routing_action` on the live tool-call frames, `routing_tool_calls` in the task
 metrics, `typed_routing_action` on the terminal event), never a client-side
 exception list. The same shape hides in "hide unless kind ∈ {…}" and "count
-unless name ∈ {…}": when the list is the rule, the rule is missing.
+unless name ∈ {…}": when the list is the rule, the rule is missing. The owner
+sentence on a routing receipt follows the same rule: the host composes it from
+the typed reason (`ouroboros/project_dialogue.py::routing_refusal_cause`) and
+ships it as `cause`; the browser prints it verbatim and keeps no reason→sentence
+map of its own.
 
 The one sanctioned exception list of this shape is the Observe level of a
 consciousness wake-up (`ouroboros/tool_capabilities.py::OBSERVE_WORLD_MUTATION_TOOLS`,

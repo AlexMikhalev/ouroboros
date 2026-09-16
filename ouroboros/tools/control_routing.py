@@ -310,6 +310,36 @@ def _promote_chat_to_task(
         current_chat_id = int(getattr(ctx, "current_chat_id", None) or 0)
     except (TypeError, ValueError):
         current_chat_id = 0
+    requested_root = str(workspace_root or "").strip()
+    workspace_sentinel = str(workspace or "").strip().lower()
+    repo_root_note = ""
+    if requested_root:
+        # Q4=A: naming the Ouroboros repository ITSELF names the documented
+        # default (no separate workspace — the ordinary self-modification task),
+        # so the EXACT root maps onto the existing "none" sentinel, in Main and
+        # in every project room alike. A subfolder, the data drive and every
+        # other path pass through unchanged; admission refuses them with the
+        # repair hint.
+        from ouroboros.tool_access import paths_overlap_casefold
+        from ouroboros.workspace_admission import WORKSPACE_NONE
+
+        system_repo = getattr(ctx, "system_repo_dir", None) or getattr(ctx, "repo_dir", None)
+        try:
+            requested_path = Path(requested_root).expanduser().resolve(strict=False)
+            system_repo_path = Path(str(system_repo)).resolve(strict=False) if system_repo else None
+            same_root = (
+                system_repo_path is not None
+                and len(requested_path.parts) == len(system_repo_path.parts)
+                and paths_overlap_casefold(requested_path, system_repo_path)
+            )
+        except (OSError, ValueError, RuntimeError):
+            same_root = False
+        if same_root:
+            requested_root, workspace_sentinel = "", WORKSPACE_NONE
+            repo_root_note = (
+                " (workspace_root named the Ouroboros repository itself; started as an "
+                "ordinary task over it — no separate workspace)"
+            )
     tid = uuid.uuid4().hex[:16]
     routing_token = uuid.uuid4().hex
     disabled_reason = _promotion_pool_disabled_from_snapshot(ctx)
@@ -335,13 +365,13 @@ def _promote_chat_to_task(
         "project_id": pid,
         "project_name": display_name,
         "title": str(title or "").strip()[:80],
-        "workspace_root": str(workspace_root or "").strip(),
+        "workspace_root": requested_root,
         # Source admission is intentionally supervisor-side, after the
         # authoritative worker-pool and duplicate-id gates.
         "source": str(source or "").strip(),
         # v6.58.0: "none" opts a project-room task OUT of the room's working_dir
         # default (a folder-less task in a folder-ful project stays possible).
-        "workspace": str(workspace or "").strip().lower(),
+        "workspace": workspace_sentinel,
         "chat_id": current_chat_id,
         "client_message_id": str(
             ((getattr(ctx, "task_metadata", {}) or {}).get("client_message_id") or "")
@@ -368,6 +398,7 @@ def _promote_chat_to_task(
             "presence": dict(presence),
             "task_contract": dict(getattr(ctx, "task_contract", {}) or {}),
         })
+        repo_root_note = ""  # Presence runs in its admitted folder, never over the repo
     # A promote from a consciousness turn/tree mints a consciousness root: the
     # origin label, ledger category and level ride the event by value; the
     # supervisor stamps them on the new root (worker_promotion) — no presence-style
@@ -397,7 +428,8 @@ def _promote_chat_to_task(
         effective_pid = str(confirmation.get("effective_project_id") or "")
         scope_note = _effective_scope_note(ctx, effective_pid)
         response = (
-            f"OK: task {tid}{scope_note} accepted and durably scheduled ({mode}).{source_confirmation} "
+            f"OK: task {tid}{scope_note} accepted and durably scheduled ({mode}){repo_root_note}."
+            f"{source_confirmation} "
             "The task now runs independently, and follow-up chat can steer it. "
             "Use wait_task/get_task_result if its result "
             "is needed in this conversation."
@@ -602,7 +634,11 @@ def _route_to_project(
             "chat_id": current_chat_id,
             "client_message_id": client_message_id,
             "requested_target": pid or requested_pid[:200],
-            "reason": str(reason or "").strip() or failure,
+            # The typed code is the receipt's `reason` (the host cause table
+            # reads it); the model's own words ride `detail` beside it instead
+            # of replacing the code with untyped prose.
+            "reason": failure,
+            "detail": str(reason or "").strip()[:1000],
             "options": options,
             # The picker click dispatches AFTER this turn's metadata is gone,
             # so the refusal annotation is the durable carrier of the original

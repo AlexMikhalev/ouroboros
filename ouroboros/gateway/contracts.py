@@ -479,7 +479,7 @@ class ProjectsChangedOutbound(TypedDict):
 
 
 class MessageAnnotationOutbound(TypedDict):
-    """Bubble-free presentation update for one canonical owner message."""
+    """Bubble-free presentation update for one owner message; ``cause``: the host's sentence for a refused act."""
 
     type: Literal["message_annotation"]
     annotation_type: Literal["routing_ack"]
@@ -494,10 +494,10 @@ class MessageAnnotationOutbound(TypedDict):
     project_chat_id: NotRequired[int]
     options: NotRequired[List[Dict[str, Any]]]
     attachment_manifest: NotRequired[List[AttachmentManifestEntry]]
-    # #198: the exact refusal-attempt identity — the picker card composes its
-    # decision_id (routing:{client_message_id}:{routing_token}) from it; a
-    # presentation frame without it renders text, never a clickable card.
+    # #198: the exact refusal-attempt identity — the picker card composes its decision_id
+    # (routing:{client_message_id}:{routing_token}) from it; a frame without it renders text, never a card.
     routing_token: NotRequired[str]
+    cause: NotRequired[str]
     ts: NotRequired[str]
 
 

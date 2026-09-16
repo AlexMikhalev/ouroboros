@@ -445,14 +445,16 @@ def test_respawn_worker_does_not_reset_spawn_time(tmp_path):
 # Test: crash storm detection accumulates (grace not reset by respawn)
 # ---------------------------------------------------------------------------
 
-def test_crash_storm_detection_accumulates(tmp_path):
+def test_crash_storm_detection_accumulates(tmp_path, monkeypatch):
     """After multiple rapid crashes, CRASH_TS should accumulate >= 3 entries
     within 60s when _LAST_SPAWN_TIME is not reset by respawn_worker."""
     import supervisor.workers as W
 
     W.DRIVE_ROOT = tmp_path
     (tmp_path / "logs").mkdir(parents=True, exist_ok=True)
-    W.QUEUE_MAX_RETRIES = 0  # Immediately fail, no retry
+    # Restored after the test: a bare assignment leaked 0 into sibling retry
+    # scenarios on the same xdist worker (they rely on the default of 1).
+    monkeypatch.setattr(W, 'QUEUE_MAX_RETRIES', 0)  # Immediately fail, no retry
     W._LAST_SPAWN_TIME = 0  # Grace already elapsed
     W.CRASH_TS = []
     notices = []
@@ -771,6 +773,10 @@ def _reserved_job(tmp_path, monkeypatch, *, exitcode=1, attempt=1, child=False):
     W.WORKERS = {0: worker}
     W.RUNNING = q.RUNNING = {task['id']: meta}
     events = stdqueue.Queue()
+    # The retry limit is a process-global (`supervisor.queue.QUEUE_MAX_RETRIES`);
+    # sibling tests assign it directly, so an xdist worker can reach this fixture
+    # with 0 and refuse the one retry these scenarios rely on. Pin the default.
+    monkeypatch.setattr(W, 'QUEUE_MAX_RETRIES', 1)
     monkeypatch.setattr(W, 'get_event_q', lambda: events)
     monkeypatch.setattr(W, 'respawn_worker', MagicMock())
     monkeypatch.setattr(q, 'persist_queue_snapshot', lambda **_k: None)

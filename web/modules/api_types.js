@@ -583,6 +583,7 @@
  * @property {string=} latest_status
  * @property {string=} reason
  * @property {string=} detail
+ * @property {string=} cause  // the owner-facing sentence for a refused routing act (409 dispatch_rejected)
  */
 
 /**
@@ -640,6 +641,7 @@
  * @property {Array<Object>=} options
  * @property {AttachmentManifestEntry[]=} attachment_manifest
  * @property {string=} routing_token
+ * @property {string=} cause  // host-authored owner sentence for a REFUSED act; absent on scheduled/delivered/pending and on the picker frame
  * @property {boolean} suppress_bubble
  * @property {string=} ts
  */
