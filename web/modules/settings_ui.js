@@ -201,8 +201,11 @@ function providerSettingsCard(spec) {
 // routes, per-model resolution on delegated ones); the adaptation is disclosed
 // in usage, and a cold route whose provider rejects without naming supported
 // tiers remains the PR-disclosed limit of the two-send recovery rail.
-const EFFORT_OPTIONS = [['none', 'None'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'X-High'], ['max', 'Max'], ['ultra', 'Ultra']]
-    .map(([value, label]) => ({ value, label }));
+const EFFORT_OPTIONS = [
+    { value: 'none', label: 'None' }, { value: 'low', label: 'Low' },
+    { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' },
+    { value: 'xhigh', label: 'X-High' }, { value: 'max', label: 'Max' }, { value: 'ultra', label: 'Ultra' },
+];
 
 function effortField({ id, label, defaultValue }) {
     // Consciousness may inherit the Task / Chat effort ('' — a wake-up is a Main turn).
