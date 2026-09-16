@@ -262,6 +262,12 @@ def get_delegate_wait_sec() -> int:
 # for the alarm; ``consciousness.py`` adopts these readers in P2.
 WAKE_DEFAULT_SEC = 3300
 CONSCIOUSNESS_AUTONOMY_LEVELS = ("observe", "act", "full")
+# The usage ledger keeps every attempt younger than this UNFOLDED (``usage_compaction``
+# ``_foldable_attempt_ids``): a folded group row is stamped with the compaction instant,
+# so only unfolded rows keep the true spend time the rolling consciousness allowance
+# (``consciousness_allowance``, a 24 h window) reads. Twice the window, so a root that
+# spent inside the window is still attributable when the window closes.
+USAGE_LEDGER_FOLD_MIN_AGE_SEC = 48 * 3600
 
 
 def get_consciousness_autonomy() -> str:

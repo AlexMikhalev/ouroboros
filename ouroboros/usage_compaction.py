@@ -39,7 +39,8 @@ import uuid
 from decimal import Decimal, DecimalException, InvalidOperation
 from typing import Any, Callable, Dict, Iterator, Optional, Tuple
 
-from ouroboros._usage_rows import _breakdown_bucket, _summary, _processing_summary, _merge_processing_summary
+from ouroboros._usage_rows import _breakdown_bucket, _summary, _processing_summary, _merge_processing_summary, row_ts_epoch
+from ouroboros.runtime_limits import USAGE_LEDGER_FOLD_MIN_AGE_SEC
 from ouroboros.usage_ledger import (
     ARCHIVE_SEGMENT_DIR_REL,
     LEDGER_REL,
@@ -63,6 +64,12 @@ log = logging.getLogger(__name__)
 # dispatched) finals keep their WHOLE chain in the live file.
 _FOLDABLE_FINAL_STATES = frozenset({"settled", "unresolved", "released"})
 _BASELINE_KINDS = frozenset({"usage_baseline", "usage_baseline_group"})
+# The fold's clock: an attempt whose final row is younger than
+# ``USAGE_LEDGER_FOLD_MIN_AGE_SEC`` stays unfolded so its ``ts`` remains the true
+# spend time the rolling consciousness allowance reads (a group row carries the
+# compaction instant instead). Module-level so a test can age a fixture by
+# moving the clock rather than weakening the money assertions.
+_fold_clock: Callable[[], float] = time.time
 _REVIEW_KEYS = ("review_skill", "review_wave_id", "review_slot_id")
 _TOKEN_SUM_FIELDS = (
     "prompt_tokens", "completion_tokens", "cached_tokens", "cache_write_tokens",
@@ -598,10 +605,19 @@ def _parse_ledger_lines(raw: bytes) -> Tuple[list, list]:
     return float_rows, decimal_rows
 
 
-def _foldable_attempt_ids(records: list) -> set:
+def _attempt_is_recent(row: Dict[str, Any], now_ts: float) -> bool:
+    """Whether a final attempt row is younger than the fold horizon (an absent or
+    unparseable ``ts`` cannot prove recency and folds as before)."""
+    ts = row_ts_epoch(row)
+    return ts is not None and now_ts - ts < USAGE_LEDGER_FOLD_MIN_AGE_SEC
+
+
+def _foldable_attempt_ids(records: list, *, now_ts: Optional[float] = None) -> set:
     """Attempt ids whose whole chain folds: terminal, plain ``attempt`` kind,
-    no review attribution — plus prior baseline group/header rows (re-folded)."""
+    no review attribution, older than the fold horizon (``now_ts`` defaults to
+    ``_fold_clock()``) — plus prior baseline group/header rows (re-folded)."""
     finals = _final_rows(records)
+    clock = _fold_clock() if now_ts is None else float(now_ts)
     foldable: set = set()
     for attempt_id, row in finals.items():
         kind = str(row.get("kind") or "attempt")
@@ -612,6 +628,8 @@ def _foldable_attempt_ids(records: list) -> set:
             continue
         if str(row.get("state") or "") not in _FOLDABLE_FINAL_STATES:
             continue
+        if _attempt_is_recent(row, clock):
+            continue  # the allowance window still needs this row's own ts
         if any(str(row.get(key) or "") for key in _REVIEW_KEYS):
             continue
         if isinstance(row.get("cost_usd"), bool) or isinstance(
