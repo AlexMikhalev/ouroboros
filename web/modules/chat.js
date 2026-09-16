@@ -1686,11 +1686,11 @@ export function createChatInstance({
             : !blockHasWork(record) ? ''
                 : (record.finished ? record.lastHumanHeadline || 'Task activity' : activeHeadline));
         if (record.titleEl.textContent !== title) record.titleEl.textContent = title;
-        // The collapsed line is a compact presentation projection, while the
-        // complete latest activity remains independently reachable through the
-        // expanded timeline. Root cards accept activity only from human frames;
-        // terminal "Done" markers must not overwrite the last real action.
-        const previewSource = record.isSubagent
+        // The collapsed line is a compact projection; the full activity stays in the
+        // expanded timeline. Every card, a child's included, takes activity only from
+        // a frame in the turn's own voice: a host note and a terminal "Done" cannot
+        // overwrite the last action.
+        const previewSource = record.isSubagent && summary.human !== false
             ? String(summary.activityPreview ?? summary.body ?? '')
             : (summary.human ? String(summary.activityPreview ?? activeHeadline ?? '') : '');
         const activityCandidate = previewSource.trim();

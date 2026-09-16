@@ -987,11 +987,10 @@ export function summarizeLogEvent(evt) {
         });
     }
 
-    // Typed severity carried by host/extension frames (`ok`, logging `level`)
-    // outranks the event name. The name-substring test that follows is the
-    // NON-EXPANDING remainder for an unknown name that carries no typed fact:
-    // it keeps a genuine producer-side failure with only a name visible under
-    // Errors, and it is pinned as a remainder, not a taxonomy.
+    // Typed severity carried by host/extension frames (`ok`, logging `level`) outranks the
+    // event name. The name-substring test that follows is the NON-EXPANDING remainder for an
+    // unknown name that carries no typed fact: it keeps a genuine producer-side failure with
+    // only a name visible under Errors, and it is pinned as a remainder, not a taxonomy.
     const level = String(evt.level || '').toLowerCase();
     const body = shortText(
         evt.error || evt.message || evt.text || evt.result_preview
@@ -1126,11 +1125,10 @@ function summarizeChatLiveEventView(evt) {
     const key = (...parts) => [t, groupId, ...parts].join(':');
 
     if (t === 'owner_hurry') {
-        // S3 (HQ1) EXPLICIT hide branch: the typed hurry control family never
-        // renders a chat timeline row or bubble — chat.js paints only a compact
-        // card status from ownerHurryProjection, and the durable facts live in
-        // the task detail. Explicit (not the fallthrough) so a future default
-        // change cannot silently surface the family in chat.
+        // S3 (HQ1) EXPLICIT hide branch: the typed hurry control family never renders a chat
+        // timeline row or bubble — chat.js paints only a compact card status from
+        // ownerHurryProjection, and the durable facts live in the task detail. Explicit (not
+        // the fallthrough) so a future default change cannot silently surface it in chat.
         return chatView({ visible: false, dedupeKey: key(evt.phase || '', evt.request_id || '') });
     }
 
@@ -1180,9 +1178,8 @@ function summarizeChatLiveEventView(evt) {
             errorText.full ? `[ERROR]\n${errorText.full}` : '',
             reasonDetail,
         ].filter(Boolean);
-        // A generic "completed" event still carries authoritative outcome axes.
-        // Normalize it once here so every live/replay route gets the same label,
-        // phase and terminal truth from the canonical projector.
+        // A generic "completed" event still carries authoritative outcome axes: normalize it
+        // once so every live/replay route gets the same label, phase and terminal truth here.
         const completionSeverity = rawEvent === 'completed' ? taskOutcomeSeverity(evt) : 'done';
         const event = rawEvent === 'completed'
             ? (completionSeverity === 'cancelled' ? 'cancelled'
@@ -1200,6 +1197,11 @@ function summarizeChatLiveEventView(evt) {
                             : event === 'scheduled' ? 'start'
                                 : 'working';
         const terminal = ['completed', 'completed_warn', 'failed', 'cancelled', 'rejected'].includes(event);
+        // A child's own note carries the same voice fact (the progress branch below):
+        // a host note inside the child's turn is a visible row that never claims the
+        // card's collapsed line. Lifecycle, result and error frames state no voice.
+        const narration = evt.narration === true || evt.narration === undefined;
+        const promoted = terminal || narration;
         const label = terminal
             ? taskPresentation(phase).headline
             : (SUBAGENT_CARD_LABEL[event] || 'Working');
@@ -1222,8 +1224,8 @@ function summarizeChatLiveEventView(evt) {
             fullBody: detailParts.join('\n\n'),
             activityPreview: activity.preview || '',
             visible: true,
-            promote: true,
-            human: true,
+            promote: promoted,
+            human: promoted,
             terminal,
             // P3: the WS result/trace were capped at 4000 server-side; expose the
             // subagent task id so "show full" can fetch the genuinely-full output.
@@ -1302,11 +1304,10 @@ function summarizeChatLiveEventView(evt) {
     }
 
     if (t === 'tool_call_started' || (t === 'tool_call_finished' && !evt.is_error)) {
-        // A successful call is execution evidence, not narration: start and finish
-        // feed the block's ONE folded row (counts; tools behind Expand), a receipt
-        // while every counted call is a host-stamped addressing act (`routing_action`,
-        // reported by the owner message's annotation). A failure keeps its own error
-        // row and still counts. `done` is the TASK's phase; a finished CALL is `ok`.
+        // A successful call is execution evidence, not narration: start and finish feed the
+        // block's ONE folded row (counts; tools behind Expand), a receipt while every counted call
+        // is a host-stamped addressing act (`routing_action`, reported by the owner message's
+        // annotation). A failure keeps its own error row. `done` is the TASK's phase, a CALL's `ok`.
         const status = t === 'tool_call_finished' ? 'ok' : 'calling';
         return chatView({
             phase: status,
@@ -1410,7 +1411,6 @@ function summarizeChatLiveEventView(evt) {
     }
 
     if (t === 'task_done') return taskTerminalSummary(evt);
-
 
     if (t === 'task_cost_finalized') {
         const unavailable = evt.cost_accounting_status === 'unavailable';

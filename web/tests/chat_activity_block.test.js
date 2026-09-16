@@ -653,3 +653,60 @@ test('the folded row is one item: the block counts notes, not tool calls', () =>
         assert.equal(count.textContent, '2 notes', 'the fold counts as one note beside the narration');
     } finally { f.close(); }
 });
+
+// A child card reads the same voice fact its parent's card reads: the worker
+// stamps every progress frame it emits, inside a child's turn as well, so a
+// checkpoint or fallback note there is a visible row and nothing more.
+const CHILD = 'child-1';
+const childNote = (patch = {}) => ({ role: 'assistant', is_progress: true, task_id: CHILD,
+    subagent_task_id: CHILD, parent_task_id: TASK, root_task_id: TASK, delegation_role: 'subagent',
+    subagent_event: 'progress', subagent_role: 'scout', model: 'm', ...patch });
+
+test('a host note inside a child leaves the child\'s collapsed line and title alone; the child\'s own notes lead', () => {
+    const f = fixture();
+    try {
+        f.census(managed());
+        f.emit('chat', { task_id: TASK, role: 'assistant', is_progress: true, content: 'Planning the swarm.' });
+        f.emit('chat', childNote({ content: 'Reading the spec.', narration: true }));
+        const card = f.card(CHILD);
+        assert.ok(card, 'the child frame mints the child card');
+        const activity = () => card.querySelector('[data-live-activity]').textContent;
+        const title = () => card.querySelector('[data-live-title]').textContent;
+        const lineage = title();
+        assert.equal(activity(), 'Reading the spec.', 'the child\'s own note is its collapsed activity');
+        f.emit('chat', childNote({ content: 'Falling back to the second model.', narration: false }));
+        assert.equal(activity(), 'Reading the spec.', 'the host note inside the child claims nothing');
+        assert.equal(title(), lineage, 'and the child keeps its lineage title');
+        f.emit('chat', childNote({ content: 'Comparing the two runs.', narration: true }));
+        assert.equal(activity(), 'Comparing the two runs.', 'the child\'s next note moves the line again');
+        f.emit('chat', childNote({ content: 'A frame from before the fact existed.' }));
+        assert.equal(activity(), 'A frame from before the fact existed.', 'an absent fact stays legacy narration');
+        f.emit('chat', childNote({ subagent_event: 'completed', status: 'completed',
+            result: 'Scouted the module.', narration: false }));
+        assert.equal(activity(), 'Scouted the module.', 'the child\'s terminal is the host\'s own account and leads');
+    } finally { f.close(); }
+});
+
+// The disclosed residual: a child folds its calls while they happen, and the
+// host's at-rest metrics stay the owner's (`noteToolMetrics` skips children),
+// so a reloaded child card carries no evidence row.
+test('a child card folds its own tool calls live and takes no at-rest evidence row', () => {
+    const f = fixture();
+    try {
+        f.census(managed());
+        f.emit('chat', childNote({ content: 'Reading the spec.', narration: true }));
+        assert.ok(f.card(CHILD), 'the child card exists before its first call');
+        f.log({ type: 'tool_call_started', task_id: CHILD, tool: 'read_file', tool_call_id: 'k1' });
+        f.log({ type: 'tool_call_finished', task_id: CHILD, tool: 'read_file', tool_call_id: 'k1', duration_sec: 0.2 });
+        f.log({ type: 'tool_call_started', task_id: CHILD, tool: 'web_search', tool_call_id: 'k2' });
+        // A child card renders its timeline only while it is open.
+        f.card(CHILD).querySelector('[data-live-summary-button]').listeners.get('click')[0]({ detail: 0 });
+        const folded = () => f.rows(CHILD).filter((n) => /tool call/.test(n.innerHTML));
+        assert.equal(folded().length, 1, 'three frames about two calls are the child\'s one evidence row');
+        assert.match(folded()[0].innerHTML, /2 tool calls/);
+        f.log({ type: 'task_metrics_event', task_id: CHILD, tool_calls: 5, tool_errors: 0,
+            tool_call_counts: { read_file: 5 } });
+        assert.equal(folded().length, 1, 'the at-rest fact belongs to the owning turn: a child takes no row from it');
+        assert.doesNotMatch(folded()[0].innerHTML, /5 tool calls/);
+    } finally { f.close(); }
+});
