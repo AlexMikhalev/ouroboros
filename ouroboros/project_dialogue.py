@@ -543,7 +543,7 @@ TASK_CAUSE_PHRASES = {
     # Acceptance-decision reasons. A clean accepted decision renders no clause,
     # so clean_pass and clean_pass_obligations_closed carry no sentence; an
     # accepted decision with a sentence here still states its cause.
-    "previous_revision_accepted": "The reviewers approved the earlier version of this answer; it was rewritten before they finished.",
+    "previous_revision_accepted": "The reviewers approved the earlier version of this answer; it changed before they finished.",
     "author_finish": "The answer was delivered on Main's own judgement; the reviewers had not signed it off.",
     "review_degraded": "No reviewer verdict was established for this answer.",
     "infra_failure": "A review infrastructure failure prevented a settled verdict.",

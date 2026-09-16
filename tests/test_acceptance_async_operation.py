@@ -360,7 +360,7 @@ def test_a_terminal_task_gets_one_row_at_completion_not_at_quorum(tmp_path, monk
         gates["model/a"].set()
         with settled:
             assert settled.wait_for(lambda: count["n"] >= 1, timeout=10)
-        time.sleep(0.5)
+        # The late row is enqueued inside the settle (before the wrapper counts), so this is deterministic.
         assert not [e for e in list(ctx.event_queue.queue) if e.get("system_type") == "acceptance_late_settlement"]
         gates["model/b"].set()
         with settled:
@@ -466,11 +466,11 @@ def test_the_rearmed_contract_never_rewrites_an_already_sent_row(tmp_path):
 
 @pytest.mark.parametrize("choice", ["wait", "finish"])
 def test_pending_review_rides_beside_the_verb_and_is_recorded_on_every_answer(tmp_path, choice):
-    from tests.test_delivery_control_lineage import _start_control_episode
-
     """WP-7: the optional wait/finish choice is a sibling of ``acceptance_subject``,
     never an extra key that invalidates the body, and every control answer records
     it (an answer without the key means wait)."""
+    from tests.test_delivery_control_lineage import _start_control_episode
+
     loop, registry, ctx, trace, candidate = _start_control_episode(tmp_path)
     loop._arm_delivery_control(registry, ctx, trace)
     status, text = loop._resolve_delivery_control(

@@ -67,12 +67,18 @@ def _reviewer_lines(wave: Dict[str, Any]) -> List[str]:
 def acceptance_settlement_message(request: Any, wave: Dict[str, Any]) -> str:
     """Render the settled wave as the reviewers' own lines, bounded per slot."""
     slots = wave.get("slots") or {}
+    # Slots that answered before the release were collected by the drain: they
+    # count as answered, and their verdicts sit in the collected panel itself.
+    early = len(wave.get("answered_before_release_ids") or ())
     head = ACCEPTANCE_SETTLEMENT_WAKE.format(
         retry_key=str(getattr(request, "retry_key", "") or ""),
-        settled=sum(1 for status in slots.values() if status),
-        total=max(int(wave.get("total") or 0), len(slots)),
+        settled=early + sum(1 for status in slots.values() if status),
+        total=max(int(wave.get("total") or 0), len(slots) + early),
     )
-    return "\n".join([head, *_reviewer_lines(wave)])
+    lines = _reviewer_lines(wave)
+    if early:
+        lines.append(f"- {early} slot(s) answered before the release; their verdicts are in the collected panel")
+    return "\n".join([head, *lines])
 
 
 def _result_root(usage_ctx: Any) -> pathlib.Path:

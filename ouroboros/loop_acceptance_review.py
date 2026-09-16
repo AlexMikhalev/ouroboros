@@ -866,7 +866,7 @@ def _apply_task_acceptance_result(
                 run["feedback_delivered"] = True
                 break
         # The aggregate word is not an explanation: printing DEGRADED alone read
-        # as "no valid quorum" while a capsule was in fact fed back for one more
+        # as "no settled verdict" while a capsule was in fact fed back for one more
         # bounded pass. Name the pass being started and the recorded causes; a
         # wave that recorded none says THAT, so the verdict is a label beside a
         # stated absence rather than standing in for the reason.
@@ -1011,7 +1011,7 @@ def _record_acceptance_infra_failure(ctx: _TaskAcceptanceContext, exc: Exception
         "status": ACCEPTANCE_FINALIZED_UNACCEPTED,
         "reason": "infra_failure",
         "source": "task_acceptance_review",
-        "rationale": "The mandatory host acceptance panel failed before a valid quorum.",
+        "rationale": "The mandatory host acceptance panel failed before any reviewer answered.",
         "degraded_reasons": [f"{type(exc).__name__}: {safe_error}"],
     })
     ctx.emit_progress("Task acceptance review: DEGRADED after host review infrastructure failure.")

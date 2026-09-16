@@ -392,7 +392,7 @@ def test_a_rewritten_answer_delivers_under_the_running_panel_instead_of_buying_o
     record = _terminal_record(trace)
     assert outcome_phase(record, {}) == "done", record["outcome_axes"]
     assert _completion_verdict(record, {}) == (
-        "The reviewers approved the earlier version of this answer; it was rewritten before they finished."
+        "The reviewers approved the earlier version of this answer; it changed before they finished."
     )
 
 

@@ -1070,7 +1070,8 @@ def _released_quorum_reached(request: Any, roster: Dict[str, Any]) -> bool:
         quorum = 1
     slots = roster.get("slots") or {}
     answered = sum(1 for status in slots.values() if status in {"ok", "empty"})
-    return int(roster.get("answered_before_release") or 0) + answered >= quorum
+    early = set(roster.get("answered_before_release_ids") or ()) - set(slots)
+    return len(early) + answered >= quorum
 
 
 def _settled_slot_verdict(actor: Any) -> Dict[str, str]:
@@ -1099,7 +1100,7 @@ def _settled_slot_verdict(actor: Any) -> Dict[str, str]:
 def _register_released_roster(
     request: Any, slots: List[Any], slot_entries: Dict[str, Any], returned_ids: set,
     slot_deadlines: Dict[str, float], monotonic_now: Callable[[str], float],
-    *, answered_before_release: int = 0,
+    *, answered_before_release: Any = (),
 ) -> set:
     """Register the WHOLE released roster under ONE lock hold before any released row is
     minted: a slot settling at once then finds the complete roster and cannot split the
@@ -1117,8 +1118,10 @@ def _register_released_roster(
         if released_ids:
             # A collection re-releases the wave: merging keeps the recorded outcomes.
             roster = _RELEASED_WAVES.setdefault(_wave_key(request), {"slots": {}, "total": len(slots)})
-            roster["answered_before_release"] = max(
-                int(roster.get("answered_before_release") or 0), int(answered_before_release))
+            # Slot IDS, not a count: a re-released wave replays an already-settled
+            # slot through the drain, and an id in the roster is never counted twice.
+            roster["answered_before_release_ids"] = sorted(
+                set(roster.get("answered_before_release_ids") or ()) | set(answered_before_release))
             for slot_id in released_ids:
                 roster["slots"].setdefault(slot_id, "")
     return released_ids
@@ -1418,8 +1421,8 @@ def run_custodied_review_slots(
     returned_ids = {str(getattr(actor, "slot_id", "") or "") for actor in actors}
     released_ids = _register_released_roster(
         request, slots, slot_entries, returned_ids, slot_deadlines, monotonic_now,
-        answered_before_release=sum(1 for actor in actors
-                                    if str(getattr(actor, "status", "") or "") in {"ok", "empty"}),
+        answered_before_release={str(getattr(actor, "slot_id", "") or "") for actor in actors
+                                 if str(getattr(actor, "status", "") or "") in {"ok", "empty"}},
     ) if drain_deadline is not None else set()
     for slot in slots:
         slot_id = str(getattr(slot, "slot_id", "") or "")

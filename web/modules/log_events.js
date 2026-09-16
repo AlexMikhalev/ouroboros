@@ -408,7 +408,7 @@ export function taskStoppedWithSummary(evt) {
 // sentence. The byte-identical twin of project_dialogue.TASK_CAUSE_PHRASES;
 // web/tests/fixtures/outcome_phase_parity.json pins both.
 const TASK_CAUSE_PHRASES = {
-    previous_revision_accepted: "The reviewers approved the earlier version of this answer; it was rewritten before they finished.",
+    previous_revision_accepted: "The reviewers approved the earlier version of this answer; it changed before they finished.",
     author_finish: "The answer was delivered on Main's own judgement; the reviewers had not signed it off.",
     review_degraded: "No reviewer verdict was established for this answer.",
     infra_failure: "A review infrastructure failure prevented a settled verdict.",
