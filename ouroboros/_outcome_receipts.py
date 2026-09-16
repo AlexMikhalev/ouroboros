@@ -121,7 +121,9 @@ def select_current_review_runs(
         superseded_only_acceptance_gap=acceptance_gap,
         superseded_aggregate_signals=superseded_signals,
         current_candidate_unaccepted=candidate_unaccepted,
-        has_replacement=bool(current_runs),
+        # A decision-named panel replaces the stale runs for the ledger as well:
+        # an older FAIL reads as superseded, not as live failure evidence.
+        has_replacement=bool(current_runs) or bool(named),
     )
 
 

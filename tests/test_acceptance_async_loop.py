@@ -587,6 +587,49 @@ def test_an_older_fail_never_outvotes_the_pass_that_accepted_the_task(full_loop,
     record = _terminal_record(trace)
     assert record["outcome_axes"]["review"]["aggregate_signals"] == ["PASS"], record["outcome_axes"]["review"]
     assert outcome_phase(record, {}) == "done", record["outcome_axes"]
+    # The verification ledger agrees: the older FAIL is superseded evidence, not a live failure.
+    from ouroboros._outcome_receipts import review_run_ledger_status, select_current_review_runs
+    selection = select_current_review_runs(trace["review_runs"], delivery_candidate=trace.get("delivery_candidate"),
+                                           review_decision=trace.get("review_decision"))
+    assert review_run_ledger_status(host[0], selection) == ("superseded", True)
+
+
+def test_an_owner_followup_acknowledged_through_the_control_sets_the_panel_aside(full_loop, monkeypatch):
+    """Astra review round 5: the owner changes the requirements while the panel
+    runs; Main reads the message, acknowledges its source on the delivery control
+    and rewrites. The rewrite is NOT a delivery under the old panel (it judged the
+    old premises): the ordinary path buys a panel on the new answer and the old
+    PASS never accepts it."""
+    f = full_loop
+    followup = "Also add a timeline section to the report."
+    rewritten = ANSWER + " Timeline: two weeks."
+
+    def main(_llm, messages, *_a, **_kw):
+        f.model_inputs.append(copy.deepcopy(messages))
+        f.model_step += 1
+        if f.model_step == 1:
+            return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": ANSWER}, "first-review")]}, 0.0
+        if f.model_step == 2:
+            assert f.entered.wait(5) and not f.release.is_set()
+            f.incoming.put(followup)
+            return {"content": "", "tool_calls": [call("send_user_message", {"text": "Adding the timeline."}, "ack")]}, 0.0
+        if f.model_step == 3:
+            assert followup in str(messages), "the owner follow-up reached the model"
+            observation = f.ctx._acceptance_observation
+            return {"content": json.dumps({"delivery_control": "replace", "full_answer": rewritten,
+                                           "acceptance_subject": {"owner_source_sha256": observation["owner_source_sha256"]}})}, 0.0
+        assert f.model_step < 8, f.progress
+        return keep(f), 0.0
+
+    monkeypatch.setattr(loop, "call_llm_with_retry", main)
+    result, _usage, trace = f.run()
+    assert result == rewritten
+    assert len(f.review_sends) == 2, ("the rewrite for the new premises got its own panel", f.progress)
+    assert f.review_requests[1].subject == rewritten
+    host = [r for r in trace["review_runs"] if r.get("authority") == "host_root"]
+    assert host[0]["superseded_by_revision"] and host[0]["owner_source_sha256"] != host[1]["owner_source_sha256"]
+    assert trace["acceptance_decision"]["reason"] != "previous_revision_accepted"
+    assert trace["acceptance_decision"]["status"] == "accepted"
 
 
 @pytest.mark.parametrize("install", ["advisory_default", "blocking_finish", "cyber_pro"])

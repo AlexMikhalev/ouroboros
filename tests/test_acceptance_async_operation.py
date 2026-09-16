@@ -396,6 +396,23 @@ def test_two_late_panels_of_one_task_each_announce_their_own_row(tmp_path, monke
                 settled.notify_all()
 
     monkeypatch.setattr("ouroboros.review_custody._settle_review_attempt", settle)
+    # Both producers answer before EITHER settlement callback runs, so the two
+    # callbacks race exactly as two panels settling together would.
+    barrier = threading.Barrier(2, timeout=10)
+
+    def settle(*args, **kwargs):
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError:
+            pass
+        try:
+            return original_settle(*args, **kwargs)
+        finally:
+            with settled:
+                count["n"] += 1
+                settled.notify_all()
+
+    monkeypatch.setattr("ouroboros.review_custody._settle_review_attempt", settle)
     gates = {"model/a": threading.Event(), "model/b": threading.Event()}
     model = _SlotModel(gates, {"model/a": "PASS", "model/b": "FAIL"})
     ctx = _terminal_ctx(tmp_path, task_id="late-pair")
@@ -407,11 +424,9 @@ def test_two_late_panels_of_one_task_each_announce_their_own_row(tmp_path, monke
                 {**json.loads(json.dumps(dataclasses.asdict(first))), "authority": "host_root",
                  "panel_id": f"panel_{key}", "binding_hash": f"binding-{key}", "candidate_hash": f"c-{key}"})
         gates["model/a"].set()
-        with settled:
-            assert settled.wait_for(lambda: count["n"] >= 1, timeout=10)
         gates["model/b"].set()
         with settled:
-            assert settled.wait_for(lambda: count["n"] >= 2, timeout=10)
+            assert settled.wait_for(lambda: count["n"] >= 2, timeout=15)
         events = []
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline and sum(1 for e in events if e.get("system_type") == "acceptance_late_settlement") < 2:

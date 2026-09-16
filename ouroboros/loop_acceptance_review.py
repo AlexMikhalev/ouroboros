@@ -1434,6 +1434,9 @@ def _run_task_acceptance_review_once(
         from ouroboros.loop_delivery import delivery_subject_hash
 
         review_ctx.review_binding["subject_hash"] = delivery_subject_hash(tools._ctx, llm_trace, content)
+        from ouroboros.loop_messages import owner_source_sha256
+
+        review_ctx.review_binding["owner_source_sha256"] = owner_source_sha256(tools._ctx)  # the premises this panel judged
         if _loop()._task_acceptance_owner_generation_changed(tools._ctx):
             _loop()._supersede_task_acceptance_for_owner_followup(tools._ctx, llm_trace)
             return True
