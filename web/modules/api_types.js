@@ -358,6 +358,14 @@
  *   The lane fact of a direct conversation turn, stamped by the host on the
  *   turn's own progress/tool frames and on every task_done; the chat block
  *   reads it before any census lists the turn.
+ * @property {boolean=} narration
+ *   The VOICE of a progress frame, stamped by the worker on every note it
+ *   emits: true only for the model's own round narration, false for every
+ *   host-authored note (checkpoints, fallback, plan, acceptance, nudge,
+ *   transport, density). Both stay visible rows; only narration may claim the
+ *   card title and the collapsed activity line. Absent = a frame that predates
+ *   the fact (an older worker, a supervisor note, a stored row), which keeps
+ *   the legacy reading that promoted every progress frame.
  * @property {string=} initiator
  *   The turn's origin label: "consciousness" on every frame and row of a
  *   self-initiated wake-up (and the roots it starts); absent on an owner's turn.
