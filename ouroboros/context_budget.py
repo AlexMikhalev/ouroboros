@@ -1,8 +1,7 @@
 """Single source of truth for AGENT-context size budgets.
 
 These govern the size of Ouroboros's OWN working context: the main-loop
-assembled prompt, the typed context-reclaim request/receipt contract, and
-the background consciousness context guards.
+assembled prompt and the typed context-reclaim request/receipt contract.
 
 They are deliberately SEPARATE from the REVIEW-prompt budget family
 (``ouroboros.tools.review_helpers.REVIEW_PROMPT_TOKEN_BUDGET`` and the
@@ -188,14 +187,6 @@ class _Part:
     text: str
     sha256: str
 
-# Background-consciousness assembled-context guards. P1: fail fast, never
-# silently truncate cognitive artifacts.
-BG_CONTEXT_WARN_CHARS = 600_000   # ~150K tokens: warn but proceed
-BG_CONTEXT_MAX_CHARS = 1_200_000  # ~300K tokens: skip the wakeup cycle
-
-# Drive-state JSON injection guard inside the consciousness context.
-BG_STATE_JSON_WARN_CHARS = 200_000
-
 # WARN threshold for a single oversized governance/knowledge context section.
 LARGE_CONTEXT_SECTION_CHARS = 200_000
 
@@ -287,10 +278,6 @@ PROGRESS_LOG_WARN_BYTES = 8_000_000
 # fired follow-up. 2MB ≈ thousands of ~1KB records: the point where a
 # per-tick full parse + atomic rewrite under the lock stops being free.
 SCHEDULED_TASKS_WARN_BYTES = 2_000_000
-# Background observations are append-only and replayed by the consciousness
-# owner on each wake.  This is a warning, not a retention gate: acknowledged
-# and unacknowledged rows remain durable until a future owner-approved archive.
-BG_OBSERVATIONS_WARN_BYTES = 20_000_000
 # Compact root-task -> skill review index used by acceptance packet assembly.
 SKILL_REVIEW_ROOT_TASKS_WARN_BYTES = 20_000_000
 # ``chat_history`` can deliberately replay the archive chain, while ordinary

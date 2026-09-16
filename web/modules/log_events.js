@@ -30,12 +30,15 @@ const ERROR_LOG_PHASES = new Set(['error', 'timeout', 'lifecycle_error']);
 
 export function categorizeLogEvent(evt, view = summarizeLogEvent(evt)) {
     const t = evt.type || evt.event || '';
+    // A wake-up's rows carry the turn's origin label (`initiator`).
+    const wake = evt.initiator === 'consciousness';
     if (evt.is_progress) {
-        return evt.task_id === 'bg-consciousness' ? 'consciousness' : 'tasks';
+        return wake ? 'consciousness' : 'tasks';
     }
     // Severity comes from the typed projection, never from the event name; the
     // name substrings below only pick the domain family of a non-error row.
     if (ERROR_LOG_PHASES.has(String(view?.phase || ''))) return 'errors';
+    if (wake) return 'consciousness';
     if (t.includes('llm') || t.includes('model')) return 'llm';
     if (t.includes('tool') || evt.tool) return 'tools';
     if (t.includes('task') || t.includes('evolution') || t.includes('review')) return 'tasks';
@@ -662,11 +665,7 @@ export function summarizeLogEvent(evt) {
                 ],
             });
         }
-        return view(
-            evt.task_id === 'bg-consciousness' ? 'thought' : 'progress',
-            narration.preview || 'Progress update',
-            { meta: [evt.task_id === 'bg-consciousness' ? 'background' : 'task'] },
-        );
+        return view('progress', narration.preview || 'Progress update', { meta: ['task'] });
     }
 
     if (t === 'task_started') {
@@ -1083,6 +1082,7 @@ export function taskTerminalSummary(evt = {}) {
         ...(evt.model_execution && typeof evt.model_execution === 'object'
             ? { modelExecution: evt.model_execution } : {}),
         ...(Number.isInteger(evt.tool_calls) ? { toolCalls: evt.tool_calls } : {}),
+        ...(evt.initiator ? { initiator: String(evt.initiator) } : {}),
     };
 }
 
@@ -1105,7 +1105,16 @@ export function modelExecutionLabel(fact) {
 
 }
 
+// The turn's origin label rides every projected frame of the turn (progress,
+// tool, heartbeat, terminal) so the block's meta line can name it whichever
+// frame minted the card; the projection branches below stay label-blind.
 export function summarizeChatLiveEvent(evt) {
+    const view = summarizeChatLiveEventView(evt);
+    if (view && evt?.initiator) view.initiator = String(evt.initiator);
+    return view;
+}
+
+function summarizeChatLiveEventView(evt) {
     const t = evt.type || evt.event || 'unknown';
     const groupId = getLogTaskGroupId(evt);
     const progressText = describeText(String(evt.content || evt.text || '').replace(/^💬\s*/, ''), 240, { markdown: true });
@@ -1225,22 +1234,9 @@ export function summarizeChatLiveEvent(evt) {
     if (evt.is_progress || t === 'send_message') {
         const lifecycleTerminal = String(evt.task_id || '').startsWith('skill_lifecycle_')
             && /\s—\s(completed|failed)\b/i.test(progressText.full);
-        // Background consciousness has no task_result; the backend signals end-of-cycle
-        // with a structured `consciousness_state` marker (and history replay annotates
-        // the latest entry with `task_terminal_status`). Both are structured, not text.
-        const bgConsciousness = evt.task_id === 'bg-consciousness';
-        const bgState = String(evt.consciousness_state || '');
-        const bgErrored = bgState === 'error_backoff' || bgState === 'error';
-        const bgTerminal = bgConsciousness
-            && (Boolean(bgState) || Boolean(evt.task_terminal_status));
-        const bgPhase = bgTerminal ? (bgErrored ? 'lifecycle_error' : 'done') : 'thinking';
         return chatView({
-            phase: bgConsciousness
-                ? bgPhase
-                : (lifecycleTerminal ? (/failed\b/i.test(progressText.full) ? 'lifecycle_error' : 'done') : 'working'),
-            // The bg end-of-cycle marker carries no text; pass an empty headline so
-            // the card keeps its last thought as the title instead of "Working...".
-            headline: (bgTerminal && !progressText.preview) ? '' : (progressText.preview || 'Working...'),
+            phase: lifecycleTerminal ? (/failed\b/i.test(progressText.full) ? 'lifecycle_error' : 'done') : 'working',
+            headline: progressText.preview || 'Working...',
             fullHeadline: progressText.full || '',
             activityPreview: progressText.preview || '',
             visible: Boolean(progressText.preview),
@@ -1255,9 +1251,9 @@ export function summarizeChatLiveEvent(evt) {
     }
 
     if (t === 'llm_usage') {
-        // A helper call can share the task id. Only the task's own loop (or
-        // background consciousness loop) supplies its coordinating model.
-        const ownLoop = Number.isInteger(evt.round) || evt.source === 'consciousness';
+        // A helper call can share the task id. Only the task's own loop
+        // supplies its coordinating model.
+        const ownLoop = Number.isInteger(evt.round);
         return chatView({ model: ownLoop ? evt.model : '', visible: false, dedupeKey: key(evt.round || '') });
     }
 

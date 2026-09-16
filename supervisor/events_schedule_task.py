@@ -524,6 +524,7 @@ def _handle_schedule_task(evt: Dict[str, Any], ctx: Any) -> None:
             "configured_subagent": configured_subagent,
             "parent_cognitive_route": parent_cognitive_route,
             "parent_id": parent_id,
+            "origin_metadata": evt.get("origin_metadata"),
         })
         scheduled_failure_reason = ""
         scheduled_failure_detail = ""

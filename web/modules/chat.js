@@ -98,7 +98,6 @@ import {
     formatMsgTime,
     getOrCreateChatSessionId,
     headerBudgetPresentation,
-    isBackgroundTaskId,
     isForegroundLiveCard,
     isNonTerminalMediaHistoryRow,
     isReplayEvidenceRow,
@@ -120,7 +119,6 @@ import {
     reconnectBannerText,
     saveChatInputHistory,
     senderLabel,
-    shouldAlwaysShowTaskCard,
     shouldFirePanic,
     taskCostMeta,
     taskCostProjection,
@@ -558,8 +556,6 @@ export function createChatInstance({
     }
 
     function syncHeaderControlState(data) {
-        const background = data?.bg_consciousness_state;
-        if (Number(background?.chat_id ?? 1) === chatId) modelWaits.syncBackground(background);
         headerActions?.querySelectorAll('[data-chat-command]').forEach((button) => {
             const cmd = button.dataset.chatCommand;
             const state = cmd === 'evolve' ? [data?.evolution_enabled, data?.evolution_state?.detail]
@@ -783,8 +779,8 @@ export function createChatInstance({
     // host's lane fact (`_is_direct_chat`) keeps its host jobs and never chooses chrome.
     function blockHasWork(record) {
         const id = record.groupId;
-        return shouldAlwaysShowTaskCard(id)
-            || record.reviewController?.groups.size > 0
+        // No lane is always shown: the retired bg-consciousness card kind is gone.
+        return record.reviewController?.groups.size > 0
             || [...subagentChildParents.values()].some((info) => info.parentId === id)
             || record.items.some((item) => !item.receipt && !String(item.dedupeKey || '').startsWith('task_done|'))
             || record.toolErrors > 0;
@@ -1676,6 +1672,8 @@ export function createChatInstance({
             record.lastHumanHeadline = headline;
         }
         if (summary.model) record.agentModel = summary.model;
+        // The origin label (a consciousness wake-up) is sticky once any frame names it.
+        if (summary.initiator) record.initiator = summary.initiator;
 
         const shouldPromote = Boolean(summary.promote) || record.finished;
         const activeHeadline = shouldPromote
@@ -1750,18 +1748,14 @@ export function createChatInstance({
         }
         ensureLiveCardVisible(record, { suppressDomInsert });
         hideTypingIndicatorOnly();
-        const drivesComposerStatus = !isBackgroundTaskId(nextGroupId);
         // A log-channel task_done settles here without finishLiveCard: remove
         // its Cancel run action and retained cancelable marker.
         if (record.finished) {
             settleLiveCard(record, summary.phase || 'done', wasFinished);
-            if (drivesComposerStatus) syncChatStatus();
         } else {
             setLiveCardTypingVisible(record, true);
-            if (drivesComposerStatus || !hasActiveLiveCard()) {
-                syncChatStatus();
-            }
         }
+        syncChatStatus();
         return Boolean(timelineChanged
             || typingBefore !== typingEl.style.display
             || liveCardProjectionChanged(before, record));
@@ -2152,6 +2146,7 @@ export function createChatInstance({
         const senderLabelOverride = opts.senderLabel || '';
         const senderSessionId = opts.senderSessionId || '';
         const source = opts.source || '';
+        const initiator = opts.initiator || '';
         const systemType = opts.systemType || '';
         const taskId = opts.taskId || '';
         const projectId = opts.projectId || '';
@@ -2199,6 +2194,7 @@ export function createChatInstance({
                 markdown: !!markdown,
                 systemType,
                 source,
+                initiator,
                 senderLabel: senderLabelOverride,
                 senderSessionId,
                 clientMessageId,
@@ -2227,7 +2223,7 @@ export function createChatInstance({
         stampHistoryNode(bubble, opts.historyId, opts.historyPosition);
 
         const sender = senderLabel(role, isProgress, systemType, {
-            source, senderLabel: senderLabelOverride, senderSessionId,
+            source, senderLabel: senderLabelOverride, senderSessionId, initiator,
         }, chatSessionId);
         const rendered = role === 'user'
             ? escapeHtml(text)
@@ -2518,6 +2514,7 @@ export function createChatInstance({
                         historyId: msg.history_id, historyPosition: msg.history_position,
                         systemType: msg.system_type || '',
                         source: msg.source || '',
+                        initiator: msg.initiator || '',
                         senderLabel: msg.sender_label || '',
                         senderSessionId: msg.sender_session_id || '',
                         clientMessageId: msg.client_message_id || '',
@@ -2808,6 +2805,7 @@ export function createChatInstance({
                 addMessage(msg.text, msg.role, !!msg.markdown, msg.ts || null, false, {
                     systemType: msg.systemType || '',
                     source: msg.source || '',
+                    initiator: msg.initiator || '',
                     senderLabel: msg.senderLabel || '',
                     senderSessionId: msg.senderSessionId || '',
                     clientMessageId: msg.clientMessageId || '',
@@ -3717,6 +3715,7 @@ export function createChatInstance({
             const added = addMessage(msg.content, msg.role, msg.markdown, msg.ts || null, false, {
                 systemType: msg.system_type || '',
                 source: msg.source || '',
+                initiator: msg.initiator || '',
                 taskId: explicitTaskId,
             });
             if (added || changed) incrementUnreadIfNeeded(msg);

@@ -9,6 +9,7 @@ convention already used by ``tests/fixtures_e2e_cancellation.py``.
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
@@ -16,9 +17,20 @@ from ouroboros import usage_accounting as ua
 from ouroboros import usage_compaction as uc
 
 
+# The fold keeps attempts younger than USAGE_LEDGER_FOLD_MIN_AGE_SEC unfolded; the
+# fixtures write rows NOW and the pins expect them to fold, so the compactor's
+# clock runs one horizon ahead — the money assertions stay exactly as they are.
+FOLD_CLOCK_AHEAD_SEC = 2 * uc.USAGE_LEDGER_FOLD_MIN_AGE_SEC
+
+
+def age_fixture_clock(monkeypatch, ahead_sec=FOLD_CLOCK_AHEAD_SEC):
+    monkeypatch.setattr(uc, "_fold_clock", lambda: time.time() + ahead_sec)
+
+
 @pytest.fixture
 def data_root_any_tier(tmp_path, monkeypatch):
     root = tmp_path / "data"
+    age_fixture_clock(monkeypatch)
     monkeypatch.setenv("OUROBOROS_DATA_DIR", str(root))
     monkeypatch.setenv("OUROBOROS_SETTINGS_PATH", str(root / "settings.json"))
     monkeypatch.setenv("TOTAL_BUDGET", "100")

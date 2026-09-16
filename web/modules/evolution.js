@@ -1,4 +1,4 @@
-import { escapeHtmlText, formatUsd2 } from './utils.js';
+import { allowanceLabel, escapeHtmlText, formatUsd2 } from './utils.js';
 import { apiFetch } from './api_client.js';
 import { openConfirmDialog } from './confirm_dialog.js';
 
@@ -114,13 +114,19 @@ export function initEvolution({ ws, state, mount }) {
     }
 
     function pillTone(status) {
-        if (['running', 'queued', 'idle_ready'].includes(status)) return 'online';
-        if (['waiting_for_idle', 'waiting_for_owner_chat', 'waiting_for_restart_verify', 'paused', 'starting'].includes(status)) return 'starting';
-        if (['budget_blocked', 'budget_stopped', 'paused_failures', 'error_backoff'].includes(status)) return 'error';
+        if (['running', 'queued', 'idle_ready', 'thinking', 'sleeping'].includes(status)) return 'online';
+        if (['waiting_for_idle', 'waiting_for_owner_chat', 'waiting_for_first_conversation', 'waiting_for_restart_verify', 'paused', 'starting'].includes(status)) return 'starting';
+        if (['budget_blocked', 'budget_stopped', 'paused_failures', 'error_backoff', 'allowance_exhausted', 'allowance_unknown', 'wake_failed', 'wake_rejected'].includes(status)) return 'error';
         return 'offline';
     }
 
     function shortStatusLabel(status, fallback = 'off') {
+        if (status === 'thinking') return 'thinking';
+        if (status === 'sleeping') return 'sleeping';
+        if (status === 'waiting_for_first_conversation') return 'needs owner';
+        if (status === 'allowance_exhausted' || status === 'allowance_unknown') return 'allowance';
+        if (status === 'wake_failed') return 'failed';
+        if (status === 'wake_rejected') return 'refused';
         if (status === 'running') return 'running';
         if (status === 'queued') return 'queued';
         if (status === 'idle_ready') return 'idle';
@@ -144,7 +150,7 @@ export function initEvolution({ ws, state, mount }) {
         const campaign = evolution.campaign || {};
         const consciousness = runtime.bg_consciousness_state || {};
         const evolutionStatus = evolution.status || (runtime.evolution_enabled ? 'idle_ready' : 'disabled');
-        const consciousnessStatus = consciousness.status || (runtime.bg_consciousness_enabled ? 'running' : 'disabled');
+        const consciousnessStatus = consciousness.status || (runtime.bg_consciousness_enabled ? 'sleeping' : 'disabled');
 
         evolutionPill.className = `evo-runtime-pill ${pillTone(evolutionStatus)}`;
         evolutionPill.textContent = `Evolution ${shortStatusLabel(evolutionStatus, 'off')}`;
@@ -166,8 +172,10 @@ export function initEvolution({ ws, state, mount }) {
             runtimeChip('Failures', evolution.consecutive_failures || 0),
             runtimeChip('Budget left', Number.isFinite(Number(evolution.budget_remaining_usd)) ? formatUsd2(evolution.budget_remaining_usd) : ''),
             runtimeChip('Last evolution', formatTs(evolution.last_task_at)),
-            runtimeChip('Next wakeup', consciousness.next_wakeup_sec ? `${consciousness.next_wakeup_sec}s` : ''),
-            runtimeChip('Last background cycle', formatTs(consciousness.last_cycle_finished_at || consciousness.last_cycle_started_at)),
+            runtimeChip('Next wake-up', runtime.bg_consciousness_enabled ? formatTs(consciousness.next_wake_at) : ''),
+            runtimeChip('Last wake-up', formatTs(consciousness.last_wake_at)),
+            runtimeChip('Consciousness allowance (24 h)', allowanceLabel(
+                consciousness.spent_24h_usd, consciousness.daily_usd, consciousness.unknown_unmetered, consciousness.integrity_degraded)),
             runtimeChip('Updated', formatTs(generatedAt)),
         ].filter(Boolean).join('');
         if (campaignDetail) {

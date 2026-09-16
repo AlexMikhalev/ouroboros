@@ -492,6 +492,26 @@ def _decision_ctx(tmp_path):
     )
 
 
+def test_a_turn_nobody_typed_is_given_the_same_main_lane_facts(tmp_path):
+    """P3c: a consciousness wake-up has no owner message, so nothing used to build its
+    Main manifest and every predecessor it named was refused as not addressable. The
+    same facts now come through ONE seam over the owner path, never a second copy that
+    could drift; only what an owner MESSAGE carries is absent."""
+    from ouroboros.projects_registry import create_project
+    from ouroboros.server_routing_context import _decision_turn_metadata, main_lane_routing_metadata
+
+    create_project(tmp_path, "racer", name="Racer")
+    ctx = _decision_ctx(tmp_path)
+
+    owner = _decision_turn_metadata(ctx, 1, "cm-owner", {})
+    wake = main_lane_routing_metadata(ctx, 1)
+
+    assert wake["main_routing_manifest"] == owner["main_routing_manifest"]
+    assert [row["project_id"] for row in wake["main_routing_manifest"]["projects"]] == ["racer"]
+    assert wake["routing_contract"]["source_lane"] == "main"
+    assert "client_message_id" not in wake
+
+
 def test_decision_turn_is_shown_the_existing_receipt_for_the_same_message(tmp_path):
     """I7 (owner decision B5=A): one owner message became task c405c824 and was then
     steered into three more live roots, each paying a review wave, because the

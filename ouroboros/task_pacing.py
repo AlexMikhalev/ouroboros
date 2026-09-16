@@ -439,7 +439,11 @@ def resolve_cost_ceiling(
     margin resolves to ``exhausted_soft_land`` instead.
 
     An enabled non-root member keeps the propagated original root ceiling;
-    a later global balance never re-mints that early threshold. Actual global
+    a later global balance never re-mints that early threshold. A ROOT may
+    carry a producer's own ``root_cost_ceiling_usd`` below its hard cap (a
+    consciousness wake-up: what is left of its allowance); it lands the same
+    planning margin early, and at or below the margin it is an immediate soft
+    landing, exactly like a cap. Actual global
     and root dispatch fences still bind independently. Legacy missing carriers
     retain a disclosed local resolution, never a guessed original root fact.
 
@@ -493,6 +497,18 @@ def resolve_cost_ceiling(
                 basis_parts.append("root_cap_minus_margin")
             if non_root_member:
                 basis_parts.append("non_root_member")
+        if not non_root_member and root_ceiling_usd is not None and float(root_ceiling_usd) > 0:
+            margin = COST_PLANNING_MARGIN_USD
+            room = float(root_ceiling_usd) - margin
+            if room <= 0:
+                return CostCeiling(
+                    state=COST_CEILING_EXHAUSTED_SOFT_LAND,
+                    root_cap_usd=cap,
+                    planning_margin_usd=margin,
+                    basis="root_ceiling_at_or_below_planning_margin",
+                )
+            components.append(room)
+            basis_parts.append("root_ceiling_minus_margin")
         if inherited is not None:
             components.append(inherited)
             basis_parts.append("root_resolved_ceiling")

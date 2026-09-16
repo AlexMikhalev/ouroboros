@@ -735,6 +735,32 @@ def _task_done_durable_fault(evt: Dict[str, Any], ctx: Any, task_id: Any) -> boo
         return True
 
 
+def _notify_consciousness_of_root_done(ctx: Any, task: Dict[str, Any], task_metadata: Any,
+                                       final_task_result: Any, task_done_event: Dict[str, Any]) -> None:
+    """A ROOT finishing (any outcome) is a reason for an early consciousness wake —
+    except the owner's own direct turn (В13: an owner message never wakes it, and
+    neither does that turn ending), a wake-up's own finish or a root consciousness
+    started (``metadata.initiator == "consciousness"``), or the chain would never sleep."""
+    metadata = task_metadata if isinstance(task_metadata, dict) else {}
+    if "subagent" in (str(task.get("delegation_role") or ""), str(metadata.get("delegation_role") or "")):
+        return  # the cancel path has already popped the RUNNING row; the event's metadata still says
+    if bool(task_done_event.get("_is_direct_chat")) or bool(task.get("_is_direct_chat")):
+        return
+    from ouroboros.consciousness_authority import is_consciousness_origin
+
+    result_metadata = final_task_result.get("metadata") if isinstance(final_task_result, dict) else None
+    if is_consciousness_origin(result_metadata) or is_consciousness_origin(task_metadata):
+        return
+    consciousness = getattr(ctx, "consciousness", None)
+    if consciousness is None:
+        return
+    try:
+        consciousness.notify(
+            f"task_finished:{task_done_event.get('task_id') or ''}:{task_done_event.get('status') or ''}")
+    except Exception:
+        log.debug("consciousness notify on task_done failed", exc_info=True)
+
+
 def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
     task_id = evt.get("task_id")
     wid = evt.get("worker_id")
@@ -916,6 +942,7 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
         final_task_result=final_task_result,
         task_done_event=task_done_event,
     )
+    _notify_consciousness_of_root_done(ctx, task, task_metadata, final_task_result, task_done_event)
 
     # v6.91 tree-quiescence coop checkpoint: MUST run after the dispatch
     # bookkeeping above removed this terminal child from RUNNING, or the

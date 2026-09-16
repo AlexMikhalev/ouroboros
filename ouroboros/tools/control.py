@@ -377,6 +377,9 @@ def get_tools() -> List[ToolEntry]:
                 "action": {"type": "string", "enum": ["start", "stop", "status"], "description": "Action to perform"},
             }, "required": ["action"]},
         }, _toggle_consciousness),
+        ToolEntry("set_next_wakeup", {
+            "name": "set_next_wakeup", "description": "Choose the consciousness wake-up interval in seconds: how long after a wake-up ends the next one starts (clamped into the owner's OUROBOROS_BG_WAKEUP_MIN/MAX bounds; a wake-up calling this sets its own next one; a pending wake-up keeps its time; stored for later when consciousness is off).", "parameters": {"type": "object", "properties": {"seconds": {"type": "integer", "description": "Seconds from the end of a wake-up to the next one"}}, "required": ["seconds"]},
+        }, _set_next_wakeup),
         ToolEntry("switch_model", {
             "name": "switch_model",
             "description": "Switch to a different LLM model or reasoning effort level. "
@@ -463,6 +466,7 @@ from ouroboros.tools.control_runtime import (  # noqa: E402, F401 -- intentional
     _request_deep_self_review,
     _request_restart,
     _send_user_message,
+    _set_next_wakeup,
     _set_tool_timeout,
     _switch_model,
     _toggle_consciousness,

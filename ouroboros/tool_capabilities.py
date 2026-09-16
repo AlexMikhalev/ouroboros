@@ -4,11 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-# The delegation_role value background consciousness stamps on its shared tool
-# context before every tool call. Owner-delivery gating keys on it, so both
-# sides import this one name instead of repeating the literal.
-BACKGROUND_DELEGATION_ROLE: str = "background"
-
 OWNER_DELIVERY_TOOL_NAMES: frozenset[str] = frozenset({
     "send_user_message", "send_photo", "send_video", "send_file", "send_links",
 })
@@ -296,3 +291,33 @@ def routing_action_for_tool(name: object) -> str:
     """The addressing action one tool call represents; '' for ordinary work."""
     tool = str(name or "").strip()
     return tool if tool in ROUTING_VERBS else ""
+
+
+# The verbs that START work or CHANGE the world outside this mind's own memory —
+# the exception list a consciousness wake-up at the Observe level does without
+# (``ouroboros/consciousness_authority.py``; owner decision В10', PLAN 5.4).
+# An exception list, not an allowlist: a new READ tool is available to Observe
+# by default (that is the point of the level), and a new mutating verb is added
+# HERE, next to the routing family it extends. The registry's own
+# ``mutates_worktree`` marker is the second source for the same fact —
+# tests/test_consciousness_authority.py pins that every entry carrying it is
+# named below, so the table cannot drift away from the catalog. Publication
+# (``FOREGROUND_MUTATIVE_TOOLS``) joins the set at the authority module.
+OBSERVE_WORLD_MUTATION_TOOLS: frozenset[str] = frozenset({
+    # starting or steering work (steer_task stays: the nanny of a running campaign)
+    "promote_chat_to_task", "schedule_subagent", "schedule_followup", "plan_task",
+    "route_to_project", "ensure_project_scope", "delegate_start", "initiate_presence",
+    "cancel_task", "override_delegation_constraint", "request_deep_self_review",
+    # writing files, running processes, integrating patches
+    "write_file", "edit_text", "apply_patch", "edit_batch",
+    "run_command", "run_script", "start_service", "stop_service", "verify_and_record",
+    "skill_exec", "run_ci_tests",  # an enabled skill's script; a branch push + workflow dispatch
+    # repository refs the catalog marks mutates_worktree
+    "vcs_pull_ff", "vcs_restore", "vcs_revert",
+    "fetch_pr_ref", "create_integration_branch", "cherry_pick_pr_commits",
+    "stage_adaptations", "stage_pr_merge",
+    # the world beyond the repository: forms, skills, project notes
+    "browser_action", "submit_skill_to_hub", "toggle_skill", "skill_owner_action",
+    "journal_write", "workpad_write",
+    "create_github_issue", "comment_on_issue", "comment_on_pr", "close_github_issue",
+})

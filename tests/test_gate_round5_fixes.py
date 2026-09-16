@@ -130,7 +130,11 @@ def test_gr5_1_toggle_start_failure_restores_a_prior_owner_stop(tmp_path, monkey
     )
     sent: list = []
 
-    events_mod._handle_toggle_evolution({"enabled": True, "objective": "x"}, _toggle_ctx(state, sent))
+    # An OWNER start reaches the mint (В12: the agent tool is refused outright
+    # while the flag stands — pinned in test_post_task_evolution).
+    events_mod._handle_toggle_evolution(
+        {"enabled": True, "objective": "x", "source": "owner_chat"}, _toggle_ctx(state, sent),
+    )
 
     assert bool(state.load_state().get("evolution_owner_stopped")) is True, (
         "GR5-1: a failed start must restore the captured owner-stop flag"

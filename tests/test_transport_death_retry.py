@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import queue
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -673,58 +672,6 @@ def test_default_budget_is_zero_for_every_direct_caller(tmp_path, no_sleep):
     msg, _cost = call_llm_with_retry(llm, MESSAGES, "test-model", None, "low", 3, tmp_path, "t-default", 1, None, {})
     assert msg is None
     assert llm.calls == 1
-
-
-def test_background_consciousness_never_enters_the_paid_repeat_rail(tmp_path):
-    """Owner decision: Background Consciousness gets zero paid transport repeats.
-    Behavioral contract through one real cycle (`_think_scoped` with the real
-    `chat_observed`): a client whose send dies with a typed transport death
-    (httpx ReadError via `__cause__`, capture dispatched) is sent exactly ONCE —
-    no repeat, no round record in any durable row — and the cycle takes its own
-    failure path: one `consciousness_llm_error` receipt, idle reason
-    `llm_error`, acknowledgement withheld, wake-up backoff doubled."""
-    from ouroboros.consciousness import BackgroundConsciousness
-
-    drive_root = tmp_path / "drive"
-    (drive_root / "logs").mkdir(parents=True)
-    repo_dir = tmp_path / "repo"
-    repo_dir.mkdir()
-    with patch.object(BackgroundConsciousness, "_build_registry", return_value=MagicMock()):
-        bc = BackgroundConsciousness(
-            drive_root=drive_root, repo_dir=repo_dir, event_queue=None, owner_chat_id_fn=lambda: None,
-        )
-
-    class _DyingClient:
-        calls = 0
-
-        def _resolve_remote_target(self, _model):
-            return {"provider": "openrouter"}  # Real route shape; local sizing makes no provider call.
-
-        def chat(self, **_kwargs):
-            self.calls += 1
-            raise _death(state="dispatched")
-
-    client = _DyingClient()
-    bc._llm = client
-    wakeup_before = bc._next_wakeup_sec
-    with (
-        patch.object(bc, "_build_context", return_value="context"),
-        patch.object(bc, "_tool_schemas", return_value=[]),
-        patch.object(bc, "_check_budget", return_value=True),
-    ):
-        assert bc._think_scoped() is False
-
-    assert client.calls == 1
-    events_text = (drive_root / "logs" / "events.jsonl").read_text()
-    rows = [json.loads(line) for line in events_text.splitlines() if line.strip()]
-    kinds = [row.get("type") for row in rows]
-    assert kinds.count("consciousness_llm_error") == 1
-    assert "Connection error." in next(row for row in rows if row.get("type") == "consciousness_llm_error")["error"]
-    assert not {"llm_api_error", "llm_non_retryable_same_request", "consciousness_thought"} & set(kinds)
-    assert TRANSPORT_DEATHS_KEY not in events_text
-    assert bc._last_idle_reason == "llm_error"
-    assert bc._cycle_ack_allowed is False
-    assert bc._next_wakeup_sec == min(wakeup_before * 2, bc._wakeup_max)
 
 
 def test_classifier_and_review_custody_are_unchanged_by_the_rail():

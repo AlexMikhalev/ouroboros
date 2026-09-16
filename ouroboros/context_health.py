@@ -5,7 +5,7 @@ stays under the hard module gate.  This module is a LEAF: it reads runtime logs,
 version carriers and custody ledgers and renders the "## Health Invariants"
 section.  It must never import ``ouroboros.context`` — ``context`` re-exports
 ``safe_read`` / ``build_health_invariants`` so every historical import site
-(``ouroboros.context.safe_read``, ``ouroboros.consciousness``, the tests that
+(``ouroboros.context.safe_read``, ``ouroboros.consciousness_wake``, the tests that
 monkeypatch ``context._STRAY_PROBE_CACHE``) keeps working unchanged.
 """
 
@@ -45,30 +45,6 @@ def _iter_recent_jsonl(path: pathlib.Path, max_bytes: int = 256_000):
 def _collect_log_analysis_checks(env: Any, checks: List[str]) -> None:
     import hashlib
     import time as _time
-
-    try:
-        from ouroboros.consciousness import BackgroundConsciousness
-        consciousness_md = safe_read(env.repo_path("prompts/CONSCIOUSNESS.md"))
-        if consciousness_md:
-            whitelist = BackgroundConsciousness._BG_TOOL_WHITELIST
-            scan_text = re.sub(r'```.*?```', '', consciousness_md, flags=re.DOTALL)
-            tool_prefixes = (
-                "schedule_", "update_", "knowledge_", "browse_", "analyze_",
-                "web_", "send_", "repo_", "data_", "chat_", "list_", "get_",
-                "wait_", "set_", "memory_",
-            )
-            prompt_tool_refs = {
-                match.group(1)
-                for match in re.finditer(r'\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b', scan_text)
-                if match.group(1) in whitelist or any(match.group(1).startswith(prefix) for prefix in tool_prefixes)
-            }
-            phantom = prompt_tool_refs - whitelist
-            if phantom:
-                checks.append(f"WARNING: PROMPT-RUNTIME DRIFT — CONSCIOUSNESS.md references tools not in BG whitelist: {', '.join(sorted(phantom))}")
-            else:
-                checks.append("OK: prompt-runtime sync (no phantom tools)")
-    except Exception:
-        pass
 
     try:
         msg_hash_to_tasks: Dict[str, set] = {}
@@ -114,7 +90,7 @@ def _collect_log_analysis_checks(env: Any, checks: List[str]) -> None:
         for ev in _iter_recent_jsonl(events_path):
             evt_type = str(ev.get("type") or "")
             model = str(ev.get("model") or "unknown")
-            if evt_type in {"llm_api_error", "review_model_error", "consciousness_llm_error", "provider_incomplete_response"}:
+            if evt_type in {"llm_api_error", "review_model_error", "provider_incomplete_response"}:
                 llm_error_models[model] += 1
             elif evt_type == "local_context_overflow":
                 local_overflow_models[model] += 1
@@ -288,7 +264,7 @@ def build_health_invariants(env: Any, task_id: str = "", active_root: str = "") 
     rots on disk), but only the OWNER task receives the call-shaped
     instruction. A non-owner told to call ``integrate_delegated_patch`` gets
     a structural ``run_not_owned`` refusal and an obligation it can never
-    discharge. Empty ``task_id`` (Background Consciousness, legacy callers)
+    discharge. Empty ``task_id`` (legacy callers)
     keeps the call-shaped wording — an unattributed reader may be the owner.
 
     ``active_root`` names that reader's own active Git root, which this module

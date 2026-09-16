@@ -102,6 +102,9 @@ D20 = "Presence"
 "ouroboros/settings_scales.py" = "D12"
 "ouroboros/configured_subagents.py" = "D07"
 "ouroboros/consciousness.py" = "D15"
+"ouroboros/consciousness_allowance.py" = "D15"
+"ouroboros/consciousness_authority.py" = "D15"
+"ouroboros/consciousness_wake.py" = "D15"
 "ouroboros/consolidator.py" = "D15"
 "ouroboros/knowledge.py" = "D15"
 "ouroboros/markdown_source.py" = "D18"
@@ -708,6 +711,7 @@ allowed = [
   "D07->D08",
   "D07->D12",
   "D07->D13",
+  "D07->D15",
   "D07->D16",
   "D07->D17",
   "D07->D18",
@@ -781,10 +785,8 @@ allowed = [
   "D14->D18",
   "D14->D19",
   "D15->D01",
-  "D15->D02",
   "D15->D03",
   "D15->D04",
-  "D15->D09",
   "D15->D12",
   "D15->D16",
   "D15->D18",
@@ -840,6 +842,7 @@ lazy_only = [
   "D04->D10",
   "D04->D12",
   "D04->D14",
+  "D04->D15",
   "D04->D20",
   "D05->D06",
   "D05->D07",
@@ -852,7 +855,6 @@ lazy_only = [
   "D07->D10",
   "D07->D11",
   "D07->D14",
-  "D07->D15",
   "D07->D20",
   "D08->D02",
   "D08->D10",
@@ -886,11 +888,14 @@ lazy_only = [
   "D14->D08",
   "D14->D17",
   "D14->D20",
+  "D15->D02",
   "D15->D05",
   "D15->D06",
   "D15->D07",
   "D15->D08",
+  "D15->D09",
   "D15->D10",
+  "D15->D13",
   "D15->D17",
   "D16->D01",
   "D16->D03",

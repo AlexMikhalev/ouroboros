@@ -186,11 +186,12 @@ class TurnEventQueue:
     capture rule of DEVELOPMENT.md). Wraps the turn's real queue and stamps
     the turn chat onto its own still-unaddressed task-scoped payloads."""
 
-    def __init__(self, inner: Any, task_id: Any, chat_id: Any,
+    def __init__(self, inner: Any, task_id: Any, chat_id: Any, initiator: Any = "",
                  on_first_work: Optional[Callable[[], None]] = None) -> None:
         self._inner = inner
         self._task_id = str(task_id or "")
         self._chat_id = int(chat_id or 0)
+        self._initiator = str(initiator or "")
         # Fired once, on the first frame this proxy stamps as WORK (below):
         # the lane hangs the turn namer on it, so a turn is named exactly
         # when its block becomes a task card and never for a greeting.
@@ -207,6 +208,11 @@ class TurnEventQueue:
                 # the header pill keeps the census verdict (Thinking…) beside
                 # the block before the census lists the turn; chrome never reads it.
                 data.setdefault("_is_direct_chat", True)
+                # The turn's origin label (a consciousness wake-up) rides the
+                # same events, so a tool-only wake is filed and labelled from
+                # its first frame; an owner's turn carries no initiator.
+                if self._initiator:
+                    data.setdefault("initiator", self._initiator)
                 # The host-attested Stop marker rides the turn's WORK frames as
                 # it rides its narration rows (events_chat_delivery stamps those
                 # through the same registry): a turn that only calls tools
@@ -238,8 +244,8 @@ def make_server_log_sink(bridge: Any, drive_root: Any, running: Any = None):
     """Build the server-process append_jsonl live sink (installed by server.py).
 
     The raw ``set_log_sink(bridge.push_log)`` predecessor broadcast every
-    server-process append unaddressed (direct-chat turns and Background
-    Consciousness run in the server process, so their rows never cross the
+    server-process append unaddressed (direct-chat turns, an owner's and a
+    wake-up's alike, run in the server process, so their rows never cross the
     worker sink) and re-broadcast every type a supervisor handler already
     pushes. This wrapper is the exactly-once + explicit-audience choke:
     suppressed types are dropped (their handler push is the one delivery),

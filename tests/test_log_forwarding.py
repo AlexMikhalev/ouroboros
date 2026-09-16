@@ -495,12 +495,13 @@ def test_turn_event_queue_stamps_by_value_at_the_producer():
     named.put_nowait({"type": "log_event", "data": {"type": "tool_call_started", "task_id": "turn2", "tool": "run_command"}})
     assert fired == [1]
 
-    # _run_chat_task installs the proxy around agent.handle_task.
+    # The execution half of the direct lane installs the proxy around
+    # agent.handle_task (admission registers the turn; execution runs it).
     import inspect
 
-    from supervisor.workers import _run_chat_task
+    from supervisor.worker_chat_lane import _execute_chat_task
 
-    src = inspect.getsource(_run_chat_task)
+    src = inspect.getsource(_execute_chat_task)
     assert "_TurnEventQueue" in src and "agent._event_queue = turn_queue" in src
 
 

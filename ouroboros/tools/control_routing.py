@@ -166,12 +166,19 @@ def _routing_issuer(ctx: ToolContext) -> Dict[str, Any]:
     contract a Swarm root never has, an empty client id read as "agent-issued",
     a room veto keyed on the chat): the host now states it once, and the model
     has no argument to claim otherwise.
+
+    A consciousness wake-up runs on the direct lane too, but nobody typed it: its
+    ``is_direct_chat`` fact does NOT make it an owner turn (PLAN 5.2a) — it
+    speaks as a task. The two other triggers stay, so a consciousness turn that
+    relays a REAL owner message it drained keeps the owner's provenance.
     """
     metadata = getattr(ctx, "task_metadata", None)
     metadata = metadata if isinstance(metadata, dict) else {}
     delivery = getattr(ctx, "last_owner_delivery", None)
+    from ouroboros.consciousness_authority import is_consciousness_origin
+
     if (
-        bool(getattr(ctx, "is_direct_chat", False))
+        (bool(getattr(ctx, "is_direct_chat", False)) and not is_consciousness_origin(metadata))
         or str(metadata.get("client_message_id") or "").strip()
         or (isinstance(delivery, dict) and delivery)
     ):
@@ -393,6 +400,13 @@ def _promote_chat_to_task(
             "task_contract": dict(getattr(ctx, "task_contract", {}) or {}),
         })
         repo_root_note = ""  # Presence runs in its admitted folder, never over the repo
+    # A promote from a consciousness turn/tree mints a consciousness root: the
+    # origin label, ledger category and level ride the event by value; the
+    # supervisor stamps them on the new root (worker_promotion) — no presence-style
+    # stripping, the wake chooses project/workspace like any Main turn (В9').
+    from ouroboros.consciousness_authority import consciousness_origin_metadata
+
+    evt.update(consciousness_origin_metadata(metadata))
     _attach_origin_from_metadata(ctx, evt)
     predecessor_error = _attach_predecessor_authority_from_metadata(
         ctx, evt, predecessor_task_id,
@@ -668,6 +682,14 @@ def _route_to_project(
         ),
         "ts": utc_now_iso(),
     }
+    # A route mints a root exactly like a promote, so a consciousness turn's origin,
+    # ledger category and level ride THIS event too. The single admission door reads
+    # them off the event (supervisor/worker_promotion.promote_chat_to_task) and stamps
+    # the root; without them a wake's routed root landed with empty metadata, no
+    # disabled_tools in its contract and the ordinary `task` ledger category.
+    from ouroboros.consciousness_authority import consciousness_origin_metadata
+
+    evt.update(consciousness_origin_metadata(metadata))
     _attach_origin_from_metadata(ctx, evt)
     evt.update(predecessor_event)
     _attach_client_surface(ctx, evt)

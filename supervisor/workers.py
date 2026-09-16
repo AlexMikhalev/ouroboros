@@ -104,7 +104,7 @@ def get_event_q():
     """Return the process-lifetime supervisor event bus, creating it lazily.
 
     Worker-pool generations are replaceable; the producers that publish onto
-    this bus (direct chat, consciousness, active turns, and workers) are not.
+    this bus (direct chat, active turns, and workers) are not.
     Rotating the queue during a pool respawn strands those producers on an
     undrained queue, so only a new server process creates a new bus.
     """
@@ -651,8 +651,8 @@ from supervisor.log_addressing import TurnEventQueue as _TurnEventQueue  # noqa:
 # sink copy would be the second delivery of the same event. This is the
 # exactly-once contract test_log_forwarding pins with the production sink
 # installed. The set is a superset of the worker list because the direct-chat
-# agent and Background Consciousness run inside the server process and append
-# the same worker-shaped rows there.
+# agent (an owner's turn and a consciousness wake-up alike) runs inside the
+# server process and appends the same worker-shaped rows there.
 from supervisor.worker_process import WORKER_LOG_SINK_SUPPRESSED_TYPES  # noqa: E402 -- moved span, needed at import time below
 
 SERVER_LOG_SINK_SUPPRESSED_TYPES = WORKER_LOG_SINK_SUPPRESSED_TYPES | frozenset({
@@ -2134,6 +2134,7 @@ from supervisor.worker_chat_lane import (  # noqa: E402, F401 -- intentional pub
     _run_chat_task,
     auto_resume_after_restart,
     handle_chat_direct,
+    handle_wake_direct,
 )
 from supervisor.worker_health import (  # noqa: E402, F401 -- intentional public re-exports
     _emit_task_done_terminal,

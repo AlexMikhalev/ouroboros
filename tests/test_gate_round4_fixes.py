@@ -415,7 +415,10 @@ def test_gr4_6_toggle_evolution_clears_owner_stop_before_the_campaign_mint(
         load_state=state.load_state, send_with_budget=lambda *a, **kw: None,
     )
 
-    events_mod._handle_toggle_evolution({"enabled": True, "objective": "x"}, ctx)
+    # An OWNER start (В12: only owner provenance clears the sticky stop).
+    events_mod._handle_toggle_evolution(
+        {"enabled": True, "objective": "x", "source": "owner_chat"}, ctx,
+    )
 
     assert seen == [False], (
         "GR4-6: the owner-stop flag is cleared BEFORE the campaign is minted — "

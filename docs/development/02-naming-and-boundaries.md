@@ -115,8 +115,10 @@ the authority. These choices are reviewed through CHECKLISTS' development and
 capability-regression items, not a new semantic gate.
 
 What belongs in `prompts/SYSTEM.md` (tier-0 for every Main/task profile in both
-context modes — Background Consciousness and the safety supervisor carry their
-own prompts — and competing with the task for context): identity and tone, the decision
+context modes — the safety supervisor is the one caller with a prompt of its own;
+Background Consciousness uses SYSTEM.md like any other turn, and
+`prompts/CONSCIOUSNESS.md` is the USER message a wake-up receives, never a second
+system prompt — and competing with the task for context): identity and tone, the decision
 loop (answer / promote / route / delegate / do it myself), cross-tool policy
 (which class of tool or lane for which situation, root semantics, memory only
 through its own tools, untrusted external data), prohibitions and safety
@@ -363,6 +365,22 @@ the typed reason (`ouroboros/project_dialogue.py::routing_refusal_cause`) and
 ships it as `cause`; the browser prints it verbatim and keeps no reason→sentence
 map of its own.
 
+The one sanctioned exception list of this shape is the Observe level of a
+consciousness wake-up (`ouroboros/tool_capabilities.py::OBSERVE_WORLD_MUTATION_TOOLS`,
+compiled by `ouroboros/consciousness_authority.py`): it names the verbs that
+START work or CHANGE the world so that a new READ tool is available to Observe
+by default, and a test pins it against the catalog's own `mutates_worktree`
+marker so it cannot drift. The same module owns the two consequences a level
+has — the contract's `disabled_tools` and the per-task `runtime_mode_cap`
+(Act/Observe run the tool dispatcher's light gates even on an advanced/pro/
+cyber_pro install, the stricter of the install mode and the cap) — and the
+origin keys everything a wake starts inherits. For a consciousness-origin task
+`disabled_tools` is enforced at DISPATCH ONLY (`registry_guards._disabled_tools`,
+`disabled_tools_dispatch_only`): the schema filters and the capability-omission
+manifest skip it so the wake's provider request shares an owner turn's cached
+prefix byte for byte; the typed dispatch refusal is the mechanism, and the wake
+message names the level. Every other contract keeps both enforcement halves.
+
 ### Task-authored messages are never owner text
 
 Who is speaking through a routing act is ONE fact the host mints by value
@@ -370,7 +388,11 @@ Who is speaking through a routing act is ONE fact the host mints by value
 what each may carry: `docs/architecture/06-agent-core.md` § "Durable memory and
 project focus"). Never derive it again from a proxy — a routing contract only
 chat turns carry, an empty client id, the chat id of the event — and never give
-the model an argument for it. A task's own words are delivered as a task
+the model an argument for it. A consciousness wake-up runs on the direct lane
+but nobody typed it: its `is_direct_chat` fact does not make it an owner turn
+(`metadata.initiator == "consciousness"` — it speaks as a task), while a
+consciousness root that relays a REAL owner message it drained keeps the
+owner's provenance through the two other triggers. A task's own words are delivered as a task
 message (`KIND_TASK_MESSAGE`, provenance `independent_task`), never as
 `KIND_OWNER_TEXT`, and the provenance value lands at three seams in one change:
 the writer's closed set (`owner_mailbox.TASK_MESSAGE_PROVENANCES`), the render

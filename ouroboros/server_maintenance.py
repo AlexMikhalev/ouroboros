@@ -13,6 +13,7 @@ import json
 import os
 import threading
 import time
+from typing import Any
 
 from ouroboros.server_process import DATA_DIR, log
 from ouroboros.utils import utc_now_iso
@@ -69,11 +70,15 @@ def _run_cancel_delivery_ref_sweep(drive_root: pathlib.Path) -> None:
         _CANCEL_INTENT_SWEEP_LOCK.release()
 
 
-def _periodic_supervisor_maintenance(last_custody_reap: list, last_review_reconcile: list) -> None:
+def _periodic_supervisor_maintenance(
+    last_custody_reap: list, last_review_reconcile: list, *, on_orphans_healed: Any = None,
+) -> None:
     """Throttled periodic upkeep extracted from the supervisor loop: cancel-intent
     watchdog and pending child-ref promotion replay (every 20s), custody reap of
     orphaned task-scoped processes (every 600s) + review-job zombie reconcile
-    (every 300s). Each cadence gates itself via its own last-run marker."""
+    (every 300s). Each cadence gates itself via its own last-run marker.
+    ``on_orphans_healed(count)`` fires when the zombie reconcile terminalized
+    orphaned RUNNING task rows (the alarm clock wakes early for them)."""
     if time.time() - _LAST_CANCEL_INTENT_SWEEP[0] > 20 and _CANCEL_INTENT_SWEEP_LOCK.acquire(blocking=False):
         _LAST_CANCEL_INTENT_SWEEP[0] = time.time()
         try:
@@ -121,7 +126,7 @@ def _periodic_supervisor_maintenance(last_custody_reap: list, last_review_reconc
             log.debug("Periodic custody reap failed", exc_info=True)
     if time.time() - last_review_reconcile[0] > 300:
         last_review_reconcile[0] = time.time()
-        _periodic_zombie_reconcile()
+        _periodic_zombie_reconcile(on_orphans_healed=on_orphans_healed)
 
 
 def _retry_latched_daemon_start() -> None:
@@ -431,22 +436,6 @@ def _startup_prune_sweeps(*, preserve_task_sources: bool = False) -> None:
             })
     except Exception:
         log.debug("Agent media prune failed", exc_info=True)
-    try:
-        # CPL4-C23: acknowledged observations older than GC retention fold into
-        # an archive segment; unacknowledged rows are never pruned. Runs before
-        # Background Consciousness starts (it is created later in startup).
-        from ouroboros.consciousness import compact_acknowledged_observations
-
-        fold_report = compact_acknowledged_observations(DATA_DIR)
-        if fold_report.get("folded") or fold_report.get("skipped"):
-            append_jsonl(DATA_DIR / "logs" / "events.jsonl", {
-                "ts": utc_now_iso(),
-                "type": "consciousness_observation_fold",
-                "report": fold_report,
-            })
-    except Exception:
-        log.debug("Observation fold failed", exc_info=True)
-
     if not preserve_task_sources:
         try:
             from ouroboros.observability import prune_observability_blobs
@@ -627,7 +616,7 @@ def _prune_delegated_snapshots() -> None:
         log.debug("Delegated execution snapshot prune failed", exc_info=True)
 
 
-def _periodic_zombie_reconcile() -> None:
+def _periodic_zombie_reconcile(*, on_orphans_healed: Any = None) -> None:
     """Heal zombie 'running' records on a supervisor cadence.
 
     A worker that died mid-review (crash / SIGKILL / manual stop) leaves
@@ -646,8 +635,10 @@ def _periodic_zombie_reconcile() -> None:
         from ouroboros.task_status import reconcile_orphaned_running_tasks
 
         expired_quizzes: list = []
-        reconcile_orphaned_running_tasks(DATA_DIR, expired_quizzes=expired_quizzes)
+        healed = reconcile_orphaned_running_tasks(DATA_DIR, expired_quizzes=expired_quizzes)
         _publish_expired_quiz_frames(expired_quizzes)
+        if healed and callable(on_orphans_healed):
+            on_orphans_healed(int(healed))
     except Exception:
         log.debug("Periodic orphaned running-task reconcile failed", exc_info=True)
     try:

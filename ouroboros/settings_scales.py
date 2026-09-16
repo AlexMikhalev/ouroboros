@@ -54,8 +54,10 @@ def resolve_effort(task_type: str) -> str:
         key = "OUROBOROS_EFFORT_SCOPE_REVIEW"
         default = "high"
     elif t == "consciousness":
-        key = "OUROBOROS_EFFORT_CONSCIOUSNESS"
-        default = "high"
+        # An empty slot is Main's effort (owner decision 16.09, 1=A): a wake-up is an
+        # ordinary Main turn and shares its request shape; a set value is honored (В25=B).
+        raw = str(runtime_setting("OUROBOROS_EFFORT_CONSCIOUSNESS", "") or "").strip().lower()
+        return raw if raw in EFFORT_SCALE else resolve_effort("task")
     else:
         # Legacy INITIAL_REASONING_EFFORT is retired; use EFFORT_TASK.
         key = "OUROBOROS_EFFORT_TASK"
@@ -148,9 +150,7 @@ RESTART_REQUIRED_SETTINGS = frozenset({
     "LOCAL_MODEL_N_GPU_LAYERS",
     "LOCAL_MODEL_CONTEXT_LENGTH",
     "LOCAL_MODEL_CHAT_FORMAT",
-    # Background cognition reads these at consciousness __init__, so a change
-    # only takes effect after restart (Phase 4 Evolution settings group).
-    "OUROBOROS_BG_WAKEUP_MIN",
-    "OUROBOROS_BG_WAKEUP_MAX",
-    "OUROBOROS_BG_MAX_ROUNDS",
+    # The consciousness keys (autonomy, allowance, concurrency, wake-up bounds) are
+    # deliberately NOT here: the alarm clock reads them at each decision
+    # (consciousness.tick / set_next_wakeup), so a save applies without a restart.
 })

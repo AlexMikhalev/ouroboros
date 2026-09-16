@@ -317,7 +317,8 @@ def emit_llm_usage_event(
         model: Model name used for the LLM call
         usage: Usage dict from LLM response
         cost: Calculated cost for this call
-        category: Budget category (task, evolution, consciousness, review, summarize, other)
+        category: Budget category (task, evolution, consciousness, consciousness_task,
+            review, summarize, other)
     """
     if not event_queue:
         return

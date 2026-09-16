@@ -191,14 +191,14 @@ class ChatOutbound(TypedDict):
     task_group_id: NotRequired[str]
     task_event: NotRequired[str]
     status: NotRequired[str]
-    # v6.82 (P5): host-attested marker, stamped by the supervisor's delivery
-    # seam ONLY for a task POST /api/tasks/{id}/cancel will actually stop — a
-    # lineage-resolved pooled ROOT (its RUNNING row) or the live in-process
-    # direct-chat turn (resolved through the same ownership reader the
-    # endpoint uses, supervisor.workers.direct_chat_turn); never a subagent
-    # frame, never an ephemeral decision turn. Gates the UI "Cancel run" action.
+    # v6.82 (P5): host-attested marker, stamped by the supervisor's delivery seam ONLY
+    # for a task POST /api/tasks/{id}/cancel will actually stop — a lineage-resolved
+    # pooled ROOT (its RUNNING row) or the live in-process direct-chat turn (resolved
+    # through the same ownership reader the endpoint uses, supervisor.workers.direct_chat_turn);
+    # never a subagent frame, never an ephemeral decision turn. Gates the UI "Cancel run" action.
     cancelable: NotRequired[bool]
     _is_direct_chat: NotRequired[bool]  # lane fact stamped on a direct turn's own frames
+    initiator: NotRequired[str]  # origin label: "consciousness" on a wake-up's frames/rows (and its roots); absent on an owner's turn
     # Monetary projections are nullable when the physical-attempt ledger cannot
     # be read.  ``None`` is deliberately distinct from a confirmed $0 result.
     # C2 (owner 10=B) named these the HONEST names — accounted upper bounds,
@@ -398,10 +398,9 @@ class QuizOutbound(TypedDict):
 class QuizStateOutbound(TypedDict):
     """Outbound WS lifecycle update for an already-rendered quiz card.
 
-    A separate discriminator (not a second ``quiz`` frame): the display path
-    dedupes quiz frames by ``quiz:{quiz_id}:{ts}``, so a state change must
-    never look like a new card. ``answered_index`` rides only with the
-    ``answered`` state.
+    A separate discriminator (not a second ``quiz`` frame): the display path dedupes
+    quiz frames by ``quiz:{quiz_id}:{ts}``, so a state change must never look like a
+    new card. ``answered_index`` rides only with the ``answered`` state.
     """
 
     type: Literal["quiz_state"]
@@ -410,6 +409,7 @@ class QuizStateOutbound(TypedDict):
     state: str
     ts: str
     answered_index: NotRequired[int]
+    wait_for_answer: NotRequired[bool]  # additive: False once a bounded wait closed (the card stays open)
     # #471: the owner's recorded free-text answer rides the live frame (absent
     # when empty) so the open card renders `Owner's answer:` as replay does.
     comment: NotRequired[str]

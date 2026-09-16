@@ -35,7 +35,6 @@ Providers name the same output-token budget differently: OpenRouter/Anthropic-co
 | Post-task evolution promotion decision (`post_task_evolution`) | 8,192 |
 | Context compaction round summaries | 32,768 |
 | Skill publish PR body generation | 8,192 |
-| Background consciousness loop | 65,536 |
 | Project naming LIGHT one-shot (`project_naming.llm_project_name`) | 256 |
 | Update letter LIGHT one-shot (`update_letter.write_letter`) | 1,024 |
 | Provider Test (`llm_probe.PROVIDER_TEST_MAX_TOKENS`) | 16 |
@@ -168,7 +167,7 @@ A registry of `config.SETTINGS_DEFAULTS` (exact defaults stay canonical in `conf
 | OUROBOROS_EFFORT_REVIEW | high | Review effort; reaches plan review as every row's default rung unless the envelope declares `reviewer_effort` |
 | OUROBOROS_EFFORT_SCOPE_REVIEW | high | Scope-review effort |
 | OUROBOROS_EFFORT_DEEP_SELF_REVIEW | high | Deep-self-review effort — the surface default; a saved `deep_review` row's own effort outranks it |
-| OUROBOROS_EFFORT_CONSCIOUSNESS | high | Consciousness effort |
+| OUROBOROS_EFFORT_CONSCIOUSNESS | (empty) | Consciousness effort; empty = the Task / Chat effort (a wake-up is an ordinary Main turn), a set value is honored |
 | OUROBOROS_RETURN_REASONING | true | Ask OpenRouter to return reasoning; direct/local request copies strip OpenRouter-only fields |
 | OUROBOROS_REASONING_SUMMARY | auto | Readable reasoning-summary rendering; presentation-only, never added to history or returned to providers |
 | OUROBOROS_TASK_IDLE_TIMEOUT_SEC | 900 | Idle timeout — requires absence of real task/subtree progress; the typed in-flight main-LLM row spares only this rail; a settled child result stamps parent progress, because delivery creates immediate integration work and must not coincide with idle termination |
@@ -190,9 +189,11 @@ A registry of `config.SETTINGS_DEFAULTS` (exact defaults stay canonical in `conf
 | OUROBOROS_CLAUDEXOR_HARNESS_INSTALL_TIMEOUT_SEC | 300 | Harness install ceiling (kills the tracked group, typed refusal) |
 | OUROBOROS_CLAUDEXOR_QUOTA_REFRESH_TIMEOUT_SEC | 90 | Quota-refresh POST ceiling (clamped 1–90) |
 | OUROBOROS_BUNDLE_DIR | (unset) | Env-only: launcher-owned bundle root propagated to embedded children for Node/ripgrep discovery |
-| OUROBOROS_BG_MAX_ROUNDS | 10 | Background-consciousness round cap |
-| OUROBOROS_BG_WAKEUP_MIN | 30 | Consciousness wakeup floor (s) |
-| OUROBOROS_BG_WAKEUP_MAX | 7200 | Consciousness wakeup ceiling (s) |
+| OUROBOROS_BG_WAKEUP_MIN | 900 | Lower bound (s) of the interval between consciousness wake-ups; the model picks the interval itself (`set_next_wakeup`) and it is clamped into [min, max]. Read at each alarm decision, so a change applies without a restart |
+| OUROBOROS_BG_WAKEUP_MAX | 14400 | Upper bound (s) of that same model-chosen interval; never below the lower bound. When the model chooses no interval the alarm uses `runtime_limits.WAKE_DEFAULT_SEC` (3300 s = 55 min, just under the default 1 h `OUROBOROS_PROMPT_CACHE_TTL` so the shared prefix stays warm on TTL-metered routes), a constant rather than a third knob |
+| OUROBOROS_CONSCIOUSNESS_AUTONOMY | act | What a consciousness wake may do (closed enum, anything else falls back to the default): `observe` thinks, keeps memory and knowledge and writes to the owner but starts nothing; `act` adds everything the runtime mode allows except editing Ouroboros's own code and prompts, evolution, restart and settings; `full` is everything the runtime mode allows, evolution included |
+| OUROBOROS_CONSCIOUSNESS_DAILY_USD | 20.0 | Rolling-24h spend ceiling for consciousness — its wakes plus the tasks they start. Exhausted means no NEW wake or task until spend leaves the window; `0` is a real choice (consciousness may not spend) |
+| OUROBOROS_CONSCIOUSNESS_MAX_TASKS | 2 | How many consciousness-started tasks may run at once; `0` = it never starts tasks |
 | OUROBOROS_POST_TASK_EVOLUTION | false | Post-task evolution promotion toggle; agent self-enablement is blocked at the shell/browser/settings/data-write guards; choosing an objective routes through the Main slot because it is a high-leverage decision, while execution stays behind ordinary review and owner gates |
 | OUROBOROS_POST_TASK_EVOLUTION_CADENCE | llm | Promotion cadence `llm` or `every_n:k` (malformed normalizes to `llm`) |
 | OUROBOROS_POST_TASK_EVOLUTION_BUDGET_USD | 0.0 | Remaining-global-budget start floor, not a cycle cap |

@@ -120,10 +120,13 @@ def test_core_catalog_schema_bytes_and_handler_owners_are_stable():
     # QuizOption gained the optional `recommended` boolean. Rolled again for owner
     # decision 6C (structural-health wave 2): the forward_to_worker description now
     # names its second addressee, any host-listed independent root, delivered as a
-    # message from an independent task. Diffing the whole catalog base to head shows
+    # message from an independent task. Rolled again for owner decision В17a=A: the
+    # escalate description stops promising expiry at task end (a late answer reaches
+    # the chat as an ordinary owner message) and the optional `max_wait_minutes`
+    # bound joins its parameters. Diffing the whole catalog base to head shows
     # exactly those edits and nothing else.
     assert hashlib.sha256(schema_bytes).hexdigest() == (
-        "43c3365d80615b2187c23a18d51d89260414067cb878319e1791dfc26cf41e13"
+        "532059cb95c431df39b0a950ced52e05228e88ec3ddd180bc0d2fa9a0cc8f616"
     )
     assert {
         entry.name: (entry.handler.__module__, entry.handler.__name__)

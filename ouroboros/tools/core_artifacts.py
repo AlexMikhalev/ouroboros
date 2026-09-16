@@ -15,7 +15,7 @@ import ipaddress
 import mimetypes
 import pathlib
 import uuid
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from ouroboros.tools.registry import ToolContext
 from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
@@ -306,13 +306,17 @@ class QuizValidationError(ValueError):
 
 def validate_quiz_payload(
     question: Any, options: Any, stake: Any, assumption: Any,
-    *, wait_for_answer: bool = False,
+    *, wait_for_answer: bool = False, max_wait_minutes: Any = None,
 ) -> Dict[str, Any]:
     """Return one cleaned quiz payload, or refuse the entire card.
 
     Shared by the asking tool and the message bus (one validator, two
     callers — the LinksOutbound pattern). Optional questions name an
     assumption; required waiting has no implied default answer.
+
+    ``max_wait_minutes`` bounds a required wait only, and never past the task's
+    absolute wall-clock ceiling: beyond it the ceiling would end the task
+    first, so a larger bound would be a promise the runtime cannot keep.
     """
     q_text = str(question or "").strip()
     if not q_text or len(q_text) > _MAX_QUIZ_QUESTION_CHARS:
@@ -357,12 +361,40 @@ def validate_quiz_payload(
             "QUIZ_ASSUMPTION_REQUIRED",
             "state the assumption you continue under until the owner answers.",
         )
+    bound = _validate_wait_bound(max_wait_minutes, wait_for_answer=wait_for_answer)
     return {
         "question": q_text,
         "options": cleaned,
         "stake": str(stake or "").strip()[:500],
         "assumption": assumption_text[:500],
+        **({"max_wait_minutes": bound} if bound is not None else {}),
     }
+
+
+def _validate_wait_bound(max_wait_minutes: Any, *, wait_for_answer: bool) -> Optional[int]:
+    """The optional wait bound in whole minutes, capped by the task ceiling."""
+    if max_wait_minutes is None:
+        return None
+    if not wait_for_answer:
+        raise QuizValidationError(
+            "QUIZ_WAIT_BOUND_INVALID",
+            "max_wait_minutes applies only to wait_for_answer=true.",
+        )
+    if (isinstance(max_wait_minutes, bool) or not isinstance(max_wait_minutes, int)
+            or max_wait_minutes < 1):
+        raise QuizValidationError(
+            "QUIZ_WAIT_BOUND_INVALID", "max_wait_minutes must be a positive integer.",
+        )
+    from ouroboros.config import get_task_abs_ceiling_sec
+
+    ceiling_minutes = max(1, int(get_task_abs_ceiling_sec()) // 60)
+    if max_wait_minutes > ceiling_minutes:
+        raise QuizValidationError(
+            "QUIZ_WAIT_BOUND_INVALID",
+            f"max_wait_minutes must be at most {ceiling_minutes} "
+            "(the task's absolute wall-clock ceiling).",
+        )
+    return int(max_wait_minutes)
 
 
 def _send_links(
@@ -397,28 +429,28 @@ def _escalate(
     stake: str = "",
     assumption: str = "",
     wait_for_answer: bool = False,
+    max_wait_minutes: int | None = None,
 ) -> str:
     """One escalation verb for the whole tree (owner decision 31 hierarchy).
 
     A ROOT task addresses the OWNER: a typed quiz card in the chat
     (optional clarification continues under ``assumption``; required waiting
-    preserves the task at the next completed-tool boundary).
+    preserves the task at the next completed-tool boundary, optionally only
+    for ``max_wait_minutes`` before it resumes with a system notice).
     A SUBAGENT addresses its PARENT: a typed mailbox frame the parent answers
     with ``forward_to_worker`` or raises higher by calling ``escalate``
     itself, forwarding the payload verbatim. The owner only ever sees what no
-    ancestor was willing to answer. Expiry is structural only (decision
-    30=A): the question dies with its author; there is no host deadline.
+    ancestor was willing to answer. Expiry stays structural (no host deadline):
+    the task-done seam closes an unanswered card, but a late answer to it is
+    still accepted and reaches the chat as an ordinary owner message (В17a=A).
+    A consciousness wake-up is an ordinary root turn here: it asks its owner
+    through the same card and may wait for the answer like any other root.
     """
-    from ouroboros.tool_capabilities import BACKGROUND_DELEGATION_ROLE
-
     meta = getattr(ctx, "task_metadata", {}) if isinstance(getattr(ctx, "task_metadata", {}), dict) else {}
-    if str(meta.get("delegation_role") or "") == BACKGROUND_DELEGATION_ROLE:
-        # Background cognition has no owner-interactive loop and no parent:
-        # a card it can never collect an answer for would be a zombie.
-        return ("⚠️ ESCALATE_UNAVAILABLE: background consciousness cannot escalate — "
-                "record the open question in memory or scratchpad instead.")
     try:
-        payload = validate_quiz_payload(question, options, stake, assumption, wait_for_answer=wait_for_answer)
+        payload = validate_quiz_payload(question, options, stake, assumption,
+                                        wait_for_answer=wait_for_answer,
+                                        max_wait_minutes=max_wait_minutes)
     except QuizValidationError as exc:
         return f"⚠️ {exc.code}: {exc}"
     task_id = str(getattr(ctx, "task_id", "") or "").strip()
@@ -525,6 +557,12 @@ def _escalate(
 
     quiz_id = uuid.uuid4().hex
     canonical_root = pathlib.Path(str(meta.get("budget_drive_root") or getattr(ctx, "budget_drive_root", "") or ctx.drive_root))
+    # The card's own chat, stored with the block: a late answer arriving after
+    # this task is gone is delivered there, exactly where the card was shown.
+    try:
+        card_chat_id = int(getattr(ctx, "current_chat_id", None) or 0)
+    except (TypeError, ValueError):
+        card_chat_id = 0
     asked = record_asked(
         canonical_root, task_id,
         quiz_id=quiz_id, question=payload["question"],
@@ -532,7 +570,8 @@ def _escalate(
         option_details=[row.get("detail", "") for row in payload["options"]],
         recommended_index=next((i for i, row in enumerate(payload["options"]) if row.get("recommended")), None),
         stake=payload["stake"], assumption=payload["assumption"],
-        wait_for_answer=wait_for_answer,
+        wait_for_answer=wait_for_answer, chat_id=card_chat_id,
+        max_wait_minutes=payload.get("max_wait_minutes"),
     )
     if asked.get("refused"):
         if wait_for_answer:
@@ -557,10 +596,24 @@ def _escalate(
     })
     delivered = "delivered to the owner" if mode == "live" else "queued for the owner"
     if wait_for_answer:
+        bound = payload.get("max_wait_minutes")
         ctx._owner_wait_requested = quiz_id
-        return (f"OK: quiz {quiz_id} {delivered}; the task waits after this tool batch, "
+        if bound:
+            # An ABSOLUTE stamp, not a countdown: the bound must survive a
+            # planned restart instead of starting over on the warm resume.
+            import datetime
+
+            from ouroboros.deadline_utils import utc_now
+
+            ctx._owner_wait_deadline_at = (
+                utc_now() + datetime.timedelta(minutes=int(bound))).isoformat()
+            ctx._owner_wait_max_minutes = int(bound)
+        limit = (f"the task waits up to {int(bound)} minutes after this tool batch, then "
+                 "continues with a notice" if bound else "the task waits after this tool batch")
+        return (f"OK: quiz {quiz_id} {delivered}; {limit}, "
                 "preserving its live browser and releasing active execution capacity. "
                 "Addressed owner text resumes your judgment; existing Stop and task deadlines still apply.")
     return (f"OK: quiz {quiz_id} {delivered}; continuing under assumption: "
             f"{payload['assumption']}. The answer (if any) arrives as an owner "
-            "quiz answer in a later round; the card expires when this task ends.")
+            "quiz answer in a later round; the card stays answerable after this "
+            "task ends — a later answer reaches this chat as an ordinary owner message.")

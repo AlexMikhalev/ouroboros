@@ -11,9 +11,16 @@ import { createSystemMessageAction } from './ui_helpers.js';
 const QUIZ_STATUS_TEXT = {
     open: 'Awaiting answer',
     answered: 'Answered',
-    expired_terminal: 'Task finished — question expired',
+    // The asking task is gone, but the card is NOT: a late answer is accepted
+    // and delivered into this chat as an ordinary message.
+    expired_terminal: 'Task finished — you can still answer',
     superseded: 'Superseded by a retry',
 };
+
+// States that still take an answer. Only a settled one (answered/superseded)
+// turns the card into a pure record.
+const ANSWERABLE_QUIZ_STATES = ['open', 'expired_terminal'];
+const WAIT_ENDED_TEXT = 'The wait window closed and the task continued; you can still answer.';
 
 // Neutral, factual statuses (owner decision 15~A): the card never scolds the
 // router — it states what the click does and what happened.
@@ -71,8 +78,10 @@ export function createChatDecision({
             || !block || String(block.quiz_id || '') !== String(quizId)
             || !['open', 'answered', 'expired_terminal', 'superseded'].includes(block.state)) return null;
         const current = observe({ ...block, task_id: taskId });
+        const wait = detail.owner_wait?.quiz_id === quizId ? detail.owner_wait : null;
         return { ...block, ...current, task_id: taskId, project_id: detail.project_id,
-            ts: block.asked_at, owner_wait_state: detail.owner_wait?.quiz_id === quizId ? detail.owner_wait.state : '' };
+            ts: block.asked_at, owner_wait_state: wait ? wait.state : '',
+            owner_wait_resume_reason: wait ? String(wait.resume_reason || '') : '' };
     }
 
     async function revealQuestion(taskId, quizId, projectId, chatId, appendQuiz, isVisible, beforeReveal = () => {}) {
@@ -102,10 +111,15 @@ export function createChatDecision({
     }
 
     function pointerText(row, state) {
+        // A wait that ended on its own bound resumed WITHOUT an answer, so the
+        // question is still wanted; a finished task's card still takes one.
+        const stillAsking = row.owner_wait_state !== 'resumed'
+            || row.owner_wait_resume_reason === 'timeout';
         const lead = state === 'answered' ? 'Question answered'
-            : ['expired_terminal', 'superseded'].includes(state) ? 'Question expired'
-                : state !== 'open' ? 'Question status unavailable'
-                    : row.owner_wait_state === 'resumed' ? 'Question' : 'Answer needed';
+            : state === 'expired_terminal' ? 'Answer still possible'
+                : state === 'superseded' ? 'Question expired'
+                    : state !== 'open' ? 'Question status unavailable'
+                        : stillAsking ? 'Answer needed' : 'Question';
         return `${lead} in ${row.project_name || 'Project'}`;
     }
 
@@ -115,7 +129,7 @@ export function createChatDecision({
         const state = String(current.state || 'unknown');
         return onDomWrite(() => {
             const text = pointerText(view.row, state);
-            const action = state === 'open' ? 'Open question' : 'View question';
+            const action = ANSWERABLE_QUIZ_STATES.includes(state) ? 'Open question' : 'View question';
             const changed = view.label.textContent !== text || view.action.textContent !== action
                 || view.card.dataset.state !== state;
             if (view.label.textContent !== text) view.label.textContent = text;
@@ -131,7 +145,8 @@ export function createChatDecision({
             const question = await readQuestion(taskId, quizId, projectId);
             if (!disposed && pointerViews.get(questionKey(taskId, quizId)) === view) {
                 updatePointer(view, { ...view.row, quiz_state: question?.state || 'unknown',
-                    owner_wait_state: question?.owner_wait_state || '' });
+                    owner_wait_state: question?.owner_wait_state || '',
+                    owner_wait_resume_reason: question?.owner_wait_resume_reason || '' });
             }
         } catch {
             if (!disposed && pointerViews.get(questionKey(taskId, quizId)) === view)
@@ -166,7 +181,8 @@ export function createChatDecision({
         // Initial open delivery can race a closed frame missed by this instance.
         const state = observations.get(key)?.state || (msg.quiz_state === 'open' && fetchDetail ? 'unknown' : msg.quiz_state);
         updatePointer(view, { ...msg, quiz_state: state });
-        if (fetchDetail && !['answered', 'expired_terminal', 'superseded'].includes(state)) void refreshPointer(view);
+        // An expired card can still become answered, so it is not settled here.
+        if (fetchDetail && !['answered', 'superseded'].includes(state)) void refreshPointer(view);
         return bubble;
     }
 
@@ -199,6 +215,7 @@ export function createChatDecision({
             stake: String(src.stake || ''),
             assumption: String(src.assumption || ''),
             waitForAnswer: src.wait_for_answer === true,
+            waitEnded: Boolean(src.wait_ended_at),
             state: String(src.state || 'open'),
             taskId: String(msg.task_id || ''),
             ts: msg.ts || null,
@@ -280,11 +297,9 @@ export function createChatDecision({
                     ? 'Already answered.' : 'This question is no longer open.', 'error');
                 return;
             }
-            if (status === 409 && card.dataset.state === 'open') {
-                setCardState(card, 'expired_terminal', null);
-                showToast('This question is no longer open.', 'error');
-                return;
-            }
+            // A bodyless 409 no longer invents an expiry: an expired card is
+            // still answerable, so the only honest thing to report is that
+            // this attempt did not land. The card keeps its state.
             showToast(`Could not record the answer (${status || 'network error'}).`, 'error');
         } catch (err) {
             showToast('Could not record the answer (network error).', 'error');
@@ -324,15 +339,20 @@ export function createChatDecision({
             state, answered_index: answeredIndex, comment: card.dataset.ownerComment || '' });
         state = current.state;
         answeredIndex = Number.isInteger(current.answered_index) ? current.answered_index : null;
+        const answerable = ANSWERABLE_QUIZ_STATES.includes(state);
         return onDomWrite(() => {
             let changed = card.dataset.state !== state;
             if (changed) card.dataset.state = state;
-            if (state !== 'open') {
+            if (!answerable) {
                 // A settled card takes no more input: the draft field goes,
                 // and what the owner actually said takes its place.
                 const box = card.querySelector('.chat-quiz-comment-box');
                 if (box) { box.remove(); changed = true; }
                 if (renderOwnerAnswer(card, String(card.dataset.ownerComment || ''))) changed = true;
+            }
+            if (state !== 'open') {
+                // Nothing is waiting on the owner any more — the task moved on
+                // or finished — even while the card still accepts an answer.
                 const waiting = card.querySelector('.chat-quiz-wait');
                 if (waiting) { waiting.remove(); changed = true; }
             }
@@ -344,7 +364,7 @@ export function createChatDecision({
             }
             const buttons = card.querySelectorAll('.chat-quiz-option');
             buttons.forEach((btn, i) => {
-                const disabled = state !== 'open';
+                const disabled = !answerable;
                 const chosen = answeredIndex !== null && i === answeredIndex;
                 if (btn.disabled !== disabled) {
                     btn.disabled = disabled;
@@ -381,6 +401,11 @@ export function createChatDecision({
                     if (quiz.options[index]?.recommended === true) appendRecommendedBadge(button);
                 });
                 existing.querySelector('.chat-quiz-details-unavailable')?.remove();
+            }
+            if (quiz.waitEnded || !quiz.waitForAnswer) {
+                // A missed timeout frame: reconciliation projects the closed bound too.
+                const waiting = existing.querySelector('.chat-quiz-wait');
+                if (waiting) { waiting.textContent = WAIT_ENDED_TEXT; waiting.classList.remove('chat-quiz-wait'); }
             }
             setCardState(existing, quiz.state, quiz.answeredIndex);
             return null;
@@ -450,7 +475,7 @@ export function createChatDecision({
                 btn.append(detail);
             }
             btn.addEventListener('click', () => {
-                if (card.dataset.state !== 'open') return;
+                if (!ANSWERABLE_QUIZ_STATES.includes(card.dataset.state)) return;
                 // A typed remark rides WITH the click: the owner picked this
                 // option and said why, one answer, one request.
                 submitAnswer(card, quiz, index, commentText());
@@ -466,9 +491,10 @@ export function createChatDecision({
         }
 
         // Free answer: none of the options may fit, and the owner must not be
-        // forced to pick the least wrong one. Always visible while the card is
-        // open (no disclosure to discover), removed once it settles.
-        if (quiz.state === 'open') {
+        // forced to pick the least wrong one. Always visible while the card
+        // still takes an answer (no disclosure to discover), removed once it
+        // settles — a finished task's card is still answerable.
+        if (ANSWERABLE_QUIZ_STATES.includes(quiz.state)) {
             const box = document.createElement('div');
             box.className = 'chat-quiz-comment-box';
             commentField = document.createElement('textarea');
@@ -489,7 +515,7 @@ export function createChatDecision({
             };
             commentField.addEventListener('input', () => onDomWrite(() => { syncSend(); return true; }));
             send.addEventListener('click', () => {
-                if (card.dataset.state !== 'open') return;
+                if (!ANSWERABLE_QUIZ_STATES.includes(card.dataset.state)) return;
                 const text = commentText();
                 if (!commentPresent()) return;
                 if (text.length > MAX_DECISION_COMMENT) {
@@ -508,13 +534,13 @@ export function createChatDecision({
         // The signature line: what the agent keeps doing while the owner has
         // not answered — and, once the card settles, the record of the path
         // it took by default.
-        if (quiz.assumption || quiz.waitForAnswer) {
+        if (quiz.assumption || quiz.waitForAnswer || quiz.waitEnded) {
             const assumption = document.createElement('div');
             assumption.className = 'chat-quiz-assumption';
             if (quiz.waitForAnswer) assumption.classList.add('chat-quiz-wait');
             assumption.textContent = quiz.waitForAnswer
                 ? 'Waiting for your answer; Stop and the task deadline still apply.'
-                : `Continuing meanwhile: ${quiz.assumption}`;
+                : (quiz.waitEnded ? WAIT_ENDED_TEXT : `Continuing meanwhile: ${quiz.assumption}`);
             card.append(assumption);
         }
 
@@ -707,12 +733,23 @@ export function createChatDecision({
         // lifecycle frame (expired/superseded) carries no comment.
         const comment = String(frame.comment || '');
         if (comment) card.dataset.ownerComment = comment;
-        return setCardState(card, String(frame.state || ''), index) || changed;
+        let waitChanged = false;
+        if (frame.wait_for_answer === false) {
+            // The bounded wait closed and the task resumed: the card stays open and
+            // answerable, but it no longer says the task is waiting.
+            const waiting = card.querySelector('.chat-quiz-wait');
+            if (waiting) {
+                waiting.textContent = WAIT_ENDED_TEXT;
+                waiting.classList.remove('chat-quiz-wait');
+                waitChanged = true;
+            }
+        }
+        return setCardState(card, String(frame.state || ''), index) || changed || waitChanged;
     }
 
     return { buildQuizCard, buildQuestionPointer, appendQuestionPointer, readQuestion, revealQuestion, setCardState, applyQuizStateFrame, renderRoutingDecision,
         refreshQuestions: () => Promise.all([...pointerViews.values()]
-            .filter((view) => !['answered', 'expired_terminal', 'superseded'].includes(view.card.dataset.state))
+            .filter((view) => !['answered', 'superseded'].includes(view.card.dataset.state))
             .map(refreshPointer)),
         resetViews(rows = []) {
             const keep = new Set(rows.map((row) => questionKey(row.task_id, row.quiz_id || row.quiz?.quiz_id)));

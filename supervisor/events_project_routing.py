@@ -191,14 +191,15 @@ def _publish_routing_ack(
 
 
 def _handle_project_digest(evt: Dict[str, Any], ctx: Any) -> None:
-    """Surface a concise per-project cycle completion digest to consciousness.
+    """A project task finished: touch the project and wake consciousness early.
 
     Full project awareness (v6.32.0): the one identity already sees the project's
-    chat thread in its unified memory, so this is a crisp "task finished" summary
-    (project_id + full objective + outcome statuses), NOT an isolation boundary.
-    Per-cycle RAW internal facts stay in the per-project knowledge/journal store
-    (scoped tools); the единый agent decides what to do with the digest — backlog,
-    identity, or nothing (BIBLE P5).
+    chat thread in its unified memory and the finished task in ``task_results``,
+    so the digest is a wake REASON, not a message — the next wake-up renders the
+    facts itself (``consciousness_wake``) and the one agent decides what to do
+    with them — backlog, identity, or nothing (BIBLE P5). A digest of a tree
+    consciousness itself started never re-arms the clock (its own finish is not
+    news to it; the chain would never sleep).
     """
     pid = str(evt.get("project_id") or "").strip()
     if not pid:
@@ -210,20 +211,13 @@ def _handle_project_digest(evt: Dict[str, Any], ctx: Any) -> None:
     except Exception:
         log.debug("project_digest touch failed", exc_info=True)
     try:
-        # Digest into the штаб's consciousness: carry the objective WHOLE (BIBLE P1
-        # — no silent/lossy clip of cognitive text). The one mind is aware of its
-        # project work in full; only raw per-cycle facts stay in the project store.
-        digest = (
-            f"Project '{pid}' task {str(evt.get('task_id') or '')} finished: "
-            f"execution={str(evt.get('execution_status') or 'unknown')}, "
-            f"objective={str(evt.get('objective_status') or 'not_evaluated')}. "
-            f"Goal: {str(evt.get('objective') or '')}"
-        )
+        from ouroboros.consciousness_authority import is_consciousness_origin
+
         consciousness = getattr(ctx, "consciousness", None)
-        if consciousness is not None:
-            consciousness.inject_observation(digest)
+        if consciousness is not None and not is_consciousness_origin(evt):
+            consciousness.notify(f"project_digest:{pid}")
     except Exception:
-        log.debug("project_digest consciousness injection failed", exc_info=True)
+        log.debug("project_digest consciousness notify failed", exc_info=True)
 
 
 def _rollback_promoted_pending(

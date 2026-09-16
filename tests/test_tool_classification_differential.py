@@ -344,6 +344,9 @@ CURRENT_PRODUCER_CONTRACTS = {
     # subagent_integration refuses to accept mismatched or unavailable file
     # evidence, or to integrate direct folder results through another surface.
     "INTEGRATE_DIRECTORY_OUTPUT_MISMATCH": (True, "integration_blocked"),
+    # A tree under the light per-task cap (a consciousness Act/Observe tree) may not land a
+    # patch on the Ouroboros repository in any install mode (16.09): a new identifier.
+    "INTEGRATE_CAPPED_TREE": (True, "integration_blocked"),
     "INTEGRATE_DIRECTORY_SURFACE_MISMATCH": (True, "integration_blocked"),
     "INTEGRATE_FILE_OUTPUTS_UNAVAILABLE": (True, "integration_blocked"),
     # The harvest puts every identifier first. A standalone capture failure

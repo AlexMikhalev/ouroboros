@@ -118,6 +118,10 @@ async def api_health(_request: Request) -> JSONResponse:
     })
 
 
+def _describe_bg(request: Request) -> Callable[[bool], dict[str, Any]] | None:
+    return _state_attr(request, "describe_bg_consciousness_state")
+
+
 def _state_snapshot(request: Request) -> Dict[str, Any]:
     """Collect every heavy synchronous input for the ``/api/state`` payload.
 
@@ -209,6 +213,9 @@ def _state_snapshot(request: Request) -> Dict[str, Any]:
         "breakdown": breakdown,
         "spent": spent,
         "evolution_state": evolution_state,
+        # The alarm's snapshot reads the usage ledger (a cross-process lock): computed HERE,
+        # on the worker thread with the rest of the snapshot, never on the event loop.
+        "bg_state": (_describe_bg(request)(bool(st.get("bg_consciousness_enabled"))) if _describe_bg(request) else {}),
         "github_token_configured": bool(github_token_from_env_or_settings()),
         "projects": _projects_summary_safe(request),
         "project_chat_ids": _project_chat_ids_safe(request),
@@ -278,7 +285,8 @@ def _task_activity_facts(drive_root: Any, task_id: str) -> dict:
     quizzes = data.get("owner_quiz") if isinstance(data.get("owner_quiz"), dict) else {}
     quiz = quizzes.get(str(wait.get("quiz_id") or ""), {})
     facts = {"finalizing": post_task_synthesis_is_open(synthesis),
-             "owner_wait": {key: wait[key] for key in ("quiz_id", "state") if key in wait},
+             "owner_wait": {key: wait[key] for key in ("quiz_id", "state", "resume_reason")
+                            if key in wait},
              "quiz": {key: quiz[key] for key in ("quiz_id", "state", "asked_at", "wait_for_answer")
                       if isinstance(quiz, dict) and key in quiz}}
     if len(_FINALIZING_MEMO) >= _FINALIZING_MEMO_MAX:
@@ -438,11 +446,7 @@ async def api_state(request: Request) -> JSONResponse:
         spent = snap["spent"]
         evolution_state = snap["evolution_state"]
         bg_requested = bool(st.get("bg_consciousness_enabled"))
-        describe_bg_state: Callable[[bool], dict[str, Any]] | None = _state_attr(
-            request,
-            "describe_bg_consciousness_state",
-        )
-        bg_state = describe_bg_state(bg_requested) if describe_bg_state else {}
+        bg_state = snap.get("bg_state") or {}
         supervisor_ready = _state_attr(request, "supervisor_ready_event")
         get_supervisor_error = _state_attr(request, "get_supervisor_error")
         app_start = float(_state_attr(request, "app_start", time.time()) or time.time())

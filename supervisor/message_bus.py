@@ -1056,6 +1056,7 @@ class LocalChatBridge:
         answered_index: Optional[int] = None,
         chat_id: int = 0,
         comment: Optional[str] = None,
+        wait_for_answer: Optional[bool] = None,
     ) -> None:
         """Broadcast a quiz lifecycle update to already-rendered cards.
 
@@ -1080,6 +1081,10 @@ class LocalChatBridge:
             msg["answered_index"] = int(answered_index)
         if str(comment or ""):
             msg["comment"] = str(comment)
+        if wait_for_answer is not None:
+            # Additive: ``False`` after a bounded wait closed — the card stops saying
+            # "waiting" while it stays answerable.
+            msg["wait_for_answer"] = bool(wait_for_answer)
         if int(chat_id or 0):
             msg["chat_id"] = int(chat_id or 0)
         try:
@@ -1316,6 +1321,10 @@ def log_chat(
                     record[key] = meta[key]
         if "task_terminal_status" in meta:
             record["task_terminal_status"] = str(meta.get("task_terminal_status") or "")
+        # The turn's origin label (a consciousness wake-up) survives the row
+        # like the terminal status: a final bubble is labelled on reload too.
+        if meta.get("initiator"):
+            record["initiator"] = str(meta.get("initiator") or "")
         if isinstance(meta.get("origin_message_ref"), dict):
             record["origin_message_ref"] = dict(meta["origin_message_ref"])
         if filename:

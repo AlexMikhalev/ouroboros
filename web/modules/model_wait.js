@@ -88,7 +88,6 @@ export function createModelWaitController({ getRecord, onDomWrite = (fn) => fn()
     read = fetchJson, send = (body) => jsonPost('/api/decisions', body, { rejectOkFalse: true }),
     store = claudexorStatus, doc = () => document } = {}) {
     const tasks = new Map();
-    let backgroundOwner = null;
     const getDoc = typeof doc === 'function' ? doc : () => doc;
     let destroyed = false;
     let serial = 0;
@@ -100,12 +99,10 @@ export function createModelWaitController({ getRecord, onDomWrite = (fn) => fn()
         if (record && !record.finished) {
             record.modelWaiting = waiting;
             record.root.dataset.modelWaiting = waiting ? '1' : '0';
-            // A block without work carries no title placeholder while it waits; the
-            // always-shown kind names its wait (chrome never reads the lane fact).
-            if (waiting && taskId === 'bg-consciousness' && !record.suggestedName && !record.lastHumanHeadline) record.titleEl.textContent = 'Background thinking';
+            // A block without work carries no title placeholder while it waits: the chrome
+            // follows the work it stands on, never the lane (and no lane is always shown).
             const phase = desiredLiveCardPhase(record);
-            setLiveCardPhase(record, record.backgroundPaused ? 'model_wait' : phase.phase,
-                record.backgroundPaused ? 'Paused for foreground task' : phase.text, phase.className);
+            setLiveCardPhase(record, phase.phase, phase.text, phase.className);
         }
         onChange(taskId, waiting);
     }
@@ -113,29 +110,6 @@ export function createModelWaitController({ getRecord, onDomWrite = (fn) => fn()
     function taskEntry(taskId) {
         if (!tasks.has(taskId)) tasks.set(taskId, { waits: {}, views: new Map(), finished: false, host: null, attempt: 0 });
         return tasks.get(taskId);
-    }
-
-    function syncBackground(snapshot) {
-        if (!snapshot || typeof snapshot.model_wait_owner_id !== 'string') return false;
-        const id = 'bg-consciousness', owner = snapshot.model_wait_owner_id;
-        if (backgroundOwner !== owner) {
-            const previous = tasks.get(id);
-            if (previous) clearViews(previous);
-            tasks.delete(id);
-            backgroundOwner = owner;
-        }
-        const record = getRecord(id, false);
-        if (record) {
-            record.backgroundPaused = Boolean(owner && snapshot.paused);
-            if (owner) record.finished = false;
-        }
-        if (!owner) { syncPhase(id, false); return true; }
-        const task = taskEntry(id);
-        task.finished = false;
-        task.paused = Boolean(snapshot.paused);
-        const changed = adopt(id, snapshot.model_waits || {});
-        syncPhase(id, activeModelWaits(task.waits).length > 0);
-        return changed;
     }
 
     function clearViews(task) {
@@ -191,7 +165,7 @@ export function createModelWaitController({ getRecord, onDomWrite = (fn) => fn()
         if (taskOnlyLocal) persist.checked = false;
         node.querySelector('[data-wait-scope]').textContent = taskOnlyLocal
             ? 'Local applies to all fallbacks in Settings. This change is task-only; edit Models for a permanent change.'
-            : `This role changes until ${taskId === 'bg-consciousness' ? 'this wakeup cycle' : 'the task'} ends.`;
+            : 'This role changes until the task ends.';
     }
 
     function paint(taskId) {
@@ -202,7 +176,6 @@ export function createModelWaitController({ getRecord, onDomWrite = (fn) => fn()
         if (!active.length) { clearViews(task); syncPhase(taskId, false); return true; }
         const record = getRecord(taskId);
         if (!record?.root || record.finished) { clearViews(task); return false; }
-        if (taskId === 'bg-consciousness') record.backgroundPaused = Boolean(task.paused);
         if (task.host?.parentElement !== record.root) {
             if (!task.host) {
                 task.host = getDoc().createElement('section');
@@ -233,8 +206,7 @@ export function createModelWaitController({ getRecord, onDomWrite = (fn) => fn()
         }
         task.host.querySelector('[data-wait-slot]').textContent = active.some((row) => row.worker_slot_held === true)
             ? 'This task keeps its worker slot. Queued tasks may wait. Completed steps are kept.'
-            : taskId === 'bg-consciousness' ? 'No worker slot is held. Foreground work may pause continuation. Changes last for this wakeup cycle.'
-                : 'Completed steps are kept. Continuation is available while Ouroboros remains running.';
+            : 'Completed steps are kept. Continuation is available while Ouroboros remains running.';
         syncPhase(taskId, true);
         return true;
     }
@@ -339,7 +311,7 @@ export function createModelWaitController({ getRecord, onDomWrite = (fn) => fn()
                 <button class="btn btn-default" type="button" data-wait-settings>Settings</button></div>
             <div class="model-wait-picker" data-wait-picker hidden>${modelRolesHost(editorId)}
                 <label class="model-wait-auto"><input class="ui-checkbox" type="checkbox" data-wait-persist> Also save this role in Settings</label>
-                <div class="model-wait-actions"><button class="btn btn-default" type="button" data-wait-apply disabled>Apply to this ${taskId === 'bg-consciousness' ? 'cycle' : 'task'}</button>
+                <div class="model-wait-actions"><button class="btn btn-default" type="button" data-wait-apply disabled>Apply to this task</button>
                     <span class="model-wait-meta" data-wait-scope></span></div></div>
             <div class="model-wait-notice ui-status" data-wait-notice role="status" aria-live="polite"></div>
             <button class="btn btn-default" type="button" data-wait-repeat hidden>Retry request</button>`;
@@ -371,18 +343,9 @@ export function createModelWaitController({ getRecord, onDomWrite = (fn) => fn()
 
     return {
         adopt,
-        syncBackground,
         observe(taskId, value) {
             const attempt = Number.isInteger(value?.task_attempt) ? value.task_attempt : 0;
             if (attempt && attempt < (tasks.get(taskId)?.attempt || 0)) return false;
-            if (taskId === 'bg-consciousness') {
-                if (value?.model_wait_live) return syncBackground(value);
-                if (isModelWaitReference(value)) {
-                    if (value.type !== 'task_model_wait') return false;
-                    if (backgroundOwner === null) syncBackground({ ...value, model_waits: {} });
-                    if (value.model_wait_owner_id !== backgroundOwner) return false;
-                }
-            }
             if (taskId && taskDoneIsTerminal(value)) {
                 if (value?.model_waits || isModelWaitReference(value)) taskEntry(taskId);
                 this.finish(taskId); return false;
