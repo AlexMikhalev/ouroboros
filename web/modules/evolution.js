@@ -1,4 +1,4 @@
-import { escapeHtmlText, formatUsd2 } from './utils.js';
+import { allowanceLabel, escapeHtmlText, formatUsd2 } from './utils.js';
 import { apiFetch } from './api_client.js';
 import { openConfirmDialog } from './confirm_dialog.js';
 
@@ -174,8 +174,8 @@ export function initEvolution({ ws, state, mount }) {
             runtimeChip('Last evolution', formatTs(evolution.last_task_at)),
             runtimeChip('Next wake-up', runtime.bg_consciousness_enabled ? formatTs(consciousness.next_wake_at) : ''),
             runtimeChip('Last wake-up', formatTs(consciousness.last_wake_at)),
-            runtimeChip('Consciousness allowance (24 h)', Number.isFinite(Number(consciousness.spent_24h_usd)) && Number.isFinite(Number(consciousness.daily_usd))
-                ? `${formatUsd2(consciousness.spent_24h_usd)} / ${formatUsd2(consciousness.daily_usd)}` : ''),
+            runtimeChip('Consciousness allowance (24 h)', allowanceLabel(
+                consciousness.spent_24h_usd, consciousness.daily_usd, consciousness.unknown_unmetered, consciousness.integrity_degraded)),
             runtimeChip('Updated', formatTs(generatedAt)),
         ].filter(Boolean).join('');
         if (campaignDetail) {

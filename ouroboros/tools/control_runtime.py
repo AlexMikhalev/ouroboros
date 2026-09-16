@@ -155,10 +155,14 @@ def _request_deep_self_review(ctx: ToolContext, reason: str) -> str:
     # Availability follows the configured deep-review ROW (packed api model,
     # native inspection episode, or delegated session), not the model key alone.
     from ouroboros.deep_self_review import deep_review_route, deep_review_unavailable_text
+    from ouroboros.consciousness_authority import consciousness_origin_metadata
     unavailable, identity = deep_review_route()
     if unavailable:
         return deep_review_unavailable_text(unavailable)
-    ctx.pending_events.append({"type": "deep_self_review_request", "reason": reason, "model": identity, "ts": utc_now_iso()})
+    # A consciousness turn names itself: the review root then goes through the ONE
+    # admission door and its spend stays inside the consciousness allowance.
+    ctx.pending_events.append({"type": "deep_self_review_request", "reason": reason, "model": identity, "ts": utc_now_iso(),
+                               **consciousness_origin_metadata(getattr(ctx, "task_metadata", None))})
     return f"Deep self-review requested (reviewer: {identity}). It will be queued and executed asynchronously."
 
 

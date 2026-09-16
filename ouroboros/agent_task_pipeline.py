@@ -383,13 +383,16 @@ def _run_global_backlog_promotion_only(
             "memory_actions": [],
         }
         _update_improvement_backlog(env, sanitized_entry)
+        from ouroboros.consciousness_authority import consciousness_origin_metadata
         from ouroboros.post_task_evolution import maybe_promote
 
         global_task = {
             "id": str(task.get("id") or ""),
             "type": str(task.get("type") or "task"),
             "source": "project_scoped_global_improvement",
-            "metadata": {"globalized_from_project_task": True},
+            # The origin survives the sanitized view: a campaign a consciousness tree
+            # promotes stays inside the consciousness limits.
+            "metadata": {"globalized_from_project_task": True, **consciousness_origin_metadata(task.get("metadata"))},
             # The eligibility probe reads the contract (disabled_tools), so the
             # globalized view keeps it: a level that may not evolve stays that way.
             **({"task_contract": dict(task["task_contract"])} if isinstance(task.get("task_contract"), dict) else {}),

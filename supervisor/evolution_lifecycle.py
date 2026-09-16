@@ -212,7 +212,24 @@ def enqueue_evolution_task_if_needed() -> None:
         "metadata": {"evolution_transaction": transaction, **consciousness_origin_metadata(campaign)},
     }
     q.attach_task_contract(task)
-    q.enqueue_task(task)
+    admitted = q.enqueue_task(task)
+    if isinstance(admitted, dict) and admitted.get("_admission_blocked"):
+        # The ONE admission door refused the cycle (a consciousness campaign out of its
+        # allowance or concurrency, a closed pool): pause the campaign like the other
+        # breakers — once, with an owner line — instead of minting a transaction and
+        # bumping the cycle on every supervisor pass. /evolve start (or the agent at
+        # Full, once its allowance is back) resumes the SAME campaign; the minted
+        # transaction is archived as dispatch_not_persisted by the next one.
+        reason = str(admitted.get("_admission_blocked") or "admission_fence")
+        detail = str(admitted.get("_admission_detail") or admitted.get("_worker_pool_disabled_reason") or "")
+        q.pause_evolution_campaign(f"admission_refused:{reason}")
+        q.disable_evolution_projection()
+        q.send_with_budget(
+            int(owner_chat_id),
+            f"🧬 Evolution paused: its next cycle was not admitted ({reason}{': ' + detail if detail else ''}). "
+            "/evolve start resumes it.",
+        )
+        return
 
     def _record_cycle(live: Dict[str, Any]) -> None:
         live["evolution_cycle"] = cycle

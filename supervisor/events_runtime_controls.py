@@ -18,9 +18,12 @@ _cancel_events_in_flight: set[tuple[str, str]] = set()
 
 
 def _handle_deep_self_review_request(evt: Dict[str, Any], ctx: Any) -> None:
+    from ouroboros.consciousness_authority import consciousness_origin_metadata
+
     ctx.queue_deep_self_review_task(
         reason=str(evt.get("reason") or "agent_self_review"),
         model=str(evt.get("model") or ""),
+        origin=consciousness_origin_metadata(evt),
     )
 
 
@@ -228,6 +231,7 @@ def _handle_toggle_evolution(evt: Dict[str, Any], ctx: Any) -> None:
         def _clear_owner_stop(live: Dict[str, Any]) -> None:
             _prior_owner_stop["value"] = bool(live.get("evolution_owner_stopped"))
             live["evolution_owner_stopped"] = False
+            live.pop("evolution_stop_source", None)
 
         if owner_sourced or agent_may_clear:
             _update_state(_clear_owner_stop)
@@ -263,12 +267,16 @@ def _handle_toggle_evolution(evt: Dict[str, Any], ctx: Any) -> None:
         # Owner stop is AUTHORITATIVE against the post-task pipeline (mirrors /evolve): set
         # the durable evolution_owner_stopped flag on disable, clear it on enable (this is an
         # owner-authorized clear). This is what apply_pending_request reads to refuse re-arm.
-        # The stop remembers who placed it: only an owner's stop is sticky against the tool.
+        # The stop remembers who placed it, and the key never outlives the stop it describes:
+        # an absent source on a set flag is an OWNER stop (/evolve off, panic, an owner-sourced
+        # toggle), so an agent stop placed on top of an owner's keeps the owner's, and every
+        # clear drops the key. Only an agent's own stop is undoable by the agent.
+        owner_stop_stands = bool(live.get("evolution_owner_stopped")) and live.get("evolution_stop_source") != "agent_tool"
         live["evolution_owner_stopped"] = (not enabled)
-        if enabled:
+        if enabled or owner_sourced or owner_stop_stands:
             live.pop("evolution_stop_source", None)
         else:
-            live["evolution_stop_source"] = "owner_chat" if owner_sourced else "agent_tool"
+            live["evolution_stop_source"] = "agent_tool"
         # Symmetry with the owner /evolve path: an explicit toggle must not inherit a
         # stale post-task one-shot autostop that would disable the campaign after one cycle.
         live["post_task_autostop"] = False

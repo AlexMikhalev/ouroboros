@@ -307,7 +307,7 @@ OBSERVE_WORLD_MUTATION_TOOLS: frozenset[str] = frozenset({
     # starting or steering work (steer_task stays: the nanny of a running campaign)
     "promote_chat_to_task", "schedule_subagent", "schedule_followup", "plan_task",
     "route_to_project", "ensure_project_scope", "delegate_start", "initiate_presence",
-    "cancel_task", "override_delegation_constraint",
+    "cancel_task", "override_delegation_constraint", "request_deep_self_review",
     # writing files, running processes, integrating patches
     "write_file", "edit_text", "apply_patch", "edit_batch",
     "run_command", "run_script", "start_service", "stop_service", "verify_and_record",

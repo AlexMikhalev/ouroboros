@@ -20,6 +20,7 @@ import {
     taskControlBusy,
 } from './task_control_menu.js';
 import { showToast } from './toast.js';
+import { allowanceLabel } from './utils.js';
 
 function esc(value) {
     return String(value ?? '').replace(/[&<>"']/g, (c) => (
@@ -104,8 +105,8 @@ export function initActivity({ mount, ws } = {}) {
             bg.level ? `autonomy ${esc(bg.level)}` : '',
             enabled && bg.next_wake_at ? `next wake ${esc(formatWhen(bg.next_wake_at))}` : '',
             bg.last_wake_at ? `last wake ${esc(formatWhen(bg.last_wake_at))}${bg.last_wake_outcome ? ` (${esc(bg.last_wake_outcome)})` : ''}` : '',
-            Number.isFinite(Number(bg.spent_24h_usd)) && Number.isFinite(Number(bg.daily_usd))
-                ? `allowance $${Number(bg.spent_24h_usd).toFixed(2)} / $${Number(bg.daily_usd).toFixed(2)} (24 h)` : '',
+            allowanceLabel(bg.spent_24h_usd, bg.daily_usd, bg.unknown_unmetered, bg.integrity_degraded)
+                ? `allowance ${esc(allowanceLabel(bg.spent_24h_usd, bg.daily_usd, bg.unknown_unmetered, bg.integrity_degraded))} (24 h)` : '',
             Number.isFinite(Number(bg.max_tasks)) ? `tasks ${Number(bg.tasks_running || 0)}/${Number(bg.max_tasks)}` : '',
         ].filter(Boolean).join(' · ');
         return `<div class="activity-row">

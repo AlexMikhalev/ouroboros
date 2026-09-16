@@ -545,7 +545,10 @@ def handle_wake_direct(
         task_constraint=None, task_metadata=dict(task_metadata or {}),
     )
     if admitted is None:
-        return {"admitted": False, "task_id": "", "reason": "admission_failed"}
+        # The gate can close between the check above and the registration — a silent
+        # refusal, nothing in the chat; every other None the lane already reported.
+        reason = "repo_writer_gate_closed" if not owner_conversation_admitted(chat_id) else "admission_failed"
+        return {"admitted": False, "task_id": "", "reason": reason}
     task_id = str(admitted["task"]["id"])
 
     def _run() -> None:

@@ -79,6 +79,7 @@ def wake_events(drive_root: Any, *, since: float, now: float, exclude_task_id: s
         rows = list_task_results(root)
     except Exception as exc:  # a disclosed gap beats a missing wake
         rows, lines = [], [f"- task_results unreadable: {type(exc).__name__}"]
+    cards, settled = [], []
     for row in rows:
         task_id = str(row.get("task_id") or "")
         if not task_id:
@@ -88,15 +89,18 @@ def wake_events(drive_root: Any, *, since: float, now: float, exclude_task_id: s
             if not isinstance(block, dict) or block.get("answered_at"):
                 continue
             if block.get("state") in (STATE_OPEN, STATE_EXPIRED_TERMINAL):
-                lines.append(f"- open question card {quiz_id} on task {task_id} (no answer yet)")
+                cards.append(f"- open question card {quiz_id} on task {task_id} (no answer yet)")
         if task_id == exclude_task_id or row.get("_is_direct_chat"):
             continue
-        status = str(row.get("status") or "")
-        if status in SETTLED_STATUSES and str(row.get("updated_at") or row.get("ts") or "") >= since_iso:
+        status, stamp = str(row.get("status") or ""), str(row.get("updated_at") or row.get("ts") or "")
+        if status in SETTLED_STATUSES and stamp >= since_iso:
             cost = row.get("accounted_upper_bound_usd", row.get("cost_usd"))
             cost_text = f", ${float(cost):.2f}" if isinstance(cost, (int, float)) else ""
             title = str(row.get("description") or row.get("text") or row.get("result") or "")[:80]
-            lines.append(f"- task {task_id} {status}{cost_text}: {title}".rstrip(": "))
+            settled.append((stamp, f"- task {task_id} {status}{cost_text}: {title}".rstrip(": ")))
+    # The owner's unanswered cards first, then what settled — newest first, so the
+    # honest truncation below drops the oldest facts, never the ones that just happened.
+    lines += cards + [line for _stamp, line in sorted(settled, reverse=True)]
     owner_messages = 0
     try:
         for entry in iter_jsonl_objects(root / "logs" / "chat.jsonl", tail_bytes=CHAT_TAIL_BYTES):

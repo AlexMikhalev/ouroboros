@@ -215,11 +215,13 @@ class BackgroundConsciousness:
             why = str(receipt.get("reason") or "refused")
             self._last_wake_outcome = f"rejected:{why}"
             # A wake the lane could not admit already left an error in the chat: back off
-            # like a failed wake. A closed door (the owner's budget, a live turn) is retried
-            # quietly — the transient ones at the floor, the budget at the interval.
+            # like a failed wake. A closed door is retried quietly — the repo-writer gate at
+            # the floor, the owner's budget at the interval. The event that asked for this
+            # wake is kept: a refused launch does not consume it.
+            self._pending_reason = self._pending_reason or reason
             if why == "admission_failed":
                 self._backoff = min(self._backoff * 2, 1024)
-            transient = why in ("owner_turn_live", "wake_live", "repo_writer_gate_closed")
+            transient = why == "repo_writer_gate_closed"
             self._set_next_wake(now + (self.floor if transient else min(self.ceiling, self._interval() * self._backoff)))
             self._record("consciousness_wake_rejected", reason=why, wake_reason=reason)
             return f"rejected:{why}"

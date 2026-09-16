@@ -476,6 +476,9 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
             # autonomous re-arm until the owner /evolve starts again. Set True on stop,
             # cleared (False) on turn_on — the only owner-authorized clear.
             st2["evolution_owner_stopped"] = (not turn_on)
+            # An owner's stop carries no agent source (absent = owner-placed, sticky against
+            # toggle_evolution); an owner's start drops a stale one with the flag.
+            st2.pop("evolution_stop_source", None)
             # Owner-initiated evolution must not inherit a stale post-task one-shot
             # autostop, which would disable the owner's campaign after one cycle.
             st2["post_task_autostop"] = False

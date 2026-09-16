@@ -172,7 +172,6 @@ BAND_PATHS = {
     "skills/telegram/plugin.py": None,
     "skills/telegram/scripts/companion.py": None,
     "skills/telegram/scripts/sidecar.py": None,
-    "supervisor/evolution_lifecycle.py": None,
     "supervisor/message_bus.py": "push_log gained the A2A frame suppression and explicit-addressing contract comments in the live log routing fix (fix/main-chat-leak sprint); the module sat at exactly 1000 lines before it",
     "supervisor/queue_transitions.py": "F2.2 cancel/custody organ: the owner-stop campaign closure (_close_campaign_after_owner_stop, reference row 970) moved in from the hot events monolith to live beside stop_evolution_tasks - one honesty rule, one owner; 1016 lines, shrink-only from here",
     "supervisor/update_merge.py": "Entered the band from above (1593 lines) by extraction: the F2.4 update-engine re-split moved the planner, the clean-plan commit builder and the live materializer \u2014 the carrier engine's three insertion points \u2014 into supervisor/update_merge_plan.py (D34 return, owner answers 5.12-5.14=A); shrink-only.",

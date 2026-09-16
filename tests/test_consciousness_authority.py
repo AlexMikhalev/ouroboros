@@ -658,6 +658,77 @@ def test_a_stop_the_agent_placed_itself_stays_undoable_by_the_agent(tmp_path, mo
     assert started == ["agent_tool"] and len([t for t in sent if "sticky" in t]) == 2
 
 
+def test_observe_does_without_the_work_starting_review_verb():
+    """`request_deep_self_review` enqueues a ROOT: Observe starts nothing (В10')."""
+    assert "request_deep_self_review" in ca.OBSERVE_DISABLED and "request_deep_self_review" not in ca.ACT_DISABLED
+
+
+def test_deep_review_request_carries_the_origin_to_the_one_door(tmp_path, monkeypatch):
+    """The tool's event names the caller's origin, the handler hands it to the queue, and the
+    queued root carries it — so the admission door and the ledger see the tree (В11/В18)."""
+    from ouroboros.tools.control_runtime import _request_deep_self_review
+    from supervisor import queue, state
+    from supervisor.events_runtime_controls import _handle_deep_self_review_request
+
+    monkeypatch.setattr("ouroboros.deep_self_review.deep_review_route", lambda: ("", "reviewer-x"))
+    ctx = types.SimpleNamespace(pending_events=[], task_metadata=dict(_wake_task("act")["metadata"]))
+    assert _request_deep_self_review(ctx, "look again").startswith("Deep self-review requested")
+    evt = ctx.pending_events[0]
+    assert evt["type"] == "deep_self_review_request" and evt["initiator"] == "consciousness"
+    owner = types.SimpleNamespace(pending_events=[], task_metadata={"client_message_id": "cm"})
+    _request_deep_self_review(owner, "look")
+    assert "initiator" not in owner.pending_events[0]
+
+    state.init(tmp_path)
+    queue.init(tmp_path)
+    pending: list = []
+    queue.init_queue_refs(pending, {}, {"value": 0})
+    state.update_state(lambda live: live.update(owner_chat_id=1))
+    monkeypatch.setattr(state, "TOTAL_BUDGET_LIMIT", 0.0)
+    monkeypatch.setattr(queue, "send_with_budget", lambda *a, **k: None)
+    monkeypatch.setattr(queue, "persist_queue_snapshot", lambda reason="": None)
+    monkeypatch.setattr("supervisor.workers._worker_pool_execution_state",
+                        lambda: {"available": True, "disabled_reason": ""})
+    monkeypatch.setattr("ouroboros.consciousness_allowance.allowance_window",
+                        lambda root, now=None: {"status": "available", "limit_usd": 20.0, "accounted_usd": 0.0,
+                                                "remaining_usd": 20.0, "unknown_unmetered": 0, "resets_at": ""})
+    handed: list = []
+    sup = types.SimpleNamespace(queue_deep_self_review_task=lambda **kw: handed.append(kw))
+    _handle_deep_self_review_request(evt, sup)
+    assert handed[0]["origin"] == {"initiator": "consciousness", "usage_category": "consciousness_task",
+                                   "consciousness_autonomy": "act"}
+    assert queue.queue_deep_self_review_task("look again", model="reviewer-x", origin=handed[0]["origin"])
+    assert pending[0]["type"] == "deep_self_review" and pending[0]["metadata"]["initiator"] == "consciousness"
+    assert pending[0]["metadata"]["usage_category"] == "consciousness_task"
+    # The owner's own request stays unmarked.
+    assert queue.queue_deep_self_review_task("mine", model="reviewer-x", force=True)
+    assert "metadata" not in pending[1] or "initiator" not in pending[1]["metadata"]
+
+
+def test_the_allowance_is_read_before_the_queue_lock(tmp_path, monkeypatch):
+    """The ledger read takes the cross-process ledger lock; it must not run under the queue lock,
+    or a contended ledger stalls every queue reader."""
+    from supervisor import queue, state
+
+    state.init(tmp_path)
+    queue.init(tmp_path)
+    pending: list = []
+    queue.init_queue_refs(pending, {}, {"value": 0})
+    monkeypatch.setattr(state, "TOTAL_BUDGET_LIMIT", 0.0)
+    monkeypatch.setattr(queue, "persist_queue_snapshot", lambda reason="": None)
+    seen: list = []
+
+    def _window(root, now=None):
+        seen.append(queue._queue_lock._is_owned())
+        return {"status": "available", "limit_usd": 20.0, "accounted_usd": 0.0, "remaining_usd": 20.0,
+                "unknown_unmetered": 0, "resets_at": ""}
+
+    monkeypatch.setattr("ouroboros.consciousness_allowance.allowance_window", _window)
+    task = {"id": "root-1", "type": "task", "chat_id": 1, "text": "x", "metadata": dict(_wake_task("act")["metadata"])}
+    assert not queue.enqueue_task(task).get("_admission_blocked")
+    assert seen == [False]
+
+
 def test_toggle_tool_stamps_the_turn_origin_on_its_event(monkeypatch):
     from ouroboros.tools.control_runtime import _toggle_evolution
 
@@ -702,6 +773,22 @@ def test_campaign_keeps_the_origin_and_its_cycle_tasks_inherit_it(tmp_path, monk
     assert task["type"] == "evolution" and task["metadata"]["initiator"] == "consciousness"
     assert task["metadata"]["usage_category"] == "consciousness_task"
     assert task["task_contract"]["disabled_tools"] == [] and task["metadata"]["runtime_mode_cap"] == ""
+    assert state.load_state()["evolution_cycle"] == 1
+    # The ONE door refuses the next cycle (the tree's allowance is spent): the campaign is
+    # paused ONCE with an owner line — no cycle bump, no transaction minted on every pass.
+    pending.clear()
+    sent: list = []
+    monkeypatch.setattr(queue, "send_with_budget", lambda cid, text, **kw: sent.append(text))
+    monkeypatch.setattr("ouroboros.consciousness_allowance.allowance_window",
+                        lambda root, now=None: {"status": "exhausted", "limit_usd": 20.0, "accounted_usd": 21.0,
+                                                "remaining_usd": 0.0, "unknown_unmetered": 0, "resets_at": "2027-01-01T00:00:00+00:00"})
+    queue.enqueue_evolution_task_if_needed()
+    queue.enqueue_evolution_task_if_needed()
+    assert pending == [] and state.load_state()["evolution_cycle"] == 1
+    paused = evolution_lifecycle._read_evolution_campaign()
+    assert paused["status"] == "paused" and paused["pause_reason"] == "admission_refused:consciousness_allowance_exhausted"
+    assert len(sent) == 1 and "Evolution paused" in sent[0] and "consciousness_allowance_exhausted" in sent[0]
+    assert not state.load_state().get("evolution_mode_enabled")
 
 
 def test_owner_campaign_carries_no_origin(tmp_path):
@@ -803,3 +890,27 @@ def test_a_wake_without_the_manifest_still_refuses_an_unaddressable_predecessor(
                                     predecessor_task_id="racer-old")
     assert refused.startswith("⚠️ AUTHORITY_SOURCE_UNAVAILABLE (promote_chat_to_task)")
     assert promoted.pending_events == []
+
+
+# --- the globalized view of a project task keeps its origin (round 2, S3) ----------
+
+
+def test_globalized_project_promotion_keeps_the_origin(monkeypatch):
+    """A Full consciousness project task's post-task promotion must not shed the origin: the
+    campaign it may produce stays inside the consciousness limits."""
+    from ouroboros import agent_task_pipeline as pipeline
+
+    captured: list = []
+    monkeypatch.setattr(pipeline, "_update_improvement_backlog", lambda env, entry: None)
+    monkeypatch.setattr("ouroboros.post_task_evolution.maybe_promote",
+                        lambda env, task, entry, llm: captured.append(task))
+    task = {"id": "p-1", "type": "task", "metadata": dict(_wake_task("full")["metadata"]),
+            "task_contract": {"disabled_tools": []}}
+    entry = {"backlog_candidates": [{"summary": "make it better"}]}
+    pipeline._run_global_backlog_promotion_only(types.SimpleNamespace(), task, entry, None)
+    assert captured and captured[0]["metadata"] == {
+        "globalized_from_project_task": True, "initiator": "consciousness",
+        "usage_category": "consciousness_task", "consciousness_autonomy": "full"}
+    captured.clear()
+    pipeline._run_global_backlog_promotion_only(types.SimpleNamespace(), {"id": "p-2", "type": "task"}, entry, None)
+    assert captured[0]["metadata"] == {"globalized_from_project_task": True}

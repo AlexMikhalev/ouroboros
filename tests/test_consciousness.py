@@ -271,8 +271,10 @@ def test_pending_reason_is_captured_and_cleared_at_launch(clock):
 def test_rejected_wake_is_typed_and_retried_by_its_reason(clock):
     clock.receipt.update({"admitted": False, "task_id": "", "reason": "budget_exhausted"})
     now = T0 + FLOOR + 1
+    clock.clock.notify("task_finished:z:completed")
     assert clock.clock.tick(now) == "rejected:budget_exhausted"
     assert clock.clock.next_wake_at == now + DEFAULT  # the owner's budget is out: quietly, at the interval
+    assert clock.clock.pending_reason == "task_finished:z:completed"  # a refused launch does not consume the event
     assert clock.clock.status_snapshot()["last_wake_outcome"] == "rejected:budget_exhausted"
     assert [row["reason"] for row in _events(clock.root) if row["type"] == "consciousness_wake_rejected"] == ["budget_exhausted"]
     clock.receipt["reason"], clock.clock._next_wake_at = "repo_writer_gate_closed", now

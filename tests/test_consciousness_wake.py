@@ -50,6 +50,7 @@ def test_events_list_settled_tasks_open_cards_and_owner_messages_since_the_last_
     since = T0 - 3600
     _result(tmp_path, "old01", ts=since - 10)
     _result(tmp_path, "new01", ts=since + 10, status="failed", cost=0.5, description="build the thing")
+    _result(tmp_path, "new02", ts=since + 50, status="completed", cost=1.0, description="later thing")
     _result(tmp_path, "run01", ts=since + 20, status="running")
     _result(tmp_path, "chat1", ts=since + 30, direct=True)  # an owner's own turn: already in Recent chat
     _result(tmp_path, "ask01", ts=since - 100, status="running",
@@ -71,6 +72,9 @@ def test_events_list_settled_tasks_open_cards_and_owner_messages_since_the_last_
     assert "- open question card q3 on task prev1 (no answer yet)" in lines
     assert not [line for line in lines if "q2" in line or "q4" in line]
     assert "- task new01 failed, $0.50: build the thing" in lines
+    settled = [line for line in lines if line.startswith("- task ")]
+    assert [line.split()[2] for line in settled] == ["new02", "new01"]  # newest first
+    assert lines.index("- open question card q1 on task ask01 (no answer yet)") < lines.index(settled[0])
     assert "- 2 message(s) from your human (see Recent chat)" in lines
     assert not [line for line in lines if "old01" in line or "run01" in line or "chat1" in line or "- task prev1 " in line]
     assert wake.wake_events(tmp_path / "missing", since=since, now=T0) == []
