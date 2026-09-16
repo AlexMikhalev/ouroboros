@@ -2400,6 +2400,18 @@ body.resizing-panels { user-select: none; }
     color: var(--status-error-fg);
 }
 
+/* The evidence row says its phase in ink, not in words: the counts-only label
+   stays the same while a call is still in flight (calling: the row is what the
+   turn is doing right now, so primary ink, never an alarm hue) and once one
+   failed (warn). Colour only, like the error rule above. */
+.chat-live-line.calling .chat-live-line-title {
+    color: var(--text-primary);
+}
+
+.chat-live-line.warn .chat-live-line-title {
+    color: var(--status-warn-fg);
+}
+
 .chat-bubble .message pre {
     background: rgba(0, 0, 0, 0.3);
     border-radius: 6px;

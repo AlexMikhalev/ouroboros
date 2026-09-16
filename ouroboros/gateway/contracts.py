@@ -186,13 +186,13 @@ class ChatOutbound(TypedDict):
     task_group_id: NotRequired[str]
     task_event: NotRequired[str]
     status: NotRequired[str]
-    # v6.82 (P5): host-attested marker, stamped by the supervisor's delivery seam ONLY
-    # for a task POST /api/tasks/{id}/cancel will actually stop — a lineage-resolved
-    # pooled ROOT (its RUNNING row) or the live in-process direct-chat turn (resolved
-    # through the same ownership reader the endpoint uses, supervisor.workers.direct_chat_turn);
-    # never a subagent frame, never an ephemeral decision turn. Gates the UI "Cancel run" action.
+    # v6.82 (P5): host-attested marker, stamped by the supervisor's delivery seam ONLY for a task POST /api/tasks/{id}/cancel
+    # will actually stop — a lineage-resolved pooled ROOT (its RUNNING row) or the live in-process direct-chat turn (resolved
+    # through the same ownership reader the endpoint uses, supervisor.workers.direct_chat_turn); never a subagent frame, never
+    # an ephemeral decision turn. Gates the UI "Cancel run" action.
     cancelable: NotRequired[bool]
     _is_direct_chat: NotRequired[bool]  # lane fact stamped on a direct turn's own frames
+    narration: NotRequired[bool]  # progress VOICE: the model's own round narration (true) vs a host note (false); absent = legacy
     initiator: NotRequired[str]  # origin label: "consciousness" on a wake-up's frames/rows (and its roots); absent on an owner's turn
     # Monetary projections are nullable when the physical-attempt ledger cannot
     # be read.  ``None`` is deliberately distinct from a confirmed $0 result.

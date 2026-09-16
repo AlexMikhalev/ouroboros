@@ -128,6 +128,21 @@ SPA, not a relocatable-page or multi-instance panel framework.
   into the client live-activity set (contract and residuals: ARCHITECTURE "Chat and Projects", the
   `DirectActivityRegistry` / `active_chat_activities` paragraph; enforced by
   `web/tests/chat_header_census.test.js`).
+- Narration leads; routine execution evidence stays compact; exceptions keep
+  their explanation and controls (semantics: DESIGN "Conversation activity
+  block"). The engineering obligations: a note is promoted on the typed
+  `narration` fact its producer stamps, never on a client reading of its text;
+  execution evidence is one bounded row per block, never a row per event and
+  never a client tool-name list; host snapshots of the same turn merge
+  field-wise, because an absent field is unknown rather than zero. A change
+  that draws one row or line per event is shown at a realistic burst size (a
+  multi-call turn, collapsed and expanded, at desktop and phone width) before
+  it is accepted; a two-event fixture proves layout only for itself. Enforced
+  by `web/tests/chat_activity_block.test.js`,
+  `web/tests/chat_addressing_card.test.js`,
+  `web/tests/progress_narration_voice.test.js` and
+  `tests/test_progress_narration_voice.py`; the visual check follows
+  "Responsive and accessible behavior" below.
 - Executor presentation consumes the existing task/run attempt facts. Keep
   `executor_observation` event-local through Agent, supervisor delivery, progress
   history and both Chat metadata paths; ordinary coordinator notes inherit none.
