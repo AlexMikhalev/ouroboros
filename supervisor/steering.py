@@ -106,6 +106,10 @@ def _refuse_steering_while_cancelling(
     )
     # A cancel-pending refusal is a live notice to the OWNER who asked; a task
     # that spoke for itself reads its typed refusal in the tool result instead.
+    # An act that wears an owner message already shows its cause on that
+    # message's receipt line; only an UNLABELLED owner act (a synthetic receipt
+    # id) needs the standalone sentence — the same rule as the other refusals.
+    notify = notify and not _relayed_owner_message(str(evt.get("client_message_id") or "").strip())
     if notify and not _task_issued(evt) and chat_id:
         try:
             ctx.send_with_budget(chat_id, _cancel_pending_notice(target_label))
@@ -455,10 +459,13 @@ def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
         # linger in the dying task's artifact store. The notice is the owner's:
         # a task that spoke for itself has its typed refusal and Logs row.
         if not task_issued and chat_id:
-            try:
-                ctx.send_with_budget(chat_id, _cancel_pending_notice(target_label))
-            except Exception:
-                log.debug("steer_task cancel-pending notice failed", exc_info=True)
+            # Same owner-labelled rule as the up-front check: a relayed owner
+            # message already carries the cause on its receipt line.
+            if not relayed_owner_message_id:
+                try:
+                    ctx.send_with_budget(chat_id, _cancel_pending_notice(target_label))
+                except Exception:
+                    log.debug("steer_task cancel-pending notice failed", exc_info=True)
     if delivered:
         if fence_generation_changed:
             ctx.persist_queue_snapshot(reason="acceptance_fence_owner_message")

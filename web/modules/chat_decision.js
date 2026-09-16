@@ -586,7 +586,7 @@ export function createChatDecision({
                     body.state === 'open' ? 'open' : body.state,
                     Number.isInteger(body.answered_index) ? body.answered_index : null);
                 showToast(body.state === 'open'
-                    ? `Not routed: ${body.reason || 'the destination refused this message'} — pick again.`
+                    ? `Not routed: ${body.cause || body.reason || 'the destination refused this message'} — pick again.`
                     : body.state === 'pending'
                         ? 'Another choice is already being routed.'
                         : 'This message was already routed.', 'error');

@@ -247,3 +247,41 @@ def test_explicit_project_choice_still_wins_over_presence_folder(installed):
     assert resolve_project_id({**task, "project_id": "chosen-project"}) == "chosen-project"
     ordinary = {"workspace_root": str(installed.workspace)}
     assert resolve_project_id(ordinary).startswith("proj_")
+
+
+def test_promotion_with_an_unusable_presence_folder_returns_the_typed_repair_and_sends_nothing(
+    installed, monkeypatch,
+):
+    """The Presence branch of workspace admission: the admitted folder vanished
+    before the promote was admitted, so the typed refusal names the Presence
+    profile as the place to fix it (the cause rides `detail` to the model) and
+    admission sends no chat text — nothing fans out into a public conversation."""
+    import shutil
+
+    from ouroboros.tools.control import _promote_chat_to_task
+    from supervisor import workers
+    from tests.test_promote_chat_flow import _confirm_promote
+
+    task = _build_task(_admit(installed), _event(), drive_root=installed.data, staged_files=())
+    ctx = _context(installed, task)
+    _confirm_promote(monkeypatch)
+    monkeypatch.setattr(workers, "DRIVE_ROOT", installed.data)
+    monkeypatch.setattr(workers, "REPO_DIR", installed.repo)
+    result = _promote_chat_to_task(ctx, "Finish the report", predecessor_task_id="")
+    assert result.startswith("OK: task"), result
+    event = ctx.pending_events[0]
+    shutil.rmtree(installed.workspace)  # the admitted folder disappears before admission
+
+    sent, enqueued = [], []
+    outcome = workers.promote_chat_to_task(event, SimpleNamespace(
+        enqueue_task=lambda row: enqueued.append(row) or row,
+        persist_queue_snapshot=lambda **_kwargs: True,
+        load_state=lambda: {"owner_chat_id": 1},
+        send_with_budget=lambda *args, **kwargs: sent.append((args, kwargs)),
+    ))
+
+    assert (outcome["status"], outcome["reason"]) == ("needs_manual_target", "workspace_unusable")
+    assert outcome["detail"].startswith("The folder configured in the Presence profile is unusable: ")
+    assert str(installed.workspace) in outcome["detail"]
+    assert outcome["detail"].endswith("Fix the Presence profile's workspace_root or clear it.")
+    assert sent == [] and enqueued == []

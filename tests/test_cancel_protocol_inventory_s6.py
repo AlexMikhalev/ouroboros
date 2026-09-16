@@ -109,7 +109,6 @@ TERMINAL_WRITERS = {
     ('supervisor/worker_health.py::_recover_crashed_task_without_terminal', 'STATUS_CANCELLED'): 'terminal',
     ('supervisor/worker_health.py::_recover_crashed_task_without_terminal', 'STATUS_FAILED'): 'terminal',
     ('supervisor/worker_pool_lifecycle.py::_write_failure_result', 'final_status'): 'dynamic',
-    ('supervisor/worker_promotion.py::_fail_promoted_task_loudly', 'STATUS_FAILED'): 'terminal',
     ('supervisor/workers.py::_settle_cancelled_pending_row', 'status_cancelled'): 'dynamic',
     ('supervisor/workers.py::_terminalize_invalid_pending_depth', 'STATUS_FAILED'): 'terminal',
 }
