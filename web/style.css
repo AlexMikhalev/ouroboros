@@ -308,20 +308,12 @@ body.resizing-panels { user-select: none; }
 }
 
 
-/* A direct conversation turn renders the same component as a compact activity
-   block (docs/DESIGN.md "Conversation activity block"): no Task/Working/Done
-   chip while it runs or once it is Done (Cancelling…/Finalizing…/Waiting and a
-   non-Done outcome stay visible), no title placeholder, the typing dots as its
-   running indicator; the collapsed header carries the count, cost and duration. */
-.chat-live-card[data-direct="1"] {
-    border-color: var(--accent-08);
-}
-
-.chat-live-card[data-direct="1"] > .chat-live-summary-button [data-live-phase]:is(.done, .working:not(.cancelling):not(.finalizing):not(.waiting)) {
-    display: none;
-}
-
-.chat-live-card[data-direct="1"] > .chat-live-summary-button .chat-live-title:empty {
+/* A block that exists only for open attention (a model wait, a pending or
+   host-offered Stop) or a bare non-Done ending carries no title placeholder
+   (docs/DESIGN.md "Conversation activity block"); its chip says the state it is
+   in (Waiting…, Cancelling…, Failed). The first row of work — a tool call,
+   narration, a child, a review, an error — gives it a title, whatever lane ran it. */
+.chat-live-card > .chat-live-summary-button .chat-live-title:empty {
     display: none;
 }
 
@@ -1843,6 +1835,14 @@ body.resizing-panels { user-select: none; }
    stable-viewport seam absorbs that one-line growth). */
 .chat-live-card:not([data-expanded="1"]) > .chat-live-summary-button .chat-live-title {
     min-height: 1.45em;
+}
+
+/* A block without work carries no title placeholder: the collapsed geometry
+   reserves nothing for an empty title (review round 1: the clamp and the
+   reserved line above outranked the general empty-title rule). */
+.chat-live-card:not([data-expanded="1"]) > .chat-live-summary-button .chat-live-title:empty {
+    display: none;
+    min-height: 0;
 }
 
 /* Activity grows with useful content. Details retain the complete source. */

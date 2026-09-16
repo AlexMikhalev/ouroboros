@@ -1012,7 +1012,7 @@ def test_main_history_admits_project_started_row_and_project_thread_excludes_it(
                     "project_id": "launch",
                     "project_name": "Launch 🚀",
                     "target_label": "Launch 🚀 › Ship release",
-                    "text": "Launch 🚀 › Ship release · Started\nWork is running in this Project.",
+                    "text": "Launch 🚀 › Ship release · Started",
                 },
                 {
                     "ts": "2026-08-21T00:00:02Z",

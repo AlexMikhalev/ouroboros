@@ -268,3 +268,41 @@ def test_native_post_task_retains_activity_and_delivers_answer_early(monkeypatch
         assert final["delivery_id"] == early["delivery_id"]
         assert done["type"] == "task_done" and done["task_id"] == task_id
         assert bus.empty()
+
+
+def test_first_working_tool_call_names_a_main_turn_once(monkeypatch, tmp_path):
+    """Owner decision Q7=A (16.09): a direct Main turn is named lazily, by the first
+    non-addressing tool call, so a greeting costs no naming call and a working turn
+    gets its title as its block becomes the task card; a Project-room turn is named
+    by its room and spawns nothing."""
+    from ouroboros import agent as agent_module, project_naming
+
+    _lane(monkeypatch, tmp_path)
+    calls = []
+    monkeypatch.setattr(project_naming, "spawn_turn_namer", lambda *a, **kw: calls.append((a, kw)))
+
+    class Actor:
+        def __init__(self, **kwargs):
+            self._owner_message_admission_lock = threading.Lock()
+
+        def handle_task(self, task):
+            frames = self._event_queue
+            frames.put_nowait({"type": "log_event", "data": {
+                "type": "tool_call_started", "task_id": task["id"], "tool": "promote_chat_to_task",
+                "routing_action": "promote_chat_to_task"}})
+            assert calls == [], "an addressing call is a receipt, not work"
+            for kind, tool in (("tool_call_started", "read_file"), ("tool_call_finished", "read_file"),
+                               ("tool_call_started", "run_command")):
+                frames.put_nowait({"type": "log_event", "data": {"type": kind, "task_id": task["id"], "tool": tool}})
+            return []
+
+    monkeypatch.setattr(agent_module, "make_agent", Actor)
+    workers.handle_chat_direct(1, "проверь, почему карточка задачи потеряла элементы")
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args[0] == tmp_path and args[2] == "проверь, почему карточка задачи потеряла элементы"
+    assert callable(kwargs["broadcast"])
+
+    calls.clear()
+    workers.handle_chat_direct(1, "и в комнате проекта", task_metadata={"project_id": "room"})
+    assert calls == [], "a Project-room turn is named by its room"

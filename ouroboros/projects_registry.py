@@ -830,9 +830,15 @@ def task_presentation_snapshot(drive_root: Any, task_id: str, *, task: Any = Non
         if task_name:
             break
     task_name = task_name or "Task"
+    label = f"{pname} › {task_name}" if pname else task_name
+    # One name, said once: a task whose own name IS the project name renders
+    # "Launch › Launch", which reads as two different things. Exact equality
+    # only — a prefix rule would fold "Art" into "Arthur".
+    if pname and task_name == pname:
+        label = task_name
     return {"project_id": pid, "project_name": pname, "task_id": tid,
             "project_routable": registered, "task_name": task_name,
-            "target_label": f"{pname} › {task_name}" if pname else task_name}
+            "target_label": label}
 
 
 def create_project(

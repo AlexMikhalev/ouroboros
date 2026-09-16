@@ -77,6 +77,9 @@ _DELIVERY_HOLD_CONTROLS = frozenset({
     _SKILL_ACTION_HOLD_CONTROL,
     _CHILD_ABSORPTION_HOLD_CONTROL,
 })
+# Header of the host's own rendered control block; identifies the transcript's
+# control history the way ``acceptance_observation`` marks the observation rows.
+_DELIVERY_CONTROL_MARKER = "[DELIVERY_FINALIZATION_CONTROL]"
 
 
 def _swarm_handoff_attempt(ctx: Any) -> Dict[str, Any]:
@@ -596,14 +599,15 @@ def _merge_finalization_trace(
     return llm_trace
 
 
-def _delivery_control_prompt(candidate: DeliveryCandidate, *, keep_allowed: bool) -> str:
+def _delivery_control_prompt(candidate: DeliveryCandidate, *, keep_allowed: bool,
+                             pending_review_choice: bool = False) -> str:
     keep_line = (
         "keep is allowed because no answer-invalidating evidence changed."
         if keep_allowed
         else "keep is NOT allowed because owner/tool/child/verification evidence changed."
     )
     return (
-        "[DELIVERY_FINALIZATION_CONTROL]\n"
+        f"{_DELIVERY_CONTROL_MARKER}\n"
         f"A complete answer candidate (revision {candidate.revision}, sha256 "
         f"{candidate.content_sha256[:12]}) is retained by the loop; do not replace it with a "
         f"service notice. {keep_line}\n"
@@ -616,6 +620,10 @@ def _delivery_control_prompt(candidate: DeliveryCandidate, *, keep_allowed: bool
         "\nEither form may include acceptance_subject with the latest observed "
         "owner_source_sha256, optional complete effective_criteria and material_tool_indices. "
         "Keep can retain answer text while explicitly changing its review subject."
+        + ('\nA paid acceptance panel on an earlier revision is still running. Either form may add '
+           '"pending_review":"wait" (the default: hold this answer until its verdict arrives) or '
+           '"pending_review":"finish" (deliver now; the verdict reaches you as advice when it settles).'
+           if pending_review_choice else "")
     )
 
 
@@ -645,29 +653,43 @@ def _arm_delivery_control(
     llm_trace: Dict[str, Any],
     *,
     control: str = "awaiting_control",
+    skip_if_unchanged: bool = False,
 ) -> None:
     candidate = getattr(tools._ctx, "_delivery_candidate", None)
     if not isinstance(candidate, _loop().DeliveryCandidate):
         return
     evidence_revision, evidence_fingerprint = _loop()._delivery_evidence_state(tools, ctx, llm_trace)
     candidate.finalization_control = control
-    candidate.repair_attempted = False
+    # The acceptance wake re-offers an EXISTING candidate's contract: its one
+    # malformed-control repair stays spent. Every other arm starts a new episode.
+    if not skip_if_unchanged:
+        candidate.repair_attempted = False
     tools._ctx._delivery_control_required = True
-    _loop()._append_or_merge_user_message(
-        ctx.messages,
-        _delivery_control_prompt(
-            candidate,
-            keep_allowed=_delivery_keep_allowed(
-                candidate, evidence_revision, evidence_fingerprint,
-            ),
-        ),
+    from ouroboros.acceptance_settlement import acceptance_choice_offered
+
+    control_prompt = _delivery_control_prompt(
+        candidate,
+        keep_allowed=_delivery_keep_allowed(candidate, evidence_revision, evidence_fingerprint),
+        pending_review_choice=bool(getattr(tools._ctx, "_task_acceptance_pending", "")
+                                   and acceptance_choice_offered()),
     )
+    # ``skip_if_unchanged`` is the repeated re-offer (every acceptance wake shows
+    # the keep contract): an unchanged candidate renders identical bytes, so the
+    # transcript's control history is not repeated, the way
+    # ``prepare_acceptance_observation`` skips an unchanged observation. Every
+    # other caller arms because something changed and always appends. ``slot``
+    # keeps an already-sent tail row byte-frozen rather than rewritten (#906).
+    latest = next((row for row in reversed(ctx.messages)
+                   if _DELIVERY_CONTROL_MARKER in str(row.get("content") or "")), None)
+    if not (skip_if_unchanged and latest is not None
+            and control_prompt in str(latest.get("content") or "")):
+        _loop()._append_or_merge_user_message(ctx.messages, control_prompt, slot=tools._ctx)
     candidate.control_episode_seen = True
     from ouroboros.loop_acceptance import capture_acceptance_observation, acceptance_observation_prompt
 
     observed = capture_acceptance_observation(tools._ctx, llm_trace, getattr(ctx, "incoming_messages", None))
     if prompt := acceptance_observation_prompt(tools._ctx, observed):
-        _loop()._append_or_merge_user_message(ctx.messages, prompt)
+        _loop()._append_or_merge_user_message(ctx.messages, prompt, slot=tools._ctx)
     _loop()._publish_delivery_candidate(tools, candidate, llm_trace)
 
 
@@ -766,7 +788,9 @@ def _classify_parsed_delivery_control(
     if not isinstance(parsed, dict) or "delivery_control" not in parsed:
         return "none", "", exact_error
     selected = str(parsed.get("delivery_control") or "")
-    keys = set(parsed) - {"acceptance_subject"}
+    if "pending_review" in parsed and str(parsed.get("pending_review") or "").strip().lower() not in {"wait", "finish"}:
+        return "invalid", "", 'pending_review must be "wait" or "finish"'
+    keys = set(parsed) - {"acceptance_subject", "pending_review"}
     if selected == "keep" and keys == {"delivery_control"}:
         return "keep", "", ""
     if selected == "replace" and keys == {"delivery_control", "full_answer"}:
@@ -922,6 +946,11 @@ def _resolve_delivery_control(
         applied, subject_error = apply_delivery_subject_decision(tools, ctx, llm_trace, parsed["acceptance_subject"])
         if not applied:
             control_kind, error = "invalid", subject_error
+    if control_kind in {"keep", "replace"} and isinstance(parsed, dict):
+        # Recorded on every control answer (the classifier already refused any
+        # other value), so an answer without the key always means "wait" rather
+        # than inheriting an earlier round's choice.
+        tools._ctx._acceptance_pending_review_choice = str(parsed.get("pending_review") or "wait").strip().lower()
     evidence_revision, evidence_fingerprint = _loop()._delivery_evidence_state(tools, ctx, llm_trace)
     valid = control_kind == "replace"
     if control_kind == "keep":

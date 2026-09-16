@@ -159,6 +159,13 @@ def test_ordinary_addressing_card_tracks_real_work_through_metrics_and_reload(
                     else:
                         card.wait_for(timeout=30000)
                         assert card.count() == 1
+                        # A tool row or a tool error is content: the direct turn
+                        # wears the task card (chrome follows content, owner
+                        # decision 16.09) — a visible chip, a title, and the
+                        # Main conversion control on an unbound turn.
+                        assert card.locator("[data-live-phase]").is_visible()
+                        assert card.locator("[data-live-title]").inner_text().strip() != ""
+                        assert card.locator("[data-turn-into-project]").count() == 1
                     page.screenshot(path=str(evidence / "live.png"), full_page=True, animations="disabled")
                     page.reload(wait_until="domcontentloaded")
                     page.get_by_text("The addressing attempt is complete.", exact=True).wait_for(timeout=30000)

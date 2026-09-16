@@ -126,7 +126,8 @@ def test_a_derived_name_is_not_reported_as_model_coined():
     """Turn-into-project reuses the name slot; it must not claim authorship.
 
     `suggested_name` is filled by admission naming (a caller title, or the
-    request's first line) and by the agent's own scope tools; the conversion
+    request's first line), by the lazy turn namer of a working Main turn and
+    by the agent's own scope tools; the conversion
     cannot tell them apart, so its naming reason names the SLOT it read rather
     than a coiner that may not exist.
     """

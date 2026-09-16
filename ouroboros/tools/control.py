@@ -102,9 +102,11 @@ log = logging.getLogger(__name__)
 # 300-line function gate; v6.70.0 added the ground-truth-probe contract).
 _PROMOTE_CHAT_DESCRIPTION = (
     "Promote real work out of this conversation into a supervised pooled task "
-    "while the conversation remains available. Use it "
-    "whenever a chat request needs tools/files/multi-step work rather than a "
-    "conversational answer. Before framing the objective around an EXISTING artifact "
+    "while the conversation remains available. Tools, files and several steps can "
+    "stay in the conversation; promote when independent work is useful — its own "
+    "queue slot, admission and reviews, steerable from chat — or when the owner "
+    "explicitly asks for a separate task. "
+    "Before framing the objective around an EXISTING artifact "
     "('check/fix/extend the X skill/file'), ground-truth its existence with one cheap probe "
     "first (skills: list_skills; files: list_files) — memory of past work is not evidence "
     "the referent still exists. Always give a short, human-readable task `title`. To "
@@ -335,10 +337,12 @@ def get_tools() -> List[ToolEntry]:
         }, _update_scratchpad),
         ToolEntry("send_user_message", {
             "name": "send_user_message",
-            "description": "Send a separate reply to the owner during ongoing work, or reach out "
-                           "with an insight, a question, or an invitation to collaborate. "
-                           "The reply appears in the conversation and leaves the task running. "
-                           "Progress stays in the task card; the final answer is delivered automatically.",
+            "description": "Send a separate reply to the owner while work continues: the first "
+                           "line of longer work (what I am about to do and why), or a mid-work "
+                           "insight, a question, or an invitation to collaborate. It appears in "
+                           "the conversation as a normal reply and leaves the work running; later "
+                           "progress stays in the card and the final answer is delivered "
+                           "automatically.",
             "parameters": {"type": "object", "properties": {
                 "text": {"type": "string", "description": "Message text"},
                 "reason": {"type": "string", "description": "Why you're reaching out (logged, not sent)"},
@@ -374,8 +378,7 @@ def get_tools() -> List[ToolEntry]:
             }, "required": ["action"]},
         }, _toggle_consciousness),
         ToolEntry("set_next_wakeup", {
-            "name": "set_next_wakeup", "description": "Choose the consciousness wake-up interval in seconds: how long after a wake-up ends the next one starts (clamped into the owner's OUROBOROS_BG_WAKEUP_MIN/MAX bounds; a wake-up calling this sets its own next one; a pending wake-up keeps its time; stored for later when consciousness is off).",
-            "parameters": {"type": "object", "properties": {"seconds": {"type": "integer", "description": "Seconds from the end of a wake-up to the next one"}}, "required": ["seconds"]},
+            "name": "set_next_wakeup", "description": "Choose the consciousness wake-up interval in seconds: how long after a wake-up ends the next one starts (clamped into the owner's OUROBOROS_BG_WAKEUP_MIN/MAX bounds; a wake-up calling this sets its own next one; a pending wake-up keeps its time; stored for later when consciousness is off).", "parameters": {"type": "object", "properties": {"seconds": {"type": "integer", "description": "Seconds from the end of a wake-up to the next one"}}, "required": ["seconds"]},
         }, _set_next_wakeup),
         ToolEntry("switch_model", {
             "name": "switch_model",

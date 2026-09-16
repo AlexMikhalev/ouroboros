@@ -395,10 +395,12 @@ def _admit_chat_task(
                 _pool()._report_binding_failure(task["id"], pid, exc, path="direct_project_turn")
         if not task["text"]:
             task["text"] = "(image attached)" if image_data else ""
-        # A direct turn is not named: it renders as an activity block, never as
-        # a titled task card, and joins a Project only through the model's own
-        # scope tools (owner decision 14=A). Managed promotes keep their
-        # admission names (worker_promotion._admitted_suggested_name).
+        # A Main turn is named lazily: the turn queue below fires the namer on
+        # the first non-addressing tool call (owner decision Q7=A, 16.09), so a
+        # greeting costs no naming call and a working turn gets a title as its
+        # block becomes the task card. A Project-room turn is named by its room.
+        # Managed promotes keep their admission names
+        # (worker_promotion._admitted_suggested_name).
         # A consciousness wake-up derives its level's disabled_tools and mode cap
         # here, before the contract reads them (consciousness_authority).
         apply_consciousness_authority(task)
@@ -444,9 +446,17 @@ def _execute_chat_task(admitted: Dict[str, Any]) -> bool:
         # straight to the agent's event queue DURING handle_task) and its
         # returned events can be consumed after this registry entry is gone:
         # stamp the authoritative chat identity before handing them off.
+        on_first_work = None
+        if not task.get("project_id"):
+            from ouroboros.project_naming import spawn_turn_namer
+
+            on_first_work = lambda: spawn_turn_namer(  # noqa: E731
+                _pool().DRIVE_ROOT, str(task["id"]), task["text"], broadcast=_broadcast_task_named,
+            )
         turn_queue = _TurnEventQueue(
             _pool().get_event_q(), task["id"], chat_id,
             initiator=str((admitted.get("task_metadata") or {}).get("initiator") or ""),
+            on_first_work=on_first_work,
         )
         prev_queue = getattr(agent, "_event_queue", None)
         agent._event_queue = turn_queue

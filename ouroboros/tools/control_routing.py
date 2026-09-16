@@ -260,11 +260,12 @@ def _promote_chat_to_task(
 ) -> str:
     """Route real work out of the conversation lane into a supervised pooled task.
 
-    Option B of the multi-project chat plane (v6.32.0): the conversation stays
-    in the fast in-process lane; ANY substantial work spawns a first-class
-    pooled task with a live card. The decision is the model's own structural
-    tool call (BIBLE P5 — no keyword routing). Follow-up owner messages reach
-    the running task through its owner-mailbox.
+    The conversation stays in the fast in-process lane and keeps its own tools;
+    the model promotes when an independent task is useful (SYSTEM.md, Decision
+    Loop), and the promoted work runs as a first-class pooled task with a live
+    card. The decision is the model's own structural tool call (BIBLE P5 — no
+    keyword routing). Follow-up owner messages reach the running task through
+    its owner-mailbox.
 
     ``title`` is a short human name the model coins for the card AT CREATION
     (no extra request, owner P1) — reused as the project name if this task is

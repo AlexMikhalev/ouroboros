@@ -91,29 +91,6 @@ def acceptance_run_pending(run: Any) -> bool:
                in {"pending_dispatch", "in_flight"} for actor in actors or [])
 
 
-def announce_acceptance_settlement(usage_ctx: Any, request: Any, wave: dict) -> None:
-    """Wake the original Main through its existing mailbox, outside custody locks.
-
-    The worker never changes live candidate, transcript, or acceptance decisions.
-    Main collects this exact recorded operation before interpreting the feedback.
-    """
-    if usage_ctx is None or not getattr(usage_ctx, "drive_root", None):
-        return
-    from ouroboros.owner_mailbox import write_task_message
-
-    try:
-        slots = wave.get("slots") or {}
-        write_task_message(
-            pathlib.Path(usage_ctx.drive_root),
-            f"Task acceptance operation {request.retry_key} settled "
-            f"({len(slots)} released reviewer slots). Its recorded results are ready "
-            "for collection; this notification is not a verdict.",
-            request.task_id, source_task_id=request.task_id, provenance="system",
-        )
-    except Exception:
-        log.warning("Acceptance settlement wake failed for %s", request.task_id, exc_info=True)
-
-
 def _resolve_ctx_lineage(ctx: Any, task_id: str = "") -> Dict[str, Any]:
     """One reader of a live tool context's lineage facts, shared by both
     eligibility sites so the observation seam and the entrypoint agree."""
@@ -182,8 +159,9 @@ def wait_for_acceptance_feedback(tools: Any, limit_ctx: Any, trace: dict,
     binding = getattr(ctx, "_task_acceptance_pending", "")
     if not binding:
         return
-    if not getattr(getattr(ctx, "_delivery_candidate", None), "control_episode_seen", False):
-        _loop()._arm_delivery_control(tools, limit_ctx, trace)
+    # Re-offered on EVERY wake: a replacement candidate inherits
+    # ``control_episode_seen``, which hid the one free route back to the verdicts.
+    _loop()._arm_delivery_control(tools, limit_ctx, trace, skip_if_unchanged=True)
     from ouroboros.owner_wait import wait_after_tools
 
     wait_after_tools(ctx, limit_ctx.messages, trace, limit_ctx.accumulated_usage,
@@ -197,6 +175,7 @@ def advance_explicit_acceptance(tools: Any, limit_ctx: Any, trace: dict,
     if not isinstance(request, dict):
         return
     tools._ctx._acceptance_request_pending = None
+    tools._ctx._acceptance_pending_review_choice = ""  # a new nomination starts a fresh wait/finish choice
     from ouroboros.loop_delivery import apply_delivery_subject_decision
 
     subject = request.get("acceptance_subject")
@@ -692,7 +671,6 @@ def _finish_cyber_acceptance(ctx: _TaskAcceptanceContext, result: Any) -> bool:
         "status": ACCEPTANCE_ACCEPTED if clean else ACCEPTANCE_FINALIZED_UNACCEPTED,
         "reason": "clean_pass" if clean else "author_finish", "source": "task_acceptance_review",
         "author_disposition": author, "review_pending": pending,
-        "rationale": "The author chose delivery; recorded critic outcomes and unfinished review work are unchanged.",
     })
     ctx.emit_progress("Task acceptance feedback remains advisory; Main chose delivery."
                       + (" Review is still running." if pending else ""))
@@ -735,7 +713,6 @@ def _finish_advisory_author(ctx: _TaskAcceptanceContext) -> bool:
     _loop()._set_acceptance_decision(ctx.llm_trace, {
         "status": ACCEPTANCE_FINALIZED_UNACCEPTED, "reason": "author_finish",
         "source": "task_acceptance_review", "author_disposition": author,
-        "rationale": "The author finished after independent feedback; the current subject is author-accepted, not reviewer PASS.",
         "reviewer_signal": author["reviewer_signal"],
         "reviewer_binding_hash": feedback.get("binding_hash"),
     })
@@ -889,7 +866,7 @@ def _apply_task_acceptance_result(
                 run["feedback_delivered"] = True
                 break
         # The aggregate word is not an explanation: printing DEGRADED alone read
-        # as "no valid quorum" while a capsule was in fact fed back for one more
+        # as "no settled verdict" while a capsule was in fact fed back for one more
         # bounded pass. Name the pass being started and the recorded causes; a
         # wave that recorded none says THAT, so the verdict is a label beside a
         # stated absence rather than standing in for the reason.
@@ -917,13 +894,12 @@ def _apply_task_acceptance_result(
             "status": ACCEPTANCE_FINALIZED_UNACCEPTED,
             "reason": "review_degraded",
             "source": "task_acceptance_review",
-            "rationale": "Acceptance reviewers did not reach a valid quorum.",
             "degraded_reasons": list(getattr(result, "degraded_reasons", []) or []),
             "open_obligations": [str(item.get("id")) for item in open_obligations],
         })
         # Show the slot failure causes beside the verdict, not only in task_results.
         ctx.emit_progress(
-            "Task acceptance review: DEGRADED (no valid quorum; not recorded as PASS)."
+            "Task acceptance review: DEGRADED (no settled verdict; not recorded as PASS)."
             + _slot_cause_clause(result)
         )
         return False
@@ -1035,7 +1011,7 @@ def _record_acceptance_infra_failure(ctx: _TaskAcceptanceContext, exc: Exception
         "status": ACCEPTANCE_FINALIZED_UNACCEPTED,
         "reason": "infra_failure",
         "source": "task_acceptance_review",
-        "rationale": "The mandatory host acceptance panel failed before a valid quorum.",
+        "rationale": "The mandatory host acceptance panel failed before any reviewer answered.",
         "degraded_reasons": [f"{type(exc).__name__}: {safe_error}"],
     })
     ctx.emit_progress("Task acceptance review: DEGRADED after host review infrastructure failure.")
@@ -1441,6 +1417,10 @@ def _run_task_acceptance_review_once(
         packet_budget_chars=acceptance_packet_budget_chars(_acceptance_delivery_slots()),
     )
     try:
+        from ouroboros.review_dispatch import reconcile_pending_acceptance_runs
+
+        reconcile_pending_acceptance_runs(
+            llm_trace, drive_root=drive_root or tools._ctx.drive_root, usage_ctx=tools._ctx)
         from types import SimpleNamespace
 
         from ouroboros.review_substrate import build_review_binding
@@ -1454,6 +1434,9 @@ def _run_task_acceptance_review_once(
         from ouroboros.loop_delivery import delivery_subject_hash
 
         review_ctx.review_binding["subject_hash"] = delivery_subject_hash(tools._ctx, llm_trace, content)
+        from ouroboros.loop_messages import owner_source_sha256
+
+        review_ctx.review_binding["owner_source_sha256"] = owner_source_sha256(tools._ctx)  # the premises this panel judged
         if _loop()._task_acceptance_owner_generation_changed(tools._ctx):
             _loop()._supersede_task_acceptance_for_owner_followup(tools._ctx, llm_trace)
             return True
@@ -1466,6 +1449,11 @@ def _run_task_acceptance_review_once(
         seen_bindings, prior_run = _prior_acceptance_run(
             tools._ctx, llm_trace, binding_hash, paid_identity=paid_identity,
         )
+        from ouroboros.acceptance_settlement import _deliver_under_running_panel
+
+        handled = _deliver_under_running_panel(review_ctx, prior_run)
+        if handled is not None:
+            return handled
         reused_result = None
         applied_before = bool(prior_run and (prior_run.get("applied_decision") or prior_run.get("feedback_delivered")))
         if prior_run is not None:
@@ -1515,26 +1503,21 @@ def _run_task_acceptance_review_once(
         passes_before_apply = int(
             getattr(tools._ctx, "_task_acceptance_improvement_passes", 0) or 0
         )
-        if prior_run is not None and acceptance_run_pending(prior_run):
-            from ouroboros.review_dispatch import collect_task_acceptance_run
-
-            panel_result = collect_task_acceptance_run(
-                prior_run, drive_root=drive_root or tools._ctx.drive_root, usage_ctx=tools._ctx,
-            )
-            # Keep the paid operation's request; only its producer facts advance.
-            prior_run.update({key: value for key, value in vars(panel_result).items()
-                              if key != "request"})
-        else:
-            panel_result = reused_result or _loop()._execute_task_acceptance_panel(review_ctx)
+        panel_result = reused_result or _loop()._execute_task_acceptance_panel(review_ctx)
         run_record = prior_run if reused_result is not None else _record_host_acceptance_run(review_ctx, panel_result)
         if acceptance_run_pending(panel_result):
             tools._ctx._task_acceptance_pending = str(run_record.get("binding_hash") or "")
             run_record["enforcement_impact"] = "pending_feedback"
+            from ouroboros.acceptance_settlement import remember_settlement_trace
+
+            remember_settlement_trace(tools._ctx, llm_trace, run_record)
             llm_trace["review_decision"].update({
                 "eligibility": "review_in_flight", "operation_state": "in_flight",
             })
             emit_progress("Task acceptance review is running; Main can receive and answer messages.")
-            if not review_enforcement_blocks("blocking"):
+            from ouroboros.acceptance_settlement import acceptance_wait_chosen
+
+            if not acceptance_wait_chosen(tools._ctx):
                 return _finish_cyber_acceptance(review_ctx, panel_result)
             return True
         tools._ctx._task_acceptance_pending = ""
