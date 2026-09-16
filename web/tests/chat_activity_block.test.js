@@ -8,7 +8,7 @@
 // block leaves with its wait and its resolved episode cannot reopen it; the
 // header keeps the census verdict beside a block.
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { after } from 'node:test';
 import { createChatInstance } from '../modules/chat.js';
 import { summarizeChatLiveEvent } from '../modules/log_events.js';
 import { ElementStub, installDom, restoreDom, walkCard } from './chat_dom_fixture.js';
@@ -16,6 +16,7 @@ import { ElementStub, installDom, restoreDom, walkCard } from './chat_dom_fixtur
 // The flat fixture's querySelector does not descend; the status badge and
 // card internals need a real descendant lookup.
 const originalQuery = ElementStub.prototype.querySelector;
+after(() => { ElementStub.prototype.querySelector = originalQuery; });
 ElementStub.prototype.querySelector = function (selector) {
     const direct = originalQuery.call(this, selector);
     if (direct) return direct;

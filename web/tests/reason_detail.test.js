@@ -14,11 +14,11 @@ test('a typed cause is stated in the owner\'s words', () => {
     // concept in front of an owner sentence is the same leak in a politer font.
     assert.equal(
         taskReasonDetail({ reason_code: 'plan_review_advisory' }),
-        'plan review never closed; the work continued under advisory enforcement',
+        'Plan review never closed; the work continued under advisory enforcement',
     );
     assert.equal(
         taskReasonDetail({ reason_code: 'delivery_control_degraded' }),
-        'delivery finished in a degraded control state',
+        'Delivery finished in a degraded control state',
     );
 });
 

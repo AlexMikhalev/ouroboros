@@ -655,7 +655,10 @@ def _arm_delivery_control(
         return
     evidence_revision, evidence_fingerprint = _loop()._delivery_evidence_state(tools, ctx, llm_trace)
     candidate.finalization_control = control
-    candidate.repair_attempted = False
+    # The acceptance wake re-offers an EXISTING candidate's contract: its one
+    # malformed-control repair stays spent. Every other arm starts a new episode.
+    if not skip_if_unchanged:
+        candidate.repair_attempted = False
     tools._ctx._delivery_control_required = True
     control_prompt = _delivery_control_prompt(
         candidate,

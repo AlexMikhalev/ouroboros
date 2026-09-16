@@ -1837,6 +1837,14 @@ body.resizing-panels { user-select: none; }
     min-height: 1.45em;
 }
 
+/* A block without work carries no title placeholder: the collapsed geometry
+   reserves nothing for an empty title (review round 1: the clamp and the
+   reserved line above outranked the general empty-title rule). */
+.chat-live-card:not([data-expanded="1"]) > .chat-live-summary-button .chat-live-title:empty {
+    display: none;
+    min-height: 0;
+}
+
 /* Activity grows with useful content. Details retain the complete source. */
 .chat-live-activity {
     color: var(--text-meta);

@@ -400,6 +400,9 @@ def test_capsule_leads_with_verdict_blocker_rails_and_three_moves():
     # this stream is text the model parrots back to its human (v6.61.4).
     assert "Review verdict: FAIL — rated a partial result" in capsule
     assert "(tier: best_effort)" not in capsule
+    # The whole header is identifier-free: panel_reason used to restate `tier=…`.
+    header = capsule.splitlines()[0]
+    assert "tier=" not in header and "best_effort" not in header and "blocked_with_evidence" not in header, header
     assert "Open blocking obligation(s) (2): ob-1, ob-2." in capsule
     assert "Remaining headroom — money: $1.00 spent" in capsule
     assert "FIX" in capsule and "REBUT" in capsule and "DECLARE UNREACHABLE" in capsule

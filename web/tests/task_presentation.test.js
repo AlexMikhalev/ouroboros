@@ -159,7 +159,8 @@ test('failed child remains a compact local fact without owner-alarm semantics', 
     // Identity only; the chip carries `Failed` (DESIGN.md §4), the headline never does.
     assert.equal(child.headline, 'researcher');
     assert.doesNotMatch(child.body, /delegated_custody_unreconciled/);
-    assert.match(child.fullBody, /Reason: Some delegated work was never reconciled\./);
+    assert.match(child.fullBody, /Some delegated work was never reconciled\./);
+    assert.doesNotMatch(child.fullBody, /Reason: /, 'no machine label in front of the owner sentence');
     assert.equal('ownerAlarm' in child, false);
     assert.equal('notification' in child, false);
     const adapter = chatSource.slice(

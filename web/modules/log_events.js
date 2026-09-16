@@ -434,11 +434,11 @@ const TASK_CAUSE_PHRASES = {
     acceptance_bypassed_provider_unavailable: "The model provider was unavailable, so the answer was never reviewed.",
     acceptance_bypassed_context_overflow: "The task outgrew its context before the answer could be reviewed.",
     acceptance_bypassed_children_unabsorbed: "Some sub-tasks had not been folded in, so the answer was never reviewed.",
-    plan_review_advisory: "plan review never closed; the work continued under advisory enforcement",
-    host_child_status_suffix: "a child task had not settled when the answer was delivered",
-    invalid_delivery_control_after_repair: "the delivery control object was still malformed after repair",
-    budget_exhausted: "the task ran out of budget before it could finish cleanly",
-    delivery_control_degraded: "delivery finished in a degraded control state",
+    plan_review_advisory: "Plan review never closed; the work continued under advisory enforcement",
+    host_child_status_suffix: "A child task had not settled when the answer was delivered",
+    invalid_delivery_control_after_repair: "The delivery control object was still malformed after repair",
+    budget_exhausted: "The task ran out of budget before it could finish cleanly",
+    delivery_control_degraded: "Delivery finished in a degraded control state",
     delegated_custody_unreconciled: "Some delegated work was never reconciled.",
 };
 
@@ -1154,7 +1154,7 @@ export function summarizeChatLiveEvent(evt) {
         const resultText = describeText(evt.result || '', 320, { markdown: true });
         const traceText = describeText(evt.trace_summary || '', 320);
         const errorText = describeText(evt.error || '', 220);
-        const reasonDetail = evt.reason_code ? `Reason: ${taskReasonPhrase(evt.reason_code)}` : '';
+        const reasonDetail = evt.reason_code ? taskReasonPhrase(evt.reason_code) : '';
         const detailParts = [
             progressText.full,
             resultText.full ? `[RESULT]\n${resultText.full}` : '',

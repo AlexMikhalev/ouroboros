@@ -200,6 +200,26 @@ def test_every_acceptance_wake_reoffers_a_changed_keep_contract(tmp_path, monkey
     assert blocks() == 2 and second.content_sha256[:12] in str(ctx.messages)
 
 
+def test_the_acceptance_wake_keeps_the_one_repair_already_spent(tmp_path, monkeypatch):
+    """Scope review round 1: re-arming on every wake reset ``repair_attempted``,
+    so a candidate could burn one malformed-control repair per wake instead of
+    one per episode. The wake's re-offer preserves the spent repair; an ordinary
+    arm (something changed) still opens a fresh episode."""
+    from ouroboros.loop_acceptance_review import wait_for_acceptance_feedback
+    from tests.test_delivery_forced_finalization import _forced_test_context
+
+    loop, registry, ctx, trace = _forced_test_context(tmp_path)
+    monkeypatch.setattr("ouroboros.owner_wait.wait_after_tools", lambda *_a, **_k: None)
+    registry._ctx._task_acceptance_pending = "binding-one"
+    candidate = loop._replace_delivery_candidate(registry, ctx, trace, "Complete answer.", control="candidate")
+    wait_for_acceptance_feedback(registry, ctx, trace, [], set())
+    candidate.repair_attempted = True  # the one repair was spent on a malformed control
+    wait_for_acceptance_feedback(registry, ctx, trace, [], set())
+    assert candidate.repair_attempted is True, "the wake re-offer must not refund the repair"
+    loop._arm_delivery_control(registry, ctx, trace)
+    assert candidate.repair_attempted is False, "an ordinary arm opens a new episode"
+
+
 def test_the_rearmed_contract_never_rewrites_an_already_sent_row(tmp_path):
     """Issue #906: merging into a sent row discards the conversation cache. Every
     wake re-arms, so the control block must take the execution slot and append."""

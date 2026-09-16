@@ -100,7 +100,9 @@ export function createModelWaitController({ getRecord, onDomWrite = (fn) => fn()
         if (record && !record.finished) {
             record.modelWaiting = waiting;
             record.root.dataset.modelWaiting = waiting ? '1' : '0';
-            if (waiting && !record.suggestedName && !record.lastHumanHeadline && !record.direct) record.titleEl.textContent = taskId === 'bg-consciousness' ? 'Background thinking' : 'Task';
+            // A block without work carries no title placeholder while it waits; the
+            // always-shown kind names its wait (chrome never reads the lane fact).
+            if (waiting && taskId === 'bg-consciousness' && !record.suggestedName && !record.lastHumanHeadline) record.titleEl.textContent = 'Background thinking';
             const phase = desiredLiveCardPhase(record);
             setLiveCardPhase(record, record.backgroundPaused ? 'model_wait' : phase.phase,
                 record.backgroundPaused ? 'Paused for foreground task' : phase.text, phase.className);

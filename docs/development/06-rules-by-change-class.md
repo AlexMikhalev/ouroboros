@@ -1308,7 +1308,8 @@ by "Provider Independence" above. Call-site imperatives:
   roster — a panel whose subject was re-authored mid-flight would otherwise have
   its bought verdicts discarded. The settlement wake names that free route (the
   keep control), and the keep contract is re-offered on every acceptance wake
-  rather than once per candidate chain. The
+  whose contract bytes changed (identical bytes are not repeated, and a spent
+  malformed-control repair stays spent) rather than once per candidate chain. The
   worker never writes Main's live candidate or author decision. Keep
   subtree/status facts
   separate from reviewer findings and Cyber's authority under BIBLE P0.

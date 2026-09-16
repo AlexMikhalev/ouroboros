@@ -386,35 +386,35 @@
       "record": {"status": "completed", "reason_code": "budget_exhausted", "outcome_axes": {"execution": {"status": "degraded"}}},
       "phase": "warn",
       "headline": "Done with warnings",
-      "acceptance_clause": "the task ran out of budget before it could finish cleanly."
+      "acceptance_clause": "The task ran out of budget before it could finish cleanly."
     },
     {
       "name": "execution reason delivery_control_degraded says its own sentence",
       "record": {"status": "completed", "reason_code": "delivery_control_degraded", "outcome_axes": {"execution": {"status": "degraded"}}},
       "phase": "warn",
       "headline": "Done with warnings",
-      "acceptance_clause": "delivery finished in a degraded control state."
+      "acceptance_clause": "Delivery finished in a degraded control state."
     },
     {
       "name": "execution reason host_child_status_suffix says its own sentence",
       "record": {"status": "completed", "reason_code": "host_child_status_suffix", "outcome_axes": {"execution": {"status": "degraded"}}},
       "phase": "warn",
       "headline": "Done with warnings",
-      "acceptance_clause": "a child task had not settled when the answer was delivered."
+      "acceptance_clause": "A child task had not settled when the answer was delivered."
     },
     {
       "name": "execution reason invalid_delivery_control_after_repair says its own sentence",
       "record": {"status": "completed", "reason_code": "invalid_delivery_control_after_repair", "outcome_axes": {"execution": {"status": "degraded"}}},
       "phase": "warn",
       "headline": "Done with warnings",
-      "acceptance_clause": "the delivery control object was still malformed after repair."
+      "acceptance_clause": "The delivery control object was still malformed after repair."
     },
     {
       "name": "execution reason plan_review_advisory says its own sentence",
       "record": {"status": "completed", "reason_code": "plan_review_advisory", "outcome_axes": {"execution": {"status": "degraded"}}},
       "phase": "warn",
       "headline": "Done with warnings",
-      "acceptance_clause": "plan review never closed; the work continued under advisory enforcement."
+      "acceptance_clause": "Plan review never closed; the work continued under advisory enforcement."
     },
     {
       "name": "an open delegated-custody debt says its own sentence",

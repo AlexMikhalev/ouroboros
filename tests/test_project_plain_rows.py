@@ -520,7 +520,7 @@ def test_host_verdict_leads_both_lifecycle_rows(tmp_path, monkeypatch):
     ) is True
     assert queued[1]["text"] == (
         "Launch 🚀 › Ship release · Done with warnings\n"
-        "the task ran out of budget before it could finish cleanly. "
+        "The task ran out of budget before it could finish cleanly. "
         "Open the Project for details."
     )
 

@@ -223,7 +223,7 @@ def _unresolved_evidence_ref_labels(run: Any) -> List[str]:
     return list(dict.fromkeys(labels))
 
 
-def panel_reason(run: Any) -> str:
+def panel_reason(run: Any, *, with_tier: bool = True) -> str:
     """One honest reason line naming the REAL blocker (v6.74.0, A6); shared by
     the capsule header, the compact projection fallback, and progress lines.
     Accepts a ``ReviewRunResult`` or its dict/namespace record."""
@@ -233,6 +233,9 @@ def panel_reason(run: Any) -> str:
         run = SimpleNamespace(**run)
     aggregate = str(getattr(run, "aggregate_signal", "") or "UNKNOWN").upper()
     tier = aggregate_outcome_tier(run)
+    # The tier is said in words (the reviewers' JSON keeps the identifier); the
+    # capsule header states it once itself and asks for the reason alone.
+    rated = f"rated {TIER_WORDS.get(tier, tier or 'unclassified')} — " if with_tier else ""
     if aggregate == "PASS":
         if task_acceptance_is_clean(run):
             return "clean acceptance"
@@ -243,11 +246,11 @@ def panel_reason(run: Any) -> str:
         if unresolved:
             more = f" (+{len(unresolved) - 3} more)" if len(unresolved) > 3 else ""
             return (
-                f"tier={tier or 'unclassified'} — cited evidence does not resolve "
+                f"{rated}cited evidence does not resolve "
                 f"against the packet: {', '.join(unresolved[:3])}{more}"
             )
         return (
-            f"tier={tier or 'unclassified'} — a PASS is not release-clean until "
+            f"{rated}a PASS is not release-clean until "
             "every criterion is supported"
         )
     if aggregate == "FAIL":
@@ -279,8 +282,8 @@ def panel_reason(run: Any) -> str:
                         break
         if named:
             compact = _sub().truncate_review_artifact(" ".join(named.split()), limit=300)
-            return f"tier={tier or 'unclassified'} — {compact}"
-        return f"tier={tier or 'unclassified'} — reviewer FAIL without a named finding"
+            return f"{rated}{compact}"
+        return f"{rated}reviewer FAIL without a named finding"
     reasons = [str(r) for r in (getattr(run, "degraded_reasons", None) or []) if str(r)]
     if len(reasons) > 4:
         return "; ".join(reasons[:4]) + f" ⚠️ OMISSION NOTE: +{len(reasons) - 4} more causes in the run record"
@@ -435,7 +438,7 @@ def build_improvement_capsule(
     header = f"[Final improvement note] Review verdict: {aggregate_signal or 'UNKNOWN'}"
     if tier:
         header += f" — rated {TIER_WORDS.get(tier, tier)}"
-    header += f" — {panel_reason(result)}."
+    header += f" — {panel_reason(result, with_tier=False)}."
     lines = [header]
     open_ids = [
         str(o.get("id"))
