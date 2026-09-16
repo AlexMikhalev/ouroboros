@@ -65,3 +65,35 @@ def test_a_started_root_reads_the_mode_it_runs_in_but_the_wake_keeps_mains(tmp_p
     assert payload["runtime_mode"] == "advanced" and "runtime_mode_rule" not in payload
     full = {"id": "root-2", "type": "task", "metadata": dict(_wake_task("full")["metadata"])}
     assert json.loads(build_runtime_section(env, full).split("\n\n", 1)[1])["runtime_mode"] == "advanced"
+
+
+def test_an_integration_reads_the_mode_the_task_runs_in(monkeypatch):
+    """A capped tree (Act/Observe: light) cannot land a system-repo patch the install mode alone
+    would allow (astra scope round 4)."""
+    from ouroboros.tools.subagent_integration import _integration_runtime_mode
+
+    monkeypatch.setattr("ouroboros.tools.subagent_integration.get_runtime_mode", lambda: "advanced")
+    assert _integration_runtime_mode(types.SimpleNamespace(task_metadata=dict(_wake_task("act")["metadata"]))) == "light"
+    assert _integration_runtime_mode(types.SimpleNamespace(task_metadata=dict(_wake_task("full")["metadata"]))) == "advanced"
+    assert _integration_runtime_mode(types.SimpleNamespace(task_metadata={})) == "advanced"
+
+
+def test_a_capped_tree_cannot_schedule_a_self_worktree_child(monkeypatch):
+    """Act may write, but never into its own repository — its children included (В21=A,
+    PLAN §5.4): on an advanced install the per-task light cap keeps a self_worktree child
+    off while an external-workspace child stays available (astra scope round 4)."""
+    from ouroboros.tools.control_scheduling import _build_acting_constraint
+
+    monkeypatch.delenv("OUROBOROS_ALLOW_MUTATIVE_SUBAGENTS", raising=False)
+    monkeypatch.delenv("OUROBOROS_BOOT_RUNTIME_MODE", raising=False)
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
+    capped = types.SimpleNamespace(task_metadata=dict(_wake_task("act")["metadata"]))
+    refused = _build_acting_constraint(write_surface="self_worktree", write_root="", protected_paths_grant=False,
+                                       external_tool_grants=None, parent_workspace_root="", ctx=capped)
+    assert "MUTATIVE_SUBAGENTS_DISABLED" in str(getattr(refused, "text", refused))
+    allowed = _build_acting_constraint(write_surface="external_workspace", write_root="/tmp/x", protected_paths_grant=False,
+                                       external_tool_grants=None, parent_workspace_root="", ctx=capped)
+    assert isinstance(allowed, dict), allowed
+    full = types.SimpleNamespace(task_metadata=dict(_wake_task("full")["metadata"]))
+    assert isinstance(_build_acting_constraint(write_surface="self_worktree", write_root="", protected_paths_grant=False,
+                                               external_tool_grants=None, parent_workspace_root="", ctx=full), dict)

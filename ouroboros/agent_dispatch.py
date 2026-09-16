@@ -381,9 +381,17 @@ def model_role_slot_override(task_metadata: Dict[str, Any]) -> Optional[Tuple[st
     if not key or role in ("main", "fallback"):
         return None
     model = str(runtime_setting(key, "") or "").strip()
+    raw_local = str(runtime_setting(f"USE_LOCAL_{role.upper()}", "") or "").strip().lower()
+    use_local = raw_local in ("true", "1")
     if not model:
-        return None
-    use_local = str(runtime_setting(f"USE_LOCAL_{role.upper()}", "") or "").lower() in ("true", "1")
+        # An empty model slot means Main's model — but the role's own local flag, when the
+        # owner set it and it differs from Main's, still decides the route (В25=B honors
+        # every slot; with equal flags nothing changes and the prefix stays Main's).
+        main_local = str(runtime_setting("USE_LOCAL_MAIN", "") or "").strip().lower() in ("true", "1")
+        main_model = str(runtime_setting("OUROBOROS_MODEL", "") or "").strip()
+        if not raw_local or use_local == main_local or not main_model:
+            return None
+        return main_model, use_local
     return model, use_local
 
 

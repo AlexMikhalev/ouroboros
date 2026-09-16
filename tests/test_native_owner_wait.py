@@ -72,12 +72,26 @@ def test_bounded_wait_resumes_with_a_notice_that_names_the_recorded_assumption(t
     deadline = _spent_bound(ctx)
     monkeypatch.setattr("ouroboros.owner_wait.time.sleep",
                         lambda _seconds: pytest.fail("a spent bound must not keep sleeping"))
+    import supervisor.message_bus as mb
+
+    frames: list = []
+    bridge = mb.LocalChatBridge()
+    bridge._broadcast_fn = frames.append
+    monkeypatch.setattr(mb, "get_bridge", lambda: bridge)
     messages = []
     wait_after_tools(ctx, messages, {}, {}, 2, [], set())
 
     row = load_task_result(tmp_path, ctx.task_id)["owner_wait"]
     # No new wait state: the row RESUMES, with the reason as an additive field.
     assert row["state"] == "resumed" and row["resume_reason"] == "timeout"
+    # The DIRECT lane announces the closed bound too (opus round 4): the card's projection
+    # stops saying "waiting" and the live card gets the additive frame; it stays open.
+    from ouroboros.owner_quiz import quiz_states
+
+    block = quiz_states(tmp_path, ctx.task_id)["q1"]
+    assert block["state"] == "open" and "wait_for_answer" not in block and block["wait_ended_at"]
+    [frame] = [f for f in frames if f.get("type") == "quiz_state"]
+    assert frame["quiz_id"] == "q1" and frame["state"] == "open" and frame["wait_for_answer"] is False
     assert row["wait_deadline_at"] == deadline and row["wait_max_minutes"] == 5
     [notice] = messages
     assert notice["role"] == "user" and notice["content"].startswith("[SYSTEM NOTICE]")

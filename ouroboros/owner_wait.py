@@ -19,6 +19,7 @@ a timeout introduces no new wait state — the row resumes with the additive
 from __future__ import annotations
 
 import json
+import logging
 import pathlib
 import queue
 import time
@@ -29,6 +30,8 @@ from typing import Any
 from ouroboros.artifacts import read_actor_source_bytes, store_actor_source_bytes
 from ouroboros.owner_mailbox import OwnerMailboxPeek
 from ouroboros.task_results import _TRULY_TERMINAL_STATUSES, load_task_result
+
+log = logging.getLogger(__name__)
 
 
 def set_owner_wait(root: Any, task_id: str, wait: dict,
@@ -279,7 +282,30 @@ def direct_owner_wait(ctx: Any, checkpoint: dict) -> str:
                    {**wait, "state": "resumed",
                     **({"resume_reason": outcome} if outcome == "timeout" else {})},
                    wait["wait_id"])
+    if outcome == "timeout":
+        announce_wait_ended(root, ctx.task_id, str(checkpoint.get("quiz_id") or ""),
+                            int(getattr(ctx, "chat_id", 0) or 0))
     return outcome
+
+
+def announce_wait_ended(root: Any, task_id: str, quiz_id: str, chat_id: int) -> None:
+    """A bound closed and the turn resumed: the card's projection and the live card both
+    stop saying "waiting" while the question stays answerable. The direct lane calls it
+    here; the pool's supervisor grant calls the same two seams (best effort, never raises)."""
+    if not quiz_id:
+        return
+    try:
+        from ouroboros.owner_quiz import mark_wait_ended
+
+        mark_wait_ended(root, task_id, quiz_id)
+    except Exception:
+        log.debug("owner-wait end not recorded on quiz %s", quiz_id, exc_info=True)
+    try:
+        from supervisor.message_bus import get_bridge
+
+        get_bridge().send_quiz_state(quiz_id, task_id, "open", chat_id=chat_id, wait_for_answer=False)
+    except Exception:
+        log.debug("owner-wait end not broadcast for quiz %s", quiz_id, exc_info=True)
 
 
 def owner_wait_timeout_notice(ctx: Any, checkpoint: dict) -> dict:

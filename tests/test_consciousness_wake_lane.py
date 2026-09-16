@@ -225,10 +225,21 @@ def test_model_role_resolves_the_consciousness_slots_and_falls_back_to_main():
     assert task_model_binding({"metadata": meta})[0] == "consciousness"
     assert task_model_binding({"metadata": {}})[0] == "main"
     with mock.patch.dict(os.environ, {"OUROBOROS_MODEL_CONSCIOUSNESS": "", "OUROBOROS_EFFORT_CONSCIOUSNESS": "low",
-                                      "OUROBOROS_EFFORT_TASK": "medium"}):
+                                      "OUROBOROS_EFFORT_TASK": "medium", "USE_LOCAL_CONSCIOUSNESS": ""}):
         assert model_role_slot_override(meta) is None  # an empty slot is Main
         assert _initial_effort_for({"metadata": meta}, "task") == "low"
         assert _initial_effort_for({"metadata": {}}, "task") == "medium"
+    # An empty model slot still honors the role's OWN local flag when the owner set it and it
+    # differs from Main's (В25=B: every slot is respected; astra round 4).
+    with mock.patch.dict(os.environ, {"OUROBOROS_MODEL_CONSCIOUSNESS": "", "USE_LOCAL_CONSCIOUSNESS": "true",
+                                      "USE_LOCAL_MAIN": "false", "OUROBOROS_MODEL": "openai/gpt-5.6-sol"}):
+        assert model_role_slot_override(meta) == ("openai/gpt-5.6-sol", True)
+    with mock.patch.dict(os.environ, {"OUROBOROS_MODEL_CONSCIOUSNESS": "", "USE_LOCAL_CONSCIOUSNESS": "false",
+                                      "USE_LOCAL_MAIN": "true", "OUROBOROS_MODEL": "local/model"}):
+        assert model_role_slot_override(meta) == ("local/model", False)
+    with mock.patch.dict(os.environ, {"OUROBOROS_MODEL_CONSCIOUSNESS": "", "USE_LOCAL_CONSCIOUSNESS": "true",
+                                      "USE_LOCAL_MAIN": "true", "OUROBOROS_MODEL": "local/model"}):
+        assert model_role_slot_override(meta) is None  # equal flags: Main, the same prefix
     with mock.patch.dict(os.environ, {"OUROBOROS_MODEL_CONSCIOUSNESS": "openai/gpt-5.6-sol", "USE_LOCAL_CONSCIOUSNESS": "true"}):
         assert model_role_slot_override(meta) == ("openai/gpt-5.6-sol", True)
     with mock.patch.dict(os.environ, {"OUROBOROS_MODEL_CONSCIOUSNESS": "openai/gpt-5.6-sol", "USE_LOCAL_CONSCIOUSNESS": ""}):

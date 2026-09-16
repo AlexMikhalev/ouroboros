@@ -360,6 +360,7 @@ def start_evolution_campaign(objective: str = "", *, source: str = "owner", orig
                 campaign["adopted_by_owner_at"] = now
             campaign.update({k: v for k, v in consciousness_origin_metadata(origin).items() if not campaign.get(k)})
             campaign["status"] = "active"
+            campaign.pop("pause_reason", None)
             campaign["updated_at"] = now
         generation = current_evolution_boot_generation()
         if generation:

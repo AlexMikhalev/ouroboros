@@ -390,6 +390,16 @@ def check_scheduled_tasks() -> None:
                     record["enabled"] = False
                     record["completed_at"] = now.isoformat()
                     record["next_run_at"] = ""
+                elif str(refused).startswith("consciousness_"):
+                    # The consciousness door refused (the tree's allowance or concurrency —
+                    # a refusal that can last hours): the one-shot stays armed but its run
+                    # point moves forward by the alarm floor, so it is not re-fired on every
+                    # supervisor pass (a fresh task id, a failed result row and a ledger
+                    # read per pass). The same class the evolution scheduler pauses on.
+                    from ouroboros.config import get_bg_wakeup_min_sec
+
+                    trigger["run_at"] = (now + datetime.timedelta(seconds=int(get_bg_wakeup_min_sec()))).isoformat()
+                    record["trigger"] = trigger
             else:
                 try:
                     record["next_run_at"] = _next_cron_time(expr, now).isoformat()

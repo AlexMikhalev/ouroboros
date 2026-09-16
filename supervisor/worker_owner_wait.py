@@ -123,20 +123,10 @@ def _resume_allowed(task_id: str, meta: dict, worker: Any) -> bool:
 
 
 def _announce_wait_ended(task_id: str, quiz_id: str, chat_id: int) -> None:
-    """The bound closed and the task resumed: the card's projection and the live card both stop
-    saying "waiting" while the question stays answerable (best effort, never raises)."""
-    try:
-        from ouroboros.owner_quiz import mark_wait_ended
+    """The bound closed and the pooled task resumed: one seam with the direct lane."""
+    from ouroboros.owner_wait import announce_wait_ended
 
-        mark_wait_ended(_pool().DRIVE_ROOT, task_id, quiz_id)
-    except Exception:
-        log.debug("owner-wait end not recorded on quiz %s", quiz_id, exc_info=True)
-    try:
-        from supervisor.message_bus import get_bridge
-
-        get_bridge().send_quiz_state(quiz_id, task_id, "open", chat_id=chat_id, wait_for_answer=False)
-    except Exception:
-        log.debug("owner-wait end not broadcast for quiz %s", quiz_id, exc_info=True)
+    announce_wait_ended(_pool().DRIVE_ROOT, task_id, quiz_id, chat_id)
 
 
 def _grant_resume(

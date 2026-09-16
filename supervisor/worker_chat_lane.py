@@ -84,7 +84,7 @@ def conversation_admitted_during_update(gate_reason: str) -> bool:
     return reason == assisted_writer_gate_reason(tx)
 
 
-def wake_gate_open(chat_id: int) -> bool:
+def wake_gate_open() -> bool:
     """The owner-conversation gate for a consciousness wake-up, WITHOUT the owner's lock
     notice: a refused wake is the alarm's typed ``repo_writer_gate_closed``, retried quietly,
     never a "🔒" line in Main at every attempt."""
@@ -272,7 +272,7 @@ def _admit_chat_task(
 
     quiet = is_consciousness_origin(task_metadata)  # a wake: the alarm reports the refusal, not the chat
     with _pool()._repo_writer_gate_lock:
-        if not (wake_gate_open(chat_id) if quiet else owner_conversation_admitted(chat_id)):
+        if not (wake_gate_open() if quiet else owner_conversation_admitted(chat_id)):
             return None
         activity = registry.register(
             task["id"], chat_id,
@@ -541,7 +541,7 @@ def handle_wake_direct(
     verbatim on ``task["metadata"]``; nothing here pauses or resumes the
     legacy background loop.
     """
-    if not wake_gate_open(chat_id):
+    if not wake_gate_open():
         return {"admitted": False, "task_id": "", "reason": "repo_writer_gate_closed"}
     from supervisor.state import budget_remaining, load_state
 
@@ -558,7 +558,7 @@ def handle_wake_direct(
     if admitted is None:
         # The gate can close between the check above and the registration — a silent
         # refusal, nothing in the chat; every other None the lane already reported.
-        reason = "repo_writer_gate_closed" if not wake_gate_open(chat_id) else "admission_failed"
+        reason = "repo_writer_gate_closed" if not wake_gate_open() else "admission_failed"
         return {"admitted": False, "task_id": "", "reason": reason}
     task_id = str(admitted["task"]["id"])
 

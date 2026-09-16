@@ -354,7 +354,18 @@ def _build_acting_constraint(
             "⚠️ TOOL_ARG_ERROR (schedule_subagent): write_surface must be one of "
             f"{allowed} (or omit it for a read-only subagent)."
         )
-    if not get_allow_mutative_subagents(write_surface):
+    from ouroboros.config import get_runtime_mode
+    from ouroboros.consciousness_authority import effective_runtime_mode
+
+    # A per-task mode cap (a consciousness Act/Observe tree: light) keeps a self_worktree
+    # child off even where the install mode or the owner's toggle would allow one — the
+    # tree may write, but never into its own repository, its children included (В21=A).
+    capped_off_self = (
+        write_surface == "self_worktree"
+        and effective_runtime_mode(get_runtime_mode(), getattr(ctx, "task_metadata", None)) == "light"
+        and str(get_runtime_mode() or "").lower() != "light"
+    )
+    if not get_allow_mutative_subagents(write_surface) or capped_off_self:
         return _publish_tool_result(ctx, ToolResult(
             status="blocked", code="ACCESS_BLOCKED",
             text=(

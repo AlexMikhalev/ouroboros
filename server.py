@@ -250,7 +250,7 @@ def _describe_bg_consciousness_state(requested_enabled: bool) -> dict:
         status, detail = "sleeping", f"Sleeping until {next_at}."
         if snapshot.get("pending_reason"):
             detail += f" Early wake pending: {snapshot['pending_reason']}."
-    return {"enabled": requested_enabled, "status": status, "detail": detail, **snapshot}
+    return {**snapshot, "enabled": requested_enabled, "status": status, "detail": detail}
 
 
 def _start_supervisor_if_needed(settings: dict) -> bool:

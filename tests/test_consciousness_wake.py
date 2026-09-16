@@ -158,6 +158,7 @@ def test_projection_names_every_honest_status(describe):
     import server
 
     assert describe(BASE, enabled=False)["status"] == "disabled"
+    assert describe(BASE, enabled=False)["enabled"] is False  # the caller's flag, not the snapshot's
     sleeping = describe(BASE)
     assert sleeping["status"] == "sleeping" and sleeping["detail"] == f"Sleeping until {server._clock_of(BASE['next_wake_at'])}."
     assert sleeping["next_wake_at"] == BASE["next_wake_at"] and sleeping["enabled"] is True
