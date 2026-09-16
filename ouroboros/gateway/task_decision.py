@@ -468,11 +468,15 @@ async def answer_decision(drive_root: pathlib.Path, body: Any) -> Tuple[int, Dic
             return status, payload
         forwarded: Optional[bool] = None
         forward_reason = ""
-        if task is None and block.get("state") == "answered":
-            # No task, no mailbox: the recorded answer is delivered as an
-            # ordinary owner message instead. A duplicate request re-enters
-            # this path on purpose — the named ingress deduplicates it, so a
-            # retry after a failed delivery still delivers.
+        if task is None and block.get("answered_after_terminal"):
+            # The persisted acceptance route decides delivery, never the task's
+            # liveness NOW: an answer accepted LATE (no mailbox will ever drain)
+            # is delivered as an ordinary owner message, and a duplicate request
+            # re-enters this path on purpose — the named ingress deduplicates it,
+            # so a retry after a failed delivery still delivers. An answer the
+            # live task already received is never forwarded when its lost HTTP
+            # response is retried after the task ended (that would be a second
+            # owner turn).
             try:
                 forwarded, forward_reason = _forward_late_quiz_answer(
                     drive_root, task_id, quiz_id, block,

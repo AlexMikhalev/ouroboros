@@ -99,6 +99,26 @@ def test_ingress_late_answer_is_accepted_and_delivered_as_an_owner_message(tmp_p
     assert len([f for f in frames if f.get("type") == "chat"]) == 1
 
 
+def test_an_answer_the_live_task_received_is_not_forwarded_when_retried_after_it_ended(tmp_path, monkeypatch):
+    """A lost HTTP response and the UI's retry of the SAME request after the task ended
+    must not turn an answer the task already received into a second owner turn: delivery
+    follows the persisted acceptance route (answered_after_terminal), not liveness now."""
+    record_asked(tmp_path, "task-2", quiz_id="q1", question="Which db?",
+                 options=["sqlite", "postgres"], assumption="sqlite meanwhile", chat_id=1)
+    bridge, frames = _late_bridge(tmp_path, monkeypatch)
+    live = _decision_app(tmp_path, monkeypatch, live_task={"id": "task-2"})
+    first = _post(live, {"request_id": "r2", "decision_id": "quiz:task-2:q1", "option_index": 0})
+    assert first.status_code == 200, first.text
+    assert first.json()["duplicate"] is False and not first.json().get("forwarded")
+    assert "answered_after_terminal" not in quiz_states(tmp_path, "task-2")["q1"]
+    reconcile_terminal(tmp_path, "task-2")  # the task ended with the answer in its mailbox
+    gone = _decision_app(tmp_path, monkeypatch, live_task=None)
+    again = _post(gone, {"request_id": "r2", "decision_id": "quiz:task-2:q1", "option_index": 0})
+    assert again.status_code == 200 and again.json()["duplicate"] is True
+    assert not again.json().get("forwarded")
+    assert _inbox(bridge) == [] and not [f for f in frames if f.get("type") == "chat"]
+
+
 def test_ingress_heals_an_unreconciled_quiz_of_a_dead_task(tmp_path, monkeypatch):
     """Crash window: the author died before the task-done seam expired its open
     quiz. The ingress still heals the lifecycle first — so the accepted late
@@ -177,4 +197,3 @@ def test_a_second_answer_to_a_settled_card_is_still_a_first_wins_409(tmp_path, m
     assert loser.json()["state"] == STATE_ANSWERED
     assert loser.json()["answered_index"] == 1
     assert _inbox(bridge) == []
-

@@ -510,4 +510,3 @@ def test_main_preserves_private_receipt_but_persists_only_public_projection(
     assert len(persisted) == 2
     assert all("opaque thought" not in json.dumps(item) for item in persisted)
     assert all(ANTHROPIC_NATIVE_RECEIPT_KEY not in json.dumps(item) for item in persisted)
-
