@@ -47,18 +47,19 @@ def _ctx(tmp_path):
 
 
 def _write_governance_docs(repo):
-    """Governance docs with one distinctive body marker each."""
+    """Governance docs with one distinctive body marker each, written as the LF
+    bytes the tracked docs are pinned to (`.gitattributes`): the reference-book
+    reader delivers exact source bytes, so a platform-newline write would not
+    measure the same text a newline-translating read expects."""
     (repo / "docs").mkdir(parents=True, exist_ok=True)
-    (repo / "BIBLE.md").write_text(
-        "# BIBLE\nBIBLE-BODY-MARKER-7Q\n", encoding="utf-8")
-    (repo / "docs" / "CHECKLISTS.md").write_text(
-        "## Repo Commit Checklist\nCHECKLIST-BODY-MARKER-7Q\n", encoding="utf-8")
-    (repo / "docs" / "DEVELOPMENT.md").write_text(
-        "# DEV\nDEVELOPMENT-BODY-MARKER-7Q\n", encoding="utf-8")
-    (repo / "docs" / "DESIGN.md").write_text(
-        "# DESIGN\nDESIGN-BODY-MARKER-7Q\n", encoding="utf-8")
-    (repo / "docs" / "ARCHITECTURE.md").write_text(
-        "# ARCH\nARCHITECTURE-BODY-MARKER-7Q\n", encoding="utf-8")
+    for rel, text in (
+        ("BIBLE.md", "# BIBLE\nBIBLE-BODY-MARKER-7Q\n"),
+        ("docs/CHECKLISTS.md", "## Repo Commit Checklist\nCHECKLIST-BODY-MARKER-7Q\n"),
+        ("docs/DEVELOPMENT.md", "# DEV\nDEVELOPMENT-BODY-MARKER-7Q\n"),
+        ("docs/DESIGN.md", "# DESIGN\nDESIGN-BODY-MARKER-7Q\n"),
+        ("docs/ARCHITECTURE.md", "# ARCH\nARCHITECTURE-BODY-MARKER-7Q\n"),
+    ):
+        (repo / rel).write_bytes(text.encode("utf-8"))
 
 
 _DOC_MARKERS = (
