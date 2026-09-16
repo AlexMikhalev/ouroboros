@@ -204,8 +204,8 @@ class TurnEventQueue:
                     data["chat_id"] = self._chat_id
                 # The lane fact rides the same events by the same rule: a live
                 # tool or progress frame names its direct turn on arrival, so
-                # the chat block never wears managed chrome (a Task title, a
-                # conversion control) in the window before the census lists it.
+                # the header pill keeps the census verdict (Thinking…) beside
+                # the block before the census lists the turn; chrome never reads it.
                 data.setdefault("_is_direct_chat", True)
                 # The host-attested Stop marker rides the turn's WORK frames as
                 # it rides its narration rows (events_chat_delivery stamps those
