@@ -1654,7 +1654,7 @@ export function createChatInstance({
         const isLegacyParentSubagentKey = syntheticKey.startsWith('parent-subagent:');
         // A call's failure and timeout evolve one row; success feeds the fold.
         const inPlaceByKey = isLegacyParentSubagentKey
-            || ['subagent-lifecycle:', 'subagent-progress:', 'subagent-result:', 'task_done|', 'tool:', 'tools|']
+            || ['subagent-lifecycle:', 'subagent-progress:', 'subagent-result:', 'task_done|', 'tool:']
                 .some((prefix) => syntheticKey.startsWith(prefix));
         if (!isLegacyParentSubagentKey) {
             record.finished = isTerminalTaskPhase(nextPhase, summary.terminal);
