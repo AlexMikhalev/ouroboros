@@ -391,6 +391,64 @@ def test_promote_from_a_wake_mints_a_consciousness_root_through_the_real_admissi
     assert root["metadata"]["runtime_mode_cap"] == "light" and "_presence_origin" not in root
 
 
+def test_route_to_project_from_a_wake_mints_a_consciousness_root_too(_promote_root):
+    """P3d (live stand): the wake's route DID create a root in project redline-exodus, but
+    with empty metadata — no origin, no ledger category, no level, no withheld tools — because
+    only ``promote_chat_to_task`` stamped the origin onto its event. A route mints a root
+    through the SAME admission door, so it carries the same origin by value."""
+    from ouroboros.projects_registry import create_project
+    from ouroboros.tools.control_routing import _route_to_project
+    from ouroboros.utils import append_jsonl
+    from supervisor.events_project_routing import _handle_promote_chat_to_task
+
+    tmp_path = _promote_root
+    create_project(tmp_path, "racer", name="Racer")
+    enqueued: list = []
+    captured: dict = {}
+    supervisor = types.SimpleNamespace(
+        DRIVE_ROOT=tmp_path, RUNNING={}, PENDING=[], WORKERS={0: types.SimpleNamespace()},
+        bridge=types.SimpleNamespace(send_routing_ack=lambda *a, **k: None, broadcast=lambda *a, **k: None),
+        enqueue_task=lambda task: enqueued.append(task) or dict(task),
+        persist_queue_snapshot=lambda **_k: True, load_state=lambda: {"owner_chat_id": 1},
+        append_jsonl=append_jsonl,
+    )
+    ctx = types.SimpleNamespace(
+        pending_events=[], current_chat_id=1, drive_root=tmp_path, budget_drive_root=str(tmp_path),
+        task_id="wake-1", is_direct_chat=True, last_owner_delivery=None, project_id="",
+        task_metadata=dict(_wake_task("act")["metadata"]), task_contract={},
+        event_queue=types.SimpleNamespace(
+            put_nowait=lambda event: (captured.update(event), _handle_promote_chat_to_task(event, supervisor))),
+    )
+    out = _route_to_project(ctx, "racer", "audit the logs", predecessor_task_id="")
+    assert "Routed to project" in out, out
+    assert captured["initiator"] == "consciousness"
+    assert captured["usage_category"] == "consciousness_task"
+    assert captured["consciousness_autonomy"] == "act"
+    [root] = enqueued
+    assert root["actor_id"] == "consciousness" and root["project_id"] == "racer"
+    assert root["metadata"]["initiator"] == "consciousness"
+    assert root["metadata"]["usage_category"] == "consciousness_task"
+    assert root["metadata"]["runtime_mode_cap"] == "light"
+    assert root["task_contract"]["disabled_tools"] == list(ca.ACT_DISABLED)
+
+
+def test_route_to_project_from_an_owner_turn_stays_unstamped(_promote_root):
+    """The origin is inherited, never minted: an owner's own route keeps the plain root."""
+    from ouroboros.projects_registry import create_project
+    from ouroboros.tools.control_routing import _route_to_project
+
+    tmp_path = _promote_root
+    create_project(tmp_path, "racer", name="Racer")
+    ctx = types.SimpleNamespace(
+        pending_events=[], event_queue=None, current_chat_id=1, drive_root=tmp_path,
+        task_id="owner-turn", is_direct_chat=True, project_id="", task_contract={},
+        task_metadata={"client_message_id": "cm-1"},
+    )
+    _route_to_project(ctx, "racer", "audit the logs", predecessor_task_id="")
+    [evt] = ctx.pending_events
+    assert "initiator" not in evt and "usage_category" not in evt
+
+
 def test_promoted_root_is_stamped_and_its_contract_derives_the_level(tmp_path, monkeypatch):
     import supervisor.workers as workers
 
@@ -624,3 +682,94 @@ def test_owner_campaign_carries_no_origin(tmp_path):
     campaign = evolution_lifecycle.start_evolution_campaign("Improve", source="owner_chat")
     assert "initiator" not in campaign
     assert ca.consciousness_origin_metadata(campaign) == {}
+
+
+# --- what a wake may address: the host routing manifest (P3c) -------------------
+
+
+def _wake_routing_ctx(tmp_path, **metadata):
+    """A wake's tool context: the P3 envelope plus whatever Main-lane routing facts the
+    alarm clock merged into it (``main_lane_routing_metadata``)."""
+    return types.SimpleNamespace(
+        pending_events=[], event_queue=None, current_chat_id=1, drive_root=tmp_path,
+        budget_drive_root=str(tmp_path), task_id="wake-1", is_direct_chat=True,
+        last_owner_delivery=None, project_id="", task_contract={},
+        task_metadata={**_wake_task("act")["metadata"], **metadata},
+    )
+
+
+def _addressable_result(tmp_path, task_id="racer-old"):
+    """One settled root on disk, exactly as the Main manifest would preview it."""
+    from ouroboros.server_routing_context import _task_result_ground_truth
+
+    row = {"task_id": task_id, "status": "completed", "project_id": "racer",
+           "title": "Racer prototype", "objective": "Build the racer prototype",
+           "task_contract": {"objective": "Build the racer prototype", "context": "exact old context"}}
+    results = tmp_path / "task_results"
+    results.mkdir(parents=True, exist_ok=True)
+    (results / f"{task_id}.json").write_text(json.dumps({"_schema_version": 1, **row}), encoding="utf-8")
+    return _task_result_ground_truth(row)
+
+
+def test_a_wake_continues_a_result_its_routing_manifest_makes_addressable(tmp_path):
+    """The first live wake chose a predecessor and got AUTHORITY_SOURCE_UNAVAILABLE twice,
+    so the work it had decided on never started: its metadata carried no routing manifest
+    (P3c). With the Main lane's own facts the named id is addressable, on both verbs."""
+    from ouroboros.projects_registry import create_project
+    from ouroboros.tools.control_routing import _promote_chat_to_task, _route_to_project
+
+    create_project(tmp_path, "racer", name="Racer")
+    preview = _addressable_result(tmp_path)
+    facts = {"main_routing_manifest": {"final_results": [preview]}}
+
+    routed = _wake_routing_ctx(tmp_path, **facts)
+    out = _route_to_project(routed, "racer", "Continue the racer", predecessor_task_id="racer-old")
+    assert out.startswith("⚠️ ROUTE_UNCONFIRMED"), out
+    [route_evt] = routed.pending_events
+    assert route_evt["predecessor_task_id"] == "racer-old"
+    assert route_evt["predecessor_authority_source"] == preview["authority_source"]
+
+    promoted = _wake_routing_ctx(tmp_path, **facts)
+    _promote_chat_to_task(promoted, "Finish the racer", workspace="none", predecessor_task_id="racer-old")
+    [promote_evt] = promoted.pending_events
+    assert promote_evt["predecessor_task_id"] == "racer-old"
+    assert promote_evt["predecessor_authority_source"] == preview["authority_source"]
+    # The manifest never dilutes the wake's own origin.
+    assert promote_evt["initiator"] == "consciousness"
+
+
+def test_a_wake_starts_fresh_work_with_no_predecessor_and_needs_no_manifest(tmp_path):
+    from ouroboros.projects_registry import create_project
+    from ouroboros.tools.control_routing import _promote_chat_to_task, _route_to_project
+
+    create_project(tmp_path, "racer", name="Racer")
+
+    routed = _wake_routing_ctx(tmp_path)
+    assert _route_to_project(routed, "racer", "Start a separate experiment",
+                             predecessor_task_id="").startswith("⚠️ ROUTE_UNCONFIRMED")
+    assert "predecessor_authority_source" not in routed.pending_events[0]
+
+    promoted = _wake_routing_ctx(tmp_path)
+    _promote_chat_to_task(promoted, "audit the logs", workspace="none", predecessor_task_id="")
+    assert "predecessor_task_id" not in promoted.pending_events[0]
+
+
+def test_a_wake_without_the_manifest_still_refuses_an_unaddressable_predecessor(tmp_path):
+    """The typed refusal is unchanged; only the facts the wake is given are new."""
+    from ouroboros.projects_registry import create_project
+    from ouroboros.tools.control_routing import _promote_chat_to_task, _route_to_project
+
+    create_project(tmp_path, "racer", name="Racer")
+    _addressable_result(tmp_path)
+
+    routed = _wake_routing_ctx(tmp_path)
+    out = _route_to_project(routed, "racer", "Continue the racer", predecessor_task_id="racer-old")
+    assert out.startswith("⚠️ AUTHORITY_SOURCE_UNAVAILABLE (route_to_project)")
+    assert "not an addressable result in the host routing manifest" in out
+    assert routed.pending_events == []
+
+    promoted = _wake_routing_ctx(tmp_path)
+    refused = _promote_chat_to_task(promoted, "Finish the racer", workspace="none",
+                                    predecessor_task_id="racer-old")
+    assert refused.startswith("⚠️ AUTHORITY_SOURCE_UNAVAILABLE (promote_chat_to_task)")
+    assert promoted.pending_events == []

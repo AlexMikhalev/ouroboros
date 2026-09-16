@@ -446,6 +446,19 @@ def _decision_turn_metadata(ctx: Any, chat_id: int, client_message_id: str, task
     return md
 
 
+def main_lane_routing_metadata(ctx: Any, chat_id: int) -> Dict[str, Any]:
+    """The Main-lane routing facts for a turn NOBODY typed (a consciousness wake-up).
+
+    Exactly what an owner turn in the same chat is handed — the Main routing manifest
+    and this chat's addressable roots — minus what is bound to an owner message (there
+    is none). One seam over the owner path, so a wake can never drift from what the
+    host says is addressable: without the manifest every predecessor the wake names is
+    refused as "not addressable" and it cannot continue prior work at all.
+    """
+    facts = _decision_turn_metadata(ctx, int(chat_id or 0), "", {})
+    return dict(facts) if isinstance(facts, dict) else {}
+
+
 def _message_routing_receipt(ctx: Any, client_message_id: str) -> Dict[str, Any]:
     """The existing routing receipt for THIS owner message, or {} when there is none.
 

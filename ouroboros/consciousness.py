@@ -2,7 +2,7 @@
 
 A wake-up is an ORDINARY Main direct turn nobody typed (owner decisions В13/В15, PLAN 5.1–5.3):
 Main's prompt, memory, tools and loop, started through ``supervisor.workers.handle_wake_direct``
-with the wake's envelope and rendered message (``consciousness_wake``). This module owns only
+with the wake's envelope, the Main lane's own routing facts and rendered message. This module owns only
 the clock — WHEN such a turn starts and what to say about it afterwards. No thread, no private
 registry, no observation inbox, no pause/resume: the supervisor loop calls ``tick(now)`` once
 per pass and the ``DirectActivityRegistry`` (the census of live direct turns) is the only
@@ -61,9 +61,11 @@ class BackgroundConsciousness:
     """The alarm clock; one instance per supervisor, ticked from its loop."""
 
     def __init__(self, drive_root: Any, repo_dir: Any, owner_chat_id_fn: Callable[[], Optional[int]],
-                 *, now: Optional[float] = None) -> None:
+                 *, routing_metadata_fn: Optional[Callable[[int], Dict[str, Any]]] = None,
+                 now: Optional[float] = None) -> None:
         self._drive_root, self._repo_dir = pathlib.Path(drive_root), pathlib.Path(repo_dir)
         self._owner_chat_id_fn, self._lock = owner_chat_id_fn, threading.RLock()
+        self._routing_metadata_fn = routing_metadata_fn
         self._booted_at = time.time() if now is None else float(now)
         state = self._read_state()
         self._enabled = bool(state.get("bg_consciousness_enabled"))
@@ -175,7 +177,8 @@ class BackgroundConsciousness:
         except (TypeError, ValueError):
             per_task_cap = 0.0
         ceiling = min(per_task_cap, remaining) if per_task_cap > 0 else remaining  # В26=A: a soft ceiling
-        metadata = wake_task_metadata(level, reason, root_cost_ceiling_usd=ceiling)
+        metadata = {**self._routing_facts(chat_id),
+                    **wake_task_metadata(level, reason, root_cost_ceiling_usd=ceiling)}
         text = render_wake_message(
             self._drive_root, self._repo_dir, reason=reason, last_wake_at=self._last_wake_at,
             since=self._last_wake_at or self._booted_at, now=now, level=level,
@@ -275,6 +278,18 @@ class BackgroundConsciousness:
             return int(live_consciousness_root_count())
         except Exception:
             return 0
+
+    def _routing_facts(self, chat_id: int) -> Dict[str, Any]:
+        """The Main-lane host facts an owner turn in this chat gets (the routing manifest,
+        the addressable roots). A wake is an ordinary Main turn, so the results it may
+        continue must be addressable the same way; a failed seam is disclosed and the wake
+        still starts fresh work with ``predecessor_task_id=""``."""
+        try:
+            facts = self._routing_metadata_fn(int(chat_id)) if self._routing_metadata_fn else {}
+        except Exception:
+            log.warning("consciousness: Main routing facts unavailable for this wake", exc_info=True)
+            return {}
+        return dict(facts) if isinstance(facts, dict) else {}
 
     def _owner_chat_id(self) -> Optional[int]:
         try:

@@ -65,6 +65,7 @@ from ouroboros.server_routing_context import (  # noqa: F401
     _scoped_task_metadata,
     _task_belongs_to_chat,
     _task_result_ground_truth,
+    main_lane_routing_metadata,
 )
 from ouroboros.server_owner_routing import (  # noqa: F401
     _owner_evolution_stop,
@@ -721,7 +722,7 @@ def _run_supervisor(settings: dict) -> None:
 
         _consciousness = BackgroundConsciousness(
             drive_root=DATA_DIR, repo_dir=REPO_DIR, owner_chat_id_fn=_get_owner_chat_id,
-        )
+            routing_metadata_fn=lambda cid: main_lane_routing_metadata(_event_ctx, cid))  # _event_ctx is built below
 
         _bg_st = load_state()
         if _bg_st.get("bg_consciousness_enabled"):

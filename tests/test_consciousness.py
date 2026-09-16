@@ -188,6 +188,48 @@ def test_launch_starts_an_ordinary_main_turn_with_the_wake_envelope(clock):
     assert started and started[0]["task_id"] == "wake0001" and started[0]["wake_reason"] == "heartbeat"
 
 
+def test_launch_carries_the_main_lane_routing_facts_an_owner_turn_gets(clock):
+    """P3c: a wake is an ordinary Main turn, so it is handed the host's routing manifest —
+    without it every predecessor it names is refused as not addressable and it cannot
+    continue prior work. The wake's own markers win the merge."""
+    asked: list = []
+    facts = {"main_routing_manifest": {"final_results": [{"task_id": "root-9"}]},
+             "current_chat": {"chat_id": 7}, "initiator": "owner", "model_role": "main"}
+
+    def routing_metadata_fn(chat_id):
+        asked.append(chat_id)
+        return dict(facts)
+
+    alarm = BackgroundConsciousness(clock.root, clock.root / "repo", lambda: 7,
+                                    routing_metadata_fn=routing_metadata_fn, now=T0)
+    assert alarm.tick(T0 + FLOOR + 1) == "launched"
+    meta = clock.launches[-1]["metadata"]
+    assert asked == [7]
+    assert meta["main_routing_manifest"] == facts["main_routing_manifest"]
+    assert meta["current_chat"] == {"chat_id": 7}
+    assert meta["initiator"] == "consciousness" and meta["model_role"] == "consciousness"
+
+
+def test_a_failing_routing_seam_is_disclosed_and_the_wake_still_starts(clock, caplog):
+    """The facts are a courtesy, not a gate: the wake can always start fresh work."""
+
+    def broken(_chat_id):
+        raise RuntimeError("routing facts unreadable")
+
+    alarm = BackgroundConsciousness(clock.root, clock.root / "repo", lambda: 7,
+                                    routing_metadata_fn=broken, now=T0)
+    with caplog.at_level("WARNING"):
+        assert alarm.tick(T0 + FLOOR + 1) == "launched"
+    meta = clock.launches[-1]["metadata"]
+    assert "main_routing_manifest" not in meta and meta["initiator"] == "consciousness"
+    assert any("Main routing facts unavailable" in record.message for record in caplog.records)
+
+
+def test_launch_without_a_routing_seam_keeps_the_bare_wake_envelope(clock):
+    assert clock.clock.tick(T0 + FLOOR + 1) == "launched"
+    assert "main_routing_manifest" not in clock.launches[-1]["metadata"]
+
+
 def test_launch_ceiling_is_the_remaining_allowance_when_no_per_task_cap(clock, monkeypatch):
     monkeypatch.setenv("OUROBOROS_PER_TASK_COST_USD", "0")
     assert clock.clock.tick(T0 + FLOOR + 1) == "launched"

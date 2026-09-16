@@ -645,6 +645,14 @@ def _route_to_project(
         ),
         "ts": utc_now_iso(),
     }
+    # A route mints a root exactly like a promote, so a consciousness turn's origin,
+    # ledger category and level ride THIS event too. The single admission door reads
+    # them off the event (supervisor/worker_promotion.promote_chat_to_task) and stamps
+    # the root; without them a wake's routed root landed with empty metadata, no
+    # disabled_tools in its contract and the ordinary `task` ledger category.
+    from ouroboros.consciousness_authority import consciousness_origin_metadata
+
+    evt.update(consciousness_origin_metadata(metadata))
     _attach_origin_from_metadata(ctx, evt)
     evt.update(predecessor_event)
     _attach_client_surface(ctx, evt)
