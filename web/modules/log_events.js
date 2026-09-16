@@ -365,6 +365,10 @@ function toolCallKey(evt, groupId) {
     return `tool:${groupId}:${evt.tool_call_id || `${evt.tool || ''}|${toolCallTarget(evt.args)}`}`;
 }
 
+// One frame's fact about one invocation, for the block's folded evidence row.
+const toolObservation = (evt, groupId, status) => ({
+    key: toolCallKey(evt, groupId), status, receipt: Boolean(evt.routing_action), tool: evt.tool || '' });
+
 function describeStartupChecks(checks) {
     if (!checks || typeof checks !== 'object') return '';
     const parts = [];
@@ -1031,6 +1035,7 @@ function chatView({
     chip = null,
     model = '',
     receipt = false,
+    toolCall = null,
 } = {}) {
     const out = {
         phase,
@@ -1046,6 +1051,8 @@ function chatView({
     // stand on: the fact it reports lives elsewhere (the owner message's
     // routing annotation for an addressing call).
     if (receipt) out.receipt = true;
+    // The normalized observation the block folds into its one evidence row.
+    if (toolCall) out.toolCall = toolCall;
     if (fullBody) out.fullBody = fullBody;
     if (fullHeadline) out.fullHeadline = fullHeadline;
     // Explicit emptiness is part of the presentation contract: a review-only
@@ -1293,24 +1300,21 @@ function summarizeChatLiveEventView(evt) {
     }
 
     if (t === 'tool_call_started' || (t === 'tool_call_finished' && !evt.is_error)) {
-        // A successful call is a compact one-line row: `tool · target`, then
-        // `✓ duration` when it finishes — content the block can stand on,
-        // unless the host stamped it as an addressing act (`routing_action`):
-        // the owner message's annotation is that call's receipt, so the row is
-        // one too (owner decision 11.09). A failure keeps its own error row.
-        const target = describeText(toolCallTarget(evt.args), 60);
-        const finished = t === 'tool_call_finished';
-        // `done` is the TASK's terminal phase (`isTerminalTaskPhase`): a row that
-        // carried it marked a still-running card finished after its first
-        // successful call. A finished CALL is `ok`, a running one `calling`.
+        // A successful call is routine execution evidence, not narration: start
+        // and finish feed the block's ONE folded row, which counts the calls and
+        // names the tools behind Expand. The row is a receipt while every call it
+        // counts is an addressing act the host stamped (`routing_action`) — the
+        // owner message's annotation already reports it (owner decision 11.09). A
+        // failure keeps its own error row and still counts here. `done` is the
+        // TASK's terminal phase, never a call's: a finished CALL is `ok`.
+        const status = t === 'tool_call_finished' ? 'ok' : 'calling';
         return chatView({
-            phase: finished ? 'ok' : 'calling',
-            headline: [evt.tool || 'tool', target.preview, finished ? `✓ ${formatLogDuration(evt.duration_sec)}`.trim() : '']
-                .filter(Boolean).join(' · '),
-            fullBody: compactJson(evt.args, 260),
+            phase: status,
+            headline: '',
             visible: true,
             receipt: Boolean(evt.routing_action),
-            dedupeKey: toolCallKey(evt, groupId),
+            dedupeKey: `tools|${groupId}`,
+            toolCall: toolObservation(evt, groupId, status),
         });
     }
 
@@ -1368,10 +1372,12 @@ function summarizeChatLiveEventView(evt) {
             headline: `One of the steps took too long${evt.tool ? ` · ${evt.tool}` : ''}`,
             visible: true,
             dedupeKey: toolCallKey(evt, groupId),
+            toolCall: toolObservation(evt, groupId, 'error'),
         });
     }
 
     if (t === 'tool_call_finished' && evt.is_error) {
+        const failed = toolObservation(evt, groupId, 'error');
         const commandText = describeText(extractCommandText(evt.args), 120);
         const errorResult = describeText(evt.result_preview || evt.error, 220);
         const bodyParts = [];
@@ -1389,6 +1395,7 @@ function summarizeChatLiveEventView(evt) {
                 fullBody: fullBodyParts.join('\n\n'),
                 visible: true,
                 dedupeKey: toolCallKey(evt, groupId),
+                toolCall: failed,
             });
         }
         return chatView({
@@ -1398,6 +1405,7 @@ function summarizeChatLiveEventView(evt) {
             fullBody: fullBodyParts.join('\n\n'),
             visible: true,
             dedupeKey: toolCallKey(evt, groupId),
+            toolCall: failed,
         });
     }
 
