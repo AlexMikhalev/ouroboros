@@ -752,7 +752,9 @@ def _handle_routing_manual_target(evt: Dict[str, Any], ctx: Any) -> None:
         ctx,
         evt,
         action="route_decision",
-        target=str(evt.get("requested_target") or evt.get("reason") or "")[:200],
+        # An unnamed target stays "": the typed reason is a code, never a task
+        # id to label.
+        target=str(evt.get("requested_target") or "")[:200],
         status="needs_manual_target",
         reason=str(evt.get("reason") or "target_unspecified"),
         # The model's own words about the abstention, kept beside the typed

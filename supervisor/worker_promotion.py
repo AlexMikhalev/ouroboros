@@ -209,9 +209,10 @@ def _admit_project_scope(
     evt: dict, task: dict, tid: str, pid: str, attachment_manifest: list,
 ) -> Optional[dict]:
     """Admit the promoted task into project ``pid``: lifecycle fence, scope on the
-    task record, project row, durable bind, project-thread routing and announcement.
-    Returns the caller's rejection dict, or ``None`` when the task is admitted (and
-    when there is no project to admit it into).
+    task record, project row, durable bind and project-thread routing; the project
+    to announce is stored on the task record and ``promote_chat_to_task`` announces
+    it only after ``enqueue_task`` succeeds. Returns the caller's rejection dict, or
+    ``None`` when the task is admitted (and when there is no project to admit it into).
 
     Held by the caller under ``origin_claim_lock``: for an implicit promote the
     origin re-read and this bind are ONE transaction against the UI conversion's
