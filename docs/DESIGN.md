@@ -514,19 +514,24 @@ ONE evidence row per block — `N tool calls`, or `N tool calls · M errors` onc
 a call failed — that stands at the first call's position and time and is
 patched in place; Expand shows the per-tool counts (`read_file ×3 ·
 web_search`); its phase is `calling` while a tracked call is still running,
-`warn` once a call failed, `result` otherwise. A failed or timed-out call keeps
+`warn` once a call failed, `result` otherwise, and the row says that phase in
+ink rather than in extra words. A failed or timed-out call keeps
 its own error row (content) and is counted in the evidence total.
 `web/modules/chat_activity.js::toolEvidenceView` builds that row for the live
-path and for the recorded metrics alike, so at rest the row is the same live,
-on reload and on reconnect: live it derives from the observed call frames
-(once per call identity; identical repeats without an id collapse into one),
-and the host's metrics replace those numbers when they arrive — a partial
-metrics fact never reclassifies a receipt row into content, and a call frame
-after the terminal changes nothing. Block presence is the same live, on
+path and for the recorded metrics alike, so at rest the row carries the same
+counts and names live, on reload and on reconnect; a cold reload mints it from
+the metrics, so it carries the metrics' time and sits where the metrics
+arrived, while a reconnect keeps the live position. Live it derives from the
+observed call frames (once per call identity; identical repeats without an id
+collapse into one), and the host's metrics replace those numbers as they
+arrive, field by field: a fact that states a total says nothing about the
+routing or error count, so it can neither erase one nor reclassify a receipt
+row into content, and a call frame after the terminal changes nothing. Block presence is the same live, on
 reload and on reconnect (a turn that moved itself into a Project with
 `ensure_project_scope` is the exception: its block and answer live in the
 Project room, and Main replays only the owner message and the Started
-annotation); a child card folds its calls live but replays no evidence row.
+annotation); a child card reads the same voice rule for its own notes and folds
+its calls live, but replays no evidence row.
 `N notes` in the collapsed header counts timeline items, the evidence row
 among them.
 
@@ -547,7 +552,8 @@ conversion; its chip says the state it is in (Waiting…, Cancelling…, Failed)
 the wait controls stay, and its first row of work gives it the title. The
 collapsed header carries the tool count live and, once the turn ends, cost and
 duration (a replayed header carries the count and cost; duration is a live
-fact). The
+fact); its `updated` stamp follows the turn's own narration, never a host note
+and never a tool call. The
 host's `_is_direct_chat` fact keeps its host jobs (routing, census `kind`, Stop
 custody, terminal rows) and, on the client, only the header pill (a direct turn
 keeps the census verdict beside its block). A block whose only reason to exist
