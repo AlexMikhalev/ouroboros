@@ -67,6 +67,7 @@ from ouroboros.tools.tool_resolution import (
     _binding_set_targets_system_repo,
     _build_builtin_target_binding,
     _target_binding_operation,
+    _user_files_binding_reaches_repo,
     active_repo_dir_for,
     system_repo_dir_for,
 )
@@ -1235,8 +1236,13 @@ class ToolRegistry:
         if name in _SYSTEM_INTRINSIC_REPO_MUTATION_TOOLS:
             light_targets_system = True
         elif resolved_binding is not None:
+            # The light gate reads the RESOLVED target, not the root label,
+            # exactly as it does for direct shell writes: a cyber_pro install
+            # resolves user_files to the whole host, so a repository path
+            # reached under THAT root is still Ouroboros self-modification.
             light_targets_system = (
                 _binding_set_is_light_restricted(self._ctx, resolved_binding) or acting_self_worktree
+                or _user_files_binding_reaches_repo(self._ctx, resolved_binding)
             )
         else:
             light_targets_system = not workspace_mode or acting_self_worktree

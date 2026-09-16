@@ -228,6 +228,35 @@ def test_full_in_a_light_install_is_still_light(tmp_path, monkeypatch):
     assert "LIGHT_MODE_BLOCKED" in reg.execute("write_file", {"path": "README.md", "content": "x"})
 
 
+@pytest.mark.parametrize(("level", "expected"), [("act", "LIGHT_MODE_BLOCKED"),
+                                                 ("observe", "RESOURCE_CONSTRAINT_BLOCKED")])
+def test_a_repo_path_reached_through_user_files_is_still_light_blocked(tmp_path, monkeypatch, level, expected):
+    """The P3 residual: a cyber_pro install resolves ``user_files`` to a base that
+    CONTAINS the repo, so the ROOT NAME alone cannot decide the light gate — the
+    resolved target must. A light-capped wake writing a repository path under
+    that root is refused; Observe never reaches the gate (the tool is withheld)."""
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "cyber_pro")
+    monkeypatch.setenv("OUROBOROS_USER_FILES_ROOT", str(tmp_path))
+    reg = _registry(tmp_path, _wake_task(level)["metadata"])
+    target = tmp_path / "repo" / "x.py"
+    result = reg.execute("write_file", {"root": "user_files", "path": "repo/x.py", "content": "print(1)\n"})
+    assert expected in result, (level, result[:300])
+    assert not target.exists()
+    if level == "act":
+        # The same root still writes a genuine user file outside the repo.
+        assert "OK: wrote" in reg.execute(
+            "write_file", {"root": "user_files", "path": "notes.txt", "content": "kept\n"})
+
+
+def test_full_may_still_write_a_repo_path_through_user_files(tmp_path, monkeypatch):
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "cyber_pro")
+    monkeypatch.setenv("OUROBOROS_USER_FILES_ROOT", str(tmp_path))
+    reg = _registry(tmp_path, _wake_task("full")["metadata"])
+    assert "LIGHT_MODE_BLOCKED" not in reg.execute(
+        "write_file", {"root": "user_files", "path": "repo/x.py", "content": "print(1)\n"})
+    assert (tmp_path / "repo" / "x.py").read_text(encoding="utf-8") == "print(1)\n"
+
+
 def test_act_keeps_the_light_positive_paths(tmp_path, monkeypatch):
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "pro")
     reg = _registry(tmp_path, _wake_task("act")["metadata"])
