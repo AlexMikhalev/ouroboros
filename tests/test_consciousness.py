@@ -176,7 +176,10 @@ def test_launch_starts_an_ordinary_main_turn_with_the_wake_envelope(clock):
     assert meta["wake_reason"] == "heartbeat" and meta["consciousness_autonomy"] == "act"
     assert meta["model_role"] == "consciousness" and meta["runtime_mode_cap"] == "light"
     assert "toggle_evolution" in meta["disabled_tools"] and "steer_task" not in meta["disabled_tools"]
-    assert meta["root_cost_ceiling_usd"] == 17.5  # min(per-task cap 50, remaining 17.5)
+    # P3e: the wake's tree CAP, not the inherited child ceiling — a wake is its own root,
+    # so `root_cost_ceiling_usd` (which only binds non-root members) never stopped it.
+    assert meta["root_limit_usd"] == 17.5  # min(per-task cap 50, remaining 17.5)
+    assert "root_cost_ceiling_usd" not in meta
     text = launch["text"]
     assert text.startswith("[Wake-up · heartbeat]") and "level=act" in text and "spent=2.50/20.00" in text
     assert "running=1/2" in text and "interval=1200" in text and "toggle_evolution" in text
@@ -230,10 +233,19 @@ def test_launch_without_a_routing_seam_keeps_the_bare_wake_envelope(clock):
     assert "main_routing_manifest" not in clock.launches[-1]["metadata"]
 
 
-def test_launch_ceiling_is_the_remaining_allowance_when_no_per_task_cap(clock, monkeypatch):
+def test_launch_cap_is_the_remaining_allowance_when_no_per_task_cap(clock, monkeypatch):
     monkeypatch.setenv("OUROBOROS_PER_TASK_COST_USD", "0")
     assert clock.clock.tick(T0 + FLOOR + 1) == "launched"
-    assert clock.launches[0]["metadata"]["root_cost_ceiling_usd"] == 17.5
+    assert clock.launches[0]["metadata"]["root_limit_usd"] == 17.5
+
+
+def test_launch_cap_rides_the_started_event_too(clock):
+    """The durable row says what the wake was allowed to spend, under the same key
+    the scope binds — a reader must not have to know a second name for the cap."""
+    assert clock.clock.tick(T0 + FLOOR + 1) == "launched"
+    started = [row for row in _events(clock.root) if row["type"] == "consciousness_wake_started"]
+    assert started and started[0]["root_limit_usd"] == 17.5
+    assert "root_cost_ceiling_usd" not in started[0]
 
 
 def test_pending_reason_is_captured_and_cleared_at_launch(clock):

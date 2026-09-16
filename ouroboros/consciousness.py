@@ -8,7 +8,10 @@ registry, no observation inbox, no pause/resume: the supervisor loop calls ``tic
 per pass and the ``DirectActivityRegistry`` (the census of live direct turns) is the only
 liveness truth. Tick order, each step a typed outcome: disabled → a live wake → a live owner
 turn → not yet due → the rolling-24h allowance (an unreadable ledger is the disclosed skip
-``allowance_unknown``, never a silent block) → an owner chat must be bound → launch. The next
+``allowance_unknown``, never a silent block) → an owner chat must be bound → launch. What is
+left of that allowance is also the launched tree's own cap (``metadata.root_limit_usd``, В26=A):
+one number the ledger fence and the graceful in-task stop both read, so a wake lands softly
+instead of spending the whole per-task cap on a nearly spent day. The next
 wake is ``last finish + interval``: the MODEL's choice (``set_next_wakeup`` persists
 ``consciousness_next_interval_sec``) or ``WAKE_DEFAULT_SEC``, clamped into the owner's
 [min, max]; a runner failure doubles it up to max until a wake succeeds. ``notify(reason)`` (a
@@ -176,9 +179,16 @@ class BackgroundConsciousness:
             per_task_cap = float(runtime_setting("OUROBOROS_PER_TASK_COST_USD", "0") or 0)
         except (TypeError, ValueError):
             per_task_cap = 0.0
-        ceiling = min(per_task_cap, remaining) if per_task_cap > 0 else remaining  # В26=A: a soft ceiling
+        # В26=A: a wake's whole tree may spend at most what is left of the rolling-24h
+        # allowance, and never more than the owner's per-task cap (a cap of 0 disables
+        # that half). It travels as the tree's ROOT CAP (`root_limit_usd`), not as the
+        # inherited child ceiling: a wake IS the root of its tree, so the ledger fence
+        # and the graceful in-task stop both read this one number — the stop lands a
+        # planning margin early, the fence binds at the cap itself. The tick never
+        # launches with a non-positive remainder (that window is `allowance_exhausted`).
+        root_cap = min(per_task_cap, remaining) if per_task_cap > 0 else remaining
         metadata = {**self._routing_facts(chat_id),
-                    **wake_task_metadata(level, reason, root_cost_ceiling_usd=ceiling)}
+                    **wake_task_metadata(level, reason, root_limit_usd=root_cap)}
         text = render_wake_message(
             self._drive_root, self._repo_dir, reason=reason, last_wake_at=self._last_wake_at,
             since=self._last_wake_at or self._booted_at, now=now, level=level,
@@ -200,7 +210,7 @@ class BackgroundConsciousness:
             return f"rejected:{why}"
         self._last_wake_task_id, self._last_wake_outcome, self._last_error = str(receipt["task_id"]), "running", ""
         self._record("consciousness_wake_started", task_id=self._last_wake_task_id, wake_reason=reason,
-                     level=level, root_cost_ceiling_usd=ceiling)
+                     level=level, root_limit_usd=root_cap)
         return "launched"
 
     def _wake_finished(self, task_id: str, ok: bool) -> None:

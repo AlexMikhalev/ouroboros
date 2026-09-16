@@ -2,6 +2,7 @@
 and the cost axis (typed v6.91 ceiling states + latched v6.56.0 milestones)."""
 import os
 import queue
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -327,6 +328,86 @@ class TestCostCeilingResolution:
         assert normalize_budget_profile({"cost_hard_stop_pct": 0})["cost_hard_stop_pct"] == 0
         assert normalize_budget_profile({"cost_hard_stop_pct": "0"})["cost_hard_stop_pct"] == 0
         assert normalize_budget_profile({"cost_hard_stop_pct": 250})["cost_hard_stop_pct"] == 100
+
+
+# --- P3e: a producer may NARROW its own tree's cap ---
+
+class TestProducerNarrowedRootCap:
+    """`agent.handle_task` binds min(the owner's per-task cap, `metadata.root_limit_usd`).
+
+    A Background Consciousness wake-up is the ROOT of its own tree, and
+    `resolve_cost_ceiling` reads the inherited `root_ceiling_usd` only for non-root
+    MEMBERS — so the ceiling a wake used to carry was ignored and one wake spent $7.60
+    against a $0.66 allowance remainder. The number BOTH stops read is
+    `UsageScope.root_limit_usd` (the ledger fence in `reserve_attempt`, the graceful
+    in-task stop in `resolve_task_cost_ceiling`), so that is where a narrowing producer
+    writes and where these pins live.
+    """
+
+    def _scope(self, tmp_path, monkeypatch, *, metadata=None, per_task_cap="50"):
+        """The scope `handle_task` actually binds for one task."""
+        from ouroboros.agent import OuroborosAgent
+        from ouroboros.usage_accounting import current_usage_scope
+
+        monkeypatch.setattr("ouroboros.subagent_runtime.apply_task_start_settings_or_disclose",
+                            lambda *_a, **_k: None)
+        monkeypatch.setattr("ouroboros.model_wait.task_model_wait_scope", lambda **_k: nullcontext())
+        monkeypatch.setenv("TOTAL_BUDGET", "1000")
+        monkeypatch.setenv("OUROBOROS_PER_TASK_COST_USD", per_task_cap)
+        host = SimpleNamespace(
+            env=SimpleNamespace(drive_root=tmp_path), _emit_live_log=lambda *_a, **_k: None,
+            _event_queue=None, _handle_task_scoped=lambda _task: current_usage_scope(),
+        )
+        task = {"id": "wake-1", "type": "task"}
+        if metadata is not None:
+            task["metadata"] = metadata
+        return OuroborosAgent.handle_task(host, task)
+
+    def test_without_metadata_the_owner_setting_is_the_cap(self, tmp_path, monkeypatch):
+        assert self._scope(tmp_path, monkeypatch).root_limit_usd == 50.0
+
+    def test_a_positive_metadata_value_narrows_the_cap(self, tmp_path, monkeypatch):
+        assert self._scope(
+            tmp_path, monkeypatch, metadata={"root_limit_usd": 0.66}).root_limit_usd == 0.66
+
+    def test_a_value_above_the_setting_is_ignored(self, tmp_path, monkeypatch):
+        """Narrowing ONLY: no producer buys itself a bigger tree than the owner allowed."""
+        assert self._scope(
+            tmp_path, monkeypatch, metadata={"root_limit_usd": 500.0}).root_limit_usd == 50.0
+
+    def test_a_disabled_setting_still_accepts_a_narrowing(self, tmp_path, monkeypatch):
+        """`OUROBOROS_PER_TASK_COST_USD=0` means no tree cap at all; a positive producer
+        value is still only a REDUCTION of what that tree may spend, so it binds."""
+        scope = self._scope(tmp_path, monkeypatch, metadata={"root_limit_usd": 0.66}, per_task_cap="0")
+        assert scope.root_limit_usd == 0.66
+
+    def test_a_non_positive_or_malformed_value_never_relaxes_the_cap(self, tmp_path, monkeypatch):
+        """The narrowing is opt-in and fails safe: garbage leaves the owner's cap standing,
+        and it never invents a cap where the owner disabled one."""
+        for bad in (0, -5, "", None, "abc", [1]):
+            assert self._scope(
+                tmp_path, monkeypatch, metadata={"root_limit_usd": bad}).root_limit_usd == 50.0, bad
+        assert self._scope(
+            tmp_path, monkeypatch, metadata={"root_limit_usd": 0}, per_task_cap="0").root_limit_usd is None
+
+    def test_a_thin_narrowed_cap_soft_lands_the_root_immediately(self, tmp_path, monkeypatch):
+        """$0.66 left of the allowance is below the planning margin, so the wake gets its
+        one best-effort final answer — not a working budget. The fence still binds at $0.66."""
+        from ouroboros.usage_accounting import usage_scope
+
+        with usage_scope(self._scope(tmp_path, monkeypatch, metadata={"root_limit_usd": 0.66})):
+            ceiling = task_pacing.resolve_task_cost_ceiling(SimpleNamespace(), 1000.0)
+        assert ceiling.state == task_pacing.COST_CEILING_EXHAUSTED_SOFT_LAND
+        assert ceiling.root_cap_usd == 0.66
+
+    def test_a_narrowed_cap_above_the_margin_is_the_working_ceiling(self, tmp_path, monkeypatch):
+        from ouroboros.usage_accounting import usage_scope
+
+        with usage_scope(self._scope(tmp_path, monkeypatch, metadata={"root_limit_usd": 9.0})):
+            ceiling = task_pacing.resolve_task_cost_ceiling(SimpleNamespace(), 1000.0)
+        assert ceiling.state == task_pacing.COST_CEILING_ACTIVE
+        assert ceiling.root_cap_usd == 9.0
+        assert ceiling.ceiling_usd == 9.0 - task_pacing.COST_PLANNING_MARGIN_USD
 
 
 class TestCostCeilingStop:

@@ -798,6 +798,23 @@ class OuroborosAgent:
                 root_limit = float(runtime_setting("OUROBOROS_PER_TASK_COST_USD", "0") or 0)
             except (TypeError, ValueError):
                 root_limit = 0.0
+            # A producer may NARROW its own tree's cap below the owner's per-task
+            # setting by putting a positive `root_limit_usd` on the task metadata —
+            # never widen it, and a non-positive value never overrides the setting.
+            # A disabled setting (<= 0, i.e. no tree cap) does accept a positive
+            # narrowing, which is still only a reduction of what the tree may spend.
+            # This is ONE number for both stops: the ledger fence reads it
+            # (`usage_accounting.reserve_attempt`) and so does the graceful in-task
+            # ceiling (`task_pacing.resolve_task_cost_ceiling`), which for a ROOT
+            # resolves `root_limit_usd` minus the planning margin. Background
+            # Consciousness is the producer today: a wake's tree may spend at most
+            # what is left of its rolling-24h allowance.
+            try:
+                narrowed = float(metadata.get("root_limit_usd") or 0)
+            except (TypeError, ValueError):
+                narrowed = 0.0
+            if narrowed > 0:
+                root_limit = min(root_limit, narrowed) if root_limit > 0 else narrowed
             scope = UsageScope(
                 drive_root=budget_root,
                 task_id=task_id,

@@ -29,15 +29,20 @@ def _result(root, task_id, *, status="completed", ts, cost=1.25, direct=False, q
     (root / "task_results" / f"{task_id}.json").write_text(json.dumps(row), encoding="utf-8")
 
 
-def test_wake_task_metadata_carries_origin_level_and_soft_ceiling(monkeypatch):
+def test_wake_task_metadata_carries_origin_level_and_tree_cap(monkeypatch):
     monkeypatch.setenv("OUROBOROS_CONSCIOUSNESS_AUTONOMY", "act")
-    meta = wake.wake_task_metadata("observe", "heartbeat", root_cost_ceiling_usd=3.5)
+    meta = wake.wake_task_metadata("observe", "heartbeat", root_limit_usd=3.5)
     assert meta["initiator"] == "consciousness" and meta["usage_category"] == "consciousness"
     assert meta["consciousness_autonomy"] == "observe" and meta["runtime_mode_cap"] == "light"
     assert meta["model_role"] == "consciousness" and meta["wake_reason"] == "heartbeat"
-    assert "promote_chat_to_task" in meta["disabled_tools"] and meta["root_cost_ceiling_usd"] == 3.5
+    # P3e: the cap the wake's own root scope binds, never the non-root member ceiling.
+    assert "promote_chat_to_task" in meta["disabled_tools"] and meta["root_limit_usd"] == 3.5
+    assert "root_cost_ceiling_usd" not in meta
     full = wake.wake_task_metadata("full", "event:x")
-    assert full["disabled_tools"] == [] and full["runtime_mode_cap"] == "" and "root_cost_ceiling_usd" not in full
+    assert full["disabled_tools"] == [] and full["runtime_mode_cap"] == "" and "root_limit_usd" not in full
+    # A non-positive cap is not stamped: it would read as "no narrowing" downstream and
+    # the alarm never launches on an exhausted allowance anyway.
+    assert "root_limit_usd" not in wake.wake_task_metadata("act", "heartbeat", root_limit_usd=0.0)
     assert wake.wake_task_metadata("bogus", "")["consciousness_autonomy"] == "act"  # falls back to the setting
 
 

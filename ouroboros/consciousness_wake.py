@@ -33,8 +33,15 @@ LEVEL_LINES = {
 _FALLBACK_TEMPLATE = "[Wake-up · {reason}] No one wrote to you: this turn is yours. Since your last wake ({last_wake_ago}): {events}"
 
 
-def wake_task_metadata(level: Any, reason: str, *, root_cost_ceiling_usd: Optional[float] = None) -> Dict[str, Any]:
-    """The wake's ``task_metadata``: origin label, ledger category, level and its consequences."""
+def wake_task_metadata(level: Any, reason: str, *, root_limit_usd: Optional[float] = None) -> Dict[str, Any]:
+    """The wake's ``task_metadata``: origin label, ledger category, level and its consequences.
+
+    ``root_limit_usd`` NARROWS the wake tree's monetary cap below the owner's per-task
+    setting (``agent.handle_task`` binds the smaller of the two): one number for both the
+    ledger fence and the graceful in-task stop, because a wake is the ROOT of its own tree.
+    Only a strictly positive cap is stamped — a wake with nothing left of its allowance is
+    skipped by the alarm, never started under a $0 cap.
+    """
     normalized = normalize_level(level)
     metadata: Dict[str, Any] = {
         "initiator": CONSCIOUSNESS_INITIATOR, "usage_category": CONSCIOUSNESS_CATEGORY,
@@ -42,8 +49,8 @@ def wake_task_metadata(level: Any, reason: str, *, root_cost_ceiling_usd: Option
         "model_role": "consciousness", "disabled_tools": disabled_tools_for(normalized),
         "runtime_mode_cap": runtime_mode_cap_for(normalized),
     }
-    if root_cost_ceiling_usd is not None:
-        metadata["root_cost_ceiling_usd"] = float(root_cost_ceiling_usd)
+    if root_limit_usd is not None and float(root_limit_usd) > 0:
+        metadata["root_limit_usd"] = float(root_limit_usd)
     return metadata
 
 
