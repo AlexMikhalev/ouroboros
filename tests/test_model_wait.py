@@ -133,7 +133,7 @@ def live_wait(setup, monkeypatch):
         yield root, transport, client, controller, events, lambda body: gateway._decide(root, body)
 
 
-def _decision_clients(root, get_background_model_wait=None):
+def _decision_clients(root):
     """Real Web/Host ingress sharing one root and the installation's live getter."""
     from contextlib import ExitStack, contextmanager
     from starlette.applications import Starlette
@@ -149,8 +149,6 @@ def _decision_clients(root, get_background_model_wait=None):
         web = Starlette(routes=[Route("/api/decisions", api_decision_answer, methods=["POST"])])
         web.state.drive_root = root
         host = create_host_service_app(root)
-        for app in (web, host):
-            app.state.get_background_model_wait = get_background_model_wait
         with ExitStack() as stack:
             web_client = stack.enter_context(TestClient(web))
             host_client = stack.enter_context(TestClient(host, headers={"x-skill-token": "token"}))

@@ -75,7 +75,8 @@ test('Logs files a wake-up row under Consciousness by its origin fact; errors st
     assert.equal(categorizeLogEvent({ type: 'tool_call_finished', tool: 'run_command', is_error: true, task_id: 'w', ...wake }), 'errors');
     assert.equal(categorizeLogEvent({ type: 'tool_call_finished', tool: 'read_file', is_error: false, task_id: 't' }), 'tools');
     assert.equal(categorizeLogEvent({ type: 'send_message', is_progress: true, task_id: 't' }), 'tasks');
-    assert.equal(categorizeLogEvent({ type: 'send_message', is_progress: true, task_id: 'bg-consciousness' }), 'consciousness');
+    // The origin fact is the ONLY signal: the retired loop's pseudo id is not one.
+    assert.equal(categorizeLogEvent({ type: 'send_message', is_progress: true, task_id: 'bg-consciousness' }), 'tasks');
 });
 
 test('the live projections carry the label so any frame can name the block', () => {

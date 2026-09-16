@@ -233,8 +233,8 @@ def make_server_log_sink(bridge: Any, drive_root: Any, running: Any = None):
     """Build the server-process append_jsonl live sink (installed by server.py).
 
     The raw ``set_log_sink(bridge.push_log)`` predecessor broadcast every
-    server-process append unaddressed (direct-chat turns and Background
-    Consciousness run in the server process, so their rows never cross the
+    server-process append unaddressed (direct-chat turns, an owner's and a
+    wake-up's alike, run in the server process, so their rows never cross the
     worker sink) and re-broadcast every type a supervisor handler already
     pushes. This wrapper is the exactly-once + explicit-audience choke:
     suppressed types are dropped (their handler push is the one delivery),

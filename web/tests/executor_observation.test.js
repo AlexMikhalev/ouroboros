@@ -40,18 +40,20 @@ test('absent serving model remains unconfirmed and foreign-task observations are
     assert.equal(executorChip(e), null);
 });
 
-test('helper usage cannot replace the task model while the background loop can report its own', () => {
+test('helper usage cannot replace the task model; a turn\'s own round reports it', () => {
     for (const helper of [
         {model_category: 'websearch'},
         {model_category: 'vision'},
         {source: 'loop', category: 'compaction'},
+        // A wake-up is an ordinary turn: its category alone proves nothing.
+        {category: 'consciousness'},
     ]) {
         const view = summarizeChatLiveEvent({type: 'llm_usage', task_id: 'root', model: 'helper', ...helper});
         assert.equal(view.model, undefined);
     }
-    const background = summarizeChatLiveEvent({type: 'llm_usage', task_id: 'bg-consciousness',
-        source: 'consciousness', category: 'consciousness', model: 'background-model'});
-    assert.equal(background.model, 'background-model');
+    const wake = summarizeChatLiveEvent({type: 'llm_usage', task_id: 'wake-1', round: 1,
+        initiator: 'consciousness', category: 'consciousness', model: 'wake-model'});
+    assert.equal(wake.model, 'wake-model');
 });
 
 test('same-run stale revisions and older cross-run frames cannot replace newer observed identity', () => {

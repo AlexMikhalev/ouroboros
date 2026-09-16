@@ -98,7 +98,6 @@ import {
     formatMsgTime,
     getOrCreateChatSessionId,
     headerBudgetPresentation,
-    isBackgroundTaskId,
     isForegroundLiveCard,
     isNonTerminalMediaHistoryRow,
     isReplayEvidenceRow,
@@ -120,7 +119,6 @@ import {
     reconnectBannerText,
     saveChatInputHistory,
     senderLabel,
-    shouldAlwaysShowTaskCard,
     shouldFirePanic,
     taskCostMeta,
     taskCostProjection,
@@ -761,8 +759,7 @@ export function createChatInstance({
     function blockVisible(record) {
         if (!record || record.isSubagent) return true;
         const id = record.groupId;
-        return shouldAlwaysShowTaskCard(id)
-            || !!(record.modelWaiting || record.cancelPendingPolicy || record.reviewAnchor)
+        return !!(record.modelWaiting || record.cancelPendingPolicy || record.reviewAnchor)
             || stopEligible(record)
             || record.reviewController?.groups.size > 0
             || [...subagentChildParents.values()].some((info) => info.parentId === id)
@@ -1737,18 +1734,14 @@ export function createChatInstance({
         }
         ensureLiveCardVisible(record, { suppressDomInsert });
         hideTypingIndicatorOnly();
-        const drivesComposerStatus = !isBackgroundTaskId(nextGroupId);
         // A log-channel task_done settles here without finishLiveCard: remove
         // its Cancel run action and retained cancelable marker.
         if (record.finished) {
             settleLiveCard(record, summary.phase || 'done', wasFinished);
-            if (drivesComposerStatus) syncChatStatus();
         } else {
             setLiveCardTypingVisible(record, true);
-            if (drivesComposerStatus || !hasActiveLiveCard()) {
-                syncChatStatus();
-            }
         }
+        syncChatStatus();
         return Boolean(timelineChanged
             || typingBefore !== typingEl.style.display
             || liveCardProjectionChanged(before, record));

@@ -3645,9 +3645,6 @@ def test_ui_smoke_cancel_run_button_eligibility_and_cancelled_state(direct_serve
          "subagent_event": "scheduled", "subagent_task_id": "sub-child1",
          "parent_task_id": "live-root", "subagent_role": "researcher",
          "cancelable": True},
-        # Reusable background-consciousness slot: never eligible.
-        {"ts": "2026-07-29T10:00:03+00:00", "chat_id": 1, "task_id": "bg-consciousness",
-         "content": "Background thinking", "cancelable": True},
         # A root that was force-cancelled before this reload.
         {"ts": "2026-07-29T10:00:04+00:00", "chat_id": 1, "task_id": "gone-root",
          "content": "Was working before the cancel", "cancelable": True},
@@ -3683,9 +3680,9 @@ def test_ui_smoke_cancel_run_button_eligibility_and_cancelled_state(direct_serve
                 cancel_btn = live.locator('[data-cancel-run]')
                 cancel_btn.wait_for(state="attached", timeout=30_000)
                 assert cancel_btn.inner_text().strip() == "Stop…"
-                # Marker-less direct-turn shape, subagent child, reusable slot,
-                # and the finished cancelled root must NOT offer the action.
-                for absent_id in ("direct-turn", "sub-child1", "bg-consciousness", "gone-root"):
+                # Marker-less direct-turn shape, subagent child and the
+                # finished cancelled root must NOT offer the action.
+                for absent_id in ("direct-turn", "sub-child1", "gone-root"):
                     card = page.locator(f'.chat-live-card[data-task-id="{absent_id}"]')
                     card.wait_for(state="attached", timeout=30_000)
                     assert card.locator('[data-cancel-run]').count() == 0, absent_id

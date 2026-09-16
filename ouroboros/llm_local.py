@@ -122,7 +122,6 @@ _LOCAL_COMPACTION_MODES = {
             "Runtime context",
             "Health Invariants",
             "Recent observations",
-            "Background consciousness info",
         },
         "Non-core sections were compacted for local execution.",
     ),

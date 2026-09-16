@@ -76,9 +76,11 @@ test('unconfirmedForegroundCardIds: subagent cards are skipped (the parent owns 
 });
 
 test('unconfirmedForegroundCardIds: reusable slots and the chat fallback group are skipped', () => {
-    assert.ok(REUSABLE_TASK_IDS.has('bg-consciousness') && REUSABLE_TASK_IDS.has('active'));
-    const cards = [live('bg-consciousness'), live('active'), live('chat'), live('real-orphan')];
-    assert.deepEqual(unconfirmedForegroundCardIds(cards, new Set()), ['real-orphan']);
+    // A consciousness wake-up is an ordinary direct turn with its own durable
+    // result, so its id is NOT a reusable slot and its card is scanned.
+    assert.ok(REUSABLE_TASK_IDS.has('active') && !REUSABLE_TASK_IDS.has('bg-consciousness'));
+    const cards = [live('active'), live('chat'), live('wake-1'), live('real-orphan')];
+    assert.deepEqual(unconfirmedForegroundCardIds(cards, new Set()), ['wake-1', 'real-orphan']);
 });
 
 test('unconfirmedForegroundCardIds: empty, missing and malformed inputs yield nothing', () => {

@@ -125,9 +125,10 @@ test('Cancel run offered only on live, marker-attested root cards', () => {
     assert.equal(cancelRunEligibility(eligible), true);
     // Subagent cards never offer it (the root cascade covers them).
     assert.equal(cancelRunEligibility({ ...eligible, isSubagent: true }), false);
-    // Reusable slots (background consciousness / legacy active) never offer it.
-    assert.equal(cancelRunEligibility({ ...eligible, groupId: 'bg-consciousness' }), false);
+    // The one remaining reusable slot (the legacy 'active' id) never offers it;
+    // a consciousness wake-up is an ordinary direct turn and does.
     assert.equal(cancelRunEligibility({ ...eligible, groupId: 'active' }), false);
+    assert.equal(cancelRunEligibility({ ...eligible, groupId: 'wake-1' }), true);
     // Finished and converted cards have nothing live to cancel.
     assert.equal(cancelRunEligibility({ ...eligible, finished: true }), false);
     assert.equal(cancelRunEligibility({ ...eligible, converted: true }), false);

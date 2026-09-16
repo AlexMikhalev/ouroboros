@@ -224,13 +224,18 @@ test('a managed Swarm root keeps the task card with Turn into project; an origin
     } finally { delete globalThis.window.__ouroTaskBindings; f.close(); }
 });
 
-test('background consciousness keeps its card without content while an ordinary empty frame mints nothing', () => {
+test('a wake-up is an ordinary direct block: an empty frame mints nothing, a tool call mints the block', () => {
     const f = fixture();
     try {
-        f.emit('chat', { task_id: 'bg-consciousness', role: 'assistant', is_progress: true, content: '' });
-        assert.ok(f.card('bg-consciousness'), 'the always-shown kind is a block on its own');
+        // No always-shown kind survives: origin does not buy a card.
+        f.emit('chat', { task_id: 'wake-1', role: 'assistant', is_progress: true,
+            content: '', initiator: 'consciousness' });
+        assert.equal(f.card('wake-1'), null, 'an empty wake frame mints nothing');
         f.emit('chat', { task_id: TASK, role: 'assistant', is_progress: true, content: '' });
         assert.equal(f.card(), null);
+        f.log({ type: 'tool_call_started', task_id: 'wake-1', tool: 'read_file', tool_call_id: 'w1',
+            initiator: 'consciousness' });
+        assert.ok(f.card('wake-1'), 'a tool-only wake shows the same block any direct turn shows');
     } finally { f.close(); }
 });
 

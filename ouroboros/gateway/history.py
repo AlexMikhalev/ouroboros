@@ -1427,7 +1427,6 @@ def _assemble_history_response(
     thread_id: int,
     n_human: int,
     n_progress: int,
-    background: Optional[dict] = None,
     cursor: Optional[str] = None,
 ) -> bytes:
     """Select and project recent/archive history in the endpoint's one worker.
@@ -1500,28 +1499,12 @@ def _assemble_history_response(
         before[source] = max([before[source], *(entry["_history_end"] for entry in selections[source][0] or ()
                                                if entry.get("history_id") in deferred_lineage)])
 
-    # Background consciousness writes no task_result, so its progress would
-    # otherwise replay as a perpetual "thinking" card after reload. Mark its
-    # most recent IN-WINDOW progress entry terminal; a fresh live event
-    # re-activates the card if a new cycle starts. (Structured signal,
-    # consumed by log_events.js.)
-    background_chat = (background or {}).get("chat_id")
-    background_visible = background_chat is not None and row_matches_thread(int(background_chat), {"task_id": "bg-consciousness"})
-    try:
-        bg_msgs = [
-            m for m in messages
-            if m.get("is_progress") and str(m.get("task_id") or "") == "bg-consciousness"
-        ]
-        if bg_msgs and not (background_visible and (background or {}).get("model_wait_owner_id")):
-            latest = max(bg_msgs, key=lambda m: str(m.get("ts") or ""))
-            latest["task_terminal_status"] = "done"
-    except Exception as exc:
-        log.debug("Failed to annotate bg-consciousness terminal status: %s", exc)
-
-    if not cursor and background is not None and background_visible:
-        messages.append({"text": "", "role": "system", "system_type": "task_model_wait",
-                         "task_id": "bg-consciousness", "is_progress": False,
-                         "model_wait_live": True, **background})
+    # A wake-up is an ordinary direct turn with its own task id and its own
+    # durable result, so it needs no replay hack. The retired loop's progress
+    # rows (the pseudo task id "bg-consciousness") carry no task_result at all:
+    # they replay as any other row whose task result is gone, and the client's
+    # durable task-detail read settles that card as "Outcome unavailable". They
+    # are never stamped terminal here — a row with no result is not a Done.
 
     # Hidden source evidence shares ordinary keyed replay. It carries no new
     # review/cost authority and never consumes the conversation quota.
@@ -1578,16 +1561,9 @@ def make_chat_history_endpoint(data_dir: pathlib.Path):
         thread_id = _int_param("chat_id", 1, 2**31 - 1) or 1
         # ONE thread hop for the whole assembly (perf2 P3): reads, transforms,
         # slicing, annotation, and the JSON encode all run off the event loop.
-        app_state = getattr(getattr(request, "app", None), "state", None)
-        reader = getattr(app_state, "get_background_model_wait", None)
-        owner = reader() if callable(reader) else None
-        background = owner.snapshot() if owner else {"model_wait_owner_id": "", "model_waits": {}}
-        describe = getattr(app_state, "describe_bg_consciousness_state", None)
-        if owner and callable(describe):
-            background["paused"] = bool(describe(True).get("paused"))
         cursor = request.query_params.get("cursor")
         try:
-            body = await asyncio.to_thread(_assemble_history_response, data_dir, thread_id, n_human, n_progress, background, cursor)
+            body = await asyncio.to_thread(_assemble_history_response, data_dir, thread_id, n_human, n_progress, cursor)
         except (HistoryCursorError, JsonlChainUnreadable, OSError) as exc:
             reason = exc.reason if isinstance(exc, HistoryCursorError) else "history_source_unavailable"
             return Response(content=json.dumps({"messages": [], "error": reason, "reason_code": reason,

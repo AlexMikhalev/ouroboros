@@ -90,7 +90,7 @@ def _collect_log_analysis_checks(env: Any, checks: List[str]) -> None:
         for ev in _iter_recent_jsonl(events_path):
             evt_type = str(ev.get("type") or "")
             model = str(ev.get("model") or "unknown")
-            if evt_type in {"llm_api_error", "review_model_error", "consciousness_llm_error", "provider_incomplete_response"}:
+            if evt_type in {"llm_api_error", "review_model_error", "provider_incomplete_response"}:
                 llm_error_models[model] += 1
             elif evt_type == "local_context_overflow":
                 local_overflow_models[model] += 1

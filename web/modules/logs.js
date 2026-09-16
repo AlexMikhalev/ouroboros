@@ -288,13 +288,11 @@ export function initLogs({ ws, state, mount }) {
         // timeline. The phase pill still follows the latest event.
         const earlier = taskGroups.get(groupId);
         // A wake-up's group is labelled by the origin fact its frames carry
-        // (sticky once seen); the literal bg-consciousness id is the legacy slot.
+        // (sticky once seen).
         const wake = evt.initiator === 'consciousness' || Boolean(earlier?.wake);
-        const category = groupId === 'bg-consciousness'
-            ? 'consciousness'
-            : (eventCategory === 'errors' || earlier?.category === 'errors' ? 'errors'
-                : (wake ? 'consciousness' : 'tasks'));
-        const kindLabel = groupId === 'bg-consciousness' ? 'background' : (wake ? 'Consciousness' : `task ${groupId}`);
+        const category = eventCategory === 'errors' || earlier?.category === 'errors' ? 'errors'
+            : (wake ? 'consciousness' : 'tasks');
+        const kindLabel = wake ? 'Consciousness' : `task ${groupId}`;
         // Captured before ANY record mutation: an already-mounted card grows
         // in place (summary rewrite, review unhide, timeline render) before
         // the append below, and that growth alone can push a pinned reader
@@ -315,10 +313,7 @@ export function initLogs({ ws, state, mount }) {
         record.headline.textContent = view.headline || 'Task activity';
         record.count.textContent = `x${record.events}`;
         record.count.hidden = record.events <= 1;
-        record.summary.innerHTML = metaPills([
-            groupId === 'bg-consciousness' ? 'background' : `task=${groupId}`,
-            ...view.meta,
-        ]);
+        record.summary.innerHTML = metaPills([`task=${groupId}`, ...view.meta]);
         const execution = executorChip(evt);
         if (execution && record.executor) {
             record.executor.title = execution.title || '';
