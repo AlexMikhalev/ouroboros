@@ -15,6 +15,7 @@ import pathlib
 import uuid
 from typing import Any, Dict, Optional
 
+from ouroboros.consciousness_authority import consciousness_origin_metadata
 from ouroboros.cost_projection import honest_cost_pair_amount
 from ouroboros.evolution_fingerprint import canonical_objective_fingerprint
 from ouroboros.outcomes import normalize_outcome_axes
@@ -112,9 +113,7 @@ def enqueue_evolution_task_if_needed() -> None:
     from supervisor.state import update_state
     has_authority = all(str(campaign.get(key) or "").strip() for key in ("id", "source"))
     if campaign.get("status") != "active" or not has_authority:
-        q.disable_evolution_authority(
-            "bare_flag_disabled", campaign_id=str(campaign.get("id") or ""),
-        )
+        q.disable_evolution_authority("bare_flag_disabled", campaign_id=str(campaign.get("id") or ""))
         q.send_with_budget(
             int(owner_chat_id),
             "🧬 Evolution stayed off: the enable flag had no active campaign authority. Use /evolve start to begin a fresh campaign.",
@@ -200,10 +199,7 @@ def enqueue_evolution_task_if_needed() -> None:
     tid = uuid.uuid4().hex[:8]
     transaction = q.begin_evolution_transaction(tid, cycle=cycle, campaign=campaign)
     if not transaction:
-        q.disable_evolution_authority(
-            "transaction_attach_failed",
-            campaign_id=str(campaign.get("id") or ""), task_id=tid,
-        )
+        q.disable_evolution_authority("transaction_attach_failed", campaign_id=str(campaign.get("id") or ""), task_id=tid)
         q.send_with_budget(
             int(owner_chat_id),
             "🧬 Evolution stayed off: the campaign changed before its next task could be attached. Start it again when ready.",
@@ -213,7 +209,7 @@ def enqueue_evolution_task_if_needed() -> None:
         "id": tid, "type": "evolution",
         "chat_id": int(owner_chat_id),
         "text": q.build_evolution_task_text(cycle),
-        "metadata": {"evolution_transaction": transaction},
+        "metadata": {"evolution_transaction": transaction, **consciousness_origin_metadata(campaign)},
     }
     q.attach_task_contract(task)
     q.enqueue_task(task)
@@ -296,8 +292,8 @@ def evolution_block_reason() -> str:
     return ""
 
 
-def start_evolution_campaign(objective: str = "", *, source: str = "owner") -> Dict[str, Any]:
-    """Start or resume the active evolution campaign."""
+def start_evolution_campaign(objective: str = "", *, source: str = "owner", origin: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Start or resume the active evolution campaign; ``origin`` = the consciousness origin keys of the starting turn, kept for its cycle tasks."""
     from supervisor import state
 
     state.assert_test_data_path(state.STATE_PATH)
@@ -315,7 +311,7 @@ def start_evolution_campaign(objective: str = "", *, source: str = "owner") -> D
                 "id": uuid.uuid4().hex[:8],
                 "status": "active",
                 "objective": objective or "Autonomously improve Ouroboros by acting on the highest-value backlog or process-memory signal.",
-                "source": str(source or ""),
+                "source": str(source or ""), **consciousness_origin_metadata(origin),
                 "started_at": now,
                 "updated_at": now,
                 "cycles_done": 0,
@@ -333,6 +329,7 @@ def start_evolution_campaign(objective: str = "", *, source: str = "owner") -> D
                 campaign["objective"] = objective
             if not str(campaign.get("source") or "").strip() and source:
                 campaign["source"] = str(source)
+            campaign.update({k: v for k, v in consciousness_origin_metadata(origin).items() if not campaign.get(k)})
             campaign["status"] = "active"
             campaign["updated_at"] = now
         generation = current_evolution_boot_generation()

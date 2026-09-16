@@ -390,6 +390,9 @@ def _run_global_backlog_promotion_only(
             "type": str(task.get("type") or "task"),
             "source": "project_scoped_global_improvement",
             "metadata": {"globalized_from_project_task": True},
+            # The eligibility probe reads the contract (disabled_tools), so the
+            # globalized view keeps it: a level that may not evolve stays that way.
+            **({"task_contract": dict(task["task_contract"])} if isinstance(task.get("task_contract"), dict) else {}),
         }
         maybe_promote(env, global_task, sanitized_entry, llm)
     except Exception as error:

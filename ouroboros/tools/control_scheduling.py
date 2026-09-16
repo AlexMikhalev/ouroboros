@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional
 
 from ouroboros.artifacts import attachment_manifest_projection, resolve_attachment_manifest
 from ouroboros.config import get_max_subagent_depth
+from ouroboros.consciousness_authority import consciousness_origin_metadata
 from ouroboros.depth_evidence import parse_task_depth
 from ouroboros.contracts.task_contract import (
     build_task_contract,
@@ -813,6 +814,8 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
         "required_capabilities": required_caps,
         **intent_fields,
         "subagent_envelope": envelope,
+        # A child of a consciousness turn/tree carries the origin (label, category, level).
+        "origin_metadata": consciousness_origin_metadata(metadata),
     }
     _populate_subagent_event_extras(
         evt, current_chat_id=current_chat_id, child_drive=child_drive,

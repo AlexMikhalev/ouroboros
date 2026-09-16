@@ -325,11 +325,16 @@ def _toggle_evolution(ctx: ToolContext, enabled: bool, objective: str = "") -> s
             block = ""
         if block:
             return block
+    from ouroboros.consciousness_authority import consciousness_origin_metadata
+
     ctx.pending_events.append({
         "type": "toggle_evolution",
         "enabled": bool(enabled),
         "objective": str(objective or "").strip(),
         "ts": utc_now_iso(),
+        # A Full-level consciousness turn/tree names itself: the campaign and its
+        # cycle tasks then stay inside the consciousness allowance (PLAN 5.14 п.7).
+        **consciousness_origin_metadata(getattr(ctx, "task_metadata", None)),
     })
     state_str = "ON" if enabled else "OFF"
     return f"OK: evolution mode toggled {state_str}."

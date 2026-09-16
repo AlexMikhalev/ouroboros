@@ -16,6 +16,7 @@ import pathlib
 import time
 import uuid
 from typing import Any, Dict, List
+from ouroboros.consciousness_authority import apply_consciousness_authority
 from ouroboros.contracts.task_contract import build_task_contract, normalize_allowed_resources
 from ouroboros.schedule_contract import RESERVED_TEMPLATE_FIELDS, schedule_slug
 from ouroboros.skill_loader import skill_identity_collision_names
@@ -264,7 +265,7 @@ def _task_from_schedule(record: Dict[str, Any]) -> Dict[str, Any]:
     existing_contract = template.get("task_contract") if isinstance(template.get("task_contract"), dict) else {}
     if existing_contract:
         task["task_contract"] = existing_contract
-    task["task_contract"] = build_task_contract(task)
+    task["task_contract"] = build_task_contract(apply_consciousness_authority(task))
     presence = metadata.get("presence")
     workspace = task["task_contract"]["workspace"]
     if isinstance(presence, dict) and presence and workspace["root"]:

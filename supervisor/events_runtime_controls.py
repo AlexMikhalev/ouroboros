@@ -184,24 +184,39 @@ def _drive_cancel_task_event(evt: Dict[str, Any], ctx: Any) -> None:
 
 
 def _handle_toggle_evolution(evt: Dict[str, Any], ctx: Any) -> None:
-    """Toggle evolution mode from LLM tool call."""
+    """Toggle evolution mode from an LLM tool call (or an owner-sourced event).
+
+    Owner decision В12: ``/evolve off`` is STICKY against the agent tool. Only an
+    event with owner provenance (``source == "owner_chat"``) may clear the
+    durable ``evolution_owner_stopped`` flag; an ``agent_tool`` enable while the
+    flag is set is refused with the same typed shape as the light-mode block.
+    """
     enabled = bool(evt.get("enabled"))
+    owner_sourced = str(evt.get("source") or "") == "owner_chat"
     if enabled:
         from supervisor.evolution_lifecycle import evolution_block_reason, start_evolution_campaign
+        from ouroboros.consciousness_authority import consciousness_origin_metadata
 
         block = evolution_block_reason()
+        if not block and not owner_sourced and bool(ctx.load_state().get("evolution_owner_stopped")):
+            block = (
+                "🧬 Evolution stayed OFF: the owner stopped evolution (/evolve off), and that stop "
+                "is sticky against toggle_evolution. Only the owner's /evolve start re-arms it; "
+                "no campaign was started."
+            )
         if block:
             st = ctx.load_state()
             if st.get("owner_chat_id"):
                 ctx.send_with_budget(int(st["owner_chat_id"]), block)
             return
-        # GR4-6: clear the durable owner-stop flag BEFORE the campaign is
-        # minted. The old order (campaign first, flag cleared in a later state
-        # write) left a window where the owner-stop backstop — fired by an old
-        # evolution task settling — read flag=True + campaign=active and closed
-        # the FRESH campaign. This clear is owner-authorized (the owner is
-        # explicitly starting evolution). GR5-1: the prior value is captured in
-        # the same locked write so a failed start can restore it.
+        # GR4-6: an OWNER start clears the durable owner-stop flag BEFORE the
+        # campaign is minted. The old order (campaign first, flag cleared in a
+        # later state write) left a window where the owner-stop backstop — fired
+        # by an old evolution task settling — read flag=True + campaign=active and
+        # closed the FRESH campaign. GR5-1: the prior value is captured in the same
+        # locked write so a failed start can restore it. An agent-tool start
+        # reaches this point only with the flag already clear (checked above), so
+        # it clears nothing.
         from supervisor.state import update_state as _update_state
 
         _prior_owner_stop = {"value": False}
@@ -210,9 +225,13 @@ def _handle_toggle_evolution(evt: Dict[str, Any], ctx: Any) -> None:
             _prior_owner_stop["value"] = bool(live.get("evolution_owner_stopped"))
             live["evolution_owner_stopped"] = False
 
-        _update_state(_clear_owner_stop)
+        if owner_sourced:
+            _update_state(_clear_owner_stop)
+        origin = consciousness_origin_metadata(evt)
+        source = "owner_chat" if owner_sourced else "agent_tool"
         try:
-            if not start_evolution_campaign(str(evt.get("objective") or ""), source="agent_tool"):
+            if not start_evolution_campaign(str(evt.get("objective") or ""), source=source,
+                                            **({"origin": origin} if origin else {})):
                 raise RuntimeError("campaign write was refused")
         except Exception:
             log.warning("Failed to start evolution campaign from agent tool", exc_info=True)

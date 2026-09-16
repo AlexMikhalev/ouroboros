@@ -48,6 +48,8 @@ def build_scheduled_task_payload(fields: Dict[str, Any]) -> Dict[str, Any]:
     configured_subagent = fields.get("configured_subagent") if isinstance(fields.get("configured_subagent"), dict) else {}
     parent_cognitive_route = fields.get("parent_cognitive_route") if isinstance(fields.get("parent_cognitive_route"), dict) else {}
     directory_options = {key: fields[key] for key in ("directory_strategy", "scope_paths") if key in fields}
+    # A child of a consciousness turn/tree inherits its origin label, category and level.
+    origin_metadata = fields.get("origin_metadata") if isinstance(fields.get("origin_metadata"), dict) else {}
     task: Dict[str, Any] = {
         "id": tid,
         "type": "task",
@@ -115,6 +117,7 @@ def build_scheduled_task_payload(fields: Dict[str, Any]) -> Dict[str, Any]:
             "parent_cognitive_route": parent_cognitive_route,
             **directory_options,
             "root_cost_ceiling_usd": root_cost_ceiling_usd,
+            **origin_metadata,
         },
     }
     if not drive_root:

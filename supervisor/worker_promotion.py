@@ -389,6 +389,7 @@ def promote_chat_to_task(evt: dict, ctx: Any) -> dict:
     land in that thread) and the optional ``project_id`` scope; it competes for
     the project writer lease like any other top-level project task.
     """
+    from ouroboros.consciousness_authority import apply_consciousness_authority, consciousness_origin_metadata
     from ouroboros.contracts.task_contract import attach_task_contract
     from ouroboros.project_naming import admission_names
 
@@ -460,6 +461,13 @@ def promote_chat_to_task(evt: dict, ctx: Any) -> dict:
         "promotion_admission_token": admission_token,
         **_promoted_force_plan_metadata(evt),
     }
+    origin = consciousness_origin_metadata(evt)
+    if origin:
+        # A root consciousness started keeps its origin/category/level by value (В9':
+        # ordinary Main flow, no presence-style project/workspace/source stripping).
+        task["actor_id"] = "consciousness"
+        task.setdefault("metadata", {}).update(origin)
+        apply_consciousness_authority(task)
     inherited_attachment_manifest = _pool()._apply_presence_promotion_authority(
         evt, task, objective=objective, expected_output=expected_output,
     )
@@ -561,6 +569,7 @@ def promote_chat_to_task(evt: dict, ctx: Any) -> dict:
         return _pool()._reject_promoted_after_attachment_stage({
             "status": "needs_manual_target",
             "reason": str(admitted.get("_admission_blocked") or "admission_fence"),
+            "detail": str(admitted.get("_admission_detail") or ""),
             "project_lifecycle": str(admitted.get("_project_lifecycle") or ""),
             "task_id": tid,
         }, attachment_manifest)

@@ -31,6 +31,7 @@ from ouroboros.config import (
     get_task_abs_ceiling_sec,  # noqa: F401 -- queue_timeouts leaf reads it via the _queue() handle
     get_task_idle_timeout_sec,  # noqa: F401 -- queue_timeouts leaf reads it via the _queue() handle
 )
+from ouroboros.consciousness_authority import apply_consciousness_authority, is_consciousness_origin
 from ouroboros.contracts.task_contract import attach_task_contract, build_task_contract, normalize_allowed_resources  # noqa: F401
 from ouroboros.schedule_contract import RESERVED_TEMPLATE_FIELDS, schedule_slug  # noqa: F401
 from ouroboros.skill_loader import skill_identity_collision_names  # noqa: F401
@@ -166,7 +167,7 @@ def enqueue_task(
     """Add task to PENDING (thread-safe: HTTP handlers enqueue concurrently
     with the supervisor main loop, so the mutation must hold the queue lock)."""
     t = dict(task)
-    attach_task_contract(t)
+    attach_task_contract(apply_consciousness_authority(t))
     with _queue_lock:
         require_unique_id = bool(t.pop("_require_unique_task_id", False))
         require_worker_pool = bool(t.pop("_require_worker_pool", False))
@@ -220,6 +221,12 @@ def enqueue_task(
                 t["_admission_blocked"] = "worker_pool_unavailable"
                 t["_worker_pool_disabled_reason"] = pool_state["disabled_reason"]
                 return t
+        consciousness_block = None if restoring_snapshot else _consciousness_admission_block(t)
+        if consciousness_block is not None:
+            t["_admission_blocked"], t["_admission_detail"] = consciousness_block
+            if ADMISSION_RESERVATIONS.get(task_id) == admission_token:
+                ADMISSION_RESERVATIONS.pop(task_id, None)
+            return t
         if admission_token and reserved_token != admission_token:
             t["_admission_blocked"] = "admission_reservation_lost"
             return t
@@ -271,6 +278,68 @@ def enqueue_task(
         if ADMISSION_RESERVATIONS.get(task_id) == admission_token:
             ADMISSION_RESERVATIONS.pop(task_id, None)
     return t
+
+
+def live_consciousness_root_count() -> int:
+    """Live PENDING+RUNNING roots that consciousness started (its origin marker on the
+    task metadata; subagents are their root's business). Sibling of ``queue_has_task_type``."""
+    def _counts(task: Any) -> bool:
+        return (
+            isinstance(task, dict)
+            and str(task.get("delegation_role") or "root") == "root"
+            and is_consciousness_origin(task.get("metadata"))
+        )
+
+    live = sum(1 for task in PENDING if _counts(task))
+    return live + sum(
+        1 for meta in RUNNING.values() if isinstance(meta, dict) and _counts(meta.get("task"))
+    )
+
+
+def _consciousness_admission_block(task: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """The ONE admission door for the roots consciousness starts (owner decisions В11/В18).
+
+    Called under the queue lock, so the live count and the admission are one
+    transaction. Returns ``(reason, detail)`` in the queue's existing refusal
+    vocabulary when a consciousness-origin ROOT may not start — the concurrency
+    cap over live roots with the same marker (``OUROBOROS_CONSCIOUSNESS_MAX_TASKS``,
+    0 = never) or the rolling-24h allowance (``OUROBOROS_CONSCIOUSNESS_DAILY_USD``,
+    0 = consciousness may not spend; an unreadable ledger refuses honestly as
+    ``allowance_unknown``) — and ``None`` when it may. Subagents are bounded by
+    their root's own cap and the per-root child cap, never counted twice; a
+    snapshot restore re-admits already-admitted work and is not gated here.
+    """
+    if (
+        not is_consciousness_origin(task.get("metadata"))
+        or str(task.get("delegation_role") or "root") != "root"
+    ):
+        return None
+    from ouroboros.config import get_consciousness_max_tasks
+    from ouroboros.consciousness_allowance import (
+        STATUS_AVAILABLE, STATUS_UNKNOWN, allowance_window,
+    )
+
+    max_tasks = get_consciousness_max_tasks()
+    live = live_consciousness_root_count()
+    if live >= max_tasks:
+        return ("consciousness_task_limit", (
+            f"{live} of {max_tasks} consciousness-started tasks already live"
+            if max_tasks else "OUROBOROS_CONSCIOUSNESS_MAX_TASKS=0: consciousness never starts tasks"
+        ))
+    window = allowance_window(DRIVE_ROOT)
+    if window["status"] == STATUS_UNKNOWN:
+        return ("consciousness_allowance_unknown",
+                f"the usage ledger could not be read: {window.get('error') or 'unknown error'}")
+    if window["status"] != STATUS_AVAILABLE:
+        if not window["limit_usd"]:
+            return ("consciousness_allowance_exhausted",
+                    "OUROBOROS_CONSCIOUSNESS_DAILY_USD=0: consciousness may not spend")
+        at_least = " (at least)" if window["unknown_unmetered"] else ""
+        return ("consciousness_allowance_exhausted", (
+            f"${window['accounted_usd']:.2f}{at_least} of ${window['limit_usd']:.2f} "
+            f"spent in the last 24 h; resets at {window['resets_at'] or 'unknown'}"
+        ))
+    return None
 
 
 def queue_has_task_type(task_type: str) -> bool:
