@@ -1042,7 +1042,13 @@ by "Provider Independence" above. Call-site imperatives:
   direct-Anthropic lane by `_anthropic_blocks_from_content` and on
   OpenRouter by `supports_message_cache_control`, and pinned by
   `tests/test_review_prompt_caching.py`. The main loop declares an
-  execution-scoped cache affinity only for subscription transport; API-compatible
+  install-scoped cache affinity for the subscription transport
+  (`llm_claudexor.cache_key_for_model`: one Codex `prompt_cache_key`, and so one
+  `session_id`, per data root and model, shared by every task, child and
+  consciousness cycle), because the Codex backend reuses a cached prefix across
+  conversations only under the same session and per-conversation turn states stay
+  valid under a shared one (measured 2026-09-17); a per-execution key paid the
+  shared governance prefix cold on every task start. API-compatible
   lanes retain their prefix-derived session identity. A consciousness wake-up is one
   of those main-loop executions: its schema array and cached system prefix are
   byte-identical to an owner turn's, so everything the level or the wake reason

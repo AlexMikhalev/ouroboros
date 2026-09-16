@@ -11,6 +11,7 @@ import pytest
 
 from ouroboros import loop, model_wait, usage_accounting as ua
 from ouroboros.llm_attempt import _attempt_request, _candidate_before_dispatch
+from ouroboros.llm_claudexor import cache_key_for_model
 from ouroboros.loop_model_call import _reprepare_waiting_main
 from ouroboros.model_slots import MODEL_ACCOUNTS_KEY
 from tests.test_context_fit_integration import _plan
@@ -539,7 +540,7 @@ def test_live_owner_wait_reprojects_affinity(main_call, monkeypatch, destination
     }
     assert facts["completed_tool_texts"] == ["verified read A", "completed review B"]
     assert ctx.accumulated_usage["execution_id"] == CACHE_REPREPARE_EXECUTION
-    assert prepared[-1]["cache_affinity"] == ("" if use_local or destination != MODEL else CACHE_REPREPARE_EXECUTION), (
+    assert prepared[-1]["cache_affinity"] == ("" if use_local or destination != MODEL else cache_key_for_model(MODEL)), (
         facts
     )
     if not use_local:
@@ -581,4 +582,6 @@ def test_recorded_wait_override_reprojects_affinity_before_send(main_call, initi
     }
     assert facts["completed_tool_texts"] == ["verified read A", "completed review B"]
     assert ctx.accumulated_usage["execution_id"] == CACHE_REPREPARE_EXECUTION
-    assert payload["options"].get("cacheKey") == CACHE_REPREPARE_EXECUTION, facts
+    # The override re-prepared the send for the subscription route, so the wire
+    # carries the install-scoped Codex key that route shares across executions.
+    assert payload["options"].get("cacheKey") == cache_key_for_model(MODEL), facts
