@@ -365,8 +365,7 @@ function toolCallKey(evt, groupId) {
     return `tool:${groupId}:${evt.tool_call_id || `${evt.tool || ''}|${toolCallTarget(evt.args)}`}`;
 }
 
-// One frame's fact about one invocation, for the block's folded evidence row.
-const toolObservation = (evt, groupId, status) => ({
+const toolObservation = (evt, groupId, status) => ({  // one frame's fact about one invocation
     key: toolCallKey(evt, groupId), status, receipt: Boolean(evt.routing_action), tool: evt.tool || '' });
 
 function describeStartupChecks(checks) {
@@ -1051,8 +1050,7 @@ function chatView({
     // stand on: the fact it reports lives elsewhere (the owner message's
     // routing annotation for an addressing call).
     if (receipt) out.receipt = true;
-    // The normalized observation the block folds into its one evidence row.
-    if (toolCall) out.toolCall = toolCall;
+    if (toolCall) out.toolCall = toolCall;  // folded into the block's one evidence row
     if (fullBody) out.fullBody = fullBody;
     if (fullHeadline) out.fullHeadline = fullHeadline;
     // Explicit emptiness is part of the presentation contract: a review-only
@@ -1241,12 +1239,9 @@ function summarizeChatLiveEventView(evt) {
     if (evt.is_progress || t === 'send_message') {
         const lifecycleTerminal = String(evt.task_id || '').startsWith('skill_lifecycle_')
             && /\s—\s(completed|failed)\b/i.test(progressText.full);
-        // Voice, not wording (P5): the worker stamps `narration` on every note it
-        // emits, so a host note is recognised by the typed fact and never by
-        // matching its text. Both voices stay visible rows; only narration is
-        // promoted, which is what feeds the card title and the collapsed activity
-        // line. An ABSENT key is a frame that predates the fact (an older worker,
-        // a supervisor note, a stored row) and keeps the legacy promotion.
+        // Voice, not wording (P5): the worker stamps `narration` on every note; a
+        // host note is a typed fact, never a text match. Both stay visible rows; only
+        // narration is promoted (title, collapsed line). ABSENT = predates the fact.
         const narration = evt.narration === true || evt.narration === undefined;
         return chatView({
             phase: lifecycleTerminal ? (/failed\b/i.test(progressText.full) ? 'lifecycle_error' : 'done') : 'working',
@@ -1307,13 +1302,11 @@ function summarizeChatLiveEventView(evt) {
     }
 
     if (t === 'tool_call_started' || (t === 'tool_call_finished' && !evt.is_error)) {
-        // A successful call is routine execution evidence, not narration: start
-        // and finish feed the block's ONE folded row, which counts the calls and
-        // names the tools behind Expand. The row is a receipt while every call it
-        // counts is an addressing act the host stamped (`routing_action`) — the
-        // owner message's annotation already reports it (owner decision 11.09). A
-        // failure keeps its own error row and still counts here. `done` is the
-        // TASK's terminal phase, never a call's: a finished CALL is `ok`.
+        // A successful call is execution evidence, not narration: start and finish
+        // feed the block's ONE folded row (counts; tools behind Expand), a receipt
+        // while every counted call is a host-stamped addressing act (`routing_action`,
+        // reported by the owner message's annotation). A failure keeps its own error
+        // row and still counts. `done` is the TASK's phase; a finished CALL is `ok`.
         const status = t === 'tool_call_finished' ? 'ok' : 'calling';
         return chatView({
             phase: status,
