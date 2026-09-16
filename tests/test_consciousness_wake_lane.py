@@ -309,7 +309,8 @@ def test_set_next_wakeup_clamps_persists_and_speaks_honestly(tmp_path, monkeypat
         assert "600 s" in high and "clamped" in high
         assert state.load_state()["consciousness_next_interval_sec"] == 600
         state.update_state(lambda st: st.__setitem__("bg_consciousness_enabled", True))
-        assert control._set_next_wakeup(ctx, 300) == "OK: next wake-up in 300 s."
+        spoken = control._set_next_wakeup(ctx, 300)
+        assert spoken.startswith("OK: the wake-up interval is now 300 s;") and "pending keeps its time" in spoken
         assert state.load_state()["consciousness_next_interval_sec"] == 300
         assert "TOOL_ARG_ERROR" in control._set_next_wakeup(ctx, "soon")
         assert state.load_state()["consciousness_next_interval_sec"] == 300

@@ -374,8 +374,8 @@ def get_tools() -> List[ToolEntry]:
             }, "required": ["action"]},
         }, _toggle_consciousness),
         ToolEntry("set_next_wakeup", {
-            "name": "set_next_wakeup", "description": "Choose how many seconds until the next consciousness wake-up (clamped into the owner's OUROBOROS_BG_WAKEUP_MIN/MAX bounds; stored for later when consciousness is off).",
-            "parameters": {"type": "object", "properties": {"seconds": {"type": "integer", "description": "Seconds until the next wake-up"}}, "required": ["seconds"]},
+            "name": "set_next_wakeup", "description": "Choose the consciousness wake-up interval in seconds: how long after a wake-up ends the next one starts (clamped into the owner's OUROBOROS_BG_WAKEUP_MIN/MAX bounds; a wake-up calling this sets its own next one; a pending wake-up keeps its time; stored for later when consciousness is off).",
+            "parameters": {"type": "object", "properties": {"seconds": {"type": "integer", "description": "Seconds from the end of a wake-up to the next one"}}, "required": ["seconds"]},
         }, _set_next_wakeup),
         ToolEntry("switch_model", {
             "name": "switch_model",

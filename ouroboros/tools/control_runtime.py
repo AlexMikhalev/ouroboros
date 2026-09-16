@@ -379,7 +379,10 @@ def _set_next_wakeup(ctx: ToolContext, seconds: int) -> str:
     if not bool(state.get("bg_consciousness_enabled")):
         return (f"OK: consciousness is off; the next wake-up interval of {interval} s{clamp_note} "
                 "is stored for when it is enabled.")
-    return f"OK: next wake-up in {interval} s{clamp_note}."
+    # The interval is finish-relative: the alarm reads it when a wake-up ends. Said plainly,
+    # so a Main turn is not promised a wake it did not move (astra scope, round 7).
+    return (f"OK: the wake-up interval is now {interval} s{clamp_note}; it applies from the end of the "
+            "next wake-up (a wake-up already pending keeps its time; a wake-up calling this sets its own next one).")
 
 
 def _switch_model(ctx: ToolContext, model: str = "", effort: str = "") -> str:
