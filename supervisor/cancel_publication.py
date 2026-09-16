@@ -254,9 +254,9 @@ def _register_owed_terminal_delivery(
                 settled_status=stored_status,
             )
         elif stored_status == STATUS_COMPLETED:
-            # GR6-5a: the disclosure rides the completed text too, and the
-            # owed registration and the publish half must build the SAME text
-            # (one delivery id) — both pass the identical list.
+            # The disclosure rides the completed answer's custody row, and the
+            # owed registration and the publish half must build the SAME rows
+            # (one delivery id each) — both pass the identical list.
             event = build_completed_result_event(
                 pathlib.Path(q.DRIVE_ROOT), task, task_id, stored,
                 unreconciled_runs=list(unreconciled_runs or []),

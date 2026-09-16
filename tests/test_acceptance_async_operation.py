@@ -271,8 +271,10 @@ def _terminal_ctx(tmp_path, *, task_id, retry_key="acceptance-subject-one"):
 
 
 def test_a_panel_that_settles_after_the_task_ended_is_attached_and_announced_once(tmp_path, monkeypatch):
-    """Owner fork 2=A: one System row in the task's room, whatever the verdict;
-    the projection reads the collected verdicts; nothing wakes a model."""
+    """Owner fork 2=A + 3=A: one System row in the task's room, whatever the
+    verdict, placed inside the card's Reviews group; the projection reads the
+    collected verdicts and carries the same sentence the row does; the panel
+    that settled before the terminal carries none; nothing wakes a model."""
     from ouroboros.task_results import load_task_result
 
     settled = threading.Event()
@@ -296,6 +298,12 @@ def test_a_panel_that_settles_after_the_task_ended_is_attached_and_announced_onc
                "panel_id": "panel_1", "binding_hash": "binding-one", "candidate_hash": "c1",
                "superseded_by_revision": True}
         ctx._execution_trace["review_runs"].append(run)
+        # A sibling panel of the same task that settled while the task was still
+        # alive: it is republished beside the late one and must stay unstamped.
+        ctx._execution_trace["review_runs"].append(_host_run(
+            request={"surface": "task_acceptance", "retry_key": "settled-in-time"},
+            panel_id="panel_in_time", aggregate_signal="PASS",
+            actors=[{"operation_state": "settled", "parsed": {"verdict": "PASS"}}]))
         gates["model/a"].set()
         assert settled.wait(10)
         events = []
@@ -315,19 +323,60 @@ def test_a_panel_that_settles_after_the_task_ended_is_attached_and_announced_onc
     assert event["text"].startswith("Reviewers later passed this answer. They reviewed the earlier version")
     assert "- a: PASS — model/a says PASS" in event["text"]
     assert event["delivery_id"] == "acceptance-late:acceptance-subject-one"
+    assert event["progress_meta"] == {"card_row": "reviews",
+                                      "card_row_id": "acceptance-late:acceptance-subject-one"}
     assert not acceptance_run_pending(run) and run["actors"][0]["parsed"]["verdict"] == "PASS"
     stored = load_task_result(tmp_path, "late-root")
     assert stored["status"] == "completed", "the supplement never moves a terminal status"
-    actor = stored["review_projection"]["panels"][0]["actors"][0]
+    panels = stored["review_projection"]["panels"]
+    actor = panels[0]["actors"][0]
     assert actor["transport_status"] == "success" and actor["parse_status"] == "valid"
+    # The panel of THIS wave carries the host's sentence verbatim; the sibling
+    # that settled in time carries no settlement at all.
+    assert len(panels) == 2 and panels[1]["panel_id"] == "panel_in_time"
+    assert panels[0]["late_settlement"] == {"note": event["text"], "reviewed_revision": "earlier",
+                                            "settled_after_terminal": True}
+    assert "late_settlement" not in panels[1]
     assert len(model.calls) == 1, "collection is free"
-    # A second settlement of the same wave finds nothing to reconcile and announces nothing.
+    # A second settlement of the same wave finds nothing to reconcile, announces
+    # nothing and stamps nothing new.
     from ouroboros.acceptance_settlement import attach_late_acceptance_settlement
 
+    before = json.dumps(stored["review_projection"], sort_keys=True)
     assert attach_late_acceptance_settlement(
         ctx, SimpleNamespace(retry_key="acceptance-subject-one", task_id="late-root"),
         {"slots": {"a": "ok"}, "total": 1}, result=stored) is False
     assert ctx.event_queue.empty()
+    assert json.dumps(load_task_result(tmp_path, "late-root")["review_projection"], sort_keys=True) == before
+
+
+def test_the_late_row_never_reports_a_reviewer_whose_outcome_is_unknown_as_answered():
+    """Only PASS and FAIL are verdicts. Anything else is a panel that reached no
+    quorum, and a slot whose physical outcome the host does not know is named as
+    unknown rather than read as silence."""
+    from ouroboros.acceptance_settlement import _late_settlement_text
+
+    wave = {"slots": {"a": "ok", "b": "ok", "c": ""},
+            "verdicts": {"a": {"verdict": "PASS"}, "b": {"verdict": "DEGRADED"}}}
+    incident = {"aggregate_signal": "DEGRADED", "actors": [
+        {"operation_state": "settled", "parsed": {"verdict": "PASS"}},
+        {"operation_state": "settled", "parsed": {"verdict": "DEGRADED"}},
+        {"operation_state": "custody_lost", "late_result_pending": True}]}
+    text = _late_settlement_text(incident, wave)
+    assert text.startswith("Reviewers later returned no settled verdict on this answer — 1 reviewer's outcome "
+                           "is still unknown. They reviewed the answer that was delivered.")
+    assert "no quorum" not in text
+    assert "- a: PASS" in text and "- c: pending" in text
+    assert "— 2 reviewers' outcomes are still unknown." in _late_settlement_text(
+        {**incident, "actors": [incident["actors"][2], {"operation_state": "pending_dispatch"}]}, wave)
+    answered = {**incident, "actors": incident["actors"][:2]}
+    assert _late_settlement_text(answered, wave).startswith(
+        "Reviewers later returned no settled verdict on this answer. They reviewed")
+    assert _late_settlement_text({**answered, "aggregate_signal": "PASS"}, wave).startswith(
+        "Reviewers later passed this answer. They reviewed the answer that was delivered.")
+    assert _late_settlement_text(
+        {**answered, "aggregate_signal": "FAIL", "superseded_by_revision": True}, wave).startswith(
+        "Reviewers later rejected this answer. They reviewed the earlier version,")
 
 
 def test_a_terminal_task_gets_one_row_at_completion_not_at_quorum(tmp_path, monkeypatch):

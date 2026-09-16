@@ -299,6 +299,69 @@ def test_started_retry_race_adopts_same_durable_invocation(monkeypatch, tmp_path
     custody._CUSTODY.clear()
 
 
+def test_a_review_panels_work_never_displaces_the_actors_own_handoff_holder(
+    monkeypatch, tmp_path,
+):
+    """Issue #1006: the handoff holder is the task's OWN delegation. An open
+    review run and a pending review invocation registered under the same task id
+    belong to their panel: they must neither become the holder nor veto the
+    actor's exact binding by counting as a second candidate."""
+    import ouroboros.claudexor_daemon as daemon
+    import ouroboros.tools.delegate as delegate
+    from ouroboros import delegate_custody as dc
+    from ouroboros.tools.registry import ToolContext
+
+    task_id = "recovery-beside-review"
+    dc._CUSTODY.clear()
+    assert dc.record_started(tmp_path, dc.RunCustody(
+        run_id="run-panel", task_id=task_id, route_id="codex",
+        source="review_substrate", category="task_acceptance_review"))
+    assert dc.record_start_requested(
+        tmp_path, run_id="", task_id=task_id, invocation_id="inv-panel",
+        idempotency_key="inv-panel", request={"prompt": "review packet"},
+        route="codex", source="review_substrate.extraction")
+
+    custody, recovery, task, snapshot, invocation_id, fingerprint, authority = (
+        _pending_handoff(tmp_path, task_id)
+    )
+
+    def expose_started_race(*_args, **_kwargs):
+        assert custody.record_started(tmp_path, custody.RunCustody(
+            run_id="run-leaf",
+            task_id=task["id"],
+            route_id="codex",
+            invocation_id=invocation_id,
+            selected_subagent_id=snapshot["selected_subagent_id"],
+            config_fingerprint=snapshot["config_fingerprint"],
+            work_order_fingerprint=fingerprint,
+            authority_fingerprint=authority,
+        ))
+        return _fail(
+            "delegate_start", "invocation_already_started",
+            "that invocation already bound a run", run_id="run-leaf",
+        )
+
+    class Gateway:
+        def get_run(self, run_id):
+            assert run_id == "run-leaf"
+            return {"id": run_id, "state": "running"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(delegate, "exact_start", expose_started_race)
+    monkeypatch.setattr(daemon, "ensure_owned_gateway", lambda: Gateway())
+    ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, task_id=task["id"])
+    ctx.budget_drive_root = str(tmp_path)
+
+    assert recovery.adopt_handoff(ctx, task) == {
+        "status": "adopted",
+        "run_id": "run-leaf",
+        "cause": recovery.CAUSE_WORKER_CRASH,
+    }
+    custody._CUSTODY.clear()
+
+
 def test_review_substrate_work_does_not_hold_the_actors_zero_run_fence(tmp_path):
     """A pending review invocation and an open review run leave the slot free."""
     from ouroboros import delegate_custody as custody

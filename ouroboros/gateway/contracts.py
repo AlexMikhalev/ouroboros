@@ -163,25 +163,20 @@ class ChatOutbound(TypedDict):
     model_lane: NotRequired[str]
     requested_model_lane: NotRequired[str]
     effective_model_lane: NotRequired[str]
-    # Phase 6: the OPAQUE harness route RESOLVED AT DISPATCH for this
-    # bubble/subagent (`resolve_subagent_dispatch`, stamped once) — a delegated
-    # route only; absent/empty means the ordinary native path and the UI draws
-    # no chip. It is the route the run was sent to, not a receipt from the
-    # engine saying where it landed: a landing below the ask is disclosed on
-    # `capability_delta`, not by rewriting this field.
+    # Phase 6: the OPAQUE harness route RESOLVED AT DISPATCH for this bubble/subagent (`resolve_subagent_dispatch`,
+    # stamped once) — a delegated route only; absent/empty means the ordinary native path and the UI draws no chip.
+    # It is the route the run was sent to, not a receipt from the engine saying where it landed: a landing below the
+    # ask is disclosed on `capability_delta`, not by rewriting this field.
     executor_route: NotRequired[str]
-    # Latest observed progress actor, NOT terminal evidence or current liveness.
-    # Own task_id/task_attempt/run_id/attempt_id, harness_id, phase, revision;
-    # optional model has explicit model_source (requested or observed).
+    # Latest observed progress actor, NOT terminal evidence or current liveness. Own
+    # task_id/task_attempt/run_id/attempt_id, harness_id, phase, revision; optional model has explicit model_source
+    # (requested or observed).
     executor_observation: NotRequired[Dict[str, Any]]
-    # The completion-seam EVIDENCE the route decision is reconciled against
-    # (subagents.envelope_from_task): delegated runs started/settled/succeeded,
-    # terminal failure states, disclosed subscription spend (+estimated flag),
-    # engine-reported models, the additive `nanny_nudge_recorded` flag (a
-    # non-empty finalization nudge was durably stamped), and the additive
-    # `delegate_start_attempted` flag (any durable delegate_start attempt,
-    # refused or started). Terminal frames only; its absence means "no
-    # evidence yet", never "ran natively".
+    # The completion-seam EVIDENCE the route decision is reconciled against (subagents.envelope_from_task):
+    # delegated runs started/settled/succeeded, terminal failure states, disclosed subscription spend (+estimated
+    # flag), engine-reported models, the additive `nanny_nudge_recorded` flag (a non-empty finalization nudge was
+    # durably stamped), and the additive `delegate_start_attempted` flag (any durable delegate_start attempt,
+    # refused or started). Terminal frames only; its absence means "no evidence yet", never "ran natively".
     execution_evidence: NotRequired[Dict[str, Any]]
     # The FACT beside the executor_route plan, from the same custody evidence:
     # "harness_used" | "harness_attempted" | "native_only". Terminal frames only; absent =
@@ -243,6 +238,11 @@ class ChatOutbound(TypedDict):
     transport: NotRequired[TransportMetadata]
     # UI-only system annotation emitted by skill-repair visible commands.
     system_type: NotRequired[str]
+    # A host-stamped placement fact for a task-keyed System row: "timeline" = a timeline item of the task's card,
+    # "reviews" = the card's Reviews group carries the fact (the row is still attached to the card); absent = an
+    # ordinary row. ``card_row_id`` is the row's stable identity across live delivery, outbox replay and history.
+    card_row: NotRequired[Literal["timeline", "reviews"]]
+    card_row_id: NotRequired[str]
     # Event-time human presentation; raw task/project ids remain machine keys.
     target_label: NotRequired[str]
     project_id: NotRequired[str]

@@ -557,9 +557,9 @@ def test_gr6_5a_completed_miss_lane_delivery_carries_the_disclosure(tmp_path):
         event_queue=queue, unreconciled_runs=["run-x", "run-y"],
     ) is True
     (event,) = [e for e in queue.events if e.get("type") == "send_message"]
-    assert "the finished answer" in event["text"]
-    assert "2 delegated run(s) may still be live: run-x, run-y" in event["text"], (
-        "GR6-5a: the completed wording carries the outcome-independent line"
+    assert event["text"] == "the finished answer", "the answer keeps the model's words alone"
+    assert "2 delegated run(s) may still be live: run-x, run-y" in event["terminal_custody_notice"], (
+        "the completed outcome carries the disclosure on its own custody row (#1006)"
     )
 
 

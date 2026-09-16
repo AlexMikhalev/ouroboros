@@ -310,6 +310,16 @@ def compact_review_projection(review_runs: Any) -> Dict[str, Any]:
             for key in ("task_attempt", "panel_index", "publication_revision", "applied_source_ref"):
                 if key in raw_run:
                     panel[key] = copy.deepcopy(raw_run[key])
+            # A panel that settled after its task ended carries the host's own
+            # sentence about it; the card prints those bytes verbatim, so the
+            # projection copies them under the same disclosed bound every other
+            # owner-facing review artifact uses.
+            if isinstance(raw_run.get("late_settlement"), dict):
+                from ouroboros.utils import truncate_review_artifact
+
+                late = copy.deepcopy(raw_run["late_settlement"])
+                late["note"] = truncate_review_artifact(str(late.get("note") or ""), 2000)
+                panel["late_settlement"] = late
         for key in (
             "candidate_hash", "evidence_revision", "fence_hash", "binding_hash",
         ):
