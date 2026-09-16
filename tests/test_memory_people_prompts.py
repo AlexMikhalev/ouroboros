@@ -103,30 +103,27 @@ def test_memory_vocabulary_is_not_dressed_up_as_tool_names():
             assert f"`{word}`" not in text, f"{rel} backticks {word}"
 
 
-def test_background_checklist_maintains_understanding_of_people():
-    consciousness = _read("prompts/CONSCIOUSNESS.md")
-    item = " ".join(
-        consciousness.split("3. **Knowledge base gaps**", 1)[1].split("\n\n", 1)[0].split()
-    ).lower()
+def test_wake_template_maintains_understanding_of_people():
+    """The wake-up message (an ordinary Main turn's user text) keeps the commitment:
+    revise the existing note about a person rather than minting a new one (P12)."""
+    template = " ".join(_read("prompts/CONSCIOUSNESS.md").split()).lower()
 
-    assert "person" in item or "people" in item
-    # Revise the current note rather than minting a new one (P12: read first).
-    assert "knowledge_read" in item and "knowledge_write" in item
-    assert "overview" in item
+    assert "people you talk with" in template
+    assert "knowledge_read" in template and "knowledge_write" in template
+    assert "rather than minting a new one" in template
 
 
-def test_background_hygiene_checks_beliefs_about_people_too():
-    hygiene = _section(_read("prompts/CONSCIOUSNESS.md"), "Memory Hygiene").lower()
+def test_wake_template_resolves_contradictions_about_people_too():
+    template = " ".join(_read("prompts/CONSCIOUSNESS.md").split()).lower()
 
-    assert "knowledge notes" in hygiene
-    assert "people" in hygiene
+    assert "contradictions" in template and "about the people you talk with" in template
 
 
-def test_background_prompt_addresses_its_human_not_a_user():
+def test_wake_template_addresses_its_human_not_a_user():
     consciousness = _read("prompts/CONSCIOUSNESS.md")
 
-    assert "Write to my human proactively" in consciousness
-    assert "Message the user proactively" not in consciousness
+    assert "write to your human" in consciousness
+    assert "the user" not in consciousness
 
 
 def test_reflection_nominates_learning_about_people_as_well_as_itself():

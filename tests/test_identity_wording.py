@@ -12,7 +12,7 @@ def test_prompts_do_not_infer_current_human_from_authors():
     assert "my human" in system
     assert "I do not know their name" in system
     assert "README, BIBLE, git history, or author" in system
-    assert "Messages From My Human" in consciousness
+    assert "your human" in consciousness and "the user" not in consciousness
     assert "I do not yet know my human's name or profile" in memory
     assert "Anton" not in system
     assert "Razzhigaev" not in system

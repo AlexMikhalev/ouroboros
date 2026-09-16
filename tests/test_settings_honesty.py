@@ -159,6 +159,18 @@ def test_provider_base_url_keys_apply_on_the_next_task_not_restart(monkeypatch, 
     assert data.get("next_task_changed") is True
 
 
+def test_consciousness_wake_bounds_apply_without_a_restart(monkeypatch, isolated_settings):
+    """The alarm clock reads OUROBOROS_BG_WAKEUP_MIN/MAX through the config getters at each
+    decision (consciousness.tick / set_next_wakeup), like the other consciousness keys, so
+    a save never claims a restart for them (Background Consciousness redesign P2)."""
+    from ouroboros.settings_scales import RESTART_REQUIRED_SETTINGS
+
+    assert not {"OUROBOROS_BG_WAKEUP_MIN", "OUROBOROS_BG_WAKEUP_MAX"} & RESTART_REQUIRED_SETTINGS
+    data = _save(monkeypatch, isolated_settings, {"OUROBOROS_BG_WAKEUP_MIN": "1200", "OUROBOROS_BG_WAKEUP_MAX": "7200"})
+    assert not data.get("restart_required")
+    assert not ({"OUROBOROS_BG_WAKEUP_MIN", "OUROBOROS_BG_WAKEUP_MAX"} & set(data.get("restart_keys") or []))
+
+
 def test_host_service_port_requires_a_restart(monkeypatch, isolated_settings):
     """The host-service port is bound once at server startup."""
     data = _save(monkeypatch, isolated_settings, {"OUROBOROS_HOST_SERVICE_PORT": "18999"})

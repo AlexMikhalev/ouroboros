@@ -34,13 +34,6 @@ def _read(rel: str) -> str:
 
 # ───────────────── Bug 1 (polish): background card finalizes ─────────────────
 
-def test_consciousness_emits_structured_idle_marker_not_text_matched():
-    src = _read("ouroboros/consciousness.py")
-    assert "_emit_cycle_idle" in src
-    assert "consciousness_state" in src
-    # The marker is structured, never a regex on log text (BIBLE P5).
-    assert "Going back to sleep" not in src
-
 
 def test_log_events_derives_bg_card_phase_from_marker():
     src = _read("web/modules/log_events.js")

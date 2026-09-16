@@ -1,7 +1,6 @@
 """Tests for evolution/consciousness status snapshots."""
 
 import json
-from unittest.mock import MagicMock, patch
 
 from starlette.applications import Starlette
 from starlette.routing import Route
@@ -81,24 +80,22 @@ def test_evolution_status_reports_budget_stop_when_disabled_after_run(monkeypatc
     assert snapshot["budget_remaining_usd"] == 1.25
 
 
-def test_consciousness_status_snapshot_exposes_runtime_fields():
+def test_consciousness_status_snapshot_exposes_the_alarm_facts(monkeypatch, tmp_path):
+    from ouroboros import consciousness as clock_module
     from ouroboros.consciousness import BackgroundConsciousness
+    from supervisor import state
 
-    with patch.object(BackgroundConsciousness, "_build_registry", return_value=MagicMock()):
-        consciousness = BackgroundConsciousness(
-            drive_root=MagicMock(),
-            repo_dir=MagicMock(),
-            event_queue=None,
-            owner_chat_id_fn=lambda: 1,
-        )
+    monkeypatch.setattr(state, "load_state", lambda: {"bg_consciousness_enabled": True, "owner_chat_id": 1})
+    monkeypatch.setattr(clock_module, "allowance_window", lambda root, now=None: {
+        "status": "available", "limit_usd": 20.0, "accounted_usd": 3.0, "remaining_usd": 17.0, "resets_at": ""})
+    monkeypatch.setattr(BackgroundConsciousness, "_running_roots", staticmethod(lambda: 0))
+    clock = BackgroundConsciousness(tmp_path, tmp_path / "repo", lambda: 1, now=1_800_000_000.0)
+    clock.notify("task_finished:t1:completed")
+    snapshot = clock.status_snapshot()
 
-    consciousness.pause()
-    consciousness._next_wakeup_sec = 180
-    snapshot = consciousness.status_snapshot()
-
-    assert snapshot["paused"] is True
-    assert snapshot["next_wakeup_sec"] == 180
-    assert snapshot["last_idle_reason"] == "paused_by_active_task"
+    assert snapshot["enabled"] is True and snapshot["pending_reason"] == "task_finished:t1:completed"
+    assert snapshot["next_wake_at"] and snapshot["last_wake_at"] == "" and snapshot["live_wake_task_id"] == ""
+    assert snapshot["spent_24h_usd"] == 3.0 and snapshot["daily_usd"] == 20.0
 
 
 def test_evolution_data_strips_legacy_checkpoint_result_status(tmp_path, monkeypatch):

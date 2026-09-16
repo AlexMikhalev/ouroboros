@@ -423,12 +423,6 @@ def test_escalate_settled_parent_is_a_typed_dead_end(tmp_path, monkeypatch):
     assert out.startswith("⚠️ ESCALATE_PARENT_SETTLED")
 
 
-def test_escalate_background_refused(tmp_path):
-    ctx = _tool_ctx(tmp_path, task_id="bg-consciousness", role="background")
-    out = _escalate(ctx, question="?", options=["a", "b"], assumption="a")
-    assert out.startswith("⚠️ ESCALATE_UNAVAILABLE")
-
-
 def test_escalate_invalid_payload_is_typed(tmp_path):
     ctx = _tool_ctx(tmp_path)
     out = _escalate(ctx, question="?", options=["only-one"], assumption="a")
@@ -898,14 +892,12 @@ def test_recommended_option_rides_the_card_the_projection_and_the_parent_frame(t
 
 
 def test_escalate_refusals_are_typed_per_branch_and_a_headless_root_still_asks(tmp_path):
-    """Verification only: the three real refusal branches as the predicate is written.
-    Background consciousness is refused; a live direct conversation (including one with
-    no continuation owner) is refused; REQUIRED waiting without a live continuation owner
-    is refused. A headless root without owner_wait_callback is NOT refused for an optional
-    question: it mints the ordinary card and continues under its assumption."""
-    background = _tool_ctx(tmp_path, task_id="bg", role="background")
-    out = _escalate(background, question="?", options=["a", "b"], assumption="a")
-    assert out.startswith("⚠️ ESCALATE_UNAVAILABLE: background consciousness cannot escalate")
+    """Verification only: the real refusal branches as the predicate is written.
+    A live direct conversation (including one with no continuation owner) is refused;
+    REQUIRED waiting without a live continuation owner is refused. A headless root
+    without owner_wait_callback is NOT refused for an optional question: it mints the
+    ordinary card and continues under its assumption. (A consciousness wake-up is an
+    ordinary root here — nothing refuses it by role.)"""
     direct = _tool_ctx(tmp_path)
     direct.is_direct_chat = True
     out = _escalate(direct, question="?", options=["a", "b"], assumption="a")

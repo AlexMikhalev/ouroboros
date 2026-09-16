@@ -150,25 +150,30 @@ def test_restart_census_keeps_native_execution_after_owner_boundary():
     assert _live_running_task_ids(SimpleNamespace(RUNNING={})) == []
 
 
-def test_consciousness_remains_paused_until_all_native_work_returns():
+def _mind():
+    """An alarm clock that reads liveness off the census alone (no state, no lane)."""
     from ouroboros.consciousness import BackgroundConsciousness
 
     mind = object.__new__(BackgroundConsciousness)
-    mind._paused = False
+    mind._last_wake_task_id = ""
+    return mind
+
+
+def test_consciousness_sees_an_owner_turn_live_until_all_native_work_returns():
+    mind = _mind()
     registry = get_direct_activity_registry()
     registry.register("first", 1)
     registry.register("second", 2)
-    assert mind.is_paused
+    assert mind.live_turns() == ("", True)
     registry.unregister("first")
-    assert mind.is_paused
+    assert mind.live_turns() == ("", True)
     registry.unregister("second")
-    assert not mind.is_paused
+    assert mind.live_turns() == ("", False)
 
 
 def test_native_post_task_retains_activity_and_delivers_answer_early(monkeypatch, tmp_path):
     """Actual synthesis dispatch must stay owned after the ordinary final answer."""
     from ouroboros import agent_task_pipeline as pipeline, post_task_evolution
-    from ouroboros.consciousness import BackgroundConsciousness
     from ouroboros.gateway.settings import _has_running_agent_tasks, _has_started_agent_tasks
     from ouroboros.post_task_checkpoint import post_task_synthesis_in_flight
     from ouroboros.server_restart import _live_running_task_ids
@@ -195,8 +200,7 @@ def test_native_post_task_retains_activity_and_delivers_answer_early(monkeypatch
         monkeypatch.setattr(pipeline, name, lambda *a, **kw: None)
     monkeypatch.setattr(post_task_evolution, "maybe_promote", lambda *a, **kw: None)
     env = SimpleNamespace(repo_dir=tmp_path / "repo", drive_root=tmp_path)
-    mind = object.__new__(BackgroundConsciousness)
-    mind._paused = False
+    mind = _mind()
 
     class Actor:
         def handle_task(self, task):
@@ -237,7 +241,7 @@ def test_native_post_task_retains_activity_and_delivers_answer_early(monkeypatch
             assert workers.drain_repo_writers(0) == [task_id]
             assert _live_running_task_ids(SimpleNamespace(RUNNING={})) == [task_id]
             assert _has_running_agent_tasks() and _has_started_agent_tasks()
-            assert mind.is_paused
+            assert mind.live_turns() == ("", True)
             # Production early delivery ran before synthesis. The terminal
             # completion stays buffered until post-task work returns.
             early = bus.get_nowait()
@@ -256,7 +260,7 @@ def test_native_post_task_retains_activity_and_delivers_answer_early(monkeypatch
         assert workers.drain_repo_writers(0) == []
         assert _live_running_task_ids(SimpleNamespace(RUNNING={})) == []
         assert not _has_running_agent_tasks() and not _has_started_agent_tasks()
-        assert not mind.is_paused
+        assert mind.live_turns() == ("", False)
         assert load_task_result(tmp_path, task_id)["root_phase_checkpoint"]["post_task_synthesis"] == "completed"
         # Retained final and early final use the existing delivery identity;
         # the supervisor deduplicates them. task_done reaches the bus last.
