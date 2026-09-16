@@ -855,7 +855,11 @@ export function routingAnnotationText(annotation) {
             .map(routingOptionLabel)
             .filter(Boolean);
         if (optionLabels.length) return `Choose a target · ${optionLabels.join(' / ')}`;
-        return targetLabel ? `Choose a target · ${targetLabel}` : 'Choose a target';
+        // No options and (by the guard above) no cause: a receipt written
+        // before the host sentence existed, or by a producer that bypasses
+        // `_emit_routing_receipt`. Nothing can be chosen on such a row, so it
+        // must not invite a choice.
+        return targetLabel ? `Not routed · ${targetLabel}` : 'Not routed';
     }
     if (status === 'project_unavailable') return 'Project is unavailable';
     const labels = {

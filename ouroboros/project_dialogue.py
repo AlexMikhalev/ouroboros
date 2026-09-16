@@ -562,6 +562,11 @@ ROUTING_REFUSAL_CAUSES: Dict[str, str] = {
     "mailbox_write_failed": "the message could not be saved",
     "project_scope_conflict": "the task already belongs to another project",
     "missing_task_or_project": "no task or project was named",
+    "project_unavailable": "the project is no longer available",
+    # route_to_project's typed abstention codes (control_routing._route_to_project)
+    "target_unspecified": "no destination was chosen",
+    "invalid_project_id": "that project id is not valid",
+    "target_not_found": "that project does not exist",
 }
 
 # The typed System rows a host-initiated admission refusal sends (Q2=A): plain

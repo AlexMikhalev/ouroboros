@@ -530,14 +530,16 @@ whole record (owner decision 11.09). A failed addressing call is an error row
 and therefore content, as is any recorded tool error. A REFUSED addressing act
 is told where the work lives and never in Ouroboros's voice (owner 16.09): the
 receipt line states the cause in the owner's words, the failed call stays the
-error row inside the block, and the tool result carries the cause with its
-repair (`detail`) so the model narrates — no host bubble interrupts a narrating
+error row inside the block, and the tool result carries the typed reason (with
+the cause and repair in `detail` where the producer holds one) so the model
+narrates — no host bubble interrupts a narrating
 turn. When the host itself issued the act (a Swarm message, a skill-card repair,
 a picker click) no turn narrates, so the refusal lands as ONE typed System row —
 `task_not_started`, or `task_start_unconfirmed` when admission could not be
 confirmed — in the chat the owner wrote in, keyed to the never-started task,
 beside the receipt; the Project start row is announced only once the task is
-really queued. No client list of tool
+really queued. A refusal receipt with neither options nor a cause sentence
+reads «Not routed», never «Choose a target». No client list of tool
 names decides presence (`docs/development/02-naming-and-boundaries.md`, "an
 open default behind a closed exception list").
 

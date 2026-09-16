@@ -3518,3 +3518,26 @@ def test_project_started_is_not_announced_when_workspace_admission_refuses(tmp_p
     assert (outcome["status"], outcome["reason"]) == ("needs_manual_target", "workspace_unusable")
     assert get_project(tmp_path, "doomed-room")["name"] == "Doomed Room"  # the project stays
     assert queued == [] and enqueued == [] and sent == []
+
+
+def test_host_initiated_refusal_row_names_an_untitled_act_at_a_word_boundary():
+    """An untitled host-issued act (a skill-card request has no title) is named by
+    its request's first words; a long request is cut at a word boundary with an
+    ellipsis, never mid-word, before the « · Not started: …» clause."""
+    from supervisor.events_project_routing import _notify_host_initiated_refusal
+
+    sent = []
+    ctx = types.SimpleNamespace(send_with_budget=lambda chat, text, **kw: sent.append((chat, text, kw)))
+    objective = "Почини скилл stand-missing-skill, его файлы отсутствуют и манифест не читается вообще"
+    _notify_host_initiated_refusal(
+        ctx,
+        {"host_initiated": True, "chat_id": 1, "objective": objective, "task_id": "t1"},
+        {"status": "needs_manual_target", "reason": "invalid_skill_repair_constraint", "task_id": "t1"},
+    )
+    assert len(sent) == 1
+    chat, text, kw = sent[0]
+    title, _, clause = text.partition(" · ")
+    assert title.endswith("…") and not title[:-1].endswith(" ") and len(title) <= 61
+    assert objective.startswith(title[:-1]) and objective[len(title) - 1] == " "
+    assert clause == "Not started: the skill repair request was invalid"
+    assert kw["role"] == "system" and kw["system_type"] == "task_not_started" and kw["task_id"] == "t1"

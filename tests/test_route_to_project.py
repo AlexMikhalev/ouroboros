@@ -278,3 +278,37 @@ def test_a_task_issuer_with_an_unmet_obligation_moves_it_through_route_to_projec
     assert events[0]["force_plan"] is True and events[0]["force_plan_source"] == "swarm"
     assert events[0]["force_plan_transferred_from"] == "swarm-root"
 
+
+
+def test_route_refusal_keeps_the_typed_code_and_carries_the_models_words_as_detail(tmp_path):
+    """The receipt's machine `reason` stays the host's typed code — the cause
+    table reads it — while the model's free-text explanation rides `detail`
+    beside it. With no options there is nothing to choose, so the durable row
+    carries the host's cause sentence instead of «Choose a target»."""
+    from ouroboros.project_dialogue import chat_annotation_receipt
+    from supervisor.events import _handle_routing_manual_target
+
+    events = []
+    metadata = {"client_message_id": "owner-9", "routing_contract": {"manual_options": []}}
+    out = _route_to_project(
+        _ctx(tmp_path, events, task_metadata=metadata),
+        "ghost", "continue it there", reason="I could not find it", predecessor_task_id="",
+    )
+
+    assert "ROUTING_UNCONFIRMED" in out
+    assert events[0]["reason"] == "target_not_found"
+    assert events[0]["detail"] == "I could not find it"
+    assert events[0]["options"] == []
+
+    class _Ctx:
+        DRIVE_ROOT = tmp_path
+
+        @staticmethod
+        def append_jsonl(path, row):
+            pass
+
+    _handle_routing_manual_target(events[0], _Ctx)
+    row = chat_annotation_receipt(tmp_path, "owner-9", events[0]["routing_token"])
+    assert (row["status"], row["reason"]) == ("needs_manual_target", "target_not_found")
+    assert row["detail"] == "I could not find it"
+    assert row["cause"] == "Not started: that project does not exist"

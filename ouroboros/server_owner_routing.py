@@ -363,14 +363,20 @@ def _record_routing_receipt(
     status: str,
     persist: bool = True,
     options: Optional[list] = None,
+    reason: str = "",
     detail: str = "",
     attachment_manifest: Optional[list] = None,
 ) -> None:
     """Emit a typed bubble-free ack and optionally persist its presentation state."""
+    from ouroboros.project_dialogue import routing_refusal_cause
+
     if target and not str(target_label or "").strip():
         from ouroboros.project_dialogue import routing_target_label
 
         target_label = routing_target_label(ctx.DRIVE_ROOT, action, target)
+    # Q3=A: this parallel producer reads the SAME host table, so a refusal it
+    # writes carries the owner's sentence instead of leaning on a client label.
+    cause = routing_refusal_cause(action, status, reason, options)
     if persist:
         try:
             from ouroboros.project_dialogue import append_chat_annotation
@@ -382,6 +388,8 @@ def _record_routing_receipt(
                 target=target,
                 target_label=target_label,
                 status=status,
+                reason=reason,
+                cause=cause,
                 detail=detail,
                 attachment_manifest=attachment_manifest,
             )
@@ -401,6 +409,8 @@ def _record_routing_receipt(
                 ack_kwargs["options"] = options
             if attachment_manifest is not None:
                 ack_kwargs["attachment_manifest"] = attachment_manifest
+            if cause:
+                ack_kwargs["cause"] = cause
             ack(
                 chat_id,
                 **ack_kwargs,
@@ -423,6 +433,8 @@ def _record_routing_receipt(
                     payload["options"] = options
                 if attachment_manifest is not None:
                     payload["attachment_manifest"] = attachment_manifest
+                if cause:
+                    payload["cause"] = cause
                 broadcast(payload)
     except Exception:
         log.debug("Routing receipt broadcast failed", exc_info=True)
@@ -518,6 +530,7 @@ def _route_owner_message(bridge: Any, ctx: Any, incoming: Dict[str, Any]) -> Non
             action="project_route",
             target=str(reserved_project.get("id") or ""),
             status="project_unavailable",
+            reason="project_unavailable",
         )
         return
     ctx.consciousness.inject_observation(f"Message from my human: {incoming.get('log_text') or ''}")

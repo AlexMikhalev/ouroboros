@@ -656,7 +656,11 @@ def _notify_host_initiated_refusal(ctx: Any, evt: Dict[str, Any], outcome: Any) 
         if chat is None:
             return
         first_line = next(iter(str(evt.get("objective") or "").strip().splitlines()), "")
-        title = str(evt.get("title") or evt.get("suggested_name") or "").strip() or first_line[:60] or "Task"
+        if len(first_line) > 60:
+            # An untitled act is named by its request's first words, cut at a
+            # word boundary so the row never ends mid-word.
+            first_line = first_line[:60].rsplit(" ", 1)[0].rstrip() + "…"
+        title = str(evt.get("title") or evt.get("suggested_name") or "").strip() or first_line or "Task"
         action = "route_to_project" if bool(evt.get("routed_from_main")) else "promote_chat_to_task"
         reason = str(outcome.get("reason") or ("admission_rejected" if status == "needs_manual_target" else ""))
         ctx.send_with_budget(
@@ -751,6 +755,9 @@ def _handle_routing_manual_target(evt: Dict[str, Any], ctx: Any) -> None:
         target=str(evt.get("requested_target") or evt.get("reason") or "")[:200],
         status="needs_manual_target",
         reason=str(evt.get("reason") or "target_unspecified"),
+        # The model's own words about the abstention, kept beside the typed
+        # code on the durable row (replay-only; no owner surface reads it).
+        detail=str(evt.get("detail") or ""),
         options=options,
         # Durable carrier: the picker click re-forwards these staged specs to
         # the chosen destination long after the routing turn's metadata died.

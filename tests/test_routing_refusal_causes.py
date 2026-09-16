@@ -50,6 +50,10 @@ REFUSAL_REASONS = (
     "mailbox_write_failed",
     # ensure_project_scope (worker_promotion, events_project_routing)
     "project_scope_conflict", "missing_task_or_project", "ensure_project_scope_failed",
+    # the parallel receipt producer (ouroboros/server_owner_routing.py)
+    "project_unavailable",
+    # route_to_project's typed abstention (ouroboros/tools/control_routing.py)
+    "target_unspecified", "invalid_project_id", "target_not_found",
 )
 
 PRODUCERS = (
@@ -59,7 +63,11 @@ PRODUCERS = (
     "supervisor/queue.py",
     "supervisor/task_admission.py",
     "ouroboros/server_owner_routing.py",
+    "ouroboros/tools/control_routing.py",
 )
+# The scan sees `"reason": "<lit>"` / `reason="<lit>"` only; a code chosen by a
+# conditional expression (control_routing.py `failure = ("a" if … else "b")`) is
+# invisible to it and is pinned by REFUSAL_REASONS instead.
 _REASON_LITERAL = re.compile(r'(?:"reason":\s*|\breason=)"([a-z][a-z0-9_]*)"')
 
 # Literals the producer scan finds that are NOT owner-facing refusal reasons.
@@ -72,8 +80,7 @@ EXEMPT = {
     # success / pseudo reasons on a delivered ensure_project_scope receipt
     "created", "adopted", "attached", "delivered", "renamed", "name_unchanged", "rename_failed",
     # the picker's claim/closing pseudo-reasons (`claimed_option:N` / `answered_option:N`)
-    # and its with-options refusal, which keeps «Choose a target» (no cause)
-    "answered_option", "claimed_option", "target_unspecified",
+    "answered_option", "claimed_option",
     # internal wait/transport outcomes that never reach an owner surface
     "client_message_id_missing", "event_serialization_failed", "handler_returned_no_outcome",
 }
@@ -115,8 +122,9 @@ def test_landed_rows_and_the_picker_carry_no_cause():
     # A refusal WITH options is the picker: «Choose a target · A / B» stays.
     assert routing_refusal_cause("route_decision", "needs_manual_target", "target_unspecified",
                                  [{"action": "steer_task", "task_id": "t1"}]) == ""
+    # Without options nothing can be chosen, so the row states the cause.
     assert routing_refusal_cause("route_decision", "needs_manual_target", "target_unspecified", []) == (
-        "Not started (target_unspecified)"
+        "Not started: no destination was chosen"
     )
 
 
@@ -175,3 +183,36 @@ def test_admission_notice_rows_stay_in_the_owners_chat(notice_type):
     ordinary = {"direction": "out", "type": "chat", "task_id": "refused-task", "chat_id": 1}
     assert main(1, ordinary) is False
     assert project(1, ordinary) is True
+
+
+def test_the_parallel_receipt_producer_reads_the_same_host_table(tmp_path):
+    """`server_owner_routing._record_routing_receipt` is the SECOND producer of a
+    routing receipt. Its one refusal — an owner message addressed to a reserved
+    project that is no longer available — used to leave the owner line to a
+    hardcoded browser label; it now carries the host sentence on the durable row
+    and on the live ack. A landed receipt still carries none."""
+    import types
+
+    from ouroboros.project_dialogue import latest_chat_annotations
+    from ouroboros.server_owner_routing import _record_routing_receipt
+
+    acks = []
+    bridge = types.SimpleNamespace(send_routing_ack=lambda chat_id, **kw: acks.append((chat_id, kw)))
+    ctx = types.SimpleNamespace(DRIVE_ROOT=tmp_path)
+
+    _record_routing_receipt(
+        bridge, ctx, chat_id=1, client_message_id="owner-pu",
+        action="project_route", target="gone", status="project_unavailable",
+        reason="project_unavailable",
+    )
+    row = latest_chat_annotations(tmp_path)["owner-pu"]
+    assert (row["status"], row["reason"]) == ("project_unavailable", "project_unavailable")
+    assert row["cause"] == "Not started: the project is no longer available"
+    assert acks[0][1]["cause"] == row["cause"]
+
+    _record_routing_receipt(
+        bridge, ctx, chat_id=1, client_message_id="owner-ok",
+        action="mailbox_delivery", target="t-1", status="delivered",
+    )
+    assert "cause" not in latest_chat_annotations(tmp_path)["owner-ok"]
+    assert "cause" not in acks[1][1]

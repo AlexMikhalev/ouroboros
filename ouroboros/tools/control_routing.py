@@ -620,7 +620,11 @@ def _route_to_project(
             "chat_id": current_chat_id,
             "client_message_id": client_message_id,
             "requested_target": pid or requested_pid[:200],
-            "reason": str(reason or "").strip() or failure,
+            # The typed code is the receipt's `reason` (the host cause table
+            # reads it); the model's own words ride `detail` beside it instead
+            # of replacing the code with untyped prose.
+            "reason": failure,
+            "detail": str(reason or "").strip()[:1000],
             "options": options,
             # The picker click dispatches AFTER this turn's metadata is gone,
             # so the refusal annotation is the durable carrier of the original
