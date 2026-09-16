@@ -986,4 +986,3 @@ def test_post_episode_trailing_control_retains_answer_on_both_rails(tmp_path, ve
     assert (candidate.revision, candidate.content_sha256, candidate.acceptance_binding) == before
     assert ctx.messages == before_messages
     assert candidate.repair_attempted is False
-

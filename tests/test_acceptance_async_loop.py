@@ -544,6 +544,51 @@ def test_a_rejected_earlier_revision_buys_a_panel_on_the_rewrite_when_the_cap_al
     assert trace["acceptance_decision"]["reason"] in {"clean_pass", "clean_pass_obligations_closed"}
 
 
+def test_an_older_fail_never_outvotes_the_pass_that_accepted_the_task(full_loop, monkeypatch):
+    """Astra review round 4: panel A rejects the first draft, Main re-nominates and
+    panel B passes the second, Main rewrites once more under B. Both runs end up
+    superseded; the decision names B. The review axis must read B alone — the
+    old FAIL is audit evidence, not a vote against the accepted answer."""
+    from ouroboros.project_dialogue import outcome_phase
+
+    f = full_loop
+    f.reviewer_verdict = "FAIL"
+    second = ANSWER + " Budget: $12."
+    third = second + " Timeline: two weeks."
+
+    def main(_llm, messages, *_a, **_kw):
+        f.model_inputs.append(copy.deepcopy(messages))
+        f.model_step += 1
+        if f.model_step == 1:
+            return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": ANSWER}, "first-review")]}, 0.0
+        if f.model_step == 2:
+            assert f.entered.wait(5)
+            f.release.set()
+            with f.condition:
+                assert f.condition.wait_for(lambda: f.settled_count >= 1, timeout=10)
+            f.reviewer_verdict = "PASS"
+            return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": second}, "second-review")]}, 0.0
+        if f.model_step == 3:
+            observation = f.ctx._acceptance_observation
+            return {"content": json.dumps({"delivery_control": "replace", "full_answer": third,
+                                           "acceptance_subject": {"owner_source_sha256": observation["owner_source_sha256"]}})}, 0.0
+        assert f.model_step < 8, f.progress
+        return keep(f), 0.0
+
+    monkeypatch.setattr(loop, "call_llm_with_retry", main)
+    result, _usage, trace = f.run()
+    assert result == third and len(f.review_sends) == 2
+    host = [r for r in trace["review_runs"] if r.get("authority") == "host_root"]
+    assert [r.get("aggregate_signal") for r in host] == ["FAIL", "PASS"], host
+    assert all(r.get("superseded_by_revision") for r in host)
+    decision = trace["acceptance_decision"]
+    assert decision["status"] == "accepted" and decision["reason"] == "previous_revision_accepted"
+    assert decision["reviewed_panel_id"] == host[1]["panel_id"]
+    record = _terminal_record(trace)
+    assert record["outcome_axes"]["review"]["aggregate_signals"] == ["PASS"], record["outcome_axes"]["review"]
+    assert outcome_phase(record, {}) == "done", record["outcome_axes"]
+
+
 @pytest.mark.parametrize("install", ["advisory_default", "blocking_finish", "cyber_pro"])
 def test_waiting_is_the_default_and_blocking_enforcement_never_offers_the_choice(full_loop, monkeypatch, install):
     """Waiting needs no key; blocking enforcement waits whatever the model says and

@@ -103,7 +103,18 @@ def select_current_review_runs(
         and "FAIL" not in superseded_signals
         and "DEGRADED" not in superseded_signals
     )
-    selected = [] if acceptance_gap else (current_runs if current_runs else all_runs)
+    # A host decision that names a panel by id AND binding applied THAT panel's
+    # verdict (an earlier revision accepted on the reviewers' word): when no run
+    # is current, the named run speaks alone and an older superseded FAIL stays
+    # audit evidence instead of outvoting the applied PASS. With no named panel
+    # the conservative rule stands: every stale run is retained.
+    named = [
+        run for run in all_runs
+        if decision.get("panel_id") and decision.get("binding_hash")
+        and str(run.get("panel_id") or "") == str(decision.get("panel_id"))
+        and str(run.get("binding_hash") or "") == str(decision.get("binding_hash"))
+    ]
+    selected = [] if acceptance_gap else (current_runs if current_runs else (named or all_runs))
     return ReviewRunSelection(
         all_runs=all_runs,
         current_runs=selected,

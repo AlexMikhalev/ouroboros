@@ -1000,7 +1000,8 @@ def _settle_review_attempt(
             roster = _RELEASED_WAVES[entry.wave_key]
             slot_id = str(getattr(slot, "slot_id", "") or "")
             roster["slots"][slot_id] = str(actor.status or "settled")
-            roster.setdefault("verdicts", {})[slot_id] = _settled_slot_verdict(actor)
+            if getattr(request, "surface", "") == "task_acceptance":  # plan review's frame carries counts only
+                roster.setdefault("verdicts", {})[slot_id] = _settled_slot_verdict(actor)
             if all(roster["slots"].values()):
                 released_wave = _RELEASED_WAVES.pop(entry.wave_key)
             elif _released_quorum_reached(request, roster):

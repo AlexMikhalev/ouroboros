@@ -294,7 +294,10 @@ def attach_late_acceptance_settlement(usage_ctx: Any, request: Any, wave: Dict[s
     from supervisor.terminal_delivery import enqueue_terminal_delivery
 
     root = pathlib.Path(usage_ctx.drive_root)
-    advanced = reconcile_pending_acceptance_runs(trace, drive_root=root, usage_ctx=usage_ctx)
+    # Only THIS wave's runs: reconciling every pending panel here would let one
+    # settlement collect a sibling panel's verdicts and leave that panel's own
+    # settlement with nothing to announce (the run objects are shared with the trace).
+    advanced = reconcile_pending_acceptance_runs({"review_runs": runs}, drive_root=root, usage_ctx=usage_ctx)
     if not any(acceptance_run_pending(run) for run in runs):
         (getattr(usage_ctx, "_acceptance_settlement_traces", None) or {}).pop(retry_key, None)
     if not advanced:

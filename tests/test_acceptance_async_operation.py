@@ -201,11 +201,12 @@ class _SlotModel:
                 {"prompt_tokens": 5, "completion_tokens": 2})
 
 
-def _released_wave(tmp_path, ctx, *, slots, model, min_successful_slots=1, task_id="root"):
+def _released_wave(tmp_path, ctx, *, slots, model, min_successful_slots=1, task_id="root",
+                   retry_key="acceptance-subject-one"):
     request = ReviewRequest(surface="task_acceptance", task_id=task_id, goal="goal",
                             subject="complete result", evidence={"requirement": "exact"},
                             policy={"min_successful_slots": min_successful_slots},
-                            retry_key="acceptance-subject-one", drain_deadline=time.monotonic())
+                            retry_key=retry_key, drain_deadline=time.monotonic())
     return run_review_request(request, slots=slots, drive_root=tmp_path, usage_ctx=ctx, llm=model)
 
 
@@ -376,6 +377,72 @@ def test_a_terminal_task_gets_one_row_at_completion_not_at_quorum(tmp_path, monk
     rows = [e for e in events if e.get("system_type") == "acceptance_late_settlement"]
     assert len(rows) == 1 and "- a: PASS" in rows[0]["text"] and "- b: PASS" in rows[0]["text"]
     assert "pending" not in rows[0]["text"] and _mailbox_rows(tmp_path, "late-two") == []
+
+
+def test_two_late_panels_of_one_task_each_announce_their_own_row(tmp_path, monkeypatch):
+    """Astra review round 4: a settlement reconciles only its own wave. Collecting
+    every pending panel would let the first callback swallow the sibling's verdicts
+    and leave that panel's own callback with nothing to announce."""
+    settled = threading.Condition()
+    count = {"n": 0}
+    original_settle = __import__("ouroboros.review_custody", fromlist=["_settle_review_attempt"])._settle_review_attempt
+
+    def settle(*args, **kwargs):
+        try:
+            return original_settle(*args, **kwargs)
+        finally:
+            with settled:
+                count["n"] += 1
+                settled.notify_all()
+
+    monkeypatch.setattr("ouroboros.review_custody._settle_review_attempt", settle)
+    gates = {"model/a": threading.Event(), "model/b": threading.Event()}
+    model = _SlotModel(gates, {"model/a": "PASS", "model/b": "FAIL"})
+    ctx = _terminal_ctx(tmp_path, task_id="late-pair")
+    try:
+        for key, slot_model in (("wave-one", "model/a"), ("wave-two", "model/b")):
+            slot = ReviewSlot(slot_id=key, model=slot_model, effort="high", timeout_sec=20)
+            first = _released_wave(tmp_path, ctx, slots=[slot], model=model, task_id="late-pair", retry_key=key)
+            ctx._execution_trace["review_runs"].append(
+                {**json.loads(json.dumps(dataclasses.asdict(first))), "authority": "host_root",
+                 "panel_id": f"panel_{key}", "binding_hash": f"binding-{key}", "candidate_hash": f"c-{key}"})
+        gates["model/a"].set()
+        with settled:
+            assert settled.wait_for(lambda: count["n"] >= 1, timeout=10)
+        gates["model/b"].set()
+        with settled:
+            assert settled.wait_for(lambda: count["n"] >= 2, timeout=10)
+        events = []
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and sum(1 for e in events if e.get("system_type") == "acceptance_late_settlement") < 2:
+            try:
+                events.append(ctx.event_queue.get(timeout=2))
+            except Exception:
+                break
+    finally:
+        for gate in gates.values():
+            gate.set()
+        with settled:
+            settled.wait_for(lambda: count["n"] >= 2, timeout=10)
+    rows = [e for e in events if e.get("system_type") == "acceptance_late_settlement"]
+    assert sorted(r["delivery_id"] for r in rows) == ["acceptance-late:wave-one", "acceptance-late:wave-two"], events
+    assert any("passed" in r["text"] for r in rows) and any("rejected" in r["text"] for r in rows)
+
+
+def test_an_owner_followup_sets_the_running_panel_aside(tmp_path):
+    """Fable review round 4: after the owner changes the requirements, the answer
+    Main writes for them is not a delivery under the panel that reviewed the old
+    ones — the latch clears, so the ordinary path decides while the old panel's
+    verdicts still arrive as advice."""
+    from ouroboros import loop
+    from tests.test_delivery_forced_finalization import _forced_test_context
+
+    _loop, registry, _ctx, trace = _forced_test_context(tmp_path)
+    registry._ctx._task_acceptance_pending = "binding-one"
+    trace["review_decision"] = {}
+    loop._supersede_task_acceptance_for_owner_followup(registry._ctx, trace)
+    assert registry._ctx._task_acceptance_pending == ""
+    assert trace["acceptance_decision"]["reason"] == "owner_followup"
 
 
 def test_a_late_settlement_for_another_task_is_never_published(tmp_path):
