@@ -311,6 +311,7 @@ OBSERVE_WORLD_MUTATION_TOOLS: frozenset[str] = frozenset({
     # writing files, running processes, integrating patches
     "write_file", "edit_text", "apply_patch", "edit_batch",
     "run_command", "run_script", "start_service", "stop_service", "verify_and_record",
+    "skill_exec", "run_ci_tests",  # an enabled skill's script; a branch push + workflow dispatch
     # repository refs the catalog marks mutates_worktree
     "vcs_pull_ff", "vcs_restore", "vcs_revert",
     "fetch_pr_ref", "create_integration_branch", "cherry_pick_pr_commits",

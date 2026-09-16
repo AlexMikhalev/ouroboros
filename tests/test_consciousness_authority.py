@@ -666,6 +666,9 @@ def test_observe_does_without_the_work_starting_review_verb():
         assert verb in ca.OBSERVE_DISABLED and verb not in ca.ACT_DISABLED, verb
     for verb in ("list_github_prs", "get_github_pr", "list_github_issues", "get_github_issue"):
         assert verb not in ca.OBSERVE_DISABLED, verb
+    # The two built-in execution verbs (astra scope round 5): a skill's script, a push + CI run.
+    for verb in ("skill_exec", "run_ci_tests"):
+        assert verb in ca.OBSERVE_DISABLED and verb not in ca.ACT_DISABLED, verb
 
 
 def test_deep_review_request_carries_the_origin_to_the_one_door(tmp_path, monkeypatch):

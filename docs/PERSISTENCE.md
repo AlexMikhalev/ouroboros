@@ -29,8 +29,7 @@ data-relative path to be covered by a row here (count-anchored both ways).
   keys migrate). Governs subagent worktrees, headless/task drives, task trees,
   service logs, and — since the CPL4 train — consumed schedule receipts,
   confirmed capability probes, delegate recovery/supervision sweeps, code_intel
-  and reconcile-failed prunes, memory-journal digesting, agent media, and the
-  acknowledged-observation fold.
+  and reconcile-failed prunes, memory-journal digesting and agent media.
 - **Rotation** — `supervisor/state.py::rotate_jsonl_log_if_needed`: >800 KB →
   atomic rename to `archive/<prefix>_<ts>.jsonl` under the append lock.
   Applied on the supervisor tick to `chat.jsonl`, `progress.jsonl` and — since

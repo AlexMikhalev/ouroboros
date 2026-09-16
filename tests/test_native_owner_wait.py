@@ -78,6 +78,7 @@ def test_bounded_wait_resumes_with_a_notice_that_names_the_recorded_assumption(t
     bridge = mb.LocalChatBridge()
     bridge._broadcast_fn = frames.append
     monkeypatch.setattr(mb, "get_bridge", lambda: bridge)
+    ctx.current_chat_id = 1
     messages = []
     wait_after_tools(ctx, messages, {}, {}, 2, [], set())
 
@@ -92,6 +93,7 @@ def test_bounded_wait_resumes_with_a_notice_that_names_the_recorded_assumption(t
     assert block["state"] == "open" and "wait_for_answer" not in block and block["wait_ended_at"]
     [frame] = [f for f in frames if f.get("type") == "quiz_state"]
     assert frame["quiz_id"] == "q1" and frame["state"] == "open" and frame["wait_for_answer"] is False
+    assert frame["chat_id"] == 1  # the card's chat, exactly as the pool's grant names it
     assert row["wait_deadline_at"] == deadline and row["wait_max_minutes"] == 5
     [notice] = messages
     assert notice["role"] == "user" and notice["content"].startswith("[SYSTEM NOTICE]")

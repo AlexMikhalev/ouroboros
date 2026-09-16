@@ -878,3 +878,19 @@ test('a bounded wait that closed stops saying waiting while the card stays answe
         assert.equal(rcard.querySelector('.chat-quiz-wait'), null);
     } finally { fx.restore(); }
 });
+
+test('reconciling a replayed row into an existing card projects the closed bound', () => {
+    const fx = fixture({ fetchImpl: async () => ({ ok: true, status: 200 }) });
+    if (!globalThis.CSS) globalThis.CSS = { escape: (v) => String(v) };
+    try {
+        const card = fx.decision.buildQuizCard({ ...WS_MSG, quiz_id: 'qz-m', wait_for_answer: true });
+        const inner = card.children[0] || card;
+        const quizCard = inner.matchesClass && inner.matchesClass('chat-quiz-card') ? inner : card;
+        assert.match(quizCard.querySelector('.chat-quiz-wait').textContent, /Waiting for your answer/);
+        // The owner was disconnected during the timeout: no frame arrived, history replays the row
+        // with the closed bound and reconciles it into the SAME card.
+        assert.equal(fx.decision.buildQuizCard({ ...WS_MSG, quiz_id: 'qz-m', wait_ended_at: '2026-08-31T10:05:00Z' }), null);
+        assert.equal(quizCard.querySelector('.chat-quiz-wait'), null);
+        assert.match(quizCard.querySelector('.chat-quiz-assumption').textContent, /wait window closed/);
+    } finally { fx.restore(); }
+});

@@ -284,7 +284,7 @@ def direct_owner_wait(ctx: Any, checkpoint: dict) -> str:
                    wait["wait_id"])
     if outcome == "timeout":
         announce_wait_ended(root, ctx.task_id, str(checkpoint.get("quiz_id") or ""),
-                            int(getattr(ctx, "chat_id", 0) or 0))
+                            int(getattr(ctx, "current_chat_id", 0) or 0))
     return outcome
 
 

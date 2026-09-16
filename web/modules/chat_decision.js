@@ -402,6 +402,11 @@ export function createChatDecision({
                 });
                 existing.querySelector('.chat-quiz-details-unavailable')?.remove();
             }
+            if (quiz.waitEnded || !quiz.waitForAnswer) {
+                // A missed timeout frame: reconciliation projects the closed bound too.
+                const waiting = existing.querySelector('.chat-quiz-wait');
+                if (waiting) { waiting.textContent = WAIT_ENDED_TEXT; waiting.classList.remove('chat-quiz-wait'); }
+            }
             setCardState(existing, quiz.state, quiz.answeredIndex);
             return null;
         }

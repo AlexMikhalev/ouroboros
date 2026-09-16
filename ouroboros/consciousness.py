@@ -215,7 +215,7 @@ class BackgroundConsciousness:
             receipt = workers.handle_wake_direct(chat_id, text, metadata, on_finished=self._wake_finished)
         if not receipt.get("admitted"):
             why = str(receipt.get("reason") or "refused")
-            self._last_wake_outcome = f"rejected:{why}"
+            self._last_wake_outcome, self._last_skip_at = f"rejected:{why}", now  # an event never undoes this backoff below the floor
             # A wake the lane could not admit already left an error in the chat: back off
             # like a failed wake. A closed door is retried quietly — the repo-writer gate at
             # the floor, the owner's budget at the interval. The event that asked for this

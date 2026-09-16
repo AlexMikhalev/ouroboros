@@ -294,6 +294,17 @@ def test_rejected_wake_is_typed_and_retried_by_its_reason(clock):
     clock.clock._next_wake_at = now
     assert clock.clock.tick(now) == "rejected:admission_failed"
     assert clock.clock.next_wake_at == now + DEFAULT * 4
+    # An event right after the refusal never pulls the retry below the floor (it would retry
+    # on the next supervisor pass and post the error again): the refusal debounces like a skip.
+    monkeypatch_time = now + 10
+    import ouroboros.consciousness as clock_mod
+    real_time = clock_mod.time.time
+    clock_mod.time.time = lambda: monkeypatch_time
+    try:
+        clock.clock.notify("task_finished:q:completed")
+        assert clock.clock.next_wake_at == now + FLOOR
+    finally:
+        clock_mod.time.time = real_time
 
 
 def test_a_turn_admitted_in_the_same_instant_keeps_the_reason_for_later(clock, monkeypatch):
