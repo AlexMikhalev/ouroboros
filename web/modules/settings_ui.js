@@ -685,7 +685,7 @@ export function renderSettingsPage() {
                                 <input id="s-bg-wakeup-max" type="number" min="60" step="1" placeholder="14400" class="ui-control" name="s-bg-wakeup-max">
                             </div>
                         </div>
-                        <div class="settings-inline-note">Ouroboros chooses the interval between its own wake-ups; the two values above are the lower and upper bound it must stay within. <strong>Applies after restart:</strong> the bounds are read when background cognition starts. Autonomy, allowance and concurrency apply without a restart.</div>
+                        <div class="settings-inline-note">Ouroboros chooses the interval between its own wake-ups; the two values above are the lower and upper bound it must stay within. All four settings apply without a restart: the alarm clock reads them at each decision.</div>
                     </div>
 
                     <div class="form-section">

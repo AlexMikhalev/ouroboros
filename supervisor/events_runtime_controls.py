@@ -331,8 +331,10 @@ def _handle_toggle_consciousness(evt: Dict[str, Any], ctx: Any) -> None:
         result = ctx.consciousness.stop()
         update_state(lambda st: st.__setitem__("bg_consciousness_enabled", False))
     else:
-        status = "running" if ctx.consciousness.is_running else "stopped"
-        result = f"Background consciousness: {status}"
+        snapshot = ctx.consciousness.status_snapshot()
+        result = (f"Background consciousness: {'enabled' if snapshot.get('enabled') else 'disabled'}; "
+                  f"next wake-up at {snapshot.get('next_wake_at') or '?'}; "
+                  f"last outcome: {snapshot.get('last_wake_outcome') or 'none yet'}")
     st = ctx.load_state()
     if st.get("owner_chat_id"):
         ctx.send_with_budget(int(st["owner_chat_id"]), f"🧠 {result}")

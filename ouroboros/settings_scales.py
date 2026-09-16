@@ -148,10 +148,7 @@ RESTART_REQUIRED_SETTINGS = frozenset({
     "LOCAL_MODEL_N_GPU_LAYERS",
     "LOCAL_MODEL_CONTEXT_LENGTH",
     "LOCAL_MODEL_CHAT_FORMAT",
-    # Background cognition reads these at consciousness __init__, so a change
-    # only takes effect after restart (Phase 4 Evolution settings group). The
-    # consciousness autonomy/allowance/concurrency keys are deliberately NOT here:
-    # they are read at decision time, so a save applies without a restart.
-    "OUROBOROS_BG_WAKEUP_MIN",
-    "OUROBOROS_BG_WAKEUP_MAX",
+    # The consciousness keys (autonomy, allowance, concurrency, wake-up bounds) are
+    # deliberately NOT here: the alarm clock reads them at each decision
+    # (consciousness.tick / set_next_wakeup), so a save applies without a restart.
 })

@@ -558,8 +558,6 @@ export function createChatInstance({
     }
 
     function syncHeaderControlState(data) {
-        const background = data?.bg_consciousness_state;
-        if (Number(background?.chat_id ?? 1) === chatId) modelWaits.syncBackground(background);
         headerActions?.querySelectorAll('[data-chat-command]').forEach((button) => {
             const cmd = button.dataset.chatCommand;
             const state = cmd === 'evolve' ? [data?.evolution_enabled, data?.evolution_state?.detail]

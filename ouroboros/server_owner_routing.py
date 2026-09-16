@@ -449,9 +449,6 @@ def _route_owner_message(bridge: Any, ctx: Any, incoming: Dict[str, Any]) -> Non
         # validates the payload and records the admitted revision.
         from supervisor.events import _handle_promote_chat_to_task
 
-        ctx.consciousness.inject_observation(
-            f"Message from my human: {incoming.get('log_text') or ''}"
-        )
         task_id = uuid.uuid4().hex[:16]
         event = {
             "type": "promote_chat_to_task",
@@ -521,7 +518,7 @@ def _route_owner_message(bridge: Any, ctx: Any, incoming: Dict[str, Any]) -> Non
             status="project_unavailable",
         )
         return
-    ctx.consciousness.inject_observation(f"Message from my human: {incoming.get('log_text') or ''}")
+    # An owner message never wakes consciousness (owner decision В13): Main answers it itself.
     task_metadata = _scoped_task_metadata(project_id, task_metadata)
     task_metadata = {**(task_metadata or {}), "client_message_id": client_message_id}
     # The turn's origin identity rides UNCONDITIONALLY (not only when the
@@ -640,16 +637,13 @@ def _route_owner_message(bridge: Any, ctx: Any, incoming: Dict[str, Any]) -> Non
         task_metadata = _decision_turn_metadata(ctx, chat_id, client_message_id, task_metadata)
 
     def _run_direct() -> None:
-        try:
-            ctx.handle_chat_direct(
-                chat_id,
-                text or image_caption,
-                image_data,
-                task_constraint=task_constraint,
-                task_metadata=task_metadata,
-            )
-        finally:
-            ctx.consciousness.resume()
+        # The alarm clock reads the direct-activity census itself; nothing pauses it here.
+        ctx.handle_chat_direct(
+            chat_id,
+            text or image_caption,
+            image_data,
+            task_constraint=task_constraint,
+            task_metadata=task_metadata,
+        )
 
-    ctx.consciousness.pause()
     threading.Thread(target=_run_direct, daemon=True).start()

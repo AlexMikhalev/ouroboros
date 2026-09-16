@@ -16,7 +16,7 @@
  * @property {boolean} bg_consciousness_enabled
  * @property {number} evolution_cycle
  * @property {Object} evolution_state
- * @property {Object} bg_consciousness_state
+ * @property {BgConsciousnessState} bg_consciousness_state  // the alarm clock's snapshot + server projection (status/detail)
  * @property {?number} spent_calls
  * @property {boolean} supervisor_ready
  * @property {?string} supervisor_error
@@ -33,6 +33,29 @@
  * @property {ActiveDirectTurn[]=} active_direct_turns  // active direct/ephemeral chat turns snapshot
  * @property {boolean=} active_chat_activities_complete
  * @property {ActiveChatActivity[]=} active_chat_activities  // combined snapshot: direct/ephemeral turns + root managed queue tasks
+ */
+
+/**
+ * Background Consciousness alarm-clock snapshot (server._describe_bg_consciousness_state over
+ * consciousness.status_snapshot). A wake-up is an ordinary Main turn; its liveness is the
+ * direct-activity census, never a flag here.
+ * @typedef {Object} BgConsciousnessState
+ * @property {boolean} enabled
+ * @property {string} status  // disabled | stopped | thinking | sleeping | waiting_for_first_conversation | allowance_exhausted | allowance_unknown | wake_rejected | wake_failed
+ * @property {string} detail  // one honest owner-readable line (e.g. "Sleeping until 14:05.")
+ * @property {string} level  // observe | act | full
+ * @property {string} next_wake_at  // ISO instant; "" when unknown
+ * @property {string} pending_reason  // the event that will wake it early, "" when none
+ * @property {string} last_wake_at  // ISO instant; "" before the first wake of this process
+ * @property {string} last_wake_task_id
+ * @property {string} last_wake_outcome  // running | done | failed | rejected:<reason> | skipped:<reason>
+ * @property {string} last_error
+ * @property {?number} spent_24h_usd  // null when the ledger could not be read
+ * @property {?number} daily_usd
+ * @property {string} allowance_resets_at  // ISO instant the oldest counted spend leaves the 24 h window
+ * @property {number} tasks_running  // live roots consciousness started
+ * @property {number} max_tasks
+ * @property {string} live_wake_task_id  // "" when no wake-up is running
  */
 
 /**

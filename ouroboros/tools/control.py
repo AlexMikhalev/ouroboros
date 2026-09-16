@@ -373,6 +373,10 @@ def get_tools() -> List[ToolEntry]:
                 "action": {"type": "string", "enum": ["start", "stop", "status"], "description": "Action to perform"},
             }, "required": ["action"]},
         }, _toggle_consciousness),
+        ToolEntry("set_next_wakeup", {
+            "name": "set_next_wakeup", "description": "Choose how many seconds until the next consciousness wake-up (clamped into the owner's OUROBOROS_BG_WAKEUP_MIN/MAX bounds; stored for later when consciousness is off).",
+            "parameters": {"type": "object", "properties": {"seconds": {"type": "integer", "description": "Seconds until the next wake-up"}}, "required": ["seconds"]},
+        }, _set_next_wakeup),
         ToolEntry("switch_model", {
             "name": "switch_model",
             "description": "Switch to a different LLM model or reasoning effort level. "

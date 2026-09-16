@@ -358,9 +358,8 @@ def _set_next_wakeup(ctx: ToolContext, seconds: int) -> str:
     ``consciousness_next_interval_sec``, where the alarm clock reads the choice
     when it schedules the next wake. Any turn may call it (a wake-up picks its
     own rhythm; a Main turn may adjust it); with consciousness off the choice is
-    stored, not refused, and applies once it is enabled. The ToolEntry lives in
-    ``control.get_tools`` once the legacy loop's private registration of the
-    same name is retired (ToolRegistry refuses a duplicate name).
+    stored, not refused, and applies once it is enabled. The alarm clock
+    (``consciousness.py``) reads the value when the wake-up ends.
     """
     from ouroboros.config import get_bg_wakeup_max_sec, get_bg_wakeup_min_sec
     from supervisor.state import update_state

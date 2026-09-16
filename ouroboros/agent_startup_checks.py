@@ -728,7 +728,6 @@ def check_stray_server_processes(env: Any) -> Tuple[Dict[str, Any], int]:
 def _hot_store_thresholds() -> Tuple[Tuple[str, int, str], ...]:
     from ouroboros.context_budget import (
         EVENTS_LOG_WARN_BYTES,
-        BG_OBSERVATIONS_WARN_BYTES,
         PROGRESS_LOG_WARN_BYTES,
         SCHEDULED_TASKS_WARN_BYTES,
         SKILL_REVIEW_ROOT_TASKS_WARN_BYTES,
@@ -744,14 +743,6 @@ def _hot_store_thresholds() -> Tuple[Tuple[str, int, str], ...]:
         "supervisor rotation tick (rotate_chat_log_if_needed pattern)."
     )
     return (
-        (
-            "state/consciousness_observations.jsonl",
-            BG_OBSERVATIONS_WARN_BYTES,
-            "Background consciousness replays this append-only inbox on wake; "
-            "acknowledged rows past GC retention fold into an archive segment "
-            "at startup (unacknowledged rows never) — growth past this size "
-            "means a large unacknowledged backlog or a gap-blocked fold.",
-        ),
         (
             "state/usage_attempts.jsonl",
             USAGE_LEDGER_WARN_BYTES,

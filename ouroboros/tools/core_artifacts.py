@@ -443,15 +443,10 @@ def _escalate(
     ancestor was willing to answer. Expiry stays structural (no host deadline):
     the task-done seam closes an unanswered card, but a late answer to it is
     still accepted and reaches the chat as an ordinary owner message (В17a=A).
+    A consciousness wake-up is an ordinary root turn here: it asks its owner
+    through the same card and may wait for the answer like any other root.
     """
-    from ouroboros.tool_capabilities import BACKGROUND_DELEGATION_ROLE
-
     meta = getattr(ctx, "task_metadata", {}) if isinstance(getattr(ctx, "task_metadata", {}), dict) else {}
-    if str(meta.get("delegation_role") or "") == BACKGROUND_DELEGATION_ROLE:
-        # Background cognition has no owner-interactive loop and no parent:
-        # a card it can never collect an answer for would be a zombie.
-        return ("⚠️ ESCALATE_UNAVAILABLE: background consciousness cannot escalate — "
-                "record the open question in memory or scratchpad instead.")
     try:
         payload = validate_quiz_payload(question, options, stake, assumption,
                                         wait_for_answer=wait_for_answer,

@@ -4,11 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-# The delegation_role value background consciousness stamps on its shared tool
-# context before every tool call. Owner-delivery gating keys on it, so both
-# sides import this one name instead of repeating the literal.
-BACKGROUND_DELEGATION_ROLE: str = "background"
-
 OWNER_DELIVERY_TOOL_NAMES: frozenset[str] = frozenset({
     "send_user_message", "send_photo", "send_video", "send_file", "send_links",
 })
