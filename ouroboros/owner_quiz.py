@@ -246,6 +246,25 @@ def record_answered(
     return outcome
 
 
+def mark_wait_ended(drive_root: Any, task_id: str, quiz_id: str) -> bool:
+    """The bounded wait behind an OPEN card closed and the task resumed: the block stops
+    saying ``wait_for_answer`` (replay renders the truth) and keeps the instant for audit.
+    The card stays open and answerable. Returns whether a block changed."""
+    changed: List[bool] = []
+
+    def _mutator(quizzes: Dict[str, Dict[str, Any]]) -> Any:
+        block = quizzes.get(str(quiz_id))
+        if not isinstance(block, dict) or not block.get("wait_for_answer"):
+            return _KEEP
+        block.pop("wait_for_answer", None)
+        block["wait_ended_at"] = utc_now_iso()
+        changed.append(True)
+        return block
+
+    _mutate_projection(drive_root, task_id, _mutator)
+    return bool(changed)
+
+
 def reconcile_terminal(drive_root: Any, task_id: str) -> List[str]:
     """Task-done reconciliation: every still-open quiz expires structurally.
 

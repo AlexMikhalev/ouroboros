@@ -564,7 +564,13 @@ def handle_wake_direct(
 
     import threading
 
-    threading.Thread(target=_run, name=f"wake-turn-{task_id}", daemon=True).start()
+    try:
+        threading.Thread(target=_run, name=f"wake-turn-{task_id}", daemon=True).start()
+    except Exception:
+        # A registered turn nobody runs would read as a live owner turn forever.
+        log.warning("wake turn %s could not start its thread", task_id, exc_info=True)
+        admitted["registry"].unregister(task_id)
+        return {"admitted": False, "task_id": "", "reason": "admission_failed"}
     return {"admitted": True, "task_id": task_id, "reason": ""}
 
 

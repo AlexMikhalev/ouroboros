@@ -20,6 +20,7 @@ const QUIZ_STATUS_TEXT = {
 // States that still take an answer. Only a settled one (answered/superseded)
 // turns the card into a pure record.
 const ANSWERABLE_QUIZ_STATES = ['open', 'expired_terminal'];
+const WAIT_ENDED_TEXT = 'The wait window closed and the task continued; you can still answer.';
 
 // Neutral, factual statuses (owner decision 15~A): the card never scolds the
 // router — it states what the click does and what happened.
@@ -214,6 +215,7 @@ export function createChatDecision({
             stake: String(src.stake || ''),
             assumption: String(src.assumption || ''),
             waitForAnswer: src.wait_for_answer === true,
+            waitEnded: Boolean(src.wait_ended_at),
             state: String(src.state || 'open'),
             taskId: String(msg.task_id || ''),
             ts: msg.ts || null,
@@ -527,13 +529,13 @@ export function createChatDecision({
         // The signature line: what the agent keeps doing while the owner has
         // not answered — and, once the card settles, the record of the path
         // it took by default.
-        if (quiz.assumption || quiz.waitForAnswer) {
+        if (quiz.assumption || quiz.waitForAnswer || quiz.waitEnded) {
             const assumption = document.createElement('div');
             assumption.className = 'chat-quiz-assumption';
             if (quiz.waitForAnswer) assumption.classList.add('chat-quiz-wait');
             assumption.textContent = quiz.waitForAnswer
                 ? 'Waiting for your answer; Stop and the task deadline still apply.'
-                : `Continuing meanwhile: ${quiz.assumption}`;
+                : (quiz.waitEnded ? WAIT_ENDED_TEXT : `Continuing meanwhile: ${quiz.assumption}`);
             card.append(assumption);
         }
 
@@ -726,7 +728,18 @@ export function createChatDecision({
         // lifecycle frame (expired/superseded) carries no comment.
         const comment = String(frame.comment || '');
         if (comment) card.dataset.ownerComment = comment;
-        return setCardState(card, String(frame.state || ''), index) || changed;
+        let waitChanged = false;
+        if (frame.wait_for_answer === false) {
+            // The bounded wait closed and the task resumed: the card stays open and
+            // answerable, but it no longer says the task is waiting.
+            const waiting = card.querySelector('.chat-quiz-wait');
+            if (waiting) {
+                waiting.textContent = WAIT_ENDED_TEXT;
+                waiting.classList.remove('chat-quiz-wait');
+                waitChanged = true;
+            }
+        }
+        return setCardState(card, String(frame.state || ''), index) || changed || waitChanged;
     }
 
     return { buildQuizCard, buildQuestionPointer, appendQuestionPointer, readQuestion, revealQuestion, setCardState, applyQuizStateFrame, renderRoutingDecision,

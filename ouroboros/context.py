@@ -361,6 +361,14 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
         runtime_mode = get_runtime_mode()
     except Exception:
         runtime_mode = os.environ.get("OUROBOROS_RUNTIME_MODE", "advanced")
+    if not bool(task.get("_is_direct_chat")):
+        # A root consciousness started carries a per-task mode cap (Act/Observe = light) that
+        # the dispatcher enforces: its Runtime block names the mode it actually runs in. The
+        # wake itself is a direct turn and keeps Main's block byte-identical (В31=B).
+        from ouroboros.consciousness_authority import effective_runtime_mode, is_consciousness_origin
+
+        if is_consciousness_origin(task.get("metadata")):
+            runtime_mode = effective_runtime_mode(str(runtime_mode or ""), task.get("metadata"))
     runtime_data = {
         "utc_now": utc_now_iso(),
         "repo_dir": str(env.repo_dir),

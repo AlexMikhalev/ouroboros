@@ -518,8 +518,8 @@ def _owner_binding_chat_id(ctx: Any, chat_id: int, is_external_transport: bool) 
 def _project_id_for_registered_chat(ctx: Any, chat_id: int) -> str:
     """Return the registered project id for a project chat_id, else ``""``.
 
-    NOT an isolation gate (full project awareness, v6.32.0): the one mind notices
-    EVERY human message via inject_observation, project rooms included. This just
+    NOT an isolation gate (full project awareness, v6.32.0): the one mind sees
+    EVERY human message in its own Main context, project rooms included. This just
     classifies a chat as a project thread so the message is scoped to that project
     (task_metadata.project_id) and routed to its panel. This active-only lookup is
     paired with ``_reserved_project_for_chat`` for deleting/tombstoned IDs, so a

@@ -462,3 +462,12 @@ def test_status_snapshot_carries_the_alarm_facts(clock):
     assert snapshot["next_wake_at"].startswith("2027-") and snapshot["last_wake_at"] == ""
     assert snapshot["spent_24h_usd"] == 2.5 and snapshot["daily_usd"] == 20.0
     assert snapshot["tasks_running"] == 1 and snapshot["max_tasks"] == 2 and snapshot["live_wake_task_id"] == ""
+
+
+def test_start_after_a_long_off_period_never_announces_a_past_wake(clock, monkeypatch):
+    clock.clock.stop()
+    clock.clock._next_wake_at = T0 - 100  # the clock did not advance while disabled
+    monkeypatch.setattr(clock_module.time, "time", lambda: T0 + 5000)
+    message = clock.clock.start()
+    assert clock.clock.enabled and clock.clock.next_wake_at == T0 + 5000
+    assert "next wake-up at" in message

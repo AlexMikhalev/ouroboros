@@ -215,7 +215,7 @@ def _late_answer_destination(
 
 
 def _forward_late_quiz_answer(
-    drive_root: pathlib.Path, task_id: str, quiz_id: str, block: Dict[str, Any],
+    drive_root: pathlib.Path, task_id: str, quiz_id: str, block: Dict[str, Any], *, source: str = "web",
 ) -> Tuple[bool, str]:
     """Deliver an accepted late answer as the owner's own message in that chat.
 
@@ -246,10 +246,10 @@ def _forward_late_quiz_answer(
     bridge = message_bus.get_bridge()
     row, rejoined = message_bus.accept_local_message(
         bridge, drive_root, text,
-        chat_id=chat_id, user_id=1, source="web",
+        chat_id=chat_id, user_id=1, source=str(source or "web"),
         client_message_id=client_message_id,
-        # Provenance rides its OWN field; the real transport (web/Telegram)
-        # keeps client_surface, which this path never substitutes.
+        # Provenance rides its OWN field; the real transport (the web card, or
+        # the skill that relayed the owner's tap) is the message's source.
         task_metadata={"late_answer": {"task_id": task_id, "quiz_id": quiz_id}},
     )
     if not rejoined:
@@ -262,7 +262,7 @@ def _forward_late_quiz_answer(
             # The accepted canonical row is the echo's text authority, exactly
             # as the owner's own typing echoes what the ingress recorded.
             "type": "chat", "role": "user", "content": str(row.get("text") or text),
-            "ts": str(row.get("ts") or ""), "source": "web", "chat_id": chat_id,
+            "ts": str(row.get("ts") or ""), "source": str(source or "web"), "chat_id": chat_id,
             "sender_session_id": "", "client_message_id": client_message_id,
         }
         try:
@@ -273,7 +273,7 @@ def _forward_late_quiz_answer(
     return True, ""
 
 
-async def answer_decision(drive_root: pathlib.Path, body: Any) -> Tuple[int, Dict[str, Any]]:
+async def answer_decision(drive_root: pathlib.Path, body: Any, *, source: str = "web") -> Tuple[int, Dict[str, Any]]:
     """The ONE decision-answer ingress, transport-neutral: ``(status, payload)``.
 
     ``POST /api/decisions`` (the browser card) and the loopback Host Service
@@ -479,7 +479,7 @@ async def answer_decision(drive_root: pathlib.Path, body: Any) -> Tuple[int, Dic
             # owner turn).
             try:
                 forwarded, forward_reason = _forward_late_quiz_answer(
-                    drive_root, task_id, quiz_id, block,
+                    drive_root, task_id, quiz_id, block, source=source,
                 )
             except Exception:
                 log.warning("Late quiz answer delivery failed for %s", quiz_id, exc_info=True)

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import pathlib
+import re
 from typing import Any, Dict, List, Optional
 
 from ouroboros.consciousness_authority import (
@@ -22,6 +23,7 @@ from ouroboros.utils import iter_jsonl_objects
 
 PROMPT_REL = pathlib.Path("prompts") / "CONSCIOUSNESS.md"
 EVENT_LINES_MAX = 10
+CARD_LINES_MAX = 4  # unanswered cards never crowd out what settled since the last wake
 CHAT_TAIL_BYTES = 512_000
 PLACEHOLDERS = ("reason", "last_wake_ago", "events", "level", "level_line", "withheld_tools",
                 "spent_usd", "daily_usd", "running", "max_tasks", "interval")
@@ -79,7 +81,7 @@ def wake_events(drive_root: Any, *, since: float, now: float, exclude_task_id: s
         rows = list_task_results(root)
     except Exception as exc:  # a disclosed gap beats a missing wake
         rows, lines = [], [f"- task_results unreadable: {type(exc).__name__}"]
-    cards, settled = [], []
+    cards, settled = [], []  # (stamp, line) pairs; both classes are listed newest first
     for row in rows:
         task_id = str(row.get("task_id") or "")
         if not task_id:
@@ -89,7 +91,8 @@ def wake_events(drive_root: Any, *, since: float, now: float, exclude_task_id: s
             if not isinstance(block, dict) or block.get("answered_at"):
                 continue
             if block.get("state") in (STATE_OPEN, STATE_EXPIRED_TERMINAL):
-                cards.append(f"- open question card {quiz_id} on task {task_id} (no answer yet)")
+                cards.append((str(block.get("asked_at") or ""),
+                              f"- open question card {quiz_id} on task {task_id} (no answer yet)"))
         if task_id == exclude_task_id or row.get("_is_direct_chat"):
             continue
         status, stamp = str(row.get("status") or ""), str(row.get("updated_at") or row.get("ts") or "")
@@ -98,9 +101,11 @@ def wake_events(drive_root: Any, *, since: float, now: float, exclude_task_id: s
             cost_text = f", ${float(cost):.2f}" if isinstance(cost, (int, float)) else ""
             title = str(row.get("description") or row.get("text") or row.get("result") or "")[:80]
             settled.append((stamp, f"- task {task_id} {status}{cost_text}: {title}".rstrip(": ")))
-    # The owner's unanswered cards first, then what settled — newest first, so the
-    # honest truncation below drops the oldest facts, never the ones that just happened.
-    lines += cards + [line for _stamp, line in sorted(settled, reverse=True)]
+    # The newest unanswered cards first (a bounded share, so a backlog of old cards never
+    # starves the settled lines), then what settled — newest first, so the honest
+    # truncation below drops the oldest facts, never the ones that just happened.
+    lines += [line for _stamp, line in sorted(cards, reverse=True)[:CARD_LINES_MAX]]
+    lines += [line for _stamp, line in sorted(settled, reverse=True)]
     owner_messages = 0
     try:
         for entry in iter_jsonl_objects(root / "logs" / "chat.jsonl", tail_bytes=CHAT_TAIL_BYTES):
@@ -115,7 +120,8 @@ def wake_events(drive_root: Any, *, since: float, now: float, exclude_task_id: s
 
 def render_wake_message(drive_root: Any, repo_dir: Any, *, reason: str, last_wake_at: float, since: float,
                         now: float, level: Any, disabled_tools: List[str], spent_usd: Any, daily_usd: Any,
-                        running: int, max_tasks: int, interval: int, exclude_task_id: str = "") -> str:
+                        running: int, max_tasks: int, interval: int, exclude_task_id: str = "",
+                        spent_is_floor: bool = False) -> str:
     """Fill ``prompts/CONSCIOUSNESS.md`` for one wake; every placeholder is substituted."""
     template = safe_read(pathlib.Path(repo_dir) / PROMPT_REL) or _FALLBACK_TEMPLATE
     events = wake_events(drive_root, since=since, now=now, exclude_task_id=exclude_task_id)
@@ -123,6 +129,8 @@ def render_wake_message(drive_root: Any, repo_dir: Any, *, reason: str, last_wak
     shown = events[:EVENT_LINES_MAX] + ([f"(+{omitted} more; see recent_tasks)"] if omitted else [])
     normalized = normalize_level(level)
     spent = f"{float(spent_usd):.2f}" if isinstance(spent_usd, (int, float)) else "unknown"
+    if spent_is_floor and spent != "unknown":
+        spent = f"at least {spent}"  # unmetered rows in the window: the number is a floor
     facts = {
         "reason": str(reason or "heartbeat"),
         "last_wake_ago": _ago(now - last_wake_at) if last_wake_at else "no wake since this process started",
@@ -132,6 +140,6 @@ def render_wake_message(drive_root: Any, repo_dir: Any, *, reason: str, last_wak
         "spent_usd": spent, "daily_usd": f"{float(daily_usd):.2f}",
         "running": str(int(running)), "max_tasks": str(int(max_tasks)), "interval": str(int(interval)),
     }
-    for key in PLACEHOLDERS:
-        template = template.replace("{" + key + "}", facts[key])
-    return template
+    # One pass: a fact (a task title inside {events}) that happens to contain "{daily_usd}"
+    # is never substituted again.
+    return re.sub(r"\{(\w+)\}", lambda m: facts.get(m.group(1), m.group(0)), template)

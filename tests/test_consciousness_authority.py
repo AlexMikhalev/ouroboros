@@ -791,6 +791,31 @@ def test_campaign_keeps_the_origin_and_its_cycle_tasks_inherit_it(tmp_path, monk
     assert not state.load_state().get("evolution_mode_enabled")
 
 
+def test_a_transient_refusal_never_pauses_the_campaign(tmp_path, monkeypatch):
+    """Only a consciousness refusal (allowance, concurrency) pauses; anything else clears itself
+    and the next pass retries — without recording a cycle (opus round 3)."""
+    from supervisor import evolution_lifecycle, queue, state
+
+    state.init(tmp_path)
+    queue.init(tmp_path)
+    pending: list = []
+    queue.init_queue_refs(pending, {}, {"value": 0})
+    monkeypatch.setattr(state, "TOTAL_BUDGET_LIMIT", 0.0)
+    evolution_lifecycle.start_evolution_campaign("Improve", source="owner_chat")
+    state.update_state(lambda live: live.update(owner_chat_id=1, evolution_mode_enabled=True,
+                                                evolution_owner_stopped=False))
+    monkeypatch.setattr(evolution_lifecycle, "evolution_block_reason", lambda: "")
+    sent: list = []
+    monkeypatch.setattr(queue, "send_with_budget", lambda cid, text, **kw: sent.append(text))
+    monkeypatch.setattr(queue, "persist_queue_snapshot", lambda reason="": None)
+    monkeypatch.setattr(queue, "enqueue_task", lambda task, **kw: {**task, "_admission_blocked": "duplicate_task_id"})
+    queue.enqueue_evolution_task_if_needed()
+    assert pending == [] and sent == []
+    assert evolution_lifecycle._read_evolution_campaign()["status"] == "active"
+    live = state.load_state()
+    assert live.get("evolution_mode_enabled") is True and not live.get("evolution_cycle")
+
+
 def test_owner_campaign_carries_no_origin(tmp_path):
     from supervisor import evolution_lifecycle, queue, state
 
@@ -914,3 +939,42 @@ def test_globalized_project_promotion_keeps_the_origin(monkeypatch):
     captured.clear()
     pipeline._run_global_backlog_promotion_only(types.SimpleNamespace(), {"id": "p-2", "type": "task"}, entry, None)
     assert captured[0]["metadata"] == {"globalized_from_project_task": True}
+
+
+# --- round 3: a consciousness-started deep review stays inside the allowance; a started root
+# --- reads the mode it runs in ---------------------------------------------------------
+
+
+def test_a_consciousness_started_review_keeps_the_tree_category():
+    """The allowance discovers its roots by the consciousness categories: a review root whose only
+    priced rows said `deep_self_review` was invisible to it (astra round 3)."""
+    from ouroboros.deep_self_review import _review_usage_scope
+    from ouroboros.usage_accounting import UsageScope
+
+    kept = _review_usage_scope(UsageScope(category="consciousness_task", source="agent.task"))
+    assert kept.category == "consciousness_task" and kept.source == "deep_self_review"
+    wake = _review_usage_scope(UsageScope(category="consciousness", source="agent.task"))
+    assert wake.category == "consciousness"
+    own = _review_usage_scope(UsageScope(category="task", source="agent.task"))
+    assert own.category == "deep_self_review" and own.source == "deep_self_review"
+    assert _review_usage_scope(UsageScope()).category == "deep_self_review"
+
+
+def test_a_started_root_reads_the_mode_it_runs_in_but_the_wake_keeps_mains(tmp_path, monkeypatch):
+    """The dispatcher caps a started root to light (Act/Observe); its Runtime block says so. The
+    wake itself is a direct turn and keeps Main's block byte-identical (В31=B)."""
+    import json
+
+    from ouroboros.context import build_runtime_section
+    from tests.test_context_runtime_section import _make_health_env
+
+    env = _make_health_env(tmp_path)
+    monkeypatch.setattr("ouroboros.config.get_runtime_mode", lambda: "advanced")
+    started = {"id": "root-1", "type": "task", "metadata": dict(_wake_task("act")["metadata"])}
+    payload = json.loads(build_runtime_section(env, started).split("\n\n", 1)[1])
+    assert payload["runtime_mode"] == "light" and "forbids Ouroboros repo mutation" in payload["runtime_mode_rule"]
+    wake = {"id": "wake-1", "type": "task", "_is_direct_chat": True, "metadata": dict(_wake_task("act")["metadata"])}
+    payload = json.loads(build_runtime_section(env, wake).split("\n\n", 1)[1])
+    assert payload["runtime_mode"] == "advanced" and "runtime_mode_rule" not in payload
+    full = {"id": "root-2", "type": "task", "metadata": dict(_wake_task("full")["metadata"])}
+    assert json.loads(build_runtime_section(env, full).split("\n\n", 1)[1])["runtime_mode"] == "advanced"

@@ -891,6 +891,20 @@ def _retrieving_task(repo_dir: pathlib.Path, drive_root: pathlib.Path, *,
     return "\n\n".join(parts), {"memory": memory, "bible_chars": len(bible)}
 
 
+def _review_usage_scope(current: Any) -> Any:
+    """The review's own usage scope: ``source`` names the surface; the CATEGORY stays the
+    tree's when that tree is one consciousness started (``consciousness``/``consciousness_task``),
+    because the rolling allowance discovers its roots by that category — a review root whose
+    only priced rows said ``deep_self_review`` was invisible to it (review round 3)."""
+    from dataclasses import replace
+
+    from ouroboros.consciousness_allowance import CONSCIOUSNESS_CATEGORIES
+
+    category = str(getattr(current, "category", "") or "")
+    keep = category in CONSCIOUSNESS_CATEGORIES
+    return replace(current, category=category if keep else "deep_self_review", source="deep_self_review")
+
+
 def _run_retrieving_review(
     repo_dir: pathlib.Path,
     drive_root: pathlib.Path,
@@ -906,7 +920,7 @@ def _run_retrieving_review(
     """A retrieving row (native episode or delegated session) through the
     shared executor seam, exactly like the advisory: hand-built request, slot
     and assignment; the product is the report text."""
-    from dataclasses import asdict, replace as _dc_replace
+    from dataclasses import asdict
 
     from ouroboros.config import get_finalization_grace_sec, get_task_abs_ceiling_sec
     from ouroboros.deadline_utils import review_operation_timeout_sec
@@ -963,7 +977,7 @@ def _run_retrieving_review(
         )
     except Exception:
         log.debug("deep self-review prompt custody write failed", exc_info=True)
-    scope = _dc_replace(current_usage_scope() or UsageScope(), category="deep_self_review", source="deep_self_review")
+    scope = _review_usage_scope(current_usage_scope() or UsageScope())
     memory = task_facts["memory"]
     try:
         with usage_scope(scope):

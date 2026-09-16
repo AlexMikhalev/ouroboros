@@ -487,8 +487,11 @@ def _nanny_finalization_message(
     one execution), only the accusation when custody has no rows yet (a
     pending/uncustodied start is an attempt, not a choice)."""
     try:
-        if "delegate_start" not in set(tools.available_tools()):
-            return ""  # the verbs are invisible here; "you chose not to" would be false
+        from ouroboros.tools import registry_guards
+
+        if "delegate_start" not in set(tools.available_tools()) or "delegate_start" in registry_guards._disabled_tools(
+                getattr(tools, "_ctx", None)):
+            return ""  # the verb is invisible or withheld here; "you chose not to" would be false
     except Exception:
         log.debug("nanny nudge: toolset visibility check failed", exc_info=True)
     evidence: Dict[str, Any] = {}

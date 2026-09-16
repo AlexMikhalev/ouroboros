@@ -222,6 +222,11 @@ def enqueue_evolution_task_if_needed() -> None:
         # transaction is archived as dispatch_not_persisted by the next one.
         reason = str(admitted.get("_admission_blocked") or "admission_fence")
         detail = str(admitted.get("_admission_detail") or admitted.get("_worker_pool_disabled_reason") or "")
+        if not reason.startswith("consciousness_"):
+            # Any other refusal clears itself (a pool, a reservation): no cycle is recorded
+            # and the next pass tries again, as before — never a pause of the owner's campaign.
+            log.warning("evolution cycle %s was not admitted (%s); retrying on the next pass", tid, reason)
+            return
         q.pause_evolution_campaign(f"admission_refused:{reason}")
         q.disable_evolution_projection()
         q.send_with_budget(

@@ -817,7 +817,7 @@ async def _api_chat_decision(request: Request) -> JSONResponse:
     from ouroboros.gateway.task_decision import answer_decision
 
     try:
-        status, payload = await answer_decision(ctx.data_dir, body)
+        status, payload = await answer_decision(ctx.data_dir, body, source=f"skill:{skill_name}")
     except Exception as exc:
         log.debug("Host service decision relay failed", exc_info=True)
         return _json_error(str(exc), 500)

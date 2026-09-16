@@ -398,10 +398,9 @@ class QuizOutbound(TypedDict):
 class QuizStateOutbound(TypedDict):
     """Outbound WS lifecycle update for an already-rendered quiz card.
 
-    A separate discriminator (not a second ``quiz`` frame): the display path
-    dedupes quiz frames by ``quiz:{quiz_id}:{ts}``, so a state change must
-    never look like a new card. ``answered_index`` rides only with the
-    ``answered`` state.
+    A separate discriminator (not a second ``quiz`` frame): the display path dedupes
+    quiz frames by ``quiz:{quiz_id}:{ts}``, so a state change must never look like a
+    new card. ``answered_index`` rides only with the ``answered`` state.
     """
 
     type: Literal["quiz_state"]
@@ -410,6 +409,7 @@ class QuizStateOutbound(TypedDict):
     state: str
     ts: str
     answered_index: NotRequired[int]
+    wait_for_answer: NotRequired[bool]  # additive: False once a bounded wait closed (the card stays open)
     # #471: the owner's recorded free-text answer rides the live frame (absent
     # when empty) so the open card renders `Owner's answer:` as replay does.
     comment: NotRequired[str]

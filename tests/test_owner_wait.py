@@ -146,12 +146,21 @@ def test_the_granted_resume_row_records_the_bound_expiry(tmp_path, monkeypatch):
     from ouroboros.task_results import load_task_result
     from supervisor import worker_owner_wait as supervisor_wait
 
+    import supervisor.message_bus as mb
+    from ouroboros.owner_quiz import quiz_states, record_asked
+
+    record_asked(tmp_path, "root-1", quiz_id="q1", question="Which db?", options=["a", "b"],
+                 assumption="a meanwhile", chat_id=1, wait_for_answer=True)
+    frames: list = []
+    bridge = mb.LocalChatBridge()
+    bridge._broadcast_fn = frames.append
+    monkeypatch.setattr(mb, "get_bridge", lambda: bridge)
     wait = {"wait_id": "w1", "task_attempt": 1, "quiz_id": "q1", "source_ref": "ref"}
     set_owner_wait(tmp_path, "root-1", {**wait, "state": "waiting"})
     worker = SimpleNamespace(in_q=queue.Queue(), busy_task_id="root-1",
                              proc=SimpleNamespace(pid=7), reaping=False, active_capacity=False)
     meta = {"worker_id": 0, "attempt": 1, "owner_wait": {**wait, "state": "waiting"},
-            "task": {"id": "root-1"}, "started_at": time.time()}
+            "task": {"id": "root-1", "chat_id": 1}, "started_at": time.time()}
     pool = SimpleNamespace(RUNNING={"root-1": meta}, WORKERS={0: worker}, DRIVE_ROOT=tmp_path)
     supervisor_wait.handle_owner_wait(
         {"type": "owner_wait", "task_id": "root-1", "worker_id": 0, "pid": 7,
@@ -167,6 +176,13 @@ def test_the_granted_resume_row_records_the_bound_expiry(tmp_path, monkeypatch):
     assert supervisor_wait._grant_resume("root-1", meta, worker) is True
     row = load_task_result(tmp_path, "root-1")["owner_wait"]
     assert row["state"] == "resumed" and row["resume_reason"] == "timeout"
+    # The bound closed: the card's projection and the live card both stop saying "waiting"
+    # while the question stays open and answerable (astra round 3).
+    block = quiz_states(tmp_path, "root-1")["q1"]
+    assert block["state"] == "open" and "wait_for_answer" not in block and block["wait_ended_at"]
+    [frame] = [f for f in frames if f.get("type") == "quiz_state"]
+    assert frame["quiz_id"] == "q1" and frame["state"] == "open" and frame["wait_for_answer"] is False
+    assert frame["chat_id"] == 1
 
 
 def test_cold_wait_requires_observed_restart_and_current_wait(tmp_path):

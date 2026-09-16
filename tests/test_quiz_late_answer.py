@@ -119,6 +119,28 @@ def test_an_answer_the_live_task_received_is_not_forwarded_when_retried_after_it
     assert _inbox(bridge) == [] and not [f for f in frames if f.get("type") == "chat"]
 
 
+def test_a_relayed_late_answer_keeps_the_relaying_skill_as_its_source(tmp_path, monkeypatch):
+    """A late answer relayed by a transport skill (Telegram) is the owner's message from THAT
+    transport, never a web message (astra round 3)."""
+    import asyncio
+
+    from ouroboros.gateway import task_decision as td
+
+    record_asked(tmp_path, "task-3", quiz_id="q1", question="Which db?",
+                 options=["sqlite", "postgres"], assumption="sqlite meanwhile", chat_id=1)
+    reconcile_terminal(tmp_path, "task-3")
+    bridge, frames = _late_bridge(tmp_path, monkeypatch)
+    _decision_app(tmp_path, monkeypatch, live_task=None)  # binds the ingress's task lookup
+    status, body = asyncio.run(td.answer_decision(
+        tmp_path, {"request_id": "r3", "decision_id": "quiz:task-3:q1", "option_index": 1},
+        source="skill:telegram"))
+    assert status == 200 and body["forwarded"] is True
+    [queued] = _inbox(bridge)
+    assert queued["source"] == "skill:telegram" and queued["chat_id"] == 1
+    echo = [f for f in frames if f.get("type") == "chat" and f.get("role") == "user"]
+    assert echo and echo[0].get("source") == "skill:telegram"
+
+
 def test_ingress_heals_an_unreconciled_quiz_of_a_dead_task(tmp_path, monkeypatch):
     """Crash window: the author died before the task-done seam expired its open
     quiz. The ingress still heals the lifecycle first — so the accepted late

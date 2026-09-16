@@ -574,3 +574,19 @@ def test_evidence_reader_crash_surfaces_the_configured_unknown_nudge(tmp_path, m
     )
     assert "CONFIGURED_ACTOR_UNKNOWN" in message
     assert "Start the exact assigned session now" not in message
+
+
+def test_a_withheld_delegate_verb_is_never_a_choice_not_to_delegate(tmp_path):
+    """Dispatch-only withholding (a consciousness Observe wake) leaves delegate_start in the
+    catalog; the accusation must read the withheld list, not the catalog (opus round 3)."""
+    from ouroboros.loop_nudges import _nanny_finalization_message
+
+    parent = _custody_drive(tmp_path / "parent")
+    child = _custody_drive(tmp_path / "child")
+    accused = _nanny_finalization_message(
+        _tools(_split_root_ctx(parent, child), ["delegate_start", "delegate_wait"]), child, "child-none")
+    assert "NANNY_DID_NOT_DELEGATE" in accused
+    withheld = _split_root_ctx(parent, child)
+    withheld.task_metadata = {**withheld.task_metadata, "disabled_tools": ["delegate_start"]}
+    assert _nanny_finalization_message(
+        _tools(withheld, ["delegate_start", "delegate_wait"]), child, "child-none") == ""

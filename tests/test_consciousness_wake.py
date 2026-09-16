@@ -54,12 +54,17 @@ def test_events_list_settled_tasks_open_cards_and_owner_messages_since_the_last_
     _result(tmp_path, "run01", ts=since + 20, status="running")
     _result(tmp_path, "chat1", ts=since + 30, direct=True)  # an owner's own turn: already in Recent chat
     _result(tmp_path, "ask01", ts=since - 100, status="running",
-            quizzes={"q1": {"state": "open"}, "q2": {"state": "answered", "answered_at": "x"}})
+            quizzes={"q1": {"state": "open", "asked_at": _iso(since + 5)}, "q2": {"state": "answered", "answered_at": "x"}})
+    # A backlog of five older cards on one task: only the newest CARD_LINES_MAX cards are listed,
+    # newest first, so old cards never starve the settled lines below (opus round 3).
+    _result(tmp_path, "ask02", ts=since - 200, status="running",
+            quizzes={f"c{i}": {"state": "open", "asked_at": _iso(since - 1000 + i)} for i in range(5)})
     # The previous wake's own card, left behind when its turn ended (expired_terminal, В17a:
     # still answerable), is exactly the "I'll come back to it" case — it must be listed even
     # though the wake's row itself is excluded from the settled-task lines.
     _result(tmp_path, "prev1", ts=since + 40, direct=True,
-            quizzes={"q3": {"state": "expired_terminal"}, "q4": {"state": "expired_terminal", "answered_at": "y"}})
+            quizzes={"q3": {"state": "expired_terminal", "asked_at": _iso(since + 40)},
+                     "q4": {"state": "expired_terminal", "answered_at": "y"}})
     (tmp_path / "logs").mkdir()
     (tmp_path / "logs" / "chat.jsonl").write_text("\n".join([
         json.dumps({"direction": "in", "ts": _iso(since + 5), "text": "hi"}),
@@ -71,6 +76,8 @@ def test_events_list_settled_tasks_open_cards_and_owner_messages_since_the_last_
     assert "- open question card q1 on task ask01 (no answer yet)" in lines
     assert "- open question card q3 on task prev1 (no answer yet)" in lines
     assert not [line for line in lines if "q2" in line or "q4" in line]
+    cards = [line.split()[4] for line in lines if line.startswith("- open question card ")]
+    assert cards == ["q3", "q1", "c4", "c3"]  # newest four; c2..c0 wait for their turn
     assert "- task new01 failed, $0.50: build the thing" in lines
     settled = [line for line in lines if line.startswith("- task ")]
     assert [line.split()[2] for line in settled] == ["new02", "new01"]  # newest first
@@ -186,3 +193,20 @@ def test_projection_without_a_constructed_clock_is_stopped_not_running(monkeypat
     described = server._describe_bg_consciousness_state(True)
     assert described["status"] == "stopped" and "not constructed" in described["detail"]
     assert server._describe_bg_consciousness_state(False)["status"] == "disabled"
+
+
+def test_render_substitutes_placeholders_in_one_pass(tmp_path):
+    """A task title that happens to contain "{daily_usd}" is a fact, not a placeholder."""
+    since = T0 - 3600
+    repo = tmp_path / "repo"
+    (repo / "prompts").mkdir(parents=True)
+    (repo / "prompts" / "CONSCIOUSNESS.md").write_text("spent {spent_usd} / {daily_usd}; events: {events}", encoding="utf-8")
+    _result(tmp_path, "odd01", ts=since + 10, status="completed", cost=0.1, description="check {daily_usd} later")
+    text = wake.render_wake_message(tmp_path, repo, reason="heartbeat", last_wake_at=since,
+                                    since=since, now=T0, level="act", disabled_tools=[], spent_usd=1.0,
+                                    daily_usd=20.0, running=0, max_tasks=2, interval=900)
+    assert text.startswith("spent 1.00 / 20.00;") and "check {daily_usd} later" in text
+    floor = wake.render_wake_message(tmp_path, repo, reason="heartbeat", last_wake_at=since,
+                                     since=since, now=T0, level="act", disabled_tools=[], spent_usd=1.0,
+                                     daily_usd=20.0, running=0, max_tasks=2, interval=900, spent_is_floor=True)
+    assert floor.startswith("spent at least 1.00 / 20.00;")

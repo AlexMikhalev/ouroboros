@@ -535,6 +535,8 @@
  * @property {number=} answered_index
  * @property {string=} comment
  *   The owner's recorded free-text answer, when one was recorded.
+ * @property {boolean=} wait_for_answer
+ *   False once a bounded wait closed and the task resumed; the card stays open and answerable.
  * @property {number=} chat_id
  */
 

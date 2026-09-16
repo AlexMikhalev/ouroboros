@@ -202,6 +202,7 @@ class BackgroundConsciousness:
             self._drive_root, self._repo_dir, reason=reason, last_wake_at=self._last_wake_at,
             since=self._last_wake_at or self._booted_at, now=now, level=level,
             disabled_tools=list(metadata.get("disabled_tools") or []), spent_usd=window.get("accounted_usd"),
+            spent_is_floor=int(window.get("unknown_unmetered") or 0) > 0,
             daily_usd=window.get("limit_usd") or 0.0, running=self._running_roots(),
             max_tasks=get_consciousness_max_tasks(), interval=self._interval(), exclude_task_id=self._last_wake_task_id)
         # Check-and-register under the lane's own re-entrant gate lock: atomic with the census.
@@ -256,6 +257,8 @@ class BackgroundConsciousness:
             if self._enabled:
                 return "Background consciousness is already enabled."
             self._enabled = True
+            # The clock did not advance while disabled: never announce a wake in the past.
+            self._set_next_wake(max(self._next_wake_at, time.time()))
             return f"Background consciousness enabled; next wake-up at {time.strftime('%H:%M', time.localtime(self._next_wake_at))}."
 
     def stop(self) -> str:

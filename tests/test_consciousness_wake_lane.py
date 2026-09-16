@@ -300,3 +300,19 @@ def test_set_next_wakeup_clamps_persists_and_speaks_honestly(tmp_path, monkeypat
         assert state.load_state()["consciousness_next_interval_sec"] == 300
         assert "TOOL_ARG_ERROR" in control._set_next_wakeup(ctx, "soon")
         assert state.load_state()["consciousness_next_interval_sec"] == 300
+
+
+def test_a_wake_whose_thread_cannot_start_leaves_no_registered_turn(monkeypatch, tmp_path):
+    """A registered turn nobody runs would read as a live owner turn forever (opus round 3)."""
+    from ouroboros import agent as agent_module
+
+    _lane(monkeypatch, tmp_path)
+    monkeypatch.setattr(agent_module, "make_agent", lambda **kw: SimpleNamespace(handle_task=lambda task: []))
+
+    def _refuse(self):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading.Thread, "start", _refuse)
+    receipt = workers.handle_wake_direct(1, "wake", dict(WAKE_META))
+    assert receipt == {"admitted": False, "task_id": "", "reason": "admission_failed"}
+    assert get_direct_activity_registry().snapshot() == []

@@ -813,3 +813,26 @@ test('the recommended option carries a badge on the live card and on the targete
         assert.deepEqual(badges(fx.decision.buildQuizCard({ ...WS_MSG, quiz_id: 'qz-3' })), [0, 0]);
     } finally { fx.restore(); }
 });
+
+test('a bounded wait that closed stops saying waiting while the card stays answerable', () => {
+    const fx = fixture({ fetchImpl: async () => ({ ok: true, status: 200 }) });
+    if (!globalThis.CSS) globalThis.CSS = { escape: (v) => String(v) };
+    try {
+        const card = fx.decision.buildQuizCard({ ...WS_MSG, quiz_id: 'qz-w', wait_for_answer: true });
+        const inner = card.children[0] || card;
+        const quizCard = inner.matchesClass && inner.matchesClass('chat-quiz-card') ? inner : card;
+        assert.match(quizCard.querySelector('.chat-quiz-wait').textContent, /Waiting for your answer/);
+        const root = { querySelector: (sel) => (sel.includes('qz-w') ? quizCard : null) };
+        const applied = fx.decision.applyQuizStateFrame(root, { quiz_id: 'qz-w', task_id: 't-1', state: 'open', wait_for_answer: false });
+        assert.equal(applied, true);
+        assert.equal(quizCard.querySelector('.chat-quiz-wait'), null);
+        assert.match(quizCard.querySelector('.chat-quiz-assumption').textContent, /wait window closed/);
+        assert.equal(quizCard.dataset.state, 'open');
+        // History replay renders the ended wait from the projection (wait_ended_at, no wait_for_answer).
+        const replayed = fx.decision.buildQuizCard({ ...WS_MSG, quiz_id: 'qz-r', wait_ended_at: '2026-08-31T10:05:00Z' });
+        const rinner = replayed.children[0] || replayed;
+        const rcard = rinner.matchesClass && rinner.matchesClass('chat-quiz-card') ? rinner : replayed;
+        assert.match(rcard.querySelector('.chat-quiz-assumption').textContent, /wait window closed/);
+        assert.equal(rcard.querySelector('.chat-quiz-wait'), null);
+    } finally { fx.restore(); }
+});
