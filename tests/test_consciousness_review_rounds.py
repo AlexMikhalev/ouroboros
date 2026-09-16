@@ -97,3 +97,21 @@ def test_a_capped_tree_cannot_schedule_a_self_worktree_child(monkeypatch):
     full = types.SimpleNamespace(task_metadata=dict(_wake_task("full")["metadata"]))
     assert isinstance(_build_acting_constraint(write_surface="self_worktree", write_root="", protected_paths_grant=False,
                                                external_tool_grants=None, parent_workspace_root="", ctx=full), dict)
+    # A Light install whose owner explicitly enabled mutative subagents admits self_worktree children —
+    # but never for a capped tree: the cap is the level's, not the install's (astra scope round 6).
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
+    monkeypatch.setenv("OUROBOROS_ALLOW_MUTATIVE_SUBAGENTS", "true")
+    refused = _build_acting_constraint(write_surface="self_worktree", write_root="", protected_paths_grant=False,
+                                       external_tool_grants=None, parent_workspace_root="", ctx=capped)
+    assert "light cap" in str(getattr(refused, "text", refused))
+    assert isinstance(_build_acting_constraint(write_surface="self_worktree", write_root="", protected_paths_grant=False,
+                                               external_tool_grants=None, parent_workspace_root="", ctx=full), dict)
+
+
+def test_a_capped_tree_may_not_land_a_system_repo_patch_in_any_mode():
+    from ouroboros.tools.subagent_integration import _capped_self_repo_refusal
+
+    capped = types.SimpleNamespace(task_metadata=dict(_wake_task("act")["metadata"]))
+    assert "INTEGRATE_CAPPED_TREE" in _capped_self_repo_refusal(capped, "child-1")
+    assert _capped_self_repo_refusal(types.SimpleNamespace(task_metadata=dict(_wake_task("full")["metadata"])), "c") == ""
+    assert _capped_self_repo_refusal(types.SimpleNamespace(task_metadata={}), "c") == ""

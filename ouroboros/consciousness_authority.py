@@ -128,6 +128,15 @@ def task_disabled_tools(task: Mapping[str, Any]) -> frozenset[str]:
     return frozenset(names)
 
 
+def task_mode_capped_light(task_metadata: Any) -> bool:
+    """Whether a task carries the light per-task cap (an Act/Observe consciousness tree). The
+    cap is the LEVEL's, not the install's: such a tree may write, but never into its own
+    repository — a self_worktree child or a system-repo patch integration is refused in every
+    install mode, the mutative-subagent toggle included (В21=A, PLAN §5.4)."""
+    metadata = task_metadata if isinstance(task_metadata, Mapping) else {}
+    return str(metadata.get("runtime_mode_cap") or "").strip().lower() == "light"
+
+
 def effective_runtime_mode(install_mode: str, task_metadata: Any) -> str:
     """The stricter of the install's runtime mode and the task's ``runtime_mode_cap``.
 
