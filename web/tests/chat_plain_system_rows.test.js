@@ -390,6 +390,108 @@ test('system row without a markdown flag renders plain (cancel_receipt class)', 
     }
 });
 
+// Promote-refusal placement (R3/R4/R14): an owner-initiated refusal is ONE typed
+// system row bound to the never-started task's id, with plain `<title> · <cause>`
+// text — `task_not_started` for a confirmed refusal («Not started: …») and
+// `task_start_unconfirmed` when the host cannot tell («Not confirmed: …»).
+// A typed keyed row is neither a terminal fact nor a plain untyped final, so it
+// renders as an ordinary plain system bubble and mints/finishes no live card —
+// live or on replay. Both types get the same assertions.
+const ADMISSION_NOTICE_ROWS = [
+    {
+        chat_id: 2,
+        role: 'system',
+        system_type: 'task_not_started',
+        task_id: 'abc123',
+        content: 'Аудит · Not started: the working folder can\'t be used',
+        ts: '2026-09-16T00:00:04Z',
+    },
+    {
+        chat_id: 2,
+        role: 'system',
+        system_type: 'task_start_unconfirmed',
+        task_id: 'def456',
+        content: 'Аудит · Not confirmed: the task may or may not have started',
+        ts: '2026-09-16T00:00:05Z',
+    },
+];
+
+function findCard(node, taskId) {
+    if (node?.dataset?.taskId === taskId && node.classList?.contains('chat-live-card')) return node;
+    for (const child of node?.children || []) {
+        const hit = findCard(child, taskId);
+        if (hit) return hit;
+    }
+    return null;
+}
+
+function liveCards() {
+    const messages = globalThis.document.byId.get('chat-messages');
+    return messages.children.filter((node) => node.classList.contains('chat-live-card'));
+}
+
+for (const noticeRow of ADMISSION_NOTICE_ROWS) {
+    test(`${noticeRow.system_type} renders as a plain system bubble and mints no card, live and after reload`, async () => {
+        const expectedText = new RegExp(noticeRow.content.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+        let liveHtml = '';
+        {
+            const { prior, mount } = installDom();
+            let instance;
+            try {
+                const made = makeInstance(mount);
+                instance = made.instance;
+                made.handlers.get('chat')(noticeRow);
+                const bubble = findBubble('system');
+                assert.ok(bubble, 'the notice row rendered a system bubble');
+                assert.match(bubble.innerHTML, /📋 System/);
+                assert.match(bubble.innerHTML, expectedText);
+                assert.doesNotMatch(bubble.innerHTML, /<br>|<h1|<h2|md-h1|md-h2|<strong/);
+                assert.equal(bubble.getAttribute('data-chat-markdown-enhanced'), '');
+                assert.equal(bubble.dataset.taskId, noticeRow.task_id, 'the row stays bound to the never-started task');
+                const messages = globalThis.document.byId.get('chat-messages');
+                assert.equal(findCard(messages, noticeRow.task_id), null, 'no live card is minted for the never-started task');
+                assert.equal(liveCards().length, 0);
+                liveHtml = bubble.innerHTML;
+            } finally {
+                instance?.destroy();
+                restoreDom(prior);
+            }
+        }
+        const historyRow = {
+            text: noticeRow.content,
+            role: 'system',
+            ts: noticeRow.ts,
+            is_progress: false,
+            system_type: noticeRow.system_type,
+            task_id: noticeRow.task_id,
+            markdown: false,
+        };
+        const { prior, mount } = installDom(async (url) => {
+            if (String(url).startsWith('/api/chat/history')) {
+                return { ok: true, json: async () => ({ messages: [historyRow] }) };
+            }
+            return { ok: true, json: async () => ({ active_direct_turns: [] }) };
+        });
+        let instance;
+        try {
+            ({ instance } = makeInstance(mount));
+            await settle();
+            await settle();
+            const bubble = findBubble('system');
+            assert.ok(bubble, 'history replay rendered the notice row');
+            assert.equal(bubble.innerHTML, liveHtml,
+                'live DOM and reload DOM are byte-identical for the notice row');
+            const messages = globalThis.document.byId.get('chat-messages');
+            assert.equal(findCard(messages, noticeRow.task_id), null,
+                'replay neither mints nor finishes a card for the never-started task');
+            assert.equal(liveCards().length, 0);
+        } finally {
+            instance?.destroy();
+            restoreDom(prior);
+        }
+    });
+}
+
 test('render arm order and enhancement guard are pinned in source', () => {
     // The plain-system arm sits between the dedicated skill_review renderer
     // (bug report #8) and the byte-pinned final markdown arm

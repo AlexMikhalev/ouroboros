@@ -514,3 +514,40 @@ def test_two_roots_under_one_owner_message_keep_two_readable_receipts_after_comp
     assert latest_chat_annotations(tmp_path)["cm-1"]["routing_token"] == "tok-steer-2"
     assert "msg-expired" not in latest_chat_annotations(tmp_path)
 
+
+
+# --- (e) a relayed owner steer refused by a pending cancel: receipt, no bubble ---
+
+def test_a_relayed_owner_steer_refused_by_a_pending_cancel_gets_no_standalone_bubble(
+    tmp_path, monkeypatch,
+):
+    """R15: an act that wears an owner message shows its cause on that message's
+    receipt line; only an UNLABELLED owner act (a synthetic receipt id, so no
+    chat row can show the refusal) still gets the standalone cancel-pending
+    notice."""
+    import ouroboros.cancel_intents as cancel_intents
+    from ouroboros.project_dialogue import AGENT_RECEIPT_ID_PREFIX, latest_chat_annotations
+    from supervisor.events import _handle_steer_task
+
+    monkeypatch.setattr(
+        cancel_intents, "cancel_pending", lambda _root, task_id, **_k: task_id == "t-target",
+    )
+    notices = []
+    supervisor = _supervisor_ctx(
+        tmp_path, notices, running={"t-target": {"task": {"id": "t-target", "chat_id": 1}}},
+    )
+    base = {"type": "steer_task", "target_task_id": "t-target", "message": "stop after this file",
+            "chat_id": 1}
+
+    _handle_steer_task({**base, "client_message_id": "cm-owner-1", "routing_token": "tok-1"}, supervisor)
+
+    row = latest_chat_annotations(tmp_path)["cm-owner-1"]
+    assert (row["status"], row["reason"]) == ("rejected", "cancel_pending")
+    assert row["cause"] == "Not delivered: that task is being stopped"
+    assert notices == []
+
+    unlabelled = f"{AGENT_RECEIPT_ID_PREFIX}tok-2"
+    _handle_steer_task({**base, "client_message_id": unlabelled, "routing_token": "tok-2"}, supervisor)
+
+    assert latest_chat_annotations(tmp_path)[unlabelled]["cause"] == "Not delivered: that task is being stopped"
+    assert len(notices) == 1

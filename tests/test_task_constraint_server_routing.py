@@ -69,44 +69,71 @@ def test_constrained_repair_promotes_managed_task_before_busy_direct_lane(monkey
         "payload_root": "skills/external/alpha",
     }
     assert event["origin_suppressed"] is True
+    # The skill card issued this promote: the handler's publication boundary
+    # owns any refusal notice, so the event says so.
+    assert event["host_initiated"] is True
     assert len(calls["sent"]) == 1
     assert calls["sent"][0][0] == 1
     assert "accepted and durably scheduled" in calls["sent"][0][1]
 
 
-def test_constrained_repair_refusal_is_reported_to_owner(monkeypatch):
-    sent = []
+_REPAIR_INCOMING = {
+    "chat_id": 1,
+    "text": "repair skill",
+    "client_message_id": "repair-1",
+    "task_constraint": {
+        "mode": "skill_repair",
+        "skill_name": "alpha",
+        "payload_root": "skills/external/alpha",
+    },
+}
+
+
+def test_constrained_repair_refusal_sends_no_untyped_bubble(monkeypatch):
+    """The handler's own publication boundary tells the owner (one typed System
+    row); the routing lane adds no «⚠️ Repair task was not started» bubble."""
+    sent, events = [], []
     ctx = SimpleNamespace(
         consciousness=SimpleNamespace(inject_observation=lambda *_: None),
-        send_with_budget=lambda chat_id, text: sent.append((chat_id, text)),
+        send_with_budget=lambda chat_id, text, **kwargs: sent.append((chat_id, text, kwargs)),
     )
     monkeypatch.setattr(
         "supervisor.events._handle_promote_chat_to_task",
-        lambda event, _ctx: {
+        lambda event, _ctx: events.append(event) or {
             "status": "needs_manual_target",
             "reason": "skill_repair_payload_missing",
             "task_id": event["task_id"],
         },
     )
 
-    server._route_owner_message(
-        FakeBridge(),
-        ctx,
-        {
-            "chat_id": 1,
-            "text": "repair skill",
-            "client_message_id": "repair-1",
-            "task_constraint": {
-                "mode": "skill_repair",
-                "skill_name": "alpha",
-                "payload_root": "skills/external/alpha",
-            },
-        },
+    server._route_owner_message(FakeBridge(), ctx, dict(_REPAIR_INCOMING))
+
+    assert sent == []
+    assert events[0]["host_initiated"] is True
+
+
+def test_constrained_repair_outer_failure_sends_one_typed_not_started_row(monkeypatch):
+    """R13: `repair_promotion_failed` is minted OUTSIDE the handler, so the lane
+    calls the same notice helper — one typed row in the owner's chat, bound to
+    the task id that never started, with the host's sentence."""
+    sent = []
+    ctx = SimpleNamespace(
+        consciousness=SimpleNamespace(inject_observation=lambda *_: None),
+        send_with_budget=lambda chat_id, text, **kwargs: sent.append((chat_id, text, kwargs)),
     )
 
-    assert len(sent) == 1
-    assert sent[0][0] == 1
-    assert "skill_repair_payload_missing" in sent[0][1]
+    def _crash(event, _ctx):
+        raise RuntimeError("handler crashed")
+
+    monkeypatch.setattr("supervisor.events._handle_promote_chat_to_task", _crash)
+
+    server._route_owner_message(FakeBridge(), ctx, dict(_REPAIR_INCOMING))
+
+    [(chat_id, text, kwargs)] = sent
+    assert chat_id == 1
+    assert text == "repair skill · Not started: the skill repair request could not be started"
+    assert kwargs["role"] == "system" and kwargs["system_type"] == "task_not_started"
+    assert kwargs["task_id"]
 
 
 def test_repair_ui_copy_does_not_promise_a_removed_decision_round():

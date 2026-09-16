@@ -457,6 +457,7 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
         "project_id",
         "project_chat_id",
         "routing_token",
+        "cause",
         "status",
         "options",
         "attachment_manifest",

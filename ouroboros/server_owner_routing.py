@@ -447,7 +447,7 @@ def _route_owner_message(bridge: Any, ctx: Any, incoming: Dict[str, Any]) -> Non
         # An explicit selected-skill development request already asks for a
         # managed task. Preserve its source/caller facts while ordinary promotion
         # validates the payload and records the admitted revision.
-        from supervisor.events import _handle_promote_chat_to_task
+        from supervisor.events import _handle_promote_chat_to_task, _notify_host_initiated_refusal
 
         ctx.consciousness.inject_observation(
             f"Message from my human: {incoming.get('log_text') or ''}"
@@ -462,6 +462,10 @@ def _route_owner_message(bridge: Any, ctx: Any, incoming: Dict[str, Any]) -> Non
             "client_message_id": client_message_id,
             "task_constraint": task_constraint,
             "routed_from_main": True,
+            # The host issued this promote (skill card), so no model turn waits on
+            # the receipt: a refusal is told to the owner by ONE typed System row
+            # from the promote handler, in the chat the owner wrote in.
+            "host_initiated": True,
         }
         metadata = task_metadata if isinstance(task_metadata, dict) else {}
         if isinstance(metadata.get("client_surface"), dict):
@@ -484,6 +488,8 @@ def _route_owner_message(bridge: Any, ctx: Any, incoming: Dict[str, Any]) -> Non
                 "reason": "repair_promotion_failed",
                 "task_id": task_id,
             }
+            # Minted OUTSIDE the handler, so its publication boundary never saw it.
+            _notify_host_initiated_refusal(ctx, event, outcome)
         outcome = outcome if isinstance(outcome, dict) else {"status": "scheduled", "task_id": task_id}
         outcome_status = str(outcome.get("status") or "needs_manual_target")
         if outcome_status == "scheduled":
@@ -494,15 +500,8 @@ def _route_owner_message(bridge: Any, ctx: Any, incoming: Dict[str, Any]) -> Non
                 )
             except Exception:
                 log.debug("Repair promotion success notification failed", exc_info=True)
-        else:
-            reason = str(outcome.get("reason") or outcome_status)
-            try:
-                ctx.send_with_budget(
-                    chat_id,
-                    f"⚠️ Repair task was not started ({reason}). Please retry from the skill card.",
-                )
-            except Exception:
-                log.debug("Repair promotion refusal notification failed", exc_info=True)
+        # A refusal is already told by the promote handler's typed System row
+        # (host_initiated) plus the receipt under the owner's message.
         return
     reserved_project = _reserved_project_for_chat(ctx, chat_id)
     project_id = (
@@ -584,6 +583,9 @@ def _route_owner_message(bridge: Any, ctx: Any, incoming: Dict[str, Any]) -> Non
             "client_message_id": client_message_id, "task_constraint": task_constraint,
             "force_plan": True, "force_plan_source": task_metadata.get("force_plan_source"),
             "attachment_uploads": list(task_metadata.get("chat_attachment_uploads") or []),
+            # Swarm: the host promotes with no model turn waiting on the receipt,
+            # so a refusal reaches the owner as the handler's typed System row.
+            "host_initiated": True,
         }
         if isinstance(task_metadata.get("client_surface"), dict):
             event["client_surface"] = dict(task_metadata["client_surface"])

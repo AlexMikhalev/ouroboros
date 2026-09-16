@@ -232,6 +232,7 @@ def _admit_project_scope(
                 "status": "needs_manual_target",
                 "reason": "project_routing_fence",
                 "project_lifecycle": existing_lifecycle,
+                "detail": f"project lifecycle: {existing_lifecycle}",
                 "task_id": tid,
             }, attachment_manifest)
     except Exception:
@@ -310,7 +311,10 @@ def _admit_project_scope(
             # project off-loop (_prepare_promote_source_off_loop) — same
             # agent-initiated creation, so the announce gate honors it.
             project = {**(project or {}), "created": True}
-        _pool()._announce_created_project(project, tid, task=task)
+        # The "Project · Started" row is owed only once the task is REALLY in the
+        # queue: promote_chat_to_task announces it after enqueue_task succeeded,
+        # so a workspace refusal after project creation announces nothing.
+        task["_announce_project"] = project
     except Exception:
         log.warning("promote: project registration failed for %s", pid, exc_info=True)
         return _pool()._reject_promoted_after_attachment_stage({
@@ -555,6 +559,8 @@ def promote_chat_to_task(evt: dict, ctx: Any) -> dict:
         task["attachment_images"] = [row for row in attachment_manifest if row.get("is_image")]
         if isinstance(task.get("task_contract"), dict):
             task["task_contract"].update(authority)
+    # Popped BEFORE the row is built/queued so the announce fact never rides it.
+    announce_project = task.pop("_announce_project", None)
     attach_task_contract(task)
     admitted = ctx.enqueue_task(task)
     if isinstance(admitted, dict) and admitted.get("_admission_blocked"):
@@ -564,6 +570,8 @@ def promote_chat_to_task(evt: dict, ctx: Any) -> dict:
             "project_lifecycle": str(admitted.get("_project_lifecycle") or ""),
             "task_id": tid,
         }, attachment_manifest)
+    if announce_project is not None:
+        _pool()._announce_created_project(announce_project, tid, task=task)
     # Owner 3=A: the promoter's unmet planning obligation now belongs to this root
     # (stamped by _promoted_force_plan_metadata above); release it on the promoter's
     # live row BEFORE the snapshot persist below, so one persist shows both facts.
@@ -635,6 +643,7 @@ def _admit_promoted_workspace(evt: dict, ctx: Any, task: dict, *, pid: str, tid:
         bounded_workspace_preflight,
         compose_workspace_block,
         resolve_room_workspace,
+        workspace_repair_hint,
     )
 
     if task.get("_presence_origin"):
@@ -646,8 +655,10 @@ def _admit_promoted_workspace(evt: dict, ctx: Any, task: dict, *, pid: str, tid:
             project_id="", explicit_workspace=str(workspace.get("root") or ""),
         )
         if ws_error:
-            _fail_promoted_task_loudly(ctx, task, ws_error)
-            return {"status": "needs_manual_target", "reason": "workspace_unusable", "task_id": tid}
+            return {
+                "status": "needs_manual_target", "reason": "workspace_unusable", "task_id": tid,
+                "detail": workspace_repair_hint(ws_error=ws_error, presence=True),
+            }
         if resolved_ws:
             task.update(workspace_root=resolved_ws, workspace_mode="external", memory_mode="shared")
         return None
@@ -693,15 +704,14 @@ def _admit_promoted_workspace(evt: dict, ctx: Any, task: dict, *, pid: str, tid:
                 # Bind-or-fail (v6.58.0): falling through to a workspace-less
                 # self_modification-profile task over the system repo is exactly
                 # the silent degradation the admission SSOT exists to kill.
-                _fail_promoted_task_loudly(
-                    ctx, task,
-                    f"project {pid!r} has no working folder and auto-provisioning one failed; "
-                    "see the supervisor log (ensure_project_workspace)",
-                )
                 return {
                     "status": "needs_manual_target",
                     "reason": "workspace_provisioning_failed",
                     "task_id": tid,
+                    "detail": workspace_repair_hint(
+                        ws_error=f"project {pid!r} has no working folder and auto-provisioning "
+                        "one failed; see the supervisor log (ensure_project_workspace)",
+                    ),
                 }
             task.setdefault("metadata", {})["workspace_autoprovisioned"] = True
 
@@ -713,11 +723,13 @@ def _admit_promoted_workspace(evt: dict, ctx: Any, task: dict, *, pid: str, tid:
         workspace_sentinel=str(evt.get("workspace") or ""),
     )
     if ws_error:
-        _fail_promoted_task_loudly(
-            ctx, task, ws_error,
-            explicit_workspace=str(evt.get("workspace_root") or "").strip(), project_id=pid,
-        )
-        return {"status": "needs_manual_target", "reason": "workspace_unusable", "task_id": tid}
+        return {
+            "status": "needs_manual_target", "reason": "workspace_unusable", "task_id": tid,
+            "detail": workspace_repair_hint(
+                ws_error=ws_error, explicit_workspace=str(evt.get("workspace_root") or "").strip(),
+                project_id=pid, drive_root=_pool().DRIVE_ROOT, system_repo_dir=_pool().REPO_DIR,
+            ),
+        }
     if resolved_ws:
         task["workspace_root"] = resolved_ws
         task["workspace_mode"] = "external"
@@ -765,85 +777,6 @@ def _admit_promoted_workspace(evt: dict, ctx: Any, task: dict, *, pid: str, tid:
             + "[END_HEADLESS_WORKSPACE]"
         )
     return None
-
-
-def _explicit_workspace_remedy(explicit: str, project_id: str) -> str:
-    """What to do about a folder the REQUEST named, not the project's own.
-
-    ``resolve_room_workspace`` already types the source, so the remedy follows
-    it instead of sending the owner to a Projects setting the failure never
-    touched. The project's folder is named only when the registry can be read,
-    and a path under the delegated-run worktree root gets the one clause that
-    explains why it is gone."""
-    import pathlib
-
-    folder = ""
-    try:
-        from ouroboros.projects_registry import get_project
-
-        folder = str((get_project(_pool().DRIVE_ROOT, project_id) or {}).get("working_dir") or "").strip()
-    except Exception:
-        log.debug("promote loud-fail: project working_dir unreadable for %s", project_id, exc_info=True)
-    retired = False
-    try:
-        from ouroboros.config import get_subagent_worktree_root
-        from ouroboros.tool_access_paths import path_is_relative_to
-
-        retired = path_is_relative_to(pathlib.Path(explicit), pathlib.Path(get_subagent_worktree_root()))
-    except Exception:
-        log.debug("promote loud-fail: worktree-root check failed for %r", explicit, exc_info=True)
-    return (
-        f"This task asked for {explicit} explicitly, so the project's working folder was never used."
-        + (" That path is inside a delegated-run worktree, which is removed when its run ends." if retired else "")
-        + " Re-promote it against"
-        + (f" the project folder ({folder})" if folder else " the project folder")
-        + " or with workspace='none' for a folder-less task."
-    )
-
-
-def _fail_promoted_task_loudly(
-    ctx: Any, task: dict, ws_error: str, *,
-    explicit_workspace: str = "", project_id: str = "",
-) -> None:
-    """v6.58.0 loud-fail invariant: a room task whose workspace is SET-but-unusable
-    is terminally FAILED at admission with a visible card + chat message — never
-    silently admitted workspace-less (which would run the self_modification profile
-    over the system repo). Never raises.
-
-    The remedy follows the SOURCE of the refused folder: a request that named its
-    own path is not fixed in Projects, and saying so is the difference between an
-    actionable message and one that points at a setting the failure never read."""
-    tid = str(task.get("id") or "")
-    chat_id = 0
-    try:
-        chat_id = int(task.get("chat_id") or 0)
-    except (TypeError, ValueError):
-        chat_id = 0
-    explicit = str(explicit_workspace or "").strip()
-    remedy = (
-        _explicit_workspace_remedy(explicit, str(project_id or "")) if explicit else
-        "Fix the project's working folder (Projects → this project) or re-promote with "
-        "workspace='none' for a folder-less task."
-    )
-    message = f"⚠️ WORKSPACE_UNUSABLE: task {tid} was NOT started — {ws_error} {remedy}"
-    try:
-        from ouroboros.task_results import STATUS_FAILED, write_task_result
-
-        write_task_result(
-            _pool().DRIVE_ROOT, tid, STATUS_FAILED,
-            reason_code="workspace_unusable",
-            result=message,
-            description=str(task.get("description") or ""),
-            chat_id=chat_id,
-            project_id=str(task.get("project_id") or ""),
-        )
-    except Exception:
-        log.warning("promote loud-fail: task_result write failed for %s", tid, exc_info=True)
-    try:
-        if chat_id:
-            ctx.send_with_budget(chat_id, message)
-    except Exception:
-        log.debug("promote loud-fail: chat message failed for %s", tid, exc_info=True)
 
 
 def ensure_project_scope(evt: dict, ctx: Any) -> dict:

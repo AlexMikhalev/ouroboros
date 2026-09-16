@@ -61,6 +61,8 @@ def _emit_routing_receipt(
     publish: bool = True,
 ) -> Dict[str, Any]:
     """Persist and publish one token-bound routing annotation receipt."""
+    from ouroboros.project_dialogue import routing_refusal_cause
+
     if target and not str(target_label or "").strip():
         from ouroboros.project_dialogue import routing_target_label
 
@@ -69,6 +71,9 @@ def _emit_routing_receipt(
     routing_token = str(evt.get("routing_token") or "").strip()
     annotation_status = "not_applicable"
     project_address = _routing_project_address(ctx, target, status)
+    # Q3=A: the owner-facing sentence for a REFUSED act (host table; "" for a
+    # landed row or the picker), computed once for the durable row and the ack.
+    cause = routing_refusal_cause(action, status, reason, options)
     if client_message_id:
         try:
             from ouroboros.project_dialogue import append_chat_annotation
@@ -85,6 +90,7 @@ def _emit_routing_receipt(
                     routing_token=routing_token,
                     reason=reason,
                     detail=detail,
+                    cause=cause,
                     options=options,
                     attachment_manifest=attachment_manifest,
                     **project_address,
@@ -129,6 +135,7 @@ def _emit_routing_receipt(
             status=effective_status,
             options=options,
             attachment_manifest=attachment_manifest,
+            cause=cause,
         )
     return receipt
 
@@ -143,6 +150,7 @@ def _publish_routing_ack(
     status: str,
     options: Optional[list] = None,
     attachment_manifest: Optional[list] = None,
+    cause: str = "",
 ) -> None:
     """Publish a live non-bubble acknowledgement after durable authority exists."""
     try:
@@ -170,6 +178,8 @@ def _publish_routing_ack(
                 ack_kwargs["options"] = options
             if attachment_manifest is not None:
                 ack_kwargs["attachment_manifest"] = attachment_manifest
+            if str(cause or ""):
+                ack_kwargs["cause"] = str(cause)
             if str(evt.get("routing_token") or ""):
                 ack_kwargs["routing_token"] = str(evt.get("routing_token"))
             ack(
@@ -316,6 +326,8 @@ def _prepare_promote_source_off_loop(evt: Dict[str, Any], ctx: Any) -> None:
         task_id = str(evt.get("task_id") or "")
         routing_token = str(evt.get("routing_token") or "")
         supervisor_queue.release_task_admission(task_id, routing_token)
+        # No host producer (skill card, Swarm, picker click) stamps `source`, so
+        # this exit never bypasses the wrapper's host-initiated refusal notice.
         failed = {
             "status": "unconfirmed",
             "reason": "source_continuation_publish_failed",
@@ -341,12 +353,14 @@ def _prepare_promote_source_off_loop(evt: Dict[str, Any], ctx: Any) -> None:
             log.exception("Failed to persist promote source continuation failure")
 
 
-def _handle_promote_chat_to_task(evt: Dict[str, Any], ctx: Any) -> Dict[str, Any]:
+def _promote_chat_to_task_outcome(evt: Dict[str, Any], ctx: Any) -> Dict[str, Any]:
     """Spawn a first-class pooled owner task from a conversation-lane promote.
 
     Unlike ``schedule_subagent`` the child is NOT a subagent: it is a normal
     owner task (live card, canonical drive, project lease participation). The
-    conversation lane that emitted the event stays free.
+    conversation lane that emitted the event stays free. Every exit returns the
+    typed outcome to ``_handle_promote_chat_to_task``, the one publication
+    boundary that tells the owner about a host-initiated refusal.
     """
     from supervisor.workers import (
         _broadcast_task_named,
@@ -380,6 +394,9 @@ def _handle_promote_chat_to_task(evt: Dict[str, Any], ctx: Any) -> Dict[str, Any
                     "status": str((admission or {}).get("status") or "unconfirmed"),
                     "task_id": task_id,
                     "reason": str((admission or {}).get("reason") or ""),
+                    # A replay of an already-settled admission: the owner was
+                    # told once, so the refusal notice stays silent.
+                    "replayed": True,
                 }
             if reservation_status == "already_reserved":
                 return {"status": "preparing", "task_id": task_id}
@@ -615,6 +632,49 @@ def _handle_promote_chat_to_task(evt: Dict[str, Any], ctx: Any) -> Dict[str, Any
             },
         )
         return failed_outcome
+
+
+def _notify_host_initiated_refusal(ctx: Any, evt: Dict[str, Any], outcome: Any) -> None:
+    """The ONE place a HOST-issued promote (skill card, Swarm, picker click)
+    tells the owner it did not start (Q2=A). No model turn narrates such a
+    refusal, so exactly one typed System row lands in the chat the OWNER wrote
+    in — never ``task["chat_id"]``, which project admission may have rewritten
+    to a new room — bound to the task that never started. A tool-issued promote
+    gets nothing here (its receipt plus the failed call are the record and the
+    model narrates); preparing, scheduled and replayed outcomes send nothing.
+    """
+    if not evt.get("host_initiated") or not isinstance(outcome, dict) or outcome.get("replayed"):
+        return
+    status = str(outcome.get("status") or "")
+    if status not in {"needs_manual_target", "unconfirmed"}:
+        return
+    try:
+        from ouroboros.project_dialogue import routing_refusal_cause
+        from supervisor.message_bus import notification_chat_route
+
+        chat = notification_chat_route(evt.get("chat_id"))
+        if chat is None:
+            return
+        first_line = next(iter(str(evt.get("objective") or "").strip().splitlines()), "")
+        title = str(evt.get("title") or evt.get("suggested_name") or "").strip() or first_line[:60] or "Task"
+        action = "route_to_project" if bool(evt.get("routed_from_main")) else "promote_chat_to_task"
+        reason = str(outcome.get("reason") or ("admission_rejected" if status == "needs_manual_target" else ""))
+        ctx.send_with_budget(
+            chat, f"{title} · {routing_refusal_cause(action, status, reason, None)}", role="system",
+            system_type="task_start_unconfirmed" if status == "unconfirmed" else "task_not_started",
+            task_id=str(outcome.get("task_id") or evt.get("task_id") or ""),
+        )
+    except Exception:
+        log.debug("host-initiated refusal row failed for %s", evt.get("task_id"), exc_info=True)
+
+
+def _handle_promote_chat_to_task(evt: Dict[str, Any], ctx: Any) -> Dict[str, Any]:
+    """The one publication boundary of a promote: every outcome of the handler
+    body — the reservation-blocked and unconfirmed early returns included —
+    passes the host-initiated refusal notice before it is returned."""
+    outcome = _promote_chat_to_task_outcome(evt, ctx)
+    _notify_host_initiated_refusal(ctx, evt, outcome)
+    return outcome
 
 
 def _record_obligation_transfer(ctx: Any, transfer: Dict[str, Any]) -> None:

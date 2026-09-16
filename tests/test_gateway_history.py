@@ -1137,3 +1137,19 @@ def test_chat_history_replays_the_live_subtree_ceiling_for_a_running_root(tmp_pa
     # Only ROOT lineage reaches the ledger; the finished root is served by its
     # durable terminal truth, not by a live read.
     assert sorted(seen_roots) == ["root-empty", "root-live"]
+
+
+def test_user_annotation_projects_the_host_cause_sentence():
+    """Q3=A: the owner-facing sentence for a refused routing act replays with the
+    owner message; the reason code stays a model artefact off the live frame."""
+    from ouroboros.gateway.history import _user_annotation
+
+    projected = _user_annotation("user", "cm-1", {"cm-1": {
+        "action": "promote_chat_to_task", "status": "needs_manual_target",
+        "reason": "workspace_unusable", "cause": "Not started: the working folder can't be used",
+        "detail": "explicit workspace_root is unusable: …",
+    }})
+
+    assert projected["cause"] == "Not started: the working folder can't be used"
+    assert projected["status"] == "needs_manual_target"
+    assert "reason" not in projected

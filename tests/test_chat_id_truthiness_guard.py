@@ -60,11 +60,6 @@ ALLOWED = {
         "chat_id means 'the event carried no chat' and the owner chat is the "
         "fallback address, not the hidden partition.",
     ),
-    ("supervisor/worker_promotion.py", "if chat_id:"): (
-        1,
-        "Same promote lane: the loud-fail notice needs a reader, and the hidden "
-        "partition has none.",
-    ),
     ("supervisor/worker_chat_lane.py", "if not chat_id:"): (
         1,
         "Auto-resume gate, where owner_chat_id 0 means 'no owner chat "

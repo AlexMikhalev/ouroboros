@@ -839,6 +839,11 @@ export function routingOptionLabel(option) {
 /** Human text for a typed routing annotation ('' hides the line). */
 export function routingAnnotationText(annotation) {
     if (!annotation || typeof annotation !== 'object') return '';
+    // A refused act carries the host's own owner-facing sentence (`cause`);
+    // it outranks the status matrix below. Absent on scheduled/delivered/
+    // pending rows and on the picker frame, so those labels are unchanged.
+    const cause = String(annotation.cause || '').trim();
+    if (cause) return cause;
     const action = String(annotation.action || '');
     const status = String(annotation.status || '');
     const target = String(annotation.target || '');
