@@ -43,6 +43,15 @@ _ADDED_OWNERS = {
     "CLAUDEXOR_MODEL_POLL_INTERVAL_SEC": runtime_limits,
     "CLAUDEXOR_OPERATOR_STOP_TIMEOUT_SEC": runtime_limits,
     "CLAUDEXOR_STOP_EXIT_WAIT_SEC": runtime_limits,
+    # Consciousness settings scaffolding: the alarm's SSOT default interval, the closed
+    # autonomy enum and the readers for the three consciousness keys.
+    "WAKE_DEFAULT_SEC": runtime_limits,
+    "CONSCIOUSNESS_AUTONOMY_LEVELS": runtime_limits,
+    "get_consciousness_autonomy": runtime_limits,
+    "get_consciousness_daily_usd": runtime_limits,
+    "get_consciousness_max_tasks": runtime_limits,
+    "get_bg_wakeup_min_sec": runtime_limits,
+    "get_bg_wakeup_max_sec": runtime_limits,
 }
 
 _MOVED_OWNERS = {

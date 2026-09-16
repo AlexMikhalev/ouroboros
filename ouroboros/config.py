@@ -116,12 +116,18 @@ from ouroboros.runtime_limits import (
     DELEGATE_WAIT_WINDOW_MAX_SEC,  # noqa: F401
     MAX_ACTIVE_SUBAGENTS_HARD_CAP,  # noqa: F401
     MAX_SUBAGENT_DEPTH_HARD_CAP,  # noqa: F401
+    WAKE_DEFAULT_SEC,  # noqa: F401
     _bounded_positive_int_setting,  # noqa: F401
     _clamped_number_setting,  # noqa: F401
     get_acceptance_reserve_pct,  # noqa: F401
     get_acceptance_review_est_sec,  # noqa: F401
+    get_bg_wakeup_max_sec,  # noqa: F401
+    get_bg_wakeup_min_sec,  # noqa: F401
     get_claudexor_harness_install_timeout_sec,  # noqa: F401
     get_claudexor_quota_refresh_timeout_sec,  # noqa: F401
+    get_consciousness_autonomy,  # noqa: F401
+    get_consciousness_daily_usd,  # noqa: F401
+    get_consciousness_max_tasks,  # noqa: F401
     get_delegate_wait_max_sec,  # noqa: F401
     get_delegate_wait_sec,  # noqa: F401
     get_finalization_grace_sec,  # noqa: F401

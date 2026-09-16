@@ -55,7 +55,9 @@ Add the field to the active frozen owner — `ouroboros/contracts/` for the pack
     added `OUROBOROS_SCOPE_REVIEW_FLOOR`, the flat `OUROBOROS_SOFT_TIMEOUT_SEC`/`OUROBOROS_HARD_TIMEOUT_SEC`
     pair (superseded by the activity model), `OUROBOROS_REVIEW_NATIVE_MAX_ROUNDS` (the native review episode is
     bounded by its transcript ceiling, the owner deadline and the wallet, not by a round count),
-    `OUROBOROS_OBSERVABILITY_RETENTION_DAYS`, and — classified separately as
+    `OUROBOROS_OBSERVABILITY_RETENTION_DAYS`, `OUROBOROS_BG_MAX_ROUNDS` (a consciousness wake is an
+    ordinary Main turn, bounded by `OUROBOROS_MAX_ROUNDS` and the per-task cost cap, so a
+    consciousness-specific round cap has no reader), and — classified separately as
     `RETIRED_COMMA_LIST_SETTING_KEYS` — the reviewer comma lists and route envs
     (`OUROBOROS_REVIEW_MODELS`, `OUROBOROS_SCOPE_REVIEW_MODELS`, `OUROBOROS_SCOPE_REVIEW_MODEL`,
     `OUROBOROS_REVIEW_ROUTES`, `OUROBOROS_SCOPE_REVIEW_ROUTES`, `OUROBOROS_ADVISORY_REVIEW_ROUTE`). Their
