@@ -22,13 +22,13 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D12 | Settings & configuration | 15 | 0 |
 | D13 | Safety, guards & runtime mode | 9 | 0 |
 | D14 | Skills & extensions | 54 | 0 |
-| D15 | Memory, knowledge, consciousness & self-evolution | 18 | 0 |
+| D15 | Memory, knowledge, consciousness & self-evolution | 21 | 0 |
 | D16 | Observability, usage accounting & cost | 11 | 0 |
 | D17 | Projects, workspaces & task results | 21 | 0 |
 | D18 | Launcher, packaging, platform & shared substrate | 14 | 0 |
 | D19 | Frozen contracts (ABI) | 10 | 0 |
 | D20 | Presence | 9 | 0 |
-| **total** | | **546** | **0** |
+| **total** | | **549** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -42,7 +42,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
 | **D04** | · | · | · | · | ✓ | · | · | · | · | · | · | · | ✓ | · | · | · | ✓ | ✓ | ✓ | · |
 | **D05** | ✓ | ✓ | · | ✓ | · | · | · | · | ✓ | ✓ | ✓ | ✓ | ✓ | · | ✓ | ✓ | ✓ | ✓ | ✓ | · |
 | **D06** | ✓ | ✓ | ✓ | ✓ | · | · | ✓ | · | ✓ | ✓ | · | ✓ | ✓ | ✓ | · | ✓ | ✓ | ✓ | ✓ | · |
-| **D07** | ✓ | ✓ | · | ✓ | ✓ | ✓ | · | ✓ | · | · | · | ✓ | ✓ | · | · | ✓ | ✓ | ✓ | ✓ | · |
+| **D07** | ✓ | ✓ | · | ✓ | ✓ | ✓ | · | ✓ | · | · | · | ✓ | ✓ | · | ✓ | ✓ | ✓ | ✓ | ✓ | · |
 | **D08** | ✓ | · | · | ✓ | ✓ | ✓ | ✓ | · | ✓ | · | · | ✓ | · | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | · |
 | **D09** | ✓ | · | · | · | · | ✓ | · | ✓ | · | · | · | · | · | · | · | ✓ | · | ✓ | · | · |
 | **D10** | · | · | · | ✓ | ✓ | ✓ | · | ✓ | · | · | · | ✓ | ✓ | · | · | · | · | ✓ | ✓ | · |
@@ -50,7 +50,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
 | **D12** | ✓ | ✓ | ✓ | · | · | · | ✓ | · | · | · | ✓ | · | ✓ | · | · | · | · | ✓ | · | · |
 | **D13** | ✓ | ✓ | · | ✓ | · | · | · | · | · | · | · | ✓ | · | · | · | · | ✓ | ✓ | · | · |
 | **D14** | · | ✓ | · | ✓ | ✓ | ✓ | · | · | ✓ | ✓ | ✓ | ✓ | ✓ | · | · | ✓ | · | ✓ | ✓ | · |
-| **D15** | ✓ | ✓ | ✓ | ✓ | · | · | · | · | ✓ | · | · | ✓ | · | · | · | ✓ | · | ✓ | ✓ | · |
+| **D15** | ✓ | · | ✓ | ✓ | · | · | · | · | · | · | · | ✓ | · | · | · | ✓ | · | ✓ | ✓ | · |
 | **D16** | · | ✓ | · | · | · | ✓ | · | · | · | · | · | ✓ | · | ✓ | · | · | · | ✓ | · | · |
 | **D17** | ✓ | · | · | ✓ | · | ✓ | · | · | · | · | · | · | · | · | ✓ | ✓ | · | ✓ | ✓ | · |
 | **D18** | · | · | · | · | · | · | · | · | ✓ | ✓ | · | ✓ | · | · | · | · | · | · | · | · |
@@ -65,7 +65,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
 
 ## Hidden coupling (classified out of the strict graph)
 
-- lazy-only cross-domain pairs: **98**
+- lazy-only cross-domain pairs: **101**
   - D01->D08
   - D01->D10
   - D01->D11
@@ -85,6 +85,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
   - D04->D10
   - D04->D12
   - D04->D14
+  - D04->D15
   - D04->D20
   - D05->D06
   - D05->D07
@@ -97,7 +98,6 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
   - D07->D10
   - D07->D11
   - D07->D14
-  - D07->D15
   - D07->D20
   - D08->D02
   - D08->D10
@@ -131,11 +131,14 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
   - D14->D08
   - D14->D17
   - D14->D20
+  - D15->D02
   - D15->D05
   - D15->D06
   - D15->D07
   - D15->D08
+  - D15->D09
   - D15->D10
+  - D15->D13
   - D15->D17
   - D16->D01
   - D16->D03
@@ -682,6 +685,9 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 ### D15 — Memory, knowledge, consciousness & self-evolution
 
 - `ouroboros/consciousness.py`
+- `ouroboros/consciousness_allowance.py`
+- `ouroboros/consciousness_authority.py`
+- `ouroboros/consciousness_wake.py`
 - `ouroboros/consolidator.py`
 - `ouroboros/dialogue_provenance.py`
 - `ouroboros/evolution_checkpoints.py`

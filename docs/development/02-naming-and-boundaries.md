@@ -115,8 +115,10 @@ the authority. These choices are reviewed through CHECKLISTS' development and
 capability-regression items, not a new semantic gate.
 
 What belongs in `prompts/SYSTEM.md` (tier-0 for every Main/task profile in both
-context modes — Background Consciousness and the safety supervisor carry their
-own prompts — and competing with the task for context): identity and tone, the decision
+context modes — the safety supervisor is the one caller with a prompt of its own;
+Background Consciousness uses SYSTEM.md like any other turn, and
+`prompts/CONSCIOUSNESS.md` is the USER message a wake-up receives, never a second
+system prompt — and competing with the task for context): identity and tone, the decision
 loop (answer / promote / route / delegate / do it myself), cross-tool policy
 (which class of tool or lane for which situation, root semantics, memory only
 through its own tools, untrusted external data), prohibitions and safety

@@ -426,17 +426,23 @@ not child-task cards and never prove execution by themselves.
 The owner quiz card (`web/modules/chat_decision.js`, `.chat-quiz-*` in
 `web/style.css`) is a chat-delivered decision surface. Optional clarification is fire-and-continue: the task states its assumption.
 Required waiting keeps the same card and explicitly says that the task awaits
-the owner, with Stop and existing task deadlines still effective. No assumption
-is treated as an answer. After settlement, status and the owner's recorded answer
-keep both forms readable. Anatomy, top to bottom:
+the owner, with Stop and existing task deadlines still effective; an optional
+bound on that wait resumes the task with a host notice and leaves the card open,
+and that notice says the same thing the card does — with a stated assumption the
+task proceeds under it, and without one, no answer is explicitly not consent.
+Silence is never an answer on either surface. A card outlives its asking task:
+after the task finishes, the owner can still answer, and the answer arrives as
+their own message in that chat. After settlement, status and the owner's recorded
+answer keep both forms readable. Anatomy, top to bottom:
 
 1. **Head** — neutral `Question` chip (`--type-meta`, neutral pair) and a
    status as dot + text. The lifecycle word family is closed:
    `Awaiting answer` (neutral dot), `Answered` (ok dot),
-   `Task finished — question expired` (disabled dot), `Superseded by a retry`
-   (disabled dot); an unknown state keeps a neutral dot but reads as settled
-   `Closed`, never as an open invitation. No timers, no countdowns: a quiz expires only with its
-   asking task.
+   `Task finished — you can still answer` (neutral dot: the card stays
+   answerable, and a late answer is delivered as the owner's own message),
+   `Superseded by a retry` (disabled dot); an unknown state keeps a neutral dot
+   but reads as settled `Closed`, never as an open invitation. No timers, no
+   countdowns: the asking task's end closes nothing but its own mailbox.
 2. **Question** — the one primary thing: `--type-body` semibold,
    `--text-primary`.
 3. **Stake** — optional one-liner (`At stake: …`), `--type-meta`, `--text-meta`.
@@ -478,9 +484,9 @@ History with no current execution or known outcome keeps its expandable content 
 
 A task's activity block is in the transcript exactly when the record already
 holds something to show — one predicate (`web/modules/chat.js::blockVisible`),
-re-read at every mutation, with no sticky flag: an always-shown kind
-(Background consciousness; a Presence turn is a direct turn and follows the
-same rules); open owner attention (a model wait, a
+re-read at every mutation, with no sticky flag: no kind is shown
+unconditionally (a Presence turn and a consciousness wake-up are direct turns
+and follow the same rules as any other); open owner attention (a model wait, a
 pending stop, a host-attested Stop the record still offers — the same reading
 the control uses, so a block never stands on a Stop it hides); a child card; a
 review group; a content row; a terminal outcome other than Done. The completion note is not content:
@@ -571,14 +577,13 @@ Waiting chips do not pulse or show typing. Closing the chat disposes view
 resources without claiming that it stopped the task; continuation requires the
 Ouroboros process to remain running.
 
-Background consciousness uses this component inside its existing background card,
-without a task-queue entry or a held worker slot. Its live owner identifies one
-wakeup cycle: a new cycle replaces old wait actions, and a current live snapshot
-outranks a historical end-of-cycle marker after reconnect. The background label
-is preserved, and the card appears only in its host-reported chat. Foreground
-pause is shown separately from model access waiting;
-it never claims computation or completion. Temporary model changes last until
-this wakeup cycle ends; the persistence checkbox saves the consciousness role.
+A consciousness wake-up needs nothing of its own here. It is an ordinary direct
+turn with its own task id, so its model wait, its controls and its temporary
+model change behave exactly as an owner turn's and last until that turn ends;
+the persistence checkbox still saves the consciousness role. What identifies the
+turn is the origin label `Consciousness` in the block's meta line, on its final
+bubble and on the cards of tasks it started — never a separate card, a reused
+slot or a different vocabulary.
 
 An already-delivered answer does not close a still-open post-task synthesis.
 Reflection or consolidation waits use the same role controls in that task's

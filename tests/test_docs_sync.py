@@ -441,14 +441,13 @@ def test_continuity_projection_contract_is_mirrored_across_governance_docs():
         "of the full contract it was cut from."
     ) in bible
     assert "Continuity data-flow map" in architecture
-    assert "state/consciousness_observations.jsonl" in architecture
     assert "Source-complete decision pipeline" in development
     assert "Context and growth matrix" in development
     assert "state/skill_review_root_tasks.jsonl" in development
     assert "state/skill_review_root_tasks.jsonl" in architecture
     assert "SKILL_REVIEW_ROOT_TASKS_WARN_BYTES" in architecture
-    assert "nine hot stores" in architecture
-    assert "nine os.stat calls" in _read("ouroboros/agent_startup_checks.py")
+    assert "eight hot stores" in architecture
+    assert "eight os.stat calls" in _read("ouroboros/agent_startup_checks.py")
     for item in (
         "source_completeness",
         "actor_readable_projection",

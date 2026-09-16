@@ -788,7 +788,7 @@ def hot_store_growth_notes(env: Any) -> list:
 
     Reused live by context.py::build_health_invariants (the
     check_stray_server_processes pattern). Deliberately NOT TTL-cached
-    (contrast context._STRAY_PROBE_CACHE): nine os.stat calls plus two shallow
+    (contrast context._STRAY_PROBE_CACHE): eight os.stat calls plus two shallow
     iterdir passes per task turn are orders of magnitude cheaper than the pgrep
     probe that cache exists for, and a stale reading would delay the signal."""
     from supervisor.state import ISOLATED_BENCHMARK_SENTINEL

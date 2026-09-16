@@ -933,8 +933,9 @@ Focused regressions: `test_review_late_cas_recovery.py`, `test_delivery_control_
   task emits one typed owner line (keyed by task and model, never per round) naming only the
   route that reported those applied options. A mismatch is disclosure, never a dispatch gate.
 - The engine's active-turn token is one of those transport facts, so the CALLER
-  owns its slot (`llm_claudexor.ModelTurnState` on the loop context, a wake-scoped
-  one in Background Consciousness) and the engine boundary is its only writer.
+  owns its slot (`llm_claudexor.ModelTurnState` on the loop context; a consciousness
+  wake-up is an ordinary such turn and needs no slot of its own) and the engine
+  boundary is its only writer.
   Give a new caller a fresh slot when its logical turn begins and clear it when
   its dispatch leaves this transport; never derive the turn from message roles,
   prose or the last stored assistant envelope (BIBLE P5), never persist the token
@@ -1042,7 +1043,12 @@ by "Provider Independence" above. Call-site imperatives:
   OpenRouter by `supports_message_cache_control`, and pinned by
   `tests/test_review_prompt_caching.py`. The main loop declares an
   execution-scoped cache affinity only for subscription transport; API-compatible
-  lanes retain their prefix-derived session identity;
+  lanes retain their prefix-derived session identity. A consciousness wake-up is one
+  of those main-loop executions: its schema array and cached system prefix are
+  byte-identical to an owner turn's, so everything the level or the wake reason
+  changes must stay in the wake's own user message and the dynamic tail; the model
+  slot it runs on (the owner's `consciousness` role, when set) decides which cache
+  that shared prefix lands in;
   `review_substrate.assert_cache_breakpoint_cap` covers only the review
   builders. Between the sends of ONE execution the transcript is append-only —
   compaction is the one sanctioned rewrite, and OpenAI-family caches discard

@@ -35,7 +35,6 @@ Providers name the same output-token budget differently: OpenRouter/Anthropic-co
 | Post-task evolution promotion decision (`post_task_evolution`) | 8,192 |
 | Context compaction round summaries | 32,768 |
 | Skill publish PR body generation | 8,192 |
-| Background consciousness loop | 65,536 |
 | Project naming LIGHT one-shot (`project_naming.llm_project_name`) | 256 |
 | Update letter LIGHT one-shot (`update_letter.write_letter`) | 1,024 |
 | Provider Test (`llm_probe.PROVIDER_TEST_MAX_TOKENS`) | 16 |
