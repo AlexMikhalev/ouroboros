@@ -8,16 +8,20 @@ registry, no observation inbox, no pause/resume: the supervisor loop calls ``tic
 per pass and the ``DirectActivityRegistry`` (the census of live direct turns) is the only
 liveness truth. Tick order, each step a typed outcome: disabled → a live wake → a live owner
 turn → not yet due → the rolling-24h allowance (an unreadable ledger is the disclosed skip
-``allowance_unknown``, never a silent block) → an owner chat must be bound → launch. What is
-left of that allowance is also the launched tree's own cap (``metadata.root_limit_usd``, В26=A):
-one number the ledger fence and the graceful in-task stop both read, so a wake lands softly
-instead of spending the whole per-task cap on a nearly spent day. The next
+``allowance_unknown``, never a silent block; a remainder at or below the graceful stop's planning
+margin counts as exhausted — less than one planned turn) → an owner chat must be bound → launch.
+What is left of that allowance is the launched tree's graceful ceiling
+(``metadata.root_cost_ceiling_usd``, В26=A): the in-task stop lands the wake a planning margin
+before it, while the ledger fence stays at the owner's per-task cap, so a wake never dies before
+its first call on a nearly spent day. The next
 wake is ``last finish + interval``: the MODEL's choice (``set_next_wakeup`` persists
 ``consciousness_next_interval_sec``) or ``WAKE_DEFAULT_SEC``, clamped into the owner's
-[min, max]; a runner failure doubles it up to max until a wake succeeds. ``notify(reason)`` (a
-root task finished, a project digest, an orphan-heal sweep) pulls the next wake to
-``max(now, last wake + min)`` — arithmetic debounce, one floor everywhere. An owner message never
-wakes it, and a wake's own finish (or that of a task it started) never re-arms it. A health
+[min, max]; a runner failure — or a wake the lane could not admit — doubles it up to max until a
+wake succeeds. ``notify(reason)`` (a root task finished, a project digest, an orphan-heal sweep)
+pulls the next wake to ``max(now, (last wake or boot) + min)`` — arithmetic debounce, one floor
+everywhere, and the boot floor holds against the first post-restart event. An owner message never
+wakes it (nor does the owner's own turn finishing), and a wake's own finish (or that of a task it
+started) never re-arms it. A health
 WARNING/CRITICAL trigger is deliberately NOT implemented: nothing emits a health event
 (``build_health_invariants`` is read-side), so health is visible in the next wake's context.
 Panic and ``/bg stop`` arrive through ``stop()``, which arms a graceful stop of a live wake
@@ -41,6 +45,7 @@ from ouroboros.consciousness_allowance import STATUS_EXHAUSTED, STATUS_UNKNOWN, 
 from ouroboros.consciousness_authority import is_consciousness_origin
 from ouroboros.consciousness_wake import render_wake_message, wake_task_metadata
 from ouroboros.deadline_utils import parse_deadline_ts
+from ouroboros.task_pacing import COST_PLANNING_MARGIN_USD
 from ouroboros.utils import append_jsonl, utc_now_iso
 
 log = logging.getLogger(__name__)
@@ -53,7 +58,7 @@ HEARTBEAT = "heartbeat"
 ALLOWANCE_VIEW_TTL_SEC = 60.0
 SNAPSHOT_KEYS = ("enabled", "level", "next_wake_at", "pending_reason", "last_wake_at", "last_wake_task_id",
                  "last_wake_outcome", "last_error", "spent_24h_usd", "daily_usd", "allowance_resets_at",
-                 "tasks_running", "max_tasks", "live_wake_task_id")
+                 "tasks_running", "max_tasks", "live_wake_task_id", "unknown_unmetered", "integrity_degraded")
 
 
 def _iso(ts: float) -> str:
@@ -157,7 +162,9 @@ class BackgroundConsciousness:
             window = self._allowance_view(now, fresh=True)
             if window.get("status") == STATUS_UNKNOWN:
                 return self._skip("allowance_unknown", now + self.floor, error=str(window.get("error") or ""))
-            if window.get("status") == STATUS_EXHAUSTED:
+            # Nothing left — or less than one planned turn (the graceful stop's planning
+            # margin): a wake started there would only be told to land at once.
+            if window.get("status") == STATUS_EXHAUSTED or float(window.get("remaining_usd") or 0.0) <= COST_PLANNING_MARGIN_USD:
                 resets = parse_deadline_ts(str(window.get("resets_at") or ""))
                 return self._skip("allowance_exhausted", max(resets.timestamp() if resets else 0.0, now + self.floor))
             if not self._owner_chat_id():
@@ -181,14 +188,16 @@ class BackgroundConsciousness:
             per_task_cap = 0.0
         # В26=A: a wake's whole tree may spend at most what is left of the rolling-24h
         # allowance, and never more than the owner's per-task cap (a cap of 0 disables
-        # that half). It travels as the tree's ROOT CAP (`root_limit_usd`), not as the
-        # inherited child ceiling: a wake IS the root of its tree, so the ledger fence
-        # and the graceful in-task stop both read this one number — the stop lands a
-        # planning margin early, the fence binds at the cap itself. The tick never
-        # launches with a non-positive remainder (that window is `allowance_exhausted`).
-        root_cap = min(per_task_cap, remaining) if per_task_cap > 0 else remaining
+        # that half). It travels as the tree's GRACEFUL ceiling (`root_cost_ceiling_usd`,
+        # honored for the root itself by `task_pacing.resolve_cost_ceiling` and inherited
+        # by the members): the in-task stop lands a planning margin early, while the
+        # ledger fence keeps the owner's per-task cap — one Main attempt reserves several
+        # dollars up front, and a fence narrowed below that refused every wake of a
+        # nearly spent day before its first call. The tick never launches with less
+        # than the planning margin left (that window is `allowance_exhausted`).
+        ceiling = min(per_task_cap, remaining) if per_task_cap > 0 else remaining
         metadata = {**self._routing_facts(chat_id),
-                    **wake_task_metadata(level, reason, root_limit_usd=root_cap)}
+                    **wake_task_metadata(level, reason, root_cost_ceiling_usd=ceiling)}
         text = render_wake_message(
             self._drive_root, self._repo_dir, reason=reason, last_wake_at=self._last_wake_at,
             since=self._last_wake_at or self._booted_at, now=now, level=level,
@@ -205,12 +214,18 @@ class BackgroundConsciousness:
         if not receipt.get("admitted"):
             why = str(receipt.get("reason") or "refused")
             self._last_wake_outcome = f"rejected:{why}"
-            self._set_next_wake(now + self.floor)
+            # A wake the lane could not admit already left an error in the chat: back off
+            # like a failed wake. A closed door (the owner's budget, a live turn) is retried
+            # quietly — the transient ones at the floor, the budget at the interval.
+            if why == "admission_failed":
+                self._backoff = min(self._backoff * 2, 1024)
+            transient = why in ("owner_turn_live", "wake_live", "repo_writer_gate_closed")
+            self._set_next_wake(now + (self.floor if transient else min(self.ceiling, self._interval() * self._backoff)))
             self._record("consciousness_wake_rejected", reason=why, wake_reason=reason)
             return f"rejected:{why}"
         self._last_wake_task_id, self._last_wake_outcome, self._last_error = str(receipt["task_id"]), "running", ""
         self._record("consciousness_wake_started", task_id=self._last_wake_task_id, wake_reason=reason,
-                     level=level, root_limit_usd=root_cap)
+                     level=level, root_cost_ceiling_usd=ceiling)
         return "launched"
 
     def _wake_finished(self, task_id: str, ok: bool) -> None:
@@ -230,7 +245,7 @@ class BackgroundConsciousness:
         """An event worth waking for: keep the last reason, pull the next wake to the floor."""
         with self._lock:
             self._pending_reason = str(reason or "event")
-            target = max(time.time(), self._last_wake_at + self.floor)
+            target = max(time.time(), max(self._last_wake_at, self._booted_at) + self.floor)
             if target < self._next_wake_at:
                 self._set_next_wake(target)
 
@@ -266,7 +281,8 @@ class BackgroundConsciousness:
         values = (self._enabled, get_consciousness_autonomy(), _iso(self._next_wake_at), self._pending_reason or "",
                   _iso(self._last_wake_at), self._last_wake_task_id, self._last_wake_outcome, self._last_error,
                   window.get("accounted_usd"), window.get("limit_usd"), str(window.get("resets_at") or ""),
-                  self._running_roots(), int(get_consciousness_max_tasks()), wake)
+                  self._running_roots(), int(get_consciousness_max_tasks()), wake,
+                  int(window.get("unknown_unmetered") or 0), bool(window.get("integrity_degraded")))
         return dict(zip(SNAPSHOT_KEYS, values))
 
     def _allowance_view(self, now: float, *, fresh: bool = False) -> Dict[str, Any]:

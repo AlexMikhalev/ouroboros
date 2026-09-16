@@ -56,6 +56,8 @@
  * @property {number} tasks_running  // live roots consciousness started
  * @property {number} max_tasks
  * @property {string} live_wake_task_id  // "" when no wake-up is running
+ * @property {number} unknown_unmetered  // window rows without a price: spent_24h_usd is then a floor ("at least")
+ * @property {boolean} integrity_degraded  // the ledger was quarantined/repaired; the numbers are best-effort
  */
 
 /**

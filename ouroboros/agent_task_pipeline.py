@@ -741,10 +741,13 @@ def emit_task_results(
             except Exception:
                 log.debug("project journal finalization entries failed", exc_info=True)
             try:
+                _task_metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
                 pending_events.append({
                     "type": "project_digest",
                     "project_id": _pid,
                     "task_id": str(task.get("id") or ""),
+                    # The alarm clock must not re-arm on a tree consciousness started.
+                    "initiator": str(_task_metadata.get("initiator") or ""),
                     "objective": _objective,
                     "execution_status": _exec_status,
                     "objective_status": str((outcome_axes.get("objective") or {}).get("status") or "not_evaluated"),

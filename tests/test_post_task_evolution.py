@@ -323,6 +323,7 @@ def test_toggle_evolution_off_wires_owner_stop(tmp_path, monkeypatch):
 
     assert captured["evolution_mode_enabled"] is False
     assert captured["evolution_owner_stopped"] is True   # durable owner-stop sentinel SET
+    assert captured["evolution_stop_source"] == "agent_tool"  # who stopped it: the tool, not the owner
     assert captured["post_task_autostop"] is False       # one-shot autostop cleared
     assert calls["complete"] == [("disabled via agent tool", "stopped")]  # terminal, not pause
     assert calls["start"] == []

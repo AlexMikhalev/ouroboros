@@ -628,6 +628,36 @@ def test_agent_tool_enable_without_an_owner_stop_starts_a_campaign_with_the_orig
     assert live["evolution_mode_enabled"] is True and live["evolution_owner_stopped"] is False
 
 
+def test_a_stop_the_agent_placed_itself_stays_undoable_by_the_agent(tmp_path, monkeypatch):
+    """В12 binds the OWNER's stop; the agent's own toggle_evolution(False) is not an owner
+    stop — it still blocks the post-task re-arm (the flag), but the agent may re-enable."""
+    import supervisor.state as state
+    from supervisor import events as events_mod
+    from supervisor import evolution_lifecycle as el
+
+    state.init(tmp_path)
+    # What the agent's own toggle_evolution(False) leaves behind (the disable path itself needs
+    # the live supervisor; its state write is pinned in test_evolution_stop_and_cost).
+    state.update_state(lambda live: live.update(owner_chat_id=7, evolution_owner_stopped=True,
+                                                evolution_stop_source="agent_tool"))
+    started: list = []
+    monkeypatch.setattr(el, "evolution_block_reason", lambda: "")
+    monkeypatch.setattr(el, "start_evolution_campaign",
+                        lambda objective, source="", **kw: started.append(source) or {"status": "active"})
+    sent: list = []
+    events_mod._handle_toggle_evolution({"enabled": True, "objective": "again"}, _toggle_ctx(state, sent))
+    live = state.load_state()
+    assert started == ["agent_tool"] and live["evolution_owner_stopped"] is False
+    assert "evolution_stop_source" not in live and not [t for t in sent if "sticky" in t]
+    # The owner's stop (/evolve off, panic, an owner-sourced toggle: no agent_tool source) stays sticky.
+    state.update_state(lambda live: live.update(evolution_owner_stopped=True, evolution_stop_source="owner_chat"))
+    events_mod._handle_toggle_evolution({"enabled": True, "objective": "x"}, _toggle_ctx(state, sent))
+    assert started == ["agent_tool"] and sent and "sticky" in sent[-1]
+    state.update_state(lambda live: (live.update(evolution_owner_stopped=True), live.pop("evolution_stop_source", None)))
+    events_mod._handle_toggle_evolution({"enabled": True, "objective": "y"}, _toggle_ctx(state, sent))
+    assert started == ["agent_tool"] and len([t for t in sent if "sticky" in t]) == 2
+
+
 def test_toggle_tool_stamps_the_turn_origin_on_its_event(monkeypatch):
     from ouroboros.tools.control_runtime import _toggle_evolution
 

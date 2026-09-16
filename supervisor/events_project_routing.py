@@ -186,8 +186,10 @@ def _handle_project_digest(evt: Dict[str, Any], ctx: Any) -> None:
     Full project awareness (v6.32.0): the one identity already sees the project's
     chat thread in its unified memory and the finished task in ``task_results``,
     so the digest is a wake REASON, not a message — the next wake-up renders the
-    facts itself (``consciousness_wake``) and the единый agent decides what to do
-    with them — backlog, identity, or nothing (BIBLE P5).
+    facts itself (``consciousness_wake``) and the one agent decides what to do
+    with them — backlog, identity, or nothing (BIBLE P5). A digest of a tree
+    consciousness itself started never re-arms the clock (its own finish is not
+    news to it; the chain would never sleep).
     """
     pid = str(evt.get("project_id") or "").strip()
     if not pid:
@@ -199,8 +201,10 @@ def _handle_project_digest(evt: Dict[str, Any], ctx: Any) -> None:
     except Exception:
         log.debug("project_digest touch failed", exc_info=True)
     try:
+        from ouroboros.consciousness_authority import is_consciousness_origin
+
         consciousness = getattr(ctx, "consciousness", None)
-        if consciousness is not None:
+        if consciousness is not None and not is_consciousness_origin(evt):
             consciousness.notify(f"project_digest:{pid}")
     except Exception:
         log.debug("project_digest consciousness notify failed", exc_info=True)

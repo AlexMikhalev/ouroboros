@@ -31,18 +31,18 @@ def _result(root, task_id, *, status="completed", ts, cost=1.25, direct=False, q
 
 def test_wake_task_metadata_carries_origin_level_and_tree_cap(monkeypatch):
     monkeypatch.setenv("OUROBOROS_CONSCIOUSNESS_AUTONOMY", "act")
-    meta = wake.wake_task_metadata("observe", "heartbeat", root_limit_usd=3.5)
+    meta = wake.wake_task_metadata("observe", "heartbeat", root_cost_ceiling_usd=3.5)
     assert meta["initiator"] == "consciousness" and meta["usage_category"] == "consciousness"
     assert meta["consciousness_autonomy"] == "observe" and meta["runtime_mode_cap"] == "light"
     assert meta["model_role"] == "consciousness" and meta["wake_reason"] == "heartbeat"
     # P3e: the cap the wake's own root scope binds, never the non-root member ceiling.
-    assert "promote_chat_to_task" in meta["disabled_tools"] and meta["root_limit_usd"] == 3.5
-    assert "root_cost_ceiling_usd" not in meta
+    assert "promote_chat_to_task" in meta["disabled_tools"] and meta["root_cost_ceiling_usd"] == 3.5
+    assert "root_limit_usd" not in meta
     full = wake.wake_task_metadata("full", "event:x")
-    assert full["disabled_tools"] == [] and full["runtime_mode_cap"] == "" and "root_limit_usd" not in full
+    assert full["disabled_tools"] == [] and full["runtime_mode_cap"] == "" and "root_cost_ceiling_usd" not in full
     # A non-positive cap is not stamped: it would read as "no narrowing" downstream and
     # the alarm never launches on an exhausted allowance anyway.
-    assert "root_limit_usd" not in wake.wake_task_metadata("act", "heartbeat", root_limit_usd=0.0)
+    assert "root_cost_ceiling_usd" not in wake.wake_task_metadata("act", "heartbeat", root_cost_ceiling_usd=0.0)
     assert wake.wake_task_metadata("bogus", "")["consciousness_autonomy"] == "act"  # falls back to the setting
 
 
@@ -52,9 +52,13 @@ def test_events_list_settled_tasks_open_cards_and_owner_messages_since_the_last_
     _result(tmp_path, "new01", ts=since + 10, status="failed", cost=0.5, description="build the thing")
     _result(tmp_path, "run01", ts=since + 20, status="running")
     _result(tmp_path, "chat1", ts=since + 30, direct=True)  # an owner's own turn: already in Recent chat
-    _result(tmp_path, "prev1", ts=since + 40)  # the previous wake itself is excluded by id
     _result(tmp_path, "ask01", ts=since - 100, status="running",
-            quizzes={"q1": {"state": "open"}, "q2": {"state": "answered"}})
+            quizzes={"q1": {"state": "open"}, "q2": {"state": "answered", "answered_at": "x"}})
+    # The previous wake's own card, left behind when its turn ended (expired_terminal, В17a:
+    # still answerable), is exactly the "I'll come back to it" case — it must be listed even
+    # though the wake's row itself is excluded from the settled-task lines.
+    _result(tmp_path, "prev1", ts=since + 40, direct=True,
+            quizzes={"q3": {"state": "expired_terminal"}, "q4": {"state": "expired_terminal", "answered_at": "y"}})
     (tmp_path / "logs").mkdir()
     (tmp_path / "logs" / "chat.jsonl").write_text("\n".join([
         json.dumps({"direction": "in", "ts": _iso(since + 5), "text": "hi"}),
@@ -64,9 +68,11 @@ def test_events_list_settled_tasks_open_cards_and_owner_messages_since_the_last_
     ]) + "\n", encoding="utf-8")
     lines = wake.wake_events(tmp_path, since=since, now=T0, exclude_task_id="prev1")
     assert "- open question card q1 on task ask01 (no answer yet)" in lines
+    assert "- open question card q3 on task prev1 (no answer yet)" in lines
+    assert not [line for line in lines if "q2" in line or "q4" in line]
     assert "- task new01 failed, $0.50: build the thing" in lines
     assert "- 2 message(s) from your human (see Recent chat)" in lines
-    assert not [line for line in lines if "old01" in line or "run01" in line or "chat1" in line or "prev1" in line]
+    assert not [line for line in lines if "old01" in line or "run01" in line or "chat1" in line or "- task prev1 " in line]
     assert wake.wake_events(tmp_path / "missing", since=since, now=T0) == []
 
 
@@ -154,6 +160,11 @@ def test_projection_names_every_honest_status(describe):
                           "allowance_resets_at": "2027-01-15T18:00:00+00:00"})
     assert exhausted["status"] == "allowance_exhausted"
     assert "$21.50 of $20.00" in exhausted["detail"] and server._clock_of("2027-01-15T18:00:00+00:00") in exhausted["detail"]
+    assert "at least" not in exhausted["detail"] and "degraded" not in exhausted["detail"]
+    # PLAN 5.5: an unmetered or quarantined ledger makes the number a floor, and the status says so.
+    floor = describe({**BASE, "last_wake_outcome": "skipped:allowance_exhausted", "spent_24h_usd": 21.5,
+                      "unknown_unmetered": 2, "integrity_degraded": True})
+    assert "at least $21.50 of $20.00" in floor["detail"] and "ledger integrity degraded" in floor["detail"]
     unknown = describe({**BASE, "last_wake_outcome": "skipped:allowance_unknown", "last_error": "OSError: ledger"})
     assert unknown["status"] == "allowance_unknown" and "OSError: ledger" in unknown["detail"]
     rejected = describe({**BASE, "last_wake_outcome": "rejected:budget_exhausted"})

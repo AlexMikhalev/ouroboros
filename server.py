@@ -236,7 +236,9 @@ def _describe_bg_consciousness_state(requested_enabled: bool) -> dict:
     elif outcome == "skipped:allowance_exhausted":
         spent, daily = snapshot.get("spent_24h_usd"), snapshot.get("daily_usd")
         status = "allowance_exhausted"
-        detail = (f"Daily allowance spent (${float(spent or 0):.2f} of ${float(daily or 0):.2f} in the last 24 h); "
+        at_least = "at least " if int(snapshot.get("unknown_unmetered") or 0) > 0 else ""
+        degraded = "; ledger integrity degraded" if snapshot.get("integrity_degraded") else ""
+        detail = (f"Daily allowance spent ({at_least}${float(spent or 0):.2f} of ${float(daily or 0):.2f} in the last 24 h{degraded}); "
                   f"next check at {_clock_of(snapshot.get('allowance_resets_at')) if snapshot.get('allowance_resets_at') else next_at}.")
     elif outcome == "skipped:allowance_unknown":
         status, detail = "allowance_unknown", f"The usage ledger could not be read ({snapshot.get('last_error') or 'unknown error'}); retry at {next_at}."

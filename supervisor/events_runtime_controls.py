@@ -187,18 +187,22 @@ def _handle_toggle_evolution(evt: Dict[str, Any], ctx: Any) -> None:
     """Toggle evolution mode from an LLM tool call (or an owner-sourced event).
 
     Owner decision В12: ``/evolve off`` is STICKY against the agent tool. Only an
-    event with owner provenance (``source == "owner_chat"``) may clear the
-    durable ``evolution_owner_stopped`` flag; an ``agent_tool`` enable while the
-    flag is set is refused with the same typed shape as the light-mode block.
+    event with owner provenance (``source == "owner_chat"``) may clear a stop the
+    OWNER placed (``/evolve off``, panic, an owner-sourced toggle — every stop without
+    an ``evolution_stop_source`` of ``agent_tool``); an ``agent_tool`` enable against
+    such a stop is refused with the same typed shape as the light-mode block. A stop
+    the agent placed itself stays undoable by the agent, as it always was.
     """
     enabled = bool(evt.get("enabled"))
     owner_sourced = str(evt.get("source") or "") == "owner_chat"
+    stop_source = str(ctx.load_state().get("evolution_stop_source") or "")
+    agent_may_clear = not owner_sourced and stop_source == "agent_tool"
     if enabled:
         from supervisor.evolution_lifecycle import evolution_block_reason, start_evolution_campaign
         from ouroboros.consciousness_authority import consciousness_origin_metadata
 
         block = evolution_block_reason()
-        if not block and not owner_sourced and bool(ctx.load_state().get("evolution_owner_stopped")):
+        if not block and not owner_sourced and not agent_may_clear and bool(ctx.load_state().get("evolution_owner_stopped")):
             block = (
                 "🧬 Evolution stayed OFF: the owner stopped evolution (/evolve off), and that stop "
                 "is sticky against toggle_evolution. Only the owner's /evolve start re-arms it; "
@@ -225,7 +229,7 @@ def _handle_toggle_evolution(evt: Dict[str, Any], ctx: Any) -> None:
             _prior_owner_stop["value"] = bool(live.get("evolution_owner_stopped"))
             live["evolution_owner_stopped"] = False
 
-        if owner_sourced:
+        if owner_sourced or agent_may_clear:
             _update_state(_clear_owner_stop)
         origin = consciousness_origin_metadata(evt)
         source = "owner_chat" if owner_sourced else "agent_tool"
@@ -259,7 +263,12 @@ def _handle_toggle_evolution(evt: Dict[str, Any], ctx: Any) -> None:
         # Owner stop is AUTHORITATIVE against the post-task pipeline (mirrors /evolve): set
         # the durable evolution_owner_stopped flag on disable, clear it on enable (this is an
         # owner-authorized clear). This is what apply_pending_request reads to refuse re-arm.
+        # The stop remembers who placed it: only an owner's stop is sticky against the tool.
         live["evolution_owner_stopped"] = (not enabled)
+        if enabled:
+            live.pop("evolution_stop_source", None)
+        else:
+            live["evolution_stop_source"] = "owner_chat" if owner_sourced else "agent_tool"
         # Symmetry with the owner /evolve path: an explicit toggle must not inherit a
         # stale post-task one-shot autostop that would disable the campaign after one cycle.
         live["post_task_autostop"] = False

@@ -33,14 +33,14 @@ LEVEL_LINES = {
 _FALLBACK_TEMPLATE = "[Wake-up · {reason}] No one wrote to you: this turn is yours. Since your last wake ({last_wake_ago}): {events}"
 
 
-def wake_task_metadata(level: Any, reason: str, *, root_limit_usd: Optional[float] = None) -> Dict[str, Any]:
+def wake_task_metadata(level: Any, reason: str, *, root_cost_ceiling_usd: Optional[float] = None) -> Dict[str, Any]:
     """The wake's ``task_metadata``: origin label, ledger category, level and its consequences.
 
-    ``root_limit_usd`` NARROWS the wake tree's monetary cap below the owner's per-task
-    setting (``agent.handle_task`` binds the smaller of the two): one number for both the
-    ledger fence and the graceful in-task stop, because a wake is the ROOT of its own tree.
-    Only a strictly positive cap is stamped — a wake with nothing left of its allowance is
-    skipped by the alarm, never started under a $0 cap.
+    ``root_cost_ceiling_usd`` is the wake tree's GRACEFUL ceiling (what is left of the
+    allowance, at most the per-task cap): ``task_pacing.resolve_cost_ceiling`` honors it for
+    the root itself and the members inherit the resolved number, while the ledger fence stays
+    at the owner's per-task cap. Only a strictly positive ceiling is stamped — a wake with
+    nothing left of its allowance is skipped by the alarm, never started under a $0 ceiling.
     """
     normalized = normalize_level(level)
     metadata: Dict[str, Any] = {
@@ -49,8 +49,8 @@ def wake_task_metadata(level: Any, reason: str, *, root_limit_usd: Optional[floa
         "model_role": "consciousness", "disabled_tools": disabled_tools_for(normalized),
         "runtime_mode_cap": runtime_mode_cap_for(normalized),
     }
-    if root_limit_usd is not None and float(root_limit_usd) > 0:
-        metadata["root_limit_usd"] = float(root_limit_usd)
+    if root_cost_ceiling_usd is not None and float(root_cost_ceiling_usd) > 0:
+        metadata["root_cost_ceiling_usd"] = float(root_cost_ceiling_usd)
     return metadata
 
 
@@ -66,9 +66,11 @@ def _ago(seconds: float) -> str:
 
 
 def wake_events(drive_root: Any, *, since: float, now: float, exclude_task_id: str = "") -> List[str]:
-    """One line per fact since ``since``: settled tasks (never direct chat turns), open owner
-    cards, and the count of owner messages; readers fail soft (a gap line, never a crash)."""
-    from ouroboros.owner_quiz import STATE_OPEN
+    """One line per fact since ``since``: settled tasks (never direct chat turns), unanswered
+    owner cards of ANY task — a wake's own included, and a card its task has already left
+    behind (``expired_terminal``) still takes a late answer (В17a) — and the count of owner
+    messages; readers fail soft (a gap line, never a crash)."""
+    from ouroboros.owner_quiz import STATE_EXPIRED_TERMINAL, STATE_OPEN
     from ouroboros.task_results import list_task_results
     from ouroboros.task_status import SETTLED_STATUSES
 
@@ -79,12 +81,16 @@ def wake_events(drive_root: Any, *, since: float, now: float, exclude_task_id: s
         rows, lines = [], [f"- task_results unreadable: {type(exc).__name__}"]
     for row in rows:
         task_id = str(row.get("task_id") or "")
-        if not task_id or task_id == exclude_task_id or row.get("_is_direct_chat"):
+        if not task_id:
             continue
         quizzes = row.get("owner_quiz") if isinstance(row.get("owner_quiz"), dict) else {}
         for quiz_id, block in quizzes.items():
-            if isinstance(block, dict) and block.get("state") == STATE_OPEN:
+            if not isinstance(block, dict) or block.get("answered_at"):
+                continue
+            if block.get("state") in (STATE_OPEN, STATE_EXPIRED_TERMINAL):
                 lines.append(f"- open question card {quiz_id} on task {task_id} (no answer yet)")
+        if task_id == exclude_task_id or row.get("_is_direct_chat"):
+            continue
         status = str(row.get("status") or "")
         if status in SETTLED_STATUSES and str(row.get("updated_at") or row.get("ts") or "") >= since_iso:
             cost = row.get("accounted_upper_bound_usd", row.get("cost_usd"))

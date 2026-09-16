@@ -176,10 +176,11 @@ def test_launch_starts_an_ordinary_main_turn_with_the_wake_envelope(clock):
     assert meta["wake_reason"] == "heartbeat" and meta["consciousness_autonomy"] == "act"
     assert meta["model_role"] == "consciousness" and meta["runtime_mode_cap"] == "light"
     assert "toggle_evolution" in meta["disabled_tools"] and "steer_task" not in meta["disabled_tools"]
-    # P3e: the wake's tree CAP, not the inherited child ceiling — a wake is its own root,
-    # so `root_cost_ceiling_usd` (which only binds non-root members) never stopped it.
-    assert meta["root_limit_usd"] == 17.5  # min(per-task cap 50, remaining 17.5)
-    assert "root_cost_ceiling_usd" not in meta
+    # В26=A: the wake tree's GRACEFUL ceiling = min(per-task cap 50, remaining 17.5); the
+    # ledger fence keeps the per-task cap (a fence narrowed below one Main attempt's
+    # reservation refused every wake of a nearly spent day before its first call).
+    assert meta["root_cost_ceiling_usd"] == 17.5
+    assert "root_limit_usd" not in meta
     text = launch["text"]
     assert text.startswith("[Wake-up · heartbeat]") and "level=act" in text and "spent=2.50/20.00" in text
     assert "running=1/2" in text and "interval=1200" in text and "toggle_evolution" in text
@@ -236,7 +237,18 @@ def test_launch_without_a_routing_seam_keeps_the_bare_wake_envelope(clock):
 def test_launch_cap_is_the_remaining_allowance_when_no_per_task_cap(clock, monkeypatch):
     monkeypatch.setenv("OUROBOROS_PER_TASK_COST_USD", "0")
     assert clock.clock.tick(T0 + FLOOR + 1) == "launched"
-    assert clock.launches[0]["metadata"]["root_limit_usd"] == 17.5
+    assert clock.launches[0]["metadata"]["root_cost_ceiling_usd"] == 17.5
+
+
+def test_less_than_one_planned_turn_left_is_exhausted(clock, monkeypatch):
+    """A remainder at or below the graceful stop's planning margin would only wake the
+    mind to be told to land at once: the tick skips it as exhausted instead."""
+    from ouroboros.task_pacing import COST_PLANNING_MARGIN_USD
+
+    thin = dict(AVAILABLE, remaining_usd=COST_PLANNING_MARGIN_USD, accounted_usd=20.0 - COST_PLANNING_MARGIN_USD)
+    monkeypatch.setattr(clock_module, "allowance_window", lambda root, now=None: dict(thin))
+    assert clock.clock.tick(T0 + FLOOR + 1) == "skipped:allowance_exhausted"
+    assert clock.launches == []
 
 
 def test_launch_cap_rides_the_started_event_too(clock):
@@ -244,8 +256,8 @@ def test_launch_cap_rides_the_started_event_too(clock):
     the scope binds — a reader must not have to know a second name for the cap."""
     assert clock.clock.tick(T0 + FLOOR + 1) == "launched"
     started = [row for row in _events(clock.root) if row["type"] == "consciousness_wake_started"]
-    assert started and started[0]["root_limit_usd"] == 17.5
-    assert "root_cost_ceiling_usd" not in started[0]
+    assert started and started[0]["root_cost_ceiling_usd"] == 17.5
+    assert "root_limit_usd" not in started[0]
 
 
 def test_pending_reason_is_captured_and_cleared_at_launch(clock):
@@ -256,13 +268,24 @@ def test_pending_reason_is_captured_and_cleared_at_launch(clock):
     assert clock.clock.pending_reason is None
 
 
-def test_rejected_wake_is_typed_and_retried_after_the_floor(clock):
+def test_rejected_wake_is_typed_and_retried_by_its_reason(clock):
     clock.receipt.update({"admitted": False, "task_id": "", "reason": "budget_exhausted"})
     now = T0 + FLOOR + 1
     assert clock.clock.tick(now) == "rejected:budget_exhausted"
-    assert clock.clock.next_wake_at == now + FLOOR
+    assert clock.clock.next_wake_at == now + DEFAULT  # the owner's budget is out: quietly, at the interval
     assert clock.clock.status_snapshot()["last_wake_outcome"] == "rejected:budget_exhausted"
     assert [row["reason"] for row in _events(clock.root) if row["type"] == "consciousness_wake_rejected"] == ["budget_exhausted"]
+    clock.receipt["reason"], clock.clock._next_wake_at = "repo_writer_gate_closed", now
+    assert clock.clock.tick(now) == "rejected:repo_writer_gate_closed"
+    assert clock.clock.next_wake_at == now + FLOOR  # a transient door: the floor
+    # The lane could not admit the turn and already reported the error in the chat: back
+    # off like a failed wake, so a broken install is not told so every 15 minutes forever.
+    clock.receipt["reason"], clock.clock._next_wake_at = "admission_failed", now
+    assert clock.clock.tick(now) == "rejected:admission_failed"
+    assert clock.clock.next_wake_at == now + DEFAULT * 2
+    clock.clock._next_wake_at = now
+    assert clock.clock.tick(now) == "rejected:admission_failed"
+    assert clock.clock.next_wake_at == now + DEFAULT * 4
 
 
 def test_a_turn_admitted_in_the_same_instant_keeps_the_reason_for_later(clock, monkeypatch):
@@ -343,7 +366,7 @@ def test_notify_pulls_the_next_wake_to_the_floor_after_the_last_wake(clock, monk
     clock.clock._next_wake_at = T0 + 3000
     monkeypatch.setattr(clock_module.time, "time", lambda: T0 + 100)
     clock.clock.notify("task_finished:a:completed")
-    assert clock.clock.next_wake_at == T0 + 100  # no wake yet: now
+    assert clock.clock.next_wake_at == T0 + FLOOR  # no wake yet: the boot floor holds (booted at T0)
     clock.clock._last_wake_at = T0
     clock.clock._next_wake_at = T0 + 3000
     clock.clock.notify("task_finished:b:completed")
@@ -368,6 +391,10 @@ def test_task_done_notifies_for_roots_of_any_outcome_but_never_for_consciousness
                                        {"task_id": "wake1", "status": "completed"})
     _notify_consciousness_of_root_done(ctx, {}, {"initiator": "consciousness", "usage_category": "consciousness_task"}, {},
                                        {"task_id": "started1", "status": "completed"})
+    # В13: the owner's own direct turn ending is not a wake reason (chatting would otherwise
+    # re-arm a wake at the floor after every reply) — whichever carrier says it is direct.
+    _notify_consciousness_of_root_done(ctx, {}, None, {}, {"task_id": "chat1", "status": "completed", "_is_direct_chat": True})
+    _notify_consciousness_of_root_done(ctx, {"_is_direct_chat": True}, None, {}, {"task_id": "chat2", "status": "completed"})
     assert reasons == ["task_finished:t1:failed", "task_finished:t2:completed"]
     # No alarm clock on the ctx (supervisor init failed) is not an error.
     _notify_consciousness_of_root_done(SimpleNamespace(), {}, None, {}, {"task_id": "t4", "status": "completed"})
@@ -381,6 +408,8 @@ def test_project_digest_and_orphan_heal_reach_notify(monkeypatch, tmp_path):
     ctx = SimpleNamespace(DRIVE_ROOT=tmp_path, consciousness=SimpleNamespace(notify=reasons.append))
     monkeypatch.setattr("ouroboros.projects_registry.touch_project", lambda root, pid: None)
     _handle_project_digest({"project_id": "p9", "task_id": "t9"}, ctx)
+    # A digest of a tree consciousness started is its own news: never a wake reason.
+    _handle_project_digest({"project_id": "p9", "task_id": "t10", "initiator": "consciousness"}, ctx)
     assert reasons == ["project_digest:p9"]
     monkeypatch.setattr("ouroboros.skill_review_runner.reconcile_stale_review_jobs", lambda root: None)
     monkeypatch.setattr("ouroboros.task_status.reconcile_orphaned_running_tasks", lambda root, **kw: 2)
@@ -424,9 +453,10 @@ def test_status_snapshot_carries_the_alarm_facts(clock):
     assert set(snapshot) == {
         "enabled", "level", "next_wake_at", "pending_reason", "last_wake_at", "last_wake_task_id",
         "last_wake_outcome", "last_error", "spent_24h_usd", "daily_usd", "allowance_resets_at",
-        "tasks_running", "max_tasks", "live_wake_task_id",
+        "tasks_running", "max_tasks", "live_wake_task_id", "unknown_unmetered", "integrity_degraded",
     }
     assert snapshot["enabled"] is True and snapshot["level"] == "act"
+    assert snapshot["unknown_unmetered"] == 0 and snapshot["integrity_degraded"] is False
     assert snapshot["next_wake_at"].startswith("2027-") and snapshot["last_wake_at"] == ""
     assert snapshot["spent_24h_usd"] == 2.5 and snapshot["daily_usd"] == 20.0
     assert snapshot["tasks_running"] == 1 and snapshot["max_tasks"] == 2 and snapshot["live_wake_task_id"] == ""

@@ -737,10 +737,13 @@ def _task_done_durable_fault(evt: Dict[str, Any], ctx: Any, task_id: Any) -> boo
 
 def _notify_consciousness_of_root_done(ctx: Any, task: Dict[str, Any], task_metadata: Any,
                                        final_task_result: Any, task_done_event: Dict[str, Any]) -> None:
-    """A ROOT finishing (any outcome, a direct turn included) is a reason for an early
-    consciousness wake — except a wake-up's own finish or a root consciousness started
-    (``metadata.initiator == "consciousness"``), or the chain would never sleep."""
+    """A ROOT finishing (any outcome) is a reason for an early consciousness wake —
+    except the owner's own direct turn (В13: an owner message never wakes it, and
+    neither does that turn ending), a wake-up's own finish or a root consciousness
+    started (``metadata.initiator == "consciousness"``), or the chain would never sleep."""
     if str(task.get("delegation_role") or "") == "subagent":
+        return
+    if bool(task_done_event.get("_is_direct_chat")) or bool(task.get("_is_direct_chat")):
         return
     from ouroboros.consciousness_authority import is_consciousness_origin
 
