@@ -1937,6 +1937,8 @@ export function createChatInstance({
                 'trace_summary', 'error', 'artifact_status'].map((key) => [key, msg?.[key] || ''])),
             ...cardMetaKeys(msg),
             lifecycle: msg?.lifecycle || null,
+            // The frame's voice, live and on replay; absent stays absent.
+            narration: msg?.narration,
         });
         if (!summary) return changed;
         const presented = withTaskCostMeta(summary, msg, { rawTs });

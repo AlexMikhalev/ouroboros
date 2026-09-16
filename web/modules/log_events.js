@@ -1234,14 +1234,21 @@ function summarizeChatLiveEventView(evt) {
     if (evt.is_progress || t === 'send_message') {
         const lifecycleTerminal = String(evt.task_id || '').startsWith('skill_lifecycle_')
             && /\s—\s(completed|failed)\b/i.test(progressText.full);
+        // Voice, not wording (P5): the worker stamps `narration` on every note it
+        // emits, so a host note is recognised by the typed fact and never by
+        // matching its text. Both voices stay visible rows; only narration is
+        // promoted, which is what feeds the card title and the collapsed activity
+        // line. An ABSENT key is a frame that predates the fact (an older worker,
+        // a supervisor note, a stored row) and keeps the legacy promotion.
+        const narration = evt.narration === true || evt.narration === undefined;
         return chatView({
             phase: lifecycleTerminal ? (/failed\b/i.test(progressText.full) ? 'lifecycle_error' : 'done') : 'working',
             headline: progressText.preview || 'Working...',
             fullHeadline: progressText.full || '',
             activityPreview: progressText.preview || '',
             visible: Boolean(progressText.preview),
-            promote: true,
-            human: true,
+            promote: narration,
+            human: narration,
             // «ТУТ бабл … на codex» — an ordinary progress bubble carries the chip
             // too whenever the frame disclosed a delegated executor.
             chip: executorChip(evt),
