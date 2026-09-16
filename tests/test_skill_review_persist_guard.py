@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 
 from ouroboros.skill_loader import (
     SkillReviewState,
@@ -425,6 +426,27 @@ def test_cancellation_during_extension_reconcile_keeps_lifecycle_lane(tmp_path, 
     asyncio.run(main())
 
 
+def _read_heartbeat(job_path) -> str:
+    """Read the heartbeat stamp through the same Windows race the writer tolerates.
+
+    The beat replaces ``review_job.json`` atomically and retries its own sharing
+    violations (``utils.replace_atomic``); the mirror image is this poll opening
+    the file while that replace is in flight, which windows-latest refuses with
+    ``PermissionError`` (winerror 5/32). POSIX never raises here, so this is one
+    read there and a bounded retry on Windows, never a silent skip.
+    """
+    delay = 0.01
+    for attempt in range(20):
+        try:
+            return json.loads(job_path.read_text(encoding="utf-8"))["last_heartbeat_at"]
+        except PermissionError:
+            if attempt == 19:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.1)
+    raise AssertionError("unreachable")
+
+
 def test_heartbeat_continues_during_extension_reconcile(tmp_path, monkeypatch):
     from ouroboros.skill_review import SkillReviewOutcome
     from ouroboros.skill_review_runner import (
@@ -476,13 +498,13 @@ def test_heartbeat_continues_during_extension_reconcile(tmp_path, monkeypatch):
         try:
             await _wait_for_reconcile(task, reconcile_started)
             job_path = review_job_state_path(drive_root, "alpha")
-            before = json.loads(job_path.read_text(encoding="utf-8"))["last_heartbeat_at"]
+            before = _read_heartbeat(job_path)
             # A bounded wait, not 20 x 10 ms: on windows-latest the heartbeat's atomic replace can
             # lose a few rounds to this very poll holding the file open (sharing violation, logged
             # and retried by the beat), and the clock ticks at ~15.6 ms — 200 ms saw no change.
             for _ in range(60):
                 await asyncio.sleep(0.05)
-                after = json.loads(job_path.read_text(encoding="utf-8"))["last_heartbeat_at"]
+                after = _read_heartbeat(job_path)
                 if after != before:
                     break
             assert after != before, "no heartbeat within 3 s while the reconcile blocks"
