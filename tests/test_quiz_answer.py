@@ -56,6 +56,33 @@ def test_projection_lifecycle_first_answer_wins(tmp_path):
     assert late["state"] == STATE_ANSWERED
 
 
+def test_projection_admits_the_late_answer_only_under_the_explicit_flag(tmp_path):
+    """В17a=A at the projection layer: an expired block is answerable when the
+    caller says the author is gone, and the acceptance is auditable. Without the
+    flag the expiry still refuses, and an ANSWERED block always does."""
+    record_asked(tmp_path, "t1", quiz_id="q1", question="Which?", options=["A", "B"],
+                 assumption="assume A", chat_id=7, max_wait_minutes=20)
+    block = quiz_states(tmp_path, "t1")["q1"]
+    assert block["chat_id"] == 7 and block["max_wait_minutes"] == 20
+    assert reconcile_terminal(tmp_path, "t1") == ["q1"]
+
+    refused = record_answered(tmp_path, "t1", quiz_id="q1", option_index=0, request_id="r0")
+    assert refused["ok"] is False and refused["error"] == "quiz_closed"
+    assert refused["state"] == STATE_EXPIRED_TERMINAL
+
+    late = record_answered(tmp_path, "t1", quiz_id="q1", option_index=1,
+                           request_id="r1", comment="B, please", allow_expired=True)
+    assert late["ok"] is True and late["state"] == STATE_ANSWERED
+    assert late["block"]["answered_after_terminal"] is True
+    assert late["block"]["answered_index"] == 1 and late["block"]["comment"] == "B, please"
+
+    # First-wins survives: another id cannot overwrite the recorded answer.
+    second = record_answered(tmp_path, "t1", quiz_id="q1", option_index=0,
+                             request_id="r2", allow_expired=True)
+    assert second["ok"] is False and second["state"] == STATE_ANSWERED
+    assert quiz_states(tmp_path, "t1")["q1"]["answered_index"] == 1
+
+
 def test_projection_refuses_out_of_range_and_unknown(tmp_path):
     record_asked(tmp_path, "t1", quiz_id="q1", question="?", options=["A", "B"])
     out = record_answered(tmp_path, "t1", quiz_id="q1", option_index=7, request_id="r")
@@ -225,29 +252,6 @@ def test_ingress_answers_a_live_quiz_end_to_end(tmp_path, monkeypatch):
     assert resp2.status_code == 200 and resp2.json()["duplicate"] is True
     entries = drain_owner_entries(tmp_path, "task-1", set())
     assert len([e for e in entries if e.get("kind") == KIND_QUIZ_ANSWER]) == 1
-
-
-def test_ingress_late_answer_is_an_honest_409(tmp_path, monkeypatch):
-    record_asked(tmp_path, "task-1", quiz_id="q1", question="?", options=["A", "B"])
-    reconcile_terminal(tmp_path, "task-1")  # the task settled
-    app = _decision_app(tmp_path, monkeypatch, live_task=None)
-    resp = _post(app, {"request_id": "r1", "decision_id": "quiz:task-1:q1",
-                       "option_index": 0})
-    assert resp.status_code == 409
-    assert resp.json()["state"] == "expired_terminal"
-
-
-def test_ingress_heals_an_unreconciled_quiz_of_a_dead_task(tmp_path, monkeypatch):
-    """Crash window: the author died before the task-done seam expired its
-    open quiz. A late answer must NOT be recorded into a mailbox nobody
-    drains — the ingress reconciles first and answers the honest 409."""
-    record_asked(tmp_path, "task-1", quiz_id="q1", question="?", options=["A", "B"])
-    app = _decision_app(tmp_path, monkeypatch, live_task=None)
-    resp = _post(app, {"request_id": "r1", "decision_id": "quiz:task-1:q1",
-                       "option_index": 0})
-    assert resp.status_code == 409
-    assert resp.json()["state"] == "expired_terminal"
-    assert quiz_states(tmp_path, "task-1")["q1"]["state"] == STATE_EXPIRED_TERMINAL
 
 
 def test_ingress_refusals_are_typed(tmp_path, monkeypatch):

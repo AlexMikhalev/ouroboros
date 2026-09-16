@@ -548,6 +548,8 @@
  * @property {number=} answered_index
  * @property {string=} comment
  * @property {boolean=} duplicate
+ * @property {boolean=} answered_after_terminal
+ * @property {boolean=} forwarded
  * @property {string=} error
  * @property {string=} dispatched
  * @property {string=} task_id

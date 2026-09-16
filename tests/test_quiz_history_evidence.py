@@ -44,7 +44,7 @@ def runtime(tmp_path, monkeypatch):
 
 def _ask(runtime, quiz_id, *, chat_id=1):
     block = record_asked(
-        runtime.root, runtime.task["id"], quiz_id=quiz_id,
+        runtime.root, runtime.task["id"], quiz_id=quiz_id, chat_id=chat_id,
         question=f"Choose for {quiz_id}?", options=["First", "Second"],
         option_details=["First benefit and cost", "Second benefit and cost"],
         recommended_index=1, stake="Delivery time", assumption="Research meanwhile",
@@ -106,6 +106,36 @@ def test_answers_survive_eighteen_quizzes_mailbox_gc_and_rotation(runtime):
     assert len([frame for frame in runtime.frames if frame.get("type") == "quiz"]) == 18
     assert len([frame for frame in runtime.frames if frame.get("type") == "quiz_state"]) == 18
     assert not [frame for frame in runtime.frames if frame.get("type") == "chat"]
+
+
+def test_a_late_answer_keeps_its_evidence_row_and_also_enters_dialogue(runtime, monkeypatch):
+    """В17a=A sibling: a card answered after its task finished keeps the SAME
+    durable quiz_answer evidence row, and because no mailbox will be drained the
+    answer additionally becomes the owner's own message in the card's chat."""
+    from ouroboros.owner_quiz import reconcile_terminal
+
+    _ask(runtime, "late")
+    monkeypatch.setattr(queue, "RUNNING", {})  # the author is gone
+    assert reconcile_terminal(runtime.root, runtime.task["id"]) == ["late"]
+    status, body = _answer(runtime, "late", request_id="late-1", index=1,
+                           comment="  After the fact  ")
+    assert status == 200, body
+    assert body["answered_after_terminal"] is True and body["forwarded"] is True
+
+    [fact] = [row for row in _facts(runtime) if row["quiz"]["quiz_id"] == "late"]
+    assert fact["client_message_id"] == "quiz_answer:task-quiz:late"
+    assert fact["source"] == "owner_quiz_answer"
+    assert fact["quiz"]["answered_after_terminal"] is True
+    assert fact["quiz"]["comment"] == "  After the fact  "
+
+    rows, coverage = Memory(runtime.root).read_chat_generations()
+    assert coverage["snapshot_stable"]
+    inbound = [row for row in rows
+               if row.get("client_message_id") == "quiz_late_answer:task-quiz:late"]
+    assert len(inbound) == 1 and inbound[0]["direction"] == "in"
+    assert inbound[0]["chat_id"] == 1 and inbound[0]["source"] == "web"
+    assert "[Owner quiz answer]" in inbound[0]["text"] and "Second" in inbound[0]["text"]
+    assert [frame["role"] for frame in runtime.frames if frame.get("type") == "chat"] == ["user"]
 
 
 @pytest.mark.parametrize("initial_index", [0, None])

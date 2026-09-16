@@ -124,6 +124,11 @@ test('Project pointer uses task/quiz identity and retains a reordered answer wit
         assert.equal(next.children[0].textContent, 'Answer needed in Storage');
         fx.decision.buildQuestionPointer({ ...row, quiz_id: 'next', owner_wait_state: 'resumed' });
         assert.equal(next.children[0].textContent, 'Question in Storage');
+        // A wait that ended on its own bound resumed WITHOUT an answer: the
+        // question is still wanted, so the pointer keeps asking for it.
+        fx.decision.buildQuestionPointer({ ...row, quiz_id: 'next',
+            owner_wait_state: 'resumed', owner_wait_resume_reason: 'timeout' });
+        assert.equal(next.children[0].textContent, 'Answer needed in Storage');
         fx.decision.buildQuestionPointer({ ...row, quiz_id: 'next', quiz_state: 'unknown' });
         assert.equal(next.children[0].textContent, 'Question status unavailable in Storage');
     } finally { fx.restore(); }
@@ -167,10 +172,13 @@ test('initial pointer waits for its exact source and legacy labels disclose miss
             project_id: 'p1', project_chat_id: 23, project_name: 'Storage', quiz_state: 'open' });
         assert.equal(pointer.children[0].textContent, 'Question status unavailable in Storage');
         await fx.decision.refreshQuestions();
-        assert.equal(pointer.children[0].textContent, 'Question expired in Storage');
+        // The task finished, but its card still takes an answer (В17a=A), so the
+        // pointer keeps inviting the click instead of reading as a dead end.
+        assert.equal(pointer.children[0].textContent, 'Answer still possible in Storage');
+        assert.equal(pointer.children[1].textContent, 'Open question');
         const question = await fx.decision.readQuestion('t-1', 'qz-1', 'p1');
         const card = fx.decision.buildQuizCard(question);
-        assert.ok(card.querySelectorAll('.chat-quiz-option').every((button) => button.disabled));
+        assert.ok(card.querySelectorAll('.chat-quiz-option').every((button) => !button.disabled));
         assert.match(card.querySelector('.chat-quiz-details-unavailable').textContent, /not retained/);
     } finally { fx.restore(); }
 });
@@ -252,8 +260,12 @@ test('quiz card renders full anatomy from a WS frame', () => {
     } finally { fx.restore(); }
 });
 
-test('quiz card renders the replay shape and settled states disable buttons', () => {
-    const fx = fixture();
+test('a finished task leaves its card answerable; only a settled one is a record', async () => {
+    const fx = fixture({ fetchImpl: async () => ({
+        ok: true, status: 200,
+        json: async () => ({ ok: true, state: 'answered', answered_index: 1,
+            answered_after_terminal: true, forwarded: true }),
+    }) });
     try {
         const replayMsg = {
             msg_type: 'quiz', role: 'assistant', task_id: 't-1',
@@ -267,10 +279,43 @@ test('quiz card renders the replay shape and settled states disable buttons', ()
         const card = fx.decision.buildQuizCard(replayMsg);
         assert.ok(card);
         assert.equal(card.dataset.state, 'expired_terminal');
-        assert.match(card.querySelector('.chat-quiz-status-text').textContent, /question expired/);
-        assert.ok(card.querySelectorAll('.chat-quiz-option').every((btn) => btn.disabled));
+        assert.match(card.querySelector('.chat-quiz-status-text').textContent, /you can still answer/);
+        // The buttons and the free-answer box stay live: without them the late
+        // answer would only be reachable from Telegram.
+        assert.ok(card.querySelectorAll('.chat-quiz-option').every((btn) => !btn.disabled));
+        const field = card.querySelector('.chat-quiz-comment');
+        assert.ok(field);
         // The assumption line survives settlement: it is the record of the path taken.
         assert.match(card.querySelector('.chat-quiz-assumption').textContent, /merging meanwhile/);
+
+        field.value = 'late but decided';
+        card.querySelectorAll('.chat-quiz-option')[1].click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        assert.equal(JSON.parse(fx.calls[0].init.body).option_index, 1);
+        assert.equal(JSON.parse(fx.calls[0].init.body).comment, 'late but decided');
+        // Answered IS settled: the draft field goes and the buttons close.
+        assert.equal(card.dataset.state, 'answered');
+        assert.equal(card.querySelector('.chat-quiz-comment'), null);
+        assert.ok(card.querySelectorAll('.chat-quiz-option').every((btn) => btn.disabled));
+
+        const superseded = fx.decision.buildQuizCard({
+            ...replayMsg, quiz: { ...replayMsg.quiz, quiz_id: 'qz-3', state: 'superseded' },
+        });
+        assert.ok(superseded.querySelectorAll('.chat-quiz-option').every((btn) => btn.disabled));
+        assert.equal(superseded.querySelector('.chat-quiz-comment'), null);
+    } finally { fx.restore(); }
+});
+
+test('a required card that outlived its task stops claiming the task is waiting', () => {
+    const fx = fixture();
+    try {
+        const card = fx.decision.buildQuizCard({
+            ...WS_MSG, quiz_id: 'qz-wait-expired', wait_for_answer: true,
+            assumption: '', state: 'expired_terminal',
+        });
+        assert.equal(card.querySelector('.chat-quiz-wait'), null);
+        assert.ok(card.querySelector('.chat-quiz-comment'));
+        assert.ok(card.querySelectorAll('.chat-quiz-option').every((btn) => !btn.disabled));
     } finally { fx.restore(); }
 });
 
@@ -370,14 +415,20 @@ test('a 409 settles the card by the BODY state — a lost race reads answered, n
     } finally { fx.restore(); }
 });
 
-test('a bodyless 409 still settles the card as expired', async () => {
+test('a bodyless 409 no longer invents an expiry the card would obey', async () => {
+    // An expired card is still answerable, so a refusal without a state is not
+    // evidence of anything: report the failed attempt and keep the card as it is.
     const fx = fixture({ fetchImpl: async () => ({ ok: false, status: 409 }) });
     try {
         const card = fx.decision.buildQuizCard(WS_MSG);
         card.querySelectorAll('.chat-quiz-option')[0].click();
         await new Promise((resolve) => setTimeout(resolve, 0));
-        assert.equal(card.dataset.state, 'expired_terminal');
-        assert.match(fx.toasts[0].text, /no longer open/);
+        assert.equal(card.dataset.state, 'open');
+        assert.match(fx.toasts[0].text, /Could not record the answer \(409\)/);
+        // The pending latch is released: the owner can try again.
+        card.querySelectorAll('.chat-quiz-option')[0].click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        assert.equal(fx.calls.length, 2);
     } finally { fx.restore(); }
 });
 

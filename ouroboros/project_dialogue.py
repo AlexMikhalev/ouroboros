@@ -67,10 +67,16 @@ def project_question_pointer(row: Dict[str, Any], block: Any, project: Any,
     known = block.get("quiz_id") == quiz_id and state in {"open", "answered", "expired_terminal", "superseded"}
     waiting = owner_wait if isinstance(owner_wait, dict) else {}
     wait_state = str(waiting.get("state") or "") if waiting.get("quiz_id") == quiz_id else ""
+    resume_reason = str(waiting.get("resume_reason") or "") if wait_state else ""
     name = str(project.get("name") or "Project")
+    # A wait that ended on its own bound resumed WITHOUT an answer, so the
+    # question is still wanted: it keeps reading "Answer needed".
+    still_asking = wait_state != "resumed" or resume_reason == "timeout"
     lead = ("Question status unavailable" if not known else "Question answered" if state == "answered"
-            else "Question expired" if state in {"expired_terminal", "superseded"}
-            else "Question" if wait_state == "resumed" else "Answer needed")
+            # The task finished, but its card is still answerable (В17a=A).
+            else "Answer still possible" if state == "expired_terminal"
+            else "Question expired" if state == "superseded"
+            else "Answer needed" if still_asking else "Question")
     return {
         "role": "system", "system_type": "project_question_pointer", "task_id": task_id,
         "quiz_id": quiz_id, "quiz_state": state if known else "unknown",
@@ -79,6 +85,7 @@ def project_question_pointer(row: Dict[str, Any], block: Any, project: Any,
         "ts": str(block.get("asked_at") or row.get("ts") or ""),
         "text": f"{lead} in {name}", "is_progress": False, "markdown": False,
         **({"owner_wait_state": wait_state} if wait_state else {}),
+        **({"owner_wait_resume_reason": resume_reason} if resume_reason else {}),
         **({"source_status": "unavailable"} if not known else {}),
     }
 

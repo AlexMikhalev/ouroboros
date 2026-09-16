@@ -251,12 +251,35 @@ def test_late_or_unknown_answers_are_toasted_honestly(tmp_path, monkeypatch):
     assert last.toasts == [("cb10", "This question was already answered.")]
     assert last.edits[0][2].endswith("\nAnswered: 1. sqlite")
 
-    # Task settled: expired.
+    # The task had finished, but the card outlived it (В17a=A): the host records
+    # the answer AND delivers it into the card's chat, so the tap succeeds and
+    # the card settles exactly as an ordinary answer does.
     Client.updates = [_callback(11, f"qz:{token}:1")]
-    _run_poller(plugin, api, monkeypatch, [], reply=(409, {"ok": False, "state": "expired_terminal"}))
+    _run_poller(plugin, api, monkeypatch, [],
+                reply=(200, {"ok": True, "state": "answered", "answered_index": 1,
+                             "answered_after_terminal": True, "forwarded": True}))
     last = _LAST_CLIENT[-1]
-    assert last.toasts == [("cb11", "This question has expired — the task moved on.")]
-    assert last.edits == []
+    assert last.toasts == [("cb11", "✅ The task had already finished — your answer "
+                                   "was delivered to the chat.")]
+    assert last.edits[0][2].endswith("\nAnswered: 2. postgres")
+    assert last.edits[0][3] == []  # the keyboard goes, as for any answer
+
+    # A card whose chat has no owner turn to start (machine/hidden): recorded,
+    # never claimed as delivered.
+    Client.updates = [_callback(16, f"qz:{token}:1")]
+    _run_poller(plugin, api, monkeypatch, [],
+                reply=(200, {"ok": True, "state": "answered", "answered_index": 1,
+                             "answered_after_terminal": True, "forwarded": False,
+                             "reason_code": "hidden_chat"}))
+    assert _LAST_CLIENT[-1].toasts == [
+        ("cb16", "✅ Answer recorded. The task had already finished and this card "
+                 "has no chat to deliver it to."),
+    ]
+
+    # A genuinely settled card (already answered by another surface) still 409s.
+    Client.updates = [_callback(17, f"qz:{token}:1")]
+    _run_poller(plugin, api, monkeypatch, [], reply=(409, {"ok": False, "state": "expired_terminal"}))
+    assert _LAST_CLIENT[-1].toasts == [("cb17", "This question has expired — the task moved on.")]
 
     # Unknown to the host.
     Client.updates = [_callback(12, f"qz:{token}:0")]
