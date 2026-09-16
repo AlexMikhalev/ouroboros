@@ -387,7 +387,7 @@ export function createTimelineAnchors({ messagesDiv, liveCardRecords }) {
                 && !node.classList.contains('chat-load-older')
         );
         const messagesRect = messagesDiv.getBoundingClientRect();
-        const topNode = nodes.find((item) => {
+        let topNode = nodes.find((item) => {
             const rect = item.getBoundingClientRect();
             return rect.bottom > messagesRect.top && rect.top < messagesRect.bottom;
         }) || null;
@@ -436,6 +436,18 @@ export function createTimelineAnchors({ messagesDiv, liveCardRecords }) {
                 .filter(({ rect }) => rect.top <= messagesRect.top && rect.bottom > messagesRect.top)
                 .sort((a, b) => b.depth - a.depth);
             node = belowTop[0]?.node || crossing[0]?.node || topNode;
+            if (node === topNode && topNode.getBoundingClientRect().top < messagesRect.top) {
+                // The card's visible part holds nothing anchorable (a wait row, a
+                // block without work): keep the reader's view of what FOLLOWS the
+                // card. Pinning the card's own top, far above the viewport, would let
+                // the card's shrink or growth move the content the reader is on.
+                const following = nodes.find((item) => {
+                    if (item === topNode) return false;
+                    const rect = item.getBoundingClientRect();
+                    return rect.top >= messagesRect.top && rect.top < messagesRect.bottom;
+                });
+                if (following) { topNode = following; node = following; }
+            }
         }
 
         const cardChain = [];
