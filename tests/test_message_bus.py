@@ -698,3 +698,26 @@ def test_project_thread_stamp_survives_meta_and_covers_typing_and_echo(monkeypat
     echoes = [f for f in frames if f.get("role") == "user"]
     assert echoes[0]["project_thread"] is True
     assert "project_thread" not in echoes[1]
+
+
+def test_send_routing_ack_carries_the_cause_only_when_present(monkeypatch):
+    """Q3=A: the host's owner-facing sentence rides the live routing_ack frame
+    and the outbound transport copy; a landed act carries no cause at all."""
+    bridge = _make_bridge(monkeypatch)
+    frames, events = [], []
+    bridge._broadcast_fn = frames.append
+    monkeypatch.setattr(message_bus, "publish_event", lambda topic, data: events.append((topic, data)))
+
+    bridge.send_routing_ack(
+        1, client_message_id="cm-1", action="promote_chat_to_task", target="t1",
+        status="needs_manual_target", routing_token="tok-1",
+        cause="Not started: the working folder can't be used",
+    )
+    bridge.send_routing_ack(
+        1, client_message_id="cm-2", action="promote_chat_to_task", target="t2",
+        status="scheduled", routing_token="tok-2",
+    )
+
+    assert frames[0]["cause"] == "Not started: the working folder can't be used"
+    assert events[0][1]["cause"] == frames[0]["cause"]
+    assert "cause" not in frames[1] and "cause" not in events[1][1]

@@ -175,6 +175,32 @@ test('repeated physical history identity updates the routing annotation on the s
     assert.match(note.textContent, /Investigation/);
 });
 
+test('a replayed refusal receipt shows the host cause and a later scheduled receipt patches the same note', async (t) => {
+    const cause = 'Not started: the working folder can\'t be used';
+    const message = row('chat:250', 'Audit the GitHub tool', {
+        role: 'user', client_message_id: 'owner-refused',
+        chat_annotation: {
+            action: 'promote_chat_to_task', status: 'needs_manual_target',
+            target: 'never-started', target_label: 'Аудит', cause,
+        },
+    });
+    const f = fixture(t, page([message]));
+    await f.refresh();
+    const bubble = f.bubbles().find((node) => node.dataset.historyId === 'chat:250');
+    assert.ok(bubble);
+    assert.equal(bubble.dataset.chatAnnotationStatus, 'needs_manual_target');
+    const note = bubble.querySelector('.msg-routing-annotation');
+    assert.equal(note.textContent, cause);
+    await f.refresh(page([{ ...message, chat_annotation: {
+        action: 'promote_chat_to_task', status: 'scheduled', target: 'task-started', target_label: 'Investigation',
+    } }]));
+    assert.equal(f.bubbles().filter((node) => node.dataset.historyId === 'chat:250').length, 1);
+    assert.equal(f.bubbles().find((node) => node.dataset.historyId === 'chat:250'), bubble);
+    assert.equal(bubble.querySelector('.msg-routing-annotation'), note);
+    assert.equal(bubble.dataset.chatAnnotationStatus, 'scheduled');
+    assert.equal(note.textContent, 'Started task · Investigation');
+});
+
 test('two physical rows with identical timestamp and body remain two messages across refresh', async (t) => {
     const rows = [row('chat:300', 'Same words'), row('chat:400', 'Same words')];
     const f = fixture(t, page(rows));

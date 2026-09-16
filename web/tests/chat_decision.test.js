@@ -641,6 +641,48 @@ test('an actionable refusal renders the picker card; other statuses fall back to
     } finally { fx.restore(); }
 });
 
+test('a refusal with a token but no options renders the host cause as the plain line, never a card', () => {
+    // The incident shape (client_message_id + routing_token, NO options): the
+    // host sends `cause`, the owner reads a sentence, and nothing is clickable.
+    const cause = 'Not started: the working folder can\'t be used';
+    const fx = fixture();
+    try {
+        const bubble = routingBubble('cm-refused');
+        const refused = {
+            action: 'promote_chat_to_task', status: 'needs_manual_target', routing_token: 'tok-r',
+            target: 'never-started', target_label: 'Аудит', cause,
+        };
+        assert.equal(fx.decision.renderRoutingDecision(bubble, refused), true);
+        assert.equal(bubble.querySelector('.chat-routing-card'), null);
+        const note = bubble.querySelector('.msg-routing-annotation');
+        assert.equal(note.textContent, cause);
+        assert.equal(note.dataset.annotationStatus, 'needs_manual_target');
+        assert.equal(bubble.dataset.chatAnnotationStatus, 'needs_manual_target');
+        assert.equal(fx.decision.renderRoutingDecision(bubble, refused), false);
+    } finally { fx.restore(); }
+});
+
+test('a routing 409 that reopens the card names the host cause before the raw reason', async () => {
+    const cause = 'Not started: the working folder can\'t be used';
+    const fx = fixture({
+        fetchImpl: async () => ({
+            ok: false, status: 409,
+            json: async () => ({ state: 'open', reason: 'workspace_unusable', cause }),
+        }),
+    });
+    try {
+        const bubble = routingBubble('cm-5');
+        fx.decision.renderRoutingDecision(bubble, ROUTING_ANNOTATION);
+        const card = bubble.querySelector('.chat-routing-card');
+        card.querySelectorAll('.chat-quiz-option')[0].click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        assert.equal(card.dataset.state, 'open');
+        assert.equal(fx.toasts.length, 1);
+        assert.equal(fx.toasts[0].text, `Not routed: ${cause} — pick again.`);
+        assert.equal(fx.toasts[0].text.includes('workspace_unusable'), false);
+    } finally { fx.restore(); }
+});
+
 test('a routing click posts the routing decision id with a STABLE request id', async () => {
     const fx = fixture();
     try {

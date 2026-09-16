@@ -206,7 +206,10 @@ def room_membership(chat_id: int, project_chat_ids: set, source_refs: list,
         row = entry if isinstance(entry, dict) else {}
         if is_a2a_chat_id(entry_chat):
             return False
-        bound = bound_room_chat(bindings, row)
+        # An admission notice ("<title> · Not started: …") is addressed to the
+        # chat the OWNER wrote in; its task id is bound to the destination
+        # project it never started in, so binding lineage must not move it.
+        bound = 0 if row.get("type") in ADMISSION_NOTICE_TYPES else bound_room_chat(bindings, row)
         lifecycle = row.get("type") in {"project_started", "project_completion_summary"}
         if chat_id in project_chat_ids:
             return not lifecycle and (bound == chat_id or entry_chat == chat_id
@@ -398,6 +401,7 @@ def append_chat_annotation(
     routing_token: str = "",
     reason: str = "",
     detail: str = "",
+    cause: str = "",
     options: Any = None,
     attachment_manifest: Any = None,
     require_latest_status: Any = None,
@@ -438,6 +442,10 @@ def append_chat_annotation(
         row["reason"] = str(reason)[:200]
     if str(detail or ""):
         row["detail"] = str(detail)[:1000]
+    if str(cause or ""):
+        # Q3=A: the host-owned owner-facing sentence for a refused act; the
+        # browser renders it verbatim on the receipt line (reason stays a code).
+        row["cause"] = str(cause)[:200]
     if isinstance(options, list):
         row["options"] = [dict(item) for item in options[:100] if isinstance(item, dict)]
     if isinstance(attachment_manifest, list):
@@ -496,6 +504,111 @@ def routing_target_label(
     except Exception:
         log.debug("Routing target label resolution failed for %s", target, exc_info=True)
         return "Task"
+
+
+# Q3=A: the HOST owns the owner-facing sentence for a REFUSED routing act. One
+# factual PHRASE per typed reason (what the producer branch observed: ≤ 60
+# chars, lower-case start, no codes, no trailing period); the prefix comes from
+# the ACT and its outcome in routing_refusal_cause, so one reason reads
+# "Not started: …" on a promote and "Not moved: …" on a scope bind. The receipt
+# under the owner's message, the host-initiated System row and the picker's
+# 409 toast all read this table; the browser renders the sentence verbatim (no
+# client table). A reason without a row stays raw ("Not started (<reason>)")
+# so a new refusal is visible before it has words.
+ROUTING_REFUSAL_CAUSES: Dict[str, str] = {
+    "workspace_unusable": "the working folder can't be used",
+    "workspace_provisioning_failed": "no working folder could be created for the project",
+    "worker_pool_unavailable": "no worker is available right now",
+    "worker_pool_state_unavailable": "the worker pool could not be checked",
+    "duplicate_task_id": "this task already exists",
+    "admission_reservation_owned": "another request already owns this task id",
+    "admission_reservation_lost": "the task lost its place in the queue",
+    "admission_reservation_failed": "the task could not be admitted",
+    "admission_fence": "the task could not be admitted",
+    "admission_rejected": "the task could not be admitted",
+    "invalid_admission_reservation": "the task id or its token was missing",
+    "task_id_lookup_failed": "the task record could not be read",
+    "empty_objective": "the request was empty",
+    "project_routing_fence": "the project no longer accepts new work",
+    "project_routing_fence_lookup_failed": "the project state could not be checked",
+    "project_binding_failed": "the project could not be set up",
+    "project_registration_failed": "the project could not be set up",
+    "ensure_project_scope_failed": "the project could not be set up",
+    "project_source_error": "the project folder could not be attached",
+    "attachment_admission_rejected": "the attachments could not be staged",
+    "staging_unavailable": "the attachments could not be staged",
+    "queue_snapshot_persist_unavailable": "the task queue could not be saved",
+    "queue_snapshot_persist_failed": "the task queue could not be saved",
+    "invalid_skill_repair_constraint": "the skill repair request was invalid",
+    "skill_repair_payload_missing": "the skill's files are missing",
+    "skill_repair_payload_unreadable": "the skill's files could not be read",
+    "skill_repair_admission_unwritable": "the skill repair request could not be recorded",
+    "repair_promotion_failed": "the skill repair request could not be started",
+    "task_acceptance_fence": "the task tree is already being accepted",
+    "invalid_task_depth": "the task depth was invalid",
+    "promotion_persistence_failed": "the task record could not be saved",
+    "routing_receipt_persist_failed": "the receipt could not be saved",
+    "routing_annotation_persist_failed": "the receipt could not be saved",
+    "source_continuation_publish_failed": "the source hand-off could not be published",
+    "confirmation_timeout": "no confirmation arrived in time",
+    "target_unknown": "that task is no longer running",
+    "direct_chat_turn": "that reply has already been given",
+    "subagent_target": "that task is a helper of another task",
+    "chat_mismatch": "that task belongs to another chat",
+    "cancel_pending": "that task is being stopped",
+    "target_closed": "that task has already finished",
+    "target_finished": "that task has already finished",
+    "acceptance_fence_sealed": "that task has already finished",
+    "mailbox_write_failed": "the message could not be saved",
+    "project_scope_conflict": "the task already belongs to another project",
+    "missing_task_or_project": "no task or project was named",
+    "project_unavailable": "the project is no longer available",
+    # route_to_project's typed abstention codes (control_routing._route_to_project)
+    "target_unspecified": "no destination was chosen",
+    "invalid_project_id": "that project id is not valid",
+    "target_not_found": "that project does not exist",
+}
+
+# The typed System rows a host-initiated admission refusal sends (Q2=A): plain
+# system bubbles addressed to the chat the OWNER wrote in, never moved by the
+# refused task's project binding (room_membership) and never a terminal fact.
+ADMISSION_NOTICE_TYPES = frozenset({"task_not_started", "task_start_unconfirmed"})
+
+# Statuses of an act that LANDED (or is still in flight): no cause sentence.
+_LANDED_ROUTING_STATUSES = frozenset({"scheduled", "delivered", "pending", "dispatch_pending", "accepted"})
+
+
+def routing_refusal_cause(action: str, status: str, reason: str, options: Any = None) -> str:
+    """The owner-facing sentence for one routing receipt; "" when the act landed
+    or when the picker keeps «Choose a target» (a refusal WITH options).
+
+    The prefix states only what the act's outcome proves: an UNCONFIRMED act
+    reads "Not confirmed" whatever it was; a refused steer "Not delivered"; a
+    refused scope bind "Not moved"; every other refused act (promote, route,
+    skill repair) "Not started". An unconfirmed act with an unknown reason
+    reads as the honest "may or may not have started"; any other unknown reason
+    stays raw (``Not started (<reason>)`` — DESIGN sanctions raw over invented)."""
+    status_text = str(status or "").strip()
+    if status_text in _LANDED_ROUTING_STATUSES:
+        return ""
+    if status_text == "needs_manual_target" and isinstance(options, list) and options:
+        return ""
+    action_text = str(action or "").strip()
+    if status_text == "unconfirmed":
+        prefix = "Not confirmed"
+    elif action_text == "steer_task":
+        prefix = "Not delivered"
+    elif action_text == "ensure_project_scope":
+        prefix = "Not moved"
+    else:
+        prefix = "Not started"
+    reason_text = str(reason or "").strip()
+    phrase = ROUTING_REFUSAL_CAUSES.get(reason_text, "")
+    if phrase:
+        return f"{prefix}: {phrase}"
+    if status_text == "unconfirmed":
+        return "Not confirmed: the task may or may not have started"
+    return f"{prefix} ({reason_text})" if reason_text else prefix
 
 
 def routing_options_with_labels(drive_root: Any, options: Any) -> List[Dict[str, Any]]:

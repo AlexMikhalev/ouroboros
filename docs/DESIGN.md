@@ -227,7 +227,11 @@ in details and Logs, but do not relabel the whole still-working task. A failed c
 authoritative status. Internal reason codes belong in details and diagnostics,
 not compact headlines. Where a card does show a cause, it says it in the owner's
 words while the record keeps the machine code; a cause with no sentence yet stays
-raw rather than borrowing a wrong one. A terminal whose preserved output was
+raw rather than borrowing a wrong one. The routing receipt under an owner
+message is such a surface: a refused addressing act carries the host-composed
+`cause` sentence (`project_dialogue.routing_refusal_cause` — one host table for
+the receipt line, the System row and the picker toast), a landed act carries
+none, and an unknown reason stays raw. A terminal whose preserved output was
 never reviewed shows that output labelled rather than hidden: a short labelled
 excerpt beside the pointer to the full copy, so a `Failed` card over applied work
 is never a bare headline and never names preserved bytes without a way to reach
@@ -534,7 +538,19 @@ addressing calls, without error, is a receipt row too. So a turn that only
 addressed work («turn this into a project») draws no block, live or on reload:
 the annotation on the owner message and the managed root's own card are its
 whole record (owner decision 11.09). A failed addressing call is an error row
-and therefore content, as is any recorded tool error. No client list of tool
+and therefore content, as is any recorded tool error. A REFUSED addressing act
+is told where the work lives and never in Ouroboros's voice (owner 16.09): the
+receipt line states the cause in the owner's words, the failed call stays the
+error row inside the block, and the tool result carries the typed reason (with
+the cause and repair in `detail` where the producer holds one) so the model
+narrates — no host bubble interrupts a narrating
+turn. When the host itself issued the act (a Swarm message, a skill-card repair,
+a picker click) no turn narrates, so the refusal lands as ONE typed System row —
+`task_not_started`, or `task_start_unconfirmed` when admission could not be
+confirmed — in the chat the owner wrote in, keyed to the never-started task,
+beside the receipt; the Project start row is announced only once the task is
+really queued. A refusal receipt with neither options nor a cause sentence
+reads «Not routed», never «Choose a target». No client list of tool
 names decides presence (`docs/development/02-naming-and-boundaries.md`, "an
 open default behind a closed exception list").
 

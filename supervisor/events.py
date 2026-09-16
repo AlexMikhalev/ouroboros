@@ -190,6 +190,7 @@ from supervisor.events_project_routing import (  # noqa: E402, F401 -- intention
     _handle_project_digest,
     _handle_promote_chat_to_task,
     _handle_routing_manual_target,
+    _notify_host_initiated_refusal,
     _persist_promote_rejection,
     _prepare_promote_source_off_loop,
     _publish_routing_ack,

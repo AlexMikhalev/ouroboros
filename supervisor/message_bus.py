@@ -566,6 +566,7 @@ class LocalChatBridge:
         options: Optional[List[Dict[str, Any]]] = None,
         attachment_manifest: Optional[List[Dict[str, Any]]] = None,
         routing_token: str = "",
+        cause: str = "",
     ) -> None:
         """Emit a typed routing receipt without creating an assistant bubble.
 
@@ -593,6 +594,9 @@ class LocalChatBridge:
             # #198: the picker card's click identity; presentation-only frames
             # without it stay text lines.
             payload["routing_token"] = str(routing_token)
+        if str(cause or ""):
+            # Q3=A: the host-owned owner-facing sentence for a refused act.
+            payload["cause"] = str(cause)
         if options is not None:
             payload["options"] = [dict(row) for row in options if isinstance(row, dict)]
         if attachment_manifest is not None:

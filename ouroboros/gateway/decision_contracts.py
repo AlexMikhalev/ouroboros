@@ -47,7 +47,8 @@ class DecisionResponse(TypedDict, total=False):
     a settled task is 409 with the true state (expired_terminal/answered),
     so the card settles instead of inviting retries. Routing adds dispatched
     (confirmed durable receipt), task_id (derived promoted id), latest_status
-    (superseding status on 409), and reason/detail diagnostics.
+    (superseding status on 409), reason/detail diagnostics, and cause (the
+    owner-facing sentence for a refused routing act).
 
     Model waits distinguish accepted (202, applied false) from the worker's
     applied_request_id. wait carries the current projection and revision;
@@ -67,6 +68,7 @@ class DecisionResponse(TypedDict, total=False):
     latest_status: str
     reason: str
     detail: str
+    cause: str
     request_id: str
     applied: bool
     saved: Optional[bool]

@@ -2796,11 +2796,13 @@ def test_decision_turn_metadata_injects_running_tasks_and_client_id(tmp_path):
 
 # --- Q10=A (owner, 2026-08-08): file-less project promotes auto-provision -----
 
-def _promote_ctx(enqueued):
+def _promote_ctx(enqueued, sent=None):
     return types.SimpleNamespace(
         enqueue_task=lambda task: enqueued.append(task),
         persist_queue_snapshot=lambda **_kwargs: True,
         load_state=lambda: {"owner_chat_id": 1},
+        # Records every chat send, so a refusal can prove it sent NOTHING.
+        send_with_budget=lambda *args, **kwargs: (sent if sent is not None else []).append((args, kwargs)),
     )
 
 
@@ -2887,17 +2889,23 @@ def test_promote_broken_working_dir_loud_fails_never_blind_ensures(tmp_path, mon
     gone = tmp_path / "gone-folder"
     update_project(tmp_path, "brokenp", working_dir=str(gone))  # never existed
 
-    enqueued = []
+    enqueued, sent = [], []
     outcome = workers.promote_chat_to_task({
         "type": "promote_chat_to_task",
         "task_id": "broken1",
         "objective": "Continue",
         "project_id": "brokenp",
         "chat_id": 1,
-    }, _promote_ctx(enqueued))
+    }, _promote_ctx(enqueued, sent))
 
     assert outcome["status"] == "needs_manual_target"
     assert outcome["reason"] == "workspace_unusable"
+    # The repair rides `detail` to the MODEL (PROMOTE_REJECTED renders it);
+    # admission itself sends no chat text (Q1=A) and writes no task result —
+    # the handler's single rejection writer does.
+    assert outcome["detail"].startswith("project 'brokenp' working_dir is unusable")
+    assert "Projects → this project" in outcome["detail"] and "workspace='none'" in outcome["detail"]
+    assert sent == []
     assert enqueued == []
     # The broken value is preserved for the owner to fix — not overwritten.
     assert get_project(tmp_path, "brokenp")["working_dir"] == str(gone)
@@ -2911,17 +2919,20 @@ def test_promote_provisioning_failure_loud_fails_not_silent_fileless(tmp_path, m
 
     monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
     monkeypatch.setattr(projects_registry, "ensure_project_workspace", lambda *a, **k: "")
-    enqueued = []
+    enqueued, sent = [], []
     outcome = workers.promote_chat_to_task({
         "type": "promote_chat_to_task",
         "task_id": "provfail1",
         "objective": "Build",
         "project_id": "provfail-proj",
         "chat_id": 1,
-    }, _promote_ctx(enqueued))
+    }, _promote_ctx(enqueued, sent))
 
     assert outcome["status"] == "needs_manual_target"
     assert outcome["reason"] == "workspace_provisioning_failed"
+    assert outcome["detail"].startswith("project 'provfail-proj' has no working folder and auto-provisioning")
+    assert "Projects → this project" in outcome["detail"] and "workspace='none'" in outcome["detail"]
+    assert sent == []
     assert enqueued == []
 
 
@@ -3048,78 +3059,96 @@ def test_the_steer_tool_renders_the_typed_reason_and_still_defaults_without_one(
     assert "(target_not_steerable)" in control_routing._steer_task(ctx, "t1", "go")
 
 
-def _loud_workspace_failure(tmp_path, monkeypatch, ws_error: str, **kwargs):
-    """Run the loud-fail writer directly and return (chat message, stored row)."""
-    import supervisor.workers as workers
-    from ouroboros.task_results import load_task_result
-    from supervisor import worker_promotion
+def _repair_hint(**kwargs):
+    """The MODEL-facing repair for one refused workspace: one line, never empty."""
+    from ouroboros.workspace_admission import workspace_repair_hint
 
-    monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
-    sent: list = []
-    ctx = types.SimpleNamespace(send_with_budget=lambda chat_id, text: sent.append(text))
-    worker_promotion._fail_promoted_task_loudly(
-        ctx, {"id": "wsfail", "chat_id": 3}, ws_error, **kwargs,
-    )
-    assert len(sent) == 1
-    return sent[0], load_task_result(tmp_path, "wsfail")
+    hint = workspace_repair_hint(**kwargs)
+    assert hint and "\n" not in hint
+    return hint
 
 
-def test_loud_workspace_failure_remedy_follows_the_source_of_the_refused_folder(
-        tmp_path, monkeypatch):
+def test_workspace_repair_hint_follows_the_source_of_the_refused_folder(tmp_path):
     """The request named its own folder, so the project's working folder was never
-    read: sending the owner to Projects points at a setting the failure never
+    read: sending the caller to Projects points at a setting the failure never
     touched. The project folder is named as the way back when it is readable."""
     from ouroboros.projects_registry import create_project
 
     create_project(tmp_path, "roomp", name="RoomP", working_dir=str(tmp_path / "room-tree"))
-    message, stored = _loud_workspace_failure(
-        tmp_path, monkeypatch,
-        "explicit workspace_root is unusable: not a git checkout.",
+    hint = _repair_hint(
+        ws_error="explicit workspace_root is unusable: not a git checkout.",
         explicit_workspace=str(tmp_path / "asked-for"), project_id="roomp",
+        drive_root=tmp_path, system_repo_dir=tmp_path / "system-repo",
     )
 
-    assert "asked for" in message and str(tmp_path / "asked-for") in message
-    assert "Projects → this project" not in message
-    assert str(tmp_path / "room-tree") in message
-    assert "workspace='none'" in message
-    assert stored["status"] == "failed" and stored["reason_code"] == "workspace_unusable"
+    assert hint.startswith("explicit workspace_root is unusable: not a git checkout. ")
+    assert "asked for" in hint and str(tmp_path / "asked-for") in hint
+    assert "Projects → this project" not in hint
+    assert str(tmp_path / "room-tree") in hint
+    assert "workspace='none'" in hint
 
 
-def test_loud_workspace_failure_keeps_the_projects_remedy_for_a_project_folder(
-        tmp_path, monkeypatch):
-    """A project working_dir failure — and an unreadable registry entry — is fixed
-    exactly where today's message says, so that text is unchanged."""
+def test_workspace_repair_hint_keeps_the_projects_remedy_for_a_project_folder():
+    """A project working_dir failure, an unreadable registry entry and a failed
+    auto-provision are fixed exactly where the sentence says: in Projects."""
     for ws_error in (
         "project 'roomp' working_dir is unusable: not a git checkout.",
         "project 'roomp' registry entry is unreadable (OSError: boom) — cannot determine "
         "the task's workspace",
+        "project 'roomp' has no working folder and auto-provisioning one failed; "
+        "see the supervisor log (ensure_project_workspace)",
     ):
-        message, stored = _loud_workspace_failure(tmp_path, monkeypatch, ws_error)
-        assert ws_error in message
-        assert message.endswith(
+        hint = _repair_hint(ws_error=ws_error)
+        assert hint.startswith(ws_error.rstrip("."))
+        assert hint.endswith(
             "Fix the project's working folder (Projects → this project) or re-promote with "
             "workspace='none' for a folder-less task."
         )
-        assert "asked for" not in message
-        assert stored["reason_code"] == "workspace_unusable"
+        assert "asked for" not in hint
 
 
-def test_loud_workspace_failure_names_a_retired_delegated_run_worktree(tmp_path, monkeypatch):
+def test_workspace_repair_hint_names_a_retired_delegated_run_worktree(tmp_path, monkeypatch):
     """The path the agent passed twice in one minute was a delegated-run worktree
     its own run had already retired; nothing in the old message said so."""
     from ouroboros import config
 
     worktrees = tmp_path / "subagent_worktrees"
     monkeypatch.setattr(config, "get_subagent_worktree_root", lambda: str(worktrees))
-    message, stored = _loud_workspace_failure(
-        tmp_path, monkeypatch,
-        "explicit workspace_root is unusable: path does not exist.",
+    hint = _repair_hint(
+        ws_error="explicit workspace_root is unusable: path does not exist.",
         explicit_workspace=str(worktrees / "dlg_060055d5_x"), project_id="",
     )
 
-    assert "delegated-run worktree" in message and "removed when its run ends" in message
-    assert "Projects → this project" not in message
-    assert stored["reason_code"] == "workspace_unusable"
+    assert "delegated-run worktree" in hint and "removed when its run ends" in hint
+    assert "Projects → this project" not in hint and "workspace='none'" in hint
+
+
+def test_workspace_repair_hint_points_a_repo_subfolder_at_the_empty_default(tmp_path):
+    """A SUBFOLDER of the Ouroboros repository can never be a workspace (the exact
+    root never reaches admission: the promote tool maps it onto no workspace);
+    the repair names the argument shape that works instead."""
+    repo = tmp_path / "Ouroboros" / "repo"
+    (repo / "ouroboros").mkdir(parents=True)
+    hint = _repair_hint(
+        ws_error="explicit workspace_root is unusable: workspace_root must not overlap the "
+        "Ouroboros system repo",
+        explicit_workspace=str(repo / "ouroboros"), system_repo_dir=repo,
+    )
+
+    assert "workspace_root must be a folder outside the Ouroboros repository" in hint
+    assert "empty (or workspace='none') to work in the repository itself" in hint
+    assert "asked for" not in hint
+
+
+def test_workspace_repair_hint_names_the_presence_profile():
+    hint = _repair_hint(
+        ws_error="explicit workspace_root is unusable: workspace_root is not a directory: /gone",
+        presence=True,
+    )
+
+    assert hint.startswith("The folder configured in the Presence profile is unusable: ")
+    assert "workspace_root is not a directory: /gone" in hint
+    assert hint.endswith("Fix the Presence profile's workspace_root or clear it.")
 
 
 def test_promote_without_an_explicit_target_inherits_the_binding_then_the_origin(
@@ -3306,3 +3335,209 @@ def test_the_implicit_promote_claim_creates_and_binds_under_the_claim_lock(
     assert enqueued[0]["project_id"] == "the-work"
     assert (registry.project_binding_for_task(tmp_path, "root01") or {}).get(
         "project_id") == "the-work"
+
+
+# --- promote refusals: placement (Q1/Q2=A), the host cause (Q3=A), the repo root (Q4=A) ---
+
+def _host_promote(host, monkeypatch, **overrides):
+    """Drive the REAL promote handler (reservation, admission, receipts, the
+    publication boundary) for a Main event; ``host.notices`` records every chat
+    send with its kwargs and ``host.bridge.acks`` every live receipt."""
+    from supervisor.events import _handle_promote_chat_to_task
+
+    evt = {
+        "type": "promote_chat_to_task", "task_id": "refused0001", "routing_token": "tok-refused-1",
+        "objective": "Audit the GitHub tool", "chat_id": 1, "client_message_id": "cm-refused-1",
+        "workspace": "none",
+    }
+    evt.update(overrides)
+    return evt, _handle_promote_chat_to_task(evt, host.ctx)
+
+
+def test_host_initiated_workspace_refusal_sends_one_typed_row_to_the_owner_chat(swarm_host, monkeypatch):
+    """Q2=A: no model turn narrates a host-issued promote, so the owner is told
+    ONCE — a typed System row in the chat the owner wrote in (never the project
+    room admission just created), bound to the never-started task — and the
+    receipt under the message carries the same host sentence (Q3=A)."""
+    from tests.test_swarm_host_admission import rows
+
+    host = swarm_host
+    announced = []
+    monkeypatch.setattr(
+        "supervisor.terminal_delivery.enqueue_terminal_delivery",
+        lambda _root, event, **_k: announced.append(dict(event)) or True,
+    )
+    evt, outcome = _host_promote(
+        host, monkeypatch, host_initiated=True, title="Аудит GitHub-инструмента",
+        project_id="refused-room", project_name="Refused Room",
+        workspace="", workspace_root=str(host.root / "missing-folder"),
+    )
+
+    assert (outcome["status"], outcome["reason"]) == ("needs_manual_target", "workspace_unusable")
+    assert outcome["detail"].startswith("explicit workspace_root is unusable")
+    assert host.pending == []
+    [notice] = host.notices
+    assert notice["chat_id"] == 1  # the OWNER's chat, not the new project room
+    assert notice["text"] == "Аудит GitHub-инструмента · Not started: the working folder can't be used"
+    assert notice["role"] == "system" and notice["system_type"] == "task_not_started"
+    assert notice["task_id"] == evt["task_id"]
+    # R9: the project was created, but its "Started" row is owed only to real work.
+    assert announced == []
+    row = rows(host.root / "logs/chat_annotations.jsonl")[-1]
+    assert (row["status"], row["reason"]) == ("needs_manual_target", "workspace_unusable")
+    assert row["cause"] == "Not started: the working folder can't be used"
+    assert host.bridge.acks[-1]["status"] == "needs_manual_target"
+    assert host.bridge.acks[-1]["cause"] == "Not started: the working folder can't be used"
+
+
+def test_tool_issued_workspace_refusal_sends_nothing(swarm_host, monkeypatch):
+    """Q1=A: a model turn waits on the receipt and narrates; the receipt (with
+    its cause) and the failed call are the record — no host chat text at all."""
+    host = swarm_host
+    evt, outcome = _host_promote(
+        host, monkeypatch, workspace="", workspace_root=str(host.root / "missing-folder"),
+    )
+
+    assert (outcome["status"], outcome["reason"]) == ("needs_manual_target", "workspace_unusable")
+    assert host.notices == []
+    assert host.bridge.acks[-1]["cause"] == "Not started: the working folder can't be used"
+
+
+def test_host_initiated_reservation_refusal_sends_one_row_and_a_replay_sends_nothing(
+    swarm_host, monkeypatch,
+):
+    """R13: the reservation-blocked exit (a disabled worker pool) passes the same
+    publication boundary; a replay of the settled admission (same token) is
+    silent — the owner was told once. The picker's route (`routed_from_main`)
+    wears the same «Not started» prefix as a promote (R14)."""
+    import supervisor.workers as workers
+    from supervisor.events import _handle_promote_chat_to_task
+
+    host = swarm_host
+    monkeypatch.setattr(
+        workers, "_worker_pool_execution_state",
+        lambda *_a, **_k: {"available": False, "disabled_reason": "maintenance"},
+    )
+    evt, outcome = _host_promote(host, monkeypatch, host_initiated=True, routed_from_main=True)
+
+    assert (outcome["status"], outcome["reason"]) == ("needs_manual_target", "worker_pool_unavailable")
+    [notice] = host.notices
+    assert notice["text"] == "Audit the GitHub tool · Not started: no worker is available right now"
+    assert notice["system_type"] == "task_not_started" and notice["task_id"] == evt["task_id"]
+
+    replay = _handle_promote_chat_to_task(dict(evt), host.ctx)
+    assert replay["replayed"] is True and replay["reason"] == "worker_pool_unavailable"
+    assert len(host.notices) == 1
+
+
+def test_host_initiated_unconfirmed_admission_sends_the_unconfirmed_row(swarm_host, monkeypatch):
+    """R14: an admission whose receipt could not be persisted is UNCONFIRMED — the
+    row says exactly that (`task_start_unconfirmed`, «Not confirmed»), never
+    «Not started»."""
+    host = swarm_host
+    monkeypatch.setattr("ouroboros.project_dialogue.append_chat_annotation", lambda *_a, **_k: False)
+    evt, outcome = _host_promote(host, monkeypatch, host_initiated=True)
+
+    assert (outcome["status"], outcome["reason"]) == ("unconfirmed", "routing_annotation_persist_failed")
+    [notice] = host.notices
+    assert notice["text"] == "Audit the GitHub tool · Not confirmed: the receipt could not be saved"
+    assert notice["role"] == "system" and notice["system_type"] == "task_start_unconfirmed"
+    assert notice["task_id"] == evt["task_id"]
+
+
+def test_promote_maps_the_exact_repo_root_onto_no_workspace(tmp_path, monkeypatch):
+    """Q4=A: naming the Ouroboros repository ITSELF names the documented default
+    (the ordinary self-modification task): the event carries the existing
+    "none" sentinel — in a project room too — and the tool result discloses it."""
+    from ouroboros.tools.control import _promote_chat_to_task
+
+    _confirm_promote(monkeypatch)
+    repo = tmp_path / "Ouroboros" / "repo"
+    repo.mkdir(parents=True)
+    events = []
+    ctx = types.SimpleNamespace(
+        pending_events=events, event_queue=None, current_chat_id=1, drive_root=tmp_path / "data",
+        repo_dir=repo, system_repo_dir=repo,
+    )
+    out = _promote_chat_to_task(
+        ctx, "Audit the GitHub tool", project_id="racer", workspace_root=f"{repo}/",
+        predecessor_task_id="",
+    )
+
+    assert out.startswith("OK: task")
+    assert (
+        "(workspace_root named the Ouroboros repository itself; started as an ordinary task "
+        "over it — no separate workspace)"
+    ) in out
+    [evt] = events
+    assert evt["workspace_root"] == "" and evt["workspace"] == "none"
+    assert evt["project_id"] == "racer"
+
+
+def test_promote_passes_a_repo_subfolder_through_to_admission_unchanged(tmp_path, monkeypatch):
+    """A SUBFOLDER is a different ask the shape cannot serve: it reaches admission
+    unchanged and is refused there with the repair hint."""
+    from ouroboros.tools.control import _promote_chat_to_task
+
+    _confirm_promote(monkeypatch)
+    repo = tmp_path / "Ouroboros" / "repo"
+    sub = repo / "ouroboros"
+    sub.mkdir(parents=True)
+    events = []
+    ctx = types.SimpleNamespace(
+        pending_events=events, event_queue=None, current_chat_id=1, drive_root=tmp_path / "data",
+        repo_dir=repo, system_repo_dir=repo,
+    )
+    out = _promote_chat_to_task(ctx, "Audit the GitHub tool", workspace_root=str(sub), predecessor_task_id="")
+
+    assert out.startswith("OK: task") and "named the Ouroboros repository itself" not in out
+    [evt] = events
+    assert evt["workspace_root"] == str(sub) and evt["workspace"] == ""
+
+
+def test_project_started_is_not_announced_when_workspace_admission_refuses(tmp_path, monkeypatch):
+    """R9: the «Project · Started» row is owed only once the task is REALLY in the
+    queue — a promote that creates a project and then fails workspace admission
+    announces nothing (the project itself stays; the refusal names it)."""
+    import supervisor.workers as workers
+    from ouroboros.projects_registry import get_project
+
+    monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
+    queued = []
+    monkeypatch.setattr(
+        "supervisor.terminal_delivery.enqueue_terminal_delivery",
+        lambda _root, event, **_k: queued.append(dict(event)) or True,
+    )
+    enqueued, sent = [], []
+    outcome = workers.promote_chat_to_task({
+        "type": "promote_chat_to_task", "task_id": "doomed0001", "objective": "Build",
+        "project_id": "doomed-room", "project_name": "Doomed Room",
+        "workspace_root": str(tmp_path / "never-existed"), "chat_id": 1,
+    }, _promote_ctx(enqueued, sent))
+
+    assert (outcome["status"], outcome["reason"]) == ("needs_manual_target", "workspace_unusable")
+    assert get_project(tmp_path, "doomed-room")["name"] == "Doomed Room"  # the project stays
+    assert queued == [] and enqueued == [] and sent == []
+
+
+def test_host_initiated_refusal_row_names_an_untitled_act_at_a_word_boundary():
+    """An untitled host-issued act (a skill-card request has no title) is named by
+    its request's first words; a long request is cut at a word boundary with an
+    ellipsis, never mid-word, before the « · Not started: …» clause."""
+    from supervisor.events_project_routing import _notify_host_initiated_refusal
+
+    sent = []
+    ctx = types.SimpleNamespace(send_with_budget=lambda chat, text, **kw: sent.append((chat, text, kw)))
+    objective = "Почини скилл stand-missing-skill, его файлы отсутствуют и манифест не читается вообще"
+    _notify_host_initiated_refusal(
+        ctx,
+        {"host_initiated": True, "chat_id": 1, "objective": objective, "task_id": "t1"},
+        {"status": "needs_manual_target", "reason": "invalid_skill_repair_constraint", "task_id": "t1"},
+    )
+    assert len(sent) == 1
+    chat, text, kw = sent[0]
+    title, _, clause = text.partition(" · ")
+    assert title.endswith("…") and not title[:-1].endswith(" ") and len(title) <= 61
+    assert objective.startswith(title[:-1]) and objective[len(title) - 1] == " "
+    assert clause == "Not started: the skill repair request was invalid"
+    assert kw["role"] == "system" and kw["system_type"] == "task_not_started" and kw["task_id"] == "t1"

@@ -150,6 +150,9 @@ def test_promote_click_confirms_from_the_admission_record(tmp_path, monkeypatch)
 
     def _supervisor_schedules(evt):
         assert evt["task_id"] == derived_task_id
+        # The owner's click issued this promote: the handler's publication
+        # boundary owns any refusal notice (no model turn narrates it).
+        assert evt["host_initiated"] is True and evt["routed_from_main"] is True
 
         def _mut(current):
             from ouroboros.contracts.schema_versions import SCHEMA_VERSION_KEY
@@ -327,6 +330,9 @@ def test_rejected_dispatch_reopens_the_original_card(tmp_path, monkeypatch):
     status, body = handle_routing_decision(
         tmp_path, request_id="r1", decision_id="routing:cm-1:tok-1", option_index=0)
     assert (status, body["state"]) == (409, "open")
+    # R5/R16: the toast shows the host's sentence for the refused act, not the code.
+    assert body["reason"] == "target_closed"
+    assert body["cause"] == "Not delivered: that task has already finished"
     reopened = chat_annotation_receipt(tmp_path, "cm-1", "tok-1")
     assert reopened["status"] == "needs_manual_target"
     assert [row["action"] for row in reopened["options"]] == [

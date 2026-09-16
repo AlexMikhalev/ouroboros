@@ -2169,7 +2169,6 @@ from supervisor.worker_process import (  # noqa: E402, F401 -- intentional publi
 from supervisor.worker_promotion import (  # noqa: E402, F401 -- intentional public re-exports
     _admit_promoted_workspace,
     _canonical_promoted_repair_constraint,
-    _fail_promoted_task_loudly,
     _origin_from_mapping,
     _origin_from_task_record,
     _promote_duplicate_reason,
