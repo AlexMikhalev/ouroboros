@@ -481,12 +481,13 @@ def test_turn_event_queue_stamps_by_value_at_the_producer():
     zero = {"type": "log_event", "data": {"type": "x", "task_id": "turn1", "chat_id": 0}}
     assert proxy.stamp(zero)["data"]["chat_id"] == 0
 
-    # _run_chat_task installs the proxy around agent.handle_task.
+    # The execution half of the direct lane installs the proxy around
+    # agent.handle_task (admission registers the turn; execution runs it).
     import inspect
 
-    from supervisor.workers import _run_chat_task
+    from supervisor.worker_chat_lane import _execute_chat_task
 
-    src = inspect.getsource(_run_chat_task)
+    src = inspect.getsource(_execute_chat_task)
     assert "_TurnEventQueue" in src and "agent._event_queue = turn_queue" in src
 
 

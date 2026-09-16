@@ -665,6 +665,11 @@ class OuroborosAgent:
                 ctx.task_use_local_override = bool(task_metadata.get("use_local_model"))
         if bool(task.get("_presence_turn")):
             ctx.inline_max_rounds = int(task_metadata.get("inline_max_rounds") or 10)
+        # A task that names a model ROLE (a consciousness wake-up) runs on that
+        # role's slot when the slot is set; an empty slot is Main (В25=B).
+        role_slot = model_role_slot_override(task_metadata)
+        if role_slot is not None and not getattr(ctx, "task_model_override", None):
+            ctx.task_model_override, ctx.task_use_local_override = role_slot
         self.tools.set_context(ctx)
 
         dispatch, _preflight_amended = self._run_delegate_preflight(drive_logs, task, dispatch)
@@ -797,7 +802,7 @@ class OuroborosAgent:
                 task_id=task_id,
                 root_task_id=root_task_id,
                 parent_task_id=parent_task_id,
-                category=str(task.get("type") or "task"),
+                category=str(metadata.get("usage_category") or task.get("type") or "task"),
                 source="agent.task",
                 global_limit_usd=global_limit,
                 global_limit_source="task_start_budget_resolver",
@@ -1229,6 +1234,7 @@ from ouroboros.agent_dispatch import (  # noqa: E402, F401 -- intentional public
     _queued_budget_exhausted_message,
     _physical_calls_after_budget_rail,
     _initial_effort_for,
+    model_role_slot_override,
     resolve_dispatch_axes,
     _DELEGATE_VERBS,
     preflight_delegate_visibility,

@@ -1,6 +1,11 @@
 """The direct chat lane and its resume after a restart.
 
-Each chat turn owns a fresh native agent and a registered execution.
+Each chat turn owns a fresh native agent and a registered execution. A turn
+is admitted (``_admit_chat_task``: the seed, the census registration, the
+actor, the start receipt) and then executed (``_execute_chat_task``); the
+owner's message runs both in one call (``handle_chat_direct``), while a
+self-initiated wake-up (``handle_wake_direct``) admits synchronously and
+answers with a typed receipt before the body runs on its own thread.
 Turns are refused while the repo-writer gate is closed
 for a DESTRUCTIVE update window (apply/replace prologue, materialization,
 rollback), so a managed update never races a turn that could touch the checkout
@@ -20,7 +25,7 @@ import json
 import pathlib
 import time
 import uuid
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Optional, Tuple, Union
 from supervisor.state import append_jsonl
 from ouroboros.utils import utc_now_iso
 
@@ -206,8 +211,34 @@ def _run_chat_task(
 ) -> None:
     """Build the direct-chat task and run it on the given agent, draining events.
 
-    Main/Project turns use the full native task/result/delivery lifecycle."""
-    task: Optional[dict] = None
+    Main/Project turns use the full native task/result/delivery lifecycle:
+    admission (``_admit_chat_task``) then execution (``_execute_chat_task``)."""
+    admitted = _admit_chat_task(
+        agent, chat_id, text, image_data,
+        task_constraint=task_constraint, task_metadata=task_metadata,
+    )
+    if admitted is not None:
+        _execute_chat_task(admitted)
+
+
+def _admit_chat_task(
+    agent: Any,
+    chat_id: int,
+    text: str,
+    image_data: Optional[Union[Tuple[str, str], Tuple[str, str, str]]] = None,
+    task_constraint: Optional[dict] = None,
+    task_metadata: Optional[dict] = None,
+) -> Optional[Dict[str, Any]]:
+    """Build and REGISTER one direct turn; ``None`` when it was refused.
+
+    Everything that happens before the model runs: the seed task, the census
+    registration under the repo-writer gate (one transaction with the update
+    owner), the actor, the origin/attachment/project layering, the task
+    contract and the authoritative start receipt. The returned bundle is a
+    registered execution that ``_execute_chat_task`` MUST run (it owns the
+    unregister); a refusal or an admission failure has already unregistered
+    itself and, for a failure, reported it to the chat.
+    """
     client_msg_id = ""
     if task_metadata:
         _cmid_ref = task_metadata.get("origin_message_ref")
@@ -231,7 +262,7 @@ def _run_chat_task(
     # the whole native lifecycle and event delivery, not just its LLM rounds.
     with _pool()._repo_writer_gate_lock:
         if not owner_conversation_admitted(chat_id):
-            return
+            return None
         activity = registry.register(
             task["id"], chat_id,
             client_message_id=client_msg_id,
@@ -239,10 +270,16 @@ def _run_chat_task(
             kind=kind, origin_message_ref=(task_metadata or {}).get("origin_message_ref"),
             actor=agent,
         )
+    admitted: Dict[str, Any] = {
+        "task": task, "agent": agent, "activity": activity, "registry": registry,
+        "chat_id": chat_id, "client_msg_id": client_msg_id, "kind": kind,
+        "task_metadata": task_metadata,
+    }
     try:
         if agent is None:
             agent = _pool()._get_chat_agent()
             activity.actor = agent
+            admitted["agent"] = agent
         from ouroboros.contracts.task_contract import attach_task_contract
 
         if task_constraint:
@@ -305,7 +342,8 @@ def _run_chat_task(
                     f"⚠️ Task not started: every attachment was rejected.\n{rendered}",
                     **_host_operation_failure(task_metadata),
                 )
-                return
+                registry.unregister(task["id"])
+                return None
             from ouroboros.artifacts import attachment_manifest_projection
             authority = attachment_manifest_projection(_pool().DRIVE_ROOT, str(task["id"]), manifest)
             rendered = _render_attachment_lines(authority)
@@ -369,11 +407,32 @@ def _run_chat_task(
             )
         except Exception:
             log.debug("Direct-turn start typing announce failed", exc_info=True)
+    except Exception as e:
+        _report_direct_chat_error(admitted, e)
+        registry.unregister(task["id"])
+        return None
+    return admitted
+
+
+def _execute_chat_task(admitted: Dict[str, Any]) -> bool:
+    """Run a registered direct turn to its end, draining its events.
+
+    Returns True when the actor's run and the event hand-off completed, False
+    when the runner failed (the failure has been reported to the chat). The
+    registry entry is released here, whichever way the turn ends.
+    """
+    task, agent, chat_id = admitted["task"], admitted["agent"], admitted["chat_id"]
+    registry = admitted["registry"]
+    ok = False
+    try:
         # The turn's live emits (loop_llm_call and friends publish
         # straight to the agent's event queue DURING handle_task) and its
         # returned events can be consumed after this registry entry is gone:
         # stamp the authoritative chat identity before handing them off.
-        turn_queue = _TurnEventQueue(_pool().get_event_q(), task["id"], chat_id)
+        turn_queue = _TurnEventQueue(
+            _pool().get_event_q(), task["id"], chat_id,
+            initiator=str((admitted.get("task_metadata") or {}).get("initiator") or ""),
+        )
         prev_queue = getattr(agent, "_event_queue", None)
         agent._event_queue = turn_queue
         try:
@@ -382,58 +441,124 @@ def _run_chat_task(
             agent._event_queue = prev_queue
         for e in events:
             _pool().get_event_q().put(turn_queue.stamp(e))
+        ok = True
     except Exception as e:
-        import traceback
-        err_msg = f"⚠️ Error: {type(e).__name__}: {e}"
-        append_jsonl(
-            _pool().DRIVE_ROOT / "logs" / "supervisor.jsonl",
-            {
-                "ts": utc_now_iso(),
-                "type": "direct_chat_error",
-                "task_id": str(task.get("id") or ""),
-                "chat_id": int(chat_id or 0),
-                "error": repr(e),
-                "traceback": str(traceback.format_exc())[:2000],
-            },
-        )
-        try:
-            # Key the error final with the turn's activity id so the client
-            # concludes exactly this turn (active set, 4A) instead of leaving
-            # its `Sending.../Thinking...` state to an unkeyed sweep. If the
-            # failure happened before the start announce was broadcast, announce
-            # it first: the receipt's census read settles the linked `Sending...`
-            # and the keyed final right after concludes the turn's census row.
-            failed_task_id = str(task.get("id") or "") if isinstance(task, dict) else ""
-            if failed_task_id and client_msg_id:
-                try:
-                    from supervisor.message_bus import get_bridge
-
-                    get_bridge().send_chat_action(
-                        int(chat_id or 0),
-                        "typing",
-                        activity_id=failed_task_id,
-                        client_message_id=client_msg_id,
-                        phase="thinking",
-                        kind=kind,
-                    )
-                except Exception:
-                    log.debug("Failed-turn typing announce failed", exc_info=True)
-            failure_meta = _host_operation_failure(task_metadata)
-            progress_meta = {"task_terminal_status": "failed"}
-            if failure_meta:
-                progress_meta["origin_message_ref"] = failure_meta["progress_meta"]["origin_message_ref"]
-            _pool().send_with_budget(
-                chat_id,
-                err_msg,
-                task_id=failed_task_id,
-                progress_meta=progress_meta,
-            )
-        except Exception:
-            log.debug("Suppressed exception", exc_info=True)
+        _report_direct_chat_error(admitted, e)
     finally:
         registry.unregister(task["id"])
+    return ok
 
 
+def _report_direct_chat_error(admitted: Dict[str, Any], e: BaseException) -> None:
+    """Record a direct-turn failure and conclude the turn in the chat."""
+    import traceback
+    task, chat_id, kind = admitted["task"], admitted["chat_id"], admitted["kind"]
+    client_msg_id, task_metadata = admitted["client_msg_id"], admitted.get("task_metadata")
+    err_msg = f"⚠️ Error: {type(e).__name__}: {e}"
+    append_jsonl(
+        _pool().DRIVE_ROOT / "logs" / "supervisor.jsonl",
+        {
+            "ts": utc_now_iso(),
+            "type": "direct_chat_error",
+            "task_id": str(task.get("id") or ""),
+            "chat_id": int(chat_id or 0),
+            "error": repr(e),
+            "traceback": str(traceback.format_exc())[:2000],
+        },
+    )
+    try:
+        # Key the error final with the turn's activity id so the client
+        # concludes exactly this turn (active set, 4A) instead of leaving
+        # its `Sending.../Thinking...` state to an unkeyed sweep. If the
+        # failure happened before the start announce was broadcast, announce
+        # it first: the receipt's census read settles the linked `Sending...`
+        # and the keyed final right after concludes the turn's census row.
+        failed_task_id = str(task.get("id") or "") if isinstance(task, dict) else ""
+        if failed_task_id and client_msg_id:
+            try:
+                from supervisor.message_bus import get_bridge
+
+                get_bridge().send_chat_action(
+                    int(chat_id or 0),
+                    "typing",
+                    activity_id=failed_task_id,
+                    client_message_id=client_msg_id,
+                    phase="thinking",
+                    kind=kind,
+                )
+            except Exception:
+                log.debug("Failed-turn typing announce failed", exc_info=True)
+        failure_meta = _host_operation_failure(task_metadata)
+        progress_meta = {"task_terminal_status": "failed"}
+        if failure_meta:
+            progress_meta["origin_message_ref"] = failure_meta["progress_meta"]["origin_message_ref"]
+        initiator = str((task_metadata or {}).get("initiator") or "")
+        if initiator:
+            progress_meta["initiator"] = initiator
+        _pool().send_with_budget(
+            chat_id,
+            err_msg,
+            task_id=failed_task_id,
+            progress_meta=progress_meta,
+        )
+    except Exception:
+        log.debug("Suppressed exception", exc_info=True)
+
+
+def handle_wake_direct(
+    chat_id: int,
+    text: str,
+    task_metadata: Optional[dict],
+    on_finished: Optional[Callable[[str, bool], None]] = None,
+) -> Dict[str, Any]:
+    """Start a self-initiated Main turn (a consciousness wake-up) as an
+    ordinary direct turn, and answer with a typed receipt.
+
+    The same gates as ``handle_chat_direct`` decide admission, but a refused
+    wake gets ``{"admitted": False, "task_id": "", "reason": <typed>}``
+    synchronously instead of a chat notice. An admitted wake is REGISTERED
+    before this returns (the census lists it, Stop reaches it, the liveness
+    read sees it) and its body runs on a daemon thread; the receipt carries
+    the registered ``task_id``. ``on_finished(task_id, ok)`` fires once the
+    turn has ended, ``ok=False`` when the runner failed, so the alarm clock
+    can back off after a failure too. The wake's ``task_metadata`` (its
+    origin label, ledger category, reason, autonomy level, model role) rides
+    verbatim on ``task["metadata"]``; nothing here pauses or resumes the
+    legacy background loop.
+    """
+    if not owner_conversation_admitted(chat_id):
+        return {"admitted": False, "task_id": "", "reason": "repo_writer_gate_closed"}
+    from supervisor.state import budget_remaining, load_state
+
+    try:
+        remaining = budget_remaining(load_state(), strict=True)
+    except Exception:
+        return {"admitted": False, "task_id": "", "reason": "cost_accounting_unavailable"}
+    if remaining <= 0:
+        return {"admitted": False, "task_id": "", "reason": "budget_exhausted"}
+    admitted = _admit_chat_task(
+        None, int(chat_id), str(text or ""), None,
+        task_constraint=None, task_metadata=dict(task_metadata or {}),
+    )
+    if admitted is None:
+        return {"admitted": False, "task_id": "", "reason": "admission_failed"}
+    task_id = str(admitted["task"]["id"])
+
+    def _run() -> None:
+        ok = False
+        try:
+            ok = _execute_chat_task(admitted)
+        finally:
+            if on_finished is not None:
+                try:
+                    on_finished(task_id, ok)
+                except Exception:
+                    log.debug("wake on_finished callback failed", exc_info=True)
+
+    import threading
+
+    threading.Thread(target=_run, name=f"wake-turn-{task_id}", daemon=True).start()
+    return {"admitted": True, "task_id": task_id, "reason": ""}
 
 
 def auto_resume_after_restart() -> None:

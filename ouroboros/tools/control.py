@@ -459,6 +459,7 @@ from ouroboros.tools.control_runtime import (  # noqa: E402, F401 -- intentional
     _request_deep_self_review,
     _request_restart,
     _send_user_message,
+    _set_next_wakeup,
     _set_tool_timeout,
     _switch_model,
     _toggle_consciousness,

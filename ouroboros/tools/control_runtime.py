@@ -345,6 +345,35 @@ def _toggle_consciousness(ctx: ToolContext, action: str = "status") -> str:
     return f"OK: consciousness '{action}' requested."
 
 
+def _set_next_wakeup(ctx: ToolContext, seconds: int) -> str:
+    """Choose the interval before the next consciousness wake-up.
+
+    The requested seconds are clamped into the owner's configured bounds
+    (``OUROBOROS_BG_WAKEUP_MIN``/``MAX``) and persisted on the runtime state as
+    ``consciousness_next_interval_sec``, where the alarm clock reads the choice
+    when it schedules the next wake. Any turn may call it (a wake-up picks its
+    own rhythm; a Main turn may adjust it); with consciousness off the choice is
+    stored, not refused, and applies once it is enabled. The ToolEntry lives in
+    ``control.get_tools`` once the legacy loop's private registration of the
+    same name is retired (ToolRegistry refuses a duplicate name).
+    """
+    from ouroboros.config import get_bg_wakeup_max_sec, get_bg_wakeup_min_sec
+    from supervisor.state import update_state
+
+    try:
+        requested = int(seconds)
+    except (TypeError, ValueError):
+        return f"⚠️ TOOL_ARG_ERROR (set_next_wakeup): invalid seconds={seconds!r}"
+    low, high = get_bg_wakeup_min_sec(), get_bg_wakeup_max_sec()
+    interval = max(low, min(high, requested))
+    state = update_state(lambda st: st.__setitem__("consciousness_next_interval_sec", interval))
+    clamp_note = f" (requested {requested} s, clamped into {low}-{high} s)" if interval != requested else ""
+    if not bool(state.get("bg_consciousness_enabled")):
+        return (f"OK: consciousness is off; the next wake-up interval of {interval} s{clamp_note} "
+                "is stored for when it is enabled.")
+    return f"OK: next wake-up in {interval} s{clamp_note}."
+
+
 def _switch_model(ctx: ToolContext, model: str = "", effort: str = "") -> str:
     """LLM-driven model/effort switch (Constitution P5: LLM-first).
 

@@ -2134,6 +2134,7 @@ from supervisor.worker_chat_lane import (  # noqa: E402, F401 -- intentional pub
     _run_chat_task,
     auto_resume_after_restart,
     handle_chat_direct,
+    handle_wake_direct,
 )
 from supervisor.worker_health import (  # noqa: E402, F401 -- intentional public re-exports
     _emit_task_done_terminal,
