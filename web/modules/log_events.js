@@ -365,6 +365,9 @@ function toolCallKey(evt, groupId) {
     return `tool:${groupId}:${evt.tool_call_id || `${evt.tool || ''}|${toolCallTarget(evt.args)}`}`;
 }
 
+const toolObservation = (evt, groupId, status) => ({  // one frame's fact about one invocation
+    key: toolCallKey(evt, groupId), status, receipt: Boolean(evt.routing_action), tool: evt.tool || '' });
+
 function describeStartupChecks(checks) {
     if (!checks || typeof checks !== 'object') return '';
     const parts = [];
@@ -984,11 +987,10 @@ export function summarizeLogEvent(evt) {
         });
     }
 
-    // Typed severity carried by host/extension frames (`ok`, logging `level`)
-    // outranks the event name. The name-substring test that follows is the
-    // NON-EXPANDING remainder for an unknown name that carries no typed fact:
-    // it keeps a genuine producer-side failure with only a name visible under
-    // Errors, and it is pinned as a remainder, not a taxonomy.
+    // Typed severity carried by host/extension frames (`ok`, logging `level`) outranks the
+    // event name. The name-substring test that follows is the NON-EXPANDING remainder for an
+    // unknown name that carries no typed fact: it keeps a genuine producer-side failure with
+    // only a name visible under Errors, and it is pinned as a remainder, not a taxonomy.
     const level = String(evt.level || '').toLowerCase();
     const body = shortText(
         evt.error || evt.message || evt.text || evt.result_preview
@@ -1031,6 +1033,7 @@ function chatView({
     chip = null,
     model = '',
     receipt = false,
+    toolCall = null,
 } = {}) {
     const out = {
         phase,
@@ -1046,6 +1049,7 @@ function chatView({
     // stand on: the fact it reports lives elsewhere (the owner message's
     // routing annotation for an addressing call).
     if (receipt) out.receipt = true;
+    if (toolCall) out.toolCall = toolCall;  // folded into the block's one evidence row
     if (fullBody) out.fullBody = fullBody;
     if (fullHeadline) out.fullHeadline = fullHeadline;
     // Explicit emptiness is part of the presentation contract: a review-only
@@ -1121,11 +1125,10 @@ function summarizeChatLiveEventView(evt) {
     const key = (...parts) => [t, groupId, ...parts].join(':');
 
     if (t === 'owner_hurry') {
-        // S3 (HQ1) EXPLICIT hide branch: the typed hurry control family never
-        // renders a chat timeline row or bubble — chat.js paints only a compact
-        // card status from ownerHurryProjection, and the durable facts live in
-        // the task detail. Explicit (not the fallthrough) so a future default
-        // change cannot silently surface the family in chat.
+        // S3 (HQ1) EXPLICIT hide branch: the typed hurry control family never renders a chat
+        // timeline row or bubble — chat.js paints only a compact card status from
+        // ownerHurryProjection, and the durable facts live in the task detail. Explicit (not
+        // the fallthrough) so a future default change cannot silently surface it in chat.
         return chatView({ visible: false, dedupeKey: key(evt.phase || '', evt.request_id || '') });
     }
 
@@ -1175,9 +1178,9 @@ function summarizeChatLiveEventView(evt) {
             errorText.full ? `[ERROR]\n${errorText.full}` : '',
             reasonDetail,
         ].filter(Boolean);
-        // A generic "completed" event still carries authoritative outcome axes.
-        // Normalize it once here so every live/replay route gets the same label,
-        // phase and terminal truth from the canonical projector.
+        // A generic "completed" event still carries authoritative outcome axes: normalize it
+        // once here so every live/replay route takes label, phase and terminal truth from the
+        // canonical projector.
         const completionSeverity = rawEvent === 'completed' ? taskOutcomeSeverity(evt) : 'done';
         const event = rawEvent === 'completed'
             ? (completionSeverity === 'cancelled' ? 'cancelled'
@@ -1195,6 +1198,10 @@ function summarizeChatLiveEventView(evt) {
                             : event === 'scheduled' ? 'start'
                                 : 'working';
         const terminal = ['completed', 'completed_warn', 'failed', 'cancelled', 'rejected'].includes(event);
+        // A child's own note carries the same voice fact (the progress branch below): a host
+        // note inside the child's turn is a visible row that never claims the card's collapsed
+        // line. The lifecycle, result and error frames state no voice, so they keep leading.
+        const promoted = terminal || evt.narration === true || evt.narration === undefined;
         const label = terminal
             ? taskPresentation(phase).headline
             : (SUBAGENT_CARD_LABEL[event] || 'Working');
@@ -1217,8 +1224,8 @@ function summarizeChatLiveEventView(evt) {
             fullBody: detailParts.join('\n\n'),
             activityPreview: activity.preview || '',
             visible: true,
-            promote: true,
-            human: true,
+            promote: promoted,
+            human: promoted,
             terminal,
             // P3: the WS result/trace were capped at 4000 server-side; expose the
             // subagent task id so "show full" can fetch the genuinely-full output.
@@ -1234,14 +1241,18 @@ function summarizeChatLiveEventView(evt) {
     if (evt.is_progress || t === 'send_message') {
         const lifecycleTerminal = String(evt.task_id || '').startsWith('skill_lifecycle_')
             && /\s—\s(completed|failed)\b/i.test(progressText.full);
+        // Voice, not wording (P5): the worker stamps `narration` on every note; a
+        // host note is a typed fact, never a text match. Both stay visible rows; only
+        // narration is promoted (title, collapsed line). ABSENT = predates the fact.
+        const narration = evt.narration === true || evt.narration === undefined;
         return chatView({
             phase: lifecycleTerminal ? (/failed\b/i.test(progressText.full) ? 'lifecycle_error' : 'done') : 'working',
             headline: progressText.preview || 'Working...',
             fullHeadline: progressText.full || '',
             activityPreview: progressText.preview || '',
             visible: Boolean(progressText.preview),
-            promote: true,
-            human: true,
+            promote: narration,
+            human: narration,
             // «ТУТ бабл … на codex» — an ordinary progress bubble carries the chip
             // too whenever the frame disclosed a delegated executor.
             chip: executorChip(evt),
@@ -1293,24 +1304,19 @@ function summarizeChatLiveEventView(evt) {
     }
 
     if (t === 'tool_call_started' || (t === 'tool_call_finished' && !evt.is_error)) {
-        // A successful call is a compact one-line row: `tool · target`, then
-        // `✓ duration` when it finishes — content the block can stand on,
-        // unless the host stamped it as an addressing act (`routing_action`):
-        // the owner message's annotation is that call's receipt, so the row is
-        // one too (owner decision 11.09). A failure keeps its own error row.
-        const target = describeText(toolCallTarget(evt.args), 60);
-        const finished = t === 'tool_call_finished';
-        // `done` is the TASK's terminal phase (`isTerminalTaskPhase`): a row that
-        // carried it marked a still-running card finished after its first
-        // successful call. A finished CALL is `ok`, a running one `calling`.
+        // A successful call is execution evidence, not narration: start and finish feed the
+        // block's ONE folded row (counts; tools behind Expand), a receipt while every counted
+        // call is a host-stamped addressing act (`routing_action`, reported by the owner
+        // message's annotation). A failure keeps its own error row and still counts. `done` is
+        // the TASK's phase; a finished CALL is `ok`.
+        const status = t === 'tool_call_finished' ? 'ok' : 'calling';
         return chatView({
-            phase: finished ? 'ok' : 'calling',
-            headline: [evt.tool || 'tool', target.preview, finished ? `✓ ${formatLogDuration(evt.duration_sec)}`.trim() : '']
-                .filter(Boolean).join(' · '),
-            fullBody: compactJson(evt.args, 260),
+            phase: status,
+            headline: '',
             visible: true,
             receipt: Boolean(evt.routing_action),
-            dedupeKey: toolCallKey(evt, groupId),
+            dedupeKey: `tools|${groupId}`,
+            toolCall: toolObservation(evt, groupId, status),
         });
     }
 
@@ -1368,10 +1374,12 @@ function summarizeChatLiveEventView(evt) {
             headline: `One of the steps took too long${evt.tool ? ` · ${evt.tool}` : ''}`,
             visible: true,
             dedupeKey: toolCallKey(evt, groupId),
+            toolCall: toolObservation(evt, groupId, 'error'),
         });
     }
 
     if (t === 'tool_call_finished' && evt.is_error) {
+        const failed = toolObservation(evt, groupId, 'error');
         const commandText = describeText(extractCommandText(evt.args), 120);
         const errorResult = describeText(evt.result_preview || evt.error, 220);
         const bodyParts = [];
@@ -1389,6 +1397,7 @@ function summarizeChatLiveEventView(evt) {
                 fullBody: fullBodyParts.join('\n\n'),
                 visible: true,
                 dedupeKey: toolCallKey(evt, groupId),
+                toolCall: failed,
             });
         }
         return chatView({
@@ -1398,20 +1407,19 @@ function summarizeChatLiveEventView(evt) {
             fullBody: fullBodyParts.join('\n\n'),
             visible: true,
             dedupeKey: toolCallKey(evt, groupId),
+            toolCall: failed,
         });
     }
 
     if (t === 'task_done') return taskTerminalSummary(evt);
 
-
     if (t === 'task_cost_finalized') {
         const unavailable = evt.cost_accounting_status === 'unavailable';
         const ownCost = unavailable ? 'cost unavailable' : formatLogMoney(accountedUpperBound(evt));
         const subtreeCost = unavailable ? '' : formatLogMoney(accountedUpperBoundWithChildren(evt));
-        // A cost checkpoint is bookkeeping, never the task's conclusion: only
-        // the settled task_done resolves the card. On the blocking lane this
-        // frame precedes task_done; treating it as terminal closed the card
-        // early, and a live card mid-"Finalizing…" must absorb it quietly.
+        // A cost checkpoint is bookkeeping, never the task's conclusion: only the settled
+        // task_done resolves the card. On the blocking lane this frame precedes task_done;
+        // treating it as terminal closed the card early — a live card mid-"Finalizing…" absorbs it.
         return chatView({
             phase: unavailable ? 'warn' : 'usage',
             headline: unavailable ? 'Cost accounting unavailable' : 'Cost finalized',

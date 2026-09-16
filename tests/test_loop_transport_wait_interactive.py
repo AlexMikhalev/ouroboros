@@ -519,6 +519,9 @@ def test_agent_progress_seam_projects_an_explicit_incident():
     assert event["progress_meta"] == {
         "task_incident": "network_wait",
         "toast_once": "eph1:network_wait:entered:1",
+        # A transport-wait note is the host talking about the turn, so the card
+        # shows the row and keeps its title; the toast pair is unaffected.
+        "narration": False,
     }
     OuroborosAgent._emit_progress(agent, "plain note")
     assert "task_incident" not in events.get_nowait().get("progress_meta", {})
