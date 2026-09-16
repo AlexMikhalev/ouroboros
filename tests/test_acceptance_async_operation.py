@@ -396,23 +396,23 @@ def test_two_late_panels_of_one_task_each_announce_their_own_row(tmp_path, monke
                 settled.notify_all()
 
     monkeypatch.setattr("ouroboros.review_custody._settle_review_attempt", settle)
-    # Both producers answer before EITHER settlement callback runs, so the two
-    # callbacks race exactly as two panels settling together would.
+    # Both settlements are PUBLISHED (custody's lock block ran, the settled attempt
+    # is collectible) before EITHER announcement runs, so the two announcements
+    # race exactly as two panels settling together would; a broken barrier fails
+    # the test instead of degrading it to a serial schedule.
     barrier = threading.Barrier(2, timeout=10)
+    broken = []
+    from ouroboros import acceptance_settlement as leaf
+    original_announce = leaf.announce_acceptance_settlement
 
-    def settle(*args, **kwargs):
+    def announce(*args, **kwargs):
         try:
             barrier.wait()
         except threading.BrokenBarrierError:
-            pass
-        try:
-            return original_settle(*args, **kwargs)
-        finally:
-            with settled:
-                count["n"] += 1
-                settled.notify_all()
+            broken.append(True)
+        return original_announce(*args, **kwargs)
 
-    monkeypatch.setattr("ouroboros.review_custody._settle_review_attempt", settle)
+    monkeypatch.setattr(leaf, "announce_acceptance_settlement", announce)
     gates = {"model/a": threading.Event(), "model/b": threading.Event()}
     model = _SlotModel(gates, {"model/a": "PASS", "model/b": "FAIL"})
     ctx = _terminal_ctx(tmp_path, task_id="late-pair")
@@ -440,6 +440,7 @@ def test_two_late_panels_of_one_task_each_announce_their_own_row(tmp_path, monke
         with settled:
             settled.wait_for(lambda: count["n"] >= 2, timeout=10)
     rows = [e for e in events if e.get("system_type") == "acceptance_late_settlement"]
+    assert not broken, "both announcements must have raced through the barrier"
     assert sorted(r["delivery_id"] for r in rows) == ["acceptance-late:wave-one", "acceptance-late:wave-two"], events
     assert any("passed" in r["text"] for r in rows) and any("rejected" in r["text"] for r in rows)
 
