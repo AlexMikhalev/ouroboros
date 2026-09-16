@@ -410,6 +410,44 @@ test('addressing beside real work keeps the block: the addressing call joins the
     } finally { g.close(); }
 });
 
+// The host states the turn's totals more than once (the metrics event, the
+// terminal, a replayed summary) and each fact carries its own subset. They
+// merge field-wise: a later fact that states a total says nothing about the
+// routing or error count, so it can neither erase one nor reclassify the row.
+test('a later partial host fact keeps the routing count, the error count and the tool names of a complete one', () => {
+    const addressing = {};
+    noteToolCall(addressing, { key: 'p1', status: 'ok', receipt: true, tool: 'promote_chat_to_task' });
+    noteToolHostMetrics(addressing, { calls: 1, errors: 0, routing: 1, counts: { promote_chat_to_task: 1 } });
+    const later = noteToolHostMetrics(addressing, { calls: 1, errors: null, routing: null, counts: undefined });
+    assert.deepEqual([later.headline, later.fullBody, later.receipt],
+        ['1 tool call', 'promote_chat_to_task', true],
+        'the addressing-only turn keeps its receipt: the second fact states a total, not the absence of routing');
+    // Cold replay: no live frame ever reached this record, so the host's own
+    // memory is the only source the row can read.
+    const cold = {};
+    noteToolHostMetrics(cold, { calls: 4, errors: 1, routing: 0, counts: { read_file: 3, web_search: 1 } });
+    const after = noteToolHostMetrics(cold, { calls: 5, errors: null, routing: null, counts: {} });
+    assert.deepEqual([after.headline, after.phase, after.fullBody, after.receipt],
+        ['5 tool calls · 1 error', 'warn', 'read_file ×3 · web_search', false],
+        'the new total lands; the known error count stays and an empty counts map never empties Expand');
+});
+
+test('a terminal that states the total alone keeps an addressing-only turn blockless when no call frame was seen', () => {
+    const f = fixture();
+    try {
+        f.census(direct());
+        f.emit('chat', ownerRow);
+        f.emit('message_annotation', receipt);
+        f.log({ type: 'task_metrics_event', tool_calls: 1, tool_errors: 0, routing_tool_calls: 1,
+            tool_call_counts: { promote_chat_to_task: 1 } });
+        assert.ok(!f.card(), 'the complete snapshot says the turn\'s one call addressed work');
+        f.log({ ...final, type: 'task_done', status: 'completed', tool_calls: 1, _is_direct_chat: true });
+        assert.ok(!f.card(), 'the terminal states a total; the routing fact it omits is still known');
+        const owner = f.messages.children.find((n) => n.dataset.clientMessageId === 'owner-1');
+        assert.match(owner?.querySelector('.msg-routing-annotation')?.textContent || '', /Started task/);
+    } finally { f.close(); }
+});
+
 // V1: Stop stays reachable while a turn runs. A replayed progress row with the
 // host-attested marker is "Activity unconfirmed" until a live source vouches
 // for the root; the census that lists it restores Stop — on the managed card

@@ -153,12 +153,27 @@ export function noteToolCall(record, observation) {
 }
 
 /**
- * The host's totals for the turn. An ABSENT field stays null: a partial
- * snapshot that carries `tool_calls` alone must not read as "no addressing
- * calls" and turn a block that only addressed work into content.
+ * The host's totals for the turn, merged FIELD-WISE onto what the host already
+ * stated. An ABSENT field (null/undefined) stays absent and keeps the previous
+ * known value: a partial snapshot that carries `tool_calls` alone must not read
+ * as "no addressing calls" and turn a block that only addressed work into
+ * content, and it must not erase an error or routing count a complete snapshot
+ * already gave. `counts` is known only as a NON-EMPTY object, so an empty or
+ * absent `tool_call_counts` keeps the live map's names and the row behind Expand
+ * is never explicitly emptied while the turn counts calls.
  */
 export function noteToolHostMetrics(record, host) {
-    ensureToolFold(record).host = host;
+    const fold = ensureToolFold(record);
+    const known = fold.host || {};
+    const carry = (next, before) => (next === null || next === undefined ? (before ?? null) : next);
+    const counts = host?.counts && typeof host.counts === 'object' && Object.keys(host.counts).length > 0
+        ? host.counts : (known.counts ?? null);
+    fold.host = {
+        calls: carry(host?.calls, known.calls),
+        errors: carry(host?.errors, known.errors),
+        routing: carry(host?.routing, known.routing),
+        counts,
+    };
     return toolEvidenceView(record.toolFold);
 }
 
