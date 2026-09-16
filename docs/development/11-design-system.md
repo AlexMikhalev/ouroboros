@@ -118,6 +118,21 @@ SPA, not a relocatable-page or multi-instance panel framework.
   into the client live-activity set (contract and residuals: ARCHITECTURE "Chat and Projects", the
   `DirectActivityRegistry` / `active_chat_activities` paragraph; enforced by
   `web/tests/chat_header_census.test.js`).
+- Narration leads; routine execution evidence stays compact; exceptions keep
+  their explanation and controls (semantics: DESIGN "Conversation activity
+  block"). A progress frame promotes into the card title or collapsed activity
+  line only with the typed `narration` fact the worker stamps at its one
+  narration producer; the client never classifies a note by its text.
+  Successful tool calls occupy one bounded evidence row per block built by
+  `chat_activity.js::toolEvidenceView` from observed call identities and, once
+  present, the host metrics — never a row per event, never a client tool-name
+  list, and a partial metrics fact never turns a receipt row into content. A
+  change that draws one row or line per event is shown at a realistic burst
+  size (a multi-call turn, collapsed and expanded, at desktop and phone width)
+  before it is accepted; a two-event fixture proves layout only for itself.
+  Enforced by `web/tests/chat_activity_block.test.js` and
+  `web/tests/chat_addressing_card.test.js`; the visual check follows
+  "Responsive and accessible behavior" below.
 - Executor presentation consumes the existing task/run attempt facts. Keep
   `executor_observation` event-local through Agent, supervisor delivery, progress
   history and both Chat metadata paths; ordinary coordinator notes inherit none.
