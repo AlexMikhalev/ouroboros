@@ -1234,15 +1234,20 @@ export function createChatInstance({
         const lines = String(msg.text ?? msg.content ?? '').split('\n');
         const headline = lines[0].trim();
         const rowId = taskKey(msg.card_row_id) || `${taskKey(msg.system_type)}|${rawTs}`;
+        const summary = { phase, headline, body: lines.slice(1).join('\n').trim(), dedupeKey: `cardrow|${rowId}` };
         return withStableViewport(() => {
             const before = captureLiveCardProjection(record);
-            const { timelineUpdate } = updateLiveTimelineItem(record, {
-                phase, headline, body: lines.slice(1).join('\n').trim(),
-            }, {
-                ts: normalizeLogTs(rawTs), rawTs, syntheticKey: `cardrow|${rowId}`,
-                headline, inPlaceByKey: true,
-            });
-            const fresh = !['none', 'duplicate-skip'].includes(timelineUpdate);
+            let fresh;
+            if (msg.history_id) {
+                // A replayed row keeps its history identity: the item sorts by its
+                // source position and leaves the card with its page.
+                fresh = mergeHistoricalTimelineItem(record, summary, msg, normalizeLogTs(rawTs));
+            } else {
+                const { timelineUpdate } = updateLiveTimelineItem(record, summary, {
+                    ts: normalizeLogTs(rawTs), rawTs, syntheticKey: summary.dedupeKey, headline, inPlaceByKey: true,
+                });
+                fresh = !['none', 'duplicate-skip'].includes(timelineUpdate);
+            }
             const changed = fresh ? renderLiveCardTimeline(record) : false;
             updateLiveCardCount(record);
             reanchorTaskCard(record, rawTs, { suppressDomInsert });

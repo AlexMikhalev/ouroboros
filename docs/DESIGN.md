@@ -224,7 +224,8 @@ bubble beside it. A reviewer panel that settles after its task already ended
 adds one System row naming the verdict and which revision it covered; that row
 lands inside the finished card (its Reviews group carries the note, the timeline
 keeps the row) without changing the card's chip, title or meta, and a standalone
-row appears only when the task has no card record in the page. Local diagnostic failures remain inspectable
+row appears only when the task has no card record in the page. The untyped
+terminal host notice and the admission notices stay ordinary rows by design. Local diagnostic failures remain inspectable
 in details and Logs, but do not relabel the whole still-working task. A failed child keeps a compact factual
 `Failed` marker inside its parent while the root continues under its own
 authoritative status. Internal reason codes belong in details and diagnostics,

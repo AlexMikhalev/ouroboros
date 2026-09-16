@@ -138,6 +138,7 @@ test('history replay places stamped rows on their cards and keeps unplaceable on
         { task_id: 'r1', is_progress: true, text: '💬 reading the ledger', ts: '2026-09-16T00:00:00Z' },
         { task_id: 'r1', role: 'system', system_type: 'custody_notice', card_row: 'timeline',
           card_row_id: 'final:r1:abc:custody_notice', ts: '2026-09-16T00:01:00Z',
+          history_id: 'h-r1-custody', history_position: { source: 'chat', offset: 2 },
           text: 'Open delegated execution: run-x.\nPending delegated invocations: none observed.' },
         { task_id: 'r1', role: 'assistant', text: 'The report is ready.', ts: '2026-09-16T00:02:00Z' },
         { task_id: 'r9', role: 'system', system_type: 'custody_notice', card_row: 'timeline',
@@ -165,5 +166,8 @@ test('history replay places stamped rows on their cards and keeps unplaceable on
         }
         assert.equal(phasedLines(card, 'warn').length, 1,
             'the replayed custody row is a timeline item of its card');
+        // The replayed item keeps its history identity, so it sorts by its source
+        // position and leaves the card when its page is released.
+        assert.equal(phasedLines(card, 'warn')[0].dataset.liveLineKey, 'history-h-r1-custody');
     } finally { instance?.destroy(); restoreDom(prior); }
 });
