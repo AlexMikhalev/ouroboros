@@ -1179,7 +1179,8 @@ function summarizeChatLiveEventView(evt) {
             reasonDetail,
         ].filter(Boolean);
         // A generic "completed" event still carries authoritative outcome axes: normalize it
-        // once so every live/replay route gets the same label, phase and terminal truth here.
+        // once here so every live/replay route takes label, phase and terminal truth from the
+        // canonical projector.
         const completionSeverity = rawEvent === 'completed' ? taskOutcomeSeverity(evt) : 'done';
         const event = rawEvent === 'completed'
             ? (completionSeverity === 'cancelled' ? 'cancelled'
@@ -1197,11 +1198,10 @@ function summarizeChatLiveEventView(evt) {
                             : event === 'scheduled' ? 'start'
                                 : 'working';
         const terminal = ['completed', 'completed_warn', 'failed', 'cancelled', 'rejected'].includes(event);
-        // A child's own note carries the same voice fact (the progress branch below):
-        // a host note inside the child's turn is a visible row that never claims the
-        // card's collapsed line. Lifecycle, result and error frames state no voice.
-        const narration = evt.narration === true || evt.narration === undefined;
-        const promoted = terminal || narration;
+        // A child's own note carries the same voice fact (the progress branch below): a host
+        // note inside the child's turn is a visible row that never claims the card's collapsed
+        // line. The lifecycle, result and error frames state no voice, so they keep leading.
+        const promoted = terminal || evt.narration === true || evt.narration === undefined;
         const label = terminal
             ? taskPresentation(phase).headline
             : (SUBAGENT_CARD_LABEL[event] || 'Working');
@@ -1305,9 +1305,10 @@ function summarizeChatLiveEventView(evt) {
 
     if (t === 'tool_call_started' || (t === 'tool_call_finished' && !evt.is_error)) {
         // A successful call is execution evidence, not narration: start and finish feed the
-        // block's ONE folded row (counts; tools behind Expand), a receipt while every counted call
-        // is a host-stamped addressing act (`routing_action`, reported by the owner message's
-        // annotation). A failure keeps its own error row. `done` is the TASK's phase, a CALL's `ok`.
+        // block's ONE folded row (counts; tools behind Expand), a receipt while every counted
+        // call is a host-stamped addressing act (`routing_action`, reported by the owner
+        // message's annotation). A failure keeps its own error row and still counts. `done` is
+        // the TASK's phase; a finished CALL is `ok`.
         const status = t === 'tool_call_finished' ? 'ok' : 'calling';
         return chatView({
             phase: status,
@@ -1416,10 +1417,9 @@ function summarizeChatLiveEventView(evt) {
         const unavailable = evt.cost_accounting_status === 'unavailable';
         const ownCost = unavailable ? 'cost unavailable' : formatLogMoney(accountedUpperBound(evt));
         const subtreeCost = unavailable ? '' : formatLogMoney(accountedUpperBoundWithChildren(evt));
-        // A cost checkpoint is bookkeeping, never the task's conclusion: only
-        // the settled task_done resolves the card. On the blocking lane this
-        // frame precedes task_done; treating it as terminal closed the card
-        // early, and a live card mid-"Finalizing…" must absorb it quietly.
+        // A cost checkpoint is bookkeeping, never the task's conclusion: only the settled
+        // task_done resolves the card. On the blocking lane this frame precedes task_done;
+        // treating it as terminal closed the card early — a live card mid-"Finalizing…" absorbs it.
         return chatView({
             phase: unavailable ? 'warn' : 'usage',
             headline: unavailable ? 'Cost accounting unavailable' : 'Cost finalized',
