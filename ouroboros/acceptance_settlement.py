@@ -75,6 +75,56 @@ def acceptance_settlement_message(request: Any, wave: Dict[str, Any]) -> str:
     return "\n".join([head, *_reviewer_lines(wave)])
 
 
+def _result_root(usage_ctx: Any) -> pathlib.Path:
+    """The root the task result lives under, resolved the way the acceptance
+    projection writer resolves it (a forked drive keeps its budget root)."""
+    meta = getattr(usage_ctx, "task_metadata", {})
+    meta = meta if isinstance(meta, dict) else {}
+    return pathlib.Path(meta.get("budget_drive_root") or getattr(usage_ctx, "budget_drive_root", None)
+                        or usage_ctx.drive_root)
+
+
+# The loop exit restores the context's ``_execution_trace`` to whatever it was
+# before the loop ran (``loop_budget._cleanup_loop_resources``), so a wave that
+# settles after the turn ended would find no trace to attach to. A panel that
+# went pending registers the trace it belongs to here, keyed by the wave's
+# retry key; the supplement reads it back and drops it once the wave settled.
+_SETTLEMENT_TRACE_CAP = 8
+
+
+def remember_settlement_trace(tools_ctx: Any, llm_trace: Dict[str, Any], run: Dict[str, Any]) -> None:
+    """Keep the trace a pending panel belongs to reachable past the loop exit."""
+    request = run.get("request") if isinstance(run, dict) else None
+    retry_key = str((request or {}).get("retry_key") or "") if isinstance(request, dict) else ""
+    if not retry_key:
+        return
+    traces = getattr(tools_ctx, "_acceptance_settlement_traces", None)
+    if not isinstance(traces, dict):
+        traces = {}
+        tools_ctx._acceptance_settlement_traces = traces
+    traces.pop(retry_key, None)
+    traces[retry_key] = llm_trace
+    while len(traces) > _SETTLEMENT_TRACE_CAP:
+        traces.pop(next(iter(traces)))
+
+
+def _settlement_trace(usage_ctx: Any, retry_key: str) -> Optional[Dict[str, Any]]:
+    """The trace holding this wave's run: the live one while the loop runs, the
+    remembered one after it exited."""
+    def holds(trace: Any) -> bool:
+        return isinstance(trace, dict) and any(
+            isinstance(run, dict) and run.get("authority") == "host_root"
+            and isinstance(run.get("request"), dict)
+            and str(run["request"].get("retry_key") or "") == retry_key
+            for run in (trace.get("review_runs") or []))
+
+    live = getattr(usage_ctx, "_execution_trace", None)
+    if holds(live):
+        return live
+    remembered = (getattr(usage_ctx, "_acceptance_settlement_traces", None) or {}).get(retry_key)
+    return remembered if holds(remembered) else None
+
+
 def announce_acceptance_settlement(usage_ctx: Any, request: Any, wave: Dict[str, Any]) -> None:
     """Deliver a settled acceptance wave to whoever can still act on it.
 
@@ -92,14 +142,13 @@ def announce_acceptance_settlement(usage_ctx: Any, request: Any, wave: Dict[str,
     try:
         from ouroboros.task_results import _TRULY_TERMINAL_STATUSES, load_task_result
 
-        root = pathlib.Path(usage_ctx.drive_root)
-        row = load_task_result(root, task_id) or {}
+        row = load_task_result(_result_root(usage_ctx), task_id) or {}
         if str(row.get("status") or "") in _TRULY_TERMINAL_STATUSES:
             attach_late_acceptance_settlement(usage_ctx, request, wave, result=row)
             return
         from ouroboros.owner_mailbox import write_task_message
 
-        write_task_message(root, acceptance_settlement_message(request, wave),
+        write_task_message(pathlib.Path(usage_ctx.drive_root), acceptance_settlement_message(request, wave),
                            task_id, source_task_id=task_id, provenance="system")
     except Exception:
         log.warning("Acceptance settlement delivery failed for %s", task_id, exc_info=True)
@@ -153,8 +202,9 @@ def _deliver_under_running_panel(ctx: Any, prior_run: Any) -> Optional[bool]:
     says so (fork 1=B); any other verdict is not a verdict on this answer, so the
     ordinary path decides — a new panel while the review cap allows, otherwise
     its typed capacity refusal — with the collected verdicts already in its
-    dialogue history. ``None`` means "not this case". A NEW panel is bought on a
-    rewritten answer only when Main nominates it again (``_acceptance_review_only``).
+    dialogue history. ``None`` means "not this case". While the panel is still
+    running, a rewritten answer buys a NEW panel only when Main nominates it
+    again (``_acceptance_review_only``).
     """
     from ouroboros import loop
     from ouroboros.loop_acceptance_review import (
@@ -222,25 +272,29 @@ def attach_late_acceptance_settlement(usage_ctx: Any, request: Any, wave: Dict[s
     sees it; the next turn reads it in chat history. The acceptance twin of plan
     review's historical supplement (docs/architecture/06-agent-core.md).
     """
-    trace = getattr(usage_ctx, "_execution_trace", None)
     retry_key = str(getattr(request, "retry_key", "") or "")
     task_id = str(getattr(request, "task_id", "") or "")
-    if not isinstance(trace, dict) or not retry_key:
-        return False
+    trace = _settlement_trace(usage_ctx, retry_key) if retry_key else None
+    if trace is None:
+        log.debug("late acceptance settlement %s: no trace holds this wave (worker rebound?)", retry_key)
+        return False  # the worker was rebound to another task; the record stays as published
     runs = [run for run in (trace.get("review_runs") or [])
             if isinstance(run, dict) and run.get("authority") == "host_root"
             and isinstance(run.get("request"), dict)
             and str(run["request"].get("retry_key") or "") == retry_key]
-    if not runs:
-        return False  # the worker was rebound to another task; the record stays as published
+    from ouroboros.loop_acceptance_review import acceptance_run_pending
     from ouroboros.review_dispatch import reconcile_pending_acceptance_runs
     from ouroboros.review_projection import publish_acceptance_checkpoint
     from supervisor.terminal_delivery import enqueue_terminal_delivery
 
     root = pathlib.Path(usage_ctx.drive_root)
-    if not reconcile_pending_acceptance_runs(trace, drive_root=root, usage_ctx=usage_ctx):
+    advanced = reconcile_pending_acceptance_runs(trace, drive_root=root, usage_ctx=usage_ctx)
+    if not any(acceptance_run_pending(run) for run in runs):
+        (getattr(usage_ctx, "_acceptance_settlement_traces", None) or {}).pop(retry_key, None)
+    if not advanced:
+        log.debug("late acceptance settlement %s: nothing reconciled (still pending or already collected)", retry_key)
         return False
-    publish_acceptance_checkpoint(usage_ctx, trace, task_id=task_id, drive_root=root,
+    publish_acceptance_checkpoint(usage_ctx, trace, task_id=task_id, drive_root=_result_root(usage_ctx),
                                   chat_id=result.get("chat_id"))
     return bool(enqueue_terminal_delivery(root, {
         "type": "send_message", "chat_id": int(result.get("chat_id") or 0), "task_id": task_id,

@@ -788,6 +788,8 @@ def _classify_parsed_delivery_control(
     if not isinstance(parsed, dict) or "delivery_control" not in parsed:
         return "none", "", exact_error
     selected = str(parsed.get("delivery_control") or "")
+    if "pending_review" in parsed and str(parsed.get("pending_review") or "").strip().lower() not in {"wait", "finish"}:
+        return "invalid", "", 'pending_review must be "wait" or "finish"'
     keys = set(parsed) - {"acceptance_subject", "pending_review"}
     if selected == "keep" and keys == {"delivery_control"}:
         return "keep", "", ""
@@ -945,13 +947,10 @@ def _resolve_delivery_control(
         if not applied:
             control_kind, error = "invalid", subject_error
     if control_kind in {"keep", "replace"} and isinstance(parsed, dict):
-        # Recorded on every control answer, so an answer without the key always
-        # means "wait" rather than inheriting an earlier round's choice.
-        choice = str(parsed.get("pending_review") or "wait").strip().lower()
-        if choice not in {"wait", "finish"}:
-            control_kind, error = "invalid", 'pending_review must be "wait" or "finish"'
-        else:
-            tools._ctx._acceptance_pending_review_choice = choice
+        # Recorded on every control answer (the classifier already refused any
+        # other value), so an answer without the key always means "wait" rather
+        # than inheriting an earlier round's choice.
+        tools._ctx._acceptance_pending_review_choice = str(parsed.get("pending_review") or "wait").strip().lower()
     evidence_revision, evidence_fingerprint = _loop()._delivery_evidence_state(tools, ctx, llm_trace)
     valid = control_kind == "replace"
     if control_kind == "keep":

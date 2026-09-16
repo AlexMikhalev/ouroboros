@@ -528,7 +528,7 @@ def test_a_revision_names_its_pass_and_causes_not_the_aggregate_word(monkeypatch
 
     A DEGRADED wave that DID feed an improvement capsule back printed
     "Task acceptance review: DEGRADED - improvement note fed back", where
-    DEGRADED elsewhere means "no valid quorum". The row now names the pass being
+    DEGRADED elsewhere means "no settled verdict". The row now names the pass being
     started and the causes the wave actually recorded; the degraded terminal
     keeps the same causes through the one shared clause.
     """

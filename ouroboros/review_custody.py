@@ -1055,8 +1055,9 @@ def _wave_key(request: Any) -> str:
 def _released_quorum_reached(request: Any, roster: Dict[str, Any]) -> bool:
     """Whether this wave has enough answered slots to be worth waking Main for.
 
-    The panel's own ``min_successful_slots`` is the quorum; slots that answered
-    before the release were collected by the drain and count as answered. A wave
+    The panel's own ``min_successful_slots`` is the quorum; slots that ANSWERED
+    before the release (the drain collected an ok/empty actor, not a refusal or
+    an expiry) are counted from the roster's registration. A wave
     announced at its quorum is never announced for that reason twice; the last
     straggler still announces through the completed-roster arm.
     """
@@ -1068,9 +1069,8 @@ def _released_quorum_reached(request: Any, roster: Dict[str, Any]) -> bool:
     except (TypeError, ValueError):
         quorum = 1
     slots = roster.get("slots") or {}
-    answered_before_release = max(0, int(roster.get("total") or 0) - len(slots))
     answered = sum(1 for status in slots.values() if status in {"ok", "empty"})
-    return answered_before_release + answered >= quorum
+    return int(roster.get("answered_before_release") or 0) + answered >= quorum
 
 
 def _settled_slot_verdict(actor: Any) -> Dict[str, str]:
@@ -1088,15 +1088,18 @@ def _settled_slot_verdict(actor: Any) -> Dict[str, str]:
     except Exception:
         log.debug("released acceptance verdict could not be parsed", exc_info=True)
         return {"verdict": "", "note": ""}
+    from ouroboros.utils import truncate_review_artifact
+
     note = str((parsed or {}).get("summary") or "") if isinstance(parsed, dict) else ""
     note = note or next((str(row.get("recommendation") or row.get("item") or "")
                          for row in (findings or []) if isinstance(row, dict)), "")
-    return {"verdict": str(signal or "").upper(), "note": " ".join(note.split())[:400]}
+    return {"verdict": str(signal or "").upper(), "note": truncate_review_artifact(" ".join(note.split()), limit=400)}
 
 
 def _register_released_roster(
     request: Any, slots: List[Any], slot_entries: Dict[str, Any], returned_ids: set,
     slot_deadlines: Dict[str, float], monotonic_now: Callable[[str], float],
+    *, answered_before_release: int = 0,
 ) -> set:
     """Register the WHOLE released roster under ONE lock hold before any released row is
     minted: a slot settling at once then finds the complete roster and cannot split the
@@ -1114,6 +1117,8 @@ def _register_released_roster(
         if released_ids:
             # A collection re-releases the wave: merging keeps the recorded outcomes.
             roster = _RELEASED_WAVES.setdefault(_wave_key(request), {"slots": {}, "total": len(slots)})
+            roster["answered_before_release"] = max(
+                int(roster.get("answered_before_release") or 0), int(answered_before_release))
             for slot_id in released_ids:
                 roster["slots"].setdefault(slot_id, "")
     return released_ids
@@ -1413,6 +1418,8 @@ def run_custodied_review_slots(
     returned_ids = {str(getattr(actor, "slot_id", "") or "") for actor in actors}
     released_ids = _register_released_roster(
         request, slots, slot_entries, returned_ids, slot_deadlines, monotonic_now,
+        answered_before_release=sum(1 for actor in actors
+                                    if str(getattr(actor, "status", "") or "") in {"ok", "empty"}),
     ) if drain_deadline is not None else set()
     for slot in slots:
         slot_id = str(getattr(slot, "slot_id", "") or "")

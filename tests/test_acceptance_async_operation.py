@@ -329,6 +329,55 @@ def test_a_panel_that_settles_after_the_task_ended_is_attached_and_announced_onc
     assert ctx.event_queue.empty()
 
 
+def test_a_terminal_task_gets_one_row_at_completion_not_at_quorum(tmp_path, monkeypatch):
+    """Fable review round 2: a quorum settlement on an already-terminal task must
+    not announce a half-settled wave (the straggler's verdict would never reach
+    the chat, deduped behind the same delivery id). Nothing is reconciled until
+    every slot answered, so the one row carries every reviewer."""
+    settled = threading.Condition()
+    count = {"n": 0}
+    original_settle = __import__("ouroboros.review_custody", fromlist=["_settle_review_attempt"])._settle_review_attempt
+
+    def settle(*args, **kwargs):
+        try:
+            return original_settle(*args, **kwargs)
+        finally:
+            with settled:
+                count["n"] += 1
+                settled.notify_all()
+
+    monkeypatch.setattr("ouroboros.review_custody._settle_review_attempt", settle)
+    gates = {"model/a": threading.Event(), "model/b": threading.Event()}
+    model = _SlotModel(gates, {"model/a": "PASS", "model/b": "PASS"})
+    ctx = _terminal_ctx(tmp_path, task_id="late-two")
+    slots = [ReviewSlot(slot_id="a", model="model/a", effort="high", timeout_sec=20),
+             ReviewSlot(slot_id="b", model="model/b", effort="high", timeout_sec=20)]
+    try:
+        first = _released_wave(tmp_path, ctx, slots=slots, model=model, task_id="late-two")
+        run = {**json.loads(json.dumps(dataclasses.asdict(first))), "authority": "host_root",
+               "panel_id": "panel_1", "binding_hash": "binding-one", "candidate_hash": "c1"}
+        ctx._execution_trace["review_runs"].append(run)
+        gates["model/a"].set()
+        with settled:
+            assert settled.wait_for(lambda: count["n"] >= 1, timeout=10)
+        time.sleep(0.5)
+        assert not [e for e in list(ctx.event_queue.queue) if e.get("system_type") == "acceptance_late_settlement"]
+        gates["model/b"].set()
+        with settled:
+            assert settled.wait_for(lambda: count["n"] >= 2, timeout=10)
+        events = []
+        while not any(e.get("system_type") == "acceptance_late_settlement" for e in events):
+            events.append(ctx.event_queue.get(timeout=10))
+    finally:
+        for gate in gates.values():
+            gate.set()
+        with settled:
+            settled.wait_for(lambda: count["n"] >= 2, timeout=10)
+    rows = [e for e in events if e.get("system_type") == "acceptance_late_settlement"]
+    assert len(rows) == 1 and "- a: PASS" in rows[0]["text"] and "- b: PASS" in rows[0]["text"]
+    assert "pending" not in rows[0]["text"] and _mailbox_rows(tmp_path, "late-two") == []
+
+
 def test_a_late_settlement_for_another_task_is_never_published(tmp_path):
     """The worker may already be rebound: a wave whose retry key is not in the
     live trace returns False and writes nothing anywhere."""
@@ -413,3 +462,24 @@ def test_the_rearmed_contract_never_rewrites_an_already_sent_row(tmp_path):
     # caller arms because something changed, so it always appends.
     loop._arm_delivery_control(registry, ctx, trace)
     assert str(ctx.messages).count("[DELIVERY_FINALIZATION_CONTROL]") == 2
+
+
+@pytest.mark.parametrize("choice", ["wait", "finish"])
+def test_pending_review_rides_beside_the_verb_and_is_recorded_on_every_answer(tmp_path, choice):
+    from tests.test_delivery_control_lineage import _start_control_episode
+
+    """WP-7: the optional wait/finish choice is a sibling of ``acceptance_subject``,
+    never an extra key that invalidates the body, and every control answer records
+    it (an answer without the key means wait)."""
+    loop, registry, ctx, trace, candidate = _start_control_episode(tmp_path)
+    loop._arm_delivery_control(registry, ctx, trace)
+    status, text = loop._resolve_delivery_control(
+        json.dumps({"delivery_control": "keep", "pending_review": choice}), registry, ctx, trace,
+    )
+    assert (status, text) == ("resolved", candidate.full_text)
+    assert registry._ctx._acceptance_pending_review_choice == choice
+    loop._arm_delivery_control(registry, ctx, trace)
+    status, _text = loop._resolve_delivery_control(
+        json.dumps({"delivery_control": "keep"}), registry, ctx, trace,
+    )
+    assert status == "resolved" and registry._ctx._acceptance_pending_review_choice == "wait"

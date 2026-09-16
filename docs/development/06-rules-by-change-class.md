@@ -1316,9 +1316,11 @@ by "Provider Independence" above. Call-site imperatives:
   stays spent) rather than once per candidate chain. A delivery under a running
   panel is never a second panel and never a capacity refusal
   (`acceptance_settlement._deliver_under_running_panel`): waiting is the default
-  and the only option under blocking enforcement; under advisory enforcement
-  Main finishes only through an explicit `"pending_review":"finish"` on its
-  delivery control; a PASS that settled on the earlier revision accepts the task
+  and the only option under blocking enforcement (Cyber Pro never waits, as
+  before); under advisory enforcement Main finishes only through an explicit
+  `"pending_review":"finish"` on its delivery control; the trace a pending panel
+  belongs to stays reachable past the loop exit (`remember_settlement_trace`) so
+  the post-terminal supplement can collect it; a PASS that settled on the earlier revision accepts the task
   as `previous_revision_accepted`; any other settled verdict lets the ordinary
   path decide. A panel that settles after the task ended is attached to the task
   result and announced once in the task's room; nothing starts a model turn. The

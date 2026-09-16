@@ -464,6 +464,86 @@ def test_a_conscious_finish_releases_the_answer_while_the_panel_runs(full_loop, 
     assert project_task_acceptance_review_capacity(f.ctx, task_id=f.ctx.task_id)["claimed_cycles"] == 1
 
 
+def test_a_panel_that_settles_after_the_loop_exited_is_attached_through_the_remembered_trace(full_loop, monkeypatch):
+    """Fable review round 2 (CRITICAL): the loop exit restores the context's
+    ``_execution_trace`` to its pre-loop value, so a wave settling after the
+    turn ended found no trace and the late supplement never fired in production.
+    The pending panel now remembers its trace; the settlement thread reads it
+    back after the loop is gone and announces once in the task's room."""
+    from ouroboros.task_results import load_task_result, write_task_result
+
+    f = full_loop
+    _advisory(monkeypatch)
+    f.ctx.owner_wait_callback = lambda *_a, **_kw: pytest.fail("a conscious finish must not park")
+
+    def main(_llm, messages, *_a, **_kw):
+        f.model_inputs.append(copy.deepcopy(messages))
+        f.model_step += 1
+        if f.model_step == 1:
+            return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": ANSWER}, "nominate")]}, 0.0
+        assert f.model_step == 2 and f.entered.wait(5) and not f.release.is_set()
+        control = json.loads(keep(f)["content"])
+        return {"content": json.dumps({**control, "pending_review": "finish"})}, 0.0
+
+    monkeypatch.setattr(loop, "call_llm_with_retry", main)
+    result, _usage, trace = f.run()
+    assert result == ANSWER and trace["review_decision"]["review_pending"] is True
+    assert getattr(f.ctx, "_execution_trace", None) is None, "the loop exit detached the live trace"
+    # The pipeline seals the task before the straggler answers.
+    write_task_result(f.ctx.drive_root, f.ctx.task_id, "completed", chat_id=1, result=ANSWER)
+    f.release.set()
+    with f.condition:
+        assert f.condition.wait_for(lambda: f.settled_count >= 1, timeout=10)
+    events = list(f.events.queue)
+    rows = [e for e in events if e.get("system_type") == "acceptance_late_settlement"]
+    assert len(rows) == 1, [e.get("type") for e in events]
+    assert rows[0]["task_id"] == f.ctx.task_id and rows[0]["chat_id"] == 1
+    assert rows[0]["text"].startswith("Reviewers later passed this answer. They reviewed the answer that was delivered.")
+    assert "- acceptance-one: PASS" in rows[0]["text"]
+    stored = load_task_result(f.ctx.drive_root, f.ctx.task_id)
+    assert stored["status"] == "completed"
+    actor = stored["review_projection"]["panels"][-1]["actors"][0]
+    assert actor["transport_status"] == "success" and actor["parse_status"] == "valid"
+    assert len(f.review_sends) == 1, "the supplement bought nothing"
+    assert not getattr(f.ctx, "_acceptance_settlement_traces", {}), "a settled wave releases its remembered trace"
+
+
+def test_a_rejected_earlier_revision_buys_a_panel_on_the_rewrite_when_the_cap_allows(full_loop, monkeypatch):
+    """The other half of fork 1: after a FAIL on the earlier revision the ordinary
+    path decides, and with review cycles left it buys a real panel on the
+    rewritten bytes — the verdict that then accepts the task is about the
+    delivered text, not the old one."""
+    f = full_loop
+    f.reviewer_verdict = "FAIL"
+    reauthored = ANSWER + " Budget: $12."
+
+    def main(_llm, messages, *_a, **_kw):
+        f.model_inputs.append(copy.deepcopy(messages))
+        f.model_step += 1
+        if f.model_step == 1:
+            return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": ANSWER}, "first-review")]}, 0.0
+        if f.model_step == 2:
+            assert f.entered.wait(5) and not f.release.is_set()
+            observation = f.ctx._acceptance_observation
+            return {"content": json.dumps({"delivery_control": "replace", "full_answer": reauthored,
+                                           "acceptance_subject": {"owner_source_sha256": observation["owner_source_sha256"]}})}, 0.0
+        # The park released panel 1 (FAIL) before this round; the rewrite addresses the notes.
+        f.reviewer_verdict = "PASS"
+        assert f.model_step < 8, f.progress
+        return keep(f), 0.0
+
+    monkeypatch.setattr(loop, "call_llm_with_retry", main)
+    result, _usage, trace = f.run()
+    assert result == reauthored
+    assert len(f.review_sends) == 2, "the rewrite got its own panel"
+    host = [r for r in trace["review_runs"] if r.get("authority") == "host_root"]
+    assert [r.get("aggregate_signal") for r in host] == ["FAIL", "PASS"], host
+    assert host[0]["superseded_by_revision"] and not host[1].get("superseded_by_revision")
+    assert f.review_requests[1].subject == reauthored
+    assert trace["acceptance_decision"]["status"] == "accepted"
+    assert trace["acceptance_decision"]["reason"] in {"clean_pass", "clean_pass_obligations_closed"}
+
+
 @pytest.mark.parametrize("install", ["advisory_default", "blocking_finish", "cyber_pro"])
 def test_waiting_is_the_default_and_blocking_enforcement_never_offers_the_choice(full_loop, monkeypatch, install):
     """Waiting needs no key; blocking enforcement waits whatever the model says and

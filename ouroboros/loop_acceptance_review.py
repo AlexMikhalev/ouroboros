@@ -1505,6 +1505,9 @@ def _run_task_acceptance_review_once(
         if acceptance_run_pending(panel_result):
             tools._ctx._task_acceptance_pending = str(run_record.get("binding_hash") or "")
             run_record["enforcement_impact"] = "pending_feedback"
+            from ouroboros.acceptance_settlement import remember_settlement_trace
+
+            remember_settlement_trace(tools._ctx, llm_trace, run_record)
             llm_trace["review_decision"].update({
                 "eligibility": "review_in_flight", "operation_state": "in_flight",
             })
