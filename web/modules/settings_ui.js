@@ -26,7 +26,7 @@ const EFFORT_FIELDS = [
     ['s-effort-task', 'Task / Chat', 'medium'],
     ['s-effort-evolution', 'Evolution', 'high'],
     ['s-effort-deep-self-review', 'Deep Self-Review', 'high'],
-    ['s-effort-consciousness', 'Consciousness', 'high'],
+    ['s-effort-consciousness', 'Consciousness', ''],  // '' = the Task / Chat effort (a wake-up is a Main turn)
 ];
 
 // Runtime mode is one axis of the owner policy contract. Keep the Settings
@@ -201,22 +201,17 @@ function providerSettingsCard(spec) {
 // routes, per-model resolution on delegated ones); the adaptation is disclosed
 // in usage, and a cold route whose provider rejects without naming supported
 // tiers remains the PR-disclosed limit of the two-send recovery rail.
-const EFFORT_OPTIONS = [
-    { value: 'none', label: 'None' },
-    { value: 'low', label: 'Low' },
-    { value: 'medium', label: 'Medium' },
-    { value: 'high', label: 'High' },
-    { value: 'xhigh', label: 'X-High' },
-    { value: 'max', label: 'Max' },
-    { value: 'ultra', label: 'Ultra' },
-];
+const EFFORT_OPTIONS = [['none', 'None'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'X-High'], ['max', 'Max'], ['ultra', 'Ultra']]
+    .map(([value, label]) => ({ value, label }));
 
 function effortField({ id, label, defaultValue }) {
+    // Consciousness may inherit the Task / Chat effort ('' — a wake-up is a Main turn).
+    const options = id === 's-effort-consciousness' ? [{ value: '', label: 'Same as Task / Chat' }, ...EFFORT_OPTIONS] : EFFORT_OPTIONS;
     return `
         <div class="settings-effort-card">
             <label for="${id}">${label}</label>
             <input id="${id}" type="hidden" value="${defaultValue}">
-            ${renderSegmentedField({ target: id, options: EFFORT_OPTIONS })}
+            ${renderSegmentedField({ target: id, options })}
         </div>
     `;
 }

@@ -167,7 +167,7 @@ A registry of `config.SETTINGS_DEFAULTS` (exact defaults stay canonical in `conf
 | OUROBOROS_EFFORT_REVIEW | high | Review effort; reaches plan review as every row's default rung unless the envelope declares `reviewer_effort` |
 | OUROBOROS_EFFORT_SCOPE_REVIEW | high | Scope-review effort |
 | OUROBOROS_EFFORT_DEEP_SELF_REVIEW | high | Deep-self-review effort — the surface default; a saved `deep_review` row's own effort outranks it |
-| OUROBOROS_EFFORT_CONSCIOUSNESS | high | Consciousness effort |
+| OUROBOROS_EFFORT_CONSCIOUSNESS | (empty) | Consciousness effort; empty = the Task / Chat effort (a wake-up is an ordinary Main turn), a set value is honored |
 | OUROBOROS_RETURN_REASONING | true | Ask OpenRouter to return reasoning; direct/local request copies strip OpenRouter-only fields |
 | OUROBOROS_REASONING_SUMMARY | auto | Readable reasoning-summary rendering; presentation-only, never added to history or returned to providers |
 | OUROBOROS_TASK_IDLE_TIMEOUT_SEC | 900 | Idle timeout — requires absence of real task/subtree progress; the typed in-flight main-LLM row spares only this rail; a settled child result stamps parent progress, because delivery creates immediate integration work and must not coincide with idle termination |

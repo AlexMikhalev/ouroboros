@@ -55,7 +55,7 @@ const VALUE_FIELDS = [
     // 6.3: Review / Scope Review efforts are per-slot rows in Agents → Review
     // lanes now; their global keys remain backend defaults, no longer UI-authored.
     ['s-effort-task', 'OUROBOROS_EFFORT_TASK', 'medium'], ['s-effort-evolution', 'OUROBOROS_EFFORT_EVOLUTION', 'high'],
-    ['s-effort-consciousness', 'OUROBOROS_EFFORT_CONSCIOUSNESS', 'high'], ['s-effort-deep-self-review', 'OUROBOROS_EFFORT_DEEP_SELF_REVIEW', 'high'],
+    ['s-effort-consciousness', 'OUROBOROS_EFFORT_CONSCIOUSNESS', ''], ['s-effort-deep-self-review', 'OUROBOROS_EFFORT_DEEP_SELF_REVIEW', 'high'],
     ['s-consciousness-autonomy', 'OUROBOROS_CONSCIOUSNESS_AUTONOMY', 'act'],
     ['s-review-enforcement', 'OUROBOROS_REVIEW_ENFORCEMENT', 'advisory'], ['s-task-review-mode', 'OUROBOROS_TASK_REVIEW_MODE', 'auto'], ['s-runtime-mode', 'OUROBOROS_RUNTIME_MODE', 'advanced'],
     // Shared paid-review-cycle cap (plan review / task acceptance / commit gate);

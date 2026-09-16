@@ -51,7 +51,7 @@ def test_effort_defaults_in_config():
     assert SETTINGS_DEFAULTS.get("OUROBOROS_EFFORT_REVIEW") == "high"
     assert SETTINGS_DEFAULTS.get("OUROBOROS_EFFORT_SCOPE_REVIEW") == "high"
     assert SETTINGS_DEFAULTS.get("OUROBOROS_EFFORT_DEEP_SELF_REVIEW") == "high"
-    assert SETTINGS_DEFAULTS.get("OUROBOROS_EFFORT_CONSCIOUSNESS") == "high"
+    assert SETTINGS_DEFAULTS.get("OUROBOROS_EFFORT_CONSCIOUSNESS") == ""  # empty = the Task / Chat effort
 
 
 def test_review_effort_default_carriers_stay_in_sync():

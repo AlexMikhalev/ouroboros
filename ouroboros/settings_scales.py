@@ -54,8 +54,10 @@ def resolve_effort(task_type: str) -> str:
         key = "OUROBOROS_EFFORT_SCOPE_REVIEW"
         default = "high"
     elif t == "consciousness":
-        key = "OUROBOROS_EFFORT_CONSCIOUSNESS"
-        default = "high"
+        # An empty slot is Main's effort (owner decision 16.09, 1=A): a wake-up is an
+        # ordinary Main turn and shares its request shape; a set value is honored (В25=B).
+        raw = str(runtime_setting("OUROBOROS_EFFORT_CONSCIOUSNESS", "") or "").strip().lower()
+        return raw if raw in EFFORT_SCALE else resolve_effort("task")
     else:
         # Legacy INITIAL_REASONING_EFFORT is retired; use EFFORT_TASK.
         key = "OUROBOROS_EFFORT_TASK"

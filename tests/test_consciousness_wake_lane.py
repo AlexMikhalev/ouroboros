@@ -229,6 +229,11 @@ def test_model_role_resolves_the_consciousness_slots_and_falls_back_to_main():
         assert model_role_slot_override(meta) is None  # an empty slot is Main
         assert _initial_effort_for({"metadata": meta}, "task") == "low"
         assert _initial_effort_for({"metadata": {}}, "task") == "medium"
+    # An empty EFFORT slot is Main's effort too (owner decision 16.09, 1=A): the wake shares
+    # Main's request shape; a set value is honored.
+    with mock.patch.dict(os.environ, {"OUROBOROS_MODEL_CONSCIOUSNESS": "", "OUROBOROS_EFFORT_CONSCIOUSNESS": "",
+                                      "OUROBOROS_EFFORT_TASK": "xhigh"}):
+        assert _initial_effort_for({"metadata": meta}, "task") == "xhigh"
     # An empty model slot still honors the role's OWN local flag when the owner set it and it
     # differs from Main's (В25=B: every slot is respected; astra round 4).
     with mock.patch.dict(os.environ, {"OUROBOROS_MODEL_CONSCIOUSNESS": "", "USE_LOCAL_CONSCIOUSNESS": "true",

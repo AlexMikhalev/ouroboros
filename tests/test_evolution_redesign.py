@@ -627,7 +627,7 @@ def test_frontend_evolution_and_consciousness_controls_are_present():
     assert consciousness["settingsToggleId"] == "s-local-consciousness"
     assert "modelRolesHost('settings-model-roles')" in settings_ui
     assert "modelRoles.load(s," in settings
-    assert "OUROBOROS_EFFORT_CONSCIOUSNESS', 'high'" in settings
+    assert "OUROBOROS_EFFORT_CONSCIOUSNESS', ''" in settings  # empty = the Task / Chat effort
 
 
 def test_evolution_checkpoint_records_and_reads(tmp_path):
