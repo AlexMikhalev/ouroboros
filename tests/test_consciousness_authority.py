@@ -837,6 +837,11 @@ def test_the_owners_start_adopts_a_paused_consciousness_campaign(tmp_path):
     assert adopted["status"] == "active" and adopted["adopted_by_owner_at"]
     assert not any(key in adopted for key in origin)
     assert ca.consciousness_origin_metadata(adopted) == {}
+    # The function's own default source is the owner too (grok round 4).
+    campaign = evolution_lifecycle.start_evolution_campaign("Again", source="agent_tool", origin=origin)
+    campaign["status"] = "paused"
+    assert evolution_lifecycle._write_evolution_campaign(campaign) is True
+    assert "initiator" not in evolution_lifecycle.start_evolution_campaign("")
 
 
 def test_owner_campaign_carries_no_origin(tmp_path):
