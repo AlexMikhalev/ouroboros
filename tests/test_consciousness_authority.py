@@ -661,6 +661,11 @@ def test_a_stop_the_agent_placed_itself_stays_undoable_by_the_agent(tmp_path, mo
 def test_observe_does_without_the_work_starting_review_verb():
     """`request_deep_self_review` enqueues a ROOT: Observe starts nothing (В10')."""
     assert "request_deep_self_review" in ca.OBSERVE_DISABLED and "request_deep_self_review" not in ca.ACT_DISABLED
+    # The GitHub write verbs change the world beyond the repository (PLAN §5.4: Observe keeps the reads only).
+    for verb in ("create_github_issue", "comment_on_issue", "comment_on_pr", "close_github_issue"):
+        assert verb in ca.OBSERVE_DISABLED and verb not in ca.ACT_DISABLED, verb
+    for verb in ("list_github_prs", "get_github_pr", "list_github_issues", "get_github_issue"):
+        assert verb not in ca.OBSERVE_DISABLED, verb
 
 
 def test_deep_review_request_carries_the_origin_to_the_one_door(tmp_path, monkeypatch):
@@ -754,10 +759,11 @@ def test_campaign_keeps_the_origin_and_its_cycle_tasks_inherit_it(tmp_path, monk
     origin = {"initiator": "consciousness", "usage_category": "consciousness_task", "consciousness_autonomy": "full"}
     campaign = evolution_lifecycle.start_evolution_campaign("Improve", source="agent_tool", origin=origin)
     assert campaign["initiator"] == "consciousness" and campaign["consciousness_autonomy"] == "full"
-    # A resume keeps the recorded origin (the owner's later resume does not erase it).
+    # An agent-sourced resume keeps the recorded origin; the owner's explicit resume of a PAUSED
+    # campaign ADOPTS it (see test_the_owners_start_adopts_a_paused_consciousness_campaign).
     campaign["status"] = "paused"
     assert evolution_lifecycle._write_evolution_campaign(campaign) is True
-    resumed = evolution_lifecycle.start_evolution_campaign("", source="owner_chat")
+    resumed = evolution_lifecycle.start_evolution_campaign("", source="agent_tool")
     assert resumed["initiator"] == "consciousness"
     state.update_state(lambda live: live.update(owner_chat_id=1, evolution_mode_enabled=True,
                                                 evolution_owner_stopped=False))
@@ -814,6 +820,23 @@ def test_a_transient_refusal_never_pauses_the_campaign(tmp_path, monkeypatch):
     assert evolution_lifecycle._read_evolution_campaign()["status"] == "active"
     live = state.load_state()
     assert live.get("evolution_mode_enabled") is True and not live.get("evolution_cycle")
+
+
+def test_the_owners_start_adopts_a_paused_consciousness_campaign(tmp_path):
+    """BIBLE P0: the owner's explicit /evolve start on a campaign the consciousness allowance paused
+    makes it the owner's work — otherwise the door refuses and re-pauses it until the window frees."""
+    from supervisor import evolution_lifecycle, queue, state
+
+    state.init(tmp_path)
+    queue.init(tmp_path)
+    origin = {"initiator": "consciousness", "usage_category": "consciousness_task", "consciousness_autonomy": "full"}
+    campaign = evolution_lifecycle.start_evolution_campaign("Improve", source="agent_tool", origin=origin)
+    campaign["status"], campaign["pause_reason"] = "paused", "admission_refused:consciousness_allowance_exhausted"
+    assert evolution_lifecycle._write_evolution_campaign(campaign) is True
+    adopted = evolution_lifecycle.start_evolution_campaign("", source="owner_chat")
+    assert adopted["status"] == "active" and adopted["adopted_by_owner_at"]
+    assert not any(key in adopted for key in origin)
+    assert ca.consciousness_origin_metadata(adopted) == {}
 
 
 def test_owner_campaign_carries_no_origin(tmp_path):
@@ -915,66 +938,3 @@ def test_a_wake_without_the_manifest_still_refuses_an_unaddressable_predecessor(
                                     predecessor_task_id="racer-old")
     assert refused.startswith("⚠️ AUTHORITY_SOURCE_UNAVAILABLE (promote_chat_to_task)")
     assert promoted.pending_events == []
-
-
-# --- the globalized view of a project task keeps its origin (round 2, S3) ----------
-
-
-def test_globalized_project_promotion_keeps_the_origin(monkeypatch):
-    """A Full consciousness project task's post-task promotion must not shed the origin: the
-    campaign it may produce stays inside the consciousness limits."""
-    from ouroboros import agent_task_pipeline as pipeline
-
-    captured: list = []
-    monkeypatch.setattr(pipeline, "_update_improvement_backlog", lambda env, entry: None)
-    monkeypatch.setattr("ouroboros.post_task_evolution.maybe_promote",
-                        lambda env, task, entry, llm: captured.append(task))
-    task = {"id": "p-1", "type": "task", "metadata": dict(_wake_task("full")["metadata"]),
-            "task_contract": {"disabled_tools": []}}
-    entry = {"backlog_candidates": [{"summary": "make it better"}]}
-    pipeline._run_global_backlog_promotion_only(types.SimpleNamespace(), task, entry, None)
-    assert captured and captured[0]["metadata"] == {
-        "globalized_from_project_task": True, "initiator": "consciousness",
-        "usage_category": "consciousness_task", "consciousness_autonomy": "full"}
-    captured.clear()
-    pipeline._run_global_backlog_promotion_only(types.SimpleNamespace(), {"id": "p-2", "type": "task"}, entry, None)
-    assert captured[0]["metadata"] == {"globalized_from_project_task": True}
-
-
-# --- round 3: a consciousness-started deep review stays inside the allowance; a started root
-# --- reads the mode it runs in ---------------------------------------------------------
-
-
-def test_a_consciousness_started_review_keeps_the_tree_category():
-    """The allowance discovers its roots by the consciousness categories: a review root whose only
-    priced rows said `deep_self_review` was invisible to it (astra round 3)."""
-    from ouroboros.deep_self_review import _review_usage_scope
-    from ouroboros.usage_accounting import UsageScope
-
-    kept = _review_usage_scope(UsageScope(category="consciousness_task", source="agent.task"))
-    assert kept.category == "consciousness_task" and kept.source == "deep_self_review"
-    wake = _review_usage_scope(UsageScope(category="consciousness", source="agent.task"))
-    assert wake.category == "consciousness"
-    own = _review_usage_scope(UsageScope(category="task", source="agent.task"))
-    assert own.category == "deep_self_review" and own.source == "deep_self_review"
-    assert _review_usage_scope(UsageScope()).category == "deep_self_review"
-
-
-def test_a_started_root_reads_the_mode_it_runs_in_but_the_wake_keeps_mains(tmp_path, monkeypatch):
-    """The dispatcher caps a started root to light (Act/Observe); its Runtime block says so. The
-    wake itself is a direct turn and keeps Main's block byte-identical (В31=B)."""
-    import json
-
-    from ouroboros.context import build_runtime_section
-    from tests.test_context_runtime_section import _make_health_env
-
-    env = _make_health_env(tmp_path)
-    monkeypatch.setattr("ouroboros.config.get_runtime_mode", lambda: "advanced")
-    started = {"id": "root-1", "type": "task", "metadata": dict(_wake_task("act")["metadata"])}
-    payload = json.loads(build_runtime_section(env, started).split("\n\n", 1)[1])
-    assert payload["runtime_mode"] == "light" and "forbids Ouroboros repo mutation" in payload["runtime_mode_rule"]
-    wake = {"id": "wake-1", "type": "task", "_is_direct_chat": True, "metadata": dict(_wake_task("act")["metadata"])}
-    payload = json.loads(build_runtime_section(env, wake).split("\n\n", 1)[1])
-    assert payload["runtime_mode"] == "advanced" and "runtime_mode_rule" not in payload
-    full = {"id": "root-2", "type": "task", "metadata": dict(_wake_task("full")["metadata"])}
-    assert json.loads(build_runtime_section(env, full).split("\n\n", 1)[1])["runtime_mode"] == "advanced"

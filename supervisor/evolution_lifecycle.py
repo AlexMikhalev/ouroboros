@@ -351,6 +351,13 @@ def start_evolution_campaign(objective: str = "", *, source: str = "owner", orig
                 campaign["objective"] = objective
             if not str(campaign.get("source") or "").strip() and source:
                 campaign["source"] = str(source)
+            if (str(source or "") == "owner_chat" and campaign.get("status") == "paused"
+                    and consciousness_origin_metadata(campaign)):
+                # The owner's explicit start ADOPTS a paused consciousness campaign: its cycles are
+                # the owner's work now, no longer bound by the consciousness allowance (BIBLE P0).
+                for key in ("initiator", "usage_category", "consciousness_autonomy"):
+                    campaign.pop(key, None)
+                campaign["adopted_by_owner_at"] = now
             campaign.update({k: v for k, v in consciousness_origin_metadata(origin).items() if not campaign.get(k)})
             campaign["status"] = "active"
             campaign["updated_at"] = now

@@ -249,6 +249,12 @@ def test_less_than_one_planned_turn_left_is_exhausted(clock, monkeypatch):
     monkeypatch.setattr(clock_module, "allowance_window", lambda root, now=None: dict(thin))
     assert clock.clock.tick(T0 + FLOOR + 1) == "skipped:allowance_exhausted"
     assert clock.launches == []
+    # On an exhausted day every root completion would otherwise pull the clock to "now" and cost a
+    # ledger read + a skip row per completion: a skip debounces the next event like a wake does.
+    clock.clock._next_wake_at = T0 + 9000
+    monkeypatch.setattr(clock_module.time, "time", lambda: T0 + FLOOR + 11)
+    clock.clock.notify("task_finished:x:completed")
+    assert clock.clock.next_wake_at == T0 + FLOOR + 1 + FLOOR
 
 
 def test_launch_cap_rides_the_started_event_too(clock):
@@ -397,6 +403,8 @@ def test_task_done_notifies_for_roots_of_any_outcome_but_never_for_consciousness
     # re-arm a wake at the floor after every reply) — whichever carrier says it is direct.
     _notify_consciousness_of_root_done(ctx, {}, None, {}, {"task_id": "chat1", "status": "completed", "_is_direct_chat": True})
     _notify_consciousness_of_root_done(ctx, {"_is_direct_chat": True}, None, {}, {"task_id": "chat2", "status": "completed"})
+    # A cancelled subagent whose RUNNING row is already gone: the event's metadata still says.
+    _notify_consciousness_of_root_done(ctx, {}, {"delegation_role": "subagent"}, {}, {"task_id": "sub1", "status": "cancelled"})
     assert reasons == ["task_finished:t1:failed", "task_finished:t2:completed"]
     # No alarm clock on the ctx (supervisor init failed) is not an error.
     _notify_consciousness_of_root_done(SimpleNamespace(), {}, None, {}, {"task_id": "t4", "status": "completed"})

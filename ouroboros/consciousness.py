@@ -85,6 +85,7 @@ class BackgroundConsciousness:
         self._next_wake_at = max(persisted, self._booted_at + self.floor)
         self._pending_reason: Optional[str] = None
         self._last_wake_at, self._last_wake_task_id, self._last_wake_outcome, self._last_error = 0.0, "", "", ""
+        self._last_skip_at = 0.0  # a skipped wake debounces the next event like a wake does
         self._backoff, self._allowance = 1, (0.0, {})
         self._archive_legacy_inbox()
 
@@ -161,18 +162,18 @@ class BackgroundConsciousness:
                 return "not_due"
             window = self._allowance_view(now, fresh=True)
             if window.get("status") == STATUS_UNKNOWN:
-                return self._skip("allowance_unknown", now + self.floor, error=str(window.get("error") or ""))
+                return self._skip("allowance_unknown", now + self.floor, now=now, error=str(window.get("error") or ""))
             # Nothing left — or less than one planned turn (the graceful stop's planning
             # margin): a wake started there would only be told to land at once.
             if window.get("status") == STATUS_EXHAUSTED or float(window.get("remaining_usd") or 0.0) <= COST_PLANNING_MARGIN_USD:
                 resets = parse_deadline_ts(str(window.get("resets_at") or ""))
-                return self._skip("allowance_exhausted", max(resets.timestamp() if resets else 0.0, now + self.floor))
+                return self._skip("allowance_exhausted", max(resets.timestamp() if resets else 0.0, now + self.floor), now=now)
             if not self._owner_chat_id():
-                return self._skip("waiting_for_first_conversation", now + self.floor)
+                return self._skip("waiting_for_first_conversation", now + self.floor, now=now)
             return self._launch(now, int(self._owner_chat_id() or 0), window)
 
-    def _skip(self, reason: str, next_at: float, *, error: str = "") -> str:
-        self._last_wake_outcome, self._last_error = f"skipped:{reason}", error
+    def _skip(self, reason: str, next_at: float, *, now: float, error: str = "") -> str:
+        self._last_wake_outcome, self._last_error, self._last_skip_at = f"skipped:{reason}", error, float(now)
         self._set_next_wake(next_at)
         self._record("consciousness_wake_skipped", reason=reason, next_wake_at=_iso(next_at), error=error)
         return f"skipped:{reason}"
@@ -248,7 +249,7 @@ class BackgroundConsciousness:
         """An event worth waking for: keep the last reason, pull the next wake to the floor."""
         with self._lock:
             self._pending_reason = str(reason or "event")
-            target = max(time.time(), max(self._last_wake_at, self._booted_at) + self.floor)
+            target = max(time.time(), max(self._last_wake_at, self._booted_at, self._last_skip_at) + self.floor)
             if target < self._next_wake_at:
                 self._set_next_wake(target)
 

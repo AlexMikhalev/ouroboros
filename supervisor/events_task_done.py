@@ -741,8 +741,9 @@ def _notify_consciousness_of_root_done(ctx: Any, task: Dict[str, Any], task_meta
     except the owner's own direct turn (В13: an owner message never wakes it, and
     neither does that turn ending), a wake-up's own finish or a root consciousness
     started (``metadata.initiator == "consciousness"``), or the chain would never sleep."""
-    if str(task.get("delegation_role") or "") == "subagent":
-        return
+    metadata = task_metadata if isinstance(task_metadata, dict) else {}
+    if "subagent" in (str(task.get("delegation_role") or ""), str(metadata.get("delegation_role") or "")):
+        return  # the cancel path has already popped the RUNNING row; the event's metadata still says
     if bool(task_done_event.get("_is_direct_chat")) or bool(task.get("_is_direct_chat")):
         return
     from ouroboros.consciousness_authority import is_consciousness_origin

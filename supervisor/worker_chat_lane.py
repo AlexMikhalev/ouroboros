@@ -84,6 +84,14 @@ def conversation_admitted_during_update(gate_reason: str) -> bool:
     return reason == assisted_writer_gate_reason(tx)
 
 
+def wake_gate_open(chat_id: int) -> bool:
+    """The owner-conversation gate for a consciousness wake-up, WITHOUT the owner's lock
+    notice: a refused wake is the alarm's typed ``repo_writer_gate_closed``, retried quietly,
+    never a "🔒" line in Main at every attempt."""
+    reason = _pool().repo_writer_admission_closed()
+    return not reason or conversation_admitted_during_update(reason)
+
+
 def owner_conversation_admitted(chat_id: int) -> bool:
     """Admit one owner chat turn: open gate, or a resolver-held update.
 
@@ -260,8 +268,11 @@ def _admit_chat_task(
     # Close/check/register is one short transaction with the update owner.
     # The registered execution includes agent construction, attachment staging,
     # the whole native lifecycle and event delivery, not just its LLM rounds.
+    from ouroboros.consciousness_authority import is_consciousness_origin
+
+    quiet = is_consciousness_origin(task_metadata)  # a wake: the alarm reports the refusal, not the chat
     with _pool()._repo_writer_gate_lock:
-        if not owner_conversation_admitted(chat_id):
+        if not (wake_gate_open(chat_id) if quiet else owner_conversation_admitted(chat_id)):
             return None
         activity = registry.register(
             task["id"], chat_id,
@@ -530,7 +541,7 @@ def handle_wake_direct(
     verbatim on ``task["metadata"]``; nothing here pauses or resumes the
     legacy background loop.
     """
-    if not owner_conversation_admitted(chat_id):
+    if not wake_gate_open(chat_id):
         return {"admitted": False, "task_id": "", "reason": "repo_writer_gate_closed"}
     from supervisor.state import budget_remaining, load_state
 
@@ -547,7 +558,7 @@ def handle_wake_direct(
     if admitted is None:
         # The gate can close between the check above and the registration — a silent
         # refusal, nothing in the chat; every other None the lane already reported.
-        reason = "repo_writer_gate_closed" if not owner_conversation_admitted(chat_id) else "admission_failed"
+        reason = "repo_writer_gate_closed" if not wake_gate_open(chat_id) else "admission_failed"
         return {"admitted": False, "task_id": "", "reason": reason}
     task_id = str(admitted["task"]["id"])
 

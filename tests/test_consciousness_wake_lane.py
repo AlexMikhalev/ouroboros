@@ -127,6 +127,8 @@ def test_wake_refusals_are_typed_and_start_nothing(monkeypatch, tmp_path):
     finally:
         workers.open_repo_writer_admission()
     assert get_direct_activity_registry().snapshot() == []
+    # A closed gate refuses the wake QUIETLY: the owner's "🔒" lock notice is for the owner's turn.
+    assert not [call for call in sent if "🔒" in str(call[0][1])]
     # A refused wake writes no budget/cost notice of its own into the chat.
     assert not [call for call in sent if "Budget" in str(call[0][1]) or "accounting" in str(call[0][1])]
 
