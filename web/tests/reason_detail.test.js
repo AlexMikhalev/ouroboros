@@ -59,15 +59,32 @@ test('every typed cause the loop can record has a sentence', () => {
     }
 });
 
+test('an accepted decision with a sentence still states its cause', () => {
+    // Owner fork 1=B (2026-09-16): reviewers who approved the earlier revision
+    // accept the task, and the row says which revision they approved. A clean
+    // accepted decision keeps rendering nothing.
+    const accepted = (reason) => taskReasonDetail({
+        status: 'completed', reason_code: 'final_message',
+        outcome_axes: { execution: { status: 'ok' },
+            review: { status: 'pass', acceptance_decision: { status: 'accepted', reason } } },
+    });
+    assert.equal(accepted('previous_revision_accepted'),
+        'The reviewers approved the earlier version of this answer; it was rewritten before they finished.');
+    assert.equal(accepted('clean_pass'), '');
+    assert.equal(accepted(''), '');
+});
+
 test('every acceptance reason the host can record has a sentence', () => {
     // The second half of the same gate. Acceptance reasons are written as
-    // `"reason": "<code>"` inside the three acceptance/finalization leaves; the
-    // bypass family is a dict of literals in outcomes.py and four more arrive
-    // through named constants, so both are read explicitly.
+    // `"reason": "<code>"` inside the four acceptance/finalization/settlement
+    // leaves; the bypass family is a dict of literals in outcomes.py, four more
+    // arrive through named constants there and the settlement leaf names its
+    // own reason as a constant, so all three shapes are read explicitly.
     const pkg = new URL('../../ouroboros/', import.meta.url);
     const read = (name) => readFileSync(new URL(name, pkg), 'utf8');
-    const decisions = ['loop_acceptance_review.py', 'loop_acceptance.py', 'loop_forced_finalization.py']
-        .map(read).join('\n');
+    const decisions = [
+        'loop_acceptance_review.py', 'loop_acceptance.py', 'loop_forced_finalization.py', 'acceptance_settlement.py',
+    ].map(read).join('\n');
     const outcomes = read('outcomes.py');
     const acceptance = new Set([
         ...[...decisions.matchAll(/"reason":\s*(?:\n\s*)?"([a-z_]+)"/g)].map((m) => m[1]),
@@ -75,10 +92,12 @@ test('every acceptance reason the host can record has a sentence', () => {
         ...[...outcomes.matchAll(
             /^REASON_(?:REVIEW_CYCLES_EXHAUSTED|IDENTICAL_ACCEPTANCE_REFUSED|ACCEPTANCE_REVIEW_SKIPPED_DEADLINE_RESERVE|ACCEPTANCE_SKIPPED_OWNER_HURRY) = "([a-z_]+)"$/gm,
         )].map((m) => m[1]),
+        ...[...read('acceptance_settlement.py').matchAll(/^REASON_[A-Z_]+ = "([a-z_]+)"$/gm)].map((m) => m[1]),
     ]);
-    // An ACCEPTED decision renders no clause, the owner stop carries its own
-    // marker instead, and queue_inspection_failed is a `{status, reason}` probe
-    // shape rather than an acceptance reason.
+    assert.ok(acceptance.has('previous_revision_accepted'), 'the settlement leaf is scanned');
+    // A CLEAN accepted decision renders no clause, the owner stop carries its
+    // own marker instead, and queue_inspection_failed is a `{status, reason}`
+    // probe shape rather than an acceptance reason.
     const exempt = new Set([
         'clean_pass', 'clean_pass_obligations_closed', 'queue_inspection_failed',
         'acceptance_bypassed_owner_requested_finalization',

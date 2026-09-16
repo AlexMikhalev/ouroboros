@@ -581,7 +581,7 @@ def test_the_degraded_terminal_keeps_its_wording_and_its_causes(monkeypatch, tmp
 
     assert trace["acceptance_decision"]["reason"] == "review_degraded"
     assert emitted[-1] == (
-        "Task acceptance review: DEGRADED (no valid quorum; not recorded as PASS)."
+        "Task acceptance review: DEGRADED (no settled verdict; not recorded as PASS)."
         " Causes: s1 window_exhausted"
     )
 

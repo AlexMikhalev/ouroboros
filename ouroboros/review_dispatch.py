@@ -176,18 +176,6 @@ def collect_task_acceptance_run(run: dict, *, drive_root: Any, usage_ctx: Any) -
         usage_ctx._review_frozen_rows = previous
 
 
-# The mailbox wake the settling wave writes. It names the one free route back to
-# the recorded verdicts, because the acceptance tool schema has no collect verb:
-# a byte-identical subject replays the paid operation, changed wording buys a
-# new one (``loop_acceptance_review.announce_acceptance_settlement``).
-ACCEPTANCE_SETTLEMENT_WAKE = (
-    "Task acceptance operation {retry_key} settled ({slots} released reviewer slots). "
-    "Its recorded results are ready for collection; this notification is not a verdict. "
-    "Reply with the keep control to collect the recorded verdicts at no cost; changed "
-    "wording starts a new paid review."
-)
-
-
 def reconcile_pending_acceptance_runs(
     llm_trace: dict, *, drive_root: Any, usage_ctx: Any,
 ) -> int:

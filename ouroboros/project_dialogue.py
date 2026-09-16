@@ -540,8 +540,10 @@ OUTCOME_PHASE_HEADLINE = {"working": "Working", "done": "Done", "warn": "Done wi
 # code stays typed on the row. web/modules/log_events.js carries the twin;
 # web/tests/fixtures/outcome_phase_parity.json pins both.
 TASK_CAUSE_PHRASES = {
-    # Acceptance-decision reasons. An accepted decision renders no clause at
-    # all, so clean_pass and clean_pass_obligations_closed carry no sentence.
+    # Acceptance-decision reasons. A clean accepted decision renders no clause,
+    # so clean_pass and clean_pass_obligations_closed carry no sentence; an
+    # accepted decision with a sentence here still states its cause.
+    "previous_revision_accepted": "The reviewers approved the earlier version of this answer; it was rewritten before they finished.",
     "author_finish": "The answer was delivered on Main's own judgement; the reviewers had not signed it off.",
     "review_degraded": "No reviewer verdict was established for this answer.",
     "infra_failure": "A review infrastructure failure prevented a settled verdict.",
@@ -1100,10 +1102,11 @@ def _completion_verdict(result: Dict[str, Any], event: Dict[str, Any]) -> str:
             if isinstance(holder, dict) and isinstance(holder.get("acceptance_decision"), dict):
                 decision = holder["acceptance_decision"]
     status = str(decision.get("status") or "").strip()
+    cause = str(decision.get("reason") or "")
     reason = str(result.get("reason_code") or event.get("reason_code") or "")
-    if (reason != REASON_OWNER_REQUESTED_FINALIZATION and status != ACCEPTANCE_ACCEPTED
-            and status and outcome_phase(result, event) in {"done", "warn"}):
-        cause = str(decision.get("reason") or "")
+    if (reason != REASON_OWNER_REQUESTED_FINALIZATION and status
+            and (status != ACCEPTANCE_ACCEPTED or cause in TASK_CAUSE_PHRASES)
+            and outcome_phase(result, event) in {"done", "warn"}):
         clause = TASK_CAUSE_PHRASES.get(cause, cause)
     elif reason in {REASON_OWNER_REQUESTED_FINALIZATION, REASON_FINAL_MESSAGE}:
         return ""

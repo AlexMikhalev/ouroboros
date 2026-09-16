@@ -408,6 +408,7 @@ export function taskStoppedWithSummary(evt) {
 // sentence. The byte-identical twin of project_dialogue.TASK_CAUSE_PHRASES;
 // web/tests/fixtures/outcome_phase_parity.json pins both.
 const TASK_CAUSE_PHRASES = {
+    previous_revision_accepted: "The reviewers approved the earlier version of this answer; it was rewritten before they finished.",
     author_finish: "The answer was delivered on Main's own judgement; the reviewers had not signed it off.",
     review_degraded: "No reviewer verdict was established for this answer.",
     infra_failure: "A review infrastructure failure prevented a settled verdict.",
@@ -482,10 +483,13 @@ export function taskReasonDetail(evt) {
     const decision = record.outcome_axes?.review?.acceptance_decision
         ?? record.review_status?.acceptance_decision;
     const severity = taskOutcomeSeverity(evt);
-    if (severity !== 'error' && severity !== 'cancelled' && decision?.status && decision.status !== 'accepted') {
-        // The decision's own typed reason speaks; the stored reviewer rationale
-        // stays in the card body, the task result and Logs.
-        return taskReasonPhrase(String(decision.reason || ''));
+    const decisionCause = String(decision?.reason || '');
+    if (severity !== 'error' && severity !== 'cancelled' && decision?.status
+        && (decision.status !== 'accepted' || Object.hasOwn(TASK_CAUSE_PHRASES, decisionCause))) {
+        // The decision's own typed reason speaks (an accepted decision only when
+        // it has a sentence); the stored reviewer rationale stays in the card
+        // body, the task result and Logs.
+        return taskReasonPhrase(decisionCause);
     }
     if (!evt?.reason_code || evt.reason_code === 'final_message') return '';
     // A healed debt is never restored: naming it again would state a debt the

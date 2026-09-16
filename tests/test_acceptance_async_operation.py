@@ -157,23 +157,192 @@ def test_an_uncollectable_pending_run_is_left_alone_and_never_raises(tmp_path, m
         assert advanced == 0 and acceptance_run_pending(pending)
 
 
-def test_the_settlement_wake_names_the_free_collection_route(tmp_path):
-    """The acceptance tool schema has no collect verb, so the wake must name the
-    one free route back to the recorded verdicts."""
-    from ouroboros.loop_acceptance_review import announce_acceptance_settlement
+def _mailbox_rows(root, task_id):
     from ouroboros.owner_mailbox import _mailbox_path
+
+    path = _mailbox_path(root, task_id)
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def test_the_settlement_wake_carries_the_reviewers_own_verdicts(tmp_path):
+    """A review is advice for its author (owner D4=A): the wake IS the advice,
+    not a pointer to a collect verb the model reaches only by not moving on."""
+    from ouroboros.acceptance_settlement import announce_acceptance_settlement
 
     announce_acceptance_settlement(
         SimpleNamespace(drive_root=tmp_path),
         SimpleNamespace(retry_key="acceptance-subject-one", task_id="root"),
-        {"slots": {"one": {}}},
+        {"slots": {"one": "ok", "two": ""}, "total": 2,
+         "verdicts": {"one": {"verdict": "PASS", "note": "Budget section is complete."}}},
     )
-    rows = [json.loads(line) for line in
-            _mailbox_path(tmp_path, "root").read_text(encoding="utf-8").splitlines() if line.strip()]
+    rows = _mailbox_rows(tmp_path, "root")
     assert len(rows) == 1 and rows[0]["provenance"] == "system"
-    assert "acceptance-subject-one" in rows[0]["text"] and "1 released reviewer slots" in rows[0]["text"]
-    assert "keep control to collect the recorded verdicts at no cost" in rows[0]["text"]
-    assert "this notification is not a verdict" in rows[0]["text"]
+    text = rows[0]["text"]
+    assert "acceptance-subject-one" in text and "1 of 2 reviewer slot(s)" in text
+    assert "advice for you, not a signature" in text
+    assert "- one: PASS — Budget section is complete." in text and "- two: pending" in text
+    assert "keep control" not in text
+
+
+class _SlotModel:
+    """One chat per roster slot, each held behind its own event."""
+
+    def __init__(self, gates, verdicts):
+        self.gates, self.verdicts, self.calls = gates, verdicts, []
+
+    def chat(self, **kwargs):
+        self.calls.append(kwargs)
+        model = str(kwargs.get("model") or "")
+        assert self.gates[model].wait(10), f"fixture did not release {model}"
+        return ({"content": json.dumps({"verdict": self.verdicts[model], "findings": [],
+                                        "summary": f"{model} says {self.verdicts[model]}"})},
+                {"prompt_tokens": 5, "completion_tokens": 2})
+
+
+def _released_wave(tmp_path, ctx, *, slots, model, min_successful_slots=1, task_id="root"):
+    request = ReviewRequest(surface="task_acceptance", task_id=task_id, goal="goal",
+                            subject="complete result", evidence={"requirement": "exact"},
+                            policy={"min_successful_slots": min_successful_slots},
+                            retry_key="acceptance-subject-one", drain_deadline=time.monotonic())
+    return run_review_request(request, slots=slots, drive_root=tmp_path, usage_ctx=ctx, llm=model)
+
+
+def test_the_quorum_wake_carries_the_reviewers_verdicts_before_the_last_slot_settles(tmp_path, monkeypatch):
+    """Fable roast round 1 / owner D4=A: a two-slot wave with quorum 1 wakes Main
+    when the first reviewer answers, then again when the straggler settles; the
+    straggler's wake lists every slot."""
+    settled = threading.Condition()
+    count = {"n": 0}
+    original_settle = __import__("ouroboros.review_custody", fromlist=["_settle_review_attempt"])._settle_review_attempt
+
+    def settle(*args, **kwargs):
+        try:
+            return original_settle(*args, **kwargs)
+        finally:
+            with settled:
+                count["n"] += 1
+                settled.notify_all()
+
+    monkeypatch.setattr("ouroboros.review_custody._settle_review_attempt", settle)
+    gates = {"model/a": threading.Event(), "model/b": threading.Event()}
+    model = _SlotModel(gates, {"model/a": "PASS", "model/b": "FAIL"})
+    ctx = SimpleNamespace(task_id="root", task_attempt=1, drive_root=tmp_path, budget_drive_root=tmp_path,
+                          task_metadata={}, pending_events=[], event_queue=None)
+    slots = [ReviewSlot(slot_id="a", model="model/a", effort="high", timeout_sec=20),
+             ReviewSlot(slot_id="b", model="model/b", effort="high", timeout_sec=20)]
+    try:
+        first = _released_wave(tmp_path, ctx, slots=slots, model=model)
+        assert acceptance_run_pending(first) and _mailbox_rows(tmp_path, "root") == []
+        gates["model/a"].set()
+        with settled:
+            assert settled.wait_for(lambda: count["n"] >= 1, timeout=10)
+        rows = _mailbox_rows(tmp_path, "root")
+        assert len(rows) == 1, rows
+        assert "1 of 2 reviewer slot(s)" in rows[0]["text"]
+        assert "- a: PASS — model/a says PASS" in rows[0]["text"] and "- b: pending" in rows[0]["text"]
+        gates["model/b"].set()
+        with settled:
+            assert settled.wait_for(lambda: count["n"] >= 2, timeout=10)
+        rows = _mailbox_rows(tmp_path, "root")
+        assert len(rows) == 2, rows
+        assert "2 of 2 reviewer slot(s)" in rows[1]["text"]
+        assert "- b: FAIL — model/b says FAIL" in rows[1]["text"]
+        assert len(model.calls) == 2, "the wakes bought nothing"
+    finally:
+        for gate in gates.values():
+            gate.set()
+        with settled:
+            settled.wait_for(lambda: count["n"] >= 2, timeout=10)
+
+
+def _terminal_ctx(tmp_path, *, task_id, retry_key="acceptance-subject-one"):
+    """A worker context whose task already ended, with the wave's run in its trace."""
+    import queue
+
+    from ouroboros.task_results import write_task_result
+
+    write_task_result(tmp_path, task_id, "completed", chat_id=1, result="The delivered answer.")
+    return SimpleNamespace(task_id=task_id, task_attempt=1, drive_root=tmp_path, budget_drive_root=tmp_path,
+                           task_metadata={}, pending_events=[], event_queue=queue.Queue(),
+                           _execution_trace={"review_runs": []}, _retry_key=retry_key)
+
+
+def test_a_panel_that_settles_after_the_task_ended_is_attached_and_announced_once(tmp_path, monkeypatch):
+    """Owner fork 2=A: one System row in the task's room, whatever the verdict;
+    the projection reads the collected verdicts; nothing wakes a model."""
+    from ouroboros.task_results import load_task_result
+
+    settled = threading.Event()
+    original_settle = __import__("ouroboros.review_custody", fromlist=["_settle_review_attempt"])._settle_review_attempt
+
+    def settle(*args, **kwargs):
+        try:
+            return original_settle(*args, **kwargs)
+        finally:
+            settled.set()
+
+    monkeypatch.setattr("ouroboros.review_custody._settle_review_attempt", settle)
+    gates = {"model/a": threading.Event()}
+    model = _SlotModel(gates, {"model/a": "PASS"})
+    ctx = _terminal_ctx(tmp_path, task_id="late-root")
+    slot = ReviewSlot(slot_id="a", model="model/a", effort="high", timeout_sec=20)
+    try:
+        first = _released_wave(tmp_path, ctx, slots=[slot], model=model, task_id="late-root")
+        assert acceptance_run_pending(first)
+        run = {**json.loads(json.dumps(dataclasses.asdict(first))), "authority": "host_root",
+               "panel_id": "panel_1", "binding_hash": "binding-one", "candidate_hash": "c1",
+               "superseded_by_revision": True}
+        ctx._execution_trace["review_runs"].append(run)
+        gates["model/a"].set()
+        assert settled.wait(10)
+        events = []
+        while not any(e.get("system_type") == "acceptance_late_settlement" for e in events):
+            events.append(ctx.event_queue.get(timeout=10))
+    finally:
+        gates["model/a"].set()
+        assert settled.wait(10)
+    assert _mailbox_rows(tmp_path, "late-root") == [], "a terminal task has nobody to wake"
+    rows = [e for e in events if e.get("system_type") == "acceptance_late_settlement"]
+    # Exactly one chat row; the other queue entries are the typed operation facts
+    # every settlement emits, never a second message and never a model turn.
+    assert len(rows) == 1 and [e for e in events if e.get("type") == "send_message"] == rows, events
+    event = rows[0]
+    assert event["type"] == "send_message" and event["role"] == "system"
+    assert event["chat_id"] == 1 and event["task_id"] == "late-root"
+    assert event["text"].startswith("Reviewers later passed this answer. They reviewed the earlier version")
+    assert "- a: PASS — model/a says PASS" in event["text"]
+    assert event["delivery_id"] == "acceptance-late:acceptance-subject-one"
+    assert not acceptance_run_pending(run) and run["actors"][0]["parsed"]["verdict"] == "PASS"
+    stored = load_task_result(tmp_path, "late-root")
+    assert stored["status"] == "completed", "the supplement never moves a terminal status"
+    actor = stored["review_projection"]["panels"][0]["actors"][0]
+    assert actor["transport_status"] == "success" and actor["parse_status"] == "valid"
+    assert len(model.calls) == 1, "collection is free"
+    # A second settlement of the same wave finds nothing to reconcile and announces nothing.
+    from ouroboros.acceptance_settlement import attach_late_acceptance_settlement
+
+    assert attach_late_acceptance_settlement(
+        ctx, SimpleNamespace(retry_key="acceptance-subject-one", task_id="late-root"),
+        {"slots": {"a": "ok"}, "total": 1}, result=stored) is False
+    assert ctx.event_queue.empty()
+
+
+def test_a_late_settlement_for_another_task_is_never_published(tmp_path):
+    """The worker may already be rebound: a wave whose retry key is not in the
+    live trace returns False and writes nothing anywhere."""
+    from ouroboros.acceptance_settlement import attach_late_acceptance_settlement
+    from ouroboros.task_results import load_task_result
+
+    ctx = _terminal_ctx(tmp_path, task_id="other-root")
+    ctx._execution_trace["review_runs"].append(_host_run(request={"surface": "task_acceptance", "retry_key": "another"}))
+    before = json.dumps(load_task_result(tmp_path, "other-root"), sort_keys=True)
+    assert attach_late_acceptance_settlement(
+        ctx, SimpleNamespace(retry_key="acceptance-subject-one", task_id="other-root"),
+        {"slots": {"a": "ok"}, "total": 1}, result={"chat_id": 1}) is False
+    assert ctx.event_queue.empty() and _mailbox_rows(tmp_path, "other-root") == []
+    assert json.dumps(load_task_result(tmp_path, "other-root"), sort_keys=True) == before
 
 
 def test_every_acceptance_wake_reoffers_a_changed_keep_contract(tmp_path, monkeypatch):

@@ -995,11 +995,17 @@ def _settle_review_attempt(
                 and str(getattr(actor, "operation_state", "") or "") == "not_dispatched")
         )
         released_wave: Dict[str, Any] = {}
+        quorum_wave: Dict[str, Any] = {}
         if entry.released_early and entry.wave_key in _RELEASED_WAVES:
             roster = _RELEASED_WAVES[entry.wave_key]
-            roster["slots"][str(getattr(slot, "slot_id", "") or "")] = str(actor.status or "settled")
+            slot_id = str(getattr(slot, "slot_id", "") or "")
+            roster["slots"][slot_id] = str(actor.status or "settled")
+            roster.setdefault("verdicts", {})[slot_id] = _settled_slot_verdict(actor)
             if all(roster["slots"].values()):
                 released_wave = _RELEASED_WAVES.pop(entry.wave_key)
+            elif _released_quorum_reached(request, roster):
+                roster["quorum_announced"] = True
+                quorum_wave = copy.deepcopy(roster)
         if replayable and usage_ctx is not None and (late or explicit_retry):
             settled = getattr(usage_ctx, "_review_settled_attempts", None)
             if not isinstance(settled, dict):
@@ -1019,10 +1025,10 @@ def _settle_review_attempt(
 
         announce_released_settlement(usage_ctx, request=request, task_id=task_id, slot=slot, actor=actor,
                                      settled_wave=dict(released_wave.get("slots") or {}), roster_size=int(released_wave.get("total") or 0))
-        if getattr(request, "surface", "") == "task_acceptance" and released_wave:
-            from ouroboros.loop_acceptance_review import announce_acceptance_settlement
+        if getattr(request, "surface", "") == "task_acceptance" and (released_wave or quorum_wave):
+            from ouroboros.acceptance_settlement import announce_acceptance_settlement
 
-            announce_acceptance_settlement(usage_ctx, request, released_wave)
+            announce_acceptance_settlement(usage_ctx, request, released_wave or quorum_wave)
     if late and not pending_invocation and not custody_lost and usage_ctx is not None:
         try:
             from ouroboros.tools.review_helpers import emit_review_event
@@ -1044,6 +1050,48 @@ def _settle_review_attempt(
 
 def _wave_key(request: Any) -> str:
     return "|".join(str(getattr(request, key, "") or "") for key in ("surface", "task_id", "retry_key"))
+
+
+def _released_quorum_reached(request: Any, roster: Dict[str, Any]) -> bool:
+    """Whether this wave has enough answered slots to be worth waking Main for.
+
+    The panel's own ``min_successful_slots`` is the quorum; slots that answered
+    before the release were collected by the drain and count as answered. A wave
+    announced at its quorum is never announced for that reason twice; the last
+    straggler still announces through the completed-roster arm.
+    """
+    if roster.get("quorum_announced"):
+        return False
+    policy = getattr(request, "policy", None) or {}
+    try:
+        quorum = max(1, int(policy.get("min_successful_slots") or 1))
+    except (TypeError, ValueError):
+        quorum = 1
+    slots = roster.get("slots") or {}
+    answered_before_release = max(0, int(roster.get("total") or 0) - len(slots))
+    answered = sum(1 for status in slots.values() if status in {"ok", "empty"})
+    return answered_before_release + answered >= quorum
+
+
+def _settled_slot_verdict(actor: Any) -> Dict[str, str]:
+    """This ONE reviewer's own verdict, parsed where it settled.
+
+    Quorum, tier, contract demotion and dissent stay with the collecting call's
+    reducer (``review_actor_aggregation``): a settlement thread that re-derived
+    them would be a second aggregation authority. Only the reviewer's own words
+    travel, so the wake can BE the advice instead of a pointer to it.
+    """
+    from ouroboros.triad_review import parse_review_findings
+
+    try:
+        parsed, findings, signal = parse_review_findings(str(getattr(actor, "raw_text", "") or ""))
+    except Exception:
+        log.debug("released acceptance verdict could not be parsed", exc_info=True)
+        return {"verdict": "", "note": ""}
+    note = str((parsed or {}).get("summary") or "") if isinstance(parsed, dict) else ""
+    note = note or next((str(row.get("recommendation") or row.get("item") or "")
+                         for row in (findings or []) if isinstance(row, dict)), "")
+    return {"verdict": str(signal or "").upper(), "note": " ".join(note.split())[:400]}
 
 
 def _register_released_roster(

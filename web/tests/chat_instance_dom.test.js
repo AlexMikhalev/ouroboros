@@ -1403,3 +1403,54 @@ test('native terminal replay retains the actual narration as title', async () =>
         assert.equal(card.querySelector('[data-live-title]').textContent, 'still working');
     } finally { instance?.destroy(); restoreDom(prior); }
 });
+
+
+test('a late acceptance settlement row never rewrites the finished card', async () => {
+    // Owner fork 2=A (2026-09-16): a reviewer panel that settles after the task
+    // ended adds ONE System row to the task's room. It carries the task id like
+    // every task-scoped notice, so the regression to pin is the card: its Done
+    // chip, title and counts stay exactly as the terminal row left them.
+    const rows = [
+        { task_id: 'late-panel', is_progress: true, text: '💬 checking the budget', ts: '2026-09-16T00:00:00Z', task_terminal_status: 'completed' },
+        { task_id: 'late-panel', role: 'assistant', text: 'The report is ready.', ts: '2026-09-16T00:01:00Z' },
+        { task_id: 'late-panel', role: 'system', system_type: 'task_summary', text: 'Done.', ts: '2026-09-16T00:02:00Z',
+          tool_calls: 3, rounds: 2, outcome_final: true, outcome_phase: 'done', outcome_axes: { execution: { status: 'ok' } } },
+    ];
+    const { prior, mount } = installDom(async (url) => ({ ok: true, json: async () =>
+        String(url).startsWith('/api/chat/history') ? { messages: rows } : { active_direct_turns: [] } }));
+    const handlers = new Map();
+    const ws = { on(type, fn) { handlers.set(type, fn); return () => handlers.delete(type); }, isConnected: () => true, send() {} };
+    let instance;
+    try {
+        instance = createChatInstance({ ws, state: { activePage: 'chat', projectChatIds: new Set(), unreadCount: 0 },
+            updateUnreadBadge() {}, stateSnapshots: { begin: () => ({ generation: 1, requestedAt: Date.now() }),
+                isCurrent: () => true, apply() {} }, chatId: 1, idPrefix: 'chat', mountEl: mount });
+        await instance.refreshHistory({ revision: 1 });
+        const messages = globalThis.document.byId.get('chat-messages');
+        const card = walkCard(messages, 'late-panel');
+        const before = {
+            phase: card.querySelector('[data-live-phase]')?.textContent,
+            hidden: card.querySelector('[data-live-phase]')?.hidden,
+            title: card.querySelector('[data-live-title]')?.textContent,
+            finished: card.dataset.finished,
+            html: card.innerHTML,
+        };
+        assert.equal(before.phase, 'Done');
+        const bubbles = () => messages.children.filter((node) => node.classList.contains('chat-bubble')
+            && node.classList.contains('system') && !node.classList.contains('typing-bubble'));
+        const systemBefore = bubbles().length;
+        const text = 'Reviewers later passed this answer. They reviewed the earlier version, which was rewritten before delivery.\n- triad_one: PASS — Budget section is complete.';
+        handlers.get('chat')({ chat_id: 1, task_id: 'late-panel', role: 'system', system_type: 'acceptance_late_settlement',
+            content: text, ts: '2026-09-16T00:05:00Z' });
+        const after = walkCard(messages, 'late-panel');
+        assert.equal(after, card, 'the finished card is the same node');
+        assert.equal(after.querySelector('[data-live-phase]')?.textContent, before.phase);
+        assert.equal(after.querySelector('[data-live-phase]')?.hidden, before.hidden);
+        assert.equal(after.querySelector('[data-live-title]')?.textContent, before.title);
+        assert.equal(after.dataset.finished, before.finished);
+        assert.equal(after.innerHTML, before.html, 'the late row is not folded into the card');
+        const added = bubbles();
+        assert.equal(added.length, systemBefore + 1, 'exactly one new System row');
+        assert.match(added[added.length - 1].innerHTML, /Reviewers later passed this answer/);
+    } finally { instance?.destroy(); restoreDom(prior); }
+});

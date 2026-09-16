@@ -1198,7 +1198,10 @@ by "Provider Independence" above. Call-site imperatives:
   dispatch barrier (`ReviewRequest.drain_deadline`): the wrapper returns while
   its workers run, but custody is not abandoned — the workers settle into
   process-local custody and announce the wave through the task mailbox
-  (`plan_review_collect`; `announce_acceptance_settlement`). Before its
+  (`plan_review_collect`; `acceptance_settlement.announce_acceptance_settlement`,
+  which for task acceptance announces at the wave's own quorum as well as at
+  completion and carries each reviewer's own verdict, not an instruction to
+  collect). Before its
   effective blocking verdict, `owner_hurry.force_plan_decision` collects once at
   zero wait and projects the returned state. Task acceptance collects the same
   way, but through the host's own reconcile at the top of the acceptance seam
@@ -1306,10 +1309,19 @@ by "Provider Independence" above. Call-site imperatives:
   (`review_cycles_exhausted`), the host reconciles every already-paid panel of
   the same root still recorded as running, at $0 over the recorded request and
   roster — a panel whose subject was re-authored mid-flight would otherwise have
-  its bought verdicts discarded. The settlement wake names that free route (the
-  keep control), and the keep contract is re-offered on every acceptance wake
-  whose contract bytes changed (identical bytes are not repeated, and a spent
-  malformed-control repair stays spent) rather than once per candidate chain. The
+  its bought verdicts discarded. Reviewer verdicts are advice for the author and
+  reach Main whatever its current draft: the settlement wake carries them, and
+  the keep contract is re-offered on every acceptance wake whose contract bytes
+  changed (identical bytes are not repeated, and a spent malformed-control repair
+  stays spent) rather than once per candidate chain. A delivery under a running
+  panel is never a second panel and never a capacity refusal
+  (`acceptance_settlement._deliver_under_running_panel`): waiting is the default
+  and the only option under blocking enforcement; under advisory enforcement
+  Main finishes only through an explicit `"pending_review":"finish"` on its
+  delivery control; a PASS that settled on the earlier revision accepts the task
+  as `previous_revision_accepted`; any other settled verdict lets the ordinary
+  path decide. A panel that settles after the task ended is attached to the task
+  result and announced once in the task's room; nothing starts a model turn. The
   worker never writes Main's live candidate or author decision. Keep
   subtree/status facts
   separate from reviewer findings and Cyber's authority under BIBLE P0.

@@ -336,6 +336,176 @@ def test_reauthored_answer_on_a_one_cycle_install_is_refused_after_its_panel_was
     assert project_task_acceptance_review_capacity(f.ctx, task_id=f.ctx.task_id)["claimed_cycles"] == 1
 
 
+def _terminal_record(trace):
+    """The host's own fold of the trace, as the terminal row and the card read it."""
+    from ouroboros import outcomes
+
+    review = outcomes._review_axis(trace)
+    return {"status": "completed", "reason_code": "final_message",
+            "outcome_axes": {"execution": {"status": "ok"}, "review": review,
+                             "objective": outcomes._objective_axis(review)}}
+
+
+def test_a_rewritten_answer_delivers_under_the_running_panel_instead_of_buying_one(full_loop, monkeypatch):
+    """The live incident shape (task 4525349b, cap 1) under owner D4=A and fork 1=B:
+    Main nominates, the reviewers are still reading when it rewrites the answer
+    through the delivery control (round 7 of the incident). The rewrite is a
+    DELIVERY, not a nomination: it buys nothing and is refused nothing; the host
+    waits for the panel it already paid for, and when that panel PASSES the earlier
+    revision the task is accepted on the reviewers' word and the row says so."""
+    from ouroboros.project_dialogue import _completion_verdict, outcome_phase
+
+    f = full_loop
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "1")
+    reauthored = ANSWER + " Budget: $12."
+
+    def main(_llm, messages, *_a, **_kw):
+        f.model_inputs.append(copy.deepcopy(messages))
+        f.model_step += 1
+        if f.model_step == 1:
+            return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": ANSWER}, "first-review")]}, 0.0
+        if f.model_step == 2:
+            assert f.entered.wait(5) and not f.release.is_set(), "the panel must still be running"
+            observation = f.ctx._acceptance_observation
+            return {"content": json.dumps({"delivery_control": "replace", "full_answer": reauthored,
+                                           "acceptance_subject": {"owner_source_sha256": observation["owner_source_sha256"]}})}, 0.0
+        assert f.model_step < 6, f.progress
+        return keep(f), 0.0
+
+    monkeypatch.setattr(loop, "call_llm_with_retry", main)
+    result, _usage, trace = f.run()
+    assert result == reauthored
+    # The rewrite bought nothing and was refused nothing: one paid panel, no synthetic refusal run.
+    assert len(f.review_sends) == 1
+    host = [r for r in trace["review_runs"] if r.get("authority") == "host_root"]
+    assert len(host) == 1 and not acceptance_run_pending(host[0]), host
+    assert host[0]["actors"][0]["parsed"]["verdict"] == "PASS"
+    assert not any("review_cycles_exhausted" in str(reason) for reason in host[0].get("degraded_reasons") or [])
+    # The host waited for the panel it had paid for (blocking enforcement in this fixture).
+    assert f.waits and f.waits[0]["reason"] == "review"
+    assert any("holding the answer for its verdict" in line for line in f.progress), f.progress
+    decision = trace["acceptance_decision"]
+    assert decision["status"] == "accepted" and decision["reason"] == "previous_revision_accepted"
+    assert decision["reviewer_signal"] == "PASS" and "rationale" not in decision
+    from ouroboros.task_results import project_task_acceptance_review_capacity
+    assert project_task_acceptance_review_capacity(f.ctx, task_id=f.ctx.task_id)["claimed_cycles"] == 1
+    record = _terminal_record(trace)
+    assert outcome_phase(record, {}) == "done", record["outcome_axes"]
+    assert _completion_verdict(record, {}) == (
+        "The reviewers approved the earlier version of this answer; it was rewritten before they finished."
+    )
+
+
+def test_a_rejected_earlier_revision_is_not_a_verdict_on_the_rewrite(full_loop, monkeypatch):
+    """Fork 1: a FAIL on the earlier revision must not paint the rewritten,
+    unreviewed answer red. The settled negative verdict hands the delivery to the
+    ordinary path: at cap 1 that is the typed capacity refusal, so the row says no
+    verdict was established for THIS answer, and the task ends with warnings."""
+    from ouroboros.project_dialogue import _completion_verdict, outcome_phase
+
+    f = full_loop
+    f.reviewer_verdict = "FAIL"
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "1")
+    reauthored = ANSWER + " Budget: $12."
+
+    def main(_llm, messages, *_a, **_kw):
+        f.model_inputs.append(copy.deepcopy(messages))
+        f.model_step += 1
+        if f.model_step == 1:
+            return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": ANSWER}, "first-review")]}, 0.0
+        if f.model_step == 2:
+            assert f.entered.wait(5) and not f.release.is_set()
+            observation = f.ctx._acceptance_observation
+            return {"content": json.dumps({"delivery_control": "replace", "full_answer": reauthored,
+                                           "acceptance_subject": {"owner_source_sha256": observation["owner_source_sha256"]}})}, 0.0
+        assert f.model_step < 6, f.progress
+        return keep(f), 0.0
+
+    monkeypatch.setattr(loop, "call_llm_with_retry", main)
+    result, _usage, trace = f.run()
+    assert result == reauthored and len(f.review_sends) == 1
+    host = [r for r in trace["review_runs"] if r.get("authority") == "host_root"]
+    assert [r.get("aggregate_signal") for r in host] == ["FAIL", "DEGRADED"], host
+    assert host[0]["superseded_by_revision"] and not host[1].get("superseded_by_revision")
+    assert trace["acceptance_decision"]["reason"] == "review_degraded"
+    record = _terminal_record(trace)
+    assert outcome_phase(record, {}) == "warn", record["outcome_axes"]
+    assert _completion_verdict(record, {}) == "No reviewer verdict was established for this answer."
+
+
+def _advisory(monkeypatch):
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
+
+
+def test_a_conscious_finish_releases_the_answer_while_the_panel_runs(full_loop, monkeypatch):
+    """Owner D4=A point 3: under advisory enforcement Main chooses explicitly.
+    ``"pending_review":"finish"`` on the delivery control delivers now, without a
+    park; the verdict reaches Main as advice when it settles."""
+    f = full_loop
+    _advisory(monkeypatch)
+    f.ctx.owner_wait_callback = lambda *_a, **_kw: pytest.fail("a conscious finish must not park")
+
+    def main(_llm, messages, *_a, **_kw):
+        f.model_inputs.append(copy.deepcopy(messages))
+        f.model_step += 1
+        if f.model_step == 1:
+            return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": ANSWER}, "nominate")]}, 0.0
+        assert f.model_step == 2 and f.entered.wait(5) and not f.release.is_set()
+        control = json.loads(keep(f)["content"])
+        assert '"pending_review":"finish"' in str(messages), "the choice is offered while the panel runs"
+        return {"content": json.dumps({**control, "pending_review": "finish"})}, 0.0
+
+    monkeypatch.setattr(loop, "call_llm_with_retry", main)
+    result, _usage, trace = f.run()
+    assert result == ANSWER and len(f.review_sends) == 1 and f.waits == []
+    assert trace["acceptance_decision"]["reason"] == "author_finish"
+    assert trace["review_decision"]["review_pending"] is True
+    from ouroboros.task_results import project_task_acceptance_review_capacity
+    assert project_task_acceptance_review_capacity(f.ctx, task_id=f.ctx.task_id)["claimed_cycles"] == 1
+
+
+@pytest.mark.parametrize("install", ["advisory_default", "blocking_finish", "cyber_pro"])
+def test_waiting_is_the_default_and_blocking_enforcement_never_offers_the_choice(full_loop, monkeypatch, install):
+    """Waiting needs no key; blocking enforcement waits whatever the model says and
+    is never offered the choice; Cyber Pro keeps its own rule (Main's final response
+    is its decision) and is not offered the choice either."""
+    f = full_loop
+    if install == "advisory_default":
+        _advisory(monkeypatch)
+    if install == "cyber_pro":
+        _advisory(monkeypatch)
+        monkeypatch.setattr("ouroboros.config.get_runtime_mode", lambda: "cyber_pro")
+        f.ctx.owner_wait_callback = lambda *_a, **_kw: pytest.fail("Cyber Pro never parks on a review")
+
+    def main(_llm, messages, *_a, **_kw):
+        f.model_inputs.append(copy.deepcopy(messages))
+        f.model_step += 1
+        if f.model_step == 1:
+            return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": ANSWER}, "nominate")]}, 0.0
+        if f.model_step == 2:
+            assert f.entered.wait(5)
+            control = json.loads(keep(f)["content"])
+            if install == "blocking_finish":
+                control["pending_review"] = "finish"
+            return {"content": json.dumps(control)}, 0.0
+        assert f.model_step < 6, f.progress
+        return keep(f), 0.0
+
+    monkeypatch.setattr(loop, "call_llm_with_retry", main)
+    result, _usage, trace = f.run()
+    assert result == ANSWER and len(f.review_sends) == 1
+    offered = any('"pending_review":"finish"' in str(inputs) for inputs in f.model_inputs)
+    if install == "advisory_default":
+        assert offered and f.waits and f.waits[0]["reason"] == "review"
+        assert trace["acceptance_decision"]["status"] == "accepted"
+    elif install == "blocking_finish":
+        assert not offered and f.waits and f.waits[0]["reason"] == "review"
+        assert trace["acceptance_decision"]["status"] == "accepted"
+    else:
+        assert not offered and f.waits == []
+        assert trace["acceptance_decision"]["reason"] == "author_finish"
+
+
 @pytest.mark.parametrize("pending_first", [False, True])
 @pytest.mark.parametrize("changed_requirement", [False, True])
 def test_explicit_renomination_replaces_the_held_answer_without_control_repair(

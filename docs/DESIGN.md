@@ -219,8 +219,10 @@ That row keeps a neutral owner anchor visible, but hides task status and typing
 until a real task status or activity arrives; review presence alone never means
 `Working`, `Done`, or owner attention.
 
-Local diagnostic failures remain inspectable in details and Logs, but do not
-relabel the whole still-working task. A failed child keeps a compact factual
+A reviewer panel that settles after its task already ended adds one System
+row to the task's room naming the verdict and which revision it covered; it
+never changes the finished card. Local diagnostic failures remain inspectable
+in details and Logs, but do not relabel the whole still-working task. A failed child keeps a compact factual
 `Failed` marker inside its parent while the root continues under its own
 authoritative status. Internal reason codes belong in details and diagnostics,
 not compact headlines. Where a card does show a cause, it says it in the owner's

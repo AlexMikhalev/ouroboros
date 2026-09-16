@@ -436,6 +436,13 @@
       "phase": "warn",
       "headline": "Done with warnings",
       "acceptance_clause": "some_future_reason."
+    },
+    {
+      "name": "reviewers approved the earlier revision: Done, and the row says which revision",
+      "record": {"status": "completed", "reason_code": "final_message", "outcome_axes": {"execution": {"status": "ok"}, "review": {"status": "pass", "acceptance_decision": {"status": "accepted", "reason": "previous_revision_accepted"}}, "objective": {"status": "pass", "source": "task_acceptance_review", "review_status": "pass"}}},
+      "phase": "done",
+      "headline": "Done",
+      "acceptance_clause": "The reviewers approved the earlier version of this answer; it was rewritten before they finished."
     }
   ]
 }

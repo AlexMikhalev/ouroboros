@@ -91,28 +91,6 @@ def acceptance_run_pending(run: Any) -> bool:
                in {"pending_dispatch", "in_flight"} for actor in actors or [])
 
 
-def announce_acceptance_settlement(usage_ctx: Any, request: Any, wave: dict) -> None:
-    """Wake the original Main through its existing mailbox, outside custody locks.
-
-    The worker never changes live candidate, transcript, or acceptance decisions.
-    Main collects this exact recorded operation before interpreting the feedback.
-    """
-    if usage_ctx is None or not getattr(usage_ctx, "drive_root", None):
-        return
-    from ouroboros.owner_mailbox import write_task_message
-    from ouroboros.review_dispatch import ACCEPTANCE_SETTLEMENT_WAKE
-
-    try:
-        slots = wave.get("slots") or {}
-        write_task_message(
-            pathlib.Path(usage_ctx.drive_root),
-            ACCEPTANCE_SETTLEMENT_WAKE.format(retry_key=request.retry_key, slots=len(slots)),
-            request.task_id, source_task_id=request.task_id, provenance="system",
-        )
-    except Exception:
-        log.warning("Acceptance settlement wake failed for %s", request.task_id, exc_info=True)
-
-
 def _resolve_ctx_lineage(ctx: Any, task_id: str = "") -> Dict[str, Any]:
     """One reader of a live tool context's lineage facts, shared by both
     eligibility sites so the observation seam and the entrypoint agree."""
@@ -197,6 +175,7 @@ def advance_explicit_acceptance(tools: Any, limit_ctx: Any, trace: dict,
     if not isinstance(request, dict):
         return
     tools._ctx._acceptance_request_pending = None
+    tools._ctx._acceptance_pending_review_choice = ""  # a new nomination starts a fresh wait/finish choice
     from ouroboros.loop_delivery import apply_delivery_subject_decision
 
     subject = request.get("acceptance_subject")
@@ -920,7 +899,7 @@ def _apply_task_acceptance_result(
         })
         # Show the slot failure causes beside the verdict, not only in task_results.
         ctx.emit_progress(
-            "Task acceptance review: DEGRADED (no valid quorum; not recorded as PASS)."
+            "Task acceptance review: DEGRADED (no settled verdict; not recorded as PASS)."
             + _slot_cause_clause(result)
         )
         return False
@@ -1467,6 +1446,11 @@ def _run_task_acceptance_review_once(
         seen_bindings, prior_run = _prior_acceptance_run(
             tools._ctx, llm_trace, binding_hash, paid_identity=paid_identity,
         )
+        from ouroboros.acceptance_settlement import _deliver_under_running_panel
+
+        handled = _deliver_under_running_panel(review_ctx, prior_run)
+        if handled is not None:
+            return handled
         reused_result = None
         applied_before = bool(prior_run and (prior_run.get("applied_decision") or prior_run.get("feedback_delivered")))
         if prior_run is not None:
@@ -1525,7 +1509,9 @@ def _run_task_acceptance_review_once(
                 "eligibility": "review_in_flight", "operation_state": "in_flight",
             })
             emit_progress("Task acceptance review is running; Main can receive and answer messages.")
-            if not review_enforcement_blocks("blocking"):
+            from ouroboros.acceptance_settlement import acceptance_wait_chosen
+
+            if not acceptance_wait_chosen(tools._ctx):
                 return _finish_cyber_acceptance(review_ctx, panel_result)
             return True
         tools._ctx._task_acceptance_pending = ""

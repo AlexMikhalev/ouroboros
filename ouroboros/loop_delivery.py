@@ -599,7 +599,8 @@ def _merge_finalization_trace(
     return llm_trace
 
 
-def _delivery_control_prompt(candidate: DeliveryCandidate, *, keep_allowed: bool) -> str:
+def _delivery_control_prompt(candidate: DeliveryCandidate, *, keep_allowed: bool,
+                             pending_review_choice: bool = False) -> str:
     keep_line = (
         "keep is allowed because no answer-invalidating evidence changed."
         if keep_allowed
@@ -619,6 +620,10 @@ def _delivery_control_prompt(candidate: DeliveryCandidate, *, keep_allowed: bool
         "\nEither form may include acceptance_subject with the latest observed "
         "owner_source_sha256, optional complete effective_criteria and material_tool_indices. "
         "Keep can retain answer text while explicitly changing its review subject."
+        + ('\nA paid acceptance panel on an earlier revision is still running. Either form may add '
+           '"pending_review":"wait" (the default: hold this answer until its verdict arrives) or '
+           '"pending_review":"finish" (deliver now; the verdict reaches you as advice when it settles).'
+           if pending_review_choice else "")
     )
 
 
@@ -660,9 +665,13 @@ def _arm_delivery_control(
     if not skip_if_unchanged:
         candidate.repair_attempted = False
     tools._ctx._delivery_control_required = True
+    from ouroboros.acceptance_settlement import acceptance_choice_offered
+
     control_prompt = _delivery_control_prompt(
         candidate,
         keep_allowed=_delivery_keep_allowed(candidate, evidence_revision, evidence_fingerprint),
+        pending_review_choice=bool(getattr(tools._ctx, "_task_acceptance_pending", "")
+                                   and acceptance_choice_offered()),
     )
     # ``skip_if_unchanged`` is the repeated re-offer (every acceptance wake shows
     # the keep contract): an unchanged candidate renders identical bytes, so the
@@ -779,7 +788,7 @@ def _classify_parsed_delivery_control(
     if not isinstance(parsed, dict) or "delivery_control" not in parsed:
         return "none", "", exact_error
     selected = str(parsed.get("delivery_control") or "")
-    keys = set(parsed) - {"acceptance_subject"}
+    keys = set(parsed) - {"acceptance_subject", "pending_review"}
     if selected == "keep" and keys == {"delivery_control"}:
         return "keep", "", ""
     if selected == "replace" and keys == {"delivery_control", "full_answer"}:
@@ -935,6 +944,14 @@ def _resolve_delivery_control(
         applied, subject_error = apply_delivery_subject_decision(tools, ctx, llm_trace, parsed["acceptance_subject"])
         if not applied:
             control_kind, error = "invalid", subject_error
+    if control_kind in {"keep", "replace"} and isinstance(parsed, dict):
+        # Recorded on every control answer, so an answer without the key always
+        # means "wait" rather than inheriting an earlier round's choice.
+        choice = str(parsed.get("pending_review") or "wait").strip().lower()
+        if choice not in {"wait", "finish"}:
+            control_kind, error = "invalid", 'pending_review must be "wait" or "finish"'
+        else:
+            tools._ctx._acceptance_pending_review_choice = choice
     evidence_revision, evidence_fingerprint = _loop()._delivery_evidence_state(tools, ctx, llm_trace)
     valid = control_kind == "replace"
     if control_kind == "keep":
