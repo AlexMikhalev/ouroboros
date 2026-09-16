@@ -73,7 +73,10 @@ def test_ui_project_completion_pointer_keeps_project_history_scoped(direct_serve
                 summary.wait_for(state="visible", timeout=30_000)
                 summary_text = summary.inner_text()
                 assert target_label in summary_text
-                assert "Release shipped." in summary_text
+                # The Main row is a pointer: one status word and the shared cause sentence,
+                # never the answer excerpt (owner Q5=A); the answer stays in the Project.
+                assert "Open the Project for details." in summary_text
+                assert "Release shipped." not in summary_text
                 assert "Open Project ↗" in summary_text
                 assert project["id"] not in summary_text
 
