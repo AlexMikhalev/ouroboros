@@ -46,6 +46,7 @@ _ADDED_OWNERS = {
     # Consciousness settings scaffolding: the alarm's SSOT default interval, the closed
     # autonomy enum and the readers for the three consciousness keys.
     "WAKE_DEFAULT_SEC": runtime_limits,
+    "USAGE_LEDGER_FOLD_MIN_AGE_SEC": runtime_limits,
     "CONSCIOUSNESS_AUTONOMY_LEVELS": runtime_limits,
     "get_consciousness_autonomy": runtime_limits,
     "get_consciousness_daily_usd": runtime_limits,
