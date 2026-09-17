@@ -751,22 +751,6 @@ def _accept_enforce_budget(ev: Dict[str, Any], *, budget: int = 0) -> Dict[str, 
     def _trajectory_rows() -> list:
         return [*(ev.get("tool_trajectory") or []), *(ev.get("tool_trajectory_selected") or [])]
 
-    def _finish() -> Dict[str, Any]:
-        for row in _trajectory_rows():
-            if isinstance(row, dict):
-                row.pop("_legacy_projection_envelope", None)
-        _sync_annotations()
-        overflow = ev.get("__immutable_core_overflow__")
-        if isinstance(overflow, dict):
-            # Count the overflow disclosure itself, including this numeric
-            # field. Its digit width settles after remeasurement.
-            while True:
-                final_size = len(json.dumps(ev, ensure_ascii=False, default=str))
-                if overflow.get("packet_chars") == final_size:
-                    break
-                overflow["packet_chars"] = final_size
-        return ev
-
     def _cap_field(row: Dict[str, Any], key: str, limit: int) -> int:
         before = str(row.get(key) or "")
         if len(before) <= limit:
@@ -943,7 +927,20 @@ def _accept_enforce_budget(ev: Dict[str, Any], *, budget: int = 0) -> Dict[str, 
             ),
         }
         notes.append(f"immutable core remains ~{_size() // 1000}k; reviewer must abstain as DEGRADED")
-    return _finish()
+    for row in _trajectory_rows():
+        if isinstance(row, dict):
+            row.pop("_legacy_projection_envelope", None)
+    _sync_annotations()
+    overflow = ev.get("__immutable_core_overflow__")
+    if isinstance(overflow, dict):
+        # Count the overflow disclosure itself, including this numeric
+        # field. Its digit width settles after remeasurement.
+        while True:
+            final_size = len(json.dumps(ev, ensure_ascii=False, default=str))
+            if overflow.get("packet_chars") == final_size:
+                break
+            overflow["packet_chars"] = final_size
+    return ev
 
 
 def _owner_content_projection(content: Any) -> str:
