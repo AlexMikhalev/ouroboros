@@ -1,9 +1,7 @@
 """The closed access vocabulary and the profile x root x operation policy matrix.
 
-Every span is extracted VERBATIM from the parent's tip bytes by
-scripts/v7next_transplant.py (D18/D33 module-handle split, proof-checked);
-the parent re-exports every moved name, so historical imports and
-monkeypatch targets keep working unchanged.
+The facade re-exports these definitions so existing imports and monkeypatch
+targets retain the same bindings.
 """
 
 from __future__ import annotations

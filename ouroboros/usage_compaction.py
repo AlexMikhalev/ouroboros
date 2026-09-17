@@ -1,6 +1,6 @@
-"""Seq-preserving compaction of the monetary usage ledger (CPL4-C6, owner 1A).
+"""Seq-preserving compaction of the monetary usage ledger.
 
-Design contract: docs/v7next/DESIGN_USAGE_COMPACTION.md. Terminal, non-review
+Design contract: docs/USAGE_COMPACTION.md. Terminal, non-review
 ``kind="attempt"`` chains fold into a stamped baseline block (one
 ``usage_baseline`` header + per-attribution ``usage_baseline_group`` rows);
 the raw pre-compaction bytes move verbatim into an append-only
@@ -999,7 +999,7 @@ def maybe_compact_usage_ledger_locked(
     return False
 
 
-# --- History readers (CPL-5 reverse-sweep join surface; audits) --------------
+# --- History readers (model-send reverse-sweep join surface; audits) --------------
 
 
 def _live_baseline_header(root: pathlib.Path) -> Optional[Dict[str, Any]]:
@@ -1013,7 +1013,7 @@ def _live_baseline_header(root: pathlib.Path) -> Optional[Dict[str, Any]]:
     tell those apart and does not try — the archive does, in the epoch anchor,
     which runs on a stamp-less file too. A row that cannot be read AT ALL is
     corruption and says so: reporting it as "not compacted" would hand the
-    CPL-5 sweep an empty archive and let it call a folded attempt an orphan
+    model-send reconciliation sweep an empty archive and let it call a folded attempt an orphan
     seal.
     """
     try:
@@ -1136,7 +1136,7 @@ def _load_segment(
                 break
             chunks.append(chunk)
         payload = b"".join(chunks)
-    except OSError as exc:  # the CPL-5 sweep maps typed corruption to UNKNOWN; a bare OSError escapes it
+    except OSError as exc:  # the model-send reconciliation sweep maps typed corruption to UNKNOWN; a bare OSError escapes it
         raise UsageLedgerCorrupt(f"usage archive segment unreadable: {path}") from exc
     finally:
         os.close(fd)
@@ -1266,7 +1266,7 @@ def archived_attempt_ids(root: pathlib.Path | str | None = None) -> frozenset:
     Segments are immutable, so per-segment reads and the union over a given
     chain are cached. An unreadable (or not-a-regular-file), hash-mismatched,
     mis-stepped, cyclic or out-anchored chain raises ``UsageLedgerCorrupt`` —
-    the CPL-5 reverse sweep must treat that as its existing UNKNOWN /
+    the model-send reverse sweep must treat that as its existing UNKNOWN /
     skip-pass state, never as evidence of an orphan."""
     root = pathlib.Path(_drive_root(root))
     live_header = _live_baseline_header(root)
@@ -1349,7 +1349,7 @@ def usage_attempt_recorded(
     """Membership of ``attempt_id`` in the live replay ∪ archived segments.
 
     The join primitive for per-attempt history questions on a compacted
-    ledger (CPL-5 reverse sweep: an id absent HERE — not merely absent from
+    ledger (model-send reverse sweep: an id absent HERE — not merely absent from
     the live replay — is what "no attempt row" means)."""
     attempt_id = str(attempt_id or "")
     if not attempt_id:

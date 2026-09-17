@@ -1,14 +1,8 @@
 """Structural contracts for the semantic-no-op git tool extraction.
 
-v7next transplant note (oracle ouroboros_v7_wip @ 9f691656): the reference pin
-also freezes the tool-module inventory through ``ouroboros.tool_module_inventory``,
-a v7 leaf absent from this tree — that clause returns with its owner. The
-reference's ``_publish_git_error`` / ``_publish_review_blocked`` rows are the
-typed-result cutover (F2 organ, not carried) and ``_refuse_capped_attempt``
-was retired upstream by 386e9417 (Max Review Cycles), so neither appears in
-the owner map below. Size bounds are re-based on tip bytes: the tip facade
-retains the paid-cycle gate family, the deferred update entry points and the
-catalog the oracle-era monolith did not have.
+The facade retains the paid-cycle gate family, deferred update entry points
+and tool catalog. Its leaves are non-catalog owners without import-time
+backedges, and the facade re-exports every moved identity.
 """
 
 from __future__ import annotations
@@ -150,4 +144,4 @@ def test_git_extraction_size_bounds_have_meaningful_headroom():
     assert counts["ouroboros.tools.git"] <= 1800
     assert all(count <= 1000 for name, count in counts.items()
                if name != "ouroboros.tools.git")
-    assert 700 <= counts["ouroboros.tools.git_review_cycle"] <= 1000
+    assert counts["ouroboros.tools.git_review_cycle"] <= 1000

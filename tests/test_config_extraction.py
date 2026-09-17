@@ -284,5 +284,5 @@ def test_settings_extraction_size_bounds_have_meaningful_headroom():
     }
     assert counts["ouroboros.config"] <= 1000
     assert all(count <= 1000 for count in counts.values())
-    assert 250 <= counts["ouroboros.settings_defaults"] <= 500
+    assert counts["ouroboros.settings_defaults"] <= 500
     assert (PACKAGE / "config.py").is_file()

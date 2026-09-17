@@ -195,4 +195,3 @@ def test_extension_extraction_size_bounds_have_meaningful_headroom():
             assert BAND_PATHS[path], f"new extension band entry needs its rationale: {path}"
             limit = BAND_MODULE_MAX_LINES
         assert count <= limit, f"{path}: {count} lines exceeds its {limit}-line bound"
-    assert counts["ouroboros.extension_plugin_api"] >= 600

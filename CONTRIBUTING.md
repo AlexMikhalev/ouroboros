@@ -64,7 +64,9 @@ direction-changing proposal. Small, well-understood fixes do not need
 ceremonial design work.
 
 Never commit local settings, credentials, runtime state, logs, caches,
-benchmark runs, generated review runs, or build artifacts.
+benchmark runs, generated review runs, or build artifacts. For tracked material,
+including campaign plans and optional reports, follow the
+[Documentation contract](docs/development/02-naming-and-boundaries.md#documentation-contract).
 
 ## 3. Branch from `ouroboros` and Do Not Bump the Version
 

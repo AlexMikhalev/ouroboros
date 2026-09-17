@@ -1,9 +1,8 @@
-"""CPL-5: the runtime invariant ``model-visible ⟺ logged`` for ``model_send``.
+"""The runtime invariant ``model-visible ⟺ logged`` for ``model_send``.
 
 The invariant binds exactly one object — the physical candidate payload at the
 last host-controlled pre-transport seam (``llm_attempt._candidate_before_dispatch``)
-— per the design note ``docs/v7next/DESIGN_MODEL_VISIBLE_LOGGED.md`` (narrowed
-per roast finding F15):
+— per the design note ``docs/MODEL_SEND_OBSERVABILITY.md``:
 
 - **Forward** (``sent ⟹ logged``): every physical attempt persists a sealed
   durable record of its exact send copy before dispatch (the ``model_send_seal``
@@ -131,13 +130,12 @@ def persist_physical_candidate(
     ``persist_call`` refs describe the redacted-by-default CAS blob; the two
     digest domains are deliberately labelled rather than equated.
 
-    The manifest carries the CPL-5 ``model_send_seal`` block (additive key under
+    The manifest carries the ``model_send_seal`` block (additive key under
     the existing SCHEMA_VERSION object; readers ignore unknown keys), and the
     returned ``manifest_ref`` is stamped ``model_send_seal_version`` so the
     accounting row it lands on names its attempt as seam-sealed — the join key
-    the reverse reconciliation sweep enforces. (Moved here whole from
-    ``observability.py`` at its module-size ceiling; that module keeps the
-    historical compatibility name.)
+    the reverse reconciliation sweep enforces. ``observability.py`` keeps the
+    compatibility export so existing callers use this same implementation.
     """
     from ouroboros.anthropic_native_custody import physical_custody_projection
     from ouroboros.observability import persist_call
