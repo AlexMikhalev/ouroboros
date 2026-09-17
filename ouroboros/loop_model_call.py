@@ -555,11 +555,9 @@ def _reprepare_waiting_main(ctx: _RoundModelCallContext, kwargs: dict):
                 _loop()._run_main_reclaim(ctx, disposition)
         disposition = _measure_after_reclaim(ctx)
     kwargs["messages"] = ctx.messages
+    from ouroboros.llm_claudexor import cache_key_for_model
     from ouroboros.provider_models import provider_for_model
-    kwargs["cache_affinity"] = (
-        str(ctx.accumulated_usage.get("execution_id") or "")
-        if not use_local and provider_for_model(model) == "claudexor" else ""
-    )
+    kwargs["cache_affinity"] = "" if use_local else cache_key_for_model(model)
     kwargs["allow_server_web_search"] = (_loop()._server_web_allowed_by_task(ctx.tools._ctx)
                                          and not use_local and provider_for_model(model) != "claudexor")
     if provider_for_model(model) == "claudexor":

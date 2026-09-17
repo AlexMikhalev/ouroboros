@@ -319,6 +319,12 @@ engine, not an Agent Run. `LLMClient` dispatches sync and async calls through
 `llm_claudexor.py` before OpenAI-compatible filtering/retries. Ouroboros retains
 its SYSTEM, BIBLE, canonical messages, tool selection and execution. The raw-model adapter is Codex; connected Claude/Cursor and other harnesses keep
 their existing Agent capabilities. Direct API keys keep their existing routes.
+Every main-loop execution of one install sends the same Codex cache key
+(`llm_claudexor.cache_key_for_model`: per data root and model, projected to
+`prompt_cache_key` and the `session_id` header), so a new task, child or
+consciousness cycle is served the governance prefix its predecessors already
+cached on its first round; per-execution turn states ride `nativeContinuation`
+unchanged under that shared session.
 
 Before creating a model operation, the host discovers the existing operation
 catalog's `captureFailureEvidence=true` query and freezes that choice for the

@@ -718,10 +718,10 @@ def prepared_wrapup_candidate(
 
     The forced send this candidate admits continues the loop's active transport
     turn, so the candidate is built from that same owner slot."""
+    from ouroboros.llm_claudexor import cache_key_for_model
     from ouroboros.loop_llm_call import _prepare_main_messages
     from ouroboros.model_slots import task_model_binding, task_processing_preference
     from ouroboros.model_wait import current_model_wait
-    from ouroboros.observability import new_execution_id
 
     owner_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
     waiter = current_model_wait()
@@ -750,9 +750,9 @@ def prepared_wrapup_candidate(
         model_account_override=account,
         model_turn_state=getattr(owner_ctx, "model_turn_state", None),
         # The admitted candidate must be the payload the send will produce: the
-        # main loop declares the same execution-scoped cache affinity, so this
-        # prepared copy binds the execution id exactly as that dispatch does.
-        cache_affinity=str(ctx.accumulated_usage.setdefault("execution_id", new_execution_id())),
+        # main loop declares the same install-scoped cache affinity, so this
+        # prepared copy binds the same key as that dispatch does.
+        cache_affinity="" if getattr(ctx, "active_use_local", False) else cache_key_for_model(ctx.active_model),
         processing_preference=task_processing_preference(
             {"task_metadata": getattr(owner_ctx, "task_metadata", {})}, model_role=role),
     )

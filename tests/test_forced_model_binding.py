@@ -79,7 +79,7 @@ def test_subscription_prepared_candidate_admits_the_actual_forced_send(acting):
     assert len(acting.gateway.creates) == 1
 
 
-def test_subscription_prospective_and_send_share_the_execution_cache_key(acting, monkeypatch):
+def test_subscription_prospective_and_send_share_the_install_cache_key(acting, monkeypatch):
     """The admitted candidate declares the same cache affinity as the real send."""
     from ouroboros import llm_claudexor
 
@@ -97,8 +97,11 @@ def test_subscription_prospective_and_send_share_the_execution_cache_key(acting,
         acting.ctx, deepcopy(acting.ctx.messages), allow_server_web_search=False)
     assert forced._call_forced_model_once(acting.ctx, initial_messages=prepared,
                                           admitted_request=request) == "Ответ 🐍"
-    execution_id = acting.ctx.accumulated_usage["execution_id"]
-    assert len(built) == 2 and built[0] == built[1] == {"reasoningEffort": "high", "cacheKey": execution_id}
+    # One install-scoped key per model (not the execution id): the priced
+    # candidate and the dispatched payload must still carry the same one.
+    shared_key = llm_claudexor.cache_key_for_model(acting.ctx.active_model)
+    assert shared_key and acting.ctx.accumulated_usage["execution_id"] not in shared_key
+    assert len(built) == 2 and built[0] == built[1] == {"reasoningEffort": "high", "cacheKey": shared_key}
     assert acting.gateway.uploads[0][0]["options"] == built[1]
 
 
@@ -106,8 +109,10 @@ def test_prospective_build_reads_the_failed_profile_without_spending_it(acting):
     """Only the dispatch consumes the one-shot fact, so its candidate still admits it."""
     acting.ctx.accumulated_usage["execution_id"] = "execution-refusal"
     acting.ctx.messages = [result()["message"], {"role": "user", "content": "Please finish"}]
-    token = llm_claudexor._FAILED_PROFILE.set(
-        ("execution-refusal", "codex", "exact-model", "account-a"))
+    # The fact is keyed by the affinity the dispatch declares: the install-scoped
+    # Codex key, no longer the execution id.
+    shared_key = llm_claudexor.cache_key_for_model(MODEL)
+    token = llm_claudexor._FAILED_PROFILE.set((shared_key, "codex", "exact-model", "account-a"))
     try:
         with task_model_wait_scope(task={"id": "task-one", "_attempt": 1}, drive_root=acting.root,
                                    event_queue=None, worker_slot_held=True) as wait:
@@ -123,7 +128,7 @@ def test_prospective_build_reads_the_failed_profile_without_spending_it(acting):
         llm_claudexor._FAILED_PROFILE.reset(token)
     payload = acting.gateway.uploads[0][0]
     assert payload["account"] == {"mode": "auto"}  # the refused account is not preferred back
-    assert payload["options"] == {"reasoningEffort": "high", "cacheKey": "execution-refusal"}
+    assert payload["options"] == {"reasoningEffort": "high", "cacheKey": shared_key}
 
 
 @pytest.mark.parametrize("shape", ["mid_round_image", "late_system_notice"])
