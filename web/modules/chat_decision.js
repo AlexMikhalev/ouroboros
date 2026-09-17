@@ -6,21 +6,14 @@
 // settles into the plain routing ack line once its dispatch is confirmed.
 import { MAX_DECISION_COMMENT, MAX_QUIZ_OPTIONS } from './api_types.js';
 import { renderRoutingAnnotation, routingOptionLabel } from './chat_activity.js';
-import { createSystemMessageAction } from './ui_helpers.js';
+import { createSystemMessageAction, createSystemMessageActions } from './ui_helpers.js';
 
-const QUIZ_STATUS_TEXT = {
-    open: 'Awaiting answer',
-    answered: 'Answered',
-    // The asking task is gone, but the card is NOT: a late answer is accepted
-    // and delivered into this chat as an ordinary message.
-    expired_terminal: 'Task finished — you can still answer',
-    superseded: 'Superseded by a retry',
-};
+import { questionPresentation, questionPreview } from './question_presentation.js';
 
 // States that still take an answer. Only a settled one (answered/superseded)
 // turns the card into a pure record.
 const ANSWERABLE_QUIZ_STATES = ['open', 'expired_terminal'];
-const WAIT_ENDED_TEXT = 'The wait window closed and the task continued; you can still answer.';
+const WAIT_ENDED_TEXT = 'Task continued — you can still answer.';
 
 // Neutral, factual statuses (owner decision 15~A): the card never scolds the
 // router — it states what the click does and what happened.
@@ -47,41 +40,72 @@ export function createChatDecision({
     const quizViews = new Map();
     const pointerViews = new Map();
     const detailReads = new Map();
+    const settledQuestions = new Map();
+    const pointerObserver = typeof IntersectionObserver === 'function' ? new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+            const view = pointerViews.get(questionKey(entry.target.dataset.taskId, entry.target.dataset.quizId));
+            if (!view || view.card !== entry.target) continue;
+            view.visible = entry.isIntersecting;
+            if (view.visible && !view.loaded && !view.loading && !view.error) void refreshPointer(view);
+        }
+    }) : null;
     const questionKey = (taskId, quizId) => JSON.stringify([String(taskId || ''), String(quizId || '')]);
     let disposed = false;
     let questionNavigation = 0;
+    let viewGeneration = 0;
     function observe(frame) {
+        frame = { ...frame, state: frame.state || frame.quiz_state };
+        delete frame.quiz_state;
         const key = questionKey(frame.task_id, frame.quiz_id);
         const previous = observations.get(key);
         if (!frame.task_id || !frame.quiz_id) return frame;
-        if (previous && previous.state !== 'open' && frame.state === 'open') return previous;
-        if (previous?.state === 'answered' && frame.state === 'expired_terminal') return previous;
+        if (previous && previous.state !== 'open' && frame.state === 'open') return { ...frame, ...previous };
+        if (previous?.state === 'answered' && frame.state === 'expired_terminal') return { ...frame, ...previous };
         if (['open', 'answered', 'expired_terminal', 'superseded'].includes(frame.state)) {
-            observations.set(key, { ...previous, ...frame });
+            // Keep lifecycle evidence, not another cache of whole question sources.
+            const fields = ['task_id', 'quiz_id', 'state', 'answered_index', 'comment',
+                'wait_for_answer', 'wait_ended_at', 'owner_wait_state', 'owner_wait_resume_reason'];
+            observations.set(key, { ...previous, ...Object.fromEntries(fields
+                .filter((field) => Object.hasOwn(frame, field)).map((field) => [field, frame[field]])) });
             if (observations.size > 2000) observations.delete(observations.keys().next().value);
         }
-        return ['answered', 'expired_terminal', 'superseded'].includes(observations.get(key)?.state)
-            ? observations.get(key) : frame;
+        return { ...frame, ...observations.get(key) };
     }
 
     async function readQuestion(taskId, quizId, projectId) {
         if (!fetchDetail || disposed) return null;
+        const key = questionKey(taskId, quizId);
+        const cached = settledQuestions.get(key);
+        if (cached && (!projectId || cached.project_id === projectId)) return cached;
+        const generation = viewGeneration;
         if (!detailReads.has(taskId)) {
-            const promise = Promise.resolve().then(() => fetchDetail(taskId))
-                .finally(() => { if (detailReads.get(taskId) === promise) detailReads.delete(taskId); });
-            detailReads.set(taskId, promise);
+            const read = { before: new Map(observations) };
+            read.promise = Promise.resolve().then(() => fetchDetail(taskId))
+                .finally(() => { if (detailReads.get(taskId) === read) detailReads.delete(taskId); });
+            detailReads.set(taskId, read);
         }
-        const detail = await detailReads.get(taskId);
+        const read = detailReads.get(taskId);
+        const before = read.before.get(key);
+        const detail = await read.promise;
         const block = detail?.owner_quiz?.[quizId];
-        if (disposed || String(detail?.task_id || detail?.id || '') !== String(taskId)
+        if (disposed || generation !== viewGeneration || String(detail?.task_id || detail?.id || '') !== String(taskId)
             || (projectId && String(detail?.project_id || '') !== String(projectId))
             || !block || String(block.quiz_id || '') !== String(quizId)
             || !['open', 'answered', 'expired_terminal', 'superseded'].includes(block.state)) return null;
-        const current = observe({ ...block, task_id: taskId });
         const wait = detail.owner_wait?.quiz_id === quizId ? detail.owner_wait : null;
-        return { ...block, ...current, task_id: taskId, project_id: detail.project_id,
-            ts: block.asked_at, owner_wait_state: wait ? wait.state : '',
-            owner_wait_resume_reason: wait ? String(wait.resume_reason || '') : '' };
+        const source = { ...block, task_id: taskId, project_id: detail.project_id, ts: block.asked_at,
+            wait_for_answer: wait?.state === 'waiting',
+            owner_wait_state: wait?.state || '', owner_wait_resume_reason: wait?.resume_reason || '' };
+        // A live answer/timeout received during this read wins. Enrich its source
+        // text, never overwrite its state or wait facts with this older snapshot.
+        const latest = observations.get(key);
+        const current = observe(latest && latest !== before ? { ...source, ...latest } : source);
+        const question = { ...source, ...current };
+        if (['answered', 'superseded'].includes(question.state)) {
+            settledQuestions.set(key, question);
+            if (settledQuestions.size > 128) settledQuestions.delete(settledQuestions.keys().next().value);
+        }
+        return question;
     }
 
     async function revealQuestion(taskId, quizId, projectId, chatId, appendQuiz, isVisible, beforeReveal = () => {}) {
@@ -110,47 +134,45 @@ export function createChatDecision({
         return true;
     }
 
-    function pointerText(row, state) {
-        // A wait that ended on its own bound resumed WITHOUT an answer, so the
-        // question is still wanted; a finished task's card still takes one.
-        const stillAsking = row.owner_wait_state !== 'resumed'
-            || row.owner_wait_resume_reason === 'timeout';
-        const lead = state === 'answered' ? 'Question answered'
-            : state === 'expired_terminal' ? 'Answer still possible'
-                : state === 'superseded' ? 'Question expired'
-                    : state !== 'open' ? 'Question status unavailable'
-                        : stillAsking ? 'Answer needed' : 'Question';
-        return `${lead} in ${row.project_name || 'Project'}`;
-    }
-
     function updatePointer(view, frame) {
-        const current = observe({ ...frame, state: frame.quiz_state || frame.state });
-        view.row = { ...view.row, ...frame };
-        const state = String(current.state || 'unknown');
+        const current = observe({ ...frame, state: frame.state || frame.quiz_state });
+        view.row = { ...view.row, ...current, quiz_state: current.state };
+        const presentation = questionPresentation(view.row);
+        const preview = questionPreview(view.row);
         return onDomWrite(() => {
-            const text = pointerText(view.row, state);
-            const action = ANSWERABLE_QUIZ_STATES.includes(state) ? 'Open question' : 'View question';
-            const changed = view.label.textContent !== text || view.action.textContent !== action
-                || view.card.dataset.state !== state;
-            if (view.label.textContent !== text) view.label.textContent = text;
-            if (view.card.dataset.state !== state) view.card.dataset.state = state;
-            if (view.action.textContent !== action) view.action.textContent = action;
+            let changed = false;
+            const write = (node, text) => {
+                if (node.textContent !== text) { node.textContent = text; changed = true; }
+            };
+            write(view.label, presentation.status);
+            write(view.question, preview.question || 'Open the original question for full details.');
+            write(view.answer, preview.answer ? `Your answer: ${preview.answer}` : '');
+            write(view.source, `In ${view.row.project_name || 'Project'}${view.error
+                ? ' · Could not load question details.' : view.loading ? ' · Checking question…' : ''}`);
+            write(view.action, presentation.action);
+            view.retry.hidden = !view.error;
+            if (view.card.dataset.state !== current.state) {
+                view.card.dataset.state = current.state; changed = true;
+            }
             return changed;
         });
     }
 
     async function refreshPointer(view) {
+        if (disposed || view.loading || !view.visible || (view.loaded
+            && ['answered', 'superseded'].includes(view.row.quiz_state))) return;
         const { task_id: taskId, quiz_id: quizId, project_id: projectId } = view.row;
+        view.loading = true; view.error = false;
+        updatePointer(view, view.row);
         try {
             const question = await readQuestion(taskId, quizId, projectId);
-            if (!disposed && pointerViews.get(questionKey(taskId, quizId)) === view) {
-                updatePointer(view, { ...view.row, quiz_state: question?.state || 'unknown',
-                    owner_wait_state: question?.owner_wait_state || '',
-                    owner_wait_resume_reason: question?.owner_wait_resume_reason || '' });
-            }
+            if (disposed || pointerViews.get(questionKey(taskId, quizId)) !== view) return;
+            view.loading = false; view.loaded = Boolean(question); view.error = !question;
+            updatePointer(view, question || view.row);
         } catch {
-            if (!disposed && pointerViews.get(questionKey(taskId, quizId)) === view)
-                updatePointer(view, { ...view.row, quiz_state: 'unknown' });
+            if (disposed || pointerViews.get(questionKey(taskId, quizId)) !== view) return;
+            view.loading = false; view.error = true;
+            updatePointer(view, view.row);
         }
     }
 
@@ -163,26 +185,29 @@ export function createChatDecision({
         card.className = 'project-question-pointer';
         card.dataset.taskId = String(msg.task_id);
         card.dataset.quizId = String(msg.quiz_id);
-        const label = document.createElement('span');
-        const view = { row: { ...msg }, card, label, action: null };
-        view.action = createSystemMessageAction({ label: 'Open question', onClick: () => {
+        const element = (name) => {
+            const node = document.createElement('div'); node.className = `project-question-${name}`; return node;
+        };
+        const view = { row: { ...msg }, card, label: element('status'), question: element('preview'),
+            answer: element('answer'), source: element('source'), visible: false, loaded: false };
+        view.action = createSystemMessageAction({ label: 'View question', onClick: () => {
             window.dispatchEvent(new CustomEvent('ouro:open-project', { detail: {
                 project: { id: view.row.project_id, name: view.row.project_name, chat_id: view.row.project_chat_id },
                 task_id: view.row.task_id, quiz_id: view.row.quiz_id,
             } }));
         } });
-        card.append(label, view.action);
+        view.retry = createSystemMessageAction({ label: 'Retry', onClick: () => { void refreshPointer(view); } });
+        view.retry.hidden = true;
+        card.append(view.question, view.label, view.answer, view.source,
+            createSystemMessageActions(view.action, view.retry));
         const bubble = frameNode(msg, card);
         bubble.classList.remove('assistant');
         bubble.classList.add('system');
         const sender = bubble.querySelector('.sender');
         if (sender) sender.textContent = 'System';
         pointerViews.set(key, view);
-        // Initial open delivery can race a closed frame missed by this instance.
-        const state = observations.get(key)?.state || (msg.quiz_state === 'open' && fetchDetail ? 'unknown' : msg.quiz_state);
-        updatePointer(view, { ...msg, quiz_state: state });
-        // An expired card can still become answered, so it is not settled here.
-        if (fetchDetail && !['answered', 'superseded'].includes(state)) void refreshPointer(view);
+        updatePointer(view, msg);
+        if (fetchDetail) pointerObserver?.observe(card);
         return bubble;
     }
 
@@ -219,6 +244,8 @@ export function createChatDecision({
             state: String(src.state || 'open'),
             taskId: String(msg.task_id || ''),
             ts: msg.ts || null,
+            answerFields: Object.fromEntries(['answered_index', 'comment'].filter((key) => Object.hasOwn(src, key))
+                .map((key) => [key, src[key]])),
             answeredIndex: Number.isInteger(src.answered_index) ? src.answered_index : null,
             // The owner's verbatim words on a settled card (history replay
             // merges them from the projection). With no answeredIndex they
@@ -237,10 +264,6 @@ export function createChatDecision({
         button.append(badge);
     }
 
-    function statusText(state) {
-        // Unknown states read as settled, never as an open invitation.
-        return QUIZ_STATUS_TEXT[state] || 'Closed';
-    }
 
     async function submitAnswer(card, quiz, index, comment) {
         if (card.dataset.pending === '1') return;
@@ -273,10 +296,14 @@ export function createChatDecision({
                 // answers with what was actually RECORDED — index absent for a
                 // free answer, comment as stored. Never render this attempt's
                 // own click over it.
-                const answered = body && Number.isInteger(body.answered_index)
-                    ? body.answered_index
-                    : (body && body.duplicate ? null : (Number.isInteger(index) ? index : null));
-                const recorded = body && typeof body.comment === 'string' ? body.comment : text;
+                const answered = Number.isInteger(body?.answered_index) ? body.answered_index : null;
+                const recorded = typeof body?.comment === 'string' ? body.comment : '';
+                if (body?.ok !== true || body.state !== 'answered'
+                    || (answered !== null && (answered < 0 || answered >= quiz.options.length))
+                    || (answered === null && !recorded.trim())) {
+                    showToast('Answer confirmation unavailable. Check the question before retrying.', 'error');
+                    return;
+                }
                 if (recorded) card.dataset.ownerComment = recorded;
                 else delete card.dataset.ownerComment;
                 setCardState(card, 'answered', answered);
@@ -339,6 +366,10 @@ export function createChatDecision({
             state, answered_index: answeredIndex, comment: card.dataset.ownerComment || '' });
         state = current.state;
         answeredIndex = Number.isInteger(current.answered_index) ? current.answered_index : null;
+        if (current.comment) card.dataset.ownerComment = current.comment;
+        else if (Object.hasOwn(current, 'comment')) delete card.dataset.ownerComment;
+        const pointer = pointerViews.get(questionKey(card.dataset.taskId, card.dataset.quizId));
+        if (pointer) updatePointer(pointer, current);
         const answerable = ANSWERABLE_QUIZ_STATES.includes(state);
         return onDomWrite(() => {
             let changed = card.dataset.state !== state;
@@ -348,16 +379,18 @@ export function createChatDecision({
                 // and what the owner actually said takes its place.
                 const box = card.querySelector('.chat-quiz-comment-box');
                 if (box) { box.remove(); changed = true; }
-                if (renderOwnerAnswer(card, String(card.dataset.ownerComment || ''))) changed = true;
+                if (renderOwnerAnswer(card, state === 'answered' ? String(card.dataset.ownerComment || '') : '')) changed = true;
             }
             if (state !== 'open') {
                 // Nothing is waiting on the owner any more — the task moved on
                 // or finished — even while the card still accepts an answer.
                 const waiting = card.querySelector('.chat-quiz-wait');
                 if (waiting) { waiting.remove(); changed = true; }
+                const ended = card.querySelector('.chat-quiz-wait-ended');
+                if (ended) { ended.remove(); changed = true; }
             }
             const status = card.querySelector('.chat-quiz-status-text');
-            const nextStatus = statusText(state);
+            const nextStatus = questionPresentation(current).status;
             if (status && status.textContent !== nextStatus) {
                 status.textContent = nextStatus;
                 changed = true;
@@ -365,7 +398,7 @@ export function createChatDecision({
             const buttons = card.querySelectorAll('.chat-quiz-option');
             buttons.forEach((btn, i) => {
                 const disabled = !answerable;
-                const chosen = answeredIndex !== null && i === answeredIndex;
+                const chosen = state === 'answered' && answeredIndex !== null && i === answeredIndex;
                 if (btn.disabled !== disabled) {
                     btn.disabled = disabled;
                     changed = true;
@@ -383,14 +416,16 @@ export function createChatDecision({
         const quiz = normalizeQuiz(msg);
         if (!quiz.quizId || !quiz.taskId || !quiz.question || quiz.options.length < 2) return null;
         const key = questionKey(quiz.taskId, quiz.quizId);
-        const current = observe({ task_id: quiz.taskId, quiz_id: quiz.quizId, state: quiz.state,
-            answered_index: quiz.answeredIndex, comment: quiz.comment });
+        const current = observe({ task_id: quiz.taskId, quiz_id: quiz.quizId, state: quiz.state, wait_for_answer: quiz.waitForAnswer,
+            ...(quiz.waitEnded ? { wait_ended_at: true, owner_wait_state: 'resumed' } : {}),
+            ...quiz.answerFields });
         quiz.state = current.state;
         quiz.answeredIndex = Number.isInteger(current.answered_index) ? current.answered_index : null;
         quiz.comment = current.comment || '';
         const existing = quizViews.get(key);
         if (existing) {
             if (quiz.comment) existing.dataset.ownerComment = quiz.comment;
+            else if (Object.hasOwn(current, 'comment')) delete existing.dataset.ownerComment;
             if (!quiz.detailsUnavailable) {
                 existing.querySelectorAll('.chat-quiz-option').forEach((button, index) => {
                     const detail = quiz.options[index]?.detail;
@@ -405,7 +440,8 @@ export function createChatDecision({
             if (quiz.waitEnded || !quiz.waitForAnswer) {
                 // A missed timeout frame: reconciliation projects the closed bound too.
                 const waiting = existing.querySelector('.chat-quiz-wait');
-                if (waiting) { waiting.textContent = WAIT_ENDED_TEXT; waiting.classList.remove('chat-quiz-wait'); }
+                if (waiting) { waiting.textContent = WAIT_ENDED_TEXT;
+                    waiting.classList.remove('chat-quiz-wait'); waiting.classList.add('chat-quiz-wait-ended'); }
             }
             setCardState(existing, quiz.state, quiz.answeredIndex);
             return null;
@@ -538,6 +574,7 @@ export function createChatDecision({
             const assumption = document.createElement('div');
             assumption.className = 'chat-quiz-assumption';
             if (quiz.waitForAnswer) assumption.classList.add('chat-quiz-wait');
+            else if (quiz.waitEnded) assumption.classList.add('chat-quiz-wait-ended');
             assumption.textContent = quiz.waitForAnswer
                 ? 'Waiting for your answer; Stop and the task deadline still apply.'
                 : (quiz.waitEnded ? WAIT_ENDED_TEXT : `Continuing meanwhile: ${quiz.assumption}`);
@@ -720,7 +757,10 @@ export function createChatDecision({
         const quizId = String(frame && frame.quiz_id || '');
         const taskId = String(frame && frame.task_id || '');
         if (!quizId || !taskId || !rootNode) return false;
+        if (frame.wait_for_answer === false && frame.state === 'open')
+            frame = { ...frame, owner_wait_state: 'resumed' };
         frame = observe(frame);
+        settledQuestions.delete(questionKey(taskId, quizId));
         const key = questionKey(taskId, quizId);
         const pointer = pointerViews.get(key);
         const changed = pointer ? updatePointer(pointer, frame) : false;
@@ -733,6 +773,7 @@ export function createChatDecision({
         // lifecycle frame (expired/superseded) carries no comment.
         const comment = String(frame.comment || '');
         if (comment) card.dataset.ownerComment = comment;
+        else if (Object.hasOwn(frame, 'comment')) delete card.dataset.ownerComment;
         let waitChanged = false;
         if (frame.wait_for_answer === false) {
             // The bounded wait closed and the task resumed: the card stays open and
@@ -741,6 +782,7 @@ export function createChatDecision({
             if (waiting) {
                 waiting.textContent = WAIT_ENDED_TEXT;
                 waiting.classList.remove('chat-quiz-wait');
+                waiting.classList.add('chat-quiz-wait-ended');
                 waitChanged = true;
             }
         }
@@ -749,17 +791,22 @@ export function createChatDecision({
 
     return { buildQuizCard, buildQuestionPointer, appendQuestionPointer, readQuestion, revealQuestion, setCardState, applyQuizStateFrame, renderRoutingDecision,
         refreshQuestions: () => Promise.all([...pointerViews.values()]
-            .filter((view) => !['answered', 'superseded'].includes(view.card.dataset.state))
+            .filter((view) => view.visible && !view.error)
             .map(refreshPointer)),
         resetViews(rows = []) {
+            viewGeneration += 1;
             const keep = new Set(rows.map((row) => questionKey(row.task_id, row.quiz_id || row.quiz?.quiz_id)));
             for (const key of observations.keys()) if (!keep.has(key)) observations.delete(key);
+            pointerObserver?.disconnect();
             quizViews.clear(); pointerViews.clear();
         },
         releaseViews(root) {
             for (const [key, card] of quizViews) if (root.contains(card)) quizViews.delete(key);
-            for (const [key, view] of pointerViews) if (root.contains(view.card)) pointerViews.delete(key);
+            for (const [key, view] of pointerViews) if (root.contains(view.card)) {
+                pointerObserver?.unobserve(view.card); pointerViews.delete(key);
+            }
         },
-        destroy() { disposed = true; observations.clear(); quizViews.clear(); pointerViews.clear(); detailReads.clear(); },
+        destroy() { disposed = true; pointerObserver?.disconnect(); observations.clear(); quizViews.clear();
+            pointerViews.clear(); detailReads.clear(); settledQuestions.clear(); },
     };
 }

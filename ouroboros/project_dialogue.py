@@ -69,14 +69,14 @@ def project_question_pointer(row: Dict[str, Any], block: Any, project: Any,
     wait_state = str(waiting.get("state") or "") if waiting.get("quiz_id") == quiz_id else ""
     resume_reason = str(waiting.get("resume_reason") or "") if wait_state else ""
     name = str(project.get("name") or "Project")
-    # A wait that ended on its own bound resumed WITHOUT an answer, so the
-    # question is still wanted: it keeps reading "Answer needed".
-    still_asking = wait_state != "resumed" or resume_reason == "timeout"
-    lead = ("Question status unavailable" if not known else "Question answered" if state == "answered"
-            # The task finished, but its card is still answerable (В17a=A).
-            else "Answer still possible" if state == "expired_terminal"
-            else "Question expired" if state == "superseded"
-            else "Answer needed" if still_asking else "Question")
+    # Waiting is positive evidence, not inferred from an unanswered question.
+    # A resumed wait says nothing about whether an ordinary chat reply arrived.
+    lead = ("Question status unavailable" if not known else "You answered" if state == "answered"
+            else "Task finished — you can still answer" if state == "expired_terminal"
+            else "Replaced by a newer question" if state == "superseded"
+            else "Task continued — you can still answer" if wait_state == "resumed" or block.get("wait_ended_at")
+            else "Waiting for your answer" if wait_state == "waiting"
+            else "Question open — you can answer")
     return {
         "role": "system", "system_type": "project_question_pointer", "task_id": task_id,
         "quiz_id": quiz_id, "quiz_state": state if known else "unknown",

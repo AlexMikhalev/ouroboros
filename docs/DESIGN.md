@@ -451,11 +451,13 @@ answer keep both forms readable. Anatomy, top to bottom:
 
 1. **Head** — neutral `Question` chip (`--type-meta`, neutral pair) and a
    status as dot + text. The lifecycle word family is closed:
-   `Awaiting answer` (neutral dot), `Answered` (ok dot),
-   `Task finished — you can still answer` (neutral dot: the card stays
-   answerable, and a late answer is delivered as the owner's own message),
-   `Superseded by a retry` (disabled dot); an unknown state keeps a neutral dot
-   but reads as settled `Closed`, never as an open invitation. No timers, no
+   `Waiting for your answer` requires positive wait evidence; an open question
+   without it says `Question open — you can answer`. A resumed wait says
+   `Task continued — you can still answer`, without inferring whether an ordinary
+   chat reply arrived. `You answered` uses the ok dot.
+   `Task finished — you can still answer` keeps the neutral dot and answerability;
+   `Replaced by a newer question` uses the disabled dot. Unknown lifecycle reads
+   `Question status unavailable`, never an invented invitation. No timers, no
    countdowns: the asking task's end closes nothing but its own mailbox.
 2. **Question** — the one primary thing: `--type-body` semibold,
    `--text-primary`.
@@ -490,7 +492,9 @@ element in the card shares one keyboard ring (2px `--focus-accent-border`,
 2px offset). Component geometry (card min/max width) keeps local literals like
 the rest of the chat surface.
 
-Required Project questions appear in Main as one neutral System pointer with `Open question` while the card is still answerable (open, or expired after its task ended — a late answer is accepted), then `View question` once answered or superseded; a bounded wait that timed out keeps the pointer's `Answer needed` status until the owner answers. The form remains in Project. Missing source says `Question status unavailable`; resumed work without a recorded answer keeps neutral `Question in <Project>` wording. An explicit click reveals that exact question without toggling the room closed or moving the viewport on background updates.
+Required Project questions appear in Main as one System pointer: the question is primary, its lifecycle and Project source secondary. Settled pointers show both the recorded option (including the first) and comment, or a comment-only answer. Preview cuts are visibly labelled and the complete original stays reachable. The pointer and quiz header share the same lifecycle wording above. Actions say `Answer question` for open/finished answerable cards, `View answer` after an answer, and `View previous question` after replacement. Checking details is neutral; a failed detail read keeps the source and navigation with explicit `Retry`, not a false expiry. The form remains in Project. An explicit click reveals that exact question without toggling the room closed or moving the viewport on background updates.
+
+System-pointer, Project-lifecycle and routing actions all use the shared `createSystemMessageActions` composition. It owns token-based space above and below the controls, wrapping and clearance for the existing button focus ring; action buttons never sit in a clipped/nowrap text line. This is a row composition, not a new card framework or a global button-margin rule.
 
 History with no current execution or known outcome keeps its expandable content under `Outcome unavailable`, without a task chip, typing or Stop. Before complete live-source reconciliation, it is `Activity unconfirmed`. Positive current activity restores only its proven controls. A delivery warning may coexist with a preserved task-acceptance PASS. Model metadata says `Last solve response`, naming the initial request only when the route changed.
 

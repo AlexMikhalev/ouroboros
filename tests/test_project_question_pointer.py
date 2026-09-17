@@ -105,7 +105,7 @@ def test_activity_question_uses_same_memo_and_preserves_wait_semantics(tmp_path,
     assert reads.count(str(tmp_path / "task_results/t1.json")) == 1
     set_owner_wait(tmp_path, "t1", {"quiz_id": "q1", "wait_id": "w1", "state": "resumed"}, "w1")
     rows = gs._chat_activities_snapshot_safe(tmp_path, direct_turns=[])
-    assert rows[0]["required_question"]["text"] == "Question in Waiting Project"
+    assert rows[0]["required_question"]["text"] == "Task continued — you can still answer in Waiting Project"
     assert quiz_states(tmp_path, "t1")["q1"]["state"] == "open"
     # A wait that ended on its OWN bound resumed without an answer, so the
     # question is still wanted: no new wait state, just the additive reason.
@@ -114,7 +114,7 @@ def test_activity_question_uses_same_memo_and_preserves_wait_semantics(tmp_path,
     gs._FINALIZING_MEMO.clear()
     rows = gs._chat_activities_snapshot_safe(tmp_path, direct_turns=[])
     pointer = rows[0]["required_question"]
-    assert pointer["text"] == "Answer needed in Waiting Project"
+    assert pointer["text"] == "Task continued — you can still answer in Waiting Project"
     assert pointer["owner_wait_resume_reason"] == "timeout"
 
 
@@ -128,3 +128,18 @@ def test_details_are_immutable_optional_and_length_checked(tmp_path):
     assert "option_details" not in quiz_states(tmp_path, "t")["old"]
     with pytest.raises(ValueError):
         record_asked(tmp_path, "t", quiz_id="bad", question="?", options=["a", "b"], option_details=["A"])
+
+
+def test_question_presentation_shared_fixture():
+    from pathlib import Path
+    from ouroboros.project_dialogue import project_question_pointer
+
+    cases = json.loads((Path(__file__).resolve().parents[1] /
+                        'web/tests/fixtures/question_presentation_parity.json').read_text())
+    for row in cases:
+        pointer = project_question_pointer(
+            {'task_id': 'task', 'quiz': {'quiz_id': 'q', 'wait_for_answer': True}},
+            {'quiz_id': 'q', **row}, {'id': 'p', 'chat_id': 12, 'name': 'Project'},
+            {'quiz_id': 'q', 'state': row.get('owner_wait_state', ''),
+             'resume_reason': row.get('owner_wait_resume_reason', '')})
+        assert pointer['text'] == row['status'] + ' in Project'

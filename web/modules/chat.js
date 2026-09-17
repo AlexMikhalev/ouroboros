@@ -3,7 +3,7 @@ import { destroyChatMarkdown, enhanceChatMarkdown, renderChatMarkdown } from './
 import { renderPageHeader } from './page_header.js';
 import { PAGE_ICONS } from './page_icons.js';
 import { showToast } from './toast.js';
-import { createSystemMessageAction, renderProjectChip } from './ui_helpers.js';
+import { createSystemMessageAction, createSystemMessageActions, renderProjectChip } from './ui_helpers.js';
 import { bindComposerFileTargets, cleanupUploadedAttachments, createChatMedia, showTaskIncidentToast } from './chat_media.js';
 import { createChatDecision } from './chat_decision.js';
 import { bindProjectWorkPointer } from './project_work_pointer.js';
@@ -2287,9 +2287,7 @@ export function createChatInstance({
         `;
         if (!isProgress && text) chatMedia.attachCopyControl(bubble, String(text));
         if (PROJECT_ROW_TYPES.has(systemType) && projectId) {
-            const actions = document.createElement('div');
-            actions.className = 'system-message-actions';
-            actions.append(createSystemMessageAction({
+            const actions = createSystemMessageActions(createSystemMessageAction({
                 label: 'Open Project ↗',
                 onClick: () => window.dispatchEvent(new CustomEvent('ouro:open-project', {
                     detail: { project: { id: projectId, name: projectName || 'Project' } },

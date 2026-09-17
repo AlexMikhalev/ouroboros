@@ -3,7 +3,7 @@
 // in-flight direct/ephemeral turn status reducer and snapshot hydration.
 import { executorIdentityMarkup } from './harness_presentation.js';
 import { compactModel, formatLogDuration, modelExecutionLabel } from './log_events.js';
-import { createSystemMessageAction } from './ui_helpers.js';
+import { createSystemMessageAction, createSystemMessageActions } from './ui_helpers.js';
 import { joinMarkdownHeadings } from './utils.js';
 import { REUSABLE_TASK_IDS } from './task_control_menu.js';
 import {
@@ -1139,6 +1139,7 @@ export function renderRoutingAnnotation(bubble, annotation) {
         const hasStatus = bubble.dataset.chatAnnotationStatus !== undefined;
         if (!note && !hasStatus) return false;
         note?.remove();
+        bubble.querySelector('.msg-routing-actions')?.remove();
         if (hasStatus) delete bubble.dataset.chatAnnotationStatus;
         return true;
     }
@@ -1156,6 +1157,7 @@ export function renderRoutingAnnotation(bubble, annotation) {
         else bubble.append(note);
     }
     if (!changed) return false;
+    bubble.querySelector('.msg-routing-actions')?.remove();
     note.textContent = text;
     note.dataset.annotationText = text;
     note.dataset.destinationKey = destinationKey;
@@ -1171,7 +1173,11 @@ export function renderRoutingAnnotation(bubble, annotation) {
                 task_id: annotation.target || '',
             } })),
         });
-        note.append(button);
+        const actions = createSystemMessageActions(button);
+        actions.classList.add('msg-routing-actions');
+        const time = bubble.querySelector('.msg-time');
+        if (time) time.before(actions);
+        else bubble.append(actions);
     }
     return changed;
 }

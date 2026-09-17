@@ -1,0 +1,11 @@
+[
+  {"state":"open", "status":"Question open — you can answer", "action":"Answer question"},
+  {"state":"open", "owner_wait_state":"waiting", "status":"Waiting for your answer", "action":"Answer question"},
+  {"state":"open", "owner_wait_state":"resumed", "status":"Task continued — you can still answer", "action":"Answer question"},
+  {"state":"open", "owner_wait_state":"resumed", "owner_wait_resume_reason":"timeout", "status":"Task continued — you can still answer", "action":"Answer question"},
+  {"state":"open", "wait_ended_at":"2026-09-16", "status":"Task continued — you can still answer", "action":"Answer question"},
+  {"state":"answered", "owner_wait_state":"waiting", "status":"You answered", "action":"View answer"},
+  {"state":"expired_terminal", "status":"Task finished — you can still answer", "action":"Answer question"},
+  {"state":"superseded", "status":"Replaced by a newer question", "action":"View previous question"},
+  {"state":"unknown", "status":"Question status unavailable", "action":"View question"}
+]
