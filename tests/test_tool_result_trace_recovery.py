@@ -256,7 +256,7 @@ def test_recovery_reads_redacted_projection_even_when_raw_payload_is_retained(tm
     secret = "sk-" + "secret" * 8
     full = FULL + "\n" + json.dumps({"api_key": secret})
     ctx, row = _record(tmp_path, full=full, keep_raw=True)
-    manifest = json.loads(pathlib.Path(row["trace_ref"]["manifest_ref"]["path"]).read_text())
+    manifest = json.loads(pathlib.Path(row["trace_ref"]["manifest_ref"]["path"]).read_text(encoding="utf-8"))
     assert secret in observability.read_blob_ref(tmp_path, manifest["full_payload_ref"])["result"]
     calls, reader = [], observability.read_blob_ref
     def track_read(drive, ref, **kwargs):
