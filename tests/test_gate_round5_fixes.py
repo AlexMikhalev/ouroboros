@@ -83,16 +83,20 @@ def qenv(tmp_path, monkeypatch):
 
 def _patch_open_delegated_run(monkeypatch, task_id: str, run_id: str = "run-open"):
     """Custody rows say one delegated run is still open for ``task_id``."""
+    from ouroboros.delegate_custody import RunCustody
+
     calls: list = []
     monkeypatch.setattr(
         "ouroboros.delegate_custody.reconcile_task_runs",
         lambda root, tid, **kw: calls.append(str(tid)) or [],
     )
     # `state` is part of these projections' contract: the terminal audit shares
-    # one custody replay across them, so a double must accept the keyword.
+    # one custody replay across them, so a double must accept the keyword. The
+    # row is a REAL RunCustody: the audit reads its owner kind (`review_owned`)
+    # as well as its ids, and a partial double answers for neither.
     monkeypatch.setattr(
         "ouroboros.delegate_custody.open_runs",
-        lambda root, state=None: [types.SimpleNamespace(task_id=task_id, run_id=run_id)],
+        lambda root, state=None: [RunCustody(task_id=task_id, run_id=run_id)],
     )
     monkeypatch.setattr(
         "ouroboros.delegate_custody.pending_invocations", lambda root, rows=None: [],

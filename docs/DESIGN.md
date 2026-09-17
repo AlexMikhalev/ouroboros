@@ -219,9 +219,13 @@ That row keeps a neutral owner anchor visible, but hides task status and typing
 until a real task status or activity arrives; review presence alone never means
 `Working`, `Done`, or owner attention.
 
-A reviewer panel that settles after its task already ended adds one System
-row to the task's room naming the verdict and which revision it covered; it
-never changes the finished card. Local diagnostic failures remain inspectable
+A host fact about a task is a row of that task's card, never a standalone
+bubble beside it. A reviewer panel that settles after its task already ended
+adds one System row naming the verdict and which revision it covered; that row
+lands inside the finished card (its Reviews group carries the note, the timeline
+keeps the row) without changing the card's chip, title or meta, and a standalone
+row appears only when the task has no card record in the page. The untyped
+terminal host notice and the admission notices stay ordinary rows by design. Local diagnostic failures remain inspectable
 in details and Logs, but do not relabel the whole still-working task. A failed child keeps a compact factual
 `Failed` marker inside its parent while the root continues under its own
 authoritative status. Internal reason codes belong in details and diagnostics,
@@ -414,6 +418,10 @@ not child-task cards and never prove execution by themselves.
 - Disclosure is user-owned. Review results, retries, failures, terminal task
   state, reconnect, and lazy-detail loading update content in place but never
   open or close the task, Reviews section, or group.
+- A panel that settled after its task ended stays one attempt row of its group,
+  labelled as settled after the task ended; its note (which verdict, which
+  revision, whether a reviewer's outcome is still unknown) is host-composed and
+  printed verbatim, leading the attempt detail.
 - Stable keyed rows are reconciled in place. A routine update preserves the
   exact lazy-detail node, focused descendant, and its reading position. Expanded
   groups state exact aggregate accounting when projected and otherwise say

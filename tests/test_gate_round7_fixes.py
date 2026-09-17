@@ -452,8 +452,9 @@ def test_gr7_4_completed_delivery_dedups_across_a_changed_note(tmp_path):
     replay = td.build_completed_result_event(
         tmp_path, task, "sid7", stored, unreconciled_runs=[],
     )
-    assert "run-a" in first["text"] and "run-a" not in replay["text"], (
-        "the disclosure still rides the text"
+    assert first["text"] == replay["text"] == "the answer", "the answer is the model's words"
+    assert "run-a" in first["terminal_custody_notice"] and "terminal_custody_notice" not in replay, (
+        "the disclosure rides the custody row (#1006)"
     )
     assert first["delivery_id"] == replay["delivery_id"], (
         "GR7-4: identity comes from the stable core, never the mutable note"

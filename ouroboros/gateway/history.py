@@ -897,7 +897,9 @@ def _collect_chat_rows(
             if "task_terminal_status" in entry:
                 rec["task_terminal_status"] = str(entry.get("task_terminal_status") or "")
             _copy_task_summary_metadata(rec, entry)
-            for field in (*SUBAGENT_MESSAGE_FIELDS, "initiator"):  # lineage + the origin label
+            # Lineage, the origin label, and the host's card placement (card_row /
+            # card_row_id) — a stored key is replayed verbatim, an absent one is omitted.
+            for field in (*SUBAGENT_MESSAGE_FIELDS, "initiator", "card_row", "card_row_id"):
                 if field in entry:
                     rec[field] = entry[field]
             combined.append(rec)

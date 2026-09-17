@@ -194,6 +194,13 @@ class RunCustody:
     patch_apply_pending: bool = False
     patch_apply_key: str = ""  # Existing apply intent's engine idempotency key.
 
+    @property
+    def review_owned(self) -> bool:
+        """A run a REVIEW surface registered is owned by its panel, not by this
+        task's delegation lifecycle: the panel bounds it, and the task's own
+        terminal is never a verdict about its reviewer (issue #1006)."""
+        return review_owned_source(self.source)
+
 
 # Process-local MEMOIZATION of the rows above — never the authority. A miss falls
 # through to the durable scan, which is why a restart no longer loses custody.
@@ -358,6 +365,7 @@ from ouroboros.delegate_registration_policy import (
     STARTED_FIRST_WINS_FACTS as _STARTED_FIRST_WINS_FACTS,
     STARTED_PROGRESS_FLAGS as _STARTED_PROGRESS_FLAGS,
     STARTED_STR_FIELDS as _STARTED_STR_FIELDS,
+    review_owned_source,
 )
 
 from ouroboros.delegate_source_coverage import (
@@ -985,6 +993,9 @@ def settle_run(drive_root: Any, gateway: Any, custody: RunCustody, detail: Dict[
                 "task_id": custody.task_id,
                 "root_task_id": custody.root_task_id, "parent_task_id": custody.parent_task_id,
                 "route": custody.route_id,
+                # The OWNER kind rides the terminal too: after rotation this may be
+                # the only surviving row (issue #1006; replay stays first-wins).
+                "source": custody.source, "category": custody.category,
                 # Route above remains custody authority. Fresh observations
                 # may differ from a replayed historical ledger row's model;
                 # they never rewrite that row, ownership, bounds or spend.
@@ -1332,6 +1343,7 @@ __all__ = [
     "release_task_runs",
     "reconcile_task_runs",
     "retire_project",
+    "review_owned_source",
     "run_timing",
     "settle_run",
     "settled_output_unread",

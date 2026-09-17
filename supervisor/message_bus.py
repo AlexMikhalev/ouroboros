@@ -1327,6 +1327,15 @@ def log_chat(
             record["initiator"] = str(meta.get("initiator") or "")
         if isinstance(meta.get("origin_message_ref"), dict):
             record["origin_message_ref"] = dict(meta["origin_message_ref"])
+        # The host's placement fact for a task-keyed System row: the row belongs
+        # to the task's card, not beside it. Only the two named placements are
+        # persisted, and the row's stable identity rides with one of them or not
+        # at all — a bare id without a placement names nothing on reload.
+        if meta.get("card_row") in ("timeline", "reviews"):
+            record["card_row"] = str(meta["card_row"])
+            card_row_id = str(meta.get("card_row_id") or "")
+            if card_row_id and len(card_row_id) <= 200:
+                record["card_row_id"] = card_row_id
         if filename:
             record["filename"] = filename
         if mime:

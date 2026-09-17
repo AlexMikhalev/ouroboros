@@ -1405,11 +1405,13 @@ test('native terminal replay retains the actual narration as title', async () =>
 });
 
 
-test('a late acceptance settlement row never rewrites the finished card', async () => {
+test('a late acceptance settlement row without a placement fact never rewrites the finished card', async () => {
     // Owner fork 2=A (2026-09-16): a reviewer panel that settles after the task
-    // ended adds ONE System row to the task's room. It carries the task id like
-    // every task-scoped notice, so the regression to pin is the card: its Done
-    // chip, title and counts stay exactly as the terminal row left them.
+    // ended adds ONE System row to the task's room. Without the host's placement
+    // fact (`card_row`) it stays a standalone row, and the regression to pin is
+    // the card: its Done chip, title and counts stay exactly as the terminal row
+    // left them. The stamped row's in-card placement is pinned in
+    // chat_card_row_placement.test.js.
     const rows = [
         { task_id: 'late-panel', is_progress: true, text: '💬 checking the budget', ts: '2026-09-16T00:00:00Z', task_terminal_status: 'completed' },
         { task_id: 'late-panel', role: 'assistant', text: 'The report is ready.', ts: '2026-09-16T00:01:00Z' },

@@ -161,6 +161,60 @@ class TestCustodyAggregation:
         assert evidence["delegated_runs_started"] == 0
         assert evidence["delegated_runs_settled"] == 0
 
+    def test_the_tasks_own_reviewers_are_not_its_substrate(self, tmp_path):
+        """Issue #1006: a run a REVIEW panel registered under the reviewed
+        task's id is the panel's substrate. Its attempt, counters, model,
+        applied access and failure state are not this task's evidence."""
+        drive = _drive(tmp_path)
+        _emit_started(drive, "run-leaf")
+        assert custody.emit(drive, custody.START_REQUESTED, {
+            "run_id": "", "task_id": "child-1", "invocation_id": "inv-review",
+            "idempotency_key": "inv-review", "request": {"prompt": "packet"},
+            "route": "codex", "source": "review_substrate.extraction",
+        })
+        assert custody.emit(drive, custody.STARTED, {
+            "run_id": "run-review", "task_id": "child-1", "route": "codex",
+            "model": "review-pin", "source": "review_substrate",
+            "category": "task_acceptance_review",
+        })
+        assert custody.emit(drive, custody.SETTLED, {
+            "run_id": "run-review", "task_id": "child-1", "route": "codex",
+            "model": "review-model", "state": "failed", "cost_usd": 4.0,
+            "cost_final": True, "spend_disclosed": True,
+            "access_profile": "workspace_write",
+        })
+        evidence = custody.task_execution_evidence(drive, "child-1")
+        assert evidence["delegated_runs_started"] == 1
+        assert evidence["delegated_runs_settled"] == 0
+        assert evidence["delegated_runs_failed"] == 0
+        assert evidence["delegated_run_failure_states"] == []
+        assert evidence["harness_models"] == []
+        assert evidence["applied_access_profiles"] == []
+        assert evidence["subscription_cost_usd"] is None
+        # The leaf started, so delegation still provably happened.
+        assert evidence["delegate_start_attempted"] is True
+
+    def test_a_reviewers_settlement_that_outlived_its_start_names_itself(self, tmp_path):
+        """After log rotation the SETTLED row may be all that survives — it
+        carries its own ``source``, so it is still the panel's, not the task's.
+        A settled row WITHOUT a source keeps counting as this task's run."""
+        drive = _drive(tmp_path)
+        assert custody.emit(drive, custody.SETTLED, {
+            "run_id": "run-review", "task_id": "child-1", "route": "codex",
+            "model": "review-model", "state": "failed", "source": "review_substrate",
+            "cost_usd": 4.0, "cost_final": True, "spend_disclosed": True,
+        })
+        evidence = custody.task_execution_evidence(drive, "child-1")
+        assert evidence["delegated_runs_started"] == 0
+        assert evidence["delegated_run_failure_states"] == []
+        assert evidence["harness_models"] == []
+
+        _emit_settled(drive, "run-rotated", state="failed")
+        evidence = custody.task_execution_evidence(drive, "child-1")
+        assert evidence["delegated_runs_started"] == 1
+        assert evidence["delegated_run_failure_states"] == ["failed"]
+        assert evidence["harness_models"] == ["claude-sonnet"]
+
 
 class TestEnvelopeReconciliation:
     def test_dispatched_route_with_no_runs_reads_zero_evidence(self, tmp_path):

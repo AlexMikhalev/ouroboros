@@ -638,6 +638,22 @@ both critical. The imperatives:
   generic data-tool behavior while fixing subagent isolation
   (`forward_to_worker` writes only to validated running tasks in the
   current task/root lineage).
+- A custody row carries its owner's kind; every sweep, audit and counter over
+  custody rows states which kinds it covers. A run a review surface registered
+  (`RunCustody.review_owned`, the durable `source` under the review substrate)
+  belongs to its panel: the orphan sweep spares it unless the owner task was
+  cancelled, the terminal audit never lists it as the task's open delegation,
+  the execution-evidence counters never count it as the task's substrate, the
+  nanny hold and the recovery candidate lists never take it for the leaf, and
+  the generic pending-invocation recovery never re-posts it, on an owner
+  cancellation too (re-posting only to cancel would pay for a run nobody
+  wants). "Every open row of
+  the task" is the defect this rule prevents: a task that consciously finishes
+  under a running panel must keep its reviewer alive (issue #1006). A new
+  delegation-domain reader
+  joins the consumer matrix in `tests/test_custody_owner_kinds.py`; physical
+  custody (settlement, the ledger, containment, registration retirement) keeps
+  seeing every run.
 - The DELEGATED Git/payload lane is the other half of that rule: it edits a
   private execution snapshot and reaches a tree only through
   `integrate_delegated_patch` (the apply/reject authority and the orphan
@@ -1334,7 +1350,9 @@ by "Provider Independence" above. Call-site imperatives:
   the post-terminal supplement can collect it; a PASS that settled on the earlier revision accepts the task
   as `previous_revision_accepted`; any other settled verdict lets the ordinary
   path decide. A panel that settles after the task ended is attached to the task
-  result and announced once in the task's room; nothing starts a model turn. The
+  result with a host-composed `late_settlement` note and announced once in the
+  task's room as a `card_row="reviews"` row of the task's card; nothing starts a
+  model turn, and the task's reviewer run is never the task's open delegation. The
   worker never writes Main's live candidate or author decision. Keep
   subtree/status facts
   separate from reviewer findings and Cyber's authority under BIBLE P0.

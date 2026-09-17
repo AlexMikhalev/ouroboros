@@ -362,6 +362,82 @@ def test_notice_is_a_system_row_live_and_on_history_replay(tmp_path, monkeypatch
     assert pending_deliveries(tmp_path) == []
 
 
+def _open_delegated_custody(tmp_path, task_id):
+    """Record one still-open delegated run through the real custody rail."""
+    from ouroboros import delegate_custody as custody, delegate_terminal
+
+    write_task_result(tmp_path, task_id, "completed", result=ANSWER,
+                      delegated_runs_unreconciled=["stale-run"])
+    assert custody.emit(tmp_path, custody.STARTED, {
+        "run_id": "run-open", "task_id": task_id, "route": "fixture",
+        "model": "fixture-model", "profile_id": "fixture-profile",
+        "selected_subagent_id": "fixture-actor", "snapshot_id": "snapshot-one", "shape": {},
+    })
+    assert delegate_terminal.refresh_terminal_reconciliation(tmp_path, task_id)
+
+
+@pytest.mark.parametrize("base", [NOTICE, ""], ids=["with_host_notice", "custody_only"])
+def test_open_custody_is_its_own_card_row_live_and_on_history_replay(tmp_path, monkeypatch, base):
+    """Issue #1006: open delegated execution is a typed row OF the task card.
+
+    It rides its own field on the send event, is owed before the answer is
+    sent, never carries the answer's phase, and replays under the same
+    placement identity. Without a base notice it is the ONLY extra row.
+    """
+    from ouroboros.gateway.history import make_chat_history_endpoint
+    from ouroboros.utils import append_jsonl
+    from supervisor import events_chat_delivery as delivery, message_bus
+    from supervisor.terminal_delivery import build_completed_result_event, pending_deliveries
+
+    _open_delegated_custody(tmp_path, "notice-root")
+    task, event = _emit_terminal(tmp_path, monkeypatch, notice=base)
+    custody = event["terminal_custody_notice"]
+    row_id = event["delivery_id"] + ":custody_notice"
+    assert event["text"] == ANSWER and "Open delegated execution: run-open." in custody
+    assert custody not in event["text"] and event.get("terminal_host_notice", "") == base
+    assert event["progress_meta"]["task_phase"] == "finalizing"
+    stored = load_task_result(tmp_path, task["id"])
+    replay = build_completed_result_event(tmp_path, task, task["id"], stored)
+    assert replay["text"] == ANSWER and replay["terminal_custody_notice"] == custody
+    assert replay["delivery_id"] == event["delivery_id"]
+
+    bridge = message_bus.LocalChatBridge({})
+    frames = []
+    bridge._broadcast_fn = frames.append
+    monkeypatch.setattr(message_bus, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(message_bus, "get_bridge", lambda: bridge)
+    monkeypatch.setattr(message_bus, "load_state", lambda: {"owner_id": 7})
+    monkeypatch.setattr(message_bus, "_advance_project_visible_revision", lambda _chat: None)
+    monkeypatch.setattr(message_bus, "publish_event", lambda *_a, **_kw: None)
+    monkeypatch.setattr(delivery, "_DELIVERED_MESSAGE_IDS", deque(maxlen=256))
+    owed_while_sending = []
+
+    def send(chat_id, text, **kwargs):
+        owed_while_sending.append({row["delivery_id"] for row in pending_deliveries(tmp_path)})
+        return message_bus.send_with_budget(chat_id, text, **kwargs)
+
+    ctx = SimpleNamespace(DRIVE_ROOT=tmp_path, RUNNING={}, append_jsonl=append_jsonl,
+                          send_with_budget=send)
+    delivery._handle_send_message(event, ctx)
+    delivery._handle_send_message(event, ctx)
+    assert row_id in owed_while_sending[0], "the custody row is owed before the answer is sent"
+    expected = [("assistant", ANSWER), *([("system", base)] if base else []), ("system", custody)]
+    chats = [row for row in frames if row.get("type") == "chat"]
+    assert [(row["role"], row["content"]) for row in chats] == expected
+    assert all(row["chat_id"] == task["chat_id"] for row in chats)
+    assert chats[-1]["system_type"] == "custody_notice"
+    assert chats[-1]["card_row"] == "timeline" and chats[-1]["card_row_id"] == row_id
+    assert not {"task_phase", "task_terminal_status"} & chats[-1].keys()
+    response = asyncio.run(make_chat_history_endpoint(tmp_path)(
+        SimpleNamespace(query_params={"chat_id": str(task["chat_id"])})))
+    messages = json.loads(response.body)["messages"]
+    assert [(row["role"], row["text"]) for row in messages] == expected
+    assert messages[-1]["system_type"] == "custody_notice"
+    assert messages[-1]["card_row"] == "timeline" and messages[-1]["card_row_id"] == row_id
+    assert not messages[-1].get("task_terminal_status")
+    assert pending_deliveries(tmp_path) == []
+
+
 @pytest.mark.parametrize("outcome", ["message", "deferred", "silent", "tool_delivered"])
 def test_presence_delivers_host_notice_once_and_preserves_silence(tmp_path, monkeypatch, outcome):
     from ouroboros.presence_runner import PresenceTurnGate, run_presence_turn
@@ -485,3 +561,35 @@ def test_browser_renders_model_answer_and_host_notice_separately(direct_server_w
             assert answer.count() == notice.count() == 1
         finally:
             browser.close()
+
+
+def test_a_custody_split_never_mints_a_task_independent_row_id(tmp_path, monkeypatch):
+    """An answer that reaches the delivery seam without its owed id still yields a
+    custody row keyed by the task's canonical identity; with no task at all the
+    custody text stays on the joined host notice instead of a bare
+    ``:custody_notice`` id the delivered registry would then suppress for every
+    later task."""
+    from types import SimpleNamespace
+
+    from supervisor import events_chat_delivery as ecd
+    from supervisor.terminal_delivery import delivery_id_for
+
+    real = ecd._handle_send_message
+    sent = []
+    monkeypatch.setattr(ecd, "_handle_send_message", lambda evt, ctx: sent.append(dict(evt)))
+    monkeypatch.setattr("supervisor.terminal_delivery.register_pending_delivery", lambda root, row: True)
+    ctx = SimpleNamespace(DRIVE_ROOT=tmp_path)
+    custody = "Open delegated execution: run-x."
+    real({"type": "send_message", "chat_id": 1, "task_id": "t1", "text": "the answer",
+          "terminal_custody_notice": custody}, ctx)
+    answer, row = sent
+    assert row["delivery_id"] == delivery_id_for("t1", "the answer") + ":custody_notice"
+    assert row["progress_meta"]["card_row_id"] == row["delivery_id"]
+    assert row["system_type"] == "custody_notice" and row["text"] == custody
+    assert "terminal_custody_notice" not in answer and "delivery_id" not in answer
+    sent.clear()
+    real({"type": "send_message", "chat_id": 1, "text": "the answer",
+          "terminal_host_notice": "Budget stop retained.", "terminal_custody_notice": custody}, ctx)
+    (only,) = sent
+    assert "terminal_custody_notice" not in only
+    assert only["terminal_host_notice"] == "Budget stop retained.\n\n" + custody

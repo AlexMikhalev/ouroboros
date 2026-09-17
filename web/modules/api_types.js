@@ -415,7 +415,10 @@
  *   bounded with an explicit omission marker, at most 8 rows per actor) and
  *   actors[].findings_omitted (exact count, 0 included). Both are emitted only
  *   when that reviewer produced a parsed response; their absence is a
- *   transport/parse hole, never "zero findings".
+ *   transport/parse hole, never "zero findings". panels[].late_settlement
+ *   ({note, reviewed_revision: "earlier"|"delivered", settled_after_terminal})
+ *   is the host-composed sentence of a panel that settled after its task ended;
+ *   the Reviews group prints the note verbatim.
  * @property {boolean=} worker_saturation_warning
  * @property {string=} source
  * @property {string=} sender_label
@@ -423,6 +426,13 @@
  * @property {string=} client_message_id
  * @property {Object=} transport
  * @property {string=} system_type
+ * @property {"timeline"|"reviews"=} card_row
+ *   A host-stamped placement fact for a task-keyed System row: "timeline" = a
+ *   timeline item of the task's card, "reviews" = the card's Reviews group
+ *   carries the fact (the row is still attached to the card); absent = an
+ *   ordinary row.
+ * @property {string=} card_row_id
+ *   The row's stable identity across live delivery, outbox replay and history.
  * @property {string=} target_label
  * @property {string=} project_id
  * @property {string=} project_name

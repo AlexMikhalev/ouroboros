@@ -99,6 +99,16 @@ SPA, not a relocatable-page or multi-instance panel framework.
   `tests/test_available_subagents_ui_static.py` pins the seam; the
   `ui_browser` acceptance in `tests/test_ui_smoke_agents_panel.py` pins the
   behaviour.
+- A host fact about a task is a row of that task's card, never a standalone
+  bubble beside it. The producer stamps the placement (`card_row` with
+  `card_row_id`); `chat.js` attaches the row to the card record in one helper
+  used by the live branch and by replay, and falls back to a standalone System
+  row only when the task has no card record in the page. A host fact that
+  belongs in the card but is produced without a placement fact is review debt
+  under this rule (CHECKLISTS item 30 checks conformance to it); the untyped terminal host notice and the admission
+  notices stay ordinary rows by design. A client-side list of row types is not
+  the rule (`docs/development/02`, an open default behind a closed exception
+  list).
 - Task outcome truth stays in `log_events.js::taskOutcomeSeverity` and
   `taskTerminalPhase`; `taskPresentation` is the one compact factual
   projection consumed by chips, live completion, history replay, and child

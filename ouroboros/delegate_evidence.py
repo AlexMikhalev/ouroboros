@@ -84,6 +84,10 @@ def task_execution_evidence(drive_root: Any, task_id: str) -> Dict[str, Any]:
     reader. ``subscription_cost_usd`` is the sum of DISCLOSED settled spend and
     ``None`` while nothing settled or any settled run left its spend undisclosed —
     unknown never renders as zero.
+
+    A run a REVIEW surface registered is that panel's substrate, never this task's:
+    its rows carry their own ``source``, and neither its attempt, its counters, its
+    model, its applied access nor its failure state is evidence here (issue #1006).
     """
     from ouroboros import delegate_custody as custody
 
@@ -104,6 +108,10 @@ def task_execution_evidence(drive_root: Any, task_id: str) -> Dict[str, Any]:
     nudge_recorded = False
     start_attempted = False
     partial_work_order_seen = False
+    # Run ids a review-owned row has already named. The log is append-only, so a
+    # run's own STARTED (or START_REQUESTED, or its SETTLED receipt) is seen before
+    # the rest of its rows; a SETTLED row that outlived its start names itself.
+    review_ids: set = set()
     _log_path = custody.event_log_path(drive_root)
     try:
         if _log_path.exists():
@@ -119,6 +127,13 @@ def task_execution_evidence(drive_root: Any, task_id: str) -> Dict[str, Any]:
             # gets the fact from the scan it already pays for (B3).
             nudge_recorded = True
             continue
+        run_id = str(row.get("run_id") or "")
+        if custody.review_owned_source(row.get("source")):
+            if run_id:
+                review_ids.add(run_id)
+            continue
+        if run_id and run_id in review_ids:
+            continue
         if str(row.get("type") or "") in (
             START_BLOCKED, STARTUP_FAULT, custody.START_REQUESTED,
         ):
@@ -126,7 +141,6 @@ def task_execution_evidence(drive_root: Any, task_id: str) -> Dict[str, Any]:
             # a typed pre-mint refusal (START_BLOCKED) or a durable request
             # whose POST then failed (START_REQUESTED with no STARTED row).
             start_attempted = True
-        run_id = str(row.get("run_id") or "")
         if not run_id:
             continue
         kind = str(row.get("type") or "")
@@ -189,7 +203,7 @@ def task_execution_evidence(drive_root: Any, task_id: str) -> Dict[str, Any]:
     if partial_work_order_seen:
         try:
             for entry in custody.replay(drive_root).values():
-                if entry.task_id != tid or not entry.settled:
+                if entry.task_id != tid or not entry.settled or entry.review_owned:
                     continue
                 if custody.work_order_source_verification(entry).get("status") == "cannot_verify":
                     source_unresolved += 1

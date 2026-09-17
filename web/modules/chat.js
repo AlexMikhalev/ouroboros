@@ -160,6 +160,9 @@ export {
 };
 
 const PROJECT_ROW_TYPES = new Set(['project_started', 'project_completion_summary']);
+// The host's card placement values and the timeline phase each one reads as: a
+// custody fact warns, a settled review reads as a result.
+const CARD_ROW_PHASES = new Map([['timeline', 'warn'], ['reviews', 'result']]);
 const CHAT_STORAGE_KEY = 'ouro_chat';
 const CHAT_DRAFT_KEY = 'ouro_chat_draft';
 const CHAT_INPUT_HISTORY_KEY = 'ouro_chat_input_history';
@@ -1200,6 +1203,48 @@ export function createChatInstance({
             });
         }
         return lifecycle.classification === 'source_incomplete' ? false : undefined;
+    }
+
+    // The host's placement fact is the ONE rule for a task-keyed System row: the
+    // row becomes one content-only timeline item of that task's card, keyed by the
+    // host's row identity, and never touches the card's chip, phase, finality or
+    // expansion. `reviews` additionally asks the Reviews group to re-read the
+    // projection that carries the same fact, and the timeline item is what remains
+    // when that read fails. A row with no placement fact, no task, or no card
+    // record for its task keeps the ordinary bubble path — the client holds no
+    // list of system types that attach. A record the two-pass replay has not
+    // mounted yet still owns its rows; pass 2 mounts the card with them.
+    function attachCardRow(msg, rawTs = '', { suppressDomInsert = false } = {}) {
+        const placement = taskKey(msg?.card_row);
+        const phase = CARD_ROW_PHASES.get(placement);
+        const taskId = taskKey(msg?.task_id);
+        const record = phase && taskId ? liveCardRecords.get(taskId) : null;
+        if (!record) return undefined;
+        const lines = String(msg.text ?? msg.content ?? '').split('\n');
+        const headline = lines[0].trim();
+        const rowId = taskKey(msg.card_row_id) || `${taskKey(msg.system_type)}|${rawTs}`;
+        const summary = { phase, headline, body: lines.slice(1).join('\n').trim(), dedupeKey: `cardrow|${rowId}` };
+        return withStableViewport(() => {
+            const before = captureLiveCardProjection(record);
+            let fresh;
+            if (msg.history_id) {
+                // A replayed row keeps its history identity: the item sorts by its
+                // source position and leaves the card with its page.
+                fresh = mergeHistoricalTimelineItem(record, summary, msg, normalizeLogTs(rawTs));
+            } else {
+                const { timelineUpdate } = updateLiveTimelineItem(record, summary, {
+                    ts: normalizeLogTs(rawTs), rawTs, syntheticKey: summary.dedupeKey, headline, inPlaceByKey: true,
+                });
+                fresh = !['none', 'duplicate-skip'].includes(timelineUpdate);
+            }
+            const changed = fresh ? renderLiveCardTimeline(record) : false;
+            updateLiveCardCount(record);
+            reanchorTaskCard(record, rawTs, { suppressDomInsert });
+            ensureLiveCardVisible(record, { suppressDomInsert });
+            // A row that repeats a fact the card already holds asks for no new read.
+            if (fresh && placement === 'reviews') hydrateCardReviews(taskId);
+            return Boolean(changed || liveCardProjectionChanged(before, record));
+        });
     }
 
     function handleCardReference(row) {
@@ -2389,6 +2434,8 @@ export function createChatInstance({
                         historicalTerminalProjections.add(msg.task_id);
                     }
                 }
+                // Rows pass 1 attached to a card; pass 2 mounts the card with them.
+                const cardRowsAttached = new Set();
                 // First pass builds card state without DOM insertion.
                 _syncPass1Active = true;
                 try { for (const msg of messages) {
@@ -2397,6 +2444,10 @@ export function createChatInstance({
                     if (isReplayEvidenceRow(msg) || msg.system_type === 'project_question_pointer') continue;
                     if (handleCardReference(msg) !== undefined) continue;
                     if (attachReviewFromRow(msg, msg.ts || '') !== undefined) continue;
+                    if (attachCardRow(msg, msg.ts || '', { suppressDomInsert: true }) !== undefined) {
+                        cardRowsAttached.add(msg);
+                        continue;
+                    }
                     const taskId = msg.task_id || '';
                     if (!taskId) continue;
                     if (msg.is_progress) {
@@ -2439,6 +2490,7 @@ export function createChatInstance({
                     if (
                         handleCardReference(msg) !== undefined
                         || attachReviewFromRow(msg, msg.ts || '', true) !== undefined
+                        || cardRowsAttached.has(msg)
                     ) continue;
                     // Reconnect: a durably recorded submission must not stay
                     // `Sending...` — history + snapshot are the authorities
@@ -3651,6 +3703,12 @@ export function createChatInstance({
             if (review !== undefined) {
                 syncChatStatus();
                 return review;
+            }
+            const cardRow = attachCardRow(msg, msg.ts || '');
+            if (cardRow !== undefined) {
+                if (cardRow) incrementUnreadIfNeeded(msg);
+                syncChatStatus();
+                return cardRow;
             }
             if (PROJECT_ROW_TYPES.has(msg.system_type)) {
                 const added = addMessage(msg.content, 'system', msg.markdown, msg.ts || null, false, {

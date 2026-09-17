@@ -643,10 +643,10 @@ def salvage_cancelled_output(
 def unreconciled_runs_note(unreconciled_runs: Optional[List[str]]) -> str:
     """GR6-5a: the ONE outcome-independent disclosure line for open delegated runs.
 
-    Appended to the owner's terminal message whenever the list is non-empty,
-    REGARDLESS of the outcome (completed, failed, cancelled, reaped): a task
-    whose teardown left delegated runs open must never read as cleanly
-    finished, and only the cancelled wording used to carry the warning.
+    Carried on the owner's custody row (never inside the model's answer)
+    whenever the list is non-empty, REGARDLESS of the outcome (completed,
+    failed, cancelled, reaped): a task whose teardown left delegated runs open
+    must never read as cleanly finished.
     Returns "" for an empty list.
     """
     runs = [str(rid) for rid in (unreconciled_runs or []) if str(rid)]
@@ -671,14 +671,14 @@ def build_completed_result_event(
     losing both the watchdog trigger and the answer. Returns None when there
     is nothing deliverable (no text / no lineage chat).
 
-    ``unreconciled_runs`` (GR6-5a): a completed answer whose teardown left
-    delegated runs open carries the outcome-independent disclosure line — the
-    completed wording used to omit it entirely. GR7-4: the note rides the TEXT
-    but never the delivery id — the id digests the CORE answer only, so a
-    replay whose rebuilt note shrank (runs reconciled meanwhile) dedups to the
-    same owed message instead of minting a second one. This also makes the id
-    byte-equal to the natural path's ``final:<tid>:<digest>`` for the same
-    stored answer.
+    ``unreconciled_runs``: a completed answer whose teardown left delegated
+    runs open carries the outcome-independent disclosure line on its CUSTODY
+    row, never inside the assistant answer — host words never speak as the
+    model's (issue #1006). The note stays out of the delivery id too: the id
+    digests the CORE answer only, so a replay whose rebuilt note shrank (runs
+    reconciled meanwhile) dedups to the same owed message instead of minting a
+    second one. This also makes the id byte-equal to the natural path's
+    ``final:<tid>:<digest>`` for the same stored answer.
     """
     tid = str(task_id or "").strip()
     core_text = str((stored or {}).get("result") or "")
@@ -686,19 +686,24 @@ def build_completed_result_event(
     chat_id = lineage_chat_id(pathlib.Path(drive_root), task_row, tid)
     if not tid or not core_text or not chat_id:
         return None
-    from ouroboros.task_finalization import terminal_host_notice_text
+    from ouroboros.task_finalization import terminal_custody_notice_text
 
+    runs = [str(rid) for rid in (unreconciled_runs or []) if str(rid)]
+    custody = terminal_custody_notice_text(stored or {})
+    note = unreconciled_runs_note(runs).lstrip("\n")
+    if note and any(run not in custody for run in runs):
+        custody = "\n\n".join(part for part in (note, custody) if part)
+    base_notice = str((stored or {}).get("terminal_host_notice") or "")
     event = {
         "type": "send_message",
         "chat_id": chat_id,
         "task_id": tid,
-        "text": core_text + unreconciled_runs_note(unreconciled_runs),
-        # The natural final answer is rendered as markdown; a re-delivered
-        # copy that drops the format renders as a different message.
+        "text": core_text,
+        # A re-delivered copy that drops markdown renders as a different message.
         "format": "markdown",
         "delivery_id": delivery_id_for(tid, core_text),
-        **({"terminal_host_notice": terminal_host_notice_text(stored or {})}
-           if terminal_host_notice_text(stored or {}) else {}),
+        **({"terminal_host_notice": base_notice} if base_notice else {}),
+        **({"terminal_custody_notice": custody} if custody else {}),
     }
     return project_terminal_result_event(
         pathlib.Path(drive_root), task_row, tid,
@@ -795,9 +800,9 @@ def deliver_completed_result(
     confirmed, so the completed answer goes out through this seam: owed BEFORE
     enqueued, deduped by the same ``final:<tid>:<digest>`` identity the natural
     path mints — a copy the worker already delivered is suppressed durably.
-    Returns whether a send was enqueued. ``unreconciled_runs`` rides the text
-    (GR6-5a) and must match what the owed registration was built with, or the
-    two halves mint different delivery ids.
+    Returns whether a send was enqueued. ``unreconciled_runs`` rides the custody
+    row, never the answer text or the delivery id, so the owed registration and
+    the publish half mint the same ids.
     """
     event = build_completed_result_event(
         pathlib.Path(drive_root), task, task_id, stored,
@@ -837,8 +842,8 @@ def deliver_miss_lane_outcome(
         return True
     try:
         if status == "completed":
-            # GR6-5a: the completed answer carries the outcome-independent
-            # unreconciled-runs line — only the cancelled wording used to.
+            # The completed answer's custody row carries the outcome-independent
+            # unreconciled-runs line; the answer text stays the model's.
             event = build_completed_result_event(
                 pathlib.Path(drive_root), row, task_id, row,
                 unreconciled_runs=list(unreconciled_runs or []),

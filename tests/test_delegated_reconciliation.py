@@ -566,6 +566,7 @@ def test_the_kill_path_claims_a_verdict_only_when_it_writes_one(tmp_path, monkey
 @pytest.mark.parametrize("axes,expected,cancelled", [
     ("infra", "left_live", []),
     ("deliberate", "cancelled", [("run-settled-owner", "owner_task_gone")]),
+    ("review_deliberate", "left_live", []),
 ])
 def test_a_settled_owner_lets_its_durable_outcome_decide_the_live_run(
     tmp_path, axes, expected, cancelled,
@@ -574,6 +575,8 @@ def test_a_settled_owner_lets_its_durable_outcome_decide_the_live_run(
 
     This is what the kill path now does for an already-settled task: an
     infrastructure death spares the live run, a deliberate completion cancels it.
+    The same deliberate completion is NOT a verdict about a run the review panel
+    owns, so that row is spared by the same read (issue #1006).
     """
     import ouroboros.delegate_custody as dc
     from ouroboros.outcomes import infra_failed_axes
@@ -583,6 +586,7 @@ def test_a_settled_owner_lets_its_durable_outcome_decide_the_live_run(
     dc.record_started(tmp_path, dc.RunCustody(
         run_id="run-settled-owner", task_id="t-settled", route_id="r", model="m",
         project_id="p", project_owned=False, root_task_id="t-settled",
+        source="review_substrate" if axes == "review_deliberate" else "delegated_subagent",
         ledger_root=str(tmp_path)))
     dc._CUSTODY.clear()
     if axes == "infra":
@@ -598,6 +602,120 @@ def test_a_settled_owner_lets_its_durable_outcome_decide_the_live_run(
 
     assert [row["action"] for row in outcomes] == [expected]
     assert transport.cancels == cancelled
+    assert outcomes[0].get("reason") == (
+        "review_panel_owns_run" if axes == "review_deliberate" else None)
+    dc._CUSTODY.clear()
+
+
+def _panel_run(tmp_path, source="review_substrate", task_id="t-reviewed",
+               run_id="run-panel"):
+    """One live acceptance-review slot registered under the REVIEWED task's id —
+    the exact shape of the incident behind issue #1006."""
+    import ouroboros.delegate_custody as dc
+
+    dc._CUSTODY.clear()
+    dc.record_started(tmp_path, dc.RunCustody(
+        run_id=run_id, task_id=task_id, route_id="codex", model="m",
+        source=source, category="task_acceptance_review",
+        review_slot_id="triad_286lhb", ledger_root=str(tmp_path)))
+    dc._CUSTODY.clear()
+    return dc
+
+
+@pytest.mark.parametrize("source", ["review_substrate", "review_substrate:task_acceptance"])
+@pytest.mark.parametrize("owner,expected", [
+    ("completed", "left_live"),
+    ("failed", "left_live"),
+    ("cancelled", "cancelled"),
+])
+def test_a_review_panels_run_outlives_every_owner_terminal_but_cancellation(
+    tmp_path, source, owner, expected,
+):
+    """The reviewed task's own terminal is not a verdict about its
+    reviewer. Only an explicit cancellation of the task speaks for the panel too;
+    a completion — the live incident — and an agent-declared failure spare it.
+    Every durable ``review_substrate*`` spelling reads the same."""
+    from ouroboros.task_results import write_task_result
+
+    dc = _panel_run(tmp_path, source=source)
+    write_task_result(tmp_path, "t-reviewed", owner, result="verdict")
+
+    transport = _LiveRunStub(run_id="run-panel")
+    outcomes = dc.reconcile_orphaned_runs(
+        tmp_path, set(), gateway_factory=lambda: transport)
+
+    assert [row["action"] for row in outcomes] == [expected]
+    if expected == "left_live":
+        assert outcomes[0]["reason"] == "review_panel_owns_run"
+        assert transport.cancels == []
+    else:
+        assert transport.cancels == [("run-panel", "owner_task_gone")]
+    dc._CUSTODY.clear()
+
+
+@pytest.mark.parametrize("deliberate,expected", [
+    ("cancelled", "cancelled"),
+    ("completed", "left_live"),
+])
+def test_only_a_claimed_cancellation_speaks_for_a_review_panels_run(
+    tmp_path, deliberate, expected,
+):
+    """The kill boundary audits custody BEFORE writing its terminal, so it states
+    its verdict inline. For a panel-owned run only the cancellation it is about to
+    write counts; any other claimed terminal leaves the reviewer live."""
+    dc = _panel_run(tmp_path)
+    transport = _LiveRunStub(run_id="run-panel")
+    outcomes = dc.reconcile_task_runs(
+        tmp_path, "t-reviewed", gateway_factory=lambda: transport,
+        deliberate_terminal=deliberate)
+
+    assert [row["action"] for row in outcomes] == [expected]
+    assert transport.cancels == (
+        [("run-panel", "owner_task_gone")] if expected == "cancelled" else [])
+    dc._CUSTODY.clear()
+
+
+def test_a_terminal_review_run_still_settles_through_the_sweep(tmp_path):
+    """Physical custody keeps seeing every run: sparing is about the DELEGATION
+    domain, not about leaving a finished reviewer unsettled and unledgered."""
+    dc = _panel_run(tmp_path)
+
+    class _Finished(_LiveRunStub):
+        def get_run(self, rid, **_kw):
+            return {"lastSeq": 2, "summary": {"state": "succeeded", "spendUsd": 0.0}}
+
+    outcomes = dc.reconcile_orphaned_runs(tmp_path, set(), gateway_factory=_Finished)
+
+    assert [row["action"] for row in outcomes] == ["settle_attempted"]
+    assert outcomes[0]["settled"] is True
+    assert [row.run_id for row in dc.open_runs(tmp_path)] == []
+    dc._CUSTODY.clear()
+
+
+def test_a_pending_review_invocation_is_retained_rather_than_re_posted(tmp_path):
+    """The review substrate rejoins its own pending invocation by its exact key
+    (``review_session_custody``); a delegation sweep that re-POSTed it here would
+    bind a second reviewer nobody on this task asked for."""
+    import ouroboros.delegate_custody as dc
+
+    dc._CUSTODY.clear()
+    assert dc.record_start_requested(
+        tmp_path, run_id="", task_id="t-reviewed", invocation_id="inv-panel",
+        idempotency_key="inv-panel", request={"prompt": "review packet"},
+        route="codex", source="review_substrate.extraction")
+    dc._CUSTODY.clear()
+
+    class _NeverStarts(_LiveRunStub):
+        def start_run(self, request, *, idempotency_key=""):
+            pytest.fail("the review substrate owns this invocation's rejoin")
+
+    outcomes = dc.reconcile_orphaned_runs(tmp_path, set(), gateway_factory=_NeverStarts)
+
+    assert outcomes == [{
+        "invocation_id": "inv-panel", "task_id": "t-reviewed",
+        "action": "invocation_retained",
+        "reason": "review_panel_owns_invocation"}]
+    assert _event_types(tmp_path).count("delegate_run_reconciled") == 1
     dc._CUSTODY.clear()
 
 
