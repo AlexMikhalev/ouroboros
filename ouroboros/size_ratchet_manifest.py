@@ -245,5 +245,5 @@ BYTE_BASELINE_DEBT = {
 }
 
 BYTE_DEBT = {
-    "tests/test_devtools_benchmarks.py": 327840,
+    "tests/test_devtools_benchmarks.py": 326550,
 }
