@@ -124,7 +124,7 @@ def render_domain_map(manifest: Manifest) -> str:
         mods_by_domain[manifest.modules[path]].append(path)
 
     L: list[str] = []
-    L.append("# Domain map — v7next")
+    L.append("# Domain map")
     L.append("")
     L.append("Generated from `ouroboros/domains.toml` by `python scripts/check_domains.py"
              " --write`. Do not edit — edit the manifest and regenerate;"
@@ -171,8 +171,8 @@ def render_domain_map(manifest: Manifest) -> str:
         L.append("The strict domain quotient is **acyclic** (`cycle_groups = []`).")
     else:
         L.append(f"{len(manifest.cycle_groups)} pinned cycle group(s) — the SCC ceiling;"
-                 " the target is zero. Witness-level detail lives in"
-                 " `docs/v7next/DOMAIN_QUOTIENT_REPORT.md`.")
+                 " the target is zero. Generate witness-level detail with"
+                 " `python scripts/domain_report.py`.")
         L.append("")
         for i, group in enumerate(manifest.cycle_groups, 1):
             L.append(f"- group {i} ({len(group)} domains): {' ⇄ '.join(group)}")

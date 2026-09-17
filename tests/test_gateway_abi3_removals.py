@@ -1,7 +1,7 @@
 """ABI 7.0 (ABI-3): per-alias removal pins for the five gateway compat aliases.
 
-One test class per alias (F11 axes: declaration / producer / stored tolerance /
-migration surface), per docs/v7next/ABI3_GATEWAY_ALIAS_INVENTORY.md. These pins
+One test class per alias (declaration / producer / stored tolerance /
+migration surface), per docs/architecture/11-frozen-contracts-v1.md. These pins
 are the REMOVAL side; the read-tolerance side lives in
 tests/test_cost_projection.py and the endpoint behavior in
 tests/test_ui_preferences_api.py / tests/test_gateway_history.py.

@@ -10,7 +10,7 @@ Five pure queries whose consumer #1 is Ouroboros itself (self-evolution):
   per ``docs/PERSISTENCE.md``;
 - ``protected_contracts_affected(diff)`` — the protected surfaces
   (``runtime_mode_policy`` inventories) and frozen-contract rows
-  (``docs/v7next/FROZEN_CONTRACTS_INVENTORY.md``) a change set touches.
+  (``docs/inventories/FROZEN_CONTRACTS_INVENTORY.md``) a change set touches.
 
 Everything here is a pure function over data the repository already pins as
 SSOT — the domain manifest, the generated inventories, and the protected-path
@@ -18,8 +18,7 @@ inventories. No LLM, no caches, no ledgers: every reader takes an explicit
 ``repo_root``, reads the carrier files fresh, and raises a teaching
 ``ValueError`` when a carrier is missing or an argument is malformed. The
 model consumes these through the existing ``query_code`` tool
-(``op=architecture``) — the seam decision is recorded in the campaign ledger
-(``docs/v7next/LEDGER_CORRECTIONS.md``, F5 lane C section).
+(``op=architecture``), so code and architecture facts share one query surface.
 """
 
 from __future__ import annotations
@@ -34,7 +33,7 @@ from ouroboros.code_intelligence import CodeInventory, _resolve_relative_import
 
 DOMAIN_MANIFEST_RELPATH = "ouroboros/domains.toml"
 PERSISTENCE_DOC_RELPATH = "docs/PERSISTENCE.md"
-FROZEN_INVENTORY_RELPATH = "docs/v7next/FROZEN_CONTRACTS_INVENTORY.md"
+FROZEN_INVENTORY_RELPATH = "docs/inventories/FROZEN_CONTRACTS_INVENTORY.md"
 
 ARCHITECTURE_FACTS = (
     "owner_of",
@@ -331,7 +330,7 @@ def facade_consumers(
         if not targets:
             raise ValueError(
                 f"{text} is not a facade module (no top-level noqa:F401 re-exports); "
-                "see docs/v7next/FACADE_INVENTORY.md for the facade list"
+                "see docs/inventories/FACADE_INVENTORY.md for the facade list"
             )
     else:
         dotted_map = {_module_dotted(path): path for path in reexports}

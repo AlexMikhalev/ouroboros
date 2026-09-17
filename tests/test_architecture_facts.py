@@ -121,8 +121,8 @@ def test_domain_dependencies_unknown_domain_teaches_the_vocabulary():
 
 def test_facade_scan_matches_the_generated_facade_inventory(reexports):
     """Completeness against the gen/verify-pinned carrier: the runtime scan
-    finds exactly the facade modules docs/v7next/FACADE_INVENTORY.md pins."""
-    inventory_text = (REPO / "docs/v7next/FACADE_INVENTORY.md").read_text(encoding="utf-8")
+    finds exactly the facade modules docs/inventories/FACADE_INVENTORY.md pins."""
+    inventory_text = (REPO / "docs/inventories/FACADE_INVENTORY.md").read_text(encoding="utf-8")
     pinned = set()
     for line in inventory_text.splitlines():
         if line.startswith("| `") and line.count("|") >= 4:

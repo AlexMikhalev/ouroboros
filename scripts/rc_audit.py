@@ -1,25 +1,21 @@
 #!/usr/bin/env python3
-"""ABI 7.0 RC auditor (ABI-7b, F13): pre-upgrade scan of a third-party install.
+"""ABI 7.0 RC auditor: pre-upgrade scan of a third-party install.
 
-The migration-window instrument of owner decision Q6=A: point it at an
-install's DATA ROOT (the directory holding ``settings.json``, ``skills/``,
-``state/``, ``task_results/``) and it names every ABI-7.0 incompatibility with
+Point the migration-window instrument at an install's DATA ROOT (the directory
+holding ``settings.json``, ``skills/``, ``state/``, ``task_results/``) and it names every ABI-7.0 incompatibility with
 its migration BEFORE the owner upgrades. It is strictly READ-ONLY over the
 audited install — it never writes, moves, creates, or locks anything there
 (the report file, when requested, is refused inside the audited root).
 
-Scope (docs/v7next/DESIGN_RC_AUDIT_SCOPE.md) is the UNION of the frozen F3
-lane inventories, emitted as one machine-readable JSON document
-(``--scope``): abi "7.0", sources (tree SHA + the SHA the feeder inventories
+Scope combines the ABI retirement inventories, emitted as one machine-readable
+JSON document (``--scope``): abi "7.0", sources (tree SHA + the SHA the feeder inventories
 were frozen at), and ``checks[]`` of exactly five classes:
 
-- ``gateway-alias`` — the five removed gateway compat aliases
-  (docs/v7next/ABI3_GATEWAY_ALIAS_INVENTORY.md, F11 axes). Stored rows stay
-  read-tolerated BY DESIGN, so on-disk hits are notes; live clients are
+- ``gateway-alias`` — the five removed gateway compat aliases, listed in
+  ``_GATEWAY_ALIASES`` below. Stored rows stay read-tolerated BY DESIGN, so on-disk hits are notes; live clients are
   owner attestation.
-- ``retired-setting`` — keys a release deleted (``RETIRED_SETTING_KEYS``,
-  ABI-5/Q10 and D04 plus earlier retirements): stripped-on-load, value
-  inert. ``since`` separates this window's own removals
+- ``retired-setting`` — keys a release deleted (``RETIRED_SETTING_KEYS``):
+  stripped-on-load, value inert. ``since`` separates this window's own removals
   (``RETIRED_IN_THIS_ABI``) from ones that were already inert.
 - ``comma-list`` — the ABI-10 reviewer comma-list / route keys
   (``RETIRED_COMMA_LIST_SETTING_KEYS``, snapped from settings_defaults at
@@ -31,11 +27,11 @@ were frozen at), and ``checks[]`` of exactly five classes:
   is refused via ``extension_new_pass_admission_error``).
 - ``schema-stamp`` — ABI-2: durable task results require
   ``_schema_version: 1``; pre-7.0 history is QUARANTINED after upgrade
-  (owner decision Q8=B, BY DESIGN — no converter exists; manual recovery
+  (by design — no converter exists; manual recovery
   only: re-stamp and move the file back).
 
 Everything not machine-checkable is an OWNER ATTESTATION list the auditor
-prints verbatim (F13: no pretend-coverage).
+prints verbatim, without claiming automatic verification.
 
 Exit codes: 0 = clean, 1 = incompatibilities found, 2 = install unreadable or
 the audit itself failed (traversal/report-write OSError, or the RuntimeError
@@ -122,12 +118,12 @@ from ouroboros.task_result_schema import (  # noqa: E402
 ABI = "7.0"
 # The base SHA at which every feeder inventory of this scope was frozen and
 # landed (ABI-3 doc, ABI-5/ABI-10 RETIRED_SETTING_KEYS, ABI-1 admission facts,
-# ABI-2 stamp semantics) — the F3.3 serial-tail base.
+# ABI-2 stamp semantics).
 INVENTORIES_FROZEN_AT = "4fa2f01abc02e7f68ee3ce0e3c7931046fc92173"
 
 # Retirements this ABI window itself performs, as opposed to the ones it merely
-# inherits: the P3 scope-review floor (Q10=A) and D04's flat wall-clock timeout
-# pair (owner 1B). An upgrading install reads the difference as "your stored
+# inherits: the P3 scope-review floor and the flat wall-clock timeout
+# pair. An upgrading install reads the difference as "your stored
 # value stopped working in THIS upgrade" versus "it was already inert".
 RETIRED_IN_THIS_ABI = frozenset({
     "OUROBOROS_SCOPE_REVIEW_FLOOR",
@@ -140,7 +136,7 @@ SEV_NOTE = "note"
 
 _MANIFEST_NAMES = ("SKILL.md", "skill.json")
 
-# ABI-3 feeder: docs/v7next/ABI3_GATEWAY_ALIAS_INVENTORY.md (frozen, F11 axes).
+# Removed gateway aliases and their durable-read compatibility.
 _GATEWAY_ALIASES: List[Dict[str, str]] = [
     {
         "id": "gateway-alias",
@@ -187,7 +183,7 @@ _GATEWAY_ALIASES: List[Dict[str, str]] = [
 _UI_PREFERENCES_LEGACY_KEYS = ("project_last_viewed", "project_hidden")
 _STORED_COST_ALIAS_KEYS = ("cost_usd", "cost_usd_with_children", "telegram_chat_id")
 
-# ABI-5 (Q10) knobs removed WITHOUT an install-visible settings key: named in
+# Knobs removed WITHOUT an install-visible settings key: named in
 # the scope prose and the schema-stamp/attestation planes, never as key checks.
 _REMOVED_KNOBS_PROSE = (
     "fail_tasks: the budget-drain batch terminalizer is removed with no "

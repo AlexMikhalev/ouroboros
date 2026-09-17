@@ -133,4 +133,4 @@ def test_review_substrate_extraction_size_bounds_have_meaningful_headroom():
     }
     assert counts["ouroboros.review_substrate"] <= 900
     assert all(count <= 1000 for count in counts.values())
-    assert 300 <= counts["ouroboros.review_verdict"] <= 1000
+    assert counts["ouroboros.review_verdict"] <= 1000

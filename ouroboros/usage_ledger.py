@@ -33,7 +33,7 @@ log = logging.getLogger(__name__)
 LEDGER_REL = pathlib.Path("state/usage_attempts.jsonl")
 QUARANTINE_REL = pathlib.Path("state/usage_attempts.quarantine.jsonl")
 LOCK_REL = pathlib.Path("state/usage_attempts.lock")  # the ONE monetary lock
-# The ONE directory a baseline header may name (CPL4-C6). The substrate owns
+# The ONE directory a baseline header may name. The substrate owns
 # it because the substrate is what decides a row is well formed: a reference
 # out of this directory is corruption, not a reader's problem.
 ARCHIVE_SEGMENT_DIR_REL = pathlib.Path("archive/usage_ledger")
@@ -127,7 +127,7 @@ def valid_archive_rel(value: Any) -> bool:
 
 
 def _validate_baseline_header(row: Dict[str, Any], sequence: int) -> None:
-    """Provenance checks on the compaction stamp (CPL4-C6).
+    """Provenance checks on the compaction stamp.
 
     The header claims a summary of bytes that are no longer in this file, so
     its claim must be checkable WITHOUT reading them: a bounded archive path,
@@ -251,7 +251,7 @@ def _write_bytes_atomic_fsync(
     because a proof taken before a refused attempt is stale by the next one —
     the last instant each replace can still be refused. A ``False`` answer
     cleans up the temp file and returns ``False`` with the destination
-    untouched (CPL4-C6: the compactor re-proves lock ownership and that the
+    untouched (the compactor re-proves lock ownership and that the
     live ledger is still the snapshot it folded, INSIDE the swap, so neither a
     lost hold nor an append landing between attempts is erased by a rename)."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -327,7 +327,7 @@ def _validate_records(
     is mutated in place as the tail validates). Defaults reproduce the historic
     whole-ledger behavior exactly.
 
-    Baseline rows (CPL4-C6 compaction, docs/v7next/DESIGN_USAGE_COMPACTION.md)
+    Baseline rows (docs/USAGE_COMPACTION.md)
     are legal ONLY as the leading block of a from-scratch validation: exactly
     one ``usage_baseline`` header at seq 1, ``usage_baseline_group`` rows
     joined to it by ``baseline_id``. The compactor rewrites the whole file
