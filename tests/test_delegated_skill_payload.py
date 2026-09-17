@@ -828,20 +828,23 @@ def test_child_git_config_diff_driver_does_not_execute_at_capture(tmp_path, monk
     custody._CUSTODY.clear()
 
 
-def test_payload_instructions_variant_is_payload_only(tmp_path, monkeypatch):
+@pytest.mark.parametrize("access", ["workspace_write", "full"])
+def test_payload_instructions_variant_is_payload_only(tmp_path, monkeypatch, access):
     """Gate fix 3: ordinary runs keep the blanket ban byte-identically; only a
     payload run gets the narrowed ban plus the explicit permission block."""
     from ouroboros.subagents import delegated_run_shape
     from ouroboros.tools.delegate import _HOST_INSTRUCTIONS, _host_instructions
 
     ordinary = _host_instructions(delegated_run_shape(False))
-    assert "runtime controls, skills, or memory" in ordinary
+    assert "do not touch the host's runtime controls, skills, or memory" in ordinary
     assert "PAYLOAD ASSIGNMENT" not in ordinary
-    payload = _host_instructions(delegated_run_shape(True), payload_skill="alpha")
+    mutating = _host_instructions(delegated_run_shape(True, access))
+    assert "do not touch the host's runtime controls, skills, or memory" in mutating
+    payload = _host_instructions(delegated_run_shape(True, access), payload_skill="alpha")
     assert "runtime controls, skills, or memory" not in payload
-    assert "runtime controls or memory" in payload
+    assert "do not touch the host's runtime controls or memory" in payload
     assert "PAYLOAD ASSIGNMENT" in payload and "'alpha'" in payload
-    assert "runtime controls, skills, or memory" in _HOST_INSTRUCTIONS  # source intact
+    assert "do not touch the host's runtime controls, skills, or memory" in _HOST_INSTRUCTIONS  # source intact
 
 
 def test_idempotent_already_applied_branch_runs_the_finalizer(tmp_path, monkeypatch):

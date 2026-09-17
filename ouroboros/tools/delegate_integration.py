@@ -689,8 +689,8 @@ def payload_host_instructions(text: str, skill_name: str) -> str:
     explicit, truthful permission block is appended.
     """
     adjusted = text.replace(
-        "do not touch unrelated host runtime controls, skills, or memory",
-        "do not touch unrelated host runtime controls or memory")
+        "do not touch the host's runtime controls, skills, or memory",
+        "do not touch the host's runtime controls or memory")
     return adjusted + (
         "\nPAYLOAD ASSIGNMENT: this working tree is a PRIVATE standalone copy of "
         f"the installed skill payload '{skill_name}'. Editing its user-authored "

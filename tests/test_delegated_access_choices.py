@@ -23,7 +23,7 @@ def _settings(access=None):
 def test_direct_default_and_lowering_reach_actual_post(full_run, monkeypatch, lower, expected):
     ctx, target, facts = full_run
     monkeypatch.setattr(delegate, 'prepare_delegate_start_actor', runtime.prepare_delegate_start_actor)
-    monkeypatch.setattr('ouroboros.config.runtime_settings', lambda **_: _settings())
+    monkeypatch.setenv('OUROBOROS_SUBAGENTS', json.dumps(_settings()['OUROBOROS_SUBAGENTS']))
     options = {'subagent_id': 'coder', **({'access': lower} if lower else {})}
     result = delegate_payload(runtime.exact_start(ctx, 'Inspect or implement the assigned change.', options))
     assert result['status'] == 'started', result
