@@ -11,6 +11,7 @@ import pytest
 
 from ouroboros import loop, model_wait, usage_accounting as ua
 from ouroboros.llm_attempt import _attempt_request, _candidate_before_dispatch
+from ouroboros.llm_claudexor import cache_key_for_model
 from ouroboros.loop_model_call import _reprepare_waiting_main
 from ouroboros.model_slots import MODEL_ACCOUNTS_KEY
 from tests.test_context_fit_integration import _plan
@@ -91,7 +92,7 @@ def test_native_account_repair_rebinds_real_physical_candidate_before_send(main_
     assert dispatched[1]["physical_context"]["route_fp"] == "capacity-account-b"
     assert dispatched[1]["physical_context"]["capacity_total_tokens"] == 240_000
     assert observations[0]["model_route"] == ROUTE_B
-    assert len(gateway.operations) == 2 and gateway.creates[0] != gateway.creates[1]
+    assert len(gateway.accepted_operations) == 2 and gateway.creates[0] != gateway.creates[1]
     resent = gateway.uploads[1][0]["messages"]
     assert "nativeContinuation" not in resent[2]
     assert resent[2]["tool_calls"] == original[2]["tool_calls"] and resent[3:] == original[3:]
@@ -106,7 +107,7 @@ def test_quota_auto_wait_rejoins_same_round_then_repairs_changed_account(main_ca
     gateway.dispatch = ["not_started", "not_started", "response_received"]
     answer, cost, mode = _dispatch(ctx)
     assert answer and cost is None and mode == "max"
-    assert len(gateway.operations) == 3
+    assert len(gateway.accepted_operations) == 3
     assert ctx.accumulated_usage["rounds"] == 1
     assert ctx.accumulated_usage["_model_route"] == ROUTE_B
     assert ctx.accumulated_usage["_context_route_fp"] == "capacity-account-b"
@@ -178,14 +179,14 @@ def test_manual_switch_updates_only_waiting_role_and_continues_current_main_call
 def test_main_control_interrupt_is_typed_no_retry_and_keeps_operation_custody(main_call, monkeypatch):
     ctx, gateway, controller, _events, _decide, _observations = main_call
     gateway.pending = True
-    monkeypatch.setattr(controller, "control_reason", lambda: "cancelled" if gateway.operations else None)
+    monkeypatch.setattr(controller, "control_reason", lambda: "cancelled" if gateway.accepted_operations else None)
     with pytest.raises(model_wait.ModelWaitInterrupted) as raised:
         _dispatch(ctx)
     error = raised.value
     assert error.control_reason == "cancelled" and error.operation_id == "op-0"
     assert error.physical_attempt_capture.state == "unresolved"
     assert error.model_role_route["role"] == "main"
-    assert len(gateway.operations) == 1 and gateway.cancels == [("op-0", "host_cancelled")]
+    assert len(gateway.accepted_operations) == 1 and gateway.cancels == [("op-0", "host_cancelled")]
     assert not controller.waits and not ctx.accumulated_usage.get("_last_llm_retry_same_request")
 
 
@@ -198,7 +199,7 @@ def test_cancel_after_result_keeps_settled_usage_and_exact_result(main_call, mon
     assert raised.value.usage["prompt_tokens"] == 20
     assert raised.value.physical_attempt_capture.state == "settled"
     assert raised.value.route == ROUTE
-    assert len(gateway.operations) == 1
+    assert len(gateway.accepted_operations) == 1
 
 
 def test_native_repair_without_main_callback_refuses_stale_physical_fit(setup):
@@ -212,7 +213,7 @@ def test_native_repair_without_main_callback_refuses_stale_physical_fit(setup):
     with ua.bind_physical_attempt_context(physical):
         with pytest.raises(model_wait.ModelWaitInterrupted, match="model_wait_reprepare_required"):
             client.chat([result()["message"]], MODEL, model_role="main")
-    assert len(gateway.operations) == 1
+    assert len(gateway.accepted_operations) == 1
 
 
 def test_unknown_main_outcome_never_retries_or_waits_for_quota(main_call):
@@ -220,7 +221,7 @@ def test_unknown_main_outcome_never_retries_or_waits_for_quota(main_call):
     gateway.results, gateway.dispatch = [result(outcome="unknown")], ["unknown"]
     answer, _cost, _mode = _dispatch(ctx)
     assert answer is None and ctx.accumulated_usage["_last_llm_error_kind"] == "provider_outcome_unknown"
-    assert len(gateway.operations) == 1 and not controller.waits
+    assert len(gateway.accepted_operations) == 1 and not controller.waits
     assert ledger(ctx.drive_root)[-1]["state"] == "unresolved"
 
 
@@ -312,7 +313,7 @@ def test_a_same_route_wait_and_reprepare_update_the_original_slot(main_call, tur
         assert _dispatch(ctx)[0]
     # The slot the loop still owns is the one the durable result must have replaced.
     assert ctx.tools._ctx.model_turn_state is slot and slot.envelope == TURN
-    assert len(gateway.operations) == 2 and gateway.uploads[-1][0]["nativeContinuation"] is None
+    assert len(gateway.accepted_operations) == 2 and gateway.uploads[-1][0]["nativeContinuation"] is None
 
 
 def test_a_helper_call_cannot_overwrite_the_running_loop_slot(setup, turn_engine):
@@ -535,11 +536,11 @@ def test_live_owner_wait_reprojects_affinity(main_call, monkeypatch, destination
         "execution_id": ctx.accumulated_usage["execution_id"],
         "owner_switch_saved": decisions[0]["saved"],
         "completed_tool_texts": [x["content"] for x in ctx.messages if x.get("role") == "tool"],
-        "gateway_operations": len(gateway.operations),
+        "gateway_operations": len(gateway.accepted_operations),
     }
     assert facts["completed_tool_texts"] == ["verified read A", "completed review B"]
     assert ctx.accumulated_usage["execution_id"] == CACHE_REPREPARE_EXECUTION
-    assert prepared[-1]["cache_affinity"] == ("" if use_local or destination != MODEL else CACHE_REPREPARE_EXECUTION), (
+    assert prepared[-1]["cache_affinity"] == ("" if use_local or destination != MODEL else cache_key_for_model(MODEL)), (
         facts
     )
     if not use_local:
@@ -568,7 +569,7 @@ def test_recorded_wait_override_reprojects_affinity_before_send(main_call, initi
     # API/local have no subscription quota wait of their own.
     controller.overrides["main"] = {"model": MODEL, "use_local": False, "model_account_override": ""}
     answer, _, _ = _dispatch(ctx)
-    assert answer and len(gateway.operations) == 1
+    assert answer and len(gateway.accepted_operations) == 1
     payload = gateway.uploads[0][0]
     facts = {
         "initial_model": initial_model,
@@ -576,9 +577,11 @@ def test_recorded_wait_override_reprojects_affinity_before_send(main_call, initi
         "active_model": ctx.active_model,
         "cache_key": payload["options"].get("cacheKey"),
         "execution_id": ctx.accumulated_usage["execution_id"],
-        "gateway_operations": len(gateway.operations),
+        "gateway_operations": len(gateway.accepted_operations),
         "completed_tool_texts": [x["content"] for x in ctx.messages if x.get("role") == "tool"],
     }
     assert facts["completed_tool_texts"] == ["verified read A", "completed review B"]
     assert ctx.accumulated_usage["execution_id"] == CACHE_REPREPARE_EXECUTION
-    assert payload["options"].get("cacheKey") == CACHE_REPREPARE_EXECUTION, facts
+    # The override re-prepared the send for the subscription route, so the wire
+    # carries the install-scoped Codex key that route shares across executions.
+    assert payload["options"].get("cacheKey") == cache_key_for_model(MODEL), facts

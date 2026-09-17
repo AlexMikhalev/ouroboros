@@ -6,14 +6,17 @@
 // settles into the plain routing ack line once its dispatch is confirmed.
 import { MAX_DECISION_COMMENT, MAX_QUIZ_OPTIONS } from './api_types.js';
 import { renderRoutingAnnotation, routingOptionLabel } from './chat_activity.js';
-import { createSystemMessageAction } from './ui_helpers.js';
+import { createSystemMessageAction, createSystemMessageActions } from './ui_helpers.js';
 
-const QUIZ_STATUS_TEXT = {
-    open: 'Awaiting answer',
-    answered: 'Answered',
-    expired_terminal: 'Task finished — question expired',
-    superseded: 'Superseded by a retry',
-};
+import { ANSWERABLE_QUIZ_STATES, QUIZ_LIFECYCLE, questionPresentation, questionPreview, waitFacts } from './question_presentation.js';
+
+const WAIT_FIELDS = ['wait_for_answer', 'wait_ended_at', 'owner_wait_state', 'owner_wait_resume_reason'];
+// The signature line after a bounded wait closed says the same thing the host notice
+// does (DESIGN "Quiz card"): the default path the task took, and that silence was not
+// read as consent. The card stays answerable either way.
+const waitEndedText = (assumption) => (assumption
+    ? `The wait ended; the task continued under its assumption (${assumption}) — you can still answer.`
+    : 'The wait ended without an answer; the task continued and did not take silence as consent — you can still answer.');
 
 // Neutral, factual statuses (owner decision 15~A): the card never scolds the
 // router — it states what the click does and what happened.
@@ -43,20 +46,37 @@ export function createChatDecision({
     const questionKey = (taskId, quizId) => JSON.stringify([String(taskId || ''), String(quizId || '')]);
     let disposed = false;
     let questionNavigation = 0;
-    function observe(frame) {
+    // One lifecycle observation per question, merged from every source (history rows,
+    // the live quiz_state frame, a detail read). Lifecycle only moves forward: a settled
+    // state never reopens, an answer is never downgraded to expiry, an unknown row
+    // keeps what is known. Wait facts have one extra rule: once a LIVE frame closed the
+    // wait, a snapshot that still says "waiting" (an older history row, a detail read
+    // begun before the frame) cannot reopen it — the live half is the newer fact.
+    function observe(frame, live = false) {
+        frame = { ...frame, state: frame.state || frame.quiz_state };
+        delete frame.quiz_state;
         const key = questionKey(frame.task_id, frame.quiz_id);
         const previous = observations.get(key);
         if (!frame.task_id || !frame.quiz_id) return frame;
-        if (previous && previous.state !== 'open' && frame.state === 'open') return previous;
-        if (previous?.state === 'answered' && frame.state === 'expired_terminal') return previous;
-        if (['open', 'answered', 'expired_terminal', 'superseded'].includes(frame.state)) {
-            observations.set(key, { ...previous, ...frame });
-            if (observations.size > 2000) observations.delete(observations.keys().next().value);
-        }
-        return ['answered', 'expired_terminal', 'superseded'].includes(observations.get(key)?.state)
-            ? observations.get(key) : frame;
+        if (!QUIZ_LIFECYCLE.includes(frame.state)) return { ...frame, ...previous };
+        if (previous && previous.state !== 'open' && frame.state === 'open') return { ...frame, ...previous };
+        if (previous?.state === 'answered' && frame.state === 'expired_terminal') return { ...frame, ...previous };
+        const next = { ...previous };
+        for (const field of ['task_id', 'quiz_id', 'state', 'answered_index', 'comment', ...WAIT_FIELDS])
+            if (Object.hasOwn(frame, field)) next[field] = frame[field];
+        if (!live && previous?.live_wait && frame.state === 'open')
+            for (const field of WAIT_FIELDS) {
+                if (Object.hasOwn(previous, field)) next[field] = previous[field]; else delete next[field];
+            }
+        if (live && WAIT_FIELDS.some((field) => Object.hasOwn(frame, field))) next.live_wait = true;
+        observations.set(key, next);
+        if (observations.size > 2000) observations.delete(observations.keys().next().value);
+        return { ...frame, ...next };
     }
 
+    // The exact source of one question, read from task detail only when navigation
+    // needs the original form outside the loaded Project history. One in-flight read
+    // per task; the result is a snapshot, so observe() keeps any newer live fact.
     async function readQuestion(taskId, quizId, projectId) {
         if (!fetchDetail || disposed) return null;
         if (!detailReads.has(taskId)) {
@@ -69,10 +89,12 @@ export function createChatDecision({
         if (disposed || String(detail?.task_id || detail?.id || '') !== String(taskId)
             || (projectId && String(detail?.project_id || '') !== String(projectId))
             || !block || String(block.quiz_id || '') !== String(quizId)
-            || !['open', 'answered', 'expired_terminal', 'superseded'].includes(block.state)) return null;
-        const current = observe({ ...block, task_id: taskId });
-        return { ...block, ...current, task_id: taskId, project_id: detail.project_id,
-            ts: block.asked_at, owner_wait_state: detail.owner_wait?.quiz_id === quizId ? detail.owner_wait.state : '' };
+            || !QUIZ_LIFECYCLE.includes(block.state)) return null;
+        const wait = detail.owner_wait?.quiz_id === quizId ? detail.owner_wait
+            : detail.owner_wait?.quiz_id ? { state: 'resumed' } : null;
+        const source = { ...block, task_id: taskId, project_id: detail.project_id, ts: block.asked_at,
+            ...(wait ? { owner_wait_state: wait.state || '', owner_wait_resume_reason: wait.resume_reason || '' } : {}) };
+        return { ...source, ...observe(source) };
     }
 
     async function revealQuestion(taskId, quizId, projectId, chatId, appendQuiz, isVisible, beforeReveal = () => {}) {
@@ -101,42 +123,34 @@ export function createChatDecision({
         return true;
     }
 
-    function pointerText(row, state) {
-        const lead = state === 'answered' ? 'Question answered'
-            : ['expired_terminal', 'superseded'].includes(state) ? 'Question expired'
-                : state !== 'open' ? 'Question status unavailable'
-                    : row.owner_wait_state === 'resumed' ? 'Question' : 'Answer needed';
-        return `${lead} in ${row.project_name || 'Project'}`;
-    }
-
-    function updatePointer(view, frame) {
-        const current = observe({ ...frame, state: frame.quiz_state || frame.state });
-        view.row = { ...view.row, ...frame };
-        const state = String(current.state || 'unknown');
+    // The pointer paints from its row alone: history and the live delivery carry the
+    // question, option labels, the recorded answer and the wait facts (the Python
+    // producer is project_dialogue.project_question_pointer). Freshness comes from the
+    // ordinary history reconciliation and the quiz_state frame, never a poll of its own.
+    function updatePointer(view, frame, live = false) {
+        const current = observe({ ...frame, state: frame.state || frame.quiz_state }, live);
+        // A narrower re-delivery (the activity census, a lifecycle frame) never blanks the
+        // question or the option labels a complete row already painted.
+        for (const field of ['question', 'options', 'project_name'])
+            if (field in current && (current[field] == null || current[field] === '' || current[field]?.length === 0)) delete current[field];
+        view.row = { ...view.row, ...current, quiz_state: current.state };
+        const presentation = questionPresentation(view.row);
+        const preview = questionPreview(view.row);
         return onDomWrite(() => {
-            const text = pointerText(view.row, state);
-            const action = state === 'open' ? 'Open question' : 'View question';
-            const changed = view.label.textContent !== text || view.action.textContent !== action
-                || view.card.dataset.state !== state;
-            if (view.label.textContent !== text) view.label.textContent = text;
-            if (view.card.dataset.state !== state) view.card.dataset.state = state;
-            if (view.action.textContent !== action) view.action.textContent = action;
+            let changed = false;
+            const write = (node, text) => {
+                if (node.textContent !== text) { node.textContent = text; changed = true; }
+            };
+            write(view.label, presentation.status);
+            write(view.question, preview.question || 'Open the original question for its text.');
+            write(view.answer, preview.answer ? `Your answer: ${preview.answer}` : '');
+            write(view.source, `In ${view.row.project_name || 'Project'}`);
+            write(view.action, presentation.action);
+            if (view.card.dataset.state !== current.state) {
+                view.card.dataset.state = current.state; changed = true;
+            }
             return changed;
         });
-    }
-
-    async function refreshPointer(view) {
-        const { task_id: taskId, quiz_id: quizId, project_id: projectId } = view.row;
-        try {
-            const question = await readQuestion(taskId, quizId, projectId);
-            if (!disposed && pointerViews.get(questionKey(taskId, quizId)) === view) {
-                updatePointer(view, { ...view.row, quiz_state: question?.state || 'unknown',
-                    owner_wait_state: question?.owner_wait_state || '' });
-            }
-        } catch {
-            if (!disposed && pointerViews.get(questionKey(taskId, quizId)) === view)
-                updatePointer(view, { ...view.row, quiz_state: 'unknown' });
-        }
     }
 
     function buildQuestionPointer(msg) {
@@ -148,25 +162,25 @@ export function createChatDecision({
         card.className = 'project-question-pointer';
         card.dataset.taskId = String(msg.task_id);
         card.dataset.quizId = String(msg.quiz_id);
-        const label = document.createElement('span');
-        const view = { row: { ...msg }, card, label, action: null };
-        view.action = createSystemMessageAction({ label: 'Open question', onClick: () => {
+        const element = (name) => {
+            const node = document.createElement('div'); node.className = `project-question-${name}`; return node;
+        };
+        const view = { row: { ...msg }, card, label: element('status'), question: element('preview'),
+            answer: element('answer'), source: element('source') };
+        view.action = createSystemMessageAction({ label: 'View question', onClick: () => {
             window.dispatchEvent(new CustomEvent('ouro:open-project', { detail: {
                 project: { id: view.row.project_id, name: view.row.project_name, chat_id: view.row.project_chat_id },
                 task_id: view.row.task_id, quiz_id: view.row.quiz_id,
             } }));
         } });
-        card.append(label, view.action);
+        card.append(view.question, view.label, view.answer, view.source, createSystemMessageActions(view.action));
         const bubble = frameNode(msg, card);
         bubble.classList.remove('assistant');
         bubble.classList.add('system');
         const sender = bubble.querySelector('.sender');
         if (sender) sender.textContent = 'System';
         pointerViews.set(key, view);
-        // Initial open delivery can race a closed frame missed by this instance.
-        const state = observations.get(key)?.state || (msg.quiz_state === 'open' && fetchDetail ? 'unknown' : msg.quiz_state);
-        updatePointer(view, { ...msg, quiz_state: state });
-        if (fetchDetail && !['answered', 'expired_terminal', 'superseded'].includes(state)) void refreshPointer(view);
+        updatePointer(view, msg);
         return bubble;
     }
 
@@ -198,10 +212,16 @@ export function createChatDecision({
             options,
             stake: String(src.stake || ''),
             assumption: String(src.assumption || ''),
+            // The wait facts the header and the signature line read (waitFacts): the
+            // original required flag, the closed bound, and the task's wait record when
+            // history or a detail read attached it.
+            waitRow: Object.fromEntries(WAIT_FIELDS.filter((key) => Object.hasOwn(src, key)).map((key) => [key, src[key]])),
             waitForAnswer: src.wait_for_answer === true,
             state: String(src.state || 'open'),
             taskId: String(msg.task_id || ''),
             ts: msg.ts || null,
+            answerFields: Object.fromEntries(['answered_index', 'comment'].filter((key) => Object.hasOwn(src, key))
+                .map((key) => [key, src[key]])),
             answeredIndex: Number.isInteger(src.answered_index) ? src.answered_index : null,
             // The owner's verbatim words on a settled card (history replay
             // merges them from the projection). With no answeredIndex they
@@ -220,10 +240,6 @@ export function createChatDecision({
         button.append(badge);
     }
 
-    function statusText(state) {
-        // Unknown states read as settled, never as an open invitation.
-        return QUIZ_STATUS_TEXT[state] || 'Closed';
-    }
 
     async function submitAnswer(card, quiz, index, comment) {
         if (card.dataset.pending === '1') return;
@@ -256,13 +272,25 @@ export function createChatDecision({
                 // answers with what was actually RECORDED — index absent for a
                 // free answer, comment as stored. Never render this attempt's
                 // own click over it.
-                const answered = body && Number.isInteger(body.answered_index)
-                    ? body.answered_index
-                    : (body && body.duplicate ? null : (Number.isInteger(index) ? index : null));
-                const recorded = body && typeof body.comment === 'string' ? body.comment : text;
+                const answered = Number.isInteger(body?.answered_index) ? body.answered_index : null;
+                const recorded = typeof body?.comment === 'string' ? body.comment : '';
+                if (body?.ok !== true || body.state !== 'answered'
+                    || (answered !== null && (answered < 0 || answered >= quiz.options.length))
+                    || (answered === null && !recorded.trim())) {
+                    showToast('Answer confirmation unavailable. Check the question before retrying.', 'error');
+                    return;
+                }
                 if (recorded) card.dataset.ownerComment = recorded;
                 else delete card.dataset.ownerComment;
                 setCardState(card, 'answered', answered);
+                // A late answer is recorded like any other; where it went is the
+                // host's fact (`forwarded`), so the card says so instead of implying
+                // the finished task will act on it.
+                if (body.answered_after_terminal === true) {
+                    showToast(body.forwarded === true
+                        ? 'Answer recorded. The task had finished, so it was delivered to its chat as your message.'
+                        : 'Answer recorded. The task had finished; nothing is waiting on it.', 'info');
+                }
                 return;
             }
             const status = res ? res.status : 0;
@@ -280,11 +308,9 @@ export function createChatDecision({
                     ? 'Already answered.' : 'This question is no longer open.', 'error');
                 return;
             }
-            if (status === 409 && card.dataset.state === 'open') {
-                setCardState(card, 'expired_terminal', null);
-                showToast('This question is no longer open.', 'error');
-                return;
-            }
+            // A bodyless 409 no longer invents an expiry: an expired card is
+            // still answerable, so the only honest thing to report is that
+            // this attempt did not land. The card keeps its state.
             showToast(`Could not record the answer (${status || 'network error'}).`, 'error');
         } catch (err) {
             showToast('Could not record the answer (network error).', 'error');
@@ -324,28 +350,39 @@ export function createChatDecision({
             state, answered_index: answeredIndex, comment: card.dataset.ownerComment || '' });
         state = current.state;
         answeredIndex = Number.isInteger(current.answered_index) ? current.answered_index : null;
+        if (current.comment) card.dataset.ownerComment = current.comment;
+        else if (Object.hasOwn(current, 'comment')) delete card.dataset.ownerComment;
+        const pointer = pointerViews.get(questionKey(card.dataset.taskId, card.dataset.quizId));
+        if (pointer) updatePointer(pointer, current);
+        const answerable = ANSWERABLE_QUIZ_STATES.includes(state);
         return onDomWrite(() => {
             let changed = card.dataset.state !== state;
             if (changed) card.dataset.state = state;
-            if (state !== 'open') {
+            if (!answerable) {
                 // A settled card takes no more input: the draft field goes,
                 // and what the owner actually said takes its place.
                 const box = card.querySelector('.chat-quiz-comment-box');
                 if (box) { box.remove(); changed = true; }
-                if (renderOwnerAnswer(card, String(card.dataset.ownerComment || ''))) changed = true;
+                if (renderOwnerAnswer(card, state === 'answered' ? String(card.dataset.ownerComment || '') : '')) changed = true;
+            }
+            if (state !== 'open') {
+                // Nothing is waiting on the owner any more — the task moved on
+                // or finished — even while the card still accepts an answer.
                 const waiting = card.querySelector('.chat-quiz-wait');
                 if (waiting) { waiting.remove(); changed = true; }
+                const ended = card.querySelector('.chat-quiz-wait-ended');
+                if (ended) { ended.remove(); changed = true; }
             }
             const status = card.querySelector('.chat-quiz-status-text');
-            const nextStatus = statusText(state);
+            const nextStatus = questionPresentation(current).status;
             if (status && status.textContent !== nextStatus) {
                 status.textContent = nextStatus;
                 changed = true;
             }
             const buttons = card.querySelectorAll('.chat-quiz-option');
             buttons.forEach((btn, i) => {
-                const disabled = state !== 'open';
-                const chosen = answeredIndex !== null && i === answeredIndex;
+                const disabled = !answerable;
+                const chosen = state === 'answered' && answeredIndex !== null && i === answeredIndex;
                 if (btn.disabled !== disabled) {
                     btn.disabled = disabled;
                     changed = true;
@@ -364,13 +401,15 @@ export function createChatDecision({
         if (!quiz.quizId || !quiz.taskId || !quiz.question || quiz.options.length < 2) return null;
         const key = questionKey(quiz.taskId, quiz.quizId);
         const current = observe({ task_id: quiz.taskId, quiz_id: quiz.quizId, state: quiz.state,
-            answered_index: quiz.answeredIndex, comment: quiz.comment });
+            ...quiz.waitRow, ...quiz.answerFields });
         quiz.state = current.state;
         quiz.answeredIndex = Number.isInteger(current.answered_index) ? current.answered_index : null;
         quiz.comment = current.comment || '';
+        const wait = waitFacts(current);
         const existing = quizViews.get(key);
         if (existing) {
             if (quiz.comment) existing.dataset.ownerComment = quiz.comment;
+            else if (Object.hasOwn(current, 'comment')) delete existing.dataset.ownerComment;
             if (!quiz.detailsUnavailable) {
                 existing.querySelectorAll('.chat-quiz-option').forEach((button, index) => {
                     const detail = quiz.options[index]?.detail;
@@ -382,6 +421,13 @@ export function createChatDecision({
                 });
                 existing.querySelector('.chat-quiz-details-unavailable')?.remove();
             }
+            if (!wait.waiting) {
+                // A missed timeout frame, or a wait the owner resumed by ordinary input:
+                // reconciliation projects the closed wait too.
+                const waiting = existing.querySelector('.chat-quiz-wait');
+                if (waiting) { waiting.textContent = waitEndedText(existing.dataset.assumption || '');
+                    waiting.classList.remove('chat-quiz-wait'); waiting.classList.add('chat-quiz-wait-ended'); }
+            }
             setCardState(existing, quiz.state, quiz.answeredIndex);
             return null;
         }
@@ -390,6 +436,7 @@ export function createChatDecision({
         card.className = 'chat-quiz-card';
         card.dataset.quizId = quiz.quizId;
         card.dataset.taskId = quiz.taskId;
+        if (quiz.assumption) card.dataset.assumption = quiz.assumption;
         quizViews.set(key, card);
 
         const head = document.createElement('div');
@@ -450,7 +497,7 @@ export function createChatDecision({
                 btn.append(detail);
             }
             btn.addEventListener('click', () => {
-                if (card.dataset.state !== 'open') return;
+                if (!ANSWERABLE_QUIZ_STATES.includes(card.dataset.state)) return;
                 // A typed remark rides WITH the click: the owner picked this
                 // option and said why, one answer, one request.
                 submitAnswer(card, quiz, index, commentText());
@@ -466,9 +513,10 @@ export function createChatDecision({
         }
 
         // Free answer: none of the options may fit, and the owner must not be
-        // forced to pick the least wrong one. Always visible while the card is
-        // open (no disclosure to discover), removed once it settles.
-        if (quiz.state === 'open') {
+        // forced to pick the least wrong one. Always visible while the card
+        // still takes an answer (no disclosure to discover), removed once it
+        // settles — a finished task's card is still answerable.
+        if (ANSWERABLE_QUIZ_STATES.includes(quiz.state)) {
             const box = document.createElement('div');
             box.className = 'chat-quiz-comment-box';
             commentField = document.createElement('textarea');
@@ -489,7 +537,7 @@ export function createChatDecision({
             };
             commentField.addEventListener('input', () => onDomWrite(() => { syncSend(); return true; }));
             send.addEventListener('click', () => {
-                if (card.dataset.state !== 'open') return;
+                if (!ANSWERABLE_QUIZ_STATES.includes(card.dataset.state)) return;
                 const text = commentText();
                 if (!commentPresent()) return;
                 if (text.length > MAX_DECISION_COMMENT) {
@@ -508,13 +556,16 @@ export function createChatDecision({
         // The signature line: what the agent keeps doing while the owner has
         // not answered — and, once the card settles, the record of the path
         // it took by default.
-        if (quiz.assumption || quiz.waitForAnswer) {
+        // A replayed row keeps only the closed bound once its required flag was dropped.
+        const waitEnded = (quiz.waitForAnswer || Boolean(quiz.waitRow.wait_ended_at)) && !wait.waiting;
+        if (quiz.assumption || quiz.waitForAnswer || waitEnded) {
             const assumption = document.createElement('div');
             assumption.className = 'chat-quiz-assumption';
-            if (quiz.waitForAnswer) assumption.classList.add('chat-quiz-wait');
-            assumption.textContent = quiz.waitForAnswer
+            if (wait.waiting) assumption.classList.add('chat-quiz-wait');
+            else if (waitEnded) assumption.classList.add('chat-quiz-wait-ended');
+            assumption.textContent = wait.waiting
                 ? 'Waiting for your answer; Stop and the task deadline still apply.'
-                : `Continuing meanwhile: ${quiz.assumption}`;
+                : (waitEnded ? waitEndedText(quiz.assumption) : `Continuing meanwhile: ${quiz.assumption}`);
             card.append(assumption);
         }
 
@@ -586,7 +637,7 @@ export function createChatDecision({
                     body.state === 'open' ? 'open' : body.state,
                     Number.isInteger(body.answered_index) ? body.answered_index : null);
                 showToast(body.state === 'open'
-                    ? `Not routed: ${body.reason || 'the destination refused this message'} — pick again.`
+                    ? `Not routed: ${body.cause || body.reason || 'the destination refused this message'} — pick again.`
                     : body.state === 'pending'
                         ? 'Another choice is already being routed.'
                         : 'This message was already routed.', 'error');
@@ -694,9 +745,14 @@ export function createChatDecision({
         const quizId = String(frame && frame.quiz_id || '');
         const taskId = String(frame && frame.task_id || '');
         if (!quizId || !taskId || !rootNode) return false;
-        frame = observe(frame);
+        // The production timeout frame says only `wait_for_answer:false`: that IS the
+        // resumed wait, and as a live fact it outranks any snapshot that still waits.
+        if (frame.wait_for_answer === false && frame.state === 'open')
+            frame = { ...frame, owner_wait_state: 'resumed' };
+        frame = observe(frame, true);
         const key = questionKey(taskId, quizId);
         const pointer = pointerViews.get(key);
+        // Observed once above as live; the pointer repaints from the merged observation.
         const changed = pointer ? updatePointer(pointer, frame) : false;
         const card = quizViews.get(key);
         if (!card) return changed;
@@ -707,13 +763,23 @@ export function createChatDecision({
         // lifecycle frame (expired/superseded) carries no comment.
         const comment = String(frame.comment || '');
         if (comment) card.dataset.ownerComment = comment;
-        return setCardState(card, String(frame.state || ''), index) || changed;
+        else if (Object.hasOwn(frame, 'comment')) delete card.dataset.ownerComment;
+        let waitChanged = false;
+        if (frame.wait_for_answer === false) {
+            // The bounded wait closed and the task resumed: the card stays open and
+            // answerable, but it no longer says the task is waiting.
+            const waiting = card.querySelector('.chat-quiz-wait');
+            if (waiting) {
+                waiting.textContent = waitEndedText(card.dataset.assumption || '');
+                waiting.classList.remove('chat-quiz-wait');
+                waiting.classList.add('chat-quiz-wait-ended');
+                waitChanged = true;
+            }
+        }
+        return setCardState(card, String(frame.state || ''), index) || changed || waitChanged;
     }
 
     return { buildQuizCard, buildQuestionPointer, appendQuestionPointer, readQuestion, revealQuestion, setCardState, applyQuizStateFrame, renderRoutingDecision,
-        refreshQuestions: () => Promise.all([...pointerViews.values()]
-            .filter((view) => !['answered', 'expired_terminal', 'superseded'].includes(view.card.dataset.state))
-            .map(refreshPointer)),
         resetViews(rows = []) {
             const keep = new Set(rows.map((row) => questionKey(row.task_id, row.quiz_id || row.quiz?.quiz_id)));
             for (const key of observations.keys()) if (!keep.has(key)) observations.delete(key);

@@ -49,6 +49,21 @@ def executor_observation_meta(
     return observation
 
 
+def initiator_meta(record: Mapping[str, Any] | None) -> Dict[str, Any]:
+    """The turn's origin label — ``initiator`` from a task record or its ``metadata``.
+
+    A consciousness wake-up (and, later, the roots it starts) carries
+    ``metadata.initiator = "consciousness"``; an owner's turn carries nothing.
+    Producers merge this into their frame meta beside the subagent identity so
+    the label survives the same hops (frame -> chat.jsonl row -> replay).
+    """
+    source = record if isinstance(record, Mapping) else {}
+    nested = source.get("metadata")
+    metadata = nested if isinstance(nested, Mapping) else {}
+    value = str(source.get("initiator") or metadata.get("initiator") or "").strip()
+    return {"initiator": value} if value else {}
+
+
 def subagent_message_meta(
     record: Mapping[str, Any] | None,
     *,

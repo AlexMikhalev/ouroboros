@@ -4,8 +4,10 @@ The host's ``chat.quiz`` event carries the card identity (``task_id``,
 ``quiz_id``). The owner's button tap or reply is relayed to the SAME decision
 ingress the web card uses — Host Service ``POST /chat/decision`` →
 ``task_decision.answer_decision`` — so the answer is idempotent per
-``request_id`` (``tg:<update_id>``), first answer wins, and a late answer gets
-the same honest 404/409 the browser gets. The only state kept here maps a
+``request_id`` (``tg:<update_id>``), first answer wins, and a late answer is
+accepted exactly as it is for the browser card: the host records it and delivers
+it into the card's chat as an ordinary owner message, and the toast says which
+of those happened. The only state kept here maps a
 short callback token and the sent message to that identity: Telegram caps
 ``callback_data`` at 64 bytes, too short for the ids themselves. Nothing here
 parses the owner's words; a reply is delivered verbatim as their own answer.
@@ -31,6 +33,8 @@ _TEXTS = {
     "en": {
         "hint": "Tap an option, or reply to this message with your own answer.",
         "recorded": "✅ Answer delivered to the task.",
+        "late_delivered": "✅ The task had already finished — your answer was delivered to the chat.",
+        "late_recorded": "✅ Answer recorded. The task had already finished and this card has no chat to deliver it to.",
         "already": "This question was already answered.",
         "expired": "This question has expired — the task moved on.",
         "gone": "This question is no longer known to Ouroboros.",
@@ -40,6 +44,8 @@ _TEXTS = {
     "ru": {
         "hint": "Нажмите вариант или ответьте на это сообщение своим текстом.",
         "recorded": "✅ Ответ передан задаче.",
+        "late_delivered": "✅ Задача уже завершилась — ответ доставлен в чат.",
+        "late_recorded": "✅ Ответ записан. Задача уже завершилась, а доставлять его в чат некуда.",
         "already": "На этот вопрос уже отвечали.",
         "expired": "Вопрос устарел — задача уже двинулась дальше.",
         "gone": "Этот вопрос Ouroboros больше не знает.",
@@ -140,6 +146,10 @@ async def _deliver(
 def _outcome_text(status: int, payload: Dict[str, Any], lang: str) -> str:
     texts = _texts(lang)
     if status < 400:
+        if payload.get("answered_after_terminal") is True:
+            # The card outlived its task: the answer became an owner message in
+            # the card's chat, unless that chat has no owner turn to start.
+            return texts["late_delivered" if payload.get("forwarded") else "late_recorded"]
         return texts["recorded"]
     if status == 404:
         return texts["gone"]

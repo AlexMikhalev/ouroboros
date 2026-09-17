@@ -1,4 +1,4 @@
-"""Copied binary/large inputs retain exact preimages without entering Git's ODB."""
+"""Snapshot working bytes stay exact; binary/large preimages stay outside Git's ODB."""
 from hashlib import sha256
 from pathlib import Path
 import subprocess
@@ -172,3 +172,112 @@ def test_baseline_file_copy_failure_cleans_checkout_ref_and_record(tmp_path, mon
     assert find_execution_snapshot("input-snapshot", tmp_path / "data") is None
     assert not git(target, "for-each-ref", "refs/ouroboros/delegated/").stdout
     assert not list((tmp_path / "snapshots").glob("dlg_*"))
+
+
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"], ids=["lf", "crlf"])
+@pytest.mark.parametrize("policy", ["autocrlf", "attributes"])
+def test_git_checkout_preserves_working_bytes_and_normal_patch_semantics(tmp_path, newline, policy):
+    target = target_tree(tmp_path)
+    git(target, "config", "core.autocrlf", "true" if policy == "autocrlf" else "false")
+    if policy == "attributes":
+        (target / ".gitattributes").write_bytes(b"*.txt text eol=crlf\n")
+    original = newline.join([b"original", b"working bytes", b""])
+    for name in ("code.txt", "staged.txt", "untracked.txt"):
+        (target / name).write_bytes(original)
+    git(target, "add", "staged.txt")
+    (target / "deleted.txt").write_bytes(b"removed before snapshot\n")
+    git(target, "add", "deleted.txt")
+    (target / "deleted.txt").unlink()
+    before_status = git(target, "status", "--porcelain=v1", "-z").stdout
+    before_index = git(target, "ls-files", "--stage", "-z").stdout
+    before_head = git(target, "rev-parse", "HEAD").stdout
+
+    handle = snapshot(tmp_path, target)
+    execution = Path(handle.path)
+    for name in ("code.txt", "staged.txt", "untracked.txt"):
+        assert (execution / name).read_bytes() == original
+    assert not (execution / "deleted.txt").exists()
+    assert git(target, "status", "--porcelain=v1", "-z").stdout == before_status
+    assert git(target, "ls-files", "--stage", "-z").stdout == before_index
+    assert git(target, "rev-parse", "HEAD").stdout == before_head
+    assert all((target / name).read_bytes() == original
+               for name in ("code.txt", "staged.txt", "untracked.txt"))
+    manifest, rows = capture(tmp_path, handle)
+    assert manifest["status"] == "ready_no_changes" and manifest["patch_size"] == 0 and rows == []
+
+    changed = original.replace(b"original", b"child edit")
+    (execution / "code.txt").write_bytes(changed)
+    manifest, rows = capture(tmp_path, handle)
+    assert manifest["status"] == "ready_with_changes" and rows == []
+    assert manifest["tracked_changed"] == ["code.txt"]
+    patch = tmp_path / "capture" / "workspace.patch"
+    git(target, "apply", "--binary", "--check", str(patch))
+    git(target, "apply", "--binary", str(patch))
+    # Explicit apply retains the target's normal Git checkout representation.
+    assert (target / "code.txt").read_bytes() == b"child edit\r\nworking bytes\r\n"
+    assert (target / "staged.txt").read_bytes() == original
+    assert (target / "untracked.txt").read_bytes() == original
+    assert git(target, "ls-files", "--stage", "-z").stdout == before_index
+    assert git(target, "rev-parse", "HEAD").stdout == before_head
+
+
+@pytest.mark.parametrize("failure", ["copy_error", "source_changed"])
+def test_regular_input_copy_failure_cleans_snapshot_without_rewriting_target(tmp_path, monkeypatch, failure):
+    from ouroboros import artifacts
+
+    target = target_tree(tmp_path)
+    before_index = git(target, "ls-files", "--stage", "-z").stdout
+    before_head = git(target, "rev-parse", "HEAD").stdout
+    before_bytes = (target / "code.txt").read_bytes()
+    original = artifacts.copy_artifact_file
+    newer = b"concurrent owner edit\n"
+
+    def copy(source, destination, **kwargs):
+        if Path(source) == target / "code.txt":
+            if failure == "copy_error":
+                raise OSError("source changed during copy")
+            Path(source).write_bytes(newer)
+        return original(source, destination, **kwargs)
+
+    monkeypatch.setattr(artifacts, "copy_artifact_file", copy)
+    expected = OSError if failure == "copy_error" else subprocess.CalledProcessError
+    with pytest.raises(expected):
+        snapshot(tmp_path, target)
+    assert (target / "code.txt").read_bytes() == (newer if failure == "source_changed" else before_bytes)
+    assert git(target, "ls-files", "--stage", "-z").stdout == before_index
+    assert git(target, "rev-parse", "HEAD").stdout == before_head
+    assert find_execution_snapshot("input-snapshot", tmp_path / "data") is None
+    assert not git(target, "for-each-ref", "refs/ouroboros/delegated/").stdout
+    assert not list((tmp_path / "snapshots").glob("dlg_*"))
+
+
+def test_snapshot_keeps_git_link_entries_out_of_regular_file_copy(tmp_path, monkeypatch):
+    from ouroboros import artifacts
+
+    target = target_tree(tmp_path)
+    # Git's portable symlink checkout is a regular file containing the target;
+    # the baseline mode, not its host file type, still owns that representation.
+    git(target, "config", "core.symlinks", "false")
+    (target / "link").write_bytes(b"code.txt")
+    oid = git(target, "hash-object", "-w", "link").stdout.decode().strip()
+    git(target, "update-index", "--add", "--cacheinfo", f"120000,{oid},link")
+    commit = git(target, "rev-parse", "HEAD").stdout.decode().strip()
+    git(target, "update-index", "--add", "--cacheinfo", f"160000,{commit},nested")
+    git(target, "-c", "user.name=Fixture", "-c", "user.email=f@invalid", "commit", "-m", "link entries")
+    (target / "nested").mkdir()  # An uninitialized gitlink stays Git-owned.
+    before_index = git(target, "ls-files", "--stage", "-z").stdout
+    original = artifacts.copy_artifact_file
+
+    def copy(source, destination, **kwargs):
+        assert Path(source).name not in {"link", "nested"}
+        return original(source, destination, **kwargs)
+
+    monkeypatch.setattr(artifacts, "copy_artifact_file", copy)
+    handle = snapshot(tmp_path, target)
+    execution = Path(handle.path)
+    assert (execution / "link").read_bytes() == b"code.txt"
+    assert git(execution, "ls-tree", "HEAD", "link").stdout.startswith(b"120000 blob ")
+    assert git(execution, "ls-tree", "HEAD", "nested").stdout.startswith(b"160000 commit ")
+    assert git(target, "ls-files", "--stage", "-z").stdout == before_index
+    manifest, rows = capture(tmp_path, handle)
+    assert manifest["status"] == "ready_no_changes" and rows == []

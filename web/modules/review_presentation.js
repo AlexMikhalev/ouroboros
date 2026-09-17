@@ -810,6 +810,11 @@ export function taskAcceptanceGroupFromTaskDetail(detail, ownerTaskId = '') {
         }, 'Author stance (unbound)');
     const attempts = panels.map((panel, index) => {
         const verdict = text(panel?.aggregate_signal || 'UNKNOWN');
+        // The host composed this sentence; the card prints it verbatim and
+        // leads the detail with it, because the renderer shows detailText over
+        // summary. The panel's own verdict and identity are untouched.
+        const late = panel?.late_settlement && typeof panel.late_settlement === 'object' ? panel.late_settlement : null;
+        const lateNote = late ? text(late.note) : '';
         return {
             id: [attemptIdentity(panel, `panel:${index + 1}`),
                 panel.task_attempt == null ? '' : `task-attempt:${panel.task_attempt}`,
@@ -820,8 +825,8 @@ export function taskAcceptanceGroupFromTaskDetail(detail, ownerTaskId = '') {
             verdict,
             timestamp: text(panel?.ts || panel?.timestamp),
             ordinal: index,
-            label: `panel ${text(panel?.panel_id || index + 1)}`,
-            summary: text(panel?.reason),
+            label: `panel ${text(panel?.panel_id || index + 1)}${late ? ' · settled after the task ended' : ''}`,
+            summary: lateNote || text(panel?.reason),
             superseded: Boolean(panel?.superseded),
             replayed: false,
             revised: false,
@@ -830,7 +835,7 @@ export function taskAcceptanceGroupFromTaskDetail(detail, ownerTaskId = '') {
             execution: null,
             detailRef: { surface: 'task_acceptance', url: panel.applied_source_status === 'available'
                 ? taskSourceDownloadUrl(owner, panel.applied_source_ref) : '' },
-            detailText: [formatReviewProjection({ panels: [panel] }),
+            detailText: [lateNote, formatReviewProjection({ panels: [panel] }),
                 authorDispositionText(panel.author_disposition), 'Cost unavailable'].filter(Boolean).join('\n'),
         };
     });

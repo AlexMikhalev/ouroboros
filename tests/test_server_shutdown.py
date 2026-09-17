@@ -637,6 +637,12 @@ def _supervisor_harness(monkeypatch, tmp_path, steps):
         def stop(self):
             pass
 
+        def tick(self, now=None):
+            pass
+
+        def notify(self, reason):
+            pass
+
     import time as time_mod
 
     noop = lambda *_a, **_k: None  # noqa: E731

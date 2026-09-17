@@ -307,3 +307,20 @@ def test_archive_parse_gap_and_zero_quota_are_not_a_cursor_loop(tmp_path):
     assert loaded[-1]["has_more"] is False and loaded[-1]["window"]["complete"] is False
     assert "chat_malformed_jsonl" in loaded[-1]["window"]["truncated_by"]
     assert not any(message.get("is_progress") for page in loaded for message in page["messages"])
+
+
+def test_a_closed_bounded_wait_reaches_the_replayed_card(tmp_path):
+    """The durable wait lifecycle rides the replay overlay: once the bound closed (the
+    projection dropped `wait_for_answer`, kept `wait_ended_at`), the replayed card no longer
+    says the task is waiting (astra scope round 4)."""
+    from ouroboros.owner_quiz import mark_wait_ended, record_asked
+
+    quiz = {"quiz_id": "w1", "question": "Proceed?", "state": "open", "wait_for_answer": True,
+            "options": [{"label": "Yes"}, {"label": "No"}]}
+    write(tmp_path / "logs" / "chat.jsonl", [row(0, direction="out", type="quiz", task_id="wait-task", quiz=quiz)])
+    record_asked(tmp_path, "wait-task", quiz_id="w1", question="Proceed?", options=["Yes", "No"],
+                 assumption="", wait_for_answer=True, chat_id=1)
+    assert mark_wait_ended(tmp_path, "wait-task", "w1") is True
+    [ask] = [message for page in pages(tmp_path) for message in page["messages"] if message.get("msg_type") == "quiz"]
+    assert ask["quiz"]["state"] == "open" and ask["quiz"]["wait_ended_at"]
+    assert "wait_for_answer" not in ask["quiz"]

@@ -5,7 +5,7 @@ stays under the hard module gate.  This module is a LEAF: it reads runtime logs,
 version carriers and custody ledgers and renders the "## Health Invariants"
 section.  It must never import ``ouroboros.context`` — ``context`` re-exports
 ``safe_read`` / ``build_health_invariants`` so every historical import site
-(``ouroboros.context.safe_read``, ``ouroboros.consciousness``, the tests that
+(``ouroboros.context.safe_read``, ``ouroboros.consciousness_wake``, the tests that
 monkeypatch ``context._STRAY_PROBE_CACHE``) keeps working unchanged.
 """
 
@@ -45,30 +45,6 @@ def _iter_recent_jsonl(path: pathlib.Path, max_bytes: int = 256_000):
 def _collect_log_analysis_checks(env: Any, checks: List[str]) -> None:
     import hashlib
     import time as _time
-
-    try:
-        from ouroboros.consciousness import BackgroundConsciousness
-        consciousness_md = safe_read(env.repo_path("prompts/CONSCIOUSNESS.md"))
-        if consciousness_md:
-            whitelist = BackgroundConsciousness._BG_TOOL_WHITELIST
-            scan_text = re.sub(r'```.*?```', '', consciousness_md, flags=re.DOTALL)
-            tool_prefixes = (
-                "schedule_", "update_", "knowledge_", "browse_", "analyze_",
-                "web_", "send_", "repo_", "data_", "chat_", "list_", "get_",
-                "wait_", "set_", "memory_",
-            )
-            prompt_tool_refs = {
-                match.group(1)
-                for match in re.finditer(r'\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b', scan_text)
-                if match.group(1) in whitelist or any(match.group(1).startswith(prefix) for prefix in tool_prefixes)
-            }
-            phantom = prompt_tool_refs - whitelist
-            if phantom:
-                checks.append(f"WARNING: PROMPT-RUNTIME DRIFT — CONSCIOUSNESS.md references tools not in BG whitelist: {', '.join(sorted(phantom))}")
-            else:
-                checks.append("OK: prompt-runtime sync (no phantom tools)")
-    except Exception:
-        pass
 
     try:
         msg_hash_to_tasks: Dict[str, set] = {}
@@ -114,7 +90,7 @@ def _collect_log_analysis_checks(env: Any, checks: List[str]) -> None:
         for ev in _iter_recent_jsonl(events_path):
             evt_type = str(ev.get("type") or "")
             model = str(ev.get("model") or "unknown")
-            if evt_type in {"llm_api_error", "review_model_error", "consciousness_llm_error", "provider_incomplete_response"}:
+            if evt_type in {"llm_api_error", "review_model_error", "provider_incomplete_response"}:
                 llm_error_models[model] += 1
             elif evt_type == "local_context_overflow":
                 local_overflow_models[model] += 1
@@ -216,6 +192,69 @@ def _plan_review_note(env: Any, task_id: str) -> str:
         return ""
 
 
+def _memory_health_lines(env: Any) -> List[str]:
+    """Own-memory maintenance signals: the two authored files and the dialogue pipeline.
+
+    Health is where stale memory becomes visible, so a dialogue-consolidation run that
+    failed, or a nomination batch that was accepted and then not published, is named
+    here rather than left to a log nobody reads. Both lines are STATE read from
+    ``memory/dialogue_meta.json``; neither carries a timestamp, because this block is
+    rendered dynamically and the facts are latest-run facts, not events.
+    """
+    import time as _time
+
+    lines: List[str] = []
+    try:
+        identity_path = env.drive_path("memory/identity.md")
+        if identity_path.exists():
+            age_hours = (_time.time() - identity_path.stat().st_mtime) / 3600
+            if age_hours > 8:
+                lines.append(f"WARNING: STALE IDENTITY — identity.md last updated {age_hours:.0f}h ago")
+            else:
+                lines.append("OK: identity.md recent")
+    except Exception:
+        pass
+    try:
+        identity_content = read_text(env.drive_path("memory/identity.md"))
+        if len(identity_content.strip()) < 200:
+            lines.append(f"WARNING: THIN IDENTITY — identity.md is only {len(identity_content)} chars. Cognitive decay signal.")
+    except Exception:
+        pass
+
+    try:
+        sp_len = len(read_text(env.drive_path("memory/scratchpad.md")).strip())
+        if sp_len < 50:
+            lines.append("WARNING: EMPTY SCRATCHPAD — scratchpad is nearly empty. Memory loss signal.")
+        elif sp_len > SCRATCHPAD_BLOAT_WARN_CHARS:
+            lines.append(f"WARNING: BLOATED SCRATCHPAD — {sp_len} chars. Extract durable insights to knowledge base.")
+        else:
+            lines.append(f"OK: scratchpad size ({sp_len} chars)")
+    except Exception:
+        pass
+
+    try:
+        meta = read_json_dict(env.drive_path("memory/dialogue_meta.json")) or {}
+        receipt = meta.get("last_unpublished_nominations")
+        if isinstance(receipt, dict) and int(receipt.get("failed") or 0) > 0:
+            # The recovery route is named because the reader may hold no read_file:
+            # an external-channel turn has the cognitive memory tools and nothing else.
+            lines.append(
+                f"WARNING: LAST DIALOGUE KNOWLEDGE PUBLICATION INCOMPLETE — {receipt.get('failed')} of "
+                f"{receipt.get('total')} nominations from the latest consolidation batch were not published "
+                f"(entry_id {receipt.get('entry_id')}); from the main chat, read_file(root='runtime_data', "
+                "path='memory/knowledge_history.jsonl') and publish what still holds"
+            )
+        error = meta.get("last_consolidation_error")
+        if isinstance(error, dict):
+            lines.append(
+                f"WARNING: LAST DIALOGUE CONSOLIDATION FAILED — kind={error.get('kind') or 'unknown'} "
+                f"at cursor {error.get('cursor_offset')}"
+            )
+    except Exception:
+        pass
+    return lines
+
+
 def build_health_invariants(env: Any, task_id: str = "", active_root: str = "") -> str:
     """Render the health-invariant WARNING block for one reader's context.
 
@@ -225,7 +264,7 @@ def build_health_invariants(env: Any, task_id: str = "", active_root: str = "") 
     rots on disk), but only the OWNER task receives the call-shaped
     instruction. A non-owner told to call ``integrate_delegated_patch`` gets
     a structural ``run_not_owned`` refusal and an obligation it can never
-    discharge. Empty ``task_id`` (Background Consciousness, legacy callers)
+    discharge. Empty ``task_id`` (legacy callers)
     keeps the call-shaped wording — an unattributed reader may be the owner.
 
     ``active_root`` names that reader's own active Git root, which this module
@@ -235,8 +274,6 @@ def build_health_invariants(env: Any, task_id: str = "", active_root: str = "") 
     of leaving sixteen identical abstract rows. Empty keeps the static wording
     byte-for-byte.
     """
-    import time as _time
-
     checks: List[str] = []
 
     try:
@@ -315,33 +352,7 @@ def build_health_invariants(env: Any, task_id: str = "", active_root: str = "") 
     except Exception:
         checks.append("WARNING: COST ACCOUNTING UNAVAILABLE — high-cost task check skipped")
 
-    try:
-        identity_path = env.drive_path("memory/identity.md")
-        if identity_path.exists():
-            age_hours = (_time.time() - identity_path.stat().st_mtime) / 3600
-            if age_hours > 8:
-                checks.append(f"WARNING: STALE IDENTITY — identity.md last updated {age_hours:.0f}h ago")
-            else:
-                checks.append("OK: identity.md recent")
-    except Exception:
-        pass
-    try:
-        identity_content = read_text(env.drive_path("memory/identity.md"))
-        if len(identity_content.strip()) < 200:
-            checks.append(f"WARNING: THIN IDENTITY — identity.md is only {len(identity_content)} chars. Cognitive decay signal.")
-    except Exception:
-        pass
-
-    try:
-        sp_len = len(read_text(env.drive_path("memory/scratchpad.md")).strip())
-        if sp_len < 50:
-            checks.append("WARNING: EMPTY SCRATCHPAD — scratchpad is nearly empty. Memory loss signal.")
-        elif sp_len > SCRATCHPAD_BLOAT_WARN_CHARS:
-            checks.append(f"WARNING: BLOATED SCRATCHPAD — {sp_len} chars. Extract durable insights to knowledge base.")
-        else:
-            checks.append(f"OK: scratchpad size ({sp_len} chars)")
-    except Exception:
-        pass
+    checks.extend(_memory_health_lines(env))
 
     # state/crash_report.json retired (CPL4-C9, owner 2A): its writer — the
     # crash-rollback path — no longer exists in this tree, so the reader and

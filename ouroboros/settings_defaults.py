@@ -165,9 +165,13 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_PACING_INTERVAL_SEC": PACING_INTERVAL_DEFAULT_SEC,
     "OUROBOROS_TOOL_TIMEOUT_SEC": 600,
     "OUROBOROS_VISION_CAPTION_TIMEOUT_SEC": 90,
-    "OUROBOROS_BG_MAX_ROUNDS": 10,
-    "OUROBOROS_BG_WAKEUP_MIN": 30,
-    "OUROBOROS_BG_WAKEUP_MAX": 7200,
+    # Consciousness: MIN/MAX bound the wake-up interval the MODEL picks (set_next_wakeup); autonomy is what a
+    # wake may do; DAILY_USD is its rolling-24h spend ceiling (0 = may not spend), MAX_TASKS its concurrent roots (0 = none).
+    "OUROBOROS_BG_WAKEUP_MIN": 900,
+    "OUROBOROS_BG_WAKEUP_MAX": 14400,
+    "OUROBOROS_CONSCIOUSNESS_AUTONOMY": "act",
+    "OUROBOROS_CONSCIOUSNESS_DAILY_USD": 20.0,
+    "OUROBOROS_CONSCIOUSNESS_MAX_TASKS": 2,
     # Post-task self-evolution envelope (V4). Owner-enabled capability whose
     # CONTENT stays LLM-first; default OFF. When enabled, after a qualifying task
     # the worker may promote one high-value code-class backlog item into the
@@ -294,7 +298,7 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_EFFORT_REVIEW": "high",
     "OUROBOROS_EFFORT_SCOPE_REVIEW": "high",
     "OUROBOROS_EFFORT_DEEP_SELF_REVIEW": "high",
-    "OUROBOROS_EFFORT_CONSCIOUSNESS": "high",
+    "OUROBOROS_EFFORT_CONSCIOUSNESS": "",  # empty = the Task / Chat effort (a wake-up is an ordinary Main turn)
     "OUROBOROS_RETURN_REASONING": True,
     "OUROBOROS_REASONING_SUMMARY": "auto",
     "GITHUB_TOKEN": "",
@@ -373,6 +377,7 @@ RETIRED_SETTING_KEYS: tuple[str, ...] = (
     "OUROBOROS_SOFT_TIMEOUT_SEC",
     "OUROBOROS_HARD_TIMEOUT_SEC",
     "OUROBOROS_REVIEW_NATIVE_MAX_ROUNDS",  # a ceiling on rounds; bounds are transcript/deadline/ledger
+    "OUROBOROS_BG_MAX_ROUNDS",  # a wake is an ordinary Main turn: OUROBOROS_MAX_ROUNDS + the per-task cost cap bound it
 )
 
 

@@ -20,8 +20,10 @@ from typing import Any, Dict
 from ouroboros.dialogue_provenance import presence_provenance_fields
 from ouroboros.llm_claudexor import propagate_model_error
 from ouroboros.outcomes import normalize_outcome_axes
+from ouroboros.subagent_messages import initiator_meta
 from ouroboros.synthesis_cost_text import _summary_row_cost_fields, _synthesis_cost_text, _synthesis_cost_usd, _synthesis_usage_snapshot_text
 from ouroboros.task_finalization import sealed_final_prompt_section
+from ouroboros.tool_capabilities import routing_action_for_tool
 from ouroboros.utils import append_jsonl, truncate_review_artifact as _truncate_with_notice, utc_now_iso
 
 
@@ -49,6 +51,11 @@ def task_tool_metrics(llm_trace: dict) -> dict:
         "tool_calls": None if unavailable else len(calls),
         "tool_errors": None if unavailable else sum(
             1 for call in calls if isinstance(call, dict) and call.get("is_error")),
+        # The addressing calls among them (tool_capabilities owns the family), so
+        # a replayed block can tell a receipt-only turn from real work without
+        # a client list of tool names.
+        "routing_tool_calls": None if unavailable else sum(
+            1 for call in calls if isinstance(call, dict) and routing_action_for_tool(call.get("tool"))),
         "tool_call_counts": None,
     }
     if unavailable or llm_trace.get("recovered_post_task_synthesis") or not isinstance(llm_trace.get("tool_calls"), list):
@@ -366,6 +373,10 @@ def _run_task_summary(env, llm, task, usage, llm_trace, drive_logs, review_evide
                 "project_id": str(task.get("project_id") or ""), "chat_id": int(task.get("chat_id") or 0), "delegation_role": str(task.get("delegation_role") or ""), "role": str(task.get("role") or ""),
                 "status": str(stored_result.get("status") or "completed"), "outcome": completion_status_label(stored_result, usage), "outcome_phase": outcome_phase(stored_result, usage),
                 "outcome_final": False, "outcome_authority": "pre_finalization_narrative_context",
+                # The chat block reads its chrome, the addressing fact and the
+                # origin label from this row when the task result has been pruned.
+                "_is_direct_chat": bool(task.get("_is_direct_chat")), **initiator_meta(task),
+                **({"typed_routing_action": str(usage["typed_routing_action"])} if usage.get("typed_routing_action") else {}),
                 "text": value, **tool_metrics, "rounds": rounds, "outcome_axes": outcome_axes, "reason_code": reason_code,
                 "result_ref": result_ref, "source_coverage": {"task_result": result_ref}, **_summary_row_cost_fields(usage), **presence_fields,
                 **({"review_projection": review_projection} if review_projection.get("panels") else {}),
@@ -470,8 +481,15 @@ def _run_chat_consolidation(env, memory, llm, task, drive_logs):
                                 meta_path=meta_path, llm_client=_llm, identity_text=_ident,
                                 knowledge_context=knowledge_context)
             if u:
+                # A run that produced no block and a run that never happened look the
+                # same in this stream without a written count; last_error_kind names the
+                # LAST error any attempt recorded (recovered splits keep theirs), which
+                # is weaker than "the run failed" and is reported under that honest name.
+                errors = u.get("_consolidation_errors") or []
                 append_jsonl(_logs / "events.jsonl", {"ts": utc_now_iso(),
                     "type": "chat_block_consolidation", "task_id": _id,
+                    "blocks_written": u.get("_blocks_written"),
+                    "last_error_kind": (errors[-1] or {}).get("kind") if errors else None,
                     "cost_usd": (
                         round(float(u["cost"]), 6)
                         if u.get("cost") is not None

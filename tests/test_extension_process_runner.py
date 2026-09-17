@@ -861,3 +861,18 @@ def test_native_risk_extension_gateway_ws_child_failure_is_log_message(tmp_path,
     assert payload["type"] == "log"
     assert "child failed" in payload["data"]["message"]
     assert "ws-child-boom" in payload["data"]["message"]
+
+
+@pytest.mark.parametrize("method", ["GET", "post", ""])
+def test_child_route_request_carries_the_dispatched_method(tmp_path, method):
+    """A route registered for GET+POST dispatches on `request.method`, so the
+    child's request proxy must carry the host's method exactly like the
+    in-process Starlette request does (empty falls back to GET)."""
+    from ouroboros.extension_process_runner import _request_from_payload
+
+    request = asyncio.run(_request_from_payload(
+        {"method": method, "path": "/api/extensions/x/settings/save"},
+        tmp_path,
+        pathlib.Path(__file__).resolve().parents[1],
+    ))
+    assert request.method == (method.upper() or "GET")

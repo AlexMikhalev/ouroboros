@@ -29,7 +29,7 @@ from ouroboros.deadline_utils import (
     main_transport_timeout_sec as _main_transport_timeout,
 )
 from ouroboros.llm import LLMClient, LocalContextTooLargeError, add_usage
-from ouroboros.llm_claudexor import propagate_model_error
+from ouroboros.llm_claudexor import cache_key_for_model, propagate_model_error
 from ouroboros.model_wait import propagate_model_control
 from ouroboros.openai_chat_dispatch import CUSTOM_RECEIPTS_USAGE_KEY, pop_custom_validation_receipts
 from ouroboros.llm_attempt import PROVIDER_POLICY_REFUSAL, _is_provider_policy_refusal  # typed-refusal contract owner
@@ -715,6 +715,7 @@ def classify_llm_exception(exc: Exception, safe_error: str = "") -> LlmErrorClas
     """Classify provider errors without changing model/request semantics."""
 
     safe = safe_error or sanitize_tool_result_for_log(repr(exc))
+    if getattr(exc, "stream_rejected", False): return LlmErrorClassification("provider_error", False)  # complete wire judged unusable: a local verdict, never a same-model repeat
     if getattr(exc, "code", "") == "model_outcome_unknown":
         return LlmErrorClassification("provider_outcome_unknown", False)
     if getattr(exc, "code", "") in {"unsupported_parameter", "invalid_continuation", "auth_changed", "model_unavailable"}:
@@ -1381,7 +1382,7 @@ def call_llm_with_retry(
                 "max_tokens": MAIN_LOOP_MAX_TOKENS,
                 "stream": True, "caller_deadline_ts": (None if deadline_ts is None
                     else float(deadline_ts) - float(transport_reserve_sec or 0.0)),
-                "use_local": use_local, "cache_affinity": execution_id if provider_for_model(model) == "claudexor" else "",
+                "use_local": use_local, "cache_affinity": cache_key_for_model(model),
                 "allow_server_web_search": bool(allow_server_web_search) and provider_for_model(model) != "claudexor",
                 "bypass_response_cache": response_cache_bypass_requested and provider_for_model(model) != "claudexor",
                 "timeout": _main_transport_timeout(model, deadline_ts, reserve_sec=transport_reserve_sec),

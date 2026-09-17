@@ -6,7 +6,6 @@ import copy
 import hashlib
 import json
 import pathlib
-from types import SimpleNamespace
 
 import pytest
 
@@ -511,68 +510,3 @@ def test_main_preserves_private_receipt_but_persists_only_public_projection(
     assert len(persisted) == 2
     assert all("opaque thought" not in json.dumps(item) for item in persisted)
     assert all(ANTHROPIC_NATIVE_RECEIPT_KEY not in json.dumps(item) for item in persisted)
-
-
-def test_background_preserves_receipt_and_aggregates_round_disclosures(
-    tmp_path, monkeypatch,
-):
-    import ouroboros.consciousness as consciousness
-    import ouroboros.llm_observability as observed
-
-    native = _canonical_message()
-    seen_messages = []
-    events = []
-    responses = [
-        (native, {
-            "cost": 0.0,
-            "cost_final": True,
-            "request_wire": {"attempt_id": "a", "candidate_sha256": "sha-a"},
-        }),
-        ({"role": "assistant", "content": "done"}, {
-            "cost": 0.0,
-            "cost_final": True,
-            "request_wire": {"attempt_id": "b", "candidate_sha256": "sha-b"},
-        }),
-    ]
-
-    def chat_observed(_llm, **kwargs):
-        seen_messages.append(copy.deepcopy(kwargs["messages"]))
-        return responses[len(seen_messages) - 1]
-
-    monkeypatch.setattr(observed, "chat_observed", chat_observed)
-    monkeypatch.setattr(consciousness, "get_consciousness_model", lambda: "anthropic/claude-future")
-    monkeypatch.setattr(
-        consciousness,
-        "append_jsonl",
-        lambda _path, row: (events.append(row) or True),
-    )
-    monkeypatch.setattr(consciousness.BackgroundConsciousness, "_build_context", lambda _self: "ctx")
-    monkeypatch.setattr(consciousness.BackgroundConsciousness, "_tool_schemas", lambda _self: [])
-    monkeypatch.setattr(consciousness.BackgroundConsciousness, "_check_budget", lambda _self: True)
-    monkeypatch.setattr(consciousness.BackgroundConsciousness, "_emit_live_log", lambda *_a, **_k: None)
-    monkeypatch.setattr(consciousness.BackgroundConsciousness, "_emit_progress", lambda *_a: None)
-    monkeypatch.setattr(
-        consciousness.BackgroundConsciousness,
-        "_execute_tool",
-        lambda _self, _call, _events, _validation: "tool-result",
-    )
-
-    bg = object.__new__(consciousness.BackgroundConsciousness)
-    bg._drive_root = tmp_path
-    bg._llm = SimpleNamespace(_resolve_remote_target=lambda _model: {
-        "provider": "anthropic",
-        "resolved_model": "claude-future",
-        "usage_model": "anthropic/claude-future",
-        "base_url": "https://api.anthropic.com",
-    })
-    bg._max_bg_rounds = 2
-    bg._paused = False
-    bg._event_queue = None
-    bg._bg_spent_usd = 0.0
-    bg._last_idle_reason = ""
-    bg._next_wakeup_sec = 1.0
-    assert bg._think_scoped() is True
-    assert ANTHROPIC_NATIVE_RECEIPT_KEY in seen_messages[1][2]
-    thought = next(row for row in events if row.get("type") == "consciousness_thought")
-    assert thought["request_wire"]["attempt_id"] == "b"
-    assert [item["attempt_id"] for item in thought["request_wire_history"]] == ["a", "b"]

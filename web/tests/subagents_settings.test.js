@@ -759,6 +759,68 @@ test('sessionRouteVerdict decides label, tone and sentence together', () => {
     assert.deepEqual(missing, { label: 'Unavailable', tone: 'warn', text: 'codex · currently unavailable' });
 });
 
+test('the verdict reads a reviewer row pin, spelled profile_id, not only the roster spelling', () => {
+    // Review-lane rows serialize their account pin as `profile_id`; roster rows
+    // use `credential_profile_id`. Reading one spelling judged every pinned
+    // reviewer row as unpinned — a worse falsehood than saying nothing.
+    const state = {
+        catalogKnown: true, accountsKnown: true, quotaKnown: true, statusError: '',
+        snapshot: {
+            harnesses: [{ id: 'codex', status: 'ok', enabled: true, models: [{ id: 'gpt-5.6-sol-high' }] }],
+            profiles: { harnessAccounts: [], profiles: [{
+                profile: { harness_id: 'codex', profile_id: 'koshak', enabled: true },
+                status: { verification: 'failed' },
+            }] },
+            quota: [],
+        },
+    };
+    const reviewerRow = { route: {
+        kind: ROUTE_KIND_AGENT_SESSION, target_id: 'codex=gpt-5.6-sol-high', profile_id: 'koshak',
+    } };
+    const live = sessionRouteVerdict(reviewerRow, state);
+    assert.equal(live.label, 'Unavailable');
+    assert.match(live.text, /pinned account koshak currently unavailable/);
+});
+
+test('an unpinned verdict intersects the usable accounts with the accounts carrying the model', () => {
+    // The live defect this pins: `gpt-5.4` was listed only by `gptopro6`, whose
+    // login is not verified, while a sibling account passed — "some account
+    // works" and "some account has this model" were both true of DIFFERENT
+    // accounts and the row still read Available.
+    const snapshot = (models) => ({
+        harnesses: [{ id: 'codex', status: 'ok', enabled: true, models }],
+        profiles: { harnessAccounts: [], profiles: [
+            { profile: { harness_id: 'codex', profile_id: 'gptopro6', enabled: true }, status: { verification: '' } },
+            { profile: { harness_id: 'codex', profile_id: 'koshak', enabled: true }, status: { verification: 'passed' } },
+        ] },
+        quota: [{ subject: { harness: 'codex', subject_id: 'koshak' }, freshness: 'fresh', constraints: [] }],
+    });
+    const facets = { catalogKnown: true, accountsKnown: true, quotaKnown: true, statusError: '' };
+    const row = { route: { kind: ROUTE_KIND_AGENT_SESSION, target_id: 'codex=gpt-5.4', profile_id: '' } };
+
+    const orphaned = sessionRouteVerdict(row, {
+        ...facets, snapshot: snapshot([{ id: 'gpt-5.4', credential_profile_id: 'gptopro6' }]),
+    });
+    assert.deepEqual(orphaned, {
+        label: 'No account', tone: 'warn', text: 'codex · no usable account currently carries gpt-5.4',
+    });
+    // The verified account carries it: the verdict is the one it always was.
+    const carried = sessionRouteVerdict(row, {
+        ...facets, snapshot: snapshot([{ id: 'gpt-5.4', credential_profile_id: 'koshak' }]),
+    });
+    assert.equal(carried.label, 'Available');
+    // A legacy engine stamps no account on its catalog entries, so it proves no
+    // absence: the older, weaker rule stands rather than a new accusation.
+    const legacy = sessionRouteVerdict(row, { ...facets, snapshot: snapshot([{ id: 'gpt-5.4' }]) });
+    assert.equal(legacy.label, carried.label);
+    assert.doesNotMatch(legacy.text, /carries/);
+    // No usable account at all keeps today's sentence, unqualified by a model.
+    const none = snapshot([{ id: 'gpt-5.4', credential_profile_id: 'gptopro6' }]);
+    none.profiles.profiles[1].status.verification = '';
+    assert.equal(sessionRouteVerdict(row, { ...facets, snapshot: none }).text,
+        'codex · no usable account currently');
+});
+
 test('the head dot takes the worse of the two status axes', () => {
     // docs/ARCHITECTURE.md §3: intent · availability, one dot whose tone is the
     // worse of the two — an unsaved draft is never shown as green success even

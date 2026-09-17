@@ -12,7 +12,12 @@ import pathlib
 from typing import Any, Dict
 
 from ouroboros.cost_projection import carry_cost_meta, with_cost_aliases
-from ouroboros.outcomes import EXECUTION_INFRA_FAILED, infra_failed_axes, normalize_outcome_axes
+from ouroboros.outcomes import (
+    EXECUTION_DEGRADED,
+    EXECUTION_INFRA_FAILED,
+    infra_failed_axes,
+    normalize_outcome_axes,
+)
 from ouroboros.post_task_checkpoint import post_task_synthesis_is_open
 from ouroboros.task_finalization import send_provider_death_notice
 from ouroboros.task_results import (
@@ -43,6 +48,31 @@ def _events():
 
 
 log = logging.getLogger(__name__)
+
+# A configured actor that finished without its physical leaf: the lifecycle is
+# `completed`, the execution axis is degraded. The axis is the SSOT
+# (`outcomes._apply_actor_first_terminal_projection` stamps it from these same
+# reason codes); the codes are carried here only so a terminal that reports the
+# reason without axes still reads honestly.
+_DEGRADED_TERMINAL_REASONS = frozenset({"configured_actor_incomplete", "configured_actor_unknown"})
+
+
+def _finished_with_warnings(task_done_event: Dict[str, Any]) -> bool:
+    """True when a `completed` lifecycle carries a degraded execution axis.
+
+    The chat line used to take its icon and verb from the lifecycle alone, so a
+    child that never ran its leaf still read as "✅ … completed" while the web
+    card, computing severity from these same axes, showed a warning. One terminal,
+    one story — for the EXECUTION axis: this mirrors only that axis of
+    `web/modules/log_events.js` `taskOutcomeSeverity`, whose objective and review
+    axes are not read here, so a child degraded on those axes alone still reads
+    as a clean completion in chat.
+    """
+    axes = task_done_event.get("outcome_axes")
+    execution = axes.get("execution") if isinstance(axes, dict) else None
+    if isinstance(execution, dict) and str(execution.get("status") or "") == EXECUTION_DEGRADED:
+        return True
+    return str(task_done_event.get("reason_code") or "") in _DEGRADED_TERMINAL_REASONS
 
 
 def _authoritative_terminal_cost(
@@ -267,6 +297,10 @@ def _finish_task_done_dispatch(
                 STATUS_INTERRUPTED: ("⏹️", STATUS_INTERRUPTED, STATUS_INTERRUPTED),
             }.get(status, ("ℹ️", status or "done", status or "finished"))
             icon, subagent_event, verb = status_display
+            if status == STATUS_COMPLETED and _finished_with_warnings(task_done_event):
+                # Icon and verb only: `subagent_event` and progress_meta `status`
+                # stay the lifecycle values every card and Telegram consumer keys on.
+                icon, verb = "⚠️", "finished with warnings"
             result_text = str(effective_result.get("result") or "")
             trace_text = str(effective_result.get("trace_summary") or "")
             constraint = effective_result.get("task_constraint")
@@ -701,6 +735,32 @@ def _task_done_durable_fault(evt: Dict[str, Any], ctx: Any, task_id: Any) -> boo
         return True
 
 
+def _notify_consciousness_of_root_done(ctx: Any, task: Dict[str, Any], task_metadata: Any,
+                                       final_task_result: Any, task_done_event: Dict[str, Any]) -> None:
+    """A ROOT finishing (any outcome) is a reason for an early consciousness wake —
+    except the owner's own direct turn (В13: an owner message never wakes it, and
+    neither does that turn ending), a wake-up's own finish or a root consciousness
+    started (``metadata.initiator == "consciousness"``), or the chain would never sleep."""
+    metadata = task_metadata if isinstance(task_metadata, dict) else {}
+    if "subagent" in (str(task.get("delegation_role") or ""), str(metadata.get("delegation_role") or "")):
+        return  # the cancel path has already popped the RUNNING row; the event's metadata still says
+    if bool(task_done_event.get("_is_direct_chat")) or bool(task.get("_is_direct_chat")):
+        return
+    from ouroboros.consciousness_authority import is_consciousness_origin
+
+    result_metadata = final_task_result.get("metadata") if isinstance(final_task_result, dict) else None
+    if is_consciousness_origin(result_metadata) or is_consciousness_origin(task_metadata):
+        return
+    consciousness = getattr(ctx, "consciousness", None)
+    if consciousness is None:
+        return
+    try:
+        consciousness.notify(
+            f"task_finished:{task_done_event.get('task_id') or ''}:{task_done_event.get('status') or ''}")
+    except Exception:
+        log.debug("consciousness notify on task_done failed", exc_info=True)
+
+
 def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
     task_id = evt.get("task_id")
     wid = evt.get("worker_id")
@@ -831,6 +891,11 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
             default=HIDDEN_CHAT_ID,
         ),
         "status": str(final_task_result.get("status") or evt.get("status") or ""),
+        # The direct-turn fact rides the rebuilt terminal so the chat block keys
+        # its chrome on host truth: the worker frame carries it, the durable
+        # result carries it, and a reaper-delivered terminal reads the result.
+        "_is_direct_chat": bool(evt.get("_is_direct_chat") or (
+            isinstance(final_task_result, dict) and final_task_result.get("_is_direct_chat"))),
         "root_phase_checkpoint": final_task_result.get("root_phase_checkpoint") or {},
         "outcome_axes": outcome_axes,
         "reason_code": reason_code,
@@ -877,6 +942,7 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
         final_task_result=final_task_result,
         task_done_event=task_done_event,
     )
+    _notify_consciousness_of_root_done(ctx, task, task_metadata, final_task_result, task_done_event)
 
     # v6.91 tree-quiescence coop checkpoint: MUST run after the dispatch
     # bookkeeping above removed this terminal child from RUNNING, or the

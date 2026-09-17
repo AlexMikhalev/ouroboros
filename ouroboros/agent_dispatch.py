@@ -16,7 +16,8 @@ import pathlib
 
 from typing import Any, Dict, Optional, Tuple
 from ouroboros.agent_startup_checks import persist_early_origin_stub as _persist_early_origin_stub_impl
-from ouroboros.config import EFFORT_SCALE, resolve_effort
+from ouroboros.config import EFFORT_SCALE, resolve_effort, runtime_setting
+from ouroboros.model_slots import MODEL_ROLE_SETTINGS
 from ouroboros.subagents import CapabilityDelta, SUBAGENT_RESOLUTION_FIELDS, SubagentDispatch, SubagentExecutorResolution, SubagentLaneResolution, capability_delta_disclosures, resolve_subagent_dispatch
 from ouroboros.task_results import STATUS_RUNNING
 from ouroboros.utils import append_jsonl, utc_now_iso
@@ -351,10 +352,47 @@ def _initial_effort_for(task: Dict[str, Any], task_type: str) -> str:
     wrote onto the record moments ago, which is ``resolve_effort(task_type)`` — read
     back rather than recomputed so the loop runs the effort the record states. For
     everything else, and for an unrecognized STORED value (durable data outlives the
-    schema that wrote it), it is the task-type default directly.
+    schema that wrote it), it is the task-type default directly — or, when the task
+    names a model ROLE in its metadata (a consciousness wake-up), that role's effort
+    slot: the role owns its effort the way it owns its account binding.
     """
     stored = str(task.get("reasoning_effort") or "").strip().lower()
-    return stored if stored in EFFORT_SCALE else resolve_effort(task_type)
+    if stored in EFFORT_SCALE:
+        return stored
+    metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+    role = str(metadata.get("model_role") or "").strip().lower()
+    return resolve_effort(role or task_type)
+
+
+def model_role_slot_override(task_metadata: Dict[str, Any]) -> Optional[Tuple[str, bool]]:
+    """The ``(model, use_local)`` pinned by a task's ``metadata.model_role``; ``None`` = Main.
+
+    A consciousness wake-up carries ``model_role="consciousness"`` (owner decision
+    В25=B): when the consciousness model slot is set, the turn runs on that model
+    with that slot's local flag; an empty slot means Main — the same model, the
+    same prefix, the same prompt cache. Roles without a single-model slot (Main
+    itself, the fallback chain) and unknown roles resolve to Main here; their
+    effort and account binding still follow the role (``_initial_effort_for``,
+    ``task_model_binding``).
+    """
+    metadata = task_metadata if isinstance(task_metadata, dict) else {}
+    role = str(metadata.get("model_role") or "").strip().lower()
+    key = MODEL_ROLE_SETTINGS.get(role)
+    if not key or role in ("main", "fallback"):
+        return None
+    model = str(runtime_setting(key, "") or "").strip()
+    raw_local = str(runtime_setting(f"USE_LOCAL_{role.upper()}", "") or "").strip().lower()
+    use_local = raw_local in ("true", "1")
+    if not model:
+        # An empty model slot means Main's model — but the role's own local flag, when the
+        # owner set it and it differs from Main's, still decides the route (В25=B honors
+        # every slot; with equal flags nothing changes and the prefix stays Main's).
+        main_local = str(runtime_setting("USE_LOCAL_MAIN", "") or "").strip().lower() in ("true", "1")
+        main_model = str(runtime_setting("OUROBOROS_MODEL", "") or "").strip()
+        if not raw_local or use_local == main_local or not main_model:
+            return None
+        return main_model, use_local
+    return model, use_local
 
 
 def resolve_dispatch_axes(task: Dict[str, Any]) -> Optional[SubagentDispatch]:

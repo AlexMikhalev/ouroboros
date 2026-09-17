@@ -1,8 +1,10 @@
 """Certain utility writes use resource authority without interpreting program bodies."""
 from __future__ import annotations
 
+import os
 import pathlib
 import shlex
+import shutil
 import sys
 import tarfile
 
@@ -57,6 +59,11 @@ def test_light_direct_target_matches_resource_authority(resources, monkeypatch, 
         "rm": ["rm", str(target)], "sort": ["sort", "-o", str(target), str(source)],
         "redirect": ["sh", "-c", f"printf x > {shlex.quote(str(target))}"],
     }
+    if utility == "sort":
+        # Windows searches System32 before PATH for a bare executable name.
+        executable = shutil.which("sort")
+        assert executable is not None
+        commands[utility][0] = executable
     result = registry.execute_result("run_command", {"cmd": commands[utility], "cwd": str(workspace),
         "outputs": [str(target)] if utility != "rm" else []})
     if destination == "desktop":
@@ -189,7 +196,9 @@ def test_explicit_utility_roles_preserve_source_and_destination(resources, monke
         "tar_archive_first": ["tar", "-xf", str(archive), "-C", str(target)],
         "tar_directory_first": ["tar", "-C", str(target), "-xf", str(archive)],
         "gzip": ["gzip", str(output)],
-        "rsync": ["rsync", str(source), str(output)],
+        # A Windows drive colon selects an rsync remote host; these operands are local.
+        "rsync": ["rsync", pathlib.Path(os.path.relpath(source, workspace)).as_posix(),
+                  pathlib.Path(os.path.relpath(output, workspace)).as_posix()],
     }
     declared = target if utility.startswith("tar_") else pathlib.Path(str(output) + ".gz") if utility == "gzip" else output
     result = registry.execute_result("run_command", {"cmd": commands[utility], "outputs": [str(declared)]})

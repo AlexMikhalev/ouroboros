@@ -15,9 +15,61 @@ from ouroboros.artifacts import stream_artifact_file
 from ouroboros.utils import atomic_write_json
 
 
+DIRECTORY_OPTIONS_NEED_WRITE = (
+    "copy and non-empty scope_paths need a write-capable child on an ordinary folder; "
+    "a read-only child reads the folder as it is, so omit directory_strategy and scope_paths "
+    "(direct with no scope is the same as omitting them) — give the child a write surface only "
+    "if it genuinely has to change files."
+)
+
+
 def is_directory_run(entry) -> bool:
     return bool(entry and isinstance(entry.resource_ref, dict)
                 and entry.resource_ref.get("workspace_kind") == "directory")
+
+
+def default_shaped_directory_options(strategy, scope_paths) -> bool:
+    """True when the request names only the documented default and nothing else.
+
+    ``direct`` IS the documented meaning of omitting the strategy, and an empty
+    ``scope_paths`` selects nothing, so on a shape that never reads these two values
+    naming either is the same request as passing neither. It is NOT a general
+    identity: a write-capable child's ``[]`` still rides the wire as ``scopePaths:
+    []``, its own attested "capture nothing", which only the engine interprets.
+    Geometry becomes a REAL request at ``copy`` or a non-empty footprint.
+    """
+    return strategy in (None, "direct") and not scope_paths
+
+
+def blocked_geometry_refusal(ctx, authority, selector_root, strategy, scope_paths):
+    """Typed pre-POST refusal for geometry this shape can never serve, else ``None``.
+
+    A read-only child and a payload selector never open the ordinary-folder session,
+    so a real geometry request is refused before the daemon call — the parent repairs
+    it in one move at $0, and the refusal names that repair instead of recommending a
+    mutating session for an audit. ``definitely_unrun`` is the producer's own verdict
+    (nothing was started), so the host ends the child on the zero-spend terminal path
+    rather than waking the model with a startup fault it cannot act on.
+
+    The documented default named explicitly is NOT such a request: it asks for exactly
+    what omission asks for, so the caller proceeds as the omitted form. Nothing has to
+    be unset for that — the folder branch that reads these two values is reachable only
+    from the write-capable non-selector shape this refusal does not touch.
+
+    It lives HERE, not at its one call site, because this module already owns
+    ``directory_execution``'s geometry validation and because ``_delegate_start`` sits
+    at the 300-line function cap on a shrink-only band path.
+    """
+    if not (selector_root or getattr(authority, "access", "") != "workspace_write"):
+        return None
+    if default_shaped_directory_options(strategy, scope_paths):
+        return None
+    from ouroboros.delegate_evidence import record_start_blocked
+    from ouroboros.delegate_shared import _fail
+
+    record_start_blocked(ctx, str(getattr(ctx, "task_id", "") or ""), "directory_execution_unavailable")
+    return _fail("delegate_start", "directory_execution_unavailable",
+                 DIRECTORY_OPTIONS_NEED_WRITE, definitely_unrun=True)
 
 
 def directory_execution(gateway, strategy=None, scope_paths=None):

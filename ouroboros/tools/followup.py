@@ -23,6 +23,7 @@ from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
 import uuid
 from typing import Any, Dict, List
 
+from ouroboros.consciousness_authority import consciousness_origin_metadata
 from ouroboros.deadline_utils import parse_deadline_ts
 from ouroboros.tools.registry import ToolContext, ToolEntry
 
@@ -224,6 +225,9 @@ def _handle_schedule_followup(ctx: ToolContext, **params) -> str:
             **({"chat_id": source_chat_id} if source_chat_id not in (None, "") else {}),
         },
     }
+    # A follow-up from a consciousness turn/tree starts a consciousness root: the
+    # origin, category and level ride the template; admission derives the rest.
+    record["task"]["metadata"].update(consciousness_origin_metadata(metadata_src))
     presence = metadata_src.get("presence") if isinstance(metadata_src, dict) else None
     contract = getattr(ctx, "task_contract", None)
     if isinstance(presence, dict) and presence and isinstance(contract, dict):

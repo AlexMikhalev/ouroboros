@@ -187,7 +187,7 @@ class TestAliasProducerFanOutSweep:
         ("ouroboros/usage_accounting.py", "cost_usd", "record_subscription_session"): ("ledger subscription session row", 1),
         ("ouroboros/usage_accounting.py", "cost_usd", "terminalize_abandoned_attempt"): ("ledger settlement transition", 1),
         ("ouroboros/usage_accounting.py", "cost_usd", "settle_attempt"): ("ledger settlement transition", 1),
-        ("ouroboros/usage_accounting.py", "cost_usd", "_terminalize_failed_attempt"): ("ledger settlement transition", 2),
+        ("ouroboros/usage_accounting.py", "cost_usd", "_terminalize_failed_attempt"): ("ledger settlement transitions + settle call for a rejected stream whose usage frame was read", 3),
         ("ouroboros/usage_accounting.py", "cost_usd", "execute_physical_attempt"): ("ledger settlement call", 1),
         ("ouroboros/usage_accounting.py", "cost_usd", "execute_physical_attempt_async"): ("ledger settlement call", 1),
         ("ouroboros/usage_legacy_import.py", "cost_usd", "_ensure_legacy_imported_locked"): ("legacy usage.json ledger import rows", 2),
@@ -198,7 +198,6 @@ class TestAliasProducerFanOutSweep:
         ("ouroboros/loop_llm_call.py", "cost_usd", "call_llm_with_retry"): ("llm_round usage event rows", 2),
         ("ouroboros/post_task_synthesis.py", "cost_usd", "_run_chat_consolidation"): ("chat_block_consolidation event row", 1),
         ("ouroboros/post_task_synthesis.py", "cost_usd", "_run_reflection"): ("reflection generation gate args", 1),
-        ("ouroboros/consciousness.py", "cost_usd", "_think_scoped"): ("consciousness thought receipt row", 2),
         ("supervisor/events_evolution_done.py", "cost_usd", "_handle_evolution_task_done"): ("internal lifecycle/checkpoint call kwargs + supervisor.jsonl observability row", 3),
         # review/evidence receipt schemas (internal review plane)
         ("ouroboros/triad_review.py", "cost_usd", "to_dict"): ("triad review receipt serialization", 1),

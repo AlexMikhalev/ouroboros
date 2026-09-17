@@ -218,11 +218,21 @@ def _recover_pending_invocation(drive_root: Any, gateway: Any,
     the engine returns the ORIGINAL handle when the first POST was accepted, and
     starts fresh only when the daemon truly never saw it. A definite 4xx retires
     the invocation and its registration; an unknown outcome stays pending.
+
+    A REVIEW surface's own pending invocation is retained untouched: its panel
+    rejoins it through ``review_session_custody``, and a delegation-domain
+    re-POST here would bind a reviewer nobody on this task asked for (#1006).
     """
     from ouroboros.gateways.claudexor import ClaudexorUnavailable
 
     invocation_id = str(record["invocation_id"])
     task_id = str(record["task_id"])
+    if _custody().review_owned_source(record.get("source")):
+        result = {"invocation_id": invocation_id, "task_id": task_id,
+                  "action": "invocation_retained",
+                  "reason": "review_panel_owns_invocation"}
+        _custody().emit(drive_root, _custody().RECONCILED, result)
+        return result
     try:
         handle = gateway.start_run(dict(record["request"]), idempotency_key=invocation_id)
     except ClaudexorUnavailable as exc:
@@ -322,7 +332,8 @@ def _retire_recovered_registration(gateway: Any, record: Dict[str, Any]) -> bool
         return False
 
 
-def _owner_terminal_is_deliberate(drive_root: Any, task_id: str) -> bool:
+def _owner_terminal_is_deliberate(drive_root: Any, task_id: str, *,
+                                  review_owned: bool = False) -> bool:
     """Whether the run's owning task ended ON PURPOSE (owner answer B1-A, the floor
     INVERTED: cancel only behind a verdict).
 
@@ -335,6 +346,13 @@ def _owner_terminal_is_deliberate(drive_root: Any, task_id: str) -> bool:
     "unknown" is exactly the case the answer is about. No reason-code table and no
     special crash branch: the axis the finalizers already write is the class. The
     spared run's own ``maxSeconds`` stays its damage limit (ARCHITECTURE, custody).
+
+    ``review_owned`` raises that floor to the ONE verdict that also speaks for a
+    review panel's run: an explicit cancellation. Task association does not confer
+    lifecycle authority, so a reviewed task that merely finished — completed,
+    degraded, best-effort or failed — is not a verdict about its own reviewer, and
+    killing the live panel on it is exactly the incident behind issue #1006. The panel's own bounds (its slot window and the run's ``maxSeconds``)
+    stay the reviewer's damage limit.
     """
     from ouroboros.outcomes import (
         EXECUTION_BEST_EFFORT, EXECUTION_CANCELLED, EXECUTION_DEGRADED, EXECUTION_FAILED,
@@ -349,6 +367,8 @@ def _owner_terminal_is_deliberate(drive_root: Any, task_id: str) -> bool:
     if not isinstance(result, dict) or str(result.get("status") or "") not in _TRULY_TERMINAL_STATUSES:
         return False
     execution = str((normalize_outcome_axes(result).get("execution") or {}).get("status") or "")
+    if review_owned:
+        return execution == EXECUTION_CANCELLED
     return execution in {EXECUTION_OK, EXECUTION_DEGRADED, EXECUTION_BEST_EFFORT,
                          EXECUTION_FAILED, EXECUTION_CANCELLED}
 
@@ -356,8 +376,19 @@ def _owner_terminal_is_deliberate(drive_root: Any, task_id: str) -> bool:
 def _reconcile_one(drive_root: Any, gateway: Any, custody: RunCustody, *,
                    deliberate_terminal: str = "") -> Dict[str, Any]:
     from ouroboros.gateways.claudexor import ClaudexorUnavailable
+    from ouroboros.task_results import STATUS_CANCELLED
     from ouroboros.tools.delegate_integration import capture_stranded_patch
 
+    review_owned = custody.review_owned
+    # The caller's claimed verdict speaks for a review panel's run only when it is
+    # the cancellation itself. `STATUS_CANCELLED` is the exact literal the two kill
+    # boundaries pass here (supervisor/cancel_publication.py and
+    # supervisor/task_lifecycle.py); every other host bound — deadline, reap, an
+    # ordinary finished task — is not a verdict about the reviewer (issue #1006).
+    claimed_verdict_cancels = (
+        str(deliberate_terminal or "") == STATUS_CANCELLED if review_owned
+        else bool(deliberate_terminal)
+    )
     try:
         detail = gateway.get_run(custody.run_id)
     except ClaudexorUnavailable as exc:
@@ -391,8 +422,9 @@ def _reconcile_one(drive_root: Any, gateway: Any, custody: RunCustody, *,
         # The C1 half: a TERMINAL DETAIL proves the run is over, so the sweep — its
         # last terminal observer — captures the diff eagerly here.
         result.update(capture_stranded_patch(drive_root, custody))
-    elif not (deliberate_terminal
-              or _owner_terminal_is_deliberate(drive_root, custody.task_id)):
+    elif not (claimed_verdict_cancels
+              or _owner_terminal_is_deliberate(drive_root, custody.task_id,
+                                               review_owned=review_owned)):
         # The inverted floor (B1-A): a live run outlives every owner terminal that
         # was not a verdict. Two ways to know the verdict, and the caller's is
         # first because a kill boundary audits custody BEFORE it writes its own
@@ -403,6 +435,9 @@ def _reconcile_one(drive_root: Any, gateway: Any, custody: RunCustody, *,
         # work becomes an undisposed_patches obligation like any other.
         result = {"run_id": custody.run_id, "task_id": custody.task_id, "action": "left_live",
                   "state": str(_custody().summary_of(detail).get("state") or ""),
+                  # A spared reviewer names its owner, so the receipt is not read
+                  # as an unexplained survival of the task's own delegation.
+                  **({"reason": "review_panel_owns_run"} if review_owned else {}),
                   **_custody().output_disposition(custody)}
     else:
         cancelled = _custody().cancel_and_verify(drive_root, gateway, custody, "owner_task_gone")

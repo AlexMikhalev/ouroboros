@@ -57,6 +57,86 @@ function fixture(t, initial = page([]), fetchPage = null) {
     };
 }
 
+// Edge navigation is bound to the real `scroll` event and starts its reads
+// without returning a promise, so a test dispatches the event and then lets the
+// fetch chain drain until it stops asking for pages.
+async function scrollEdge(f, scrollTop = 0) {
+    f.messages.scrollTop = scrollTop;
+    for (const handler of f.messages.listeners.get('scroll')) handler({});
+    for (let n = 0, spent = -1; spent !== f.calls.length && n < 40; n += 1) {
+        spent = f.calls.length;
+        await new Promise(resolve => setTimeout(resolve, 0));
+    }
+}
+
+// One saved message and nothing else: every page below it is empty down to the
+// archive floor. This is the sparse Project room that grew a 64-click pill.
+const sparseRoom = (t, floor = 5) => fixture(t,
+    page([row('chat:900', 'The one saved message')], 'page:recent', 'before:1'),
+    (cursor) => {
+        const index = Number(cursor.split(':').at(-1));
+        return page([], `page:empty-${index}`, index < floor ? `before:${index + 1}` : null);
+    });
+
+test('a sparse room walks to its floor without minting a Load-newer control', async (t) => {
+    const f = sparseRoom(t);
+    await f.refresh();
+    await scrollEdge(f);
+    assert.deepEqual(f.calls, [null, 'before:1', 'before:2', 'before:3', 'before:4', 'before:5']);
+    const controls = f.messages.querySelector('.chat-load-older');
+    assert.equal(controls.querySelector('.chat-load-older-note').textContent, 'Beginning of saved history');
+    assert.equal(controls.querySelector('.chat-load-older-btn').hidden, true);
+    assert.equal(f.messages.querySelector('.chat-load-newer'), null, 'walked-over empty pages are not a gap');
+    assert.equal(f.bubbles().filter(node => node.dataset.historyId === 'chat:900').length, 1);
+});
+
+test('a walked-out sparse room asks for nothing more, however often the reader scrolls', async (t) => {
+    const f = sparseRoom(t);
+    await f.refresh();
+    await scrollEdge(f);
+    // Everything fits on one screen, so the reader is at the top edge and near the
+    // bottom at the same time: both edges are live on every one of these events.
+    const spent = f.calls.length;
+    for (let n = 0; n < 5; n += 1) await scrollEdge(f);
+    assert.equal(f.calls.length, spent, 'no pill to click 64 times, and no request storm behind it');
+    assert.equal(f.messages.querySelector('.chat-load-newer'), null);
+});
+
+test('at the bottom edge a released page returns by its exact handle and closes the gap', async (t) => {
+    // Reading protection pins any row the reader can see; park every history row
+    // off-screen so the page budget, not the viewport, decides what is released.
+    const oldRect = ElementStub.prototype.getBoundingClientRect;
+    ElementStub.prototype.getBoundingClientRect = function () {
+        return this.dataset.historyId
+            ? { top: 1000, bottom: 1020, left: 0, right: 100, width: 100, height: 20 }
+            : oldRect.call(this);
+    };
+    t.after(() => { ElementStub.prototype.getBoundingClientRect = oldRect; });
+    const recent = page([row('chat:900', 'Newest saved message')], 'page:recent', 'before:1');
+    const older = [
+        page([row('chat:300', 'Older one')], 'page:1', 'before:2'),
+        page([row('chat:200', 'Older two')], 'page:2', 'before:3'),
+        page([row('chat:100', 'Older three')], 'page:3'),
+    ];
+    const served = new Map([['before:1', older[0]], ['before:2', older[1]], ['before:3', older[2]],
+        ...[recent, ...older].map(item => [item.page_cursor, item])]);
+    const f = fixture(t, recent, (cursor) => served.get(cursor));
+    await f.refresh();
+    for (let n = 0; n < 3; n += 1) await scrollEdge(f);
+    assert.deepEqual(f.calls, [null, 'before:1', 'before:2', 'before:3']);
+    assert.equal(f.bubbles().filter(node => node.dataset.historyId === 'chat:900').length, 1,
+        'the recent rows stay mounted after the pager released their page');
+    // Near the bottom without being at the top: only the newer edge is live here.
+    await scrollEdge(f, 200);
+    assert.deepEqual(f.calls, [null, 'before:1', 'before:2', 'before:3', 'page:recent'],
+        'the released page is refetched by its own frozen handle, page zero first');
+    const ids = [...f.messages.querySelectorAll('[data-history-id]')].map(node => node.dataset.historyId);
+    assert.equal(new Set(ids).size, ids.length, 'a replayed page mounts no duplicate row');
+    const spent = f.calls.length;
+    for (let n = 0; n < 3; n += 1) await scrollEdge(f, 200);
+    assert.equal(f.calls.length, spent, 'with the gap closed the bottom edge asks for nothing');
+});
+
 test('live message adopts its physical history identity without replacing the visible bubble', async (t) => {
     const f = fixture(t);
     await f.refresh();
@@ -93,6 +173,32 @@ test('repeated physical history identity updates the routing annotation on the s
     assert.equal(bubble.dataset.chatAnnotationStatus, 'delivered');
     assert.notEqual(note.textContent, 'Choosing the right destination…');
     assert.match(note.textContent, /Investigation/);
+});
+
+test('a replayed refusal receipt shows the host cause and a later scheduled receipt patches the same note', async (t) => {
+    const cause = 'Not started: the working folder can\'t be used';
+    const message = row('chat:250', 'Audit the GitHub tool', {
+        role: 'user', client_message_id: 'owner-refused',
+        chat_annotation: {
+            action: 'promote_chat_to_task', status: 'needs_manual_target',
+            target: 'never-started', target_label: 'Аудит', cause,
+        },
+    });
+    const f = fixture(t, page([message]));
+    await f.refresh();
+    const bubble = f.bubbles().find((node) => node.dataset.historyId === 'chat:250');
+    assert.ok(bubble);
+    assert.equal(bubble.dataset.chatAnnotationStatus, 'needs_manual_target');
+    const note = bubble.querySelector('.msg-routing-annotation');
+    assert.equal(note.textContent, cause);
+    await f.refresh(page([{ ...message, chat_annotation: {
+        action: 'promote_chat_to_task', status: 'scheduled', target: 'task-started', target_label: 'Investigation',
+    } }]));
+    assert.equal(f.bubbles().filter((node) => node.dataset.historyId === 'chat:250').length, 1);
+    assert.equal(f.bubbles().find((node) => node.dataset.historyId === 'chat:250'), bubble);
+    assert.equal(bubble.querySelector('.msg-routing-annotation'), note);
+    assert.equal(bubble.dataset.chatAnnotationStatus, 'scheduled');
+    assert.equal(note.textContent, 'Started task · Investigation');
 });
 
 test('two physical rows with identical timestamp and body remain two messages across refresh', async (t) => {

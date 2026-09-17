@@ -157,7 +157,7 @@ def test_missing_role_terminal_root_is_never_labeled_child(tmp_path):
     row = next(row for row in _chat_rows(tmp_path) if row.get("task_id") == "roleless-root")
     assert row["summary_kind"] == "terminal_root_projection"
     assert row["role"] == "root"
-    assert "role=root" in row["text"]
+    assert "Root task roleless-root." in row["text"]
 
 
 def test_terminal_child_projection_is_idempotent_and_honest_for_all_outcomes(tmp_path):
@@ -201,7 +201,9 @@ def test_terminal_child_projection_is_idempotent_and_honest_for_all_outcomes(tmp
         assert row["result_ref"] == {
             "kind": "task_result", "task_id": task_id, "reader": "get_task_result",
         }
-        assert f'get_task_result(task_id="{task_id}")' in row["text"]
+        # The reader is a typed field; a host row never spells a tool name.
+        assert "get_task_result" not in row["text"]
+        assert f"(child {task_id} of project-root)" in row["text"]
 
 
 def test_terminal_projection_dedup_does_not_lose_concurrent_chat_append(tmp_path):
@@ -472,10 +474,13 @@ def test_child_projection_enters_main_cognition_and_project_lineage_not_main_ui(
     project_context = "\n\n".join(
         build_recent_sections(Memory(tmp_path), env=None, thread_chat_id=project_chat)
     )
-    assert "Reviewed exact SHA" in main_context
-    assert "parent=root" in main_context
-    assert "Reviewed exact SHA" in project_context
-    assert "parent=root" in project_context
+    # ``memory._format_chat_line`` renders the text and drops every typed
+    # field, so lineage must stay in words. The child's own answer is not
+    # repeated here: it is a turn of its own in the room this row lives in.
+    assert "(child child-review of root)" in main_context
+    assert "Reviewed exact SHA" not in main_context
+    assert "(child child-review of root)" in project_context
+    assert "Reviewed exact SHA" not in project_context
 
     import asyncio
 
@@ -500,7 +505,8 @@ def test_child_projection_enters_main_cognition_and_project_lineage_not_main_ui(
         {"chat_id": 1, "status": "completed"},
     )
     main_context = "\n\n".join(build_recent_sections(Memory(tmp_path), env=None))
-    assert "Unscoped child truth" in main_context
+    assert "researcher (child child-main of main-root)" in main_context
+    assert "Unscoped child truth" not in main_context
     main_rows = json.loads(asyncio.run(endpoint(SimpleNamespace(
         query_params={"chat_id": "1"},
     ))).body)["messages"]

@@ -76,7 +76,10 @@ def _compact_markdown_sections(
         parts.append(preamble)
 
     for title, section in sections:
-        if title in preserve_titles:
+        # Production headings carry a provenance suffix the preserve sets do not spell
+        # out ("## Identity (from `memory/identity.md` — ...)"), so an exact-only match
+        # silently compacts the very sections this mode exists to keep.
+        if title in preserve_titles or title.split("(")[0].strip() in preserve_titles:
             parts.append(section)
             continue
         omitted_chars = max(0, len(section))
@@ -94,8 +97,9 @@ _LOCAL_COMPACTION_MODES = {
         "Use a larger-context model or read the source file directly if this section becomes necessary.",
     ),
     "semi_stable": (
-        {"Identity"},
-        "Identity was preserved; non-core stable memory sections were compacted for local execution.",
+        {"Identity", "Shared understanding"},
+        "Identity and the shared understanding were preserved; non-core stable memory "
+        "sections were compacted for local execution.",
     ),
     "dynamic": (
         {
@@ -118,7 +122,6 @@ _LOCAL_COMPACTION_MODES = {
             "Runtime context",
             "Health Invariants",
             "Recent observations",
-            "Background consciousness info",
         },
         "Non-core sections were compacted for local execution.",
     ),

@@ -31,6 +31,7 @@ from ouroboros.config import (
     get_task_abs_ceiling_sec,  # noqa: F401 -- queue_timeouts leaf reads it via the _queue() handle
     get_task_idle_timeout_sec,  # noqa: F401 -- queue_timeouts leaf reads it via the _queue() handle
 )
+from ouroboros.consciousness_authority import apply_consciousness_authority, is_consciousness_origin
 from ouroboros.contracts.task_contract import attach_task_contract, build_task_contract, normalize_allowed_resources  # noqa: F401
 from ouroboros.schedule_contract import RESERVED_TEMPLATE_FIELDS, schedule_slug  # noqa: F401
 from ouroboros.skill_loader import skill_identity_collision_names  # noqa: F401
@@ -78,6 +79,10 @@ def init(drive_root: pathlib.Path) -> None:
     QUEUE_SNAPSHOT_PATH = drive_root / "state" / "queue_snapshot.json"
     FINALIZATION_GRACE_SEC = get_finalization_grace_sec()
     BUDGET_ROOT_FENCES.clear()
+    # A previous process's direct-chat turns must not outlive it in the roster.
+    from supervisor.direct_roots import clear_direct_roots
+
+    clear_direct_roots(drive_root)
 
 
 def refresh_timeouts_from_settings(settings: dict) -> None:
@@ -162,7 +167,16 @@ def enqueue_task(
     """Add task to PENDING (thread-safe: HTTP handlers enqueue concurrently
     with the supervisor main loop, so the mutation must hold the queue lock)."""
     t = dict(task)
-    attach_task_contract(t)
+    attach_task_contract(apply_consciousness_authority(t))
+    # The allowance read takes the cross-process ledger lock: read it BEFORE the queue
+    # lock so a contended ledger never stalls every queue reader; only the live-root
+    # count and the append must be one transaction with the lock (the window gates
+    # starts — a window stale by milliseconds changes nothing).
+    consciousness_window = None
+    if not restoring_snapshot and _consciousness_root(t):
+        from ouroboros.consciousness_allowance import allowance_window
+
+        consciousness_window = allowance_window(DRIVE_ROOT)
     with _queue_lock:
         require_unique_id = bool(t.pop("_require_unique_task_id", False))
         require_worker_pool = bool(t.pop("_require_worker_pool", False))
@@ -216,6 +230,12 @@ def enqueue_task(
                 t["_admission_blocked"] = "worker_pool_unavailable"
                 t["_worker_pool_disabled_reason"] = pool_state["disabled_reason"]
                 return t
+        consciousness_block = None if restoring_snapshot else _consciousness_admission_block(t, consciousness_window)
+        if consciousness_block is not None:
+            t["_admission_blocked"], t["_admission_detail"] = consciousness_block
+            if ADMISSION_RESERVATIONS.get(task_id) == admission_token:
+                ADMISSION_RESERVATIONS.pop(task_id, None)
+            return t
         if admission_token and reserved_token != admission_token:
             t["_admission_blocked"] = "admission_reservation_lost"
             return t
@@ -267,6 +287,72 @@ def enqueue_task(
         if ADMISSION_RESERVATIONS.get(task_id) == admission_token:
             ADMISSION_RESERVATIONS.pop(task_id, None)
     return t
+
+
+def live_consciousness_root_count() -> int:
+    """Live PENDING+RUNNING roots that consciousness started (its origin marker on the
+    task metadata; subagents are their root's business). Sibling of ``queue_has_task_type``."""
+    def _counts(task: Any) -> bool:
+        return (
+            isinstance(task, dict)
+            and str(task.get("delegation_role") or "root") == "root"
+            and is_consciousness_origin(task.get("metadata"))
+        )
+
+    live = sum(1 for task in PENDING if _counts(task))
+    return live + sum(
+        1 for meta in RUNNING.values() if isinstance(meta, dict) and _counts(meta.get("task"))
+    )
+
+
+def _consciousness_root(task: Dict[str, Any]) -> bool:
+    return (is_consciousness_origin(task.get("metadata"))
+            and str(task.get("delegation_role") or "root") == "root")
+
+
+def _consciousness_admission_block(task: Dict[str, Any], window: Optional[Dict[str, Any]] = None) -> Optional[Tuple[str, str]]:
+    """The ONE admission door for the roots consciousness starts (owner decisions В11/В18).
+
+    Called under the queue lock, so the live count and the admission are one
+    transaction. Returns ``(reason, detail)`` in the queue's existing refusal
+    vocabulary when a consciousness-origin ROOT may not start — the concurrency
+    cap over live roots with the same marker (``OUROBOROS_CONSCIOUSNESS_MAX_TASKS``,
+    0 = never) or the rolling-24h allowance (``OUROBOROS_CONSCIOUSNESS_DAILY_USD``,
+    0 = consciousness may not spend; an unreadable ledger refuses honestly as
+    ``allowance_unknown``) — and ``None`` when it may. Subagents are bounded by
+    their root's own cap and the per-root child cap, never counted twice; a
+    snapshot restore re-admits already-admitted work and is not gated here. ``window``
+    is the allowance the caller read before taking the lock; read here only when absent.
+    """
+    if not _consciousness_root(task):
+        return None
+    from ouroboros.config import get_consciousness_max_tasks
+    from ouroboros.consciousness_allowance import (
+        STATUS_AVAILABLE, STATUS_UNKNOWN, allowance_window,
+    )
+
+    max_tasks = get_consciousness_max_tasks()
+    live = live_consciousness_root_count()
+    if live >= max_tasks:
+        return ("consciousness_task_limit", (
+            f"{live} of {max_tasks} consciousness-started tasks already live"
+            if max_tasks else "OUROBOROS_CONSCIOUSNESS_MAX_TASKS=0: consciousness never starts tasks"
+        ))
+    if window is None:
+        window = allowance_window(DRIVE_ROOT)
+    if window["status"] == STATUS_UNKNOWN:
+        return ("consciousness_allowance_unknown",
+                f"the usage ledger could not be read: {window.get('error') or 'unknown error'}")
+    if window["status"] != STATUS_AVAILABLE:
+        if not window["limit_usd"]:
+            return ("consciousness_allowance_exhausted",
+                    "OUROBOROS_CONSCIOUSNESS_DAILY_USD=0: consciousness may not spend")
+        at_least = " (at least)" if window["unknown_unmetered"] else ""
+        return ("consciousness_allowance_exhausted", (
+            f"${window['accounted_usd']:.2f}{at_least} of ${window['limit_usd']:.2f} "
+            f"spent in the last 24 h; resets at {window['resets_at'] or 'unknown'}"
+        ))
+    return None
 
 
 def queue_has_task_type(task_type: str) -> bool:
@@ -369,12 +455,15 @@ def _cancel_task_by_id_single(task_id: str) -> bool:
 # so `supervisor.queue` stays the single import surface for callers.
 
 
-def queue_deep_self_review_task(reason: str, model: str = "", force: bool = False, chat_id: Optional[int] = None) -> Optional[str]:
+def queue_deep_self_review_task(reason: str, model: str = "", force: bool = False, chat_id: Optional[int] = None,
+                                origin: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """Queue a deep self-review task.
 
     ``chat_id`` targets a specific chat (e.g. the external transport chat that ran
     ``/review``) so the queued ack and the task results return to the requester
-    instead of always defaulting to the web owner's ``owner_chat_id``.
+    instead of always defaulting to the web owner's ``owner_chat_id``. ``origin`` is
+    the requester's consciousness origin (a wake-up or its tree), stamped on the
+    root so the admission door and the ledger see it; empty for the owner.
     """
     # Membership, not truthiness: a review asked for from the hidden partition
     # is answered there, not silently re-routed to the owner's main chat.
@@ -391,12 +480,15 @@ def queue_deep_self_review_task(reason: str, model: str = "", force: bool = Fals
         "text": reason or "Deep self-review",
         "model": model,
         "_require_worker_pool": True,
+        **({"metadata": dict(origin)} if origin else {}),
     })
     if admitted.get("_admission_blocked"):
         reason = admitted.get("_worker_pool_disabled_reason") or admitted["_admission_blocked"]
+        detail = str(admitted.get("_admission_detail") or "")
+        hint = f" {detail}." if detail else " Use /restart to restore the worker pool."
         send_with_budget(
             int(target_chat_id),
-            f"Deep self-review could not be queued: {reason}. Use /restart to restore the worker pool.",
+            f"Deep self-review could not be queued: {reason}.{hint}",
             role="system", system_type="deep_self_review_unavailable",
         )
         return None

@@ -18,13 +18,19 @@ def test_processing_settings_save_reopen_and_actor_reference(role_ui):
     page.locator('[data-global-processing]').select_option('fast')
     main = page.locator('[data-model-role="main"]')
     assert not main.locator('details').evaluate('e => e.open')
+    # The collapsed override must be recognizable as a disclosure: the glyph is
+    # drawn by CSS, so only a real render can prove it is there and flips open.
+    marker = "s => getComputedStyle(s, '::before').content"
+    assert main.locator('summary').evaluate(marker) == '"▸ "'
     main.locator('summary').click()
+    assert main.locator('summary').evaluate(marker) == '"▾ "'
     main.locator('[data-model-role-processing]').select_option('standard')
     assert 'Standard (override)' in main.locator('summary').text_content()
     main_model = ui['settings']['OUROBOROS_MODEL']
     page.locator('[data-settings-tab="agents"]').click()
     actor = page.locator('[data-subagent-row]').first
     assert 'Fast (from Models)' in actor.locator('[data-processing-summary]').text_content()
+    assert actor.locator('summary').evaluate(marker) == '"▸ "'
     actor.locator('summary').click()
     actor.locator('[data-subagent-field="processing_preference"]').select_option('economy')
     scope = page.locator('[data-slot-id="scope_1"]')

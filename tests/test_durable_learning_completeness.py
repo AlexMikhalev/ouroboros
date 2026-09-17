@@ -34,6 +34,67 @@ def test_pattern_register_rewrite_receives_complete_tail(tmp_path, monkeypatch):
     assert tail in path.read_text(encoding="utf-8")
 
 
+def test_pattern_register_receives_the_whole_reflection_and_the_exact_goal(tmp_path, monkeypatch):
+    """A correction past character 500 decides the register's row, so it must arrive.
+
+    The incident: the Pattern Register writer received ``reflection[:500]``. The
+    clip landed inside the exculpatory clause of a reflection whose EARLIER
+    sentence said the opposite, so the register recorded the inverse conclusion
+    and kept bumping its count. The goal was clipped the same way at 200 chars.
+    Both are decision inputs of a DESTRUCTIVE rewrite (this call replaces the
+    whole register), so both arrive complete. Asserted on the messages actually
+    composed for the Light model, and on the producer's own entry rather than a
+    hand-built one.
+    """
+    from ouroboros import reflection
+
+    (tmp_path / "memory" / "knowledge").mkdir(parents=True)
+    goal_tail = "GOAL TAIL: the owner asked for the release notes, not a branch cleanup."
+    goal = "Ship the release. " + ("Background context sentence. " * 30) + goal_tail
+    early = "EARLY READING: the host should fail closed on REVIEW_REQUIRED."
+    correction = (
+        "DECISIVE CORRECTION: this install runs advisory enforcement, so failing closed "
+        "on REVIEW_REQUIRED would be the inverse of the configured rule."
+    )
+    reflection_body = early + " " + ("Padding sentence about the trace. " * 30) + correction
+    assert len(goal) > 200
+    assert reflection_body.index(correction) > 500
+
+    captured = {}
+    replies = [{"content": reflection_body
+                + "\nMEMORY_ACTIONS_JSON: []\nBACKLOG_CANDIDATES_JSON: []"}]
+
+    def fake_chat(*args, **kwargs):
+        if kwargs.get("call_type") == "pattern_register_update":
+            captured["prompt"] = kwargs["messages"][0]["content"]
+            return ({"content": reflection._PATTERNS_HEADER
+                     + "| advisory misreading | 1 | clipped input | pass whole input | open |\n"}, {})
+        return (replies.pop(0), {})
+
+    monkeypatch.setattr("ouroboros.config.get_light_model", lambda: "light")
+    monkeypatch.setattr("ouroboros.llm.LLMClient", lambda: object())
+    monkeypatch.setattr("ouroboros.llm_observability.chat_observed", fake_chat)
+
+    entry = reflection.generate_reflection(
+        {"id": "task-learn", "text": goal, "drive_root": str(tmp_path)},
+        {"tool_calls": [{"tool": "write_file", "is_error": True, "status": "error",
+                         "tool_result_code": "TOOL_REPORTED_FAILURE", "result": "boom"}]},
+        "trace", object(), {"rounds": 3, "cost": 0.0},
+    )
+    # The bounded display field survives beside the exact one; neither replaces the other.
+    assert entry["goal_exact"] == goal
+    assert entry["goal"].startswith("Ship the release.") and goal_tail not in entry["goal"]
+    assert entry["reflection"] == reflection_body
+
+    reflection.append_reflection(tmp_path, entry)
+
+    prompt = captured["prompt"]
+    assert reflection_body in prompt
+    assert prompt.index(correction) > prompt.index(early)
+    assert goal_tail in prompt
+    assert "OMISSION NOTE" not in prompt
+
+
 def test_backlog_fingerprint_uses_unsanitized_canonical_fields(tmp_path, monkeypatch):
     from ouroboros.improvement_backlog import append_backlog_items, load_backlog_items
 
@@ -314,28 +375,43 @@ def test_closed_objective_unavailable_abstains_before_chooser(tmp_path, monkeypa
     assert called == []
 
 
-def _bg_fixture(tmp_path, *, backlog_count=10):
-    from ouroboros.consciousness import BackgroundConsciousness
-    from ouroboros.improvement_backlog import append_backlog_items
+def _wake_context(tmp_path, *, chat_rows=None):
+    """The system text a consciousness wake-up gets: Main's own builder (build_llm_messages)
+    over a wake-shaped task and the real repository prompts — the typed gap facts the
+    context builders disclose (recent-chat, dialogue-history and schedule digests) are
+    what the wake reads; nothing consciousness-specific is layered on top."""
+    from ouroboros.context import build_llm_messages
+    from ouroboros.memory import Memory
 
     repo_dir = pathlib.Path(__file__).parents[1]
-    (tmp_path / "logs").mkdir(parents=True)
-    (tmp_path / "logs" / "chat.jsonl").write_text(
-        json.dumps({"chat_id": 1, "direction": "in", "text": "complete recent chat"}) + "\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "state").mkdir(parents=True)
-    (tmp_path / "state" / "state.json").write_text("{}", encoding="utf-8")
-    for idx in range(backlog_count):
-        append_backlog_items(tmp_path, [{
-            "id": f"ibl-bg-{idx}", "fingerprint": f"fp-bg-{idx}",
-            "summary": f"background item {idx}", "category": "identity", "source": "reflection",
-        }])
-    return BackgroundConsciousness(tmp_path, repo_dir, None, lambda: None)
 
+    class FakeEnv:
+        def drive_path(self, p):
+            return tmp_path / p
 
-def _tool_call(name, args, call_id):
-    return {"id": call_id, "function": {"name": name, "arguments": json.dumps(args)}}
+        def repo_path(self, p):
+            return repo_dir / p
+
+        @property
+        def repo_dir(self):
+            return repo_dir
+
+        @property
+        def drive_root(self):
+            return tmp_path
+
+    (tmp_path / "logs").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "memory").mkdir(parents=True, exist_ok=True)
+    if not (tmp_path / "state" / "state.json").exists():
+        (tmp_path / "state" / "state.json").write_text("{}", encoding="utf-8")
+    rows = chat_rows if chat_rows is not None else [json.dumps({"chat_id": 1, "direction": "in", "text": "complete recent chat"})]
+    (tmp_path / "logs" / "chat.jsonl").write_text("".join(row + "\n" for row in rows), encoding="utf-8")
+    task = {"id": "wake1", "type": "task", "text": "[Wake-up · heartbeat]", "_is_direct_chat": True,
+            "metadata": {"initiator": "consciousness", "usage_category": "consciousness",
+                         "consciousness_autonomy": "act"}}
+    messages, _cap = build_llm_messages(env=FakeEnv(), memory=Memory(drive_root=tmp_path, repo_dir=repo_dir), task=task)
+    return "\n\n".join(block["text"] for block in messages[0]["content"])
 
 
 def _write_schedules(tmp_path, count):
@@ -343,311 +419,45 @@ def _write_schedules(tmp_path, count):
         "id": f"schedule-{idx}", "name": f"schedule {idx}", "enabled": True,
         "trigger": {"type": "cron", "expr": "0 * * * *"},
     } for idx in range(count)]
+    (tmp_path / "state").mkdir(parents=True, exist_ok=True)
     (tmp_path / "state" / "scheduled_tasks.json").write_text(
         json.dumps({"tasks": tasks}), encoding="utf-8",
     )
 
 
-def test_bgc_direct_identity_update_requires_complete_named_omission(tmp_path):
-    bc = _bg_fixture(tmp_path)
-    try:
-        # The knowledge header is separate from the exact body; both the
-        # delivered body and revision must preserve a CRLF source.
-        backlog = tmp_path / "memory" / "knowledge" / "improvement-backlog.md"
-        backlog.write_bytes(
-            backlog.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
-        )
-        context = bc._build_context()
-        assert "knowledge_read" in context and "improvement-backlog" in context
-        content = "I remain directly self-authoring after complete source materialization."
-        blocked = bc._execute_tool(_tool_call("update_identity", {"content": content}, "u1"), [])
-        assert "IDENTITY_UPDATE_ABSTAINED" in blocked
-        read = bc._execute_tool(_tool_call("knowledge_read", {"topic": "improvement-backlog"}, "r1"), [])
-        assert "background item 9" in read
-        updated = bc._execute_tool(_tool_call("update_identity", {"content": content}, "u2"), [])
-        assert updated.startswith("OK: identity updated")
-        journal = tmp_path / "memory" / "identity_journal.jsonl"
-        assert journal.exists() and content in journal.read_text(encoding="utf-8")
-    finally:
-        bc._tool_executor.shutdown(wait=False, cancel_futures=True)
+def test_wake_context_discloses_a_malformed_recent_chat_gap(tmp_path):
+    context = _wake_context(tmp_path, chat_rows=[
+        json.dumps({"chat_id": 1, "direction": "in", "text": "complete recent chat"}),
+        '{"direction":"in","text":"broken"',
+    ])
+    assert "jsonl_malformed" in context
 
 
-def test_bgc_source_mutation_after_read_cannot_authorize_identity_rewrite(tmp_path, monkeypatch):
-    bc = _bg_fixture(tmp_path)
-    try:
-        bc._build_context()
-        backlog = tmp_path / "memory" / "knowledge" / "improvement-backlog.md"
-        changed = backlog.read_bytes() + (
-            b"\n### ibl-concurrent\n- summary: changed after materialization\n"
-        )
-        real_read_bytes = pathlib.Path.read_bytes
-        target_reads = 0
-
-        def mutate_before_snapshot(self, *args, **kwargs):
-            nonlocal target_reads
-            if self == backlog:
-                target_reads += 1
-                if target_reads == 1:
-                    captured = real_read_bytes(self, *args, **kwargs)
-                    self.write_bytes(changed)
-                    return captured
-            return real_read_bytes(self, *args, **kwargs)
-
-        monkeypatch.setattr(pathlib.Path, "read_bytes", mutate_before_snapshot)
-        bc._execute_tool(_tool_call("knowledge_read", {"topic": "improvement-backlog"}, "r1"), [])
-        result = bc._execute_tool(
-            _tool_call("update_identity", {"content": "must remain blocked"}, "u1"), [],
-        )
-        assert target_reads >= 2  # reader capture plus current-source validation
-        assert "IDENTITY_UPDATE_ABSTAINED" in result
-    finally:
-        bc._tool_executor.shutdown(wait=False, cancel_futures=True)
+def test_wake_context_carries_a_complete_dialogue_block_without_a_gap(tmp_path):
+    (tmp_path / "memory").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "memory" / "dialogue_blocks.json").write_text(json.dumps([{
+        "ts": "2026-08-21T00:00:00Z", "source": "consolidator",
+        "content": "Complete consolidated biography block.",
+    }]), encoding="utf-8")
+    _write_schedules(tmp_path, 8)
+    context = _wake_context(tmp_path)
+    assert "Complete consolidated biography block." in context
+    dialogue = context.split("## Dialogue History", 1)[1].split("\n## ", 1)[0]
+    assert "[MEMORY GAP]" not in dialogue
 
 
-def test_bgc_source_snapshot_cannot_mix_text_and_digest(tmp_path, monkeypatch):
-    bc = _bg_fixture(tmp_path)
-    try:
-        backlog = tmp_path / "memory" / "knowledge" / "improvement-backlog.md"
-        backlog.write_bytes(
-            backlog.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
-        )
-        bc._build_context()
-        original = backlog.read_bytes()
-        changed = original + b"\r\n### ibl-concurrent\r\n- summary: changed bytes\r\n"
-        real_read_bytes = pathlib.Path.read_bytes
-        target_reads = 0
-
-        def oscillate_during_validation(self, *args, **kwargs):
-            nonlocal target_reads
-            if self == backlog:
-                target_reads += 1
-                if target_reads == 1:
-                    self.write_bytes(changed)
-                    raw = real_read_bytes(self, *args, **kwargs)
-                    self.write_bytes(original)
-                    return raw
-            return real_read_bytes(self, *args, **kwargs)
-
-        monkeypatch.setattr(pathlib.Path, "read_bytes", oscillate_during_validation)
-        materialized = bc._execute_tool(
-            _tool_call("knowledge_read", {"topic": "improvement-backlog"}, "r1"), [],
-        )
-        assert materialized.endswith(changed.decode("utf-8"))
-        assert materialized.startswith("[Knowledge source]")
-        assert "improvement-backlog" not in bc._identity_source_reads
-        backlog.write_bytes(changed)
-        result = bc._execute_tool(
-            _tool_call("update_identity", {"content": "must remain blocked"}, "u1"), [],
-        )
-        assert "IDENTITY_UPDATE_ABSTAINED" in result
-    finally:
-        bc._tool_executor.shutdown(wait=False, cancel_futures=True)
+def test_wake_context_discloses_a_durable_dialogue_gap(tmp_path):
+    (tmp_path / "memory").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "memory" / "dialogue_blocks.json").write_text(json.dumps([{
+        "ts": "2026-08-21T00:00:00Z", "source": "consolidator",
+        "gap_id": "dialogue-gap-123",
+        "content": "[MEMORY GAP] A durable biography interval is unavailable.",
+    }]), encoding="utf-8")
+    context = _wake_context(tmp_path)
+    assert "## Dialogue History" in context and "[MEMORY GAP]" in context
 
 
-def test_bgc_unavailable_named_omission_abstains_without_approval_flow(tmp_path):
-    bc = _bg_fixture(tmp_path)
-    try:
-        bc._build_context()
-        (tmp_path / "memory" / "knowledge" / "improvement-backlog.md").unlink()
-        content = "I retain direct authority but abstain when the named source is unavailable."
-        result = bc._execute_tool(_tool_call("update_identity", {"content": content}, "u1"), [])
-        assert "IDENTITY_UPDATE_ABSTAINED" in result
-        assert "approval" not in result.lower()
-        assert not (tmp_path / "memory" / "identity_journal.jsonl").exists()
-    finally:
-        bc._tool_executor.shutdown(wait=False, cancel_futures=True)
-
-
-def test_bgc_malformed_recent_chat_gap_blocks_direct_identity_update(tmp_path):
-    bc = _bg_fixture(tmp_path, backlog_count=0)
-    try:
-        chat = tmp_path / "logs" / "chat.jsonl"
-        chat.write_text(
-            chat.read_text(encoding="utf-8") + '{"direction":"in","text":"broken"\n',
-            encoding="utf-8",
-        )
-        context = bc._build_context()
-        assert "jsonl_malformed" in context
-        content = "I must not rewrite identity from a context with a known chat gap."
-        result = bc._execute_tool(_tool_call("update_identity", {"content": content}, "u1"), [])
-        assert "IDENTITY_UPDATE_ABSTAINED" in result
-        assert not (tmp_path / "memory" / "identity_journal.jsonl").exists()
-    finally:
-        bc._tool_executor.shutdown(wait=False, cancel_futures=True)
-
-
-def test_bgc_complete_recent_chat_keeps_direct_identity_update_available(tmp_path):
-    bc = _bg_fixture(tmp_path, backlog_count=0)
-    try:
-        memory_dir = tmp_path / "memory"
-        memory_dir.mkdir(parents=True, exist_ok=True)
-        (memory_dir / "dialogue_blocks.json").write_text(json.dumps([{
-            "ts": "2026-08-21T00:00:00Z", "source": "consolidator",
-            "content": "Complete consolidated biography block.",
-        }]), encoding="utf-8")
-        _write_schedules(tmp_path, 8)
-        bc._build_context()
-        content = "I retain direct identity authority with complete ordinary context."
-        result = bc._execute_tool(_tool_call("update_identity", {"content": content}, "u1"), [])
-        assert result.startswith("OK: identity updated")
-        assert content in (tmp_path / "memory" / "identity_journal.jsonl").read_text(encoding="utf-8")
-    finally:
-        bc._tool_executor.shutdown(wait=False, cancel_futures=True)
-
-
-def test_bgc_durable_dialogue_gap_blocks_direct_identity_update(tmp_path):
-    bc = _bg_fixture(tmp_path, backlog_count=0)
-    try:
-        memory_dir = tmp_path / "memory"
-        memory_dir.mkdir(parents=True, exist_ok=True)
-        (memory_dir / "dialogue_blocks.json").write_text(json.dumps([{
-            "ts": "2026-08-21T00:00:00Z", "source": "consolidator",
-            "gap_id": "dialogue-gap-123",
-            "content": "[MEMORY GAP] A durable biography interval is unavailable.",
-        }]), encoding="utf-8")
-        context = bc._build_context()
-        assert "## Dialogue History" in context and "[MEMORY GAP]" in context
-        content = "I must not rewrite identity across a known durable biography gap."
-        result = bc._execute_tool(_tool_call("update_identity", {"content": content}, "u1"), [])
-        assert "IDENTITY_UPDATE_ABSTAINED" in result
-        assert "dialogue-gap-123" in result
-        assert not (memory_dir / "identity_journal.jsonl").exists()
-    finally:
-        bc._tool_executor.shutdown(wait=False, cancel_futures=True)
-
-
-def test_bgc_scheduled_tasks_omission_blocks_direct_identity_update(tmp_path):
-    bc = _bg_fixture(tmp_path, backlog_count=0)
-    try:
-        _write_schedules(tmp_path, 9)
-        context = bc._build_context()
-        assert '"omitted_count": 1' in context
-        content = "I must not rewrite identity from an incomplete standing-schedule digest."
-        result = bc._execute_tool(_tool_call("update_identity", {"content": content}, "u1"), [])
-        assert "IDENTITY_UPDATE_ABSTAINED" in result
-        assert "scheduled-tasks" in result
-        assert not (tmp_path / "memory" / "identity_journal.jsonl").exists()
-    finally:
-        bc._tool_executor.shutdown(wait=False, cancel_futures=True)
-
-
-def test_bgc_observation_gap_blocks_direct_identity_update(tmp_path):
-    bc = _bg_fixture(tmp_path, backlog_count=0)
-    try:
-        store = tmp_path / "state" / "consciousness_observations.jsonl"
-        store.write_text(
-            '{"op":"enqueue","id":"valid","source":"runtime",'
-            '"kind":"text","time":"2026-08-21T00:00:00Z",'
-            '"payload":"known row","ref":null}\n'
-            '{"op":"enqueue","id":"broken"\n',
-            encoding="utf-8",
-        )
-        context = bc._build_context()
-        assert "source_complete=False" in context
-        assert "state/consciousness_observations.jsonl" in context
-        assert "background-observations" in context
-        content = "I must not rewrite identity across a known observation-source gap."
-        result = bc._execute_tool(_tool_call("update_identity", {"content": content}, "u1"), [])
-        assert "IDENTITY_UPDATE_ABSTAINED" in result
-        assert "background-observations" in result
-        assert not (tmp_path / "memory" / "identity_journal.jsonl").exists()
-    finally:
-        bc._tool_executor.shutdown(wait=False, cancel_futures=True)
-
-
-def test_bgc_omitted_observation_rows_block_direct_identity_update(tmp_path):
-    bc = _bg_fixture(tmp_path, backlog_count=0)
-    try:
-        for index in range(11):
-            assert bc.inject_observation(
-                f"observation-{index}", observation_id=f"omitted-{index}"
-            )
-        context = bc._build_context()
-        assert "omitted=1" in context
-        assert "source_complete=False" in context
-        assert "background-observations" in context
-        result = bc._execute_tool(
-            _tool_call(
-                "update_identity",
-                {"content": "Do not rewrite identity from omitted observations."},
-                "u1",
-            ),
-            [],
-        )
-        assert "IDENTITY_UPDATE_ABSTAINED" in result
-        assert "background-observations" in result
-        assert not (tmp_path / "memory" / "identity_journal.jsonl").exists()
-    finally:
-        bc._tool_executor.shutdown(wait=False, cancel_futures=True)
-
-
-def test_bgc_payload_truncation_blocks_direct_identity_update(tmp_path):
-    bc = _bg_fixture(tmp_path, backlog_count=0)
-    try:
-        assert bc.inject_observation(
-            "p" * 2_000, observation_id="payload-truncated"
-        )
-        context = bc._build_context()
-        assert "payload omitted" in context
-        assert "source_complete=False" in context
-        assert "background-observations" in context
-        result = bc._execute_tool(
-            _tool_call(
-                "update_identity",
-                {"content": "Do not rewrite identity from a truncated payload."},
-                "u1",
-            ),
-            [],
-        )
-        assert "IDENTITY_UPDATE_ABSTAINED" in result
-        assert "background-observations" in result
-        assert not (tmp_path / "memory" / "identity_journal.jsonl").exists()
-    finally:
-        bc._tool_executor.shutdown(wait=False, cancel_futures=True)
-
-
-def test_bgc_aggregate_projection_truncation_blocks_direct_identity_update(tmp_path):
-    bc = _bg_fixture(tmp_path, backlog_count=0)
-    try:
-        for index in range(10):
-            assert bc.inject_observation(
-                "small",
-                observation_id=f"aggregate-{index}",
-                source="s" * 1_400,
-            )
-        context = bc._build_context()
-        assert "projection truncated" in context
-        assert "source_complete=False" in context
-        assert "background-observations" in context
-        result = bc._execute_tool(
-            _tool_call(
-                "update_identity",
-                {"content": "Do not rewrite identity from an aggregate projection."},
-                "u1",
-            ),
-            [],
-        )
-        assert "IDENTITY_UPDATE_ABSTAINED" in result
-        assert "background-observations" in result
-        assert not (tmp_path / "memory" / "identity_journal.jsonl").exists()
-    finally:
-        bc._tool_executor.shutdown(wait=False, cancel_futures=True)
-
-
-def test_bgc_complete_observation_source_keeps_direct_identity_update_available(tmp_path):
-    bc = _bg_fixture(tmp_path, backlog_count=0)
-    try:
-        assert bc.inject_observation(
-            "complete observation", observation_id="complete-observation"
-        )
-        context = bc._build_context()
-        assert "source_complete=True" in context
-        assert "complete-observation" in context
-        content = "I retain direct identity authority with a complete observation source."
-        result = bc._execute_tool(_tool_call("update_identity", {"content": content}, "u1"), [])
-        assert result.startswith("OK: identity updated")
-        assert content in (tmp_path / "memory" / "identity_journal.jsonl").read_text(
-            encoding="utf-8"
-        )
-    finally:
-        bc._tool_executor.shutdown(wait=False, cancel_futures=True)
+def test_wake_context_discloses_an_omitted_schedule_count(tmp_path):
+    _write_schedules(tmp_path, 9)
+    context = _wake_context(tmp_path)
+    assert '"omitted_count": 1' in context

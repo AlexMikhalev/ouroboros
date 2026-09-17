@@ -139,9 +139,7 @@ def test_project_started_row_rides_outbox_pins_main_and_dedupes_durably(tmp_path
     assert queued[0]["system_type"] == "project_started"
     assert queued[0]["role"] == "system"
     assert queued[0]["chat_id"] == 1
-    assert queued[0]["text"] == (
-        "Launch 🚀 › Ship release · Started\nWork is running in this Project."
-    )
+    assert queued[0]["text"] == "Launch 🚀 › Ship release · Started"
     assert queued[0]["progress_meta"] == {
         "project_id": "launch",
         "project_name": "Launch 🚀",
@@ -282,6 +280,115 @@ def test_chat_annotation_compaction_drops_rows_after_chat_retention(tmp_path):
     assert (logs / "chat_annotations.jsonl").read_text(encoding="utf-8") == ""
 
 
+def test_chat_annotation_compaction_keeps_receipts_that_address_no_message(tmp_path):
+    """A steer the agent authored itself is answered by a receipt keyed on its
+    routing token, and its only reader is the tool waiting on `routing_wait`.
+    Chat-row membership cannot retire it: the append that crosses the threshold
+    used to delete the very row it had just written, so a landed delivery came
+    back as unconfirmed. Stale owner rows still go."""
+    from ouroboros.project_dialogue import (
+        AGENT_RECEIPT_ID_PREFIX, _COMPACT_AT_BYTES, append_chat_annotation,
+        latest_chat_annotations,
+    )
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "chat.jsonl").write_text(
+        json.dumps({
+            "direction": "in", "chat_id": 1,
+            "client_message_id": "msg-1789388120127-2", "text": "publish the skills",
+        }) + "\n",
+        encoding="utf-8",
+    )
+    annotations = logs / "chat_annotations.jsonl"
+    live = {
+        "ts": "2026-09-14T12:37:49Z", "type": "chat_annotation",
+        "client_message_id": "msg-1789388120127-2", "action": "promote_chat_to_task",
+        "target": "a3e646fc62a44015", "status": "scheduled", "detail": "x" * 400,
+    }
+    stale = {**live, "client_message_id": "msg-expired-1"}
+    with annotations.open("w", encoding="utf-8") as stream:
+        while annotations.stat().st_size < _COMPACT_AT_BYTES:
+            stream.write(json.dumps(live) + "\n")
+            stream.write(json.dumps(stale) + "\n")
+            stream.flush()
+    assert annotations.stat().st_size >= _COMPACT_AT_BYTES  # the next append compacts
+
+    receipt_id = f"{AGENT_RECEIPT_ID_PREFIX}f00dtoken"
+    assert append_chat_annotation(
+        tmp_path, receipt_id, action="steer_task", target="a3e646fc62a44015",
+        status="delivered", routing_token="f00dtoken",
+    )
+
+    latest = latest_chat_annotations(tmp_path)
+    assert annotations.stat().st_size < _COMPACT_AT_BYTES  # it really did compact
+    assert latest[receipt_id]["status"] == "delivered"  # survives its own append
+    assert latest[receipt_id]["routing_token"] == "f00dtoken"
+    assert "msg-1789388120127-2" in latest  # the owner's message keeps its receipt
+    assert "msg-expired-1" not in latest  # chat retention still drops the rest
+
+    # Per-id dedupe bounds the synthetic rows exactly like the addressed ones.
+    assert append_chat_annotation(
+        tmp_path, receipt_id, action="steer_task", target="a3e646fc62a44015",
+        status="needs_manual_target", routing_token="f00dtoken",
+    )
+    rows = [
+        json.loads(line) for line in annotations.read_text(encoding="utf-8").splitlines() if line
+    ]
+    assert [row["status"] for row in rows if row["client_message_id"] == receipt_id] == [
+        "delivered", "needs_manual_target",
+    ]
+    assert latest_chat_annotations(tmp_path)[receipt_id]["status"] == "needs_manual_target"
+
+
+def test_synthetic_receipt_retention_is_bounded_by_the_newest_cap(tmp_path):
+    """Every steer mints a fresh token, so per-id dedupe bounds nothing: without a
+    cap the synthetic rows accumulate forever, the file stays permanently above the
+    compaction threshold and every append rewrites the whole of it. The newest cap
+    survives, which is all any live `routing_wait` (15 s of polling) can need."""
+    from ouroboros.project_dialogue import (
+        AGENT_RECEIPT_ID_PREFIX, _COMPACT_AT_BYTES, _RETAINED_AGENT_RECEIPTS,
+        append_chat_annotation, latest_chat_annotations,
+    )
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "chat.jsonl").write_text("", encoding="utf-8")
+    annotations = logs / "chat_annotations.jsonl"
+    seeded = 70
+    with annotations.open("w", encoding="utf-8") as stream:
+        for index in range(seeded):
+            stream.write(json.dumps({
+                "ts": f"2026-09-14T12:{index // 60:02d}:{index % 60:02d}Z",
+                "type": "chat_annotation",
+                "client_message_id": f"{AGENT_RECEIPT_ID_PREFIX}token{index:04d}",
+                "action": "steer_task", "target": "t-target", "status": "delivered",
+                "routing_token": f"token{index:04d}", "detail": "x" * 200,
+            }) + "\n")
+    assert annotations.stat().st_size < _COMPACT_AT_BYTES  # no compaction yet
+    assert len(latest_chat_annotations(tmp_path)) == seeded
+
+    # Cross the threshold with one oversized stale row, then append the newest receipt.
+    with annotations.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({
+            "ts": "2026-07-13T00:00:00Z", "type": "chat_annotation",
+            "client_message_id": "expired", "action": "routed",
+            "target": "x" * _COMPACT_AT_BYTES, "status": "delivered",
+        }) + "\n")
+    newest = f"{AGENT_RECEIPT_ID_PREFIX}tokennewest"
+    assert append_chat_annotation(
+        tmp_path, newest, action="steer_task", target="t-target",
+        status="delivered", routing_token="tokennewest",
+    )
+
+    latest = latest_chat_annotations(tmp_path)
+    assert annotations.stat().st_size < _COMPACT_AT_BYTES  # it really did compact
+    synthetic = [mid for mid in latest if mid.startswith(AGENT_RECEIPT_ID_PREFIX)]
+    assert len(synthetic) <= _RETAINED_AGENT_RECEIPTS
+    assert newest in synthetic          # the row its own append had to keep
+    assert "expired" not in latest      # chat retention still drops addressed rows
+
+
 def test_project_sidebar_and_menu_static_contracts():
     from pathlib import Path
 
@@ -415,14 +522,24 @@ def test_project_lifecycle_rows_render_design_system_action_static_contract():
         chat.index("function updateMessageAnnotation")
     ]
     assert "createSystemMessageAction({" in render
-    assert "'system-message-actions'" in render
+    assert "createSystemMessageActions(" in render
+    assert "row.className = 'system-message-actions'" in helpers
+    for consumer in ("chat_decision.js", "chat_activity.js"):
+        assert "createSystemMessageActions(" in (root / "web/modules" / consumer).read_text(encoding="utf-8")
     assert "document.createElement('br')" not in render
 
     # The custom pill is gone everywhere; the conversion-flow buttons moved to
     # the shared design-system role beside their `btn btn-xs btn-danger` sibling.
     assert "chat-live-project-btn" not in chat
     assert "chat-live-project-btn" not in style
-    assert 'class="btn btn-xs btn-default" data-turn-into-project' in chat
+    # The conversion button is now built by the chrome sync from the record's
+    # facts (an HTML template could not be re-derived when a turn is direct),
+    # so the design-system role and the marker app.js queries are set on the
+    # node itself.
+    chrome = chat[chat.index("function syncBlockChrome(record) {"):chat.index("function syncCancelRunButton(record) {")]
+    assert "btn.className = 'btn btn-xs btn-default';" in chrome
+    assert "btn.dataset.turnIntoProject = '1';" in chrome
+    assert "btn.textContent = 'Turn into project';" in chrome
     # The identity chip keeps its own role, now built once in ui_helpers and
     # shared by the converted card (chat.js) and the bound-task footer (app.js).
     assert "chat-live-project-card-btn" in helpers
@@ -594,7 +711,9 @@ def test_web_frames_keep_reference_order_and_one_authored_reply():
     assert reference.index("isModelWaitReference(row)") < reference.index("reviewReferenceFromRow(row)")
     logs = chat[chat.index("function updateLiveCardFromLogEvent"):chat.index("function addMessage")]
     assert logs.index("handleCardReference(evt)") < logs.index("const taskId = getLogTaskGroupId(evt)")
-    assert logs.index("handleCardReference(evt)") < logs.index("applyEventTelemetry")
+    # Tool accounting (the telemetry closure's one surviving job) also runs
+    # after the reference seam.
+    assert logs.index("handleCardReference(evt)") < logs.index("noteToolMetrics(taskId, evt, rawTs)")
     history = chat[chat.index("function applyHistoryMessages"):chat.index("async function syncHistory")]
     assert history.index("handleCardReference(msg)") < history.index("updateLiveCardFromProgressMessage(msg,")
     fanout = chat[chat.index("onWs('chat'"):chat.index("onWs('message_annotation'")]
@@ -602,4 +721,9 @@ def test_web_frames_keep_reference_order_and_one_authored_reply():
     assert "showTaskIncidentToast(msg);" in fanout
     assistant_fanout = fanout[fanout.index("const explicitTaskId"):]
     assert assistant_fanout.count("addMessage(msg.content, msg.role") == 1
-    assert "msg.cancelable === true" in fanout
+    # Stop authority stays host-attested: the fanout hands the progress row to
+    # the card updater, and only the host's `cancelable` flag grants it there
+    # (typing frames are receipts and never register liveness or controls).
+    assert "updateLiveCardFromProgressMessage(msg, { grantCancelAuthority: true })" in fanout
+    updater = chat[chat.index("function updateLiveCardFromProgressMessage"):chat.index("function updateLiveCardFromLogEvent")]
+    assert "grantCancelAuthority && msg?.cancelable === true && msg?.task_id" in updater

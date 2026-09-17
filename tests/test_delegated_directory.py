@@ -82,7 +82,7 @@ def test_start_uses_normal_writing_mode_without_git_or_fake_snapshot(tmp_path, m
     ctx, target = context(tmp_path, monkeypatch)
     engine = DirectoryEngine(target, strategy)
     monkeypatch.setattr(claudexor, "ClaudexorGateway", lambda *a, **k: engine)
-    result = json.loads(delegate._delegate_start(ctx, "edit documents", directory_strategy=strategy, scope_paths=["."]))
+    result = json.loads(delegate._delegate_start(ctx, "edit documents", directory_strategy=strategy, scope_paths=["."]).text)
     assert result["status"] == "started", result
     request, key = engine.posts[0]
     assert request["scope"]["root"] == str(target)
@@ -95,6 +95,94 @@ def test_start_uses_normal_writing_mode_without_git_or_fake_snapshot(tmp_path, m
     assert recorded.invocation_id == key and not recorded.snapshot_id and not recorded.baseline_sha
     assert recorded.resource_ref["strategy"] == strategy
     assert not (target / ".git").exists()
+
+
+@pytest.mark.parametrize("options,expected_scope", [
+    ({}, None),
+    ({"directory_strategy": "direct"}, None),
+    ({"scope_paths": []}, []),
+    ({"directory_strategy": "direct", "scope_paths": []}, []),
+])
+def test_a_write_capable_child_keeps_its_attested_folder_shape(
+    tmp_path, monkeypatch, options, expected_scope,
+):
+    """#882 changed nothing for a child that can actually open the session.
+
+    The read-only repair must not quietly rewrite a write-capable request: an
+    explicit `direct` still starts the same live directory session as omitting
+    it, and an explicit empty footprint still rides the wire as `scopePaths: []`
+    — the parent said "capture nothing", which is a different attested choice
+    from saying nothing at all, and only the engine gets to interpret it.
+    """
+    from ouroboros.gateways import claudexor
+
+    ctx, target = context(tmp_path, monkeypatch)
+    engine = DirectoryEngine(target, "direct")
+    monkeypatch.setattr(claudexor, "ClaudexorGateway", lambda *a, **k: engine)
+    result = json.loads(delegate._delegate_start(ctx, "edit documents", **options).text)
+    assert result["status"] == "started", result
+    execution = engine.posts[0][0]["execution"]
+    assert execution["workspaceKind"] == "directory" and execution["isolation"] == "live"
+    assert execution.get("scopePaths") == expected_scope
+
+
+def _git_workspace_start(tmp_path, monkeypatch, case, **options):
+    """Start one write-capable child against a fresh Git workspace."""
+    import subprocess
+
+    from ouroboros.gateways import claudexor
+
+    root = tmp_path / case
+    root.mkdir()
+    monkeypatch.setenv("OUROBOROS_SUBAGENT_WORKTREE_ROOT", str(root / "snaps"))
+    ctx, target = context(root, monkeypatch)
+    subprocess.run(["git", "init"], cwd=str(target), capture_output=True, check=True)
+    engine = DirectoryEngine(target, "direct")
+    monkeypatch.setattr(claudexor, "ClaudexorGateway", lambda *a, **k: engine)
+    delegate._CUSTODY.clear()
+    payload = json.loads(delegate._delegate_start(ctx, "edit documents", **options).text)
+    delegate._CUSTODY.clear()
+    return payload, engine
+
+
+def test_a_git_workspace_treats_the_named_default_as_omission_and_still_refuses_real_geometry(
+    tmp_path, monkeypatch,
+):
+    """#882 reaches the sibling refusal site too: a named default is not a request.
+
+    A Git tree keeps its private-snapshot contract, so `copy` or a selected
+    footprint is a genuine contradiction for a write-capable child there and stays
+    a typed `definitely_unrun` refusal naming that contract. `direct` with nothing
+    selected asks for nothing at all — it is the documented spelling of omitting
+    both — so it takes the unchanged snapshot path omission takes instead of dying
+    at the host's pre-start over a word that changed no behaviour.
+    """
+    # Each case gets its own folder and its own invocation, so identity fields
+    # differ by construction; every OTHER key and value must match, including the
+    # key set itself — that is what "took the omitted path" means here.
+    per_case = ("root", "execution_root", "snapshot_id", "baseline_sha", "baseline_id",
+                "baseline_manifest_read", "run_id", "invocation_id", "authority_target_root")
+    compared = lambda payload: {key: ("<per-case identity>" if key in per_case else value)
+                                for key, value in payload.items()}
+    omitted, omitted_engine = _git_workspace_start(tmp_path, monkeypatch, "omit")
+    assert omitted["status"] == "started" and omitted["baseline_id"], omitted
+    for index, named_default in enumerate((
+        {"directory_strategy": "direct"}, {"scope_paths": []},
+        {"directory_strategy": "direct", "scope_paths": []},
+    )):
+        named, engine = _git_workspace_start(tmp_path, monkeypatch, f"named-{index}", **named_default)
+        assert compared(named) == compared(omitted), named_default
+        assert len(engine.posts) == len(omitted_engine.posts), named_default
+    for index, geometry in enumerate((
+        {"directory_strategy": "copy", "scope_paths": ["."]},
+        {"scope_paths": ["src"]},
+    )):
+        refused, engine = _git_workspace_start(tmp_path, monkeypatch, f"geometry-{index}", **geometry)
+        assert refused["status"] == "refused", geometry
+        assert refused["reason"] == "directory_execution_unavailable"
+        assert "Git workspaces keep their snapshot contract" in refused["detail"]
+        assert refused["definitely_unrun"] is True
+        assert engine.posts == []
 
 
 def entry(ctx, target, strategy):
@@ -194,12 +282,12 @@ def test_lost_start_replays_original_processing_facts_after_setting_changes(tmp_
     monkeypatch.setattr(delegate, "prepare_delegate_start_actor", actor)
     monkeypatch.setattr(engine, "start_run", start)
     monkeypatch.setattr(claudexor, "ClaudexorGateway", lambda: engine)
-    lost = json.loads(delegate._delegate_start(ctx, "edit documents", directory_strategy="copy", scope_paths=["."]))
+    lost = json.loads(delegate._delegate_start(ctx, "edit documents", directory_strategy="copy", scope_paths=["."]).text)
     token = lost["pending_invocation_id"]
     original = custody.invocation_record(ctx.drive_root, token)["processing"]
     assert original["requested"] == original["submitted"] == "economy"
     preference = "fast"
-    retried = json.loads(delegate._delegate_start(ctx, "edit documents", retry_of=token))
+    retried = json.loads(delegate._delegate_start(ctx, "edit documents", retry_of=token).text)
     assert retried["status"] == "started" and retried["processing"] == original
     assert engine.posts[0] == engine.posts[1]
     assert engine.posts[1][0]["processingPreference"] == "economy"

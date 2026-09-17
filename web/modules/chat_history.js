@@ -1,3 +1,5 @@
+import { isReplayEvidenceRow } from './chat_activity.js';
+
 /** Chat's bounded archive-page owner. DOM, reading protection and live rows stay
  * with the chat instance; only fetchPage is asynchronous. Cursors are opaque.
  */
@@ -22,11 +24,15 @@ export function createChatHistoryPager({
 
     // Protected pages can remain as islands while the ordinary reading window
     // moves. Navigation follows the contiguous window containing the last load.
+    // A landed page that contributed no rows owns nothing to mount or restore, so
+    // the window steps over it: it is a boundary the reader already crossed, not a
+    // gap. Only a NON-EMPTY page missing from the cache is a real hole above/below.
+    const held = page => cache.has(page.id) || page.rows === 0;
     function bounds() {
         if (!pages.length) return { first: 0, last: 0 };
         let first = focus, last = focus;
-        while (first > 0 && cache.has(pages[first - 1].id)) first -= 1;
-        while (last + 1 < pages.length && cache.has(pages[last + 1].id)) last += 1;
+        while (first > 0 && held(pages[first - 1])) first -= 1;
+        while (last + 1 < pages.length && held(pages[last + 1])) last += 1;
         return { first, last };
     }
 
@@ -65,14 +71,26 @@ export function createChatHistoryPager({
                 release(entry);
             }
         }
-        const candidates = [...cache.values()]
+        // An empty page mounts nothing: its descriptor alone holds the window (see
+        // `held`), so its cache entry is released at once and never spends or pays
+        // the budget. Only pages that contributed rows count toward the limit.
+        for (const entry of [...cache.values()]) {
+            if (entry.page.rows === 0 && entry.page.index !== focus) {
+                released.push(entry.page.id);
+                release(entry);
+            }
+        }
+        const mounted = [...cache.values()].filter(entry => entry.page.rows !== 0);
+        let size = mounted.length;
+        const candidates = mounted
             .filter(entry => entry.page.chain === chain && entry.page.index !== focus)
             .sort((a, b) => Math.abs(b.page.index - focus) - Math.abs(a.page.index - focus));
         for (const entry of candidates) {
-            if (cache.size <= limit) break;
+            if (size <= limit) break;
             if (isPageProtected(entry.page)) continue;
             released.push(entry.page.id);
             release(entry);
+            size -= 1;
         }
         return released;
     }
@@ -94,22 +112,23 @@ export function createChatHistoryPager({
             throw new TypeError('History page is missing its messages or continuation boundary');
         }
         const nextChain = newChain ? chain + 1 : chain;
-        // Re-reading a page refreshes its projection, never its frozen boundaries.
-        const page = (!newChain && pages[index]) || Object.freeze({
-            id: `history-page-${nextChain}-${index}`, chain: nextChain, index,
-            requestCursor: data.page_cursor,
-            nextCursor: data.next_cursor ?? null,
-            hasMore: data.has_more,
-        });
+        const messageCount = data.messages.filter(row => !isReplayEvidenceRow(row)).length;
+        // Re-reading a page refreshes its row count, never its frozen boundaries.
+        const prior = newChain ? null : pages[index];
+        const page = prior?.rows === messageCount ? prior : Object.freeze(prior
+            ? { ...prior, rows: messageCount }
+            : { id: `history-page-${nextChain}-${index}`, chain: nextChain, index,
+                requestCursor: data.page_cursor, nextCursor: data.next_cursor ?? null,
+                hasMore: data.has_more, rows: messageCount });
         applyPage(data.messages, { ...page, direction, window: data.window ?? null });
         if (!alive()) return { status: 'disposed' };
         if (newChain) { chain = nextChain; pages = [page]; }
         else pages[index] = page;
         cache.set(page.id, { page });
-        focus = index;
+        // An empty page is never a reading position: it would make the window
+        // rewind one request per click for content nobody can see.
+        if (newChain || messageCount > 0) focus = index;
         const releasedPageIds = prune();
-        const messageCount = data.messages.filter(row => row.system_type !== 'quiz_answer'
-            && !(row.summary_kind && row.historical_terminal)).length;
         return { status: 'applied', page, releasedPageIds, messageCount };
     }
 
@@ -147,6 +166,8 @@ export function createChatHistoryPager({
             const chosen = pages.findIndex(page => page.id === pageId);
             return pages.length ? { pages: [...pages], focus: chosen >= 0 ? chosen : focus } : null;
         },
+        // A resume written before pages carried `rows` restores unchanged: an
+        // unknown row count is treated as non-empty until the page is re-read.
         restore(saved) {
             if (pages.length || !Array.isArray(saved?.pages) || !saved.pages.length
                 || !Number.isInteger(saved.focus) || !saved.pages[saved.focus]

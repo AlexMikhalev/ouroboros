@@ -6,12 +6,9 @@ queue first so the owner sees the frame while the task is still RUNNING, and
 fall back to ``ctx.pending_events`` (the end-of-task drain) when live
 transport is unavailable. The transport contract mirrors
 ``_emit_control_event`` (tools/control.py) — live XOR deferred, never both —
-with three structural gates:
+with two structural gates (a consciousness wake-up is an ordinary Main turn
+and delivers like one):
 
-- **Background consciousness stays deferred.** The consciousness loop wires a
-  live queue into the shared ctx before every tool call and aggregates
-  ``pending_events`` at cycle end (with pause deferral), so gating on queue
-  presence alone would leak frames from uncommitted or paused cycles.
 - **A2A chats stay deferred.** A peer's ``wait_for_response`` subscription
   resolves on the FIRST non-progress chat frame, so a live mid-task frame
   would hijack the answer the peer is waiting for.
@@ -49,11 +46,8 @@ def deliver_owner_event(ctx: Any, evt: Dict[str, Any]) -> str:
     ``"live"`` or ``"deferred"`` — the caller words its receipt honestly.
 
     Lineage (``task_id`` / ``parent_task_id`` / ``root_task_id``) is stamped
-    for every real-task frame so the supervisor can resolve project binding
-    for live deliveries exactly as it does for the end-of-task drain.
-    Background-consciousness frames are buffered UNSTAMPED, exactly as they
-    were before this seam existed: a pseudo task id would only send the
-    supervisor on lineage recovery for a task that never was.
+    for every task frame so the supervisor can resolve project binding for
+    live deliveries exactly as it does for the end-of-task drain.
     """
     meta = getattr(ctx, "task_metadata", {})
     meta = meta if isinstance(meta, dict) else {}
@@ -61,11 +55,6 @@ def deliver_owner_event(ctx: Any, evt: Dict[str, Any]) -> str:
     def _deferred() -> str:
         ctx.pending_events.append(evt)
         return "deferred"
-
-    from ouroboros.tool_capabilities import BACKGROUND_DELEGATION_ROLE
-
-    if str(meta.get("delegation_role") or "") == BACKGROUND_DELEGATION_ROLE:
-        return _deferred()
 
     evt.setdefault("task_id", str(getattr(ctx, "task_id", "") or ""))
     evt.setdefault("parent_task_id", str(meta.get("parent_task_id") or ""))

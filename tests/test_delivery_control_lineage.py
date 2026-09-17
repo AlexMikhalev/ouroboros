@@ -45,6 +45,8 @@ def _start_control_episode(
         '{"delivery_control":"replace","full_answer":7}',
         '{"delivery_control":"replace","full_answer":"one","full_answer":"two"}',
         '{"delivery_control":"keep","extra":true}',
+        '{"delivery_control":"keep","pending_review":"later"}',
+        '{"delivery_control":"replace","full_answer":"x","pending_review":true}',
         '```json\n{"delivery_control":"publish"}\n```',
     ],
 )

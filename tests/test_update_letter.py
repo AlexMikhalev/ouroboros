@@ -86,7 +86,7 @@ def history_repo(tmp_path):
 # material
 # ---------------------------------------------------------------------------
 
-def test_material_recovers_rows_from_commit_diffs_and_lists_first_parent_commits(history_repo):
+def test_material_recovers_rows_from_commit_diffs_and_lists_range_commits(history_repo):
     repo = history_repo["repo"]
     material = ul.collect_range_material(history_repo["base"], history_repo["c4"], git=_capture_for(repo))
 
@@ -178,7 +178,7 @@ def test_material_ignores_a_merge_second_parent_diff(history_repo):
     _git(repo, "merge", "-q", "--no-ff", "-m", "merge side", side)
     merged = _git(repo, "rev-parse", "HEAD")
     material = ul.collect_range_material(history_repo["c4"], merged, git=_capture_for(repo))
-    assert [c["subject"] for c in material["commits"]] == ["merge side"]
+    assert {c["subject"] for c in material["commits"]} == {"merge side", "side work"}
     assert material["releases"] == [], "the merge added no README row on the first-parent line"
 
 

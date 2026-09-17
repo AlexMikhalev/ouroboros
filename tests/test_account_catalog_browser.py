@@ -16,6 +16,9 @@ CONSUMERS = ("Models", "API actor", "Native actor", "Inline reviewer")
 SAVED_MODEL = "catalog-owner-saved"
 DRAFT_MODEL = "catalog-owner-unsaved"
 SOURCE = "opaque-source"
+# A model suggestion names the model alone; account and capability facts never ride along.
+ACCOUNT_CLAIMS = ("personal", "work", "available", "unavailable", "date unknown",
+                  "272000", "1,000,000", "1000000", "Fast", "free")
 
 
 @pytest.fixture
@@ -163,11 +166,8 @@ def test_account_pin_auto_roundtrip_keeps_saved_custom_model(account_catalog_ui,
         options = suggestions(page, field, known)
         assert set(options) - {SAVED_MODEL} == known
         shared = options["catalog-shared"]
-        assert ("personal" in shared) is (pin != "work")
-        assert ("work" in shared) is (pin != "personal")
-        if pin != "personal":
-            assert "unavailable" in shared and "date unknown" in shared
-        assert not any(claim in shared for claim in ("272000", "1,000,000", "1000000", "Fast", "free"))
+        assert shared == "catalog-shared"
+        assert not any(claim in shared for claim in ACCOUNT_CLAIMS)
     roles.capture(page, "account-catalog-pin-" + consumer.lower().replace(" ", "-"))
     assert_saved(ui, consumer, SAVED_MODEL, "work")
     _, _, _, reopened, reopened_account = editor(ui, consumer)
@@ -207,8 +207,9 @@ def test_partial_account_refresh_keeps_draft_and_only_failed_account_history(acc
     assert problem["message"] in page.locator("#settings-model-catalog-status").text_content()
     options = suggestions(page, field, {"catalog-shared", "catalog-only-b"})
     assert set(options) - {DRAFT_MODEL} == {"catalog-shared", "catalog-only-b"}
-    assert "personal" not in options["catalog-shared"]
-    assert "work" in options["catalog-shared"] and "unknown" in options["catalog-shared"]
+    shared = options["catalog-shared"]
+    assert shared == "catalog-shared"
+    assert not any(claim in shared for claim in ACCOUNT_CLAIMS)
     if consumer == "Native actor":
         account.select_option("personal")
         assert "not in discovery" in suggestions(page, field)[DRAFT_MODEL]

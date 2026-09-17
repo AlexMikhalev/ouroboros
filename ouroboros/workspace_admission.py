@@ -1,16 +1,17 @@
 """Workspace-task admission SSOT (v6.58.0, slice 1).
 
-ONE validator + room-workspace resolver shared by the two surfaces that turn a
+ONE validator + room-workspace resolver shared by the surfaces that turn a
 folder into a task's active workspace:
 
-- ``gateway/tasks.py::api_tasks_create`` (the `/api/tasks` HTTP path), and
+- ``gateway/tasks.py::api_tasks_create`` (the `/api/tasks` HTTP path),
 - ``supervisor/workers.py::promote_chat_to_task`` (the in-agent promote/route
   path — previously a DEGRADED twin that set ``workspace_root`` as a raw string
-  with no validation).
+  with no validation), and
+- owner-selected Presence folders (local configuration and turn admission).
 
 Two invariants this module enforces (BIBLE P3/P5):
 
-1. **One admission path.** Both surfaces call ``validate_workspace_root`` — the
+1. **One admission path.** These surfaces call ``validate_workspace_root`` — the
    SAME folder + Git geometry + repo/data-overlap check — so they cannot drift.
 2. **Loud fail over silent self_modification.** A task born in a project ROOM
    whose ``working_dir`` is SET-but-unusable (deleted/moved/invalid Git root)
@@ -172,6 +173,85 @@ def resolve_room_workspace(
         # workspace-less (self_modification-profile) task over the system repo.
         return "", f"{source} is unusable: {exc}"
     return (str(resolved) if resolved else ""), ""
+
+
+def workspace_repair_hint(
+    *,
+    ws_error: str,
+    explicit_workspace: str = "",
+    project_id: str = "",
+    project_folder: str = "",
+    presence: bool = False,
+    retired_worktree: bool = False,
+    drive_root: Any = None,
+    system_repo_dir: Any = None,
+) -> str:
+    """The MODEL-facing repair for one refused workspace: the typed cause plus
+    the one move that fixes it, following the SOURCE of the refused folder.
+
+    ``resolve_room_workspace`` already types the source, so the repair follows
+    it instead of sending the caller to a Projects setting the failure never
+    read: a Presence profile's folder is fixed in the profile; a path the
+    REQUEST named is re-promoted against the project's folder or with
+    ``workspace='none'`` (a subfolder of the Ouroboros repository can never be a
+    workspace, and a delegated-run worktree is gone once its run ends); a
+    project ``working_dir`` — or a failed auto-provision — is fixed in Projects.
+    The project folder is named only when the registry can be read; the
+    worktree/repo facts are derived here unless the caller already knows them.
+    Never raises; this text rides ``detail`` into the typed refusal.
+    """
+    cause = str(ws_error or "").strip().rstrip(".")
+    if presence:
+        return (
+            f"The folder configured in the Presence profile is unusable: {cause}. "
+            "Fix the Presence profile's workspace_root or clear it."
+        )
+    explicit = str(explicit_workspace or "").strip()
+    if not explicit:
+        return (
+            f"{cause}. Fix the project's working folder (Projects → this project) "
+            "or re-promote with workspace='none' for a folder-less task."
+        )
+    requested = pathlib.Path(explicit).expanduser()
+    if system_repo_dir is not None:
+        from ouroboros.tool_access import paths_overlap_casefold
+
+        try:
+            under_repo = paths_overlap_casefold(requested, pathlib.Path(system_repo_dir))
+        except Exception:
+            under_repo = False
+            log.debug("workspace repair hint: repo-overlap check failed for %r", explicit, exc_info=True)
+        if under_repo:
+            return (
+                f"{cause}. workspace_root must be a folder outside the Ouroboros repository, "
+                "or empty (or workspace='none') to work in the repository itself."
+            )
+    if not retired_worktree:
+        try:
+            from ouroboros.config import get_subagent_worktree_root
+            from ouroboros.tool_access_paths import path_is_relative_to
+
+            retired_worktree = path_is_relative_to(requested, pathlib.Path(get_subagent_worktree_root()))
+        except Exception:
+            log.debug("workspace repair hint: worktree-root check failed for %r", explicit, exc_info=True)
+    folder = str(project_folder or "").strip()
+    if not folder and str(project_id or "").strip() and drive_root is not None:
+        try:
+            from ouroboros.projects_registry import get_project
+
+            folder = str((get_project(drive_root, project_id) or {}).get("working_dir") or "").strip()
+        except Exception:
+            log.debug("workspace repair hint: project working_dir unreadable for %s", project_id, exc_info=True)
+    named_folder = f" ({folder})" if folder else ""
+    if retired_worktree:
+        return (
+            f"{cause}. That path is inside a delegated-run worktree, which is removed when "
+            f"its run ends; re-promote with the project's folder{named_folder} or with workspace='none'."
+        )
+    return (
+        f"{cause}. This task asked for {explicit} explicitly; re-promote it against the "
+        f"project folder{named_folder} or with workspace='none' for a folder-less task."
+    )
 
 
 def room_chat_lens_dir(drive_root: Any, project_id: str) -> tuple[str, str]:

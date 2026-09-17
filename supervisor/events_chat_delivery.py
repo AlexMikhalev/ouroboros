@@ -70,7 +70,10 @@ def _handle_typing_start(evt: Dict[str, Any], ctx: Any) -> None:
                 from supervisor.active_activity import get_direct_activity_registry
                 # A registry hit identifies a direct/ephemeral turn; queued
                 # managed tasks also emit typing_start but are not tracked here,
-                # so their frames go out without a kind stamp.
+                # so their frames go out without a kind stamp. The stamp is
+                # kept for wire compatibility only: no in-repo client reads a
+                # typing frame's kind, and it carries no authority over any
+                # client-side set.
                 entry = get_direct_activity_registry().get(task_id)
                 if entry:
                     client_msg_id = entry.client_message_id
@@ -78,10 +81,12 @@ def _handle_typing_start(evt: Dict[str, Any], ctx: Any) -> None:
             except Exception:
                 pass
         if not kind and task_row:
-            # A RUNNING queue ROOT is stamped "managed_task" so the client can
-            # reconcile its entry against the /api/state activity snapshot
-            # (which lists queue roots). Subagent typing keeps the legacy
-            # no-kind exemption: no snapshot source enumerates children.
+            # A RUNNING queue ROOT is stamped "managed_task" like the /api/state
+            # activity census names it (that census lists queue roots). The stamp
+            # is kept for wire compatibility only: no in-repo client reads it, and
+            # the web header never admits a typing frame into its live-activity
+            # set, so an empty kind is not an exemption from anything. The census still
+            # does not enumerate children by design — their own task cards do.
             try:
                 from ouroboros.task_results import resolve_task_lineage
 
@@ -127,6 +132,44 @@ def _register_delivered(ctx: Any, delivery_id: str) -> None:
 
 def _handle_send_message(evt: Dict[str, Any], ctx: Any) -> None:
     try:
+        if evt.get("terminal_custody_notice"):
+            from supervisor.terminal_delivery import register_pending_delivery
+
+            # Issue #1006: open delegated execution is a typed row OF the task's
+            # card, so it is split off before the host notice and never carries
+            # the answer's phase — a custody row concludes or relabels nothing.
+            answer = dict(evt)
+            custody = str(answer.pop("terminal_custody_notice"))
+            meta = evt.get("progress_meta") if isinstance(evt.get("progress_meta"), dict) else {}
+            # Derived from the ANSWER's id, so a re-split never grows a suffix. An
+            # answer that reaches this seam unregistered gets the same canonical
+            # identity its owed registration would mint; with no task to key it,
+            # the custody text stays on the joined host notice rather than
+            # minting a task-independent id the delivered registry would then
+            # suppress for every later task.
+            base_id = str(evt.get("delivery_id") or "")
+            if not base_id and str(evt.get("task_id") or ""):
+                from supervisor.terminal_delivery import delivery_id_for
+
+                base_id = delivery_id_for(str(evt.get("task_id")), str(evt.get("text") or ""))
+            if not base_id:
+                answer["terminal_host_notice"] = "\n\n".join(
+                    part for part in (str(answer.get("terminal_host_notice") or ""), custody) if part)
+                _handle_send_message(answer, ctx)
+                return
+            row_id = base_id + ":custody_notice"
+            row = {**answer, "text": custody, "log_text": custody, "role": "system",
+                   "system_type": "custody_notice", "delivery_id": row_id,
+                   "progress_meta": {**{key: value for key, value in meta.items()
+                                        if key not in ("task_phase", "task_terminal_status")},
+                                     "card_row": "timeline", "card_row_id": row_id}}
+            row.pop("terminal_host_notice", None)
+            row.pop("terminal_origin", None)
+            # Owe the row before the answer send clears its bundled outbox row.
+            register_pending_delivery(ctx.DRIVE_ROOT, row)
+            _handle_send_message(answer, ctx)
+            _handle_send_message(row, ctx)
+            return
         if evt.get("terminal_host_notice"):
             from supervisor.terminal_delivery import project_terminal_result_event, register_pending_delivery
 
@@ -178,6 +221,11 @@ def _handle_send_message(evt: Dict[str, Any], ctx: Any) -> None:
         # frames are addressed to the task's card but authored by the supervisor, so they
         # are narration ABOUT the task, never work BY it.
         progress_meta = evt.get("progress_meta") if isinstance(evt.get("progress_meta"), dict) else None
+        if is_progress and evt.get("_is_direct_chat") is True:
+            # Stamped by value on the turn's own queue (TurnEventQueue); the live
+            # frame is built from progress_meta, so the fact rides along.
+            progress_meta = dict(progress_meta or {})
+            progress_meta["_is_direct_chat"] = True
         _running = getattr(ctx, "RUNNING", None)
         task_row: Dict[str, Any] = {}
         if task_id and isinstance(_running, dict):

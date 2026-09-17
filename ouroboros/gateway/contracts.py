@@ -19,10 +19,9 @@ except ImportError:  # pragma: no cover - CI supports Python 3.10.
 
 
 class ChatAttachmentInbound(TypedDict, total=False):
-    """One uploaded chat attachment reference (file already stored by
-    /api/chat/upload under data/uploads/; ``filename`` is the stored
-    basename). Image attachments are delivered to vision models as native
-    image blocks (v6.26.0)."""
+    """Reference to a file stored by /api/chat/upload under data/uploads/.
+    ``filename`` is its stored basename. Images reach vision models as
+    native image blocks."""
 
     filename: str
     display_name: str
@@ -59,11 +58,9 @@ class ChatInbound(TypedDict):
     # stays user_id 1; chat_id selects the thread, project_id scopes memory.
     chat_id: NotRequired[int]
     project_id: NotRequired[str]
-    # Per-message sending-surface observables (additive-optional): raw facts the
-    # SPA measures at send time (pywebview bridge presence, ua, viewport,
-    # matchMedia booleans, captured_at). The gateway normalizes through the
-    # closed-key bounded `client_surface.normalize_client_surface`; absence is an
-    # honest gap, never defaulted.
+    # Per-message sending-surface observables (additive-optional): raw facts the SPA measures at send
+    # time (pywebview bridge presence, ua, viewport, matchMedia booleans, captured_at), normalized by
+    # the closed-key `client_surface.normalize_client_surface`; absence is an honest gap, never defaulted.
     client_surface: NotRequired[dict]
 
 
@@ -135,6 +132,14 @@ class ChatOutbound(TypedDict):
     project_chat_id: NotRequired[int]
     source_status: NotRequired[str]
     owner_wait_state: NotRequired[str]
+    # The complete Project-question pointer: question, option labels, recorded answer and wait facts.
+    owner_wait_resume_reason: NotRequired[str]
+    wait_for_answer: NotRequired[bool]
+    wait_ended_at: NotRequired[str]
+    question: NotRequired[str]
+    options: NotRequired[List[str]]
+    answered_index: NotRequired[int]
+    comment: NotRequired[str]
     task_incident: NotRequired[str]
     # A cancellation fault names the PHYSICAL task it could not settle when that
     # differs from the displayed (logical) task id.
@@ -164,25 +169,20 @@ class ChatOutbound(TypedDict):
     model_lane: NotRequired[str]
     requested_model_lane: NotRequired[str]
     effective_model_lane: NotRequired[str]
-    # Phase 6: the OPAQUE harness route RESOLVED AT DISPATCH for this
-    # bubble/subagent (`resolve_subagent_dispatch`, stamped once) — a delegated
-    # route only; absent/empty means the ordinary native path and the UI draws
-    # no chip. It is the route the run was sent to, not a receipt from the
-    # engine saying where it landed: a landing below the ask is disclosed on
-    # `capability_delta`, not by rewriting this field.
+    # Phase 6: the OPAQUE harness route RESOLVED AT DISPATCH for this bubble/subagent (`resolve_subagent_dispatch`,
+    # stamped once) — a delegated route only; absent/empty means the ordinary native path and the UI draws no chip.
+    # It is the route the run was sent to, not a receipt from the engine saying where it landed: a landing below the
+    # ask is disclosed on `capability_delta`, not by rewriting this field.
     executor_route: NotRequired[str]
-    # Latest observed progress actor, NOT terminal evidence or current liveness.
-    # Own task_id/task_attempt/run_id/attempt_id, harness_id, phase, revision;
-    # optional model has explicit model_source (requested or observed).
+    # Latest observed progress actor, NOT terminal evidence or current liveness. Own
+    # task_id/task_attempt/run_id/attempt_id, harness_id, phase, revision; optional model has explicit model_source
+    # (requested or observed).
     executor_observation: NotRequired[Dict[str, Any]]
-    # The completion-seam EVIDENCE the route decision is reconciled against
-    # (subagents.envelope_from_task): delegated runs started/settled/succeeded,
-    # terminal failure states, disclosed subscription spend (+estimated flag),
-    # engine-reported models, the additive `nanny_nudge_recorded` flag (a
-    # non-empty finalization nudge was durably stamped), and the additive
-    # `delegate_start_attempted` flag (any durable delegate_start attempt,
-    # refused or started). Terminal frames only; its absence means "no
-    # evidence yet", never "ran natively".
+    # The completion-seam EVIDENCE the route decision is reconciled against (subagents.envelope_from_task):
+    # delegated runs started/settled/succeeded, terminal failure states, disclosed subscription spend (+estimated
+    # flag), engine-reported models, the additive `nanny_nudge_recorded` flag (a non-empty finalization nudge was
+    # durably stamped), and the additive `delegate_start_attempted` flag (any durable delegate_start attempt,
+    # refused or started). Terminal frames only; its absence means "no evidence yet", never "ran natively".
     execution_evidence: NotRequired[Dict[str, Any]]
     # The FACT beside the executor_route plan, from the same custody evidence:
     # "harness_used" | "harness_attempted" | "native_only". Terminal frames only; absent =
@@ -192,20 +192,18 @@ class ChatOutbound(TypedDict):
     task_group_id: NotRequired[str]
     task_event: NotRequired[str]
     status: NotRequired[str]
-    # v6.82 (P5): host-attested marker, stamped by the supervisor's delivery
-    # seam ONLY for a task POST /api/tasks/{id}/cancel will actually stop — a
-    # lineage-resolved pooled ROOT (its RUNNING row) or the live in-process
-    # direct-chat turn (resolved through the same ownership reader the
-    # endpoint uses, supervisor.workers.direct_chat_turn); never a subagent
-    # frame, never an ephemeral decision turn. Gates the UI "Cancel run" action.
+    # v6.82 (P5): host-attested marker, stamped by the supervisor's delivery seam ONLY for a task POST /api/tasks/{id}/cancel
+    # will actually stop — a lineage-resolved pooled ROOT (its RUNNING row) or the live in-process direct-chat turn (resolved
+    # through the same ownership reader the endpoint uses, supervisor.workers.direct_chat_turn); never a subagent frame, never
+    # an ephemeral decision turn. Gates the UI "Cancel run" action.
     cancelable: NotRequired[bool]
-    # Monetary projections are nullable when the physical-attempt ledger cannot
-    # be read.  ``None`` is deliberately distinct from a confirmed $0 result.
-    # C2 (owner 10=B) named these the HONEST names — accounted upper bounds,
-    # not settled receipts; ABI 7.0 (ABI-3) removed the deprecated
-    # ``cost_usd[_with_children]`` wire aliases, so these are the only outbound
-    # spellings (ouroboros/cost_projection.py is the one author). Stored legacy
-    # records keep both spellings readable via ``resolve_cost_pair``.
+    _is_direct_chat: NotRequired[bool]  # lane fact stamped on a direct turn's own frames
+    narration: NotRequired[bool]  # progress VOICE: the model's own round narration (true) vs a host note (false); absent = legacy
+    initiator: NotRequired[str]  # origin label: "consciousness" on a wake-up's frames/rows (and its roots); absent on an owner's turn
+    # Monetary projections are nullable when the physical-attempt ledger cannot be read: ``None`` is
+    # distinct from a confirmed $0. These are the honest names (accounted upper bounds, not settled
+    # receipts) and the only outbound spellings since ABI 7.0 dropped the ``cost_usd[_with_children]``
+    # aliases; ouroboros/cost_projection.py is the one author, ``resolve_cost_pair`` reads legacy records.
     accounted_upper_bound_usd: NotRequired[Optional[float]]
     accounted_upper_bound_usd_with_children: NotRequired[Optional[float]]
     cost_accounting_status: NotRequired[Literal["available", "unavailable"]]
@@ -243,6 +241,11 @@ class ChatOutbound(TypedDict):
     transport: NotRequired[TransportMetadata]
     # UI-only system annotation emitted by skill-repair visible commands.
     system_type: NotRequired[str]
+    # A host-stamped placement fact for a task-keyed System row: "timeline" = a timeline item of the task's card,
+    # "reviews" = the card's Reviews group carries the fact (the row is still attached to the card); absent = an
+    # ordinary row. ``card_row_id`` is the row's stable identity across live delivery, outbox replay and history.
+    card_row: NotRequired[Literal["timeline", "reviews"]]
+    card_row_id: NotRequired[str]
     # Event-time human presentation; raw task/project ids remain machine keys.
     target_label: NotRequired[str]
     project_id: NotRequired[str]
@@ -398,10 +401,9 @@ class QuizOutbound(TypedDict):
 class QuizStateOutbound(TypedDict):
     """Outbound WS lifecycle update for an already-rendered quiz card.
 
-    A separate discriminator (not a second ``quiz`` frame): the display path
-    dedupes quiz frames by ``quiz:{quiz_id}:{ts}``, so a state change must
-    never look like a new card. ``answered_index`` rides only with the
-    ``answered`` state.
+    A separate discriminator (not a second ``quiz`` frame): the display path dedupes
+    quiz frames by ``quiz:{quiz_id}:{ts}``, so a state change must never look like a
+    new card. ``answered_index`` rides only with the ``answered`` state.
     """
 
     type: Literal["quiz_state"]
@@ -410,6 +412,7 @@ class QuizStateOutbound(TypedDict):
     state: str
     ts: str
     answered_index: NotRequired[int]
+    wait_for_answer: NotRequired[bool]  # additive: False once a bounded wait closed (the card stays open)
     # #471: the owner's recorded free-text answer rides the live frame (absent
     # when empty) so the open card renders `Owner's answer:` as replay does.
     comment: NotRequired[str]
@@ -430,9 +433,9 @@ class TypingOutbound(TypedDict):
     activity_id: NotRequired[str]
     client_message_id: NotRequired[str]
     phase: NotRequired[str]
-    # Stamped only for direct-registry-tracked turns ("direct_chat" /
-    # "ephemeral_decision"); queued managed tasks emit typing without it, so the
-    # client exempts their entries from /api/state snapshot deletion authority.
+    # Stamped for a registry-tracked turn ("direct_chat") or a RUNNING queue
+    # root ("managed_task"); empty for children. No in-repo client reads it
+    # (wire compatibility): only the census inserts into the header live-set.
     kind: NotRequired[str]
 
 
@@ -479,7 +482,7 @@ class ProjectsChangedOutbound(TypedDict):
 
 
 class MessageAnnotationOutbound(TypedDict):
-    """Bubble-free presentation update for one canonical owner message."""
+    """Bubble-free presentation update for one owner message; ``cause``: the host's sentence for a refused act."""
 
     type: Literal["message_annotation"]
     annotation_type: Literal["routing_ack"]
@@ -494,10 +497,10 @@ class MessageAnnotationOutbound(TypedDict):
     project_chat_id: NotRequired[int]
     options: NotRequired[List[Dict[str, Any]]]
     attachment_manifest: NotRequired[List[AttachmentManifestEntry]]
-    # #198: the exact refusal-attempt identity — the picker card composes its
-    # decision_id (routing:{client_message_id}:{routing_token}) from it; a
-    # presentation frame without it renders text, never a clickable card.
+    # #198: the exact refusal-attempt identity — the picker card composes its decision_id
+    # (routing:{client_message_id}:{routing_token}) from it; a frame without it renders text, never a card.
     routing_token: NotRequired[str]
+    cause: NotRequired[str]
     ts: NotRequired[str]
 
 
@@ -562,6 +565,11 @@ class UpdateApplyErrorResponse(TypedDict):
     stash_note: NotRequired[str]
     estimated_wave_usd: NotRequired[Optional[float]]
     remaining_usd: NotRequired[Optional[float]]
+
+
+class UpdateProgressChangedOutbound(TypedDict):
+    """Invalidation only; never proof that boot finalization completed."""
+    type: Literal["update_progress_changed"]
 
 
 class UpdateStatusReadyOutbound(TypedDict):
@@ -635,10 +643,10 @@ class FsDirsResponse(TypedDict):
 
 
 class TaskNamedOutbound(TypedDict):
-    """Outbound notice that the proactive card namer coined a project name for a fresh
-    main-chat task (v6.40). The client sets the live card's title to ``suggested_name``;
-    turn-into-project later reuses the same name. Not chat-scoped — carries only
-    ``task_id`` and is a no-op unless a thread already holds that card."""
+    """Outbound notice that a project name was coined for a task's card (inline naming of
+    a turn-into-project conversion; direct turns are not named in the background). The
+    client sets the live card's title to ``suggested_name``. Not chat-scoped — carries
+    only ``task_id`` and is a no-op unless a thread already holds that card."""
 
     type: Literal["task_named"]
     task_id: str
@@ -856,6 +864,7 @@ class OwnerSafetyModeResponse(TypedDict):
 class OwnerSkillPresenceRuntimeRequest(TypedDict):
     expected_state_fingerprint: str
     runtime_overrides: Dict[str, Any]
+    workspace_root: NotRequired[str]
 
 
 class OwnerSkillPresenceRuntimeResponse(TypedDict):
@@ -1124,11 +1133,9 @@ class TaskDetailResponse(TypedDict, total=False):
 
     cost_breakdown: TaskCostBreakdown
     model_waits: Dict[str, Any]
-    # Poltergeist phase A cancel projection (additive-optional): ``"pending"``
-    # while a durable cancel intent is open and the supervisor teardown has not
-    # settled — the status itself honestly stays running/scheduled. Absent on
-    # settled results and on tasks nobody asked to cancel. The UI renders the
-    # interim "Cancelling…" from this field, never from a status value.
+    # Cancel projection (additive-optional): ``"pending"`` while a durable cancel intent is open and the
+    # supervisor teardown has not settled — the status itself honestly stays running/scheduled; absent on
+    # settled results and on tasks nobody asked to cancel. The UI's interim "Cancelling…" reads this, never a status.
     cancel_state: str
     # Rides beside ``cancel_state`` when the intent carries a reason (GR2-11):
     # the WHY of the pending cancellation (owner text, "subtree cancellation of
@@ -1186,13 +1193,11 @@ class ClaudexorStatusResponse(TypedDict, total=False):
     quota: List[Dict[str, Any]]
     quota_absences: List[Dict[str, Any]]
     reads: ClaudexorStatusReads
-    # UNIFIED ACCOUNT MODEL feature fact (additive-optional): True only when
-    # the engine's own /v2/operations catalog was read and advertises
-    # `GET /v2/account-pools` — the engine change that migrates every default
-    # CLI login into a named registry row, empties `harnessAccounts` and
-    # carries pool routing in the additive `profiles.accountPools` key. False
-    # (or absent, on an older backend) means the legacy native-pseudo-row
-    # rendering; an unreadable catalog fails closed to False.
+    # UNIFIED ACCOUNT MODEL feature fact (additive-optional): True only when the engine's own
+    # /v2/operations catalog was read and advertises `GET /v2/account-pools` (every default CLI login
+    # becomes a named registry row, `harnessAccounts` empties, pool routing rides `profiles.accountPools`).
+    # False, or absent on an older backend, means the legacy native-pseudo-row rendering; an unreadable
+    # catalog fails closed to False.
     unified_accounts: bool
     subagent_last_delegation: Dict[str, Any]
     error: str
@@ -1306,13 +1311,10 @@ class TaskCancelResponse(TypedDict, total=False):
     # for the subtree cancel, which is COMPLETE by the time this answer is sent;
     # the plain envelope is unchanged.
     cascade: bool
-    # S3 (Q1/Q2, additive): present on the 202 acknowledgement of a
-    # ``{"stop_policy": "finalize_then_cancel"}`` request — the durable intent
-    # is open ("pending") while the bounded finalization attempt runs;
-    # ``stop_policy`` echoes the EFFECTIVE policy of the durable intent
-    # ("immediate" | "finalize_then_cancel"): a graceful request over an
-    # already-hard intent never softens it, and the answer says so. Absent on
-    # the legacy immediate path, which stays byte-identical.
+    # Additive on the 202 acknowledgement of a ``{"stop_policy": "finalize_then_cancel"}`` request: the
+    # durable intent is open ("pending") while the bounded finalization attempt runs, and ``stop_policy``
+    # echoes the EFFECTIVE policy of the durable intent ("immediate" | "finalize_then_cancel") — a graceful
+    # request over an already-hard intent never softens it, and the answer says so. Absent on the legacy immediate path.
     cancel_state: str
     stop_policy: str
     error: str
@@ -1477,6 +1479,7 @@ WS_MESSAGE_TYPES: tuple[str, ...] = (
     "projects_changed",
     "task_named",
     "update_status_ready",
+    "update_progress_changed",
 )
 
 
@@ -1510,6 +1513,7 @@ __all__ = [
     "UpdateApplySuccessResponse",
     "UpdateApplyErrorResponse",
     "UpdateStatusReadyOutbound",
+    "UpdateProgressChangedOutbound",
     "ProjectCreateRequest",
     "ProjectEntry",
     "ProjectDeleteResponse",

@@ -25,7 +25,10 @@ from ouroboros.llm import LLMClient, _canonical_candidate_bytes
 
 @pytest.fixture
 def data_root(tmp_path, monkeypatch):
+    from tests.fixtures_usage_compaction import age_fixture_clock
+
     root = tmp_path / "data"
+    age_fixture_clock(monkeypatch)  # the fold horizon: fresh rows must still fold here
     monkeypatch.setenv("OUROBOROS_DATA_DIR", str(root))
     monkeypatch.setenv("OUROBOROS_SETTINGS_PATH", str(root / "settings.json"))
     monkeypatch.setenv("TOTAL_BUDGET", "100")

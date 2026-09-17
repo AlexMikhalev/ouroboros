@@ -18,9 +18,20 @@ one-shot snapshot registrations is discharged.
 
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Any, Tuple
 
 from ouroboros._usage_rows import REVIEW_ATTRIBUTION_KEYS
+
+
+def review_owned_source(source: Any) -> bool:
+    """Does this custody row's durable ``source`` name a REVIEW surface?
+
+    True for every ``review_substrate*`` spelling. The reading lives beside the
+    STARTED-row tables because ``source`` is one of their first-wins binding
+    facts, and every delegation-domain consumer of a custody row shares this
+    ONE reading of it (issue #1006).
+    """
+    return str(source or "").startswith("review_substrate")
 
 
 def persistent_registration(execution_root: str, access: str) -> bool:

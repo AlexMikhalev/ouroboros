@@ -125,6 +125,7 @@ def execute_panic_stop(
         # Panic is an owner stop: make it authoritative against the post-task pipeline too,
         # so evolution cannot autonomously re-arm on the next boot (mirrors /evolve off).
         st["evolution_owner_stopped"] = True
+        st.pop("evolution_stop_source", None)  # an owner stop: no agent source may un-stick it
         st["post_task_autostop"] = False
         save_state(st)
     except Exception:

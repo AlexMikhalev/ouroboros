@@ -1012,7 +1012,7 @@ def test_main_history_admits_project_started_row_and_project_thread_excludes_it(
                     "project_id": "launch",
                     "project_name": "Launch 🚀",
                     "target_label": "Launch 🚀 › Ship release",
-                    "text": "Launch 🚀 › Ship release · Started\nWork is running in this Project.",
+                    "text": "Launch 🚀 › Ship release · Started",
                 },
                 {
                     "ts": "2026-08-21T00:00:02Z",
@@ -1137,3 +1137,59 @@ def test_chat_history_replays_the_live_subtree_ceiling_for_a_running_root(tmp_pa
     # Only ROOT lineage reaches the ledger; the finished root is served by its
     # durable terminal truth, not by a live read.
     assert sorted(seen_roots) == ["root-empty", "root-live"]
+
+
+def test_user_annotation_projects_the_host_cause_sentence():
+    """Q3=A: the owner-facing sentence for a refused routing act replays with the
+    owner message; the reason code stays a model artefact off the live frame."""
+    from ouroboros.gateway.history import _user_annotation
+
+    projected = _user_annotation("user", "cm-1", {"cm-1": {
+        "action": "promote_chat_to_task", "status": "needs_manual_target",
+        "reason": "workspace_unusable", "cause": "Not started: the working folder can't be used",
+        "detail": "explicit workspace_root is unusable: …",
+    }})
+
+    assert projected["cause"] == "Not started: the working folder can't be used"
+    assert projected["status"] == "needs_manual_target"
+    assert "reason" not in projected
+
+
+def test_chat_history_replays_an_admission_notice_without_terminal_truth(tmp_path):
+    """A host-issued promote that was refused leaves a `task_not_started` System
+    row in the owner's chat AND a failed task result for the never-started id. On
+    replay the row comes back in Main as a plain typed system row: no
+    `task_terminal_status`, no `outcome_final` — a keyed typed row is neither a
+    terminal fact nor a plain untyped final, so the client neither mints nor
+    finishes a card for it (03-web-ui «admission-notice row»)."""
+    from ouroboros.task_results import STATUS_FAILED, write_task_result
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "chat.jsonl").write_text(
+        json.dumps({
+            "ts": "2026-09-16T01:00:00Z",
+            "direction": "system",
+            "type": "task_not_started",
+            "task_id": "never-started",
+            "chat_id": 1,
+            "text": "Аудит · Not started: the working folder can't be used",
+        }) + "\n",
+        encoding="utf-8",
+    )
+    (logs / "progress.jsonl").write_text("", encoding="utf-8")
+    write_task_result(
+        tmp_path, "never-started", STATUS_FAILED, reason_code="workspace_unusable",
+        result="Promotion was not scheduled: workspace_unusable. explicit workspace_root is unusable.",
+        description="Аудит", chat_id=1,
+    )
+
+    endpoint = make_chat_history_endpoint(tmp_path)
+    response = asyncio.run(endpoint(SimpleNamespace(query_params={"limit": "10"})))
+    payload = json.loads(response.body.decode("utf-8"))["messages"]
+
+    rec = next(item for item in payload if item.get("task_id") == "never-started")
+    assert rec.get("system_type") == "task_not_started"
+    assert rec["text"] == "Аудит · Not started: the working folder can't be used"
+    assert "task_terminal_status" not in rec
+    assert "outcome_final" not in rec

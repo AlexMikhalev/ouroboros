@@ -5,46 +5,42 @@ import { compareHistoryPosition } from './chat_history_replay.js';
 const nodePosition = node => node?.dataset?.historySource
     ? { source: node.dataset.historySource, offset: Number(node.dataset.historyOffset) } : null;
 
-/** History chrome only; the chat instance retains navigation and reading state. */
-export function createHistoryControls(messagesDiv, typingEl) {
+/**
+ * History chrome only; the chat instance retains navigation and reading state.
+ *
+ * There is no "Load newer" control. Whether a newer page is cached is a fact
+ * about the bounded page cache, not about what the reader can see, so a button
+ * driven by it appeared under a fully visible transcript and asked for one click
+ * per cached page. Loading newer pages is automatic at the bottom edge; the
+ * floating scroll-to-latest button remains the only return-to-present control.
+ */
+export function createHistoryControls(messagesDiv) {
     const doc = messagesDiv.ownerDocument;
-    const make = className => {
-        const root = doc.createElement('div');
-        root.className = className;
-        const button = doc.createElement('button');
-        button.type = 'button';
-        button.className = 'chat-load-older-btn';
-        root.append(button);
-        return { root, button };
-    };
-    const older = make('chat-load-older');
-    const newer = make('chat-load-newer');
+    const root = doc.createElement('div');
+    root.className = 'chat-load-older';
+    const button = doc.createElement('button');
+    button.type = 'button';
+    button.className = 'chat-load-older-btn';
     const note = doc.createElement('span');
     note.className = 'chat-load-older-note';
-    older.root.append(note);
+    root.append(button, note);
     return {
-        olderButton: older.button,
-        newerButton: newer.button,
+        olderButton: button,
         render(snapshot, windows) {
             const error = snapshot.error;
             const changedView = error?.body?.reason_code === 'history_view_changed';
             const noteText = error ? String(error.message || error)
                 : snapshot.olderExhausted ? 'Beginning of saved history' : '';
             const fields = [
-                [older.button, { textContent: snapshot.loading ? 'Loading…'
+                [button, { textContent: snapshot.loading ? 'Loading…'
                     : changedView ? 'Refresh history' : error ? 'Retry loading messages' : 'Load older messages',
                     disabled: Boolean(snapshot.loading), hidden: !error && !snapshot.canOlder }],
-                [newer.button, { textContent: snapshot.loading === 'newer' ? 'Loading…' : 'Load newer messages',
-                    disabled: Boolean(snapshot.loading) }],
                 [note, { textContent: noteText, hidden: !noteText }],
             ];
             for (const [node, values] of fields) {
                 for (const [key, value] of Object.entries(values)) if (node[key] !== value) node[key] = value;
             }
-            if ((snapshot.initialized || error) && !older.root.isConnected) messagesDiv.prepend(older.root);
-            if (snapshot.canNewer) {
-                if (!newer.root.isConnected) messagesDiv.insertBefore(newer.root, typingEl);
-            } else newer.root.remove();
+            if ((snapshot.initialized || error) && !root.isConnected) messagesDiv.prepend(root);
             const hasGaps = [...windows].some(value => (value?.truncated_by || [])
                 .some(cause => !['quota', 'archive_floor', 'lineage_cap', 'page'].includes(cause)));
             return { complete: Boolean(snapshot.initialized && snapshot.olderExhausted
@@ -391,7 +387,7 @@ export function createTimelineAnchors({ messagesDiv, liveCardRecords }) {
                 && !node.classList.contains('chat-load-older')
         );
         const messagesRect = messagesDiv.getBoundingClientRect();
-        const topNode = nodes.find((item) => {
+        let topNode = nodes.find((item) => {
             const rect = item.getBoundingClientRect();
             return rect.bottom > messagesRect.top && rect.top < messagesRect.bottom;
         }) || null;
@@ -440,6 +436,18 @@ export function createTimelineAnchors({ messagesDiv, liveCardRecords }) {
                 .filter(({ rect }) => rect.top <= messagesRect.top && rect.bottom > messagesRect.top)
                 .sort((a, b) => b.depth - a.depth);
             node = belowTop[0]?.node || crossing[0]?.node || topNode;
+            if (node === topNode && topNode.getBoundingClientRect().top < messagesRect.top) {
+                // The card's visible part holds nothing anchorable (a wait row, a
+                // block without work): keep the reader's view of what FOLLOWS the
+                // card. Pinning the card's own top, far above the viewport, would let
+                // the card's shrink or growth move the content the reader is on.
+                const following = nodes.find((item) => {
+                    if (item === topNode) return false;
+                    const rect = item.getBoundingClientRect();
+                    return rect.top >= messagesRect.top && rect.top < messagesRect.bottom;
+                });
+                if (following) { topNode = following; node = following; }
+            }
         }
 
         const cardChain = [];
@@ -555,6 +563,9 @@ export function updateLiveTimelineItem(record, summary, { ts, rawTs, syntheticKe
             fullBody: summary.fullBody || summary.body || it.fullBody || '',
             fullRef: summary.fullRef || it.fullRef || '',
             truncated: summary.truncated || it.truncated || false,
+            // A call's failure frame replaces its receipt start: the row is
+            // content again once it reports an error.
+            receipt: Boolean(summary.receipt),
             ts: ts || it.ts,
         };
         if (Object.entries(patch).some(([key, value]) => it[key] !== value)) {
@@ -595,6 +606,7 @@ export function updateLiveTimelineItem(record, summary, { ts, rawTs, syntheticKe
             fullBody: summary.fullBody || summary.body || '',
             fullRef: summary.fullRef || '',
             truncated: summary.truncated || false,
+            receipt: Boolean(summary.receipt),
             ts: ts || '',
             sourceTs: rawTs,
             count: 1,
@@ -604,4 +616,18 @@ export function updateLiveTimelineItem(record, summary, { ts, rawTs, syntheticKe
         timelineUpdate = 'append';
     }
     return { timelineUpdate, patchIndex };
+}
+
+/** The block's folded tool evidence row. Live frames and the host's metrics
+ * reach it through the same keyed in-place upsert, so neither route can mint a
+ * second row, and the row keeps the position and timestamp of its first frame.
+ */
+export function upsertToolFoldRow(record, view, ts, rawTs) {
+    const syntheticKey = `tools|${record.groupId}`;
+    // Stationary: the row keeps the place and the time of the first frame it
+    // counted, so a burst of calls never walks it down the timeline.
+    const first = !record.items.some((item) => item.dedupeKey === syntheticKey);
+    return updateLiveTimelineItem(record, view, {
+        ts: first ? ts : '', rawTs, syntheticKey, headline: view.headline, inPlaceByKey: true,
+    });
 }

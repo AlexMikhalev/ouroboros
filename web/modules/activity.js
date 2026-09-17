@@ -20,6 +20,7 @@ import {
     taskControlBusy,
 } from './task_control_menu.js';
 import { showToast } from './toast.js';
+import { allowanceLabel } from './utils.js';
 
 function esc(value) {
     return String(value ?? '').replace(/[&<>"']/g, (c) => (
@@ -89,15 +90,29 @@ export function initActivity({ mount, ws } = {}) {
         return parts.length ? parts.join('') : '<div class="activity-empty">Nothing running or queued.</div>';
     }
 
+    function formatWhen(value) {
+        if (!value) return '';
+        const parsed = new Date(value);
+        return Number.isNaN(parsed.getTime()) ? '' : parsed.toLocaleString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' });
+    }
+
     function renderBg(stateData) {
         if (typeof stateData?.bg_consciousness_enabled !== 'boolean') throw new Error('Background state unavailable');
         const enabled = stateData.bg_consciousness_enabled;
         const bg = (stateData && stateData.bg_consciousness_state) || {};
-        const detail = esc(bg.detail || bg.last_idle_reason || (enabled ? 'running' : 'disabled'));
+        const detail = esc(bg.detail || (enabled ? 'enabled' : 'disabled'));
+        const facts = [
+            bg.level ? `autonomy ${esc(bg.level)}` : '',
+            enabled && bg.next_wake_at ? `next wake ${esc(formatWhen(bg.next_wake_at))}` : '',
+            bg.last_wake_at ? `last wake ${esc(formatWhen(bg.last_wake_at))}${bg.last_wake_outcome ? ` (${esc(bg.last_wake_outcome)})` : ''}` : '',
+            allowanceLabel(bg.spent_24h_usd, bg.daily_usd, bg.unknown_unmetered, bg.integrity_degraded)
+                ? `allowance ${esc(allowanceLabel(bg.spent_24h_usd, bg.daily_usd, bg.unknown_unmetered, bg.integrity_degraded))} (24 h)` : '',
+            Number.isFinite(Number(bg.max_tasks)) ? `tasks ${Number(bg.tasks_running || 0)}/${Number(bg.max_tasks)}` : '',
+        ].filter(Boolean).join(' · ');
         return `<div class="activity-row">
             <div class="activity-row-main">
                 <span class="activity-name">Background consciousness</span>
-                <span class="activity-sub">${enabled ? 'enabled' : 'disabled'}${detail ? ` · ${detail}` : ''}</span>
+                <span class="activity-sub">${enabled ? 'enabled' : 'disabled'}${detail ? ` · ${detail}` : ''}${facts ? ` · ${facts}` : ''}</span>
             </div>
             <div class="activity-row-actions">
                 <button type="button" class="btn btn-xs btn-default" data-act="bg-toggle" data-enabled="${enabled ? '1' : '0'}"${ws ? '' : ' disabled'}>${enabled ? 'Stop' : 'Start'}</button>

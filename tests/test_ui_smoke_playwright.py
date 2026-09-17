@@ -328,7 +328,12 @@ def direct_server_with_data(tmp_path):
 
         try:
             start_server()
-            yield {"url": url, "data_dir": data_dir, "restart_server": restart_server}
+            yield {
+                "url": url, "data_dir": data_dir, "restart_server": restart_server,
+                # A seed that must survive into the next boot (queue snapshot, state files) has to
+                # land while no server runs: the main loop persists its own snapshot every tick.
+                "stop_server": stop_server, "start_server": start_server,
+            }
         finally:
             stop_server()
 
@@ -3621,9 +3626,13 @@ def test_ui_smoke_cancel_run_button_eligibility_and_cancelled_state(direct_serve
     data_dir = direct_server_with_data["data_dir"]
     logs_dir = data_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
+    # Seed while no server runs (the live loop rewrites the queue snapshot every tick).
+    direct_server_with_data["stop_server"]()
     (logs_dir / "chat.jsonl").write_text("", encoding="utf-8")
     rows = [
-        # Pooled live root: carries the supervisor's host-attested marker.
+        # Pooled live root: carries the supervisor's host-attested marker AND is
+        # genuinely running (dispatched at boot, held in its first model call) so
+        # the census vouches for it (the 09.09 rule).
         {"ts": "2026-07-29T10:00:00+00:00", "chat_id": 1, "task_id": "live-root",
          "content": "Working on the big thing", "cancelable": True},
         # Direct-chat-turn shape: same card shape, NO marker -> no button.
@@ -3636,9 +3645,6 @@ def test_ui_smoke_cancel_run_button_eligibility_and_cancelled_state(direct_serve
          "subagent_event": "scheduled", "subagent_task_id": "sub-child1",
          "parent_task_id": "live-root", "subagent_role": "researcher",
          "cancelable": True},
-        # Reusable background-consciousness slot: never eligible.
-        {"ts": "2026-07-29T10:00:03+00:00", "chat_id": 1, "task_id": "bg-consciousness",
-         "content": "Background thinking", "cancelable": True},
         # A root that was force-cancelled before this reload.
         {"ts": "2026-07-29T10:00:04+00:00", "chat_id": 1, "task_id": "gone-root",
          "content": "Was working before the cancel", "cancelable": True},
@@ -3658,6 +3664,10 @@ def test_ui_smoke_cancel_run_button_eligibility_and_cancelled_state(direct_serve
             "execution": {"status": "cancelled"},
         },
     }) + "\n", encoding="utf-8")
+    from tests.test_s3_task_control_browser import _hold_live_root, _release_mock_model
+
+    _hold_live_root(data_dir, "live-root")
+    direct_server_with_data["start_server"]()
 
     try:
         with sync_playwright() as pw:
@@ -3670,9 +3680,9 @@ def test_ui_smoke_cancel_run_button_eligibility_and_cancelled_state(direct_serve
                 cancel_btn = live.locator('[data-cancel-run]')
                 cancel_btn.wait_for(state="attached", timeout=30_000)
                 assert cancel_btn.inner_text().strip() == "Stop…"
-                # Marker-less direct-turn shape, subagent child, reusable slot,
-                # and the finished cancelled root must NOT offer the action.
-                for absent_id in ("direct-turn", "sub-child1", "bg-consciousness", "gone-root"):
+                # Marker-less direct-turn shape, subagent child and the
+                # finished cancelled root must NOT offer the action.
+                for absent_id in ("direct-turn", "sub-child1", "gone-root"):
                     card = page.locator(f'.chat-live-card[data-task-id="{absent_id}"]')
                     card.wait_for(state="attached", timeout=30_000)
                     assert card.locator('[data-cancel-run]').count() == 0, absent_id
@@ -3695,6 +3705,7 @@ def test_ui_smoke_cancel_run_button_eligibility_and_cancelled_state(direct_serve
                 page.screenshot(path=str(data_dir.parent / "cancel-run.png"), full_page=True)
             finally:
                 browser.close()
+                _release_mock_model()
     except PlaywrightError as exc:
         if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
             pytest.skip(str(exc))

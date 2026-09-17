@@ -3,6 +3,7 @@
 // `api_chat` + `profile_id`; task actors serialize `api_model` +
 // `credential_profile_id`.
 
+import { accountRows, accountName } from './claudexor_status_store.js';
 import { formatRelativeAge } from './ui_helpers.js';
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
 import { modelChooserHtml, updateModelChooserOptions } from './model_chooser.js';
@@ -197,21 +198,21 @@ function routeCatalogItems(route, items = []) {
         && (!pin || !item?.credential_profile_id || item.credential_profile_id === pin));
 }
 
-/** Collapse duplicate values for the chooser, retaining account evidence in labels. */
+/**
+ * One suggestion per model: the label names the model and makes no account claim
+ * (DESIGN.md §7). Availability, the reading account and its observation time are
+ * account facts, so they never travel on a model option.
+ */
 export function catalogModelOptions(items = []) {
     const values = new Map();
     for (const item of items) {
         const value = String(item?.value || item?.id || item);
-        const label = String(item?.name || item?.label || value);
-        const account = item?.credential_profile_id;
-        const facts = account ? [account, item.availability, item.observed_at
-            ? formatRelativeAge(Date.parse(item.observed_at), 'just now') : 'date unknown'].filter(Boolean).join(' · ') : '';
-        const current = values.get(value) || { value, label, accounts: [] };
-        if (facts && !current.accounts.includes(facts)) current.accounts.push(facts);
-        values.set(value, current);
+        const name = String(item?.name || item?.label || '');
+        const current = values.get(value);
+        if (!current) values.set(value, { value, label: name || value, named: Boolean(name) });
+        else if (name && !current.named) Object.assign(current, { label: name, named: true });
     }
-    return [...values.values()].map(({ value, label, accounts }) => ({ value,
-        label: accounts.length ? `${label} · ${accounts.join('; ')}` : label }));
+    return [...values.values()].map(({ value, label }) => ({ value, label }));
 }
 
 /** Suggestions carry the model alone; the source select already names the provider. */
@@ -427,25 +428,27 @@ export function routeChoiceGroups({
     ];
 }
 
+// The PIN-SIDE projection of `accountRows`: one payload, one reader, so the
+// select that pins a route and the Accounts tab that lists the same account
+// call it one name. A second walk over `profiles.profiles` is how the pin
+// option came to say `codex-default` for the row Accounts calls by its email.
 export function indexProfilesByHarness(payload) {
     const byHarness = {};
-    const profiles = payload?.profiles?.profiles || [];
-    for (const wrapper of Array.isArray(profiles) ? profiles : []) {
-        const profile = wrapper?.profile || {};
-        const harness = String(profile.harness_id || '');
-        const id = String(profile.profile_id || '');
-        if (!harness || !id) continue;
-        (byHarness[harness] = byHarness[harness] || []).push({
-            id,
-            enabled: profile.enabled !== false,
+    for (const row of accountRows(payload)) {
+        if (row.kind !== 'profile' || !row.profile_id) continue;
+        (byHarness[row.harness] = byHarness[row.harness] || []).push({
+            id: row.profile_id,
+            enabled: row.enabled,
+            name: accountName(row),
         });
     }
     return byHarness;
 }
 
 export function profileEntry(entry) {
-    if (typeof entry === 'string') return { id: entry, enabled: true };
-    return { id: String(entry?.id || ''), enabled: entry?.enabled !== false };
+    if (typeof entry === 'string') return { id: entry, enabled: true, name: entry };
+    const id = String(entry?.id || '');
+    return { id, enabled: entry?.enabled !== false, name: String(entry?.name || '') || id };
 }
 
 /** Native model discovery is per account; an unread account is not an empty catalog. */
@@ -488,8 +491,12 @@ export function profileOptionsFor(profiles, savedPin, { accountsKnown = true } =
     const options = [
         { value: '', label: 'Account: automatic rotation' },
         ...(profiles || []).map(profileEntry).filter((profile) => profile.id).map((profile) => ({
+            // The VALUE stays the id — it is what the setting stores and what
+            // pins the route. Only the label speaks the owner's name for the
+            // account, with the stored id appended when they differ.
             value: profile.id,
-            label: `Account: ${profile.id} (pinned)${profile.enabled ? '' : ' (disabled)'}`,
+            label: `Account: ${profile.name}${profile.name !== profile.id ? ` · ${profile.id}` : ''}`
+                + ` (pinned)${profile.enabled ? '' : ' (disabled)'}`,
         })),
     ];
     if (savedPin && !options.some((option) => option.value === savedPin)) {

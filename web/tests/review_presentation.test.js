@@ -963,6 +963,32 @@ test('task acceptance adapts only task_acceptance panels; advisory and commit st
     assert.deepEqual(reviewGroupsFromTaskDetail(detail).map((item) => item.surface), ['task_acceptance']);
 });
 
+test('a late acceptance settlement is printed verbatim in the Reviews group', () => {
+    const note = 'Reviewers later returned no settled verdict on this answer — 1 reviewer’s outcome is still'
+        + ' unknown. They reviewed the answer that was delivered.\n- a: PASS — model/a says PASS';
+    const groupOf = (extra = {}) => taskAcceptanceGroupFromTaskDetail({
+        task_id: 'root',
+        review_projection: { panels: [{ panel_id: 'accept', surface: 'task_acceptance',
+            aggregate_signal: 'DEGRADED', reason: 'quorum not reached', actors: [], ...extra }] },
+    });
+    const plain = groupOf().attempts[0];
+    const group = groupOf({ late_settlement: { note, reviewed_revision: 'delivered', settled_after_terminal: true } });
+    const late = group.attempts[0];
+    assert.equal(plain.label, 'panel accept');
+    assert.equal(plain.summary, 'quorum not reached');
+    assert.ok(plain.detailText.startsWith('Review panel accept:'));
+    // A republished panel is the same attempt: the settlement may not split the row.
+    assert.deepEqual([late.id, late.verdict, late.tone], [plain.id, plain.verdict, plain.tone]);
+    assert.equal(late.label, 'panel accept · settled after the task ended');
+    assert.equal(late.summary, note);
+    // The renderer shows detailText over summary, so the note has to lead it.
+    assert.equal(late.detailText, `${note}\n${plain.detailText}`);
+    const html = renderReviewsSection([group], { sectionExpanded: true,
+        expandedGroups: new Set([group.id]), expandedAttempts: new Set([`${group.id}:${late.id}`]) });
+    assert.match(html, /settled after the task ended/);
+    assert.match(html, /Reviewers later returned no settled verdict on this answer/);
+});
+
 test('author finish is shown beside raw reviewer signal without becoming PASS', () => {
     const fingerprint = 'a'.repeat(64);
     const plan = planReviewGroupFromTaskDetail({

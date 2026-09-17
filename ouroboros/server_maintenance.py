@@ -13,6 +13,7 @@ import json
 import os
 import threading
 import time
+from typing import Any
 
 from ouroboros.server_process import DATA_DIR, log
 from ouroboros.utils import utc_now_iso
@@ -69,11 +70,15 @@ def _run_cancel_delivery_ref_sweep(drive_root: pathlib.Path) -> None:
         _CANCEL_INTENT_SWEEP_LOCK.release()
 
 
-def _periodic_supervisor_maintenance(last_custody_reap: list, last_review_reconcile: list) -> None:
+def _periodic_supervisor_maintenance(
+    last_custody_reap: list, last_review_reconcile: list, *, on_orphans_healed: Any = None,
+) -> None:
     """Throttled periodic upkeep extracted from the supervisor loop: cancel-intent
     watchdog and pending child-ref promotion replay (every 20s), custody reap of
     orphaned task-scoped processes (every 600s) + review-job zombie reconcile
-    (every 300s). Each cadence gates itself via its own last-run marker."""
+    (every 300s). Each cadence gates itself via its own last-run marker.
+    ``on_orphans_healed(count)`` fires when the zombie reconcile terminalized
+    orphaned RUNNING task rows (the alarm clock wakes early for them)."""
     if time.time() - _LAST_CANCEL_INTENT_SWEEP[0] > 20 and _CANCEL_INTENT_SWEEP_LOCK.acquire(blocking=False):
         _LAST_CANCEL_INTENT_SWEEP[0] = time.time()
         try:
@@ -84,6 +89,19 @@ def _periodic_supervisor_maintenance(last_custody_reap: list, last_review_reconc
             log.warning("Terminal maintenance could not start", exc_info=True)
     if time.time() - last_custody_reap[0] > 600:
         last_custody_reap[0] = time.time()
+        try:
+            # Issue #844: release the owned-daemon start latch in ITS OWN try, ahead of
+            # the reap, so a raising reap can never pin it; retry once — only when THIS
+            # sweep released a latch — on a short-lived thread, as warm_owned_daemon()
+            # does (the reconcile below ensures only with orphan work). Contract, per-
+            # process scope and the residual: DEVELOPMENT.md "Process Custody Rule".
+            from ouroboros.claudexor_daemon import get_owned_daemon
+
+            if get_owned_daemon().clear_start_failure_latch(cleared_by="supervisor_sweep"):
+                threading.Thread(target=_retry_latched_daemon_start,
+                                 name="owned-daemon-latch-retry", daemon=True).start()
+        except Exception:
+            log.debug("Owned daemon latch release failed", exc_info=True)
         try:
             from ouroboros.claudexor_daemon import CUSTODY_PURPOSE
             from ouroboros.process_custody import reap_orphaned_processes
@@ -108,7 +126,35 @@ def _periodic_supervisor_maintenance(last_custody_reap: list, last_review_reconc
             log.debug("Periodic custody reap failed", exc_info=True)
     if time.time() - last_review_reconcile[0] > 300:
         last_review_reconcile[0] = time.time()
-        _periodic_zombie_reconcile()
+        _periodic_zombie_reconcile(on_orphans_healed=on_orphans_healed)
+
+
+def _retry_latched_daemon_start() -> None:
+    """The one retry of a latched owned-daemon start (#844), made by the sweep itself.
+
+    Runs on its own short-lived daemon thread, only after this sweep released
+    the latch: one ``ensure_owned_gateway`` with ZERO admission and ZERO
+    startup wait, so the supervisor loop never holds a startup wait (nor the
+    unbounded runtime preparation) — the spawn happens, custody keeps the child, and
+    ``daemon_starting`` is the EXPECTED answer (the next ordinary caller joins
+    or settles it). Any other typed refusal (a child that died at once has
+    already re-latched inside the manager) is logged as a warning; nothing is
+    raised into the loop, nothing else is retried or scheduled, and a gateway
+    that did open is closed at once (the reconcile that follows attaches on
+    its own).
+    """
+    from ouroboros.claudexor_daemon import ensure_owned_gateway
+    from ouroboros.gateways.claudexor import ClaudexorUnavailable
+
+    try:
+        ensure_owned_gateway(admission_wait_sec=0, startup_wait_sec=0).close()
+    except ClaudexorUnavailable as exc:
+        if exc.code == "daemon_starting":
+            log.info("Owned daemon retry after latch release is starting under custody: %s", exc)
+        else:
+            log.warning("Owned daemon retry after latch release refused (%s): %s", exc.code, exc)
+    except Exception:
+        log.warning("Owned daemon retry after latch release failed unexpectedly", exc_info=True)
 
 
 def _reconcile_delegated_runs(running_task_ids: set) -> None:
@@ -390,22 +436,6 @@ def _startup_prune_sweeps(*, preserve_task_sources: bool = False) -> None:
             })
     except Exception:
         log.debug("Agent media prune failed", exc_info=True)
-    try:
-        # CPL4-C23: acknowledged observations older than GC retention fold into
-        # an archive segment; unacknowledged rows are never pruned. Runs before
-        # Background Consciousness starts (it is created later in startup).
-        from ouroboros.consciousness import compact_acknowledged_observations
-
-        fold_report = compact_acknowledged_observations(DATA_DIR)
-        if fold_report.get("folded") or fold_report.get("skipped"):
-            append_jsonl(DATA_DIR / "logs" / "events.jsonl", {
-                "ts": utc_now_iso(),
-                "type": "consciousness_observation_fold",
-                "report": fold_report,
-            })
-    except Exception:
-        log.debug("Observation fold failed", exc_info=True)
-
     if not preserve_task_sources:
         try:
             from ouroboros.observability import prune_observability_blobs
@@ -586,7 +616,7 @@ def _prune_delegated_snapshots() -> None:
         log.debug("Delegated execution snapshot prune failed", exc_info=True)
 
 
-def _periodic_zombie_reconcile() -> None:
+def _periodic_zombie_reconcile(*, on_orphans_healed: Any = None) -> None:
     """Heal zombie 'running' records on a supervisor cadence.
 
     A worker that died mid-review (crash / SIGKILL / manual stop) leaves
@@ -605,8 +635,10 @@ def _periodic_zombie_reconcile() -> None:
         from ouroboros.task_status import reconcile_orphaned_running_tasks
 
         expired_quizzes: list = []
-        reconcile_orphaned_running_tasks(DATA_DIR, expired_quizzes=expired_quizzes)
+        healed = reconcile_orphaned_running_tasks(DATA_DIR, expired_quizzes=expired_quizzes)
         _publish_expired_quiz_frames(expired_quizzes)
+        if healed and callable(on_orphans_healed):
+            on_orphans_healed(int(healed))
     except Exception:
         log.debug("Periodic orphaned running-task reconcile failed", exc_info=True)
     try:

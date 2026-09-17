@@ -125,9 +125,10 @@ test('Cancel run offered only on live, marker-attested root cards', () => {
     assert.equal(cancelRunEligibility(eligible), true);
     // Subagent cards never offer it (the root cascade covers them).
     assert.equal(cancelRunEligibility({ ...eligible, isSubagent: true }), false);
-    // Reusable slots (background consciousness / legacy active) never offer it.
-    assert.equal(cancelRunEligibility({ ...eligible, groupId: 'bg-consciousness' }), false);
+    // The one remaining reusable slot (the legacy 'active' id) never offers it;
+    // a consciousness wake-up is an ordinary direct turn and does.
     assert.equal(cancelRunEligibility({ ...eligible, groupId: 'active' }), false);
+    assert.equal(cancelRunEligibility({ ...eligible, groupId: 'wake-1' }), true);
     // Finished and converted cards have nothing live to cancel.
     assert.equal(cancelRunEligibility({ ...eligible, finished: true }), false);
     assert.equal(cancelRunEligibility({ ...eligible, converted: true }), false);
@@ -183,7 +184,8 @@ test('a 404 cancel reconciles the card from the durable record', () => {
     // "Working" forever. The branch must fetch the durable record and resolve the
     // card through the SAME terminal seam replay uses — not merely hide a button.
     const chat = readFileSync(new URL('../modules/chat.js', import.meta.url), 'utf8');
-    const branch = chat.slice(chat.indexOf('cancelableTaskIds.delete(taskId)'));
+    const branch = chat.slice(chat.indexOf('exc?.status === 404'));
+    assert.match(branch.slice(0, 600), /revokeManagedTaskCancelAuthority\(taskId\);/);
     assert.match(branch.slice(0, 1200), /reconcileCancelCardFromDetail\(record, taskId, await fetchTaskDetail\(taskId\)\)/);
 });
 

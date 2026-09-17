@@ -103,12 +103,19 @@ function verdict([label, tone], text) {
     return { label, tone, text };
 }
 
+// Actors store the pin as `credential_profile_id`, reviewer rows as
+// `profile_id`; the verdict reads both, or a pinned reviewer row would be
+// judged as an unpinned one.
+function routePin(route) {
+    return String(route?.credential_profile_id || route?.profile_id || '');
+}
+
 export function sessionRouteVerdict(row, state, nowMs = Date.now()) {
     const { harness, model } = splitSessionTarget(row?.route?.target_id);
     if (!state?.catalogKnown || !state?.accountsKnown) {
         return verdict(NOT_CHECKED, 'Agent session · live availability not checked');
     }
-    const pin = String(row?.route?.credential_profile_id || '');
+    const pin = routePin(row?.route);
     const harnessEntry = accountScopedModelCatalog(harnessMap(state.snapshot)[harness], pin);
     if (!harnessEntry) return verdict(UNAVAILABLE, `${harness} · currently unavailable`);
     if (!harnessModelsKnown(harnessEntry, state.catalogKnown)) {
@@ -136,9 +143,21 @@ export function sessionRouteVerdict(row, state, nowMs = Date.now()) {
         || (harnessEntry.status && String(harnessEntry.status) !== 'ok')) {
         return verdict(UNAVAILABLE, `${harness} · currently unavailable`);
     }
-    if (!rows.some((account) => account.enabled !== false
-        && String(account?.status?.verification || '') === 'passed')) {
-        return verdict(NO_ACCOUNT, `${harness} · no usable account currently`);
+    const usable = rows.filter((account) => account.enabled !== false
+        && String(account?.status?.verification || '') === 'passed');
+    if (!usable.length) return verdict(NO_ACCOUNT, `${harness} · no usable account currently`);
+    // "Some account carries this model" and "some account is usable" are two
+    // questions, and `gpt-5.4` — listed only by an unverified account — used to
+    // pass both while no single account could answer yes to BOTH. An
+    // account-view catalog stamps each entry with the account that carries it,
+    // so the two sets are intersected here; a legacy catalog carries no such
+    // provenance (empty `carriers`) and keeps the older, weaker rule.
+    const carriers = new Set((model ? (harnessEntry.models || []) : [])
+        .filter((entry) => String(entry?.id || entry?.value || entry || '') === String(model))
+        .map((entry) => String(entry?.credential_profile_id || ''))
+        .filter(Boolean));
+    if (carriers.size && !usable.some((account) => carriers.has(String(account.profile_id || '')))) {
+        return verdict(NO_ACCOUNT, `${harness} · no usable account currently carries ${model}`);
     }
     if (!state.quotaKnown) return verdict(NOT_CHECKED, `${harness} · account ready; quota not checked`);
     const pool = nextUpAccount(state.snapshot, harness);
@@ -191,7 +210,7 @@ export function rowStatus(row, state) {
     }
     const live = sessionRouteVerdict(row, state);
     const { harness } = splitSessionTarget(row.route.target_id);
-    const gap = modelsGapNote(accountScopedModelCatalog(harnessMap(state.snapshot)[harness], row.route.credential_profile_id), state.catalogKnown);
+    const gap = modelsGapNote(accountScopedModelCatalog(harnessMap(state.snapshot)[harness], routePin(row.route)), state.catalogKnown);
     return {
         label: `${intent.word} · ${live.label}`,
         tone: worseTone(intent.tone, live.tone),

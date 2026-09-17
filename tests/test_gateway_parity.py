@@ -428,6 +428,14 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
         "artifact_status",
     ):
         assert re.search(rf"@property \{{string=\}} {field}\b", text), f"ChatOutbound missing {field}"
+    # The HOST names where a task-keyed System row belongs inside the task's card, so the
+    # browser reads one typed fact instead of keeping its own list of system types. Pin the
+    # literal set and the row identity beside it in BOTH mirrors: a placement only one side
+    # knows is a row the client silently drops back beside the card.
+    card_row_hint = get_type_hints(ChatOutbound, include_extras=True)["card_row"]
+    assert get_args(get_args(card_row_hint)[0]) == ("timeline", "reviews")
+    assert re.search(r'@property \{"timeline"\|"reviews"=\} card_row\b', text), "ChatOutbound missing card_row"
+    assert re.search(r"@property \{string=\} card_row_id\b", text), "ChatOutbound missing card_row_id"
     assert re.search(r"@property \{\?number=\} accounted_upper_bound_usd\b", text), (
         "ChatOutbound accounted_upper_bound_usd must be nullable"
     )
@@ -457,6 +465,7 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
         "project_id",
         "project_chat_id",
         "routing_token",
+        "cause",
         "status",
         "options",
         "attachment_manifest",

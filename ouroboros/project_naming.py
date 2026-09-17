@@ -3,10 +3,12 @@
 An LLM-first short human title for a project card, with a deterministic heuristic
 fallback. Shared by every path that names a project so the UI conversion and the
 agent never drift:
-  - the proactive card namer (names ANY task card up front, supervisor side);
-  - ``gateway/projects.py`` turn-into-project conversion (reuses the up-front name,
+  - ``gateway/projects.py`` turn-into-project conversion (reuses an admission name,
     or names inline as a race fallback);
-  - ``ensure_project_scope`` (the agent self-creates + names a project).
+  - ``ensure_project_scope`` (the agent self-creates + names a project);
+  - ``admission_names`` (headless runs and chat promotion, no model call);
+  - ``spawn_turn_namer`` (a direct Main turn, named once it starts working:
+    the first non-addressing tool call triggers one bounded Light call).
 
 Doctrine:
   - P5 LLM-first: the model COINS the name; post-processing is purely lexical
@@ -18,12 +20,12 @@ Doctrine:
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import pathlib
 import threading
 from dataclasses import replace
 from typing import Any, Callable, Dict, Optional, Sequence
-import contextvars
 
 log = logging.getLogger("ouroboros.project_naming")
 
@@ -288,14 +290,18 @@ def _refresh_root_cost_after_naming(drive_root: Any, task_id: str) -> None:
         log.debug("project naming cost refresh failed for %s", task_id, exc_info=True)
 
 
-def spawn_proactive_namer(
+def spawn_turn_namer(
     drive_root: Any, task_id: str, text: str, *, broadcast: Optional[Callable[[dict], None]] = None,
 ) -> None:
-    """Proactively coin an LLM project name for a fresh card in a DAEMON thread (Cluster B).
+    """Coin an LLM title for a direct turn that started working, in a DAEMON thread.
 
-    Writes the coined ``suggested_name`` onto the task result (turn-into-project then reuses
-    it with zero extra call) and, via ``broadcast``, emits a ``task_named`` event so the live
-    card shows a human title up front. NEVER blocks the task. ``drive_root`` is captured at
+    Called once per Main turn from the first non-addressing tool-call frame (the
+    seam that already stamps that frame as work: ``supervisor/log_addressing.py``),
+    so a greeting that runs no tool costs no naming call while a turn that does
+    real work gets a human title as its block becomes the task card. Writes the
+    coined ``suggested_name`` onto the task result (turn-into-project then reuses
+    it with zero extra call) and, via ``broadcast``, emits a ``task_named`` event so
+    the live card shows the title. NEVER blocks the task. ``drive_root`` is captured at
     CALL time — NOT read from a mutable module global at thread-execution time — so a later
     context switch (or a test that swaps the supervisor drive) can't redirect this thread's
     write. Skips cleanly unless ``drive_root`` is a real directory (test safety: a stub /
@@ -338,7 +344,7 @@ def spawn_proactive_namer(
                 try:
                     _result.append(llm_project_name(body, drive_root=drive_root, task_id=task_id))
                 except Exception:
-                    log.debug("proactive namer inner call failed for %s", task_id, exc_info=True)
+                    log.debug("turn namer inner call failed for %s", task_id, exc_info=True)
                 finally:
                     _finished.set()
                     if _detached.is_set():
@@ -354,11 +360,11 @@ def spawn_proactive_namer(
                 # the detached marker. The once-guard covers both interleavings.
                 if _finished.is_set():
                     _refresh_detached_once()
-                log.debug("proactive namer exceeded its wall-clock bound for %s; skipped", task_id)
+                log.debug("turn namer exceeded its wall-clock bound for %s; skipped", task_id)
                 return
             inner.join()
             if not _result:
-                log.debug("proactive namer exceeded its wall-clock bound for %s; skipped", task_id)
+                log.debug("turn namer exceeded its wall-clock bound for %s; skipped", task_id)
                 return
             name = _result[0]
             if not name:
@@ -389,14 +395,14 @@ def spawn_proactive_namer(
                 except Exception:
                     log.debug("task_named broadcast failed for %s", task_id, exc_info=True)
         except Exception:
-            log.debug("proactive namer failed for %s", task_id, exc_info=True)
+            log.debug("turn namer failed for %s", task_id, exc_info=True)
 
     try:
         settings_context = contextvars.Context()
         copy_task_settings_context(settings_context)
         threading.Thread(target=settings_context.run, args=(_work,), name=f"namer-{task_id}", daemon=True).start()
     except Exception:
-        log.debug("proactive namer thread spawn failed for %s", task_id, exc_info=True)
+        log.debug("turn namer thread spawn failed for %s", task_id, exc_info=True)
 
 
 def admission_names(body: Dict[str, Any], description: str) -> tuple:

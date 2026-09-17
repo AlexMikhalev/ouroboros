@@ -361,14 +361,17 @@ def test_chat_id_addressing_docs_match_the_code_that_routes_it():
     assert "tests/test_chat_id_truthiness_guard.py" in development
 
 
-def test_consciousness_prompt_matches_scope_limited_contracts():
+def test_consciousness_prompt_is_the_wake_message_of_an_ordinary_main_turn():
+    """The wake-up runs on Main's system prompt and tools (owner decision В15); this file
+    is its USER message: no private capability catalog, no round or interval limits."""
     consciousness = _read("prompts/CONSCIOUSNESS.md")
 
-    assert "schedule subagents" in consciousness
-    assert "wait on subagents" in consciousness
-    assert "Update your scratchpad or identity" in consciousness
-    assert "Message the user proactively" in consciousness
+    assert consciousness.startswith("[Wake-up · {reason}]")
+    assert "Doing nothing is a fine outcome" in consciousness
+    assert "`set_next_wakeup`" in consciousness and "`escalate`" in consciousness
     assert "recent_tasks" in consciousness
+    for retired in ("You can:", "up to 10 rounds", "Default wakeup", "background consciousness mode"):
+        assert retired not in consciousness, retired
 
 
 def test_phase3_governance_language_is_pinned_without_new_qa_surface():
@@ -438,14 +441,13 @@ def test_continuity_projection_contract_is_mirrored_across_governance_docs():
         "of the full contract it was cut from."
     ) in bible
     assert "Continuity data-flow map" in architecture
-    assert "state/consciousness_observations.jsonl" in architecture
     assert "Source-complete decision pipeline" in development
     assert "Context and growth matrix" in development
     assert "state/skill_review_root_tasks.jsonl" in development
     assert "state/skill_review_root_tasks.jsonl" in architecture
     assert "SKILL_REVIEW_ROOT_TASKS_WARN_BYTES" in architecture
-    assert "nine hot stores" in architecture
-    assert "nine os.stat calls" in _read("ouroboros/agent_startup_checks.py")
+    assert "eight hot stores" in architecture
+    assert "eight os.stat calls" in _read("ouroboros/agent_startup_checks.py")
     for item in (
         "source_completeness",
         "actor_readable_projection",
@@ -577,35 +579,23 @@ def _prompt_bare_identifiers(text: str) -> set:
 
 def test_prompt_tool_names_resolve_to_registered_tools(tmp_path):
     """Every backticked snake_case identifier in the three runtime prompts is
-    either a registered tool (public schema), a background-consciousness tool,
-    or a documented non-tool identifier. Completeness is deliberately NOT
-    required (the schemas are the catalog); this only forbids phantoms and
-    stale spellings, the drift class the prompt audit found in every prompt."""
-    from ouroboros.consciousness import BackgroundConsciousness
+    either a registered tool (public schema) or a documented non-tool identifier
+    (for the wake-up template also one of its own render placeholders).
+    Completeness is deliberately NOT required (the schemas are the catalog);
+    this only forbids phantoms and stale spellings, the drift class the prompt
+    audit found in every prompt. The wake-up runs on the full registry, so its
+    universe is Main's."""
+    from ouroboros.consciousness_wake import PLACEHOLDERS
 
     root = pathlib.Path(__file__).resolve().parent.parent
     registry = ToolRegistry(repo_dir=tmp_path / "repo", drive_root=tmp_path / "data")
     registered = {schema["function"]["name"] for schema in registry.schemas()}
-    # The background whitelist is not taken on faith: every name in it must be a
-    # registered public tool or a ToolEntry the consciousness module registers
-    # itself (set_next_wakeup and friends), otherwise the whitelist has rotted.
-    consciousness_src = (root / "ouroboros" / "consciousness.py").read_text(encoding="utf-8")
-    bg_private = set(re.findall(r'ToolEntry\("([a-z0-9_]+)"', consciousness_src))
-    stale_whitelist = set(BackgroundConsciousness._BG_TOOL_WHITELIST) - registered - bg_private
-    assert not stale_whitelist, f"_BG_TOOL_WHITELIST names unregistered tools: {sorted(stale_whitelist)}"
-    universe = (
-        registered
-        | set(BackgroundConsciousness._BG_TOOL_WHITELIST)
-        | PROMPT_NON_TOOL_IDENTIFIERS
-    )
-    # CONSCIOUSNESS.md runs on the background registry, which admits ONLY the
-    # whitelist (consciousness.py _tool_schemas/_execute_tool), so a public tool
-    # that is not whitelisted is a phantom there.
-    bg_universe = set(BackgroundConsciousness._BG_TOOL_WHITELIST) | PROMPT_NON_TOOL_IDENTIFIERS
+    universe = registered | PROMPT_NON_TOOL_IDENTIFIERS
+    wake_universe = universe | set(PLACEHOLDERS)
     for rel, allowed in (
         ("prompts/SYSTEM.md", universe),
         ("prompts/SAFETY.md", universe),
-        ("prompts/CONSCIOUSNESS.md", bg_universe),
+        ("prompts/CONSCIOUSNESS.md", wake_universe),
     ):
         text = (root / rel).read_text(encoding="utf-8")
         unresolved = _prompt_backticked_identifiers(text) - allowed
@@ -613,11 +603,10 @@ def test_prompt_tool_names_resolve_to_registered_tools(tmp_path):
             f"{rel} names identifiers that are neither registered tools nor "
             f"classified non-tool identifiers: {sorted(unresolved)}"
         )
-    # CONSCIOUSNESS.md writes tool names without backticks; its bare snake_case
-    # tokens must resolve the same way (the runtime drift check in
-    # context_health only catches names with known prefixes).
+    # The wake template also names tools without backticks; its bare snake_case
+    # tokens (the render placeholders aside) must resolve the same way.
     bare = _prompt_bare_identifiers((root / "prompts" / "CONSCIOUSNESS.md").read_text(encoding="utf-8"))
-    unresolved_bare = bare - bg_universe
+    unresolved_bare = bare - wake_universe
     assert not unresolved_bare, (
         f"prompts/CONSCIOUSNESS.md names bare identifiers that are neither registered tools "
         f"nor classified non-tool identifiers: {sorted(unresolved_bare)}"

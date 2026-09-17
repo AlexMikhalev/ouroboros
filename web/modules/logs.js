@@ -208,14 +208,14 @@ export function initLogs({ ws, state, mount }) {
         if (state.activeFilters[cat] && pinned) scrollToLatest();
     }
 
-    function createTaskGroupCard(groupId, category) {
+    function createTaskGroupCard(groupId, category, kindLabel) {
         const entry = document.createElement('div');
         entry.className = 'log-entry log-task-card';
         entry.dataset.category = category;
         entry.dataset.taskGroup = groupId;
         entry.innerHTML = `
             ${logMainHtml({
-                type: { className: category, label: groupId === 'bg-consciousness' ? 'background' : 'task' },
+                type: { className: category, label: kindLabel },
                 phase: 'info',
                 headline: 'Task activity',
                 attrs: {
@@ -287,32 +287,33 @@ export function initLogs({ ws, state, mount }) {
         // drop it out of the Errors filter while the failure is still in its
         // timeline. The phase pill still follows the latest event.
         const earlier = taskGroups.get(groupId);
-        const category = groupId === 'bg-consciousness'
-            ? 'consciousness'
-            : (eventCategory === 'errors' || earlier?.category === 'errors' ? 'errors' : 'tasks');
+        // A wake-up's group is labelled by the origin fact its frames carry
+        // (sticky once seen).
+        const wake = evt.initiator === 'consciousness' || Boolean(earlier?.wake);
+        const category = eventCategory === 'errors' || earlier?.category === 'errors' ? 'errors'
+            : (wake ? 'consciousness' : 'tasks');
+        const kindLabel = wake ? 'Consciousness' : `task ${groupId}`;
         // Captured before ANY record mutation: an already-mounted card grows
         // in place (summary rewrite, review unhide, timeline render) before
         // the append below, and that growth alone can push a pinned reader
         // past the slack allowance.
         const pinned = isPinnedToLatest();
-        const record = taskGroups.get(groupId) || createTaskGroupCard(groupId, category);
+        const record = taskGroups.get(groupId) || createTaskGroupCard(groupId, category, kindLabel);
         const ts = normalizeLogTs(evt.ts || evt.timestamp);
 
         record.events += 1;
         record.category = category;
+        record.wake = wake;
         record.entry.dataset.category = category;
         record.ts.textContent = ts;
-        record.kind.textContent = groupId === 'bg-consciousness' ? 'background' : `task ${groupId}`;
+        record.kind.textContent = kindLabel;
         record.kind.className = `log-type ${category}`;
         record.phase.textContent = view.phase || 'info';
         record.phase.className = `log-phase ${view.phase || 'info'}`;
         record.headline.textContent = view.headline || 'Task activity';
         record.count.textContent = `x${record.events}`;
         record.count.hidden = record.events <= 1;
-        record.summary.innerHTML = metaPills([
-            groupId === 'bg-consciousness' ? 'background' : `task=${groupId}`,
-            ...view.meta,
-        ]);
+        record.summary.innerHTML = metaPills([`task=${groupId}`, ...view.meta]);
         const execution = executorChip(evt);
         if (execution && record.executor) {
             record.executor.title = execution.title || '';

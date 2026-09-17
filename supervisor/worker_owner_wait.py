@@ -62,6 +62,12 @@ def handle_owner_wait(event: dict, ctx: Any) -> None:
         if event.get("phase") == "resume":
             if current.get("wait_id") == wait_id and current.get("state") == "waiting":
                 meta["owner_wait_resume_requested"] = True
+                reason = str(event.get("resume_reason") or "")
+                if reason:
+                    # Carried into the row the grant writes, so the projection
+                    # can say a bound ended the wait. The notice itself is the
+                    # worker's; this is the readable record beside it.
+                    meta["owner_wait"] = {**current, "resume_reason": reason}
             return
         if event.get("phase") != "park":
             return
@@ -116,6 +122,13 @@ def _resume_allowed(task_id: str, meta: dict, worker: Any) -> bool:
     return (not intent or intent.get("stop_policy") == "finalize_then_cancel") and _pool().repo_writer_task_allowed(meta["task"])
 
 
+def _announce_wait_ended(task_id: str, quiz_id: str, chat_id: int) -> None:
+    """The bound closed and the pooled task resumed: one seam with the direct lane."""
+    from ouroboros.owner_wait import announce_wait_ended
+
+    announce_wait_ended(_pool().DRIVE_ROOT, task_id, quiz_id, chat_id)
+
+
 def _grant_resume(
     task_id: str, meta: dict, worker: Any, *, exhausted_replacement: Any = None,
 ) -> bool:
@@ -160,6 +173,8 @@ def _grant_resume(
                 log.warning("Owner-wait rollback remains unpersisted for %s", task_id, exc_info=True)
             raise
         meta.pop("owner_wait_resume_requested", None)
+        if str(resumed.get("resume_reason") or "") == "timeout" and str(resumed.get("quiz_id") or ""):
+            _announce_wait_ended(task_id, str(resumed["quiz_id"]), int((meta.get("task") or {}).get("chat_id") or 0))
         # A mailbox wake is the start of useful model work, not a new attempt.
         meta["last_progress_at"] = _pool().time.time()
         return True

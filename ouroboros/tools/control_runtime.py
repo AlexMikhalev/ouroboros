@@ -155,10 +155,14 @@ def _request_deep_self_review(ctx: ToolContext, reason: str) -> str:
     # Availability follows the configured deep-review ROW (packed api model,
     # native inspection episode, or delegated session), not the model key alone.
     from ouroboros.deep_self_review import deep_review_route, deep_review_unavailable_text
+    from ouroboros.consciousness_authority import consciousness_origin_metadata
     unavailable, identity = deep_review_route()
     if unavailable:
         return deep_review_unavailable_text(unavailable)
-    ctx.pending_events.append({"type": "deep_self_review_request", "reason": reason, "model": identity, "ts": utc_now_iso()})
+    # A consciousness turn names itself: the review root then goes through the ONE
+    # admission door and its spend stays inside the consciousness allowance.
+    ctx.pending_events.append({"type": "deep_self_review_request", "reason": reason, "model": identity, "ts": utc_now_iso(),
+                               **consciousness_origin_metadata(getattr(ctx, "task_metadata", None))})
     return f"Deep self-review requested (reviewer: {identity}). It will be queued and executed asynchronously."
 
 
@@ -186,12 +190,6 @@ def _chat_history(
 
 def _update_scratchpad(ctx: ToolContext, content: str) -> str:
     """LLM-driven scratchpad update — appends a timestamped block (Constitution P5: LLM-first)."""
-    if str(getattr(ctx, "project_id", "") or "").strip():
-        # Project-scoped tasks have no per-project scratchpad and must never write
-        # the canonical scratchpad (outbound isolation). Persist project facts via
-        # knowledge_write instead (routed to the per-project store).
-        return ("OK: scratchpad is not used for project-scoped tasks (no per-project "
-                "scratchpad). Persist durable project facts with knowledge_write.")
     if not content or not isinstance(content, str) or len(content.strip()) < 10:
         return (
             _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR", text=("⚠️ REJECTED: content is empty or too short "
@@ -200,7 +198,14 @@ def _update_scratchpad(ctx: ToolContext, content: str) -> str:
             "This likely means the tool call was malformed — check your arguments.")))
         )
     from ouroboros.memory import Memory
-    mem = Memory(drive_root=ctx.drive_root)
+    from ouroboros.tool_access import canonical_data_root
+
+    # One working memory, every room (P1): the scratchpad is the same file in
+    # the main chat, in a project room, and in an external conversation, so a
+    # project-scoped turn writes it like any other turn. The root follows the
+    # same precedence as _chat_history, so a forked execution drive still
+    # remembers into the canonical root the next context reads.
+    mem = Memory(drive_root=canonical_data_root(ctx))
     mem.ensure_files()
     try:
         block = mem.append_scratchpad_block(
@@ -256,11 +261,6 @@ def _send_user_message(ctx: ToolContext, text: str, reason: str = "") -> str:
 
 def _update_identity(ctx: ToolContext, content: str) -> str:
     """Update identity manifest (who you are, who you want to become)."""
-    if str(getattr(ctx, "project_id", "") or "").strip():
-        # Identity is global and continuous (P1); it is never modified from a
-        # project-scoped task. There is no per-project identity.
-        return ("OK: identity is global and is never modified from a project-scoped "
-                "task (identity stays continuous across projects — P1).")
     if not content or not isinstance(content, str) or len(content.strip()) < 50:
         return (
             _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR", text=("⚠️ REJECTED: content is empty or too short "
@@ -269,11 +269,18 @@ def _update_identity(ctx: ToolContext, content: str) -> str:
             "This likely means the tool call was malformed — check your arguments.")))
         )
     from ouroboros.memory import Memory
-    mem = Memory(drive_root=ctx.drive_root)
+    from ouroboros.tool_access import canonical_data_root
+
+    # One identity, every room (P1): who I am does not change with the room I
+    # am speaking in, so a project room or an external conversation revises the
+    # same continuous file. The root follows the same precedence as
+    # _chat_history, so a forked execution drive still writes the identity the
+    # canonical root reads back.
+    mem = Memory(drive_root=canonical_data_root(ctx))
     mem.ensure_files()
 
     old_content = ""
-    path = ctx.drive_root / "memory" / "identity.md"
+    path = mem.identity_path()
     if path.exists():
         try:
             old_content = path.read_text(encoding="utf-8")
@@ -322,11 +329,16 @@ def _toggle_evolution(ctx: ToolContext, enabled: bool, objective: str = "") -> s
             block = ""
         if block:
             return block
+    from ouroboros.consciousness_authority import consciousness_origin_metadata
+
     ctx.pending_events.append({
         "type": "toggle_evolution",
         "enabled": bool(enabled),
         "objective": str(objective or "").strip(),
         "ts": utc_now_iso(),
+        # A Full-level consciousness turn/tree names itself: the campaign and its
+        # cycle tasks then stay inside the consciousness allowance (PLAN 5.14 п.7).
+        **consciousness_origin_metadata(getattr(ctx, "task_metadata", None)),
     })
     state_str = "ON" if enabled else "OFF"
     return f"OK: evolution mode toggled {state_str}."
@@ -340,6 +352,37 @@ def _toggle_consciousness(ctx: ToolContext, action: str = "status") -> str:
         "ts": utc_now_iso(),
     })
     return f"OK: consciousness '{action}' requested."
+
+
+def _set_next_wakeup(ctx: ToolContext, seconds: int) -> str:
+    """Choose the interval before the next consciousness wake-up.
+
+    The requested seconds are clamped into the owner's configured bounds
+    (``OUROBOROS_BG_WAKEUP_MIN``/``MAX``) and persisted on the runtime state as
+    ``consciousness_next_interval_sec``, where the alarm clock reads the choice
+    when it schedules the next wake. Any turn may call it (a wake-up picks its
+    own rhythm; a Main turn may adjust it); with consciousness off the choice is
+    stored, not refused, and applies once it is enabled. The alarm clock
+    (``consciousness.py``) reads the value when the wake-up ends.
+    """
+    from ouroboros.config import get_bg_wakeup_max_sec, get_bg_wakeup_min_sec
+    from supervisor.state import update_state
+
+    try:
+        requested = int(seconds)
+    except (TypeError, ValueError):
+        return f"⚠️ TOOL_ARG_ERROR (set_next_wakeup): invalid seconds={seconds!r}"
+    low, high = get_bg_wakeup_min_sec(), get_bg_wakeup_max_sec()
+    interval = max(low, min(high, requested))
+    state = update_state(lambda st: st.__setitem__("consciousness_next_interval_sec", interval))
+    clamp_note = f" (requested {requested} s, clamped into {low}-{high} s)" if interval != requested else ""
+    if not bool(state.get("bg_consciousness_enabled")):
+        return (f"OK: consciousness is off; the next wake-up interval of {interval} s{clamp_note} "
+                "is stored for when it is enabled.")
+    # The interval is finish-relative: the alarm reads it when a wake-up ends. Said plainly,
+    # so a Main turn is not promised a wake it did not move (astra scope, round 7).
+    return (f"OK: the wake-up interval is now {interval} s{clamp_note}; it applies from the end of the "
+            "next wake-up (a wake-up already pending keeps its time; a wake-up calling this sets its own next one).")
 
 
 def _switch_model(ctx: ToolContext, model: str = "", effort: str = "") -> str:

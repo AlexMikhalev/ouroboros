@@ -58,10 +58,12 @@ def test_chat_header_decoration_does_not_clip_menu_and_system_actions_keep_gap(s
         metrics = action.evaluate("""el => {
             const prose = el.previousElementSibling;
             return {previous:prose.className, nested:!!el.closest('.message'),
-                gap:el.getBoundingClientRect().top - prose.getBoundingClientRect().bottom};
+                gap:el.querySelector('button').getBoundingClientRect().top - prose.getBoundingClientRect().bottom,
+                below:el.getBoundingClientRect().bottom - el.querySelector('button').getBoundingClientRect().bottom};
         }""")
         assert metrics["previous"] == "message" and not metrics["nested"]
         assert metrics["gap"] == pytest.approx(12, abs=0.5), metrics
+        assert metrics["below"] == pytest.approx(12, abs=0.5), metrics
     header = page.locator(".chat-page-header")
     paint = header.evaluate("""el => ({mask:getComputedStyle(el).maskImage,
         overflow:getComputedStyle(el).overflow, fade:getComputedStyle(el,'::before').maskImage,
@@ -338,3 +340,95 @@ def test_mcp_transport_fields_use_named_shared_controls_without_changing_drafts(
     capture = setup_browser.capture
     cards.first.scroll_into_view_if_needed()
     capture(page,'shell-mcp-shared-fields')
+
+
+@pytest.mark.parametrize('width,height', [(1100, 722), (390, 844)])
+def test_question_pointer_composition_preview_navigation_and_reload(subscription_ui, width, height):
+    """Real SPA readers and WebSocket handlers; disposable source data, no owner writes."""
+    from urllib.parse import parse_qs
+
+    ui = subscription_ui
+    page = ui['page']
+    page.set_viewport_size({'width': width, 'height': height})
+    project = {'id': 'question-proof', 'name': 'Evidence project with a deliberately long descriptive name',
+               'chat_id': 42, 'lifecycle': 'active', 'visible_revision': 0}
+    block = {'quiz_id': 'exact-question', 'state': 'open', 'question': 'Which evidence should we retain?',
+             'options': ['Keep the primary source', 'Use the replication'],
+             'option_details': ['Preserve the full original measurements.', 'Compare the independent run.'],
+             'wait_for_answer': True, 'asked_at': '2026-09-16T00:00:00Z'}
+    wait = {'quiz_id': block['quiz_id'], 'state': 'waiting'}
+    sockets = []
+    page.route_web_socket('**/ws', lambda ws: (sockets.append(ws), ws.send(json.dumps({'type': 'heartbeat'}))))
+    page.route('**/api/projects', lambda r: r.fulfill(json={'projects': [project]}))
+    page.route('**/api/state', lambda r: r.fulfill(json={'supervisor_ready': True,
+        'active_chat_activities': [], 'projects': [project], 'project_chat_ids': [42]}))
+    page.route('**/api/tasks/proof-task', lambda r: r.fulfill(json={'task_id': 'proof-task',
+        'project_id': project['id'], 'owner_quiz': {block['quiz_id']: block}, 'owner_wait': wait}))
+
+    def history(route):
+        chat_id = parse_qs(urlparse(route.request.url).query).get('chat_id', ['1'])[0]
+        if chat_id == '42':
+            # Source question is outside this window: exact navigation must read detail.
+            rows = [{'role': 'assistant', 'text': 'Later retained project message.', 'ts': '2026-09-16T01:00:00Z'}]
+        else:
+            # The row the Python producer emits: complete for display, no detail read needed.
+            rows = [{'role': 'system', 'system_type': 'project_question_pointer', 'task_id': 'proof-task',
+                'quiz_id': block['quiz_id'], 'quiz_state': block['state'], 'project_id': project['id'],
+                'project_name': project['name'], 'project_chat_id': 42, 'owner_wait_state': wait['state'],
+                'question': block['question'], 'options': block['options'], 'ts': block['asked_at'],
+                **{key: block[key] for key in ('wait_for_answer', 'wait_ended_at', 'answered_index', 'comment') if key in block}}]
+        route.fulfill(json={'messages': rows, 'progress': []})
+    page.route('**/api/chat/history*', history)
+    open_app(ui)
+    pointer = page.locator('#chat-messages .project-question-pointer')
+    pointer.get_by_text(block['question'], exact=True).wait_for()
+    pointer.get_by_text('Waiting for your answer', exact=True).wait_for()
+    action = pointer.get_by_role('button', name='Answer question', exact=True)
+    action.focus()
+    # WebKit on macOS follows native keyboard navigation: Option+Tab includes
+    # buttons even when the OS's full-keyboard-access preference is disabled.
+    page.keyboard.press('Alt+Tab')
+    page.keyboard.press('Alt+Shift+Tab')
+    assert action.evaluate('el=>el===document.activeElement'), page.evaluate('document.activeElement.outerHTML')
+    assert action.evaluate("el=>getComputedStyle(el).outlineStyle") != 'none'
+    metrics = pointer.evaluate("""el => {
+        const row=el.querySelector('.system-message-actions'), b=row.querySelector('button');
+        const r=row.getBoundingClientRect(), a=b.getBoundingClientRect();
+        return {above:a.top-row.previousElementSibling.getBoundingClientRect().bottom,
+            below:r.bottom-a.bottom, overflow:el.scrollWidth-el.clientWidth,
+            wrap:getComputedStyle(row).flexWrap, buttonRight:a.right, viewport:innerWidth};
+    }""")
+    assert metrics['above'] >= 12 and metrics['below'] >= 12, metrics
+    assert metrics['overflow'] <= 1 and metrics['buttonRight'] <= width, metrics
+    assert metrics['wrap'] == 'wrap'
+    print(json.dumps({'question_geometry': metrics, 'viewport': [width, height]}))
+    setup_browser.capture(page, f'question-waiting-focus-{width}')
+    wait['state'] = 'resumed'
+    block.pop('wait_for_answer'); block['wait_ended_at'] = '2026-09-16T00:01:00Z'
+    # The production timeout frame carries only wait_for_answer:false.
+    for ws in sockets:
+        ws.send(json.dumps({'type': 'quiz_state', 'task_id': 'proof-task', 'quiz_id': block['quiz_id'],
+                           'state': 'open', 'wait_for_answer': False}))
+    pointer.get_by_text('Unanswered · the task continued; an answer is still accepted', exact=True).wait_for()
+    comment = 'Retain the provenance and the original source.'
+    block.update(state='answered', answered_index=0, comment=comment)
+    for ws in sockets:
+        ws.send(json.dumps({'type': 'quiz_state', 'task_id': 'proof-task', 'quiz_id': block['quiz_id'],
+                           'state': 'answered', 'answered_index': 0, 'comment': comment}))
+    pointer.get_by_text('You answered', exact=True).wait_for()
+    pointer.get_by_text('Your answer: Keep the primary source — ' + comment, exact=True).wait_for()
+    setup_browser.capture(page, f'question-answered-preview-{width}')
+    pointer.get_by_role('button', name='View answer', exact=True).click()
+    quiz = page.locator('.chat-quiz-card[data-task-id="proof-task"][data-quiz-id="exact-question"]')
+    quiz.get_by_text('Preserve the full original measurements.', exact=True).wait_for()
+    quiz.get_by_text("Owner's answer: " + comment, exact=True).wait_for()
+    assert quiz.locator('.chat-quiz-option.chosen').inner_text().startswith('Keep the primary source')
+    assert quiz.locator('.chat-quiz-comment').count() == 0
+    assert quiz.locator('.chat-quiz-wait-ended').count() == 0
+    setup_browser.capture(page, f'question-exact-navigation-{width}')
+    page.reload()
+    pointer.get_by_text('Your answer: Keep the primary source — ' + comment, exact=True).wait_for()
+    pointer.get_by_role('button', name='View answer', exact=True).click()
+    quiz.get_by_text("Owner's answer: " + comment, exact=True).wait_for()
+    setup_browser.capture(page, f'question-reloaded-{width}')
+    assert not [path for path, _ in ui['posts'] if path == '/api/decisions']

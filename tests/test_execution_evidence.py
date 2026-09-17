@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from ouroboros import delegate_custody as custody
 from ouroboros.subagents import envelope_from_task
 
@@ -158,6 +160,60 @@ class TestCustodyAggregation:
         evidence = custody.task_execution_evidence(drive, "child-1")
         assert evidence["delegated_runs_started"] == 0
         assert evidence["delegated_runs_settled"] == 0
+
+    def test_the_tasks_own_reviewers_are_not_its_substrate(self, tmp_path):
+        """Issue #1006: a run a REVIEW panel registered under the reviewed
+        task's id is the panel's substrate. Its attempt, counters, model,
+        applied access and failure state are not this task's evidence."""
+        drive = _drive(tmp_path)
+        _emit_started(drive, "run-leaf")
+        assert custody.emit(drive, custody.START_REQUESTED, {
+            "run_id": "", "task_id": "child-1", "invocation_id": "inv-review",
+            "idempotency_key": "inv-review", "request": {"prompt": "packet"},
+            "route": "codex", "source": "review_substrate.extraction",
+        })
+        assert custody.emit(drive, custody.STARTED, {
+            "run_id": "run-review", "task_id": "child-1", "route": "codex",
+            "model": "review-pin", "source": "review_substrate",
+            "category": "task_acceptance_review",
+        })
+        assert custody.emit(drive, custody.SETTLED, {
+            "run_id": "run-review", "task_id": "child-1", "route": "codex",
+            "model": "review-model", "state": "failed", "cost_usd": 4.0,
+            "cost_final": True, "spend_disclosed": True,
+            "access_profile": "workspace_write",
+        })
+        evidence = custody.task_execution_evidence(drive, "child-1")
+        assert evidence["delegated_runs_started"] == 1
+        assert evidence["delegated_runs_settled"] == 0
+        assert evidence["delegated_runs_failed"] == 0
+        assert evidence["delegated_run_failure_states"] == []
+        assert evidence["harness_models"] == []
+        assert evidence["applied_access_profiles"] == []
+        assert evidence["subscription_cost_usd"] is None
+        # The leaf started, so delegation still provably happened.
+        assert evidence["delegate_start_attempted"] is True
+
+    def test_a_reviewers_settlement_that_outlived_its_start_names_itself(self, tmp_path):
+        """After log rotation the SETTLED row may be all that survives — it
+        carries its own ``source``, so it is still the panel's, not the task's.
+        A settled row WITHOUT a source keeps counting as this task's run."""
+        drive = _drive(tmp_path)
+        assert custody.emit(drive, custody.SETTLED, {
+            "run_id": "run-review", "task_id": "child-1", "route": "codex",
+            "model": "review-model", "state": "failed", "source": "review_substrate",
+            "cost_usd": 4.0, "cost_final": True, "spend_disclosed": True,
+        })
+        evidence = custody.task_execution_evidence(drive, "child-1")
+        assert evidence["delegated_runs_started"] == 0
+        assert evidence["delegated_run_failure_states"] == []
+        assert evidence["harness_models"] == []
+
+        _emit_settled(drive, "run-rotated", state="failed")
+        evidence = custody.task_execution_evidence(drive, "child-1")
+        assert evidence["delegated_runs_started"] == 1
+        assert evidence["delegated_run_failure_states"] == ["failed"]
+        assert evidence["harness_models"] == ["claude-sonnet"]
 
 
 class TestEnvelopeReconciliation:
@@ -453,6 +509,60 @@ class TestTerminalFrameDelivery:
             task_done_event=task_done_event,
         )
         return task_done_event
+
+    def _dispatch_text(self, tmp_path, monkeypatch, **terminal_facts):
+        """Dispatch one subagent terminal and return its chat ``(text, meta)``."""
+        from types import SimpleNamespace
+
+        from supervisor import events as events_mod
+
+        monkeypatch.setattr(
+            events_mod, "_bound_project_chat_id", lambda *_a, **_k: 0)
+        seen: list = []
+        ctx = SimpleNamespace(
+            DRIVE_ROOT=tmp_path, RUNNING={}, PENDING=[], WORKERS={},
+            send_with_budget=lambda _cid, text, **kw: seen.append(
+                (text, kw.get("progress_meta") or {})),
+            persist_queue_snapshot=lambda **_k: True,
+            bridge=SimpleNamespace(push_log=lambda _e: None),
+        )
+        events_mod._finish_task_done_dispatch(
+            {}, ctx, task_id="child-1", worker_id=0,
+            task={"id": "child-1", "chat_id": 7, "parent_task_id": "root-1",
+                  "root_task_id": "root-1", "delegation_role": "subagent",
+                  "role": "publication-auditor"},
+            final_task_result=self._result(),
+            task_done_event={"type": "task_done", "task_id": "child-1",
+                             "status": "completed", **terminal_facts},
+        )
+        return seen[0]
+
+    def test_a_clean_completion_still_reads_as_a_clean_completion(
+            self, tmp_path, monkeypatch):
+        text, meta = self._dispatch_text(tmp_path, monkeypatch)
+        assert text == "✅ Subagent child-1 completed (publication-auditor)."
+        assert meta["subagent_event"] == "completed" and meta["status"] == "completed"
+
+    @pytest.mark.parametrize("terminal_facts", [
+        {"outcome_axes": {"execution": {"status": "degraded"}}},
+        {"reason_code": "configured_actor_incomplete"},
+        {"reason_code": "configured_actor_unknown"},
+    ])
+    def test_a_degraded_completion_reads_as_a_warning(
+            self, tmp_path, monkeypatch, terminal_facts):
+        """The chat line and the card told two stories about ONE terminal.
+
+        A configured actor that never started its leaf ends `completed` on the
+        lifecycle axis and `degraded` on the execution axis. The web card computes
+        `warn` from those axes; the server-emitted progress text read the lifecycle
+        alone and said "✅ … completed", so the owner's first signal was a green
+        check over a child that had done nothing. Only icon and verb move —
+        `subagent_event` and `status` are what Telegram cards and the web consumers
+        key on, and a terminal must not change identity to change its wording.
+        """
+        text, meta = self._dispatch_text(tmp_path, monkeypatch, **terminal_facts)
+        assert text == "⚠️ Subagent child-1 finished with warnings (publication-auditor)."
+        assert meta["subagent_event"] == "completed" and meta["status"] == "completed"
 
     def test_panel_chat_zero_receives_the_terminal_evidence_frame(
             self, tmp_path, monkeypatch):

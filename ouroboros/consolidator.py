@@ -157,7 +157,10 @@ def consolidate(
         if (compact_chronicle and not (usage or {}).get("_consolidation_errors")
                 and not (pressure_fits is not None and pressure_fits())):
             reduced = _compact_chronicle(blocks_path, llm_client, identity_text, knowledge_context)
-            usage = _merge_consolidation_usage(*([usage] if usage else []), reduced)
+            merged = _merge_consolidation_usage(*([usage] if usage else []), reduced)
+            # A fixed-key merge would drop this receipt; a chronicle-only pass wrote no block.
+            merged["_blocks_written"] = (usage or {}).get("_blocks_written", 0)
+            usage = merged
         return usage
     finally:
         if lock_fd is not None:
@@ -281,6 +284,9 @@ def _run_block_consolidation(
     total_usage: Dict[str, Any] = {
         "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "cost": 0.0,
     }
+    # A failed SUFFIX chunk still advances the successful PREFIX, so the stale-error
+    # clear below must know whether THIS run recorded a failure it would erase.
+    run_failed = False
     new_blocks: List[Dict[str, Any]] = []
     chunks_to_process = (len(new_entries) + BLOCK_SIZE - 1) // BLOCK_SIZE if force_tail else len(new_entries) // BLOCK_SIZE
     processed = 0
@@ -316,7 +322,10 @@ def _run_block_consolidation(
             meta.pop("consolidation_retry", None)
         if not content and usage.get("_consolidation_retry"):
             meta["consolidation_retry"] = {"source_sha256": source_hash, "input_limit": usage["_consolidation_retry"]}
-        if usage.get("_consolidation_errors"):
+        # A refused part that was split and then fully summarized still carries its
+        # attempt errors in usage; only a chunk that produced NO content failed.
+        if usage.get("_consolidation_errors") and not (content and content.strip()):
+            run_failed = True
             meta["last_consolidation_error"] = dict(
                 usage["_consolidation_errors"][-1], cursor_offset=last_offset + processed,
                 chat_log_signature=segment_sigs[0], message_count=len(chunk),
@@ -343,6 +352,9 @@ def _run_block_consolidation(
             log.warning("Block summary empty for chunk %d, will retry next cycle", i)
             break
 
+    # Set after the last merge of this stretch: _merge_consolidation_usage forwards
+    # fixed keys only, so an earlier assignment would be dropped by the next merge.
+    total_usage["_blocks_written"] = len(new_blocks)
     if not new_blocks:
         atomic_write_json(meta_path, meta)
         return total_usage
@@ -363,6 +375,7 @@ def _run_block_consolidation(
             "source_ref": ref, **source,
         }, ensure_record_boundary=True, require_lock=True):
             log.warning("Dialogue knowledge nominations could not be retained; preserving original blocks/cursor")
+            total_usage["_blocks_written"] = 0
             return total_usage
         for block, _entries in pending_knowledge:
             block["knowledge_source_ref"] = ref
@@ -397,10 +410,12 @@ def _run_block_consolidation(
     _write_locked_json(blocks_path, all_blocks)
 
     if knowledge_context is not None:
+        published: List[Dict[str, Any]] = []
         for block, entries in pending_knowledge:
             block["knowledge_writes"] = _write_knowledge_entries(
                 pathlib.Path(knowledge_context.drive_root) / "memory" / "knowledge",
                 entries, context=knowledge_context)
+            published.extend(block["knowledge_writes"])
             if any(not outcome["ok"] for outcome in block["knowledge_writes"]):
                 append_jsonl(pathlib.Path(knowledge_context.drive_root) / "memory" / "knowledge_history.jsonl", {
                     "ts": utc_now_iso(), "type": "dialogue_knowledge_writes_incomplete",
@@ -410,13 +425,28 @@ def _run_block_consolidation(
             # Nominations were durable before mutation. Outcome facts belong to
             # the same blocks, so a failed write is available to later learning.
             _write_locked_json(blocks_path, all_blocks)
+            # Era compression later replaces these blocks with one object carrying no
+            # knowledge_writes, so this batch receipt lives in meta, not in a scan of
+            # dialogue_blocks.json. A fully published batch clears it; a run with no
+            # nominations at all leaves the older receipt standing.
+            # Count what was NOMINATED, not only what produced an outcome: an entry
+            # the writer skipped as malformed was not published either.
+            nominated = sum(len(entries) for _block, entries in pending_knowledge)
+            failed = nominated - sum(1 for outcome in published if outcome["ok"])
+            meta.pop("last_unpublished_nominations", None)
+            if failed > 0:
+                meta["last_unpublished_nominations"] = {"entry_id": ref["entry_id"],
+                                                        "failed": failed, "total": nominated}
 
     _advance_cursor(meta, segments, segment_sigs, segment_entries, last_offset + processed)
+    if not run_failed:  # An advance by a run that recorded no failure retires a stale error.
+        meta.pop("last_consolidation_error", None)
     meta["last_consolidated_at"] = utc_now_iso()
     atomic_write_json(meta_path, meta)
 
     log.info("Block consolidation: %d messages -> %d new blocks (total %d)",
              processed, len(new_blocks), len(all_blocks))
+    total_usage["_blocks_written"] = len(new_blocks)
     return total_usage
 
 
@@ -624,8 +654,14 @@ nominating a durable revision. Keep the original episode below as evidence, read
 the complete CURRENT note before replacing it, and preserve its sources, uncertainty,
 unknown metadata and useful links. A new observation may correct an old interpretation;
 do not merely repeat fragments. New topics may be created without a prior read.
-The global topic overview is the shared authored orientation; ordinary linked notes
-carry details. Keep a useful overview current when this episode changes understanding.
+Understanding of the people involved — preferences, recurring reactions, shared history,
+tentative interpretations with their source — is ordinary knowledge to nominate in global scope;
+a pattern across several moments is worth more than one; revise the existing note rather than minting a rule,
+and an explicit standing request stays explicit. Author a YAML summary for a new or meaningfully revised note —
+the summary is what stays resident in the index — and revise it when the note's meaning changes.
+The note overview (scope global) is the shared orientation loaded into every future context; keep it
+current, and when none exists and this episode gives real understanding, create it after reading the index.
+Scope is a separate field, never a topic prefix.
 Do not treat the generated index or earlier previews as authored truth. Patterns and
 improvement-backlog retain their dedicated semantic maintainers; nominate ordinary
 knowledge here. If no memory change is useful, nominate none. This is the same memory
@@ -865,10 +901,10 @@ The source may be one contiguous part of the block; summarize only the supplied 
 
 ## Rules
 1. Header: ### Block: {first_date} {first_time} - {last_time}
-2. Preserve: decisions, agreements, technical discoveries, emotional moments, task outcomes, what worked/failed
+2. Preserve: decisions, agreements, technical discoveries, emotional and personal moments (what someone felt, asked for, enjoyed or disliked — quote them), task outcomes, what worked/failed
 3. Compress: routine tool calls, repetitive back-and-forth
 4. Quote key phrases directly when important
-5. First person as Ouroboros: "I did...", "the user asked..."
+5. First person as Ouroboros: "I did..."; call people by the names the messages give; when no name is known, describe the speaker honestly rather than inventing one
 6. Length: 200-500 words depending on content density
 7. Include task_ids when referencing specific tasks
 {identity_section}

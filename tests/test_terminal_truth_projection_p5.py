@@ -1,4 +1,4 @@
-"""The Reason line names the cause the record actually holds (owner item, spam B).
+"""The cause line names the cause the record actually holds (owner item, spam B).
 
 ``_apply_terminal_custody_outcome`` stamps ``delegated_custody_unreconciled`` as
 the row's reason_code while a delegated run is still unreconciled. The debt then
@@ -17,7 +17,10 @@ lines and would cross the 1000-line target here.
 from __future__ import annotations
 
 from ouroboros.outcomes import WARN_DELEGATED_CUSTODY_UNRECONCILED
-from ouroboros.project_dialogue import _completion_verdict
+from ouroboros.project_dialogue import TASK_CAUSE_PHRASES, _completion_verdict
+
+# The one owner sentence for the debt; the raw code stays typed on the row.
+CUSTODY_SENTENCE = TASK_CAUSE_PHRASES[WARN_DELEGATED_CUSTODY_UNRECONCILED]
 
 
 def _row(**fields) -> dict:
@@ -31,7 +34,7 @@ def test_a_healed_debt_yields_the_execution_reason_instead() -> None:
         delegated_runs_unreconciled=[],
         outcome_axes={"execution": {"status": "degraded", "reason_code": "tool_failure"}},
     )
-    assert _completion_verdict(healed, {}) == "Reason: tool_failure."
+    assert _completion_verdict(healed, {}) == "tool_failure."
 
 
 def test_an_open_debt_is_still_named() -> None:
@@ -39,9 +42,7 @@ def test_an_open_debt_is_still_named() -> None:
         delegated_runs_unreconciled=["run-a1"],
         outcome_axes={"execution": {"status": "ok"}},
     )
-    assert _completion_verdict(open_debt, {}) == (
-        f"Reason: {WARN_DELEGATED_CUSTODY_UNRECONCILED}."
-    )
+    assert _completion_verdict(open_debt, {}) == CUSTODY_SENTENCE
 
 
 def test_both_real_are_stated_in_one_line() -> None:
@@ -49,9 +50,7 @@ def test_both_real_are_stated_in_one_line() -> None:
         delegated_runs_unreconciled=["run-a1", "run-b2"],
         outcome_axes={"execution": {"status": "failed", "reason_code": "provider_unavailable"}},
     )
-    assert _completion_verdict(both, {}) == (
-        f"Reason: provider_unavailable ({WARN_DELEGATED_CUSTODY_UNRECONCILED})."
-    )
+    assert _completion_verdict(both, {}) == f"provider_unavailable ({CUSTODY_SENTENCE})"
 
 
 def test_a_healed_debt_with_no_execution_cause_states_nothing() -> None:
@@ -69,12 +68,12 @@ def test_the_debt_may_arrive_on_the_event_instead_of_the_result() -> None:
         "delegated_runs_unreconciled": ["run-a1"],
         "outcome_axes": {"execution": {"status": "ok"}},
     }
-    assert _completion_verdict({}, event) == f"Reason: {WARN_DELEGATED_CUSTODY_UNRECONCILED}."
+    assert _completion_verdict({}, event) == CUSTODY_SENTENCE
 
 
 def test_every_other_reason_code_passes_through_untouched() -> None:
     plain = {"status": "failed", "reason_code": "provider_unavailable"}
-    assert _completion_verdict(plain, {}) == "Reason: provider_unavailable."
+    assert _completion_verdict(plain, {}) == "provider_unavailable."
     assert _completion_verdict({"status": "completed"}, {}) == ""
 
 
@@ -103,7 +102,7 @@ def test_a_healed_debt_is_never_resurrected_by_its_own_frozen_warning() -> None:
     # While the debt is real the row names it, headline and cause agreeing.
     owed = _row(outcome_axes=axes, delegated_runs_unreconciled=["run-a1"])
     assert OUTCOME_PHASE_HEADLINE[outcome_phase(owed, {})] == "Done with warnings"
-    assert _completion_verdict(owed, {}) == f"Reason: {WARN_DELEGATED_CUSTODY_UNRECONCILED}."
+    assert _completion_verdict(owed, {}) == CUSTODY_SENTENCE
 
     # A row whose axes healed too reads as clean and also states nothing.
     clean = _row(outcome_axes={"execution": {"status": "ok"}},
@@ -115,7 +114,7 @@ def test_a_healed_debt_is_never_resurrected_by_its_own_frozen_warning() -> None:
     railed = _row(outcome_axes=custody_debt_axes(
         {"execution": {"status": "failed", "reason_code": "provider_unavailable"}}),
         delegated_runs_unreconciled=[])
-    assert _completion_verdict(railed, {}) == "Reason: provider_unavailable."
+    assert _completion_verdict(railed, {}) == "provider_unavailable."
 
 
 def test_the_event_and_the_row_render_one_reason_line_over_the_shared_fixture() -> None:
@@ -139,7 +138,7 @@ def test_the_event_and_the_row_render_one_reason_line_over_the_shared_fixture() 
                / "web" / "tests" / "fixtures" / "outcome_phase_parity.json")
     cases = json.loads(fixture.read_text(encoding="utf-8"))["cases"]
     asserted = [case for case in cases if case.get("acceptance_clause")]
-    assert len(asserted) >= 5, "the fixture lost its Reason-line cases"
+    assert len(asserted) >= 5, "the fixture lost its cause-line cases"
     for case in asserted:
         record, clause = case["record"], case["acceptance_clause"]
         assert _completion_verdict(record, {}) == clause, case["name"]

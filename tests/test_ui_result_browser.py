@@ -144,7 +144,7 @@ def test_ui_results_and_required_question_journey(wait_clone, tmp_path, monkeypa
                         wait = wait_until(lambda: (block if (block := oracle.task_result(task["id"]).get("owner_wait", {})).get("state") == "waiting" else None), 90)
                         assert wait
                         pointer = page.locator(f'.project-question-pointer[data-task-id="{task["id"]}"]')
-                        pointer.get_by_text("Answer needed in Evidence review").wait_for(timeout=30000)
+                        pointer.get_by_text("Waiting for your answer").wait_for(timeout=30000)
                         assert page.locator('#chat-messages .chat-quiz-card').count() == 0
                         page.screenshot(animations="disabled", path=str(screenshots / "chromium-main-question-pointer.png"), full_page=True)
                         # Age the original question beyond the ordinary Project
@@ -156,7 +156,7 @@ def test_ui_results_and_required_question_journey(wait_clone, tmp_path, monkeypa
                             log_chat("in", project["chat_id"], 1, f"Retained later project note {index}", drive_root=root)
                         project_history = _api(server.base_url, "GET", f"/api/chat/history?chat_id={project['chat_id']}")["messages"]
                         assert not any(row.get("msg_type") == "quiz" for row in project_history)
-                        pointer.get_by_role("button", name="Open question").click()
+                        pointer.get_by_role("button", name="Answer question").click()
                         quiz = page.locator(f'.chat-quiz-card[data-task-id="{task["id"]}"][data-quiz-id="{wait["quiz_id"]}"]')
                         quiz.get_by_text("Include the independent replication too.", exact=True).wait_for()
                         # This new Project instance cold-replayed cancelable history;
@@ -172,7 +172,8 @@ def test_ui_results_and_required_question_journey(wait_clone, tmp_path, monkeypa
                         quiz.get_by_role("button", name="Both sources").click()
                         result = wait_durable_result(oracle, task["id"], timeout=90)
                         assert result["owner_quiz"][wait["quiz_id"]]["answered_index"] == 1
-                        pointer.get_by_text("Question answered in Evidence review").wait_for(timeout=30000)
+                        pointer.get_by_text("You answered").wait_for(timeout=30000)
+                        pointer.get_by_text("Your answer: Both sources", exact=True).wait_for(timeout=30000)
                         task_card = page.locator(f'.chat-live-card[data-task-id="{task["id"]}"]')
                         task_card.locator('[data-live-meta]').filter(has_text="Last solve response:").wait_for(timeout=30000)
                         assert task_card.locator('[data-live-title]').inner_text() == "still working"
@@ -187,8 +188,8 @@ def test_ui_results_and_required_question_journey(wait_clone, tmp_path, monkeypa
                     page = browser.new_page(viewport=viewport, has_touch=viewport["width"] < 500, reduced_motion="reduce")
                     try:
                         page.goto(server.base_url, wait_until="domcontentloaded")
-                        pointer = page.locator('.project-question-pointer').filter(has_text="Question answered in Evidence review")
-                        pointer.get_by_role("button", name="View question").click(timeout=30000)
+                        pointer = page.locator('.project-question-pointer').filter(has_text="You answered")
+                        pointer.get_by_role("button", name="View answer").click(timeout=30000)
                         replay_quiz = page.locator('.chat-quiz-card').filter(has_text="Which evidence should the report use?")
                         replay_quiz.wait_for()
                         # Existing scroll restoration spans 12 animation frames;

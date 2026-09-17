@@ -47,6 +47,7 @@ from ouroboros.agent_task_pipeline import (
 )
 from ouroboros.task_results import STATUS_RUNNING, write_task_result
 from ouroboros.contracts.task_constraint import normalize_task_constraint
+from ouroboros.consciousness_authority import apply_consciousness_authority
 from ouroboros.contracts.task_contract import attach_task_contract
 from ouroboros.outcomes import infra_failed_axes
 from ouroboros import subagent_bootstrap, subagent_runtime
@@ -60,7 +61,7 @@ from ouroboros.subagents import (
     resolve_subagent_dispatch,  # noqa: F401 -- the agent module keeps its historical import surface for the dispatch leaf
 )
 from ouroboros.settings_setup_contract import resolve_total_budget_usd
-from ouroboros.subagent_messages import subagent_message_meta
+from ouroboros.subagent_messages import initiator_meta, subagent_message_meta
 
 
 _worker_boot_logged = False
@@ -494,7 +495,7 @@ class OuroborosAgent:
         if authority_refusal:
             return None, [], {"authority_source_unavailable": authority_refusal}
         drive_logs = self.env.drive_path("logs")
-        task = attach_task_contract(task)
+        task = attach_task_contract(apply_consciousness_authority(task))
         # THE resolution, before anything durable is written about this run: the
         # RUNNING record below is the single atomic write that states model, effort,
         # route, profile, effective executor and the one `capability_delta` together.
@@ -679,6 +680,11 @@ class OuroborosAgent:
                 ctx.task_use_local_override = bool(task_metadata.get("use_local_model"))
         if bool(task.get("_presence_turn")):
             ctx.inline_max_rounds = int(task_metadata.get("inline_max_rounds") or 10)
+        # A task that names a model ROLE (a consciousness wake-up) runs on that
+        # role's slot when the slot is set; an empty slot is Main (В25=B).
+        role_slot = model_role_slot_override(task_metadata)
+        if role_slot is not None and not getattr(ctx, "task_model_override", None):
+            ctx.task_model_override, ctx.task_use_local_override = role_slot
         self.tools.set_context(ctx)
 
         dispatch, _preflight_amended = self._run_delegate_preflight(drive_logs, task, dispatch)
@@ -811,7 +817,7 @@ class OuroborosAgent:
                 task_id=task_id,
                 root_task_id=root_task_id,
                 parent_task_id=parent_task_id,
-                category=str(task.get("type") or "task"),
+                category=str(metadata.get("usage_category") or task.get("type") or "task"),
                 source="agent.task",
                 global_limit_usd=global_limit,
                 global_limit_source="task_start_budget_resolver",
@@ -1096,9 +1102,18 @@ class OuroborosAgent:
             self._current_task_type = None
 
     def _emit_progress(self, text: str, *, incident: Optional[Dict[str, str]] = None,
-                       executor_observation: Optional[Dict[str, Any]] = None) -> None:
+                       executor_observation: Optional[Dict[str, Any]] = None,
+                       narration: bool = False) -> None:
         """Owner-visible note; ``incident`` is the typed ``task_incident``/``toast_once``
-        pair the browser toasts once."""
+        pair the browser toasts once.
+
+        ``narration`` is the VOICE of the note, not its text: only the model's own
+        round narration (``loop_messages._emit_round_progress``) is the turn's
+        speech. Every other caller — checkpoints, fallback and plan notes, the
+        acceptance, nudge and transport lines, and the whole ToolContext ABI
+        (``emit_progress_fn``) — is the HOST talking about the turn, so it keeps
+        the default. Both voices stay visible rows; the flag decides only whether
+        a note may claim the card title and the collapsed activity line."""
         self._last_progress_ts = time.time()
         if self._event_queue is None or self._current_chat_id is None:
             return
@@ -1121,8 +1136,11 @@ class OuroborosAgent:
                 )
                 if observation:
                     progress_meta["executor_observation"] = observation
-            if progress_meta:
-                event["progress_meta"] = progress_meta
+            # Stamped on EVERY frame, never inferred from the absence of other
+            # metadata: a reader that sees no key is reading an older worker or a
+            # row written before the fact existed, and keeps the legacy reading.
+            progress_meta["narration"] = bool(narration)
+            event["progress_meta"] = progress_meta
             self._event_queue.put(event)
         except Exception:
             log.warning("Failed to emit progress event", exc_info=True)
@@ -1189,7 +1207,10 @@ class OuroborosAgent:
     def _subagent_progress_meta(self, event: str) -> Dict[str, Any]:
         metadata = self._current_task_metadata if isinstance(self._current_task_metadata, dict) else {}
         task_id = str(self._current_task_id or metadata.get("subagent_task_id") or metadata.get("task_id") or "")
-        return subagent_message_meta(metadata, task_id=task_id, event=event or "progress")
+        meta = subagent_message_meta(metadata, task_id=task_id, event=event or "progress")
+        # The origin label rides every progress/heartbeat frame of the turn.
+        meta.update(initiator_meta(metadata))
+        return meta
 
     def _start_task_heartbeat_loop(self, task_id: str) -> Optional[threading.Event]:
         if not task_id.strip():
@@ -1240,6 +1261,7 @@ from ouroboros.agent_dispatch import (  # noqa: E402, F401 -- intentional public
     _queued_budget_exhausted_message,
     _physical_calls_after_budget_rail,
     _initial_effort_for,
+    model_role_slot_override,
     resolve_dispatch_axes,
     _DELEGATE_VERBS,
     preflight_delegate_visibility,

@@ -23,6 +23,7 @@ from ouroboros.loop_llm_call import TRANSPORT_DEATHS_KEY, _TRANSPORT_DEATH_RETRI
 from ouroboros.loop_tool_execution import prune_reclaim_trace_refs, reclaim_negative_memo, reclaim_trace_refs
 from ouroboros.observability import new_execution_id
 from ouroboros.tools.registry import ToolRegistry
+from ouroboros.transcript_prefix import sanction_rewrite
 from ouroboros.usage_accounting import PhysicalAttemptContext, PhysicalAttemptPreconditionFailed, invalidate_task_cache_splits
 
 
@@ -554,11 +555,9 @@ def _reprepare_waiting_main(ctx: _RoundModelCallContext, kwargs: dict):
                 _loop()._run_main_reclaim(ctx, disposition)
         disposition = _measure_after_reclaim(ctx)
     kwargs["messages"] = ctx.messages
+    from ouroboros.llm_claudexor import cache_key_for_model
     from ouroboros.provider_models import provider_for_model
-    kwargs["cache_affinity"] = (
-        str(ctx.accumulated_usage.get("execution_id") or "")
-        if not use_local and provider_for_model(model) == "claudexor" else ""
-    )
+    kwargs["cache_affinity"] = "" if use_local else cache_key_for_model(model)
     kwargs["allow_server_web_search"] = (_loop()._server_web_allowed_by_task(ctx.tools._ctx)
                                          and not use_local and provider_for_model(model) != "claudexor")
     if provider_for_model(model) == "claudexor":
@@ -608,6 +607,7 @@ def _run_main_reclaim(
     if receipt.status == "applied":
         invalidate_task_cache_splits(ctx.task_id)
         ctx.messages[:] = rebuilt
+        sanction_rewrite(ctx.tools._ctx, "compaction")
         ctx.tools._ctx.messages = ctx.messages
         _loop().seal_task_transcript(ctx.messages)
         prune_reclaim_trace_refs(ctx.tools._ctx, ctx.messages)

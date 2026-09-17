@@ -44,6 +44,27 @@ class TestValidateQuizPayload:
             validate_quiz_payload("q", ["a", "b"], "", "  ")
         assert err.value.code == "QUIZ_ASSUMPTION_REQUIRED"
 
+    def test_wait_bound_is_whole_minutes_capped_by_the_task_ceiling(self, monkeypatch):
+        """The bound belongs to a REQUIRED wait and can never promise more time
+        than the absolute wall-clock ceiling already allows (beyond it the
+        ceiling ends the task first, so the bound would be a false promise)."""
+        monkeypatch.setenv("OUROBOROS_TASK_ABS_CEILING_SEC", "21600")  # 360 minutes
+        payload = validate_quiz_payload("q", ["a", "b"], "", "",
+                                        wait_for_answer=True, max_wait_minutes=30)
+        assert payload["max_wait_minutes"] == 30
+        # Absent unless asked for: an unbounded wait stays unbounded.
+        assert "max_wait_minutes" not in validate_quiz_payload(
+            "q", ["a", "b"], "", "", wait_for_answer=True)
+        for bad in (0, -5, True, 1.5, "30", 361):
+            with pytest.raises(QuizValidationError) as err:
+                validate_quiz_payload("q", ["a", "b"], "", "",
+                                      wait_for_answer=True, max_wait_minutes=bad)
+            assert err.value.code == "QUIZ_WAIT_BOUND_INVALID"
+        # A bound without waiting is a contradiction, not a silent no-op.
+        with pytest.raises(QuizValidationError) as err:
+            validate_quiz_payload("q", ["a", "b"], "", "assume", max_wait_minutes=5)
+        assert err.value.code == "QUIZ_WAIT_BOUND_INVALID"
+
     def test_empty_or_oversized_question_refused(self):
         with pytest.raises(QuizValidationError):
             validate_quiz_payload("", ["a", "b"], "", "assume")

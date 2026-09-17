@@ -156,6 +156,7 @@ BAND_PATHS = {
     "ouroboros/tools/commit_gate.py": "Grew INTO the band by the review-wave fix binding the actor reference (delivery class) into the commit review contract fingerprint \u2014 same-module contract identity, splitting it would separate the fingerprint from its gate.",
     "ouroboros/tools/core.py": "D05 ledger split (rows 311-349): read/list and owner-chat delivery spans moved to core_file_tools/core_artifacts; facade re-enters the band from above (2283 -> 1373) and shrinks further when the residual catalog split lands",
     "ouroboros/tools/delegate.py": "D07 finisher DEL1 split brought the nanny-verb monolith DOWN from the 1600 hard cap into the band (1600->1263); terminal-evidence family extracted to tools/delegate_terminal_evidence.py, shrink-only direction",
+    "ouroboros/tools/plan_review.py": "Entered the band from 999 lines: the required-affected_paths form (owner 9=A) added the schema field and the PLAN_RESOURCE_FORM_REQUIRED refusal, which must name the task's open wave and the $0 disposition exit \u2014 it belongs beside the one preamble both the paid and dry-run paths share, not in the pure plan_spec companion that owns no task state.",
     "ouroboros/tools/plan_review_runtime.py": "Entered the band from 986 lines: timeout custody synthesis joined the existing plan-review runtime owner while preserving profile-continuity disclosures and typed health facts during target integration.",
     "ouroboros/tools/registry_core.py": "F3.1 typed-organ re-split (D04 rows 156/167/170/171/174/175): the tip ToolRegistry class body re-homed whole from the protected registry facade; the guard/dispatch surface already left for its sibling leaves, and the class shrinks further only with the ABI-8 post-release handler conversion.",
     "ouroboros/tools/review.py": "D06 F2.3a re-entry by extraction: the multi-model fan-out moved to review_multi_model.py (1550->1269); the remaining single-owner review cycle machinery lands in the 1001-1500 band with headroom",
@@ -171,7 +172,6 @@ BAND_PATHS = {
     "skills/telegram/plugin.py": None,
     "skills/telegram/scripts/companion.py": None,
     "skills/telegram/scripts/sidecar.py": None,
-    "supervisor/evolution_lifecycle.py": None,
     "supervisor/message_bus.py": "push_log gained the A2A frame suppression and explicit-addressing contract comments in the live log routing fix (fix/main-chat-leak sprint); the module sat at exactly 1000 lines before it",
     "supervisor/queue_transitions.py": "F2.2 cancel/custody organ: the owner-stop campaign closure (_close_campaign_after_owner_stop, reference row 970) moved in from the hot events monolith to live beside stop_evolution_tasks - one honesty rule, one owner; 1016 lines, shrink-only from here",
     "supervisor/update_merge.py": "Entered the band from above (1593 lines) by extraction: the F2.4 update-engine re-split moved the planner, the clean-plan commit builder and the live materializer \u2014 the carrier engine's three insertion points \u2014 into supervisor/update_merge_plan.py (D34 return, owner answers 5.12-5.14=A); shrink-only.",
@@ -195,6 +195,7 @@ BAND_PATHS = {
     "tests/test_loop_transport_wait.py": "Contract suite for the transport-wait episode: classification, custody, round-level wait, terminals, and the final-review regression pins live together as one coherent surface.",
     "tests/test_managed_review_subject.py": "Lane L-review contract suite: the managed resolution-delta subject (gate/advisory surfaces, M0 fallback), Q25-A admission, Q28-A yield outcomes and enforcement-honest advisory texts grew past 1000 across the adversarial fix round; one subject, one suite.",
     "tests/test_native_tool_round_executor.py": "One suite per executor contract: the native tool-round episode's bounds, floors, custody facts and delivery shapes are one behaviour pinned together; split at the next natural seam (custody vs bounds), not by size.",
+    "tests/test_nested_rights_depth.py": "Nested-rights depth suite shrank into the band when the semantic duplicate-gate stubs left (#884); one contract, one file; shrink next touch.",
     "tests/test_observability_outcomes_v2.py": None,
     "tests/test_onboarding_wizard.py": None,
     "tests/test_owner_stop_s3.py": "Entered the band from 821 lines: the S3 contract suite now covers retry-root aliasing, graceful-to-immediate hardening, stale-control drain races, hard deadline preservation, descendant settlement failure, and late resweep exactly-once root finalization.",
@@ -213,6 +214,7 @@ BAND_PATHS = {
     "tests/test_terminal_durability_v664.py": "Entered the band from 974 lines: terminal durability coverage now pins retry-admission failure custody so an unpersisted terminal row cannot publish task_done or lose the retry marker.",
     "tests/test_timeout_policy.py": "Adaptive timeout and custody regression suite covers raw-deadline admission, explicit finalization reserve, transport bounds, and late-result reconciliation.",
     "tests/test_tool_result.py": "F3.1 typed-organ pins carried with the D02 organ (D04 entry 9): the closed code table, the one legacy-text adapter, the publish/sidecar seam and the meta-boundary contracts pin one organ in one suite; sibling suites (meta_boundaries, t46, classification differential) already hold the spill-over families.",
+    "tests/test_transport_b_stream_deadlines.py": "Stream-assembler contract suite: the issue #856 doctrine pins (terminal-vs-form verdicts, recorded-wire driver replays, native Messages assembly, the forgiveness table) share one wire/driver/ledger fixture; keeping them in one focused suite below the 1500-line band cap.",
     "tests/test_transport_death_retry.py": "Physical transport-repeat and exceptional-loop evidence tests share the same scripted provider and real tool-execution fixture; retain this coherent contract suite below the module cap.",
     "tests/test_tree_cost_ceiling.py": "Budget-rail coverage entered the band with the cache-split ownership, candidate-predicate, soft-landing, probe-confirmed stop and one-row-per-delegated-run regressions; one focused suite for the tree cost ceiling.",
     "tests/test_ui_smoke_project_continuity.py": "Playwright smoke of the Project continuity contracts (panel/Main re-homing, lifecycle rows, the Main-root project pointer): each test drives one end-to-end owner flow across both surfaces, so the cross-surface assertions cannot be split into smaller files without losing what they prove.",
@@ -230,7 +232,7 @@ BAND_PATHS = {
     "web/modules/skills.js": "One installed-skill page controller owns independently settling primary/optional reads and current-generation menu, identity and badge updates; domain lifecycle, cards, hub truth and shared interactions remain separate owners.",
     "web/tests/chat_instance_dom.test.js": "Entered the band from 1000 lines with the alias-free subagent cost pin (stage-2 fix wave): that regression reproduces only through the real createChatInstance card path, and this file owns the DOM harness that drives it; split when the next createChatInstance face lands.",
     "web/tests/harness_login_cards.test.js": "Login-card suite grew past 1000 lines with the name-the-account face cases (agy pickup, issue #232); split when the next face lands.",
-    "web/tests/reviewer_slots.test.js": "The reviewer-slot tests keep source selection and access serialization coverage together with their UI contract.",
+    "web/tests/reviewer_slots.test.js": "Entered the band with the 2026-09-13 reviewer-slots editor: the per-row source picker, its read-only derived disclosure and the persistence cases stay in one module beside the editor they cover; split when a second editor surface lands.",
 }
 
 BYTE_BASELINE_DEBT = {
@@ -244,5 +246,4 @@ BYTE_BASELINE_DEBT = {
 
 BYTE_DEBT = {
     "tests/test_devtools_benchmarks.py": 327840,
-    "web/modules/chat.js": 201650,
 }
