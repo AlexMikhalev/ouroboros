@@ -156,6 +156,32 @@ export function createHistoryResyncScheduler({
  * Equal timestamps preserve arrival order; timestamp-free nodes append.
  * (Moved verbatim from chat.js — that module sits at its byte ceiling.)
  */
+// A focused text control keeps its own caret; Chromium mirrors it into the
+// document Selection, so clearing and rebuilding document ranges around a
+// timeline move collapses that caret (a typed wait-picker draft lost its
+// selection on every reconnect). While such a control is focused, the document
+// ranges are that mirror: leave them alone and restore the control's caret.
+function textControlCaret(active) {
+    const tag = String(active?.tagName || active?.nodeName || '').toUpperCase();
+    if (tag !== 'INPUT' && tag !== 'TEXTAREA') return null;
+    try {
+        const { selectionStart, selectionEnd, selectionDirection } = active;
+        if (selectionStart == null || selectionEnd == null) return null;
+        return { selectionStart, selectionEnd, selectionDirection: selectionDirection || 'none' };
+    } catch {
+        return null; // input types without a caret (number, email, ...) throw on read
+    }
+}
+
+function restoreTextControlCaret(active, caret) {
+    if (!caret || typeof active?.setSelectionRange !== 'function') return;
+    try {
+        active.setSelectionRange(caret.selectionStart, caret.selectionEnd, caret.selectionDirection);
+    } catch {
+        // The control changed type or lost its value between capture and restore.
+    }
+}
+
 export function insertTimelineNode(messages, node, typing = null) {
     const rawNodeTs = node?.dataset?.ts;
     const nodeTs = rawNodeTs == null || rawNodeTs === '' ? NaN : Number(rawNodeTs);
@@ -176,7 +202,8 @@ export function insertTimelineNode(messages, node, typing = null) {
     if (node.parentNode === messages && node.nextElementSibling === target) return { before };
     const doc = messages.ownerDocument;
     const active = doc?.activeElement;
-    const selection = doc?.getSelection?.();
+    const caret = textControlCaret(active);
+    const selection = caret ? null : doc?.getSelection?.();
     const ranges = Array.from({ length: selection?.rangeCount || 0 }, (_, index) => {
         const range = selection.getRangeAt(index);
         return [range.startContainer, range.startOffset, range.endContainer, range.endOffset];
@@ -184,6 +211,7 @@ export function insertTimelineNode(messages, node, typing = null) {
     if (target) messages.insertBefore(node, target);
     else messages.appendChild(node);
     if (active && node.contains?.(active) && doc.activeElement !== active) active.focus({ preventScroll: true });
+    if (caret) restoreTextControlCaret(active, caret);
     if (ranges.length && ranges.every(([start, , end]) => start.isConnected && end.isConnected)) {
         selection.removeAllRanges();
         for (const [start, startOffset, end, endOffset] of ranges) {
@@ -293,7 +321,8 @@ export function createLiveCardTimelineRenderer({ withStableViewport, buildTimeli
             const prevTop = el.scrollTop;
             const byKey = new Map(Array.from(el.children).map((node) => [node.dataset.liveLineKey, node]));
             const active = el.ownerDocument?.activeElement;
-            const selection = el.ownerDocument?.getSelection?.();
+            const caret = textControlCaret(active);
+            const selection = caret ? null : el.ownerDocument?.getSelection?.();
             const ranges = Array.from({ length: selection?.rangeCount || 0 }, (_, index) => {
                 const range = selection.getRangeAt(index);
                 return [range.startContainer, range.startOffset, range.endContainer, range.endOffset];
@@ -321,6 +350,7 @@ export function createLiveCardTimelineRenderer({ withStableViewport, buildTimeli
             }
             if (moved) {
                 if (el.contains(active) && el.ownerDocument.activeElement !== active) active.focus({ preventScroll: true });
+                if (caret) restoreTextControlCaret(active, caret);
                 const intact = ranges.filter(([start, , end]) => start.isConnected && end.isConnected);
                 if (intact.length) {
                     selection.removeAllRanges();
