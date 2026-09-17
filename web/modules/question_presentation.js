@@ -14,7 +14,10 @@ const STATUS = {
     superseded: 'Replaced by a newer question',
     unknown: 'Status unavailable',
 };
-const LIFECYCLE = ['open', 'answered', 'expired_terminal', 'superseded'];
+// The closed lifecycle set, and the states that still take an answer (only a settled one —
+// answered/superseded — turns a card into a pure record). One JS home for both lists.
+export const QUIZ_LIFECYCLE = ['open', 'answered', 'expired_terminal', 'superseded'];
+export const ANSWERABLE_QUIZ_STATES = ['open', 'expired_terminal'];
 const PREVIEW_CHARS = 280;
 const PREVIEW_MARK = '… (preview; open for full text)';
 
@@ -30,10 +33,10 @@ export function waitFacts(row = {}) {
 export function questionPresentation(row = {}) {
     const state = row.quiz_state || row.state || 'unknown';
     const { waiting, resumed } = waitFacts(row);
-    const key = !LIFECYCLE.includes(state) ? 'unknown' : state !== 'open' ? state
+    const key = !QUIZ_LIFECYCLE.includes(state) ? 'unknown' : state !== 'open' ? state
         : waiting ? 'waiting' : resumed ? 'resumed' : 'open';
     const action = state === 'answered' ? 'View answer'
-        : ['open', 'expired_terminal'].includes(state) ? 'Answer question' : 'View question';
+        : ANSWERABLE_QUIZ_STATES.includes(state) ? 'Answer question' : 'View question';
     return { status: STATUS[key], action };
 }
 

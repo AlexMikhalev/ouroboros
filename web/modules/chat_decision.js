@@ -8,12 +8,8 @@ import { MAX_DECISION_COMMENT, MAX_QUIZ_OPTIONS } from './api_types.js';
 import { renderRoutingAnnotation, routingOptionLabel } from './chat_activity.js';
 import { createSystemMessageAction, createSystemMessageActions } from './ui_helpers.js';
 
-import { questionPresentation, questionPreview, waitFacts } from './question_presentation.js';
+import { ANSWERABLE_QUIZ_STATES, QUIZ_LIFECYCLE, questionPresentation, questionPreview, waitFacts } from './question_presentation.js';
 
-// States that still take an answer. Only a settled one (answered/superseded)
-// turns the card into a pure record.
-const ANSWERABLE_QUIZ_STATES = ['open', 'expired_terminal'];
-const QUIZ_LIFECYCLE = ['open', 'answered', 'expired_terminal', 'superseded'];
 const WAIT_FIELDS = ['wait_for_answer', 'wait_ended_at', 'owner_wait_state', 'owner_wait_resume_reason'];
 // The signature line after a bounded wait closed says the same thing the host notice
 // does (DESIGN "Quiz card"): the default path the task took, and that silence was not
