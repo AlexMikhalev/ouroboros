@@ -89,6 +89,12 @@ Reuse the **same campaign file and key** for all paid phases. If earlier probes
 predate the first campaign baseline, account for them once with
 `--prior-spend-usd` when creating the campaign.
 
+`--budget-reserve-usd` is an explicit nonnegative allowance for delayed/in-flight
+provider charges, independent of concurrency. Per-task lifetime limits remain
+separate: 32 tasks with a $25 task limit do not automatically reserve $800.
+Choose the reserve for the expected outstanding charges; delayed billing means
+it is not a provider-enforced spending cap.
+
 ## Monitor, recover and audit
 
 `monitor.json` records progress, key-meter spending, disk headroom and stop

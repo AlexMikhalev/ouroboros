@@ -410,7 +410,9 @@ def supervise_run(args: argparse.Namespace, command: list[str], bench_dir: pathl
     """
     root = bench_dir.parent
     stop_file = pathlib.Path(run_env["COWORK_STOP_FILE"])
-    reserve = max(args.budget_reserve_usd, args.concurrency * args.per_task_cost_usd)
+    # A task's lifetime budget is not a reservation of unsettled provider charges.
+    # The CLI validates this explicit billing allowance as nonnegative.
+    reserve = args.budget_reserve_usd
     initial_spent = campaign.spent
     if campaign.remaining <= reserve:
         raise ValueError("campaign remaining budget does not cover the in-flight reserve")

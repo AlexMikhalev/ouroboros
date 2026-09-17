@@ -292,6 +292,40 @@ def test_supervisor_stops_owned_work_on_real_boundaries(supervised, monkeypatch,
         assert result["meter_error"] == "OSError"
 
 
+@pytest.mark.parametrize("reserve", [0.0, 100.0, 250.0])
+def test_parallel_campaign_spends_past_lifetime_caps_then_stops_at_explicit_reserve(supervised, monkeypatch, reserve):
+    args, bench, env, _old_budget, events, _handlers, proc = supervised
+    args.concurrency = 32
+    args.per_task_cost_usd = 25
+    args.budget_usd = 2000
+    args.budget_reserve_usd = reserve
+    budget = budgets.CampaignBudget(bench.parent / "full-campaign.json", fingerprint="key-a",
+                                   ceiling=2000, usage=100)
+    # Meter values are cumulative key usage. Continue after $1200 (the old
+    # 32*$25 reserve stopped here) and $1600; stop only at the selected margin.
+    usage = iter([1300, 1700, 2100 - reserve, 2100 - reserve])
+    monkeypatch.setattr(launcher, "key_usage", lambda _key: next(usage))
+    continued_at = []
+    def still_running(**kwargs):
+        continued_at.append(budget.spent)
+        raise subprocess.TimeoutExpired("fake-runner", kwargs["timeout"])
+    proc.wait = still_running
+    result = launcher.supervise_run(args, ["fake-runner"], bench, env, "not-a-real-key", budget)
+    assert continued_at == [1200, 1600]
+    assert result["stop_reason"] == "campaign_budget_reserve"
+    assert result["campaign_spent_usd"] == 2000 - reserve
+    assert result["campaign_remaining_usd"] == reserve
+    assert result["inflight_reserve_usd"] == reserve
+    assert events == ["stop-group", "cleanup-owned"]
+    assert "active_run" not in budget.record
+
+
+def test_negative_explicit_billing_reserve_is_rejected():
+    with pytest.raises(SystemExit) as exc:
+        launcher.parse_args(["--budget-reserve-usd", "-1"])
+    assert exc.value.code == 2
+
+
 def test_supervisor_handles_sigterm_then_cleans_only_owned_resources(supervised, monkeypatch):
     args, bench, env, budget, events, handlers, proc = supervised
     def launch(*_args, **kwargs):

@@ -98,17 +98,21 @@ infrastructure retries. Concurrent ownership is locked. A changed key, changed
 ceiling, decreased usage counter or unsettled prior run requires reconciliation.
 Unrelated spending on the same key counts conservatively toward the campaign.
 
-For the owner-approved example campaign, the requested total ceiling is **$1000**
-and an invocation's default spending bound is **$150**. The supervisor preserves
-an in-flight allowance equal to the larger of the configured reserve (default
-$100) and concurrency times the per-task bound (default $25). It stops when the
+The qualification example uses a total ceiling of **$1000** and an invocation's
+default spending bound of **$150**. The supervisor preserves
+the explicit nonnegative `--budget-reserve-usd` allowance (default $100) for
+unsettled provider charges. It is independent of concurrency and of the per-task
+lifetime bound (default $25), which remains unchanged. Select the allowance for
+billing delay and work actually in flight; multiplying full task budgets would
+prematurely stop a 32-task, $2000 campaign at $1200 spent. With a $100 reserve,
+the campaign stop boundary is $1900 spent instead. The supervisor stops when the
 campaign remainder reaches that allowance, when the invocation bound is reached,
 or when the meter or disk reserve becomes unavailable. These are configurable
 operator bounds. Billing can be delayed and paid calls may already be in flight;
 the monitor is **not a provider-enforced hard dollar cap**.
 
-Start qualification at concurrency 1; the approved campaign allows at most 2
-after measuring resource use. If smoke projects the full dataset above the
+Start qualification at concurrency 1 and choose full-run concurrency after
+measuring resource use. If smoke projects the full dataset above the
 remaining campaign budget, pause for an owner decision rather than changing the
 model, effort, configuration or budget. Reconcile delayed charges before another
 paid phase. Preserve every run in a new directory outside the source and live
