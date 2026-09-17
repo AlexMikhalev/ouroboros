@@ -883,6 +883,21 @@ def materialize_repo_diff_evidence(
     }
 
 
+def _matching_projection(drive_root: Any, call: Dict[str, Any]) -> Dict[str, Any]:
+    """Read the call's redacted observability projection, verified to be the same call."""
+    from ouroboros.observability import read_blob_ref
+
+    trace = call.get("trace_ref") if isinstance(call.get("trace_ref"), dict) else {}
+    payload = read_blob_ref(pathlib.Path(drive_root), trace.get("redacted_projection_ref") or {})
+    # An absent tool_call_id cannot identify a call, so it never matches. The
+    # argument gap publishes this text; the result fallback swallows it.
+    if (not isinstance(payload, dict) or not call.get("tool_call_id")
+            or payload.get("tool_call_id") != call["tool_call_id"]
+            or payload.get("tool") != call.get("tool")):
+        raise ValueError("argument source does not match the tool call")
+    return payload
+
+
 def materialize_tool_args_source(drive_root: Any, call: Dict[str, Any]) -> tuple[Any, bool, Dict[str, Any]]:
     """Recover logging-sanitizer omissions from the existing redacted call blob."""
     args = call.get("args")
@@ -896,12 +911,8 @@ def materialize_tool_args_source(drive_root: Any, call: Dict[str, Any]) -> tuple
     trace = call.get("trace_ref") if isinstance(call.get("trace_ref"), dict) else {}
     ref = trace.get("redacted_projection_ref") or {}
     try:
-        from ouroboros.observability import read_blob_ref
-        payload = read_blob_ref(pathlib.Path(drive_root), ref)
-        if (not isinstance(payload, dict) or "args" not in payload
-                or not call.get("tool_call_id")
-                or payload.get("tool_call_id") != call["tool_call_id"]
-                or payload.get("tool") != call.get("tool")):
+        payload = _matching_projection(drive_root, call)
+        if "args" not in payload:
             raise ValueError("argument source does not match the tool call")
         return payload["args"], True, {}
     except (OSError, TypeError, ValueError) as exc:
@@ -914,8 +925,6 @@ def materialize_tool_result_source(
     drive_root: Union[pathlib.Path, str], task_id: str, call: Dict[str, Any],
 ) -> tuple[Any, bool, Dict[str, Any]]:
     """Materialize a result under existing redaction; metadata carries its source or gap."""
-    from ouroboros.observability import read_blob_ref
-
     result = call.get("result")
     legacy_match = (
         _LEGACY_TOOL_RESULT_TRUNCATION_RE.search(result)
@@ -942,10 +951,8 @@ def materialize_tool_result_source(
             gap.update(reason=f"{type(exc).__name__}: {exc}",
                        declared_status=str(call.get("result_source_status") or ""))
     try:
-        payload = read_blob_ref(pathlib.Path(drive_root), call["trace_ref"]["redacted_projection_ref"])
-        if (isinstance(payload, dict) and isinstance(payload.get("result"), str)
-                and all(isinstance(call.get(key), str) and call[key] and payload.get(key) == call[key]
-                        for key in ("tool_call_id", "tool"))):
+        payload = _matching_projection(drive_root, call)
+        if isinstance(payload.get("result"), str):
             text = payload["result"]
             _, recovered_ref, issue = persist_exact_text_source(
                 drive_root, task_id, source_id=call["tool_call_id"], text=text,

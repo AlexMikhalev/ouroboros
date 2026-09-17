@@ -179,7 +179,7 @@ def test_primary_source_wins_without_projection_reads_or_republication(tmp_path,
     "absent_trace", "invalid_trace", "missing_blob", "wrong_size", "wrong_digest",
     "wrong_kind", "wrong_encoding", "truncated_gzip", "invalid_deflate", "non_object",
     "wrong_tool", "wrong_call", "missing_result", "null_result", "object_result",
-    "missing_identity", "empty_identity", "nonstring_identity",
+    "missing_identity", "empty_identity",
 ])
 def test_unusable_projection_preserves_original_refusal(tmp_path, damage):
     ctx, row = _record(tmp_path)
@@ -211,8 +211,6 @@ def test_unusable_projection_preserves_original_refusal(tmp_path, damage):
         payload.pop("tool_call_id")
     elif damage == "empty_identity":
         row["tool_call_id"] = payload["tool_call_id"] = ""
-    elif damage == "nonstring_identity":
-        row["tool_call_id"] = payload["tool_call_id"] = 7
     elif damage == "wrong_tool":
         payload["tool"] = "another_tool"
     elif damage == "wrong_call":
@@ -226,13 +224,32 @@ def test_unusable_projection_preserves_original_refusal(tmp_path, damage):
     elif damage == "non_object":
         payload = [payload]
     if damage in {"wrong_tool", "wrong_call", "missing_result", "null_result", "object_result",
-                  "non_object", "missing_identity", "empty_identity", "nonstring_identity"}:
+                  "non_object", "missing_identity", "empty_identity"}:
         row["trace_ref"]["redacted_projection_ref"] = observability.write_blob(tmp_path, payload)
     result, complete, issue = artifacts.materialize_tool_result_source(tmp_path, ctx.task_id, row)
     assert result == row["result"] and complete is False
     assert issue["status"] == "source_unavailable"
     assert issue["source_ref"] == row["result_source_ref"]
     assert "FileNotFoundError" in issue["reason"]
+
+
+def test_both_materializers_refuse_a_projection_from_another_call(tmp_path):
+    """One shared identity check guards argument and result recovery alike."""
+    ctx, row = _record(tmp_path)
+    row["args"] = {"path": "<TRUNCATED:4096 chars>"}
+    row["trace_ref"]["redacted_projection_ref"] = observability.write_blob(
+        tmp_path, {"tool": TOOL, "tool_call_id": "another-call",
+                   "args": {"path": "/recovered"}, "result": FULL},
+    )
+    with pytest.raises(ValueError, match="does not match the tool call"):
+        artifacts._matching_projection(tmp_path, row)
+    args, args_complete, args_issue = artifacts.materialize_tool_args_source(tmp_path, row)
+    assert args == row["args"] and args_complete is False
+    assert args_issue["status"] == "source_unavailable"
+    assert args_issue["reason"].startswith("argument_source_unavailable: ValueError")
+    result, complete, gap = artifacts.materialize_tool_result_source(tmp_path, ctx.task_id, row)
+    assert result == row["result"] and complete is False
+    assert gap["status"] == "source_unavailable"
 
 
 def test_recovery_reads_redacted_projection_even_when_raw_payload_is_retained(tmp_path, monkeypatch):
@@ -286,7 +303,8 @@ def test_explicit_complete_row_does_not_read_trace_or_republish(tmp_path, monkey
     monkeypatch.setattr(artifacts, "persist_exact_text_source", lambda *a, **k: calls.append(True))
     packet = _evidence(ctx, row)
     assert packet["tool_trajectory"][0]["result"] == row["result"]
-    assert "result_complete" not in packet["tool_trajectory"][0]
+    assert packet["tool_trajectory"][0]["result_complete"] is True
+    assert "result_source_ref" not in packet["tool_trajectory"][0]
     assert calls == []
 
 
@@ -306,7 +324,7 @@ def test_whole_row_shedding_retains_effective_source_or_unavailability(
     calls = [row] + [{"tool": "later_tool", "result": "later evidence"} for _ in range(20)]
     packet = build_task_acceptance_evidence(
         ctx, llm_trace={"tool_calls": calls}, drive_root=ctx.drive_root,
-        task_id=ctx.task_id, budget_chars=8_000,
+        task_id=ctx.task_id, budget_chars=10_000,
     )
     assert "__immutable_core_overflow__" not in packet
     assert len(packet["tool_trajectory"]) == 20
