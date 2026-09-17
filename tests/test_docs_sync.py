@@ -88,22 +88,20 @@ def test_the_domain_manifest_is_reachable_from_the_handbook():
 
 
 def test_recent_abi_retirements_section_carries_the_abi_70_window():
-    """Section 11.4 documented a 5.25.0-rc.4 banner API and nothing since.
+    """Section 11.4 carries the compatibility facts an upgrading operator needs.
 
     ABI 7.0 is the largest retirement window in the project's history — five
     gateway aliases, the reviewer comma-list configuration keys, two wall-clock
     timeout keys, a plugin-API major, and a durable task-row schema stamp with
-    no legacy converter — and an upgrading operator read "recent retirements"
-    as though none of it happened. Every key of
-    `RETIRED_COMMA_LIST_SETTING_KEYS` must be named there, because those are
-    the ones whose migration must happen BEFORE the upgrade.
+    no legacy converter. Every key of `RETIRED_COMMA_LIST_SETTING_KEYS` must be
+    named there, because those are the ones whose migration must happen BEFORE
+    the upgrade. Older release chronology is git history, not a book fact.
     """
     section = _architecture_section("11.4 Recent ABI Retirements")
 
     from ouroboros.settings_defaults import RETIRED_COMMA_LIST_SETTING_KEYS
 
     assert "**ABI 7.0**" in section
-    assert "5.25.0-rc.4" in section, "older entries stay: this is a history"
     missing = [key for key in RETIRED_COMMA_LIST_SETTING_KEYS if key not in section]
     assert not missing, f"11.4 does not name the retired comma-list keys: {missing}"
     assert "OUROBOROS_REVIEWER_SLOTS" in section, "the migration target must be named"
@@ -634,6 +632,13 @@ DOC_RESIDUE_PATTERNS = {
     "narrative": r"\b(?:used to|previously|formerly|was deleted|replaces the earlier|gate[- ]round|round \d+)\b",
     "codename_paren": r"\((?:GR|AR|BR|CR|D|Q|S|HQ|C|B)\d+[^)]{0,24}\)",
     "codename_word": r"\bPoltergeist\b|\bphase [A-C]\d?\b|owner(?:-| )(?:decision|ratif)",
+    # Owner-batch answer codes and reviewer-round labels resolve only inside the chat that minted
+    # them; the decision CONTENT belongs in the book, the label in the commit or PR.
+    "owner_code": r"\bowner (?:R\d+|batch \d+|fork \d+|\d+[A-Za-z]?\s*=\s*[A-Z]\b)",
+    "owner_paren": r"\(owner (?:R\d+|\d+[A-Za-z]?\b|fork \d|batch \d|answer )[^)]{0,40}\)",
+    # A residual may cite its tracker once, in the one resolvable form `(issue #NNN)`.
+    "bare_issue_ref": r"(?<!\(issue )#\d{3,}\b",
+    "cyrillic": r"[А-Яа-яЁё]",
 }
 DOC_RESIDUE_SKIPPED_SUBSECTIONS = {
     "docs/DEVELOPMENT.md": ("Mutable external-fact inventory", "Documentation contract"),
