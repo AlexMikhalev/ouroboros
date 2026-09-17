@@ -19,6 +19,8 @@ from devtools.benchmarks.common.model_slots import runtime_actor_snapshot
 from devtools.benchmarks.cowork_bench import campaign as budgets
 from devtools.benchmarks.cowork_bench import run_cowork_bench as launcher
 
+IMAGE_ID = "sha256:" + "1" * 64
+
 
 @pytest.fixture(autouse=True)
 def forbid_live_services(monkeypatch):
@@ -96,24 +98,29 @@ def selection(tmp_path):
     previous = tmp_path / "previous"
     config = {"model": "test-model", "settings": {"effort": "high"}}
     write_json(previous / "run_manifest.json", {
-        "harness": {"applied_config": config, "bench": {"head": "bench-sha"}},
+        "harness": {"applied_config": config, "bench": {"head": "bench-sha"}, "image_id": IMAGE_ID},
         "source": {"head": "seed-sha"},
+        "requested_task_ids": ["passed", "wrong-answer", "infra"],
     })
     rows = [{"instance_id": name, "status": status} for name, status in (
         ("passed", "passed"), ("wrong-answer", "failed"), ("infra", "infra_failed"))]
     (previous / "result_index.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
-    args = argparse.Namespace(task_file="", task=[], resume_from=[str(previous)], bench_commit="bench-sha")
+    args = argparse.Namespace(task_file="", task=[], resume_from=[str(previous)],
+                              bench_commit="bench-sha", image_id=IMAGE_ID)
     return bench, previous, args, config
 
 
 def test_resume_retries_infrastructure_but_never_genuine_failures(selection):
     bench, _previous, args, config = selection
-    assert launcher.select_tasks(bench, args, config, "seed-sha") == ["infra", "new"]
+    # The original invocation selected three tasks, not the whole dataset.
+    assert launcher.select_tasks(bench, args, config, "seed-sha") == ["infra"]
+    assert set(args.selection_task_ids) == {"passed", "wrong-answer", "infra"}
+    assert args.resume_generation == 1
     args.task = ["passed", "wrong-answer"]
     assert launcher.select_tasks(bench, args, config, "seed-sha") == []
 
 
-@pytest.mark.parametrize("change", ["config", "seed", "benchmark"])
+@pytest.mark.parametrize("change", ["config", "seed", "benchmark", "image"])
 def test_resume_refuses_incompatible_protocol_or_source(selection, change):
     bench, _previous, args, config = selection
     seed = "seed-sha"
@@ -121,9 +128,11 @@ def test_resume_refuses_incompatible_protocol_or_source(selection, change):
         config = {**config, "model": "another-model"}
     elif change == "seed":
         seed = "new-seed"
-    else:
+    elif change == "benchmark":
         args.bench_commit = "new-benchmark"
-    with pytest.raises(ValueError, match="configuration/seed differs"):
+    else:
+        args.image_id = "sha256:" + "2" * 64
+    with pytest.raises(ValueError, match="configuration|seed|image"):
         launcher.select_tasks(bench, args, config, seed)
 
 
@@ -162,9 +171,11 @@ def dry_launcher(tmp_path, monkeypatch):
     monkeypatch.setattr(launcher, "admit_benchmark_run", admit)
     monkeypatch.setattr(launcher, "bench_provenance", lambda *_a: {"head": launcher.PINNED_BENCH_COMMIT})
     monkeypatch.setattr(launcher, "image_exists", lambda *_a: True)
-    monkeypatch.setattr(launcher, "image_labels", lambda *_a: {
-        "org.ouroboros.cowork.seed_sha": "seed-sha",
-        "org.ouroboros.cowork.bench_sha": launcher.PINNED_BENCH_COMMIT,
+    monkeypatch.setattr(launcher, "image_identity", lambda *_a: {
+        "id": IMAGE_ID, "repo_digests": [], "labels": {
+            "org.ouroboros.cowork.seed_sha": "seed-sha",
+            "org.ouroboros.cowork.bench_sha": launcher.PINNED_BENCH_COMMIT,
+        },
     })
     monkeypatch.setattr(launcher, "_git", lambda *_a: "")
     monkeypatch.setattr(launcher.subprocess, "run", clone)
@@ -175,9 +186,20 @@ def dry_launcher(tmp_path, monkeypatch):
 
 def test_empty_resume_never_calls_official_runner_with_zero_task_arguments(dry_launcher, monkeypatch):
     out, argv = dry_launcher
-    monkeypatch.setattr(launcher, "select_tasks", lambda *_a: [])
+    args = launcher.parse_args(argv)
+    template = json.loads(launcher.SETTINGS_TEMPLATE.read_text(encoding="utf-8"))
+    settings, _actor = launcher.render_settings(template, args)
+    config = launcher.bench_config(args, settings)
+    previous = out.parent / "previous-run"
+    write_json(previous / "run_manifest.json", {
+        "source": {"head": "seed-sha"}, "requested_task_ids": ["one"],
+        "harness": {"applied_config": config, "image_id": IMAGE_ID,
+                    "bench": {"head": launcher.PINNED_BENCH_COMMIT}},
+    })
+    (previous / "result_index.jsonl").write_text(
+        json.dumps({"instance_id": "one", "status": "passed"}) + "\n", encoding="utf-8")
     monkeypatch.setattr(launcher, "spawn_supervised", lambda *_a, **_k: pytest.fail("empty remainder launched all tasks"))
-    assert launcher.main(argv) == 0
+    assert launcher.main([*argv, "--resume-from", str(previous)]) == 0
     manifest = json.loads((out / "run_manifest.json").read_text(encoding="utf-8"))
     assert manifest["extra"]["outcome"] == "nothing_remaining"
     assert manifest["requested_count"] == 0
@@ -190,6 +212,9 @@ def test_manifest_metadata_matches_config_received_by_container(dry_launcher):
     manifest = json.loads((out / "run_manifest.json").read_text(encoding="utf-8"))
     config = json.loads((out / "bench" / "configs" / launcher.CONFIG_NAME).read_text(encoding="utf-8"))
     assert manifest["harness"]["applied_config"] == config
+    assert manifest["harness"]["image_id"] == IMAGE_ID
+    assert manifest["harness"]["selection_task_ids"] == ["one"]
+    assert manifest["harness"]["resume_generation"] == 0
     observed = runtime_actor_snapshot(config["settings"], expected_model=config["model"])
     assert not observed["mismatches"]
     assert manifest["model_slots"] == observed["model_slots"]
@@ -363,3 +388,207 @@ def test_existing_run_is_preserved_and_refusal_gets_its_own_manifest(dry_launche
     assert refused["extra"]["outcome"] == "refused"
     assert refused["extra"]["exit_code"] == 2
     assert refused["extra"]["refusal"]["requested_root"] == str(out)
+
+
+def test_web_and_delegated_vision_mirrors_follow_the_actual_tool_catalog():
+    from ouroboros.tools.registry import _WEB_TOOLS
+    from ouroboros.tools.vision import get_tools
+
+    assert set(launcher.WEB_TOOLS) == set(_WEB_TOOLS)
+    # As in Terminal-Bench, local images stay available to the measured model;
+    # the vision module's other entries call a separate model.
+    assert {tool.name for tool in get_tools()} == set(launcher.DELEGATED_VISION_TOOLS) | {"view_image"}
+    for allow_subagents in (False, True):
+        disabled = set(launcher.disabled_tools(subagents=allow_subagents))
+        assert set(_WEB_TOOLS) | set(launcher.DELEGATED_VISION_TOOLS) <= disabled
+        assert "view_image" not in disabled
+
+
+def recovery_manifest(root, previous, config, *, selected, generation, settled):
+    write_json(root / "run_manifest.json", {
+        "source": {"head": "seed-sha"},
+        "requested_task_ids": selected,
+        "harness": {"applied_config": config, "bench": {"head": "bench-sha"},
+                    "image_id": IMAGE_ID, "selection_task_ids": selected,
+                    "resume_generation": generation,
+                    "resume_from": [str(path.resolve()) for path in previous]},
+    })
+    (root / "result_index.jsonl").write_text(
+        "".join(json.dumps({"instance_id": name, "status": status}) + "\n"
+                for name, status in settled.items()), encoding="utf-8")
+
+
+def test_resume_explicit_selection_can_widen_without_repeating_settled_tasks(selection):
+    bench, _previous, args, config = selection
+    args.task = ["new", "passed", "infra", "wrong-answer"]
+    assert launcher.select_tasks(bench, args, config, "seed-sha") == ["new", "infra"]
+    assert args.selection_task_ids == args.task
+
+
+def test_latest_parent_keeps_ancestral_settlements_and_recovery_depth(selection):
+    bench, initial, args, config = selection
+    first = initial.parent / "recovery-one"
+    recovery_manifest(first, [initial], config, selected=["infra", "new"], generation=1,
+                      settled={"infra": "passed", "new": "infra_failed"})
+    args.resume_from = [str(first)]
+    # Explicitly revisiting an old task still consults its ancestor's ledger.
+    args.task = ["passed", "wrong-answer", "infra", "new"]
+    assert launcher.select_tasks(bench, args, config, "seed-sha") == ["new"]
+    assert args.resume_generation == 2
+    assert set(args.resume_sources) == {str(initial.resolve()), str(first.resolve())}
+    args.task = []
+    assert launcher.select_tasks(bench, args, config, "seed-sha") == ["new"]
+    assert set(args.selection_task_ids) == {"infra", "new"}
+
+
+def test_third_recovery_refuses_work_but_empty_completion_needs_no_new_pass(selection):
+    bench, initial, args, config = selection
+    first, second = initial.parent / "recovery-one", initial.parent / "recovery-two"
+    recovery_manifest(first, [initial], config, selected=["infra"], generation=1,
+                      settled={"infra": "infra_failed"})
+    recovery_manifest(second, [initial, first], config, selected=["infra"], generation=2,
+                      settled={"infra": "infra_failed"})
+    args.resume_from = [str(second)]
+    with pytest.raises(ValueError, match="recovery|resume|two"):
+        launcher.select_tasks(bench, args, config, "seed-sha")
+    (second / "result_index.jsonl").write_text(
+        json.dumps({"instance_id": "infra", "status": "passed"}) + "\n", encoding="utf-8")
+    assert launcher.select_tasks(bench, args, config, "seed-sha") == []
+
+
+def test_multiple_parent_scopes_union_without_expanding_to_full_dataset(selection):
+    bench, initial, args, config = selection
+    second = initial.parent / "other-initial"
+    recovery_manifest(second, [], config, selected=["new"], generation=0,
+                      settled={"new": "not_attempted"})
+    args.resume_from = [str(initial), str(second)]
+    assert set(launcher.select_tasks(bench, args, config, "seed-sha")) == {"infra", "new"}
+    assert set(args.selection_task_ids) == {"passed", "wrong-answer", "infra", "new"}
+    assert args.resume_generation == 1
+
+
+def test_missing_resume_ledger_is_an_explicit_refusal(selection):
+    bench, previous, args, config = selection
+    (previous / "result_index.jsonl").unlink()
+    with pytest.raises(ValueError, match="ledger"):
+        launcher.select_tasks(bench, args, config, "seed-sha")
+
+
+def test_resume_checks_immutable_image_even_in_an_older_ancestor(selection):
+    bench, initial, args, config = selection
+    first = initial.parent / "recovery-one"
+    recovery_manifest(first, [initial], config, selected=["infra"], generation=1,
+                      settled={"infra": "infra_failed"})
+    old = json.loads((initial / "run_manifest.json").read_text(encoding="utf-8"))
+    old["harness"]["image_id"] = "sha256:" + "2" * 64
+    write_json(initial / "run_manifest.json", old)
+    args.resume_from = [str(first)]
+    with pytest.raises(ValueError, match="image|configuration"):
+        launcher.select_tasks(bench, args, config, "seed-sha")
+
+
+def test_resuming_a_noop_after_last_recovery_retains_the_original_settlements(selection):
+    bench, initial, args, config = selection
+    first, second = initial.parent / "recovery-one", initial.parent / "recovery-two"
+    recovery_manifest(first, [initial], config, selected=["infra"], generation=1,
+                      settled={"infra": "infra_failed"})
+    recovery_manifest(second, [initial, first], config, selected=["infra"], generation=2,
+                      settled={"infra": "passed"})
+    args.resume_from = [str(second)]
+    assert launcher.select_tasks(bench, args, config, "seed-sha") == []
+    assert args.resume_generation == 2
+    noop = initial.parent / "completed-noop"
+    recovery_manifest(noop, list(map(pathlib.Path, args.resume_sources)), config,
+                      selected=args.selection_task_ids, generation=args.resume_generation, settled={})
+    record = json.loads((noop / "run_manifest.json").read_text(encoding="utf-8"))
+    record["requested_task_ids"] = []
+    record["extra"] = {"outcome": "nothing_remaining"}
+    write_json(noop / "run_manifest.json", record)
+    args.resume_from = [str(noop)]
+    assert launcher.select_tasks(bench, args, config, "seed-sha") == []
+    assert args.resume_generation == 2
+    assert str(second.resolve()) in args.resume_sources
+    assert str(initial.resolve()) in args.resume_sources
+
+
+def test_image_identity_uses_local_content_id_without_requiring_registry_digest(monkeypatch):
+    calls = []
+    def docker(host, *argv, **_kwargs):
+        calls.append((host, argv))
+        return subprocess.CompletedProcess(argv, 0, json.dumps({
+            "Id": IMAGE_ID, "Config": {"Labels": {"seed": "fixed"}}, "RepoDigests": [],
+        }))
+    monkeypatch.setattr(launcher, "_docker", docker)
+    identity = launcher.image_identity("unix:///owned.sock", "mutable-tag:latest")
+    assert identity == {"id": IMAGE_ID, "labels": {"seed": "fixed"}, "repo_digests": []}
+    assert len(calls) == 1
+    assert calls[0][0] == "unix:///owned.sock"
+    assert calls[0][1][-1] == "mutable-tag:latest"
+
+
+def test_missing_immutable_image_identity_refuses_instead_of_trusting_tag(monkeypatch):
+    monkeypatch.setattr(launcher, "_docker", lambda *_a, **_kw: subprocess.CompletedProcess([], 0, '{"Config": {}}'))
+    with pytest.raises(RuntimeError, match="immutable image identity"):
+        launcher.image_identity("unix:///owned.sock", "mutable-tag:latest")
+
+
+@pytest.mark.parametrize("low_disk", [False, True])
+def test_image_preparation_obeys_disk_reserve_and_settles_its_process(tmp_path, monkeypatch, low_disk):
+    args = argparse.Namespace(resource_root=tmp_path, min_free_gib=200, min_root_free_gib=40,
+                              docker_host="unix:///owned.sock")
+    events = []
+    process = SimpleNamespace(pid=424242, returncode=None)
+    process.poll = lambda: process.returncode
+    def wait(**_kwargs):
+        events.append("wait")
+        process.returncode = 0
+        return 0
+    process.wait = wait
+    def spawn(command, **kwargs):
+        assert command == ["fake-docker", "build"]
+        assert kwargs["drive_root"] == tmp_path
+        assert kwargs["scope"] == "session"
+        assert kwargs["purpose"] == "cowork-image-preparation"
+        assert kwargs["env"]["DOCKER_HOST"] == args.docker_host
+        events.append("spawn-owned")
+        return process
+    def stop(owned):
+        assert owned is process
+        events.append("settle-owned")
+    monkeypatch.setattr(launcher, "spawn_supervised", spawn)
+    monkeypatch.setattr(launcher, "stop_process_group", stop)
+    monkeypatch.setattr(launcher.shutil, "disk_usage",
+                        lambda _path: SimpleNamespace(free=(199 if low_disk else 300) * 1024**3))
+    if low_disk:
+        with pytest.raises(RuntimeError, match="disk reserve"):
+            launcher.run_preparation(["fake-docker", "build"], args, tmp_path / "build.log", timeout=60)
+        assert events == ["spawn-owned", "settle-owned"]
+    else:
+        launcher.run_preparation(["fake-docker", "build"], args, tmp_path / "build.log", timeout=60)
+        assert events == ["spawn-owned", "wait", "settle-owned"]
+
+
+def test_paid_runner_uses_immutable_image_and_scrubs_ambient_alternate_keys(dry_launcher, monkeypatch):
+    out, argv = dry_launcher
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-selected-key")
+    monkeypatch.setenv("LLM_API_KEY", "test-unrelated-llm-key")
+    monkeypatch.setenv("MODEL_API_KEY", "test-unrelated-model-key")
+    monkeypatch.setattr(launcher, "key_headroom", lambda _key: {"effective": 1000})
+    monkeypatch.setattr(launcher, "key_usage", lambda _key: 100)
+    monkeypatch.setattr(launcher, "prepare_resource_env", lambda env, **_kwargs: dict(env))
+    def supervise(args, command, bench, env, api_key, campaign):
+        assert command[-1] == "one"
+        assert env["IMAGE"] == IMAGE_ID
+        assert not {"LLM_API_KEY", "MODEL_API_KEY", "OPENROUTER_API_KEY"} & env.keys()
+        assert api_key == "test-selected-key"
+        secret = json.loads((bench / "configs" / launcher.SECRET_NAME).read_text(encoding="utf-8"))
+        assert secret["settings"][args.credential_setting] == api_key
+        dump = bench / "dumps" / launcher.dump_dir_name(args.model) / "SingleUserTurn-one"
+        write_json(dump / "ouroboros_summary.json", {"bench_status": "success"})
+        write_json(dump / "eval_res.json", {"pass": True})
+        return {"stop_reason": "", "meter_error": "", "runner_exit_code": 0}
+    monkeypatch.setattr(launcher, "supervise_run", supervise)
+    paid_argv = [item for item in argv if item != "--dry-run"]
+    assert launcher.main([*paid_argv, "--campaign-file", str(out.parent / "campaign.json")]) == 0
+    assert (out / "bench" / "configs" / launcher.SECRET_NAME).read_text(encoding="utf-8") == "{}"
+    assert "test-selected-key" not in (out / "run_manifest.json").read_text(encoding="utf-8")

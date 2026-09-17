@@ -41,6 +41,11 @@ The accepted campaign configuration is:
 | Post-task evolution | Disabled |
 | Qualification timeout | 3600 seconds per agent phase; final full-run timeout chosen after smoke |
 
+The pinned upstream runner keeps its agent container alive with `sleep 7200`.
+That inherited two-hour lifetime can end a long task regardless of a larger
+`--task-timeout`; retain it in the deferred full-run timeout decision. Qualification
+uses 3600 seconds.
+
 The acceptance panel is part of the measured agent, not the official scorer.
 Safety-off is a benchmark-specific departure from the usual light-mode template;
 it avoids adding a separate safety-model request to the mock office operations.
@@ -57,7 +62,10 @@ engines.
 ## Container and dependency disclosures
 
 Ouroboros starts its ordinary server inside the task container from a clean
-committed seed. Its dependency environment is separate from the benchmark's.
+committed seed. The launcher resolves and records an immutable Docker image ID,
+uses that ID for execution, and requires the same ID for compatible recovery;
+matching labels on a rebuilt mutable tag alone do not prove an identical image.
+Its dependency environment is separate from the benchmark's.
 `mcp-proxy==0.12.0` with `mcp==1.30.0` holds the task's stdio MCP sessions alive
 behind local HTTP endpoints. This preserves presentation and browser state
 across Ouroboros calls without changing its core MCP client.
@@ -75,10 +83,11 @@ Every container created through the official runner, including database,
 evaluator and helper containers, receives a limit of **4 CPUs, 16 GiB memory,
 no swap and 512 PIDs**. These are per-container limits, not an aggregate run
 quota. Exact run labels scope cleanup. Image building is a separate preparation
-step and is not covered by these task-container limits. Resource admission
-checks a configurable free-space reserve on the heavy-storage filesystem
-(default 200 GiB), and the supervisor also checks the root filesystem (default
-40 GiB). Another user's writes can still consume shared storage between checks.
+step and is not covered by these CPU/memory/PID limits. The launcher monitors
+the same heavy-storage free-space reserve during its owned build and task run
+(default 200 GiB); task admission checks it before new containers are created.
+The supervisor also checks the root filesystem (default 40 GiB). Another user's
+writes can still consume shared storage between checks.
 
 ## Spending and run custody
 
@@ -107,20 +116,34 @@ runtime data, including aborted runs. No score is inferred from launcher exit 0.
 
 ## Outcomes and evidence
 
+The adapter waits for pending/finalizing task artifacts within the existing outer
+agent deadline. Explicitly partial cost on a completed result receives the CLI's
+bounded finality wait (up to 60 seconds within that deadline). The summary retains
+`accounted_upper_bound_usd` and the canonical cost openness/finality fields;
+unknown or unfinished accounting is not presented as a final paid receipt.
+
 A voluntarily completed Ouroboros task maps to the reference engine's `success`;
 only the official evaluator decides pass or fail. Runtime round, budget and
 deadline termination remain disclosed truncations. Provider/transport failures
 and adapter setup failures are infrastructure outcomes. A wall-clock timeout
 after model work is a genuine failed attempt, not a new attempt entitlement.
 The result ledger retains every selected ID, including `not_attempted` entries.
-Infrastructure retries use new roots and the identical configuration and seed;
-settled successes and genuine failures are not repeated for best-of selection.
-Any final scoring overlay must retain provenance to the original attempts.
+A timeout before task submission is an infrastructure failure. After submission,
+missing token telemetry does not prove that no paid/model work happened.
+Infrastructure recovery uses new roots and the identical configuration, seed and
+immutable image. With no explicit new selection, it preserves the original task
+selection, and always retains cumulative ancestry. At most two recovery passes
+with remaining work are permitted; settled successes and genuine failures
+from every ancestor are skipped, never repeated for best-of selection. Any final
+scoring overlay must retain provenance to the original attempts.
 
 Phase-aware mounts omit the task's evaluator and ground-truth workspace from the
 agent's task view. Ouroboros settings and provider credentials remain outside the
 shared dump directory; the run-local credential file is mode 0600 and is cleared
-on launcher completion. Sanitize and inspect artifacts before publication.
+on launcher completion. The existing isolated-benchmark sentinel is created
+before the server starts, suppressing runtime log rotation so the collector keeps
+the full task-local event/tool history. Sanitize and inspect artifacts before
+publication.
 Task dumps are shared across the run, and native shell/Python can potentially
 access PostgreSQL directly instead of using MCP, as can reference agents. Native
 web is disabled because benchmark answers are public, but this is not proof of

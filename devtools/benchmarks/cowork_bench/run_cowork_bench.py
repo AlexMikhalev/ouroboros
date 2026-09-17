@@ -146,13 +146,37 @@ def image_exists(docker_host: str, image: str) -> bool:
     return _docker(docker_host, "image", "inspect", image, timeout=60).returncode == 0
 
 
+def run_preparation(command: list[str], args: argparse.Namespace, log_path: pathlib.Path, timeout: int) -> None:
+    """Keep image preparation inside the same storage reserve as task execution."""
+    with log_path.open("a", encoding="utf-8") as handle:
+        proc = spawn_supervised(command, drive_root=log_path.parent, scope="session",
+                                purpose="cowork-image-preparation", stdout=handle, stderr=subprocess.STDOUT,
+                                env={**os.environ, "DOCKER_HOST": args.docker_host}, text=True)
+        deadline = time.monotonic() + timeout
+        try:
+            while proc.poll() is None:
+                if (shutil.disk_usage(args.resource_root).free < args.min_free_gib * 1024**3
+                        or shutil.disk_usage(pathlib.Path.home().anchor).free < args.min_root_free_gib * 1024**3):
+                    raise RuntimeError("image preparation stopped at the disk reserve")
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("image preparation exceeded its existing time limit")
+                try:
+                    proc.wait(timeout=min(15, max(0.1, deadline - time.monotonic())))
+                except subprocess.TimeoutExpired:
+                    pass
+            if proc.returncode:
+                raise RuntimeError(f"image preparation failed (exit {proc.returncode}); see {log_path}")
+        finally:
+            stop_process_group(proc)
+
+
 def build_image(args: argparse.Namespace, seed_head: str, bench_head: str, log_path: pathlib.Path) -> None:
     """Build the derived image from a throwaway context holding a full clone of the seed."""
     with tempfile.TemporaryDirectory(prefix="cowork-image-", dir=log_path.parent / "tmp") as raw:
         context = pathlib.Path(raw)
-        subprocess.run(
+        run_preparation(
             ["git", "clone", "--quiet", "--no-hardlinks", "--single-branch", str(args.repo_dir), str(context / "seed")],
-            check=True, timeout=600,
+            args, log_path, timeout=600,
         )
         _git(context / "seed", "checkout", "--quiet", "--detach", seed_head)
         shutil.copy2(CONTAINER_DIR / "main_ouroboros.py", context / "main_ouroboros.py")
@@ -164,23 +188,19 @@ def build_image(args: argparse.Namespace, seed_head: str, bench_head: str, log_p
             "--build-arg", f"BENCH_SHA={bench_head}",
             str(context),
         ]
-        with log_path.open("w", encoding="utf-8") as handle:
-            proc = subprocess.run(
-                command, env={**os.environ, "DOCKER_HOST": args.docker_host},
-                stdout=handle, stderr=subprocess.STDOUT, text=True, timeout=7200,
-            )
-        if proc.returncode != 0:
-            raise RuntimeError(f"derived image build failed (exit {proc.returncode}); see {log_path}")
+        run_preparation(command, args, log_path, timeout=7200)
 
 
-def image_labels(docker_host: str, image: str) -> dict[str, str]:
-    proc = _docker(docker_host, "image", "inspect", "--format", "{{json .Config.Labels}}", image, timeout=60)
-    try:
-        labels = json.loads(proc.stdout or "{}")
-    except json.JSONDecodeError:
-        labels = {}
-    return labels if isinstance(labels, dict) else {}
-
+def image_identity(docker_host: str, image: str) -> dict[str, Any]:
+    """Resolve the exact local image, including builds without a registry RepoDigest."""
+    proc = _docker(docker_host, "image", "inspect", "--format", "{{json .}}", image, timeout=60)
+    if proc.returncode:
+        raise RuntimeError(f"cannot inspect image {image!r}")
+    record = json.loads(proc.stdout)
+    if not isinstance(record, dict) or not record.get("Id"):
+        raise RuntimeError("Docker did not return an immutable image identity")
+    return {"id": record["Id"], "labels": (record.get("Config") or {}).get("Labels") or {},
+            "repo_digests": record.get("RepoDigests") or []}
 
 def key_headroom(api_key: str) -> dict[str, Any]:
     """Both bounds of an OpenRouter key: the key limit is not money, the account balance is."""
@@ -207,7 +227,11 @@ def settled_tasks(run_roots: list[pathlib.Path]) -> set[str]:
     settled: set[str] = set()
     for root in run_roots:
         ledger = root / "result_index.jsonl"
-        for line in ledger.read_text(encoding="utf-8").splitlines():
+        try:
+            contents = ledger.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ValueError(f"resume ledger unavailable; inspect the previous run: {ledger}") from exc
+        for line in contents.splitlines():
             row = json.loads(line)
             if str(row.get("status") or "") in SETTLED_STATUSES:
                 settled.add(str(row.get("instance_id") or ""))
@@ -277,26 +301,67 @@ def write_ledger(ledger_path: pathlib.Path, bench_dir: pathlib.Path, model: str,
 
 
 def select_tasks(bench_dir: pathlib.Path, args: argparse.Namespace, config: dict[str, Any], seed_head: str) -> list[str]:
-    """Resume only identical configurations, never turn an empty remainder into a full run."""
+    """Keep recovery inside its declared selection and skip settled outcomes across its ancestry."""
     available = discover_tasks(bench_dir)
-    explicit = bool(args.task_file or args.task)
-    selected = [*read_task_file(pathlib.Path(args.task_file)), *args.task] if args.task_file else list(args.task)
-    if not explicit:
+    records: dict[pathlib.Path, dict[str, Any]] = {}
+    depths: dict[pathlib.Path, int] = {}
+    visiting: set[pathlib.Path] = set()
+
+    def parent(root: pathlib.Path) -> dict[str, Any]:
+        root = root.expanduser().resolve()
+        if root in visiting:
+            raise ValueError("resume ancestry contains a cycle")
+        if root in records:
+            return records[root]
+        visiting.add(root)
+        previous = _load(root / "run_manifest.json")
+        harness = previous.get("harness", {})
+        if (harness.get("applied_config") != config
+                or previous.get("source", {}).get("head") != seed_head
+                or harness.get("bench", {}).get("head") != args.bench_commit
+                or not getattr(args, "image_id", "") or harness.get("image_id") != args.image_id):
+            raise ValueError(f"resume configuration/seed/image differs: {root}")
+        ancestors = [pathlib.Path(item).expanduser().resolve() for item in harness.get("resume_from", [])]
+        for ancestor in ancestors:
+            parent(ancestor)
+        depth = 1 + max(depths[item] for item in ancestors) if ancestors else 0
+        if previous.get("extra", {}).get("outcome") == "nothing_remaining":
+            depth = max((depths[item] for item in ancestors), default=0)
+        if harness.get("resume_generation", depth) != depth:
+            raise ValueError(f"resume depth disagrees with ancestry: {root}")
+        records[root], depths[root] = previous, depth
+        visiting.remove(root)
+        return previous
+
+    direct = [pathlib.Path(item).expanduser().resolve() for item in args.resume_from]
+    for root in direct:
+        parent(root)
+    if args.task_file or args.task:
+        selected = [*read_task_file(pathlib.Path(args.task_file)), *args.task] if args.task_file else list(args.task)
+    elif direct:
+        selected = []
+        for root in direct:
+            previous = records[root]
+            selection = previous["harness"].get("selection_task_ids", previous.get("requested_task_ids"))
+            if not isinstance(selection, list):
+                raise ValueError(f"resume root has no retained task selection: {root}")
+            selected.extend(task for task in selection if task not in selected)
+    else:
         selected = available
     if len(selected) != len(set(selected)) or any(task not in available for task in selected):
         raise ValueError("task selection contains duplicate or unknown dataset IDs")
-    roots = [pathlib.Path(item).expanduser() for item in args.resume_from]
-    if len(roots) > 2:
+    args.selection_task_ids = list(selected)
+    args.resume_sources = [str(root) for root in records]
+    args.resume_generation = 1 + max(depths[root] for root in direct) if direct else 0
+    settled = settled_tasks(list(records))
+    remaining = [task for task in selected if task not in settled]
+    if remaining and args.resume_generation > 2:
         raise ValueError("at most two infrastructure recovery passes are permitted")
-    for root in roots:
-        previous = _load(root / "run_manifest.json")
-        if (previous.get("harness", {}).get("applied_config") != config
-                or previous.get("source", {}).get("head") != seed_head
-                or previous.get("harness", {}).get("bench", {}).get("head") != args.bench_commit):
-            raise ValueError(f"resume configuration/seed differs: {root}")
-    settled = settled_tasks(roots)
-    return [task for task in selected if task not in settled]
-
+    if not remaining and direct:
+        args.resume_generation = max(depths[root] for root in direct)
+        # Keep every outcome source; the terminal nothing_remaining outcome records
+        # why this no-op adds no paid recovery generation.
+    return remaining
 
 def remove_run_containers(docker_host: str, run_label: str) -> None:
     """Clean only resources labeled by this invocation, including anonymous helper containers."""
@@ -562,8 +627,11 @@ def main(argv: list[str] | None = None) -> int:
             final.update({"outcome": "refused", "exit_code": 2,
                           "refusal": {"stage": "image", "reason": f"image {args.image} not found; pass --build-image"}})
             return 2
-        labels = image_labels(args.docker_host, args.image)
-        manifest["harness"]["image_labels"] = labels
+        identity = image_identity(args.docker_host, args.image)
+        args.image_id = identity["id"]
+        labels = identity["labels"]
+        manifest["harness"].update({"image_labels": labels, "image_id": args.image_id,
+                                   "image_repo_digests": identity["repo_digests"]})
         if (labels.get("org.ouroboros.cowork.seed_sha") != seed_head
                 or labels.get("org.ouroboros.cowork.bench_sha") != args.bench_commit):
             final.update({"outcome": "refused", "exit_code": 2,
@@ -574,6 +642,9 @@ def main(argv: list[str] | None = None) -> int:
         _git(bench_dir, "checkout", "--quiet", "--detach", args.bench_commit)
         tasks = select_tasks(bench_dir, args, config, seed_head)
         args.selected_tasks = tasks
+        manifest["harness"].update({"selection_task_ids": args.selection_task_ids,
+                                   "resume_from": args.resume_sources,
+                                   "resume_generation": args.resume_generation})
         manifest["requested_task_ids"] = tasks
         manifest["requested_count"] = len(tasks)
         if not tasks:
@@ -609,11 +680,12 @@ def main(argv: list[str] | None = None) -> int:
             (bench_dir / "configs" / CONFIG_NAME).read_bytes()
         ).hexdigest()
         campaign_path = assert_outside_repo(pathlib.Path(args.campaign_file).expanduser(), args.repo_dir)
-        run_env = {key: value for key, value in os.environ.items() if key != args.api_key_env}
+        run_env = {key: value for key, value in os.environ.items()
+                   if key not in {args.api_key_env, "LLM_API_KEY", "MODEL_API_KEY"}}
         run_env.update({
-            "DOCKER_HOST": args.docker_host, "IMAGE": args.image, "AGENT_ENTRY": "main_ouroboros.py",
+            "DOCKER_HOST": args.docker_host, "IMAGE": args.image_id, "AGENT_ENTRY": "main_ouroboros.py",
             "AGENT_PHASE_AWARE": "1", "MODEL_PROVIDER": ENGINE, "MODEL_NAME": args.model, "LLM_MODEL": args.model,
-            "MAX_STEPS": str(args.max_steps), "TASK_TIMEOUT": str(args.task_timeout), "TMPDIR": str(out_root / "tmp"),
+            "MAX_STEPS": str(args.max_steps), "TASK_TIMEOUT": str(args.task_timeout),
         })
         run_env = prepare_resource_env(
             run_env, run_root=out_root, docker_host=args.docker_host,

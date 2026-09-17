@@ -38,6 +38,7 @@ DEFAULT_SECRET_PATH = "/workspace/configs/ouroboros_bench.secret.json"
 OUROBOROS_SRC = "/opt/ouroboros-src"
 OUROBOROS_PYTHON = "/opt/ouroboros-venv/bin/python"
 OUROBOROS_DATA = "/opt/ouroboros-data"
+OUROBOROS_RUNTIME = "/opt/ouroboros-runtime"
 MCP_PROXY_BIN = "/opt/mcp-proxy-venv/bin/mcp-proxy"
 MCP_PROXY_PYTHON = "/opt/mcp-proxy-venv/bin/python"
 STATUS_SUCCESS = "success"
@@ -54,6 +55,15 @@ _LIBPQ_BRIDGE = {
     "PG_PASSWORD": "PGPASSWORD",
 }
 _AUDIT_LOGS = ("tools.jsonl", "events.jsonl", "progress.jsonl", "chat.jsonl", "supervisor.jsonl")
+# Public API fields copied without renaming or inventing amounts/finality. This
+# entrypoint cannot import the runtime from the benchmark interpreter; a test
+# pins this consumer mirror to cost_projection's canonical names/openness set.
+COST_RESULT_FIELDS = (
+    "accounted_upper_bound_usd", "accounted_upper_bound_usd_with_children", "cost_known",
+    "cost_accounting_status", "cost_accounting_error", "cost_final", "cost_with_children_partial",
+    "unknown_unmetered", "non_final_rows", "reserved_usd", "unresolved_upper_bound_usd",
+    "ledger_integrity_degraded",
+)
 
 
 class EngineFailure(RuntimeError):
@@ -449,6 +459,8 @@ def run_agent_phase(task_dir: str, max_steps: int) -> str:
     status = STATUS_FAILED
     final_answer = ""
     task_id = ""
+    task_submission_started = False
+    result: dict[str, Any] = {}
     proxy: subprocess.Popen | None = None
     server: subprocess.Popen | None = None
 
@@ -472,7 +484,7 @@ def run_agent_phase(task_dir: str, max_steps: int) -> str:
             task_dir=os.path.abspath(os.path.join("tasks/finalpool", task_config.task_dir)),
             environ=os.environ,
         )
-        runtime_dir = pathlib.Path("/opt/ouroboros-runtime")
+        runtime_dir = pathlib.Path(OUROBOROS_RUNTIME)
         runtime_dir.mkdir(parents=True, exist_ok=True)
         proxy_config_path = runtime_dir / "mcp_proxy.json"
         proxy_config_path.write_text(json.dumps(proxy_config(servers)), encoding="utf-8")
@@ -492,6 +504,9 @@ def run_agent_phase(task_dir: str, max_steps: int) -> str:
         data_dir = pathlib.Path(OUROBOROS_DATA)
         for sub in ("logs", "state"):
             (data_dir / sub).mkdir(parents=True, exist_ok=True)
+        # The existing runtime marker keeps the full task history in its active
+        # logs, so rotation cannot discard evidence when this container is removed.
+        (data_dir / ".ouroboros_isolated_benchmark").touch()
         settings_path = data_dir / "settings.json"
         settings = build_settings(bench_config, secret, needed)
         settings_path.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -543,33 +558,62 @@ def run_agent_phase(task_dir: str, max_steps: int) -> str:
         )
         summary["adapter_overhead_sec"] = round(overhead, 1)
         summary["ouroboros_timeout_sec"] = body.get("timeout_sec")
+        task_submission_started = True
         created = _http_json("POST", f"{base_url}/api/tasks", body)
         task_id = str(created.get("task_id") or "")
         if not task_id:
             raise EngineFailure("task_create_failed", f"task creation returned no task_id: {created!r}")
         summary["ouroboros_task_id"] = task_id
 
-        result: dict[str, Any] = {}
+        outer_deadline = entry_started + float(bench_config["task_timeout_sec"])
+        cost_deadline: float | None = None
+        terminal = False
         while True:
+            now = time.monotonic()
+            if terminal and cost_deadline is not None and now >= cost_deadline:
+                summary["cost_finality_wait_exhausted"] = True
+                break
+            if now >= outer_deadline:
+                raise WallClockInterrupt()
             try:
-                result = _http_json("GET", f"{base_url}/api/tasks/{urllib.parse.quote(task_id)}")
+                result = _http_json("GET", f"{base_url}/api/tasks/{urllib.parse.quote(task_id)}",
+                                    timeout=min(30, outer_deadline - now))
             except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
                 if server.poll() is not None:
                     raise EngineFailure("server_died", f"Ouroboros server exited with {server.returncode}") from exc
-                time.sleep(2)
+                time.sleep(min(2, max(0, outer_deadline - time.monotonic())))
                 continue
-            if str(result.get("status") or "") in {"completed", "failed", "cancelled", "rejected_duplicate"}:
-                break
-            time.sleep(2)
+            result_status = str(result.get("status") or "").lower()
+            bundle = result.get("artifact_bundle")
+            bundle = bundle if isinstance(bundle, dict) else {}
+            artifact_status = str(bundle.get("status") or result.get("artifact_status") or "").lower()
+            terminal = (result_status in {"completed", "failed", "cancelled", "rejected_duplicate"}
+                        and artifact_status not in {"pending", "finalizing"})
+            if terminal:
+                if cost_deadline is not None and (
+                    result.get("cost_final") or result.get("cost_with_children_partial") is False
+                ):
+                    break
+                # Match cli._await_cost_finality: only explicit partial accounting
+                # on completed/degraded outcomes waits, at most 60s and within
+                # this invocation's existing outer deadline. Unknown stays unknown.
+                cost_pending = result_status in {"completed", "degraded"} and (
+                    result.get("cost_final") is False or result.get("cost_with_children_partial") is True
+                )
+                if not cost_pending:
+                    break
+                if cost_deadline is None:
+                    cost_deadline = min(time.monotonic() + 60, outer_deadline)
+            sleep_until = min(outer_deadline, cost_deadline) if terminal and cost_deadline is not None else outer_deadline
+            remaining = max(0, sleep_until - time.monotonic())
+            time.sleep(min(2, remaining))
 
         outcome = classify_outcome(result, list(bench_config["truncation_reason_codes"]))
         status = outcome["bench_status"]
-        final_answer = str(result.get("final_answer") or result.get("result") or "")[:20000]
         summary.update(outcome)
         summary.update(
             {
                 "adapter_stage": "finished",
-                "cost_usd": result.get("cost_usd"),
                 "prompt_tokens": result.get("prompt_tokens"),
                 "completion_tokens": result.get("completion_tokens"),
                 "total_rounds": result.get("total_rounds"),
@@ -577,7 +621,10 @@ def run_agent_phase(task_dir: str, max_steps: int) -> str:
             }
         )
     except WallClockInterrupt:
-        summary.update({"reason_code": "wall_clock_timeout", "truncated": True})
+        # Before POST admission there is definitely no solve attempt. A missing
+        # task id/usage after POST began is uncertainty, not proof of zero work.
+        summary.update({"reason_code": "wall_clock_timeout", "truncated": True,
+                        "infra_failed": not task_submission_started})
         status = STATUS_FAILED
     except EngineFailure as exc:
         summary.update({"reason_code": exc.reason, "infra_failed": True, "error": scrub(str(exc), secrets)[:2000]})
@@ -592,6 +639,19 @@ def run_agent_phase(task_dir: str, max_steps: int) -> str:
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         summary["bench_status"] = status
         summary["elapsed_sec"] = round(time.monotonic() - entry_started, 1)
+        summary["task_submission_started"] = task_submission_started
+        final_answer = str(result.get("final_answer") or result.get("result") or "")
+        if result.get("status"):
+            summary["ouroboros_status"] = result["status"]
+        summary.update({key: result[key] for key in COST_RESULT_FIELDS if key in result})
+        summary.update({key: result[key] for key in (
+            "artifact_status", "artifact_bundle", "prompt_tokens", "completion_tokens", "total_rounds"
+        ) if key in result})
+        observed_tokens = [result.get(key) for key in ("prompt_tokens", "completion_tokens")]
+        summary["model_activity_observed"] = (
+            False if not task_submission_started else
+            True if any(isinstance(n, (int, float)) and n > 0 for n in observed_tokens) else None
+        )
         try:
             collect_audit_artifacts(task_root, task_id, secrets)
         finally:
