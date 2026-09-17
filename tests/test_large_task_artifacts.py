@@ -41,7 +41,7 @@ def test_large_copy_version_and_directory_are_streamed(tmp_path, monkeypatch):
     with large.open("ab") as handle:
         handle.write(b"new version")
     artifacts.copy_file_to_task_artifacts(ctx, large)
-    versions = list(artifacts._artifact_versions_dir(ctx.drive_root, ctx.task_id, copied["name"]).iterdir())
+    versions = list((ctx.drive_root / "task_results" / "artifact_versions" / ctx.task_id / copied["name"]).iterdir())
     assert len(versions) == 1
     assert artifacts.stream_artifact_file(versions[0]) == expected
     records = artifacts.copy_directory_to_task_artifacts(ctx, source)
