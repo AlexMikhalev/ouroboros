@@ -145,7 +145,7 @@ def test_question_presentation_shared_fixture():
     from ouroboros.project_dialogue import project_question_pointer
 
     cases = json.loads((Path(__file__).resolve().parents[1] /
-                        'web/tests/fixtures/question_presentation_parity.json').read_text())
+                        'web/tests/fixtures/question_presentation_parity.json').read_text(encoding="utf-8"))
     keys = ("quiz_state", "owner_wait_state", "owner_wait_resume_reason", "wait_for_answer",
             "wait_ended_at", "answered_index", "comment", "source_status")
     for case in cases:
