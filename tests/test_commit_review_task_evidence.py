@@ -98,6 +98,36 @@ def test_large_task_selected_source_is_complete_and_native_readable(evidence_con
     assert native_ctx.last_read_view["opened_root"] == "artifact_store"
 
 
+@pytest.mark.parametrize("recoverable", [True, False], ids=["projection_recovers", "source_unavailable"])
+def test_partial_visual_result_completeness_follows_recovery(evidence_context, recoverable):
+    from ouroboros import artifacts
+
+    ctx = evidence_context
+    full = "Full observed result\n" + "x" * 20000 + "\nDECISIVE_END"
+    model_response(ctx, "before", "Inspect the screen")
+    projection = full if recoverable else {"partial": "legacy body unavailable"}
+    call = tool_response(ctx, "visual", "before", result=projection)
+    _, primary_ref, issue = artifacts.persist_exact_text_source(
+        ctx.drive_root, ctx.task_id, source_id="visual", text=full,
+    )
+    assert not issue
+    logged = full[:100]
+    call.update(result=logged, result_partial=True, result_source_ref=primary_ref)
+    (artifacts.task_artifact_dir_path(ctx.drive_root, ctx.task_id) / primary_ref["path"]).unlink()
+    model_response(ctx, "after", "Recorded visible assessment")
+
+    packet = capture_commit_review_evidence(ctx)
+    raw = read_actor_source_bytes(ctx.budget_drive_root, ctx.task_id, packet["source_ref"]).decode("utf-8")
+    selected = json.loads(raw.split("\n\n", 2)[2])
+
+    assert selected["result_complete"] is recoverable
+    assert selected["result"] == (full if recoverable else logged)
+    assert selected["following_visible_text"] == "Recorded visible assessment"
+    assert packet["source_status"] == "ready"
+    assert packet["source_complete"] is recoverable
+    assert packet["gap_count"] == (0 if recoverable else 1)
+
+
 @pytest.mark.parametrize("shape", ["missing", "empty", "failed", "other_execution", "tampered"])
 def test_following_response_gap_never_selects_a_later_success(evidence_context, shape):
     ctx = evidence_context
