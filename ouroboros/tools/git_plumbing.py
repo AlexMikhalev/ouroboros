@@ -1,13 +1,10 @@
 """Low-level git plumbing shared by the git tool owners.
 
 Runtime-mode projection, git error sanitisation, staging hygiene, the
-cross-process git lock, and the resolved-binding path projections that every
-git tool leaf builds on. Split out of ``ouroboros/tools/git.py`` (v7
-module-size discipline); every span is extracted VERBATIM from the parent's
-tip bytes by scripts/v7next_transplant.py and the parent re-exports every
-moved name. Parent-scope helpers the monolith read as module globals are
-read through the call-time handle ``_git()`` — never a from-import — so the
-facade binding stays the one tests monkeypatch.
+cross-process git lock, and resolved-binding path projections live here.
+The ``ouroboros/tools/git.py`` facade re-exports these definitions. Shared
+helpers are read through the call-time handle ``_git()`` so the facade binding
+stays the one tests monkeypatch.
 """
 
 from __future__ import annotations
@@ -30,7 +27,7 @@ def _git():
     The parent owns the rebindable module state and the members tests
     monkeypatch there; reading them through the module at each call keeps
     one binding, where a from-import would freeze the value this leaf saw
-    at import time (the owner-approved D18/D33 mechanical exception).
+    at import time.
     """
     from ouroboros.tools import git
 

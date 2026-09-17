@@ -158,7 +158,7 @@ BAND_PATHS = {
     "ouroboros/tools/delegate.py": "D07 finisher DEL1 split brought the nanny-verb monolith DOWN from the 1600 hard cap into the band (1600->1263); terminal-evidence family extracted to tools/delegate_terminal_evidence.py, shrink-only direction",
     "ouroboros/tools/plan_review.py": "Entered the band from 999 lines: the required-affected_paths form (owner 9=A) added the schema field and the PLAN_RESOURCE_FORM_REQUIRED refusal, which must name the task's open wave and the $0 disposition exit \u2014 it belongs beside the one preamble both the paid and dry-run paths share, not in the pure plan_spec companion that owns no task state.",
     "ouroboros/tools/plan_review_runtime.py": "Entered the band from 986 lines: timeout custody synthesis joined the existing plan-review runtime owner while preserving profile-continuity disclosures and typed health facts during target integration.",
-    "ouroboros/tools/registry_core.py": "F3.1 typed-organ re-split (D04 rows 156/167/170/171/174/175): the tip ToolRegistry class body re-homed whole from the protected registry facade; the guard/dispatch surface already left for its sibling leaves, and the class shrinks further only with the ABI-8 post-release handler conversion.",
+    "ouroboros/tools/registry_core.py": "ToolRegistry owns the registry class behind the protected facade; guard and dispatch implementations live in sibling leaves.",
     "ouroboros/tools/review.py": "D06 F2.3a re-entry by extraction: the multi-model fan-out moved to review_multi_model.py (1550->1269); the remaining single-owner review cycle machinery lands in the 1001-1500 band with headroom",
     "ouroboros/tools/review_context_atlas.py": "Grew INTO the band by the #284 pack-arithmetic fixes: measured render charged at admission, exact per-row costs, target capped at the hard rail, honest eviction diagnostics \u2014 all in the module that owns the arithmetic.",
     "ouroboros/tools/skill_exec.py": None,
@@ -168,7 +168,6 @@ BAND_PATHS = {
     "ouroboros/usage_compaction.py": "Entered the band from 971 lines: the C6 round-4 fixes homed here \u2014 dir-fd/O_NOFOLLOW anchoring of the archive writer and reader (a link planted after any path check cannot receive or serve monetary history) and the swap's last-instant snapshot re-proof inside the atomic replace \u2014 defenses that belong beside the compaction pass they defend.",
     "ouroboros/workspace_executor.py": None,
     "scripts/claudexor_platform_smoke.py": "The managed Claudexor platform smoke owns a multi-platform fixture, lifecycle receipt, and cleanup proof; keeping this runner in the documented band preserves the release gate without moving those checks into product runtime.",
-    "scripts/v7next_transplant.py": "F0 phase-review CRITICAL hardening: whole-leaf runtime invariants (handle existence/shape, declared/preamble disjointness, unread-declared) added to the byte-proof verifier; campaign tool retires with F6, not a runtime module",
     "skills/telegram/plugin.py": None,
     "skills/telegram/scripts/companion.py": None,
     "skills/telegram/scripts/sidecar.py": None,
@@ -246,5 +245,5 @@ BYTE_BASELINE_DEBT = {
 }
 
 BYTE_DEBT = {
-    "tests/test_devtools_benchmarks.py": 327840,
+    "tests/test_devtools_benchmarks.py": 326550,
 }

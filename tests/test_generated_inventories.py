@@ -3,14 +3,14 @@ fresh regeneration and their resolution invariants hold — staleness = red.
 
 The generator half is ``python scripts/regenerate_inventories.py``:
 
-- ``docs/v7next/FROZEN_CONTRACTS_INVENTORY.md`` — ARCHITECTURE §11.1 rows,
+- ``docs/inventories/FROZEN_CONTRACTS_INVENTORY.md`` — ARCHITECTURE §11.1 rows,
   every referenced owner/anchor path resolved against the tree, plus the
   ``ouroboros/contracts/`` package-coverage gap list (pinned here: growth of
   the gap is red even after regeneration);
-- ``docs/v7next/DATA_LAYOUT_INVENTORY.md`` — the ARCHITECTURE "Data layout"
+- ``docs/inventories/DATA_LAYOUT_INVENTORY.md`` — the ARCHITECTURE "Data layout"
   tree probed entry-by-entry against tracked paths / runtime source literals
   (zero UNRESOLVED entries pinned here);
-- ``docs/v7next/FACADE_INVENTORY.md`` — the AST-derived ``noqa: F401``
+- ``docs/inventories/FACADE_INVENTORY.md`` — the AST-derived ``noqa: F401``
   re-export facade inventory over the domain manifest population.
 
 Synthetic tests prove the red branches (missing file, unresolvable entry,

@@ -675,14 +675,9 @@ def run_llm_loop(
         _delegate_hold_close(tools, drive_logs=drive_logs, task_id=task_id, detail="loop_exit")
         _cleanup_loop_resources(stateful_executor, exit_ctx)
 
-# The v7 L-B split: the members below moved into cohesive leaves (module-size
-# boundary). This tree keeps the FULL re-export surface: the tip consumer set
-# (production callers and tests) still addresses every moved name at its
-# historical ouroboros.loop binding, and the D33 call-time handle reads of the
-# sibling leaves resolve through this module as the family rendezvous. The
-# oracle's later L3-trimmed surface (RETIRED_FROM_LOOP) is a consumer-rebind
-# wave, not part of the byte-preserving relocation (see LEDGER_CORRECTIONS,
-# D01 lane).
+# Cohesive leaves own the implementations below. Keep the full re-export
+# surface: production callers and tests address these historical loop bindings,
+# and sibling leaves resolve their call-time handles through this module.
 from ouroboros.loop_messages import (  # noqa: E402, F401 -- intentional public re-exports
     _emit_checkpoint_event,
     _extract_plain_text_from_content,

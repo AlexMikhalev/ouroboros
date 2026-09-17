@@ -1,7 +1,7 @@
-"""CPL4-C6 pins: the seq-preserving compaction pass over the monetary ledger.
+"""Pins the seq-preserving compaction pass over the monetary ledger.
 
-Design contract: docs/v7next/DESIGN_USAGE_COMPACTION.md. The invariants
-pinned here are monetary-authority invariants (owner sanction 1A):
+Design contract: docs/USAGE_COMPACTION.md. The invariants
+pinned here are monetary-authority invariants:
 
 1. decimal-exact money before/after; the production projections render EQUAL;
 2. in-flight (unsettled) rows never fold and stay transitionable;
@@ -10,7 +10,7 @@ pinned here are monetary-authority invariants (owner sanction 1A):
 6. idempotent kinds (subscription/external/legacy) never fold, so their replay dedup keeps working;
 7. trigger policy: config SSOT threshold, thrash guard, verify-abort = no-op.
 
-The reader side of the same organ — invariant 5 (the CPL-5 join across
+The reader side of the same organ — invariant 5 (the model-send join across
 chained compactions) and invariant 8 (baseline rows are legal only as the
 leading block) — lives in ``tests/test_usage_compaction_archive.py``; the
 fixtures both modules share live in ``tests/fixtures_usage_compaction.py``.

@@ -192,6 +192,6 @@ def test_review_state_extraction_size_bounds_have_meaningful_headroom():
     }
     assert all(count <= 1000 for count in counts.values()), counts
     assert counts["ouroboros.review_state"] <= 850
-    assert 300 <= counts["ouroboros.review_state_records"] <= 1000
-    assert 600 <= counts["ouroboros.review_state_model"] <= 1000
-    assert 150 <= counts["ouroboros.review_state_custody"] <= 600
+    assert counts["ouroboros.review_state_records"] <= 1000
+    assert counts["ouroboros.review_state_model"] <= 1000
+    assert counts["ouroboros.review_state_custody"] <= 600

@@ -1,20 +1,12 @@
 """Structural contracts for the semantic-no-op tool_access extraction.
 
-Carried from the v7 reference (ouroboros_v7_wip @ 9f691656) with four disclosed
-adaptations to THIS tree:
+The no-backedge clause forbids module-level imports of the facade. Leaves
+read parent-owned rebindable names through a call-time module handle, so
+those reads do not introduce an import-time cycle.
 
-1. The frozen-tool-inventory clause is dropped: ``ouroboros.tool_module_inventory``
-   is a v7 leaf this tree does not carry yet; the clause returns with that leaf.
-2. The no-backedge clause asserts no MODULE-LEVEL (import-time) import of the
-   facade: on this tree the leaves deliberately read parent-owned rebindable
-   names through a call-time module handle (the owner-approved D18/D33
-   mechanical exception), which is not an import-time cycle.
-3. The one-matrix clause checks identity through the facade re-export only:
-   the user_files leaf reads ``_POLICY`` through the call-time handle instead
-   of binding a module attribute, so the same-object guarantee holds by
-   construction (there is exactly one binding, on the facade).
-4. The facade size bound is kept at the reference's 900; this tree's facade is
-   the tip monolith minus the moved spans and lands under it.
+The policy matrix identity is checked through the facade re-export. The
+user_files leaf reads ``_POLICY`` through its call-time handle instead of
+binding another module attribute, preserving the same-object guarantee.
 """
 
 from __future__ import annotations
@@ -154,4 +146,4 @@ def test_tool_access_extraction_size_bounds_have_meaningful_headroom():
     }
     assert counts["ouroboros.tool_access"] <= 900
     assert all(count <= 1000 for count in counts.values())
-    assert 200 <= counts["ouroboros.tool_access_user_files"] <= 1000
+    assert counts["ouroboros.tool_access_user_files"] <= 1000

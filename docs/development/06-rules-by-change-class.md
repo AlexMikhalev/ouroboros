@@ -1402,6 +1402,11 @@ by "Provider Independence" above. Call-site imperatives:
   cleanup, not just the copy result; one operation-scoped memo may reuse
   verified work but must not cache failure as success or survive as a second
   store.
+- Mirror a split root's actual execution start and child-drive binding into its
+  canonical result through the existing terminal-preserving writer.
+  Recover a legacy missing binding only from positive known-child start evidence
+  plus the existing fresh-queue/later-worker orphan proof, never while pending or
+  actively cancelled and never as permission to resume execution.
 - Pooled terminal file preparation belongs to
   `headless.prepare_terminal_task_files` at the worker's own task_done
   boundary, after blocking post-task work and before releasing the slot;

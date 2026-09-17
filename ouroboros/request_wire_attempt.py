@@ -29,17 +29,25 @@ def validate_normalized_wire_success(
         raise ValueError("provider-error response cannot prove wire semantic success")
 
 
-def validate_physical_wire_attempt(
+def validate_wire_attempt_identity(
     candidate: "WireCandidateManifest",
     capture: "PhysicalAttemptCapture",
 ) -> None:
-    """Require the settled accounting attempt for this exact physical candidate."""
+    """Require the exact physical identity of the accounting attempt that carried this candidate.
+
+    Identity is one question — is this capture the attempt that sent exactly
+    this candidate on exactly this route — and it is independent of the
+    capture's accounting lifecycle state. Factual disclosure needs identity
+    only; durable compatibility learning composes it with a settled lifecycle
+    below. Settled means the ledger closed the attempt, not that its price is
+    final: a settled attempt with an unknown or non-final cost may still teach.
+    """
     from ouroboros.usage_accounting import PhysicalAttemptCapture
 
     if not isinstance(capture, PhysicalAttemptCapture):
         raise ValueError("wire evidence requires a physical-attempt capture")
-    if capture.state != "settled" or not capture.attempt_id:
-        raise ValueError("wire evidence requires a settled physical attempt")
+    if not capture.attempt_id:
+        raise ValueError("wire evidence requires an identified physical attempt")
     if capture.candidate_measurement_kind != "canonical_json_v1":
         raise ValueError("wire evidence requires an inspectable canonical candidate")
     if capture.candidate_raw_sha256 != candidate.candidate_sha256:
@@ -56,6 +64,16 @@ def validate_physical_wire_attempt(
         or not _valid_sha256(manifest_ref.get("sha256"))
     ):
         raise ValueError("wire evidence lacks the physical-candidate manifest receipt")
+
+
+def validate_physical_wire_attempt(
+    candidate: "WireCandidateManifest",
+    capture: "PhysicalAttemptCapture",
+) -> None:
+    """Require the settled accounting attempt for this exact physical candidate."""
+    validate_wire_attempt_identity(candidate, capture)
+    if capture.state != "settled":
+        raise ValueError("wire evidence requires a settled physical attempt")
 
 
 @dataclass(frozen=True)
@@ -79,7 +97,11 @@ class WireUsageDisclosure:
         candidate: "WireCandidateManifest",
         physical_attempt: "PhysicalAttemptCapture",
     ) -> "WireUsageDisclosure":
-        validate_physical_wire_attempt(candidate, physical_attempt)
+        # Identity only: the disclosure states which request shape was actually
+        # sent, a fact a failed monetary settlement cannot unmake. The caller
+        # (the successful-return finalizer) establishes that a response arrived;
+        # money keeps its own authority in the attempt ledger.
+        validate_wire_attempt_identity(candidate, physical_attempt)
         return cls(
             requested_effort=candidate.requested_effort,
             applied_effort=candidate.candidate_spec.effort,

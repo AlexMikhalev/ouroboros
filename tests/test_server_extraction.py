@@ -76,11 +76,10 @@ _MOVED_OWNERS = {
 # Process-scoped state and the composition itself: a leaf that needed one of
 # these would have to import the parent back, so they must stay defined in
 # server.py rather than arriving through an import. The restart transaction —
-# the deferred drain record and the three functions around it — stays here too
-# (HOT-DEFERRED): the upstream delegation train coupled the performer to
-# ``main()`` through the written module global
+# the deferred drain record and the three functions around it — stays here too:
+# the performer and ``main()`` share the written module global
 # ``_planned_delegate_restart_transaction_id``, so a byte-preserving relocation
-# would fork that state (docs/v7next/LEDGER_CORRECTIONS.md, D11 lane).
+# would fork that state.
 _SERVER_OWNED = (
     "_planned_delegate_restart_transaction_id",
     "_pending_restart",
@@ -200,8 +199,7 @@ def test_server_extraction_size_bounds_have_meaningful_headroom():
     # server.py keeps the lifespan, the supervisor loop, the owner-command
     # dispatch, the process state those three need, AND (on this tree) the
     # deferred restart transaction plus post-cutoff upstream drift, so the
-    # bound is looser than the reference's 1500 until the delegation organ
-    # (F2) frees the restart rows.
+    # bound includes the restart transaction state owned by the composition root.
     assert counts["server"] <= 1700
-    assert 400 <= counts["ouroboros.server_routing_context"] <= 1000
-    assert 400 <= counts["ouroboros.server_owner_routing"] <= 1000
+    assert counts["ouroboros.server_routing_context"] <= 1000
+    assert counts["ouroboros.server_owner_routing"] <= 1000

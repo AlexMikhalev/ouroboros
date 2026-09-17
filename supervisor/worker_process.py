@@ -163,8 +163,10 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
     if not getattr(_sys, 'frozen', False):
         _sys.path.insert(0, repo_dir)
     _drive = _pathlib.Path(drive_root)
-    # Spawned workers must pin the runtime-mode baseline from the parent env;
-    # forked workers inherit it. This keeps the elevation ratchet consistent.
+    # Every worker must pin the runtime-mode baseline. Spawn and forkserver do
+    # not inherit live parent memory, so the pin travels through the
+    # parent-exported OUROBOROS_BOOT_RUNTIME_MODE environment key (config.py
+    # _resolve_baseline_from_env). This keeps the elevation ratchet consistent.
     try:
         from ouroboros.config import initialize_runtime_mode_baseline
         initialize_runtime_mode_baseline()
