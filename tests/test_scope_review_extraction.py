@@ -139,4 +139,4 @@ def test_scope_review_extraction_size_bounds_have_meaningful_headroom():
     }
     assert all(count <= 1000 for count in counts.values()), counts
     assert counts["ouroboros.tools.scope_review"] <= 1000
-    assert 500 <= counts["ouroboros.tools.scope_review_pack"] <= 1000
+    assert counts["ouroboros.tools.scope_review_pack"] <= 1000

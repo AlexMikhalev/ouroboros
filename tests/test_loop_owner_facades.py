@@ -1,18 +1,10 @@
-"""Facade-identity contract for the v7 L-B loop.py leaf owners (D01 lane).
+"""Facade-identity contract for the loop.py leaf owners.
 
-Every member the L-B split moved out of ``ouroboros/loop.py`` keeps a loop.py
-re-export under its historical name, so existing callers and monkeypatching
-tests keep working unchanged: the loop binding IS the leaf's object, and the
-sibling leaves' D33 call-time handle reads (``_loop().X``) resolve through this
-module as the family rendezvous.
-
-v7next transplant note: the reference (ouroboros_v7_wip @ 9f691656) later spent
-the private half of this facade (its L3 package, RETIRED_FROM_LOOP) by
-re-homing every loop-private test import to its leaf owner. That trimming is a
-consumer-rebind wave, not part of the byte-preserving relocation, and does NOT
-ride with the D01 lane: on this tree the tip consumer surface still addresses
-every moved name at ``ouroboros.loop``, so the FULL re-export surface is the
-contract here (see docs/v7next/LEDGER_CORRECTIONS.md, D01 lane).
+``ouroboros/loop.py`` re-exports its leaf owners' members under the names
+existing callers and monkeypatching tests use. The loop binding IS the leaf's
+object, and sibling leaves' call-time handle reads (``_loop().X``) resolve
+through this module as the family rendezvous. The full re-export surface is
+required while those consumers address the names through ``ouroboros.loop``.
 """
 
 from __future__ import annotations

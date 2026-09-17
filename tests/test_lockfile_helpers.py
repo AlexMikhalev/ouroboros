@@ -483,14 +483,12 @@ def test_lockfileex_refusals_classify_by_the_win32_error():
 
 
 def test_the_design_note_names_the_exact_kernel_refusal_sets():
-    """Round 5.2 corrected the busy set in the code, in its pin and in the
-    review packet, and left the RATIFIED design note saying EACCES means
-    contention — the negation of what that same pin asserts. A reader who
-    implements the note re-opens the finding: a genuine access-denied would
-    re-contend for the whole 45 s monetary timeout instead of failing closed.
+    """EACCES must not be described as contention: a genuine access-denied
+    would re-contend for the whole 45 s monetary timeout instead of failing
+    closed if the design note contradicted the implemented errno sets.
     So the note names both sets and this compares them, member for member, by
     the numbers (EWOULDBLOCK and ENOTSUP are aliases on Linux, not everywhere)."""
-    note = pathlib.Path(__file__).resolve().parents[1] / "docs" / "v7next" / "DESIGN_USAGE_COMPACTION.md"
+    note = pathlib.Path(__file__).resolve().parents[1] / "docs" / "USAGE_COMPACTION.md"
     spelled = re.findall(r"are exactly ((?:`[A-Z]+`/)+`[A-Z]+`)", note.read_text(encoding="utf-8"))
     assert len(spelled) == 2, spelled
     unsupported, held = ({getattr(errno, name.strip("`")) for name in group.split("/")} for group in spelled)

@@ -1,10 +1,11 @@
 # Delegated-run admission — threat model
 
-Status: **schema floor enforced at admission; the boundary is read back per attempt and
+**Schema floor is enforced at admission; the boundary is read back per attempt and
 DISCLOSED, never required.** Owner: `ouroboros/config.py` (the two floors),
-`ouroboros/subagents.route_health` (the admission decision),
+`ouroboros/subagent_route_health.route_health` (the admission decision),
 `ouroboros/gateways/claudexor.attempt_containment` (the applied-fact reader) and
-`ouroboros/tools/delegate.py` (the three-place disclosure). This document is the reason
+`ouroboros/tools/delegate_terminal_evidence.py` and
+`ouroboros/delegate_start_instructions.py` (the three-place disclosure). This document is the reason
 those numbers and that predicate are what they are; change it in the same commit as the code.
 
 Claudexor owns the mirror document, `docs/DELEGATED_CONFINEMENT.md` in its own tree, which
@@ -13,32 +14,41 @@ the outside, and what it says when the answer is "nothing was applied".
 
 ## 1. The asset
 
-`~/.claudexor/v3/daemon/token` is a bearer for the ENTIRE `/v2` control API. A process that
-reads it can start runs at any access level on any registered project. Every authority
-derivation Ouroboros performs — the access profile, the run shape, the write-surface
-predicate — is decoration downstream of a child that holds it.
+The token named by the selected daemon's `control-api.json` is a bearer for
+the entire `/v2` control API. A process that reads it can request runs at other
+access levels on registered projects. Child-scope instructions do not restrict
+what a holder of the daemon token can ask the control API to do.
 
-The daemon runs as the operator, so a daemon Ouroboros did not start keeps its token in the
-operator's own home, at an absolute path a scoped `HOME` does not redirect. Ouroboros's OWN
-daemon (D30) is the exception: it is spawned under `CLAUDEXOR_CONFIG_DIR`, and that override IS
-the complete relocatable root — its token lives under `data/claudexor/`, not in the operator's
-home. Either way the token is an absolute path the child does not have to guess.
+Ouroboros owns a daemon under `DATA_DIR/claudexor/`:
+`CLAUDEXOR_CONFIG_DIR` relocates its complete config, credential, run and daemon
+state. A separately configured daemon may use its own runtime home instead.
+In either case, changing a child's `HOME` redirects home-relative lookups; it
+does not make the actual token path inaccessible.
 
 ## 2. The actor
 
-A delegated MUTATING child: `mode: agent`, `access: workspace_write`,
-`execution.isolation: live`. Claudexor hands the harness a real shell in the nanny's own
-worktree. The command stream is model output and the host cannot review each command before it
-runs. Not assumed hostile — assumed uncontrolled.
+A delegated mutating child uses the shape from
+`subagents.delegated_run_shape`: `mode: agent`, `access: workspace_write`,
+`execution.isolation: live`, with the delegated marker. For Git and skill
+payload work, `tools/delegate.py` provisions a private execution snapshot
+before dispatch. `live` means that Claudexor works in that supplied execution
+root; it does not mean direct edits to the authoritative target. The host
+captures the result and applies it through its existing integration path.
+Ordinary folders use the separate supported direct/copy work-product shape in
+`delegate_directory.py`.
 
-A delegated READ-ONLY child (`mode: ask`, `access: readonly`) is not this actor. It gets no
-shell that can mutate, and it stays inside Claudexor's ordinary envelope.
+The harness can execute model-generated commands under the operator's OS
+identity. It is not assumed hostile, but the host cannot review each command
+before it runs.
 
-## 2a. Stable project identity and the persistent registration (#362)
+A read-only child requests `mode: ask`, `access: readonly` under Claudexor's
+ordinary envelope. The host reads effective access back for both shapes;
+the delegated HOME/boundary checks below apply only to marker-carrying runs.
 
-Fresh mutating delegated starts on an engine satisfying the workspace-root release
-contract (`CLAUDEXOR_DELEGATED_WORKSPACE_ROOT_MIN_VERSION = "3.8.1"`, the next
-compatible release carrying Claudexor PR216 after the pinned 3.8.0) register and retain
+## 2a. Stable project identity and persistent registration
+
+For Git and skill payload work, fresh mutating starts on an engine satisfying the workspace-root release
+contract (`CLAUDEXOR_DELEGATED_WORKSPACE_ROOT_MIN_VERSION = "3.8.1"`) register and retain
 the user's actual target project in `scope.root`, while the child's writable filesystem
 rides separately as the private snapshot in `execution.workspaceRoot`. That registration
 is the USER'S identity, not a disposable snapshot: it is marked `project_persistent`
@@ -55,75 +65,56 @@ shape and retire their one-shot registration as before.
 
 ## 3. What Ouroboros actually controls
 
-Only ADMISSION and REPORTING. Ouroboros is an HTTP client of a daemon it does not build, ship,
-or version. It cannot confine the child; it can decline to start a run, and it can state
-afterwards what the run actually got.
+Ouroboros selects and delivers an immutable Claudexor runtime through
+`claudexor_runtime_pin.json` and `claudexor_runtime.py`. Executable bytes live
+under `DATA_DIR/state/cx`; credentials and daemon state remain separately under
+`DATA_DIR/claudexor`. The reviewed pin selects the next spawn, while the serving
+process may still run an earlier pin until its lifecycle ends. Admission uses
+the engine version returned by the connected daemon's handshake.
 
-The marginal escalation is worth naming before any defence is priced against it (AGENTS.md
-"Name the marginal escalation, not the scary noun"): this child already holds a shell in the
-nanny's worktree, running the operator's own code as the operator. The step from "shell" to
-"shell plus the daemon token" is real but small, and it does not buy a lane-wide refusal.
+Claudexor implements the harness boundary. Ouroboros controls admission,
+execution-root preparation, custody and reporting through the control API; it
+cannot infer an applied boundary merely from having delivered a particular
+engine build.
 
-So the question is NOT "against which engines is this an acceptable act?" but **"what did this
-run actually get, and does everyone downstream know?"**
+The marginal escalation matters: this child already holds a shell in its
+assigned worktree, running the operator's code as the operator. Access to the
+daemon token adds control-plane authority, but withholding the whole lane
+because a host has no boundary mechanism would also remove useful delegated
+execution. The contract therefore checks required request support and reports
+what each attempt actually received.
 
-## 4. The version bands (measured 2026-08-03, not assumed)
+## 4. Compatibility floors and applied evidence
 
-Probed live against the operator's running daemon, and read out of the Claudexor tree at
-`/Users/anton/Clawdexor` for the bands no local daemon runs.
+The constants in `ouroboros/config.py` answer request-compatibility questions:
 
-| Engine | `execution.delegated` | What the child actually gets | Verdict |
-| --- | --- | --- | --- |
-| ≤ 3.2.x | **400** `invalid_request`, `fieldErrors: {"/execution/delegated": ["Unexpected field; not part of this request."]}` | run never starts | below the marker floor — refused, because it cannot run |
-| 3.3.0 – 3.3.1 | accepted | a scoped `HOME` — a CONVENTION. `~`-relative lookups redirect; `/Users/<op>/.claudexor/v3/daemon/token` is read with an absolute path and is READABLE. No confinement fields exist on the attempt record at all | admitted, and reported as UNCONFINED |
-| ≥ 3.3.2, macOS | accepted | Seatbelt profile denying the Claudexor runtime tree and the operator credential stores, PROVEN against a denied path before the harness spawns; recorded as `confinement_mechanism` + `confinement_verified_denied_path` | admitted, and reported as CONFINED |
-| 3.3.2, elsewhere | accepted | nothing, and the run does not proceed: `applyConfinement` threw `ConfinementUnavailableError` off darwin and the evidence gate refused to terminalize | REFUSED by the engine (`delegated_confinement_unavailable`) |
-| ≥ 3.3.3, elsewhere | accepted | nothing enforced. `confinementMechanism()` returns null off darwin and the engine works anyway, disclosing the absence — `docs/DELEGATED_CONFINEMENT.md` §7: "There is no second policy. On every other platform `confinement_mechanism` is null, `confinement_verified_denied_path` is null, and `confinement_unavailable_reason` says why." | admitted, and reported as UNCONFINED |
+| Engine version | Request support used by Ouroboros | Consequence |
+| --- | --- | --- |
+| Below `CLAUDEXOR_MIN_VERSION` (3.2.0) | Below the supported control transport | Handshake refuses the route |
+| From 3.2.0, below `CLAUDEXOR_DELEGATED_MARKER_MIN_VERSION` (3.3.0) | Read-only shape is supported; `execution.delegated` is not | Read-only delegation remains available; a mutating shape gets `engine_rejects_delegated_marker` |
+| From 3.3.0 | Delegated marker is schema-compatible | Admission can proceed subject to route readiness; confinement is read from attempt evidence |
+| From `CLAUDEXOR_DELEGATED_WORKSPACE_ROOT_MIN_VERSION` (3.8.1) | Separate `execution.workspaceRoot` is supported | Stable target registration and private execution root stay distinct (§2a) |
 
-3.3.3 is where proceed-and-disclose replaced the refusal, not 3.3.6. Between them, 3.3.3–3.3.5
-did ship a real Linux bubblewrap boundary; 3.3.6 removed it as an owner decision, leaving the
-scoped `HOME` plus a disclosed absence as the whole non-macOS design. None of 3.3.3–3.3.5 was
-ever tagged or published, so the band above is what any reachable engine does.
-
-The live 3.2.0 daemon answers the read-only body with nothing but the fake-root error
-(`project root does not exist`), i.e. it schema-accepts every field that lane sends. The
-mutating body is rejected on the field, before the root is even looked at.
-
-### Why the floor is the MARKER release and not the boundary release
-
-Both were tried. The floor sat at 3.3.2 — the release that added the boundary — on the
-reasoning that 3.3.0–3.3.1 write `harness_home_isolated: true` while the token stays readable,
-so admitting them would produce a receipt for a confinement that is not there.
-
-That reasoning was right about the receipt and wrong about the remedy. **The last row of the
-table is the same defect the floor was supposed to prevent, and the floor cannot see it:** a
-3.3.2 build declares 3.3.2 on every host and applies a boundary on one of them. A version
-describes a BUILD; it never describes what THIS attempt did. Using it as a proxy for "a
-boundary was applied" is false in both directions — it refuses engines that would have been
-honestly reported, and it passes hosts where nothing was applied.
-
-The receipt is fixed where the receipt is written (§8), not by narrowing admission. Once the
-report tells the truth, the whole band from 3.3.0 up is admissible, and the floor means the
-one thing a version can honestly mean: **below 3.3.0 the request is a 400 and no run exists.**
+These floors are not a platform-support matrix. A version describes a build,
+not what a particular attempt applied. Raising the marker floor to a release
+that contains a boundary would still not prove that boundary exists on every
+host; it would also refuse older engines that can execute with honest
+unconfined disclosure. The report must instead follow the attempt evidence
+in §8. The floors are compatibility minima, not a claim that the managed pin
+or serving engine currently equals one of them.
 
 ## 5. Why a version at all, and why not a capability probe
 
-For the SCHEMA question a version is the only answer available. Verified rather than assumed:
+The marker floor prevents a known request-schema failure before dispatch.
+The capability catalog's top-level `runControlKeys` does not establish support
+for the nested `execution.delegated` field. Its per-harness `delegation` object
+describes MCP injection for Claudexor's own delegation strategy, which is a
+different capability. `subagent_route_health.route_health` therefore does not
+use that field as proof of marker support.
 
-- `POST /v2/handshake` returns `{protocolMajor, compatible, operationsPath, engine: {version,
-  sha, entry}}`. There is no capability list of any kind — checked live, and checked in the
-  3.3.2 source, where the handshake responder is unchanged.
-- `GET /v2/agent-capabilities` publishes `runControlKeys` derived from **top-level** request
-  keys only. `execution` appears; `execution.delegated` is nested and therefore invisible.
-  The catalog SCHEMA is field-identical between 3.2.0 and 3.3.2 — the only diff is one
-  `.describe()` string, so it gained nothing a probe could read.
-- The per-harness `delegation` object in that catalog is about **Claudexor MCP injection** —
-  whether the harness can be handed sub-agent tools. It is `available: true` on the live 3.2.0
-  daemon, which rejects the marker outright, so reading it as a delegation signal would admit
-  precisely the engines that cannot serve the lane.
-- A probe by BEHAVIOUR is unavailable: `RunExecution` is `.strict()`, so the only way to learn
-  whether the field is accepted is to send it, and sending it on an engine that accepts it
-  STARTS THE RUN. There is no dry-run key in `runControlKeys`. The probe and the act are one.
+A behavioral test of the start endpoint would be the operation itself: sending
+the field to an engine that accepts it starts a run. Admission uses the
+compatibility constant instead of spending a model run to probe that schema.
 
 For the BOUNDARY question no probe is needed, because the engine already answers it — after
 the fact, on the attempt record (§8). That answer is a fact about the run rather than a
@@ -141,12 +132,12 @@ one question left that a floor cannot answer:
   `route_health` against the run SHAPE, before a token is spent. An engine below it would
   reject the request with a 400, so the lane refuses it with a typed reason
   (`engine_rejects_delegated_marker`) instead of spending a dispatch on a certain failure.
-- `attempt_containment` — the applied-evidence reader. Not a gate: it decides what is SAID,
-  never whether the run happens.
+- `attempt_containment` — the applied-evidence reader. Its boundary evidence
+  feeds disclosure, never a boundary-required admission gate. Its HOME facts
+  also feed the separate breach check in §8.
 
 An engine between the two floors serves read-only delegation and refuses mutating delegation.
-That is the owner's explicit decision, and it is why the marker floor is not simply raised into
-the transport floor.
+Keeping the marker floor separate preserves that serving read-only lane.
 
 Both floors fail CLOSED: `engine_at_least` compares an absent or unparsable version as `(0,)`,
 below every floor.
@@ -161,21 +152,21 @@ never produce. An `auto` request becomes an ordinary native subagent with a visi
 Stated plainly, because a floor described as total is worse than a narrow one.
 
 - **Not the enforcement.** Ouroboros admits; the engine confines. The floor is a claim about a
-  build, checked against a self-reported number, and it is now used only for the schema
+  build, checked against a self-reported number, and it is used only for the schema
   question, where that is enough.
 - **Not a lying or downgraded daemon.** The version is self-reported over loopback, and so are
   the applied facts on the attempt record. Anything that can forge either already runs as the
   operator and has the token.
-- **Not the gap between two repos.** Ouroboros and Claudexor have no shared build. That the
-  release carrying the marker declares ≥ 3.3.0 is a RELEASE GATE on the engine side, not
-  something this pin can enforce. It holds without an edit for every bump above the floor and
-  fails closed if a release ever breaks it.
+- **Not the engine implementation.** Claudexor is built separately and selected
+  by an exact reviewed runtime pin. Its release must actually implement the
+  request shape its version promises. The compatibility floor checks that
+  declared contract; it does not inspect the engine's code at dispatch.
 - **Not a promise that anything is confined.** A delegated mutating run is allowed on a host
   with no boundary mechanism at all. What is guaranteed is that the run is not DESCRIBED as
   confined when it is not — the disclosure, not the boundary, is the invariant.
 - **Not what the boundary itself leaves open where it does exist.** The vendor credential root
   stays readable to the child and the network is not fenced. Those are the engine's to state
-  and it states them in `docs/DELEGATED_CONFINEMENT.md` §8. Ouroboros must not re-describe
+  and it states them in `docs/DELEGATED_CONFINEMENT.md`. Ouroboros must not re-describe
   them as covered.
 - **Not the read-only lane's confinement.** A read-only child is scoped by Claudexor's ordinary
   envelope. Ouroboros asks for no marker and verifies no boundary there.
@@ -183,24 +174,13 @@ Stated plainly, because a floor described as total is worse than a narrow one.
   boundary", so such a run is disclosed as unconfined when it was in fact confined. That is
   the honest limit of an applied-fact reader, and it is the safe direction: the consequence is
   a disclosure, never a refusal.
-- **Not free of every harness NAME.** One named residual, disclosed rather than removed:
-  `gateway/claudexor_accounts.py::_build_login_request` branches on `harness == "codex"` in
-  three places (login setup only — never admission, routing or confinement). The branch is
-  load-bearing: `loginFlow` exists only for codex and is a 400 elsewhere, and a non-codex
-  login with no explicit transport would default daemon-side to `transport=daemon`, the
-  macOS Terminal.app handoff D30 forbids — so `client_pty` is forced instead. It mirrors
-  Claudexor's own setup-transport rule, not Ouroboros policy, and deleting it breaks D30.
-  It is the ONLY harness-name branch in the core (`ouroboros/`, `supervisor/`, `server.py`,
-  `launcher.py`). Removal condition: when the engine makes non-codex logins daemon-hosted,
-  the branch goes and this bullet with it.
 
 ## 8. Evidence, not intention — and the disclosure it feeds
 
 What the run actually got is read back from the run's own artifacts
 (`<runDir>/attempts/<id>/attempt.yaml`). The HOME pair is artifact-only — the engine projects it
 onto no `/v2` response — while the boundary is also on the run detail, as
-`candidates[].confinement` (`proven` / `mechanism` / `verifiedDeniedPath` / `unavailableReason`,
-since 3.3.6); the artifact stays the one reader here because it answers both halves at once.
+`candidates[].confinement` (`proven` / `mechanism` / `verifiedDeniedPath` / `unavailableReason`); the artifact stays the one reader here because it answers both halves at once.
 Two facts, one reader (`gateways.claudexor.attempt_containment`):
 
 - the HOME pair, `harness_home_isolated` / `harness_home_dir`;
@@ -220,32 +200,32 @@ branch would have gone on reporting "no boundary" forever after that day.
 **The two halves take different rules about silence, on purpose.** A missing HOME fact stays
 UNPROVEN rather than false, because the consequence of "false" there is a CANCELLATION, and an
 attempt can legitimately record no `harness_home_isolated` — it is the one optional member of
-the applied facts, omitted when the attempt died before its home was decided (and an engine
-older than 3.3.2 put no applied facts on `attemptFailureRecord` at all). A missing mechanism
+the applied facts, omitted when the attempt died before its home was decided (and an older engine may omit
+those facts from `attemptFailureRecord`). A missing mechanism
 collapses to "no boundary", because the consequence there is a DISCLOSURE. Each silence is read
 in the direction whose failure mode is recoverable.
 
-**A breach is exactly two facts** (simplified 2026-08-11, Poltergeist phase A3; the
-2026-08-07 refinement went one step further): a recorded `harness_home_isolated: false`,
-or an applied home EQUAL to the operator's own (the claim is the lie, whatever boundary
-sits beside it). A scoped home NESTED under `$HOME` is NOT a breach — with or without a
-recorded boundary. The engine roots every scoped home under its own runtime dir, which
-lives under `$HOME` on every host it supports, and on a host with no boundary mechanism
-(every non-macOS host today) it CANNOT record one — so the former nested-without-mechanism
-rule cancelled every mutating Linux run post-factum while the work was already done and
-healthy. The boundary-less nested shape flows to the existing disclosed-unconfined path
-below instead: the token stays reachable by a relative walk and the disclosure SAYS so,
-but the child already holds a shell in this worktree, and cutting the lane on every
-boundary-less host costs more than the marginal step it prevents (AGENTS.md "Disclose
-instead of forbid"). The engine's typed `confinement_unavailable_reason` — read from the
-SAME attempt artifact — rides the disclosure as an amplifier (why this host has no
-mechanism); it is telemetry, never an admission token, and its presence never excuses a
-recorded FALSE.
+**Confirmed HOME failures are distinct from missing evidence.** For attempts
+that record the HOME isolation flag, `_home_isolation_breach` reports a breach
+when that flag is false, or when the claimed isolated home resolves to the
+operator's own home. A missing flag is skipped by this enforcement check and
+remains unproven in the report. A scoped home nested under the operator's home
+is not a breach, with or without an OS boundary: nesting is the engine's
+ordinary layout and its absence of a boundary is disclosed rather than used
+to cancel useful work. The engine's `confinement_unavailable_reason` amplifies
+that disclosure; it never excuses a recorded false.
 
-Where no boundary was applied, the fact is written LOUDLY into three places (AGENTS.md
-"Disclose instead of forbid"):
+The run-level report also preserves partial evidence. `verified` remains false
+unless every recorded attempt discloses its HOME fact, no HOME breach exists,
+the HOME is not nested under the operator's, and all attempts name the same
+proven boundary mechanism. `nested_under_operator_home` stays visible even if
+a boundary was applied: the boundary is evidence of confinement; the HOME
+redirect alone is not.
 
-1. **the durable record** — a `delegate_run_unconfined` event, once per run, carrying the
+The disclosure reaches three places:
+
+1. **the durable record** — a `delegate_run_unconfined` event when no boundary
+   is reported or the HOME is nested under the operator's, once per run, carrying the
    note the parent was given, so the forensic trail of an integrated patch says where the
    work came from;
 2. **the child's own prompt** — its instructions state that the boundary is a REQUEST and not

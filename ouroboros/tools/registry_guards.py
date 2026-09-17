@@ -1,9 +1,7 @@
 """Host-owned pre-dispatch guards: capability/resource, managed-update and skill-payload constraints.
 
-Every span is extracted VERBATIM from the parent's tip bytes by
-scripts/v7next_transplant.py (D18/D33 module-handle split, proof-checked);
-the parent re-exports every moved name, so historical imports and
-monkeypatch targets keep working unchanged.
+The facade re-exports these definitions so existing imports and monkeypatch
+targets retain the same bindings.
 """
 
 from __future__ import annotations
@@ -34,7 +32,7 @@ def _registry():
     The parent owns the rebindable module state and the members tests
     monkeypatch there; reading them through the module at each call keeps
     one binding, where a from-import would freeze the value this leaf saw
-    at import time (the owner-approved D18/D33 mechanical exception).
+    at import time.
     """
     from ouroboros.tools import registry
 
@@ -329,7 +327,7 @@ def _disabled_tools(ctx: Any) -> frozenset:
     # too (harmless: nothing registers it), so old contracts round-trip as-is.
     if "claude_code_edit" in names:
         names.add("delegate_start")
-    # Q1 rename compatibility: contracts that withheld `advisory_review` keep
+    # Rename compatibility: contracts that withheld `advisory_review` keep
     # withholding the SAME organ under its new name, and vice versa (a new
     # contract naming only the new spelling must also silence the alias).
     if "advisory_review" in names:
@@ -793,7 +791,7 @@ def _shell_git_and_runtime_block(
     """Direct-git-via-shell policy + the external-workspace runtime/secret read
     guard. External workspaces AND the default (non-workspace) lane get full
     task-local git through ONE target-aware resolver — only the Ouroboros
-    runtime is protected (Q4=A unwind, 2026-08-08) — while raw non-git shell
+    runtime is protected — while raw non-git shell
     in external workspaces still cannot read the runtime/secrets;
     self_worktree keeps the strict read-only git policy."""
     if not _registry().shell_argv(raw_cmd):
@@ -866,7 +864,7 @@ def _shell_git_and_runtime_block(
                 ),
             )
         return None
-    # DEFAULT (non-workspace) lane. Q4=A (owner 2026-08-08): mutating git
+    # DEFAULT (non-workspace) lane: mutating git
     # is free EVERYWHERE outside the Ouroboros runtime. The argv-text
     # blanket is replaced by the SAME target-aware resolver the external
     # lane runs since v6.27: read-only git allowed even at a runtime
