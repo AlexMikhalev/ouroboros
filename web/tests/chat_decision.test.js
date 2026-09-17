@@ -905,6 +905,11 @@ test('the pointer paints from its row alone: question, option zero and comment, 
         // A comment-only answer replayed later updates the same pointer in place.
         assert.equal(fx.decision.buildQuestionPointer({ ...POINTER, comment: 'Neither — use the archive.' }), null);
         assert.equal(pointer.querySelector('.project-question-answer').textContent, 'Your answer: Yes — Neither — use the archive.');
+        // A narrower re-delivery (the 3-second activity census) never blanks the painted question or option label.
+        const { question: _q, options: _o, ...narrow } = POINTER;
+        assert.equal(fx.decision.buildQuestionPointer({ ...narrow, question: '', options: [], answered_index: 0 }), null);
+        assert.equal(pointer.querySelector('.project-question-preview').textContent, 'Merge now?');
+        assert.equal(pointer.querySelector('.project-question-answer').textContent, 'Your answer: Yes — Neither — use the archive.');
         fx.decision.releaseViews({ contains: (node) => node === pointer });
         const restored = fx.decision.buildQuestionPointer({ ...POINTER, answered_index: 1 });
         assert.equal(restored.querySelector('.project-question-answer').textContent, 'Your answer: No — Neither — use the archive.');

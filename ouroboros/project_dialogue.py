@@ -123,8 +123,10 @@ def project_question_pointer(row: Dict[str, Any], block: Any, project: Any,
     still_required = bool(block.get("wait_for_answer")) if block else bool(quiz.get("wait_for_answer"))
     name = str(project.get("name") or "Project")
     lead = question_status(state if known else "unknown", facts, still_required)
-    options = quiz.get("options") if isinstance(quiz.get("options"), list) else block.get("options") or []
-    labels = [str(option.get("label") if isinstance(option, dict) else option or "") for option in options]
+    options = quiz.get("options") if isinstance(quiz.get("options"), list) else block.get("options")
+    labels = [str(option.get("label") if isinstance(option, dict) else option or "")
+              for option in (options if isinstance(options, list) else [])]
+    question = str(quiz.get("question") or row.get("text") or block.get("question") or "")
     pointer: Dict[str, Any] = {
         "role": "system", "system_type": "project_question_pointer", "task_id": task_id,
         "quiz_id": quiz_id, "quiz_state": state if known else "unknown",
@@ -132,8 +134,9 @@ def project_question_pointer(row: Dict[str, Any], block: Any, project: Any,
         "project_chat_id": int(project["chat_id"]), "chat_id": WEB_UI_CHAT_ID,
         "ts": str(block.get("asked_at") or row.get("ts") or ""),
         "text": f"{lead} in {name}", "is_progress": False, "markdown": False,
-        "question": str(quiz.get("question") or row.get("text") or block.get("question") or ""),
-        "options": labels,
+        # Display fields only when known: a narrower producer must never blank a complete row.
+        **({"question": question} if question else {}),
+        **({"options": labels} if labels else {}),
         **facts,
         **({"source_status": "unavailable"} if not known else {}),
     }

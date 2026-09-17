@@ -133,6 +133,10 @@ export function createChatDecision({
     // ordinary history reconciliation and the quiz_state frame, never a poll of its own.
     function updatePointer(view, frame, live = false) {
         const current = observe({ ...frame, state: frame.state || frame.quiz_state }, live);
+        // A narrower re-delivery (the activity census, a lifecycle frame) never blanks the
+        // question or the option labels a complete row already painted.
+        for (const field of ['question', 'options', 'project_name'])
+            if (field in current && (current[field] == null || current[field] === '' || current[field]?.length === 0)) delete current[field];
         view.row = { ...view.row, ...current, quiz_state: current.state };
         const presentation = questionPresentation(view.row);
         const preview = questionPreview(view.row);
@@ -752,7 +756,8 @@ export function createChatDecision({
         frame = observe(frame, true);
         const key = questionKey(taskId, quizId);
         const pointer = pointerViews.get(key);
-        const changed = pointer ? updatePointer(pointer, frame, true) : false;
+        // Observed once above as live; the pointer repaints from the merged observation.
+        const changed = pointer ? updatePointer(pointer, frame) : false;
         const card = quizViews.get(key);
         if (!card) return changed;
         const index = Number.isInteger(frame.answered_index) ? frame.answered_index : null;

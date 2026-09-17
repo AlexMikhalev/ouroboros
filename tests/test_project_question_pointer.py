@@ -106,6 +106,8 @@ def test_activity_question_uses_same_memo_and_preserves_wait_semantics(tmp_path,
     rows = gs._chat_activities_snapshot_safe(tmp_path, direct_turns=[])
     assert rows[0]["required_question"]["quiz_state"] == "open"
     assert rows[0]["required_question"]["text"] == "Waiting for your answer in Waiting Project"
+    # The census pointer is as complete as the history row: the browser never paints a blank over it.
+    assert rows[0]["required_question"]["question"] == "?" and rows[0]["required_question"]["options"] == ["a", "b"]
     assert reads.count(str(tmp_path / "task_results/t1.json")) == 1
     gs._chat_activities_snapshot_safe(tmp_path, direct_turns=[])
     assert reads.count(str(tmp_path / "task_results/t1.json")) == 1
@@ -155,6 +157,9 @@ def test_question_presentation_shared_fixture():
         assert pointer["text"] == case["status"] + " in Project", case["case"]
         assert {key: pointer[key] for key in keys if key in pointer} == case["row"], case["case"]
         assert pointer["question"] == "Which?" and pointer["options"] == ["a", "b"]
+    narrow = project_question_pointer({"task_id": "task", "quiz_id": "q", "wait_for_answer": True},
+                                      {"quiz_id": "q", "state": "open"}, {"id": "p", "chat_id": 12, "name": "Project"}, None)
+    assert not {"question", "options"} & narrow.keys(), "unknown display fields are omitted, never blanked"
 
 
 def test_project_room_quiz_row_carries_the_wait_facts(tmp_path):
