@@ -638,7 +638,8 @@ def test_watcher_tick_never_waits_on_the_key_probe(capsys):
     thread.join(timeout=5)
     line = next(ln for ln in seen.splitlines() if "[watch]" in ln)
     assert "spent $2.50/$50.00 reserved $16.00" in line and "SM1_a1=running scenario" in line   # $16 per task, one root
-    assert "key probe pending" in line and "ALERT" not in line
+    # Disk alerts are independent of the key probe's pending state.
+    assert line.endswith(" | key probe pending")
 
 
 # --------------------------------------------------------------------------- #
