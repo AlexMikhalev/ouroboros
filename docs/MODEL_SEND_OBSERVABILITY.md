@@ -1,15 +1,12 @@
-# Design note — runtime invariant `model-visible ⟺ logged` (CPL-5)
+# Model-send observability: `model-visible ⟺ logged`
 
-Status: LANDED (plan §7 item 5; batch-1 Q8=A confirmed; narrowed per roast
-finding F15). The code is `ouroboros/model_send_seal.py`, wired at
+The physical-send observability contract is implemented in
+`ouroboros/model_send_seal.py`, wired at
 `llm_attempt._candidate_before_dispatch` and swept from `server_maintenance`;
-the pins are `tests/test_model_send_seal.py`. This note remains the contract,
-kept narrow so neither the code nor a later reader drifts into a broader —
-unprovable — claim. ONE clause changed between design and landing, and it is
-marked in §3.2: a reconstruction mismatch is an OBSERVABILITY fact, not a
-dispatch gate.
+`tests/test_model_send_seal.py` verifies it. The claim is deliberately narrow:
+a reconstruction mismatch is an observability fact, not a dispatch gate.
 
-## 1. The claim, narrowed (F15)
+## 1. Scope of the claim
 
 The invariant binds exactly one object: **`model_send` — the physical
 candidate payload at the last host-controlled pre-transport seam**. That seam
@@ -22,8 +19,8 @@ after the cache-marker finalizer produced the final send copy
   durable record of its exact send copy BEFORE dispatch.
 - **Reverse (`logged ⟹ sent`)**: every sealed `model_send` record joins
   exactly one accounting attempt (dispatched, refused, or released). The
-  reverse direction holds for `model_send` records ONLY — F15 explicitly does
-  not claim it for any other log plane (events, chat, progress are narrations,
+  reverse direction is asserted only for `model_send` records, not
+  for any other log plane (events, chat, progress are narrations,
   not send truth).
 - **Everything else is out of the byte domain by typed exclusion, never by
   silence** (§4).
@@ -35,21 +32,20 @@ its own previous answers is whatever the host replays into the NEXT send, so
 response-assembly truth is covered transitively by the next round's
 `model_send` record (§5.2).
 
-## 2. What already exists (reuse-first — the note extends, it does not mint)
+## 2. Shared mechanisms
 
 | Existing mechanism | Where | Role in the invariant |
 |---|---|---|
 | Canonical digest of the exact send copy (`canonical_json_v1`: sort_keys, compact separators, `ensure_ascii=False`, `allow_nan=False`, `default=str`) | `llm_attempt._attempt_request` / `_canonical_candidate_bytes` | The canonical form and its versioned basis (`candidate_measurement_kind`) |
-| Pre-dispatch identity re-check: digests re-derived from the closed-over candidate and compared with the reservation's expected identity; drift refuses dispatch (`PhysicalAttemptPreparationFailed: physical candidate changed before dispatch`) | `llm_attempt._candidate_before_dispatch` | The forward gate's skeleton — today a digest compare of two in-memory copies |
+| Pre-dispatch identity re-check: digests re-derived from the closed-over candidate and compared with the reservation's expected identity; drift refuses dispatch (`PhysicalAttemptPreparationFailed: physical candidate changed before dispatch`) | `llm_attempt._candidate_before_dispatch` | The forward gate's skeleton — a digest compare of two in-memory copies |
 | Durable candidate manifest + redacted CAS blob, written before dispatch, with two labelled digest domains (`canonical_json_v1_pre_redaction` facts vs `observability_json_v1_post_default_redaction_cas` blob) | `observability.persist_physical_candidate` / `persist_call` | The sealed record carrier |
 | Attempt lifecycle `reserved → dispatched → settled|unresolved` / `reserved → released`, short-lock append + sequence replay | `usage_accounting` | The join target for the reverse direction |
 | Anthropic native custody projection (opaque provider-native content replaced before persistence; disclosed as `anthropic_native_custody_projected`) | `anthropic_native_custody.physical_custody_projection` | Prototype of a typed exclusion |
 | Secret redaction with per-hit `RedactionRecord`s | `observability._redact_text` + rules | Prototype of a typed exclusion |
 
-The gap this note was written to close: the pre-existing gate compared two
-**in-memory** serializations, so a bug between "what we persisted" and "what we
-believe we persisted" was assumed away rather than caught, and a mismatch was
-only a raised exception. `model_send_seal.verify_sealed_candidate` closes it by
+An identity gate that compares only two **in-memory** serializations cannot
+establish whether the durable record matches either copy.
+`model_send_seal.verify_sealed_candidate` checks that separate question by
 **reconstructing from the durable record** and byte-comparing that
 reconstruction against the wire-bound serialization, emitting a **typed durable
 fact** on any inequality (§3.2 — a fact, not a refusal).
@@ -58,7 +54,7 @@ fact** on any inequality (§3.2 — a fact, not a refusal).
 
 ### 3.1 Sealed record (`model_send` seal, v1)
 
-Extend the existing physical-candidate manifest (no new plane) with a
+The existing physical-candidate manifest carries a
 `model_send_seal` block:
 
 - `seal_version: 1`
@@ -66,18 +62,18 @@ Extend the existing physical-candidate manifest (no new plane) with a
   the serializer is a NEW basis string; a reader never re-interprets bytes
   under a different basis.
 - `pre_redaction_sha256` / `size_bytes` — digest of the canonical bytes of the
-  exact wire payload (exists today as `candidate_raw_sha256`).
+  exact wire payload (`candidate_raw_sha256`).
 - `exclusions: [...]` — every applied exclusion instance: `{class, path,
   opaque_sha256?}` (§4). An empty list is an explicit claim that the CAS blob
   reconstructs the wire bytes exactly (modulo nothing).
-- `attempt_id` — the accounting join key (exists).
+- `attempt_id` — the accounting join key.
 
 ### 3.2 Verification on call (forward)
 
 At the seam, in this order:
 
 1. Serialize the wire-bound candidate to canonical bytes `W`.
-2. Persist the sealed record (already the order today: persist, then gate).
+2. Persist the sealed record (persist, then gate).
 3. **Reconstruct** `R` from the durable record just written: read back the
    blob, undo nothing — instead apply the SAME exclusion map to `W` (redaction
    and custody projection are not invertible; §5.1) — and compare byte-for-byte
@@ -87,10 +83,7 @@ At the seam, in this order:
    NOT blocked, and the verification never raises: this invariant is
    observability, and `verify_sealed_candidate` is fail-soft by contract.
 
-That last step is the one place the landed contract differs from the first
-draft of this note, which asked for a fail-closed refusal through
-`PhysicalAttemptPreparationFailed`. It was rejected on its own merits, not for
-convenience:
+Verification remains fail-soft for two reasons:
 
 - The refusal it would add is not the same question as the existing gate. The
   in-memory identity re-check above this call still refuses dispatch when the
@@ -106,7 +99,7 @@ convenience:
   disclosure, and a refusal path that can itself fail (write error, unreadable
   root) would have to decide between a silent skip and a dead runtime.
 
-So the landed rule is: the fact is mandatory, the block is not.
+The mismatch must be disclosed without blocking dispatch.
 `tests/test_model_send_seal.py` pins exactly this — a corrupted blob, a
 tampered seal digest, a dropped seal block, an undisclosed exclusion class and
 a foreign basis each produce their typed fact while the attempt still settles.
@@ -152,7 +145,7 @@ violation.
 | `secret_redaction` | Secret VALUES masked in the CAS blob by the observability redaction rules | The durable copy must not carry live credentials; equality is digest-anchored instead (pre-redaction sha256) | existing `RedactionRecord`s → `{class, path}` rows |
 | `provider_native_custody` | Provider-owned opaque content (e.g. encrypted reasoning replay items) projected before persistence | Bytes are provider property; replay semantics are server-side | existing `anthropic_native_custody_projected` flag → per-item `{class, path, opaque_sha256}` |
 | `transport_envelope` | HTTP headers, auth, SDK-added transport fields (user-agent, idempotency keys, `stream` flag where the SDK owns it) | Below the seam by construction; carries secrets and transport identity, not model-visible content | class-level row (no per-call enumeration) |
-| `provider_side_transform` | Server-side effects the host cannot observe pre-flight: prompt-cache application, provider truncation/normalization | Not host-controlled; the seam is the LAST host-controlled point, not the last point | class-level row; conformance suite (CPL-6) owns per-provider characterization |
+| `provider_side_transform` | Server-side effects the host cannot observe pre-flight: prompt-cache application, provider truncation/normalization | Not host-controlled; the seam is the LAST host-controlled point, not the last point | class-level row |
 
 Delegated/harness model calls (`agent_session` executor lanes) are a
 lane-level instance of `provider_side_transform`: the host never holds the
@@ -217,24 +210,19 @@ from "our two copies agree" to "the durable record agrees with the wire".
   narration planes (they remain projections; reverse-⟺ is `model_send` only).
 - No logical-call identity across retry rungs (§5.3).
 - No global "every log line reconstructs" framework — one seam, one record
-  kind, one sweep (plan: local decisions, no generic framework).
+  kind, one sweep.
 - No new persistence plane: the seal extends the existing physical-candidate
   manifest; facts ride `events.jsonl` + the seal's own directory.
 
-## 7. Implementation sketch for the next lane (not this one)
+## 7. Implementation owners
 
-1. `llm_attempt.py`: extend `_candidate_before_dispatch` with read-back +
-   projection compare; thread the typed fact writer (small; the seam is one
-   closure).
-2. `observability.py`: `model_send_seal` block in
-   `persist_physical_candidate` manifests (schema_version bump of the
-   manifest payload is NOT needed — additive key under the existing
-   `SCHEMA_VERSION` object; readers ignore unknown keys).
-3. `server_maintenance.py`: reconciliation sweep behind the existing startup
-   sweep guardrails (fail-soft, bounded batch, UNKNOWN accounting state skips
-   destructive conclusions — there are none to skip: the sweep only writes
-   facts).
-4. Tests: seal round-trip (write → reconstruct → equal); each §5 class forced
-   (mutating fake SDK, redaction-rule flip, double-assembly guard, per-rung
-   seals); reverse sweep on a synthetic orphan both ways; delegated-lane
-   `unobserved` disclosure.
+- `llm_attempt.py` owns the pre-dispatch seam and its candidate identity gate.
+- `model_send_seal.py` stamps the physical-candidate manifest, reads back the
+  durable projection, writes typed mismatch facts and reconciles both join
+  directions. The seal is an additive key under the existing manifest schema.
+- `server_maintenance.py` runs the bounded reconciliation through the existing
+  startup sweep. Unknown accounting evidence does not become an orphan claim;
+  the sweep records facts without deleting records or fabricating attempts.
+- `tests/test_model_send_seal.py` covers reconstruction, typed divergence,
+  non-blocking dispatch and reverse joins. Compacted history is resolved through
+  the live/archive union described in [Usage compaction](USAGE_COMPACTION.md).

@@ -1,4 +1,4 @@
-"""ABI 7.0 (ABI-10) — F3.3 comma-list remnant sweep: the phase CI gate.
+"""ABI 7.0 reviewer comma-list retirement checks.
 
 Grep-level checker over ``ouroboros/`` + ``web/`` (+ ``supervisor/``) pinning
 that the retired reviewer comma-list surface stays retired. Three sweeps:
@@ -11,7 +11,7 @@ that the retired reviewer comma-list surface stays retired. Three sweeps:
    the known derived-plane parsers — the review-configuration modules
    themselves carry NO comma parsing (the structured
    ``OUROBOROS_REVIEWER_SLOTS`` is the one configuration surface);
-3. the phase-5 plumbing removed by the sweep stays removed, and the retired
+3. removed route plumbing stays removed, and the retired
    per-row route envs are IGNORED at runtime (retired-envs-are-ignored pin).
 
 Allowlist discipline follows tests/test_gateway_abi3_removals.py: PER-SITE and
@@ -42,8 +42,7 @@ def _sweep_files():
 
 
 # (posix path, retired key) -> (reason, exact mention count).
-# Every row is a LEGITIMATE remnant class disclosed in
-# docs/v7next/LEDGER_CORRECTIONS.md ("From the F3.3 comma-sweep"):
+# Every row belongs to one of these legitimate remnant classes:
 #   retirement-SSOT — the list that declares the keys retired;
 #   derived env plane — the comma ENV spellings of the two model lists live on
 #     as the runtime projection for the API-pinned surfaces (never settings);
@@ -59,7 +58,7 @@ _RETIRED_KEY_MENTION_ALLOWLIST = {
     ("ouroboros/settings_defaults.py", "OUROBOROS_REVIEW_ROUTES"): ("retirement SSOT", 2),
     ("ouroboros/settings_defaults.py", "OUROBOROS_SCOPE_REVIEW_ROUTES"): ("retirement SSOT", 2),
     ("ouroboros/settings_defaults.py", "OUROBOROS_ADVISORY_REVIEW_ROUTE"): ("retirement SSOT", 2),
-    # -- derived env plane: the projection writer (D15) …
+    # -- derived env plane: the projection writer …
     ("ouroboros/reviewer_slot_config.py", "OUROBOROS_REVIEW_MODELS"): ("derived env plane projection writer", 4),
     ("ouroboros/reviewer_slot_config.py", "OUROBOROS_SCOPE_REVIEW_MODELS"): ("derived env plane projection writer", 4),
     ("ouroboros/reviewer_slot_config.py", "OUROBOROS_SCOPE_REVIEW_MODEL"): ("derived env plane projection writer", 2),
@@ -191,7 +190,7 @@ def test_comma_split_ast_scan_sees_the_evasion_spellings():
 
 
 def test_phase5_route_plumbing_stays_removed():
-    """The F3.3 removals stay removed: no per-row route env plumbing, no
+    """Removed route plumbing stays removed: no per-row route env plumbing, no
     advisory route env constant, anywhere under the swept trees."""
     retired_symbols = (
         "configured_review_routes",

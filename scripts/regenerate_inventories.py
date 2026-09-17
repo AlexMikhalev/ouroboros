@@ -5,20 +5,20 @@ Each inventory is a generated document whose staleness turns CI red
 (``tests/test_generated_inventories.py`` pins byte-identity against a fresh
 in-memory regeneration, plus the resolution invariants below):
 
-1. ``docs/v7next/FROZEN_CONTRACTS_INVENTORY.md`` — machine extraction of the
+1. ``docs/inventories/FROZEN_CONTRACTS_INVENTORY.md`` — machine extraction of the
    ARCHITECTURE §11.1 frozen-contracts table: per row the contract label, the
    owner files, and the anchoring suites, every referenced repo path resolved
    against the tree (a row whose owner or anchor file disappeared = red), plus
    the ``ouroboros/contracts/`` package coverage (a contracts module never
    referenced by §11.1 is listed as a gap — growth of that list = red).
-2. ``docs/v7next/DATA_LAYOUT_INVENTORY.md`` — machine extraction of the
+2. ``docs/inventories/DATA_LAYOUT_INVENTORY.md`` — machine extraction of the
    ARCHITECTURE "Data layout (`~/Ouroboros/`)" tree (the closest thing this
    tree has to the reference's PERSISTENCE_OWNERS carrier): every entry is
    probed against reality — repo entries must exist as tracked paths, data-
    plane entries must appear as a literal in the runtime sources that
    construct them (a renamed/removed durable file whose tree row survived =
    red).
-3. ``docs/v7next/FACADE_INVENTORY.md`` — AST-derived facade inventory: every
+3. ``docs/inventories/FACADE_INVENTORY.md`` — AST-derived facade inventory: every
    runtime module whose top-level ``from <population module> import ...``
    statements carry the ``noqa: F401`` re-export marker (the codebase's
    declared "this binding exists for compatibility" convention, per the
@@ -54,7 +54,7 @@ from ouroboros.reference_books import (  # noqa: E402
     read_book_section,
 )
 
-OUT_DIR = REPO_ROOT / "docs" / "v7next"
+OUT_DIR = REPO_ROOT / "docs" / "inventories"
 FROZEN_OUT = OUT_DIR / "FROZEN_CONTRACTS_INVENTORY.md"
 LAYOUT_OUT = OUT_DIR / "DATA_LAYOUT_INVENTORY.md"
 FACADE_OUT = OUT_DIR / "FACADE_INVENTORY.md"
@@ -71,8 +71,7 @@ def _tracked_all() -> set[str]:
 
 
 def _split_row(line: str) -> list[str]:
-    """Split one markdown table row on unescaped pipes (adoption-validator
-    convention)."""
+    """Split one markdown table row on unescaped pipes."""
     body = line.strip().strip("|")
     cells, cur, escaped = [], [], False
     for ch in body:
@@ -451,6 +450,7 @@ def main(argv: list[str] | None = None) -> int:
             if on_disk != rendered:
                 stale.append(str(rel))
         else:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text(rendered, encoding="utf-8")
             print(f"wrote {rel}")
 

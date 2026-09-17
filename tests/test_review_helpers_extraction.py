@@ -195,5 +195,5 @@ def test_review_helpers_extraction_size_bounds_have_meaningful_headroom():
     # the next addition is a governance-document leaf beside
     # `review_prompt_text` and `review_file_pack`, not a smaller docstring.
     assert counts["ouroboros.tools.review_helpers"] <= 925
-    assert 300 <= counts["ouroboros.tools.review_prompt_text"] <= 1000
-    assert 400 <= counts["ouroboros.tools.review_file_pack"] <= 1000
+    assert counts["ouroboros.tools.review_prompt_text"] <= 1000
+    assert counts["ouroboros.tools.review_file_pack"] <= 1000

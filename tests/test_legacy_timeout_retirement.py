@@ -123,10 +123,6 @@ def test_no_runtime_or_settings_surface_still_names_either_key():
         # later chapter split cannot silently turn a record of a removal into a
         # live surface finding.
         "docs/ARCHITECTURE.md",
-        "ADOPTION_v7next.md",                   # ...and adopted: the D04 row names
-                                                # what it retired, same as the already
-                                                # skipped docs/v7next/ ledger. A record
-                                                # of a removal is not a live surface
     }
     from ouroboros.reference_books import book_entrypoint_for
 
@@ -139,7 +135,7 @@ def test_no_runtime_or_settings_surface_still_names_either_key():
             # is still documentation and not a live surface.
             if book_entrypoint_for(rel) in allowed:
                 continue
-            if rel in allowed or rel.startswith(("venv", "node_modules", "docs/v7next/", "docs/archive/")):
+            if rel in allowed or rel.startswith(("venv", "node_modules", "docs/archive/")):
                 continue
             try:
                 text = path.read_text(encoding="utf-8")
