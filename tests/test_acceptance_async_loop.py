@@ -876,13 +876,14 @@ def test_automatic_completion_uses_the_same_retained_candidate_and_free_collect(
 
 
 
-@pytest.mark.parametrize("failure", ["pending", "fail", "unavailable", "evidence_unavailable"])
+@pytest.mark.parametrize("failure", ["pending", "fail", "late_fail", "unavailable", "evidence_unavailable"])
 def test_cyber_final_response_never_waits_for_or_obeys_critic_veto(full_loop, monkeypatch, failure):
     f = full_loop
     monkeypatch.setattr("ouroboros.config.get_runtime_mode", lambda: "cyber_pro")
-    if failure == "fail":
+    if failure in {"fail", "late_fail"}:
         f.reviewer_verdict = "FAIL"
-        f.release.set()
+        if failure == "fail":
+            f.release.set()
     if failure == "unavailable":
         monkeypatch.setattr(review_substrate, "triad_delivery_slots", lambda **_kw: [])
     if failure == "evidence_unavailable":
@@ -895,12 +896,17 @@ def test_cyber_final_response_never_waits_for_or_obeys_critic_veto(full_loop, mo
     def main(_llm, messages, *_a, **_kw):
         f.model_inputs.append(copy.deepcopy(messages))
         f.model_step += 1
-        if failure == "fail" and f.model_step == 1:
+        if failure in {"fail", "late_fail"} and f.model_step == 1:
             return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": ANSWER}, "explicit-critic")]}, 0.0
-        if failure == "fail":
+        if failure in {"fail", "late_fail"}:
+            if failure == "late_fail" and f.model_step == 2:
+                assert "- acceptance-one: FAIL" not in str(messages)
+                f.release.set()  # Settle after this request's ingress drain.
             with f.condition:
                 assert f.condition.wait_for(lambda: f.settled_count == 1, timeout=10)
-            assert f.model_step == 2
+            assert f.model_step in {2, 3}
+            if f.model_step == 3:
+                assert "- acceptance-one: FAIL" in str(messages)
             return keep(f), 0.0
         assert f.model_step == 1
         return {"content": ANSWER}, 0.0
@@ -915,10 +921,12 @@ def test_cyber_final_response_never_waits_for_or_obeys_critic_veto(full_loop, mo
         assert not f.release.is_set()
         assert trace["review_runs"][-1]["actors"][0]["operation_state"] in {"pending_dispatch", "in_flight"}
         assert trace["acceptance_decision"]["review_pending"]
-    elif failure == "fail":
+    elif failure in {"fail", "late_fail"}:
         assert trace["review_runs"][-1]["aggregate_signal"] == "FAIL"
         assert trace["review_runs"][-1]["actors"][0]["parsed"]["verdict"] == "FAIL"
         assert len(f.review_sends) == 1
+        if failure == "late_fail":
+            assert f.model_step == 3
     else:
         assert trace["review_runs"][-1]["aggregate_signal"] == "DEGRADED"
         assert not f.review_sends
