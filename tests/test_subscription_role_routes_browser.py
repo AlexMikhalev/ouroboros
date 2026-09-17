@@ -49,7 +49,10 @@ def configure_mixed(ui):
         "advisory": {"enabled": True, "route": {"kind": "api_chat", "target_id": target, "profile_id": "personal"}},
         "deep_review": {"subagent_id": "native"},
     }
-    ui["settings"].update(OUROBOROS_SUBAGENTS=actors, OUROBOROS_REVIEWER_SLOTS=json.dumps(slots))
+    # An actor's saved route is not provider readiness: offer OpenAI through
+    # the same configured-credential fact the real source picker reads.
+    ui["settings"].update(OPENAI_API_KEY="fixture-openai-credential",
+                          OUROBOROS_SUBAGENTS=actors, OUROBOROS_REVIEWER_SLOTS=json.dumps(slots))
     ui["fixture"]["preview"]["reviewer_slots"] = slots
     ui["fixture"]["catalog"]["model_sources"] = [
         {"id": "opaque-source", "label": "Codex", "credentialHarness": "codex"},
@@ -80,12 +83,12 @@ def test_reviewer_source_roundtrip_restores_its_own_model_and_account(role_ui):
         row = page.locator(selector)
         route = row.locator('[data-slot-route], [data-advisory-route]')
         route.select_option('api:openai')
-        row.locator(model_field).fill('openai::other-choice')
+        row.locator(model_field).fill('other-choice')
         route.select_option('subscription:opaque-source')
         assert row.locator(model_field).input_value() == 'gpt-test'
         assert row.locator(account_field).input_value() == 'personal'
         route.select_option('api:openai')
-        assert row.locator(model_field).input_value() == 'openai::other-choice'
+        assert row.locator(model_field).input_value() == 'other-choice'
         route.select_option('subscription:opaque-source')
     page.locator('[data-advisory-row]').scroll_into_view_if_needed()
     capture(page, "reviewer-source-roundtrip-restored")

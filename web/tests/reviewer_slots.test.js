@@ -144,7 +144,8 @@ test('the deep self-review block states the delivery where the owner picks', () 
     assert.doesNotMatch(markup, /packed|Atlas/);
     assert.match(markup, /a model you name or a configured subagent/);
     assert.match(markup, /native\s+inspection episode with host-observed reads/);
-    assert.match(markup, /governance documents read on demand/);
+    assert.match(markup, /core rules supplied inline/);
+    assert.match(markup, /reference books available on demand/);
     assert.match(markup, /reads not host-observed/);
     assert.match(markup, /memory whitelist reaches the reviewer\s+inline byte-exact/);
     assert.match(markup, /outranks the Behavior-tab deep\s+self-review effort/);
