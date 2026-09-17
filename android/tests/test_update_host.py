@@ -288,7 +288,7 @@ def test_platform_pin_delta_prepares_before_native_build_with_same_key(device, m
     host.update(args)
     repo = args.app_root / 'repo'
     manifest = repo / 'android/provision/artifacts.json'
-    pins = json.loads(manifest.read_text())
+    pins = json.loads(manifest.read_text(encoding="utf-8"))
     next(pin for pin in pins if pin['name'] == 'android-platform')['sha256'] = 'e' * 64
     manifest.write_text(json.dumps(pins))
     desired_before = host.source_identity(repo, args.app_root / 'android-sdk')[0]

@@ -99,8 +99,8 @@ def test_browser_cli_reads_exact_cached_input_and_local_server_is_closed(monkeyp
 
 
 def test_manifest_has_no_private_paths_and_node_matches_the_common_pin():
-    pins = json.loads((PROVISION / "artifacts.json").read_text())
-    common = json.loads((PROVISION.parents[1] / "ouroboros/claudexor_runtime_pin.json").read_text())
+    pins = json.loads((PROVISION / "artifacts.json").read_text(encoding="utf-8"))
+    common = json.loads((PROVISION.parents[1] / "ouroboros/claudexor_runtime_pin.json").read_text(encoding="utf-8"))
     node = next(item for item in pins if item["name"] == "node")
     expected = common["release"]["node_artifacts"]["linux-arm64"]
     assert node["url"] == expected["archive_url"]

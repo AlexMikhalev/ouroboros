@@ -123,7 +123,7 @@ def test_preparation_shutdown_reaps_actual_detached_child_before_launcher_exit(t
         while not child_file.exists() and time.monotonic() < deadline:
             time.sleep(0.02)
         assert child_file.exists()
-        child = int(child_file.read_text())
+        child = int(child_file.read_text(encoding="utf-8"))
         assert pid_is_alive(child)
         shutdown.set()
         monkeypatch.setattr(launcher, '_shutdown_event', shutdown)

@@ -661,7 +661,7 @@ def test_external_source_launcher_keeps_older_seed_version_and_local_head(tmp_pa
     assert context.bundle_dir == seed
     assert bootstrap.ensure_managed_repo(context) == 'unchanged'
     assert _git_output(repo, 'rev-parse', 'HEAD') == personal_head
-    assert (repo / 'VERSION').read_text().strip() == '4.50.1'
+    assert (repo / 'VERSION').read_text(encoding="utf-8").strip() == '4.50.1'
     assert (seed / 'repo_bundle_manifest.json').read_bytes() == original_manifest
 
 

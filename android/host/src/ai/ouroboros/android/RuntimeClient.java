@@ -93,7 +93,7 @@ final class RuntimeClient {
                 if (input != null) stream.write(input.getBytes(StandardCharsets.UTF_8));
             }
             if (!process.waitFor(30, TimeUnit.SECONDS))
-                throw new java.io.IOException("Действие ещё не подтверждено. Проверьте статус перед повтором.");
+                throw new java.io.IOException("The action is not yet confirmed. Check its status before retrying.");
             reader.join(1000);
             String output = bytes.toString("UTF-8").trim();
             if (process.exitValue() != 0) throw new java.io.IOException(output);

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import tarfile
 from pathlib import Path
 
@@ -126,7 +127,7 @@ def test_release_builder_refuses_missing_key_before_source_or_compiler_work(tmp_
     assert not (tmp_path / "out").exists()
 
 
-def test_android_ci_is_fork_safe_and_required_for_publication():
+def test_android_ci_is_fork_safe_and_experimental_for_publication():
     workflow = (REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     validation = workflow.split("  android-test:", 1)[1].split("  android-build:", 1)[0]
     release = workflow.split("  android-build:", 1)[1].split("  release-preflight:", 1)[0]
@@ -140,8 +141,14 @@ def test_android_ci_is_fork_safe_and_required_for_publication():
     assert "publisher signing credentials are required" in release
     assert "android-build" in next(line for line in publication.splitlines() if "needs:" in line)
     assert "secrets." not in release.split("- name: Generate Android source", 1)[1]
-    for suffix in ("android-arm64.tar.gz", "android.apk"):
-        assert f"release-artifacts/Ouroboros-*-{suffix}" in publication
+    assert "always() && !cancelled()" in publication
+    assert "needs.android-build.result == 'success'" not in publication
+    assert "needs.build.result == 'success'" in publication
+    assert "needs.skill-smoke.result == 'success'" in publication
+    assert "fromJSON(steps.release_proof.outputs.files_json)" in publication
+    assert "--android-build-result" in publication
+    assert "--android-attestation-result" in publication
+    assert "continue-on-error" not in publication
     assert "draft: true" in publication
 
 
@@ -149,6 +156,9 @@ def test_android_ci_has_representative_emulator_matrix_without_calling_it_device
     workflow = (REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     smoke = workflow.split("  android-emulator-smoke:", 1)[1].split("  # The publisher key", 1)[0]
     assert "api-level: [26, 29, 30, 33, 36]" in smoke
+    assert "needs: android-test" in smoke
+    assert "needs.android-test.outputs.android_changed == 'true'" in smoke
+    assert "startsWith(github.ref, 'refs/tags/v')" in smoke
     assert "adb install -r" in smoke
     assert "dumpsys package ai.ouroboros.android" in smoke
     assert "SELinux" not in smoke
@@ -164,3 +174,111 @@ def test_default_host_build_uses_the_shared_root_asset_path():
     source = (REPO / "android/host/build.py").read_text(encoding="utf-8")
     assert 'source.parents[1] / "assets" / "icon_1024.png"' in source
     assert (REPO / "assets/icon_1024.png").is_file()
+
+
+@pytest.mark.parametrize(("event", "path", "ref", "expected"), [
+    ("pull_request", "docs/readme.md", "refs/pull/1/merge", False),
+    ("pull_request", "ouroboros/core.py", "refs/pull/1/merge", False),
+    ("pull_request", "android/host/change.java", "refs/pull/1/merge", True),
+    ("push", "android/host/change.java", "refs/heads/ouroboros", True),
+    ("push", "docs/readme.md", "refs/tags/v7.0.0", True),
+    ("schedule", "android/host/change.java", "refs/heads/main", False),
+])
+@pytest.mark.skipif(os.name == "nt", reason="Exercises the Ubuntu workflow's POSIX Bash step")
+def test_android_emulator_selection_uses_event_diff(tmp_path, event, path, ref, expected):
+    import os
+    import shutil
+    import subprocess
+    import yaml
+
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("the workflow's Bash runner is unavailable")
+    jobs = yaml.safe_load((REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8"))["jobs"]
+    script = next(step["run"] for step in jobs["android-test"]["steps"] if step.get("id") == "android_changes")
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "README").write_text("base", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True).strip()
+    changed = tmp_path / path
+    changed.parent.mkdir(parents=True, exist_ok=True)
+    changed.write_text("change", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "change"], cwd=tmp_path, check=True)
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True).strip()
+    output = tmp_path / "output"
+    env = {**os.environ, "GITHUB_SHA": head, "GITHUB_OUTPUT": str(output),
+           "PR_BASE": base if event == "pull_request" else "", "PR_HEAD": head if event == "pull_request" else "",
+           "PUSH_BASE": base if event == "push" else ""}
+    result = subprocess.run([bash, "-c", script], cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    detected = output.read_text(encoding="utf-8").strip().split("=", 1)[1]
+    expression = jobs["android-emulator-smoke"]["if"]
+    for key, value in {"github.event_name": event, "github.ref": ref,
+                       "needs.android-test.outputs.android_changed": detected}.items():
+        expression = expression.replace(key, repr(value))
+    expression = expression.replace("&&", " and ").replace("||", " or ")
+    assert eval(expression, {"__builtins__": {}}, {"startsWith": str.startswith}) is expected
+
+
+@pytest.mark.parametrize(("failed_job", "result", "cancelled", "expected"), [
+    ("android-build", "failure", False, True),
+    ("android-build", "cancelled", False, True),
+    ("android-build", "skipped", False, True),
+    *[(job, "failure", False, False) for job in ("build", "release-preflight", "marker-guards",
+       "ui-smoke", "docker-ui-smoke", "docker-portable-test", "skill-smoke")],
+    (None, "success", True, False),
+])
+def test_release_requires_desktop_gates_and_respects_workflow_cancel(failed_job, result, cancelled, expected):
+    import re
+    import yaml
+
+    job = yaml.safe_load((REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8"))["jobs"]["release"]
+    expression = job["if"].removeprefix("${{").removesuffix("}}")
+    for name in job["needs"]:
+        expression = expression.replace(f"needs.{name}.result", repr(result if name == failed_job else "success"))
+    expression = expression.replace("github.ref", repr("refs/tags/v7.0.0"))
+    expression = re.sub(r"!(?!=)", "not ", expression).replace("&&", " and ").replace("||", " or ")
+    assert eval(f"({expression.strip()})", {"__builtins__": {}}, {
+        "always": lambda: True, "cancelled": lambda: cancelled, "startsWith": str.startswith,
+    }) is expected
+
+
+@pytest.mark.parametrize(("failed_platform", "expected"), [("android-apk", 0), ("macos-arm64", 1), (None, 0)])
+@pytest.mark.skipif(os.name == "nt", reason="Executes the Ubuntu release step with a POSIX gh fixture")
+def test_attestation_command_failure_excludes_android_but_stops_desktop(tmp_path, failed_platform, expected):
+    import os
+    import shutil
+    import subprocess
+    import sys
+    import yaml
+
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("the workflow's Bash runner is unavailable")
+    workflow = yaml.safe_load((REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    script = next(step["run"] for step in workflow["jobs"]["release"]["steps"] if step.get("id") == "verify_artifacts")
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    (binaries / "python").symlink_to(sys.executable)
+    gh = binaries / "gh"
+    gh.write_text(f"#!{sys.executable}\nimport os,sys,pathlib\n"
+                  "with open(os.environ['GH_CALL_LOG'],'a',encoding='utf-8') as stream:\n"
+                  "    stream.write(pathlib.Path(sys.argv[3]).name+'\\n')\n"
+                  "raise SystemExit(1 if pathlib.Path(sys.argv[3]).name == os.environ['FAIL_ARTIFACT'] else 0)\n",
+                  encoding="utf-8")
+    gh.chmod(0o755)
+    version = (REPO / "VERSION").read_text(encoding="utf-8").strip()
+    output, calls = tmp_path / "output", tmp_path / "calls"
+    env = {**os.environ, "PATH": str(binaries) + os.pathsep + os.environ.get("PATH", ""),
+           "RUNNER_TEMP": str(tmp_path), "GITHUB_OUTPUT": str(output), "ANDROID_BUILD_RESULT": "success",
+           "GITHUB_REPOSITORY": "example/source", "GITHUB_SHA": "a" * 40, "GITHUB_REF": "refs/tags/v" + version,
+           "GH_CALL_LOG": str(calls), "FAIL_ARTIFACT": release_asset_name(failed_platform, version) if failed_platform else ""}
+    result = subprocess.run([bash, "-c", script], cwd=REPO, env=env, capture_output=True, text=True)
+    assert result.returncode == expected, result.stderr
+    if expected == 0:
+        outcome = "failure" if failed_platform else "success"
+        assert output.read_text(encoding="utf-8").strip() == "android_result=" + outcome
+        observed = calls.read_text(encoding="utf-8").splitlines()
+        assert {release_asset_name(key, version) for key in DESKTOP_DOWNLOAD_IDS} <= set(observed)

@@ -195,7 +195,7 @@ Keep reusable large downloads in the installer's durable cache.
 not cover that directory. Portable source/transport fixtures and host compilation
 are separate from physical root, boot, permissions, hardware and battery evidence.
 The same-key instrumentation under `android/tests/device` owns a temporary SDK
-bridge and an uncommitted PackageInstaller session. The emulator job executes
+bridge and an uncommitted PackageInstaller session. The emulator job runs for Android source changes and tags, and executes
 session readback on API 26/29/30/33/36 and accepts its explicit PASS only after
 abandon and bridge cleanup. It requires neither root nor a provisioned Linux
 core; it does not certify the phone bootstrap or owner consent UI.

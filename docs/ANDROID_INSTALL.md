@@ -43,7 +43,12 @@ patched boot image and performs no firmware flashing.
 
 Use an Android-capable release in the
 [common Ouroboros release list](https://github.com/razzant/ouroboros/releases).
-Keep all downloaded files from the same exact release tag.
+Use a release whose `release-evidence.json` contains both Android artifacts below,
+and keep all downloaded files from that exact tag. During the experimental phase,
+a desktop release can ship without Android: its notes disclose the Android build
+or verification failure and link the CI run, without offering unavailable APK links.
+Mandatory Android release coverage will be reconsidered after
+[stabilization](https://github.com/razzant/ouroboros/issues/1036).
 
 | File | Purpose |
 | --- | --- |
@@ -155,15 +160,34 @@ operation afterward.
 
 Open Ouroboros and allow its Magisk root request if you want the selected broad
 device access. Complete the ordinary provider/account setup with your own
-credentials. The native **⋮** menu currently labels Start as **Запустить ядро**,
-Status as **Статус ядра**, and Android access setup as **Разрешения Android**.
+credentials. The native **⋮** menu provides **Start core**, **Core status**, and
+**Android permissions**.
 
 ## Access and permissions
 
+### Known experimental limitations
+
+The recorded phone dogfood pass exposed these follow-ups; experimental integration
+does not claim that they are fixed or that every planned scenario passed:
+
+- [Local APK staging](https://github.com/razzant/ouroboros/issues/1029): a downloaded
+  Linux path can be unreadable to the Android installer; a readable content URI is distinct.
+- [Home-screen shortcuts](https://github.com/razzant/ouroboros/issues/1030): an accepted
+  pin request does not prove that the launcher placed an icon.
+- [Widget placement](https://github.com/razzant/ouroboros/issues/1031): an installed
+  provider does not supply a working shell command for placing its widget.
+- [Permission dialogs](https://github.com/razzant/ouroboros/issues/1032): a dialog
+  visible in a screenshot may be absent from the Accessibility tree.
+- [Quick Settings tile placement](https://github.com/razzant/ouroboros/issues/1033):
+  the declared tile can still require the owner's manual addition to the active grid.
+- [Phone-facing Linux files](https://github.com/razzant/ouroboros/issues/1034):
+  copying a file to Documents is not a live file-manager view of the Linux workspace.
+- [Locked-screen capabilities](https://github.com/razzant/ouroboros/issues/1035):
+  a running core and bridge do not prove that Accessibility can reach apps behind keyguard.
+
 ### Choosing Ouroboros as the Android assistant
 
-On Android 10 and later, open the Ouroboros menu and choose **Назначить
-ассистентом Android**. The app uses Android's normal `RoleManager` consent
+On Android 10 and later, open the Ouroboros menu and choose **Set as Android assistant**. The app uses Android's normal `RoleManager` consent
 screen, then reads the role back. Root-only `cmd role add-role-holder` is useful
 for qualification scripts, but it is not the public user flow. The APK also
 declares `ACTION_ASSIST`, which makes the existing Activity a candidate.
@@ -198,7 +222,7 @@ Three independent permissions are involved:
 - **Android app permissions** govern native app-UID access: reading or changing
   contacts/calendar entries, reading permitted photos/video/audio, using the
   camera/microphone, and requesting approximate or precise location. First-open
-  access setup lets you choose those grants in Android dialogs; **Later (Позже)** defers
+  access setup lets you choose those grants in Android dialogs; **Later** defers
   setup and the native menu reopens it. Android settings retain denial, revocation
   and available limited-access choices. Root-side tools retain their separate,
   broader authority.
@@ -316,7 +340,7 @@ fixed and checked on the phone, including an unbounded mock response that inflat
 test memory. A complete passing preflight and self-edit → review → commit → restart
 proof remain required; those focused checks do not substitute for them.
 
-Panic is a full stop; the native **Остановить агента** action invokes it too.
+Panic is a full stop; the native **Stop agent** action invokes it too.
 Automatic entry must keep it stopped; use the explicit Start action when you want
 to resume. Reopening the interface or rebooting is not permission to silently
 resume stopped work.

@@ -18,7 +18,7 @@ class AndroidHostTest(unittest.TestCase):
             for action in intent_filter.findall("action")
         }
         self.assertIn("android.intent.action.ASSIST", actions)
-        source = (HOST / "src/ai/ouroboros/android/MainActivity.java").read_text()
+        source = (HOST / "src/ai/ouroboros/android/MainActivity.java").read_text(encoding="utf-8")
         self.assertIn("createRequestRoleIntent(RoleManager.ROLE_ASSISTANT)", source)
         self.assertIn("isRoleHeld(RoleManager.ROLE_ASSISTANT)", source)
 
@@ -45,7 +45,7 @@ class AndroidHostTest(unittest.TestCase):
         self.assertEqual(ET.parse(HOST / "res/xml/wallpaper_service.xml").getroot().tag, "wallpaper")
 
     def test_location_bridge_has_state_and_bounded_current_fix_methods(self):
-        source = (HOST / "src/ai/ouroboros/android/AndroidBridge.java").read_text()
+        source = (HOST / "src/ai/ouroboros/android/AndroidBridge.java").read_text(encoding="utf-8")
         self.assertIn('"location.state"', source)
         self.assertIn('"location.get"', source)
         self.assertIn("getCurrentLocation", source)
@@ -58,7 +58,7 @@ class AndroidHostTest(unittest.TestCase):
         app = manifest.find("application")
         self.assertEqual(app.get(A + "usesCleartextTraffic"), "false")
         self.assertEqual(app.get(A + "networkSecurityConfig"), "@xml/network_security_config")
-        config = (HOST / "res/xml/network_security_config.xml").read_text()
+        config = (HOST / "res/xml/network_security_config.xml").read_text(encoding="utf-8")
         self.assertIn('cleartextTrafficPermitted="false"', config)
         self.assertIn("localhost", config)
         self.assertIn("127.0.0.1", config)
@@ -82,12 +82,12 @@ class AndroidHostTest(unittest.TestCase):
         self.assertIn("android.permission.REQUEST_INSTALL_PACKAGES", permissions)
         receiver = manifest.find("application/receiver[@android:name='.PackageInstallReceiver']", {"android": "http://schemas.android.com/apk/res/android"})
         self.assertIsNotNone(receiver)
-        source = (HOST / "src/ai/ouroboros/android/AndroidBridge.java").read_text()
+        source = (HOST / "src/ai/ouroboros/android/AndroidBridge.java").read_text(encoding="utf-8")
         for marker in ("\"packages.sessions\"", "\"packages.install\"", "\"packages.install.abandon\"",
                        "idempotency_key", "source_sha256", "completion_observed",
                        "retry_automatically", "rollback"):
             self.assertIn(marker, source)
-        callback = (HOST / "src/ai/ouroboros/android/PackageInstallReceiver.java").read_text()
+        callback = (HOST / "src/ai/ouroboros/android/PackageInstallReceiver.java").read_text(encoding="utf-8")
         self.assertIn("STATUS_PENDING_USER_ACTION", callback)
         self.assertIn("pending_user_action", callback)
         self.assertNotIn("startActivity", callback)
@@ -100,10 +100,10 @@ class AndroidHostTest(unittest.TestCase):
         self.assertEqual(instrumentation.get(A + "targetPackage"), "ai.ouroboros.android")
         self.assertEqual(instrumentation.get(A + "name"),
                          "ai.ouroboros.android.device.DeviceSdkSmoke")
-        source = (device / "src/ai/ouroboros/android/device/DeviceSdkSmoke.java").read_text()
+        source = (device / "src/ai/ouroboros/android/device/DeviceSdkSmoke.java").read_text(encoding="utf-8")
         self.assertIn("OBO_DEVICE_SDK_SMOKE=PASS", source)
         self.assertIn("packages.sessions", source)
-        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
+        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         self.assertIn("api-level: [26, 29, 30, 33, 36]", workflow)
         self.assertIn("OBO_DEVICE_SDK_SMOKE=PASS", workflow)
 

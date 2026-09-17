@@ -73,8 +73,8 @@ def test_onboarding_restart_uses_existing_no_resume_flags_and_exit_signal(startu
     assert calls == [('checked', {'reason': 'owner_restart', 'unsynced_policy': 'rescue_and_reset'}), ('stopped', {})]
     assert obj.server._restart_requested.is_set() and obj.server._owner_restart_requested.is_set()
     assert obj.server.RESTART_EXIT_CODE == 42
-    assert (obj.data / 'state/owner_restart_no_resume.flag').read_text() == 'owner_restart'
-    assert (obj.data / 'state/panic_stop.flag').read_text() == 'owner_restart_no_resume'
+    assert (obj.data / 'state/owner_restart_no_resume.flag').read_text(encoding="utf-8") == 'owner_restart'
+    assert (obj.data / 'state/panic_stop.flag').read_text(encoding="utf-8") == 'owner_restart_no_resume'
     assert not (obj.data / 'settings.json').exists()
     from supervisor import state, git_ops
     assert state.DRIVE_ROOT == git_ops.DRIVE_ROOT == obj.data
@@ -102,7 +102,7 @@ def test_onboarding_panic_runs_real_panic_marker_and_exit_99(startup_controls, m
     response = obj.client.post('/api/command', json={'cmd': '/panic'})
     assert response.status_code == 200 and response.json() == {'status': 'ok'}
     assert exits == [99]
-    assert (obj.data / 'state/panic_stop.flag').read_text() == 'panic'
+    assert (obj.data / 'state/panic_stop.flag').read_text(encoding="utf-8") == 'panic'
     assert ('daemon',) in stops and ('port', 19876) in stops
     assert not (obj.data / 'settings.json').exists()
     from supervisor import state

@@ -274,7 +274,7 @@ def test_relative_root_reaps_owned_children_and_preserves_unrelated_process(
         assert not broad_queries, "preflight rediscovered process ownership from command-line text"
         assert stranger.poll() is None, "an unrelated process was killed because its argv named a path"
         assert pid_file.exists(), "the owned fixture never ran"
-        owned = json.loads(pid_file.read_text())
+        owned = json.loads(pid_file.read_text(encoding="utf-8"))
         deadline = time.monotonic() + 10
         while any(pid_is_alive(pid) for pid in owned.values()) and time.monotonic() < deadline:
             time.sleep(0.05)
@@ -287,7 +287,7 @@ def test_relative_root_reaps_owned_children_and_preserves_unrelated_process(
             assert result["returncode"] == 0 and result["error"] is None
     finally:
         if pid_file.exists():
-            for pid in json.loads(pid_file.read_text()).values():
+            for pid in json.loads(pid_file.read_text(encoding="utf-8")).values():
                 if pid_is_alive(pid):
                     force_kill_pid(pid)
         stranger.terminate()

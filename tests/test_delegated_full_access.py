@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from ouroboros import delegate_custody as custody, subagents
+from ouroboros.delegate_shared import delegate_payload
 from ouroboros.delegate_registration_policy import persistent_registration, record_persistent
 from ouroboros.tools import delegate
 from tests.test_owner_settings_write_seam import _settings_app, isolated_settings as isolated_settings
@@ -98,7 +99,7 @@ def test_full_start_http_contract_and_real_snapshot_capture(full_run):
     from ouroboros.tools.subagent_integration import _integrate_delegated_patch
 
     ctx, target, facts = full_run
-    result = json.loads(delegate._delegate_start(ctx, 'Implement the fixture.'))
+    result = delegate_payload(delegate._delegate_start(ctx, 'Implement the fixture.'))
     assert result['status'] == 'started', result
     request, key = facts['requests'][0]
     assert request['access'] == 'full' and request['mode'] == 'agent'
@@ -115,7 +116,7 @@ def test_full_start_http_contract_and_real_snapshot_capture(full_run):
     assert 'OS-enforced boundary' not in result['note']
     assert facts['trust_posts'] == [{'repoRoot': target, 'allowFullAccess': True}]
     snapshot = Path(result['execution_root'])
-    assert snapshot != Path(target) and (snapshot / 'README.md').read_text() == 'seed\n'
+    assert snapshot != Path(target) and (snapshot / 'README.md').read_text(encoding="utf-8") == 'seed\n'
     (snapshot / 'native-result.py').write_text('result = 42\n')
     assert not (Path(target) / 'native-result.py').exists()
     row = custody.replay(custody.custody_root(ctx))['full-run']
@@ -128,7 +129,7 @@ def test_full_start_http_contract_and_real_snapshot_capture(full_run):
     assert not (Path(target) / 'native-result.py').exists()
     outcome = _integrate_delegated_patch(ctx, 'full-run', 'apply', 'Fixture verified.')
     assert '✅ Integrated' in outcome, outcome
-    assert (Path(target) / 'native-result.py').read_text() == 'result = 42\n'
+    assert (Path(target) / 'native-result.py').read_text(encoding="utf-8") == 'result = 42\n'
 
 
 @pytest.mark.parametrize('recorded_access,current_access', [('full', 'workspace_write'), ('workspace_write', 'full')])
@@ -136,13 +137,13 @@ def test_retry_replays_original_access_and_snapshot(full_run, monkeypatch, recor
     ctx, target, facts = full_run
     facts['selected_access'] = recorded_access
     facts['lost_start'] = True
-    initial = json.loads(delegate._delegate_start(ctx, 'Same complete work order.'))
+    initial = delegate_payload(delegate._delegate_start(ctx, 'Same complete work order.'))
     invocation = initial['pending_invocation_id']
     first_request = facts['requests'][0]
     grants_before = len(facts['trust_posts'])
     facts['selected_access'] = current_access
     facts['lost_start'] = False
-    result = json.loads(delegate._delegate_start(ctx, 'Same complete work order.', retry_of=invocation))
+    result = delegate_payload(delegate._delegate_start(ctx, 'Same complete work order.', retry_of=invocation))
     assert result['status'] == 'started' and result['idempotent_recovery'], result
     assert facts['requests'] == [first_request, first_request]
     assert len(facts['trust_posts']) == grants_before
@@ -159,7 +160,7 @@ def test_trust_refusal_does_not_start_run_or_leave_pending_snapshot(full_run, fa
     ctx, target, facts = full_run
     facts['recorded'] = failure == 'revoked'
     facts['fail_trust'] = failure == 'transport'
-    result = json.loads(delegate._delegate_start(ctx, 'A new assignment.'))
+    result = delegate_payload(delegate._delegate_start(ctx, 'A new assignment.'))
     assert result['status'] == 'refused' and result['definitely_unrun'], result
     assert not facts['requests'] and not facts['trust_posts']
     assert not custody.pending_invocations(custody.custody_root(ctx))
@@ -174,7 +175,7 @@ def test_full_mutation_still_requires_active_matching_workspace(tmp_path, monkey
     shape = subagents.delegated_run_shape(True, 'full')
     ctx.workspace_mode = ''
     record, refusal = delegate._mutation_authority(ctx, shape)
-    assert not record and 'workspace_not_active' in refusal
+    assert not record and delegate_payload(refusal)['reason'] == 'workspace_not_active'
 
 
 def test_full_retry_without_snapshot_binding_is_refused(tmp_path):
@@ -186,7 +187,7 @@ def test_full_retry_without_snapshot_binding_is_refused(tmp_path):
         'execution': {'isolation': 'live', 'delegated': True}, 'primaryHarness': 'some-route'},
         project_id='stable', project_owned=False, route='some-route')
     binding, refusal = delegate._resolve_retry_invocation(ctx, drive, 'original', 'work')
-    assert binding is None and 'retry_binding_absent' in refusal
+    assert binding is None and delegate_payload(refusal)['reason'] == 'retry_binding_absent'
 
 
 def test_full_registration_and_access_evidence_keep_their_existing_owners():
@@ -266,7 +267,7 @@ def test_owner_http_save_projects_full_choice_into_task_start_snapshot(monkeypat
     with TestClient(app) as client:
         response = client.post('/api/settings', json={SUBAGENTS_SETTING: config})
         assert response.status_code == 200, response.text
-        assert json.loads(json.loads(isolated_settings.read_text())[SUBAGENTS_SETTING])['items'][0]['access'] == 'full'
+        assert json.loads(json.loads(isolated_settings.read_text(encoding="utf-8"))[SUBAGENTS_SETTING])['items'][0]['access'] == 'full'
         start = apply_task_start_settings()
         selected, _ = select_subagent_snapshot(start.settings, subagent_id='phone-coder')
         assert selected['access'] == 'full'

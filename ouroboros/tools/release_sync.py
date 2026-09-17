@@ -97,9 +97,10 @@ RELEASE_ASSET_TEMPLATES = {
 # Android has a rooted-device USB setup guide, not the desktop download flow.
 # Keep its artifacts in the same release registry without inventing missing
 # Android buttons in already-published desktop onboarding/version carriers.
+ANDROID_DOWNLOAD_IDS = ("android-arm64", "android-apk")
 DESKTOP_DOWNLOAD_IDS = tuple(
     proof_id for proof_id in RELEASE_ASSET_TEMPLATES
-    if proof_id not in {"android-arm64", "android-apk"}
+    if proof_id not in ANDROID_DOWNLOAD_IDS
 )
 _PUBLIC_REPOSITORY = "razzant/ouroboros"
 

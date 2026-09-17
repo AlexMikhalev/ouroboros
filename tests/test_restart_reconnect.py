@@ -402,8 +402,8 @@ def test_owner_restart_copy_is_explicit_about_stopped_task(tmp_path, monkeypatch
 
     def stopped(actual):
         assert actual is ctx
-        assert (flags / "owner_restart_no_resume.flag").read_text() == "owner_restart"
-        assert (flags / "panic_stop.flag").read_text() == "owner_restart_no_resume"
+        assert (flags / "owner_restart_no_resume.flag").read_text(encoding="utf-8") == "owner_restart"
+        assert (flags / "panic_stop.flag").read_text(encoding="utf-8") == "owner_restart_no_resume"
         calls.append("stopped")
         return ["active-task"]
 

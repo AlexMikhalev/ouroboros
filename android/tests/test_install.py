@@ -250,7 +250,7 @@ def test_streamed_output_is_visible_saved_and_keeps_the_producer_exit(monkeypatc
     else:
         assert installer.run_stream(["adb", "shell", "-T", "remote"], log) == b""
     assert log.read_bytes() == output
-    assert Path(str(log) + ".exit-code").read_text() == str(code) + "\n"
+    assert Path(str(log) + ".exit-code").read_text(encoding="utf-8") == str(code) + "\n"
     assert observed[0][1]["stderr"] == installer.subprocess.STDOUT
 
 

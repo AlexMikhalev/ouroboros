@@ -24,7 +24,7 @@ public final class CoreService extends Service {
     private final java.util.concurrent.atomic.AtomicInteger dnsRevision = new java.util.concurrent.atomic.AtomicInteger();
     private volatile boolean closed;
     private volatile String networkNote = "";
-    private volatile String runtimeText = "Проверяю состояние ядра";
+    private volatile String runtimeText = "Checking core status";
     private volatile String queuedDns = null;
     private String queuedNetworkNote = null;
 
@@ -57,16 +57,16 @@ public final class CoreService extends Service {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         return new Notification.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.ic_menu_manage)
                 .setContentTitle("Ouroboros").setContentText(text).setContentIntent(open)
-                .addAction(new Notification.Action.Builder(null, "Остановить агента", panic).build())
+                .addAction(new Notification.Action.Builder(null, "Stop agent", panic).build())
                 .setOngoing(true).build();
     }
 
     private void updateNetworkDns(LinkProperties properties) {
         if (closed) return;
         String dns = properties == null ? "" : RuntimeClient.dnsConfiguration(properties.getDnsServers());
-        String note = dns.isEmpty() ? "Нет текущих DNS: файл Linux оставлен без изменений" : "";
+        String note = dns.isEmpty() ? "No current DNS servers; the Linux file was left unchanged" : "";
         if (properties != null && android.os.Build.VERSION.SDK_INT >= 28 && properties.isPrivateDnsActive())
-            note += (note.isEmpty() ? "" : "; ") + "Android Private DNS не переносится в обычный DNS Linux";
+            note += (note.isEmpty() ? "" : "; ") + "Android Private DNS is not transferred to ordinary Linux DNS";
         if (dns.equals(queuedDns) && note.equals(queuedNetworkNote)) return;
         queuedDns = dns; queuedNetworkNote = note;
         networkNote = note;
@@ -77,7 +77,7 @@ public final class CoreService extends Service {
             catch (Exception error) {
                 if (closed || revision != dnsRevision.get()) return;
                 queuedDns = null; // A later network/control event may retry after root is granted.
-                networkNote = "Не удалось обновить DNS Linux";
+                networkNote = "Could not update Linux DNS";
                 android.util.Log.e("OuroborosHost", "Linux DNS update failed", error);
             }
             if (!closed && revision == dnsRevision.get())
@@ -120,13 +120,13 @@ public final class CoreService extends Service {
                 if ("start".equals(action) || "boot".equals(action)) {
                     String result = RuntimeClient.control("start", "boot".equals(action) ? "automatic" : "owner");
                     if (result.equals("stopped")) {
-                        getSystemService(NotificationManager.class).notify(1, notification("Остановлен владельцем. Нажмите «Запустить» для продолжения."));
+                        getSystemService(NotificationManager.class).notify(1, notification("Stopped by the owner. Choose Start core to continue."));
                         stopForeground(STOP_FOREGROUND_DETACH);
                         stopSelf(startId); return;
                     }
                     starting = result.equals("starting");
                 }
-                if (starting) getSystemService(NotificationManager.class).notify(1, notification("Ядро запускается…"));
+                if (starting) getSystemService(NotificationManager.class).notify(1, notification("The core is starting…"));
                 long deadline = android.os.SystemClock.elapsedRealtime() + (starting ? START_OBSERVATION_MS : 0);
                 while (true) {
                     if (request != operation.get()) return;
@@ -139,7 +139,7 @@ public final class CoreService extends Service {
                         if (android.os.SystemClock.elapsedRealtime() >= deadline) {
                             if (request != operation.get()) return;
                             getSystemService(NotificationManager.class).notify(1, notification(
-                                    "Запуск запрошен. Готовность ядра пока не подтверждена; проверьте статус позже."));
+                                    "Start requested. Core readiness is not yet confirmed; check status later."));
                             return;
                         }
                         Thread.sleep(1000);
@@ -147,20 +147,20 @@ public final class CoreService extends Service {
                 }
                 if (request != operation.get()) return;
                 getSystemService(NotificationManager.class).notify(1, notification(bridgeFailure == null
-                        ? "Ядро работает на телефоне" : "Ядро работает. Android-инструменты недоступны: "
+                        ? "The core is running on this phone" : "The core is running. Android tools are unavailable: "
                         + bridgeFailure.getMessage()));
             } catch (Exception error) {
                 if (request != operation.get()) return;
                 android.util.Log.e("OuroborosHost", "Native control failed: " + action, error);
                 getSystemService(NotificationManager.class).notify(1,
-                        notification("Действие не выполнено. Откройте статус: " + error.getMessage()));
+                        notification("Action failed. Open status: " + error.getMessage()));
             }
         });
         return "panic".equals(action) ? START_NOT_STICKY : START_STICKY;
     }
 
     private void startForegroundOwnerNotification() {
-        Notification value = notification("Проверяю состояние ядра");
+        Notification value = notification("Checking core status");
         if (android.os.Build.VERSION.SDK_INT >= 34) {
             int type = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE;
             boolean background = checkSelfPermission(android.Manifest.permission.ACCESS_BACKGROUND_LOCATION)

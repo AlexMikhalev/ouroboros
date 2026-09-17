@@ -50,7 +50,7 @@ def platform(tmp_path, monkeypatch):
 
 def change_pin(repo, name, suffix):
     path = repo / "android/provision/artifacts.json"
-    pins = json.loads(path.read_text())
+    pins = json.loads(path.read_text(encoding="utf-8"))
     pin = next(item for item in pins if item['name'] == name)
     pin['url'] += suffix
     path.write_text(json.dumps(pins))
@@ -65,7 +65,7 @@ def test_unchanged_recipe_skips_all_dependency_operations(platform):
 
 def test_sdk_pin_change_prepares_from_current_repo_and_keeps_identity(platform):
     module, repo, receipt, calls = platform
-    old = json.loads(receipt.read_text())['platform_inputs']
+    old = json.loads(receipt.read_text(encoding="utf-8"))['platform_inputs']
     key = (module.APP / 'signing/host.keystore').read_bytes()
     change_pin(repo, 'android-platform', '?new-pinned-release')
     assert not module.platform_current(repo)[0]
@@ -74,7 +74,7 @@ def test_sdk_pin_change_prepares_from_current_repo_and_keeps_identity(platform):
     downloaded = [name for action, name in calls if action == 'download']
     assert 'android-platform' in downloaded and 'ubuntu-base' not in downloaded
     assert 'node' not in downloaded and 'playwright-chromium' not in downloaded
-    installed = json.loads(receipt.read_text())
+    installed = json.loads(receipt.read_text(encoding="utf-8"))
     assert installed['platform_inputs']['sdk'] != old['sdk']
     assert installed['platform_inputs']['node'] == old['node']
     assert 'platform_preparing' not in installed and module.platform_current(repo)[0]
@@ -91,14 +91,14 @@ def test_tracked_recipe_and_patch_changes_are_inputs(platform, path, group):
     old = module.platform_inputs(repo)
     file = repo / 'android/provision' / path
     file.parent.mkdir(exist_ok=True)
-    file.write_text((file.read_text() if file.exists() else '') + '\n# changed recipe\n')
+    file.write_text((file.read_text(encoding="utf-8") if file.exists() else '') + '\n# changed recipe\n')
     assert module.platform_inputs(repo)[group] != old[group]
 
 
 def test_package_recipe_update_uses_current_snapshot_without_rootfs_overlay(platform):
     module, repo, receipt, calls = platform
     sources = repo / 'android/provision/ubuntu.sources'
-    sources.write_text(sources.read_text().replace('20260911T000000Z', '20260912T000000Z'))
+    sources.write_text(sources.read_text(encoding="utf-8").replace('20260911T000000Z', '20260912T000000Z'))
     assert module.ensure_platform(repo)
     assert module.APT_SOURCES.read_bytes() == sources.read_bytes()
     assert calls == [('run', ('/bin/sh', repo / 'android/provision/packages.sh'))]
@@ -123,7 +123,7 @@ def test_interrupted_sdk_update_remains_stale_after_git_source_rollback(platform
     monkeypatch.setattr(module, 'install_sdk', fail)
     with pytest.raises(RuntimeError, match='interrupted'):
         module.ensure_platform(repo)
-    assert json.loads(receipt.read_text())['platform_preparing'] == ['sdk']
+    assert json.loads(receipt.read_text(encoding="utf-8"))['platform_preparing'] == ['sdk']
     manifest.write_bytes(original)
     assert not module.platform_current(repo)[0]
     rebuilt = []
@@ -134,19 +134,19 @@ def test_interrupted_sdk_update_remains_stale_after_git_source_rollback(platform
 
 def test_source_drift_during_preparation_does_not_advance_completed_receipt(platform, monkeypatch):
     module, repo, receipt, calls = platform
-    previous = json.loads(receipt.read_text())['platform_inputs']
+    previous = json.loads(receipt.read_text(encoding="utf-8"))['platform_inputs']
     change_pin(repo, 'android-platform', '?candidate')
     monkeypatch.setattr(module, 'install_sdk', lambda *a, **kw: change_pin(repo, 'android-platform', '?concurrent-edit'))
     with pytest.raises(RuntimeError, match='source changed'):
         module.ensure_platform(repo)
-    assert json.loads(receipt.read_text())['platform_inputs'] == previous
+    assert json.loads(receipt.read_text(encoding="utf-8"))['platform_inputs'] == previous
     assert not module.platform_current(repo)[0]
 
 
 def test_common_node_pin_changes_refresh_node_group(platform):
     module, repo, receipt, calls = platform
     file = repo / 'ouroboros/claudexor_runtime_pin.json'
-    pin = json.loads(file.read_text())
+    pin = json.loads(file.read_text(encoding="utf-8"))
     pin['release']['node_artifacts']['linux-arm64']['archive_url'] += '?next'
     file.write_text(json.dumps(pin))
     assert module.ensure_platform(repo)
@@ -189,7 +189,7 @@ def test_common_node_manager_replaces_owned_executable_links(tmp_path, monkeypat
     monkeypatch.setattr(module.subprocess, 'check_output', lambda *a, **kw: json.dumps([str(tmp_path / 'new/node')]).encode())
     monkeypatch.setattr(module, 'run', lambda *a: None)
     module.install_node(tmp_path / 'repo', 'python', tools, [])
-    assert all((tools / name).read_text() == 'new' for name in ('node', 'npm', 'npx'))
+    assert all((tools / name).read_text(encoding="utf-8") == 'new' for name in ('node', 'npm', 'npx'))
 
 
 def test_actual_sdk_jar_replacement_skips_native_source_compile(platform, tmp_path, monkeypatch):
@@ -215,5 +215,5 @@ def test_actual_sdk_jar_replacement_skips_native_source_compile(platform, tmp_pa
     assert module.ensure_platform(repo)
     actual = receipt.parent / 'platforms/android-36/android.jar'
     assert actual.read_bytes() == b'new verified platform fixture'
-    assert json.loads(receipt.read_text())['outputs']['platforms/android-36/android.jar'] == module.sha(actual)
+    assert json.loads(receipt.read_text(encoding="utf-8"))['outputs']['platforms/android-36/android.jar'] == module.sha(actual)
     assert (receipt.parent / 'build-tools/36.0.0/aapt2').read_bytes() == before

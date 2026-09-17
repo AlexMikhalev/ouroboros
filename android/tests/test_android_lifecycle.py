@@ -109,7 +109,7 @@ import java.lang.reflect.Field;
 import java.util.*;
 import java.util.concurrent.*;
 public class LifecycleTest {
-    static final String PENDING="Запуск запрошен. Готовность ядра пока не подтверждена; проверьте статус позже.";
+    static final String PENDING="Start requested. Core readiness is not yet confirmed; check status later.";
     static class Queue extends AbstractExecutorService {
         final ArrayDeque<Runnable> items=new ArrayDeque<>(); boolean closed;
         public void execute(Runnable r) { items.add(r); }
@@ -142,19 +142,19 @@ public class LifecycleTest {
                 send(service,"start",1); work.drain();
                 require(RuntimeClient.stopped && RuntimeClient.calls.contains("/api/command"),"in-flight Panic lost");
                 require(service.notifications.messages.stream().noneMatch(m->m.startsWith(PENDING)
-                    || m.startsWith("Действие не выполнено")),"stale start outcome overwrote Panic");
+                    || m.startsWith("Action failed")),"stale start outcome overwrote Panic");
             } else if (scenario.equals("starting_pending")) {
                 RuntimeClient.startResult="starting"; RuntimeClient.healthFailure=true;
                 send(service,"start",1); work.drain();
                 require(service.notifications.messages.stream().anyMatch(m->m.startsWith(PENDING)),"missing unconfirmed readiness");
-                require(service.notifications.messages.stream().noneMatch(m->m.startsWith("Действие не выполнено")),"start was falsely reported failed");
+                require(service.notifications.messages.stream().noneMatch(m->m.startsWith("Action failed")),"start was falsely reported failed");
                 require(Collections.frequency(RuntimeClient.calls,"start:owner")==1,"start was repeated");
             } else if (scenario.equals("health_failure") || scenario.equals("control_failure")) {
                 RuntimeClient.healthFailure=scenario.equals("health_failure");
                 RuntimeClient.controlFailure=scenario.equals("control_failure");
                 send(service,RuntimeClient.healthFailure ? "status" : "start",1); work.drain();
                 String cause=RuntimeClient.healthFailure ? "health-failure" : "control-failure";
-                require(service.notifications.messages.stream().anyMatch(m->m.startsWith("Действие не выполнено") && m.contains(cause)),"ordinary failure hidden");
+                require(service.notifications.messages.stream().anyMatch(m->m.startsWith("Action failed") && m.contains(cause)),"ordinary failure hidden");
                 require(service.notifications.messages.stream().noneMatch(m->m.startsWith(PENDING)),"ordinary failure became readiness pending");
             } else if (scenario.equals("sticky_status")) {
                 send(service,null,1); work.drain();

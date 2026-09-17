@@ -790,10 +790,35 @@ jobs:
   android-test:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    outputs:
+      android_changed: ${{ steps.android_changes.outputs.changed }}
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Select Android emulator coverage
+        id: android_changes
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BASE: ${{ github.event.before }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          HEAD_SHA="${PR_HEAD:-$GITHUB_SHA}"
+          BASE_SHA="${PR_BASE:-$PUSH_BASE}"
+          if [ -z "$BASE_SHA" ] || [[ "$BASE_SHA" =~ ^0+$ ]]; then
+            BASE_SHA="$(git rev-parse "$HEAD_SHA^" 2>/dev/null || true)"
+          fi
+          if [ -n "$BASE_SHA" ]; then
+            CHANGED="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- android/)"
+          else
+            CHANGED="$(git diff-tree --root --no-commit-id --name-only -r "$HEAD_SHA" -- android/)"
+          fi
+          if [ -n "$CHANGED" ]; then echo 'changed=true' >> "$GITHUB_OUTPUT";
+          else echo 'changed=false' >> "$GITHUB_OUTPUT"; fi
       - uses: ./.github/actions/setup-python-env
       - name: Cache Android build dependencies
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -835,7 +860,8 @@ jobs:
   # releases. This is an emulator compatibility signal, not a substitute for
   # rooted ARM64, SELinux, launcher, WebView and physical-device qualification.
   android-emulator-smoke:
-    if: github.event_name != 'schedule'
+    needs: android-test
+    if: github.event_name != 'schedule' && (startsWith(github.ref, 'refs/tags/v') || needs.android-test.outputs.android_changed == 'true')
     name: Android emulator smoke (API ${{ matrix.api-level }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -1828,7 +1854,12 @@ jobs:
   # Release: Create GitHub Release with all artifacts
   # ──────────────────────────────────────────────────────────────────
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      ${{ always() && !cancelled() && startsWith(github.ref, 'refs/tags/v') &&
+          needs.build.result == 'success' && needs.release-preflight.result == 'success' &&
+          needs.marker-guards.result == 'success' && needs.ui-smoke.result == 'success' &&
+          needs.docker-ui-smoke.result == 'success' && needs.docker-portable-test.result == 'success' &&
+          needs.skill-smoke.result == 'success' }}
     needs: [build, android-build, release-preflight, marker-guards, ui-smoke, docker-ui-smoke, docker-portable-test, skill-smoke]
     runs-on: ubuntu-latest
     concurrency:
@@ -1854,7 +1885,52 @@ jobs:
           path: release-artifacts/
           merge-multiple: true
 
+      - name: Verify artifact attestations
+        id: verify_artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ANDROID_BUILD_RESULT: ${{ needs.android-build.result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PYCODE' > "$RUNNER_TEMP/attestation-targets.tsv"
+          import os, pathlib, runpy
+          registry = runpy.run_path("ouroboros/tools/release_sync.py")
+          version = pathlib.Path("VERSION").read_text(encoding="utf-8").strip()
+          ids = list(registry["DESKTOP_DOWNLOAD_IDS"])
+          if os.environ["ANDROID_BUILD_RESULT"] == "success":
+              ids.extend(registry["ANDROID_DOWNLOAD_IDS"])
+          for proof_id in ids:
+              name = registry["release_asset_name"](proof_id, version)
+              print(proof_id + "\t" + str(pathlib.Path("release-artifacts") / name))
+          PYCODE
+          SOURCE_ARGS=(
+            --repo "$GITHUB_REPOSITORY"
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml"
+            --source-digest "$GITHUB_SHA"
+            --source-ref "$GITHUB_REF"
+          )
+          ANDROID_RESULT=not_run
+          if [ "$ANDROID_BUILD_RESULT" = success ]; then ANDROID_RESULT=success; fi
+          while IFS=$'\t' read -r proof_id file; do
+            if [[ "$proof_id" == android-* ]]; then
+              if ! gh attestation verify "$file" "${SOURCE_ARGS[@]}" ||
+                 ! gh attestation verify "$file" "${SOURCE_ARGS[@]}" --predicate-type https://cyclonedx.org/bom; then
+                ANDROID_RESULT=failure
+                echo "::warning::Experimental Android verification failed for $file; neither Android asset will be published."
+              fi
+            else
+              gh attestation verify "$file" "${SOURCE_ARGS[@]}"
+              gh attestation verify "$file" "${SOURCE_ARGS[@]}" --predicate-type https://cyclonedx.org/bom
+            fi
+          done < "$RUNNER_TEMP/attestation-targets.tsv"
+          echo "android_result=$ANDROID_RESULT" >> "$GITHUB_OUTPUT"
+
       - name: Assemble release proof capsule and notes
+        id: release_proof
+        env:
+          ANDROID_BUILD_RESULT: ${{ needs.android-build.result }}
+          ANDROID_ATTESTATION_RESULT: ${{ steps.verify_artifacts.outputs.android_result }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1867,34 +1943,11 @@ jobs:
             --tag "$GITHUB_REF_NAME" \
             --commit "$GITHUB_SHA" \
             --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --android-build-result "$ANDROID_BUILD_RESULT" \
+            --android-attestation-result "$ANDROID_ATTESTATION_RESULT" \
+            --github-output "$GITHUB_OUTPUT" \
             --notes-output release-notes.md \
             "${ARGS[@]}"
-
-      - name: Verify artifact attestations
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          for file in release-artifacts/Ouroboros-*.dmg \
-                      release-artifacts/Ouroboros-*-linux-x86_64.tar.gz \
-                      release-artifacts/Ouroboros-*-linux-x86_64.AppImage \
-                      release-artifacts/ouroboros_*_amd64.deb \
-                      release-artifacts/ouroboros-*-1.x86_64.rpm \
-                      release-artifacts/ouroboros-*-1.red80.x86_64.rpm \
-                      release-artifacts/Ouroboros-*-windows-x64.zip \
-                      release-artifacts/Ouroboros-*-android-arm64.tar.gz \
-                      release-artifacts/Ouroboros-*-android.apk; do
-            SOURCE_ARGS=(
-              --repo "$GITHUB_REPOSITORY"
-              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml"
-              --source-digest "$GITHUB_SHA"
-              --source-ref "$GITHUB_REF"
-            )
-            gh attestation verify "$file" "${SOURCE_ARGS[@]}"
-            gh attestation verify "$file" "${SOURCE_ARGS[@]}" \
-              --predicate-type https://cyclonedx.org/bom
-          done
 
       - name: Require an unpublished release slot
         env:
@@ -1949,36 +2002,7 @@ jobs:
       - name: Create draft GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          files: |
-            release-artifacts/Ouroboros-*.dmg
-            release-artifacts/Ouroboros-*-linux-x86_64.tar.gz
-            release-artifacts/Ouroboros-*-linux-x86_64.AppImage
-            release-artifacts/ouroboros_*_amd64.deb
-            release-artifacts/ouroboros-*-1.x86_64.rpm
-            release-artifacts/ouroboros-*-1.red80.x86_64.rpm
-            release-artifacts/Ouroboros-*-windows-x64.zip
-            release-artifacts/Ouroboros-*-android-arm64.tar.gz
-            release-artifacts/Ouroboros-*-android.apk
-            release-artifacts/release-smoke-macos-arm64.json
-            release-artifacts/release-smoke-linux-x86_64.json
-            release-artifacts/release-smoke-linux-appimage-x86_64.json
-            release-artifacts/release-smoke-linux-deb-amd64.json
-            release-artifacts/release-smoke-linux-rpm-x86_64.json
-            release-artifacts/release-smoke-linux-rpm-red80-x86_64.json
-            release-artifacts/release-smoke-windows-x64.json
-            release-artifacts/release-smoke-android-arm64.json
-            release-artifacts/release-smoke-android-apk.json
-            release-artifacts/sbom-macos-arm64.cdx.json
-            release-artifacts/sbom-linux-x86_64.cdx.json
-            release-artifacts/sbom-linux-appimage-x86_64.cdx.json
-            release-artifacts/sbom-linux-deb-amd64.cdx.json
-            release-artifacts/sbom-linux-rpm-x86_64.cdx.json
-            release-artifacts/sbom-linux-rpm-red80-x86_64.cdx.json
-            release-artifacts/sbom-windows-x64.cdx.json
-            release-artifacts/sbom-android-arm64.cdx.json
-            release-artifacts/sbom-android-apk.cdx.json
-            release-artifacts/SHA256SUMS
-            release-artifacts/release-evidence.json
+          files: ${{ fromJSON(steps.release_proof.outputs.files_json) }}
           body_path: release-notes.md
           fail_on_unmatched_files: true
           # The existing annotated tag is exact-SHA verified above. Passing an

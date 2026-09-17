@@ -73,19 +73,19 @@ public final class MainActivity extends Activity {
         title.setOnClickListener(v -> showStatus());
         menu = new Button(this); menu.setText("⋮"); menu.setTextSize(23);
         menu.setTextColor(android.graphics.Color.WHITE); menu.setBackgroundColor(android.graphics.Color.TRANSPARENT);
-        menu.setContentDescription("Меню приложения");
+        menu.setContentDescription("Application menu");
         menu.setOnClickListener(v -> {
             PopupMenu popup = new PopupMenu(this, menu);
-            popup.getMenu().add(0, 1, 0, "Запустить ядро");
-            popup.getMenu().add(0, 2, 1, "Обновить окно");
-            popup.getMenu().add(0, 3, 2, "Статус ядра");
-            popup.getMenu().add(0, 4, 3, "Остановить агента");
-            popup.getMenu().add(0, 5, 4, "Разрешения Android");
-            popup.getMenu().add(0, 6, 5, "Назначить ассистентом Android");
+            popup.getMenu().add(0, 1, 0, "Start core");
+            popup.getMenu().add(0, 2, 1, "Refresh view");
+            popup.getMenu().add(0, 3, 2, "Core status");
+            popup.getMenu().add(0, 4, 3, "Stop agent");
+            popup.getMenu().add(0, 5, 4, "Android permissions");
+            popup.getMenu().add(0, 6, 5, "Set as Android assistant");
             popup.setOnMenuItemClickListener(item -> {
                 switch (item.getItemId()) {
                     case 1:
-                        status.setVisibility(View.VISIBLE); status.setText("Запускаю ядро…");
+                        status.setVisibility(View.VISIBLE); status.setText("Starting the core…");
                         startForegroundService(new Intent(this, CoreService.class).setAction("start")); break;
                     case 2: if (loaded && web != null) web.reload(); check(true); break;
                     case 3: showStatus(); break;
@@ -104,7 +104,7 @@ public final class MainActivity extends Activity {
         title.setGravity(Gravity.CENTER_VERTICAL);
         toolbar.addView(menu, new LinearLayout.LayoutParams(dp(48), dp(40)));
         root.addView(toolbar);
-        status = new TextView(this); status.setText("Подключаюсь к ядру на телефоне…");
+        status = new TextView(this); status.setText("Connecting to the core on this phone…");
         status.setTextColor(android.graphics.Color.LTGRAY);
         status.setPadding(16, 4, 16, 8); root.addView(status);
         web = new WebView(this);
@@ -142,7 +142,7 @@ public final class MainActivity extends Activity {
             @Override public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
                 if (request.isForMainFrame()) {
                     loaded = false; status.setVisibility(View.VISIBLE);
-                    status.setText("Жду подключения к ядру…");
+                    status.setText("Waiting for the core connection…");
                 }
             }
             @Override public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
@@ -180,10 +180,10 @@ public final class MainActivity extends Activity {
         });
         web.setDownloadListener((url, agent, disposition, mime, length) -> {
             if (!url.startsWith(RuntimeClient.baseUrl() + "/")) {
-                notifyOutcome("Этот формат скачивания пока не поддержан приложением"); return;
+                notifyOutcome("This download format is not yet supported by the app"); return;
             }
             if (pendingDownload != null) {
-                notifyOutcome("Сначала выберите место для предыдущего файла"); return;
+                notifyOutcome("Choose a destination for the previous file first"); return;
             }
             pendingDownload = url;
             Intent save = new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
@@ -191,7 +191,7 @@ public final class MainActivity extends Activity {
                     .putExtra(Intent.EXTRA_TITLE, URLUtil.guessFileName(url, disposition, mime));
             try { startActivityForResult(save, 11); }
             catch (ActivityNotFoundException error) {
-                pendingDownload = null; notifyOutcome("На телефоне нет приложения выбора файла");
+                pendingDownload = null; notifyOutcome("No file picker is available on this phone");
             }
         });
         root.addView(web, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -207,23 +207,23 @@ public final class MainActivity extends Activity {
     /** Ask Android's ordinary user-consent flow for the assistant role. */
     private void requestAssistantRole() {
         if (Build.VERSION.SDK_INT < 29) {
-            notifyOutcome("Роль системного ассистента доступна начиная с Android 10");
+            notifyOutcome("The system assistant role requires Android 10 or later");
             return;
         }
         RoleManager roles = (RoleManager) getSystemService(RoleManager.class);
         if (roles == null || !roles.isRoleAvailable(RoleManager.ROLE_ASSISTANT)) {
-            notifyOutcome("На этом Android нет роли системного ассистента");
+            notifyOutcome("The system assistant role is unavailable on this Android device");
             return;
         }
         if (roles.isRoleHeld(RoleManager.ROLE_ASSISTANT)) {
-            notifyOutcome("Ouroboros уже выбран системным ассистентом");
+            notifyOutcome("Ouroboros is already the system assistant");
             return;
         }
         try {
             startActivityForResult(roles.createRequestRoleIntent(RoleManager.ROLE_ASSISTANT),
                     ASSISTANT_ROLE_REQUEST);
         } catch (RuntimeException error) {
-            notifyOutcome("Android не открыл выбор системного ассистента");
+            notifyOutcome("Android could not open the system assistant chooser");
         }
     }
 
@@ -247,30 +247,30 @@ public final class MainActivity extends Activity {
                 }
             }
         } catch (android.content.pm.PackageManager.NameNotFoundException error) {
-            notifyOutcome("Не удалось прочитать разрешения приложения");
+            notifyOutcome("Could not read the app permissions");
         }
         return missing.toArray(new String[0]);
     }
 
     private void showAccessSetup() {
         if (isFinishing() || isDestroyed()) return;
-        new AlertDialog.Builder(this).setTitle("Доступ Ouroboros к телефону")
-                .setMessage("Ouroboros может использовать камеру, микрофон, геопозицию, контакты, календарь "
-                        + "и медиафайлы по вашим поручениям. В следующих окнах Android выберите, что разрешить. "
-                        + "Уже выданные разрешения не запрашиваются перед каждым действием. "
-                        + "Root-доступ выдаётся отдельно в Magisk. Изменить доступ можно в меню приложения.")
-                .setPositiveButton("Настроить доступ", (dialog, which) -> {
+        new AlertDialog.Builder(this).setTitle("Ouroboros access to your phone")
+                .setMessage("Ouroboros can use the camera, microphone, location, contacts, calendar "
+                        + "and media files for your tasks. Choose what to allow in the following Android dialogs. "
+                        + "Existing permissions are not requested again before each action. "
+                        + "Root access is granted separately in Magisk. You can change access from the app menu.")
+                .setPositiveButton("Set up access", (dialog, which) -> {
                     getPreferences(MODE_PRIVATE).edit().putBoolean("native_access_setup_seen", true).apply();
                     enqueuePermissionPrompt(new PermissionPrompt(missingRuntimePermissions(), proceed -> {
                         if (!isFinishing() && !isDestroyed()) {
                             String[] missing = missingRuntimePermissions();
-                            notifyOutcome(missing.length == 0 ? "Разрешения настроены" : "Доступ настроен с выбранными ограничениями");
+                            notifyOutcome(missing.length == 0 ? "Permissions configured" : "Access configured with your selected restrictions");
                         }
                     }));
                 })
-                .setNeutralButton("Настройки Android", (dialog, which) -> startActivity(new Intent(
+                .setNeutralButton("Android settings", (dialog, which) -> startActivity(new Intent(
                         android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName()))))
-                .setNegativeButton("Позже", (dialog, which) ->
+                .setNegativeButton("Later", (dialog, which) ->
                         getPreferences(MODE_PRIVATE).edit().putBoolean("native_access_setup_seen", true).apply())
                 .show();
     }
@@ -396,12 +396,12 @@ public final class MainActivity extends Activity {
                 } else if (startWhenMissing) {
                     startWhenMissing = false;
                     status.setVisibility(View.VISIBLE);
-                    status.setText("Запускаю ядро…");
+                    status.setText("Starting the core…");
                     // Passive window entry must not clear a previous Panic.
                     startForegroundService(new Intent(this, CoreService.class).setAction("boot"));
                 } else {
                     status.setVisibility(View.VISIBLE);
-                    status.setText("Ядро не отвечает. Откройте меню запуска или статуса.");
+                    status.setText("The core is not responding. Open the Start or Status menu.");
                 }
                 handler.removeCallbacks(refresh);
                 if (visible) handler.postDelayed(refresh, 3000);
@@ -414,19 +414,19 @@ public final class MainActivity extends Activity {
             String text;
             try {
                 JSONObject state = RuntimeClient.request("/api/state", "GET");
-                text = "Ядро: " + RuntimeClient.baseUrl() + "\nРаботники: "
+                text = "Core: " + RuntimeClient.baseUrl() + "\nWorkers: "
                         + state.optInt("workers_alive") + "/" + state.optInt("workers_total")
-                        + "\nРежим: " + state.optString("runtime_mode")
-                        + "\nОжидают: " + state.optInt("pending_count")
-                        + "\nАктивные задачи: " + state.optInt("running_count");
+                        + "\nMode: " + state.optString("runtime_mode")
+                        + "\nPending: " + state.optInt("pending_count")
+                        + "\nActive tasks: " + state.optInt("running_count");
             } catch (Exception error) {
                 try { text = RuntimeClient.control("status", "owner"); }
-                catch (Exception controlError) { text = "Запуск недоступен: " + controlError.getMessage(); }
+                catch (Exception controlError) { text = "Start unavailable: " + controlError.getMessage(); }
             }
             final String message = text;
             runOnUiThread(() -> {
                 if (!isDestroyed()) new AlertDialog.Builder(this).setTitle("Ouroboros")
-                        .setMessage(message).setPositiveButton("Закрыть", null).show();
+                        .setMessage(message).setPositiveButton("Close", null).show();
             });
         });
     }
@@ -435,7 +435,7 @@ public final class MainActivity extends Activity {
         String scheme = uri.getScheme();
         if (!"https".equals(scheme) && !"http".equals(scheme) && !"mailto".equals(scheme)) return;
         try { startActivity(new Intent(Intent.ACTION_VIEW, uri)); }
-        catch (ActivityNotFoundException error) { notifyOutcome("Нет приложения для этой ссылки"); }
+        catch (ActivityNotFoundException error) { notifyOutcome("No app can open this link"); }
     }
 
     @Override protected void onActivityResult(int request, int result, Intent data) {
@@ -443,8 +443,8 @@ public final class MainActivity extends Activity {
         if (request == ASSISTANT_ROLE_REQUEST && Build.VERSION.SDK_INT >= 29) {
             RoleManager roles = (RoleManager) getSystemService(RoleManager.class);
             boolean held = roles != null && roles.isRoleHeld(RoleManager.ROLE_ASSISTANT);
-            notifyOutcome(held ? "Ouroboros выбран системным ассистентом"
-                    : "Выбор системного ассистента отменён");
+            notifyOutcome(held ? "Ouroboros is now the system assistant"
+                    : "System assistant selection cancelled");
             return;
         }
         if (request == 10 && chooser != null) {
@@ -468,19 +468,19 @@ public final class MainActivity extends Activity {
                         while ((count = input.read(buffer)) >= 0) output.write(buffer, 0, count);
                     }
                     runOnUiThread(() -> showSavedFile(target));
-                } catch (Exception error) { notifyOutcome("Не удалось сохранить файл"); }
+                } catch (Exception error) { notifyOutcome("Could not save the file"); }
                 finally { if (connection != null) connection.disconnect(); }
             });
         }
     }
 
     private void showSavedFile(Uri file) {
-        if (isFinishing() || isDestroyed()) { notifyOutcome("Файл сохранён"); return; }
-        new AlertDialog.Builder(this).setTitle("Файл сохранён")
-                .setMessage("Открыть файл или передать его в другое приложение?")
-                .setPositiveButton("Открыть", (dialog, which) -> openSavedFile(file, false))
-                .setNeutralButton("Поделиться", (dialog, which) -> openSavedFile(file, true))
-                .setNegativeButton("Закрыть", null).show();
+        if (isFinishing() || isDestroyed()) { notifyOutcome("File saved"); return; }
+        new AlertDialog.Builder(this).setTitle("File saved")
+                .setMessage("Open this file or share it with another app?")
+                .setPositiveButton("Open", (dialog, which) -> openSavedFile(file, false))
+                .setNeutralButton("Share", (dialog, which) -> openSavedFile(file, true))
+                .setNegativeButton("Close", null).show();
     }
 
     private void openSavedFile(Uri file, boolean share) {
@@ -490,8 +490,8 @@ public final class MainActivity extends Activity {
                 : new Intent(Intent.ACTION_VIEW).setDataAndType(file, mime);
         action.setClipData(ClipData.newUri(getContentResolver(), "Ouroboros", file));
         action.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        try { startActivity(Intent.createChooser(action, share ? "Поделиться файлом" : "Открыть файл")); }
-        catch (ActivityNotFoundException error) { notifyOutcome("Нет приложения для этого файла"); }
+        try { startActivity(Intent.createChooser(action, share ? "Share file" : "Open file")); }
+        catch (ActivityNotFoundException error) { notifyOutcome("No app can open this file"); }
     }
 
     @Override protected void onSaveInstanceState(Bundle saved) {

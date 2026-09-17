@@ -8,7 +8,7 @@ import pytest
 
 @pytest.mark.parametrize('override,expected', [(None, '3600'), ('5400', '5400')])
 def test_android_entry_forwards_default_or_explicit_total_test_budget(tmp_path, override, expected):
-    source = (Path(__file__).parents[1] / 'bootstrap/enter-linux').read_text()
+    source = (Path(__file__).parents[1] / 'bootstrap/enter-linux').read_text(encoding="utf-8")
     assignments = '\n'.join(line for line in source.splitlines() if line.startswith(('preflight_workers=', 'preflight_timeout=')))
     invocation = source[source.index('exec chroot '):]
     # Replace only the physical chroot boundary. Its real env -i argument list

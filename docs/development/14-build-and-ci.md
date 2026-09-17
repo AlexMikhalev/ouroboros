@@ -218,7 +218,7 @@ across runs.
 
 The artifact pipeline — per-platform archive smokes, native Linux packages,
 the AppImage custody chain, SBOM and attestation binding, and the
-nine-asset release job — lives in ARCHITECTURE "8. Git Branching, CI, and
+seven-required-desktop plus optional-Android release job — lives in ARCHITECTURE "8. Git Branching, CI, and
 Build" and `.github/workflows/ci.yml`. The honesty invariants a change must
 preserve:
 

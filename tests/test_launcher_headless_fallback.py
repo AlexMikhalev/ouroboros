@@ -73,7 +73,7 @@ def test_native_boot_preserves_panic_but_owner_can_start(
         launcher.main(["--no-ui", "--launch-intent", intent])
     assert bool(observed) == launches
     if marker is not None:
-        assert flag.read_text() == marker
+        assert flag.read_text(encoding="utf-8") == marker
 
 
 def test_external_ui_keepalive_preserves_crash_shutdown(external_launcher, monkeypatch):
