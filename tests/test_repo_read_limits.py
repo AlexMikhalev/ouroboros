@@ -306,9 +306,8 @@ def test_triad_review_prompt_reaches_architecture_md_by_navigation():
     Owner decision 2026-09-17: one SSOT (`tools/governance_context.py`) tiers the
     governance corpus. The architecture map is delivered as book navigation for
     every reviewer, with the sections that name a touched file selected for a
-    packet row — so ARCHITECTURE.md remains REACHED in full (every chapter named
-    with line ranges, read on demand) instead of being pasted in full into every
-    api row. The prompt templates must not carry a whole-book placeholder, and
+    packet row. Every chapter remains named with line ranges, without promising
+    tools to a packet recipient. The templates carry no whole-book placeholder, and
     nothing may be omitted silently."""
     from ouroboros.tools.governance_context import governance_context
     from ouroboros.tools.review import (
@@ -335,7 +334,8 @@ def test_triad_review_prompt_reaches_architecture_md_by_navigation():
     )
     # The map is named, addressable and never inlined whole.
     assert "docs/ARCHITECTURE.md" in [row["path"] for row in context.manifest]
-    assert 'read_file(root="system_repo"' in context.navigation
+    assert 'read_file(root="system_repo"' not in context.navigation
+    assert "index of sources not inlined" in context.navigation
     assert "docs/architecture/03-web-ui-pages-and-buttons.md" in context.navigation
     inlined_whole = [row["path"] for row in context.manifest
                      if row["disposition"] == "inline" and row["tier"] == 3 and "#" not in row["path"]]

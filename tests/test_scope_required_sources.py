@@ -541,7 +541,7 @@ def test_a_stored_bare_scope_row_discloses_its_migration_once_per_install(tmp_pa
     assert events[0]["model"] == "fixture/model"
     assert events[0]["delivery"] == "native_retrieval"
     marker = data / "state" / review_admission.SCOPE_DELIVERY_MIGRATION_FILENAME
-    assert json.loads(marker.read_text())["slot_id"] == "scope_slot_1"
+    assert json.loads(marker.read_text(encoding="utf-8"))["slot_id"] == "scope_slot_1"
 
 
 def test_a_bare_api_scope_seat_is_priced_as_its_native_first_send(tmp_path):

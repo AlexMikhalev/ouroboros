@@ -1033,8 +1033,9 @@ def _write_contributor_packet(
 def _diff_size_refusal(args, resolved_config: dict, reviewable_chars: int, cap: int) -> bool:
     """The cap binds packet recipients; configured retrieving actors read files.
 
-    The non-contributor advisory flow keeps its existing hard cap. Native
-    API actors remain paid seats even though they do not receive a packet.
+    Scope rows always retrieve; only triad rows can receive a packet. The
+    non-contributor advisory flow keeps its existing hard cap. Native API
+    actors remain paid seats even though they do not receive a packet.
     """
     from ouroboros.review_execution import delivery_retrieves
 
@@ -1044,10 +1045,7 @@ def _diff_size_refusal(args, resolved_config: dict, reviewable_chars: int, cap: 
         return True
     return any(
         not delivery_retrieves((row.get("route") or {}).get("kind"), row.get("subagent_id"))
-        for row in [
-            *list(resolved_config.get("triad_slots") or []),
-            *list(resolved_config.get("scope_slots") or []),
-        ]
+        for row in resolved_config.get("triad_slots") or []
     )
 
 

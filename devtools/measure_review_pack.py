@@ -375,8 +375,8 @@ def measure(repo: pathlib.Path) -> dict:
     from ouroboros.tools.preflight_review_prompt import _advisory_touched_manifest
     from ouroboros.tools.review_file_pack import parse_changed_paths_from_porcelain
 
-    advisory_paths = [p for p in paths if p != "docs/ARCHITECTURE.md"]  # the run's exclude_paths
-    resolved = [p for p in parse_changed_paths_from_porcelain(porcelain) if p != "docs/ARCHITECTURE.md"]
+    advisory_paths = list(paths)
+    resolved = parse_changed_paths_from_porcelain(porcelain)
     if sorted(resolved) != sorted(advisory_paths):
         raise MeasuredCheckoutDirty(
             f"the advisory arm resolved {resolved} from the porcelain while the index names "

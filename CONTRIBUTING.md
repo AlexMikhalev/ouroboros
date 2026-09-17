@@ -194,10 +194,10 @@ path. What a scope reviewer is owed in full is change-relative: the touched
 protected runtime paths, prompts and frozen contracts, with their declared
 families and cross-language twins. Everything else it reaches itself with
 read-only tools, so the run does not depend on a very large reviewer window.
-What it does depend on is the reading actually happening: a reviewer that
-leaves a required source unread produces a coverage gap, which keeps its
-findings but supplies no authoritative verdict, and the packet records that
-plainly instead of presenting it as clean. A scope review that cannot run at
+Reading coverage is diagnostic: incomplete or unobserved ranges are recorded
+beside the received verdict and never remove a responding reviewer from quorum,
+block a commit or automatically buy another review. The author judges whether
+a concrete gap warrants more reading. A scope review that cannot run at
 all — an unreadable repository, an unavailable review subject, a reviewer that
 failed or answered outside the contract — is reported as
 `SCOPE_REVIEW_BLOCKED` with its cause, and the evidence packet is preserved

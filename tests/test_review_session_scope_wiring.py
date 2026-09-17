@@ -873,6 +873,7 @@ def test_a_staged_diff_above_the_first_send_is_paged_as_one_exact_source(tmp_pat
     task, manifest = prepared["session_task"], prepared["context_manifest"]
 
     assert manifest["diff_delivery"] == "paged", manifest.get("diff_paging_reason")
+    assert manifest["first_send_chars"] < manifest["first_send_ceiling"]
     assert manifest["diff_chars"] == len(expected)
     # The body is NOT in the brief; its address, size and digest are.
     assert DIFF_MARKER not in task

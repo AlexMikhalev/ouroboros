@@ -549,6 +549,8 @@ def build_scope_session_task(
                 delivery.update(diff_paging="unavailable",
                                 diff_paging_reason=str(source.get("error") or "no_source_root"))
     task_text = _assemble(diff_slot)
+    if delivery.get("diff_delivery") == "paged":
+        delivery["first_send_chars"] = _first_send_chars(repo_dir, brief, task_text)
 
     manifest: Dict[str, Any] = {
         # D-12's ratified spelling. It is deliberately NOT `agent_session`: that

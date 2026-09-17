@@ -311,7 +311,8 @@ def test_repo_selects_every_governance_corpus(synthetic_repo, isolated_roots, mo
     assert rows["docs/DEVELOPMENT.md"]["disposition"] == "navigation"
     assert rows["docs/DESIGN.md"]["disposition"] == "navigation"
     assert rows["docs/ARCHITECTURE.md"]["tier"] == 3
-    assert "Governance navigation (read on demand)" in prefix["governance_tail"]
+    assert "Governance navigation (index of sources not inlined)" in prefix["governance_tail"]
+    assert 'read_file(root="system_repo"' not in prefix["governance_tail"]
 
     report = mrp.measure(synthetic_repo)
     parts = report["governance_context"]["parts"]
@@ -369,3 +370,18 @@ def test_main_prints_the_triad_packet_parts_and_the_advisory_manifest(
                            "advisory_touched_manifest", "governance_context",
                            "zero_diff_message", "fit"}
     assert "scope_full" not in report
+
+
+def test_advisory_measurement_keeps_a_changed_architecture_entrypoint(synthetic_repo, isolated_roots, monkeypatch):
+    from ouroboros.tools.preflight_review_prompt import _advisory_touched_manifest
+
+    path = synthetic_repo / "docs/ARCHITECTURE.md"
+    path.write_text("# ARCHITECTURE.md\n\nChanged entrypoint.\n", encoding="utf-8")
+    _git(synthetic_repo, "add", "docs/ARCHITECTURE.md")
+    monkeypatch.setattr(mrp, "_o200k", _no_bpe)
+    report = mrp.measure(synthetic_repo)
+    measured = report["advisory_touched_manifest"]
+    assert "docs/ARCHITECTURE.md" in measured["paths"]
+    porcelain = subprocess.check_output(["git", "status", "--porcelain"], cwd=synthetic_repo, text=True)
+    actual = _advisory_touched_manifest(synthetic_repo, report["staged_paths"], porcelain)
+    assert measured["chars"] == len(actual)

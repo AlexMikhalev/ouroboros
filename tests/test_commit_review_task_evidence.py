@@ -564,7 +564,7 @@ def test_real_packet_assembly_omits_optional_excerpt_before_required_material(ev
     # row's constitutional head (outside this prompt) and the standing
     # disclosures ride the checklist section. Nothing is dropped silently —
     # every document is named here and dispositioned in the manifest.
-    assert 'read_file(root="system_repo"' in fitted
+    assert "Governance navigation (index of sources not inlined)" in fitted
     assert "docs/ARCHITECTURE.md" in fitted and "docs/DEVELOPMENT.md" in fitted
     assert "OPTIONAL_IMAGE_EXCERPT" not in fitted and "excerpt omitted to fit" in fitted
     assert ctx._commit_review_evidence == evidence

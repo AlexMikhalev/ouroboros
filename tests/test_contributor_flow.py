@@ -46,7 +46,8 @@ def test_public_contributor_flow_is_agent_first_and_route_neutral():
     assert "SCOPE_REVIEW_BLOCKED" in guide
     assert "change-relative" in guide
     assert "does not depend on a very large reviewer window" in guide
-    assert "coverage gap" in guide
+    assert "Reading coverage is diagnostic" in guide
+    assert "never remove a responding reviewer from quorum" in guide
     assert "SHAPE, not truth" in guide
     assert "--contributor" in guide
     assert "--base-ref upstream/ouroboros" in guide
