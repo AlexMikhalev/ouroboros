@@ -522,7 +522,10 @@ def test_project_lifecycle_rows_render_design_system_action_static_contract():
         chat.index("function updateMessageAnnotation")
     ]
     assert "createSystemMessageAction({" in render
-    assert "'system-message-actions'" in render
+    assert "createSystemMessageActions(" in render
+    assert "row.className = 'system-message-actions'" in helpers
+    for consumer in ("chat_decision.js", "chat_activity.js"):
+        assert "createSystemMessageActions(" in (root / "web/modules" / consumer).read_text(encoding="utf-8")
     assert "document.createElement('br')" not in render
 
     # The custom pill is gone everywhere; the conversion-flow buttons moved to

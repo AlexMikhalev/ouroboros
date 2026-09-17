@@ -450,12 +450,17 @@ their own message in that chat. After settlement, status and the owner's recorde
 answer keep both forms readable. Anatomy, top to bottom:
 
 1. **Head** — neutral `Question` chip (`--type-meta`, neutral pair) and a
-   status as dot + text. The lifecycle word family is closed:
-   `Awaiting answer` (neutral dot), `Answered` (ok dot),
-   `Task finished — you can still answer` (neutral dot: the card stays
-   answerable, and a late answer is delivered as the owner's own message),
-   `Superseded by a retry` (disabled dot); an unknown state keeps a neutral dot
-   but reads as settled `Closed`, never as an open invitation. No timers, no
+   status as dot + text. The lifecycle word family is closed and leads with the
+   one word that answers "is there an unanswered question for me?":
+   `Waiting for your answer` needs positive wait evidence (the task's live wait
+   record, or the original required flag before any record exists); a resumed
+   wait — the owner typed instead, or the bound closed — reads `Unanswered · the
+   task continued; an answer is still accepted`; an open question without any
+   wait evidence reads `Unanswered · an answer is still accepted`;
+   `Unanswered · the task finished; a late answer is accepted as your message`
+   keeps the neutral dot and answerability; `You answered` uses the ok dot;
+   `Replaced by a newer question` uses the disabled dot; an unreadable source
+   reads `Status unavailable`, never an invented invitation. No timers, no
    countdowns: the asking task's end closes nothing but its own mailbox.
 2. **Question** — the one primary thing: `--type-body` semibold,
    `--text-primary`.
@@ -490,7 +495,9 @@ element in the card shares one keyboard ring (2px `--focus-accent-border`,
 2px offset). Component geometry (card min/max width) keeps local literals like
 the rest of the chat surface.
 
-Required Project questions appear in Main as one neutral System pointer with `Open question` while the card is still answerable (open, or expired after its task ended — a late answer is accepted), then `View question` once answered or superseded; a bounded wait that timed out keeps the pointer's `Answer needed` status until the owner answers. The form remains in Project. Missing source says `Question status unavailable`; resumed work without a recorded answer keeps neutral `Question in <Project>` wording. An explicit click reveals that exact question without toggling the room closed or moving the viewport on background updates.
+Required Project questions appear in Main as one System pointer: the question is primary (`--type-body` semibold), the status and `In <Project>` line are meta ink (the owner reads them to act), the recorded answer is a second body line. Settled pointers show both the recorded option (including the first) and the comment, or a comment-only answer; the option and the comment are bounded separately, a cut is visibly labelled, and the complete original stays one click away. The pointer and the quiz header share the lifecycle wording above. Actions say `Answer question` while the card still takes one, `View answer` after an answer, and `View question` otherwise (a replaced or unreadable question still opens). The form remains in Project. An explicit click reveals that exact question without toggling the room closed or moving the viewport on background updates.
+
+System-pointer, Project-lifecycle and routing actions all use the shared `createSystemMessageActions` composition. It owns token-based space above and below the controls, wrapping and clearance for the existing button focus ring; action buttons never sit in a clipped/nowrap text line. This is a row composition, not a new card framework or a global button-margin rule.
 
 History with no current execution or known outcome keeps its expandable content under `Outcome unavailable`, without a task chip, typing or Stop. Before complete live-source reconciliation, it is `Activity unconfirmed`. Positive current activity restores only its proven controls. A delivery warning may coexist with a preserved task-acceptance PASS. Model metadata says `Last solve response`, naming the initial request only when the route changed.
 

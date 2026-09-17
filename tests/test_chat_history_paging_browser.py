@@ -483,8 +483,17 @@ def test_history_details_selection_replay_and_project_reopen(direct_server_with_
                     page.wait_for_function("feed => [...document.querySelectorAll(`${feed} img`)].some(img => img.complete && img.naturalWidth > 0)", arg=feed)
                     assert image.count() > 0
                     assert page.locator(feed).get_by_text("history-note.txt", exact=True).count() > 0
-                    assert page.locator(f'{feed} [data-client-message-id="routed-archive"] .msg-routing-annotation').get_by_role("button", name="Open Project").count() == 1
                     anchor = page.locator(f'{feed} [data-client-message-id="routed-archive"]')
+                    # The routing receipt's button lives in the shared action row between the note and the
+                    # timestamp (never inside the nowrap note line): DESIGN "Quiz card", ARCHITECTURE 03.
+                    assert anchor.locator('.msg-routing-actions').get_by_role("button", name="Open Project").count() == 1
+                    assert anchor.locator('.msg-routing-annotation').get_by_role("button").count() == 0
+                    assert anchor.evaluate("""node => {
+                        const note = node.querySelector('.msg-routing-annotation'), row = node.querySelector('.msg-routing-actions'),
+                            time = node.querySelector('.msg-time');
+                        const follows = (a, b) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+                        return Boolean(note && row && time) && follows(note, row) && follows(row, time);
+                    }""")
                     anchor.scroll_into_view_if_needed()
                     identity = anchor.get_attribute("data-history-id")
                     before_top = anchor.evaluate("node => node.getBoundingClientRect().top - node.closest('.chat-messages').getBoundingClientRect().top")

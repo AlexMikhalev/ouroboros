@@ -92,6 +92,17 @@ SPA, not a relocatable-page or multi-instance panel framework.
   action docked right); notifications use the shared toast host. Working,
   warning, error, and destructive states keep consistent meaning across
   Chat, Logs, Settings, and Skills.
+- System-message actions use `ui_helpers.createSystemMessageActions` around the
+  shared button, including question pointers, Project lifecycle and routing
+  receipts. Spacing above/below, wrap and focus clearance belong to this one
+  composition, never a global button margin or a nowrap text ancestor.
+  Question lifecycle words live once in `question_presentation.js` (pointer and
+  quiz header) and their Python twin `project_dialogue.QUESTION_STATUS`; a new
+  state is added to both sides in the same commit with a row in
+  `question_presentation_parity.json` (the pointer's data flow and precedence:
+  ARCHITECTURE "Chat and Projects"). Geometry and exact-question navigation are
+  exercised by `test_ui_coherence_browser.py`; answer delivery and the Main
+  answer preview by `test_ui_result_browser.py`.
 - A list editor reveals the entry it just added through
   `ui_helpers.revealNewRow(row, field)` — the one seam for "scrolled into
   view, caret in the first field" — and a freshly added entry shows no

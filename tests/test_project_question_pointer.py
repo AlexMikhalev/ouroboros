@@ -41,7 +41,10 @@ def test_real_escalation_bridge_history_detail_and_answer(tmp_path, monkeypatch)
     assert [row["type"] for row in frames] == ["quiz", "chat"]
     pointer = frames[1]
     assert pointer["system_type"] == "project_question_pointer" and pointer["chat_id"] == 1
-    assert not {"options", "question", "comment", "answered_index"} & pointer.keys()
+    # The live pointer frame is complete for display: the browser paints it without a detail read.
+    assert pointer["question"] == "Which storage?" and pointer["options"] == ["Local", "Shared"]
+    assert pointer["wait_for_answer"] is True and pointer["content"] == "Waiting for your answer in Question Project"
+    assert not {"comment", "answered_index"} & pointer.keys()
     stored = (tmp_path / "logs/chat.jsonl").read_text().splitlines()
     assert len(stored) == 1 and json.loads(stored[0])["chat_id"] == project["chat_id"]
     main = json.loads(_assemble_history_response(tmp_path, 1, 10, 0))["messages"]
@@ -58,7 +61,9 @@ def test_real_escalation_bridge_history_detail_and_answer(tmp_path, monkeypatch)
                      {"request_id": "answer-1", "decision_id": f"quiz:task-1:{qid}", "option_index": 1})
     assert answered.status_code == 200, answered.text
     main = json.loads(_assemble_history_response(tmp_path, 1, 10, 0))["messages"]
-    assert main[0]["quiz_state"] == "answered"
+    assert main[0]["quiz_state"] == "answered" and main[0]["answered_index"] == 1
+    assert main[0]["question"] == "Which storage?" and main[0]["options"] == ["Local", "Shared"]
+    assert main[0]["text"] == "You answered in Question Project"
     assert reconcile_terminal(tmp_path, "task-1") == []
     assert quiz_states(tmp_path, "task-1")[qid]["option_details"][1] == "Multiple writers over network"
 
@@ -100,12 +105,15 @@ def test_activity_question_uses_same_memo_and_preserves_wait_semantics(tmp_path,
     monkeypatch.setattr(utils, "read_json_dict", lambda path: (reads.append(str(path)), real(path))[1])
     rows = gs._chat_activities_snapshot_safe(tmp_path, direct_turns=[])
     assert rows[0]["required_question"]["quiz_state"] == "open"
+    assert rows[0]["required_question"]["text"] == "Waiting for your answer in Waiting Project"
+    # The census pointer is as complete as the history row: the browser never paints a blank over it.
+    assert rows[0]["required_question"]["question"] == "?" and rows[0]["required_question"]["options"] == ["a", "b"]
     assert reads.count(str(tmp_path / "task_results/t1.json")) == 1
     gs._chat_activities_snapshot_safe(tmp_path, direct_turns=[])
     assert reads.count(str(tmp_path / "task_results/t1.json")) == 1
     set_owner_wait(tmp_path, "t1", {"quiz_id": "q1", "wait_id": "w1", "state": "resumed"}, "w1")
     rows = gs._chat_activities_snapshot_safe(tmp_path, direct_turns=[])
-    assert rows[0]["required_question"]["text"] == "Question in Waiting Project"
+    assert rows[0]["required_question"]["text"] == "Unanswered · the task continued; an answer is still accepted in Waiting Project"
     assert quiz_states(tmp_path, "t1")["q1"]["state"] == "open"
     # A wait that ended on its OWN bound resumed without an answer, so the
     # question is still wanted: no new wait state, just the additive reason.
@@ -114,7 +122,7 @@ def test_activity_question_uses_same_memo_and_preserves_wait_semantics(tmp_path,
     gs._FINALIZING_MEMO.clear()
     rows = gs._chat_activities_snapshot_safe(tmp_path, direct_turns=[])
     pointer = rows[0]["required_question"]
-    assert pointer["text"] == "Answer needed in Waiting Project"
+    assert pointer["text"] == "Unanswered · the task continued; an answer is still accepted in Waiting Project"
     assert pointer["owner_wait_resume_reason"] == "timeout"
 
 
@@ -128,3 +136,53 @@ def test_details_are_immutable_optional_and_length_checked(tmp_path):
     assert "option_details" not in quiz_states(tmp_path, "t")["old"]
     with pytest.raises(ValueError):
         record_asked(tmp_path, "t", quiz_id="bad", question="?", options=["a", "b"], option_details=["A"])
+
+
+def test_question_presentation_shared_fixture():
+    """Both sides of the parity fixture: Python emits exactly the fixture row for each case, and the
+    browser (web/tests/question_presentation.test.js) reads the fixture status out of that row."""
+    from pathlib import Path
+    from ouroboros.project_dialogue import project_question_pointer
+
+    cases = json.loads((Path(__file__).resolve().parents[1] /
+                        'web/tests/fixtures/question_presentation_parity.json').read_text(encoding="utf-8"))
+    keys = ("quiz_state", "owner_wait_state", "owner_wait_resume_reason", "wait_for_answer",
+            "wait_ended_at", "answered_index", "comment", "source_status")
+    for case in cases:
+        block = {"quiz_id": "q", **case["block"]} if case["block"] is not None else None
+        wait = {"quiz_id": "q", **case["owner_wait"]} if case["owner_wait"] is not None else None
+        pointer = project_question_pointer(
+            {"task_id": "task", "text": "Which?", "quiz": {"quiz_id": "q", "wait_for_answer": True, "options": ["a", "b"]}},
+            block, {"id": "p", "chat_id": 12, "name": "Project"}, wait)
+        assert pointer["text"] == case["status"] + " in Project", case["case"]
+        assert {key: pointer[key] for key in keys if key in pointer} == case["row"], case["case"]
+        assert pointer["question"] == "Which?" and pointer["options"] == ["a", "b"]
+    narrow = project_question_pointer({"task_id": "task", "quiz_id": "q", "wait_for_answer": True},
+                                      {"quiz_id": "q", "state": "open"}, {"id": "p", "chat_id": 12, "name": "Project"}, None)
+    assert not {"question", "options"} & narrow.keys(), "unknown display fields are omitted, never blanked"
+
+
+def test_project_room_quiz_row_carries_the_wait_facts(tmp_path):
+    """A wait the owner resumed by ordinary input leaves no frame behind: the replayed card
+    reads the task's wait record like the Main pointer does."""
+    from ouroboros.utils import append_jsonl
+
+    project = create_project(tmp_path, "resumed-project", name="Resumed Project")
+    write_task_result(tmp_path, "t1", STATUS_RUNNING, project_id=project["id"], chat_id=project["chat_id"])
+    record_asked(tmp_path, "t1", quiz_id="q1", question="Which?", options=["a", "b"], wait_for_answer=True)
+    append_jsonl(tmp_path / "logs/chat.jsonl", {"type": "quiz", "direction": "out", "chat_id": project["chat_id"],
+                 "task_id": "t1", "ts": "2026-09-16T00:00:00Z", "text": "Which?",
+                 "quiz": {"quiz_id": "q1", "options": ["a", "b"], "wait_for_answer": True}})
+    room = json.loads(_assemble_history_response(tmp_path, project["chat_id"], 10, 0))["messages"]
+    assert "owner_wait_state" not in room[0]["quiz"]
+    set_owner_wait(tmp_path, "t1", {"quiz_id": "q1", "wait_id": "w1", "state": "waiting"})
+    room = json.loads(_assemble_history_response(tmp_path, project["chat_id"], 10, 0))["messages"]
+    assert room[0]["quiz"]["owner_wait_state"] == "waiting"
+    set_owner_wait(tmp_path, "t1", {"quiz_id": "q1", "wait_id": "w1", "state": "resumed"})
+    room = json.loads(_assemble_history_response(tmp_path, project["chat_id"], 10, 0))["messages"]
+    assert room[0]["quiz"]["owner_wait_state"] == "resumed" and room[0]["quiz"]["wait_for_answer"] is True
+    main = json.loads(_assemble_history_response(tmp_path, 1, 10, 0))["messages"]
+    assert main[0]["text"] == "Unanswered · the task continued; an answer is still accepted in Resumed Project"
+    set_owner_wait(tmp_path, "t1", {"quiz_id": "q2", "wait_id": "w2", "state": "waiting"})
+    room = json.loads(_assemble_history_response(tmp_path, project["chat_id"], 10, 0))["messages"]
+    assert room[0]["quiz"]["owner_wait_state"] == "resumed"

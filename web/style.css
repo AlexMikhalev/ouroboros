@@ -293,18 +293,38 @@ body.resizing-panels { user-select: none; }
     content: ' ⏩';
 }
 
-/* Layout-only container for design-system actions on host-stamped system
-   rows (Project lifecycle rows). The buttons themselves are the shared
+/* Layout-only composition for question, Project lifecycle and routing
+   actions, with room for keyboard focus above and below. Buttons use the shared
    `.btn.btn-default.btn-sm` role — no new colors, radii, or variants. */
 .system-message-actions {
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-3);
-    margin-top: var(--space-3);
+    padding-block: var(--space-3);
 }
 
 .system-message-action {
-    flex: 0 0 auto;
+    flex: 0 1 auto;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+.project-question-pointer {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+.project-question-preview { font-weight: 600; }
+.project-question-answer:empty { display: none; }
+.project-question-preview, .project-question-answer {
+    color: var(--text-primary); font-size: var(--type-body);
+}
+/* The owner reads the status to act on it: meta ink, never the quieter secondary step. */
+.project-question-status, .project-question-source {
+    color: var(--text-meta); font-size: var(--type-meta);
 }
 
 

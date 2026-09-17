@@ -58,11 +58,9 @@ class ChatInbound(TypedDict):
     # stays user_id 1; chat_id selects the thread, project_id scopes memory.
     chat_id: NotRequired[int]
     project_id: NotRequired[str]
-    # Per-message sending-surface observables (additive-optional): raw facts the
-    # SPA measures at send time (pywebview bridge presence, ua, viewport,
-    # matchMedia booleans, captured_at). The gateway normalizes through the
-    # closed-key bounded `client_surface.normalize_client_surface`; absence is an
-    # honest gap, never defaulted.
+    # Per-message sending-surface observables (additive-optional): raw facts the SPA measures at send
+    # time (pywebview bridge presence, ua, viewport, matchMedia booleans, captured_at), normalized by
+    # the closed-key `client_surface.normalize_client_surface`; absence is an honest gap, never defaulted.
     client_surface: NotRequired[dict]
 
 
@@ -134,6 +132,14 @@ class ChatOutbound(TypedDict):
     project_chat_id: NotRequired[int]
     source_status: NotRequired[str]
     owner_wait_state: NotRequired[str]
+    # The complete Project-question pointer: question, option labels, recorded answer and wait facts.
+    owner_wait_resume_reason: NotRequired[str]
+    wait_for_answer: NotRequired[bool]
+    wait_ended_at: NotRequired[str]
+    question: NotRequired[str]
+    options: NotRequired[List[str]]
+    answered_index: NotRequired[int]
+    comment: NotRequired[str]
     task_incident: NotRequired[str]
     # A cancellation fault names the PHYSICAL task it could not settle when that
     # differs from the displayed (logical) task id.
@@ -194,13 +200,10 @@ class ChatOutbound(TypedDict):
     _is_direct_chat: NotRequired[bool]  # lane fact stamped on a direct turn's own frames
     narration: NotRequired[bool]  # progress VOICE: the model's own round narration (true) vs a host note (false); absent = legacy
     initiator: NotRequired[str]  # origin label: "consciousness" on a wake-up's frames/rows (and its roots); absent on an owner's turn
-    # Monetary projections are nullable when the physical-attempt ledger cannot
-    # be read.  ``None`` is deliberately distinct from a confirmed $0 result.
-    # C2 (owner 10=B) named these the HONEST names — accounted upper bounds,
-    # not settled receipts; ABI 7.0 (ABI-3) removed the deprecated
-    # ``cost_usd[_with_children]`` wire aliases, so these are the only outbound
-    # spellings (ouroboros/cost_projection.py is the one author). Stored legacy
-    # records keep both spellings readable via ``resolve_cost_pair``.
+    # Monetary projections are nullable when the physical-attempt ledger cannot be read: ``None`` is
+    # distinct from a confirmed $0. These are the honest names (accounted upper bounds, not settled
+    # receipts) and the only outbound spellings since ABI 7.0 dropped the ``cost_usd[_with_children]``
+    # aliases; ouroboros/cost_projection.py is the one author, ``resolve_cost_pair`` reads legacy records.
     accounted_upper_bound_usd: NotRequired[Optional[float]]
     accounted_upper_bound_usd_with_children: NotRequired[Optional[float]]
     cost_accounting_status: NotRequired[Literal["available", "unavailable"]]
@@ -1130,11 +1133,9 @@ class TaskDetailResponse(TypedDict, total=False):
 
     cost_breakdown: TaskCostBreakdown
     model_waits: Dict[str, Any]
-    # Poltergeist phase A cancel projection (additive-optional): ``"pending"``
-    # while a durable cancel intent is open and the supervisor teardown has not
-    # settled — the status itself honestly stays running/scheduled. Absent on
-    # settled results and on tasks nobody asked to cancel. The UI renders the
-    # interim "Cancelling…" from this field, never from a status value.
+    # Cancel projection (additive-optional): ``"pending"`` while a durable cancel intent is open and the
+    # supervisor teardown has not settled — the status itself honestly stays running/scheduled; absent on
+    # settled results and on tasks nobody asked to cancel. The UI's interim "Cancelling…" reads this, never a status.
     cancel_state: str
     # Rides beside ``cancel_state`` when the intent carries a reason (GR2-11):
     # the WHY of the pending cancellation (owner text, "subtree cancellation of
@@ -1192,13 +1193,11 @@ class ClaudexorStatusResponse(TypedDict, total=False):
     quota: List[Dict[str, Any]]
     quota_absences: List[Dict[str, Any]]
     reads: ClaudexorStatusReads
-    # UNIFIED ACCOUNT MODEL feature fact (additive-optional): True only when
-    # the engine's own /v2/operations catalog was read and advertises
-    # `GET /v2/account-pools` — the engine change that migrates every default
-    # CLI login into a named registry row, empties `harnessAccounts` and
-    # carries pool routing in the additive `profiles.accountPools` key. False
-    # (or absent, on an older backend) means the legacy native-pseudo-row
-    # rendering; an unreadable catalog fails closed to False.
+    # UNIFIED ACCOUNT MODEL feature fact (additive-optional): True only when the engine's own
+    # /v2/operations catalog was read and advertises `GET /v2/account-pools` (every default CLI login
+    # becomes a named registry row, `harnessAccounts` empties, pool routing rides `profiles.accountPools`).
+    # False, or absent on an older backend, means the legacy native-pseudo-row rendering; an unreadable
+    # catalog fails closed to False.
     unified_accounts: bool
     subagent_last_delegation: Dict[str, Any]
     error: str
@@ -1312,13 +1311,10 @@ class TaskCancelResponse(TypedDict, total=False):
     # for the subtree cancel, which is COMPLETE by the time this answer is sent;
     # the plain envelope is unchanged.
     cascade: bool
-    # S3 (Q1/Q2, additive): present on the 202 acknowledgement of a
-    # ``{"stop_policy": "finalize_then_cancel"}`` request — the durable intent
-    # is open ("pending") while the bounded finalization attempt runs;
-    # ``stop_policy`` echoes the EFFECTIVE policy of the durable intent
-    # ("immediate" | "finalize_then_cancel"): a graceful request over an
-    # already-hard intent never softens it, and the answer says so. Absent on
-    # the legacy immediate path, which stays byte-identical.
+    # Additive on the 202 acknowledgement of a ``{"stop_policy": "finalize_then_cancel"}`` request: the
+    # durable intent is open ("pending") while the bounded finalization attempt runs, and ``stop_policy``
+    # echoes the EFFECTIVE policy of the durable intent ("immediate" | "finalize_then_cancel") — a graceful
+    # request over an already-hard intent never softens it, and the answer says so. Absent on the legacy immediate path.
     cancel_state: str
     stop_policy: str
     error: str

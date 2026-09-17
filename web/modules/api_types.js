@@ -275,6 +275,13 @@
  * @property {number=} project_chat_id
  * @property {string=} source_status
  * @property {string=} owner_wait_state
+ * @property {string=} owner_wait_resume_reason
+ * @property {boolean=} wait_for_answer
+ * @property {string=} wait_ended_at
+ * @property {string=} question
+ * @property {string[]=} options
+ * @property {number=} answered_index
+ * @property {string=} comment
  * @property {"chat"} type
  * @property {"user"|"assistant"|"system"} role
  * @property {string} content
