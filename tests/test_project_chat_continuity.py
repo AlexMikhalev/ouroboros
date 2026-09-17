@@ -27,6 +27,7 @@ owner row and its routing annotation.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import types
 from types import SimpleNamespace
@@ -124,29 +125,75 @@ def test_chat_activities_snapshot_projects_queue_roots_with_phases(tmp_path, mon
     assert "running-child" not in rows
 
 
-def test_snapshot_rehomes_converted_task_through_binding(tmp_path, monkeypatch):
-    """A mid-run "turn into project" conversion binds the task to the project
-    without touching its queue row; the snapshot re-homes chat/project ids
-    through the same task-binding projection /api/state already serves."""
+@pytest.mark.serial
+@pytest.mark.parametrize("kind", ["direct_chat", "managed_task"])
+@pytest.mark.parametrize("bound", [False, True])
+def test_snapshot_rehomes_activity_without_changing_sources(tmp_path, monkeypatch, kind, bound):
+    """Both live owners follow their Project binding without rewriting ingress."""
     import supervisor.queue as queue_mod
     from ouroboros.gateway import state as gateway_state
 
+    registry = get_direct_activity_registry()
+    if kind == "direct_chat":
+        registry.register("root", chat_id=1, client_message_id="owner-message")
+    direct_rows = registry.snapshot()
+    original_direct = copy.deepcopy(direct_rows)
+    running = {} if kind == "direct_chat" else {
+        "root": {"task": _root_task("root", chat_id=1, project_id=""), "started_at": 9.0},
+    }
+    original_running = copy.deepcopy(running)
+    bindings = {"root": {"project_id": "task-converted", "chat_id": 77}} if bound else {}
+    original_bindings = copy.deepcopy(bindings)
     monkeypatch.setattr(queue_mod, "PENDING", [])
-    monkeypatch.setattr(queue_mod, "RUNNING", {
-        "converted-root": {"task": _root_task("converted-root", chat_id=1, project_id=""), "started_at": 9.0},
-    })
+    monkeypatch.setattr(queue_mod, "RUNNING", running)
     gateway_state._FINALIZING_MEMO.clear()
 
-    rows = {
-        row["activity_id"]: row
-        for row in gateway_state._chat_activities_snapshot_safe(
-            tmp_path,
-            {"converted-root": {"project_id": "task-converted", "chat_id": 77}},
-        )
-    }
+    rows = gateway_state._chat_activities_snapshot_safe(tmp_path, bindings, direct_turns=direct_rows)
 
-    assert rows["converted-root"]["chat_id"] == 77
-    assert rows["converted-root"]["project_id"] == "task-converted"
+    expected = original_direct[0] if kind == "direct_chat" else {
+        "activity_id": "root", "chat_id": 1, "project_id": "",
+        "kind": "managed_task", "phase": "working", "started_at": 9.0,
+        "client_message_id": "", "task_attempt": 1,
+    }
+    assert rows == [{**expected, **bindings.get("root", {})}]
+    assert direct_rows == original_direct
+    assert registry.snapshot() == original_direct
+    assert running == original_running
+    assert bindings == original_bindings
+    if direct_rows:
+        assert rows[0] is not direct_rows[0]
+
+
+@pytest.mark.serial
+def test_bound_direct_activity_question_uses_project_without_mutating_raw_snapshot(tmp_path, monkeypatch):
+    from ouroboros.gateway import state as gateway_state
+    from ouroboros.owner_quiz import record_asked
+    from ouroboros.owner_wait import set_owner_wait
+    from ouroboros.projects_registry import create_project
+    from ouroboros.task_results import STATUS_RUNNING, write_task_result
+    from supervisor import queue
+
+    project = create_project(tmp_path, "waiting-project", name="Waiting Project")
+    write_task_result(tmp_path, "direct", STATUS_RUNNING)
+    record_asked(tmp_path, "direct", quiz_id="q1", question="Proceed?", options=["Yes", "No"], wait_for_answer=True)
+    set_owner_wait(tmp_path, "direct", {"quiz_id": "q1", "wait_id": "w1", "state": "waiting"})
+    registry = get_direct_activity_registry()
+    registry.register("direct", chat_id=1, client_message_id="owner-message")
+    direct_rows = registry.snapshot()
+    original_direct = copy.deepcopy(direct_rows)
+    monkeypatch.setattr(queue, "PENDING", [])
+    monkeypatch.setattr(queue, "RUNNING", {})
+    gateway_state._FINALIZING_MEMO.clear()
+
+    rows = gateway_state._chat_activities_snapshot_safe(
+        tmp_path, {"direct": {"project_id": project["id"], "chat_id": project["chat_id"]}},
+        direct_turns=direct_rows,
+    )
+
+    assert rows[0]["required_question"]["project_id"] == project["id"]
+    assert rows[0]["required_question"]["quiz_state"] == "open"
+    assert direct_rows == original_direct
+    assert registry.snapshot() == original_direct
 
 
 def test_finalizing_probe_follows_checkpoint_lifecycle(tmp_path):

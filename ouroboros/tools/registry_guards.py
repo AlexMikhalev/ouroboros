@@ -305,6 +305,14 @@ def _disabled_tools(ctx: Any) -> frozenset:
     (e.g. the agent's web_search/browser/VLM tools for a faithful benchmark)
     WITHOUT setting web/network=false — so shell network egress (git/pip) stays
     available. Withholding web tools does not withhold unrelated network tools.
+
+    Enforced twice — the schema filters in ``registry_core`` hide the names and
+    ``_capability_resource_guard_result`` refuses them at dispatch — EXCEPT for a
+    consciousness-origin task (``disabled_tools_dispatch_only``): its list is
+    enforced at dispatch only, so a wake-up's tool schemas and its capability
+    manifest are byte-identical to an owner turn's and the provider prompt cache
+    prefix is shared (owner decision В31=B). The model then sees tools it may not
+    call and gets the typed refusal instead; the wake message names the level.
     """
     metadata = getattr(ctx, "task_metadata", {}) if isinstance(getattr(ctx, "task_metadata", {}), dict) else {}
     contract = metadata.get("task_contract") if isinstance(metadata.get("task_contract"), dict) else {}
@@ -329,6 +337,13 @@ def _disabled_tools(ctx: Any) -> frozenset:
     if "preflight_review" in names:
         names.add("advisory_review")
     return frozenset(names)
+
+
+def disabled_tools_dispatch_only(ctx: Any) -> bool:
+    """Whether ``disabled_tools`` binds at dispatch only (a consciousness-origin task)."""
+    from ouroboros.consciousness_authority import is_consciousness_origin
+
+    return is_consciousness_origin(getattr(ctx, "task_metadata", None))
 
 
 _GITHUB_TOKEN_TOOLS = frozenset({
@@ -667,6 +682,19 @@ def _direct_shell_write_block(self, raw_cmd: Any, work_dir: pathlib.Path, runtim
         self._ctx, operation="shell", process_cwd=str(work_dir))
     roots = list(dict.fromkeys([(selected.root, selected.base_path, selected.source, selected.skill_name),
                                *_process_root_candidates(self._ctx, "shell")]))
+    system_repo = pathlib.Path(getattr(self._ctx, "system_repo_dir", None) or self._ctx.repo_dir)
+
+    def _refuse_write(target: pathlib.Path, token: str) -> ToolResult:
+        if self._is_acting_subagent():
+            return _workspace_write_block_outside_root_result(target.resolve(strict=False), work_dir, token)
+        light_internal = runtime_mode == "light" and any(
+            path_is_relative_to(target, root) for root in _git_protected_roots(self))
+        code = "LIGHT_MODE_BLOCKED" if light_internal else "WORKSPACE_BLOCKED"
+        prefix = "LIGHT_MODE_BLOCKED" if light_internal else "WORKSPACE_SHELL_BLOCKED"
+        return ToolResult(status="blocked", code=code, text=(
+            f"⚠️ {prefix}: explicit write target {target} is outside the resources this task may write. "
+            f"Selected process root: {work_dir}. The process was not started."))
+
     for (argv, targets, _inline, _unknown), cwd in zip(rows, _registry().sequential_effective_cwds(rows, work_dir)):
         for command, destination, source in directory_destination_pairs(argv):
             directory = _command_path(self._ctx, cwd, destination)
@@ -679,6 +707,12 @@ def _direct_shell_write_block(self, raw_cmd: Any, work_dir: pathlib.Path, runtim
             target = _command_path(self._ctx, cwd, token)
             if target is None:
                 continue
+            # The light gate is root-independent: ``runtime_mode`` here is the
+            # EFFECTIVE mode (the install mode capped per task), and a cyber_pro
+            # install resolves user_files to the whole host, which would admit a
+            # repository target under that name for a light-capped task.
+            if runtime_mode == "light" and path_is_relative_to(target, system_repo):
+                return _refuse_write(target, token)
             for root, base, source, skill in roots:
                 if not decide_tool_access(profile=selected.profile, root=root, operation="write").allow:
                     continue
@@ -707,15 +741,7 @@ def _direct_shell_write_block(self, raw_cmd: Any, work_dir: pathlib.Path, runtim
                 except (OSError, ValueError, RuntimeError):
                     continue
             else:
-                if self._is_acting_subagent():
-                    return _workspace_write_block_outside_root_result(target.resolve(strict=False), work_dir, token)
-                light_internal = runtime_mode == "light" and any(
-                    path_is_relative_to(target, root) for root in _git_protected_roots(self))
-                code = "LIGHT_MODE_BLOCKED" if light_internal else "WORKSPACE_BLOCKED"
-                prefix = "LIGHT_MODE_BLOCKED" if light_internal else "WORKSPACE_SHELL_BLOCKED"
-                return ToolResult(status="blocked", code=code, text=(
-                    f"⚠️ {prefix}: explicit write target {target} is outside the resources this task may write. "
-                    f"Selected process root: {work_dir}. The process was not started."))
+                return _refuse_write(target, token)
     return None
 
 

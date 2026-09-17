@@ -311,7 +311,7 @@ def test_every_future_release_receipt_requires_real_embedded_betterleaks():
 def test_future_final_artifact_lanes_smoke_betterleaks_from_the_artifact():
     workflow = (REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     build_job = workflow[
-        workflow.index("  build:") : workflow.index("  vendor-package-smoke:")
+        workflow.index("\n  build:\n") : workflow.index("\n  vendor-package-smoke:\n")
     ]
     assert build_job.count("scripts/betterleaks_platform_smoke.py") == 4
     assert '--bundle-root "$MOUNT/Ouroboros.app/Contents/Resources"' in build_job
@@ -411,7 +411,7 @@ def test_linux_package_smoke_starts_the_desktop_launcher_on_ubuntu_22_04():
 def test_vendor_distro_smoke_is_informational_and_never_gates_a_release():
     workflow = (REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     vendor_job = workflow[
-        workflow.index("  vendor-package-smoke:") : workflow.index("  release:")
+        workflow.index("\n  vendor-package-smoke:\n") : workflow.index("\n  release:\n")
     ]
     assert "continue-on-error: true" in vendor_job
     assert "smoke_linux_packages.sh vendor" in vendor_job
@@ -419,14 +419,14 @@ def test_vendor_distro_smoke_is_informational_and_never_gates_a_release():
     # The gating lane runs every package through Docker Hub images only, so a
     # vendor registry outage cannot stop a tagged release.
     build_job = workflow[
-        workflow.index("  build:") : workflow.index("  vendor-package-smoke:")
+        workflow.index("\n  build:\n") : workflow.index("\n  vendor-package-smoke:\n")
     ]
     assert "smoke_linux_packages.sh official" in build_job
     assert "smoke_linux_packages.sh vendor" not in build_job
 
     release_needs = next(
         line
-        for line in workflow[workflow.index("  release:") :].splitlines()
+        for line in workflow[workflow.index("\n  release:\n") :].splitlines()
         if line.strip().startswith("needs:")
     )
     assert "vendor-package-smoke" not in release_needs
@@ -535,7 +535,7 @@ def test_release_workflow_orders_smoke_sbom_attestation_and_draft_verification()
     assert "$env:HOMEDRIVE = Split-Path -Qualifier $HomeDir" in workflow
     assert "$env:HOMEPATH = $HomeDir.Substring" in workflow
     build_job = workflow[
-        workflow.index("  build:") : workflow.index("  vendor-package-smoke:")
+        workflow.index("\n  build:\n") : workflow.index("\n  vendor-package-smoke:\n")
     ]
     job_env = build_job[build_job.index("    env:") : build_job.index("    steps:")]
     assert "BUILD_CERTIFICATE_BASE64:" not in job_env

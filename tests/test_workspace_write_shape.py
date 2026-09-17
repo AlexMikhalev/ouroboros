@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import pathlib
+import shlex
 
 import pytest
 
@@ -498,7 +500,7 @@ def test_glued_operator_is_not_a_path_candidate(tmp_path):
 
     assert check(["sh", "-c", "git reset HEAD scratch/ 2>/dev/null; rm -rf scratch/"]) is None
     assert check(["sh", "-c", "node build.js 2>/dev/null; echo ok"]) is None
-    redirect_block = check(["sh", "-c", f"node t.js > {outside / 'out.log'} 2>&1"]) or ""
+    redirect_block = check(["sh", "-c", f"node t.js > {shlex.quote(str(outside / 'out.log'))} 2>&1"]) or ""
     assert "WORKSPACE_SHELL_BLOCKED" in redirect_block
     assert str(outside / "out.log") in redirect_block
 
@@ -559,7 +561,7 @@ def test_round6_redirect_file_targets_outside_workspace_are_blocked(tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
     (workspace / "1").symlink_to(outside / "numeric-log")
-    for body in (f"echo x >& {outside / 'redirect-log'}", "echo x >1"):
+    for body in (f"echo x >& {shlex.quote(str(outside / 'redirect-log'))}", "echo x >1"):
         args = {"cmd": ["sh", "-c", body], "cwd": str(workspace)}
         out = _shell_guard_text(reg, args, "advanced") or ""
         assert "WORKSPACE_SHELL_BLOCKED" in out, (body, out)
@@ -592,14 +594,14 @@ def test_round3_old_block_coverage_stays_blocked(tmp_path):
     outside.mkdir()
 
     commands = (
-        ("cd_relative_write", f"cd {outside} && echo x > rel"),
-        ("pushd_relative_write", f"pushd {outside} && echo x > rel"),
-        ("awk_redirect", f"awk '{{print $1}}' input > {outside / 'awk'}"),
-        ("rsync_destination", ["rsync", "src", str(outside / "rsync")]),
+        ("cd_relative_write", f"cd {shlex.quote(str(outside))} && echo x > rel"),
+        ("pushd_relative_write", f"pushd {shlex.quote(str(outside))} && echo x > rel"),
+        ("awk_redirect", f"awk '{{print $1}}' input > {shlex.quote(str(outside / 'awk'))}"),
+        ("rsync_destination", ["rsync", "src", pathlib.Path(os.path.relpath(outside / "rsync", workspace)).as_posix()]),
         ("tar_chdir_extract", ["tar", "-C", str(outside), "-xf", "a.tar"]),
-        ("append_redirect", f"echo x >> {outside / 'append'}"),
-        ("stderr_redirect", f"awk '{{print $1}}' input 2> {outside / 'stderr'}"),
-        ("combined_redirect", f"awk '{{print $1}}' input &> {outside / 'combined'}"),
+        ("append_redirect", f"echo x >> {shlex.quote(str(outside / 'append'))}"),
+        ("stderr_redirect", f"awk '{{print $1}}' input 2> {shlex.quote(str(outside / 'stderr'))}"),
+        ("combined_redirect", f"awk '{{print $1}}' input &> {shlex.quote(str(outside / 'combined'))}"),
     )
     if pathlib.Path(r"C:\outside\drive.txt").is_absolute():
         # These are physical absolute targets on Windows; on POSIX the
@@ -761,13 +763,13 @@ def test_outside_root_block_names_the_spelling_the_model_used(tmp_path):
     alias.symlink_to(real, target_is_directory=True)
     for spelled in (f"{alias / 'f'}", "../outside_real/f"):
         text = _shell_guard_text(reg,
-            {"cmd": ["sh", "-c", f"echo x > {spelled}"], "cwd": str(workspace)}, "advanced",
+            {"cmd": ["sh", "-c", f"echo x > {shlex.quote(spelled)}"], "cwd": str(workspace)}, "advanced",
         ) or ""
         assert "WORKSPACE_SHELL_BLOCKED" in text and str(workspace) in text, spelled
         assert spelled in text or str(real / "f") in text
     # Identical spellings are named once.
     text = _shell_guard_text(reg,
-        {"cmd": ["sh", "-c", f"echo x > {real / 'g'}"], "cwd": str(workspace)}, "advanced",
+        {"cmd": ["sh", "-c", f"echo x > {shlex.quote(str(real / 'g'))}"], "cwd": str(workspace)}, "advanced",
     ) or ""
     assert "WORKSPACE_SHELL_BLOCKED" in text and str(real / "g") in text
 

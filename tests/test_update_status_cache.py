@@ -48,7 +48,7 @@ def _wire(monkeypatch, *, cache_channel="stable", cache_ref="refs/ouroboros-mana
             return 0, "ouroboros", ""
         if cmd == ["git", "rev-parse", "HEAD"]:
             return 0, CURRENT, ""
-        if cmd == ["git", "status", "--porcelain"]:
+        if cmd == ["git", "--no-optional-locks", "status", "--porcelain"]:
             return 0, "", ""
         if cmd[:3] == ["git", "merge-base", "--is-ancestor"]:
             return (0 if ancestor else 1), "", ""
@@ -197,7 +197,7 @@ def test_failed_divergence_check_mints_no_checked_at(monkeypatch):
             return 0, "ouroboros", ""
         if cmd == ["git", "rev-parse", "HEAD"]:
             return 0, CURRENT, ""
-        if cmd == ["git", "status", "--porcelain"]:
+        if cmd == ["git", "--no-optional-locks", "status", "--porcelain"]:
             return 0, "", ""
         if cmd[:2] == ["git", "log"]:
             return 0, "msg", ""

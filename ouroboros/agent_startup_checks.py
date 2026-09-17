@@ -728,7 +728,6 @@ def check_stray_server_processes(env: Any) -> Tuple[Dict[str, Any], int]:
 def _hot_store_thresholds() -> Tuple[Tuple[str, int, str], ...]:
     from ouroboros.context_budget import (
         EVENTS_LOG_WARN_BYTES,
-        BG_OBSERVATIONS_WARN_BYTES,
         PROGRESS_LOG_WARN_BYTES,
         SCHEDULED_TASKS_WARN_BYTES,
         SKILL_REVIEW_ROOT_TASKS_WARN_BYTES,
@@ -744,14 +743,6 @@ def _hot_store_thresholds() -> Tuple[Tuple[str, int, str], ...]:
         "supervisor rotation tick (rotate_chat_log_if_needed pattern)."
     )
     return (
-        (
-            "state/consciousness_observations.jsonl",
-            BG_OBSERVATIONS_WARN_BYTES,
-            "Background consciousness replays this append-only inbox on wake; "
-            "acknowledged rows past GC retention fold into an archive segment "
-            "at startup (unacknowledged rows never) — growth past this size "
-            "means a large unacknowledged backlog or a gap-blocked fold.",
-        ),
         (
             "state/usage_attempts.jsonl",
             USAGE_LEDGER_WARN_BYTES,
@@ -797,7 +788,7 @@ def hot_store_growth_notes(env: Any) -> list:
 
     Reused live by context.py::build_health_invariants (the
     check_stray_server_processes pattern). Deliberately NOT TTL-cached
-    (contrast context._STRAY_PROBE_CACHE): nine os.stat calls plus two shallow
+    (contrast context._STRAY_PROBE_CACHE): eight os.stat calls plus two shallow
     iterdir passes per task turn are orders of magnitude cheaper than the pgrep
     probe that cache exists for, and a stale reading would delay the signal."""
     from supervisor.state import ISOLATED_BENCHMARK_SENTINEL

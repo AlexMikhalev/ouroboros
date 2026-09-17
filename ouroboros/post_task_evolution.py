@@ -26,6 +26,7 @@ import logging
 import pathlib
 from typing import Any, Dict, Optional
 
+from ouroboros.consciousness_authority import consciousness_origin_metadata, task_disabled_tools
 from ouroboros.evolution_fingerprint import _PLAN_REVIEW_SUFFIX
 from ouroboros.config import runtime_setting
 
@@ -69,6 +70,11 @@ def _eligible(task: Dict[str, Any]) -> bool:
     if str(task.get("type") or "") in _SKIP_TYPES:
         return False
     if str(task.get("delegation_role") or "") == "subagent":
+        return False
+    # ONE fact: a task whose contract withholds toggle_evolution (a consciousness
+    # wake-up below Full, and every root it started) may not propose evolution
+    # either — otherwise Act would reach a campaign through one indirection.
+    if "toggle_evolution" in task_disabled_tools(task):
         return False
     return True
 
@@ -309,6 +315,9 @@ def _write_request(drive_root: pathlib.Path, decision: Dict[str, Any], task: Dic
         "backlog_id": decision.get("backlog_id") or "",
         "source": "post_task",
         "origin_task_id": str(task.get("id") or ""),
+        # A Full-level consciousness tree proposing evolution keeps its origin, so
+        # the campaign and its cycle tasks stay inside the consciousness allowance.
+        **consciousness_origin_metadata(task.get("metadata")),
     }
     path = drive_root / _REQUEST_REL
     # Atomic publish: the supervisor polls every tick, so a partial write must
@@ -441,7 +450,8 @@ def apply_pending_request(drive_root: Any) -> bool:
                 return False
         if bool(req.get("requires_plan_review", True)):
             objective += _PLAN_REVIEW_SUFFIX
-        if not start_evolution_campaign(objective, source="post_task"):
+        origin = consciousness_origin_metadata(req)
+        if not start_evolution_campaign(objective, source="post_task", **({"origin": origin} if origin else {})):
             return False
         # Link the promoted backlog id to the campaign so close-on-commit (Phase 2 C)
         # can mark it done when the cycle is absorbed. Validate it against the OPEN

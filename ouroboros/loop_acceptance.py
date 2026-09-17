@@ -322,6 +322,10 @@ def _supersede_task_acceptance_for_owner_followup(
     )
     ctx._task_acceptance_reviewed = False
     ctx._task_acceptance_fence_generation_mismatch = False
+    # The panel in flight reviewed the answer to the OLD requirements: it stays
+    # custodied and its verdicts still arrive as advice, but the answer Main writes
+    # for the follow-up is not a delivery under it — the ordinary path decides.
+    ctx._task_acceptance_pending = ""
     llm_trace.pop("root_phase_checkpoint", None)
     llm_trace["review_decision"] = {**dict(llm_trace.get("review_decision") or {}),
         "eligibility": "pending_owner_followup",

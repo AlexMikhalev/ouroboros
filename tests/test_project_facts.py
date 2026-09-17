@@ -271,7 +271,7 @@ def test_forked_project_child_skips_global_knowledge_seed(tmp_path):
 def test_d5_project_scoped_shared_preserves_mode_but_isolates_drive(tmp_path, monkeypatch):
     """D5 (Option A) gateway contract: a project-scoped `shared` task keeps its RECORDED
     memory_mode 'shared', yet the drive is MATERIALIZED isolated (effective mode 'forked')
-    so project facts can never leak into global/shared memory. Guards against a future
+    so the automatic writers can never leak project facts into global/shared memory. Guards against a future
     'simplification' back to passing memory_mode straight through to prepare_task_drive."""
     import asyncio
     import json
@@ -328,19 +328,20 @@ def test_scheduled_subagent_task_inherits_project_id():
     assert resolve_project_id(task) == "proj_x"
 
 
-def test_scratchpad_and_identity_tools_noop_for_project_tasks(tmp_path):
+def test_scratchpad_and_identity_tools_write_canonical_memory_from_a_project_room(tmp_path):
     import types
 
     from ouroboros.tools import control
 
+    # One memory, every room: a project-scoped turn writes the same canonical
+    # scratchpad and identity files the main chat writes.
     ctx = types.SimpleNamespace(drive_root=tmp_path, project_id="proj_p")
     r1 = control._update_scratchpad(ctx, "a meaningful scratchpad note for the task at hand")
     r2 = control._update_identity(ctx, "x" * 60)
-    assert "project-scoped" in r1.lower()
-    assert ("project-scoped" in r2.lower()) or ("global" in r2.lower())
-    # nothing written to canonical memory
-    assert not (tmp_path / "memory" / "scratchpad_blocks.json").exists()
-    assert not (tmp_path / "memory" / "identity.md").exists()
+    assert r1.startswith("OK")
+    assert r2.startswith("OK")
+    assert (tmp_path / "memory" / "scratchpad_blocks.json").exists()
+    assert (tmp_path / "memory" / "identity.md").read_text(encoding="utf-8") == "x" * 60
 
 
 def test_maybe_promote_skips_project_scoped_task(tmp_path, monkeypatch):

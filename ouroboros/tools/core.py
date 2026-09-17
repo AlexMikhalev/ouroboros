@@ -1200,8 +1200,12 @@ def _durable_descendant_of(
 def _forward_to_worker(
     ctx: ToolContext, task_id: str, message: str, relayed_from_task_id: str = "",
 ) -> str:
-    """Forward a message to a running worker task's mailbox."""
-    from ouroboros.owner_mailbox import write_task_message
+    """Write a task-tree message into a running task's mailbox: one writer for a
+    descendant (an ancestor's or relayed sibling's message) and for any active
+    independent root the host lists (a message from an independent task, owner
+    6C). Never owner text; WRITTEN, not read -- the recipient drains it later."""
+    from ouroboros.owner_mailbox import PROVENANCE_INDEPENDENT_TASK, write_task_message
+    from ouroboros.peer_roster import host_listed_independent_root
     from ouroboros.task_results import STATUS_RUNNING, validate_task_id
     from ouroboros.task_status import FINAL_STATUSES, load_effective_task_result
 
@@ -1238,10 +1242,16 @@ def _forward_to_worker(
     current_task_id = str(getattr(ctx, "task_id", "") or "").strip()
     if not current_task_id:
         return "⚠️ TASK_FORBIDDEN: forward_to_worker requires an active task context."
-    if not _durable_descendant_of(status_drive_root, tid, data, current_task_id):
-        return f"⚠️ TASK_FORBIDDEN: task {tid} is not a child or descendant of the current task."
     relayed_from = str(relayed_from_task_id or "").strip()
     provenance = "ancestor_task"
+    listed_root = None
+    if not _durable_descendant_of(status_drive_root, tid, data, current_task_id):
+        listed_root = host_listed_independent_root(status_drive_root, tid)
+        if listed_root is None:
+            return f"⚠️ TASK_FORBIDDEN: task {tid} is neither a descendant of the current task nor an active independent root the host lists."
+        if relayed_from:
+            return f"⚠️ TASK_FORBIDDEN: a relayed message reaches only your own descendants; task {tid} is an independent root."
+        provenance = PROVENANCE_INDEPENDENT_TASK
     if relayed_from:
         try:
             relayed_from = validate_task_id(relayed_from)
@@ -1257,6 +1267,9 @@ def _forward_to_worker(
             )
         provenance = "peer_via_ancestor"
     child_drive = str(data.get("child_drive_root") or data.get("headless_child_drive_root") or data.get("drive_root") or "").strip()
+    if not child_drive and listed_root is not None:
+        # A root drains its own listed drive, else the canonical root -- never the SENDER's drive.
+        child_drive = str(listed_root.get("drive_root") or "").strip() or str(status_drive_root)
     mailbox_drive = pathlib.Path(child_drive) if child_drive else pathlib.Path(ctx.drive_root)
     written = write_task_message(
         mailbox_drive,
@@ -1269,6 +1282,9 @@ def _forward_to_worker(
     )
     if not written:
         return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ERROR", text=(f"⚠️ TASK_MESSAGE_UNWRITTEN: message to task {tid} was not persisted.")))
+    if listed_root is not None:
+        return (f"Message forwarded to task {tid}: written to its mailbox as a message from this task "
+                "(never owner text); it reads it at its next checkpoint. Files cannot be attached to messages between tasks.")
     return f"Message forwarded to task {tid}"
 
 
@@ -1444,7 +1460,8 @@ def get_tools() -> List[ToolEntry]:
                 "A live root, including ordinary Main or Project conversation, may set wait_for_answer=true when the answer is necessary: "
                 "after the current tool batch it waits without model calls, preserving its browser "
                 "and freeing active worker capacity. Addressed owner text resumes your judgment. "
-                "Stop and existing task deadlines remain effective; questions expire only at task end."
+                "Stop and existing task deadlines remain effective. The card outlives the task: "
+                "an answer that arrives later reaches the chat as an ordinary owner message."
             ),
             "parameters": {"type": "object", "properties": {
                 "question": {"type": "string", "description": "The decision being escalated (markdown renders in chat)"},
@@ -1456,14 +1473,18 @@ def get_tools() -> List[ToolEntry]:
                 "stake": {"type": "string", "description": "What depends on this decision (optional, max 500)"},
                 "assumption": {"type": "string", "description": "For optional clarification, the assumption you continue under (max 500); may be empty for required waiting."},
                 "wait_for_answer": {"type": "boolean", "default": False, "description": "Live roots: wait for addressed owner input before another model round."},
+                "max_wait_minutes": {"type": "integer", "description": "Optional bound for wait_for_answer: resume with a system notice after N minutes if no answer arrives (the card stays open)."},
             }, "required": ["question", "options"]},
         }, _escalate),
         ToolEntry("forward_to_worker", {
             "name": "forward_to_worker",
             "description": (
-                "Send an addressed task-tree message to a running child or descendant. "
-                "The mailbox preserves you as the ancestor sender; it never labels this "
-                "message as owner dialogue. Arbitrary unrelated tasks remain unreachable."
+                "Write an addressed task-tree message into a running task's mailbox: a child "
+                "or descendant of yours (delivered as the ancestor's message), or any active "
+                "independent root the host lists (delivered as a message from an independent "
+                "task). It is never labelled owner dialogue, files cannot be attached, and the "
+                "result says the message was written, not read: the task drains it at its next "
+                "checkpoint."
             ),
             "parameters": {"type": "object", "properties": {
                 "task_id": {"type": "string", "description": "ID of the running task to forward to"},

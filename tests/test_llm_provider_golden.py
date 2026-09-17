@@ -460,7 +460,7 @@ def _install_model_operation_fake(stack: contextlib.ExitStack, recorder: _Record
 
     class ModelGateway(Gateway):
         def create_model_operation(self, ref, *, idempotency_key):
-            if idempotency_key not in self.operations:
+            if idempotency_key not in self.accepted_operations:
                 payload = self.uploads[-1][0]
                 step = recorder.record("claudexor.model_operation", payload=payload)
                 if step.get("kind") == "error" and step.get("code") != "provider_policy_refusal":
@@ -469,7 +469,7 @@ def _install_model_operation_fake(stack: contextlib.ExitStack, recorder: _Record
                     "code": step.get("code"), "message": step.get("message")}, route={
                     "source": payload["source"], "model": payload["model"],
                     "credentialProfileId": "conformance-profile", "accountFingerprint": "conformance-identity"}))
-                index = len(self.operations)
+                index = len(self.accepted_operations)
                 if index == 0:
                     self.results[0], self.dispatch[0] = value, "response_received"
                 else:
@@ -612,7 +612,7 @@ def _observe(spec: Dict[str, Any]) -> Dict[str, Any]:
         client = LLMClient(**client_args)
         call = copy.deepcopy(spec["call"])
         if spec.get("cancel_model_after_create"):
-            call["kwargs"]["model_poll_control"] = lambda: "cancelled" if recorder.model_gateway.operations else None
+            call["kwargs"]["model_poll_control"] = lambda: "cancelled" if recorder.model_gateway.accepted_operations else None
         try:
             result = _call_route(client, call)
         except BaseException as exc:  # noqa: BLE001 - the raise IS the projection
@@ -637,7 +637,7 @@ def _observe(spec: Dict[str, Any]) -> Dict[str, Any]:
     observed["unused_script_steps"] = len(recorder.script)
     if spec.get("model_operation"):
         gateway = recorder.model_gateway
-        observed["model_control"] = {"create_posts": len(gateway.creates), "operations": len(gateway.operations),
+        observed["model_control"] = {"create_posts": len(gateway.creates), "operations": len(gateway.accepted_operations),
                                      "unique_create_keys": len(set(gateway.creates)), "cancels": gateway.cancels}
     return _jsonable(observed)
 

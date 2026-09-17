@@ -234,7 +234,7 @@ test('chat.js wires the replay flag around the replay and keeps live callsites i
     // behind the scheduler's gate, so sharing cleanup cannot mute either path.
     assert.match(chatSource, /settleLiveCard\(record, summary\.phase \|\| 'done', wasFinished\);/);
     assert.match(chatSource, /settleLiveCard\(record, activePhase, wasFinished\);/);
-    assert.match(chatSource, /if \(!wasFinished\) scheduleHistorySync\(\);/);
+    assert.match(chatSource, /if \(!wasFinished && blockVisible\(record\)\) scheduleHistorySync\(\);/);
     // The third occurrence is the scheduler re-arming when a run settles with the bound
     // still armed, which is how a run that only JOINED an older in-flight fetch (and
     // spent its timer on a window fetched before the arm) keeps the deadline alive.
@@ -326,4 +326,54 @@ test('a reader inside Reviews stays anchored when content grows above the attemp
     assert.equal(anchor.node, review);
     assert.equal(anchors.restoreVisibleTimelineAnchor(anchor), true);
     assert.equal(messages.scrollTop, 1120);
+});
+
+test('a card crossing the top with nothing anchorable inside keeps the reader on what follows it', () => {
+    // A wait-only block above the viewport (no title, no actions, no timeline
+    // line) used to anchor on its own top; when a wait update shrank the block,
+    // the messages the reader was on moved up. The reader's view of what
+    // FOLLOWS the card is the anchor there.
+    const box = (top, bottom) => ({ top, bottom, left: 0, right: 600, width: 600, height: bottom - top });
+    const makeNode = (name, bounds, classes = [], selectors = []) => {
+        const node = { name, dataset: {}, isConnected: true, parentElement: null, bounds,
+            classNames: new Set(classes), selectors: new Set(selectors) };
+        node.classList = { contains: (value) => node.classNames.has(value) };
+        node.getBoundingClientRect = () => node.bounds;
+        node.getClientRects = () => [node.bounds];
+        node.matches = (selector) => node.selectors.has(selector);
+        node.contains = (candidate) => {
+            for (let current = candidate; current; current = current.parentElement) if (current === node) return true;
+            return false;
+        };
+        node.closest = (selector) => {
+            for (let current = node; current; current = current.parentElement) {
+                if (selector === '.chat-live-card' && current.classNames?.has('chat-live-card')) return current;
+            }
+            return null;
+        };
+        node.querySelectorAll = () => [];
+        return node;
+    };
+    const messages = makeNode('messages', box(0, 900));
+    messages.scrollTop = 300;
+    const card = makeNode('card', box(-244, 124), ['chat-live-card']);
+    card.dataset.taskId = 'wait-task';
+    card.parentElement = messages;
+    const summary = makeNode('summary', box(-243, -200), [], ['[data-live-summary-button]']);
+    summary.parentElement = card;
+    card.querySelectorAll = (selector) => (selector.includes('[data-live-summary-button]') ? [summary] : []);
+    const bubble = makeNode('bubble', box(124, 300), ['chat-bubble']);
+    bubble.dataset.ts = '2026-09-06T21:02:00Z';
+    bubble.parentElement = messages;
+    messages.children = [card, bubble];
+    messages.contains = (candidate) => candidate === card || candidate === bubble || card.contains(candidate);
+
+    const anchors = createTimelineAnchors({ messagesDiv: messages, liveCardRecords: new Map([['wait-task', { root: card }]]) });
+    const anchor = anchors.captureVisibleTimelineAnchor();
+    assert.equal(anchor.node, bubble, 'the following message is the anchor, not the card top');
+    // The wait update shrank the card by 40 px: everything below moved up.
+    card.bounds = box(-244, 84);
+    bubble.bounds = box(84, 260);
+    assert.equal(anchors.restoreVisibleTimelineAnchor(anchor), true);
+    assert.equal(messages.scrollTop, 260, 'the reader stays on the same message');
 });

@@ -87,7 +87,10 @@ def test_safety_keeps_full_task_sources_after_transcript_compaction(tmp_path, mo
     prompt = safety._build_check_prompt("run_command", {"cmd": ["gh", "repo", "create"]},
         [{"role": "user", "content": "compacted conversation"}], ctx=ctx, resolved_binding=binding)
     assert origin in prompt and reply in prompt
-    assert "answer-1" in prompt and str(work) in prompt
+    assert "answer-1" in prompt
+    source_json = prompt.split("Task sources and physical target (complete; provenance is not consent):\n", 1)[1]
+    facts, _ = json.JSONDecoder().raw_decode(source_json)
+    assert facts["resolved_target"]["target_path"] == repr(work)
     assert "Create the requested private repository" in prompt
 
 

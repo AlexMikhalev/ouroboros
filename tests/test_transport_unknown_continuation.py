@@ -226,14 +226,15 @@ def test_subscription_requires_fresh_typed_upstream_observation(monkeypatch, fac
     assert bool(transport.upstream_transport_reachable(None, "claudexor::codex=test", timeout=3)) is (fact == "upstream")
 
 
-def test_claudexor_control_loss_keeps_same_operation_past_read_window(tmp_path, monkeypatch):
+@pytest.mark.parametrize("route_kind", ["", "agent_session"])
+def test_claudexor_control_loss_keeps_same_operation_past_read_window(tmp_path, monkeypatch, route_kind):
     from ouroboros import llm_claudexor
     from ouroboros.gateways.claudexor import ClaudexorUnavailable
     inv = llm_claudexor._ModelInvocation({"usage_model": "claudexor::codex=test"}, {}, {"timeout": 1})
     inv.operation_id, inv.invocation_id, inv.task_id, inv.root = "same-op", "same-attempt", "t", tmp_path
     inv.create_attempted = True
     now, reads = [0.0], []
-    ctx = SimpleNamespace(task_id="t")
+    ctx = SimpleNamespace(task_id="t", _configured_subagent_route_kind=route_kind)
     waiter = SimpleNamespace(tool_context=ctx, control_reason=lambda: None)
     monkeypatch.setattr(llm_claudexor, "current_model_wait", lambda: waiter)
     monkeypatch.setattr(llm_claudexor, "time", SimpleNamespace(monotonic=lambda: now[0], sleep=lambda t: now.__setitem__(0, now[0]+t)))
@@ -389,7 +390,10 @@ def test_upstream_head_uses_connection_window_in_every_socket_phase(monkeypatch,
     assert requests[0].extensions["timeout"] == dict(connect=bound, read=bound, write=bound, pool=bound)
 
 
-def test_unknown_policy_keeps_configured_session_nanny_out_of_managed_continuation(tmp_path):
+def test_unknown_policy_admits_configured_session_model_to_managed_continuation(tmp_path):
     ctx = SimpleNamespace(task_id="t", exact_model_route=True, _configured_subagent_route_kind="agent_session")
-    from ouroboros import loop_transport
-    assert loop_transport.reconcile_transport_wait(None, ctx, msg_present=False, error_kind="provider_outcome_unknown", drive_logs=tmp_path, task_id="t", model="m", emit_progress=lambda *a, **kw: pytest.fail("unexpected automatic continuation")) is None
+    episode = transport.reconcile_transport_wait(None, ctx, msg_present=False,
+        error_kind="provider_outcome_unknown", drive_logs=tmp_path, task_id="t", model="m",
+        emit_progress=lambda *a, **kw: None)
+    assert episode is not None and episode.wait_cause == "provider_outcome_unknown"
+    assert not episode.interactive

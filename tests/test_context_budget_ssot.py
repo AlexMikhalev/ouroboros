@@ -18,9 +18,8 @@ def _src(rel: str) -> str:
 def test_agent_context_budget_values_pinned():
     """Values are the SSOT; changing them is a deliberate, visible edit."""
     assert cb.OWNER_LOW_TARGET_TOKENS == 200_000
-    assert cb.BG_CONTEXT_WARN_CHARS == 600_000
-    assert cb.BG_CONTEXT_MAX_CHARS == 1_200_000
-    assert cb.BG_STATE_JSON_WARN_CHARS == 200_000
+    for retired in ("BG_CONTEXT_WARN_CHARS", "BG_CONTEXT_MAX_CHARS", "BG_STATE_JSON_WARN_CHARS", "BG_OBSERVATIONS_WARN_BYTES"):
+        assert not hasattr(cb, retired), retired  # a wake-up is a Main turn under Main's budgets
     assert cb.LARGE_CONTEXT_SECTION_CHARS == 200_000
     assert cb.MAX_RECENT_CHAT_TAIL == 1000
     assert cb.CHAT_ARCHIVE_SCAN_WARN_BYTES == 100_000_000
@@ -83,10 +82,6 @@ def test_call_sites_import_the_ssot_names():
     assert "read_unconsolidated_chat" in ctx_recent_src
     assert "last_consolidated_offset" in _src("ouroboros/memory.py")
 
-    consc_src = _src("ouroboros/consciousness.py")
-    for name in ("BG_CONTEXT_MAX_CHARS", "BG_CONTEXT_WARN_CHARS", "BG_STATE_JSON_WARN_CHARS"):
-        assert name in consc_src, f"consciousness.py must consume {name}"
-
     ctx_src = _src("ouroboros/context.py")
     assert "LARGE_CONTEXT_SECTION_CHARS" in ctx_src
     assert "CONTEXT_SOFT_CAP_TOKENS" not in ctx_src
@@ -98,11 +93,6 @@ def test_call_sites_import_the_ssot_names():
 def test_old_bare_literals_are_gone_from_call_sites():
     """The decisive anti-drift check: no bare literal can outlive the SSOT."""
     assert "> 1_200_000" not in _src("ouroboros/loop.py")
-
-    consc = _src("ouroboros/consciousness.py")
-    assert "= 1_200_000" not in consc
-    assert "= 600_000" not in consc
-    assert "> 200_000" not in consc
 
     ctx = _src("ouroboros/context.py")
     assert "= 200_000" not in ctx

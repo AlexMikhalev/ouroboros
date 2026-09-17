@@ -454,7 +454,8 @@ def test_one_cancel_leaves_exactly_one_salvaged_paragraph_in_the_chat(tmp_path, 
     )
     assert f"{SALVAGE_EXCERPT_LABEL}." in row["text"]
     assert salvage not in row["text"]
-    assert 'get_task_result(task_id="stopped-one")' in row["text"]
+    assert "get_task_result" not in row["text"]
+    assert row["text"].startswith("Cancelled. Root task stopped-one.")
 
 
 @pytest.mark.serial
@@ -525,7 +526,7 @@ def test_cascade_receipt_dedups_the_actual_destination_and_preserves_main(qenv, 
         if row.get("type") == "task_summary"
     )
     assert text not in terminal["text"] and SALVAGE_EXCERPT_LABEL in terminal["text"]
-    assert 'get_task_result(task_id="settled-root")' in terminal["text"]
+    assert "get_task_result" not in terminal["text"]
     queue.events.clear()
     assert enqueue_project_completion_summary(
         qenv.drive, {}, "settled-root", task, stored, {"status": "failed"},

@@ -16,6 +16,7 @@ import pathlib
 import time
 import uuid
 from typing import Any, Dict, List
+from ouroboros.consciousness_authority import apply_consciousness_authority
 from ouroboros.contracts.task_contract import build_task_contract, normalize_allowed_resources
 from ouroboros.schedule_contract import RESERVED_TEMPLATE_FIELDS, schedule_slug
 from ouroboros.skill_loader import skill_identity_collision_names
@@ -264,7 +265,14 @@ def _task_from_schedule(record: Dict[str, Any]) -> Dict[str, Any]:
     existing_contract = template.get("task_contract") if isinstance(template.get("task_contract"), dict) else {}
     if existing_contract:
         task["task_contract"] = existing_contract
-    task["task_contract"] = build_task_contract(task)
+    task["task_contract"] = build_task_contract(apply_consciousness_authority(task))
+    presence = metadata.get("presence")
+    workspace = task["task_contract"]["workspace"]
+    if isinstance(presence, dict) and presence and workspace["root"]:
+        task.update(
+            workspace_root=workspace["root"], workspace_mode=workspace["mode"],
+            memory_mode="shared",
+        )
     task["metadata"]["schedule_id"] = str(record.get("id") or "")
     task["metadata"]["schedule_name"] = str(record.get("name") or "")
     task["metadata"]["schedule_trigger"] = dict(record.get("trigger") or {})
@@ -382,6 +390,16 @@ def check_scheduled_tasks() -> None:
                     record["enabled"] = False
                     record["completed_at"] = now.isoformat()
                     record["next_run_at"] = ""
+                elif str(refused).startswith("consciousness_"):
+                    # The consciousness door refused (the tree's allowance or concurrency —
+                    # a refusal that can last hours): the one-shot stays armed but its run
+                    # point moves forward by the alarm floor, so it is not re-fired on every
+                    # supervisor pass (a fresh task id, a failed result row and a ledger
+                    # read per pass). The same class the evolution scheduler pauses on.
+                    from ouroboros.config import get_bg_wakeup_min_sec
+
+                    trigger["run_at"] = (now + datetime.timedelta(seconds=int(get_bg_wakeup_min_sec()))).isoformat()
+                    record["trigger"] = trigger
             else:
                 try:
                     record["next_run_at"] = _next_cron_time(expr, now).isoformat()

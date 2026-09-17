@@ -21,7 +21,7 @@ from supervisor.message_bus import coerce_chat_identity  # noqa: F401 -- worker_
 from ouroboros.config import DATA_DIR, REPO_DIR as CONFIG_REPO_DIR, WORKER_SPAWN_GRACE_SEC
 from ouroboros.depth_evidence import parse_task_depth
 from ouroboros.review_owner_custody import (
-    reconcile_confirmed_dead_review_owner as _reconcile_confirmed_dead_review_owner_for_root,
+    reconcile_confirmed_dead_review_owners as _reconcile_review_owners,
 )
 from ouroboros.utils import utc_now_iso
 
@@ -104,7 +104,7 @@ def get_event_q():
     """Return the process-lifetime supervisor event bus, creating it lazily.
 
     Worker-pool generations are replaceable; the producers that publish onto
-    this bus (direct chat, consciousness, active turns, and workers) are not.
+    this bus (direct chat, active turns, and workers) are not.
     Rotating the queue during a pool respawn strands those producers on an
     undrained queue, so only a new server process creates a new bus.
     """
@@ -651,8 +651,8 @@ from supervisor.log_addressing import TurnEventQueue as _TurnEventQueue  # noqa:
 # sink copy would be the second delivery of the same event. This is the
 # exactly-once contract test_log_forwarding pins with the production sink
 # installed. The set is a superset of the worker list because the direct-chat
-# agent and Background Consciousness run inside the server process and append
-# the same worker-shaped rows there.
+# agent (an owner's turn and a consciousness wake-up alike) runs inside the
+# server process and appends the same worker-shaped rows there.
 from supervisor.worker_process import WORKER_LOG_SINK_SUPPRESSED_TYPES  # noqa: E402 -- moved span, needed at import time below
 
 SERVER_LOG_SINK_SUPPRESSED_TYPES = WORKER_LOG_SINK_SUPPRESSED_TYPES | frozenset({
@@ -1080,7 +1080,7 @@ _WORKER_PIDS_FILENAME = "worker_pids.json"
 
 
 def _reconcile_confirmed_dead_review_owner(owner_pid: int) -> None:
-    _reconcile_confirmed_dead_review_owner_for_root(DRIVE_ROOT, owner_pid)
+    _reconcile_review_owners(DRIVE_ROOT, {owner_pid})
 
 
 from supervisor.worker_pool_lifecycle import _serialized_worker_lifecycle  # noqa: E402 -- moved span, decorator read at import time below
@@ -1163,6 +1163,7 @@ def kill_workers(
     preserve_pending: bool = False,
     preserve_running_task_ids: Optional[set[str]] = None,
     reconcile_delegate_custody: bool = True,
+    reconcile_review_custody: bool = True,
 ) -> bool:
     global _WORKER_POOL_DISABLED_REASON
     from supervisor import queue
@@ -1192,16 +1193,13 @@ def kill_workers(
         for w in WORKERS.values():
             w.proc.join(timeout=3)
         _kill_survivors()
+        dead_pids: set[int] = set()
         for w in WORKERS.values():
             try:
                 if w.proc.pid and not w.proc.is_alive():
-                    _reconcile_confirmed_dead_review_owner(int(w.proc.pid))
+                    dead_pids.add(int(w.proc.pid))
             except Exception:
-                log.debug(
-                    "Could not prove worker %s dead for review reconciliation",
-                    w.wid,
-                    exc_info=True,
-                )
+                log.debug("Cannot confirm worker %s dead", w.wid, exc_info=True)
         WORKERS.clear()
         orphaned_ids = []
         drained_ids = []
@@ -1416,6 +1414,8 @@ def kill_workers(
             log.warning("Zombie prevention cleanup failed", exc_info=True)
         for terminal_id in orphaned_ids:
             RUNNING.pop(str(terminal_id), None)
+    if reconcile_review_custody:
+        _reconcile_review_owners(DRIVE_ROOT, dead_pids)
     try:
         snapshot_ok = queue.persist_queue_snapshot(reason="kill_workers") is not False
     except Exception:
@@ -2134,6 +2134,7 @@ from supervisor.worker_chat_lane import (  # noqa: E402, F401 -- intentional pub
     _run_chat_task,
     auto_resume_after_restart,
     handle_chat_direct,
+    handle_wake_direct,
 )
 from supervisor.worker_health import (  # noqa: E402, F401 -- intentional public re-exports
     _emit_task_done_terminal,
@@ -2169,7 +2170,6 @@ from supervisor.worker_process import (  # noqa: E402, F401 -- intentional publi
 from supervisor.worker_promotion import (  # noqa: E402, F401 -- intentional public re-exports
     _admit_promoted_workspace,
     _canonical_promoted_repair_constraint,
-    _fail_promoted_task_loudly,
     _origin_from_mapping,
     _origin_from_task_record,
     _promote_duplicate_reason,

@@ -235,7 +235,7 @@ def test_project_completion_host_salvage_labels_its_bytes_and_points(tmp_path, m
     assert len(queued) == 1
     text = queued[0]["text"]
     assert raw not in text
-    assert f"Reason: provider_unavailable. {SALVAGE_EXCERPT_LABEL}: RAW PATCH" in text
+    assert f"provider_unavailable. {SALVAGE_EXCERPT_LABEL}: RAW PATCH" in text
     # The excerpt form keeps the pointer too: this writer has no other one.
     assert text.endswith(" Open the Project for details.")
     labelled = text.split(f"{SALVAGE_EXCERPT_LABEL}: ", 1)[1]

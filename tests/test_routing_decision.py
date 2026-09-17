@@ -150,6 +150,9 @@ def test_promote_click_confirms_from_the_admission_record(tmp_path, monkeypatch)
 
     def _supervisor_schedules(evt):
         assert evt["task_id"] == derived_task_id
+        # The owner's click issued this promote: the handler's publication
+        # boundary owns any refusal notice (no model turn narrates it).
+        assert evt["host_initiated"] is True and evt["routed_from_main"] is True
 
         def _mut(current):
             from ouroboros.contracts.schema_versions import SCHEMA_VERSION_KEY
@@ -327,6 +330,9 @@ def test_rejected_dispatch_reopens_the_original_card(tmp_path, monkeypatch):
     status, body = handle_routing_decision(
         tmp_path, request_id="r1", decision_id="routing:cm-1:tok-1", option_index=0)
     assert (status, body["state"]) == (409, "open")
+    # R5/R16: the toast shows the host's sentence for the refused act, not the code.
+    assert body["reason"] == "target_closed"
+    assert body["cause"] == "Not delivered: that task has already finished"
     reopened = chat_annotation_receipt(tmp_path, "cm-1", "tok-1")
     assert reopened["status"] == "needs_manual_target"
     assert [row["action"] for row in reopened["options"]] == [
@@ -484,6 +490,26 @@ def _decision_ctx(tmp_path):
         load_state=lambda: {"owner_id": 1, "owner_chat_id": 1},
         update_state=lambda fn: fn({"owner_id": 1, "owner_chat_id": 1}),
     )
+
+
+def test_a_turn_nobody_typed_is_given_the_same_main_lane_facts(tmp_path):
+    """P3c: a consciousness wake-up has no owner message, so nothing used to build its
+    Main manifest and every predecessor it named was refused as not addressable. The
+    same facts now come through ONE seam over the owner path, never a second copy that
+    could drift; only what an owner MESSAGE carries is absent."""
+    from ouroboros.projects_registry import create_project
+    from ouroboros.server_routing_context import _decision_turn_metadata, main_lane_routing_metadata
+
+    create_project(tmp_path, "racer", name="Racer")
+    ctx = _decision_ctx(tmp_path)
+
+    owner = _decision_turn_metadata(ctx, 1, "cm-owner", {})
+    wake = main_lane_routing_metadata(ctx, 1)
+
+    assert wake["main_routing_manifest"] == owner["main_routing_manifest"]
+    assert [row["project_id"] for row in wake["main_routing_manifest"]["projects"]] == ["racer"]
+    assert wake["routing_contract"]["source_lane"] == "main"
+    assert "client_message_id" not in wake
 
 
 def test_decision_turn_is_shown_the_existing_receipt_for_the_same_message(tmp_path):

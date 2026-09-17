@@ -4,8 +4,8 @@ ROOT = Path(__file__).parents[1]
 
 
 def test_settings_and_chat_expose_nano_context_mode():
-    settings = (ROOT / 'web/modules/settings_ui.js').read_text()
-    chat = (ROOT / 'web/modules/chat.js').read_text()
+    settings = (ROOT / 'web/modules/settings_ui.js').read_text(encoding="utf-8")
+    chat = (ROOT / 'web/modules/chat.js').read_text(encoding="utf-8")
     assert "{ value: 'nano', label: 'Nano' }" in settings
     assert 'data-mode="nano">Nano' in chat
     assert "['nano', 'low', 'max'].includes(data.context_mode)" in chat
@@ -13,8 +13,8 @@ def test_settings_and_chat_expose_nano_context_mode():
 
 
 def test_chat_control_ids_match_instance_wiring_and_nano_has_active_style():
-    chat = (ROOT / 'web/modules/chat.js').read_text()
-    styles = (ROOT / 'web/style.css').read_text()
+    chat = (ROOT / 'web/modules/chat.js').read_text(encoding="utf-8")
+    styles = (ROOT / 'web/style.css').read_text(encoding="utf-8")
     # The markup keeps the chat-* ids that byId() resolves for the main
     # instance (and namespaces for project panels), so handlers cannot drift
     # to a selector for a different control.

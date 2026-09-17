@@ -387,7 +387,7 @@ export function createTimelineAnchors({ messagesDiv, liveCardRecords }) {
                 && !node.classList.contains('chat-load-older')
         );
         const messagesRect = messagesDiv.getBoundingClientRect();
-        const topNode = nodes.find((item) => {
+        let topNode = nodes.find((item) => {
             const rect = item.getBoundingClientRect();
             return rect.bottom > messagesRect.top && rect.top < messagesRect.bottom;
         }) || null;
@@ -436,6 +436,18 @@ export function createTimelineAnchors({ messagesDiv, liveCardRecords }) {
                 .filter(({ rect }) => rect.top <= messagesRect.top && rect.bottom > messagesRect.top)
                 .sort((a, b) => b.depth - a.depth);
             node = belowTop[0]?.node || crossing[0]?.node || topNode;
+            if (node === topNode && topNode.getBoundingClientRect().top < messagesRect.top) {
+                // The card's visible part holds nothing anchorable (a wait row, a
+                // block without work): keep the reader's view of what FOLLOWS the
+                // card. Pinning the card's own top, far above the viewport, would let
+                // the card's shrink or growth move the content the reader is on.
+                const following = nodes.find((item) => {
+                    if (item === topNode) return false;
+                    const rect = item.getBoundingClientRect();
+                    return rect.top >= messagesRect.top && rect.top < messagesRect.bottom;
+                });
+                if (following) { topNode = following; node = following; }
+            }
         }
 
         const cardChain = [];
@@ -551,6 +563,9 @@ export function updateLiveTimelineItem(record, summary, { ts, rawTs, syntheticKe
             fullBody: summary.fullBody || summary.body || it.fullBody || '',
             fullRef: summary.fullRef || it.fullRef || '',
             truncated: summary.truncated || it.truncated || false,
+            // A call's failure frame replaces its receipt start: the row is
+            // content again once it reports an error.
+            receipt: Boolean(summary.receipt),
             ts: ts || it.ts,
         };
         if (Object.entries(patch).some(([key, value]) => it[key] !== value)) {
@@ -591,6 +606,7 @@ export function updateLiveTimelineItem(record, summary, { ts, rawTs, syntheticKe
             fullBody: summary.fullBody || summary.body || '',
             fullRef: summary.fullRef || '',
             truncated: summary.truncated || false,
+            receipt: Boolean(summary.receipt),
             ts: ts || '',
             sourceTs: rawTs,
             count: 1,
@@ -600,4 +616,18 @@ export function updateLiveTimelineItem(record, summary, { ts, rawTs, syntheticKe
         timelineUpdate = 'append';
     }
     return { timelineUpdate, patchIndex };
+}
+
+/** The block's folded tool evidence row. Live frames and the host's metrics
+ * reach it through the same keyed in-place upsert, so neither route can mint a
+ * second row, and the row keeps the position and timestamp of its first frame.
+ */
+export function upsertToolFoldRow(record, view, ts, rawTs) {
+    const syntheticKey = `tools|${record.groupId}`;
+    // Stationary: the row keeps the place and the time of the first frame it
+    // counted, so a burst of calls never walks it down the timeline.
+    const first = !record.items.some((item) => item.dedupeKey === syntheticKey);
+    return updateLiveTimelineItem(record, view, {
+        ts: first ? ts : '', rawTs, syntheticKey, headline: view.headline, inPlaceByKey: true,
+    });
 }

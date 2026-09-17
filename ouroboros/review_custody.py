@@ -995,11 +995,18 @@ def _settle_review_attempt(
                 and str(getattr(actor, "operation_state", "") or "") == "not_dispatched")
         )
         released_wave: Dict[str, Any] = {}
+        quorum_wave: Dict[str, Any] = {}
         if entry.released_early and entry.wave_key in _RELEASED_WAVES:
             roster = _RELEASED_WAVES[entry.wave_key]
-            roster["slots"][str(getattr(slot, "slot_id", "") or "")] = str(actor.status or "settled")
+            slot_id = str(getattr(slot, "slot_id", "") or "")
+            roster["slots"][slot_id] = str(actor.status or "settled")
+            if getattr(request, "surface", "") == "task_acceptance":  # plan review's frame carries counts only
+                roster.setdefault("verdicts", {})[slot_id] = _settled_slot_verdict(actor)
             if all(roster["slots"].values()):
                 released_wave = _RELEASED_WAVES.pop(entry.wave_key)
+            elif _released_quorum_reached(request, roster):
+                roster["quorum_announced"] = True
+                quorum_wave = copy.deepcopy(roster)
         if replayable and usage_ctx is not None and (late or explicit_retry):
             settled = getattr(usage_ctx, "_review_settled_attempts", None)
             if not isinstance(settled, dict):
@@ -1019,10 +1026,10 @@ def _settle_review_attempt(
 
         announce_released_settlement(usage_ctx, request=request, task_id=task_id, slot=slot, actor=actor,
                                      settled_wave=dict(released_wave.get("slots") or {}), roster_size=int(released_wave.get("total") or 0))
-        if getattr(request, "surface", "") == "task_acceptance" and released_wave:
-            from ouroboros.loop_acceptance_review import announce_acceptance_settlement
+        if getattr(request, "surface", "") == "task_acceptance" and (released_wave or quorum_wave):
+            from ouroboros.acceptance_settlement import announce_acceptance_settlement
 
-            announce_acceptance_settlement(usage_ctx, request, released_wave)
+            announce_acceptance_settlement(usage_ctx, request, released_wave or quorum_wave)
     if late and not pending_invocation and not custody_lost and usage_ctx is not None:
         try:
             from ouroboros.tools.review_helpers import emit_review_event
@@ -1046,9 +1053,55 @@ def _wave_key(request: Any) -> str:
     return "|".join(str(getattr(request, key, "") or "") for key in ("surface", "task_id", "retry_key"))
 
 
+def _released_quorum_reached(request: Any, roster: Dict[str, Any]) -> bool:
+    """Whether this wave has enough answered slots to be worth waking Main for.
+
+    The panel's own ``min_successful_slots`` is the quorum; slots that ANSWERED
+    before the release (the drain collected an ok/empty actor, not a refusal or
+    an expiry) are counted from the roster's registration. A wave
+    announced at its quorum is never announced for that reason twice; the last
+    straggler still announces through the completed-roster arm.
+    """
+    if roster.get("quorum_announced"):
+        return False
+    policy = getattr(request, "policy", None) or {}
+    try:
+        quorum = max(1, int(policy.get("min_successful_slots") or 1))
+    except (TypeError, ValueError):
+        quorum = 1
+    slots = roster.get("slots") or {}
+    answered = sum(1 for status in slots.values() if status in {"ok", "empty"})
+    early = set(roster.get("answered_before_release_ids") or ()) - set(slots)
+    return len(early) + answered >= quorum
+
+
+def _settled_slot_verdict(actor: Any) -> Dict[str, str]:
+    """This ONE reviewer's own verdict, parsed where it settled.
+
+    Quorum, tier, contract demotion and dissent stay with the collecting call's
+    reducer (``review_actor_aggregation``): a settlement thread that re-derived
+    them would be a second aggregation authority. Only the reviewer's own words
+    travel, so the wake can BE the advice instead of a pointer to it.
+    """
+    from ouroboros.triad_review import parse_review_findings
+
+    try:
+        parsed, findings, signal = parse_review_findings(str(getattr(actor, "raw_text", "") or ""))
+    except Exception:
+        log.debug("released acceptance verdict could not be parsed", exc_info=True)
+        return {"verdict": "", "note": ""}
+    from ouroboros.utils import truncate_review_artifact
+
+    note = str((parsed or {}).get("summary") or "") if isinstance(parsed, dict) else ""
+    note = note or next((str(row.get("recommendation") or row.get("item") or "")
+                         for row in (findings or []) if isinstance(row, dict)), "")
+    return {"verdict": str(signal or "").upper(), "note": truncate_review_artifact(" ".join(note.split()), limit=400)}
+
+
 def _register_released_roster(
     request: Any, slots: List[Any], slot_entries: Dict[str, Any], returned_ids: set,
     slot_deadlines: Dict[str, float], monotonic_now: Callable[[str], float],
+    *, answered_before_release: Any = (),
 ) -> set:
     """Register the WHOLE released roster under ONE lock hold before any released row is
     minted: a slot settling at once then finds the complete roster and cannot split the
@@ -1066,6 +1119,10 @@ def _register_released_roster(
         if released_ids:
             # A collection re-releases the wave: merging keeps the recorded outcomes.
             roster = _RELEASED_WAVES.setdefault(_wave_key(request), {"slots": {}, "total": len(slots)})
+            # Slot IDS, not a count: a re-released wave replays an already-settled
+            # slot through the drain, and an id in the roster is never counted twice.
+            roster["answered_before_release_ids"] = sorted(
+                set(roster.get("answered_before_release_ids") or ()) | set(answered_before_release))
             for slot_id in released_ids:
                 roster["slots"].setdefault(slot_id, "")
     return released_ids
@@ -1365,6 +1422,8 @@ def run_custodied_review_slots(
     returned_ids = {str(getattr(actor, "slot_id", "") or "") for actor in actors}
     released_ids = _register_released_roster(
         request, slots, slot_entries, returned_ids, slot_deadlines, monotonic_now,
+        answered_before_release={str(getattr(actor, "slot_id", "") or "") for actor in actors
+                                 if str(getattr(actor, "status", "") or "") in {"ok", "empty"}},
     ) if drain_deadline is not None else set()
     for slot in slots:
         slot_id = str(getattr(slot, "slot_id", "") or "")

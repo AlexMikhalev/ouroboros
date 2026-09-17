@@ -176,6 +176,46 @@ def collect_task_acceptance_run(run: dict, *, drive_root: Any, usage_ctx: Any) -
         usage_ctx._review_frozen_rows = previous
 
 
+def reconcile_pending_acceptance_runs(
+    llm_trace: dict, *, drive_root: Any, usage_ctx: Any,
+) -> int:
+    """Collect every already-paid acceptance panel still recorded as running, $0.
+
+    The dispatch barrier (``ReviewRequest.drain_deadline``) returns the host right
+    after dispatch, so a panel whose subject was re-authored before it settled is
+    left with ``pending_dispatch`` rows that nothing reads: the free-replay lookup
+    matches only the CURRENT binding or paid identity, so verdicts the tree already
+    bought were discarded. This is the acceptance twin of plan review's
+    reconcile-before-supersede (I3): it sends nothing, pays nothing, samples no new
+    evidence, and advances only producer facts on runs the tree already owns.
+    Idempotent by ``acceptance_run_pending`` alone -- a settled, custody-lost or
+    already-collected run is never collected again. Returns how many runs advanced.
+    """
+    from ouroboros.loop_acceptance_review import acceptance_run_pending
+
+    advanced = 0
+    for run in (llm_trace.get("review_runs") or []):
+        # Agent-tool acceptance runs carry no barrier and drain synchronously.
+        if not isinstance(run, dict) or run.get("authority") != "host_root":
+            continue
+        if not isinstance(run.get("request"), dict) or not run.get("slot_roster"):
+            continue
+        if not acceptance_run_pending(run):
+            continue
+        try:
+            result = collect_task_acceptance_run(
+                run, drive_root=drive_root, usage_ctx=usage_ctx,
+            )
+        except (OSError, TimeoutError, ValueError, KeyError) as exc:
+            log.warning("acceptance run %s could not be reconciled: %s",
+                        str(run.get("panel_id") or "")[:16], exc)
+            continue
+        # Keep the paid operation's request; only its producer facts advance.
+        run.update({key: value for key, value in vars(result).items() if key != "request"})
+        advanced += not acceptance_run_pending(run)
+    return advanced
+
+
 def task_acceptance_preclaim_refusal(ctx: Any) -> Any:
     """Project every free refusal before assembly and again at dispatch."""
     from ouroboros.review_substrate import ReviewRunResult

@@ -3,6 +3,11 @@ import test from 'node:test';
 import { createChatInstance } from '../modules/chat.js';
 import { installDom, restoreDom, walkCard } from './chat_dom_fixture.js';
 
+// The stub's querySelector reads direct children only; the conversion button
+// lives inside the card's actions row, so find it by walking the subtree.
+const convertButton = (node) => (node?.dataset && Object.hasOwn(node.dataset, 'turnIntoProject') ? node
+    : (node?.children || []).map(convertButton).find(Boolean) || null);
+
 // A typing frame no longer writes the client live-set: liveness is a projection
 // of the /api/state census. A PARTIAL census listing is the census-shaped
 // equivalent of the old typing-frame write — it inserts the activity and
@@ -1073,9 +1078,11 @@ test('history rebuild keeps a lineage-known branch nested, never appended top-le
 });
 
 // ---------------------------------------------------------------------------
-// Direct-turn tool work, typed conclusions and accounting keep the ordinary card.
+// Direct-turn tool work, typed conclusions and accounting render the same task
+// card as a managed root (chrome follows content, owner decision 16.09); Cancel
+// still needs the host's marker.
 // ---------------------------------------------------------------------------
-test('a direct turn renders tool work and needs host authority for Cancel', async () => {
+test('a direct turn renders tool work as an activity block and needs host authority for Cancel', async () => {
     const { prior, mount } = installDom(async () => ({ ok: true, json: async () => ({ active_direct_turns: [] }) }));
     const handlers = new Map();
     const ws = {
@@ -1089,12 +1096,14 @@ test('a direct turn renders tool work and needs host authority for Cancel', asyn
     };
     let instance;
     try {
-        // Main chat: the only surface that offers "Turn into project".
+        // Main chat: the only surface that offers "Turn into project" — to content blocks of either lane.
         instance = createChatInstance({
             ws, state: { activePage: 'chat', projectChatIds: new Set(), unreadCount: 0 },
             updateUnreadBadge() {}, stateSnapshots, chatId: 1, idPrefix: 'chat', mountEl: mount,
         });
         const messages = globalThis.document.byId.get('chat-messages');
+        // The census is the host fact that this turn is a direct conversation turn.
+        listActivity(instance, 'eph-1', 1, 'thinking', 'direct_chat');
         handlers.get('log')({ chat_id: 1, data: {
             type: 'task_started', task_id: 'eph-1', ts: '2026-09-05T10:00:00Z',
         } });
@@ -1103,8 +1112,9 @@ test('a direct turn renders tool work and needs host authority for Cancel', asyn
             type: 'tool_call_started', task_id: 'eph-1', tool: 'read_file', ts: '2026-09-05T10:00:01Z',
         } });
         const card = walkCard(messages, 'eph-1');
-        assert.ok(card, 'real tool work reveals the ordinary live card');
-        assert.ok(card.querySelector('[data-turn-into-project]'), 'ordinary Main work can become a project');
+        assert.ok(card, 'real tool work reveals the activity block');
+        assert.ok(convertButton(card), 'a working direct turn is offered conversion in Main');
+        assert.equal(card.querySelector('[data-live-title]').textContent, 'Working...', 'the running placeholder title');
         assert.equal(card.querySelector('[data-cancel-run]'), null, 'no host cancelable marker: no Cancel');
         handlers.get('chat')({
             chat_id: 1, role: 'assistant', is_progress: true,
@@ -1135,7 +1145,7 @@ test('a direct turn renders tool work and needs host authority for Cancel', asyn
         } });
         assert.equal(card.dataset.finished, '1');
         assert.match(card.querySelector('[data-live-meta]').innerHTML, /\$2\.70/);
-        assert.ok(card.querySelector('[data-turn-into-project]'));
+        assert.ok(convertButton(card), 'conversion stays on the finished card');
         // A direct turn without tool work or progress stays a plain answer.
         handlers.get('log')({ chat_id: 1, data: {
             type: 'task_started', task_id: 'eph-2', ts: '2026-09-05T11:00:00Z',
@@ -1158,7 +1168,9 @@ test(`history replay of a direct turn preserves ${execution}`, async () => {
           ts: '2026-09-05T10:00:00Z' },
         { chat_id: 1, role: 'assistant', is_progress: true,
           content: 'Reading the account snapshots…', ts: '2026-09-05T10:00:02Z', task_id: 'eph-h' },
-        { chat_id: 1, role: 'assistant', is_progress: true,
+        // gateway/history lands the terminal truth (the direct-turn fact included)
+        // on the latest in-window progress row when no summary row is present.
+        { chat_id: 1, role: 'assistant', is_progress: true, _is_direct_chat: true,
           content: 'Comparing the reset windows…', ts: '2026-09-05T10:05:00Z', task_id: 'eph-h' },
         { chat_id: 1, role: 'assistant', content: 'The earliest window resets on Monday.',
           text: 'The earliest window resets on Monday.', ts: '2026-09-05T10:22:00Z', task_id: 'eph-h',
@@ -1197,7 +1209,7 @@ test(`history replay of a direct turn preserves ${execution}`, async () => {
         assert.equal(card.querySelector('[data-live-phase]').dataset.phase, phase);
         assert.doesNotMatch(card.querySelector('[data-live-meta]').innerHTML, /\$0(?:\.00)?(?:\s|<|$)/);
         if (execution === 'ok') assert.match(card.querySelector('[data-live-meta]').innerHTML, /\$0\.75/);
-        assert.ok(card.querySelector('[data-turn-into-project]'));
+        assert.ok(convertButton(card), 'replayed content is offered conversion in Main');
         assert.equal(card.querySelector('[data-cancel-run]'), null);
         assert.equal(messages.children.filter((n) => /resets on Monday/.test(n.innerHTML)).length, 1);
     } finally {
@@ -1389,5 +1401,58 @@ test('native terminal replay retains the actual narration as title', async () =>
         await instance.refreshHistory({ revision: 1 });
         const card = walkCard(globalThis.document.byId.get('chat-messages'), 'native-title');
         assert.equal(card.querySelector('[data-live-title]').textContent, 'still working');
+    } finally { instance?.destroy(); restoreDom(prior); }
+});
+
+
+test('a late acceptance settlement row without a placement fact never rewrites the finished card', async () => {
+    // Owner fork 2=A (2026-09-16): a reviewer panel that settles after the task
+    // ended adds ONE System row to the task's room. Without the host's placement
+    // fact (`card_row`) it stays a standalone row, and the regression to pin is
+    // the card: its Done chip, title and counts stay exactly as the terminal row
+    // left them. The stamped row's in-card placement is pinned in
+    // chat_card_row_placement.test.js.
+    const rows = [
+        { task_id: 'late-panel', is_progress: true, text: '💬 checking the budget', ts: '2026-09-16T00:00:00Z', task_terminal_status: 'completed' },
+        { task_id: 'late-panel', role: 'assistant', text: 'The report is ready.', ts: '2026-09-16T00:01:00Z' },
+        { task_id: 'late-panel', role: 'system', system_type: 'task_summary', text: 'Done.', ts: '2026-09-16T00:02:00Z',
+          tool_calls: 3, rounds: 2, outcome_final: true, outcome_phase: 'done', outcome_axes: { execution: { status: 'ok' } } },
+    ];
+    const { prior, mount } = installDom(async (url) => ({ ok: true, json: async () =>
+        String(url).startsWith('/api/chat/history') ? { messages: rows } : { active_direct_turns: [] } }));
+    const handlers = new Map();
+    const ws = { on(type, fn) { handlers.set(type, fn); return () => handlers.delete(type); }, isConnected: () => true, send() {} };
+    let instance;
+    try {
+        instance = createChatInstance({ ws, state: { activePage: 'chat', projectChatIds: new Set(), unreadCount: 0 },
+            updateUnreadBadge() {}, stateSnapshots: { begin: () => ({ generation: 1, requestedAt: Date.now() }),
+                isCurrent: () => true, apply() {} }, chatId: 1, idPrefix: 'chat', mountEl: mount });
+        await instance.refreshHistory({ revision: 1 });
+        const messages = globalThis.document.byId.get('chat-messages');
+        const card = walkCard(messages, 'late-panel');
+        const before = {
+            phase: card.querySelector('[data-live-phase]')?.textContent,
+            hidden: card.querySelector('[data-live-phase]')?.hidden,
+            title: card.querySelector('[data-live-title]')?.textContent,
+            finished: card.dataset.finished,
+            html: card.innerHTML,
+        };
+        assert.equal(before.phase, 'Done');
+        const bubbles = () => messages.children.filter((node) => node.classList.contains('chat-bubble')
+            && node.classList.contains('system') && !node.classList.contains('typing-bubble'));
+        const systemBefore = bubbles().length;
+        const text = 'Reviewers later passed this answer. They reviewed the earlier version, which was rewritten before delivery.\n- triad_one: PASS — Budget section is complete.';
+        handlers.get('chat')({ chat_id: 1, task_id: 'late-panel', role: 'system', system_type: 'acceptance_late_settlement',
+            content: text, ts: '2026-09-16T00:05:00Z' });
+        const after = walkCard(messages, 'late-panel');
+        assert.equal(after, card, 'the finished card is the same node');
+        assert.equal(after.querySelector('[data-live-phase]')?.textContent, before.phase);
+        assert.equal(after.querySelector('[data-live-phase]')?.hidden, before.hidden);
+        assert.equal(after.querySelector('[data-live-title]')?.textContent, before.title);
+        assert.equal(after.dataset.finished, before.finished);
+        assert.equal(after.innerHTML, before.html, 'the late row is not folded into the card');
+        const added = bubbles();
+        assert.equal(added.length, systemBefore + 1, 'exactly one new System row');
+        assert.match(added[added.length - 1].innerHTML, /Reviewers later passed this answer/);
     } finally { instance?.destroy(); restoreDom(prior); }
 });

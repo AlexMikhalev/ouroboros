@@ -420,6 +420,20 @@ def _rebind_runtime_roots_between_tests():
 
 
 @pytest.fixture(autouse=True)
+def _unlatch_supervisor_event_bus_between_tests():
+    """A TestClient lifespan runs the server shutdown, whose ``workers.shutdown_event_q()``
+    latches ``_EVENT_Q_SHUTDOWN`` for the rest of the xdist worker; the next test in that
+    worker that publishes on the bus (``kill_workers_for_update``, a promote, a wake) then
+    raises "supervisor event bus is shutting down" against a fixture it never saw. Several
+    modules already unlatch it locally (test_promote_event_transport, test_inflight_indicator_seams);
+    this does it once for every test. A test that wants the latch sets it itself (monkeypatch)."""
+    from supervisor import workers
+
+    workers._EVENT_Q_SHUTDOWN = False
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _restore_gateway_settings_bindings_between_tests():
     """``server._sync_gateway_settings_module()`` copies the server module's CURRENT
     ``load_settings`` / ``save_settings`` / ``_apply_settings_to_env`` /

@@ -26,7 +26,7 @@ from ouroboros.cost_projection import carry_cost_meta, live_root_cost_projection
 from ouroboros.outcomes import normalize_outcome_axes
 from ouroboros.post_task_checkpoint import post_task_synthesis_is_open
 from ouroboros.project_dialogue import historical_terminal_projection
-from ouroboros.subagent_messages import SUBAGENT_MESSAGE_FIELDS, executor_observation_meta, subagent_message_meta
+from ouroboros.subagent_messages import SUBAGENT_MESSAGE_FIELDS, executor_observation_meta, initiator_meta, subagent_message_meta
 from ouroboros.task_results import TASK_COST_META_FIELDS as _TASK_COST_META_FIELDS
 from ouroboros.utils import JsonlChainUnreadable, strip_markdown, utc_now_iso
 
@@ -99,6 +99,10 @@ _PROGRESS_META_FIELDS = (
     # A duplicate lifecycle call is a typed pointer/ack, not a task. Preserve
     # the pointer on reload while its outer task_id stays empty.
     "lifecycle_pointer",
+    "initiator",  # the turn's origin label (a consciousness wake-up)
+    # The frame's voice: a replayed host note must stay a host note, or a reload
+    # would hand the card title back to the very line live rendering refused it.
+    "narration",
 )
 
 _SKILL_REVIEW_STRING_FIELDS = (
@@ -191,7 +195,7 @@ def _user_annotation(
     return {
         key: annotation.get(key)
         for key in (
-            "action", "target", "target_label", "status", "detail", "options",
+            "action", "target", "target_label", "status", "detail", "cause", "options",
             "attachment_manifest", "routing_token", "project_id", "project_chat_id",
         )
         if key in annotation
@@ -342,30 +346,30 @@ def _copy_task_summary_metadata(rec: Dict[str, Any], entry: Dict[str, Any]) -> N
         rec["model_execution"] = dict(entry["model_execution"])
     if entry.get("suggested_name"):
         rec["suggested_name"] = str(entry["suggested_name"])
-    for key in ("tool_calls", "rounds", "tool_errors"):
+    for key in ("tool_calls", "rounds", "tool_errors", "routing_tool_calls"):
         if key in entry:
             rec[key] = None if entry[key] is None else int(entry[key])
     if "tool_call_counts" in entry:
-        counts = entry["tool_call_counts"]
-        rec["tool_call_counts"] = dict(counts) if isinstance(counts, dict) else None
-    if entry.get("type") == "task_summary" or isinstance(entry.get("outcome_axes"), dict):
-        rec["outcome_axes"] = normalize_outcome_axes(entry)
+        rec["tool_call_counts"] = dict(entry["tool_call_counts"]) if isinstance(entry["tool_call_counts"], dict) else None
+    # The row's own direct-turn fact (pruned-result fallback; the persisted
+    # result overrides it) and the typed routing action as `addressing_only`.
+    if "_is_direct_chat" in entry:
+        rec["_is_direct_chat"] = bool(entry["_is_direct_chat"])
+    if entry.get("typed_routing_action"):
+        rec["addressing_only"] = str(entry["typed_routing_action"])
+    rec["outcome_axes"] = normalize_outcome_axes(entry)
     if "reason_code" in entry:
         rec["reason_code"] = str(entry.get("reason_code") or "")
     if isinstance(entry.get("review_projection"), dict):
         rec["review_projection"] = dict(entry.get("review_projection") or {})
-    # The chat row carries the flat task-scope cost snapshot written by
-    # the task-summary producer.
-    # _annotate_terminal_task_truth later OVERRIDES these with the persisted
-    # task_results values when the result file survives (row = fallback only).
-    # ABI-3: CONVERTED, not copied — a stored legacy row's pair resolves
-    # deprecated-wins and replays under the honest names only.
+    # The row's flat task-scope cost snapshot; _annotate_terminal_task_truth
+    # later OVERRIDES it with the persisted task_results values when the result
+    # file survives (row = fallback only). ABI-3: CONVERTED, not copied — a
+    # stored legacy pair resolves deprecated-wins under the honest names only.
     rec.update(carry_cost_meta(entry))
-    # Live-card outcome axes ride the summary row too (the pruned-result
-    # fallback); persisted task_results values still override them below.
-    for key in ("outcome_phase", "outcome_final"):
-        if key in entry:
-            rec[key] = entry[key]
+    # Live-card outcome axes and the origin label ride the summary row too (the
+    # pruned-result fallback); persisted task_results values still override them below.
+    rec.update({key: entry[key] for key in ("outcome_phase", "outcome_final", "initiator") if key in entry})
 
 
 def _load_terminal_result(
@@ -493,9 +497,9 @@ def _annotate_terminal_task_truth(
                 terminal_status_by_task[task_id] = status
             if task_id in finalizing_tasks or task_id in terminal_status_by_task:
                 terminal_truth: Dict[str, Any] = {
-                    "outcome_axes": normalize_outcome_axes(result),
+                    "outcome_axes": normalize_outcome_axes(result), "_is_direct_chat": bool(result.get("_is_direct_chat")),
                     "outcome_phase": outcome_phase(result, {}), "outcome_final": task_id not in finalizing_tasks,
-                }
+                    **initiator_meta(result)}  # + the origin label, from the persisted metadata
                 if isinstance(result.get("model_execution"), dict):
                     terminal_truth["model_execution"] = dict(result["model_execution"])
                 if result.get("reason_code"):
@@ -884,14 +888,25 @@ def _collect_chat_rows(
                     _live = _quiz_source(_qtid)["quizzes"].get(_qid) or answered.get((_qtid, _qid))
                     if isinstance(_live, dict):
                         quiz["state"] = str(_live.get("state") or quiz.get("state") or "open")
-                        for key in ("answered_index", "comment"):  # the recorded answer itself
+                        for key in ("answered_index", "comment", "wait_ended_at"):  # the answer, the closed bound
                             if key in _live:
                                 quiz[key] = _live[key]
+                        if "wait_for_answer" not in _live:
+                            quiz.pop("wait_for_answer", None)  # the bound closed: the card no longer waits
+                    if quiz.get("wait_for_answer") or quiz.get("wait_ended_at"):
+                        # The card header reads the same wait facts the Main pointer does: a
+                        # wait the owner resumed by ordinary input leaves no frame behind.
+                        from ouroboros.project_dialogue import owner_wait_projection
+
+                        quiz.update(owner_wait_projection(_qid, _quiz_source(_qtid)["wait"],
+                                                          _live if isinstance(_live, dict) else None))
                 rec.update(msg_type="quiz", quiz=quiz)
             if "task_terminal_status" in entry:
                 rec["task_terminal_status"] = str(entry.get("task_terminal_status") or "")
             _copy_task_summary_metadata(rec, entry)
-            for field in SUBAGENT_MESSAGE_FIELDS:
+            # Lineage, the origin label, and the host's card placement (card_row /
+            # card_row_id) — a stored key is replayed verbatim, an absent one is omitted.
+            for field in (*SUBAGENT_MESSAGE_FIELDS, "initiator", "card_row", "card_row_id"):
                 if field in entry:
                     rec[field] = entry[field]
             combined.append(rec)
@@ -1426,7 +1441,6 @@ def _assemble_history_response(
     thread_id: int,
     n_human: int,
     n_progress: int,
-    background: Optional[dict] = None,
     cursor: Optional[str] = None,
 ) -> bytes:
     """Select and project recent/archive history in the endpoint's one worker.
@@ -1499,28 +1513,12 @@ def _assemble_history_response(
         before[source] = max([before[source], *(entry["_history_end"] for entry in selections[source][0] or ()
                                                if entry.get("history_id") in deferred_lineage)])
 
-    # Background consciousness writes no task_result, so its progress would
-    # otherwise replay as a perpetual "thinking" card after reload. Mark its
-    # most recent IN-WINDOW progress entry terminal; a fresh live event
-    # re-activates the card if a new cycle starts. (Structured signal,
-    # consumed by log_events.js.)
-    background_chat = (background or {}).get("chat_id")
-    background_visible = background_chat is not None and row_matches_thread(int(background_chat), {"task_id": "bg-consciousness"})
-    try:
-        bg_msgs = [
-            m for m in messages
-            if m.get("is_progress") and str(m.get("task_id") or "") == "bg-consciousness"
-        ]
-        if bg_msgs and not (background_visible and (background or {}).get("model_wait_owner_id")):
-            latest = max(bg_msgs, key=lambda m: str(m.get("ts") or ""))
-            latest["task_terminal_status"] = "done"
-    except Exception as exc:
-        log.debug("Failed to annotate bg-consciousness terminal status: %s", exc)
-
-    if not cursor and background is not None and background_visible:
-        messages.append({"text": "", "role": "system", "system_type": "task_model_wait",
-                         "task_id": "bg-consciousness", "is_progress": False,
-                         "model_wait_live": True, **background})
+    # A wake-up is an ordinary direct turn with its own task id and its own
+    # durable result, so it needs no replay hack. The retired loop's progress
+    # rows (the pseudo task id "bg-consciousness") carry no task_result at all:
+    # they replay as any other row whose task result is gone, and the client's
+    # durable task-detail read settles that card as "Outcome unavailable". They
+    # are never stamped terminal here — a row with no result is not a Done.
 
     # Hidden source evidence shares ordinary keyed replay. It carries no new
     # review/cost authority and never consumes the conversation quota.
@@ -1577,16 +1575,9 @@ def make_chat_history_endpoint(data_dir: pathlib.Path):
         thread_id = _int_param("chat_id", 1, 2**31 - 1) or 1
         # ONE thread hop for the whole assembly (perf2 P3): reads, transforms,
         # slicing, annotation, and the JSON encode all run off the event loop.
-        app_state = getattr(getattr(request, "app", None), "state", None)
-        reader = getattr(app_state, "get_background_model_wait", None)
-        owner = reader() if callable(reader) else None
-        background = owner.snapshot() if owner else {"model_wait_owner_id": "", "model_waits": {}}
-        describe = getattr(app_state, "describe_bg_consciousness_state", None)
-        if owner and callable(describe):
-            background["paused"] = bool(describe(True).get("paused"))
         cursor = request.query_params.get("cursor")
         try:
-            body = await asyncio.to_thread(_assemble_history_response, data_dir, thread_id, n_human, n_progress, background, cursor)
+            body = await asyncio.to_thread(_assemble_history_response, data_dir, thread_id, n_human, n_progress, cursor)
         except (HistoryCursorError, JsonlChainUnreadable, OSError) as exc:
             reason = exc.reason if isinstance(exc, HistoryCursorError) else "history_source_unavailable"
             return Response(content=json.dumps({"messages": [], "error": reason, "reason_code": reason,

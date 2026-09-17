@@ -2,8 +2,8 @@
 // live-card presentation projections (moved verbatim from chat.js) plus the
 // in-flight direct/ephemeral turn status reducer and snapshot hydration.
 import { executorIdentityMarkup } from './harness_presentation.js';
-import { compactModel, modelExecutionLabel } from './log_events.js';
-import { createSystemMessageAction } from './ui_helpers.js';
+import { compactModel, formatLogDuration, modelExecutionLabel } from './log_events.js';
+import { createSystemMessageAction, createSystemMessageActions } from './ui_helpers.js';
 import { joinMarkdownHeadings } from './utils.js';
 import { REUSABLE_TASK_IDS } from './task_control_menu.js';
 import {
@@ -53,6 +53,9 @@ export function senderLabel(role, isProgress = false, systemType = '', opts = {}
         return '📋 System';
     }
     if (isProgress) return '💬 Thought';
+    // A self-initiated turn (a consciousness wake-up) signs its final bubble
+    // through the same sender line the user bubble uses for its source.
+    if (opts.initiator === 'consciousness') return 'Ouroboros · Consciousness';
     return 'Ouroboros';
 }
 
@@ -110,6 +113,122 @@ export function buildTimelineItemHtml(item, record) {
     `;
 }
 
+// ---------------------------------------------------------------------------
+// Folded tool evidence (docs/DESIGN.md "Conversation activity block").
+// ---------------------------------------------------------------------------
+
+/**
+ * A turn's routine execution is ONE row, whatever a burst costs in calls, so
+ * the narration around it stays readable. The accumulator is a state map keyed
+ * by invocation rather than a pair of counters: duplicate, reordered and
+ * concurrent frames all settle on the same totals, and the host's own numbers
+ * replace them without either side double counting.
+ */
+function ensureToolFold(record) {
+    if (!record.toolFold) record.toolFold = { calls: new Map(), host: null };
+    return record.toolFold;
+}
+
+/**
+ * One frame's fact about one invocation: {key, status, receipt, tool}. Status
+ * never regresses — a start frame that arrives after the finish cannot reopen
+ * the call, and an error stays an error however many frames report that key.
+ */
+export function noteToolCall(record, observation) {
+    const key = observation?.key;
+    if (!record || !key) return record;
+    const { calls } = ensureToolFold(record);
+    const prev = calls.get(key);
+    const status = observation.status === 'error' || prev?.status === 'error' ? 'error'
+        : ((observation.status === 'ok' || prev?.status === 'ok') ? 'ok' : 'calling');
+    calls.set(key, {
+        status,
+        // A call is an addressing receipt only while EVERY frame about it says so
+        // (the host stamps `routing_action`): the first frame without the stamp
+        // makes the call content, and content it stays.
+        receipt: Boolean(observation.receipt) && (prev ? prev.receipt : true),
+        tool: observation.tool || prev?.tool || '',
+    });
+    return record;
+}
+
+/**
+ * The host's totals for the turn, merged FIELD-WISE onto what the host already
+ * stated. An ABSENT field (null/undefined) stays absent and keeps the previous
+ * known value: a partial snapshot that carries `tool_calls` alone must not read
+ * as "no addressing calls" and turn a block that only addressed work into
+ * content, and it must not erase an error or routing count a complete snapshot
+ * already gave. `counts` is known only as a NON-EMPTY object, so an empty or
+ * absent `tool_call_counts` keeps the live map's names and the row behind Expand
+ * is never explicitly emptied while the turn counts calls.
+ */
+export function noteToolHostMetrics(record, host) {
+    const fold = ensureToolFold(record);
+    const known = fold.host || {};
+    const carry = (next, before) => (next === null || next === undefined ? (before ?? null) : next);
+    const counts = host?.counts && typeof host.counts === 'object' && Object.keys(host.counts).length > 0
+        ? host.counts : (known.counts ?? null);
+    fold.host = {
+        calls: carry(host?.calls, known.calls),
+        errors: carry(host?.errors, known.errors),
+        routing: carry(host?.routing, known.routing),
+        counts,
+    };
+    return toolEvidenceView(record.toolFold);
+}
+
+/**
+ * One frame about one invocation, applied to the block's fold: the map first,
+ * then the row it owns, rebuilt from the map and the host's totals together.
+ * The meta counts follow the same reading, so the header never disagrees with
+ * the row while a turn runs.
+ */
+export function applyToolObservation(record, observation) {
+    noteToolCall(record, observation);
+    const view = toolEvidenceView(record.toolFold);
+    record.toolCalls = view.calls;
+    record.toolErrors = view.errors;
+    return view;
+}
+
+const perToolLine = (entries) => entries
+    .filter(([name, n]) => name && n > 0)
+    .map(([name, n]) => (n > 1 ? `${name} ×${n}` : name)).join(' · ');
+
+/**
+ * The block's one tool row, built from the live map and the host's totals
+ * together: the host answers what it stated, the live map answers the rest.
+ * The closed row carries the counts only (summary outranks details); the
+ * per-tool names live behind Expand, so the row stays one line either way.
+ */
+export function toolEvidenceView(fold = null) {
+    const live = fold?.calls instanceof Map ? [...fold.calls.values()] : [];
+    const host = fold?.host || null;
+    const calls = Number.isInteger(host?.calls) ? host.calls : live.length;
+    const errors = Number.isInteger(host?.errors) ? host.errors
+        : live.filter((call) => call.status === 'error').length;
+    const liveCounts = new Map();
+    for (const call of live) liveCounts.set(call.tool, (liveCounts.get(call.tool) || 0) + 1);
+    const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+    return {
+        phase: errors > 0 ? 'warn'
+            : ((!host && live.some((call) => call.status === 'calling')) ? 'calling' : 'result'),
+        headline: `${plural(calls, 'tool call')}${errors > 0 ? ` · ${plural(errors, 'error')}` : ''}`,
+        body: '',
+        fullBody: perToolLine(host?.counts && typeof host.counts === 'object'
+            ? Object.entries(host.counts) : [...liveCounts]),
+        visible: true,
+        // Addressing calls report themselves on the owner's message, so a block
+        // that ran nothing else stands on nothing. The host's count decides when
+        // it stated one; otherwise the live map decides, but only while it
+        // accounts for every counted call. Knowing neither means content.
+        receipt: errors <= 0 && (Number.isInteger(host?.routing) ? host.routing >= calls
+            : live.length >= calls && live.length > 0 && live.every((call) => call.receipt)),
+        calls,
+        errors,
+    };
+}
+
 // Sortable data-ts stamping for timeline nodes; anchor mode only ever moves a
 // node's effective timestamp earlier so replay cannot teleport it downward.
 export function stampNodeTimestamp(node, raw, { anchor = false } = {}) {
@@ -164,30 +283,18 @@ export function isNonTerminalMediaHistoryRow(msg) {
     return msg.system_type === 'photo' || msg.system_type === 'video';
 }
 
-export function isBackgroundTaskId(taskId = '') {
-    return taskId === 'bg-consciousness';
-}
-
-export function shouldAlwaysShowTaskCard(taskId = '') {
-    return isBackgroundTaskId(taskId);
-}
-
-export const ADDRESSING_ONLY_TOOLS = new Set(['promote_chat_to_task', 'route_to_project', 'steer_task']);
-
-export function addressingToolCallCount(count, metrics) {
-    const counts = metrics.tool_call_counts;
-    const entries = counts && typeof counts === 'object' && !Array.isArray(counts) ? Object.entries(counts) : [];
-    if (!Number.isInteger(count) || count <= 0 || !Number.isInteger(metrics.tool_errors)
-            || metrics.tool_errors < 0 || !entries.length
-            || !entries.every(([, n]) => Number.isInteger(n) && n > 0)
-            || entries.reduce((sum, [, n]) => sum + n, 0) !== count) return null;
-    return entries.reduce((sum, [name, n]) => sum + (ADDRESSING_ONLY_TOOLS.has(name) ? n : 0), 0);
+/**
+ * A history row that carries replay evidence only (a recorded quiz answer, a
+ * hidden terminal projection) and mounts nothing: the one owner of that
+ * distinction for the replay passes and the pager's page-row count.
+ */
+export function isReplayEvidenceRow(row) {
+    return row?.system_type === 'quiz_answer' || Boolean(row?.summary_kind && row?.historical_terminal);
 }
 
 export function isForegroundLiveCard(record) {
     return Boolean(
         record?.root?.isConnected && !record.finished && !record.reviewAnchor && !record.historicalUnavailable && !record.historicalUnconfirmed
-        && !isBackgroundTaskId(record.groupId)
     );
 }
 
@@ -503,9 +610,8 @@ export function clearStickyCardState(record) {
     record.executorChip = null;
     // A recycled slot must not inherit the previous cycle's finalizing hold.
     record.finalizingHold = false;
-    // The activity clock is cycle state too: a
-    // recycled slot ('bg-consciousness', 'active') would otherwise open showing
-    // the previous cycle's "updated" time.
+    // The activity clock is cycle state too: a recycled slot ('active') would
+    // otherwise open showing the previous cycle's "updated" time.
     record.latestActivityTs = '';
     if (record.activityEl) {
         record.activityEl.textContent = '';
@@ -513,6 +619,11 @@ export function clearStickyCardState(record) {
     }
     record.modelExecution = null;
     record.toolCalls = null;
+    record.toolErrors = null;
+    // The folded evidence is cycle state too: a recycled slot must not count
+    // the previous cycle's invocations.
+    record.toolFold = null;
+    record.durationSec = null;
     record.historicalUnavailable = false;
     record.historicalUnconfirmed = false;
     record.historicalTerminal = null;
@@ -840,6 +951,11 @@ export function routingOptionLabel(option) {
 /** Human text for a typed routing annotation ('' hides the line). */
 export function routingAnnotationText(annotation) {
     if (!annotation || typeof annotation !== 'object') return '';
+    // A refused act carries the host's own owner-facing sentence (`cause`);
+    // it outranks the status matrix below. Absent on scheduled/delivered/
+    // pending rows and on the picker frame, so those labels are unchanged.
+    const cause = String(annotation.cause || '').trim();
+    if (cause) return cause;
     const action = String(annotation.action || '');
     const status = String(annotation.status || '');
     const target = String(annotation.target || '');
@@ -851,7 +967,11 @@ export function routingAnnotationText(annotation) {
             .map(routingOptionLabel)
             .filter(Boolean);
         if (optionLabels.length) return `Choose a target · ${optionLabels.join(' / ')}`;
-        return targetLabel ? `Choose a target · ${targetLabel}` : 'Choose a target';
+        // No options and (by the guard above) no cause: a receipt written
+        // before the host sentence existed, or by a producer that bypasses
+        // `_emit_routing_receipt`. Nothing can be chosen on such a row, so it
+        // must not invite a choice.
+        return targetLabel ? `Not routed · ${targetLabel}` : 'Not routed';
     }
     if (status === 'project_unavailable') return 'Project is unavailable';
     const labels = {
@@ -980,8 +1100,8 @@ export function reconcileHydratedDirectActivities(
  *
  * Skipped here: finished cards, detached roots (not part of the reducer's
  * scan), subagent cards (their parent owns the lineage; observe filters them
- * too), reusable slots ('bg-consciousness', 'active' — many cycles per id, no
- * single durable result) and the 'chat' fallback group id. Pure for node tests.
+ * too), reusable slots ('active' — many cycles per id, no single durable
+ * result) and the 'chat' fallback group id. Pure for node tests.
  */
 export function unconfirmedForegroundCardIds(cards, activeIds) {
     const out = [];
@@ -1019,6 +1139,7 @@ export function renderRoutingAnnotation(bubble, annotation) {
         const hasStatus = bubble.dataset.chatAnnotationStatus !== undefined;
         if (!note && !hasStatus) return false;
         note?.remove();
+        bubble.querySelector('.msg-routing-actions')?.remove();
         if (hasStatus) delete bubble.dataset.chatAnnotationStatus;
         return true;
     }
@@ -1036,6 +1157,7 @@ export function renderRoutingAnnotation(bubble, annotation) {
         else bubble.append(note);
     }
     if (!changed) return false;
+    bubble.querySelector('.msg-routing-actions')?.remove();
     note.textContent = text;
     note.dataset.annotationText = text;
     note.dataset.destinationKey = destinationKey;
@@ -1051,7 +1173,11 @@ export function renderRoutingAnnotation(bubble, annotation) {
                 task_id: annotation.target || '',
             } })),
         });
-        note.append(button);
+        const actions = createSystemMessageActions(button);
+        actions.classList.add('msg-routing-actions');
+        const time = bubble.querySelector('.msg-time');
+        if (time) time.before(actions);
+        else bubble.append(actions);
     }
     return changed;
 }
@@ -1080,7 +1206,7 @@ export function costMetaKeys(src) {
 
 const CARD_META_KEYS = [
     ...COST_META_KEYS, 'executor_route', 'execution_evidence', 'actual_substrate',
-    'executor_observation', 'model_execution', 'tool_calls', 'model', 'ts',
+    'executor_observation', 'model_execution', 'tool_calls', 'model', 'ts', 'initiator',
 ];
 export function cardMetaKeys(src) {
     return Object.fromEntries(CARD_META_KEYS.map((key) => [key, src?.[key]]));
@@ -1091,10 +1217,12 @@ export function cardMetaKeys(src) {
 export function renderLiveCardMeta(record, { agentModel = record?.agentModel || '' } = {}) {
     if (!record?.metaEl) return false;
     const html = executorIdentityMarkup(record.executorChip, { agentModel: compactModel(agentModel) }) + [
-        record.groupId === 'bg-consciousness' ? 'Background thinking' : '',
+        record.initiator === 'consciousness' ? 'Consciousness' : '',
         record.historicalUnavailable ? 'Outcome unavailable' : (record.historicalUnconfirmed ? 'Activity unconfirmed' : ''),
         modelExecutionLabel(record.modelExecution),
         Number.isInteger(record.toolCalls) ? `${record.toolCalls} tool ${record.toolCalls === 1 ? "call" : "calls"}` : '',
+        record.toolErrors > 0 ? `${record.toolErrors} error${record.toolErrors === 1 ? '' : 's'}` : '',
+        Number.isFinite(record.durationSec) ? formatLogDuration(record.durationSec) : '',
         ...(Array.isArray(record._lastFrameMeta) ? record._lastFrameMeta : []),
         ...((record.costMeta && Array.isArray(record.costMeta.meta)) ? record.costMeta.meta : []),
         record.latestActivityTs ? `updated ${record.latestActivityTs}` : '',

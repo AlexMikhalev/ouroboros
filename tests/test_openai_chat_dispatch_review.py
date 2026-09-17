@@ -5,9 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import pathlib
-from types import SimpleNamespace
 
-import ouroboros.consciousness as consciousness
 import ouroboros.context_compaction as context_compaction
 import ouroboros.llm as llm_module
 import ouroboros.llm_observability as llm_observability
@@ -103,28 +101,6 @@ class _QueuedLLM:
         return copy.deepcopy(message), usage
 
 
-def _background_instance(tmp_path, llm, tools, *, rounds=2):
-    instance = object.__new__(consciousness.BackgroundConsciousness)
-    instance._build_context = lambda: "context"
-    instance._tool_schemas = lambda: copy.deepcopy(tools)
-    instance._llm = llm
-    instance._drive_root = tmp_path
-    instance._max_bg_rounds = rounds
-    instance._paused = False
-    instance._emit_live_log = lambda *_a, **_k: None
-    instance._emit_progress = lambda _content: None
-    instance._bg_spent_usd = 0.0
-    instance._check_budget = lambda: True
-    instance._event_queue = None
-    instance._last_idle_reason = ""
-    instance._next_wakeup_sec = 300
-    instance._wakeup_max = 3600
-    instance._owner_chat_id_fn = lambda: None
-    instance._registry = SimpleNamespace(_ctx=SimpleNamespace())
-    (tmp_path / "logs").mkdir(exist_ok=True)
-    return instance
-
-
 def _capture_persistence(monkeypatch):
     persisted = []
     monkeypatch.setattr(
@@ -141,42 +117,6 @@ def _response_payloads(persisted):
         for item in persisted
         if str(item.get("call_type") or "").endswith("_response")
     ]
-
-
-def _pin_remote_background(monkeypatch):
-    monkeypatch.setattr(
-        consciousness,
-        "get_consciousness_model",
-        lambda: "openai::future-model-without-prefix",
-    )
-    monkeypatch.setattr(consciousness, "resolve_effort", lambda _slot: "medium")
-
-
-def test_background_chat_observed_persists_public_usage_and_returns_receipt(
-    monkeypatch,
-    tmp_path,
-):
-    tool = _read_tool()
-    invalid, first_usage = _custom_exchange(tool, '{"path":"wrong"}')
-    llm = _QueuedLLM([
-        (invalid, first_usage),
-        ({"role": "assistant", "content": "corrected"}, {"cost": 0.0}),
-    ])
-    instance = _background_instance(tmp_path, llm, [tool])
-    persisted = _capture_persistence(monkeypatch)
-    _pin_remote_background(monkeypatch)
-
-    assert instance._think_scoped() is True
-    assert len(llm.requests) == 2
-    assert llm.requests[1]["messages"][-1]["role"] == "tool"
-    assert "TOOL_ARG_ERROR" in llm.requests[1]["messages"][-1]["content"]
-    assert dispatch.CUSTOM_RECEIPTS_USAGE_KEY not in first_usage
-    response_payloads = _response_payloads(persisted)
-    assert response_payloads[0]["usage"]["request_wire"]
-    assert all(
-        dispatch.CUSTOM_RECEIPTS_USAGE_KEY not in item["usage"]
-        for item in response_payloads
-    )
 
 
 def test_compaction_chat_observed_persists_public_usage_and_returns_receipt(
@@ -300,49 +240,6 @@ def test_history_body_error_cannot_advance_the_dialect_ladder():
         error=error,
         body_error=True,
     ) is None
-
-
-def test_background_remeasures_growth_before_every_physical_send(monkeypatch, tmp_path):
-    tool = _read_tool()
-    first = {
-        "role": "assistant",
-        "content": "",
-        "tool_calls": [{
-            "id": "call-large",
-            "type": "function",
-            "function": {"name": "read_file", "arguments": '{"path":"allowed"}'},
-        }],
-    }
-    llm = _QueuedLLM([
-        (first, {"cost": 0.0}),
-        ({"role": "assistant", "content": "must not send"}, {"cost": 0.0}),
-    ])
-    instance = _background_instance(tmp_path, llm, [tool])
-    instance._execute_tool = (
-        lambda *_a, **_k: "x" * (consciousness.BG_CONTEXT_MAX_CHARS + 100)
-    )
-    _pin_remote_background(monkeypatch)
-    measured = []
-    real_measure = dispatch.projected_context_size_bytes
-
-    def measure(*args, **kwargs):
-        result = real_measure(*args, **kwargs)
-        measured.append(result)
-        return result
-
-    monkeypatch.setattr(dispatch, "projected_context_size_bytes", measure)
-
-    assert instance._think_scoped() is False
-    assert len(llm.requests) == 1
-    assert len(measured) == 2
-    assert measured[0] < consciousness.BG_CONTEXT_MAX_CHARS
-    assert measured[1] > consciousness.BG_CONTEXT_MAX_CHARS
-    assert instance._last_idle_reason == "context_overflow"
-    events = [
-        json.loads(line)
-        for line in (tmp_path / "logs" / "events.jsonl").read_text().splitlines()
-    ]
-    assert events[-1]["type"] == "consciousness_context_overflow"
 
 
 def _serialized_projection(messages, tools):

@@ -64,7 +64,10 @@ test('live task_done and replay/log task truth have phase and headline parity', 
         assert.deepEqual({ phase: replay.phase, headline: replay.headline }, expected, `${name}/replay`);
         assert.doesNotMatch(`${live.headline} ${replay.headline}`, /Issue|Notice|delegated_custody_unreconciled/);
         if (payload.reason_code) {
-            assert.match(live.body, /Reason: delegated_custody_unreconciled/);
+            // The card body says the cause in words; the raw code stays in the
+            // record half (Logs meta), which is where a machine code belongs.
+            assert.match(live.body, /Some delegated work was never reconciled\./);
+            assert.doesNotMatch(live.body, /delegated_custody_unreconciled/);
             assert.ok(replay.meta.includes('delegated_custody_unreconciled'));
         }
     }
@@ -79,7 +82,7 @@ test('typed terminal status drives an error phase on live and replay cards', () 
     assert.equal(taskDoneIsTerminal(failed), true);
     assert.match(
         chatSource,
-        /finishLiveCard\(taskId, msg\.task_terminal_status \? taskTerminalPhase\(msg\) : replayTerminalPhase\(taskState, record\)\);/,
+        /finishLiveCard\(taskId, msg\.task_terminal_status \? taskTerminalPhase\(msg\) : replayTerminalPhase\(record\)\);/,
     );
     assert.match(chatSource, /appendTaskSummaryToLiveCard\(msg\) \|\| changed;/);
 });
@@ -156,7 +159,8 @@ test('failed child remains a compact local fact without owner-alarm semantics', 
     // Identity only; the chip carries `Failed` (DESIGN.md §4), the headline never does.
     assert.equal(child.headline, 'researcher');
     assert.doesNotMatch(child.body, /delegated_custody_unreconciled/);
-    assert.match(child.fullBody, /Reason: delegated_custody_unreconciled/);
+    assert.match(child.fullBody, /Some delegated work was never reconciled\./);
+    assert.doesNotMatch(child.fullBody, /Reason: /, 'no machine label in front of the owner sentence');
     assert.equal('ownerAlarm' in child, false);
     assert.equal('notification' in child, false);
     const adapter = chatSource.slice(
@@ -279,15 +283,15 @@ test('history replay keeps open summaries live and terminal fallbacks factual', 
     assert.match(summary, /record\.finalizingHold = true/);
     assert.match(summary, /if \(finalizing\) return changed;\s*changed = finishLiveCard/);
 
-    assert.equal(replayTerminalPhase({}, { finished: false, phaseEl: {
+    assert.equal(replayTerminalPhase({ finished: false, phaseEl: {
         dataset: { phase: 'working' },
     } }), 'done');
-    assert.equal(replayTerminalPhase({}, { finished: true, phaseEl: {
+    assert.equal(replayTerminalPhase({ finished: true, phaseEl: {
         dataset: { phase: 'error' },
     } }), 'error');
-    assert.equal(replayTerminalPhase({ completedPhase: 'warn' }, {}), 'warn');
+    assert.equal(replayTerminalPhase({}), 'done');
     assert.equal(
-        [...chatSource.matchAll(/finishLiveCard\(taskId, msg\.task_terminal_status \? taskTerminalPhase\(msg\) : replayTerminalPhase\(taskState, record\)\);/g)].length,
+        [...chatSource.matchAll(/finishLiveCard\(taskId, msg\.task_terminal_status \? taskTerminalPhase\(msg\) : replayTerminalPhase\(record\)\);/g)].length,
         2,
     );
     assert.doesNotMatch(
@@ -299,7 +303,7 @@ test('history replay keeps open summaries live and terminal fallbacks factual', 
         chatSource.indexOf("if (msg.system_type === 'task_summary')"),
         chatSource.indexOf("if (explicitTaskId && subagentChildParents.has", chatSource.indexOf("if (msg.system_type === 'task_summary')")),
     );
-    assert.match(wsSummary, /if \(!finalizing\) markAssistantReply\(explicitTaskId\);/);
+    assert.match(wsSummary, /const changed = appendTaskSummaryToLiveCard\(msg\);/);
 });
 
 test('phase chips are contextual polite status regions without repeat announcements', () => {
@@ -406,6 +410,7 @@ test('a review-caused warning names the acceptance decision on the card and in L
                 status: 'degraded',
                 acceptance_decision: {
                     status: 'finalized_unaccepted',
+                    reason: 'review_degraded',
                     rationale: 'Acceptance reviewers did not reach a valid quorum.',
                 },
             },
@@ -414,8 +419,10 @@ test('a review-caused warning names the acceptance decision on the card and in L
     const live = summarizeChatLiveEvent(evt);
     const replay = summarizeLogEvent(evt);
     assert.deepEqual({ phase: live.phase, headline: live.headline }, { phase: 'warn', headline: 'Done with warnings' });
-    assert.match(live.body, /Acceptance: finalized_unaccepted — Acceptance reviewers did not reach a valid quorum\./);
+    assert.match(live.body, /No reviewer verdict was established for this answer\./);
     assert.doesNotMatch(live.body, /final_message/);
+    // The raw code lives on in the record half, never in the card body.
+    assert.doesNotMatch(live.body, /finalized_unaccepted/);
     assert.ok(replay.meta.includes('review degraded'));
     assert.ok(replay.meta.includes('acceptance finalized_unaccepted'));
 });

@@ -67,9 +67,11 @@ def _extract_plain_text_from_content(content: Any) -> str:
     return str(content) if content is not None else ""
 
 
-def _append_or_merge_user_message(messages: List[Dict[str, Any]], text: str) -> None:
+def _append_or_merge_user_message(
+    messages: List[Dict[str, Any]], text: str, *, slot: Any = None,
+) -> None:
     """Append a user message without creating consecutive user turns."""
-    _append_or_merge_user_content(messages, text)
+    _append_or_merge_user_content(messages, text, slot=slot)
 
 
 def _evict_stale_image_blocks(messages: List[Dict[str, Any]], *, incoming: int = 0) -> None:
@@ -110,8 +112,17 @@ def _evict_stale_image_blocks(messages: List[Dict[str, Any]], *, incoming: int =
         content[b_idx] = {"type": "text", "text": placeholder}
 
 
-def _append_or_merge_user_content(messages: List[Dict[str, Any]], content: Any) -> None:
-    """Append user content without flattening multipart blocks."""
+def _append_or_merge_user_content(
+    messages: List[Dict[str, Any]], content: Any, *, slot: Any = None,
+) -> None:
+    """Append user content without flattening multipart blocks.
+
+    ``slot`` is the execution slot the send observer parks the previous send's
+    digests on (the loop's ToolContext); with it, a tail row that already went
+    out is never merged into (issue #906): the new content becomes its own row.
+    """
+    from ouroboros.transcript_prefix import sent_in_previous_send
+
     if isinstance(content, list):
         incoming_images = sum(
             1 for b in content
@@ -119,6 +130,11 @@ def _append_or_merge_user_content(messages: List[Dict[str, Any]], content: Any) 
         )
         if incoming_images:
             _evict_stale_image_blocks(messages, incoming=incoming_images)
+    if messages and sent_in_previous_send(slot, messages[-1]):
+        # A sent row is byte-frozen: merging into it would rewrite an
+        # already-sent message and break byte-prefix prompt caching.
+        messages.append({"role": "user", "content": content})
+        return
     if messages and messages[-1].get("role") == "user":
         prior = messages[-1].get("content")
         if isinstance(content, list):
@@ -304,9 +320,14 @@ def acceptance_observation_prompt(ctx: Any, observation: Dict[str, Any]) -> str:
         "The retained complete answer remains available. " if candidate is not None
         else "When nominating the complete task result for review, use this source selector. "
     )
+    # ``tool_count`` stays on the stored observation (delivery bounds material
+    # tool indices with it) but changes every round; rendering it would rewrite
+    # this message's bytes and break prompt caches that reuse only a byte-prefix
+    # of the previous request (issue #906).
+    facts = {key: value for key, value in observation.items() if key != "tool_count"}
     return (
         "[ACCEPTANCE_SUBJECT_OBSERVATION]\n"
-        + json.dumps(observation, ensure_ascii=False, sort_keys=True)
+        + json.dumps(facts, ensure_ascii=False, sort_keys=True)
         + "\n" + retained + "In your ordinary decision, "
         "use acceptance_subject.owner_source_sha256 above to acknowledge this exact source. "
         "Keep effective_criteria/material_tool_indices when the subject is unchanged; "
@@ -350,13 +371,17 @@ def _emit_round_progress(content: Any, msg: Dict[str, Any], emit_progress, llm_t
 
     Visible text is retained in ``reasoning_notes``. Provider reasoning stays
     display-only; the native message and transcript remain unchanged.
+
+    Both emissions are the turn's OWN speech, so both carry ``narration=True``:
+    this function is the single producer of model narration, and the card takes
+    its title and collapsed activity line from that voice alone.
     """
     visible_text = _visible_round_text(content)
     if visible_text:
         safe_text = sanitize_tool_result_for_log(visible_text)
-        emit_progress(safe_text)
+        emit_progress(safe_text, narration=True)
         llm_trace["reasoning_notes"].append(safe_text)
     elif str(runtime_setting("OUROBOROS_REASONING_SUMMARY", "auto")).strip().lower() != "off":
         display_reasoning = LLMClient.extract_display_reasoning(msg)
         if display_reasoning:
-            emit_progress(sanitize_tool_result_for_log(display_reasoning))
+            emit_progress(sanitize_tool_result_for_log(display_reasoning), narration=True)

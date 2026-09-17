@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from ouroboros.delegate_shared import _fail, delegate_result
+
 
 def _session_snapshot() -> dict:
     from ouroboros.subagent_runtime import select_subagent_snapshot
@@ -90,7 +92,7 @@ def test_exact_pending_retry_bypasses_fresh_zero_run_unknown_fence(
         "_delegate_start",
         lambda _ctx, prompt, _max_seconds, retry_of, **_kwargs: (
             calls.append((prompt, retry_of))
-            or json.dumps({"status": "started", "run_id": "run-recovered"})
+            or delegate_result({"status": "started", "run_id": "run-recovered"})
         ),
     )
     ctx = SimpleNamespace(
@@ -118,7 +120,7 @@ def test_exact_pending_retry_bypasses_fresh_zero_run_unknown_fence(
 
     result = json.loads(runtime.exact_start(
         ctx, "stored canonical request", {"retry_of": "inv-recovery"},
-    ))
+    ).text)
 
     assert result["status"] == "started"
     assert calls == [("stored canonical request", "inv-recovery")]
@@ -150,7 +152,7 @@ def test_unknown_retry_token_cannot_bypass_zero_run_unknown_fence(
 
     result = json.loads(runtime.exact_start(
         ctx, "stored canonical request", {"retry_of": "unknown-invocation"},
-    ))
+    ).text)
 
     assert result["status"] == "refused"
     assert result["reason"] == "zero_run_evidence_unavailable"
@@ -168,10 +170,10 @@ def test_retry_refusal_preserves_live_owner_handoff_and_pending_invocation(
     monkeypatch.setattr(
         delegate,
         "exact_start",
-        lambda *_args, **_kwargs: json.dumps({
-            "status": "refused",
-            "reason": "subscription_window_exhausted",
-        }),
+        lambda *_args, **_kwargs: _fail(
+            "delegate_start", "subscription_window_exhausted",
+            "the engine subscription window is spent",
+        ),
     )
     monkeypatch.setattr(
         custody,
@@ -232,7 +234,7 @@ def test_definite_retry_refusal_retires_handoff_without_false_pending_claim(
             "invocation_id": invocation_id,
             "definite": True,
         })
-        return json.dumps({"status": "refused", "reason": "route_refused"})
+        return _fail("delegate_start", "route_refused", "the engine refused this route")
 
     monkeypatch.setattr(delegate, "exact_start", refuse_definitely)
     ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, task_id=task["id"])
@@ -268,11 +270,10 @@ def test_started_retry_race_adopts_same_durable_invocation(monkeypatch, tmp_path
             work_order_fingerprint=fingerprint,
             authority_fingerprint=authority,
         ))
-        return json.dumps({
-            "status": "refused",
-            "reason": "invocation_already_started",
-            "run_id": "run-started-race",
-        })
+        return _fail(
+            "delegate_start", "invocation_already_started",
+            "that invocation already bound a run", run_id="run-started-race",
+        )
 
     class Gateway:
         def get_run(self, run_id):
@@ -295,6 +296,69 @@ def test_started_retry_race_adopts_same_durable_invocation(monkeypatch, tmp_path
         "cause": recovery.CAUSE_WORKER_CRASH,
     }
     assert recovery._read(tmp_path, task["id"])["status"] == "adopted"
+    custody._CUSTODY.clear()
+
+
+def test_a_review_panels_work_never_displaces_the_actors_own_handoff_holder(
+    monkeypatch, tmp_path,
+):
+    """Issue #1006: the handoff holder is the task's OWN delegation. An open
+    review run and a pending review invocation registered under the same task id
+    belong to their panel: they must neither become the holder nor veto the
+    actor's exact binding by counting as a second candidate."""
+    import ouroboros.claudexor_daemon as daemon
+    import ouroboros.tools.delegate as delegate
+    from ouroboros import delegate_custody as dc
+    from ouroboros.tools.registry import ToolContext
+
+    task_id = "recovery-beside-review"
+    dc._CUSTODY.clear()
+    assert dc.record_started(tmp_path, dc.RunCustody(
+        run_id="run-panel", task_id=task_id, route_id="codex",
+        source="review_substrate", category="task_acceptance_review"))
+    assert dc.record_start_requested(
+        tmp_path, run_id="", task_id=task_id, invocation_id="inv-panel",
+        idempotency_key="inv-panel", request={"prompt": "review packet"},
+        route="codex", source="review_substrate.extraction")
+
+    custody, recovery, task, snapshot, invocation_id, fingerprint, authority = (
+        _pending_handoff(tmp_path, task_id)
+    )
+
+    def expose_started_race(*_args, **_kwargs):
+        assert custody.record_started(tmp_path, custody.RunCustody(
+            run_id="run-leaf",
+            task_id=task["id"],
+            route_id="codex",
+            invocation_id=invocation_id,
+            selected_subagent_id=snapshot["selected_subagent_id"],
+            config_fingerprint=snapshot["config_fingerprint"],
+            work_order_fingerprint=fingerprint,
+            authority_fingerprint=authority,
+        ))
+        return _fail(
+            "delegate_start", "invocation_already_started",
+            "that invocation already bound a run", run_id="run-leaf",
+        )
+
+    class Gateway:
+        def get_run(self, run_id):
+            assert run_id == "run-leaf"
+            return {"id": run_id, "state": "running"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(delegate, "exact_start", expose_started_race)
+    monkeypatch.setattr(daemon, "ensure_owned_gateway", lambda: Gateway())
+    ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, task_id=task["id"])
+    ctx.budget_drive_root = str(tmp_path)
+
+    assert recovery.adopt_handoff(ctx, task) == {
+        "status": "adopted",
+        "run_id": "run-leaf",
+        "cause": recovery.CAUSE_WORKER_CRASH,
+    }
     custody._CUSTODY.clear()
 
 

@@ -156,6 +156,7 @@ BAND_PATHS = {
     "ouroboros/tools/commit_gate.py": "Grew INTO the band by the review-wave fix binding the actor reference (delivery class) into the commit review contract fingerprint \u2014 same-module contract identity, splitting it would separate the fingerprint from its gate.",
     "ouroboros/tools/core.py": "D05 ledger split (rows 311-349): read/list and owner-chat delivery spans moved to core_file_tools/core_artifacts; facade re-enters the band from above (2283 -> 1373) and shrinks further when the residual catalog split lands",
     "ouroboros/tools/delegate.py": "D07 finisher DEL1 split brought the nanny-verb monolith DOWN from the 1600 hard cap into the band (1600->1263); terminal-evidence family extracted to tools/delegate_terminal_evidence.py, shrink-only direction",
+    "ouroboros/tools/plan_review.py": "Entered the band from 999 lines: the required-affected_paths form (owner 9=A) added the schema field and the PLAN_RESOURCE_FORM_REQUIRED refusal, which must name the task's open wave and the $0 disposition exit \u2014 it belongs beside the one preamble both the paid and dry-run paths share, not in the pure plan_spec companion that owns no task state.",
     "ouroboros/tools/plan_review_runtime.py": "Entered the band from 986 lines: timeout custody synthesis joined the existing plan-review runtime owner while preserving profile-continuity disclosures and typed health facts during target integration.",
     "ouroboros/tools/registry_core.py": "F3.1 typed-organ re-split (D04 rows 156/167/170/171/174/175): the tip ToolRegistry class body re-homed whole from the protected registry facade; the guard/dispatch surface already left for its sibling leaves, and the class shrinks further only with the ABI-8 post-release handler conversion.",
     "ouroboros/tools/review.py": "D06 F2.3a re-entry by extraction: the multi-model fan-out moved to review_multi_model.py (1550->1269); the remaining single-owner review cycle machinery lands in the 1001-1500 band with headroom",
@@ -171,7 +172,6 @@ BAND_PATHS = {
     "skills/telegram/plugin.py": None,
     "skills/telegram/scripts/companion.py": None,
     "skills/telegram/scripts/sidecar.py": None,
-    "supervisor/evolution_lifecycle.py": None,
     "supervisor/message_bus.py": "push_log gained the A2A frame suppression and explicit-addressing contract comments in the live log routing fix (fix/main-chat-leak sprint); the module sat at exactly 1000 lines before it",
     "supervisor/queue_transitions.py": "F2.2 cancel/custody organ: the owner-stop campaign closure (_close_campaign_after_owner_stop, reference row 970) moved in from the hot events monolith to live beside stop_evolution_tasks - one honesty rule, one owner; 1016 lines, shrink-only from here",
     "supervisor/update_merge.py": "Entered the band from above (1593 lines) by extraction: the F2.4 update-engine re-split moved the planner, the clean-plan commit builder and the live materializer \u2014 the carrier engine's three insertion points \u2014 into supervisor/update_merge_plan.py (D34 return, owner answers 5.12-5.14=A); shrink-only.",
@@ -246,5 +246,4 @@ BYTE_BASELINE_DEBT = {
 
 BYTE_DEBT = {
     "tests/test_devtools_benchmarks.py": 327840,
-    "web/modules/chat.js": 201090,
 }

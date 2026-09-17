@@ -208,6 +208,31 @@ def _verify_shared_external_workspace(
     return True, [], ""
 
 
+def _capped_self_repo_refusal(ctx: Any, child_task_id: str) -> str:
+    """A tree under the light per-task cap (a consciousness Act/Observe tree) may not land a
+    patch on the Ouroboros repository — protected paths or not, in every install mode. The
+    empty string when the task is not capped."""
+    from ouroboros.consciousness_authority import task_mode_capped_light
+
+    if not task_mode_capped_light(getattr(ctx, "task_metadata", None)):
+        return ""
+    return (
+        f"⚠️ INTEGRATE_CAPPED_TREE: child {child_task_id} produced a self_worktree patch (against "
+        "the Ouroboros system repo), but this task's tree runs under a light cap (a consciousness "
+        "Act/Observe tree): it may not land a patch on the Ouroboros repository, protected paths "
+        "or not, in any runtime mode."
+    )
+
+
+def _integration_runtime_mode(ctx: Any) -> str:
+    """The mode the protected-path gate of an integration reads: the stricter of the install
+    mode and the task's own cap (a consciousness Act/Observe tree is light), so a capped task
+    cannot land a system-repo patch the install mode alone would allow."""
+    from ouroboros.consciousness_authority import effective_runtime_mode
+
+    return effective_runtime_mode(get_runtime_mode(), getattr(ctx, "task_metadata", None))
+
+
 def _patch_touched_paths(patch_path: pathlib.Path, target: pathlib.Path, env: Any = None) -> tuple[set[str], str]:
     """Every path the patch touches, parsed NUL-SAFELY from git's own reader.
 
@@ -804,6 +829,9 @@ def _integrate_subagent_patch(
     # own workspace IS a self_worktree checkout stays legitimate top-only
     # routing and is not touched by this guard.
     if child_surface == "self_worktree":
+        capped = _capped_self_repo_refusal(ctx, child_task_id)
+        if capped:
+            return capped
         parent_ws_mode = str(getattr(ctx, "workspace_mode", "") or "").strip().lower()
         # Fire STRUCTURALLY whenever the parent's active root is a non-system
         # workspace (is_workspace_mode()), so an unrecognized external spelling
@@ -818,7 +846,7 @@ def _integrate_subagent_patch(
                 "task workspace; integrate it from a non-workspace parent task instead."
             )
 
-    runtime_mode = get_runtime_mode()
+    runtime_mode = _integration_runtime_mode(ctx)
     # Derive the changed-path set from the PATCH ITSELF (not the child-controlled
     # manifest) for the protected-path gate: a child must not be able to hide a
     # protected edit by omitting it from the manifest (sha256 verifies bytes only).

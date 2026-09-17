@@ -26,7 +26,7 @@ const EFFORT_FIELDS = [
     ['s-effort-task', 'Task / Chat', 'medium'],
     ['s-effort-evolution', 'Evolution', 'high'],
     ['s-effort-deep-self-review', 'Deep Self-Review', 'high'],
-    ['s-effort-consciousness', 'Consciousness', 'high'],
+    ['s-effort-consciousness', 'Consciousness', ''],  // '' = the Task / Chat effort (a wake-up is a Main turn)
 ];
 
 // Runtime mode is one axis of the owner policy contract. Keep the Settings
@@ -202,21 +202,19 @@ function providerSettingsCard(spec) {
 // in usage, and a cold route whose provider rejects without naming supported
 // tiers remains the PR-disclosed limit of the two-send recovery rail.
 const EFFORT_OPTIONS = [
-    { value: 'none', label: 'None' },
-    { value: 'low', label: 'Low' },
-    { value: 'medium', label: 'Medium' },
-    { value: 'high', label: 'High' },
-    { value: 'xhigh', label: 'X-High' },
-    { value: 'max', label: 'Max' },
-    { value: 'ultra', label: 'Ultra' },
+    { value: 'none', label: 'None' }, { value: 'low', label: 'Low' },
+    { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' },
+    { value: 'xhigh', label: 'X-High' }, { value: 'max', label: 'Max' }, { value: 'ultra', label: 'Ultra' },
 ];
 
 function effortField({ id, label, defaultValue }) {
+    // Consciousness may inherit the Task / Chat effort ('' — a wake-up is a Main turn).
+    const options = id === 's-effort-consciousness' ? [{ value: '', label: 'Same as Task / Chat' }, ...EFFORT_OPTIONS] : EFFORT_OPTIONS;
     return `
         <div class="settings-effort-card">
             <label for="${id}">${label}</label>
             <input id="${id}" type="hidden" value="${defaultValue}">
-            ${renderSegmentedField({ target: id, options: EFFORT_OPTIONS })}
+            ${renderSegmentedField({ target: id, options })}
         </div>
     `;
 }
@@ -658,24 +656,34 @@ export function renderSettingsPage() {
 
                     <div class="form-section">
                         <h3>Background Cognition</h3>
-                        <div class="settings-section-copy">
-                            Cadence for Ouroboros's background cognition loop. These values are read at startup; save them, then restart for the new timing to take effect.
+                        <div class="settings-section-copy">When Ouroboros wakes up on its own, what a wake-up is allowed to do, and what it may spend doing it.</div>
+                        <div class="settings-effort-card">
+                            <label>Consciousness Autonomy</label>
+                            <input id="s-consciousness-autonomy" type="hidden" value="act">
+                            ${renderSegmentedField({ target: 's-consciousness-autonomy', options: [{ value: 'observe', label: 'Observe' }, { value: 'act', label: 'Act' }, { value: 'full', label: 'Full' }] })}
+                            <div class="settings-inline-note"><strong>Observe:</strong> think, keep memory and knowledge, write to you &mdash; start nothing. <strong>Act (default):</strong> everything the runtime mode allows except editing Ouroboros's own code and prompts, evolution, restart and settings. <strong>Full:</strong> everything the runtime mode allows, evolution included.</div>
                         </div>
                         <div class="form-row">
                             <div class="form-field ui-field">
-                                <label for="s-bg-wakeup-min">BG Wakeup Min (sec)</label>
-                                <input id="s-bg-wakeup-min" type="number" min="1" step="1" placeholder="30" class="ui-control" name="s-bg-wakeup-min">
+                                <label for="s-consciousness-daily-usd">Daily Allowance (USD)</label>
+                                <input id="s-consciousness-daily-usd" placeholder="20" class="ui-control" name="s-consciousness-daily-usd" type="text" aria-describedby="s-consciousness-daily-usd-help">
+                                <div class="settings-inline-note ui-field-help" id="s-consciousness-daily-usd-help">Spending cap for consciousness over a rolling 24-hour window: the wake-ups plus the tasks they start. When it is exhausted, no new wake-up or task starts until spend leaves the window. <code>0</code> = consciousness may not spend.</div>
                             </div>
                             <div class="form-field ui-field">
-                                <label for="s-bg-wakeup-max">BG Wakeup Max (sec)</label>
-                                <input id="s-bg-wakeup-max" type="number" min="1" step="1" placeholder="7200" class="ui-control" name="s-bg-wakeup-max">
+                                <label for="s-consciousness-max-tasks">Max Concurrent Tasks</label>
+                                <input id="s-consciousness-max-tasks" type="number" min="0" step="1" placeholder="2" class="ui-control" name="s-consciousness-max-tasks" aria-describedby="s-consciousness-max-tasks-help">
+                                <div class="settings-inline-note ui-field-help" id="s-consciousness-max-tasks-help">How many tasks started by consciousness may run at once. <code>0</code> = it never starts tasks.</div>
                             </div>
                             <div class="form-field ui-field">
-                                <label for="s-bg-max-rounds">BG Max Rounds</label>
-                                <input id="s-bg-max-rounds" type="number" min="1" step="1" placeholder="10" class="ui-control" name="s-bg-max-rounds">
+                                <label for="s-bg-wakeup-min">Wake-Up Interval Min (sec)</label>
+                                <input id="s-bg-wakeup-min" type="number" min="60" step="1" placeholder="900" class="ui-control" name="s-bg-wakeup-min">
+                            </div>
+                            <div class="form-field ui-field">
+                                <label for="s-bg-wakeup-max">Wake-Up Interval Max (sec)</label>
+                                <input id="s-bg-wakeup-max" type="number" min="60" step="1" placeholder="14400" class="ui-control" name="s-bg-wakeup-max">
                             </div>
                         </div>
-                        <div class="settings-inline-note"><strong>Applies after restart:</strong> BG Wakeup Min/Max and BG Max Rounds are read when the background cognition loop starts.</div>
+                        <div class="settings-inline-note">Ouroboros chooses the interval between its own wake-ups; the two values above are the lower and upper bound it must stay within. All four settings apply without a restart: the alarm clock reads them at each decision.</div>
                     </div>
 
                     <div class="form-section">

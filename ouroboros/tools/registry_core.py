@@ -67,6 +67,7 @@ from ouroboros.tools.tool_resolution import (
     _binding_set_targets_system_repo,
     _build_builtin_target_binding,
     _target_binding_operation,
+    _user_files_binding_reaches_repo,
     active_repo_dir_for,
     system_repo_dir_for,
 )
@@ -521,7 +522,8 @@ class ToolRegistry:
     def available_tools(self) -> List[str]:
         acting_subagent = self._is_acting_subagent()
         local_readonly_subagent = self._is_local_readonly_subagent()
-        disabled = _disabled_tools(self._ctx)
+        # A consciousness-origin task keeps its full schema set (dispatch-only policy, В31=B).
+        disabled = frozenset() if registry_guards.disabled_tools_dispatch_only(self._ctx) else _disabled_tools(self._ctx)
         return [
             e.name
             for e in self._entries.values()
@@ -683,7 +685,9 @@ class ToolRegistry:
         acting_subagent = self._is_acting_subagent()
         acting_grants = self._acting_tool_grants() if acting_subagent else set()
         local_readonly_subagent = self._is_local_readonly_subagent()
-        disabled_tools = _disabled_tools(self._ctx)
+        # Dispatch-only policy (В31=B): a consciousness-origin task is filtered by nothing here and
+        # records no disabled_by_contract omission, so its prefix matches an owner turn's exactly.
+        disabled_tools = frozenset() if registry_guards.disabled_tools_dispatch_only(self._ctx) else _disabled_tools(self._ctx)
         # Rebuild from the load-time facts, never from empty: a rebuilt schema
         # list must not erase module_load_failed omissions (H3, capinv-447).
         self._capability_omissions = [dict(item) for item in self._module_load_omissions]
@@ -855,7 +859,7 @@ class ToolRegistry:
         # reason instead of "not found" (2026-08-10 amendments). Deeper extension/
         # MCP policy reasons (grants, network) would need new plumbing — disclosed
         # residual, not built.
-        if requested in _disabled_tools(self._ctx):
+        if requested in _disabled_tools(self._ctx) and not registry_guards.disabled_tools_dispatch_only(self._ctx):
             return "disabled by this task's contract (disabled_tools)"
         if not _presence_tool_allowed(self._ctx, requested):
             return "outside this presence task's positive capability ceiling"
@@ -883,7 +887,7 @@ class ToolRegistry:
         local_readonly_subagent = self._is_local_readonly_subagent()
         # Declarative tool policy applies across ALL discovery sources (built-in, extension, MCP),
         # so enable_tools/discovery can never surface a disabled name — consistent with schemas()/execute().
-        if requested in _disabled_tools(self._ctx):
+        if requested in _disabled_tools(self._ctx) and not registry_guards.disabled_tools_dispatch_only(self._ctx):
             return None
         if not _presence_tool_allowed(self._ctx, requested):
             return None
@@ -1202,6 +1206,12 @@ class ToolRegistry:
             _runtime_mode = _get_runtime_mode()
         except Exception:
             _runtime_mode = "advanced"
+        # A task's own mode cap (metadata.runtime_mode_cap — a consciousness wake-up at
+        # Act/Observe, В21=A) can only NARROW the install mode: every light gate below
+        # (repo mutation, protected writes, start_service, the shell write block) reads
+        # the stricter of the two through this one local; get_runtime_mode() is unchanged.
+        from ouroboros.consciousness_authority import effective_runtime_mode as _effective_runtime_mode
+        _runtime_mode = _effective_runtime_mode(_runtime_mode, getattr(self._ctx, "task_metadata", None))
         if is_mcp:
             return extension_dispatch._dispatch_mcp_tool_result(self._ctx, name, args)
         if entry is None:
@@ -1226,8 +1236,13 @@ class ToolRegistry:
         if name in _SYSTEM_INTRINSIC_REPO_MUTATION_TOOLS:
             light_targets_system = True
         elif resolved_binding is not None:
+            # The light gate reads the RESOLVED target, not the root label,
+            # exactly as it does for direct shell writes: a cyber_pro install
+            # resolves user_files to the whole host, so a repository path
+            # reached under THAT root is still Ouroboros self-modification.
             light_targets_system = (
                 _binding_set_is_light_restricted(self._ctx, resolved_binding) or acting_self_worktree
+                or _user_files_binding_reaches_repo(self._ctx, resolved_binding)
             )
         else:
             light_targets_system = not workspace_mode or acting_self_worktree

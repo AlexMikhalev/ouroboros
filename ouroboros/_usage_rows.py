@@ -9,12 +9,28 @@ so historical import and monkeypatch sites keep working unchanged.
 """
 from __future__ import annotations
 
+import datetime as _dt
 from typing import Any, Dict, Optional, Sequence
 from decimal import Decimal, InvalidOperation
 
 from ouroboros.usage_ledger import _number
 
 REVIEW_ATTRIBUTION_KEYS = ("review_skill", "review_wave_id", "review_slot_id")
+
+
+def row_ts_epoch(row: Any) -> Optional[float]:
+    """A ledger row's ``ts`` (UTC ISO, the appender's stamp) as an epoch second;
+    ``None`` when absent or unparseable — a reader must not guess a time."""
+    text = str(row.get("ts") or "").strip() if isinstance(row, dict) else ""
+    if not text:
+        return None
+    try:
+        parsed = _dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=_dt.timezone.utc)
+    return parsed.timestamp()
 
 
 def _merge_processing_summary(total: dict, addition: dict) -> None:

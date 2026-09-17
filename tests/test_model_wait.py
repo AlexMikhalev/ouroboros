@@ -133,7 +133,7 @@ def live_wait(setup, monkeypatch):
         yield root, transport, client, controller, events, lambda body: gateway._decide(root, body)
 
 
-def _decision_clients(root, get_background_model_wait=None):
+def _decision_clients(root):
     """Real Web/Host ingress sharing one root and the installation's live getter."""
     from contextlib import ExitStack, contextmanager
     from starlette.applications import Starlette
@@ -149,8 +149,6 @@ def _decision_clients(root, get_background_model_wait=None):
         web = Starlette(routes=[Route("/api/decisions", api_decision_answer, methods=["POST"])])
         web.state.drive_root = root
         host = create_host_service_app(root)
-        for app in (web, host):
-            app.state.get_background_model_wait = get_background_model_wait
         with ExitStack() as stack:
             web_client = stack.enter_context(TestClient(web))
             host_client = stack.enter_context(TestClient(host, headers={"x-skill-token": "token"}))
@@ -325,7 +323,7 @@ def test_async_cancellation_resolves_only_its_wait_and_keeps_shared_task(live_wa
         assert terminal["resolution"] == "caller_cancelled"
 
     asyncio.run(run())
-    assert not controller.closed and len(transport.operations) == 1
+    assert not controller.closed and len(transport.accepted_operations) == 1
     assert all(row["state"] == "resolved" for row in load_task_result(root, "task-one")["model_waits"].values())
 
 
@@ -623,7 +621,7 @@ def test_unproved_pool_cause_never_enters_resource_wait(live_wait, pool_context)
     transport.dispatch = ["not_started"]
     with pytest.raises(ClaudexorModelError, match="credential_pool_exhausted"):
         client.chat([{"role": "user", "content": "Do not infer quota"}], MODEL, model_role="main")
-    assert not controller.waits and events.empty() and len(transport.operations) == 1
+    assert not controller.waits and events.empty() and len(transport.accepted_operations) == 1
 
 
 def test_mixed_pool_cannot_bypass_unknown_physical_custody(live_wait):
@@ -636,7 +634,7 @@ def test_mixed_pool_cannot_bypass_unknown_physical_custody(live_wait):
     transport.dispatch = ["unknown"]
     with pytest.raises(ClaudexorModelError, match="model_outcome_unknown"):
         client.chat([{"role": "user", "content": "No duplicate generation"}], MODEL, model_role="main")
-    assert not controller.waits and events.empty() and len(transport.operations) == 1
+    assert not controller.waits and events.empty() and len(transport.accepted_operations) == 1
 
 
 def test_mixed_pool_wait_keeps_calendar_deadline_and_existing_quota_union(live_wait, monkeypatch):
@@ -691,14 +689,14 @@ def test_call_can_decline_resource_wait_without_losing_task_binding(live_wait, c
     assert error.physical_attempt_capture.state == "released"
     assert error.model_role_route == {"role": "light", "model": MODEL, "use_local": False,
                                      "credential_profile_id": ""}
-    assert not controller.waits and events.empty() and len(transport.operations) == 1
+    assert not controller.waits and events.empty() and len(transport.accepted_operations) == 1
     assert transport.uploads[0][0]["account"] == {"mode": "auto"}
     assert "wait_for_resources" not in json.dumps(transport.uploads[0][0])
     assert model_wait.current_model_wait() is controller and not controller.closed
     assert [row["state"] for row in ledger(root)] == ["reserved", "dispatched", "released"]
 
     answer, usage = call()
-    assert answer == result()["message"] and len(transport.operations) == 3
+    assert answer == result()["message"] and len(transport.accepted_operations) == 3
     assert len(usage["ledger_attempt_ids"]) == 2
     assert any(row["state"] == "waiting" for row in list(events.queue))
     assert controller.overrides["light"]["model_account_override"] == ""
@@ -716,4 +714,4 @@ def test_declining_resource_wait_still_honors_owner_control(live_wait, monkeypat
         else:
             client.chat(*args, **kwargs)
     assert caught.value.control_reason == "finalize_requested"
-    assert not transport.operations and not controller.waits and events.empty()
+    assert not transport.accepted_operations and not controller.waits and events.empty()

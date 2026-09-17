@@ -492,8 +492,10 @@ def test_health_invariants_come_first_in_dynamic_context(tmp_path):
     assert dynamic_text.index("## Health Invariants") < dynamic_text.index("## Drive state")
 
 
-def test_health_invariants_come_first_in_background_consciousness_context(tmp_path):
-    from ouroboros.consciousness import BackgroundConsciousness
+def test_health_invariants_come_first_in_a_consciousness_wake_context(tmp_path):
+    """A wake-up is an ordinary Main turn: the same builder, the same section order."""
+    from ouroboros.context import build_llm_messages
+    from ouroboros.memory import Memory
 
     repo_dir = tmp_path / "repo"
     drive_root = tmp_path / "drive"
@@ -503,7 +505,7 @@ def test_health_invariants_come_first_in_background_consciousness_context(tmp_pa
     (drive_root / "logs").mkdir(parents=True, exist_ok=True)
     (drive_root / "state").mkdir(parents=True, exist_ok=True)
 
-    (repo_dir / "prompts" / "CONSCIOUSNESS.md").write_text("Consciousness prompt", encoding="utf-8")
+    (repo_dir / "prompts" / "SYSTEM.md").write_text("System prompt", encoding="utf-8")
     (repo_dir / "BIBLE.md").write_text("Bible", encoding="utf-8")
     (repo_dir / "VERSION").write_text("1.2.3", encoding="utf-8")
     (repo_dir / "pyproject.toml").write_text('version = "1.2.3"', encoding="utf-8")
@@ -523,15 +525,31 @@ def test_health_invariants_come_first_in_background_consciousness_context(tmp_pa
     (drive_root / "logs" / "supervisor.jsonl").write_text("", encoding="utf-8")
     (drive_root / "logs" / "task_reflections.jsonl").write_text("", encoding="utf-8")
 
-    bg = BackgroundConsciousness(
-        drive_root=drive_root,
-        repo_dir=repo_dir,
-        event_queue=None,
-        owner_chat_id_fn=lambda: None,
+    class FakeEnv:
+        def drive_path(self, p):
+            return drive_root / p
+
+        def repo_path(self, p):
+            return repo_dir / p
+
+        @property
+        def repo_dir(self):
+            return repo_dir
+
+        @property
+        def drive_root(self):
+            return drive_root
+
+    messages, _cap_info = build_llm_messages(
+        env=FakeEnv(),
+        memory=Memory(drive_root=drive_root, repo_dir=repo_dir),
+        task={"id": "wake1", "type": "task", "text": "[Wake-up · heartbeat]", "_is_direct_chat": True,
+              "metadata": {"initiator": "consciousness", "usage_category": "consciousness"}},
     )
 
-    text = bg._build_context()
-    assert text.index("## Health Invariants") < text.index("## Drive state")
+    dynamic_text = messages[0]["content"][2]["text"]
+    assert dynamic_text.startswith("## Health Invariants")
+    assert dynamic_text.index("## Health Invariants") < dynamic_text.index("## Drive state")
 
 
 def test_project_recent_chat_filters_archives_before_recent_bound(tmp_path, monkeypatch):

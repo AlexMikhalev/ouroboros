@@ -60,11 +60,6 @@ ALLOWED = {
         "chat_id means 'the event carried no chat' and the owner chat is the "
         "fallback address, not the hidden partition.",
     ),
-    ("supervisor/worker_promotion.py", "if chat_id:"): (
-        1,
-        "Same promote lane: the loud-fail notice needs a reader, and the hidden "
-        "partition has none.",
-    ),
     ("supervisor/worker_chat_lane.py", "if not chat_id:"): (
         1,
         "Auto-resume gate, where owner_chat_id 0 means 'no owner chat "
@@ -76,19 +71,24 @@ ALLOWED = {
         "an unhomed answer into a partition with no reader would add rows to the "
         "chat log a benchmark parses for its final answer.",
     ),
-    ("supervisor/steering.py", "if notify and chat_id:"): (
+    ("supervisor/steering.py", "if notify and not _task_issued(evt) and chat_id:"): (
         1,
-        "A steer REFUSAL is a live notice to the person who asked, and a steer "
-        "event only ever arrives from a real chat. Same rule as the scheduled "
-        "toast: a live notice needs a reader, and the hidden partition has none.",
+        "A cancel-pending steer REFUSAL is a live notice to the OWNER who asked. "
+        "The issuer fact decides who that is: a task that spoke for itself has no "
+        "owner reader (its typed refusal is its tool result and its Logs row), and "
+        "an owner turn's chat is a real chat. Same rule as the scheduled toast: a "
+        "live notice needs a reader, and the hidden partition has none.",
     ),
-    ("supervisor/steering.py", "if not client_message_id and chat_id:"): (
+    ("supervisor/steering.py", "if owner_unlabelled and chat_id:"): (
         1,
-        "Same refusal path, same rule.",
+        "The other refusal family, same rule: only an OWNER turn whose act wears no "
+        "owner message (a synthetic receipt id, so no chat row can show the typed "
+        "acknowledgement) is told in its chat; a task issuer is never told anywhere "
+        "but its own result.",
     ),
-    ("supervisor/steering.py", "if chat_id:"): (
+    ("supervisor/steering.py", "if not task_issued and chat_id:"): (
         1,
-        "Same refusal path, same rule.",
+        "The post-lock cancel-pending notice, same rule as the up-front one.",
     ),
 }
 

@@ -53,6 +53,7 @@ from ouroboros.loop_tool_execution import (
     reclaim_trace_refs,  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
 )
 from ouroboros.loop_llm_call import TRANSPORT_DEATHS_KEY, call_llm_with_retry, emit_llm_usage_event, forced_response_is_incomplete, forced_response_parts, provider_no_call_source  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
+from ouroboros.transcript_prefix import observe_send as _observe_transcript_send
 from ouroboros.delegate_hold import (
     close_hold as _delegate_hold_close,
     hold_step as _delegate_hold_step,
@@ -349,6 +350,30 @@ def _resolve_loop_max_rounds(ctx: Any = None) -> int:
     return min(configured, int(getattr(ctx, "inline_max_rounds", configured)))
 
 
+def _record_transcript_prefix(ctx, messages, round_idx, accumulated_usage,
+                              event_queue, task_id, drive_logs) -> None:
+    """Record whether the transcript this round dispatched extends the previous one.
+
+    Called once per successful dispatch, after the model call and the fallback
+    chain and before the assistant row is appended, so an in-call reclaim,
+    an overflow reprojection or a fallback adoption is part of what the next
+    round must extend.  Between the sends of ONE execution the transcript is append-only:
+    OpenAI-family caches reuse a previous request only when that whole request
+    is a byte-prefix of the next, so a transient trailing message or an
+    in-place rewrite of an already-sent message discards the entire
+    conversation cache (#906).  The compaction seams stamp their sanction
+    (``transcript_prefix.sanction_rewrite``); every other break (a context-fit
+    reprojection after a real overflow, a replaced tail) is counted in
+    ``prompt_prefix_breaks``.  It records and never blocks a send.
+    """
+    fact = _observe_transcript_send(ctx, messages, round_idx=round_idx)
+    if not fact:
+        return
+    _emit_checkpoint_event(event_queue, task_id, drive_logs, fact)
+    if not fact["sanctioned_by"]:
+        accumulated_usage["prompt_prefix_breaks"] = int(accumulated_usage.get("prompt_prefix_breaks") or 0) + 1
+
+
 def run_llm_loop(
     messages: List[Dict[str, Any]],
     tools: ToolRegistry,
@@ -551,8 +576,12 @@ def run_llm_loop(
                 active_model, active_use_local = model_call.active_model, model_call.active_use_local
                 context_fit_plan = model_call.context_fit_plan
             tools._ctx._current_llm_call_meta = dict(accumulated_usage.get("_last_llm_call_meta") or {})
-
             last_error_kind = str(accumulated_usage.get("_last_llm_error_kind") or "")
+            if msg is None and _delegate_hold_latch(
+                    tools, error_kind=last_error_kind, drive_logs=drive_logs,
+                    task_id=task_id, emit_progress=emit_progress, transport_episode=transport_wait):
+                transport_wait = None  # The leaf wake owns resumption, without a provider probe.
+                continue
             transport_wait = _reconcile_transport_wait(
                 transport_wait, ctx, msg_present=msg is not None, error_kind=last_error_kind,
                 drive_logs=drive_logs, task_id=task_id, model=active_model, emit_progress=emit_progress)
@@ -589,10 +618,6 @@ def run_llm_loop(
                 emit_progress=emit_progress, incoming_messages=incoming_messages, owner_msg_seen=_owner_msg_seen):
                 free_redial = True
                 continue
-            if msg is None and _delegate_hold_latch(
-                    tools, error_kind=last_error_kind, drive_logs=drive_logs,
-                    task_id=task_id, emit_progress=emit_progress):  # hold latched -> next round top parks
-                continue
             if msg is None:
                 # Exact actor routes skip generic substitution and fail as infrastructure.
                 text, accumulated_usage, forced_trace = _handle_provider_unavailable(
@@ -604,6 +629,7 @@ def run_llm_loop(
                 _merge_finalization_trace(llm_trace, forced_trace)
                 return text, accumulated_usage, llm_trace
 
+            _record_transcript_prefix(tools._ctx, messages, round_idx, accumulated_usage, event_queue, task_id, drive_logs)
             from ouroboros.openai_chat_dispatch import CUSTOM_RECEIPTS_USAGE_KEY
 
             tool_calls = msg.get("tool_calls") or []

@@ -139,9 +139,7 @@ def test_project_started_row_rides_outbox_pins_main_and_dedupes_durably(tmp_path
     assert queued[0]["system_type"] == "project_started"
     assert queued[0]["role"] == "system"
     assert queued[0]["chat_id"] == 1
-    assert queued[0]["text"] == (
-        "Launch 🚀 › Ship release · Started\nWork is running in this Project."
-    )
+    assert queued[0]["text"] == "Launch 🚀 › Ship release · Started"
     assert queued[0]["progress_meta"] == {
         "project_id": "launch",
         "project_name": "Launch 🚀",
@@ -524,14 +522,24 @@ def test_project_lifecycle_rows_render_design_system_action_static_contract():
         chat.index("function updateMessageAnnotation")
     ]
     assert "createSystemMessageAction({" in render
-    assert "'system-message-actions'" in render
+    assert "createSystemMessageActions(" in render
+    assert "row.className = 'system-message-actions'" in helpers
+    for consumer in ("chat_decision.js", "chat_activity.js"):
+        assert "createSystemMessageActions(" in (root / "web/modules" / consumer).read_text(encoding="utf-8")
     assert "document.createElement('br')" not in render
 
     # The custom pill is gone everywhere; the conversion-flow buttons moved to
     # the shared design-system role beside their `btn btn-xs btn-danger` sibling.
     assert "chat-live-project-btn" not in chat
     assert "chat-live-project-btn" not in style
-    assert 'class="btn btn-xs btn-default" data-turn-into-project' in chat
+    # The conversion button is now built by the chrome sync from the record's
+    # facts (an HTML template could not be re-derived when a turn is direct),
+    # so the design-system role and the marker app.js queries are set on the
+    # node itself.
+    chrome = chat[chat.index("function syncBlockChrome(record) {"):chat.index("function syncCancelRunButton(record) {")]
+    assert "btn.className = 'btn btn-xs btn-default';" in chrome
+    assert "btn.dataset.turnIntoProject = '1';" in chrome
+    assert "btn.textContent = 'Turn into project';" in chrome
     # The identity chip keeps its own role, now built once in ui_helpers and
     # shared by the converted card (chat.js) and the bound-task footer (app.js).
     assert "chat-live-project-card-btn" in helpers
@@ -703,7 +711,9 @@ def test_web_frames_keep_reference_order_and_one_authored_reply():
     assert reference.index("isModelWaitReference(row)") < reference.index("reviewReferenceFromRow(row)")
     logs = chat[chat.index("function updateLiveCardFromLogEvent"):chat.index("function addMessage")]
     assert logs.index("handleCardReference(evt)") < logs.index("const taskId = getLogTaskGroupId(evt)")
-    assert logs.index("handleCardReference(evt)") < logs.index("applyEventTelemetry")
+    # Tool accounting (the telemetry closure's one surviving job) also runs
+    # after the reference seam.
+    assert logs.index("handleCardReference(evt)") < logs.index("noteToolMetrics(taskId, evt, rawTs)")
     history = chat[chat.index("function applyHistoryMessages"):chat.index("async function syncHistory")]
     assert history.index("handleCardReference(msg)") < history.index("updateLiveCardFromProgressMessage(msg,")
     fanout = chat[chat.index("onWs('chat'"):chat.index("onWs('message_annotation'")]

@@ -439,7 +439,11 @@ def resolve_cost_ceiling(
     margin resolves to ``exhausted_soft_land`` instead.
 
     An enabled non-root member keeps the propagated original root ceiling;
-    a later global balance never re-mints that early threshold. Actual global
+    a later global balance never re-mints that early threshold. A ROOT may
+    carry a producer's own ``root_cost_ceiling_usd`` below its hard cap (a
+    consciousness wake-up: what is left of its allowance); it lands the same
+    planning margin early, and at or below the margin it is an immediate soft
+    landing, exactly like a cap. Actual global
     and root dispatch fences still bind independently. Legacy missing carriers
     retain a disclosed local resolution, never a guessed original root fact.
 
@@ -493,6 +497,18 @@ def resolve_cost_ceiling(
                 basis_parts.append("root_cap_minus_margin")
             if non_root_member:
                 basis_parts.append("non_root_member")
+        if not non_root_member and root_ceiling_usd is not None and float(root_ceiling_usd) > 0:
+            margin = COST_PLANNING_MARGIN_USD
+            room = float(root_ceiling_usd) - margin
+            if room <= 0:
+                return CostCeiling(
+                    state=COST_CEILING_EXHAUSTED_SOFT_LAND,
+                    root_cap_usd=cap,
+                    planning_margin_usd=margin,
+                    basis="root_ceiling_at_or_below_planning_margin",
+                )
+            components.append(room)
+            basis_parts.append("root_ceiling_minus_margin")
         if inherited is not None:
             components.append(inherited)
             basis_parts.append("root_resolved_ceiling")
@@ -702,10 +718,10 @@ def prepared_wrapup_candidate(
 
     The forced send this candidate admits continues the loop's active transport
     turn, so the candidate is built from that same owner slot."""
+    from ouroboros.llm_claudexor import cache_key_for_model
     from ouroboros.loop_llm_call import _prepare_main_messages
     from ouroboros.model_slots import task_model_binding, task_processing_preference
     from ouroboros.model_wait import current_model_wait
-    from ouroboros.observability import new_execution_id
 
     owner_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
     waiter = current_model_wait()
@@ -734,9 +750,9 @@ def prepared_wrapup_candidate(
         model_account_override=account,
         model_turn_state=getattr(owner_ctx, "model_turn_state", None),
         # The admitted candidate must be the payload the send will produce: the
-        # main loop declares the same execution-scoped cache affinity, so this
-        # prepared copy binds the execution id exactly as that dispatch does.
-        cache_affinity=str(ctx.accumulated_usage.setdefault("execution_id", new_execution_id())),
+        # main loop declares the same install-scoped cache affinity, so this
+        # prepared copy binds the same key as that dispatch does.
+        cache_affinity="" if getattr(ctx, "active_use_local", False) else cache_key_for_model(ctx.active_model),
         processing_preference=task_processing_preference(
             {"task_metadata": getattr(owner_ctx, "task_metadata", {})}, model_role=role),
     )

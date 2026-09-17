@@ -48,6 +48,14 @@ export function createSystemMessageAction({ label, onClick, disabled = false, ar
     return btn;
 }
 
+// Composition owns spacing, wrapping and focus clearance, not bare buttons.
+export function createSystemMessageActions(...buttons) {
+    const row = document.createElement('div');
+    row.className = 'system-message-actions';
+    row.append(...buttons);
+    return row;
+}
+
 /**
  * The one project chip: the bound-task footer in Main (`in project ↗`) and the
  * whole converted card (`running in background ↗`) share this exact DOM so the

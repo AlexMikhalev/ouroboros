@@ -26,9 +26,10 @@ Recovery is an owner note for every episode; local adoption and
 error-kind change are notes for interactive turns only, because such a turn
 has no progress row to show the closure — a managed task keeps the durable
 row and its ordinary progress; exhaustion is a note for an interactive turn,
-while a managed task's exhaustion is its terminal result. Every episode note
-passes ``incident=None``, so an ``emit_progress`` callable handed to
-``run_llm_loop`` must accept that keyword.
+while a managed task's exhaustion is its terminal result. Every episode note is
+the host speaking about the turn: it passes ``incident=None`` and keeps the
+default voice, so an ``emit_progress`` callable handed to ``run_llm_loop`` must
+accept the emitter's keyword facts (``incident``, ``narration``).
 
 Also hosts the owner-facing provider-failure text helpers and terminal salvage
 readers used by that terminal path (extracted from ``loop.py``, which is at its
@@ -143,10 +144,9 @@ def emit_network_wait_event(
 
 
 def managed_transport_continuation(ctx: Any) -> bool:
-    """Owner-selected continuation applies to ordinary managed cognition."""
+    """Managed cognition may recover; a live delegated-leaf hold takes priority."""
     return bool(ctx is not None and getattr(ctx, "task_id", "")
-                and not getattr(ctx, "is_direct_chat", False)
-                and getattr(ctx, "_configured_subagent_route_kind", "") != "agent_session")
+                and not getattr(ctx, "is_direct_chat", False))
 
 
 def continue_unknown_transport(episode: TransportWaitEpisode, *, llm: Any, tools: Any,

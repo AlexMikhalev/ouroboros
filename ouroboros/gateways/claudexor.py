@@ -286,15 +286,26 @@ def _is_loopback(host: str) -> bool:
         return False
 
 
-def account_catalog_supported(operations: list[dict], path: str) -> bool:
-    """Opt in only when this exact operation declares the accounts query view."""
+def operation_query_supported(operations: list[dict], *, method: str, path: str,
+                              name: str, value: str) -> bool:
+    """Negotiate an exact query value from the serving operation's descriptor."""
     return any(
-        operation.get("method") == "GET" and operation.get("path") == path
-        and any(parameter.get("name") == "view" and parameter.get("location") == "query"
-                and "accounts" in (parameter.get("enum") or [])
-                for parameter in operation.get("parameters", []) if isinstance(parameter, dict))
+        operation.get("method") == method and operation.get("path") == path
+        and any(parameter.get("name") == name and parameter.get("location") == "query"
+                and isinstance(parameter.get("enum"), list) and value in parameter["enum"]
+                for parameter in (operation.get("parameters") or []) if isinstance(parameter, dict))
         for operation in operations if isinstance(operation, dict)
     )
+
+
+def account_catalog_supported(operations: list[dict], path: str) -> bool:
+    """Opt in only when this exact operation declares the accounts query view."""
+    return operation_query_supported(operations, method="GET", path=path, name="view", value="accounts")
+
+
+def model_failure_evidence_supported(operations: list[dict]) -> bool:
+    return operation_query_supported(operations, method="POST", path="/v2/model-operations",
+                                     name="captureFailureEvidence", value="true")
 
 
 class ClaudexorGateway:
@@ -568,11 +579,12 @@ class ClaudexorGateway:
         return ref
 
     def create_model_operation(self, request_ref: Dict[str, Any], *,
-                               idempotency_key: str) -> Dict[str, Any]:
+                               idempotency_key: str, capture_failure_evidence: bool = False) -> Dict[str, Any]:
         """Create or rejoin exactly one caller-identified generation; never mint a retry key."""
         key = _model_idempotency_key(idempotency_key)
+        path = "/v2/model-operations" + ("?captureFailureEvidence=true" if capture_failure_evidence else "")
         return _model_operation(self._request(
-            "POST", "/v2/model-operations", json_body={"request": _model_payload_ref(request_ref)},
+            "POST", path, json_body={"request": _model_payload_ref(request_ref)},
             headers={"Idempotency-Key": key},
         ))
 

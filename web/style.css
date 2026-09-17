@@ -293,20 +293,53 @@ body.resizing-panels { user-select: none; }
     content: ' ⏩';
 }
 
-/* Layout-only container for design-system actions on host-stamped system
-   rows (Project lifecycle rows). The buttons themselves are the shared
+/* Layout-only composition for question, Project lifecycle and routing
+   actions, with room for keyboard focus above and below. Buttons use the shared
    `.btn.btn-default.btn-sm` role — no new colors, radii, or variants. */
 .system-message-actions {
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-3);
-    margin-top: var(--space-3);
+    padding-block: var(--space-3);
 }
 
 .system-message-action {
-    flex: 0 0 auto;
+    flex: 0 1 auto;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
 
+.project-question-pointer {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+.project-question-preview { font-weight: 600; }
+.project-question-answer:empty { display: none; }
+.project-question-preview, .project-question-answer {
+    color: var(--text-primary); font-size: var(--type-body);
+}
+/* The owner reads the status to act on it: meta ink, never the quieter secondary step. */
+.project-question-status, .project-question-source {
+    color: var(--text-meta); font-size: var(--type-meta);
+}
+
+
+/* A block that exists only for open attention (a model wait, a pending or
+   host-offered Stop) or a bare non-Done ending carries no title placeholder
+   (docs/DESIGN.md "Conversation activity block"); its chip says the state it is
+   in (Waiting…, Cancelling…, Failed). The first row of work — a tool call,
+   narration, a child, a review, an error — gives it a title, whatever lane ran it. */
+.chat-live-card > .chat-live-summary-button .chat-live-title:empty {
+    display: none;
+}
+
+.chat-live-actions:empty {
+    display: none;
+}
 
 /* P3 — a converted card becomes a calm "project identity" chip. The whole card
    recolors from the red task accent to the project fuchsia over ~250ms; the live
@@ -1824,6 +1857,14 @@ body.resizing-panels { user-select: none; }
     min-height: 1.45em;
 }
 
+/* A block without work carries no title placeholder: the collapsed geometry
+   reserves nothing for an empty title (review round 1: the clamp and the
+   reserved line above outranked the general empty-title rule). */
+.chat-live-card:not([data-expanded="1"]) > .chat-live-summary-button .chat-live-title:empty {
+    display: none;
+    min-height: 0;
+}
+
 /* Activity grows with useful content. Details retain the complete source. */
 .chat-live-activity {
     color: var(--text-meta);
@@ -2377,6 +2418,18 @@ body.resizing-panels { user-select: none; }
 .chat-live-line.error .chat-live-line-title,
 .chat-live-line.timeout .chat-live-line-title {
     color: var(--status-error-fg);
+}
+
+/* The evidence row says its phase in ink, not in words: the counts-only label
+   stays the same while a call is still in flight (calling: the row is what the
+   turn is doing right now, so primary ink, never an alarm hue) and once one
+   failed (warn). Colour only, like the error rule above. */
+.chat-live-line.calling .chat-live-line-title {
+    color: var(--text-primary);
+}
+
+.chat-live-line.warn .chat-live-line-title {
+    color: var(--status-warn-fg);
 }
 
 .chat-bubble .message pre {
@@ -4337,6 +4390,15 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 
 .skills-presence-runtime input {
     width: 110px;
+}
+
+.skills-presence-runtime .skills-presence-workspace {
+    flex: 1 1 100%;
+    min-width: 0;
+}
+
+.skills-presence-workspace input {
+    width: 100%;
 }
 
 .skills-presence-runtime-actions {

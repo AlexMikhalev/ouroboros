@@ -17,9 +17,17 @@ EXISTING identities per family instead of minting a durable registry:
 The quiz path mirrors the hurry ingress split (``gateway/task_hurry.py``):
 projection write first (request-id idempotent, first answer wins), then the
 typed ``KIND_QUIZ_ANSWER`` mailbox control on the task's physical drive, then
-the live ``quiz_state`` broadcast. A late answer to a settled task is an
-honest 409 carrying the card's true lifecycle state — the card settles
-instead of inviting retries.
+the live ``quiz_state`` broadcast.
+
+A LATE answer — the card's task already finished, so its block is structurally
+``expired_terminal`` — is ACCEPTED here (owner decision В17a=A, retiring the
+earlier "a quiz dies with its author"): the projection records it with
+``answered_after_terminal``, and because no mailbox will ever be drained the
+answer is delivered as the owner's OWN message into the card's chat through the
+named ingress ``supervisor.message_bus.accept_local_message``. The 2xx then says
+``forwarded`` so the surface never claims a delivery that did not happen. A 409
+is left for what is genuinely settled: an already answered card (first-wins) and
+a non-root addressee.
 """
 
 from __future__ import annotations
@@ -172,16 +180,110 @@ def _record_quiz_answer_history(
     )
 
 
-async def answer_decision(
-    drive_root: pathlib.Path, body: Any, *, get_background_model_wait: Any = None,
-) -> Tuple[int, Dict[str, Any]]:
+def _late_answer_destination(
+    drive_root: pathlib.Path, task_id: str, block: Dict[str, Any],
+) -> Tuple[Optional[int], str]:
+    """The card's own chat, or the addressing its history row already uses.
+
+    Canonical chat-id policy: synthetic A2A traffic has no owner turn to start
+    (``send_quiz`` refuses those ids too), and the hidden partition is a real
+    destination that no browser surface reads — an owner message there would
+    never be seen. Both are skipped honestly instead of being invented into
+    Main.
+    """
+    from ouroboros.contracts.chat_id_policy import HIDDEN_CHAT_ID, is_a2a_chat_id
+
+    raw = block.get("chat_id")
+    if raw is None:
+        from supervisor.log_addressing import address_task_event
+
+        from ouroboros.task_results import load_task_result
+
+        row = load_task_result(drive_root, task_id) or {}
+        raw = address_task_event(
+            {task_id: {"task": row}}, drive_root, {"task_id": task_id},
+        ).get("chat_id")
+    try:
+        chat_id = int(raw)
+    except (TypeError, ValueError):
+        return None, "chat_unresolved"
+    if is_a2a_chat_id(chat_id):
+        return None, "a2a_chat"
+    if chat_id == HIDDEN_CHAT_ID:
+        return None, "hidden_chat"
+    return chat_id, ""
+
+
+def _forward_late_quiz_answer(
+    drive_root: pathlib.Path, task_id: str, quiz_id: str, block: Dict[str, Any], *, source: str = "web",
+) -> Tuple[bool, str]:
+    """Deliver an accepted late answer as the owner's own message in that chat.
+
+    The asking task is gone, so no mailbox will be drained: the answer becomes
+    an ordinary owner turn through the NAMED ingress, whose canonical chat row
+    is the acceptance receipt and whose ``client_message_id`` is the
+    idempotency key (a crash after acceptance never authorizes another
+    enqueue), so a retry of this request re-enters the same delivery instead of
+    duplicating it. The text is the same full ``_quiz_answer_frame`` the live
+    mailbox control carries — nothing is trimmed.
+
+    Disclosed property: in a PROJECT room that currently has exactly one live
+    steerable root task, the ordinary routing delivers this message into THAT
+    task's mailbox — the answer can therefore reach a different, live task in
+    the same room. In Main it always starts the ordinary owner turn.
+    """
+    from supervisor import message_bus
+
+    chat_id, reason = _late_answer_destination(drive_root, task_id, block)
+    if chat_id is None:
+        return False, reason
+    index = block.get("answered_index")
+    text = _quiz_answer_frame(
+        block, index if isinstance(index, int) else None,
+        str(block.get("comment") or ""),
+    )
+    client_message_id = f"quiz_late_answer:{task_id}:{quiz_id}"
+    bridge = message_bus.get_bridge()
+    row, rejoined = message_bus.accept_local_message(
+        bridge, drive_root, text,
+        chat_id=chat_id, user_id=1, source=str(source or "web"),
+        client_message_id=client_message_id,
+        # Provenance rides its OWN field; the real transport (the web card, or
+        # the skill that relayed the owner's tap) is the message's source.
+        task_metadata={"late_answer": {"task_id": task_id, "quiz_id": quiz_id}},
+    )
+    if not rejoined:
+        # The named ingress accepts and enqueues but does not echo; give the
+        # owner the SAME user bubble their own typing produces (a rejoin
+        # already echoed when it was first accepted).
+        from ouroboros.projects_registry import stamp_project_thread
+
+        echo = {
+            # The accepted canonical row is the echo's text authority, exactly
+            # as the owner's own typing echoes what the ingress recorded.
+            "type": "chat", "role": "user", "content": str(row.get("text") or text),
+            "ts": str(row.get("ts") or ""), "source": str(source or "web"), "chat_id": chat_id,
+            "sender_session_id": "", "client_message_id": client_message_id,
+        }
+        try:
+            stamp_project_thread(message_bus.DATA_DIR, echo)
+            bridge.broadcast(echo)
+        except Exception:
+            log.debug("Late quiz answer echo failed for %s", quiz_id, exc_info=True)
+    return True, ""
+
+
+async def answer_decision(drive_root: pathlib.Path, body: Any, *, source: str = "web") -> Tuple[int, Dict[str, Any]]:
     """The ONE decision-answer ingress, transport-neutral: ``(status, payload)``.
 
     ``POST /api/decisions`` (the browser card) and the loopback Host Service
     ``POST /chat/decision`` (a reviewed transport skill relaying the owner's
     tap or reply, e.g. Telegram — #472) both call this, so every surface gets
-    the same idempotent ``request_id`` write, first-answer-wins race and the
-    same honest 404/409 on a late answer.
+    the same idempotent ``request_id`` write, the same first-answer-wins race,
+    and the same late-answer handling: accepted, recorded with
+    ``answered_after_terminal``, and forwarded into the card's chat as the
+    owner's own message (``forwarded`` says whether that happened). 404 stays
+    for a card the projection no longer knows, 409 for one already answered.
     """
     if not isinstance(body, dict):
         return _refused("request body must be a JSON object", 400)
@@ -195,9 +297,7 @@ async def answer_decision(
     if decision_id.split(":", 1)[0] == "model_wait":
         from ouroboros.gateway.task_model_wait import answer_model_wait_decision
 
-        return await answer_model_wait_decision(
-            drive_root, body, get_background_model_wait=get_background_model_wait,
-        )
+        return await answer_model_wait_decision(drive_root, body)
     raw_comment = body.get("comment")
     if raw_comment is not None and not isinstance(raw_comment, str):
         return _refused("comment must be a string", 400, reason_code="comment_invalid")
@@ -280,13 +380,16 @@ async def answer_decision(
         if task is None:
             # The author is gone. Normally the task-done seam already expired
             # its open quizzes; a crash window can leave one open — heal it
-            # here so a late answer gets the honest expired 409 instead of a
-            # 200 recorded into a mailbox nobody will ever drain.
+            # here so the card's lifecycle state is structurally truthful
+            # before the late answer is recorded on it.
             reconcile_terminal(drive_root, task_id)
         outcome = record_answered(
             drive_root, task_id,
             quiz_id=quiz_id, option_index=raw_index,
             request_id=request_id, comment=comment,
+            # The late answer is accepted (В17a=A); with the task alive the
+            # expired state would be a contradiction, so the flag is not set.
+            allow_expired=task is None,
         )
         block = outcome.get("block") if isinstance(outcome.get("block"), dict) else {}
         try:
@@ -349,10 +452,10 @@ async def answer_decision(
             payload: Dict[str, Any] = {
                 "ok": False, "error": error, "decision_id": decision_id,
             }
-            # The truthful lifecycle state settles the card client-side: a
-            # closed quiz on a SETTLED task reads as expired, an already
-            # answered one as answered.
-            payload["state"] = state or ("expired_terminal" if task is None else "")
+            # The truthful lifecycle state settles the card client-side. Now
+            # that a late answer is accepted, a refusal on a finished task
+            # means the card was ALREADY answered — never a fabricated expiry.
+            payload["state"] = state
             refused_block = outcome.get("block") if isinstance(outcome.get("block"), dict) else {}
             if isinstance(refused_block.get("answered_index"), int):
                 # The loser of a first-wins race settles honestly: the card
@@ -363,6 +466,28 @@ async def answer_decision(
             if error in {"option_out_of_range", "answer_empty"}:
                 status = 400
             return status, payload
+        forwarded: Optional[bool] = None
+        forward_reason = ""
+        if task is None and block.get("answered_after_terminal"):
+            # The persisted acceptance route decides delivery, never the task's
+            # liveness NOW: an answer accepted LATE (no mailbox will ever drain)
+            # is delivered as an ordinary owner message, and a duplicate request
+            # re-enters this path on purpose — the named ingress deduplicates it,
+            # so a retry after a failed delivery still delivers. An answer the
+            # live task already received is never forwarded when its lost HTTP
+            # response is retried after the task ended (that would be a second
+            # owner turn).
+            try:
+                forwarded, forward_reason = _forward_late_quiz_answer(
+                    drive_root, task_id, quiz_id, block, source=source,
+                )
+            except Exception:
+                log.warning("Late quiz answer delivery failed for %s", quiz_id, exc_info=True)
+                return _refused(
+                    "the answer was recorded but could not be delivered to the chat "
+                    "— retry to deliver it",
+                    503, task_id=task_id, reason_code="late_answer_not_delivered",
+                )
         try:
             from supervisor.message_bus import get_bridge
 
@@ -390,6 +515,13 @@ async def answer_decision(
         payload_ok["answered_index"] = recorded_index
     if str(block.get("comment") or ""):
         payload_ok["comment"] = str(block["comment"])
+    if block.get("answered_after_terminal") is True:
+        # The card outlived its author: say so, and say whether the answer
+        # actually reached a chat (a machine or hidden destination has none).
+        payload_ok["answered_after_terminal"] = True
+        payload_ok["forwarded"] = bool(forwarded)
+        if not forwarded and forward_reason:
+            payload_ok["reason_code"] = forward_reason
     return 200, payload_ok
 
 
@@ -398,10 +530,7 @@ async def answer_decision(
 async def api_decision_answer(request: Request) -> JSONResponse:
     """POST /api/decisions — idempotent owner answer for a decision card."""
     body = await request_json_or(request, {})
-    status, payload = await answer_decision(
-        request_drive_root(request), body,
-        get_background_model_wait=getattr(request.app.state, "get_background_model_wait", None),
-    )
+    status, payload = await answer_decision(request_drive_root(request), body)
     return JSONResponse(payload, status_code=status)
 
 

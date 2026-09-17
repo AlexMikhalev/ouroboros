@@ -106,6 +106,36 @@ def test_once_schedule_survives_a_refused_admission_and_retries(tmp_path, monkey
     assert record.get("last_error") == ""
 
 
+def test_once_schedule_refused_by_the_consciousness_door_defers_by_the_alarm_floor(tmp_path, monkeypatch):
+    """A one-shot a wake scheduled and the consciousness door refuses (allowance, concurrency —
+    a refusal that can last hours) must not re-fire on every supervisor pass: the record stays
+    armed, its run point moves forward by the alarm floor (opus round 4)."""
+    import datetime
+
+    queue, pending = _queue(tmp_path)
+    monkeypatch.setenv("OUROBOROS_BG_WAKEUP_MIN", "900")
+    queue.upsert_scheduled_task({
+        "id": "fu-conscious", "name": "Follow-up", "enabled": True, "source": "task_followup",
+        "trigger": {"type": "once", "run_at": "2000-01-01T00:00:00+00:00"},
+        "task": {"type": "task", "text": "resume later",
+                 "metadata": {"initiator": "consciousness", "usage_category": "consciousness_task"}},
+    })
+    fires: list = []
+    monkeypatch.setattr(
+        queue, "enqueue_task",
+        lambda task: fires.append(task["id"]) or {**task, "_admission_blocked": "consciousness_allowance_exhausted",
+                                                 "_admission_detail": "$20.00 of $20.00 spent in the last 24 h"})
+    before = datetime.datetime.now(datetime.timezone.utc)
+    queue.check_scheduled_tasks()
+    queue.check_scheduled_tasks()  # the very next pass: NOT due again
+    assert len(fires) == 1 and pending == []
+    record = queue.list_scheduled_tasks(tmp_path)["tasks"][0]
+    assert record["enabled"] is True and not record.get("completed_at")
+    assert "consciousness_allowance_exhausted" in str(record.get("last_error") or "")
+    run_at = datetime.datetime.fromisoformat(record["trigger"]["run_at"])
+    assert run_at >= before + datetime.timedelta(seconds=890)
+
+
 def test_re_enabled_completed_once_never_refires(tmp_path):
     """Round-3 exactly-once: a consumed one-shot (non-empty completed_at) must not
     fire again even when the owner flips enabled back on from the UI — re-arming

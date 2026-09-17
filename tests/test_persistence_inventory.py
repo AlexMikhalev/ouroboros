@@ -555,6 +555,13 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # root-task projection with its gaps ledger (``state/skill_review_root_tasks*``)
 # and the per-project retirement locks (``state/delegate_project_retirements/``)
 # — while the retired acceptance api-fallback record left the population.
+# 290 -> 291: the supervisor's off-lock projection of live direct-chat roots
+# (``state/direct_roots.json``, ``supervisor/direct_roots.py``) is the one new
+# durable plane of the structural-health train; it has its own row in section 2.
+# 291 -> 290: the Background Consciousness redesign retired the observation inbox
+# and its startup fold; the archive segments ``archive/consciousness_observations_<ts>``
+# left the population and the one-time ``archive/consciousness_observations.jsonl``
+# move target (``ouroboros/consciousness.py``) took their place.
 EXPECTED_SCAN_PATHS = 290  # Linked project knowledge history is a dynamic validated shelf.
 
 # Scanned paths that must always be present — guards the scanner itself
