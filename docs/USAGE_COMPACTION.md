@@ -1,23 +1,23 @@
-# Design note — usage-ledger compaction (CPL4-C6, monetary authority)
+# Usage-ledger compaction and monetary authority
 
-Owner sanction: batch №8 item 1A (2026-09-01) — "seq-preserving compaction
-snapshot (settled rows folded into a stamped baseline row + archive of the raw
-segment)", excised from the CPL-4 persistence train into its own reviewed lane
-because the ledger is the monetary authority.
+Terminal usage history is compacted into a stamped baseline block while the
+exact original ledger bytes remain in an append-only archive. The ledger is
+the monetary authority, so compaction preserves exact money, attribution,
+in-flight attempts and historical joins.
 
 ## 1. Problem
 
 `state/usage_attempts.jsonl` is the append-only monetary authority
 (`ouroboros/usage_ledger.py`). Every reservation re-reads it under the
 cross-process monetary lock; a ~20 MB ledger costs ~0.5 s per full re-read
-under that lock (the 2026-07-23 lock-timeout incident;
-`USAGE_LEDGER_WARN_BYTES` in `ouroboros/context_budget.py` warns at exactly
-that point). The in-process warm caches (#129) bound the *steady-state* cost,
+under that lock. `USAGE_LEDGER_WARN_BYTES` in
+`ouroboros/context_budget.py` warns at that measured degradation point.
+The in-process warm caches bound the *steady-state* cost,
 but every cold read (process start, refold on any doubt) still replays the
-whole file, and the file grows without bound: each physical attempt appends a
-2–4 row lifecycle chain that stays forever after it is terminal.
+whole file. Without compaction the live file grows without bound: each
+physical attempt appends a 2–4 row lifecycle chain that remains after it is terminal.
 
-## 2. Sanctioned shape
+## 2. Compacted representation
 
 Fold the terminal history into a **stamped baseline block** at the head of the
 ledger and move the raw pre-compaction bytes, verbatim, into an append-only
@@ -32,7 +32,7 @@ validated aggregate plus every row that is still live.
 | `kind="attempt"`, final state `settled` / `unresolved` / `released`, and **no review attribution** (`review_skill`/`review_wave_id`/`review_slot_id` all empty) | folded (their whole seq chain) | terminal, id never re-asserted by any writer (`attempt_id` is a one-shot uuid4 minted at reserve time); aggregation-complete under §5 |
 | `kind="attempt"`, final state `reserved` / `dispatched` (in-flight) | **retained verbatim** | INVARIANT: in-flight/unsettled rows are never folded — their terminal transition still has to join them by `attempt_id` in the live replay |
 | `usage_baseline` / `usage_baseline_group` from a previous compaction | re-folded (header replaced, groups merged by key, exact-decimal sums added) | baselines must not accumulate per epoch |
-| `kind="subscription_session"`, `"external_unmetered"` | **retained** | their `attempt_id` is deterministically re-derived from a stable external id and re-asserted on replay: `_append_single_settled_row` dedups and conflict-checks against the LIVE replay. Folding them would turn an idempotent replay into a silent double charge. Disclosed residual: these rows keep growing (slowly — one row per delegated run / external dispatch); a future lane may fold them behind an archived-identity membership check. |
+| `kind="subscription_session"`, `"external_unmetered"` | **retained** | their `attempt_id` is deterministically re-derived from a stable external id and re-asserted on replay: `_append_single_settled_row` dedups and conflict-checks against the LIVE replay. Folding them would turn an idempotent replay into a silent double charge. Disclosed residual: these rows keep growing (slowly — one row per delegated run / external dispatch). |
 | `kind="legacy_*"` | **retained** | same idempotency argument: `ensure_legacy_imported` dedups candidate rows against live `attempt_id`s if the completion watermark is ever lost mid-history. Bounded one-time set. |
 | attempts with review attribution | **retained** | `skill_review_usage` projects historical waves per-attempt (`attempt_ids`, `attempts` lists) for durable review receipts; folding would erase that projection. Disclosed residual (skill-review waves only; ordinary task/review traffic carries no `review_*` attribution). |
 | unknown future kinds | **retained** | fail-safe default: fold only what this design proves aggregation-complete |
@@ -83,7 +83,7 @@ carrying: the key fields verbatim; `folded_attempt_count` (int ≥ 1);
 `root_limit_usd` = min over the group's known values (else absent);
 `baseline_id` joining the header; empty `review_*` attribution.
 
-Why per-group rows and not the literally single row of the sanction sketch:
+Why per-group rows rather than a single global aggregate:
 budget enforcement is **per-root** (`reserve_attempt` filters finals by
 `root_task_id`; `usage_projection` takes `min` of row `root_limit_usd`), and
 `usage_breakdown` groups by model/provider/category/task/root. A single global
@@ -148,7 +148,7 @@ so instead the compacted file starts a fresh dense epoch:
 - the header records `source_first_seq`/`source_last_seq`, and the archive
   segment holds every original row with its original `seq` untouched.
 
-Monotonicity and density are preserved (the lane invariant); the original seq
+Monotonicity and density are preserved; the original seq
 values are never lost (archive + `pre_compaction_seq`). Nothing durable
 references ledger rows by `seq` (cross-references are `attempt_id`s); resume
 fingerprints are invalidated structurally by the inode change (§8).
@@ -187,7 +187,7 @@ thing that decides what a well-formed row IS — checks it:
 
 ## 7. Aggregation contract (`_usage_rows`)
 
-`_summary` and `_physical_call_count`/`_breakdown_bucket` become
+`_summary` and `_physical_call_count`/`_breakdown_bucket` are
 baseline-aware in the narrowest way:
 
 - `usage_baseline` header: skipped (no money, no counts);
@@ -195,7 +195,7 @@ baseline-aware in the narrowest way:
   `unknown_unmetered`, `non_final_rows`, physical calls, `prompt_cache_ttls`)
   uses `weight = folded_attempt_count`; every **sum** adds the row's carried
   aggregate once. For all existing kinds `weight == 1` and the code path is
-  byte-equivalent to today's.
+  unchanged.
 
 The group key (§4) makes each group homogeneous in every branch predicate
 `_summary` evaluates per row (`cost is None`, `cost_final`,
@@ -221,14 +221,12 @@ exactly the per-row branch taken `weight` times with the sums pre-added.
   tier structurally unreachable there: a Windows volume without byte-range
   locks would fail EVERY monetary append closed instead of degrading to it.
   `ENOLCK` ("no locks available" — a filesystem without a lock daemon, or an
-  exhausted kernel lock table) is the third answer (round 5.4 close-out; round
-  5.4 proper made it fail EVERY caller closed, which the lenses showed to be
-  product-wide: the same primitive locks state singletons, task results and
-  custody, so a lockd-less NFS `state/` would have stopped every locked write
-  and every model dispatch — a capability the name protocol had always
-  provided there): it selects the **name tier** like a filesystem that cannot,
-  but the probe RECORDS the errno beside the verdict, and a caller may refuse
-  that tier by errno (`acquire_exclusive_file_lock(refuse_name_tier_errnos=…)`).
+  exhausted kernel lock table) selects the **name tier** too. Making this
+  failure close every caller would stop locked state writes, task-result and
+  custody updates, and model dispatch on a lockd-less filesystem, although
+  those non-monetary consumers can use the name protocol. The probe records
+  the errno beside its verdict, and each caller can refuse that tier by errno
+  (`acquire_exclusive_file_lock(refuse_name_tier_errnos=…)`).
   Only the monetary lock does: `usage_ledger._named_lock` names `ENOLCK`, so on
   such an install every monetary write refuses typed (`UsageAccountingError` —
   no lock, no append, no pass; money never runs the name protocol where locks
@@ -239,21 +237,14 @@ exactly the per-row branch taken `weight` times with the sums pre-added.
   probes that could disagree — except a directory where the scratch probe
   cannot be created, which answers enforced for that call and is probed again
   next time (not cached).
-  **Windows takes the ENFORCED tier in 7.0, on a byte range beyond the stamp.**
-  Its first shape could not ship. The 3-OS matrix on `bf8b6549`
-  (run 33654743857) locked the WHOLE file, and a Windows byte-range lock is
-  MANDATORY: a contender that opened the held lock file to read the owner's
-  stamp was refused the READ, could never judge the hold and waited out its
-  timeout — eight concurrent monetary writers all answered «lock unavailable»,
-  `update_json_locked` timed out, a concurrent chat append was lost.
-  `kernel_file_locks_enforced` was made to answer False there (abea91ec), which
-  moved the defect rather than closing it: this design's name tier probes
-  identity and stamp on every poll (the pre-C6 protocol only `stat`ed), and on
-  Windows that contender handle made the owner's release unlink fail with a
-  sharing violation (no FILE_SHARE_DELETE), orphaning the lock with a live pid
-  until `_unlink_lock_path` retried the transient refusal for a bounded window
-  (run 33663258606). The owner then made the working tier a release condition
-  (batch №13 item 1, 2026-09-02), and it is back: the hold is ONE byte at
+  **Windows takes the enforced tier on a byte range beyond the stamp.**
+  Windows byte-range locks are mandatory: locking the whole file prevents a
+  contender from reading the owner's stamp, so it cannot judge the hold and
+  times out. Falling back to the name tier would expose another constraint:
+  the contender's open handle can prevent the owner's release unlink through
+  a sharing violation (no `FILE_SHARE_DELETE`). `_unlink_lock_path` retries
+  that transient refusal for a bounded window. The enforced-tier hold is one
+  byte at
   `platform_layer._WIN32_LOCK_OFFSET` (`0x7FFFFFFF00000000`, length 1 — the
   common Win32 idiom; a lock beyond end-of-file is legal there and no lock
   file's one-line stamp can reach that far), so the bytes a contender reads,
@@ -277,9 +268,8 @@ exactly the per-row branch taken `weight` times with the sums pre-added.
   retries a contender's transient refusal). What Windows still does not have on
   this tier is named elsewhere in this section and unchanged: no directory
   fsync, and no old-inode witness across `os.replace`, so a charge landed in
-  the swap's last syscall is lost silently there. The Windows-EXECUTED proof is
-  the CI matrix, which is the only Windows host this work has: the Linux-side
-  pins (the range constant and its two wrappers, an emulated LockFileEx that
+  the swap's last syscall is lost silently there. Windows execution is checked
+  by the CI matrix; host-side pins (the range constant and its two wrappers, an emulated LockFileEx that
   refuses the same range, the delete-semantics simulator) stand in for the
   mechanism, never for the platform.
   *Enforced tier* (POSIX `fcntl.flock`, Windows `LockFileEx` —
@@ -339,15 +329,11 @@ exactly the per-row branch taken `weight` times with the sums pre-added.
   inode. It fails closed, and the file we stamped with our LIVE pid is removed
   with it when its bytes are still exactly the ones we wrote — left behind, no
   owner-aware reclaimer could ever evict it and the lock wedges for good.
-  **Residual, disclosed (mechanism corrected in round 5.4):** the owner-aware
-  rule asks `pid_is_alive(owner_pid)`, and a RECYCLED pid — one a live
-  process now owns — reads as alive whoever owns it: `kill(0)` succeeds for
-  a same-uid impostor and answers EPERM for another user's, which round 5.4
-  made "alive" too (it read as "dead" before, so another user's recycle was
-  reclaimed through the age path — the probe flock guarding it on the
-  enforced tier — while only a same-uid recycle wedged; this note named the
-  opposite mechanism). So a lock whose owner died and whose pid was reused
-  is never reclaimed by age while the impostor lives (`pid_is_alive` is the
+  **Residual, disclosed:** the owner-aware rule asks
+  `pid_is_alive(owner_pid)`, and a recycled PID reads as alive whoever now
+  owns it: `kill(0)` succeeds for the same user and answers `EPERM` for
+  another user's process; both mean alive. A lock whose owner died and whose
+  PID was reused is never reclaimed by age while the impostor lives (`pid_is_alive` is the
   ONE liveness primitive, shared by every consumer — custody settlements,
   claim reclaims, staging reaps — so a pid recycled onto another user's
   process reads alive everywhere and those defer while the impostor lives,
@@ -368,11 +354,9 @@ exactly the per-row branch taken `weight` times with the sums pre-added.
   checkpoint, immediately before every rename attempt and once more AFTER
   the in-swap snapshot look, so the irreducible residual is the interval
   between that last proof and the rename syscall: a charge the robber lands
-  inside it is ERASED by the swap. Until round 5.4 this note claimed the
-  post-swap re-read or the next read's seq quarantine would surface it;
-  neither can — the re-read compares the NEW inode against the candidate and
-  the archive segment is the pre-row snapshot — so the loss was silent and
-  the pass returned a success receipt. Now, on POSIX, the swap holds the OLD
+  inside it is erased by the swap. A post-swap re-read cannot detect that
+  loss: it compares the new inode against the candidate, while the archive
+  contains the pre-row snapshot. On POSIX the swap therefore holds the old
   inode open across the rename (the only witness left) and reads whatever
   landed beyond the proven snapshot's length AFTER the fact: those bytes go
   to `state/usage_attempts.quarantine.jsonl` (`raw_base64`, the shape a torn
@@ -492,11 +476,13 @@ exactly the per-row branch taken `weight` times with the sums pre-added.
   mechanism, exactly like the rotation-bounded log warns: it now fires only if
   compaction is broken or the unfoldable residue itself reaches 20 MB.
 
-## 10. History readers: CPL-5 reconcile sweep, audits
+## 10. History readers: model-send reconciliation and audits
 
-CPL-5 (`DESIGN_MODEL_VISIBLE_LOGGED.md` §3.3, implementation landed on the integration tip as `ouroboros/model_send_seal.py`, wired and swept) reconciles `model_send` seals against "an attempt row in the
-usage-accounting replay". After compaction a folded attempt is no longer in
-the live replay, so this lane ships the join surface the sweep must use:
+The reverse reconciliation in
+[Model-send observability](MODEL_SEND_OBSERVABILITY.md#33-reverse-direction-audit-model_send-only)
+(`ouroboros/model_send_seal.py`) joins model-send seals to usage-accounting
+attempts. A folded attempt is absent from the live replay, so the sweep uses
+the archive-aware join:
 
 - `usage_compaction.archived_attempt_ids(root)` — the `attempt_id` set of
   every archived segment, walked through the tamper-evident header chain
@@ -560,7 +546,7 @@ the live replay, so this lane ships the join surface the sweep must use:
     open is the step a directory refuses and a writer-less FIFO blocks on. A
     first row that reads but does not parse is a torn segment from a crashed
     write: no evidence of any generation, left to the walk. Every path
-    inspection the reader makes is typed the same way (round 5.4): `pathlib`
+    inspection the reader makes is typed the same way: `pathlib`
     re-raises every `OSError` but `ENOENT`/`ENOTDIR`/`EBADF`/`ELOOP` from
     `is_symlink`/`is_dir`, so the symlink bounds on both archive levels and
     on the named segment (an `archive/usage_ledger` readable but not
@@ -639,7 +625,7 @@ the live replay, so this lane ships the join surface the sweep must use:
   stamp-less file too, and the wrong answer there turns a folded attempt into
   a reported orphan seal.
 
-Contract for the CPL-5 lane (recorded here and in the review packet): the
+The model-send reconciliation contract is that the
 reverse sweep's "no attempt row" verdict (`orphan_seal`) must consult this
 union, not the live replay alone; an unreadable/mismatched segment is the
 sweep's existing UNKNOWN → skip-pass case (fail-soft, the API raises typed
@@ -651,11 +637,11 @@ existing live-replay dedup keeps working under a lost watermark.
 
 ## 11. Module placement
 
-New leaf `ouroboros/usage_compaction.py` (domain D16): fold policy +
+`ouroboros/usage_compaction.py` (domain D16) owns fold policy +
 archive/verify/swap + history readers. It imports FROM `usage_ledger`
 (substrate) and `_usage_rows` (aggregation leaf); `usage_accounting` calls
 INTO it from `reserve_attempt`. The substrate stays policy-free (it learns
-only the new row kinds' validation), the one-way seam
+only the baseline row kinds' validation), the one-way seam
 `usage_ledger ← usage_accounting` is unchanged, and the compactor — which must
 know the aggregation semantics — lives beside the aggregation, not inside the
 byte authority.
@@ -671,7 +657,7 @@ tests/fixtures_usage_compaction.py)
    limits) and of `usage_breakdown` (all axes) renders equal dicts: state
    counts and folded weights, physical calls, token sums, finality,
    subscription sessions, per-root limits, every axis shape. The float dollars
-   those renders carry are deliberately NOT part of that equality (R2-37).
+   those renders carry are deliberately NOT part of that equality.
    Readers round money at six places, so one history summed per row and summed
    per group can land on either side of that boundary. The regression fixture
    in `tests/test_usage_compaction_fingerprint.py` observes a 1e-6 USD shift,
@@ -696,7 +682,7 @@ tests/fixtures_usage_compaction.py)
    and the ledger's directory after it.
 4. **Budget limits are preserved**: root/global enforcement thresholds are
    unchanged across compaction.
-5. **CPL-5 join survives**: every pre-compaction `attempt_id` remains
+5. **Model-send join survives**: every pre-compaction `attempt_id` remains
    resolvable through live ∪ archive, across chained compactions; a tampered
    segment, a re-hashed but structurally broken segment, a deleted segment
    behind a warm cache, a same-size rewrite once the cache window closes, an
@@ -777,11 +763,3 @@ tests/fixtures_usage_compaction.py)
     than the live file's own (bar an uncommitted orphan of it, proven by
     still being a prefix of that file), whether or not the live file carries
     a stamp.
-
-## 13. Explicitly out of scope
-
-- Folding subscription/external/legacy/review-attributed rows (disclosed
-  residuals, §3).
-- Any GC of archive segments or the quarantine file (append-only, never).
-- Changes to the CPL-5 sweep beyond the archive-aware membership join in §10.
-- Changing `USAGE_LEDGER_WARN_BYTES` or the lock timeouts.

@@ -1,9 +1,7 @@
 """The user_files confinement: secret-name policy and path resolution.
 
-Every span is extracted VERBATIM from the parent's tip bytes by
-scripts/v7next_transplant.py (D18/D33 module-handle split, proof-checked);
-the parent re-exports every moved name, so historical imports and
-monkeypatch targets keep working unchanged.
+The facade re-exports these definitions so existing imports and monkeypatch
+targets retain the same bindings.
 """
 
 from __future__ import annotations
@@ -23,7 +21,7 @@ def _tool_access():
     The parent owns the rebindable module state and the members tests
     monkeypatch there; reading them through the module at each call keeps
     one binding, where a from-import would freeze the value this leaf saw
-    at import time (the owner-approved D18/D33 mechanical exception).
+    at import time.
     """
     from ouroboros import tool_access
 
@@ -237,7 +235,7 @@ class UserFilesPathBlockedError(ValueError):
     the typed ``⚠️ USER_FILES_PATH_BLOCKED`` prefix so the outcome axis can
     partition it into ``execution.policy_denials`` (v6.57.0) instead of the
     generic ``error`` status that falsely degraded a shipped task to
-    ``tool_failure`` (the submarine wave-3 incident)."""
+    ``tool_failure``."""
 
 
 def resolve_user_file_path(

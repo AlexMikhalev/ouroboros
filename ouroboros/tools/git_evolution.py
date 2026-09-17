@@ -1,12 +1,9 @@
-"""Evolution campaign authority at the reviewed-commit and publication
-boundaries, split out of ``ouroboros/tools/git.py`` (v7 module-size
-discipline). Every span is extracted VERBATIM from the parent's tip bytes by
-scripts/v7next_transplant.py; the parent re-exports every moved name.
-Parent-scope helpers the monolith read as module globals are read through
-the call-time handle ``_git()`` — never a from-import — so the facade
-binding stays the one tests monkeypatch. ``_sanitize_git_error`` is the one
-f-string-read exception (the byte gate cannot rewrite f-string internals):
-it binds the plumbing owner at import time.
+"""Evolution campaign authority at the reviewed-commit and publication boundaries.
+
+The ``ouroboros/tools/git.py`` facade re-exports these definitions. Shared
+helpers are read through the call-time handle ``_git()`` so the facade binding
+stays the one tests monkeypatch. ``_sanitize_git_error`` binds the plumbing
+owner at import time, including calls from f-strings.
 """
 
 from __future__ import annotations
@@ -28,7 +25,7 @@ def _git():
     The parent owns the rebindable module state and the members tests
     monkeypatch there; reading them through the module at each call keeps
     one binding, where a from-import would freeze the value this leaf saw
-    at import time (the owner-approved D18/D33 mechanical exception).
+    at import time.
     """
     from ouroboros.tools import git
 
