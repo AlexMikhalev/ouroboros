@@ -179,6 +179,7 @@ BAND_PATHS = {
     "tests/test_commit_gate.py": None,
     "tests/test_cybergym_dispatch.py": "CyberGym dispatch tests cover completion-order admission, transient gateway pauses and budget-refusal recovery through one existing fake campaign harness.",
     "tests/test_cybergym_docker.py": "CyberGym workspace custody tests cover atomic gateway transfer, recovery and durable-result acknowledgement using the same attested fake container fixtures.",
+    "tests/test_cybergym_executor_wire.py": "CyberGym served-wire evidence tests combine request-accounting disclosure with existing provider, final-PoC and classification coverage; gateway custody remains in its dedicated test module.",
     "tests/test_deep_review_slot.py": "\u04243 deep self-review suite: the deep_review row/endpoint half and the three-delivery half (retrieving executors, coverage, header, custody, availability) share one fixture set (repo/drive roots, scripted LLM, fake session executor); split at the config-vs-delivery seam once the row contract stops moving, not by size.",
     "tests/test_delegate_answer.py": "Entered the band by the #204 escalation-route pins (walk-up, schema and expiry-note source pins) on top of the phase-B interaction suite; one coherent delegated-question surface, split only when a natural seam appears",
     "tests/test_delegated_skill_payload.py": "Sol scope-review fix batch: P1 trust probes (forged index, symlinked git metadata), P2 golden-E2E review close and schema/docs pins joined the existing R1+gate-fix payload suite.",

@@ -996,3 +996,121 @@ def test_fair_completion_reads_outermost_execution_axis():
                "result": {"outcome_axes": {"execution": {"status": "failed"}}}}
     assert _gateway_fair_completion(payload) == (True, "execution_ok")
     assert _gateway_fair_completion({"result": {"task_result": _envelope({"status": "failed"})}}) == (False, "execution_failed")
+
+
+def _verified_response_refs(
+    run_root: pathlib.Path, disclosure: dict, *, call_id: str = "llm-1"
+) -> dict:
+    """Write one run-local call manifest + blob the wire reader accepts."""
+    blob_raw = json.dumps(
+        {"usage": {"request_wire": disclosure, "response_provider": "backend-a"}},
+        sort_keys=True,
+    ).encode("utf-8")
+    blob_path = run_root / "observability" / "blobs" / (f"{'c' * 64}.json.gz")
+    blob_path.parent.mkdir(parents=True, exist_ok=True)
+    blob_path.write_bytes(gzip.compress(blob_raw))
+    manifest_raw = json.dumps(
+        {
+            "task_id": "opaque",
+            "call_id": f"{call_id}_response",
+            "llm_call_id": call_id,
+            "full_payload_ref": {
+                "path": str(blob_path),
+                "sha256": hashlib.sha256(blob_raw).hexdigest(),
+                "size": len(blob_raw),
+                "kind": "json",
+                "encoding": "gzip",
+            },
+        },
+        sort_keys=True,
+    ).encode("utf-8")
+    manifest_path = run_root / "observability" / "calls" / "opaque" / f"{call_id}_response.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_bytes(manifest_raw)
+    return {
+        "path": str(manifest_path),
+        "sha256": hashlib.sha256(manifest_raw).hexdigest(),
+        "call_id": f"{call_id}_response",
+    }
+
+def test_unsettled_wire_disclosure_reports_effort_but_never_buys_the_cost_gate(
+    tmp_path, monkeypatch
+):
+    """An unsettled attempt may still disclose its effort; cost finality is separate."""
+    config = _config(
+        tmp_path,
+        provider_probe=True,
+        expected_data_sha256="a" * 64,
+        expected_binary_sha256="b" * 64,
+    )
+    disclosure = {
+        "requested_effort": "high",
+        "applied_effort": "high",
+        "requested_tool_dialect": "function",
+        "applied_tool_dialect": "function",
+        "reason_code": "requested_wire_form",
+        "source_profile_fingerprint": "d" * 64,
+        "accepted_profile_fingerprint": "d" * 64,
+        "attempt_id": "attempt-unsettled",
+        "candidate_sha256": "e" * 64,
+        "ladder_ordinal": 1,
+        "applied_actions": [],
+        "task_local": False,
+    }
+    response_ref = _verified_response_refs(config.run_root, disclosure)
+    gateway_result = {
+        "status": "completed",
+        "model": "requested/not-served",
+        "prompt_tokens": 12,
+        "completion_tokens": 4,
+        "cost_usd": 0.07,
+        "accounted_upper_bound_usd": 0.07,
+        "cost_estimated": False,
+        "cost_final": False,
+        "trace_refs": {
+            "llm_call_refs": [
+                {
+                    "llm_call_id": "llm-1",
+                    "resolved_model": config.model,
+                    "provider": "provider-a",
+                    "response_ref": response_ref,
+                }
+            ]
+        },
+    }
+
+    served = _served_telemetry(gateway_result, allowed_roots=(config.run_root,))
+    assert served["observed_effort"] == "high"
+    assert served["effort_source"] == "served_response_wire"
+    assert served["response_wire_effort_count"] == served["trace_call_count"] == 1
+    assert served["response_wire_provider_count"] == 1
+
+    executor = CyberGymExecutor(config)
+    monkeypatch.setattr(executor, "start", lambda: None)
+    monkeypatch.setattr(executor, "_generate", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        executor_module, "_install_workspace_backend_alias", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(executor, "_workspace", lambda *_args, **_kwargs: "container-a")
+    monkeypatch.setattr(executor, "_cleanup_workspace_container", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(executor, "_ensure_key", lambda: "test-key")
+    monkeypatch.setattr(
+        executor, "_attest_runtime", lambda *_args, **_kwargs: {"status": "ok"}
+    )
+    monkeypatch.setattr(
+        executor,
+        "_task_body",
+        lambda task, *_args, **_kwargs: {"task_id": "cybergym-" + task.task_id.replace(":", "-")},
+    )
+    monkeypatch.setattr(executor, "_gateway_wait", lambda *_args, **_kwargs: gateway_result)
+    rows = run_campaign(
+        ["arvo:1"],
+        run_root=config.run_root,
+        executor=executor.run_task,
+        estimated_cost_usd=1,
+        budget_cap_usd=2,
+    )
+
+    assert rows[0]["status"] == "infra_failed"
+    assert rows[0]["lifecycle"] == "post_gateway_evaluation_failed"
+    assert "cost is unknown or estimated" in rows[0]["error"]
