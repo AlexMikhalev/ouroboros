@@ -27,6 +27,10 @@ from devtools.benchmarks.cybergym.cybergym_dispatch import (  # noqa: F401
     GatewayCircuitOpen,
     run_dispatched,
 )
+from devtools.benchmarks.cybergym.cybergym_cost_evidence import (
+    frame_accounting_sources,
+    root_cost_snapshot,
+)
 from devtools.benchmarks.cybergym.cybergym_protocol import (
     _HEX64,
     _SAFE_COMPONENT,
@@ -583,31 +587,8 @@ def _terminal_gateway_accounting(payload: Mapping[str, Any] | None) -> dict[str,
     status = str(payload.get("status") or "").strip().lower()
     if status not in _TERMINAL_GATEWAY_STATUSES:
         return {}
-    sources: list[Mapping[str, Any]] = []
-    queue: list[Mapping[str, Any]] = [payload]
-    seen: set[int] = set()
-    for source in queue:
-        marker = id(source)
-        if marker in seen:
-            continue
-        seen.add(marker)
-        sources.append(source)
-        for child_key in (
-            "result",
-            "task_result",
-            "runtime_result",
-            "cost_breakdown",
-        ):
-            child = source.get(child_key)
-            if isinstance(child, Mapping):
-                queue.append(child)
-
-    def first_value(*names: str) -> Any:
-        for source in sources:
-            for name in names:
-                if name in source and source[name] is not None:
-                    return source[name]
-        return None
+    sources = frame_accounting_sources(payload)
+    present_snapshot, snapshot = root_cost_snapshot(payload)
 
     total: float | None = None
     amount_conflict = False
@@ -627,7 +608,12 @@ def _terminal_gateway_accounting(payload: Mapping[str, Any] | None) -> dict[str,
                 values.append(value)
         return values, invalid
 
-    totals, invalid_total = amount_views("accounted_upper_bound_usd")
+    # A coherent tree snapshot replaces overlapping own-task amount views,
+    # without replacing the existing explicit finality/partiality contract.
+    totals, invalid_total = (
+        ([snapshot["accounted_upper_bound_usd"]], False) if snapshot is not None
+        else amount_views("accounted_upper_bound_usd")
+    )
     if not totals and not invalid_total:
         totals, invalid_total = amount_views("cost_usd")
     if totals:
@@ -682,10 +668,15 @@ def _terminal_gateway_accounting(payload: Mapping[str, Any] | None) -> dict[str,
     accounting_status = (
         accounting_statuses[0]
         if accounting_statuses
-        else first_value("cost_status")
+        else next((source["cost_status"] for source in sources
+                   if source.get("cost_status") is not None), None)
     )
     if isinstance(accounting_status, str) and accounting_status.strip():
         projected["cost_status"] = accounting_status.strip()
+    if present_snapshot and (snapshot is None or any(snapshot[key] != 0 for key in (
+        "non_final_rows", "unknown_unmetered", "reserved_usd", "unresolved_upper_bound_usd",
+    ))):
+        projected["cost_final"] = False
     return projected
 
 
@@ -1246,6 +1237,8 @@ def finalize_outcome_row(
         # the row discloses it instead of claiming a fully final cost.
         row.update({"cost_final": False, "cost_grace_acceptance": grace,
                     "unresolved_upper_bound_usd": grace["unresolved_upper_bound_usd"]})
+        if grace.get("accounting_schema") and "cost_estimated" not in outcome:
+            row.pop("cost_estimated", None)
     return row
 
 

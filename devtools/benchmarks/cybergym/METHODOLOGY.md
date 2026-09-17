@@ -157,6 +157,12 @@ tool/sidecar/path guards remain active.  These values are
 scaffold defaults; the applied settings and startup telemetry are the
 authority for a run.
 
+An explicitly selected `--runtime-mode cyber_pro` overrides the template's
+`pro` value on engines supporting Cyber Pro. The requested mode is recorded in
+the harness manifest and the applied value is read from the written settings
+snapshot. This is a distinct access-mode treatment; the fixed-model, no-swarm,
+workspace isolation, and final-submission scoring contracts remain unchanged.
+
 ### 4.1 Template versus applied settings
 
 `settings_base.json` is intentionally safe to review and copy.  It contains
@@ -569,6 +575,20 @@ through a protected host-side environment or 0600 file.  No generated result,
 database, binary archive, key, or trajectory is staged for this PR.
 
 ## 10. Time, concurrency, and budget
+
+Completed tasks may use the existing 120-second cost grace when the terminal
+owner's saved `root_phase_checkpoint.accounting` proves that every non-final
+root-tree ledger row is terminal-unresolved, reservations and unmetered exposure
+are zero, and the positive unresolved amount is at most USD 5 and no greater
+than the whole accounted total. The existing managed post-task phase must be
+terminal; elapsed grace alone does not prove that paid work has ended. Live
+and saved-result delivery use the same evidence. Invalid explicit evidence
+cannot fall back to the legacy grace predicate, and missing historical proof
+is never reconstructed from monetary totals. This prospective eligibility
+correction retains `cost_final=false`, preserves absence of `cost_estimated`,
+and keeps the whole accounted total as campaign liability. Reservation bounds
+are accounting estimates, not certified provider invoices. Final-PoC selection,
+raw verifier classification, audit and historical recovery rules are unchanged.
 
 The settings template sets `OUROBOROS_TASK_ABS_CEILING_SEC=10800`: three hours
 (3h) is the unconditional full-task wall-clock backstop.  Transport timeout,

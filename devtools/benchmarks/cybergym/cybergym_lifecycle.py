@@ -1409,12 +1409,9 @@ class _LifecycleMixin:
             "sidecar_attestation": sidecar_attestation,
             "observed_model": observed_model,
             "observed_provider": observed_provider,
-            "observed_provider_attempts": list(
-                served.get("observed_provider_attempts") or ()
-            ),
-            "observed_provider_route": list(
-                served.get("observed_provider_route") or ()
-            ),
+            **{key: list(served.get(key) or ()) for key in (
+                "observed_provider_attempts", "observed_provider_route",
+            )},
             "provider_distribution": dict(
                 served.get("provider_distribution") or {}
             ),
@@ -1425,7 +1422,9 @@ class _LifecycleMixin:
             "completion_tokens": completion_tokens,
             "cached_tokens": cached_tokens,
             "cost_usd": task_cost,
-            "cost_estimated": False,
+            **({"cost_estimated": task_accounting["cost_estimated"]}
+               if "cost_estimated" in task_accounting else
+               ({"cost_estimated": False} if cost_final else {})),
             "cost_final": bool(cost_final),
             **({"cost_grace_acceptance": grace} if grace is not None else {}),
             "leakage": {
