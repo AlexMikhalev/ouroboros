@@ -130,7 +130,7 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       ├── _outcome_receipts.py ← Receipt parsing and the ONE canonical receipt identity (`receipt_canonical_identity` → `ReceiptIdentity`; §10 invariant 16) from three components: `criterion_id`; the canonical `check` text PAIRED with its `check_rendering` stamp (the stored string alone cannot say which renderer wrote it); the raw-sorted `canonical_path_set` (a leading space is a legal filename byte). Per-kind normalization lives in the closed `IDENTITY_KINDS`/`KIND_NORMALIZES_COMMAND_TEXT` table; outstanding sets `unreconciled_failed`/`unreconciled_masked`; `receipt_identity_projection`/`disclosed_list_projection` carry exact omitted counts plus a hash; `verification_receipt_ledger_row` splats that projection, so a new receipt key is dropped unless added there
       ├── _outcome_tool_errors.py ← Leaf SSOT for tool-trace status vocabularies and execution-axis classification; outcomes.py re-exports
       ├── code_intelligence.py ← Internal code inventory: derived-only file facts, hashes, polyglot symbol/import/call extraction via tree-sitter with Python on stdlib `ast`, a visible `structural_unavailable` fallback when a grammar is missing, and an incremental JSON cache (no raw source)
-      ├── code_intelligence_architecture.py ← Architecture facts over the pinned domain/contract/persistence carriers: `owner_of`, the domain quotient, and the facade inventory (`docs/v7next/FACADE_INVENTORY.md`)
+      ├── code_intelligence_architecture.py ← Architecture facts over the pinned domain/contract/persistence carriers: `owner_of`, the domain quotient, and the facade inventory (`docs/inventories/FACADE_INVENTORY.md`)
       ├── code_search_rg.py    ← Optional ripgrep-backed search for search_code; every match is post-filtered through the protected/secret gates
       ├── pricing.py           ← Exact-route best-effort provider-catalog lookup with nullable estimates; no static model tariffs (they go stale) and not the monetary ledger (§6 Budget tracking)
       ├── usage_accounting.py  ← Physical-model-attempt monetary authority: reserved→dispatched→settled|unresolved (or reserved→released), short cross-process check+append+fsync lock, global/root admission, validated replay, compatibility projections; candidates carry exact raw/context identities + a pre-dispatch manifest on the same attempt id (§6 Budget tracking)
@@ -483,6 +483,8 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
 
 `devtools/` (including `devtools/benchmarks/cybergym/`) lives outside the runtime and package discovery: no runtime imports, normal review, artifacts in an external output root; a sentinel-marked isolated root suppresses rotation warnings. `devtools/e2e_live/` is the live E2E stand — K staggered isolated real servers running the owner-shaped scenarios SM1, SW1 and SK1, accepted over durable artifacts and a browser probe, admitted through the same seed gate and manifest seams as the benchmark launchers. Its operator manual is `devtools/e2e_live/README.md`; the one rule binding runtime changes is DEVELOPMENT "Live E2E stand".
 
+`devtools/benchmarks/cowork_bench/` runs a clean seed inside the pinned upstream task containers, preserving MCP process state through a local proxy; its launcher owns campaign spending, resource limits and result ledgers, while its offline audit preserves the official evaluator as scoring authority (see its `METHODOLOGY.md`).
+
 ### Gateway Boundary v1
 
 `ouroboros/gateway/` is the single inbound browser/CLI boundary (`ouroboros/gateways/` holds the thin outbound adapters): `contracts.py` owns the envelopes, with the endpoint index in `endpoint_index.py`, `router.py` collects the routes, and `files.py`/`host_service.py` stay separate trust boundaries. The contract is EXECUTABLE — `gateway/schema.py` validates ingress against JSON Schema derived from those TypedDicts. Domain handlers translate transport into calls on existing runtime owners and must not acquire a second copy of queue, review, settings, or lifecycle policy. The facade exists for dependency direction: the UI evolves without importing the agent body, and the runtime evolves without ad-hoc browser contracts.
@@ -635,7 +637,7 @@ Bundled resources use the CLI / Headless Boundary lookup order rather than assum
 └── ouroboros.pid                  ← launcher PID lock; platform lock auto-released on crash
 ```
 
-The generated `docs/v7next/DATA_LAYOUT_INVENTORY.md` probes every entry of this tree: its last literal path segment must be a tracked repo path or directory, or a literal in the runtime sources. A durable file renamed in code while its row here survives therefore turns red, not silent — but this is a basename-and-substring check and proves nothing stronger about an entry.
+The generated `docs/inventories/DATA_LAYOUT_INVENTORY.md` probes every entry of this tree: its last literal path segment must be a tracked repo path or directory, or a literal in the runtime sources. A durable file renamed in code while its row here survives therefore turns red, not silent — but this is a basename-and-substring check and proves nothing stronger about an entry.
 
 ---
 

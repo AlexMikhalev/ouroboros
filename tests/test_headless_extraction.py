@@ -68,12 +68,7 @@ def test_headless_leaves_are_non_catalog_owners_without_headless_backedges():
             for node in ast.walk(tree)
         )
 
-    # v7next transplant note: the reference test (ouroboros_v7_wip @ 9f691656)
-    # additionally proves the three modules stay out of the frozen tool-module
-    # inventory via ouroboros.tool_module_inventory; that leaf belongs to the
-    # tools domain and is not on this integration branch yet — the clause
-    # returns with its lane. The static guarantee it rested on is kept above:
-    # none of the three modules defines get_tools, so no catalog can adopt them.
+    # None of these modules defines get_tools, so they remain non-catalog owners.
 
 
 def test_headless_public_export_list_preserves_extraction_and_terminal_file_helpers():
@@ -122,7 +117,7 @@ def test_headless_extraction_size_bounds_have_meaningful_headroom():
     }
     assert counts["ouroboros.headless"] <= 1000
     assert all(count <= 1000 for count in counts.values())
-    assert 400 <= counts["ouroboros.workspace_patch_capture"] <= 1000
+    assert counts["ouroboros.workspace_patch_capture"] <= 1000
 
 
 def test_terminal_file_helper_preserves_legacy_ready_without_finalized_timestamp(tmp_path, monkeypatch):

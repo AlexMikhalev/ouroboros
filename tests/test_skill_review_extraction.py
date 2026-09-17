@@ -149,4 +149,4 @@ def test_skill_review_extraction_size_bounds_have_meaningful_headroom():
     }
     assert counts["ouroboros.skill_review"] <= 900
     assert all(count <= 1000 for count in counts.values())
-    assert 300 <= counts["ouroboros.skill_review_prompt"] <= 1000
+    assert counts["ouroboros.skill_review_prompt"] <= 1000

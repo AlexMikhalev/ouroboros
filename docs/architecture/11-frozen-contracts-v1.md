@@ -84,11 +84,10 @@ Add the field to the active frozen owner — `ouroboros/contracts/` for the pack
     install that emits a machine-readable scope document naming every incompatibility it finds across the five
     frozen classes (gateway alias, retired setting, comma list, plugin API, schema stamp), snapping the
     retired-key lists at execution time instead of hardcoding them.
-  - *Deliberately NOT in this window:* the handler ABI — tool handlers returning `ToolResult` instead of `str` —
-    is backlog, so handler signatures are unchanged. The external-executor family is the one INTERIOR
-    exception and does not open that window: its producers, decorators and host consumers pass a native
-    `ToolResult`, while its four REGISTERED entries still publish a `str` projection through
-    `tool_result._publish_tool_result`. No handler signature and no other family changed.
+  - *Handler ABI.* Registered tool handlers return `str`. The external-executor family uses a native
+    `ToolResult` internally across its producers, decorators and host consumers, while its four
+    registered entries publish a `str` projection through `tool_result._publish_tool_result`.
+    This preserves the public handler signature.
 - The native skill upgrade migration banner API (`GET /api/migrations`, `POST /api/migrations/{key}/dismiss`,
   `MigrationsResponse`) is retired: dismissed banner state in `data/state/migrations.json` is intentionally ignored.
 

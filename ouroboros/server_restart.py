@@ -4,11 +4,9 @@ The live-task census the restart drain consults, the teardown arguments that
 finalize interrupted tasks with an honest reason, the managed-update guard on
 preserving queued work, the checkout/update serialization gate, the owned-work
 stop of the owner's manual Restart, the planned restart's engine-pin daemon stop,
-and the event bus shutdown. The restart
-transaction itself — the deferred drain record and the performer that raises
-the exit signal — stays in ``server.py`` for now: the upstream delegation
-train coupled it to the composition root through the planned-handoff
-transaction id (see docs/v7next/LEDGER_CORRECTIONS.md, D11).
+and the event bus shutdown live here. The restart transaction itself stays in
+``server.py``: its planned-handoff transaction id joins the deferred drain record
+to the performer that raises the exit signal.
 """
 
 from __future__ import annotations

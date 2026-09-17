@@ -33,6 +33,9 @@ runtime core and are not packaged as app runtime code.
   the exact model, provider, final-PoC, and denominator contract.
 - `harness_bench_fast/` — Ouroboros CLI wrapper and methodology notes for the
   public `ai-forever/harness-bench-fast` runner.
+- `cowork_bench/` — pinned Cowork Bench task-container adapter, persistent MCP
+  sessions, campaign spending and resource limits, plus an offline evidence audit;
+  see [its methodology](cowork_bench/METHODOLOGY.md) for protocol differences.
 - `common/` — shared manifests, result ledgers, safe run roots, secret hygiene,
   and official command builders.
 

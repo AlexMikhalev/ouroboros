@@ -156,7 +156,7 @@ are pointed to, never restated, and the ARCHITECTURE settings and endpoint
 tables are test-checked registries of those owners, not second authorities.
 
 A change REPLACES the description of the node it touched; release history lives
-in git and the README history table, leftovers in issues. A `§1` module-tree row
+in git and the README history table. A `§1` module-tree row
 is an address plus the capability and the typed codes, events and state files it
 emits as grep targets, plus a `(§N)` pointer. The owning subsection keeps the
 complete rationale and trade-offs; internal mechanism may live in the named
@@ -170,6 +170,17 @@ measured numbers live only in the inventory below. The authored introduction
 under a chapter's H1 IS its compact Low/Nano view: re-read and correct it
 whenever the chapter changes.
 
+Track assets with a continuing purpose for the product, contributors, verification,
+legal requirements or evidence for public claims, beyond the work that introduced them. Plans, review packets, run receipts
+and campaign bookkeeping belong in the external work area or durable task evidence,
+not the tracked source tree; a test preserving their presence or wording does not
+give them a permanent product role. Retire temporary campaign tooling when its
+purpose ends. Keep current behavior and its rationale in their existing owners;
+future-work lists and campaign backlog stay outside the tracked product tree.
+Generated snapshots with real product, verification or publication consumers remain
+valid; optional reports use stdout or an explicit output destination. Existing
+review enforces this contract, without automatic deletion or filename matching.
+
 Both are reference BOOKS: an entrypoint plus one chapter file per subject under
 `docs/architecture/` or `docs/development/`. Five rules keep the shape honest:
 
@@ -182,14 +193,13 @@ Both are reference BOOKS: an entrypoint plus one chapter file per subject under
 - **WHY stays where the reader is.** A chapter keeps the rationale for what it
   owns; moved prose REPLACES the description at its destination.
 - **One line ending.** `.gitattributes` pins `docs/**/*.md` to LF, so the digests
-  and byte offsets carried by source refs, inventories and the transfer table
+  and byte offsets carried by source refs and inventories
   stay stable everywhere.
 - **Readers ask for a view, not for a file.** `load_governance_doc` composes,
   `context_layout.book_navigation` navigates, `reference_books.book_path_role`
   classifies; `tests/_governance_docs_shared.py` is the one reader tests use: a
   substring pin over an entrypoint `read_text()` passes while testing nothing,
   since that page is only a membership list.
-  `docs/reference-books-migration.md` is the operator record, not a member.
 
 Enforcement: `tests/test_reference_book_validation.py` validates book shape.
 Residue — version stamps, decision codenames, owner codes, Cyrillic, bare issue
