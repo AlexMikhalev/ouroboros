@@ -187,6 +187,32 @@ def panel_awaiting_this_turn(tools_ctx: Any, llm_trace: Dict[str, Any]) -> Optio
     return run
 
 
+def awaited_panel_has_settled(tools_ctx: Any, llm_trace: Dict[str, Any]) -> bool:
+    """Whether the panel this turn waits for has already settled (a $0 look).
+
+    Settled means its verdicts already woke Main and sit in the transcript: the
+    only thing left is the next model round — a control repair, for one — so
+    the loop must run it instead of parking behind a settlement that will never
+    arrive again (the keyless E2E lane hung that way until the task deadline).
+    The run record is reconciled at $0 first, exactly as delivery does, because
+    the trace learns of a settlement only through that collection.
+    """
+    from ouroboros.loop_acceptance_review import acceptance_run_pending
+    from ouroboros.review_dispatch import reconcile_pending_acceptance_runs
+
+    run = panel_awaiting_this_turn(tools_ctx, llm_trace)
+    if run is None:
+        return False
+    if acceptance_run_pending(run):
+        try:
+            reconcile_pending_acceptance_runs(
+                {"review_runs": [run]}, drive_root=pathlib.Path(tools_ctx.drive_root),
+                usage_ctx=tools_ctx)
+        except Exception:
+            log.debug("awaited acceptance panel could not be reconciled", exc_info=True)
+    return not acceptance_run_pending(run)
+
+
 def acceptance_choice_offered() -> bool:
     """Whether the host can honour a wait/finish choice on this install.
 

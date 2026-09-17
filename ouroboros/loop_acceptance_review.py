@@ -159,6 +159,10 @@ def wait_for_acceptance_feedback(tools: Any, limit_ctx: Any, trace: dict,
     binding = getattr(ctx, "_task_acceptance_pending", "")
     if not binding:
         return
+    from ouroboros.acceptance_settlement import awaited_panel_has_settled
+
+    if awaited_panel_has_settled(ctx, trace):
+        return  # its verdicts already woke this turn; the next round runs, nothing settles again
     # Re-offered on EVERY wake: a replacement candidate inherits
     # ``control_episode_seen``, which hid the one free route back to the verdicts.
     _loop()._arm_delivery_control(tools, limit_ctx, trace, skip_if_unchanged=True)
