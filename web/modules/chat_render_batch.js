@@ -597,6 +597,9 @@ export function updateLiveTimelineItem(record, summary, { ts, rawTs, syntheticKe
             // content again once it reports an error.
             receipt: Boolean(summary.receipt),
             ts: ts || it.ts,
+            // Replay compares the child's current status with older pages.
+            // Its source time advances with the live status, not with narration.
+            ...(syntheticKey.startsWith('subagent-lifecycle:') && rawTs ? { sourceTs: rawTs } : {}),
         };
         if (Object.entries(patch).some(([key, value]) => it[key] !== value)) {
             Object.assign(it, patch);
