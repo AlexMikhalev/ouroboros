@@ -13,15 +13,23 @@ like the hurry projection):
     "owner_quiz": {
         "<quiz_id>": {
             "quiz_id", "question", "options": [label, ...], "stake",
+            "option_details"?: [detail, ...], "recommended_index"?: int,
             "assumption", "state": open|answered|expired_terminal,
             "asked_at", "answered_at"?, "answered_index"?, "request_id"?,
-            "comment"?, "reconciled_at"?,
+            "comment"?, "reconciled_at"?, "chat_id"?, "max_wait_minutes"?,
+            "answered_after_terminal"?,
         }, ...
     }
 
-Structural expiry only (owner decision 30=A): a quiz dies with its author —
-``reconcile_terminal`` runs on the task-done seam; there is no host TTL.
-The writer mutates ONLY the ``owner_quiz`` key via ``update_json_locked``
+Expiry stays STRUCTURAL: ``reconcile_terminal`` runs on the task-done seam and
+flips every still-open block to ``expired_terminal``; there is no host TTL. What
+changed (owner decision В17a=A, which explicitly retired 30=A's "a quiz dies
+with its author") is the fate of a LATE answer: the ingress may still record it
+on an expired block (``record_answered(allow_expired=True)``), first answer
+still wins, and the block keeps ``answered_after_terminal`` for audit. The
+stored ``chat_id`` is the card's own chat, so that answer can be delivered as an
+ordinary owner message once its author is gone.
+The writers mutate ``owner_quiz`` and its paired terminal ``owner_wait`` via ``update_json_locked``
 (never ``write_task_result`` — its status-regression guard can drop the
 write), so concurrent terminal writers merge around it.
 """
@@ -86,8 +94,8 @@ def _mutate_projection(
             return None
         if len(quizzes) > _QUIZ_CAP:
             # Evict CLOSED blocks first (oldest asked_at): an evicted OPEN
-            # block would resurrect as an "Awaiting answer" card on replay
-            # (the chat row froze state=open) whose click then 404s.
+            # block would resurrect as an unanswered card on replay (the chat
+            # row froze state=open) whose click then 404s.
             def _eviction_key(key: str):
                 block = quizzes[key]
                 closed = str(block.get("state") or STATE_OPEN) != STATE_OPEN
@@ -109,19 +117,39 @@ def record_asked(
     quiz_id: str, question: str, options: List[str],
     stake: str = "", assumption: str = "",
     wait_for_answer: bool = False,
+    option_details: Optional[List[str]] = None,
+    recommended_index: Optional[int] = None,
+    chat_id: Optional[int] = None,
+    max_wait_minutes: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Worker-side projection write at ask time.
 
     The stored option labels are the ingress's validation authority: an
     ``option_index`` outside this list is refused, and the answer echoes the
-    verbatim label back to the asking task."""
+    verbatim label back to the asking task.
+
+    ``chat_id`` is the card's own chat, recorded by the asker (chat 0 is the
+    real hidden partition, never "no chat"): a late answer arriving after the
+    task is gone is delivered there as an ordinary owner message instead of
+    into a mailbox nobody drains. ``max_wait_minutes`` records the bound a
+    waiting asker chose, so replay can say what the task waited for."""
+    if option_details is not None and (
+        not isinstance(option_details, list) or len(option_details) != len(options)
+        or not all(isinstance(value, str) for value in option_details)
+    ):
+        raise ValueError("option_details must preserve the labels' length and order")
     stamp = utc_now_iso()
     block = {
         "quiz_id": str(quiz_id), "question": str(question or ""),
         "options": [str(label) for label in options],
+        **({"option_details": list(option_details)} if option_details is not None else {}),
+        **({"recommended_index": int(recommended_index)} if isinstance(recommended_index, int) else {}),
         "stake": str(stake or ""), "assumption": str(assumption or ""),
         "state": STATE_OPEN, "asked_at": stamp,
         **({"wait_for_answer": True} if wait_for_answer else {}),
+        **({"chat_id": int(chat_id)} if isinstance(chat_id, int) and not isinstance(chat_id, bool) else {}),
+        **({"max_wait_minutes": int(max_wait_minutes)}
+           if isinstance(max_wait_minutes, int) and not isinstance(max_wait_minutes, bool) else {}),
     }
 
     refused: Dict[str, str] = {}
@@ -151,6 +179,7 @@ def record_asked(
 def record_answered(
     drive_root: Any, task_id: str, *,
     quiz_id: str, option_index: Optional[int], request_id: str, comment: str = "",
+    allow_expired: bool = False,
 ) -> Dict[str, Any]:
     """Ingress-side answer write — request-id idempotent, first answer wins.
 
@@ -159,12 +188,19 @@ def record_answered(
     would read as "chose the first option" on every later replay) and the
     verbatim ``comment`` carries the answer.
 
+    ``allow_expired`` admits the LATE answer (В17a=A): a structurally expired
+    card of a finished task is still answerable, and the accepted block carries
+    ``answered_after_terminal`` so replay can tell it from an answer the asking
+    task itself received. First-wins is untouched — an already ``answered``
+    block stays a refusal on any other ``request_id``.
+
     Returns ``{"ok", "state", "duplicate", "error", "block"}``:
     - unknown quiz_id → ``error="quiz_not_found"``;
-    - open + valid index (or no index + comment) → answered (``ok=True``);
+    - open (or expired with ``allow_expired``) + valid index (or no index +
+      comment) → answered (``ok=True``);
     - same ``request_id`` replay → the recorded confirmation, ``duplicate``;
-    - already answered/expired with a different ``request_id`` → refusal with
-      the truthful current ``state`` (the card settles, never re-invites);
+    - already answered, or expired without ``allow_expired``, under a different
+      ``request_id`` → refusal with the truthful current ``state``;
     - out-of-range index → ``error="option_out_of_range"``;
     - no index and no comment → ``error="answer_empty"`` (an answer that says
       nothing is not an answer).
@@ -181,7 +217,8 @@ def record_answered(
         if str(block.get("request_id") or "") and str(block.get("request_id")) == str(request_id or ""):
             outcome.update({"ok": True, "state": state, "duplicate": True, "block": dict(block)})
             return _KEEP
-        if state != STATE_OPEN:
+        late = allow_expired and state == STATE_EXPIRED_TERMINAL
+        if state != STATE_OPEN and not late:
             outcome.update({"ok": False, "error": "quiz_closed", "state": state, "block": dict(block)})
             return _KEEP
         options = block.get("options") if isinstance(block.get("options"), list) else []
@@ -195,6 +232,8 @@ def record_answered(
         block.update({
             "state": STATE_ANSWERED, "answered_at": stamp,
             "request_id": str(request_id or ""),
+            # Audit only: the card was answered after its author finished.
+            **({"answered_after_terminal": True} if late else {}),
             # No index key at all for an own answer — see the docstring.
             **({"answered_index": int(option_index)} if option_index is not None else {}),
             **({"comment": str(comment)} if str(comment or "").strip() else {}),
@@ -207,6 +246,25 @@ def record_answered(
     return outcome
 
 
+def mark_wait_ended(drive_root: Any, task_id: str, quiz_id: str) -> bool:
+    """The bounded wait behind an OPEN card closed and the task resumed: the block stops
+    saying ``wait_for_answer`` (replay renders the truth) and keeps the instant for audit.
+    The card stays open and answerable. Returns whether a block changed."""
+    changed: List[bool] = []
+
+    def _mutator(quizzes: Dict[str, Dict[str, Any]]) -> Any:
+        block = quizzes.get(str(quiz_id))
+        if not isinstance(block, dict) or not block.get("wait_for_answer"):
+            return _KEEP
+        block.pop("wait_for_answer", None)
+        block["wait_ended_at"] = utc_now_iso()
+        changed.append(True)
+        return block
+
+    _mutate_projection(drive_root, task_id, _mutator)
+    return bool(changed)
+
+
 def reconcile_terminal(drive_root: Any, task_id: str) -> List[str]:
     """Task-done reconciliation: every still-open quiz expires structurally.
 
@@ -215,15 +273,53 @@ def reconcile_terminal(drive_root: Any, task_id: str) -> List[str]:
     answered block."""
     stamp = utc_now_iso()
     expired: List[str] = []
+    terminal_quizzes: List[str] = []
 
     def _mutator(quizzes: Dict[str, Dict[str, Any]]) -> Any:
         for key, block in quizzes.items():
-            if str(block.get("state") or STATE_OPEN) == STATE_OPEN:
+            state = str(block.get("state") or STATE_OPEN)
+            if state == STATE_OPEN:
                 block.update({"state": STATE_EXPIRED_TERMINAL, "reconciled_at": stamp})
                 expired.append(str(key))
+                terminal_quizzes.append(str(key))
+            elif state in (STATE_EXPIRED_TERMINAL, STATE_ANSWERED):
+                # A previous call may have committed quiz expiry before the
+                # paired task-result repair failed. Keep the second pass
+                # idempotent; an accepted answer can also await worker capacity
+                # when the task ends. Neither case rewrites the quiz's answer.
+                terminal_quizzes.append(str(key))
         return True if expired else _KEEP
 
     _mutate_projection(drive_root, task_id, _mutator)
+    if terminal_quizzes:
+        from ouroboros.task_results import (
+            require_writable_task_result_schema,
+            stamp_task_result_schema,
+        )
+
+        def _close_owner_wait(current: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            require_writable_task_result_schema(current)
+            wait = current.get("owner_wait")
+            if not isinstance(wait, dict) or str(wait.get("state") or "") != "waiting":
+                return None
+            quiz_id = str(wait.get("quiz_id") or "")
+            if quiz_id not in terminal_quizzes:
+                return None
+            updated = dict(current)
+            updated["owner_wait"] = {
+                **wait,
+                "state": STATE_EXPIRED_TERMINAL,
+                "reconciled_at": stamp,
+            }
+            return stamp_task_result_schema(updated)
+
+        # The quiz and its waiting continuation share the same task-result
+        # authority. Close the paired wait after the quiz projection so a
+        # terminal task cannot replay as both expired and still waiting.
+        update_json_locked(
+            _quiz_result_path(drive_root, task_id),
+            _close_owner_wait,
+        )
     return expired
 
 

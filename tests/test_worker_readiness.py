@@ -272,6 +272,8 @@ def test_the_window_and_the_reported_wait_count_from_the_spawn_instant(pool, sea
 
 
 def test_the_replacement_loop_is_bounded_then_parked_and_reported(pool, seam, monkeypatch):
+    disabled = []
+    monkeypatch.setattr(pool.workers, "disable_exhausted_worker_pool", lambda: disabled.append(True))
     monkeypatch.setattr(pool.lifecycle, "WORKER_READY_MAX_ATTEMPTS", 2)
     monkeypatch.setattr(pool.workers, "load_state", lambda: {"current_sha": "abc123", "owner_chat_id": 7})
     first = _booting_slot(pool, 1, 5011)
@@ -284,6 +286,7 @@ def test_the_replacement_loop_is_bounded_then_parked_and_reported(pool, seam, mo
     assert seam.respawned == [(1, {"ready_attempt": 2})], "no respawn at the bound"
     assert seam.killed == [5011, 5012]
     assert last.reaping is True, "parked: never assignable, never respawned again"
+    assert last.readiness_exhausted and disabled == [True]
     rows = _rows(seam.supervisor, "worker_ready_timeout")
     assert [row["action"] for row in rows] == ["respawn", "parked"]
     assert rows[1]["attempt"] == 2 and rows[1]["max_attempts"] == 2
@@ -565,6 +568,51 @@ def test_assignment_skips_a_booting_slot_and_dispatches_to_an_open_one_unchanged
     workers.assign_tasks()
     assert [t["id"] for t in sent[0]] == ["second"]
     assert workers.RUNNING["second"]["worker_id"] == 0
+    workers.PENDING[:] = []
+    workers.RUNNING.clear()
+    workers.WORKERS.clear()
+
+
+def test_assignment_mirrors_the_running_status_for_a_root_not_only_a_subagent(tmp_path, monkeypatch):
+    """Both orphan healers key on the STORED status, so a root that exists only in
+    memory and the snapshot is a ghost. The root twin of the subagent mirror pinned
+    in tests/test_task_status_flow.py: same status, its OWN sentence, and none of
+    the delegation-only keys — a None there would erase what admission recorded."""
+    from ouroboros.task_results import STATUS_RUNNING, load_task_result, write_task_result
+    from supervisor import queue, state, workers
+
+    state.init(tmp_path, total_budget_limit=10.0)
+    queue.init(tmp_path)
+    monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
+    monkeypatch.setattr(queue, "DRIVE_ROOT", tmp_path)
+    workers.PENDING[:] = []
+    workers.RUNNING.clear()
+    workers.WORKERS.clear()
+    queue.BUDGET_ROOT_FENCES.clear()
+    queue.init_queue_refs(workers.PENDING, workers.RUNNING, workers.QUEUE_SEQ_COUNTER_REF)
+    monkeypatch.setattr(workers, "load_state", lambda: {"owner_chat_id": 0})
+    monkeypatch.setattr(state, "budget_remaining", lambda _st, **_kwargs: 10.0)
+
+    write_task_result(tmp_path, "root-1", "scheduled", description="Draft the release note",
+                      chat_id=4, expected_output="one paragraph")
+    workers.WORKERS[0] = SimpleNamespace(wid=0, busy_task_id=None, reaping=False,
+                                         in_q=SimpleNamespace(put=lambda _t: None))
+    workers.PENDING.append({
+        "id": "root-1", "type": "task", "chat_id": 4, "priority": 1,
+        "delegation_role": "root", "root_task_id": "root-1", "drive_root": str(tmp_path),
+        "description": "Draft the release note", "objective": "Draft the release note",
+    })
+
+    workers.assign_tasks()
+
+    stored = load_task_result(tmp_path, "root-1")
+    assert stored["status"] == STATUS_RUNNING
+    assert stored["result"] == "Assigned to a worker."
+    assert stored["chat_id"] == 4 and stored["root_task_id"] == "root-1"
+    assert "child_drive_root" not in stored and "parent_task_id" not in stored
+    # Merge, not overwrite: what admission recorded and this mirror does not carry
+    # must survive it.
+    assert stored["expected_output"] == "one paragraph"
     workers.PENDING[:] = []
     workers.RUNNING.clear()
     workers.WORKERS.clear()

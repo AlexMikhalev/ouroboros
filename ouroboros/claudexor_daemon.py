@@ -51,6 +51,18 @@ import threading
 import time
 from typing import Any, Dict, Literal, Optional
 
+from ouroboros.claudexor_startup_failure import (
+    ExitFact,
+    build_start_failure_record,
+    classified_start_failure_record,
+    classify_startup_failure,
+    describe_log_interval,
+    latch_cleared_row,
+    read_startup_log_interval,
+    start_failure_detail,
+    start_failure_label,
+    start_failure_row,
+)
 from ouroboros.config import (
     CLAUDEXOR_STARTUP_WAIT_SEC as _SPAWN_WAIT_SEC,
     CLAUDEXOR_STARTUP_POLL_SEC as _SPAWN_POLL_SEC,
@@ -87,6 +99,10 @@ _TRANSPORT_UNREACHABLE = "transport_unreachable"
 # The typed answer of ``OwnedClaudexorDaemon.stop_outcome``: an unconfirmed stop
 # is already disclosed (critical log + supervisor row) with custody retained.
 DaemonStopOutcome = Literal["stopped", "nothing_to_stop", "unconfirmed"]
+from ouroboros.config import (
+    CLAUDEXOR_OPERATOR_STOP_TIMEOUT_SEC as _OPERATOR_STOP_TIMEOUT_SEC,
+    CLAUDEXOR_STOP_EXIT_WAIT_SEC as _STOP_EXIT_WAIT_SEC,
+)
 
 
 def _handshake_serving_mode(body: Any) -> str:
@@ -111,6 +127,22 @@ def owned_config_dir() -> pathlib.Path:
 
 def owned_descriptor_path() -> pathlib.Path:
     return owned_config_dir() / "daemon" / "control-api.json"
+
+
+def _descriptor_identity() -> Optional[tuple]:
+    """Stat identity of the control descriptor, ``None`` when absent.
+
+    Recorded at spawn and compared when the exit is first observed. The engine
+    rewrites ``control-api.json`` IN PLACE (``daemon-startup.ts``), so the tuple
+    relies on ``st_mtime_ns``/``st_size`` changing, not on a new inode; a change
+    means a descriptor was written DURING that spawn — the second half of the
+    latch predicate.
+    """
+    try:
+        stat = owned_descriptor_path().stat()
+    except OSError:
+        return None
+    return (stat.st_ino, stat.st_mtime_ns, stat.st_size)
 
 
 def owned_daemon_provisioned() -> bool:
@@ -311,10 +343,18 @@ class OwnedClaudexorDaemon:
         self._proc: Optional[subprocess.Popen] = None
         self._last_error = ""
         self._engine_version = ""
+        # Liveness bookkeeping above; the PROVEN serving version below. Only a
+        # successful handshake writes it, so a failed probe cannot retract it.
+        self._proven_engine_version = ""
         self._engine_build_sha = ""
         self._generation = 0
         self._stopping = False
         self._startup_attempt: Dict[str, Any] = {}
+        # Spawn latch (#844): the typed record of the last start that ended
+        # with ``ExitFact.failed_without_control``. While set, no caller
+        # spawns; the periodic supervisor sweep, a live attach, or a new
+        # manager (Restart/Panic) clears it. Not a counter, not a backoff.
+        self._last_start_failure: Optional[Dict[str, Any]] = None
         # Rotation reconcile (B3): a non-blocking lock dedups CONCURRENT
         # ensures so they never double-POST settings; nothing else is gated.
         self._rotation_lock = threading.Lock()
@@ -357,6 +397,7 @@ class OwnedClaudexorDaemon:
                     else gateway.handshake(timeout_sec=timeout_sec)
                 )
                 self._engine_version = gateway.engine_version
+                self._proven_engine_version = str(gateway.engine_version or "")
                 engine = handshake.get("engine") if isinstance(handshake.get("engine"), dict) else {}
                 self._engine_build_sha = str(engine.get("sha") or "")
                 # Reachable-recovering is still "running" (the handshake proves
@@ -382,6 +423,27 @@ class OwnedClaudexorDaemon:
             ):
                 return None, _TRANSPORT_UNREACHABLE, f"{exc.code}: {exc}"
             return None, "stale", f"{exc.code}: {exc}"
+
+    @property
+    def engine_version(self) -> str:
+        """Serving version PROVEN by the last SUCCESSFUL handshake here, else ''.
+
+        A request-shape floor reads this before it has a gateway, so a FAILED
+        probe leaves it exactly as it was: a handshake timeout, a token refusal
+        or a momentarily unreachable socket is silence about the engine, never
+        evidence that a version it already served is gone. Blanking it there
+        would flip a running caller's request shape between the candidate it
+        was priced on and the send, which is a different bug wearing this
+        field's clothes. Only another successful handshake replaces the value,
+        and that is exactly how a deliberate stop or a planned restart on a new
+        pin publishes its engine: the next ``ensure_owned_gateway`` re-proves
+        the serving version, and until then the last proven one stands. Engine
+        DOWNGRADE is not a supported direction, so a supported replacement can
+        only prove the same version or a newer one. ``_engine_version`` stays
+        the liveness projection — current probe, blanked on failure — which is
+        what status and the pin comparison read.
+        """
+        return self._proven_engine_version
 
     def _alive_endpoint(self, *, timeout_sec: Optional[float] = None) -> Optional[Any]:
         """Endpoint of a LIVE daemon on our home, or None. Never spawns."""
@@ -455,11 +517,89 @@ class OwnedClaudexorDaemon:
         _write_ownership_marker()
         with self._lock:
             self._check_start_generation(generation)
-            if self._proc is not None and self._proc.poll() is not None:
-                self._proc = None  # Popen.poll reaps an exited election contender.
-                self._startup_attempt = {}
+        # An own child that exited while a live daemon answers — an election
+        # loser, or a crash after publishing control — is reaped and ROWED
+        # here (Popen.poll reaps it); it never latches against this attach,
+        # because a live authenticated daemon (started by anyone) is exactly
+        # the fact the latch waited for, so the attach clears it right after.
+        self._settle_exited_child()
+        with self._lock:
             self._last_error = ""
+        self.clear_start_failure_latch(cleared_by="live_daemon_attached")
         return endpoint
+
+    def _settle_exited_child(self) -> Optional[Dict[str, Any]]:
+        """Reap this manager's own EXITED child once and harvest its exit fact (#844).
+
+        Called at every spawn decision and at attach, not only when a caller's
+        wait expires: with the real crash cadence (V8 dies after the 20 s
+        startup window) the waiting caller got ``daemon_starting`` and the
+        child died with nobody waiting — the next caller must still find the
+        row, the classification and the latch instead of respawning silently.
+        A live child, or a joined peer startup (no own handle), settles nothing.
+        The exit fact and the latch are taken under the SAME lock as the pop
+        (descriptor identity sampled right here), so a second caller in the
+        read/classify/row window that follows already meets the latch, never a
+        free spawn slot; the classification completes the record afterwards.
+        """
+        from ouroboros.utils import utc_now_iso
+
+        with self._lock:
+            proc, attempt = self._proc, dict(self._startup_attempt)
+            returncode = proc.poll() if proc is not None else None
+            if returncode is None:
+                return None
+            self._proc, self._startup_attempt = None, {}
+            exit_status = ExitFact(returncode=returncode,
+                                   descriptor_written=_descriptor_identity() != attempt.get("descriptor"))
+            pending = build_start_failure_record(
+                pin_version=str(attempt.get("version") or "unknown"),
+                pin_build=str(attempt.get("build_sha") or "unknown"), exit_status=exit_status,
+                log_path=str(owned_config_dir() / "daemon.log"), at=utc_now_iso(),
+            )
+            if exit_status.failed_without_control:
+                self._last_start_failure = pending
+        return self._record_start_failure(attempt, exit_status, pending)
+
+    def clear_start_failure_latch(self, *, cleared_by: str) -> bool:
+        """Release the spawn latch; True when one was set (a durable row names who released it).
+
+        Callers: the periodic sweep and the owner's Refresh (the two retriers),
+        and a successful attach. Restart/Panic clear it by constructing a new manager.
+        """
+        with self._lock:
+            record, self._last_start_failure = self._last_start_failure, None
+        if record is None:
+            return False
+        from ouroboros.utils import utc_now_iso
+
+        self._supervisor_row(latch_cleared_row(record, cleared_by=cleared_by, ts=utc_now_iso()))
+        return True
+
+    def _refuse_latched_spawn(self) -> None:
+        """Settle an own child that died unwatched; while latched, refuse immediately, spawning nothing.
+
+        Runs at both spawn-decision points (before preparation and right before spawn); ``_spawn``
+        re-checks the latch under its own lock, so a peer's settle in between buys no extra spawn.
+        """
+        self._settle_exited_child()
+        with self._lock:
+            self._raise_if_latched()
+
+    def _raise_if_latched(self) -> None:
+        """Under ``self._lock``: the typed refusal while the spawn latch is set."""
+        record = self._last_start_failure
+        if record is None:
+            return
+        from ouroboros.gateways.claudexor import ClaudexorUnavailable
+        detail = start_failure_detail(record)
+        self._last_error = f"daemon_spawn_failed: {detail}"
+        raise ClaudexorUnavailable(
+            "daemon_spawn_failed",
+            "owned daemon start is latched after a typed startup failure; no new spawn until "
+            f"the periodic supervisor sweep retries, the owner refreshes or restarts; {detail}",
+            status_code=503,
+        )
 
     def ensure_running(self, *, startup_wait_sec: Optional[float] = None) -> Any:
         """Attach or join an installation-owned startup within this caller's wait.
@@ -489,6 +629,8 @@ class OwnedClaudexorDaemon:
                 return self._accept_endpoint(endpoint, generation)
         elif self._startup_pids():
             return self._wait_for_start(generation, startup_wait_sec)
+        else:
+            self._refuse_latched_spawn()  # before preparation: the refusal is immediate
         if state == "foreign_daemon" and detail:
             log.warning("owned-daemon startup leaves the foreign responder untouched: %s", detail)
         try:
@@ -513,6 +655,7 @@ class OwnedClaudexorDaemon:
         if endpoint is not None:
             return self._accept_endpoint(endpoint, generation)
         if not self._startup_pids():
+            self._refuse_latched_spawn()  # a peer's failure may have latched during preparation
             self._spawn(command, runtime_manager, generation)
         return self._wait_for_start(generation, startup_wait_sec)
 
@@ -546,12 +689,14 @@ class OwnedClaudexorDaemon:
         log_path = config_dir / "daemon.log"
         from ouroboros.config import DATA_DIR
         from ouroboros.process_custody import spawn_supervised
+        from ouroboros.platform_layer import subprocess_new_group_kwargs
 
         log.info("Spawning owned claudexord under %s from %s", config_dir, runtime.get("source") or "external")
         _write_ownership_marker()
         with self._lock:
             self._check_start_generation(generation)
-            if self._proc is not None and self._proc.poll() is None:
+            self._raise_if_latched()  # a peer may have settled our dead child since the pre-spawn check
+            if self._proc is not None:  # alive: join it; exited and unsettled: the next settle owns its fact
                 return
             with open(log_path, "ab") as sink:
                 attempt = {
@@ -559,6 +704,7 @@ class OwnedClaudexorDaemon:
                                                               os.fstat(sink.fileno()).st_ino),
                     "version": runtime.get("version") or "unknown",
                     "build_sha": runtime.get("build_sha") or "unknown",
+                    "descriptor": _descriptor_identity(),
                 }
                 self._proc = spawn_supervised(
                     command,
@@ -569,6 +715,7 @@ class OwnedClaudexorDaemon:
                     stdin=subprocess.DEVNULL,
                     stdout=sink,
                     stderr=sink,
+                    **subprocess_new_group_kwargs(breakaway_from_job=True),
                 )
                 self._startup_attempt = {**attempt, "pid": self._proc.pid}
 
@@ -599,41 +746,67 @@ class OwnedClaudexorDaemon:
             )
         with self._lock:
             self._check_start_generation(generation)
-            if self._proc is not None and self._proc.poll() is not None:
-                self._proc = None
-                self._startup_attempt = {}
+        failure = self._settle_exited_child()
+        with self._lock:  # no own fact here: name the manager's latched state, marked as such
+            latched = None if failure is not None else self._last_start_failure
+        if failure is not None or latched is not None:
+            detail = f"{detail}; {'' if failure else 'latched: '}{start_failure_label(failure or latched)}"
         self._last_error = f"daemon_spawn_failed: {detail}"
         raise ClaudexorUnavailable(
             "daemon_spawn_failed", f"no live owned startup or authenticated endpoint after {wait:.1f}s; {detail}",
             status_code=503,
         )
 
+    def _record_start_failure(self, attempt: Dict[str, Any], exit_status: ExitFact,
+                              pending: Dict[str, Any]) -> Dict[str, Any]:
+        """Complete the harvested record: classify (diagnostic), row it, finalize the latch (#844).
+
+        Only this manager's own exited child carries an exit fact; a joined
+        peer startup that vanished leaves nothing to classify and never latches.
+        The latch, if any, was taken with ``pending`` under the lock; it is
+        replaced by the classified record only while it is still that object —
+        a sweep that released it meanwhile is never re-latched.
+        """
+        interval, written = read_startup_log_interval(
+            pathlib.Path(pending["log_path"]), start=int(attempt["log_start"]),
+            identity=attempt["log_identity"])
+        record = classified_start_failure_record(
+            pending, classification=classify_startup_failure(written, exit_status), log_interval=interval)
+        latched = exit_status.failed_without_control
+        with self._lock:
+            if latched and self._last_start_failure is pending:
+                self._last_start_failure = record
+        log.warning("Owned Claudexor start failed (latched=%s): %s", latched, start_failure_detail(record))
+        self._supervisor_row(start_failure_row(record, latched=latched))
+        return record
+
     def _startup_diagnostic(self, pids: set[int]) -> str:
         """Name current process evidence and its log interval, never an old tail as cause."""
         with self._lock:
             attempt = dict(self._startup_attempt)
-            proc = self._proc
+            proc, latched = self._proc, self._last_start_failure
         details = [f"stage=waiting_for_control; live_pids={sorted(pids)}"]
         log_path = owned_config_dir() / "daemon.log"
         if attempt:
             details.append(f"spawn_pid={attempt['pid']}; selected_version={attempt['version']}; "
                            f"selected_build_sha={attempt['build_sha']}; "
-                           f"exit_code={proc.poll() if proc is not None else 'unknown'}")
-            try:
-                stat = log_path.stat()
-                if (stat.st_dev, stat.st_ino) == attempt["log_identity"] and stat.st_size >= attempt["log_start"]:
-                    details.append(f"startup log interval={attempt['log_start']}..{stat.st_size} bytes")
-                else:
-                    details.append("startup log interval unavailable after file replacement")
-            except OSError:
-                details.append("startup log interval unavailable")
-        else:
+                           f"poll={proc.poll() if proc is not None else 'unknown'}")
+            interval, _ = read_startup_log_interval(  # identity-checked bounds only, no bytes
+                log_path, start=int(attempt["log_start"]), identity=attempt["log_identity"], limit=0)
+            details.append(describe_log_interval(interval or []))
+        elif latched is None:
             details.append("joining another manager; its runtime build is not yet authenticated")
+        else:
+            details.append("no own startup handle left (settled by a concurrent caller, or a joined startup ended)")
         details.append(f"log={log_path} (shared diagnostic source, not an attributed failure cause)")
         return "; ".join(details)
 
     def _terminate_child(self) -> bool:
-        """Stop our captured child outside the lock; clear only its confirmed handle."""
+        """Stop our captured child outside the lock; clear only its confirmed handle.
+
+        A child found exited HERE died of this stop's own signalling (the ledger pass
+        runs first): cleared, not rowed. An earlier death was settled by ``stop_outcome``.
+        """
         with self._lock:
             proc = self._proc
         if proc is None:
@@ -767,6 +940,33 @@ class OwnedClaudexorDaemon:
         """``stop_outcome`` as Panic reads it: True only for a confirmed stop."""
         return self.stop_outcome() == "stopped"
 
+    def _request_operator_stop(self) -> bool:
+        """Use the installed same-home CLI, never provisioning or waking a daemon."""
+        from ouroboros.claudexor_runtime import get_runtime_manager
+        from ouroboros.platform_layer import subprocess_hidden_kwargs
+
+        try:
+            command = get_runtime_manager().resolve_cli_command(require_npm=False)
+            if not command:
+                return False
+            env = dict(os.environ)
+            env["CLAUDEXOR_CONFIG_DIR"] = str(owned_config_dir())
+            for crossing in ("CLAUDEXOR_DAEMON_SOCK", "CLAUDEXOR_CONTROL_PORT"):
+                env.pop(crossing, None)
+            result = subprocess.run(
+                [*command, "daemon", "stop", "--json"], env=env, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                timeout=_OPERATOR_STOP_TIMEOUT_SEC, **subprocess_hidden_kwargs(),
+            )
+            receipt = json.loads(result.stdout) if result.returncode == 0 else None
+            return bool(isinstance(receipt, dict) and receipt.get("ok") is True
+                        and receipt.get("stopped") is True and receipt.get("outcome") in {"exited", "killed"})
+        except Exception as exc:
+            # CLI stdout/stderr may contain private diagnostics. The existing
+            # stop owner independently decides whether measured fallback is valid.
+            log.warning("Owned daemon operator stop did not confirm completion (%s)", type(exc).__name__)
+            return False
+
     def stop_outcome(self) -> DaemonStopOutcome:
         """Stop verified own roots; report every unconfirmed remainder.
 
@@ -778,15 +978,20 @@ class OwnedClaudexorDaemon:
         to tell the two non-stops apart. Lock acquisition is bounded separately
         from HTTP connect/read phases and each root's exit wait; there is no
         promised absolute wall-clock deadline for the whole teardown. A
-        self-started Popen handle proves direct ownership; attached roots need
-        the owned marker and measured ledger identity, plus an
-        authenticated endpoint, typed transport failure, or a genuinely absent
-        descriptor for a marked startup. Network and exit waits run outside the
-        lock. An explicit token refusal or invalid discovery permits no fallback.
+        self-started Popen handle proves direct ownership. An authenticated
+        same-home endpoint permits ordinary CLI shutdown, including a legacy
+        attached daemon whose recorded birth was unavailable. Forced signalling
+        still requires the measured ledger identity plus an authenticated
+        endpoint, typed transport failure, or absent descriptor for a marked
+        startup. Network and exit waits run outside the lock. A token refusal
+        or invalid discovery permits no attached fallback.
         """
         from ouroboros.config import DATA_DIR
         from ouroboros.gateways.claudexor import SHORT_POLL_TIMEOUT_SEC
-        from ouroboros.process_custody import pending_process_stops, stop_ledgered_processes
+        from ouroboros.process_custody import (
+            pending_process_stops, pid_is_zombie, process_stop_snapshot, stop_ledgered_processes,
+        )
+        from ouroboros.platform_layer import collect_descendant_pids, pid_is_alive
 
         if not self._lock.acquire(timeout=SHORT_POLL_TIMEOUT_SEC):
             self._report_stop_unconfirmed("daemon manager lock unavailable; custody unchanged")
@@ -803,6 +1008,9 @@ class OwnedClaudexorDaemon:
             purposes = {CUSTODY_PURPOSE}
             stopped, unconfirmed = [], []
             self._last_error = ""
+            # An unwatched death BEFORE this stop is settled first (rowed, latched when
+            # it applies) so Restart/Panic never forget it; a child killed below is not one.
+            self._settle_exited_child()
             ownership_problem = verify_owned_home(require_marker=True)
             endpoint, state = None, ""
             if not ownership_problem:
@@ -810,15 +1018,51 @@ class OwnedClaudexorDaemon:
                 if detail:
                     self._last_error = detail
             pre_listener = state == "not_provisioned" and not os.path.lexists(owned_descriptor_path())
+            operator_stopped = False
             if endpoint is not None or state == _TRANSPORT_UNREACHABLE or pre_listener:
-                stopped = stop_ledgered_processes(root, purposes, unconfirmed=unconfirmed)
+                expected_entries, observed = [], set()
+                try:
+                    expected_entries = process_stop_snapshot(root, purposes)
+                    for entry in expected_entries:
+                        pid = int(entry["pid"])
+                        observed.add(pid)
+                        observed.update(collect_descendant_pids(pid))
+                    if self._proc is not None:
+                        observed.add(self._proc.pid)
+                except Exception:
+                    unconfirmed.append("stop target custody could not be observed")
+                if endpoint is not None:
+                    operator_stopped = self._request_operator_stop()
+                if operator_stopped:
+                    # Lease release confirms clean service shutdown; a Node tail
+                    # or captured harness child may still be physically alive.
+                    deadline = time.monotonic() + _STOP_EXIT_WAIT_SEC
+                    remaining = observed
+                    while remaining:
+                        remaining = {pid for pid in remaining if pid_is_alive(pid) and not pid_is_zombie(pid)}
+                        if not remaining or time.monotonic() >= deadline:
+                            break
+                        time.sleep(0.05)
+                else:
+                    stopped = stop_ledgered_processes(
+                        root, purposes, unconfirmed=unconfirmed, expected_entries=expected_entries,
+                    )
             child_stopped = self._terminate_child()
+            if operator_stopped:
+                remaining = {pid for pid in observed if pid_is_alive(pid) and not pid_is_zombie(pid)}
+                if remaining:
+                    unconfirmed.append(f"operator stop left process exit unconfirmed: {sorted(remaining)}")
+                live_endpoint, _, _ = self._classify_liveness(timeout_sec=SHORT_POLL_TIMEOUT_SEC)
+                if live_endpoint is not None:
+                    # The CLI's receipt concerns its pinned owner, not a new
+                    # daemon another client may have started during shutdown.
+                    unconfirmed.append("an authenticated owned endpoint remains after operator stop")
             if ownership_problem and owned_daemon_provisioned() and not child_stopped:
                 unconfirmed.append("descriptor ownership is unconfirmed")
             unconfirmed.extend(pending_process_stops(root, purposes))
             if self._proc is not None:
                 unconfirmed.append("self-started child exit unconfirmed")
-            if endpoint is not None and not stopped and not child_stopped:
+            if endpoint is not None and not stopped and not child_stopped and not operator_stopped:
                 unconfirmed.append("authenticated endpoint has no confirmed stopped root")
             if unconfirmed:
                 reason = ownership_problem or self._last_error
@@ -827,22 +1071,26 @@ class OwnedClaudexorDaemon:
                 self._report_stop_unconfirmed("; ".join(dict.fromkeys(unconfirmed)))
                 return "unconfirmed"
             self._last_error = ""
-            return "stopped" if (child_stopped or stopped) else "nothing_to_stop"
+            return "stopped" if (operator_stopped or child_stopped or stopped) else "nothing_to_stop"
         finally:
             with self._lock:
                 self._stopping = False
 
     def _report_stop_unconfirmed(self, detail: str) -> None:
         """The lifecycle owner discloses a failed stop in the existing supervisor log."""
-        from ouroboros.config import DATA_DIR
-        from ouroboros.utils import append_jsonl, utc_now_iso
+        from ouroboros.utils import utc_now_iso
 
         self._last_error = detail
         log.critical("Owned Claudexor stop unconfirmed: %s; custody retained", detail)
-        append_jsonl(pathlib.Path(DATA_DIR) / "logs" / "supervisor.jsonl", {
-            "ts": utc_now_iso(), "type": "process_stop_unconfirmed",
-            "purpose": CUSTODY_PURPOSE, "reason": detail,
-        })
+        self._supervisor_row({"ts": utc_now_iso(), "type": "process_stop_unconfirmed", "reason": detail})
+
+    def _supervisor_row(self, row: Dict[str, Any]) -> None:
+        """The manager's one durable disclosure seam: a purpose-stamped supervisor row."""
+        from ouroboros.config import DATA_DIR
+        from ouroboros.utils import append_jsonl
+
+        append_jsonl(pathlib.Path(DATA_DIR) / "logs" / "supervisor.jsonl",
+                     {**row, "purpose": CUSTODY_PURPOSE})
 
 
 _MANAGER: Optional[OwnedClaudexorDaemon] = None
@@ -871,13 +1119,35 @@ def warm_owned_daemon() -> bool:
 
     def warm() -> None:
         try:
-            ensure_owned_gateway().close()
+            # Warmup is the host's speculative join, so give an already
+            # custodied daemon enough room to finish journal admission after
+            # its control socket appears.  A normal caller keeps the shorter
+            # admission window; expiry still leaves custody intact and the
+            # first real caller simply joins the same startup.
+            warmup_admission_wait = max(_ADMISSION_WAIT_SEC, _SPAWN_WAIT_SEC * 2.0)
+            ensure_owned_gateway(admission_wait_sec=warmup_admission_wait).close()
         except Exception:
             log.info("Owned daemon warmup did not reach readiness; the first caller starts or joins",
                      exc_info=True)
 
     threading.Thread(target=warm, name="owned-daemon-warmup", daemon=True).start()
     return True
+
+
+def owned_engine_version() -> str:
+    """The serving version proven by the last SUCCESSFUL handshake, no new I/O.
+
+    A feature floor that must be decided BEFORE a gateway exists (the model
+    lane freezes its request bytes before it connects) reads the version the
+    previous ensure/handshake already proved, and keeps reading the same answer
+    while probes fail — several callers probe this singleton concurrently, so a
+    transient failure must not change one caller's request shape mid-turn.
+    Empty means no handshake has succeeded in this process yet, and every floor
+    then fails CLOSED — a process's first model call sends the legacy shape
+    rather than probing the control plane again or trusting the next-spawn pin,
+    which a live daemon may intentionally lag.
+    """
+    return get_owned_daemon().engine_version
 
 
 def read_owned_gateway() -> Any:
@@ -992,6 +1262,7 @@ __all__ = [
     "attach_login_shell",
     "resolve_attach_login_argv",
     "ensure_owned_gateway",
+    "owned_engine_version",
     "read_owned_gateway",
     "get_owned_daemon",
     "warm_owned_daemon",

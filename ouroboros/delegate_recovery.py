@@ -102,6 +102,32 @@ def _active_restart_transaction_path(drive_root: Any) -> pathlib.Path:
     return pathlib.Path(drive_root) / "state" / "delegate_recovery_transactions" / "active.json"
 
 
+def arm_active_planned_restart_transaction(drive_root: Any) -> str:
+    """Pass a prepared restart transaction to a direct re-exec successor.
+
+    Launcher-managed exits acknowledge the same durable transaction by waiting
+    for exit code 42.  A direct server re-exec has no launcher, so it carries
+    the already-created transaction id through the existing one-shot
+    environment handoff consumed by ``_ack_direct_exec_successor``.
+    """
+    try:
+        active = json.loads(_active_restart_transaction_path(drive_root).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(active, dict):
+        return ""
+    transaction_id = str(active.get("transaction_id") or "")
+    row = _read_restart_transaction(drive_root, transaction_id) if transaction_id else {}
+    if (
+        not transaction_id
+        or row.get("status") != "prepared"
+        or int(row.get("supervisor_pid") or 0) != os.getpid()
+    ):
+        return ""
+    os.environ[PLANNED_RESTART_TRANSACTION_ENV] = transaction_id
+    return transaction_id
+
+
 def _read_restart_transaction(drive_root: Any, transaction_id: str) -> dict[str, Any]:
     try:
         data = json.loads(
@@ -186,7 +212,11 @@ def _selected_session(task: Mapping[str, Any]) -> dict[str, Any]:
 def unsettled_start_ids(
     drive_root: Any, task_id: str, *, rows: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, list[str]]:
-    """Durable run/start blockers from one consistent custody-log snapshot."""
+    """Durable run/start blockers from one consistent custody-log snapshot.
+
+    A review run is the review substrate's obligation, not the actor's
+    delegation slot, so it never blocks the actor's own start.
+    """
 
     mine = str(task_id or "")
     snapshot = list(rows) if rows is not None else list(
@@ -196,17 +226,18 @@ def unsettled_start_ids(
     return {
         "open_run_ids": [
             row.run_id for row in runs.values()
-            if row.task_id == mine and not row.settled
+            if row.task_id == mine and not row.settled and not row.review_owned
         ],
         "pending_invocation_ids": [
             str(row.get("invocation_id") or "")
             for row in custody.pending_invocations(drive_root, rows=snapshot)
             if str(row.get("task_id") or "") == mine
+            and not custody.review_owned_source(row.get("source"))
         ],
         "undisposed_patch_run_ids": [
             row.run_id for row in runs.values()
             if row.task_id == mine and row.snapshot_id and row.settled
-            and not row.patch_disposed
+            and not row.patch_disposed and not row.review_owned
         ],
     }
 
@@ -468,10 +499,14 @@ def prepare_handoff(
                 "replay_reason": "acknowledged_in_dead_transcript",
             }
     pending_wake = _successor_pending_wake(pending_wake)
-    runs = [row for row in custody.open_runs(drive_root) if row.task_id == task_id]
+    # The handoff holder is the task's OWN delegation; a review panel's run or
+    # invocation is its panel's obligation and never a candidate here (#1006).
+    runs = [row for row in custody.open_runs(drive_root)
+            if row.task_id == task_id and not row.review_owned]
     pending = [
         row for row in custody.pending_invocations(drive_root)
         if str(row.get("task_id") or "") == task_id
+        and not custody.review_owned_source(row.get("source"))
     ]
     settled_holder = None
     if not runs and not pending:
@@ -722,10 +757,14 @@ def pre_adopt_planned_handoffs(
         if mismatch:
             veto_handoff(drive_root, task_id, mismatch)
             continue
-        runs = [candidate for candidate in custody.open_runs(drive_root) if candidate.task_id == task_id]
+        # The task's OWN delegation only: a review panel's work is not a holder
+        # and must not veto the actor's binding as a second candidate (#1006).
+        runs = [candidate for candidate in custody.open_runs(drive_root)
+                if candidate.task_id == task_id and not candidate.review_owned]
         pending_invocations_for_task = [
             candidate for candidate in custody.pending_invocations(drive_root)
             if str(candidate.get("task_id") or "") == task_id
+            and not custody.review_owned_source(candidate.get("source"))
         ]
         settled = custody.replay(drive_root).get(str(row.get("run_id") or ""))
         if row.get("settled_terminal") is True:
@@ -840,10 +879,14 @@ def adopt_handoff(ctx: Any, task: Mapping[str, Any]) -> dict[str, Any]:
         reason = planned_restart_mismatch or "successor_binding_mismatch"
         veto_handoff(drive, task_id, reason)
         return {"status": "recovery_required", "reason": reason}
-    runs = [candidate for candidate in custody.open_runs(drive) if candidate.task_id == task_id]
+    # The task's OWN delegation only: a review panel's work is not a holder and
+    # must not veto the actor's binding as a second candidate (#1006).
+    runs = [candidate for candidate in custody.open_runs(drive)
+            if candidate.task_id == task_id and not candidate.review_owned]
     pending = [
         candidate for candidate in custody.pending_invocations(drive)
         if str(candidate.get("task_id") or "") == task_id
+        and not custody.review_owned_source(candidate.get("source"))
     ]
     pending_wake = row.get("pending_wake") if isinstance(row.get("pending_wake"), dict) else {}
     wake_payload = (
@@ -910,11 +953,11 @@ def adopt_handoff(ctx: Any, task: Mapping[str, Any]) -> dict[str, Any]:
             _write(drive, row)
         except Exception:
             return {"status": "recovery_required", "reason": "adoption_record_unwritable"}
-        result = exact_start(ctx, replay_prompt, retry_spec)
-        try:
-            parsed = json.loads(result)
-        except (TypeError, ValueError):
-            parsed = {}
+        # The exact-start primitive answers with the family's NATIVE result; the
+        # durable invocation fate below, not this payload, decides the outcome.
+        from ouroboros.delegate_shared import delegate_payload
+
+        parsed = delegate_payload(exact_start(ctx, replay_prompt, retry_spec))
         run_id = str(parsed.get("run_id") or "")
         if str(parsed.get("status") or "") != "started" or not run_id:
             # Durable fate, not transport prose, decides whether this exact POST
@@ -994,6 +1037,7 @@ __all__ = [
     "CAUSE_WORKER_CRASH",
     "NO_RESUME_CAUSES",
     "PLANNED_RESTART_TRANSACTION_ENV",
+    "arm_active_planned_restart_transaction",
     "acknowledge_observed_restart_exit",
     "adopt_handoff",
     "authority_fingerprint_from_context",

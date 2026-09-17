@@ -250,62 +250,42 @@ def test_blocking_open_plan_round_rail_preserves_useful_candidate(tmp_path, monk
     text, usage, _returned_trace = loop._handle_round_limit(limit_ctx)
 
     assert text.startswith("Useful verified work completed before the rail.")
-    assert "Blocking plan review remained open" in usage["terminal_host_notice"]
+    # The wave is still open at finalization, so the disclosure says so in the
+    # present tense: "remained" claimed a panel had ended that nobody closed.
+    assert "Blocking plan review is open" in usage["terminal_host_notice"]
     assert "`round_limit`" in usage["terminal_host_notice"]
     assert usage["reason_code"] == "round_limit"
 
 
-def test_forced_swarm_router_uses_cached_unconfirmed_receipt(tmp_path, monkeypatch):
+def test_forced_managed_swarm_runs_the_ordinary_final_model_call(tmp_path, monkeypatch):
     loop, registry, limit_ctx, _trace = _forced_test_context(tmp_path)
-    registry._ctx.is_ephemeral_turn = True
     registry._ctx.task_metadata.update({"force_plan": True, "force_plan_source": "swarm"})
-    registry._ctx._swarm_handoff_attempt = {
-        "task_id": "swarm-task-1",
-        "routing_token": "route-token",
-        "status": "unconfirmed",
-        "reason": "confirmation_timeout",
-        "response": "PROMOTE_UNCONFIRMED",
-    }
+    calls = []
     monkeypatch.setattr(
-        loop,
-        "call_llm_with_retry",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("forced router fallback must not start a new model round")
-        ),
+        loop, "call_llm_with_retry",
+        lambda *_args, **_kwargs: calls.append("forced") or (
+            {"role": "assistant", "content": "Verified work before the limit."}, 0.0),
     )
-
     text, usage, _returned_trace = loop._handle_round_limit(limit_ctx)
-
-    assert "swarm-task-1" in text
-    assert "admission was not confirmed" in text
-    assert "No second routing event was emitted" in text
+    assert calls == ["forced"]
+    assert text == "Verified work before the limit."
     assert usage["reason_code"] == "round_limit"
+    assert "Plan review is open" in usage["terminal_host_notice"]
 
 
-def test_forced_swarm_router_keeps_confirmed_handoff_successful(tmp_path, monkeypatch):
+def test_presence_handoff_does_not_replace_ordinary_forced_finalization(tmp_path, monkeypatch):
     loop, registry, limit_ctx, _trace = _forced_test_context(tmp_path)
-    registry._ctx.is_ephemeral_turn = True
-    registry._ctx.task_metadata.update({"force_plan": True, "force_plan_source": "swarm"})
+    registry._ctx.task_metadata["presence"] = {"binding_id": "presence-binding"}
     registry._ctx._swarm_handoff_attempt = {
-        "task_id": "swarm-task-1",
-        "routing_token": "route-token",
-        "status": "scheduled",
-        "reason": "",
-        "response": "OK: task swarm-task-1 accepted and durably scheduled",
+        "task_id": "presence-work", "routing_token": "route-token", "status": "scheduled",
+        "reason": "", "response": "OK: task presence-work accepted and durably scheduled",
     }
-    monkeypatch.setattr(
-        loop,
-        "call_llm_with_retry",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("forced router fallback must not start a new model round")
-        ),
-    )
-
+    monkeypatch.setattr(loop, "call_llm_with_retry", lambda *_args, **_kwargs: (
+        {"role": "assistant", "content": "Current verified Presence work."}, 0.0))
     text, usage, _returned_trace = loop._handle_round_limit(limit_ctx)
-
-    assert "Swarm admitted managed task swarm-task-1" in text
-    assert usage.get("execution_status") != "failed"
-    assert usage.get("reason_code") != "round_limit"
+    assert text == "Current verified Presence work."
+    assert registry._ctx._swarm_handoff_attempt["task_id"] == "presence-work"
+    assert usage["reason_code"] == "round_limit"
 
 
 def test_physical_budget_exit_discloses_stale_candidate_after_service_teardown(
@@ -473,9 +453,9 @@ def test_budget_latch_preserves_stale_candidate_with_resume_disclosure(
     loop._publish_delivery_candidate(registry, old, trace)
     loop._latch_final_answer_marker(trace, f"FINAL ANSWER: {answer}")
 
-    # Owner evidence invalidates the candidate without adding a tool call. The
-    # unconditional FINAL ANSWER latch remains useful, but its unchanged text
-    # must retain its old evidence provenance and carry a loud resume disclosure.
+    # Unprocessed owner input prevents final acceptance, but does not itself
+    # change the semantic criteria. Preserve the answer and evidence provenance
+    # with a loud resume disclosure until Main processes the new source.
     registry._ctx._owner_directives = [{"content": "Late answer constraint"}]
     monkeypatch.setattr(
         accounting,
@@ -516,14 +496,14 @@ def test_budget_latch_preserves_stale_candidate_with_resume_disclosure(
     assert rebound.acceptance_binding["acceptance_status"] == "unaccepted"
     assert rebound.acceptance_binding["authoritative"] is False
     assert rebound.acceptance_binding["stale_evidence"] is True
-    assert returned_trace["delivery_candidate"]["evidence_current"] is False
+    assert returned_trace["delivery_candidate"]["evidence_current"] is True
     forced = returned_trace["forced_finalization"]
     assert forced["source"] == (
         "budget_latched_fallback_stale_evidence_resume_required"
     )
-    assert forced["evidence_current"] is False
+    assert forced["evidence_current"] is True
     assert forced["evidence_revision"] == old.evidence_revision
-    assert forced["current_evidence_revision"] > old.evidence_revision
+    assert forced["current_evidence_revision"] == old.evidence_revision
     assert usage["_best_effort_extracted"] is True
     assert trace["tool_calls"] == []
 
@@ -551,6 +531,8 @@ def test_provider_unavailable_preserves_stale_candidate_with_resume_disclosure(
         "binding_hash": "binding-old",
     }
     loop._publish_delivery_candidate(registry, old, trace)
+    # Source acknowledgement and semantic evidence have separate generations.
+    # Provider failure cannot acknowledge this source or infer new criteria.
     registry._ctx._owner_directives = [{"content": "Late answer constraint"}]
 
     forced_calls = 0
@@ -579,12 +561,12 @@ def test_provider_unavailable_preserves_stale_candidate_with_resume_disclosure(
     assert rebound.acceptance_binding["acceptance_status"] == "unaccepted"
     assert rebound.acceptance_binding["authoritative"] is False
     assert rebound.acceptance_binding["stale_evidence"] is True
-    assert returned_trace["delivery_candidate"]["evidence_current"] is False
+    assert returned_trace["delivery_candidate"]["evidence_current"] is True
     forced = returned_trace["forced_finalization"]
     assert forced["source"] == "host_fallback_stale_evidence_resume_required"
-    assert forced["evidence_current"] is False
+    assert forced["evidence_current"] is True
     assert forced["evidence_revision"] == old.evidence_revision
-    assert forced["current_evidence_revision"] > old.evidence_revision
+    assert forced["current_evidence_revision"] == old.evidence_revision
     assert usage["_best_effort_extracted"] is True
     assert usage["terminal_origin"] == "host_salvage"
     assert trace["tool_calls"] == []
@@ -1348,8 +1330,9 @@ def test_child_result_change_during_host_panel_supersedes_pass(tmp_path, monkeyp
     assert another_round is True
     assert registry._ctx._task_acceptance_reviewed is False
     assert trace["review_runs"][0]["superseded_by_revision"] is True
+    # The unified subject includes material child-result evidence.
     assert trace["review_runs"][0]["superseded_reason"] == (
-        "host_acceptance_evidence_revision_changed"
+        "host_acceptance_subject_changed"
     )
     binding = loop._delivery_acceptance_binding(
         registry, trace, hashlib.sha256(answer.encode("utf-8")).hexdigest(),
@@ -2730,3 +2713,65 @@ def test_web_forbidding_contract_keeps_the_forced_call_web_free(tmp_path, monkey
     loop._handle_round_limit(limit_ctx)
 
     assert seen["allow_server_web_search"] is False
+
+
+def test_orphan_note_names_failed_children_and_skips_rows_this_chat_already_has(tmp_path, monkeypatch):
+    """Owner item spam G, corrected: the note described children it could not
+    describe, and then silenced far more than it meant to.
+
+    The two-way clause said running children may be incomplete and completed
+    ones may be unread, so a FAILED or CANCELLED child was told about as
+    something it is not. The first skip then asked only whether a canonical
+    receipt EXISTS, which is true of every settled task, so every completed,
+    failed and cancelled child vanished from the note and the forced contract
+    ("the parent may not have seen completions") was void. The receipt now
+    records the chat its row went to, and only that reader is spared the repeat.
+
+    Driven through the real writers, because a fixture that omits the receipt
+    production always writes cannot show either half.
+    """
+    import ouroboros.loop as loop
+    from ouroboros.project_dialogue import append_terminal_task_projection
+    from ouroboros.task_results import write_task_result
+    from ouroboros.task_status import find_child_tasks
+
+    for tid, status in (("kid-done", "completed"), ("kid-failed", "failed")):
+        child = {"id": tid, "chat_id": 7, "parent_task_id": "parent",
+                 "root_task_id": "parent", "delegation_role": "subagent"}
+        stored = write_task_result(tmp_path, tid, status, result=f"{tid} output", **{
+            key: value for key, value in child.items() if key != "id"
+        })
+        assert append_terminal_task_projection(
+            tmp_path, tid, child, stored, {"status": status, "chat_id": 7},
+        )
+    rows = find_child_tasks(tmp_path, parent_task_id="parent", root_task_id="parent",
+                            exclude_task_id="parent", scope="direct")
+    assert len(rows) == 2 and all(r.get("canonical_terminal_projection") for r in rows)
+    monkeypatch.setattr(loop, "_direct_child_results", lambda _ctx: [dict(r) for r in rows])
+    monkeypatch.setattr(loop, "_child_disposition_state", lambda _child: "")
+    monkeypatch.setattr(loop, "_claimed_child_dispositions", lambda _ctx: {})
+
+    def _ctx(chat_id):
+        return SimpleNamespace(tools=SimpleNamespace(
+            _ctx=SimpleNamespace(current_chat_id=chat_id)))
+
+    # The reader that already has both terminal rows is not told twice.
+    assert loop._forced_orphan_note(_ctx(7)) == ""
+    # Every other reader, and an unknown one, gets the whole note.
+    for elsewhere in (_ctx(1), _ctx(None), SimpleNamespace()):
+        note = loop._forced_orphan_note(elsewhere)
+        assert "finished ones (completed, failed or cancelled) may be UNREAD" in note
+        assert "kid-done [completed]" in note and "kid-failed [failed]" in note
+        assert "2 child task(s) not explicitly absorbed" in note
+
+    # A claimed disposition that no longer binds is a DIFFERENT fact: the child's
+    # terminal row never carried it, so that hint survives in its own chat too.
+    from ouroboros.tools.join_ledger import _child_result_sha256
+
+    monkeypatch.setattr(loop, "_claimed_child_dispositions",
+                        lambda _ctx: {"kid-done": ("integrated", "0" * 64)})
+    same_chat = loop._forced_orphan_note(_ctx(7))
+    assert "kid-done [completed;" in same_chat
+    assert "integrated recorded for an EARLIER result hash" in same_chat
+    assert "kid-failed" not in same_chat
+    assert _child_result_sha256(rows[0]) != "0" * 64

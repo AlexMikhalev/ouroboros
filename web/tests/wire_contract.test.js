@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { accountRows } from '../modules/harness_accounts.js';
-import { nextUpAccount } from '../modules/claudexor_status_store.js';
+import { accountName, nextUpAccount } from '../modules/claudexor_status_store.js';
 import { indexProfilesByHarness } from '../modules/reviewer_slots.js';
 
 // Source pins below delimit across line breaks; normalize CRLF so a Windows
@@ -116,11 +116,12 @@ test('the live progress path forwards every progress field the endpoint emits an
     // a whitelist, and a whitelist silently drops whatever it forgot — which is how
     // a chip came back on reload and was missing while the task ran.
     const chat = moduleFile('chat.js');
+    const activity = moduleFile('chat_activity.js');
     const DELEGATION_KEYS = ['executor_route', 'execution_evidence', 'actual_substrate', 'executor_observation'];
-    const carry = chat.match(/const CARD_META_KEYS = \[([^\]]+)\]/)?.[1];
+    const carry = activity.match(/const CARD_META_KEYS = \[([^\]]+)\]/)?.[1];
     assert.ok(carry, 'shared card carry list must exist');
     const carried = new Set([...carry.matchAll(/'([a-z_]+)'/g)].map(m => m[1]));
-    assert.match(chat, /return Object.fromEntries\(CARD_META_KEYS.map\(\(key\) => \[key, src\?\.\[key\]\]\)\)/);
+    assert.match(activity, /return Object.fromEntries\(CARD_META_KEYS.map\(\(key\) => \[key, src\?\.\[key\]\]\)\)/);
     const forwardedFields = (chunk) => {
         assert.match(chunk, /\.\.\.cardMetaKeys\((msg|evt)\)/, 'both wire seams use the same carry owner');
         return carried;
@@ -170,13 +171,17 @@ test('both consumers of the credential-profiles wire read the SAME shape', () =>
     )) };
     const fromAccounts = accountRows(payload)
         .filter((row) => row.kind === 'profile')
-        .map((row) => `${row.harness}/${row.profile_id}`)
+        .map((row) => `${row.harness}/${row.profile_id}/${accountName(row)}`)
         .sort();
     const index = indexProfilesByHarness(payload);
     const fromSlots = Object.entries(index)
-        .flatMap(([harness, entries]) => entries.map((entry) => `${harness}/${entry.id}`))
+        .flatMap(([harness, entries]) => entries
+            .map((entry) => `${harness}/${entry.id}/${entry.name}`))
         .sort();
     assert.ok(fromAccounts.length > 0, 'fixture carries no profile rows');
+    // Name included: the pin select offers the account under the name the
+    // Accounts tab gives it, which is true by construction only while both
+    // sides read these rows through the one reader.
     assert.deepEqual(fromSlots, fromAccounts);
 });
 
@@ -201,6 +206,15 @@ test('the UNIFIED wire shape feeds the same readers: all rows named, pools carry
     // rows read — the reviewer-side half of the unification.
     const index = indexProfilesByHarness(payload);
     assert.ok((index.codex || []).some((entry) => entry.id === 'codex-default'));
+    // …under its own name, not its machine id: the migrated default login is
+    // called by its login email on both surfaces.
+    assert.equal((index.codex || []).find((entry) => entry.id === 'codex-default').name,
+        'native@example.com');
+    const namesById = Object.fromEntries(Object.values(index).flat()
+        .map((entry) => [entry.id, entry.name]));
+    for (const row of rows.filter((entry) => entry.kind === 'profile')) {
+        assert.equal(namesById[row.profile_id], accountName(row));
+    }
     // The enabled projection reaches both consumers from one reader.
     const byId = Object.fromEntries(rows.map((row) => [row.profile_id, row.enabled]));
     assert.deepEqual(byId, { 'codex-default': true, koshak: false });

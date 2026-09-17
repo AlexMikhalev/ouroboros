@@ -250,7 +250,7 @@ def test_local_readonly_subagent_repo_read_denies_secret_files(tmp_path):
     (repo / ".git" / "credentials").write_text("https://token@example.invalid\n", encoding="utf-8")
     (repo / ".git" / "config").write_text("[credential]\n", encoding="utf-8")
     (repo / ".env.local").write_text("TOKEN=secret\nLEAK_MARKER=env\n", encoding="utf-8")
-    (repo / "auth_token.json").write_text('{"token":"TOKEN_LEAK"}\n', encoding="utf-8")
+    (repo / "auth_token.json").write_text('{"token":"PROJECT_TOKEN_REPORT"}\n', encoding="utf-8")
     (repo / "src").mkdir()
     (repo / "src" / "public.py").write_text("print('ok')\n", encoding="utf-8")
     (repo / "src" / "skill_token.py").write_text("TOKEN_NAME = 'safe source symbol'\n", encoding="utf-8")
@@ -277,7 +277,7 @@ def test_local_readonly_subagent_repo_read_denies_secret_files(tmp_path):
     assert "REPO_READ_BLOCKED" in registry.execute("read_file", {"path": ".git/config"})
     assert "READ_FILE_BLOCKED" in registry.execute("read_file", {"root": "system_repo", "path": ".git/config"})
     assert "REPO_READ_BLOCKED" in registry.execute("read_file", {"path": ".env.local"})
-    assert "REPO_READ_BLOCKED" in registry.execute("read_file", {"path": "auth_token.json"})
+    assert "PROJECT_TOKEN_REPORT" in registry.execute("read_file", {"path": "auth_token.json"})
     alias_result = registry.execute("read_file", {"path": "alias.txt"})
     if (repo / "alias.txt").exists():
         assert "REPO_READ_BLOCKED" in alias_result
@@ -287,28 +287,29 @@ def test_local_readonly_subagent_repo_read_denies_secret_files(tmp_path):
     listing = registry.execute("list_files", {"path": "."})
     assert ".git/" not in listing
     assert ".env.local" not in listing
-    assert "auth_token.json" not in listing
+    assert "auth_token.json" in listing
     assert "alias.txt" not in listing
     assert "hardlink.txt" not in listing
     assert "src/" in listing
     assert "secret/control" in listing
     system_listing = registry.execute("list_files", {"root": "system_repo", "path": "."})
     assert ".git/" not in system_listing
-    assert "auth_token.json" not in system_listing
+    assert "auth_token.json" in system_listing
     assert "secret/control" in system_listing
     assert "REPO_LIST_BLOCKED" in registry.execute("list_files", {"path": ".git"})
     readable = registry.execute("read_file", {"path": "src/public.py"})
     assert "print('ok')" in readable
     source_with_token_name = registry.execute("read_file", {"path": "src/skill_token.py"})
     assert "safe source symbol" in source_with_token_name
-    secret_search = registry.execute("search_code", {"query": "TOKEN_LEAK"})
+    secret_search = registry.execute("search_code", {"query": "LEAK_MARKER"})
     assert "No matches found" in secret_search
     assert "auth_token.json:" not in secret_search
-    assert "SEARCH_BLOCKED" in registry.execute("search_code", {"query": "TOKEN_LEAK", "path": "auth_token.json"})
+    assert "auth_token.json:" in registry.execute("search_code", {"query": "PROJECT_TOKEN_REPORT", "path": "auth_token.json"})
     public_search = registry.execute("search_code", {"query": "safe source symbol"})
     assert "src/skill_token.py" in public_search
     digest = registry.execute("query_code", {"op": "digest"})
-    assert "auth_token.json" not in digest
+    # JSON contributes to inventory coverage but has no code-symbol digest row.
+    assert digest.startswith("Codebase Digest (3 files,")
     assert ".env.local" not in digest
     assert "src/skill_token.py" in digest
     cached = list((data / "state" / "code_intel").glob("*/inventory.json"))

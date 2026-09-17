@@ -23,6 +23,11 @@ import pathlib
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from ouroboros.tools.review_helpers import (
+    CANONICAL_GOVERNANCE_DOCS,
+    canonical_governance_sources,
+    is_canonical_governance_path,
+)
 from ouroboros.tools.review_prompt_text import (
     _ANTI_THRASHING_RULE_VERDICT,
     _CONVERGENCE_RULE_TEXT,
@@ -89,13 +94,10 @@ def _current_scope_context_manifest() -> dict:
     return dict(_SCOPE_CONTEXT_MANIFEST.get({}) or {})
 
 
-_CANONICAL_CONTEXT_DOCS = (
-    "BIBLE.md",
-    "docs/DEVELOPMENT.md",
-    "docs/DESIGN.md",
-    "docs/ARCHITECTURE.md",
-    "docs/CHECKLISTS.md",
-)
+# The canonical corpus and its chapter membership have ONE owner
+# (`review_helpers`); this alias keeps the historical local spelling for the
+# reading order of `_load_canonical_context_docs` and `scope_review`'s import.
+_CANONICAL_CONTEXT_DOCS = CANONICAL_GOVERNANCE_DOCS
 
 
 _CURRENT_TOUCHED_CONTEXT_SKIP_PREFIXES = (
@@ -109,7 +111,7 @@ def _should_skip_current_touched_context(path: str) -> bool:
     full atlas anchors, ladder-degradable — but never canonical docs)."""
     norm = str(path or "").replace("\\", "/").lstrip("./")
     return (
-        norm in _CANONICAL_CONTEXT_DOCS
+        is_canonical_governance_path(norm)
         or any(norm.startswith(prefix) for prefix in _CURRENT_TOUCHED_CONTEXT_SKIP_PREFIXES)
     )
 
@@ -306,7 +308,9 @@ def _gather_scope_packs(
     # from requiredness classification. A canonical doc is claimed only if it exists.
     already_included = frozenset(
         set(snapshot_included_paths or frozenset())
-        | {doc for doc in _CANONICAL_CONTEXT_DOCS if (repo_dir / doc).is_file()}
+        # A canonical book is inlined as its COMPOSED text, so its declared
+        # chapters are already in the prompt and must not be owed again.
+        | set(canonical_governance_sources(repo_dir))
     )
     _input_limit = _sr()._effective_scope_input_limit(scope_model=scope_model, **({"window_binding": window_binding} if window_binding else {}))
     try:
@@ -491,6 +495,7 @@ class _ScopePromptContext:
     # None for every ordinary commit — the pack then reads the staged diff.
     managed_subject: Optional[Any] = None
     window_binding: Optional[dict] = None
+    task_evidence: Optional[dict] = None
 
 
 def _build_scope_prompt(
@@ -601,6 +606,8 @@ def _build_scope_prompt(
     if touched_status is not None:
         return None, touched_status
 
+    from ouroboros.review_evidence import commit_review_evidence_section
+    task_evidence_compact = False
     repo_pack_placeholder = "__GENERATED_SCOPE_ATLAS_PENDING__"
 
     def _assemble_prompt(current_files_section: str) -> str:
@@ -613,6 +620,7 @@ def _build_scope_prompt(
             diff_text=diff_text,
             repo_pack_placeholder=repo_pack_placeholder,
             critical_calibration=_sr().CRITICAL_FINDING_CALIBRATION,
+            task_evidence_section=commit_review_evidence_section(context.task_evidence or {}, delivery="packet", compact=task_evidence_compact),
         )
         _SCOPE_STABLE_PREFIX_LEN.set(stable_len)
         return prompt_text
@@ -726,6 +734,11 @@ def _build_scope_prompt(
         else:
             # Even the manifest cannot fit beside the fixed part: shrink it for room.
             deficit = max(50_000, fixed_prompt_tokens + _atlas_min_allowance - input_limit)
+
+        if context.task_evidence and not task_evidence_compact:
+            task_evidence_compact = True
+            ladder_steps.append({"step": "task_evidence_excerpt_omitted", "source_ref": context.task_evidence.get("source_ref")})
+            continue
 
         # Degradable never holds atlas-required-beyond-diff paths: the atlas
         # refuses a diff-only required artifact by design, so that rung could

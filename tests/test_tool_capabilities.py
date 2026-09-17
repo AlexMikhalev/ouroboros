@@ -28,7 +28,9 @@ def test_tool_policy_defines_no_local_tool_sets():
     import ouroboros.tool_policy as tp
     source = inspect.getsource(tp)
     assert not re.search(r"^(CORE_TOOL_NAMES|META_TOOL_NAMES)\s*[:=]", source, re.MULTILINE)
-    assert "frozenset({" not in source
+    # Nano's schema-residency projection is intentionally a derived set in
+    # this module; capability sets themselves remain owned by tool_capabilities.
+    assert "NANO_SCHEMA_META_NAMES = META_TOOL_NAMES | frozenset" in source
 
 
 def test_loop_execution_imports_from_capabilities():
@@ -559,9 +561,6 @@ def test_policy_hidden_reason_pins_get_schema_by_name(tmp_path):
                 mode="acting_subagent", allow_enable=False, surface="external_workspace",
             ),
         )
-        ephemeral = ToolContext(repo_dir=system_repo, drive_root=data)
-        ephemeral.is_ephemeral_turn = True
-        yield "ephemeral", ephemeral
         disabled = ToolContext(repo_dir=system_repo, drive_root=data)
         disabled.task_contract = {"disabled_tools": ["write_file", "delegate_start"]}
         yield "contract_disabled", disabled

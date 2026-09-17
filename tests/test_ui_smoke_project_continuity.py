@@ -349,18 +349,14 @@ def test_ui_smoke_reversed_state_responses_do_not_resurrect_main_root(
             try:
                 _install_task_detail_gate(page)
                 _goto_main_ready(page, url)
+                # The progress row alone mints the card with Stop authority; a
+                # typing frame is a submission receipt and never registers liveness.
                 page.evaluate(
-                    """() => {
-                        window.__ouroWs.emit('typing', {
-                            type: 'typing', chat_id: 1, activity_id: 'race-main-root',
-                            kind: 'managed_task', phase: 'working',
-                        });
-                        window.__ouroWs.emit('chat', {
-                            type: 'chat', role: 'assistant', is_progress: true,
-                            chat_id: 1, task_id: 'race-main-root', cancelable: true,
-                            content: 'Main race is running.',
-                        });
-                    }"""
+                    """() => window.__ouroWs.emit('chat', {
+                        type: 'chat', role: 'assistant', is_progress: true,
+                        chat_id: 1, task_id: 'race-main-root', cancelable: true,
+                        content: 'Main race is running.',
+                    })"""
                 )
                 page.wait_for_selector(f"{card} [data-cancel-run]")
                 page.wait_for_timeout(20)
@@ -714,13 +710,8 @@ def test_ui_smoke_queue_loss_converges_terminal_card_once(direct_server_with_dat
                     arg=reusable_card,
                 )
                 _wait_status(page, "Online")
-                page.evaluate(
-                    """() => window.__ouroWs.emit('typing', {
-                        type: 'typing', chat_id: 1, activity_id: 'active',
-                        kind: 'managed_task', phase: 'working',
-                    })"""
-                )
-                _wait_status(page, "Working...")
+                # Cycle two reopens through its progress card (typing frames are
+                # receipts and never light the header).
                 page.evaluate(
                     """() => window.__ouroWs.emit('chat', {
                         type: 'chat', role: 'assistant', is_progress: true,
@@ -736,6 +727,7 @@ def test_ui_smoke_queue_loss_converges_terminal_card_once(direct_server_with_dat
                     }""",
                     arg=reusable_card,
                 )
+                _wait_status(page, "Working...")
                 page.evaluate(
                     """() => window.__ouroWs.emit('log', {
                         type: 'log', chat_id: 1,
@@ -931,17 +923,8 @@ def test_ui_smoke_open_project_panel_heals_lost_task_done_from_state_fanout(
                 page.wait_for_selector("#project-panel:not([hidden])", timeout=30_000)
                 _panel_status_is(page, "Online", timeout=30_000)
 
-                # Managed typing frame registers the activity in the panel.
-                page.evaluate(
-                    """(chatId) => window.__ouroWs.emit('typing', {
-                        type: 'typing', chat_id: chatId, activity_id: 'panel-root-1',
-                        phase: 'working', kind: 'managed_task',
-                    })""",
-                    project_chat,
-                )
-                _panel_status_is(page, "Working...")
-
-                # A visible root card carries host-attested Stop authority.
+                # A visible root card carries host-attested Stop authority and is
+                # what lights the panel header (typing frames are receipts only).
                 page.evaluate(
                     """(chatId) => window.__ouroWs.emit('chat', {
                         type: 'chat', role: 'assistant', is_progress: true,
@@ -952,6 +935,7 @@ def test_ui_smoke_open_project_panel_heals_lost_task_done_from_state_fanout(
                     project_chat,
                 )
                 page.wait_for_selector(f"{card} [data-cancel-run]", timeout=10_000)
+                _panel_status_is(page, "Working...")
 
                 # Early final prose does not conclude while post-task work runs.
                 page.evaluate(
@@ -963,8 +947,8 @@ def test_ui_smoke_open_project_panel_heals_lost_task_done_from_state_fanout(
                     project_chat,
                 )
                 _panel_status_is(page, "Working...")
-                # Make the next request barrier strictly newer than the typing
-                # registration even on a millisecond-resolution browser clock.
+                # Make the next request barrier strictly newer than the live
+                # progress frame even on a millisecond-resolution browser clock.
                 page.wait_for_timeout(20)
 
                 # The newer empty chat refresh applies before the older active app

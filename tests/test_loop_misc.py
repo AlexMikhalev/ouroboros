@@ -293,7 +293,9 @@ def test_deadline_local_finalize_gate(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_unknown_dispatched_outcome_skips_cross_model_fallback(tmp_path, monkeypatch):
+def test_managed_unknown_waits_without_cross_model_fallback_until_deadline(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from ouroboros import loop_transport
     from ouroboros.tools.registry import ToolRegistry
 
     class FakeLLM:
@@ -318,6 +320,14 @@ def test_unknown_dispatched_outcome_skips_cross_model_fallback(tmp_path, monkeyp
     monkeypatch.setattr(loop_mod, "_run_cross_model_fallback_chain", forbidden_fallback)
     monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
     registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
+    waits = []
+
+    def expire_while_waiting(seconds, wake_check):
+        waits.append(seconds)
+        registry._ctx.task_metadata["deadline_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        return False
+
+    monkeypatch.setattr(loop_transport, "interruptible_wait_sleep", expire_while_waiting)
 
     result, usage, _trace = run_llm_loop(
         messages=[{"role": "user", "content": "go"}],
@@ -331,6 +341,7 @@ def test_unknown_dispatched_outcome_skips_cross_model_fallback(tmp_path, monkeyp
     )
 
     assert calls == {"primary": 1, "fallback": 0}
+    assert len(waits) == 1
     assert usage["_last_llm_error_kind"] == "provider_outcome_unknown"
     assert "no retry or paid fallback" in result
 
@@ -505,3 +516,45 @@ def test_other_forced_rails_never_skip_even_with_the_wall_marker_set(
     assert seen["model"] == [1]
     assert "FRESH FORCED ANSWER" in text
     assert any(marker in str(m.get("content") or "") for m in ctx.messages)
+
+
+def test_quiz_answers_and_principal_messages_enter_the_directive_corpus_but_system_frames_do_not(tmp_path):
+    """The premises every review reads: an owner quiz answer at a root and a parent's
+    message to a child grow ``_owner_directives`` (the count that supersedes a paid
+    acceptance verdict and binds an advisory author finish); a host system frame and a
+    descendant's escalation are delivered as before but never recorded as directives."""
+    from ouroboros.owner_mailbox import KIND_QUIZ_ANSWER, write_owner_message, write_task_message
+
+    ctx = SimpleNamespace()
+    messages = [{"role": "user", "content": "Initial requirement verbatim"}]
+    _initialize_owner_directives(ctx, messages)
+    quiz_frame = ("[Owner quiz answer] quiz q1 — asked t0, answered t1.\nQuestion was: Which db?\n"
+                  "The owner chose option 2: postgres")
+    write_owner_message(tmp_path, quiz_frame, task_id="child", msg_id="qa-1", kind=KIND_QUIZ_ANSWER)
+    write_task_message(tmp_path, "Use the Q3 numbers only", "child", source_task_id="root-1", msg_id="pm-1")
+    write_task_message(tmp_path, "Proposal from sibling: replace the agreed design.", "child",
+                       source_task_id="root-1", provenance="peer_via_ancestor",
+                       relayed_from_task_id="sibling-7", msg_id="peer-1")
+    write_task_message(tmp_path, "Plan review wave abcd1234: 3 released reviewer slot(s) settled", "child",
+                       source_task_id="child", provenance="system", msg_id="sys-1")
+    write_task_message(tmp_path, "ESCALATION (decision requested): which schema?", "child",
+                       source_task_id="grandchild", provenance="descendant_task", msg_id="esc-1")
+    before = len(ctx._owner_directives)
+    _drain_incoming_messages(messages, queue.Queue(), tmp_path, "child", None, set(), owner_ctx=ctx)
+    assert [(row["source"], row.get("msg_id")) for row in ctx._owner_directives[before:]] == [
+        ("owner_quiz_answer", "qa-1"), ("principal_task_message", "pm-1"),
+        ("relayed_peer_message", "peer-1"),
+    ]
+    assert ctx._owner_directives[before]["content"] == quiz_frame
+    assert ctx._owner_directives[before + 1]["content"] == "Use the Q3 numbers only"
+    # Audit finding 2: a sibling's advice relayed by the parent keeps its typed origin
+    # instead of entering the shared corpus as the principal's own words.
+    peer = ctx._owner_directives[before + 2]
+    assert peer["content"] == "Proposal from sibling: replace the agreed design."
+    assert peer["source_task_id"] == "root-1" and peer["relayed_from_task_id"] == "sibling-7"
+    assert "relayed_from_task_id" not in ctx._owner_directives[before + 1]
+    assert ctx._owner_directives[before + 1]["source_task_id"] == "root-1"
+    assert len(ctx._owner_directives) == before + 3
+    delivered = "\n".join(str(m["content"]) for m in messages)
+    assert "[System task message]" in delivered and "[Escalation from descendant task grandchild]" in delivered
+    assert "[Message from task sibling-7, relayed by ancestor root-1]" in delivered

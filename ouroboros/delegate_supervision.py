@@ -9,18 +9,70 @@ import uuid
 from typing import Any, Callable, Optional
 
 from ouroboros import delegate_custody as custody
+from ouroboros.delegate_shared import _fail, delegate_result, refusal_host_code
 from ouroboros.owner_mailbox import (
     KIND_FINALIZE_NOW,
     KIND_HURRY,
     KIND_TASK_MESSAGE,
     drain_owner_entries,
 )
+from ouroboros.tools.tool_result import ToolResult
 from ouroboros.utils import atomic_write_json, utc_now_iso
 
 _TICK_SEC = 3
-_QUIET_STATUSES = {"progress", "no_progress"}
+_QUIET_STATUSES = {"progress", "no_progress", "observation_pending"}
 _LOOP_CONTROL_KINDS = {KIND_FINALIZE_NOW, KIND_HURRY}
 _MAX_COORDINATION_SEEN = 256
+# The gateway's typed code for a read that delivered no daemon answer at all
+# (``gateways.claudexor._request``): a quiet renewal here, never a model wake.
+_DAEMON_UNREACHABLE = "daemon_unreachable"
+
+
+def _owner_line(ctx: Any, text: str, key: str, tone: str) -> None:
+    """One owner-visible line per unreachable-daemon episode, through the task's
+    existing progress channel; the typed ``task_incident``/``toast_once`` pair is
+    what the client toasts once, so no host state is written for the dedup."""
+    fn = getattr(ctx, "emit_progress_fn", None)
+    if not callable(fn):
+        return
+    try:
+        fn(text, incident={
+            "task_incident": "delegation_daemon_unreachable",
+            "toast_once": f"{getattr(ctx, 'task_id', '') or ''}:{key}",
+            "toast_tone": tone,
+        })
+    except Exception:
+        pass
+
+
+# A tick that returned NO DAEMON ANSWER: either a read the daemon never answered,
+# or a refusal raised before any byte left the host (a missing descriptor, an
+# unreadable token, an engine below the floor). It drops the loop's transport, so
+# the next tick re-reads the descriptor and re-handshakes, and it cannot close an
+# open outage episode either: silence of a different shape is not contact.
+_NO_DAEMON_ANSWER_STATUSES = frozenset({"observation_pending", "refused"})
+
+
+def _loop_gateway() -> Any:
+    """The loop's own transport, built WITHOUT a handshake: the observing wait
+    handshakes it once (``engine_version`` is the receipt) and classifies any refusal
+    through its own typed path. An unreadable descriptor leaves the tick to its
+    per-call transport, which reports the same fact the same way."""
+    from ouroboros.gateways.claudexor import ClaudexorGateway, ClaudexorUnavailable
+
+    try:
+        return ClaudexorGateway()
+    except ClaudexorUnavailable:
+        return None
+
+
+def _drop_gateway(gateway: Any) -> None:
+    if gateway is not None:
+        try:
+            gateway.close()
+        except Exception:
+            pass
+    return None
 
 
 def _attempt_key(ctx: Any) -> str:
@@ -145,9 +197,9 @@ def _settled_spend_fact(ctx: Any, root_task_id: str) -> dict[str, Any]:
     known-zero. The fact writes nothing of its own; it inherits the reader's bounded maintenance —
     today: the torn-tail quarantine after a SINGLE crash mid-append (a crash inside that repair, a
     torn quarantine sink, is a known residual, issue #586), the empty
-    ``state/`` lock directory on a never-initialized root, and removal of a stale
-    ``usage_attempts.lock`` past the 90 s window (``usage_ledger._locked`` →
-    ``platform_layer.acquire_exclusive_file_lock``, stale-age unlink) — each pinned by a regression."""
+    ``state/`` lock directory on a never-initialized root, and owner-aware
+    ``usage_attempts.lock`` recovery (ARCHITECTURE §1 Platform substrate) —
+    each pinned by a regression."""
     try:
         from ouroboros.usage_accounting import usage_breakdown
 
@@ -265,9 +317,9 @@ def coordination_live_context(ctx: Any) -> dict[str, Any]:
     maintenance — today: the torn-tail quarantine after a SINGLE crash mid-append
     (``usage_ledger._read_records_locked``, identical for every reader; a crash inside that repair
     is a known residual, issue #586), the empty ``state/`` lock directory
-    on a never-initialized root, and removal of a stale ``usage_attempts.lock`` past the 90 s window
-    (``usage_ledger._locked`` → ``platform_layer.acquire_exclusive_file_lock``, stale-age unlink) —
-    each pinned by a regression; the settled-spend fact reads the ledger through that reader.
+    on a never-initialized root, and owner-aware ``usage_attempts.lock`` recovery
+    (ARCHITECTURE §1 Platform substrate) — each pinned by a regression;
+    the settled-spend fact reads the ledger through that reader.
     """
 
     root_task_id = _coordination_root_id(ctx)
@@ -531,7 +583,17 @@ def _wake_event_summary(event: Any) -> dict[str, Any]:
     return summary or {"type": str(event.get("type") or "unknown")}
 
 
-def _render_wake_payload(ctx: Any, payload: dict[str, Any]) -> str:
+def _wake_result(payload: dict[str, Any]) -> ToolResult:
+    """One wake payload as its native result, keyed by the wake id it published.
+
+    The id rides in producer meta because the ACK is keyed on it: the loop
+    acknowledges the wake the result itself names, not every call that happens to
+    be spelled ``delegate_wait``."""
+    wake_id = str(payload.get("supervision_wake_id") or "")
+    return delegate_result(payload, meta={"supervision_wake_id": wake_id} if wake_id else {})
+
+
+def _render_wake_payload(ctx: Any, payload: dict[str, Any]) -> ToolResult:
     """Render valid bounded JSON, spilling an oversized exact wake to artifacts."""
 
     raw = json.dumps(payload, ensure_ascii=False, indent=2)
@@ -539,7 +601,7 @@ def _render_wake_payload(ctx: Any, payload: dict[str, Any]) -> str:
 
     budget = tool_result_limit("delegate_wait")
     if len(raw) <= budget:
-        return raw
+        return _wake_result(payload)
     wake_id = str(payload.get("supervision_wake_id") or "")
     try:
         from ouroboros.artifacts import store_actor_source_bytes, task_id_for_artifacts
@@ -560,12 +622,15 @@ def _render_wake_payload(ctx: Any, payload: dict[str, Any]) -> str:
             "wake_id": wake_id,
             "total_chars": len(raw),
         })
-        return raw
+        return _wake_result(payload)
     events = payload.get("wake_events") if isinstance(payload.get("wake_events"), list) else []
     summaries = [_wake_event_summary(event) for event in events]
+    # ``ok``/``host_code`` ride the fitted envelope: a wake that relays a REFUSED
+    # observation must keep its classification when the exact payload spills, or a
+    # refusal too large to inline would read as a successful wait.
     envelope: dict[str, Any] = {
         key: (str(value)[:600] if isinstance(value, str) else value)
-        for key in ("status", "run_id", "state", "last_seq", "reason")
+        for key in ("status", "ok", "host_code", "run_id", "state", "last_seq", "reason")
         if (value := payload.get(key)) not in (None, "")
     }
     envelope["supervision_wake_id"] = wake_id
@@ -606,20 +671,38 @@ def _render_wake_payload(ctx: Any, payload: dict[str, Any]) -> str:
     if len(rendered) > budget:
         envelope = {
             "status": str(payload.get("status") or "wake_available")[:120],
+            **({"ok": False, "host_code": str(payload.get("host_code") or "")}
+               if payload.get("ok") is False else {}),
             "run_id": str(payload.get("run_id") or "")[:200],
             "supervision_wake_id": wake_id,
             "coordination_context": {"state": "available_in_full_wake_source"},
             "wake_delivery": envelope["wake_delivery"],
         }
         rendered = json.dumps(envelope, ensure_ascii=False, indent=2)
-    return rendered
+    return _wake_result(envelope)
+
+
+def _schema_1_envelope(payload: dict[str, Any]) -> dict[str, Any]:
+    """Carry a schema-1 ``pending_wake.payload`` forward without rewriting it.
+
+    Rows written before this family carried ``ok``/``host_code`` replay exactly as
+    stored; only the two classification keys are derived, and only when they are
+    ABSENT. ``refused`` was the one status the old writer used for a refused
+    observation, so it replays as the recorded tool failure it always was and
+    everything else replays as the ordinary observation it always was. No prose is
+    read, no word is matched, no terminal/success/zero-spend fact is invented, and
+    an unknown or corrupt shape keeps its whole body.
+    """
+    if "ok" in payload or str(payload.get("status") or "") != "refused":
+        return dict(payload)
+    return {**payload, "ok": False, "host_code": refusal_host_code(str(payload.get("reason") or ""))}
 
 
 def _pending_payload(ctx: Any, state: dict[str, Any]) -> dict[str, Any]:
     pending = state.get("pending_wake") if isinstance(state.get("pending_wake"), dict) else {}
     payload = pending.get("payload") if isinstance(pending.get("payload"), dict) else {}
     if pending and not pending.get("acknowledged_at") and payload:
-        replay = dict(payload)
+        replay = _schema_1_envelope(payload)
         if str(pending.get("attempt_key") or "") != _attempt_key(ctx):
             events = replay.get("wake_events")
             if isinstance(events, list):
@@ -779,19 +862,23 @@ def supervised_wait(
     checkpoint_after_sec: Optional[int] = None,
     checkpoint_reason: str = "",
     wait_once: Optional[Callable[..., str]] = None,
-) -> str:
+) -> ToolResult:
     """Renew quiet windows internally and return only a meaningful wake batch."""
 
     if (checkpoint_after_sec is None) != (not str(checkpoint_reason or "").strip()):
-        return json.dumps({
-            "status": "refused",
-            "reason": "checkpoint_requires_time_and_reason",
-            "detail": "checkpoint_after_sec and non-empty checkpoint_reason must be supplied together.",
-        }, ensure_ascii=False, indent=2)
+        # The family's ONE refusal author, not a second literal envelope beside
+        # it: this is an argument fault, and it is recorded as one.
+        return _fail(
+            "delegate_wait", "checkpoint_requires_time_and_reason",
+            "checkpoint_after_sec and non-empty checkpoint_reason must be supplied together.",
+        )
+    owns_transport = wait_once is None
     if wait_once is None:
         from ouroboros.tools.delegate import _delegate_wait
 
-        wait_once = _delegate_wait
+        from functools import partial
+
+        wait_once = partial(_delegate_wait, observation_only=True)
     state = _load_state(ctx, run_id)
     replay = _pending_payload(ctx, state)
     if replay:
@@ -829,89 +916,142 @@ def supervised_wait(
         "checkpoint_scheduled": bool(checkpoint_after_sec is not None),
     })
 
-    while True:
-        raw = wait_once(
-            ctx,
-            run_id,
-            _TICK_SEC,
-            int(state.get("journal_cursor") or 0),
-        )
-        payload = _payload(raw)
-        cursor = payload.get("last_seq")
-        if isinstance(cursor, int):
-            state["journal_cursor"] = max(int(state.get("journal_cursor") or 0), cursor)
-        addressed_wakes = _addressed_wakes(ctx, state)
-        control_wakes = _control_wakes(ctx)
-        coordination_events, next_coordination_cursor = _coordination_wakes(ctx, state)
-        wakes = addressed_wakes + control_wakes + coordination_events
-        checkpoint = state.get("checkpoint") if isinstance(state.get("checkpoint"), dict) else {}
-        due = bool(
-            checkpoint
-            and not checkpoint.get("consumed")
-            and float(checkpoint.get("due_at_unix") or 0) <= time.time()
-        )
-        meaningful = str(payload.get("status") or "") not in _QUIET_STATUSES
-        if meaningful or wakes or due:
-            if checkpoint and not checkpoint.get("consumed"):
-                checkpoint["consumed"] = True
-                checkpoint["consumed_at"] = utc_now_iso()
-                checkpoint["consumed_by"] = (
-                    "real_event" if meaningful or wakes else "scheduled_checkpoint"
-                )
-                state["checkpoint"] = checkpoint
-                _emit(ctx, "delegate_supervision_checkpoint_consumed", {
-                    "run_id": str(run_id), "reason": str(checkpoint.get("reason") or ""),
-                    "consumed_by": str(checkpoint.get("consumed_by") or ""),
-                })
-            if due and not meaningful and not wakes:
-                payload = {
-                    "status": "inspection_checkpoint",
-                    "run_id": str(run_id),
-                    "reason": str(checkpoint.get("reason") or ""),
-                    "last_seq": int(state.get("journal_cursor") or 0),
+    # The OPEN unreachable-daemon episode: its UTC start (empty when none) plus the
+    # millisecond stamp that keeps two episodes of one wait distinct on both client
+    # dedup surfaces (the loop_transport.incident precedent).
+    outage_since = ""
+    outage_stamp = ""
+    gateway = None  # the loop's own transport, only when it built the observing wait
+    try:
+        while True:
+            # A control already present does not wait behind another HTTP read.
+            observed = not _control_wakes(ctx)
+            if not observed:
+                raw = json.dumps({"status": "no_progress", "run_id": str(run_id)})
+            else:
+                if owns_transport and gateway is None:
+                    gateway = _loop_gateway()
+                raw = wait_once(ctx, run_id, _TICK_SEC, int(state.get("journal_cursor") or 0),
+                                **({"gateway": gateway} if gateway is not None else {}))
+            payload = _payload(raw)
+            answered = str(payload.get("status") or "") not in _NO_DAEMON_ANSWER_STATUSES
+            if not answered:
+                gateway = _drop_gateway(gateway)
+            unreachable = (
+                payload.get("status") == "observation_pending"
+                and payload.get("reason") == _DAEMON_UNREACHABLE
+            )
+            if observed and outage_since and answered:
+                # The first read the daemon ANSWERED closes the episode. A refusal
+                # that never reached it (descriptor gone, token unreadable, engine
+                # too old) used to satisfy this and told the owner the daemon was
+                # reachable again at the moment it became less reachable.
+                _owner_line(
+                    ctx,
+                    "Delegation daemon reachable again; the outage that began at "
+                    f"{outage_since} is over and delegated runs are being observed again.",
+                    f"delegation_daemon_recovered:{outage_stamp}", "ok")
+                outage_since, outage_stamp = "", ""
+            cursor = payload.get("last_seq")
+            if isinstance(cursor, int):
+                state["journal_cursor"] = max(int(state.get("journal_cursor") or 0), cursor)
+            addressed_wakes = _addressed_wakes(ctx, state)
+            control_wakes = _control_wakes(ctx)
+            coordination_events, next_coordination_cursor = _coordination_wakes(ctx, state)
+            wakes = addressed_wakes + control_wakes + coordination_events
+            checkpoint = state.get("checkpoint") if isinstance(state.get("checkpoint"), dict) else {}
+            due = bool(
+                checkpoint
+                and not checkpoint.get("consumed")
+                and float(checkpoint.get("due_at_unix") or 0) <= time.time()
+            )
+            meaningful = str(payload.get("status") or "") not in _QUIET_STATUSES
+            if meaningful or wakes or due:
+                if checkpoint and not checkpoint.get("consumed"):
+                    checkpoint["consumed"] = True
+                    checkpoint["consumed_at"] = utc_now_iso()
+                    checkpoint["consumed_by"] = (
+                        "real_event" if meaningful or wakes else "scheduled_checkpoint"
+                    )
+                    state["checkpoint"] = checkpoint
+                    _emit(ctx, "delegate_supervision_checkpoint_consumed", {
+                        "run_id": str(run_id), "reason": str(checkpoint.get("reason") or ""),
+                        "consumed_by": str(checkpoint.get("consumed_by") or ""),
+                    })
+                if due and not meaningful and not wakes:
+                    payload = {
+                        "status": "inspection_checkpoint",
+                        "run_id": str(run_id),
+                        "reason": str(checkpoint.get("reason") or ""),
+                        "last_seq": int(state.get("journal_cursor") or 0),
+                    }
+                if wakes:
+                    payload["wake_events"] = wakes
+                payload["coordination_context"] = coordination_live_context(ctx)
+                wake_id = uuid.uuid4().hex
+                payload["supervision_wake_id"] = wake_id
+                state["status"] = "wake_pending"
+                state["last_wake"] = payload
+                state["pending_wake"] = {
+                    "wake_id": wake_id,
+                    "attempt_key": _attempt_key(ctx),
+                    "payload": payload,
+                    "mailbox_ids": [
+                        str(item.get("msg_id") or "") for item in wakes
+                        if str(item.get("msg_id") or "")
+                        and str(item.get("kind") or "") not in _LOOP_CONTROL_KINDS
+                    ],
+                    "seen_mailbox_ids": [
+                        str(item.get("msg_id") or "") for item in wakes
+                        if str(item.get("msg_id") or "")
+                    ],
+                    "interaction_ids": sorted(_interaction_ids(payload)),
+                    "coordination_cursor": next_coordination_cursor,
+                    "created_at": utc_now_iso(),
                 }
-            if wakes:
-                payload["wake_events"] = wakes
-            payload["coordination_context"] = coordination_live_context(ctx)
-            wake_id = uuid.uuid4().hex
-            payload["supervision_wake_id"] = wake_id
-            state["status"] = "wake_pending"
-            state["last_wake"] = payload
-            state["pending_wake"] = {
-                "wake_id": wake_id,
-                "attempt_key": _attempt_key(ctx),
-                "payload": payload,
-                "mailbox_ids": [
-                    str(item.get("msg_id") or "") for item in wakes
-                    if str(item.get("msg_id") or "")
-                    and str(item.get("kind") or "") not in _LOOP_CONTROL_KINDS
-                ],
-                "seen_mailbox_ids": [
-                    str(item.get("msg_id") or "") for item in wakes
-                    if str(item.get("msg_id") or "")
-                ],
-                "interaction_ids": sorted(_interaction_ids(payload)),
-                "coordination_cursor": next_coordination_cursor,
-                "created_at": utc_now_iso(),
-            }
+                _save_state(ctx, state)
+                _emit(ctx, "delegate_supervision_wake_pending", {
+                    "run_id": str(run_id), "wake_id": wake_id,
+                    "payload": payload,
+                    "mailbox_ids": list(state["pending_wake"]["mailbox_ids"]),
+                    "interaction_ids": list(state["pending_wake"]["interaction_ids"]),
+                })
+                return _render_wake_payload(ctx, payload)
+            if payload.get("status") == "observation_pending":
+                _emit(ctx, "delegate_supervision_observation_pending", {
+                    "run_id": str(run_id), "reason": payload.get("reason"),
+                    "waited_sec": payload.get("waited_sec"),
+                })
+                if unreachable and not outage_since:
+                    # The class the model can do nothing about: a dead socket is a quiet
+                    # renewal on the same 3 s beat (no backoff, no durable counter), and
+                    # the owner hears about it exactly once per episode. Deadline, ceiling,
+                    # budget and cancel stay the outer bounds that cut a long unobserved
+                    # stretch. The episode stamps its own key and names its start in the
+                    # text, so a SECOND outage in the same wait is a new line on both
+                    # client surfaces instead of a duplicate the toast set already holds.
+                    opened = time.time()
+                    outage_since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(opened))
+                    outage_stamp = str(int(opened * 1000))
+                    _owner_line(ctx, f"Delegation daemon unreachable since {outage_since}; "
+                                "delegated runs are not being observed, the runs themselves "
+                                "keep going.",
+                                f"delegation_daemon_unreachable:{outage_stamp}", "warn")
+                # A failed read is not a completed quiet window; retain the cursor
+                # and avoid a busy loop if a transport fails before its read bound.
+                time.sleep(_TICK_SEC)
+            state["coordination_cursor"] = next_coordination_cursor
+            state["quiet_renewals"] = int(state.get("quiet_renewals") or 0) + 1
+            renewals = int(state["quiet_renewals"])
+            if renewals == 1 or renewals & (renewals - 1) == 0:
+                _emit(ctx, "delegate_supervision_wait_renewed", {
+                    "run_id": str(run_id), "quiet_renewals": renewals,
+                    "journal_cursor": int(state.get("journal_cursor") or 0),
+                    "event_only": True,
+                })
             _save_state(ctx, state)
-            _emit(ctx, "delegate_supervision_wake_pending", {
-                "run_id": str(run_id), "wake_id": wake_id,
-                "payload": payload,
-                "mailbox_ids": list(state["pending_wake"]["mailbox_ids"]),
-                "interaction_ids": list(state["pending_wake"]["interaction_ids"]),
-            })
-            return _render_wake_payload(ctx, payload)
-        state["coordination_cursor"] = next_coordination_cursor
-        state["quiet_renewals"] = int(state.get("quiet_renewals") or 0) + 1
-        renewals = int(state["quiet_renewals"])
-        if renewals == 1 or renewals & (renewals - 1) == 0:
-            _emit(ctx, "delegate_supervision_wait_renewed", {
-                "run_id": str(run_id), "quiet_renewals": renewals,
-                "journal_cursor": int(state.get("journal_cursor") or 0),
-                "event_only": True,
-            })
-        _save_state(ctx, state)
+    finally:
+        _drop_gateway(gateway)
 
 
 def read_unknown_hold(ctx: Any) -> dict[str, Any]:
@@ -978,7 +1118,7 @@ def delegate_wait_entry(
     since_seq: Optional[int] = None,
     checkpoint_after_sec: Optional[int] = None,
     checkpoint_reason: str = "",
-) -> str:
+) -> ToolResult:
     """Event-only wait; hidden ``wait_sec`` is accepted only for old transcripts."""
 
     if wait_sec is not None:

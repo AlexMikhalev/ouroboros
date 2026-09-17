@@ -1,7 +1,7 @@
 """Forced finalization of a task that ran out of road: orphan notes, child claims
 and the absorption gate, forced children acceptance, swarm-action enforcement,
 forced services and owner-directive drain, the one forced model call, stale and
-fallback candidates, the swarm router and the forced final answer.
+fallback candidates and the forced final answer.
 Extracted from loop.py (v7 L-B split); loop.py re-exports every name."""
 
 from __future__ import annotations
@@ -15,9 +15,8 @@ import time
 
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from ouroboros.loop_llm_call import forced_response_is_incomplete, forced_response_parts
-from ouroboros.outcomes import REASON_DELIVERY_CONTROL_DEGRADED
+from ouroboros.outcomes import ACCEPTANCE_FINALIZED_UNACCEPTED, REASON_DELIVERY_CONTROL_DEGRADED
 from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_NOTICE, TERMINAL_ORIGIN_HOST_SALVAGE, TERMINAL_ORIGIN_MODEL_FINAL, set_terminal_host_notice
-from ouroboros.tool_policy import swarm_router_turn
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.usage_accounting import BudgetExceeded
 from ouroboros.utils import sanitize_tool_result_for_log, truncate_review_artifact
@@ -188,18 +187,38 @@ def _forced_orphan_note(ctx: _RoundLimitContext, *, include_terminal: bool = Tru
     both reported. On a NORMAL no-tool finalization
     (``include_terminal=False``) the agent saw every change, so only
     STILL-RUNNING undecided children — genuinely orphaned by finalizing
-    mid-flight — are reported. Never raises."""
+    mid-flight — are reported. A settled child whose own terminal row already
+    reached THIS reader's chat is left to that row rather than repeated here; a
+    child whose disposition was claimed but did not bind is kept whatever its
+    row said, because the terminal row does not carry that fact. Never
+    raises."""
     try:
+        from ouroboros.project_dialogue import canonical_task_summary_reached_chat
         from ouroboros.task_status import FINAL_STATUSES
 
         children = _loop()._direct_child_results(ctx)
         claimed = _loop()._claimed_child_dispositions(ctx)
+        # The chat this note is about to be read in. Every settled task has a
+        # receipt, so only the receipt's own chat can say whether THIS reader
+        # already saw the child's terminal row; without it the note stays whole.
+        tools_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
+        note_chat_id = getattr(tools_ctx, "current_chat_id", None)
 
         def _undecided(c: Dict[str, Any]) -> bool:
             if _loop()._child_disposition_state(c) in {
                 "integrated", "irrelevant", "deferred", "discarded", "cancelled",
             }:
                 return False  # explicitly handled
+            if (
+                canonical_task_summary_reached_chat(c, note_chat_id)
+                and str(c.get("task_id") or c.get("id") or "") not in claimed
+            ):
+                # This reader already has the child's own terminal row, so it was
+                # not orphaned SILENTLY and naming it here tells one event twice.
+                # A durable fact of the child's, never a scan of chat text. The
+                # claimed-but-unbound case stays: that row says the child
+                # finished, never that the parent's disposition failed to bind.
+                return False
             # completed children were already surfaced via the reminder
             return include_terminal or str(c.get("status") or "").strip().lower() not in FINAL_STATUSES
 
@@ -241,7 +260,11 @@ def _forced_orphan_note(ctx: _RoundLimitContext, *, include_terminal: bool = Tru
             more = f" (+{len(undecided) - 10} more)" if len(undecided) > 10 else ""
             lead = "finalized under a hard limit with" if include_terminal else "finalized with"
             detail = (
-                "running ones may be incomplete, completed ones may be UNREAD"
+                # A child that FAILED or was CANCELLED is neither running nor
+                # completed: the two-way clause described it as something it is
+                # not, while its own label already carries the real lifecycle.
+                "running ones may be incomplete, finished ones (completed, failed "
+                "or cancelled) may be UNREAD"
                 if include_terminal else
                 "still-running children not absorbed or discarded"
             )
@@ -452,20 +475,7 @@ def _enforce_swarm_actions(
     llm_trace: Dict[str, Any],
     emit_progress: Callable[[str], None],
 ) -> bool:
-    """Hold normal finalization while routing or blocking plan work is open."""
-
-    if swarm_router_turn(tools._ctx) and not _loop()._swarm_handoff_attempt(tools._ctx):
-        if content.strip():
-            messages.append({"role": "assistant", "content": content})
-        reminder = (
-            "[SWARM_ROUTING_INTENT] Admit exactly one new managed root now with "
-            "promote_chat_to_task, or from Main route_to_project for a clearly matching "
-            "existing Project. Do not answer inline or steer an existing task."
-        )
-        _loop()._append_or_merge_user_message(messages, reminder)
-        llm_trace["reasoning_notes"].append(reminder)
-        emit_progress("Swarm routing action required before final response.")
-        return True
+    """Hold normal finalization while blocking plan work is open."""
 
     decision = _loop()._force_plan_decision(tools._ctx, llm_trace)
     if decision.get("required"):
@@ -491,9 +501,22 @@ _FORCED_BEST_EFFORT_TAIL = (
 def _prepare_forced_prompt(
     ctx: _RoundLimitContext, prompt: str, llm_trace: Dict[str, Any],
 ) -> str:
+    _loop()._drain_forced_owner_directives(ctx, llm_trace)
     _loop()._finalize_forced_services(ctx, llm_trace)
     tools_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
-    return prompt + _loop()._forced_delegation_note(tools_ctx, llm_trace)
+    return prompt + _loop()._forced_delegation_note(tools_ctx, llm_trace) + _forced_subject_prompt(ctx, llm_trace)
+
+
+def _forced_subject_prompt(ctx: _RoundLimitContext, llm_trace: Dict[str, Any]) -> str:
+    """Capture the source before pricing/sending, never after a reply arrives."""
+    from ouroboros.loop_acceptance import capture_acceptance_observation, acceptance_observation_prompt
+
+    tools_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
+    if tools_ctx is None:
+        return ""
+    observed = capture_acceptance_observation(tools_ctx, llm_trace, ctx.incoming_messages)
+    rendered = acceptance_observation_prompt(tools_ctx, observed)
+    return "\n\n" + rendered if rendered else ""
 
 
 def _finalize_forced_services(
@@ -635,6 +658,9 @@ def _call_forced_model_once(
         candidate_predicate=candidate_predicate,
         model_role=role,
         model_account_override=account,
+        # A forced final belongs to the loop invocation that is finishing, so it
+        # continues that same active turn instead of opening a new one.
+        model_turn_state=getattr(owner_ctx, "model_turn_state", None),
     )
     ctx.accumulated_usage["_forced_response_meta"] = response_meta
     return str((final_msg or {}).get("content") or "").strip()
@@ -709,6 +735,7 @@ def _publish_stale_forced_candidate(
     # A host disclosure cannot make the preserved model text current.
     candidate.evidence_revision = stale_candidate.evidence_revision
     candidate.evidence_fingerprint = stale_candidate.evidence_fingerprint
+    candidate.owner_source_sha256 = stale_candidate.owner_source_sha256
     candidate.acceptance_binding = _loop()._forced_unaccepted_binding(
         tools, candidate, reason_code,
     )
@@ -737,9 +764,6 @@ def _forced_fallback_result(
     provider_terminal: bool = False,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """Compose fallback."""
-    router_result = _loop()._forced_swarm_router_result(ctx, llm_trace, reason_code)
-    if router_result is not None:
-        return router_result
     tool_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
     plan_suffix = (
         _loop()._force_plan_disclosure(tool_ctx, llm_trace, forced_reason=reason_code)
@@ -838,62 +862,10 @@ def _forced_fallback_result(
     return composed, ctx.accumulated_usage, llm_trace
 
 
-def _forced_swarm_router_result(
-    ctx: _RoundLimitContext,
-    llm_trace: Dict[str, Any],
-    reason_code: str,
-) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
-    """Use deterministic routing text only when a real rail ends the router."""
-
-    tools = getattr(ctx, "tools", None)
-    if tools is None or not swarm_router_turn(tools._ctx):
-        return None
-    attempt = _loop()._swarm_handoff_attempt(tools._ctx)
-    status = str(attempt.get("status") or "not_attempted")
-    task_id = str(attempt.get("task_id") or "")
-    if status == "scheduled":
-        text = f"✅ Swarm admitted managed task {task_id}. Work continues in that task."
-    elif status == "unconfirmed":
-        text = (
-            f"⚠️ Swarm attempted managed task {task_id}, but admission was not confirmed. "
-            "No second routing event was emitted; keep the task id for reconciliation."
-        )
-    elif status == "rejected":
-        detail = str(attempt.get("reason") or "admission rejected")
-        text = f"⚠️ Swarm could not admit a new managed task ({detail}). No retry was emitted."
-    else:
-        text = (
-            f"⚠️ Swarm reached the task-wide rail `{reason_code}` before a managed-root "
-            "admission attempt completed. No inline work was published."
-        )
-    full_text = _loop()._compose_delivery_suffix(text, _loop()._forced_orphan_note(ctx))
-    candidate = _loop()._replace_delivery_candidate(
-        tools, ctx, llm_trace, full_text, control=f"forced_swarm_router:{reason_code}",
-    )
-    if status != "scheduled":
-        candidate.degraded = True
-        candidate.degraded_reason = reason_code
-    _loop()._publish_delivery_candidate(tools, candidate, llm_trace)
-    if status == "scheduled":
-        # The short acknowledgement hit a rail, but the requested managed work
-        # was already durably admitted. Keep that successful handoff truthful.
-        ctx.accumulated_usage.pop("execution_status", None)
-        ctx.accumulated_usage.pop("reason_code", None)
-    else:
-        ctx.accumulated_usage.update(execution_status="failed", reason_code=reason_code)
-    _loop()._record_forced_finalization(
-        ctx,
-        llm_trace,
-        reason_code=reason_code,
-        source="host_swarm_routing_fallback",
-        candidate=candidate,
-    )
-    return candidate.full_text, ctx.accumulated_usage, llm_trace
-
-
 def _resolve_forced_delivery_control(
     tools_ctx: Any,
     extracted: str,
+    *, ctx: Optional[_RoundLimitContext] = None, llm_trace: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, str, bool, bool]:
     """Resolve forced control; returns text, degradation, retained, replaced."""
     if tools_ctx is None or not extracted:
@@ -910,6 +882,29 @@ def _resolve_forced_delivery_control(
     )
     if consumed:
         tools_ctx._delivery_control_required = False
+        from ouroboros.loop_delivery import _parse_delivery_control_body, apply_delivery_subject_decision
+
+        parsed, duplicate, embedded = _parse_delivery_control_body(extracted)
+        if (not duplicate and not embedded and isinstance(parsed, dict)
+                and "acceptance_subject" in parsed and not degraded):
+            applied, error = (
+                apply_delivery_subject_decision(ctx.tools, ctx, llm_trace, parsed["acceptance_subject"])
+                if ctx is not None and llm_trace is not None else
+                (False, "forced subject has no current source observation context")
+            )
+            if llm_trace is not None:
+                llm_trace["forced_acceptance_subject"] = {"applied": applied, "reason": error}
+            if not applied:
+                degraded = True
+                if ctx is not None and llm_trace is not None and isinstance(candidate, _loop().DeliveryCandidate):
+                    candidate.acceptance_binding = _loop()._forced_unaccepted_binding(
+                        ctx.tools, candidate, REASON_DELIVERY_CONTROL_DEGRADED,
+                    )
+                    tools_ctx._task_acceptance_reviewed = False
+                    _loop()._set_acceptance_decision(llm_trace, {
+                        "status": ACCEPTANCE_FINALIZED_UNACCEPTED, "reason": REASON_DELIVERY_CONTROL_DEGRADED,
+                        "source": "forced_acceptance_subject", "rationale": error,
+                    })
     return (
         resolved,
         REASON_DELIVERY_CONTROL_DEGRADED if degraded else "",
@@ -941,9 +936,6 @@ def _forced_final_answer(
             ctx, llm_trace, fallback_text, reason_code,
             source=f"{reason_code}_window_elapsed",
         )
-    router_result = _loop()._forced_swarm_router_result(ctx, llm_trace, reason_code)
-    if router_result is not None:
-        return router_result
     tools_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
     _loop()._append_or_merge_user_message(ctx.messages, prompt)
     extracted = ""
@@ -975,7 +967,7 @@ def _forced_final_answer(
                 reason_code,
                 source="provider_outcome_unknown_no_resend",
             )
-        if attempt == 1:
+        if single_semantic_turn or attempt == 1:
             return _loop()._forced_fallback_result(
                 ctx,
                 llm_trace,
@@ -987,7 +979,8 @@ def _forced_final_answer(
         _loop()._finalize_forced_services(ctx, llm_trace)
         _loop()._append_or_merge_user_message(
             ctx.messages,
-            "[FORCED_OWNER_REFRESH] Answer all current directives; ignore the stale draft.",
+            "[FORCED_OWNER_REFRESH] Answer all current directives; ignore the stale draft."
+            + _forced_subject_prompt(ctx, llm_trace),
         )
 
     # Control resolution runs BEFORE the incomplete branch: a retained candidate
@@ -995,7 +988,7 @@ def _forced_final_answer(
     # and a stale-evidence retention keeps its own reason (#447/issue-449).
     incomplete = bool(extracted) and forced_response_is_incomplete(response_meta)
     extracted, control_degraded, retained, replaced = _resolve_forced_delivery_control(
-        tools_ctx, extracted,
+        tools_ctx, extracted, ctx=ctx, llm_trace=llm_trace,
     )
     current = _loop()._current_delivery_candidate(ctx, llm_trace)
     if retained and current is None:

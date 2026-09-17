@@ -55,6 +55,81 @@ def test_a_read_only_child_uses_the_same_transport_with_a_narrower_profile(tmp_p
     assert payload["access"] == "readonly"
 
 
+@pytest.mark.parametrize("named_default", [
+    {"directory_strategy": "direct"},
+    {"scope_paths": []},
+    {"directory_strategy": "direct", "scope_paths": []},
+])
+def test_naming_the_documented_default_starts_exactly_like_omitting_it(
+    tmp_path, monkeypatch, named_default,
+):
+    """#882: `direct` IS what omission means, and `[]` selects nothing.
+
+    A read-only child never opens an ordinary-folder session, so neither argument
+    can change its run — yet the presence test they used to meet refused the start
+    before any POST, and the startup receipt forbade the child any other substrate.
+    The first real use of the parameter (a read-only auditor naming the documented
+    default) died unrun and still cost two paid rounds. Naming a default is not a
+    different request.
+    """
+    roots = [tmp_path / "omit", tmp_path / "named"]
+    for root in roots:
+        root.mkdir()
+    omitted, _ = _started_request(roots[0], acting=False, monkeypatch=monkeypatch)
+    explicit, payload = _started_request(
+        roots[1], acting=False, monkeypatch=monkeypatch, start_kwargs=named_default)
+    assert "execution" not in explicit
+    assert payload["access"] == "readonly"
+    assert {key: value for key, value in explicit.items() if key != "scope"} == {
+        key: value for key, value in omitted.items() if key != "scope"}
+
+
+@pytest.mark.parametrize("geometry", [
+    {"scope_paths": ["src"]},
+    {"directory_strategy": "direct", "scope_paths": ["src"]},
+    {"directory_strategy": "copy", "scope_paths": ["."]},
+])
+def test_real_geometry_on_a_read_only_child_refuses_before_the_daemon(
+    tmp_path, monkeypatch, geometry,
+):
+    """A REAL geometry request still refuses — typed, unrun, and repairable.
+
+    `copy` or a selected footprint asks for something a read-only child cannot do,
+    so the refusal stands. What it must carry: `definitely_unrun` (the host provably
+    started nothing, so the child ends at $0 instead of waking the model with a fault
+    it cannot act on), a durable start-blocked row (the child's own evidence used to
+    read "delegate_start never attempted" over a call the registry saw), and a repair
+    the parent can apply — omit the arguments — rather than "an ordinary writable
+    folder", which sends an auditor looking for a mutating session it never needed.
+    """
+    from ouroboros import delegate_custody as custody
+    from ouroboros.delegate_evidence import START_BLOCKED
+    from ouroboros.gateways import claudexor as _gw
+    from ouroboros.tools import delegate
+
+    reached = []
+
+    class _NeverReached:
+        def handshake(self, **_kw): reached.append("handshake"); return {}
+        def close(self): pass
+
+    monkeypatch.setattr(_gw, "ClaudexorGateway", lambda *a, **k: _NeverReached())
+    monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "some-route=weak-model:low")
+    ctx = _delegating_ctx(tmp_path, acting=False, task_id="t-geometry")
+    refused = json.loads(delegate._delegate_start(ctx, "audit the folder", **geometry).text)
+    assert refused["status"] == "refused"
+    assert refused["reason"] == "directory_execution_unavailable"
+    assert refused["definitely_unrun"] is True
+    assert "omit directory_strategy and scope_paths" in refused["detail"]
+    assert reached == [], "an argument refusal never reaches the daemon"
+    custody._CUSTODY.clear()
+    rows = [json.loads(line) for line in
+            custody.event_log_path(tmp_path).read_text(encoding="utf-8").splitlines()]
+    blocked = [row for row in rows if row.get("type") == START_BLOCKED]
+    assert [row["reason"] for row in blocked] == ["directory_execution_unavailable"]
+    assert blocked[0]["task_id"] == "t-geometry"
+
+
 def test_the_host_states_its_prohibitions_on_every_delegated_run(tmp_path, monkeypatch):
     request, _ = _started_request(tmp_path, acting=True, monkeypatch=monkeypatch)
     instructions = request["instructions"].lower()
@@ -71,6 +146,7 @@ def test_the_model_has_no_argument_that_could_widen_the_profile():
     # ResolvedResourceBinding authorizer as ordinary writes (R1 item 9).
     assert properties == {
         "prompt", "subagent_id", "max_seconds", "retry_of", "root", "bucket", "skill_name",
+        "directory_strategy", "scope_paths",
     }
     assert entry.schema["parameters"]["properties"]["root"]["enum"] == ["skill_payload"]
     assert not properties & {"access", "mode", "isolation", "scope", "write_surface", "cwd"}
@@ -224,7 +300,7 @@ def test_a_mutating_run_requires_an_ACTIVE_workspace_not_merely_agreement(tmp_pa
     ctx.workspace_mode = ""
     record, refusal = _mutation_authority(
         ctx, delegated_run_shape(True))
-    assert refusal and "workspace_not_active" in refusal, refusal
+    assert refusal and "workspace_not_active" in refusal.text, refusal
     assert record == {}
 
 
@@ -285,7 +361,8 @@ def test_a_delegated_run_can_only_be_touched_by_the_task_that_started_it(tmp_pat
 
     for tool, call in (
         ("delegate_wait", lambda ctx, rid: delegate._delegate_wait(ctx, rid, wait_sec=1)),
-        ("delegate_cancel", lambda ctx, rid: delegate._delegate_cancel(ctx, rid, reason="x")),
+        # delegate_wait is the tick contract (str); cancel answers natively.
+        ("delegate_cancel", lambda ctx, rid: delegate._delegate_cancel(ctx, rid, reason="x").text),
     ):
         # A run with NO durable start record anywhere: ownership is UNKNOWN, which is a
         # different fact from "demonstrably someone else's" and is refused on its own name.
@@ -352,7 +429,7 @@ def test_a_mutating_run_is_refused_when_the_root_and_the_granted_write_root_disa
     ctx.workspace_root = str(inside_the_drive)
     ctx.workspace_mode = "self_worktree"
 
-    out = json.loads(delegate._delegate_start(ctx, "edit the README"))
+    out = json.loads(delegate._delegate_start(ctx, "edit the README").text)
     assert out["status"] == "refused", out
     # A worktree overlapping the data drive is refused as "not an active workspace" —
     # `workspace_mode_block_reason` fires first and is the stronger statement.
@@ -361,7 +438,7 @@ def test_a_mutating_run_is_refused_when_the_root_and_the_granted_write_root_disa
     # And a mutating child whose constraint granted no write_root at all is refused too,
     # rather than the host picking a directory on its behalf.
     ctx.task_constraint = TaskConstraint(mode="acting_subagent", surface="self_worktree")
-    out = json.loads(delegate._delegate_start(ctx, "edit the README"))
+    out = json.loads(delegate._delegate_start(ctx, "edit the README").text)
     assert out["status"] == "refused", out
     assert out["reason"] in ("write_root_missing", "workspace_not_active"), out
 
@@ -378,11 +455,11 @@ def test_the_guards_that_protect_a_delegated_run_fail_closed(tmp_path, monkeypat
     ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path)
     ctx.task_id = "t-a"
     ctx.task_metadata = {"root_task_id": "t-a"}
-    assert json.loads(delegate._delegate_cancel(ctx, "run-x"))["reason"] == "run_not_owned"
+    assert json.loads(delegate._delegate_cancel(ctx, "run-x").text)["reason"] == "run_not_owned"
     ctx.task_id = ""
     delegate._CUSTODY["run-x"] = delegate._RunCustody(
         task_id="t-a", route_id="r", model="m", project_id="p", project_owned=False)
-    assert json.loads(delegate._delegate_cancel(ctx, "run-x"))["reason"] == "run_not_owned"
+    assert json.loads(delegate._delegate_cancel(ctx, "run-x").text)["reason"] == "run_not_owned"
     delegate._CUSTODY.clear()
 
     # 2. A run with no knowable deadline gets a conservative cap, never an omitted one:
@@ -444,7 +521,7 @@ def test_the_guards_that_protect_a_delegated_run_fail_closed(tmp_path, monkeypat
     from ouroboros.gateways import claudexor as _gw
 
     monkeypatch.setattr(_gw, "ClaudexorGateway", lambda *a, **k: _NeverReached())
-    refused = json.loads(delegate._delegate_start(expired, "start something new"))
+    refused = json.loads(delegate._delegate_start(expired, "start something new").text)
     assert refused["status"] == "refused" and refused["reason"] == "task_deadline_expired"
     assert refused["definitely_unrun"] is True
     assert reached == [], "expired nanny never reaches daemon"
@@ -487,7 +564,7 @@ def test_an_unresolvable_write_root_is_a_typed_refusal_not_a_traceback(tmp_path)
     ctx.workspace_mode = "self_worktree"
     record, refusal = _mutation_authority(
         ctx, delegated_run_shape(True))
-    assert refusal and "write_root_mismatch" in refusal, refusal
+    assert refusal and "write_root_mismatch" in refusal.text, refusal
     assert record == {}
 
 
@@ -523,5 +600,5 @@ def test_an_inactive_workspace_is_refused_even_when_the_root_is_set(tmp_path):
     record, refusal = _mutation_authority(
         ctx, delegated_run_shape(True))
     assert refusal, "an inactive workspace must be refused"
-    assert "workspace_not_active" in refusal, refusal
+    assert "workspace_not_active" in refusal.text, refusal
     assert record == {}

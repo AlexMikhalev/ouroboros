@@ -779,15 +779,14 @@ def sw1_stub_script(_clone: pathlib.Path) -> dict:
             "expected_output": "A short listing."}}
 
     return {
-        "router": [{"tool": "promote_chat_to_task", "arguments": {
-            "objective": SW1_OBJECTIVE, "title": "SW1 swarm survey", "predecessor_task_id": ""}},
-            {"final": "Routed the Swarm request into a managed task."}],
         "agent": [
             {"tool": "plan_task", "arguments": {
                 "goal": "Survey the repository with two parallel scouts.",
                 "plan": "Schedule two scouts, wait for both, summarize.",
                 "spec": {"deliverables": ["Two scout results summarized."],
-                         "acceptance_claims": ["Both scouts completed and were absorbed."]}}},
+                         "acceptance_claims": ["Both scouts completed and were absorbed."],
+                         # Required on every submitted spec (owner 9=A); a survey changes no file.
+                         "affected_paths": []}}},
             scout("A", "list the top-level directories"),
             scout("B", "list the test modules under tests/system_e2e"),
             wait_step,

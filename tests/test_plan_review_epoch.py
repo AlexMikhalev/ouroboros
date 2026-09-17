@@ -12,6 +12,8 @@ its own module because the engine test file sits at its 1500-line ceiling.
 
 from __future__ import annotations
 
+import pytest
+
 import dataclasses
 import json
 import logging
@@ -444,3 +446,103 @@ def test_transient_and_unknown_health_still_fail_open_for_a_pinned_slot(monkeypa
         _patch_snapshot_health(monkeypatch, lambda rid, model, pin, r=reason, t=reset: (r, t))
         assert plan_panel_health_snapshot(
             _profile_slots(("s1", "codex=gpt-5.6-sol", "spent-acct"))) == {}, reason
+
+
+@pytest.mark.parametrize("aggregate", ["REVIEW_REQUIRED", "REVISE_PLAN", "DEGRADED"])
+@pytest.mark.parametrize("enforcement", ["blocking", "advisory"])
+@pytest.mark.parametrize("epoch", ["", "health"])
+@pytest.mark.parametrize("cap", [None, 2, 3])
+def test_whole_plan_render_respects_paid_capacity(aggregate, enforcement, epoch, cap):
+    from ouroboros.tools.plan_render import _render_wave, _parse_plan_review_control
+    import copy
+
+    wave = {"aggregate": aggregate, "closed": False, "request_fingerprint": "fp", "health_epoch": epoch,
+            "counts": {"configured": 3, "parseable": 0, "quorum": 2},
+            "findings": [{"class": "blocking", "finding_id": "s1:f1"}],
+            "closure_notes": ["blocking_finding_below_quorum_stays_open: let the next paid delta cycle judge the rejection",
+                              "revise_plan_not_closable_by_disposition: next paid delta cycle",
+                              "degraded_not_closable_by_disposition: rerun the wave",
+                              "author note: retained unchanged"]}
+    before = copy.deepcopy(wave)
+    text = _render_wave(wave, cap=cap, cycles_paid=2, enforcement=enforcement)
+    assert wave == before
+    assert _parse_plan_review_control(text) == (aggregate, False)
+    assert "author note: retained unchanged" in text
+    assert "rerun the wave" not in text
+    # The rendered control owns the current paid-capacity disclosure. The
+    # retained closure notes remain provenance; no literal phrase is required.
+
+
+
+def test_closed_and_pending_plan_states_do_not_advertise_new_review_at_cap():
+    from ouroboros.tools.plan_render import _next_step
+
+    assert _next_step({"aggregate": "GREEN", "closed": True}, enforcement="blocking", cap=2, cycles_paid=2).startswith("Closed: proceed")
+    pending = _next_step({"aggregate": "DEGRADED", "custody_pending": True}, enforcement="blocking", cap=2, cycles_paid=2)
+    assert "custody reconciliation" in pending and "fresh panel" not in pending
+
+
+def test_loop_reminder_does_not_repromise_a_spent_panel(monkeypatch):
+    from ouroboros.owner_hurry import plan_review_reminder
+
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "2")
+    for outcome in ("REVISE_PLAN", "REVIEW_REQUIRED", "DEGRADED"):
+        text = plan_review_reminder({"outcome": outcome, "status": "open", "cycles_paid": 2,
+                                    "reviewer_slots_degraded": outcome == "DEGRADED"})
+        assert "cannot dispatch another paid panel" in text
+        assert "re-dispatches a fresh panel" not in text
+        assert "a changed spec starts the next paid cycle" not in text
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "unlimited")
+    assert "re-dispatches a fresh panel" in plan_review_reminder({"outcome": "DEGRADED", "reviewer_slots_degraded": True, "cycles_paid": 2})
+
+
+def _effort_aware_builder(harness, monkeypatch):
+    """A builder stub that honours ``default_effort`` (the engine wraps the builder
+    only when the envelope declares an effort; zero-arg stubs stay valid)."""
+    from ouroboros.tools import plan_review as pr
+
+    def build(default_effort=""):
+        return [dataclasses.replace(slot, effort=default_effort or slot.effort,
+                                    declared_effort=default_effort)
+                for slot in harness.state["slots"]]
+
+    monkeypatch.setattr(pr, "_plan_review_slots", build)
+
+
+def test_declared_reviewer_effort_re_dispatches_and_the_same_declaration_replays_free(harness, monkeypatch):
+    """Owner batch 2 Q3=A: the envelope declares the panel's strength; effort is
+    roster identity, so a changed declaration is a new paid panel while repeating
+    the same declaration replays the recorded wave for free."""
+    _patch_health(monkeypatch, lambda slots: {})
+    _effort_aware_builder(harness, monkeypatch)
+    open_finding = json.dumps([_finding("n1", "blocking", breaks="claim_1")])
+    sub = harness.install({"s1": open_finding, "s2": CLEAN, "s3": CLEAN})
+    ctx = harness.make_ctx()
+    first = _call(ctx, reviewer_effort="low")
+    assert _control(first) == {"outcome": "REVIEW_REQUIRED", "closed": False}
+    assert len(sub.calls) == 1 and [s.effort for s in sub.calls[0]["slots"]] == ["low", "low", "low"]
+    wave = _state(harness)["waves"][-1]
+    assert wave["reviewer_effort"] == "low" and "declared reviewer effort: low" in first
+    assert _call(ctx, reviewer_effort="low").count("cached exact review") == 1 and len(sub.calls) == 1
+    stronger = _call(ctx, reviewer_effort="max")
+    assert "cached exact review" not in stronger and len(sub.calls) == 2
+    assert [s.effort for s in sub.calls[1]["slots"]] == ["max", "max", "max"]
+    assert _state(harness)["cycles_paid"] == 2
+    # Off the scale: a typed argument refusal, no reviewer called, no attempt recorded.
+    refused = _call(ctx, reviewer_effort="turbo")
+    assert refused.startswith("ERROR: PLAN_SPEC_INVALID") and "reviewer_effort" in refused
+    assert len(sub.calls) == 2
+
+
+def test_a_closed_verdict_from_a_cheap_panel_is_not_reopened_by_a_stronger_declaration(harness, monkeypatch):
+    """The disclosed residual named to the owner (batch 2, Q3): a closed verdict is
+    earned authority for this envelope; ordering a stronger panel afterwards
+    replays the closed wave for free instead of re-dispatching."""
+    _patch_health(monkeypatch, lambda slots: {})
+    _effort_aware_builder(harness, monkeypatch)
+    sub = harness.install({"s1": CLEAN, "s2": CLEAN, "s3": CLEAN})
+    ctx = harness.make_ctx(task_id="task-cheap")
+    assert _control(_call(ctx, reviewer_effort="none")) == {"outcome": "GREEN", "closed": True}
+    again = _call(ctx, reviewer_effort="max")
+    assert _control(again) == {"outcome": "GREEN", "closed": True}
+    assert "cached exact review" in again and len(sub.calls) == 1

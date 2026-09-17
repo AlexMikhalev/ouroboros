@@ -79,15 +79,23 @@ def test_nav_map_is_fence_aware_at_every_supported_depth():
     assert "fake-h4" not in m
 
 
-def test_real_architecture_map_exposes_all_h4_groups():
-    architecture = (
-        Path(__file__).resolve().parents[1] / "docs" / "ARCHITECTURE.md"
-    ).read_text(encoding="utf-8")
-    m = cl.generate_doc_nav_map(
-        architecture,
-        title="ARCHITECTURE.md",
-        rel_path="docs/ARCHITECTURE.md",
-    )
+def test_the_real_architecture_book_navigation_exposes_all_h4_groups():
+    """The compact view must not lose the subsection index the monolith's map
+    carried: every `###`/`####` group still appears, addressed to the PHYSICAL
+    chapter it lives in, with the parent range containing its children."""
+    from ouroboros.reference_books import load_reference_book
+
+    repo = Path(__file__).resolve().parents[1]
+    book = load_reference_book(repo, "architecture")
+    m = cl.book_navigation(book)
+
+    assert "## 6. Agent Core (navigation map)" in m
+    assert "Source: `docs/architecture/06-agent-core.md`" in m
+    # A composed-book offset is never a locator; the read instruction is stated
+    # once, over the physical Source paths.
+    assert 'read_file(root="system_repo", path=...)' in m
+    assert m.count("Full text is NOT inlined") == 0
+
     tool_children = (
         "Web access mechanisms (three distinct paths — do not conflate)",
         "Context fitting, retry, and compaction",
@@ -101,7 +109,7 @@ def test_real_architecture_map_exposes_all_h4_groups():
         "Durable memory and project focus",
     )
     for title in (*tool_children, *planning_children):
-        assert f"    - {title} — lines " in m
+        assert f"    - {title} — lines " in m, title
 
     def _range(indent: str, title: str) -> tuple[int, int]:
         prefix = f"{indent}- {title} — lines "
@@ -118,17 +126,31 @@ def test_real_architecture_map_exposes_all_h4_groups():
         assert all(parent_start < start <= end <= parent_end for start, end in child_ranges)
         assert parent_end == child_ranges[-1][1]
 
+    # Those ranges address the chapter file, so they resolve there and nowhere
+    # else: the entrypoint has one section and cannot answer for them.
+    chapter = next(c for c in book.chapters if c.source_path.endswith("06-agent-core.md"))
+    start, end = _range("  ", "Tool capability and execution")
+    lines = chapter.text.split("\n")
+    assert lines[start - 1].startswith("### Tool capability and execution")
+    assert end <= len(lines)
+
+
+def test_a_legacy_revision_navigates_as_the_single_source_it_is():
+    from ouroboros.reference_books import load_reference_book
+
+    monolith = b"# Book\n\nOrientation.\n\n## Runtime\n\nBody.\n\n### Startup\n\nMore.\n"
+    book = load_reference_book(Path("unused"), "architecture", lambda _: monolith)
+    nav = cl.book_navigation(book)
+    assert "docs/ARCHITECTURE.md" in nav and "Runtime" in nav and "Startup" in nav
+
 
 def test_nav_map_no_heading_fallback_names_all_supported_depths():
     m = cl.generate_doc_nav_map("# Title\nbody", title="X", rel_path="x.md")
     assert "(no `##`/`###`/`####` headings; read `x.md` directly)" in m
 
 
-def test_reference_doc_sections_decouple_arch_mode_from_dev_inclusion():
-    """D-ARCH (owner, 2026-08-08): context_mode decides ONLY the ARCHITECTURE
-    form (full in max, nav map in low); DEVELOPMENT inclusion is the caller's
-    mode-independent decision. Whatever is not inlined is named in the visible
-    on-demand pointer (P1)."""
+def test_reference_doc_sections_preserve_max_and_orient_both_books_in_low():
+    """Max retains its full bodies; Low names both complete retrievable books."""
     arch = "## Arch A\n\nARCHBODY\n"
     dev = "## Dev A\n\nDEVBODY\n"
 
@@ -153,7 +175,8 @@ def test_reference_doc_sections_decouple_arch_mode_from_dev_inclusion():
     low_dev = _render("low", True)
     assert "ARCHBODY" not in low_dev  # nav map in low
     assert "navigation map" in low_dev
-    assert "DEVBODY" in low_dev  # DEV inclusion independent of the mode
+    assert "DEVBODY" not in low_dev
+    assert "## DEVELOPMENT.md (navigation map)" in low_dev
 
     low_no_dev = _render("low", False)
     assert "DEVBODY" not in low_no_dev

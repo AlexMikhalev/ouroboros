@@ -8,36 +8,15 @@ from types import SimpleNamespace
 import ouroboros.tools.registry as registry_module
 import ouroboros.tools.registry_guard_process as process_guard
 import ouroboros.tools.registry_guards as registry_guards
-from ouroboros.artifacts import task_artifact_dir_path
 from ouroboros.tools.registry import ToolContext, ToolRegistry
 from ouroboros.tools.tool_result import LegacyTextResultAdapter, ToolResult
 
 
-# Tip adaptations against the reference tables, each disclosed:
-# - the whole owner-control detector family carries the ``writeish`` read-carve
-#   keyword on THIS tree (the v6.80.0 contract extended to every member; the
-#   reference had it on the floor detector only);
-# - ``_detect_scope_review_floor_self_lowering`` is ABSENT here: the setting and
-#   its guard were retired outright in the 7.0 ABI window (owner Q10=A);
-# - three constant cardinalities moved by upstream drift after the fork
-#   (_SUBAGENT_SHELL_SECRET_MARKERS 17->18, _DENIED_READ_OPTIONS 11->12,
-#   _SKILL_OWNER_STATE_STEMS 12->14; 14->15 with the CPL4-C11 uninstall
-#   tombstone joining the owner-state allowlist);
-# - ``_workspace_shell_write_block`` takes the upstream per-segment ``target_rows``
-#   (which replaced ``write_target_argvs``).
+# Semantic mention detectors were removed; execution and observation owners remain.
 _FUNCTION_SIGNATURES = {
-    "_detect_runtime_mode_elevation": "(text_lower: 'str', *, writeish: 'bool' = True) -> 'bool'",
-    "_subagent_shell_targets_secret": "(cmd_path_lower: 'str', *, ctx: 'Any' = None, cwd: 'Any' = None) -> 'bool'",
-    "_detect_mutative_toggle_self_change": "(text_lower: 'str', *, writeish: 'bool' = True) -> 'bool'",
-    "_detect_evolution_owner_control_self_change": "(text_lower: 'str', *, writeish: 'bool' = True) -> 'bool'",
-    "_detect_context_mode_self_lowering": "(text_lower: 'str', *, writeish: 'bool' = True) -> 'bool'",
     "_trusted_read_head": "(token: 'str') -> 'str'",
     "_denied_read_option": "(token: 'str', denied: 'frozenset') -> 'bool'",
     "_is_pure_read_inspection": "(text_lower: 'str') -> 'bool'",
-    "_detect_safety_mode_self_lowering": "(text_lower: 'str', *, writeish: 'bool' = True) -> 'bool'",
-    "_detect_owner_skill_attest_self_call": "(text_lower: 'str', *, writeish: 'bool' = True) -> 'bool'",
-    "_mentions_skill_owner_state": "(text_lower: 'str', *, writeish: 'bool' = True) -> 'bool'",
-    "_mentions_detached_process": "(text_lower: 'str') -> 'bool'",
     "_run_shell_safety_check": "(self, args: 'Dict[str, Any]', runtime_mode: 'str', binding: 'Any' = None) -> 'ToolResult | None'",
     "_light_repo_snapshot": "(repo_dir: 'pathlib.Path') -> 'Optional[Dict[str, Any]]'",
     "_format_light_repo_write_note": "(before: 'Dict[str, Any]', after: 'Dict[str, Any]', tool_name: 'str' = 'run_command') -> 'str'",
@@ -48,16 +27,11 @@ _FUNCTION_SIGNATURES = {
 
 _REGISTRY_GUARD_SIGNATURES = {
     "_executor_backend_candidate_allowed": "(ctx: 'Any', candidate: 'str', allowed_roots: 'List[pathlib.Path]') -> 'bool'",
-    "_command_mentions_protected_root": "(cmd_path_lower: 'str', root_text: 'str') -> 'bool'",
     "_authorized_managed_update_resolver": "(ctx: 'Any') -> 'bool'",
     "_light_mode_payload_mutation_allowed": "(*, ctx: 'Any', tool_name: 'str', args: 'Dict[str, Any]', runtime_mode: 'str', effective_constraint: 'Optional[TaskConstraint]', implicit_skill_cwd_allowed: 'bool', allow_short_relative: 'bool') -> 'bool'",
-    "_protected_shell_block": "(self, raw_cmd, cmd_path_lower, binding, acting_self_worktree, writeish) -> 'ToolResult | None'",
     "_git_protected_roots": "(self) -> 'list'",
     "_resolved_shell_cwd": "(self, args: 'Dict[str, Any]', binding: 'Any' = None) -> 'pathlib.Path | ToolResult'",
     "_external_workspace_git_block": "(self, raw_cmd: 'Any', work_dir: 'pathlib.Path') -> 'ToolResult | None'",
-    "_external_runtime_protected_paths": "(self, binding: 'Any' = None) -> 'tuple[list, list, list, list]'",
-    "_external_shell_runtime_or_secret_block": "(self, raw_cmd: 'Any', cmd_path_lower: 'str', args: 'Dict[str, Any]', work_dir: 'Optional[pathlib.Path]' = None, binding: 'Any' = None) -> 'ToolResult | None'",
-    "_workspace_shell_write_block": "(self, args: 'Dict[str, Any]', raw_cmd: 'Any', cmd_path_lower: 'str', explicit_write_targets: 'list[str]', target_rows: 'list', executable_path_tokens: 'set[str]', runtime_mode: 'str', acting_subagent: 'bool', binding: 'Any') -> 'ToolResult | None'",
     "_shell_git_and_runtime_block": "(self, raw_cmd: 'Any', args: 'Dict[str, Any]', cmd_path_lower: 'str', workspace_mode: 'bool', acting_self_worktree: 'bool', binding: 'Any') -> 'ToolResult | None'",
 }
 
@@ -69,8 +43,6 @@ _CONSTANT_CARDINALITIES = {
     "_TRUSTED_EXECUTABLE_DIRS": 6,
     "_NESTED_EXECUTION_MARKERS": 4,
     "_NESTED_EXECUTION_TOKENS": 6,
-    "_SKILL_OWNER_STATE_STEMS": 15,
-    "_DETACHED_PROCESS_MARKERS": 5,
 }
 
 _RETIRED_REGISTRY_DEPENDENCIES = frozenset({
@@ -183,20 +155,8 @@ def test_process_guard_uses_explicit_registry_guard_owners_once_in_order(
 ):
     stub = _RegistryStub(tmp_path)
     stub._ctx.is_workspace_mode = lambda: True
-    monkeypatch.setattr(
-        registry_module,
-        "protected_artifact_shell_block_reason",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        registry_module,
-        "workspace_executor_state_write_block",
-        lambda *_args, **_kwargs: None,
-    )
     stages = (
         "_resolved_shell_cwd",
-        "_workspace_shell_write_block",
-        "_protected_shell_block",
         "_shell_git_and_runtime_block",
     )
     denial = ToolResult(status="blocked", code="WORKSPACE_BLOCKED", text="blocked")
@@ -211,24 +171,12 @@ def test_process_guard_uses_explicit_registry_guard_owners_once_in_order(
             calls.append("_resolved_shell_cwd")
             return denial if stop_index == 0 else tmp_path
 
-        def workspace(owner, *args):
-            assert owner is stub
-            calls.append("_workspace_shell_write_block")
-            return denial if stop_index == 1 else None
-
-        def protected(owner, *args):
-            assert owner is stub
-            calls.append("_protected_shell_block")
-            return denial if stop_index == 2 else None
-
         def git_runtime(owner, *args):
             assert owner is stub
             calls.append("_shell_git_and_runtime_block")
-            return denial if stop_index == 3 else None
+            return denial if stop_index == 1 else None
 
         monkeypatch.setattr(registry_guards, "_resolved_shell_cwd", resolved)
-        monkeypatch.setattr(registry_guards, "_workspace_shell_write_block", workspace)
-        monkeypatch.setattr(registry_guards, "_protected_shell_block", protected)
         monkeypatch.setattr(registry_guards, "_shell_git_and_runtime_block", git_runtime)
 
         result = process_guard._run_shell_safety_check(
@@ -338,10 +286,10 @@ def test_light_repo_formatter_preserves_sorted_bounded_path_disclosure():
         tool_name="run_script",
     )
     assert note == (
-        "⚠️ LIGHT_MODE_REPO_WRITE_BLOCKED: runtime_mode=light detected a mutation of the "
-        "Ouroboros repository after run_script. The command result is blocked and no "
+        "⚠️ LIGHT_MODE_REPO_CHANGED: runtime_mode=light observed a mutation of the "
+        "Ouroboros repository after run_script. The execution result is preserved and no "
         "automatic rollback was attempted to avoid overwriting concurrent human edits. "
-        "Affected/dirty paths: a.py, b.py, z.py. Switch to advanced/pro for repo writes."
+        "Affected/dirty paths: a.py, b.py, z.py. Inspect these changes against the task contract."
     )
 
     crowded = process_guard._format_light_repo_write_note(
@@ -433,10 +381,10 @@ def test_process_post_checks_append_every_tripwire_note_after_the_payload(
         "Owner settings change only through save_settings / the Settings UI; this write "
         "was NOT auto-reverted (a post-hoc rollback can clobber a concurrent legitimate "
         "owner edit) — the owner surface is the place to verify and restore.\n\n"
-        "⚠️ LIGHT_MODE_REPO_WRITE_BLOCKED: runtime_mode=light detected a mutation of the "
-        "Ouroboros repository after run_script. The command result is blocked and no "
+        "⚠️ LIGHT_MODE_REPO_CHANGED: runtime_mode=light observed a mutation of the "
+        "Ouroboros repository after run_script. The execution result is preserved and no "
         "automatic rollback was attempted to avoid overwriting concurrent human edits. "
-        "Affected/dirty paths: changed.py. Switch to advanced/pro for repo writes.\n\n"
+        "Affected/dirty paths: changed.py. Inspect these changes against the task contract.\n\n"
         "⚠️ WORKSPACE_GIT_REF_CHANGED: run_command changed git HEAD or refs inside the "
         "external workspace. External workspace runs must leave changes as files/patch "
         "artifacts, not commits/tags/resets."
@@ -649,182 +597,14 @@ def test_custom_handler_cannot_reuse_stale_builtin_result_sidecar(
     assert not hasattr(registry._ctx, "_active_builtin_tool_result")
 
 
-def test_process_guard_denials_preserve_exact_text(tmp_path, monkeypatch):
+def test_process_input_limit_preserves_typed_failure(tmp_path):
     stub = _RegistryStub(tmp_path)
-    monkeypatch.setattr(registry_module, "protected_artifact_shell_block_reason", lambda *args, **kwargs: None)
-    monkeypatch.setattr(registry_module, "workspace_executor_state_write_block", lambda *args, **kwargs: None)
-
-    def check(command, mode="advanced"):
-        result = process_guard._run_shell_safety_check(stub, {"cmd": command}, mode, ())
-        assert isinstance(result, ToolResult)
-        assert result.status == "blocked"
-        assert dict(result.meta) == {}
-        legacy = LegacyTextResultAdapter.from_text("run_command", result.text)
-        assert (result.status, result.code, dict(result.meta)) == (
-            legacy.status,
-            legacy.code,
-            dict(legacy.meta),
-        )
-        return result
-
-    sudo = check(["sudo", "true"])
-    assert sudo.code == "SUDO_INTERACTIVE_BLOCKED"
-    assert sudo.text == (
-        "⚠️ SUDO_INTERACTIVE_BLOCKED: sudo must be noninteractive. Use sudo -n for commands "
-        "that can run without a password; if sudo -n fails, report validation/install blocked "
-        "by environment."
-    )
-
-    stub.acting = True
-    secret = check("cat .env")
-    assert secret.code == "SUBAGENT_SECRET_READ_BLOCKED"
-    assert secret.text == (
-        "⚠️ SUBAGENT_SECRET_READ_BLOCKED: subagents may not read Ouroboros secrets, "
-        "credentials, or owner-control state via shell. Use the gated read_file tool "
-        "(which denies secrets) for any inspection you actually need."
-    )
-    stub.acting = False
-
-    cases = (
-        (
-            'save_settings({"ouroboros_runtime_mode":"pro"})',
-            "ELEVATION_BLOCKED",
-            "⚠️ ELEVATION_BLOCKED: shell command pattern looks like an OUROBOROS_RUNTIME_MODE "
-            "elevation attempt (mentions ``save_settings`` together with ``OUROBOROS_RUNTIME_MODE``, "
-            "or invokes ``ouroboros.config.save_settings`` directly). Runtime mode is "
-            "owner-controlled — change it by stopping the agent and editing settings.json "
-            "directly, then restart.",
-        ),
-        (
-            'save_settings({"ouroboros_context_mode":"low"})',
-            "CONTEXT_MODE_SELF_LOWERING_BLOCKED",
-            "⚠️ CONTEXT_MODE_SELF_LOWERING_BLOCKED: shell command pattern looks like an attempt "
-            "to lower OUROBOROS_CONTEXT_MODE to low through settings.json or /api/owner/context-mode. "
-            "Context mode is owner-controlled — ask the owner to change the Low/Max toggle or edit "
-            "settings while the agent is stopped.",
-        ),
-        # Tip adaptation: the SCOPE_REVIEW_FLOOR self-lowering denial is gone —
-        # the setting and its guard were retired in the 7.0 ABI window (Q10=A).
-        (
-            'save_settings({"ouroboros_safety_mode":"off"})',
-            "SAFETY_MODE_SELF_LOWERING_BLOCKED",
-            "⚠️ SAFETY_MODE_SELF_LOWERING_BLOCKED: shell command pattern looks like an attempt to "
-            "change OUROBOROS_SAFETY_MODE (e.g. to ``light``/``off``) through settings.json, "
-            "/api/settings, or /api/owner/safety-mode. LLM-safety coverage is owner-controlled "
-            "(BIBLE P3) — the agent must not reduce its own supervision. Ask the owner to change "
-            "it via the dedicated /api/owner/safety-mode endpoint, or stop the agent and edit "
-            "settings.json directly.",
-        ),
-        (
-            "curl -x post /api/owner/skills/alpha/attest-review",
-            "OWNER_SKILL_ATTESTATION_SELF_CALL_BLOCKED",
-            "⚠️ OWNER_SKILL_ATTESTATION_SELF_CALL_BLOCKED: shell command pattern looks like an "
-            "attempt to loopback-POST /api/owner/skills/<skill>/attest-review. Owner-attestation "
-            "skips the expensive LLM skill review and is OWNER-ONLY — the agent must not "
-            "self-attest its own skill to bypass the immune system's review. Ask the owner to "
-            "attest it from the Skills UI.",
-        ),
-        (
-            'save_settings({"ouroboros_allow_mutative_subagents":"true"})',
-            "ELEVATION_BLOCKED",
-            "⚠️ ELEVATION_BLOCKED: OUROBOROS_ALLOW_MUTATIVE_SUBAGENTS is owner-controlled (it "
-            "grants subagents write power against the live body). Change it by stopping the agent "
-            "and editing settings.json directly, then restart — the agent must not self-enable "
-            "mutative subagents.",
-        ),
-        (
-            'save_settings({"ouroboros_post_task_evolution":"true"})',
-            "ELEVATION_BLOCKED",
-            "⚠️ ELEVATION_BLOCKED: the self-evolution controls (OUROBOROS_POST_TASK_EVOLUTION and "
-            "OUROBOROS_EVOLUTION_PERSISTENT_OBJECTIVE) are owner-controlled — they enable or "
-            "steer self-modification cycles. Change them via the owner Settings UI, or stop the "
-            "agent and edit settings.json directly — the agent must not self-set evolution controls.",
-        ),
-        (
-            # A WRITE shape: since #447 A2 the family read-carve lets a pure
-            # inspection (`echo`/`grep`/`rg`) name these files, so the denial is
-            # pinned on a spelling that actually writes.
-            "cp payload.json state/skills/alpha/review.json",
-            "SKILL_STATE_WRITE_BLOCKED",
-            "⚠️ SKILL_STATE_WRITE_BLOCKED: skill review, enablement, grants, and marketplace "
-            "provenance are owner/review controlled state. Use skill_review, toggle_skill/the "
-            "Skills UI, or the desktop launcher confirmation flow. Pure read-only inspection "
-            "(grep/rg/cat/jq) of these names is allowed.",
-        ),
-        (
-            "nohup echo state/skills/alpha/unknown.json",
-            "SKILL_STATE_WRITE_BLOCKED",
-            "⚠️ SKILL_STATE_WRITE_BLOCKED: detached shell processes must not target skill state "
-            "directories. Use the reviewed skill lifecycle tools instead.",
-        ),
-        (
-            "gh repo create example",
-            "SAFETY_VIOLATION",
-            "⚠️ SAFETY_VIOLATION: Creating/deleting GitHub repositories requires admin approval.",
-        ),
-        (
-            "gh auth login",
-            "SAFETY_VIOLATION",
-            # #447 A7: the argv-positional gh resolver names the read-only
-            # subcommands that stay available instead of a bare refusal.
-            "⚠️ SAFETY_VIOLATION: Modifying GitHub authentication is not permitted. "
-            "Read-only `gh auth status` / `gh auth token` are allowed.",
-        ),
-    )
-    for command, code, expected in cases:
-        result = check(command)
-        assert (result.code, result.text) == (code, expected)
-
-    monkeypatch.setattr(registry_module, "light_shell_repo_mutation", lambda *args, **kwargs: True)
-    light_repo = check("echo ok", "light")
-    assert light_repo.code == "LIGHT_MODE_BLOCKED"
-    assert light_repo.text == (
-        "⚠️ LIGHT_MODE_BLOCKED: runtime_mode=light refuses shell commands that mutate the "
-        "Ouroboros repository. For external deliverables, run with cwd under user_files "
-        "(for example /Users/<you>/Desktop), root=artifact_store, or root=task_drive. Switch "
-        "to advanced/pro only for reviewed Ouroboros self-modification."
-    )
-
-    monkeypatch.setattr(registry_module, "light_shell_repo_mutation", lambda *args, **kwargs: False)
-    # Tip adaptation: the write-shape seam here is non_interpreter_write_shape
-    # (the reference's shell_has_write_indicator no longer exists).
-    monkeypatch.setattr(registry_module, "non_interpreter_write_shape", lambda *args, **kwargs: True)
-    monkeypatch.setattr(registry_module, "runtime_data_guard_targets", lambda *args, **kwargs: ["/blocked"])
-    task_drive = tmp_path / "task_drive"
-    artifact_dir = task_artifact_dir_path(tmp_path, "task-process-guard", create=False)
-    light_data = check("echo ok", "light")
-    assert light_data.code == "LIGHT_MODE_BLOCKED"
-    assert light_data.text == (
-        "⚠️ LIGHT_MODE_BLOCKED: runtime_mode=light blocks this command's "
-        "access to runtime_data outside the permitted task roots. This task's real roots are: "
-        f"artifact_store={artifact_dir}, task_drive={task_drive} — staged attachments live "
-        f"under {artifact_dir / 'attachments'}. Use those absolute paths in scripts, or "
-        "root=artifact_store / root=task_drive / root=user_files in file tools. Blocked paths: "
-        "/blocked"
-    )
-
-    monkeypatch.setattr(
-        registry_module,
-        "protected_artifact_shell_block_reason",
-        lambda *args, **kwargs: "⚠️ RESOURCE_POLICY_BLOCKED: protected fixture.",
-    )
-    resource = check(["cat", "fixture"])
-    assert (resource.code, resource.text) == (
-        "RESOURCE_POLICY_BLOCKED",
-        "⚠️ RESOURCE_POLICY_BLOCKED: protected fixture.",
-    )
-
-    monkeypatch.setattr(registry_module, "protected_artifact_shell_block_reason", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        registry_module,
-        "workspace_executor_state_write_block",
-        lambda *args, **kwargs: "⚠️ WORKSPACE_EXECUTOR_STATE_WRITE_BLOCKED: fixture.",
-    )
-    workspace = check(["touch", "fixture"])
-    assert (workspace.code, workspace.text) == (
-        "WORKSPACE_BLOCKED",
-        "⚠️ WORKSPACE_EXECUTOR_STATE_WRITE_BLOCKED: fixture.",
-    )
+    result = process_guard._run_shell_safety_check(stub, {"cmd": ["sudo", "true"]}, "advanced")
+    assert isinstance(result, ToolResult)
+    assert (result.status, result.code) == ("blocked", "SUDO_INTERACTIVE_BLOCKED")
+    assert "cannot answer a password prompt" in result.text
+    legacy = LegacyTextResultAdapter.from_text("run_command", result.text)
+    assert (legacy.status, legacy.code, dict(legacy.meta)) == (result.status, result.code, dict(result.meta))
 
 
 def test_registry_dispatch_calls_process_owner_once_before_safety_and_handler(

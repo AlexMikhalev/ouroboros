@@ -141,12 +141,10 @@ from ouroboros.tools.tool_resolution import (  # noqa: F401 — re-exported move
 )
 from ouroboros.tools.write_shape import _workspace_write_candidates  # noqa: F401 — historical facade surface
 from ouroboros.tools.registry_guards import (  # noqa: F401 — re-exported moved surface
-    _EPHEMERAL_ALLOWED_TOOLS,
     _GITHUB_TOKEN_TOOLS,
     _WEB_TOOLS,
     _authorized_managed_update_resolver,
     _builtin_tool_availability,
-    _command_mentions_protected_root,
     _disabled_tools,
     _executor_backend_candidate_allowed,
     _light_mode_payload_mutation_allowed,
@@ -158,27 +156,16 @@ from ouroboros.tools.registry_guards import (  # noqa: F401 — re-exported move
 from ouroboros.tools.registry_guard_process import (  # noqa: F401 — re-exported moved surface
     _COMMAND_HEAD_WRAPPERS,
     _DENIED_READ_OPTIONS,
-    _DETACHED_PROCESS_MARKERS,
     _NESTED_EXECUTION_MARKERS,
     _NESTED_EXECUTION_TOKENS,
     _READ_ONLY_INSPECTION_COMMANDS,
     _SEARCH_TOOL_EXEC_OPTIONS,
-    _SKILL_OWNER_STATE_STEMS,
     _TRUSTED_EXECUTABLE_DIRS,
     _denied_read_option,
-    _detect_context_mode_self_lowering,
-    _detect_evolution_owner_control_self_change,
-    _detect_mutative_toggle_self_change,
-    _detect_owner_skill_attest_self_call,
-    _detect_runtime_mode_elevation,
-    _detect_safety_mode_self_lowering,
     _format_light_repo_write_note,
     _git_ref_snapshot,
     _is_pure_read_inspection,
     _light_repo_snapshot,
-    _mentions_detached_process,
-    _mentions_skill_owner_state,
-    _subagent_shell_targets_secret,
     _trusted_read_head,
 )
 
@@ -196,7 +183,6 @@ from ouroboros.tools.tool_result import (  # noqa: F401 — re-exported moved su
 )
 from ouroboros.tools.registry_guards import (  # noqa: F401 — re-exported moved surface
     _capability_resource_guard_result,
-    _ephemeral_block_result,
     _executor_backend_candidate_path,
     _managed_update_code_tool_block_result,
     _subagent_and_update_guard_result,
@@ -221,27 +207,6 @@ from ouroboros.tools.registry_core import (  # noqa: F401 — re-exported moved 
 )
 
 
-def _owner_control_mention_blocks(text_lower: str, detected: bool, writeish: bool) -> bool:
-    """Shared read-carve for the owner-control mention detectors.
-
-    The scope-floor guard adjudicated this contract at v6.80.0 (that detector
-    itself was retired with its setting in the 7.0 ABI window, owner Q10=A;
-    the contract it established governs the whole surviving family):
-    naming an owner key/endpoint
-    blocks UNLESS the whole command line is demonstrably read-only inspection —
-    ``grep OUROBOROS_RUNTIME_MODE data/settings.json`` and
-    ``rg /api/owner/safety-mode ouroboros/gateway`` read and do not act, and the
-    product's own reuse-first duty (grep callers of ``save_settings``) depends on
-    them. The other six family members stayed read-blind, blocking those exact
-    inspections in every runtime mode — the same hazard class at a different
-    strictness. Fail-closed like the precedent: ``writeish`` (any write shape)
-    disqualifies the exemption, ``_is_pure_read_inspection`` is a HEAD allowlist
-    where any interpreter, HTTP client, wrapper-with-flags, or nested execution
-    is NOT an inspection, and the default ``writeish=True`` keeps a caller that
-    cannot supply the fact fail-closed."""
-    if not detected:
-        return False
-    return writeish or not _is_pure_read_inspection(text_lower)
 
 
 # Commands that can only READ. This is an ALLOWLIST on purpose: an unrecognised
@@ -290,25 +255,3 @@ def _owner_control_mention_blocks(text_lower: str, detected: bool, writeish: boo
 # "a write that lands in the repo working tree" must judge the whole set, not
 # the historical write_file/edit_text pair — a new editing primitive that misses
 # one of these gates is a silently weaker lane, not a new capability.
-
-
-# CW3 (v6.34.0): an ephemeral decision turn DECIDES (answer / route / spawn /
-# steer) — it does NOT do durable work; that is the spawned task's job.
-# Enforced as a DEFAULT-DENY ALLOWLIST, not a denylist (a denylist is
-# whack-a-mole: it kept missing review/skill/publish/control mutators —
-# advisory_review, skill_review, submit_skill_to_hub, skill_exec,
-# toggle_skill, cancel_task, task_acceptance_review, ...). The turn may call
-# only the read-only INSPECTION tools plus the route/spawn/steer/reply tools
-# below; every other built-in — repo/git/cognitive/control/review/skill/publish
-# mutators, run_command (shell is durable-capable) — is hidden from schemas()
-# and fails closed in execute(). The owner's dynamic surfaces ride this lane
-# too: configured MCP tools and enabled, granted, reviewed extension tools,
-# behind their own gates (liveness, grants, the network resource gate) exactly
-# as on a managed task (issue #722, owner decision 2026-09-08: every Main/
-# project chat message takes this lane on an install with Projects, so
-# withholding them hid the owner's healthy servers and skills; the model
-# decides inline vs promote_chat_to_task). The allowlist is
-# EXPLICITLY curated, not derived (deriving from
-# LOCAL_READONLY_SUBAGENT_TOOL_NAMES leaked subagent-only tools:
-# schedule_subagent spawns durable children, wait_task/wait_tasks BLOCK a
-# short turn, browser_action INTERACTS with pages).

@@ -101,8 +101,10 @@ test('direct API is a neutral channel presentation, never a harness identity', (
 
 test('Chat renders the executor evidence chip through the shared identity SSOT', () => {
     const chatSource = readFileSync(new URL('../modules/chat.js', import.meta.url), 'utf8');
+    const activitySource = readFileSync(new URL('../modules/chat_activity.js', import.meta.url), 'utf8');
     const logSource = readFileSync(new URL('../modules/log_events.js', import.meta.url), 'utf8');
-    assert.match(chatSource, /executorIdentityMarkup\(record\.executorChip/);
+    assert.match(chatSource, /renderLiveCardMeta/);
+    assert.match(activitySource, /executorIdentityMarkup\(record\.executorChip/);
     const identitySource = readFileSync(new URL('../modules/harness_presentation.js', import.meta.url), 'utf8');
     assert.match(identitySource, /harnessIdentityMarkup\(chip\.harness/);
     assert.match(logSource, /harnessPresentation\(harness\)\.label/);
@@ -194,7 +196,8 @@ test('configured subagent marks surround native text controls without changing s
     };
     const html = availableSubagentRowMarkup(sessionRow, state);
     assert.match(html, /data-harness-identity="codex"/);
-    assert.match(html, />Codex Live<\/span>/);
+    // The chip names the source: the agent, not the channel (decision 4A).
+    assert.match(html, />Codex Live · agent<\/span>/);
     assert.match(html, /<select[^>]*data-subagent-field="route"/);
     assert.equal(JSON.stringify(sessionRow), before);
     assert.deepEqual(serializeRouteSpec(sessionRow.route, {
@@ -211,6 +214,43 @@ test('configured subagent marks surround native text controls without changing s
     });
     assert.match(apiHtml, /data-presentation-kind="channel"/);
     assert.match(apiHtml, /aria-label="API model for Subagent 1"/);
+});
+
+test('a subagent row offers its account under the name the Accounts tab gives it', () => {
+    // The real consumer of the pin index. A unified engine's migrated default
+    // login carries its login email as the registry display name, so a select
+    // that named the row `codex-default` alone read as a missing account beside
+    // an Accounts tab listing the email. The stored id rides the label and
+    // stays the option value — it is what pins the route.
+    const row = {
+        subagent_id: 'builder', name: 'Builder', recommended_use: 'Implement changes.',
+        route: {
+            kind: ROUTE_KIND_AGENT_SESSION,
+            target_id: 'codex=gpt-5.6-sol-high',
+            credential_profile_id: 'codex-default',
+        },
+    };
+    const html = availableSubagentRowMarkup(row, {
+        catalogKnown: true, accountsKnown: true, quotaKnown: true, statusError: '',
+        snapshot: {
+            harnesses: [{
+                id: 'codex', display_name: 'Codex Live', status: 'ok', enabled: true,
+                models: [{ id: 'gpt-5.6-sol-high' }],
+            }],
+            profiles: { profiles: [{
+                profile: {
+                    harness_id: 'codex', profile_id: 'codex-default', enabled: true,
+                    display_name: 'native@example.com',
+                },
+                status: { verification: 'passed' },
+                identity: { email: 'native@example.com' },
+            }] },
+            quota: [],
+        },
+    });
+    const option = html.match(/<option value="codex-default"[^>]*>([^<]*)<\/option>/);
+    assert.ok(option, 'the pinned account is offered');
+    assert.equal(option[1], 'Account: native@example.com · codex-default (pinned)');
 });
 
 test('configured identity ignores stale daemon labels until the catalog read is proven', () => {
@@ -234,21 +274,21 @@ test('configured identity ignores stale daemon labels until the catalog read is 
         catalogKnown: false, accountsKnown: false, quotaKnown: false,
         statusError: '', snapshot,
     });
-    assert.match(gapHtml, />Codex<\/span>/);
+    assert.match(gapHtml, />Codex · agent<\/span>/);
     assert.doesNotMatch(gapHtml, /Stale daemon label/);
 
     const provenHtml = availableSubagentRowMarkup(row, {
         catalogKnown: true, accountsKnown: false, quotaKnown: false,
         statusError: '', snapshot,
     });
-    assert.match(provenHtml, />Stale daemon label<\/span>/);
+    assert.match(provenHtml, />Stale daemon label · agent<\/span>/);
 });
 
 test('Chat, Logs, onboarding, and reviewer lanes consume the same mark owner', () => {
-    const modules = ['chat.js', 'logs.js', 'onboarding_agents_step.js', 'reviewer_slots.js'];
+    const modules = ['chat_activity.js', 'logs.js', 'onboarding_agents_step.js', 'reviewer_slots.js'];
     for (const name of modules) {
         const source = readFileSync(new URL(`../modules/${name}`, import.meta.url), 'utf8');
-        assert.match(source, name === 'chat.js' ? /executorIdentityMarkup/ : /harnessIdentityMarkup/, `${name} bypasses harness presentation SSOT`);
+        assert.match(source, name === 'chat_activity.js' ? /executorIdentityMarkup/ : /harnessIdentityMarkup/, `${name} bypasses harness presentation SSOT`);
     }
     const events = readFileSync(new URL('../modules/log_events.js', import.meta.url), 'utf8');
     assert.match(events, /harnessPresentation/);

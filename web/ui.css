@@ -145,6 +145,11 @@
     /* Bounded scroll region for the Updates restore list (DESIGN section 5:
        a new visual dimension becomes a variable before a page-local literal). */
     --updates-list-max-height: 320px;
+    /* Bounded scroll window for the sidebar project list (v6.32.0 geometry): a
+       share of the visual viewport height below, so the navigation column keeps
+       its height whatever the project count. Distinct from the fixed Updates
+       window above: one is a page-local list, this one follows the viewport. */
+    --nav-projects-list-max-height: calc(var(--vvh) * 0.38);
     --vvh: 100dvh;
 }
 
@@ -372,8 +377,14 @@
     box-shadow: 0 0 0 3px var(--focus-accent-ring);
 }
 .ui-control:disabled { color: var(--text-disabled); cursor: not-allowed; }
+/* WebKit (the packaged desktop shell) computes `overflow: visible` on a native
+   select, so a long selected option paints past the control and turns the page
+   scroller into a horizontal one; the clip keeps it inside the control's box. */
 select.ui-control {
+    -webkit-appearance: none;
     appearance: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
     padding-inline-end: calc(var(--space-3) * 3);
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14'%3E%3Cpath d='M3 5l4 4 4-4' fill='none' stroke='%23e2e8f0' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
     background-repeat: no-repeat;

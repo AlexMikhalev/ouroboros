@@ -133,7 +133,7 @@ def live_wait(setup, monkeypatch):
         yield root, transport, client, controller, events, lambda body: gateway._decide(root, body)
 
 
-def _decision_clients(root, get_background_model_wait=None):
+def _decision_clients(root):
     """Real Web/Host ingress sharing one root and the installation's live getter."""
     from contextlib import ExitStack, contextmanager
     from starlette.applications import Starlette
@@ -149,8 +149,6 @@ def _decision_clients(root, get_background_model_wait=None):
         web = Starlette(routes=[Route("/api/decisions", api_decision_answer, methods=["POST"])])
         web.state.drive_root = root
         host = create_host_service_app(root)
-        for app in (web, host):
-            app.state.get_background_model_wait = get_background_model_wait
         with ExitStack() as stack:
             web_client = stack.enter_context(TestClient(web))
             host_client = stack.enter_context(TestClient(host, headers={"x-skill-token": "token"}))
@@ -325,7 +323,7 @@ def test_async_cancellation_resolves_only_its_wait_and_keeps_shared_task(live_wa
         assert terminal["resolution"] == "caller_cancelled"
 
     asyncio.run(run())
-    assert not controller.closed and len(transport.operations) == 1
+    assert not controller.closed and len(transport.accepted_operations) == 1
     assert all(row["state"] == "resolved" for row in load_task_result(root, "task-one")["model_waits"].values())
 
 
@@ -606,7 +604,7 @@ def test_confirmed_mixed_pool_waits_and_heals_on_the_same_live_call(elapsed_quot
     assert rows[0]["credential_profile_id"] == "", "A mixed pool has no single login target"
     assert rows[0]["quota_clock"]["active"] is True
     assert rows[-1]["state"] == "resolved" and rows[-1]["resolution"] == "resource_available"
-    assert rows[-1]["quota_clock"]["active"] is False and controller.paused_seconds() == 2.5
+    assert rows[-1]["quota_clock"]["active"] is False and controller.paused_seconds() == pytest.approx(2.5)
     assert load_task_result(root, "task-one")["model_waits"][rows[0]["wait_id"]]["reason"] == "auth_quota"
 
 
@@ -623,7 +621,7 @@ def test_unproved_pool_cause_never_enters_resource_wait(live_wait, pool_context)
     transport.dispatch = ["not_started"]
     with pytest.raises(ClaudexorModelError, match="credential_pool_exhausted"):
         client.chat([{"role": "user", "content": "Do not infer quota"}], MODEL, model_role="main")
-    assert not controller.waits and events.empty() and len(transport.operations) == 1
+    assert not controller.waits and events.empty() and len(transport.accepted_operations) == 1
 
 
 def test_mixed_pool_cannot_bypass_unknown_physical_custody(live_wait):
@@ -636,7 +634,7 @@ def test_mixed_pool_cannot_bypass_unknown_physical_custody(live_wait):
     transport.dispatch = ["unknown"]
     with pytest.raises(ClaudexorModelError, match="model_outcome_unknown"):
         client.chat([{"role": "user", "content": "No duplicate generation"}], MODEL, model_role="main")
-    assert not controller.waits and events.empty() and len(transport.operations) == 1
+    assert not controller.waits and events.empty() and len(transport.accepted_operations) == 1
 
 
 def test_mixed_pool_wait_keeps_calendar_deadline_and_existing_quota_union(live_wait, monkeypatch):
@@ -664,3 +662,56 @@ def test_mixed_pool_wait_keeps_calendar_deadline_and_existing_quota_union(live_w
     controller.quota_leave("other-reviewer", "other-slot", now=110.0)
     assert controller.paused_seconds(now=120.0) == 20.0, "Concurrent pauses count their union, not 30 seconds"
     assert list(events.queue)[-1]["resolution"] == "deadline"
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("code", ["auth_required", "subscription_window_exhausted", "credential_pool_exhausted"])
+def test_call_can_decline_resource_wait_without_losing_task_binding(live_wait, code, asynchronous):
+    from ouroboros.llm_claudexor import ClaudexorModelError
+
+    root, transport, client, controller, events, _decide = live_wait
+    failure = _refusal(code)
+    if code == "credential_pool_exhausted":
+        failure["problem"]["context"]["poolCause"] = "mixed"
+    transport.results = [failure, failure, result()]
+    transport.dispatch = ["not_started", "not_started", "response_received"]
+    controller.overrides["light"] = {"model": MODEL, "use_local": False, "model_account_override": ""}
+    messages = [{"role": "user", "content": "Return an unavailable advisory, retaining the owner"}]
+
+    def call(**kwargs):
+        return (asyncio.run(client.chat_async(messages, MODEL, model_role="light", **kwargs)) if asynchronous
+                else client.chat(messages, MODEL, model_role="light", **kwargs))
+
+    with pytest.raises(ClaudexorModelError) as caught:
+        call(wait_for_resources=False)
+    error = caught.value
+    assert error.code == code and error.operation_id == "op-0"
+    assert error.physical_attempt_capture.state == "released"
+    assert error.model_role_route == {"role": "light", "model": MODEL, "use_local": False,
+                                     "credential_profile_id": ""}
+    assert not controller.waits and events.empty() and len(transport.accepted_operations) == 1
+    assert transport.uploads[0][0]["account"] == {"mode": "auto"}
+    assert "wait_for_resources" not in json.dumps(transport.uploads[0][0])
+    assert model_wait.current_model_wait() is controller and not controller.closed
+    assert [row["state"] for row in ledger(root)] == ["reserved", "dispatched", "released"]
+
+    answer, usage = call()
+    assert answer == result()["message"] and len(transport.accepted_operations) == 3
+    assert len(usage["ledger_attempt_ids"]) == 2
+    assert any(row["state"] == "waiting" for row in list(events.queue))
+    assert controller.overrides["light"]["model_account_override"] == ""
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_declining_resource_wait_still_honors_owner_control(live_wait, monkeypatch, asynchronous):
+    _root, transport, client, controller, events, _decide = live_wait
+    monkeypatch.setattr(controller, "control_reason", lambda: "finalize_requested")
+    with pytest.raises(model_wait.ModelWaitInterrupted) as caught:
+        args = ([{"role": "user", "content": "Respect Stop"}], MODEL)
+        kwargs = {"model_role": "light", "wait_for_resources": False}
+        if asynchronous:
+            asyncio.run(client.chat_async(*args, **kwargs))
+        else:
+            client.chat(*args, **kwargs)
+    assert caught.value.control_reason == "finalize_requested"
+    assert not transport.accepted_operations and not controller.waits and events.empty()

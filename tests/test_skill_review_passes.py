@@ -121,6 +121,10 @@ def test_chunked_passes_keep_the_full_row_plan_and_exact_session_evidence():
         assert "STABLE::" not in call["session_task"]
         assert all(path in call["session_task"] for path in (
             "BIBLE.md", "docs/CHECKLISTS.md", "ouroboros/contracts/plugin_api.py"))
+        assert "every physical chapter" in call["session_task"]
+        assert "`Chapters` membership list in full, in the order you choose" in call["session_task"]
+        assert "legacy monolith without `Chapters`" in call["session_task"]
+        assert "physical file paths and file-local lines" in call["session_task"]
         assert f"PART {idx} of 2" in call["session_task"]
 
 

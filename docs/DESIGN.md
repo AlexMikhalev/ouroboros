@@ -155,6 +155,9 @@ never the field's only name. Help and validation belong to that field without
 changing the alignment of neighboring controls and their actions.
 
 Short fixed choices keep native selects, including the platform's own popup.
+A control never widens its column: a select shows its chosen label on one
+line, clipped at its own edge, and the full label stays in the platform's
+popup.
 Model selection uses the shared editable chooser: suggestions assist typing
 without becoming an allowlist. A saved unknown model remains editable; a
 catalog refresh preserves the real input, selection and composition. Escape
@@ -216,13 +219,29 @@ That row keeps a neutral owner anchor visible, but hides task status and typing
 until a real task status or activity arrives; review presence alone never means
 `Working`, `Done`, or owner attention.
 
-Local diagnostic failures remain inspectable in details and Logs, but do not
-relabel the whole still-working task. A failed child keeps a compact factual
+A host fact about a task is a row of that task's card, never a standalone
+bubble beside it. A reviewer panel that settles after its task already ended
+adds one System row naming the verdict and which revision it covered; that row
+lands inside the finished card (its Reviews group carries the note, the timeline
+keeps the row) without changing the card's chip, title or meta, and a standalone
+row appears only when the task has no card record in the page. The untyped
+terminal host notice and the admission notices stay ordinary rows by design. Local diagnostic failures remain inspectable
+in details and Logs, but do not relabel the whole still-working task. A failed child keeps a compact factual
 `Failed` marker inside its parent while the root continues under its own
 authoritative status. Internal reason codes belong in details and diagnostics,
 not compact headlines. Where a card does show a cause, it says it in the owner's
 words while the record keeps the machine code; a cause with no sentence yet stays
-raw rather than borrowing a wrong one.
+raw rather than borrowing a wrong one. The routing receipt under an owner
+message is such a surface: a refused addressing act carries the host-composed
+`cause` sentence (`project_dialogue.routing_refusal_cause` — one host table for
+the receipt line, the System row and the picker toast), a landed act carries
+none, and an unknown reason stays raw. A terminal whose preserved output was
+never reviewed shows that output labelled rather than hidden: a short labelled
+excerpt beside the pointer to the full copy, so a `Failed` card over applied work
+is never a bare headline and never names preserved bytes without a way to reach
+them. Where a stop receipt already carries the same text
+in the very chat the card is written to, the card keeps the label and the
+pointer alone; a card in another chat keeps the excerpt.
 
 | Role | Foreground | Background | Border |
 | --- | --- | --- | --- |
@@ -284,6 +303,14 @@ not move them into the migrated set in section 8.
   visually grouped with their own rows, their own add action in the head
   (List editors, below). A heading that floats equidistant between two groups
   belongs to neither.
+- **A collapsed disclosure shows that it opens.** A `<details>` summary always
+  carries a visible open/closed marker — the native triangle, the `▸`/`▾`
+  glyph pair, or button/card chrome. A summary that sits beside a help line at
+  the same size takes control ink (`--text-primary`) and its own line, so it
+  does not read as one more note; a summary that already reads as a control
+  through its own chrome or placement may stay in meta ink. Overriding
+  `display` on a summary drops the native marker, so the glyph must be drawn
+  explicitly.
 - Spacing comes from the 8pt tokens (`--space-*`); a new visual dimension
   becomes a CSS variable before it becomes a page-local literal.
 - An item in a popup menu or a picker list highlights with
@@ -297,7 +324,8 @@ not move them into the migrated set in section 8.
 - **A markdown heading inside chat is a subsection label**, never a page
   title: in chat bubbles every heading level renders at `--type-body`
   semibold; in a task card's timeline it renders inline, without block
-  margins, at its row's own size. The page-size `md-h1` belongs to non-chat
+  margins, at its row's own size, with a copyable line break before the
+  following paragraph. The page-size `md-h1` belongs to non-chat
   surfaces only.
 - **A task card's summary outranks its details.** The latest-activity line is
   `--type-body`; collapsed timeline rows are a dense log at `--type-meta` in
@@ -320,14 +348,35 @@ not move them into the migrated set in section 8.
   facts, not a claim that their union is the current actor. Missing identity
   stays unconfirmed; marks and configured routes never manufacture execution.
 
+### History edges
+
+A paged transcript loads older portions automatically at the reading edge and
+keeps a keyboard-reachable `Load older messages` button that retries the same
+portion when reading fails. A short or empty portion never claims the beginning
+of the archive; only the source reader establishes that boundary, and an empty
+portion is never a reading position. Distant portions may leave the rendered
+window and return quietly as the reader nears the live edge. There is no
+`load newer` control: the one explicit return to the present is the floating
+`Scroll to latest message` button. An edge control states a fact about the
+rendered transcript, never about an internal cache or cursor. The visible
+passage, selected text, focused control and expanded Reviews retain their
+actual nodes.
+
 ### Project work pointer
 
 A Project keeps its conversation and real nested task cards. One compact pointer
 leads to an unfinished represented root, or the latest represented root when all
-are finished. It states `Loaded messages only` unless history coverage is complete;
-without a represented card it states that absence and has no action. Navigation
-moves the conversation to the existing card without changing the next message's
-recipient, opening another work pane or manufacturing activity.
+are finished. It occupies one line: it names the card (its coined name, else its
+title) and ellipsizes rather than restating a status headline in full, so the status bar
+never grows into the reading area; the complete text stays on the card itself,
+one click away, not in a mouse-only tooltip. A default desktop panel keeps the
+pointer, the coverage note and the status pill on one row while the pill is
+short (Online, Working, Thinking, Sending, Queued); a longer pill, a narrower
+panel or a phone wraps the bar to a second row, never a third. It states `Loaded messages only`
+unless history coverage is complete; without a represented card the pointer and
+that note are hidden, which is not a claim that the Project has no work.
+Navigation moves the conversation to the existing card without changing the next
+message's recipient, opening another work pane or manufacturing activity.
 
 ### List editors
 
@@ -369,6 +418,10 @@ not child-task cards and never prove execution by themselves.
 - Disclosure is user-owned. Review results, retries, failures, terminal task
   state, reconnect, and lazy-detail loading update content in place but never
   open or close the task, Reviews section, or group.
+- A panel that settled after its task ended stays one attempt row of its group,
+  labelled as settled after the task ended; its note (which verdict, which
+  revision, whether a reviewer's outcome is still unknown) is host-composed and
+  printed verbatim, leading the attempt detail.
 - Stable keyed rows are reconciled in place. A routine update preserves the
   exact lazy-detail node, focused descendant, and its reading position. Expanded
   groups state exact aggregate accounting when projected and otherwise say
@@ -387,17 +440,28 @@ not child-task cards and never prove execution by themselves.
 The owner quiz card (`web/modules/chat_decision.js`, `.chat-quiz-*` in
 `web/style.css`) is a chat-delivered decision surface. Optional clarification is fire-and-continue: the task states its assumption.
 Required waiting keeps the same card and explicitly says that the task awaits
-the owner, with Stop and existing task deadlines still effective. No assumption
-is treated as an answer. After settlement, status and the owner's recorded answer
-keep both forms readable. Anatomy, top to bottom:
+the owner, with Stop and existing task deadlines still effective; an optional
+bound on that wait resumes the task with a host notice and leaves the card open,
+and that notice says the same thing the card does — with a stated assumption the
+task proceeds under it, and without one, no answer is explicitly not consent.
+Silence is never an answer on either surface. A card outlives its asking task:
+after the task finishes, the owner can still answer, and the answer arrives as
+their own message in that chat. After settlement, status and the owner's recorded
+answer keep both forms readable. Anatomy, top to bottom:
 
 1. **Head** — neutral `Question` chip (`--type-meta`, neutral pair) and a
-   status as dot + text. The lifecycle word family is closed:
-   `Awaiting answer` (neutral dot), `Answered` (ok dot),
-   `Task finished — question expired` (disabled dot), `Superseded by a retry`
-   (disabled dot); an unknown state keeps a neutral dot but reads as settled
-   `Closed`, never as an open invitation. No timers, no countdowns: a quiz expires only with its
-   asking task.
+   status as dot + text. The lifecycle word family is closed and leads with the
+   one word that answers "is there an unanswered question for me?":
+   `Waiting for your answer` needs positive wait evidence (the task's live wait
+   record, or the original required flag before any record exists); a resumed
+   wait — the owner typed instead, or the bound closed — reads `Unanswered · the
+   task continued; an answer is still accepted`; an open question without any
+   wait evidence reads `Unanswered · an answer is still accepted`;
+   `Unanswered · the task finished; a late answer is accepted as your message`
+   keeps the neutral dot and answerability; `You answered` uses the ok dot;
+   `Replaced by a newer question` uses the disabled dot; an unreadable source
+   reads `Status unavailable`, never an invented invitation. No timers, no
+   countdowns: the asking task's end closes nothing but its own mailbox.
 2. **Question** — the one primary thing: `--type-body` semibold,
    `--text-primary`.
 3. **Stake** — optional one-liner (`At stake: …`), `--type-meta`, `--text-meta`.
@@ -431,10 +495,124 @@ element in the card shares one keyboard ring (2px `--focus-accent-border`,
 2px offset). Component geometry (card min/max width) keeps local literals like
 the rest of the chat surface.
 
+Required Project questions appear in Main as one System pointer: the question is primary (`--type-body` semibold), the status and `In <Project>` line are meta ink (the owner reads them to act), the recorded answer is a second body line. Settled pointers show both the recorded option (including the first) and the comment, or a comment-only answer; the option and the comment are bounded separately, a cut is visibly labelled, and the complete original stays one click away. The pointer and the quiz header share the lifecycle wording above. Actions say `Answer question` while the card still takes one, `View answer` after an answer, and `View question` otherwise (a replaced or unreadable question still opens). The form remains in Project. An explicit click reveals that exact question without toggling the room closed or moving the viewport on background updates.
+
+System-pointer, Project-lifecycle and routing actions all use the shared `createSystemMessageActions` composition. It owns token-based space above and below the controls, wrapping and clearance for the existing button focus ring; action buttons never sit in a clipped/nowrap text line. This is a row composition, not a new card framework or a global button-margin rule.
+
+History with no current execution or known outcome keeps its expandable content under `Outcome unavailable`, without a task chip, typing or Stop. Before complete live-source reconciliation, it is `Activity unconfirmed`. Positive current activity restores only its proven controls. A delivery warning may coexist with a preserved task-acceptance PASS. Model metadata says `Last solve response`, naming the initial request only when the route changed.
+
+### Conversation activity block
+
+A task's activity block is in the transcript exactly when the record already
+holds something to show — one predicate (`web/modules/chat.js::blockVisible`),
+re-read at every mutation, with no sticky flag: no kind is shown
+unconditionally (a Presence turn and a consciousness wake-up are direct turns
+and follow the same rules as any other); open owner attention (a model wait, a
+pending stop, a host-attested Stop the record still offers — the same reading
+the control uses, so a block never stands on a Stop it hides); a child card; a
+review group; a content row; a terminal outcome other than Done. The completion note is not content:
+a turn that ran no tool and finished Done leaves no block — live, after a
+reload and after a reconnect.
+
+Narration leads; routine execution evidence stays compact; exceptions keep
+their explanation and controls. The block's title, its collapsed activity line
+and its timeline carry the turn's own narration — the progress frames the
+model itself authored, marked by the typed `narration` fact the worker stamps
+at that one producer (a frame without the fact is a legacy frame and is read
+as narration) — and whatever needs the owner's eyes: a failed or timed-out
+step, a wait, a review, a child. What the host says about how the turn is
+running (a checkpoint, a model fallback, a review verdict, a nudge) is a
+visible timeline row that never claims the title or the collapsed line, so a
+turn whose only notes were the host's keeps its coined or task name and an
+empty activity line. Successful tool calls are not rows at all: they fold into
+ONE evidence row per block — `N tool calls`, or `N tool calls · M errors` once
+a call failed — that stands at the first call's position and time and is
+patched in place; Expand shows the per-tool counts (`read_file ×3 ·
+web_search`); its phase is `calling` while a tracked call is still running,
+`warn` once a call failed, `result` otherwise, and the row says that phase in
+ink rather than in extra words. A failed or timed-out call keeps
+its own error row (content) and is counted in the evidence total.
+`web/modules/chat_activity.js::toolEvidenceView` builds that row for the live
+path and for the recorded metrics alike, so at rest the row carries the same
+counts and names live, on reload and on reconnect; a cold reload mints it from
+the metrics, so it carries the metrics' time and sits where the metrics
+arrived, while a reconnect keeps the live position. Live it derives from the
+observed call frames (once per call identity; identical repeats without an id
+collapse into one), and the host's metrics replace those numbers as they
+arrive, field by field: a fact that states a total says nothing about the
+routing or error count, so it can neither erase one nor reclassify a receipt
+row into content, and a call frame after the terminal changes nothing. Block presence is the same live, on
+reload and on reconnect (a turn that moved itself into a Project with
+`ensure_project_scope` is the exception: its block and answer live in the
+Project room, and Main replays only the owner message and the Started
+annotation); a child card reads the same voice rule for its own notes and folds
+its calls live, but replays no evidence row.
+`N notes` in the collapsed header counts timeline items, the evidence row
+among them.
+
+The block's chrome follows the work it stands on
+(`web/modules/chat.js::blockHasWork`, the presence facts minus open attention
+and minus a bare terminal outcome), never the lane that ran the turn (owner
+decision 16.09: real work is a task card, a greeting is nothing). A block with
+work — a review group, a child card, an evidence or narration row, a tool
+error — is the task card whether a managed root or a direct
+conversation turn produced it: a title (the coined name, the latest narration
+headline, or the `Working…`/`Task activity` placeholder), the status chip, Stop
+while the host attests it, and `Turn into project` in Main unless its origin is
+already bound (a direct turn's later rows then route to the Project room like a
+turn that called `ensure_project_scope`). A block that exists only for open
+attention — a model wait, a pending or host-offered Stop — or only for a
+non-Done ending of a turn that did no work carries no title placeholder and no
+conversion; its chip says the state it is in (Waiting…, Cancelling…, Failed),
+the wait controls stay, and its first row of work gives it the title. The
+collapsed header carries the tool count live and, once the turn ends, cost and
+duration (a replayed header carries the count and cost; duration is a live
+fact); its `updated` stamp follows the turn's own narration, never a host note
+and never a tool call. The
+host's `_is_direct_chat` fact keeps its host jobs (routing, census `kind`, Stop
+custody, terminal rows) and, on the client, only the header pill (a direct turn
+keeps the census verdict beside its block). A block whose only reason to exist
+was open attention leaves when that attention closes: a wait-only block
+disappears when the wait resolves, and the resolved episode's no-reopen ledger
+survives with the record, so a stale revision cannot bring the block back.
+
+An addressing call (`promote_chat_to_task`, `route_to_project`, `steer_task`, `ensure_project_scope` —
+the routing-verb family `ouroboros/tool_capabilities.py::ROUTING_VERBS` owns) is stamped by
+the host on its live tool-call frames (`routing_action`) and counted in the
+task metrics (`routing_tool_calls`); its receipt is the typed routing
+annotation on the owner's message. Such a call is a receipt row: it renders
+inside a block that exists for other reasons but is never content the block
+stands on, and the evidence row of a turn whose calls were all addressing
+calls, without error, is a receipt row too — live from the stamped frames, on
+reload from `routing_tool_calls`. So a turn that only
+addressed work («turn this into a project») draws no block, live or on reload:
+the annotation on the owner message and the managed root's own card are its
+whole record (owner decision 11.09). A failed addressing call is an error row
+and therefore content, as is any recorded tool error. A REFUSED addressing act
+is told where the work lives and never in Ouroboros's voice (owner 16.09): the
+receipt line states the cause in the owner's words, the failed call stays the
+error row inside the block, and the tool result carries the typed reason (with
+the cause and repair in `detail` where the producer holds one) so the model
+narrates — no host bubble interrupts a narrating
+turn. When the host itself issued the act (a Swarm message, a skill-card repair,
+a picker click) no turn narrates, so the refusal lands as ONE typed System row —
+`task_not_started`, or `task_start_unconfirmed` when admission could not be
+confirmed — in the chat the owner wrote in, keyed to the never-started task,
+beside the receipt; the Project start row is announced only once the task is
+really queued. A refusal receipt with neither options nor a cause sentence
+reads «Not routed», never «Choose a target». No client list of tool
+names decides presence (`docs/development/02-naming-and-boundaries.md`, "an
+open default behind a closed exception list"), and no client reading of a
+note's text decides whether it is narration. A change that draws one row or
+line per event is judged at a realistic burst size — a multi-call turn,
+collapsed and expanded, at desktop and phone width — never at a two-event
+fixture.
+
 ### Subscription waits inside task cards
 
 Quota exhaustion and a confirmed need to sign in again use the same component,
-`model_wait.js` with `model_wait.css`, inside the existing task card. Each
+`model_wait.js` with `model_wait.css`, inside the turn's existing host: the task
+card of a turn that has done work, the bare block of a turn that has not. Each
 waiting role has its own row; the model, account and reason are separate facts.
 The controls stay visible when the task's timeline is collapsed. Waiting carries
 a quiet warning status and no computation animation, activity counter or invented
@@ -474,14 +652,13 @@ Waiting chips do not pulse or show typing. Closing the chat disposes view
 resources without claiming that it stopped the task; continuation requires the
 Ouroboros process to remain running.
 
-Background consciousness uses this component inside its existing background card,
-without a task-queue entry or a held worker slot. Its live owner identifies one
-wakeup cycle: a new cycle replaces old wait actions, and a current live snapshot
-outranks a historical end-of-cycle marker after reconnect. The background label
-is preserved, and the card appears only in its host-reported chat. Foreground
-pause is shown separately from model access waiting;
-it never claims computation or completion. Temporary model changes last until
-this wakeup cycle ends; the persistence checkbox saves the consciousness role.
+A consciousness wake-up needs nothing of its own here. It is an ordinary direct
+turn with its own task id, so its model wait, its controls and its temporary
+model change behave exactly as an owner turn's and last until that turn ends;
+the persistence checkbox still saves the consciousness role. What identifies the
+turn is the origin label `Consciousness` in the block's meta line, on its final
+bubble and on the cards of tasks it started — never a separate card, a reused
+slot or a different vocabulary.
 
 An already-delivered answer does not close a still-open post-task synthesis.
 Reflection or consolidation waits use the same role controls in that task's
@@ -531,11 +708,11 @@ instead, and let the status text carry the claim.
 Accounts is the common connection surface for subscriptions and API keys.
 Models and Agents edit assignments; adding a connection updates available
 choices without replacing an owner's assignments. A model role uses one compact
-Source / Model / Account row, with a single grouped source select. The account
-is a property of that role: Auto rotates compatible accounts and an explicit
-pin stays pinned. A model inherited from Main remains visibly inherited while
-its account can be pinned independently. Fallbacks use the same row in their
-saved order, with adjacent move/remove controls and the group's Add action.
+Source / Model / Account row. The account is a property of that role: Auto
+rotates compatible accounts and an explicit pin stays pinned. A model inherited
+from Main remains visibly inherited while its account can be pinned
+independently. Fallbacks use the same row in their saved order, with adjacent
+move/remove controls and the group's Add action.
 
 Context details distinguish the exact route's advertised Auto window from a
 manual value labelled "set by you". Changing an account withdraws the previous
@@ -545,19 +722,35 @@ caret in place and never assign a model. `model_roles.js` and `model_roles.css`
 own the shared Settings/wizard editor; `reviewer_slots.css` supplies the same
 reviewer-row layout to both documents.
 
-Available subagents and all review categories use the same grouped source
-choices and Source / Model / Account controls. Subscription model sources and
-agent sessions are distinct groups: neither implies the other's model inventory.
-Source ids are opaque; the model-sources catalog names the credential harness.
-Saved subscription-model account pins survive catalog gaps and unrelated saves;
-direct API-key models do not offer a subscription-account pin. Catalog entries
-are suggestions, not account-specific entitlement or context evidence.
-Changing a model or account never changes the delivery kind: a configured
-subagent reference remains a reference to its native inspection episode, while
-an inline packed-review model remains inline. Catalog refreshes preserve the
-edited value, focus, selection and scroll position.
-Returning to a reviewer's previous source restores that source's model/account
-draft; a source not previously selected starts without another source's pin.
+A source is chosen, never spelled. Every surface that assigns a model — the
+Models roles, Available subagents, every review lane, the first-run wizard and
+the quota-wait picker — offers one grouped source select with the same groups
+in the same order: configured subagents where references are allowed,
+Subscriptions · models, API keys (one entry per provider with a stored
+credential, then one disabled pointer to Accounts; a saved choice without a
+credential stays selectable as "(no key)"), Agents · sessions where a session
+is possible. The model chooser lists only the chosen source's catalog, so a
+suggestion's transport is the selected source; any id can still be typed. The
+stored spellings (`provider::model`, `claudexor::source=model`,
+`harness=model`) are serialization authored by the editor: never required from
+the owner, never a field placeholder or help-text instruction, never the
+primary displayed value; the exact stored id may appear in a meta line or
+tooltip. The route identity chip names the source (API · OpenAI, Codex · model,
+Claude Code · agent), not the channel alone. A last-run receipt is shown
+against the route that produced it: when the row's route changed since, the
+line says so and names the earlier route.
+
+Subscription model sources and agent sessions never imply each other's model
+inventory. Source ids are opaque; the model-sources catalog names the
+credential harness. Saved subscription-model account pins survive catalog gaps
+and unrelated saves; direct API-key models do not offer a subscription-account
+pin. Catalog entries are suggestions, not account-specific entitlement or
+context evidence. Changing a model or account never changes the delivery kind:
+a configured subagent reference remains a reference to its native inspection
+episode, while an inline packed-review model remains inline. Catalog refreshes
+preserve the edited value, focus, selection and scroll position. Returning to a
+reviewer's previous source restores that source's model/account draft; a source
+not previously selected starts without another source's pin.
 
 The wizard has five steps: Accounts, Models, Review, Budget, Summary. Agent
 connection is inside Accounts; Codex is the recommended connection for starting

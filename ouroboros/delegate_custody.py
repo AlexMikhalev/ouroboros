@@ -192,6 +192,14 @@ class RunCustody:
     # the target tree MAY carry the patch (crash between apply and the disposition
     # row), so any later disposition over this run is ambiguous until inspected.
     patch_apply_pending: bool = False
+    patch_apply_key: str = ""  # Existing apply intent's engine idempotency key.
+
+    @property
+    def review_owned(self) -> bool:
+        """A run a REVIEW surface registered is owned by its panel, not by this
+        task's delegation lifecycle: the panel bounds it, and the task's own
+        terminal is never a verdict about its reviewer (issue #1006)."""
+        return review_owned_source(self.source)
 
 
 # Process-local MEMOIZATION of the rows above — never the authority. A miss falls
@@ -357,6 +365,7 @@ from ouroboros.delegate_registration_policy import (
     STARTED_FIRST_WINS_FACTS as _STARTED_FIRST_WINS_FACTS,
     STARTED_PROGRESS_FLAGS as _STARTED_PROGRESS_FLAGS,
     STARTED_STR_FIELDS as _STARTED_STR_FIELDS,
+    review_owned_source,
 )
 
 from ouroboros.delegate_source_coverage import (
@@ -380,6 +389,7 @@ def _merge_started_into(entry: RunCustody, previous: RunCustody) -> None:
     """
     for attr in _STARTED_PROGRESS_FLAGS:
         setattr(entry, attr, getattr(previous, attr))
+    entry.patch_apply_key = previous.patch_apply_key
     entry.project_owned = previous.project_owned and entry.project_owned
     entry.project_persistent = previous.project_persistent or entry.project_persistent
     for attr in _STARTED_FIRST_WINS_FACTS:
@@ -465,6 +475,7 @@ def _apply(state: Dict[str, RunCustody], row: Dict[str, Any]) -> None:
         custody.patch_captured = True
     elif kind == PATCH_APPLY_STARTED:
         custody.patch_apply_pending = True
+        custody.patch_apply_key = str(row.get("apply_idempotency_key") or "")
     elif kind == PATCH_APPLY_RESOLVED:
         custody.patch_apply_pending = False
     elif kind == SOURCE_RANGE_VERIFIED:
@@ -587,6 +598,7 @@ def record_patch_apply_started(drive_root: Any, custody: RunCustody, **payload: 
     })
     if landed:
         custody.patch_apply_pending = True
+        custody.patch_apply_key = str(payload.get("apply_idempotency_key") or "")
     return landed
 
 
@@ -677,7 +689,8 @@ def new_invocation_id() -> str:
     return uuid.uuid4().hex
 
 
-def invocation_record(drive_root: Any, invocation_id: str) -> Optional[Dict[str, Any]]:
+def invocation_record(drive_root: Any, invocation_id: str, *,
+                      rows: Optional[List[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
     """One invocation's durable fate: who requested it, the EXACT body it sent,
     the resources that attempt bound, and how it resolved.
     ``state`` is ``pending`` (requested, never bound, never definitely refused —
@@ -696,13 +709,14 @@ def invocation_record(drive_root: Any, invocation_id: str) -> Optional[Dict[str,
     context wrote a durable record contradicting the body it actually POSTed.
     First-request lineage, usage attribution (category/source/skill/wave/slot),
     and isolation facts are likewise replayed rather than re-derived.
+    ``rows`` reuses a caller's single event snapshot, as the other replay views do.
     """
     target = str(invocation_id or "").strip()
     if not target:
         return None
     found: Optional[Dict[str, Any]] = None
     state, run_id = "pending", ""
-    for row in _iter_rows(event_log_path(drive_root)):
+    for row in rows if rows is not None else _iter_rows(event_log_path(drive_root)):
         if str(row.get("invocation_id") or "") != target:
             continue
         kind = str(row.get("type") or "")
@@ -739,6 +753,7 @@ def invocation_record(drive_root: Any, invocation_id: str) -> Optional[Dict[str,
                 "work_order_fingerprint": str(row.get("work_order_fingerprint") or ""),
                 "work_order_coverage": str(row.get("work_order_coverage") or ""),
                 "authority_fingerprint": str(row.get("authority_fingerprint") or ""),
+                "processing": row.get("processing") if isinstance(row.get("processing"), dict) else {},
                 "work_order_source_request": (
                     row.get("work_order_source_request")
                     if isinstance(row.get("work_order_source_request"), dict) else {}
@@ -924,7 +939,7 @@ def settle_run(drive_root: Any, gateway: Any, custody: RunCustody, detail: Dict[
     # is only free when the amount is really zero AND really settled: expired
     # sessions, bill-by-construction routes and auth fallbacks all charge, and
     # writing 0.0/cost_final=True over them hides money from every budget fence.
-    spend, estimated = disclosed_spend(summary)
+    spend, estimated = disclosed_spend(summary, attempt_execution=detail.get("attemptExecution"))
     # Model and credential profile belong to one final attempt. The run-level
     # authRoute can borrow an earlier account; missing final facts stay unknown.
     applied_profile = observed.get("profile_id", "")
@@ -949,6 +964,11 @@ def settle_run(drive_root: Any, gateway: Any, custody: RunCustody, detail: Dict[
                 prompt_tokens=disclosed_tokens(summary.get("inputTokens")),
                 completion_tokens=disclosed_tokens(summary.get("outputTokens")),
                 cached_tokens=disclosed_tokens(summary.get("cachedInputTokens")),
+                # The harness's own normalized input split when it reports one.
+                # An engine that reports none leaves the row exactly as before,
+                # and the ledger writer decides what is usable.
+                input_token_usage=summary.get("inputTokenUsage"),
+                attempt_execution=detail.get("attemptExecution"),
                 spend_usd=spend,
                 spend_estimated=estimated,
                 credential_profile_id=applied_profile,
@@ -973,6 +993,9 @@ def settle_run(drive_root: Any, gateway: Any, custody: RunCustody, detail: Dict[
                 "task_id": custody.task_id,
                 "root_task_id": custody.root_task_id, "parent_task_id": custody.parent_task_id,
                 "route": custody.route_id,
+                # The OWNER kind rides the terminal too: after rotation this may be
+                # the only surviving row (issue #1006; replay stays first-wins).
+                "source": custody.source, "category": custody.category,
                 # Route above remains custody authority. Fresh observations
                 # may differ from a replayed historical ledger row's model;
                 # they never rewrite that row, ownership, bounds or spend.
@@ -1085,7 +1108,7 @@ def record_settled_unread(drive_root: Any, custody: RunCustody) -> bool:
     return True
 
 
-def settled_unread_outputs(drive_root: Any) -> List[RunCustody]:
+def settled_unread_outputs(drive_root: Any, state: Optional[Dict[str, RunCustody]] = None) -> List[RunCustody]:
     """Settled runs whose verified FULL output was never read to EOF.
 
     The counterpart of ``open_containment_faults`` for the D7 class, and self-clearing
@@ -1095,12 +1118,12 @@ def settled_unread_outputs(drive_root: Any) -> List[RunCustody]:
     and a run that staged nothing (inline result, cancelled, failed with no output) owes
     nothing and must never appear here.
     """
-    return [custody for custody in replay(drive_root).values()
+    return [custody for custody in (state if state is not None else replay(drive_root)).values()
             if settled_output_unread(custody)]
 
 
 def undisposed_patches(drive_root: Any, state: Optional[Dict[str, RunCustody]] = None) -> List[RunCustody]:
-    """Settled mutating runs whose snapshot work awaits an explicit apply/reject.
+    """Settled snapshot or directory-copy work awaiting explicit apply/reject.
 
     The C1 counterpart of ``settled_unread_outputs``: a run that executed in a
     private snapshot and settled — through the nanny OR through reconciliation —
@@ -1112,7 +1135,9 @@ def undisposed_patches(drive_root: Any, state: Optional[Dict[str, RunCustody]] =
     ``PATCH_DISPOSED`` row flips ``patch_disposed`` in the very replay this reads.
     """
     return [custody for custody in (state if state is not None else replay(drive_root)).values()
-            if custody.snapshot_id and custody.settled and not custody.patch_disposed]
+            if (custody.snapshot_id or (custody.resource_ref.get("workspace_kind") == "directory"
+                                       and custody.resource_ref.get("strategy") == "copy"))
+            and custody.settled and not custody.patch_disposed]
 
 
 def record_containment_fault(drive_root: Any, custody: RunCustody, reason: str,
@@ -1318,6 +1343,7 @@ __all__ = [
     "release_task_runs",
     "reconcile_task_runs",
     "retire_project",
+    "review_owned_source",
     "run_timing",
     "settle_run",
     "settled_output_unread",

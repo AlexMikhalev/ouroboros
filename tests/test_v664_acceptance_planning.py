@@ -47,15 +47,15 @@ def test_required_blocking_binds_shared_cycle_cap_but_explicit_cap_always_wins(m
         ) == (False, "improvement_passes_exhausted")
 
 
-def test_system_prompt_describes_root_acceptance_as_evidence_only():
+def test_system_prompt_describes_one_whole_result_acceptance_operation():
     import pathlib
-
-    system = (
-        pathlib.Path(__file__).resolve().parents[1] / "prompts" / "SYSTEM.md"
-    ).read_text(encoding="utf-8")
-    assert "For a root task in `task_review_mode=auto|required`" in system
-    assert "this call is evidence-only" in system
-    assert "single authoritative host panel" in system
+    system = (pathlib.Path(__file__).resolve().parents[1] / "prompts/SYSTEM.md").read_text(encoding="utf-8")
+    normalized = " ".join(system.split())
+    assert "`task_acceptance_review` can nominate my complete task result for review" in normalized
+    assert "After the whole tool-result block, the host advances the same operation as final delivery" in normalized
+    assert "checking an intermediate artifact is not whole-task acceptance" in normalized
+    assert "acknowledge my human's messages" in normalized
+    assert "A status reply need not replace the retained result or buy another panel" in normalized
     assert "Use `task_acceptance_review` for expensive independent critique" not in system
 
 
@@ -907,7 +907,7 @@ def test_only_task_acceptance_fail_with_correction_rail_is_a_valid_veto(tmp_path
     )
     assert tier_veto.aggregate_signal == "FAIL"
     assert tier_veto.actors[2]["signal"] == "FAIL"
-    assert "best_effort" in build_improvement_capsule(tier_veto)
+    assert "rated a partial result" in build_improvement_capsule(tier_veto)  # the tier in words, never the identifier
 
     unanimous_minimal_fail = run_review_request(
         request,
@@ -989,7 +989,11 @@ def test_clean_acceptance_requires_per_criterion_evidence(tmp_path):
         drive_root=tmp_path,
         llm=_CriterionLLM(structured=True, status="missing"),
     )
-    assert missing.aggregate_signal == "DEGRADED"
+    assert missing.aggregate_signal == "PASS"
+    from ouroboros.review_substrate import task_acceptance_is_clean
+    assert task_acceptance_is_clean(missing) is False
+    assert all(actor["semantic_verdict"] == "PASS" for actor in missing.actors)
+    assert all(actor["parsed"]["outcome_tier"] == "solved" for actor in missing.actors)
     clean = run_review_request(
         request, slots=slots, drive_root=tmp_path, llm=_CriterionLLM(structured=True),
     )

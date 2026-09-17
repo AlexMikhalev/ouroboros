@@ -69,7 +69,11 @@ def test_quorum_unreachable_releases_finalization_for_a_blocked_terminal(harness
     decision = force_plan_decision(ctx, {}, enforcement="blocking")
     assert decision["allow"] is True and decision["quorum_unreachable"] is True
     disclosure = plan_review_disclosure(decision)
-    assert "blocked_with_evidence" in disclosure and "structurally unreachable" in disclosure
+    # Owner-readable prose says the ending in words; the ledger identifier stays
+    # on the typed objective axis asserted below.
+    assert "the task ends blocked with its evidence recorded" in disclosure
+    assert "blocked_with_evidence" not in disclosure
+    assert "structurally unreachable" in disclosure
     assert "2030-01-01T00:00:00+00:00" in disclosure
     from ouroboros.outcomes import derive_loop_outcome
 

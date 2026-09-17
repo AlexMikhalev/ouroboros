@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from ouroboros.task_results import plan_review_notes_are_annotatable
 from ouroboros.tools.review_synthesis import PLAN_REVIEW_CONTROL_PREFIX
 from ouroboros.tools.plan_spec import MAX_FINDINGS_PER_SLOT
+from ouroboros.tools.review_helpers import review_enforcement_blocks
 
 
 # B2 (honest DEGRADED): every aggregate reaches the control line as itself — the
@@ -94,12 +95,16 @@ def _actor_outcome(actor: dict) -> str:
             + ": " + str(actor.get("error")))
 
 
-def _degraded_replay_note(wave: dict) -> str:
+def _degraded_replay_note(wave: dict, *, paid_available: bool = True) -> str:
     """The honest replay mechanics of one recorded DEGRADED wave (aligned with the
     engine's `plan_wave_replay_decision`): a wave with structural snapshot evidence
     replays while its epoch and the reviewer roster stand; one without (its slots
     died at dispatch time, invisible to the pre-fan-out snapshot) never replays —
     a transient death is never cached as structural."""
+    if not paid_available:
+        replay = ("an identical envelope can replay this result for free while its health epoch and roster stand; "
+                  if wave.get("health_epoch") else "no structural lane evidence was recorded; ")
+        return replay + "the cycle cap is reached, so neither an identical nor revised request can start another paid panel, even after lane recovery"
     if wave.get("health_epoch"):
         return (
             "an identical envelope replays this recorded result at no further cost while "
@@ -117,6 +122,27 @@ def _next_step(wave: dict, *, enforcement: str, cap: Optional[int], cycles_paid:
     aggregate = str(wave.get("aggregate") or "")
     fp = str(wave.get("request_fingerprint") or "")
     at_cap = cap is not None and cycles_paid >= cap
+    author = wave.get("author_disposition")
+    author_note = ""
+    if isinstance(author, dict) and author.get("disposition") and author.get("rationale"):
+        author_note = (
+            f"Author finish recorded as {author.get('disposition')} against this exact "
+            "review fingerprint; raw reviewer findings remain evidence. "
+        )
+        if review_enforcement_blocks(enforcement):
+            author_note += "Blocking enforcement still holds the open plan gate. "
+        elif not review_enforcement_blocks("blocking"):
+            author_note += "Cyber Pro preserves final judgment with Ouroboros. "
+        else:
+            author_note += "Advisory enforcement permits proceeding with the review open. "
+    if not review_enforcement_blocks("blocking"):
+        return (
+            author_note + "Cyber Pro: Ouroboros decides whether and how to continue. "
+            "The recorded verdict, open findings and any unresolved physical reviewers remain "
+            "independent facts; continuation does not close the wave or create a PASS. "
+            f"The existing $0 plan_task(review_disposition={{review_fingerprint: '{fp}', items: [...]}}) "
+            "can collect results or record a disposition without a new panel."
+        )
     if bool(wave.get("closed")):
         if plan_review_notes_are_annotatable(wave):
             return (
@@ -127,22 +153,30 @@ def _next_step(wave: dict, *, enforcement: str, cap: Optional[int], cycles_paid:
             )
         return "Closed: proceed with the reviewed spec."
     if bool(wave.get("custody_pending")):
+        # Facts about the route that exists (B2), not an instruction to take it: the
+        # settlement frame is a mailbox message, so the ordinary in-task wait returns
+        # on it. A followup would mint a NEW root task, which cannot collect this wave.
         return (
             "Open: one or more paid reviewer operations are still in flight. "
             "The responses received so far are not final authority; wait for "
-            "custody reconciliation before treating this wave as closed."
+            "custody reconciliation before treating this wave as closed. The host writes ONE "
+            "message into this task's mailbox when every released slot settles: wait_task on "
+            "this task's own id (wait_tasks while children run) returns on it, and the $0 "
+            f"plan_task(review_disposition={{review_fingerprint: '{fp}', items: []}}) then "
+            "collects this wave without a second panel."
         )
     if aggregate == "DEGRADED":
         # B2: facts, not a retry coach (BIBLE P5 — the host never dictates the next tool
         # call). Quorum arithmetic, per-slot typed states above, and the replay mechanics;
         # the decision (revise the spec, wait, escalate, proceed if permitted) is the LLM's.
         counts = wave.get("counts") if isinstance(wave.get("counts"), dict) else {}
-        text = (
+        text = author_note + (
             f"DEGRADED: parseable reviewer verdicts {counts.get('parseable', 0)} of "
             f"{counts.get('configured', 0)} configured slot(s) — below the review quorum "
             f"({counts.get('quorum', '?')}). Per-slot typed states (code and reset time, when "
             "known) are listed under Reviewer slots above. This wave is recorded and OPEN; "
-            f"{_degraded_replay_note(wave)}; a changed spec starts the next paid cycle. "
+            f"{_degraded_replay_note(wave, paid_available=not at_cap)}. "
+            + ("A changed spec may start another paid cycle. " if not at_cap else "")
         )
         if wave.get("quorum_unreachable"):
             # Naming asymmetry, on purpose: the wave fact is the bare
@@ -160,20 +194,24 @@ def _next_step(wave: dict, *, enforcement: str, cap: Optional[int], cycles_paid:
             )
     elif aggregate == "REVIEW_REQUIRED":
         blocking = [f for f in wave.get("findings") or [] if f.get("class") == "blocking"]
-        text = (
-            "Notes are optional. Disposition need_evidence (accept | reject | defer, with a rationale) in ONE "
-            f"call: plan_task(review_disposition={{review_fingerprint: '{fp}', items: [...]}}) — no "
-            "reviewer call, no cycle. "
+        text = author_note + (
+            "Notes are optional. Open need_evidence requests (a locator the host attaches next cycle, or "
+            "a question addressed to you by spec id) close with ONE $0 call: "
+            f"plan_task(review_disposition={{review_fingerprint: '{fp}', items: [...]}}) — accept = "
+            "answered (your rationale is the answer; it reaches reviewers on the next paid cycle), "
+            "reject, or defer = deferred openly; no reviewer call, no cycle. A revised envelope "
+            "supersedes this wave and its open requests can no longer be dispositioned. "
         )
         if blocking:
             ids = ", ".join(str(f.get("finding_id") or f.get("id")) for f in blocking[:4])
             text += (
                 f"NOTE: {len(blocking)} BLOCKING finding(s) below quorum ({ids}) stay OPEN whatever "
-                "you disposition — a blocking finding closes only through a changed spec "
-                "(new fingerprint, next paid cycle) or a reject that the next paid delta cycle judges. "
+                "you disposition. "
+                + ("A changed spec or a justified rejection may be judged in another paid cycle. "
+                   if not at_cap else "The cycle cap is reached; no further paid panel is available. ")
             )
     else:
-        text = (
+        text = author_note + (
             "Blocking findings: accept ⇒ change the spec and re-call plan_task (new fingerprint, "
             f"{'the cap is reached — no further paid cycle' if at_cap else 'next paid cycle ' + str(cycles_paid + 1) + ('' if cap is None else f' of {cap}')}); "
             "reject ⇒ record reject + rationale via review_disposition naming this fingerprint — it "
@@ -205,9 +243,46 @@ def _next_step(wave: dict, *, enforcement: str, cap: Optional[int], cycles_paid:
 
 
 
+def _closure_note_view(note: str) -> str:
+    """Legacy host notes describe state; the current renderer owns available steps."""
+    prefix = str(note).partition(":")[0]
+    meaning = {
+        "blocking_finding_below_quorum_stays_open": "blocking findings remain open after disposition",
+        "revise_plan_not_closable_by_disposition": "disposition does not close blocking findings",
+        "degraded_not_closable_by_disposition": "no parseable reviewer quorum; disposition does not close the wave",
+    }.get(prefix)
+    return f"{prefix}: {meaning}" if meaning else str(note)
+
+
+def _dialogue_source_view(wave: dict, *, cached: bool) -> list[str]:
+    """Expose recorded context, without re-reading or judging later messages."""
+    own = (wave.get("evidence_manifest_full") or {}).get("own_dialogue") or {}
+    source = wave.get("dialogue_source_ref") or own.get("source_ref") or {}
+    if not own and not source:
+        return []
+    if own.get("gap"):
+        return [f"**Own-room dialogue:** unavailable ({own['gap']})."]
+    coverage = {key: {field: len(value) if field == "generations" else value
+                      for field, value in section.items()} if isinstance(section, dict) else section
+                for key, section in (own.get("coverage") or {}).items()}
+    rows = [f"**Dialogue snapshot:** `{source.get('sha256') or own.get('sha256') or 'unavailable'}` "
+            f"captured {own.get('captured_at') or 'time unavailable'}; {own.get('bytes', source.get('size', '?'))} bytes.",
+            f"Source: read_file(root='artifact_store', path='{source.get('path') or ''}').",
+            "Snapshot coverage: " + json.dumps(coverage, ensure_ascii=False, default=str)]
+    for sid, facts in (wave.get("dialogue_delivery") or {}).items():
+        rows.append(f"- {sid} prepared dialogue coverage (physical/read status below): " + json.dumps(facts, ensure_ascii=False, default=str))
+    if not wave.get("dialogue_delivery"):
+        rows.append("Per-slot dialogue coverage was not recorded in this historical wave.")
+    rows.append(("Cached review" if cached else "This review") + " covers this recorded snapshot only. "
+                "Later messages are not claimed reviewed; their implications remain your judgment. "
+                "A changed plan/evidence request captures current discussion.")
+    return rows
+
+
 def _render_wave(
     wave: dict, *, cap: Optional[int], cycles_paid: int, enforcement: str,
     cached: bool = False, notes: Optional[List[str]] = None, reminder: str = "",
+    historical_feedback: Optional[list[dict]] = None,
 ) -> str:
     aggregate = str(wave.get("aggregate") or "")
     closed = bool(wave.get("closed"))
@@ -220,9 +295,10 @@ def _render_wave(
         f"**Plan fingerprint:** `{wave.get('request_fingerprint') or ''}`"
         + ("  (cached exact review — no reviewer was called)" if cached else ""),
         f"**Constitutional:** {'yes' if wave.get('constitutional') else 'no'} — {wave.get('constitutional_note') or ''}",
-        f"**Evidence:** {len(manifest.get('attached') or [])} attached; omissions: "
+        f"**Declared/requested evidence:** {len(manifest.get('attached') or [])} attached; omissions: "
         + (", ".join(f"{o.get('locator')}: {o.get('reason')}" for o in manifest.get("omissions") or []) or "none"),
     ]
+    lines.extend(_dialogue_source_view(wave, cached=cached))
     if wave.get("compact"):
         ref = wave.get("wave_artifact") if isinstance(wave.get("wave_artifact"), dict) else {}
         artifact_path = str(ref.get("path") or "")
@@ -240,11 +316,11 @@ def _render_wave(
             "", "⚠️ REVIEW CUSTODY PENDING: the received quorum is provisional; "
             "a paid reviewer operation is still in flight and this wave remains open."
         ]
-    elif aggregate == "DEGRADED":
+    elif aggregate == "DEGRADED" and historical_feedback is None:
         # Banner aligned with _next_step: the replay promise depends on whether the
         # wave carries structural snapshot evidence (see _degraded_replay_note).
         lines += ["", "⚠️ DEGRADED: no parseable reviewer quorum — recorded as an OPEN wave; "
-                  + _degraded_replay_note(wave) + "."]
+                  + _degraded_replay_note(wave, paid_available=cap is None or cycles_paid < cap) + "."]
     actor_lines = [
         f"- {a.get('slot_id')} · {a.get('model')} · {a.get('route')} · host_file_read: "
         f"{a.get('host_file_read_attestation')} · {_actor_outcome(a)}"
@@ -254,8 +330,12 @@ def _render_wave(
     findings = list(wave.get("findings") or [])
     findings_total = int(wave.get("findings_total") or len(findings))
     finding_page = findings[:MAX_FINDINGS_PER_SLOT]
+    if wave.get("reviewer_effort"):
+        actor_lines.append(
+            f"- declared reviewer effort: {wave['reviewer_effort']} (this envelope's order; an explicit "
+            "per-row effort or a compound route slug outranks it)")
     lines += [
-        "", "### Reviewer slots", "", *actor_lines,
+        "", "### Reviewer slots" + (" (original recorded state)" if historical_feedback is not None else ""), "", *actor_lines,
         "", "### Findings (per slot; finding_id = slot:id)", "", "```json",
         json.dumps(finding_page, ensure_ascii=False, indent=2, default=str), "```",
     ]
@@ -272,6 +352,23 @@ def _render_wave(
         lines += ["", "### Unparseable reviewer output (bounded preview)", ""]
         for actor in previews:
             lines += [f"#### {actor.get('slot_id')}", _quote_control_lines(str(actor.get("raw_text_preview"))), ""]
+    if wave.get("historical_supplements"):
+        lines += ["", "### Historical feedback", "",
+                  "Late responses are retained separately. The original actors, aggregate and closure below "
+                  "have not been recomputed; these sources do not create a new PASS."]
+        resolved = {row["operation_id"]: row for row in historical_feedback or []}
+        for row in wave["historical_supplements"]:
+            ref = row.get("source_ref") or {}
+            lines += [f"#### {row.get('slot_id')} · cycle {row.get('cycle_index')} · {row.get('operation_state')}",
+                      f"Operation: {row.get('operation_id')}. Source SHA256: {ref.get('sha256') or 'unavailable'}.",
+                      f"Source: read_file(root='artifact_store', path='{ref.get('path') or ''}')."]
+            result = (resolved.get(row.get("operation_id")) or {}).get("result")
+            if result is not None:
+                if result.get("error"):
+                    lines += ["Recorded error: " + _quote_control_lines(str(result["error"]))]
+                lines += [_quote_control_lines(str(result.get("text") or "(no reviewer text)"))]
+            else:
+                lines += ["Full source is retained at the reference above; its body was not read for this view."]
     lines += [
         "", f"### Aggregate: {aggregate}" + (" (closed)" if closed else " (open)"),
         "", "Reasons: " + (", ".join(str(r) for r in wave.get("reasons") or []) or "none")
@@ -280,12 +377,18 @@ def _render_wave(
     if wave.get("dispositions"):
         lines += ["", "### Dispositions", "", "```json",
                   json.dumps(wave.get("dispositions"), ensure_ascii=False, indent=2), "```"]
+    if isinstance(wave.get("author_disposition"), dict):
+        lines += ["", "### Author finish", "", "```json",
+                  json.dumps(wave.get("author_disposition"), ensure_ascii=False, indent=2), "```"]
     if wave.get("closure_notes") or notes:
-        lines += ["", "Closure notes: " + "; ".join([*(wave.get("closure_notes") or []), *(notes or [])])]
+        lines += ["", "Closure notes: " + "; ".join(_closure_note_view(note) for note in [*(wave.get("closure_notes") or []), *(notes or [])])]
     outcome, closed = wave_control_state(wave)
     lines += [
         "", "## Plan Review Contract", "",
-        _next_step(wave, enforcement=enforcement, cap=cap, cycles_paid=cycles_paid), "",
+        ("This is a free read of the completed historical responses. No reviewer was called and no cycle "
+         "was consumed. Consider the feedback alongside the current task; the original review decision "
+         "remains unchanged." if historical_feedback is not None else
+         _next_step(wave, enforcement=enforcement, cap=cap, cycles_paid=cycles_paid)), "",
         PLAN_REVIEW_CONTROL_PREFIX + json.dumps({"outcome": outcome, "closed": closed}, separators=(",", ":")),
     ]
     return "\n".join(lines)

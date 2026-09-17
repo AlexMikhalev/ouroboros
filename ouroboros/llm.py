@@ -8,13 +8,13 @@ import hashlib  # noqa: F401  (prior import surface)
 import inspect  # noqa: F401  (prior import surface)
 import json
 import logging
-import os
 import re
 import threading  # noqa: F401  (prior import surface)
 import time  # noqa: F401  (prior import surface)
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from ouroboros.model_wait import model_waitable
+from ouroboros.model_wait import dispatch_deadline_remaining_sec, model_waitable
+from ouroboros.deadline_utils import caller_deadline_scoped
 
 from ouroboros.anthropic_native_custody import (  # noqa: F401  (prior import surface)
     anthropic_replay_scoped,
@@ -30,29 +30,33 @@ from ouroboros.context_budget import (  # noqa: F401
     context_overflow_message,
 )
 from ouroboros.llm_anthropic import (
+
+    anthropic_web_search_server_tool as _anthropic_web_search_server_tool,
     _AnthropicLaneMixin,  # noqa: F401
 )
 from ouroboros.llm_attempt import (
+    _attempt_request,  # noqa: F401 -- historical public import surface
     PROVIDER_POLICY_REFUSAL,  # noqa: F401
     ProviderPolicyRefusal,  # noqa: F401
     _applied_payload_cache_ttl,  # noqa: F401
-    _attempt_request,
     _CACHE_TTL_SECONDS,  # noqa: F401
-    _candidate_before_dispatch,
     _canonical_candidate_bytes,  # noqa: F401
-    _execute_candidate,
+    _candidate_before_dispatch,  # noqa: F401 -- historical public import surface
     _execute_candidate_async,  # noqa: F401
+    _execute_candidate,  # noqa: F401 -- historical public import surface
+    _physical_candidate,  # noqa: F401 -- historical public import surface
     _finalized_physical_candidate,  # noqa: F401
     _is_provider_policy_refusal,  # noqa: F401
     _is_structured_context_overflow_body,  # noqa: F401
     _is_structured_context_overflow_exception,  # noqa: F401
     _PayloadCachePolicyMixin,  # noqa: F401
-    _physical_candidate,
     _route_normalizes_cache_breakpoints,  # noqa: F401
     _structured_error_values,  # noqa: F401
     _VALID_CACHE_TTLS,  # noqa: F401
     cache_ttl_seconds,  # noqa: F401
     supports_message_cache_control,  # noqa: F401
+    apply_processing_preference,  # noqa: F401 -- historical public import surface
+    processing_contract_headers,  # noqa: F401 -- historical public import surface
 )
 from ouroboros.llm_capability_policy import (
     _CapabilityPolicyMixin,  # noqa: F401
@@ -80,6 +84,8 @@ from ouroboros.llm_messages import (
     _MessageShapingMixin,  # noqa: F401
 )
 from ouroboros.llm_openai_compatible import (
+
+    openrouter_web_search_server_tool as _openrouter_web_search_server_tool,
     _bounded_response_metadata_label,  # noqa: F401
     _FALSE_LIKE_ENV_VALUES,  # noqa: F401
     _OpenAICompatibleLaneMixin,  # noqa: F401
@@ -96,7 +102,6 @@ from ouroboros.llm_routing import (
     _ProviderRoutingMixin,  # noqa: F401
     _resolve_or_provider,  # noqa: F401
 )
-from ouroboros.openrouter_attribution import OPENROUTER_APP_HEADERS
 from ouroboros.provider_models import (  # noqa: F401  (prior import surface)
     DEEPSEEK_BASE_URL,
     OPENROUTER_DEFAULTS,
@@ -116,6 +121,7 @@ from ouroboros.request_wire_recovery import (
     request_wire_scoped,
 )
 from ouroboros.transport_custody import is_loopback_base_url  # noqa: F401
+from ouroboros.openrouter_attribution import OPENROUTER_APP_HEADERS  # noqa: F401 -- historical public import surface
 from ouroboros.usage_accounting import (
     AttemptRequest,  # noqa: F401
     PhysicalAttemptCapture,  # noqa: F401
@@ -130,9 +136,10 @@ from ouroboros.usage_accounting import (
     execute_physical_attempt,  # noqa: F401
     execute_physical_attempt_async,  # noqa: F401
     last_physical_attempt_capture,  # noqa: F401
-    usage_scope,
-)
+    usage_scope,  # noqa: F401 -- historical public import surface
+    )
 from ouroboros.utils import in_worker_process, sanitize_tool_result_for_log  # noqa: F401
+from ouroboros.config import runtime_setting
 
 log = logging.getLogger(__name__)
 
@@ -159,7 +166,7 @@ class LLMClient(
         base_url: str = "https://openrouter.ai/api/v1",
     ):
         self._api_key_override = api_key
-        self._api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
+        self._api_key = api_key or runtime_setting("OPENROUTER_API_KEY", "")
         self._base_url = base_url
         self._client = None
         self._client_api_key: Optional[str] = None
@@ -171,6 +178,7 @@ class LLMClient(
         self._async_remote_clients: Dict[Tuple[str, str, str, Tuple[Tuple[str, str], ...]], Any] = {}
         self._gigachat_clients: Dict[Tuple[str, str, str, str, str, bool], Any] = {}
 
+    @caller_deadline_scoped
     @model_waitable
     def chat(
         self,
@@ -192,7 +200,14 @@ class LLMClient(
         model_poll_control: Any = None,
         model_operation_observer: Any = None,
         model_account_override: str | None = None,
+        model_turn_state: Any = None,
         default_temperature: Optional[float] = None,
+        stream: bool = False,
+        caller_deadline_ts: Optional[float] = None,
+        caller_execution_deadline: Optional[float] = None,
+        wait_for_resources: bool = True,
+        processing_preference: str | None = None,
+        context_mode: str | None = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Single LLM call returning (message, usage); no_proxy avoids macOS fork proxy crashes.
 
@@ -203,18 +218,34 @@ class LLMClient(
 
         ``default_temperature`` is a host hint, unlike explicit ``temperature``.
         Resolve it on this invocation's effective route after any model wait:
-        raw model operations defer to provider defaults; explicit values win."""
+        raw model operations defer to provider defaults; explicit values win.
+
+        ``model_turn_state`` is the caller's optional active-turn transport slot
+        (``llm_claudexor.ModelTurnState``); this seam is where a dispatch that
+        leaves that transport ends the turn. ``wait_for_resources=False`` returns
+        a confirmed quota/auth refusal to this caller without entering resource
+        waiting; task overrides, controls and dispatched-operation custody remain."""
+        from ouroboros.llm_claudexor import turn_state_for_route
+
         messages = self._normalize_system_message_placement(messages)
         with capture_attempt_ids() as attempt_ids:
             if use_local:
+                turn_state_for_route(model_turn_state, "local")
+                local_kwargs = {"timeout": timeout}
+                if processing_preference:
+                    local_kwargs["processing_preference"] = processing_preference
+                if context_mode:
+                    local_kwargs["context_mode"] = context_mode
                 message, usage = self._chat_local(
-                    messages, tools, max_tokens, tool_choice, timeout=timeout,
+                    messages, tools, max_tokens, tool_choice, **local_kwargs,
                 )
             else:
                 # Central worker policy: remote calls from worker processes avoid
                 # system proxy lookup without every caller remembering a flag.
                 no_proxy = no_proxy or in_worker_process()
-                target = self._resolve_remote_target(model)
+                target = {**self._resolve_remote_target(model),
+                          "processing_preference": processing_preference,
+                          "context_mode": context_mode}
                 if temperature is None and target.get("provider") != "claudexor":
                     temperature = default_temperature
                 message, usage = self._chat_remote(
@@ -229,11 +260,14 @@ class LLMClient(
                     model_poll_control=model_poll_control,
                     model_operation_observer=model_operation_observer,
                     model_account_override=model_account_override,
+                    model_turn_state=turn_state_for_route(model_turn_state, target.get("provider")),
+                    **({"stream": True} if stream else {}),
                 )
             usage["ledger_attempt_ids"] = list(attempt_ids)
             return message, usage
 
     @request_wire_scoped
+    @caller_deadline_scoped
     @model_waitable
     async def chat_async(
         self,
@@ -252,20 +286,36 @@ class LLMClient(
         model_poll_control: Any = None,
         model_operation_observer: Any = None,
         model_account_override: str | None = None,
+        model_turn_state: Any = None,
         use_local: bool = False,
         default_temperature: Optional[float] = None,
+        stream: bool = False,
+        caller_deadline_ts: Optional[float] = None,
+        caller_execution_deadline: Optional[float] = None,
+        wait_for_resources: bool = True,
+        processing_preference: str | None = None,
+        context_mode: str | None = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Async remote chat; no_proxy keeps forked macOS workers off OS proxy APIs.
 
-        Host temperature hints follow ``chat``'s effective-route contract."""
+        Host temperature hints, resource waiting and the active-turn transport
+        slot follow ``chat``'s effective-route contract."""
+        from ouroboros.llm_claudexor import turn_state_for_route
+
         messages = self._normalize_system_message_placement(messages)
         no_proxy = no_proxy or in_worker_process()
         if use_local:
+            turn_state_for_route(model_turn_state, "local")
             from ouroboros.usage_accounting import adopt_physical_attempt_capture, last_physical_attempt_capture
 
             def local_call():
                 adopt_physical_attempt_capture(None)
-                result = self._chat_local(messages, tools, max_tokens, tool_choice, timeout=timeout)
+                local_kwargs = {"timeout": timeout}
+                if processing_preference:
+                    local_kwargs["processing_preference"] = processing_preference
+                if context_mode:
+                    local_kwargs["context_mode"] = context_mode
+                result = self._chat_local(messages, tools, max_tokens, tool_choice, **local_kwargs)
                 return result, last_physical_attempt_capture()
 
             with capture_attempt_ids() as attempt_ids:
@@ -277,9 +327,12 @@ class LLMClient(
                 adopt_physical_attempt_capture(capture)
             result[1]["ledger_attempt_ids"] = list(attempt_ids)
             return result
-        target = self._resolve_remote_target(model)
+        target = {**self._resolve_remote_target(model),
+                  "processing_preference": processing_preference,
+                  "context_mode": context_mode}
         if temperature is None and target.get("provider") != "claudexor":
             temperature = default_temperature
+        carried_turn_state = turn_state_for_route(model_turn_state, target.get("provider"))
         if target.get("provider") == "claudexor":
             from ouroboros.llm_claudexor import chat_claudexor_async
 
@@ -292,20 +345,22 @@ class LLMClient(
                     model_poll_control=model_poll_control,
                     model_operation_observer=model_operation_observer,
                     model_account_override=model_account_override,
+                    model_turn_state=carried_turn_state,
                 )
             result[1]["ledger_attempt_ids"] = list(attempt_ids)
             return result
-        if tools:
-            raise ValueError("chat_async does not support tool calls")
         if target.get("provider") == "anthropic":
             with capture_attempt_ids() as attempt_ids:
-                result = await asyncio.to_thread(
-                    self._chat_anthropic, target, messages, tools, reasoning_effort,
+                result = await self._chat_anthropic_async(
+                    target, messages, tools, reasoning_effort,
                     max_tokens, tool_choice, temperature, no_proxy, timeout,
+                    **({"stream": True} if stream else {}),
                 )
             result[1]["ledger_attempt_ids"] = list(attempt_ids)
             return result
         if target.get("provider") == "gigachat":
+            if tools:
+                raise ValueError("chat_async does not support GigaChat tool calls")
             # The gigachat library client is synchronous; offload to a thread
             # like the Anthropic path so the event loop is never blocked.
             with capture_attempt_ids() as attempt_ids:
@@ -323,7 +378,10 @@ class LLMClient(
                     skip_capability_fetch=True,
                     allow_server_web_search=allow_server_web_search,
                     cache_affinity=cache_affinity,
+                    **({"stream": True} if stream else {}),
                 )
+                if dispatch_deadline_remaining_sec() is not None:
+                    kwargs["timeout"] = self._no_proxy_timeout(timeout)
                 prompt_cache_ttl = self._normalize_payload_cache_ttl(target, kwargs)
                 with capture_attempt_ids() as attempt_ids:
                     resp = await self._create_chat_completion_with_retries_async(
@@ -347,11 +405,14 @@ class LLMClient(
             target, messages, reasoning_effort, max_tokens, tool_choice, temperature, tools,
             allow_server_web_search=allow_server_web_search,
             cache_affinity=cache_affinity,
+            **({"stream": True} if stream else {}),
         )
         if timeout and timeout > 0:
             # Cached clients are built without a timeout; honor the caller's
             # per-request timeout instead of silently using the SDK default.
             kwargs["timeout"] = float(timeout)
+        elif dispatch_deadline_remaining_sec() is not None:
+            kwargs["timeout"] = getattr(client, "timeout", None)
         prompt_cache_ttl = self._normalize_payload_cache_ttl(target, kwargs)
         with capture_attempt_ids() as attempt_ids:
             resp = await self._create_chat_completion_with_retries_async(
@@ -580,6 +641,7 @@ class LLMClient(
         model_poll_control: Any = None,
         model_operation_observer: Any = None,
         model_account_override: str | None = None,
+        processing_preference: str | None = None,
     ) -> Tuple[str, Dict[str, Any]]:
         """Run a lightweight vision query; image dicts use url or base64+mime."""
         content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
@@ -612,18 +674,19 @@ class LLMClient(
             model_poll_control=model_poll_control,
             model_operation_observer=model_operation_observer,
             model_account_override=model_account_override,
+            processing_preference=processing_preference,
         )
         text = response_msg.get("content") or ""
         return text, usage
 
     def default_model(self) -> str:
         """Return the single default model from env. LLM switches via tool if needed."""
-        return os.environ.get("OUROBOROS_MODEL", OPENROUTER_DEFAULTS["main"])
+        return runtime_setting("OUROBOROS_MODEL", OPENROUTER_DEFAULTS["main"])
 
     def available_models(self) -> List[str]:
         """Return list of available models from env (for switch_model tool schema)."""
         main = self.default_model()
-        light = os.environ.get("OUROBOROS_MODEL_LIGHT", "")
+        light = runtime_setting("OUROBOROS_MODEL_LIGHT", "")
         models = [main]
         if light and light != main:
             models.append(light)
@@ -631,86 +694,27 @@ class LLMClient(
 
 
 def openrouter_web_search_server_tool(
-    *,
-    api_key: str,
-    model: str,
-    query: str,
-    search_context_size: str,
-    accounting_scope: Optional[UsageScope] = None,
-    timeout: Optional[float] = None,
+
+    *, api_key: str, model: str, query: str, search_context_size: str,
+    accounting_scope: Optional[UsageScope] = None, timeout: Optional[float] = None,
+    processing_preference: str | None = None,
 ) -> Any:
-    """Run OpenRouter's provider-owned web_search server tool."""
-
-    from ouroboros.net_transport import web_search_openai_client
-
-    client = web_search_openai_client(
-        api_key=api_key,
-        base_url="https://openrouter.ai/api/v1",
-        timeout=timeout,
-        default_headers=dict(OPENROUTER_APP_HEADERS),
+    """Keep native search tools on the shared physical-send recovery driver."""
+    return _openrouter_web_search_server_tool(
+        api_key=api_key, model=model, query=query, search_context_size=search_context_size,
+        accounting_scope=accounting_scope, timeout=timeout, processing_preference=processing_preference,
+        _recovery=LLMClient()._create_chat_completion_with_retries,
     )
-    payload = dict(
-        model=model,
-        messages=[{"role": "user", "content": query}],
-        tools=[{
-            "type": "openrouter:web_search",
-            "parameters": {
-                "search_context_size": search_context_size,
-                "max_total_results": 10,
-            },
-        }],
-    )
-    candidate = _physical_candidate(payload)
-    request = _attempt_request(
-        {"provider": "openrouter", "usage_model": model, "resolved_model": model},
-        candidate,
-        source="web_search.openrouter",
-    )
-    before_dispatch = _candidate_before_dispatch(candidate, request)
-    if accounting_scope is None:
-        return _execute_candidate(
-            request, lambda: client.chat.completions.create(**candidate), before_dispatch,
-        )
-    with usage_scope(accounting_scope):
-        return _execute_candidate(
-            request, lambda: client.chat.completions.create(**candidate), before_dispatch,
-        )
 
 
 def anthropic_web_search_server_tool(
-    *,
-    api_key: str,
-    model: str,
-    query: str,
-    accounting_scope: Optional[UsageScope] = None,
-    timeout: Optional[float] = None,
+    *, api_key: str, model: str, query: str,
+    accounting_scope: Optional[UsageScope] = None, timeout: Optional[float] = None,
+    processing_preference: str | None = None,
 ) -> Any:
-    """Run Anthropic's provider-owned web_search server tool."""
-
-    import anthropic
-
-    client_kwargs: Dict[str, Any] = {"api_key": api_key, "max_retries": 0}
-    if timeout is not None:
-        client_kwargs["timeout"] = float(timeout)
-    client = anthropic.Anthropic(**client_kwargs)
-    payload = dict(
-        model=model,
-        max_tokens=2048,
-        tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
-        messages=[{"role": "user", "content": query}],
+    """Compose native Messages search without converting its provider-owned tool."""
+    return _anthropic_web_search_server_tool(
+        api_key=api_key, model=model, query=query, accounting_scope=accounting_scope,
+        timeout=timeout, processing_preference=processing_preference,
+        _recovery=LLMClient()._create_chat_completion_with_retries,
     )
-    candidate = _physical_candidate(payload)
-    request = _attempt_request(
-        {"provider": "anthropic", "usage_model": model, "resolved_model": model},
-        candidate,
-        source="web_search.anthropic",
-    )
-    before_dispatch = _candidate_before_dispatch(candidate, request)
-    if accounting_scope is None:
-        return _execute_candidate(
-            request, lambda: client.messages.create(**candidate), before_dispatch,
-        )
-    with usage_scope(accounting_scope):
-        return _execute_candidate(
-            request, lambda: client.messages.create(**candidate), before_dispatch,
-        )

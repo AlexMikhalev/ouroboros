@@ -143,7 +143,10 @@ def copy_wait_context() -> contextvars.Context:
     Copying every ContextVar also transfers a previous physical capture and
     the parent's Main fit authority. Those belong to their original call.
     """
+    from ouroboros.settings_integrity import copy_task_settings_context
+
     copied = contextvars.Context()
+    copy_task_settings_context(copied)
     for variable in (_CURRENT, _REPREPARE, _CALENDAR, _LOGICAL):
         copied.run(variable.set, variable.get())
     return copied
@@ -169,6 +172,17 @@ def calendar_scope(deadline_at: str) -> Iterator[None]:
         yield
     finally:
         _CALENDAR.reset(token)
+
+
+def dispatch_deadline_remaining_sec() -> float | None:
+    """Read inherited calendar and quota-adjusted execution bounds, without a floor."""
+    from ouroboros.deadline_utils import seconds_until
+
+    remaining = [value for bound in _CALENDAR.get()
+                 if (value := seconds_until(bound)) is not None]
+    remaining.extend(max(0.0, deadline - monotonic_now(slot))
+                     for deadline, slot in _LOGICAL.get())
+    return min(remaining) if remaining else None
 
 
 def mutate_wait(root: Any, task_id: str, wait_id: str, transform: Callable) -> dict:
@@ -240,15 +254,11 @@ class TaskModelWait:
     def mutate_row(self, wait_id: str, transform: Callable) -> dict:
         if self.row_mutator is not None:
             return self.row_mutator(wait_id, transform)
-        if self.task.get("_ephemeral_turn"):
-            return mutate_live_wait(self, wait_id, transform)
         return mutate_wait(self.canonical_root, self.task_id, wait_id, transform)
 
     def read_rows(self) -> dict:
         if self.rows_reader is not None:
             return self.rows_reader()
-        if self.task.get("_ephemeral_turn"):
-            return self.snapshot()["model_waits"]
         from ouroboros.task_results import load_task_result
         return (load_task_result(self.canonical_root, self.task_id, strict=True) or {}).get("model_waits", {})
 
@@ -402,8 +412,6 @@ class TaskModelWait:
             public = {key: copy.deepcopy(value) for key, value in row.items() if not key.startswith("_")}
             event = {"type": "task_model_wait", "ts": utc_now_iso(), "task_id": self.task_id,
                      **public, "quota_clock": clock_projection, "is_progress": False}
-            if self.task.get("_ephemeral_turn"):
-                event["ephemeral_decision"] = True
             if self.owner_id:
                 event["model_wait_owner_id"] = self.owner_id
         # The owner's projection precedes notification. The handler owns the
@@ -561,12 +569,6 @@ class TaskModelWait:
     def close(self) -> None:
         with self.lock:
             self.closed = True
-            if self.task.get("_ephemeral_turn"):
-                # This turn has no durable task_done cleanup. Decisions hold this
-                # same lock for their final live check and mailbox write.
-                from ouroboros.owner_mailbox import cleanup_task_mailbox
-
-                cleanup_task_mailbox(pathlib.Path(self.drive_root), self.task_id)
 
 
 @contextlib.contextmanager
@@ -577,12 +579,7 @@ def task_model_wait_scope(*, task: dict, drive_root: Any, event_queue: Any,
                             worker_slot_held=worker_slot_held, **owner_hooks)
     token = _CURRENT.set(context)
     try:
-        with contextlib.ExitStack() as stack:
-            if task.get("_ephemeral_turn"):
-                from supervisor.active_activity import get_direct_activity_registry
-
-                stack.enter_context(get_direct_activity_registry().bind_model_wait(context))
-            yield context
+        yield context
     finally:
         context.close()
         _CURRENT.reset(token)
@@ -593,7 +590,11 @@ def current_model_wait() -> TaskModelWait | None:
 
 
 def model_waitable(function: Callable | None = None, *, client_parameter: str = "self") -> Callable:
-    """Catch resource refusals inside one LLM call, before helper catch-all blocks."""
+    """Catch resource refusals before helper catches; callers may decline waiting.
+
+    ``wait_for_resources`` is call-local, leaving the shared task's overrides,
+    controls and custody intact even when a refusal returns immediately.
+    """
     if function is None:
         return functools.partial(model_waitable, client_parameter=client_parameter)
     signature = inspect.signature(function)
@@ -606,6 +607,15 @@ def model_waitable(function: Callable | None = None, *, client_parameter: str = 
         for name, parameter in signature.parameters.items():
             if parameter.kind is inspect.Parameter.VAR_KEYWORD:
                 values.update(values.pop(name, {}))
+        if "processing_preference" in signature.parameters:
+            from ouroboros.model_slots import resolve_processing_preference
+
+            # Capture before the logical retry loop, including callers without
+            # a task owner. Re-entering after a quota wait never rereads settings.
+            values["processing_preference"] = resolve_processing_preference(
+                str(values.get("model_role") or ""),
+                override=values.get("processing_preference"),
+            )
         return receiver, values
 
     def prepare(context, values):
@@ -630,6 +640,7 @@ def model_waitable(function: Callable | None = None, *, client_parameter: str = 
 
         capture = getattr(error, "physical_attempt_capture", None)
         return bool(context and not context.closed and values.get("model_role")
+                    and values.get("wait_for_resources", True)
                     and isinstance(error, ClaudexorModelError)
                     and model_wait_reason(error)
                     and getattr(capture, "state", None) in {"released", "settled"})
@@ -660,7 +671,7 @@ def model_waitable(function: Callable | None = None, *, client_parameter: str = 
             receiver, values = bind(args, kwargs)
             context = current_model_wait()
             if context is None:
-                return await function(*args, **kwargs)
+                return await function(**{client_parameter: receiver, **values})
             attempts = []
             preparation = prepare(context, values)
             while True:
@@ -696,7 +707,7 @@ def model_waitable(function: Callable | None = None, *, client_parameter: str = 
         receiver, values = bind(args, kwargs)
         context = current_model_wait()
         if context is None:
-            return function(*args, **kwargs)
+            return function(**{client_parameter: receiver, **values})
         attempts = []
         preparation = prepare(context, values)
         while True:

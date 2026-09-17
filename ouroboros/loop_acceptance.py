@@ -11,7 +11,7 @@ import pathlib
 from typing import Any, Callable, Dict, List, Optional
 from ouroboros.review_cycles import REASON_REVIEW_CYCLES_EXHAUSTED
 from ouroboros.review_projection import publish_acceptance_checkpoint
-from ouroboros.outcomes import ACCEPTANCE_ACCEPTED, ACCEPTANCE_BYPASS_REASONS, ACCEPTANCE_BYPASS_REASON_BY_RAIL, ACCEPTANCE_DECISION_STATUSES, ACCEPTANCE_FINALIZED_UNACCEPTED, ACCEPTANCE_REVISION_REQUESTED, REASON_ACCEPTANCE_REVIEW_SKIPPED_DEADLINE_RESERVE, REASON_IDENTICAL_ACCEPTANCE_REFUSED, extract_final_answer, turn_has_reviewable_effects
+from ouroboros.outcomes import ACCEPTANCE_ACCEPTED, ACCEPTANCE_BYPASS_REASONS, ACCEPTANCE_BYPASS_REASON_BY_RAIL, ACCEPTANCE_DECISION_STATUSES, ACCEPTANCE_FINALIZED_UNACCEPTED, ACCEPTANCE_REVISION_REQUESTED, REASON_ACCEPTANCE_REVIEW_SKIPPED_DEADLINE_RESERVE, REASON_DELIVERY_CONTROL_DEGRADED, REASON_IDENTICAL_ACCEPTANCE_REFUSED, extract_final_answer, turn_has_reviewable_effects
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.utils import truncate_review_artifact
 
@@ -45,7 +45,6 @@ def _task_acceptance_eligible(
     is_direct_chat: bool,
     *,
     is_root_task: bool = True,
-    is_ephemeral_turn: bool = False,
     task_contract: Optional[Dict[str, Any]] = None,
 ) -> tuple[bool, str]:
     """Return ``(host_should_review, trigger_reason)``.
@@ -54,15 +53,13 @@ def _task_acceptance_eligible(
     ``auto`` also honors an agent's explicit review-tool request, so read-only
     research remains reviewable without classifying its prose or tool counts.
     Queue membership alone qualifies only in ``required``. Child reviews stay
-    advisory, ephemeral control turns are excluded, and ``off`` never reviews.
+    advisory, and ``off`` never reviews.
     Eligibility uses typed contracts and runtime facts, never message content.
     """
     if mode == "off":
         return False, "off"
     if not is_root_task:
         return False, "skipped_child_advisory"
-    if is_ephemeral_turn:
-        return False, "skipped_ephemeral_control"
     if mode in {"auto", "required"}:
         prefix = "required" if mode == "required" else "auto"
         if turn_has_reviewable_effects(llm_trace):
@@ -84,6 +81,14 @@ def _task_acceptance_eligible(
             return True, "auto_agent_request"
         return False, "skipped_conversation"
     return False, "skipped_unknown_mode"
+
+
+from ouroboros.loop_messages import (  # noqa: F401 — shared owner-source surface
+    _acceptance_observation_state,
+    capture_acceptance_observation,
+    acknowledge_acceptance_observation,
+    acceptance_observation_prompt,
+)
 
 
 def _begin_task_acceptance_fence(ctx: Any, task_id: str) -> tuple[bool, Any]:
@@ -145,6 +150,8 @@ def _begin_task_acceptance_fence(ctx: Any, task_id: str) -> tuple[bool, Any]:
 def _end_task_acceptance_fence(
     ctx: Any, *, outcome: str, admission_locked: bool = False,
 ) -> bool:
+    if getattr(ctx, "_acceptance_review_only", False) and outcome != "revision":
+        outcome = "revision"  # Early feedback never closes the root's future work.
     token = getattr(ctx, "_task_acceptance_fence_token", None)
     if token is None and str(outcome) == "revision":
         token = getattr(ctx, "_task_acceptance_sealed_fence_token", None)
@@ -157,11 +164,23 @@ def _end_task_acceptance_fence(
             admission_lock.acquire()
             acquired = True
         expected_owner_generation = getattr(ctx, "_task_acceptance_owner_generation", None)
+        from ouroboros.loop_messages import owner_source_sha256
+        from ouroboros.loop_transport import _owner_signal_pending
+
+        acknowledged_source = getattr(ctx, "_acceptance_ack_source_sha256", "")
         direct_generation_mismatch = bool(
+            (acknowledged_source and (
+                acknowledged_source != owner_source_sha256(ctx)
+                or _owner_signal_pending(
+                    getattr(ctx, "_acceptance_observation_incoming", None), getattr(ctx, "drive_root", None),
+                    str(getattr(ctx, "task_id", "") or ""), getattr(ctx, "_loop_mailbox_seen_ids", None),
+                    getattr(ctx, "task_attempt", None) or 1,
+                )
+            )) or (
             expected_owner_generation is not None
             and admission_agent is not None
             and int(getattr(admission_agent, "_owner_message_generation", 0) or 0)
-            != int(expected_owner_generation)
+            != int(expected_owner_generation))
         )
         effective_outcome = "revision" if direct_generation_mismatch else str(outcome)
         if token is None or not callable(callback):
@@ -297,24 +316,18 @@ def _supersede_task_acceptance_for_owner_followup(
     *,
     admission_locked: bool = False,
 ) -> bool:
-    """Invalidate a paid verdict whose immutable evidence predates an owner follow-up."""
+    """Release finalization for Main to consume new input, retaining paid evidence."""
     released = _loop()._end_task_acceptance_fence(
         ctx, outcome="revision", admission_locked=admission_locked,
     )
-    for run in reversed(llm_trace.get("review_runs") or []):
-        if (
-            isinstance(run, dict)
-            and run.get("authority") == "host_root"
-            and not run.get("superseded_by_revision")
-        ):
-            run["superseded_by_revision"] = True
-            run["superseded_reason"] = "owner_followup_after_acceptance_evidence"
-            run["enforcement_impact"] = "requires_revision"
-            break
     ctx._task_acceptance_reviewed = False
     ctx._task_acceptance_fence_generation_mismatch = False
+    # The panel in flight reviewed the answer to the OLD requirements: it stays
+    # custodied and its verdicts still arrive as advice, but the answer Main writes
+    # for the follow-up is not a delivery under it — the ordinary path decides.
+    ctx._task_acceptance_pending = ""
     llm_trace.pop("root_phase_checkpoint", None)
-    llm_trace["review_decision"] = {
+    llm_trace["review_decision"] = {**dict(llm_trace.get("review_decision") or {}),
         "eligibility": "pending_owner_followup",
         "trigger": "owner_followup_after_acceptance",
     }
@@ -322,7 +335,7 @@ def _supersede_task_acceptance_for_owner_followup(
         "status": ACCEPTANCE_REVISION_REQUESTED,
         "reason": "owner_followup",
         "source": "owner_followup",
-        "rationale": "The owner added a directive after acceptance evidence was frozen; re-review is required.",
+        "rationale": "Main must consume the owner follow-up and decide whether the retained review subject changed.",
     })
     publish_acceptance_checkpoint(ctx, llm_trace)
     return released
@@ -331,6 +344,12 @@ def _supersede_task_acceptance_for_owner_followup(
 def _task_acceptance_owner_generation_changed(ctx: Any) -> bool:
     """Check direct and queue-owned owner generations without closing the fence."""
 
+    from ouroboros.loop_messages import owner_source_sha256
+
+    known_source = (getattr(ctx, "_acceptance_ack_source_sha256", "")
+                    or getattr(getattr(ctx, "_delivery_candidate", None), "owner_source_sha256", ""))
+    if known_source and known_source != owner_source_sha256(ctx):
+        return True
     expected_owner = getattr(ctx, "_task_acceptance_owner_generation", None)
     admission_agent = getattr(ctx, "owner_message_admission_agent", None)
     if (
@@ -351,8 +370,18 @@ def _task_acceptance_owner_generation_changed(ctx: Any) -> bool:
             isinstance(state, dict)
             and int(state.get("owner_message_generation") or 0) != int(expected_queue)
         )
-    except Exception:
-        return True
+    except Exception as exc:
+
+        trace = getattr(ctx, "_execution_trace", None)
+        if isinstance(trace, dict):
+            trace.setdefault("review_decision", {})["admission_inspection"] = {
+                "status": "unknown", "reason": "queue_inspection_failed",
+                "error_type": type(exc).__name__,
+            }
+        # Unknown queue state is not evidence that a new message arrived. Keep
+        # the existing acceptance candidate; the inspection failure is already
+        # disclosed above and must not manufacture a semantic owner change.
+        return False
 
 
 def _supersede_task_acceptance_for_evidence_change(
@@ -565,6 +594,7 @@ ACCEPTANCE_DECISION_REASONS = (
     "review_degraded",
     "fence_reopen_failed",
     "infra_failure",
+    "author_finish",
     # The pacing/wallet reason two branches below already STAMP (`pass_reason ==
     # REASON_REVIEW_CYCLES_EXHAUSTED`); it was missing from the closed set, so a
     # spent shared cap shipped a reason no reader could validate.
@@ -572,6 +602,7 @@ ACCEPTANCE_DECISION_REASONS = (
     # A-material (2026-08-30): the resubmit carried no changed candidate and no new
     # obligation disposition, so the recorded verdict was replayed for free.
     REASON_IDENTICAL_ACCEPTANCE_REFUSED,
+    REASON_DELIVERY_CONTROL_DEGRADED,
     # Owner Q2A: the forced children_unabsorbed rail runs the panel but cannot
     # grant a requested improvement pass; the dangling revision terminalizes.
     "revision_unavailable_on_forced_rail",
@@ -590,9 +621,8 @@ def _set_acceptance_decision(llm_trace: Dict[str, Any], decision: Dict[str, Any]
     owner-facing states (``ACCEPTANCE_DECISION_STATUSES``) plus a typed
     ``reason`` naming WHICH exit. A status outside the trio fails closed to
     ``finalized_unaccepted`` with its raw token surviving as ``reason`` — no
-    fourth state, no lost token. The agent's stance (``agent_disposition``/
-    ``agent_rationale``) carries forward, never overwritten (after P4.1 the
-    agent writes no status at all)."""
+    fourth state, no lost token. The author's historical stance survives;
+    owner/evidence supersession consumes its controlling finish intent."""
     previous = llm_trace.get("acceptance_decision") if isinstance(llm_trace.get("acceptance_decision"), dict) else {}
     merged = dict(decision)
     status = str(merged.get("status") or "")
@@ -601,16 +631,46 @@ def _set_acceptance_decision(llm_trace: Dict[str, Any], decision: Dict[str, Any]
         merged["status"] = ACCEPTANCE_FINALIZED_UNACCEPTED
         reason = reason or status or ACCEPTANCE_REASON_UNSPECIFIED
     merged["reason"] = reason
-    for key in ("agent_disposition", "agent_rationale"):
+    for key in ("agent_disposition", "agent_rationale", "author_disposition"):
         if previous.get(key) and not merged.get(key):
             merged[key] = previous.get(key)
+    if reason not in {"owner_followup", "evidence_refresh", "author_finish"} and not (
+        reason == "delivery_binding_superseded" and previous.get("reason") == "author_finish"
+    ) and previous.get("agent_finish_intent"):
+        merged["agent_finish_intent"] = previous["agent_finish_intent"]
     llm_trace["acceptance_decision"] = merged
     # A full applied-review source includes the host's actual decision, not
     # only the provider's earlier response. The decision above stays authority.
     for run in reversed(llm_trace.get("review_runs") or []):
         if isinstance(run, dict) and run.get("authority") == "host_root":
+            author = merged.get("author_disposition")
+            if reason == "author_finish" and isinstance(author, dict) and author.get("subject_hash") != run.get("binding_hash"):
+                break  # A revised author subject is a task fact, not this older panel's decision.
             run["applied_decision"] = dict(merged)
             break
+
+
+def merge_agent_acceptance_stance(trace: Dict[str, Any], decision: dict, ctx: Any) -> None:
+    """Record one explicit stance after feedback, separately from the host verdict."""
+    previous = trace.get("acceptance_decision")
+    merged = dict(previous) if isinstance(previous, dict) else {}
+    merged.setdefault("source", "agent_task_acceptance_review_tool")
+    merged["agent_disposition"] = str(decision.get("disposition") or "")
+    merged["agent_rationale"] = truncate_review_artifact(str(decision.get("rationale") or ""), limit=500)
+    merged.pop("agent_finish_intent", None)
+    feedback = next((run for run in reversed(trace.get("review_runs") or [])
+                     if isinstance(run, dict) and run.get("authority") == "host_root"
+                     and run.get("feedback_delivered")), None)
+    if ctx is not None and feedback and decision.get("explicit_finish") is True and merged["agent_rationale"].strip():
+        from ouroboros.loop_delivery import delivery_evidence_fingerprint
+
+        merged["agent_finish_intent"] = {
+            "review_binding_hash": str(feedback.get("binding_hash") or ""),
+            "tool_count": len(trace.get("tool_calls") or []),
+            "owner_directives": len(getattr(ctx, "_owner_directives", []) or []),
+            "evidence_fingerprint": delivery_evidence_fingerprint(ctx, trace),
+        }
+    trace["acceptance_decision"] = merged
 
 
 def _collect_acceptance_obligations(llm_trace: Dict[str, Any], result: Any) -> None:
@@ -904,7 +964,6 @@ def _record_forced_acceptance_bypass(
             llm_trace,
             bool(getattr(tools_ctx, "is_direct_chat", False)),
             is_root_task=bool(lineage["is_root_task"]),
-            is_ephemeral_turn=bool(getattr(tools_ctx, "is_ephemeral_turn", False)),
             task_contract=(
                 tools_ctx.task_contract
                 if isinstance(getattr(tools_ctx, "task_contract", None), dict)

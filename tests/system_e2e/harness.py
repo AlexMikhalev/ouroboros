@@ -479,8 +479,9 @@ class LoopbackModelServer:
 
     Subclasses implement ``_answer(body, seq) -> (kind, message)``; this base owns the
     socket, the /models capability answer, the call ledger and the completion
-    envelope. One base, two models (``ScriptedStubModel`` / ``ReplayModel``), so the
-    wire shape and the window evidence can never drift between them.
+    envelope, using JSON or complete SSE according to the request. One base,
+    two models (``ScriptedStubModel`` / ``ReplayModel``), so the wire shape and
+    the window evidence can never drift between them.
     """
 
     def __init__(self, *, latency_sec: float = 0.0, gate: "ModelGate | None" = None) -> None:
@@ -520,15 +521,34 @@ class LoopbackModelServer:
                     outer.gate(body)
                 if outer.latency_sec:
                     time.sleep(outer.latency_sec)
-                return self._send(outer._completion(body))
+                return self._send(outer._completion(body), stream=bool(body.get("stream")))
 
-            def _send(self, payload):
-                data = json.dumps(payload).encode("utf-8")
+            def _send(self, payload, *, stream=False):
+                content_type = "application/json"
+                if stream:
+                    content_type = "text/event-stream"
+                    choices = []
+                    for choice in payload["choices"]:
+                        delta = dict(choice["message"])
+                        if delta.get("tool_calls"):
+                            delta["tool_calls"] = [dict(call, index=index)
+                                                   for index, call in enumerate(delta["tool_calls"])]
+                        choices.append({"index": choice["index"], "delta": delta,
+                                        "finish_reason": choice["finish_reason"]})
+                    common = {"id": payload["id"], "model": payload["model"],
+                              "object": "chat.completion.chunk"}
+                    frames = [{**common, "choices": choices},
+                              {**common, "choices": [], "usage": payload["usage"]}]
+                    data = ("".join("data: " + json.dumps(frame) + "\n\n" for frame in frames)
+                            + "data: [DONE]\n\n").encode("utf-8")
+                else:
+                    data = json.dumps(payload).encode("utf-8")
                 self.send_response(200)
-                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
+                self.wfile.flush()
 
             def log_message(self, *_args):
                 return
@@ -740,7 +760,7 @@ class ReplayModel(LoopbackModelServer):
 
 # Every way the runtime tree reads an environment variable by literal name.
 _ENV_READ_RE = re.compile(
-    r"""os\.(?:environ(?:\.get)?[\[(]|getenv\()\s*["']([A-Z0-9_]+)["']"""
+    r"""(?:os\.(?:environ(?:\.get)?[\[(]|getenv\()|\bruntime_setting\()\s*["']([A-Z0-9_]+)["']"""
 )
 _CREDENTIAL_SHAPE_RE = re.compile(r"(API_KEY|CREDENTIALS|TOKEN|SECRET|PASSWORD)")
 RUNTIME_TREE_GLOBS = ("ouroboros/**/*.py", "supervisor/**/*.py", "server.py")
@@ -752,7 +772,7 @@ def runtime_credential_env_key_reads() -> set:
     Built from the source (not from a hand-kept list), so a provider credential
     added upstream tomorrow lands in the strip-coverage pin automatically instead of
     silently reaching a keyless child. Includes reads through ``os.environ[...]``,
-    ``os.environ.get`` and ``os.getenv``.
+    ``os.environ.get``, ``os.getenv`` and the task-captured ``runtime_setting``.
     """
     keys: set = set()
     for pattern in RUNTIME_TREE_GLOBS:

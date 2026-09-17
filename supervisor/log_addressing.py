@@ -7,7 +7,7 @@ Split out of ``supervisor/events.py`` at the module-size boundary;
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from typing import Any, Callable, Dict, Optional
 
 from ouroboros.contracts.chat_id_policy import HIDDEN_CHAT_ID, WEB_UI_CHAT_ID
 
@@ -186,20 +186,51 @@ class TurnEventQueue:
     capture rule of DEVELOPMENT.md). Wraps the turn's real queue and stamps
     the turn chat onto its own still-unaddressed task-scoped payloads."""
 
-    def __init__(self, inner: Any, task_id: Any, chat_id: Any) -> None:
+    def __init__(self, inner: Any, task_id: Any, chat_id: Any, initiator: Any = "",
+                 on_first_work: Optional[Callable[[], None]] = None) -> None:
         self._inner = inner
         self._task_id = str(task_id or "")
         self._chat_id = int(chat_id or 0)
+        self._initiator = str(initiator or "")
+        # Fired once, on the first frame this proxy stamps as WORK (below):
+        # the lane hangs the turn namer on it, so a turn is named exactly
+        # when its block becomes a task card and never for a greeting.
+        self._on_first_work = on_first_work
 
     def stamp(self, item: Any) -> Any:
         if isinstance(item, dict):
             data = item.get("data") if item.get("type") == "log_event" else item
-            if (
-                isinstance(data, dict)
-                and str(data.get("task_id") or "") == self._task_id
-                and data.get("chat_id") is None
-            ):
-                data["chat_id"] = self._chat_id
+            if isinstance(data, dict) and str(data.get("task_id") or "") == self._task_id:
+                if data.get("chat_id") is None:
+                    data["chat_id"] = self._chat_id
+                # The lane fact rides the same events by the same rule: a live
+                # tool or progress frame names its direct turn on arrival, so
+                # the header pill keeps the census verdict (Thinking…) beside
+                # the block before the census lists the turn; chrome never reads it.
+                data.setdefault("_is_direct_chat", True)
+                # The turn's origin label (a consciousness wake-up) rides the
+                # same events, so a tool-only wake is filed and labelled from
+                # its first frame; an owner's turn carries no initiator.
+                if self._initiator:
+                    data.setdefault("initiator", self._initiator)
+                # The host-attested Stop marker rides the turn's WORK frames as
+                # it rides its narration rows (events_chat_delivery stamps those
+                # through the same registry): a turn that only calls tools
+                # offers Stop on the block its rows already justify, and a turn
+                # that does neither keeps no block to hang a Stop on. An
+                # addressing call (``routing_action``) is a receipt, not work:
+                # it carries no marker, so an addressing-only turn keeps no block.
+                if (
+                    data.get("type") in ("tool_call_started", "tool_call_finished")
+                    and not data.get("routing_action")
+                ):
+                    data.setdefault("cancelable", True)
+                    if self._on_first_work is not None:
+                        callback, self._on_first_work = self._on_first_work, None
+                        try:
+                            callback()
+                        except Exception:
+                            log.debug("first-work callback failed for %s", self._task_id, exc_info=True)
         return item
 
     def put(self, item: Any, *args: Any, **kwargs: Any) -> Any:
@@ -213,8 +244,8 @@ def make_server_log_sink(bridge: Any, drive_root: Any, running: Any = None):
     """Build the server-process append_jsonl live sink (installed by server.py).
 
     The raw ``set_log_sink(bridge.push_log)`` predecessor broadcast every
-    server-process append unaddressed (direct-chat turns and Background
-    Consciousness run in the server process, so their rows never cross the
+    server-process append unaddressed (direct-chat turns, an owner's and a
+    wake-up's alike, run in the server process, so their rows never cross the
     worker sink) and re-broadcast every type a supervisor handler already
     pushes. This wrapper is the exactly-once + explicit-audience choke:
     suppressed types are dropped (their handler push is the one delivery),

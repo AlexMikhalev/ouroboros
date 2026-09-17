@@ -71,6 +71,16 @@ _VALID_COMMAND_MODES = frozenset({_COMMAND_MODE_STRICT, _COMMAND_MODE_SAFE, _COM
 # Which translation keys are available in safe mode (full_access forwards raw)
 _SAFE_TRANSLATION_KEYS = frozenset({"/status", "/bg status", "/bg"})
 
+# The exact keys the declarative Settings form owns: POST accepts only these and
+# the GET that hydrates the form returns only these. The bot token belongs to
+# Secrets and is deliberately absent from both directions.
+_SETTINGS_FORM_KEYS = (
+    "TELEGRAM_CHAT_ID", "TELEGRAM_MAX_UPDATES_PER_POLL", "TELEGRAM_MIRROR_MODE",
+    "TELEGRAM_COMMAND_MODE", "TELEGRAM_LANGUAGE", "TELEGRAM_SILENT_MODE",
+    "TELEGRAM_SUBAGENT_CARDS", "TELEGRAM_MIRROR_PROGRESS", "TELEGRAM_NOTIFY_TASKS",
+    "TELEGRAM_NOTIFY_BUDGET", "TELEGRAM_MINIAPP_ENABLED",
+)
+
 def _setting_int(settings: Dict[str, Any], key: str, default: int, *, minimum: int = 1, maximum: int = 100) -> int:
     try:
         value = int(settings.get(key) or default)
@@ -260,6 +270,17 @@ def _build_language_keyboard(lang: str = "en") -> tuple[str, list[list[dict]]]:
 
 def _make_settings_save(api):
     async def _settings_save(request):
+        if str(getattr(request, "method", "POST") or "POST").upper() == "GET":
+            # Hydration read for the Settings form: only the form's own keys
+            # that are actually stored, as strings, so the UI shows what is
+            # saved instead of the schema's first option.
+            try:
+                stored = _load_settings(api)
+            except TelegramSettingsError as exc:
+                return JSONResponse({"ok": False, "message": str(exc)}, status_code=409)
+            return JSONResponse(
+                {key: str(stored[key]) for key in _SETTINGS_FORM_KEYS if key in stored}
+            )
         try:
             data = await request.json()
         except (TypeError, ValueError):
@@ -272,8 +293,7 @@ def _make_settings_save(api):
                 {"ok": False, "message": "Invalid Telegram settings payload."},
                 status_code=400,
             )
-        allowed = {"TELEGRAM_CHAT_ID", "TELEGRAM_MAX_UPDATES_PER_POLL", "TELEGRAM_MIRROR_MODE", "TELEGRAM_COMMAND_MODE", "TELEGRAM_LANGUAGE", "TELEGRAM_SILENT_MODE", "TELEGRAM_SUBAGENT_CARDS", "TELEGRAM_MIRROR_PROGRESS", "TELEGRAM_NOTIFY_TASKS", "TELEGRAM_NOTIFY_BUDGET", "TELEGRAM_MINIAPP_ENABLED"}
-        payload = {key: data.get(key) for key in allowed if key in data}
+        payload = {key: data.get(key) for key in _SETTINGS_FORM_KEYS if key in data}
         owner_ignored = False
         if "TELEGRAM_CHAT_ID" in payload and not request_may_change_owner(request):
             payload.pop("TELEGRAM_CHAT_ID", None)
@@ -1284,7 +1304,7 @@ def _make_quiz(api):
                 if isinstance(option, dict):
                     label = str(option.get("label") or "").strip()
                     if label:
-                        labels.append(label)
+                        labels.append(f"★ {label}" if option.get("recommended") is True else label)
             # Shared quiz contract cap: ouroboros.tools.core._MAX_QUIZ_OPTIONS.
             labels = labels[:6]
             if not question or len(labels) < 2:
@@ -1329,7 +1349,8 @@ def register(api):
     api.subscribe_event("chat.document", _make_document(api))
     api.subscribe_event("chat.links", _make_links(api))
     api.subscribe_event("chat.quiz", _make_quiz(api))
-    api.register_route("settings/save", handler=_make_settings_save(api), methods=("POST",))
+    # GET hydrates the declarative form with what is stored; POST saves it.
+    api.register_route("settings/save", handler=_make_settings_save(api), methods=("GET", "POST"))
     api.register_route("miniapp/status", handler=_make_status(api), methods=("POST",))
     api.register_settings_section(
         "telegram",
@@ -1361,10 +1382,12 @@ def register(api):
                          "placeholder": "en"},
                         {"name": "TELEGRAM_COMMAND_MODE", "label": "Command mode", "type": "select",
                          "options": [
-                             {"value": "full_access", "label": "Full access (default) — raw owner commands incl. /panic, /restart"},
-                             {"value": "safe_commands", "label": "Safe — allow /status, /bg status only"},
-                             {"value": "strict", "label": "Strict — block all slash commands from Telegram"},
+                             {"value": "full_access", "label": "Full access (default)"},
+                             {"value": "safe_commands", "label": "Safe commands only"},
+                             {"value": "strict", "label": "Strict"},
                          ],
+                         "help": "Full access forwards raw owner commands including /panic and /restart. "
+                                 "Safe allows /status and /bg status only. Strict blocks every slash command from Telegram.",
                          "placeholder": "full_access"},
                         {"name": "TELEGRAM_MIRROR_MODE", "label": "Mirror mode", "type": "select",
                          "options": [
@@ -1376,21 +1399,24 @@ def register(api):
                         {"name": "TELEGRAM_MAX_UPDATES_PER_POLL", "label": "Max updates per poll", "type": "number", "placeholder": "20"},
                         {"name": "TELEGRAM_SILENT_MODE", "label": "Silent mode (edit-in-place)", "type": "select",
                          "options": [
-                             {"value": "off", "label": "Off — each thought is a new message"},
-                             {"value": "on", "label": "On — replace the previous thought in-place"},
+                             {"value": "off", "label": "Off"},
+                             {"value": "on", "label": "On (edit in place)"},
                          ],
+                         "help": "On replaces the previous thought in place instead of sending a new message.",
                          "placeholder": "off"},
                         {"name": "TELEGRAM_SUBAGENT_CARDS", "label": "Subagent cards", "type": "select",
                          "options": [
-                             {"value": "on", "label": "On — one updating message per subagent"},
-                             {"value": "off", "label": "Off — hide subagent activity"},
+                             {"value": "on", "label": "On"},
+                             {"value": "off", "label": "Off"},
                          ],
+                         "help": "One updating message per subagent.",
                          "placeholder": "on"},
                         {"name": "TELEGRAM_MIRROR_PROGRESS", "label": "Mirror progress telemetry", "type": "select",
                          "options": [
-                             {"value": "off", "label": "Off (default) — replies only (clean chat)"},
-                             {"value": "on", "label": "On — stream the main agent's progress"},
+                             {"value": "off", "label": "Off (default)"},
+                             {"value": "on", "label": "On"},
                          ],
+                         "help": "On streams the main agent's progress; Off keeps replies only.",
                          "placeholder": "off"},
                         {"name": "TELEGRAM_MINIAPP_ENABLED", "label": "Telegram Mini App", "type": "select",
                          "options": [

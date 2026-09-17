@@ -23,7 +23,10 @@ from ouroboros.configured_subagents import (
     configured_subagents_fingerprint,
     resolve_configured_subagents,
 )
+from ouroboros.delegate_shared import delegate_payload
 from ouroboros.route_spec import route_spec_dict
+from ouroboros.settings_integrity import SETTINGS_ENV_LOCK, TaskSettingsSnapshot, runtime_setting
+from ouroboros.tools.tool_result import ToolResult, _replace_tool_result
 from ouroboros.utils import utc_now_iso
 
 
@@ -68,7 +71,7 @@ def effective_runtime_subagent_settings(settings: Mapping[str, Any]) -> dict[str
     for key in _RUNTIME_LEGACY_KEYS:
         # Absence is meaningful: apply_settings_to_env removes a normalized-empty
         # setting, so retaining the raw disk value here would undo normalization.
-        effective[key] = os.environ.get(key, "")
+        effective[key] = runtime_setting(key, "")
     return effective
 
 
@@ -132,24 +135,34 @@ def model_visible_subagent_catalog(settings: Mapping[str, Any]) -> dict[str, Any
 def current_model_visible_subagent_catalog() -> dict[str, Any]:
     """Read the current normalized settings and return the stable catalog."""
 
-    from ouroboros.config import load_settings
+    from ouroboros.config import runtime_settings
 
     return model_visible_subagent_catalog(
-        effective_runtime_subagent_settings(load_settings())
+        effective_runtime_subagent_settings(runtime_settings())
     )
 
 
-def apply_task_start_settings() -> None:
-    """Project the provider-normalized in-memory snapshot for one task start."""
-
-    from ouroboros.config import apply_settings_to_env, load_settings
+def apply_task_start_settings() -> TaskSettingsSnapshot:
+    """Capture a task's normalized projection before publishing the process view."""
+    from ouroboros import config
     from ouroboros.server_runtime import apply_runtime_provider_defaults
+    from ouroboros.settings_integrity import task_settings_snapshot
 
-    effective, _changed, _keys = apply_runtime_provider_defaults(load_settings())
-    apply_settings_to_env(effective)
+    fd = config._acquire_settings_lock()
+    try:
+        with SETTINGS_ENV_LOCK:
+            effective, _changed, _keys = apply_runtime_provider_defaults(
+                config.load_settings_lock_held(_settings_lock_held=fd is not None))
+            projected = dict(os.environ)
+            config.apply_settings_to_env(effective, environ=projected)
+            snapshot = task_settings_snapshot(effective, projected)
+            config.apply_settings_to_env(effective)
+            return snapshot
+    finally:
+        config._release_settings_lock(fd)
 
 
-def apply_task_start_settings_or_disclose(task_id: str, emit_live_log: Any) -> None:
+def apply_task_start_settings_or_disclose(task_id: str, emit_live_log: Any) -> TaskSettingsSnapshot:
     """Task-start settings reload with a LOUD failure path (#285).
 
     A silent failure breaks the save-time promise "the saved changes apply
@@ -162,6 +175,15 @@ def apply_task_start_settings_or_disclose(task_id: str, emit_live_log: Any) -> N
     of raising, which would keep exactly the silence this wrapper exists to
     break. A MISSING file is legitimate (defaults-only install), not a fault.
     """
+    from ouroboros.settings_integrity import task_settings_snapshot
+
+    from ouroboros.config import SETTINGS_DEFAULTS, settings_env_keys
+
+    with SETTINGS_ENV_LOCK:
+        previous_env = dict(os.environ)
+    previous_settings = dict(SETTINGS_DEFAULTS)
+    previous_settings.update({key: previous_env.get(key, "") for key in settings_env_keys()})
+    previous = task_settings_snapshot(previous_settings, previous_env)
     try:
         from ouroboros import config as _config
 
@@ -171,21 +193,23 @@ def apply_task_start_settings_or_disclose(task_id: str, emit_live_log: Any) -> N
             raw_settings_text = None
         if raw_settings_text is not None:
             json.loads(raw_settings_text)
-        apply_task_start_settings()
+        return apply_task_start_settings()
     except Exception as exc:
         import logging
 
         logging.getLogger(__name__).error(
-            "Task-start settings reload failed; this task runs on the previously applied configuration",
+            "Task-start settings reload failed; this task uses the environment from the previously applied configuration; document-only values are unavailable",
             exc_info=True,
         )
         emit_live_log(
             "task_start_settings_reload_failed",
             task_id=task_id,
             error=f"{type(exc).__name__}: {exc}",
-            message=("Settings reload failed at task start: this task runs "
-                     "on the previously applied configuration."),
+            message=("Settings reload failed at task start: this task uses the environment "
+                     "from the previously applied configuration; document-only values "
+                     "could not be recovered."),
         )
+    return previous
 
 
 def _resolution(
@@ -264,6 +288,7 @@ def select_subagent_snapshot(
     Availability is deliberately not embedded here: saved intent is immutable;
     dispatch/start records its dated live observation in a separate task field.
     """
+    from ouroboros.model_slots import resolve_processing_preference
 
     selected_id = str(subagent_id or "").strip()
     has_legacy = bool(legacy_model_lane_supplied or legacy_executor_supplied)
@@ -310,6 +335,8 @@ def select_subagent_snapshot(
             row.route, api_kind="api_model", pin_key="credential_profile_id"
         ),
         "effort": row.effort,
+        "processing_preference": resolve_processing_preference(
+            override=row.processing_preference or None, settings=dict(settings)),
         "selected_at": utc_now_iso(),
     }, used_legacy
 
@@ -331,6 +358,14 @@ def validate_subagent_snapshot(raw: Any) -> dict[str, Any]:
         raise SubagentSelectionError(
             "subagent_snapshot_invalid", "The task has no complete immutable subagent snapshot."
         )
+    from ouroboros.model_slots import normalize_processing_preference
+
+    try:
+        # An old durable snapshot captures legacy behavior, never today's global setting.
+        snapshot["processing_preference"] = normalize_processing_preference(
+            snapshot.get("processing_preference"))
+    except ValueError as exc:
+        raise SubagentSelectionError("subagent_snapshot_invalid", str(exc)) from exc
     return snapshot
 
 
@@ -492,10 +527,10 @@ def current_subagent_alternatives(exclude_id: str = "") -> list[dict[str, Any]]:
     """Project the current saved choices without ranking or probing them."""
 
     try:
-        from ouroboros.config import load_settings
+        from ouroboros.config import runtime_settings
 
         resolution = resolve_configured_subagents(
-            effective_runtime_subagent_settings(load_settings())
+            effective_runtime_subagent_settings(runtime_settings())
         )
     except Exception:
         return []
@@ -550,7 +585,7 @@ def prepare_delegate_start_actor(
     invocation_id: str,
     work_order_fingerprint: str,
     authority_fingerprint: str,
-) -> tuple[dict[str, Any], str]:
+) -> tuple[dict[str, Any], Optional["ToolResult"]]:
     """Resolve the exact actor/start fence without growing the transport facade."""
 
     from ouroboros import delegate_custody as custody
@@ -575,7 +610,7 @@ def prepare_delegate_start_actor(
             "authority_fingerprint": str(
                 invocation.get("authority_fingerprint") or authority_fingerprint
             ),
-        }, ""
+        }, None
 
     if selected_snapshot is None:
         return {}, _fail(
@@ -613,14 +648,15 @@ def prepare_delegate_start_actor(
     return {
         "route": route,
         "selected_subagent_id": selected_id,
+        "processing_preference": str(snapshot.get("processing_preference") or ""),
         "config_fingerprint": config_fingerprint,
         "work_order_fingerprint": work_order_fingerprint,
         "authority_fingerprint": authority_fingerprint,
         "compiled_work_order": bool(selection.get("compiled_work_order")),
-    }, ""
+    }, None
 
 
-def exact_start(ctx: Any, prompt: str, spec: Optional[dict[str, Any]] = None) -> str:
+def exact_start(ctx: Any, prompt: str, spec: Optional[dict[str, Any]] = None) -> "ToolResult":
     """Shared exact-start primitive for actor-first sessions and root-direct calls."""
 
     options = dict(spec or {})
@@ -713,10 +749,10 @@ def exact_start(ctx: Any, prompt: str, spec: Optional[dict[str, Any]] = None) ->
                 "A fresh delegated start requires subagent_id; only retry_of replays without it.",
             )
         if selected_id:
-            from ouroboros.config import load_settings
+            from ouroboros.config import runtime_settings
 
             selected_snapshot, _legacy = select_subagent_snapshot(
-                effective_runtime_subagent_settings(load_settings()),
+                effective_runtime_subagent_settings(runtime_settings()),
                 subagent_id=selected_id,
             )
         if selected_snapshot is not None:
@@ -741,6 +777,8 @@ def exact_start(ctx: Any, prompt: str, spec: Optional[dict[str, Any]] = None) ->
             _canonical_work_order_fingerprint=canonical_work_order_fingerprint,
             _work_order_source_request=work_order_source_request,
             _coordination_context=coordination_context,
+            **{key: options.pop(key) for key in ("directory_strategy", "scope_paths")
+               if key in options},
         )
         # Every configured-session start lands here — the host's pre-start
         # (charter, owner 2026-08-28/29) and any model-issued retry/replacement
@@ -750,10 +788,7 @@ def exact_start(ctx: Any, prompt: str, spec: Optional[dict[str, Any]] = None) ->
         # episode could mint a false zero-run receipt after a successful start
         # and nanny economics would miss real activity.
         _mark_actor_physical_start(ctx, result)
-        try:
-            payload = json.loads(result)
-        except (TypeError, ValueError):
-            return result
+        payload = delegate_payload(result)
         if isinstance(selected_snapshot, dict):
             payload["selected_subagent_id"] = str(
                 selected_snapshot.get("selected_subagent_id") or ""
@@ -763,7 +798,8 @@ def exact_start(ctx: Any, prompt: str, spec: Optional[dict[str, Any]] = None) ->
             )
         if isinstance(work_order_source_request, dict):
             payload["work_order_source_request"] = dict(work_order_source_request)
-        return json.dumps(payload, ensure_ascii=False, indent=2)
+        return _replace_tool_result(
+            result, text=json.dumps(payload, ensure_ascii=False, indent=2))
     except SubagentSelectionError as exc:
         from ouroboros.delegate_shared import _fail
 
@@ -772,7 +808,7 @@ def exact_start(ctx: Any, prompt: str, spec: Optional[dict[str, Any]] = None) ->
         _EXACT_START_SELECTION.reset(token)
 
 
-def _mark_actor_physical_start(ctx: Any, result: Any) -> None:
+def _mark_actor_physical_start(ctx: Any, result: "ToolResult") -> None:
     """Record a successful actor-first physical start on the private bootstrap fact.
 
     This is deliberately an internal projection, not a new lifecycle ABI.  The
@@ -783,21 +819,19 @@ def _mark_actor_physical_start(ctx: Any, result: Any) -> None:
     bootstrap = getattr(ctx, "_configured_actor_bootstrap", None)
     if not isinstance(bootstrap, dict):
         return
-    try:
-        payload = json.loads(result) if isinstance(result, str) else result
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return
-    if not isinstance(payload, dict) or str(payload.get("status") or "") not in {
-        "started", "started_uncustodied",
-    }:
+    # The DOMAIN status, never the host class: a started run is `started` (or
+    # `started_uncustodied`), and a refusal that classified `ok` would otherwise
+    # mint a physical-start marker over a run that never began.
+    status = str(delegate_payload(result).get("status") or "")
+    if status not in {"started", "started_uncustodied"}:
         return
     bootstrap["physical_started"] = True
     bootstrap["exact_start_pending"] = False
-    bootstrap["physical_start_status"] = str(payload.get("status") or "")
+    bootstrap["physical_start_status"] = status
     ctx._nanny_physical_activity_seed = True
 
 
-def delegate_start_entry(ctx: Any, prompt: str, _resolved_binding: Any = None, **params: Any) -> str:
+def delegate_start_entry(ctx: Any, prompt: str, _resolved_binding: Any = None, **params: Any) -> "ToolResult":
     # Actor-first configured sessions bind every fresh start to the immutable
     # snapshot captured before the episode. The model supplies only an advisory
     # coordination appendix; the canonical work order remains host-owned.
@@ -854,6 +888,8 @@ def delegate_start_entry(ctx: Any, prompt: str, _resolved_binding: Any = None, *
             "compiled_work_order": True,
             "work_order_fingerprint": str(bootstrap.get("work_order_fingerprint") or ""),
             "_coordination_context": str(prompt or ""),
+            **{key: bootstrap[key] for key in ("directory_strategy", "scope_paths")
+               if key in bootstrap},
         })
         if _resolved_binding is not None:
             bound["_resolved_binding"] = _resolved_binding

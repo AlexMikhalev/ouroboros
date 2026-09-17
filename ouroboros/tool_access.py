@@ -71,6 +71,7 @@ from ouroboros.tool_access_roots import (  # noqa: F401 — re-exported moved su
 )
 from ouroboros.tool_access_user_files import (  # noqa: F401 — re-exported moved surface
     UserFilesPathBlockedError,
+    _delegated_capture_read_hint,
     _subagent_projects_read_hint,
     resolve_user_file_path,
     user_files_path_block_reason,
@@ -90,7 +91,7 @@ def summarize_subagent_profile(profile: ToolProfile, *, effective_lane: str = ""
     at schedule time (and the child sees first line of its context) what the child
     CAN and CANNOT do. Prevents the wasted rounds where a prober child hit
     workspace_blocked on run_script because neither side knew shell was off."""
-    matrix = _POLICY.get(profile, {})
+    matrix = _POLICY.get(_effective_policy_profile(profile), {})
     shell_roots = sorted(root for root, ops in matrix.items() if "shell" in ops)
     write_roots = sorted(root for root, ops in matrix.items() if ops & {"write", "edit"})
     has_shell = bool(shell_roots)
@@ -105,20 +106,36 @@ def summarize_subagent_profile(profile: ToolProfile, *, effective_lane: str = ""
     return "child capabilities — " + " · ".join(bits)
 
 
+def _effective_policy_profile(profile: ToolProfile) -> ToolProfile:
+    """Map an acting child to the existing full matrix only in Cyber Pro."""
+    if profile != "acting_subagent":
+        return profile
+    try:
+        from ouroboros.config import get_runtime_mode
+        from ouroboros.runtime_mode_policy import runtime_mode_at_least
+
+        if runtime_mode_at_least(get_runtime_mode(), "cyber_pro"):
+            return "operator_control"
+    except Exception:
+        pass
+    return profile
+
+
 def decide_tool_access(
     *,
     profile: ToolProfile,
     root: ResourceRoot,
     operation: Operation,
 ) -> ToolAccessDecision:
-    allowed = operation in _POLICY.get(profile, {}).get(root, set())
+    effective_profile = _effective_policy_profile(profile)
+    allowed = operation in _POLICY.get(effective_profile, {}).get(root, set())
     if allowed:
-        return ToolAccessDecision(True, guard=f"{profile}:{root}:{operation}")
-    allowed_roots = ", ".join(sorted(r for r, ops in _POLICY.get(profile, {}).items() if operation in ops)) or "(none)"
+        return ToolAccessDecision(True, guard=f"{effective_profile}:{root}:{operation}")
+    allowed_roots = ", ".join(sorted(r for r, ops in _POLICY.get(effective_profile, {}).items() if operation in ops)) or "(none)"
     return ToolAccessDecision(
         False,
-        reason=f"profile={profile} cannot {operation} root={root}. Roots your profile can {operation}: {allowed_roots}.",
-        guard=f"{profile}:{root}:{operation}",
+        reason=f"profile={effective_profile} cannot {operation} root={root}. Roots your profile can {operation}: {allowed_roots}.",
+        guard=f"{effective_profile}:{root}:{operation}",
     )
 
 
@@ -131,7 +148,7 @@ def subagent_profile_satisfies(profile: ToolProfile, needs: Iterable[str]) -> tu
     operation on at least one root.
     """
 
-    ops_by_root = _POLICY.get(profile, {})
+    ops_by_root = _POLICY.get(_effective_policy_profile(profile), {})
     available_ops = {op for ops in ops_by_root.values() for op in ops}
     missing: list[str] = []
     for need in needs or []:
@@ -244,7 +261,7 @@ def filesystem_affordance_map(ctx: Any, *, runtime_mode: str = "") -> dict[str, 
     """
 
     profile = active_tool_profile(ctx)
-    policy = _POLICY.get(profile, {})
+    policy = _POLICY.get(_effective_policy_profile(profile), {})
     # H2 (capinv-447): a root is writable iff a MUTATING operation is granted on
     # it. Grouping "vcs" as write-like claimed writable roots for the read-only
     # child profile (status/diff-only vcs), contradicting summarize_subagent_profile.
@@ -322,7 +339,7 @@ def profile_readable_root_paths(ctx: Any) -> list[tuple[str, pathlib.Path]]:
     """
     out: list[tuple[str, pathlib.Path]] = []
     try:
-        policy = _POLICY.get(active_tool_profile(ctx), {})
+        policy = _POLICY.get(_effective_policy_profile(active_tool_profile(ctx)), {})
     except Exception:
         return out
     for root, ops in sorted(policy.items()):
@@ -609,6 +626,16 @@ def _resolve_target_in_selected_base(
                         anchored = delegated_capture_read_target(
                             canonical_data_root(ctx), task_id_for_artifacts(ctx), relative, resolved_base,
                         )
+                        if anchored is not None:
+                            return anchored
+                    else:
+                        # An ORPHAN's capture lives under ANOTHER task's prefix, so
+                        # `relative` is empty and control would fall straight to the
+                        # raise below. Read-only, prefix-confined, no new root: the
+                        # orphan disposition rule is the only authority consulted.
+                        from ouroboros.delegate_shared import orphan_capture_read_target
+
+                        anchored = orphan_capture_read_target(ctx, candidate)
                         if anchored is not None:
                             return anchored
         if is_absolute_path_text(path_text):

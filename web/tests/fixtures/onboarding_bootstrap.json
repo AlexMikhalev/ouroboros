@@ -131,7 +131,7 @@
         "id": "openai-key",
         "inputType": "password",
         "label": "OpenAI API Key",
-        "note": "Optional. If this is the only remote key, the next step prefills direct openai::... models.",
+        "note": "Optional. If this is the only remote key, the next step prefills OpenAI's own model ids.",
         "placeholder": "sk-...",
         "settingKey": "OPENAI_API_KEY",
         "settingsInputId": "s-openai",
@@ -142,7 +142,7 @@
         "id": "cloudru-key",
         "inputType": "password",
         "label": "Cloud.ru Foundation Models API Key",
-        "note": "Optional. If this is the only remote key, the next step prefills direct cloudru::... models.",
+        "note": "Optional. If this is the only remote key, the next step prefills Cloud.ru's own model ids.",
         "placeholder": "Cloud.ru API key",
         "settingKey": "CLOUDRU_FOUNDATION_MODELS_API_KEY",
         "settingsInputId": "s-cloudru-key",
@@ -153,7 +153,7 @@
         "id": "minimax-key",
         "inputType": "password",
         "label": "MiniMax API Key",
-        "note": "Optional. If this is the only remote key, the next step prefills direct minimax::... models.",
+        "note": "Optional. If this is the only remote key, the next step prefills MiniMax's own model ids.",
         "placeholder": "MiniMax API key",
         "settingKey": "MINIMAX_API_KEY",
         "settingsInputId": "s-minimax-key",
@@ -175,7 +175,7 @@
         "id": "deepseek-key",
         "inputType": "password",
         "label": "DeepSeek API Key",
-        "note": "Optional. If this is the only remote key, the next step prefills direct deepseek::... models.",
+        "note": "Optional. If this is the only remote key, the next step prefills DeepSeek's own model ids.",
         "placeholder": "sk-...",
         "settingKey": "DEEPSEEK_API_KEY",
         "settingsInputId": "s-deepseek-key",
@@ -186,7 +186,7 @@
         "id": "anthropic-key",
         "inputType": "password",
         "label": "Anthropic API Key",
-        "note": "Optional. Saved for direct anthropic::... models and Claude tooling.",
+        "note": "Optional. Saved for models routed straight to Anthropic, and for Claude tooling.",
         "placeholder": "sk-ant-...",
         "settingKey": "ANTHROPIC_API_KEY",
         "settingsInputId": "s-anthropic",
@@ -197,7 +197,7 @@
         "id": "openai-compatible-url",
         "inputType": "url",
         "label": "OpenAI-compatible Base URL",
-        "note": "Base URL for your OpenAI-compatible endpoint (e.g. Ollama, LM Studio, vLLM). Required when using openai-compatible:: models.",
+        "note": "Base URL for your OpenAI-compatible endpoint (e.g. Ollama, LM Studio, vLLM). Required whenever a slot uses the OpenAI-compatible endpoint as its source.",
         "placeholder": "http://localhost:11434/v1",
         "settingKey": "OPENAI_COMPATIBLE_BASE_URL",
         "settingsInputId": "s-compatible-url",
@@ -219,17 +219,17 @@
       "anthropic": {
         "label": "Anthropic",
         "modelCopy": "Anthropic-only setup detected. These defaults are explicit and official.",
-        "providerCopy": "Anthropic is present, so the next step prefills direct anthropic:: model values."
+        "providerCopy": "Anthropic is present, so the next step prefills Anthropic's own model ids."
       },
       "cloudru": {
         "label": "Cloud.ru Foundation Models",
-        "modelCopy": "Cloud.ru-only setup detected. These defaults use explicit cloudru:: model IDs.",
-        "providerCopy": "Cloud.ru is present, so the next step prefills direct cloudru:: model values."
+        "modelCopy": "Cloud.ru-only setup detected. These defaults use Cloud.ru's own model ids.",
+        "providerCopy": "Cloud.ru is present, so the next step prefills Cloud.ru's own model ids."
       },
       "deepseek": {
         "label": "DeepSeek",
         "modelCopy": "DeepSeek-only setup detected. These defaults use deepseek-v4-pro for main work and deepseek-v4-flash for the light lane. Blocking deep/scope review in Max context mode additionally needs the owner 1M-window acknowledgement in Settings.",
-        "providerCopy": "DeepSeek is present, so the next step prefills direct deepseek:: model values."
+        "providerCopy": "DeepSeek is present, so the next step prefills DeepSeek's own model ids."
       },
       "direct-multi": {
         "label": "Direct multi-provider",
@@ -244,28 +244,28 @@
       "minimax": {
         "label": "MiniMax",
         "modelCopy": "MiniMax-only setup detected. These defaults include MiniMax-M3 and MiniMax-M2.7.",
-        "providerCopy": "MiniMax is present, so the next step prefills direct minimax:: model values."
+        "providerCopy": "MiniMax is present, so the next step prefills MiniMax's own model ids."
       },
       "openai": {
         "label": "OpenAI",
         "modelCopy": "OpenAI-only setup detected. These defaults are explicit and official.",
-        "providerCopy": "OpenAI is present, so the next step prefills direct openai:: model values."
+        "providerCopy": "OpenAI is present, so the next step prefills OpenAI's own model ids."
       },
       "openai-compatible": {
         "label": "OpenAI-compatible endpoint",
-        "modelCopy": "OpenAI-compatible endpoint detected. Use openai-compatible::your-model-name for every slot. The model list is whatever your server supports.",
+        "modelCopy": "OpenAI-compatible endpoint detected. Choose the OpenAI-compatible endpoint as the source and enter the model names your server exposes. The model list is whatever your server supports.",
         "providerCopy": "An OpenAI-compatible base URL is configured. Enter the model names your server exposes in the next step."
       },
       "openrouter": {
         "label": "OpenRouter",
-        "modelCopy": "OpenRouter-style routing remains active. Unprefixed provider IDs like openai/gpt-5.6-terra or anthropic/claude-sonnet-5 continue to route through OpenRouter.",
+        "modelCopy": "OpenRouter-style routing remains active. OpenRouter stays the source for ids such as openai/gpt-5.6-terra or anthropic/claude-sonnet-5.",
         "providerCopy": "OpenRouter is present, so the next step keeps router-style defaults while still saving any extra direct keys you paste here."
       }
     },
     "reviewModes": [
       {
         "className": "advisory",
-        "copy": "Faster and cheaper. Review still runs, but you decide how to handle findings. Best when you want iteration speed and can manually watch for drift.",
+        "copy": "Review still runs. After feedback, Ouroboros can fix, reject or finish; raw reviewer findings remain visible.",
         "label": "Advisory",
         "tone": "Flexible",
         "value": "advisory"
@@ -299,6 +299,13 @@
         "label": "Pro",
         "tone": "Power",
         "value": "pro"
+      },
+      {
+        "className": "cyber-pro",
+        "copy": "Host and configuration authority, including credentials, models, Supervisor and protected rewrites. Review scope and Blocking or Advisory enforcement remain owner-controlled.",
+        "label": "Cyber Pro",
+        "tone": "Maximum power",
+        "value": "cyber_pro"
       }
     ],
     "steps": [
@@ -311,7 +318,7 @@
       },
       {
         "copy": "Review the visible model defaults derived from your current setup, then edit anything you want before launch.",
-        "footer": "Plain openai/... or anthropic/... remains router-style. Direct values use openai::... and anthropic::....",
+        "footer": "Each slot names its source. OpenRouter stays the source for ids such as openai/gpt-5.6-terra; a provider's own key routes that slot straight to the provider.",
         "id": "models",
         "railCopy": "model slots",
         "title": "Choose models"
@@ -376,9 +383,11 @@
     "minimaxRegion": "",
     "modelAccounts": {},
     "modelContextWindows": {},
+    "modelProcessingPreferences": {},
     "openaiKey": "",
     "openrouterKey": "",
     "perTaskCostUsd": 50.0,
+    "processingPreference": "",
     "providerProfile": "openrouter",
     "reviewEnforcement": "advisory",
     "runtimeMode": "advanced",

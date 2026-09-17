@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import pathlib
-import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from ouroboros.config import (
@@ -18,6 +17,7 @@ from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
 from ouroboros.model_wait import current_model_wait, model_waitable
 from ouroboros.utils import emit_cognitive_operation_event
 from ouroboros.observability import new_call_id
+from ouroboros.config import runtime_setting
 
 log = logging.getLogger(__name__)
 
@@ -161,7 +161,8 @@ _VLM_MAX_IMAGE_SIDE = 1600
 
 
 @model_waitable(client_parameter="client")
-def _vision_query_with_timeout(client: Any, *, model_role: str = "vision", **kwargs: Any) -> tuple[str, dict]:
+def _vision_query_with_timeout(client: Any, *, model_role: str = "vision",
+                               processing_preference: Optional[str] = None, **kwargs: Any) -> tuple[str, dict]:
     """Wait around one image call while keeping inference in a tracked child."""
     from ouroboros.provider_models import provider_for_model
     from ouroboros.deadline_utils import dispatch_window_remaining_sec
@@ -179,7 +180,7 @@ def _vision_query_with_timeout(client: Any, *, model_role: str = "vision", **kwa
         raise TimeoutError("VLM task execution window exhausted before child dispatch")
     child_timeout = operation_timeout + NESTED_SETTLEMENT_MARGIN_SEC
     return run_vision_child(child_timeout=child_timeout, subscription=subscription,
-                            model_role=model_role, **kwargs)
+                            model_role=model_role, processing_preference=processing_preference, **kwargs)
 
 
 def _vision_execution_window() -> float:
@@ -352,7 +353,7 @@ def _vision_capable_slot_candidates(client: Any, ctx: Any = None) -> List[str]:
         out.append(str(client.default_model() or "").strip())
     except Exception:
         pass
-    out.append(str(os.environ.get("OUROBOROS_MODEL", "") or "").strip())
+    out.append(str(runtime_setting("OUROBOROS_MODEL", "") or "").strip())
     # Fallbacks is a comma chain -> add each link as its own candidate (via the shared
     # SSOT parser, which also honors the legacy singular env), not the raw comma-string
     # (which would never match a vision-capable model id).

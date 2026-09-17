@@ -31,6 +31,9 @@ def test_equal_evidence_fields_cannot_revive_changed_owner_authority(tmp_path, m
         tools._ctx._task_acceptance_owner_generation = 1
         tools._ctx.owner_message_admission_agent = SimpleNamespace(_owner_message_generation=2)
     elif change == "superseded":
+        # The release notification follows real ingress; it is no longer a
+        # declaration that the task's meaning changed by itself.
+        tools._ctx._owner_directives = [{"content": "Use the newly supplied source."}]
         loop._supersede_task_acceptance_for_owner_followup(tools._ctx, trace)
     else:
         prior["superseded_by_revision"] = True
@@ -109,6 +112,31 @@ def test_host_notice_does_not_replace_or_supersede_an_unchanged_answer(tmp_path,
     assert not trace["review_runs"][0].get("superseded_by_revision")
     assert trace["acceptance_decision"]["status"] == ("accepted" if verdict == "PASS" else "finalized_unaccepted")
 
+    # #533: transport/finalization warning must not erase the bound assessment.
+    from ouroboros.outcomes import derive_loop_outcome, normalize_outcome_axes, public_task_result
+    from ouroboros.task_results import load_task_result
+
+    trace["delivery_candidate"].update(degraded=True, degraded_reason="advisory_plan_review_open")
+    usage = {"terminal_host_notice": NOTICE}
+    axes = derive_loop_outcome(ANSWER, usage, trace)["outcome_axes"]
+    expected = "pass" if verdict == "PASS" else "fail"
+    assert axes["objective"]["status"] == expected
+    assert axes["objective"]["source"] == "task_acceptance_review"
+    assert axes["execution"]["status"] == "degraded"
+    env = SimpleNamespace(drive_root=tmp_path, repo_dir=tmp_path)
+    task = {"id": "parent1", "type": "task", "chat_id": 1, "text": "Produce a report",
+            "task_contract": tools._ctx.task_contract, "_skip_post_task_synthesis": True}
+    pipeline._store_task_result(env, task, ANSWER, usage, trace)
+    stored = load_task_result(tmp_path, "parent1")
+    assert stored["outcome_axes"]["objective"]["status"] == expected
+    assert normalize_outcome_axes(public_task_result(stored))["objective"]["source"] == "task_acceptance_review"
+    pending = []
+    pipeline.emit_task_results(env, None, None, pending, task, ANSWER, usage, trace,
+                              start_time=0.0, drive_logs=tmp_path / "logs")
+    terminal = next(row for row in pending if row["type"] == "task_done")
+    assert terminal["outcome_axes"]["objective"]["status"] == expected
+    assert load_task_result(tmp_path, "parent1")["outcome_axes"]["execution"]["status"] == "degraded"
+
     # Real input changes still supersede the binding even when answer bytes match.
     tools._ctx._owner_directives = [{"text": "Use the newly supplied source."}]
     changed = loop._replace_delivery_candidate(tools, ctx, trace, ANSWER, control="candidate")
@@ -117,7 +145,7 @@ def test_host_notice_does_not_replace_or_supersede_an_unchanged_answer(tmp_path,
     assert trace["review_runs"][0]["superseded_by_revision"] is True
 
 
-def _emit_terminal(tmp_path, monkeypatch, *, ephemeral=False, project=False, child=False, notice=NOTICE, answer=ANSWER):
+def _emit_terminal(tmp_path, monkeypatch, *, direct=False, project=False, child=False, notice=NOTICE, answer=ANSWER):
     from ouroboros.task_finalization import set_terminal_host_notice
 
     monkeypatch.setattr(pipeline, "_run_post_task_processing_async", lambda *_a, **_kw: None)
@@ -130,8 +158,8 @@ def _emit_terminal(tmp_path, monkeypatch, *, ephemeral=False, project=False, chi
         row = create_project(tmp_path, "notice-project", name="Research")
         bind_task_to_project(tmp_path, task["id"], row["id"], row["chat_id"], origin={"absent": "system"})
         task.update(project_id=row["id"], chat_id=row["chat_id"])
-    if ephemeral:
-        task.update(_ephemeral_turn=True, _is_direct_chat=True)
+    if direct:
+        task.update(_is_direct_chat=True)
     usage = {"terminal_origin": "model_final"}
     set_terminal_host_notice(usage, notice)
     pending = []
@@ -295,25 +323,22 @@ def test_child_notice_hash_extension_preserves_legacy_hash_and_telemetry_exclusi
         assert _child_result_sha256({**row, **telemetry}) == _child_result_sha256(row)
 
 
-@pytest.mark.parametrize("ephemeral", [False, True])
+@pytest.mark.parametrize("direct", [False, True])
 @pytest.mark.parametrize("project", [False, True])
-def test_notice_is_a_system_row_live_and_on_history_replay(tmp_path, monkeypatch, ephemeral, project):
+def test_notice_is_a_system_row_live_and_on_history_replay(tmp_path, monkeypatch, direct, project):
     from ouroboros.gateway.history import make_chat_history_endpoint
     from ouroboros.utils import append_jsonl
     from supervisor import events_chat_delivery as delivery, message_bus
     from supervisor.terminal_delivery import build_completed_result_event, pending_deliveries
 
-    task, event = _emit_terminal(tmp_path, monkeypatch, ephemeral=ephemeral, project=project)
+    task, event = _emit_terminal(tmp_path, monkeypatch, direct=direct, project=project)
     assert event["text"] == event["log_text"] == ANSWER
-    if not ephemeral:
-        stored = load_task_result(tmp_path, task["id"])
-        assert stored["result"] == ANSWER and stored["terminal_host_notice"] == NOTICE
-        replay = build_completed_result_event(tmp_path, task, task["id"], stored)
-        assert replay["text"] == ANSWER and replay["terminal_host_notice"] == NOTICE
-        assert replay["delivery_id"] == event["delivery_id"]
-        assert pending_deliveries(tmp_path)[0]["terminal_host_notice"] == NOTICE
-    else:
-        assert load_task_result(tmp_path, task["id"]) is None
+    stored = load_task_result(tmp_path, task["id"])
+    assert stored["result"] == ANSWER and stored["terminal_host_notice"] == NOTICE
+    replay = build_completed_result_event(tmp_path, task, task["id"], stored)
+    assert replay["text"] == ANSWER and replay["terminal_host_notice"] == NOTICE
+    assert replay["delivery_id"] == event["delivery_id"]
+    assert pending_deliveries(tmp_path)[0]["terminal_host_notice"] == NOTICE
 
     bridge = message_bus.LocalChatBridge({})
     frames = []
@@ -327,14 +352,89 @@ def test_notice_is_a_system_row_live_and_on_history_replay(tmp_path, monkeypatch
     ctx = SimpleNamespace(DRIVE_ROOT=tmp_path, RUNNING={}, append_jsonl=append_jsonl,
                           send_with_budget=message_bus.send_with_budget)
     delivery._handle_send_message(event, ctx)
-    if not ephemeral:  # A transient turn has no terminal outbox identity of its own.
-        delivery._handle_send_message(event, ctx)
+    delivery._handle_send_message(event, ctx)
     chats = [row for row in frames if row.get("type") == "chat"]
     assert [(row["role"], row["content"]) for row in chats] == [("assistant", ANSWER), ("system", NOTICE)]
     assert all(row["chat_id"] == task["chat_id"] for row in chats)
     response = asyncio.run(make_chat_history_endpoint(tmp_path)(SimpleNamespace(query_params={"chat_id": str(task["chat_id"])})))
     messages = json.loads(response.body)["messages"]
     assert [(row["role"], row["text"]) for row in messages] == [("assistant", ANSWER), ("system", NOTICE)]
+    assert pending_deliveries(tmp_path) == []
+
+
+def _open_delegated_custody(tmp_path, task_id):
+    """Record one still-open delegated run through the real custody rail."""
+    from ouroboros import delegate_custody as custody, delegate_terminal
+
+    write_task_result(tmp_path, task_id, "completed", result=ANSWER,
+                      delegated_runs_unreconciled=["stale-run"])
+    assert custody.emit(tmp_path, custody.STARTED, {
+        "run_id": "run-open", "task_id": task_id, "route": "fixture",
+        "model": "fixture-model", "profile_id": "fixture-profile",
+        "selected_subagent_id": "fixture-actor", "snapshot_id": "snapshot-one", "shape": {},
+    })
+    assert delegate_terminal.refresh_terminal_reconciliation(tmp_path, task_id)
+
+
+@pytest.mark.parametrize("base", [NOTICE, ""], ids=["with_host_notice", "custody_only"])
+def test_open_custody_is_its_own_card_row_live_and_on_history_replay(tmp_path, monkeypatch, base):
+    """Issue #1006: open delegated execution is a typed row OF the task card.
+
+    It rides its own field on the send event, is owed before the answer is
+    sent, never carries the answer's phase, and replays under the same
+    placement identity. Without a base notice it is the ONLY extra row.
+    """
+    from ouroboros.gateway.history import make_chat_history_endpoint
+    from ouroboros.utils import append_jsonl
+    from supervisor import events_chat_delivery as delivery, message_bus
+    from supervisor.terminal_delivery import build_completed_result_event, pending_deliveries
+
+    _open_delegated_custody(tmp_path, "notice-root")
+    task, event = _emit_terminal(tmp_path, monkeypatch, notice=base)
+    custody = event["terminal_custody_notice"]
+    row_id = event["delivery_id"] + ":custody_notice"
+    assert event["text"] == ANSWER and "Open delegated execution: run-open." in custody
+    assert custody not in event["text"] and event.get("terminal_host_notice", "") == base
+    assert event["progress_meta"]["task_phase"] == "finalizing"
+    stored = load_task_result(tmp_path, task["id"])
+    replay = build_completed_result_event(tmp_path, task, task["id"], stored)
+    assert replay["text"] == ANSWER and replay["terminal_custody_notice"] == custody
+    assert replay["delivery_id"] == event["delivery_id"]
+
+    bridge = message_bus.LocalChatBridge({})
+    frames = []
+    bridge._broadcast_fn = frames.append
+    monkeypatch.setattr(message_bus, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(message_bus, "get_bridge", lambda: bridge)
+    monkeypatch.setattr(message_bus, "load_state", lambda: {"owner_id": 7})
+    monkeypatch.setattr(message_bus, "_advance_project_visible_revision", lambda _chat: None)
+    monkeypatch.setattr(message_bus, "publish_event", lambda *_a, **_kw: None)
+    monkeypatch.setattr(delivery, "_DELIVERED_MESSAGE_IDS", deque(maxlen=256))
+    owed_while_sending = []
+
+    def send(chat_id, text, **kwargs):
+        owed_while_sending.append({row["delivery_id"] for row in pending_deliveries(tmp_path)})
+        return message_bus.send_with_budget(chat_id, text, **kwargs)
+
+    ctx = SimpleNamespace(DRIVE_ROOT=tmp_path, RUNNING={}, append_jsonl=append_jsonl,
+                          send_with_budget=send)
+    delivery._handle_send_message(event, ctx)
+    delivery._handle_send_message(event, ctx)
+    assert row_id in owed_while_sending[0], "the custody row is owed before the answer is sent"
+    expected = [("assistant", ANSWER), *([("system", base)] if base else []), ("system", custody)]
+    chats = [row for row in frames if row.get("type") == "chat"]
+    assert [(row["role"], row["content"]) for row in chats] == expected
+    assert all(row["chat_id"] == task["chat_id"] for row in chats)
+    assert chats[-1]["system_type"] == "custody_notice"
+    assert chats[-1]["card_row"] == "timeline" and chats[-1]["card_row_id"] == row_id
+    assert not {"task_phase", "task_terminal_status"} & chats[-1].keys()
+    response = asyncio.run(make_chat_history_endpoint(tmp_path)(
+        SimpleNamespace(query_params={"chat_id": str(task["chat_id"])})))
+    messages = json.loads(response.body)["messages"]
+    assert [(row["role"], row["text"]) for row in messages] == expected
+    assert messages[-1]["system_type"] == "custody_notice"
+    assert messages[-1]["card_row"] == "timeline" and messages[-1]["card_row_id"] == row_id
+    assert not messages[-1].get("task_terminal_status")
     assert pending_deliveries(tmp_path) == []
 
 
@@ -461,3 +561,35 @@ def test_browser_renders_model_answer_and_host_notice_separately(direct_server_w
             assert answer.count() == notice.count() == 1
         finally:
             browser.close()
+
+
+def test_a_custody_split_never_mints_a_task_independent_row_id(tmp_path, monkeypatch):
+    """An answer that reaches the delivery seam without its owed id still yields a
+    custody row keyed by the task's canonical identity; with no task at all the
+    custody text stays on the joined host notice instead of a bare
+    ``:custody_notice`` id the delivered registry would then suppress for every
+    later task."""
+    from types import SimpleNamespace
+
+    from supervisor import events_chat_delivery as ecd
+    from supervisor.terminal_delivery import delivery_id_for
+
+    real = ecd._handle_send_message
+    sent = []
+    monkeypatch.setattr(ecd, "_handle_send_message", lambda evt, ctx: sent.append(dict(evt)))
+    monkeypatch.setattr("supervisor.terminal_delivery.register_pending_delivery", lambda root, row: True)
+    ctx = SimpleNamespace(DRIVE_ROOT=tmp_path)
+    custody = "Open delegated execution: run-x."
+    real({"type": "send_message", "chat_id": 1, "task_id": "t1", "text": "the answer",
+          "terminal_custody_notice": custody}, ctx)
+    answer, row = sent
+    assert row["delivery_id"] == delivery_id_for("t1", "the answer") + ":custody_notice"
+    assert row["progress_meta"]["card_row_id"] == row["delivery_id"]
+    assert row["system_type"] == "custody_notice" and row["text"] == custody
+    assert "terminal_custody_notice" not in answer and "delivery_id" not in answer
+    sent.clear()
+    real({"type": "send_message", "chat_id": 1, "text": "the answer",
+          "terminal_host_notice": "Budget stop retained.", "terminal_custody_notice": custody}, ctx)
+    (only,) = sent
+    assert "terminal_custody_notice" not in only
+    assert only["terminal_host_notice"] == "Budget stop retained.\n\n" + custody

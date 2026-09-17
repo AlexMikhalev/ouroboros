@@ -293,20 +293,53 @@ body.resizing-panels { user-select: none; }
     content: ' ⏩';
 }
 
-/* Layout-only container for design-system actions on host-stamped system
-   rows (Project lifecycle rows). The buttons themselves are the shared
+/* Layout-only composition for question, Project lifecycle and routing
+   actions, with room for keyboard focus above and below. Buttons use the shared
    `.btn.btn-default.btn-sm` role — no new colors, radii, or variants. */
 .system-message-actions {
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-3);
-    margin-top: var(--space-3);
+    padding-block: var(--space-3);
 }
 
 .system-message-action {
-    flex: 0 0 auto;
+    flex: 0 1 auto;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
 
+.project-question-pointer {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+.project-question-preview { font-weight: 600; }
+.project-question-answer:empty { display: none; }
+.project-question-preview, .project-question-answer {
+    color: var(--text-primary); font-size: var(--type-body);
+}
+/* The owner reads the status to act on it: meta ink, never the quieter secondary step. */
+.project-question-status, .project-question-source {
+    color: var(--text-meta); font-size: var(--type-meta);
+}
+
+
+/* A block that exists only for open attention (a model wait, a pending or
+   host-offered Stop) or a bare non-Done ending carries no title placeholder
+   (docs/DESIGN.md "Conversation activity block"); its chip says the state it is
+   in (Waiting…, Cancelling…, Failed). The first row of work — a tool call,
+   narration, a child, a review, an error — gives it a title, whatever lane ran it. */
+.chat-live-card > .chat-live-summary-button .chat-live-title:empty {
+    display: none;
+}
+
+.chat-live-actions:empty {
+    display: none;
+}
 
 /* P3 — a converted card becomes a calm "project identity" chip. The whole card
    recolors from the red task accent to the project fuchsia over ~250ms; the live
@@ -1125,11 +1158,13 @@ body.resizing-panels { user-select: none; }
     50% { opacity: 0.5; }
 }
 
-/* "Load older" control at the top of the chat feed (perf2 P4.5). */
+/* History navigation at the top edge of the rendered window. */
 .chat-load-older {
     display: flex;
     justify-content: center;
     align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-2);
     padding: 6px 12px 10px;
 }
 .chat-load-older[hidden] { display: none; }
@@ -1138,7 +1173,7 @@ body.resizing-panels { user-select: none; }
     border: 1px solid var(--divider);
     border-radius: 999px;
     background: var(--bg-secondary);
-    color: var(--text-secondary);
+    color: var(--text-primary);
     font-size: var(--type-meta);
     padding: 5px 14px;
     cursor: pointer;
@@ -1149,9 +1184,13 @@ body.resizing-panels { user-select: none; }
     border-color: var(--accent);
 }
 .chat-load-older-btn:disabled { opacity: 0.6; cursor: default; }
+.chat-load-older-btn:focus-visible {
+    outline: 2px solid var(--focus-accent-border);
+    outline-offset: 2px;
+}
 .chat-load-older-note {
     font-size: var(--type-meta);
-    color: var(--text-muted);
+    color: var(--text-meta);
     text-align: center;
     max-width: 460px;
 }
@@ -1818,6 +1857,14 @@ body.resizing-panels { user-select: none; }
     min-height: 1.45em;
 }
 
+/* A block without work carries no title placeholder: the collapsed geometry
+   reserves nothing for an empty title (review round 1: the clamp and the
+   reserved line above outranked the general empty-title rule). */
+.chat-live-card:not([data-expanded="1"]) > .chat-live-summary-button .chat-live-title:empty {
+    display: none;
+    min-height: 0;
+}
+
 /* Activity grows with useful content. Details retain the complete source. */
 .chat-live-activity {
     color: var(--text-meta);
@@ -2159,7 +2206,7 @@ body.resizing-panels { user-select: none; }
     }
 
     /* A COLLAPSED nested child keeps its one-line identity row — status chip ·
-       `role · model` · `N notes` · chevron — over its metadata row (DESIGN.md
+       role · `N notes` · chevron — over its model/executor metadata (DESIGN.md
        §5) instead of dropping the title to a third band once its own inline
        width crosses this threshold (#623). The title is already nowrap/ellipsis
        here; it keeps the same 160px demand the mobile readability floor uses,
@@ -2188,8 +2235,8 @@ body.resizing-panels { user-select: none; }
 }
 
 /* A nested child is subordinate to its root: quieter ink, and collapsed it is
-   an identity row (chip · role · model · notes + chevron; the `Show details`
-   label is the root's) over its metadata row (harness chip with the run count,
+   an identity row (chip · role · notes + chevron; the `Show details`
+   label is the root's) over its metadata row (model, harness chip with the run count,
    cost, last update, docked Reviews count). Only its narration line waits for
    expansion. The title stays on one line and stays IN the identity row at every
    width (the narrow-regime rule above gives it a 160px demand and lets the side
@@ -2253,6 +2300,8 @@ body.resizing-panels { user-select: none; }
 }
 
 .chat-live-line-toggle {
+    user-select: text;
+    -webkit-user-select: text;
     width: 100%;
     padding: 0;
     border: 0;
@@ -2369,6 +2418,18 @@ body.resizing-panels { user-select: none; }
 .chat-live-line.error .chat-live-line-title,
 .chat-live-line.timeout .chat-live-line-title {
     color: var(--status-error-fg);
+}
+
+/* The evidence row says its phase in ink, not in words: the counts-only label
+   stays the same while a call is still in flight (calling: the row is what the
+   turn is doing right now, so primary ink, never an alarm hue) and once one
+   failed (warn). Colour only, like the error rule above. */
+.chat-live-line.calling .chat-live-line-title {
+    color: var(--text-primary);
+}
+
+.chat-live-line.warn .chat-live-line-title {
+    color: var(--status-warn-fg);
 }
 
 .chat-bubble .message pre {
@@ -3073,6 +3134,10 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     pointer-events: none;
 }
 .chat-context-mode .chat-seg {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
     height: var(--composer-control-height);
     padding: 0 12px;
     border: none;
@@ -3093,6 +3158,10 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 .chat-context-mode[data-context-mode="low"] .chat-seg[data-mode="low"] {
     background: rgba(245, 158, 11, 0.16);
     color: var(--amber);
+}
+.chat-context-mode[data-context-mode="nano"] .chat-seg[data-mode="nano"] {
+    background: var(--project-18);
+    color: var(--project);
 }
 
 .chat-send-group {
@@ -3487,8 +3556,11 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     gap: 6px;
 }
 
-::-webkit-scrollbar { width: 6px; }
+/* `width` is the vertical bar, `height` the horizontal one: without the height
+   a horizontal bar falls back to the 16-17px UA default and paints thick. */
+::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-corner { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--accent-18); border-radius: var(--radius-xs); }
 ::-webkit-scrollbar-thumb:hover { background: var(--accent-35); }
 
@@ -4318,6 +4390,15 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 
 .skills-presence-runtime input {
     width: 110px;
+}
+
+.skills-presence-runtime .skills-presence-workspace {
+    flex: 1 1 100%;
+    min-width: 0;
+}
+
+.skills-presence-workspace input {
+    width: 100%;
 }
 
 .skills-presence-runtime-actions {
@@ -5651,6 +5732,8 @@ textarea.chat-input {
     flex-shrink: 0;
 }
 
+/* The sidebar's one variable-length collection: a bounded window that scrolls
+   on its own, so expanding it never pushes the Utilities rows past the fold. */
 .nav-projects-list {
     display: flex;
     flex-direction: column;
@@ -5658,6 +5741,9 @@ textarea.chat-input {
     width: 100%;
     align-items: stretch;
     flex-shrink: 0;
+    max-height: var(--nav-projects-list-max-height);
+    min-height: 0;
+    overflow-y: auto;
 }
 
 .nav-projects-list[hidden] {
@@ -5713,12 +5799,6 @@ textarea.chat-input {
 
 .nav-project-row.active::before {
     display: none;
-}
-
-.nav-projects-more {
-    color: var(--text-muted);
-    font-size: 12px;
-    padding-left: calc(var(--space-3) + 18px + var(--space-3));
 }
 
 /* v6.59.0 — New Project "+" in the Projects header + per-row kebab actions. */
@@ -6973,6 +7053,12 @@ textarea.chat-input {
     color: var(--text-meta);
 }
 .chat-quiz-option:disabled .chat-quiz-option-detail { color: var(--text-disabled); }
+.chat-quiz-option-recommended {
+    margin-left: var(--space-2, 8px);
+    font-size: var(--type-meta);
+    font-weight: 600;
+    color: var(--status-ok-fg);
+}
 /* Free answer: the owner's own words when no offered option fits. */
 .chat-quiz-comment-box {
     display: flex;
@@ -7090,13 +7176,27 @@ textarea.chat-input {
 
 /* === design-system:migrated-end === */
 
+/* One line, never a paragraph: the pointer names the card and ellipsizes, so
+   the status bar cannot grow into the reading area (a 400-character plan_task
+   verdict used to wrap it to twelve lines). The 180px basis is the bar's
+   original row policy: a default desktop panel keeps one row while the
+   status pill is short; a longer pill, a narrower panel or a phone wraps the
+   bar to a second row, never a third. The auto margin keeps the pointer left
+   of the status pill. */
 .project-work-pointer {
-    min-width: 0;
-    max-width: 100%;
     flex: 1 1 180px;
+    min-width: 0;
+    max-width: 40ch;
+    margin-right: auto;
     justify-content: flex-start;
     text-align: left;
     overflow: hidden;
+}
+.project-work-pointer-label {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
 }
 .project-work-coverage { font-size: var(--type-meta); color: var(--text-meta); }
 .chat-panel-statusbar { flex-wrap: wrap; gap: var(--space-2); }

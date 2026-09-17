@@ -68,6 +68,37 @@ test('legacy routing receipts and manual choices use neutral labels, never raw i
     assert.equal(manual.includes('opaque-'), false);
 });
 
+test('a refusal row with neither options nor a cause reads «Not routed», never «Choose a target»', () => {
+    // Such a row is a receipt written before the host sentence existed (or by a
+    // producer that bypasses the receipt rail): it carries nothing to click, so
+    // inviting a choice would be a lie about what the owner can do.
+    assert.equal(routingAnnotationText({
+        action: 'promote_chat_to_task', status: 'needs_manual_target',
+        target: 'opaque-project-id', target_label: 'Аудит', options: [],
+    }), 'Not routed · Аудит');
+    assert.equal(routingAnnotationText({
+        action: 'manual', status: 'needs_manual_target',
+    }), 'Not routed');
+});
+
+test('a host cause on a refused routing receipt outranks the status matrix; an empty cause changes nothing', () => {
+    // The host authors the owner sentence for a REFUSED act (`cause`); the
+    // client never derives one from `reason`. The field is absent/empty on
+    // scheduled, delivered and pending rows and on the picker frame, so those
+    // keep their labels (the options case above stays «Choose a target · …»).
+    const cause = 'Not started: the working folder can\'t be used';
+    const refused = routingAnnotationText({
+        action: 'promote_chat_to_task', status: 'needs_manual_target',
+        target: 'x', target_label: 'Аудит', cause,
+    });
+    assert.equal(refused, cause);
+    assert.equal(refused.includes('Choose a target'), false);
+    assert.equal(routingAnnotationText({
+        action: 'steer_task', status: 'delivered', target: 'opaque-task-id',
+        target_label: 'Launch', cause: '',
+    }), 'Steered task · Launch');
+});
+
 test('state snapshots and failure authority stay monotonic across reversed completion', () => {
     const applied = [];
     const requestTimes = [100, 200];
@@ -86,34 +117,6 @@ test('state snapshots and failure authority stay monotonic across reversed compl
     assert.equal(snapshots.isCurrent(older), false);
     assert.equal(snapshots.apply(older, { activities: ['stale-root'] }), false);
     assert.deepEqual(applied, [{ data: { activities: [] }, requestedAt: 200 }]);
-});
-
-test('snapshot provenance beats apply time while equal-time live frames keep the request barrier', () => {
-    let activities = new Map();
-    const snapshots = createStateSnapshotSequencer((data, requestedAt, generation) => {
-        activities = computeHydratedDirectActivities(
-            activities, data.activities, 1, requestedAt, null, generation,
-        );
-    }, () => 100);
-    const older = snapshots.begin();
-    const newer = snapshots.begin();
-    const originalNow = Date.now;
-    Date.now = () => 300;
-    try {
-        assert.equal(snapshots.apply(older, { activities: [
-            { activity_id: 'snapshot-root', chat_id: 1, kind: 'managed_task' },
-        ] }), true);
-        assert.equal(activities.get('snapshot-root').snapshotGeneration, older.generation);
-        // A genuinely later live frame can share the request's millisecond.
-        activities.set('live-root', {
-            activityId: 'live-root', kind: 'managed_task', startedAt: newer.requestedAt,
-        });
-        assert.equal(snapshots.apply(newer, { activities: [] }), true);
-        assert.equal(activities.has('snapshot-root'), false);
-        assert.equal(activities.has('live-root'), true);
-    } finally {
-        Date.now = originalNow;
-    }
 });
 
 test('computeDerivedChatStatus: offline state when ws is disconnected', () => {
@@ -203,8 +206,8 @@ test('computeDerivedChatStatus: online idle state by default', () => {
 test('computeHydratedDirectActivities: filters turns by chatId', () => {
     const turns = [
         { activity_id: 'act-main-1', chat_id: 1, kind: 'direct_chat', phase: 'thinking' },
-        { activity_id: 'act-proj-2', chat_id: 2, kind: 'ephemeral_decision', phase: 'thinking' },
-        { activity_id: 'act-main-2', chat_id: 1, kind: 'ephemeral_decision', phase: 'thinking' },
+        { activity_id: 'act-proj-2', chat_id: 2, kind: 'direct_chat', phase: 'thinking' },
+        { activity_id: 'act-main-2', chat_id: 1, kind: 'direct_chat', phase: 'thinking' },
     ];
 
     const mapChat1 = computeHydratedDirectActivities(new Map(), turns, 1);
@@ -237,38 +240,13 @@ test('computeHydratedDirectActivities: removes completed activities not in snaps
     assert.ok(updated.has('act-new'));
 });
 
-test('computeHydratedDirectActivities: a stale snapshot never wipes an activity registered after the snapshot was requested', () => {
-    const snapshotRequestedAt = 1_000_000;
+test('computeHydratedDirectActivities: an incomplete census deletes nothing', () => {
     const initialMap = new Map([
-        // Registered by a WS typing frame AFTER the /api/state request went out:
-        // the (stale) empty snapshot has no authority over it.
-        ['act-fresh', { activityId: 'act-fresh', kind: 'direct_chat', phase: 'thinking', startedAt: snapshotRequestedAt + 50 }],
-        // Existed before the snapshot was requested and is absent from it: done.
-        ['act-stale', { activityId: 'act-stale', kind: 'direct_chat', phase: 'thinking', startedAt: snapshotRequestedAt - 50 }],
+        ['act-held', { activityId: 'act-held', kind: 'direct_chat', phase: 'thinking' }],
     ]);
-
-    const updated = computeHydratedDirectActivities(initialMap, [], 1, snapshotRequestedAt);
-    assert.equal(updated.size, 1);
-    assert.ok(updated.has('act-fresh'));
-    assert.ok(!updated.has('act-stale'));
-
-    // Without a barrier (default Infinity) the snapshot wipes both — legacy behavior.
-    const legacy = computeHydratedDirectActivities(initialMap, [], 1);
-    assert.equal(legacy.size, 0);
-});
-
-test('computeHydratedDirectActivities: startedAt stays client-clock (snapshot server time never enters the barrier)', () => {
-    const clientObservedAt = 5_000;
-    const initialMap = new Map([
-        ['act-1', { activityId: 'act-1', kind: 'direct_chat', phase: 'thinking', startedAt: clientObservedAt }],
-    ]);
-    // Snapshot lists the same activity with a (skewed) server-clock started_at.
-    const turns = [
-        { activity_id: 'act-1', chat_id: 1, kind: 'direct_chat', phase: 'working', started_at: 99_999_999 },
-    ];
-    const updated = computeHydratedDirectActivities(initialMap, turns, 1, 10_000);
-    assert.equal(updated.get('act-1').startedAt, clientObservedAt);
-    assert.equal(updated.get('act-1').phase, 'working');
+    const partial = computeHydratedDirectActivities(initialMap, [], 1, null, false);
+    assert.equal(partial.size, 1);
+    assert.ok(partial.has('act-held'));
 });
 
 test('computeHydratedDirectActivities: correctly handles chat_id=0 without coercing to 1', () => {
@@ -286,21 +264,16 @@ test('computeHydratedDirectActivities: correctly handles chat_id=0 without coerc
     assert.ok(mapChat1.has('act-main-1'));
 });
 
-test('computeHydratedDirectActivities: snapshot has no deletion authority over managed-task typing entries (no kind stamp)', () => {
+test('computeHydratedDirectActivities: a complete census deletes kind-less entries too', () => {
     const initialMap = new Map([
-        // Queued managed task's typing frame carries no kind: the direct
-        // registry does not track it, so an (empty) snapshot must not end it.
-        ['managed-1', { activityId: 'managed-1', kind: '', phase: 'thinking', startedAt: 100 }],
-        // Registry-tracked direct turn absent from the snapshot: concluded.
-        ['direct-1', { activityId: 'direct-1', kind: 'direct_chat', phase: 'thinking', startedAt: 100 }],
-        ['eph-1', { activityId: 'eph-1', kind: 'ephemeral_decision', phase: 'thinking', startedAt: 100 }],
+        // Kind-less entries were exempt while typing frames wrote this map. The
+        // census is now its only writer, so its complete listing ends them too.
+        ['managed-1', { activityId: 'managed-1', kind: '', phase: 'thinking' }],
+        ['direct-1', { activityId: 'direct-1', kind: 'direct_chat', phase: 'thinking' }],
+        ['direct-2', { activityId: 'direct-2', kind: 'direct_chat', phase: 'thinking' }],
     ]);
 
-    const updated = computeHydratedDirectActivities(initialMap, [], 1, 1_000);
-    assert.equal(updated.size, 1);
-    assert.ok(updated.has('managed-1'));
-    assert.ok(!updated.has('direct-1'));
-    assert.ok(!updated.has('eph-1'));
+    assert.equal(computeHydratedDirectActivities(initialMap, [], 1).size, 0);
 });
 
 test('computeHydratedDirectActivities: a concluded turn is never resurrected by a snapshot captured while it still ran', () => {
@@ -312,7 +285,7 @@ test('computeHydratedDirectActivities: a concluded turn is never resurrected by 
         { activity_id: 'act-done', chat_id: 1, kind: 'direct_chat', phase: 'thinking' },
         { activity_id: 'act-live', chat_id: 1, kind: 'direct_chat', phase: 'thinking' },
     ];
-    const updated = computeHydratedDirectActivities(new Map(), turns, 1, Infinity, concluded);
+    const updated = computeHydratedDirectActivities(new Map(), turns, 1, concluded);
     assert.equal(updated.size, 1);
     assert.ok(!updated.has('act-done'));
     assert.ok(updated.has('act-live'));

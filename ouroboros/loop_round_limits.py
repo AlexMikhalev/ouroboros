@@ -7,10 +7,12 @@ loop.py re-exports every name."""
 from __future__ import annotations
 
 import functools
+import json
+import copy
 import pathlib
 import queue
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from ouroboros import task_pacing
 from ouroboros.config import get_light_model
@@ -24,6 +26,7 @@ from ouroboros.outcomes import REASON_OWNER_REQUESTED_FINALIZATION
 from ouroboros.pricing import estimate_cost_optional
 from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_NOTICE, TERMINAL_ORIGIN_HOST_SALVAGE
 from ouroboros.tools.registry import ToolRegistry
+from ouroboros.transcript_prefix import sanction_rewrite
 from ouroboros.usage_accounting import invalidate_task_cache_splits
 from supervisor.owner_stop import REASON_OWNER_STOPPED_DIRECT_TURN, _narrow_round_deadline, _owner_stop_control_is_current, _owner_stop_window_elapsed, handle_finalize_now_entry  # noqa: F401 -- _owner_stop_control_is_current stays a facade surface
 
@@ -55,6 +58,29 @@ class _CompactionRoundContext:
     round_idx: int
     event_queue: Optional[queue.Queue]
     emit_progress: Callable[[str], None]
+    tool_schemas: Optional[List[Dict[str, Any]]] = None
+    fit_candidate: Optional[Callable[[list, list], Dict[str, Any]]] = None
+
+
+def _stamp_owner_delivery(
+    owner_ctx: Any, *, msg_id: str, client_message_id: str, text: str, ts: str,
+) -> None:
+    """Record the latest owner message this turn actually DRAINED (latest wins).
+
+    The steer relay and the routing issuer read this typed fact to tell "acting
+    on the owner message this round delivered" from "speaking for myself".
+    Only owner DIALOGUE stamps it: typed controls (task messages, quiz answers,
+    hurry, finalize-now, revocations) are not the owner's steering text, and a
+    message merely WRITTEN to a mailbox has not been delivered at all. The fact
+    lives for one drain: ``_drain_incoming_messages`` clears it before reading
+    the mailbox, so a task that relayed one owner message is a task again on its
+    next round rather than an owner turn for the rest of its life.
+    """
+    if owner_ctx is None:
+        return
+    owner_ctx.last_owner_delivery = {
+        "msg_id": msg_id, "client_message_id": client_message_id, "text": text, "ts": ts,
+    }
 
 
 def _drain_incoming_messages(
@@ -68,6 +94,8 @@ def _drain_incoming_messages(
 ) -> Dict[str, Any]:
     """Injects dialogue; returns typed controls."""
     controls: Dict[str, Any] = {}
+    if owner_ctx is not None and getattr(owner_ctx, "last_owner_delivery", None) is not None:
+        owner_ctx.last_owner_delivery = None
     while not incoming_messages.empty():
         try:
             injected = incoming_messages.get_nowait()
@@ -83,17 +111,31 @@ def _drain_incoming_messages(
                         or ""
                     ),
                 )
-                _loop()._append_or_merge_user_content(messages, _loop()._owner_marked_content(owner_content))
+                _stamp_owner_delivery(
+                    owner_ctx,
+                    msg_id=str(injected.get("msg_id") or ""),
+                    client_message_id=str(injected.get("client_message_id") or ""),
+                    text=str(injected.get("text") or ""),
+                    ts=str(injected.get("ts") or ""),
+                )
+                _loop()._append_or_merge_user_content(
+                    messages, _loop()._owner_marked_content(owner_content), slot=owner_ctx,
+                )
             else:
                 _loop()._record_owner_directive(
                     owner_ctx, source="direct_incoming", content=injected,
                 )
-                _loop()._append_or_merge_user_message(messages, _loop()._owner_marked_content(injected))
+                _stamp_owner_delivery(
+                    owner_ctx, msg_id="", client_message_id="", text=str(injected), ts="",
+                )
+                _loop()._append_or_merge_user_message(
+                    messages, _loop()._owner_marked_content(injected), slot=owner_ctx,
+                )
         except queue.Empty:
             break
 
     if drive_root is not None and task_id:
-        from ouroboros.owner_mailbox import KIND_FINALIZE_NOW, KIND_HURRY, KIND_OWNER_TEXT, KIND_QUIZ_ANSWER, KIND_TASK_MESSAGE, acknowledge_transcript_entry, deliver_quiz_answer, deliver_task_message, drain_owner_entries
+        from ouroboros.owner_mailbox import KIND_FINALIZE_NOW, KIND_HURRY, KIND_OWNER_TEXT, KIND_QUIZ_ANSWER, KIND_TASK_MESSAGE, PROVENANCE_INDEPENDENT_TASK, acknowledge_transcript_entry, deliver_quiz_answer, deliver_task_message, drain_owner_entries
 
         if owner_ctx:
             owner_ctx._loop_mailbox_seen_ids = _owner_msg_seen
@@ -115,11 +157,42 @@ def _drain_incoming_messages(
                 continue
             dmsg = entry.get("text") or ""
             if kind == KIND_TASK_MESSAGE:
-                deliver_task_message(entry, task_id, event_queue, lambda text: _loop()._append_or_merge_user_message(messages, text))
+                # A principal's words to this task are premises every review reads
+                # (plan and acceptance share one corpus); a host system frame and a
+                # descendant's escalation are not the principal's directives. A sibling's
+                # words the parent RELAYED are context with a real source, not the
+                # principal's own directive: the typed provenance and the relay ids ride
+                # the row, exactly as the dialogue renderer already distinguishes them.
+                # An INDEPENDENT task's words (a peer root speaking for itself) are
+                # context the receiving model judges, never a directive: they enter no
+                # owner corpus, so owner_source_sha256, the post-drain growth check and
+                # the acceptance premises stay the owner's (owner 4=A -- only the
+                # owner's messages supersede a reviewed answer). The typed provenance
+                # and the sender id ride the row, the injected event and the ack.
+                provenance = str(entry.get("provenance") or "ancestor_task")
+                if provenance not in {"system", "descendant_task", PROVENANCE_INDEPENDENT_TASK}:
+                    _loop()._record_owner_directive(
+                        owner_ctx, content=dmsg, msg_id=str(entry.get("msg_id") or ""),
+                        source=("relayed_peer_message" if provenance == "peer_via_ancestor"
+                                else "principal_task_message"),
+                        origin={"source_task_id": str(entry.get("source_task_id") or ""),
+                                "relayed_from_task_id": str(entry.get("relayed_from_task_id") or "")},
+                    )
+                deliver_task_message(
+                    entry, task_id, event_queue,
+                    lambda text: _loop()._append_or_merge_user_message(messages, text, slot=owner_ctx),
+                )
                 acknowledge_transcript_entry(drive_root, task_id, entry)
                 continue
             if kind == KIND_QUIZ_ANSWER:
-                deliver_quiz_answer(entry, task_id, event_queue, lambda text: _loop()._append_or_merge_user_message(messages, text))
+                _loop()._record_owner_directive(
+                    owner_ctx, source="owner_quiz_answer", content=dmsg,
+                    msg_id=str(entry.get("msg_id") or ""),
+                )
+                deliver_quiz_answer(
+                    entry, task_id, event_queue,
+                    lambda text: _loop()._append_or_merge_user_message(messages, text, slot=owner_ctx),
+                )
                 acknowledge_transcript_entry(drive_root, task_id, entry)
                 continue
             _loop()._record_owner_directive(
@@ -128,9 +201,19 @@ def _drain_incoming_messages(
                 content=dmsg,
                 msg_id=str(entry.get("msg_id") or ""),
             )
+            _stamp_owner_delivery(
+                owner_ctx,
+                msg_id=str(entry.get("msg_id") or ""),
+                client_message_id=str(entry.get("client_message_id") or ""),
+                text=dmsg,
+                ts=str(entry.get("ts") or ""),
+            )
             from ouroboros.client_surface import noted_owner_text
 
-            _loop()._append_or_merge_user_message(messages, _loop()._owner_marked_content(noted_owner_text(owner_ctx, entry, dmsg)))
+            _loop()._append_or_merge_user_message(
+                messages, _loop()._owner_marked_content(noted_owner_text(owner_ctx, entry, dmsg)),
+                slot=owner_ctx,
+            )
             acknowledge_transcript_entry(drive_root, task_id, entry)
             if event_queue is not None:
                 try:
@@ -172,10 +255,29 @@ def _run_round_compaction(
     messages: List[Dict[str, Any]],
     ctx: _CompactionRoundContext,
 ) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """The round's transcript maintenance before the send: an explicit manual
+    reclaim (Main fit owns automatic decisions), then -- on the transcript that
+    will actually go out -- the host roster of independent roots as a TAIL row
+    when it changed (owner 6C). The note follows any reclaim so it is never
+    folded into a rewrite, and precedes the acceptance observation and the seal."""
+    from ouroboros.peer_roster import maybe_append_roster_note
+
+    messages, usage = _run_round_reclaim(messages, ctx)
+    maybe_append_roster_note(ctx.tools._ctx, messages, ctx.drive_root)
+    return messages, usage
+
+
+def _run_round_reclaim(
+    messages: List[Dict[str, Any]],
+    ctx: _CompactionRoundContext,
+) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
     """Run only an explicit manual reclaim; Main fit owns automatic decisions."""
     pending = getattr(ctx.tools._ctx, "_pending_compaction", None)
-    if pending is None:
+    selected_names = getattr(ctx.tools._ctx, "_pending_tool_schema_names", None)
+    if pending is None and selected_names is None:
         return messages, None
+    if isinstance(pending, dict) or pending is None:
+        return _run_authored_context_view(messages, ctx, pending, selected_names), None
     ctx.tools._ctx._pending_compaction = None
     rebuilt, receipt, usage = _loop().compact_tool_history_llm(
         messages,
@@ -200,7 +302,102 @@ def _run_round_compaction(
     if receipt.status == "applied":
         invalidate_task_cache_splits(ctx.task_id)
         prune_reclaim_trace_refs(ctx.tools._ctx, rebuilt)
+        sanction_rewrite(ctx.tools._ctx, "compaction")
     return rebuilt, usage
+
+
+def _run_authored_context_view(messages, ctx, pending, selected_names):
+    """Apply one source/schema view together at the existing completed boundary."""
+    from ouroboros.context_budget import ContextReclaimRequest
+    from ouroboros.context_compaction import compact_tool_history_llm, context_reclaim_transcript_sha256
+    from ouroboros.tool_policy import request_tool_schema_selection, select_tool_schemas
+
+    tool_ctx = ctx.tools._ctx
+    mode = getattr(tool_ctx, "active_context_mode", "") or "max"
+    current_tools = ctx.tool_schemas
+    if current_tools is None:
+        ctx.emit_progress("Context view kept unchanged: active schema snapshot is unavailable.")
+        return messages
+    proposal = pending or {}
+    names = proposal.get("schema_names")
+    if names is not None:
+        requested = request_tool_schema_selection(tool_ctx, ctx.tools, names,
+                                                  context_mode=mode, current_schemas=current_tools)
+        selected_names = requested.selection.chosen if mode == "nano" else None
+    schemas = (list(select_tool_schemas(ctx.tools.schemas(), context_mode=mode, schema_names=selected_names).schemas)
+               if selected_names is not None else list(current_tools))
+    fit_candidate = ctx.fit_candidate
+    if fit_candidate is None:
+        tool_ctx._pending_compaction = None
+        tool_ctx._pending_tool_schema_names = None
+        ctx.emit_progress("Context view kept unchanged: prospective physical fit is unavailable.")
+        return messages
+    if pending is None:
+        # Schema-only enablement uses the same candidate fit/publication. It
+        # does not fabricate an authored note or rewrite existing history.
+        try:
+            before_sha = context_reclaim_transcript_sha256(messages)
+            fit = fit_candidate(copy.deepcopy(messages), copy.deepcopy(schemas))
+            if context_reclaim_transcript_sha256(messages) != before_sha:
+                fit = {"accepted": False, "reason": "binding_mismatch"}
+        except Exception as exc:
+            fit = {"accepted": False, "reason": type(exc).__name__}
+        changed = schemas != current_tools
+        receipt = {"status": "applied" if fit.get("accepted") is True and changed else
+                   "no_op" if fit.get("accepted") is True else "fit_rejected", "fit": fit,
+                   "schema_names": [s["function"]["name"] for s in schemas]}
+        candidate = messages
+    else:
+        observed = proposal["observed"]
+        request = ContextReclaimRequest(
+            route_fp="actor", round_id=str(ctx.round_idx),
+            transcript_sha256=context_reclaim_transcript_sha256(messages),
+            measurement_basis="cold_estimate", measurement_density=1.0, reclaim_goal_tokens=0,
+            **{key: proposal[key] for key in ("working_note", "expected_view_revision", "keep_unit_ids", "restore_unit_refs", "schema_names")},
+        )
+        candidate, result, _ = compact_tool_history_llm(
+            messages, request=request, observed_messages=observed["messages"],
+            observed_tool_schemas=observed["tool_schemas"], tool_schemas=schemas,
+            fit_candidate=fit_candidate, drive_root=ctx.drive_root or pathlib.Path(ctx.drive_logs).parent,
+            task_id=ctx.task_id, trace_refs_by_tool_call_id=reclaim_trace_refs(tool_ctx),
+        )
+        receipt = asdict(result)
+    if receipt["status"] != "no_op":
+        from ouroboros.artifacts import store_actor_source_bytes
+        import hashlib
+
+        raw = json.dumps({"stage": "candidate_materialization", "published": False,
+                          "receipt": receipt}, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        try:
+            source = store_actor_source_bytes(
+                ctx.drive_root or pathlib.Path(ctx.drive_logs).parent, ctx.task_id,
+                category="context_checkpoints", source_id=hashlib.sha256(raw).hexdigest(),
+                data=raw, extension="json")
+            notice = {"status": receipt["status"], "receipt_source": source}
+        except (OSError, ValueError):
+            notice = {"status": receipt["status"], "receipt_source": "unavailable"}
+        with_receipt = [*candidate, {"role": "user", "content": "[Context view receipt]\n" + json.dumps(notice, ensure_ascii=False)}]
+        try:
+            final_fit = fit_candidate(copy.deepcopy(with_receipt), copy.deepcopy(schemas))
+        except Exception as exc:
+            final_fit = {"accepted": False, "reason": type(exc).__name__}
+        if final_fit.get("accepted") is True:
+            candidate = with_receipt
+        else:
+            receipt.update(status="fit_rejected", fit=final_fit)
+            candidate = messages
+            ctx.emit_progress("Context view kept unchanged: the complete candidate and receipt do not fit.")
+    if receipt["status"] == "applied":
+        current_tools[:] = schemas
+        invalidate_task_cache_splits(ctx.task_id)
+        prune_reclaim_trace_refs(tool_ctx, candidate)
+        sanction_rewrite(tool_ctx, "compaction")
+    tool_ctx._pending_compaction = None
+    tool_ctx._pending_tool_schema_names = None
+    tool_ctx._context_view_receipt = receipt
+    _loop()._emit_checkpoint_event(ctx.event_queue, ctx.task_id, ctx.drive_logs,
+                                   {"checkpoint_kind": "context_view", "round": ctx.round_idx, **receipt})
+    return candidate
 
 
 @dataclass

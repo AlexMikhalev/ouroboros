@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import ast
+from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
+
 import fnmatch
-import json
 import logging
 import os
 import pathlib
@@ -50,6 +50,7 @@ from ouroboros.contracts.skill_payload_policy import (
 from ouroboros.tools.core_file_tools import (  # noqa: F401
     _ListingFailure,
     _MEMORY_AT_DRIVE_MEMORY,
+    _raw_owner_secret_access_allowed,
     _SKILL_OWNER_STATE_FILENAMES,
     _SUBAGENT_SECRET_FILE_NAMES,
     _access_or_block,
@@ -145,6 +146,11 @@ def _skill_payload_parts(target: pathlib.Path, data_root: pathlib.Path) -> tuple
 def _native_payload_mutation_block_reason(
     target: pathlib.Path, data_root: pathlib.Path,
 ) -> str:
+    from ouroboros.config import get_runtime_mode
+    from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+
+    if mode_has_unrestricted_agency(get_runtime_mode()):
+        return ""
     payload = _skill_payload_parts(target, data_root)
     if payload is None:
         return ""
@@ -177,20 +183,6 @@ def _data_skill_target(path: str, drive_root: pathlib.Path) -> SkillPayloadTarge
 def _data_skill_path(path: str, drive_root: pathlib.Path) -> pathlib.Path | None:
     target = _data_skill_target(path, drive_root)
     return target.target_path if target is not None else None
-
-
-def _looks_like_serialized_tool_result(content: Any) -> bool:
-    text = str(content or "").lstrip()
-    if not (text.startswith("{'content'") or text.startswith('{"content"')):
-        return False
-    try:
-        parsed = ast.literal_eval(text)
-    except Exception:
-        try:
-            parsed = json.loads(text)
-        except Exception:
-            return False
-    return isinstance(parsed, dict) and isinstance(parsed.get("content"), str)
 
 
 def is_skill_control_plane_path(target: pathlib.Path, data_root: pathlib.Path) -> bool:
@@ -248,7 +240,10 @@ def _check_data_shrink_guard(
     (``git._check_shrink_guard``) but WITHOUT the ``git ls-files`` tracking check — the
     data plane is not a git tree. Skips a non-existent target (a fresh create is any
     size) and appends (the caller only invokes this on overwrite). Never raises."""
-    if force:
+    from ouroboros.config import get_runtime_mode
+    from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+
+    if force or mode_has_unrestricted_agency(get_runtime_mode()):
         return None
     try:
         if not target.exists():
@@ -338,18 +333,13 @@ def _data_write(
         lexical_target = pathlib.Path(p).resolve(strict=False)
     else:
         lexical_target = pathlib.Path(ctx.drive_root).resolve(strict=False) / safe_relpath(write_path)
-    suffix = pathlib.PurePosixPath(str(path or "")).suffix.lower()
-    if suffix in {".py", ".md", ".json", ".sh"} and _looks_like_serialized_tool_result(content):
-        return (
-            "⚠️ DATA_WRITE_BLOCKED: content looks like a serialized tool result "
-            "object (for example {'content': ...}) rather than file text. "
-            "Extract the actual file body before calling write_file."
-        )
+    from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+    cyber = mode_has_unrestricted_agency(_cfg.get_runtime_mode())
     native_block = (
         _native_payload_mutation_block_reason(lexical_target, data_root)
         or _native_payload_mutation_block_reason(target_path, data_root)
     )
-    if native_block:
+    if native_block and not cyber:
         return f"⚠️ DATA_WRITE_BLOCKED: {native_block}."
     skill_owner_state_path = (
         _is_skill_owner_state_target(lexical_target, data_root)
@@ -357,7 +347,7 @@ def _data_write(
     )
     if not skill_owner_state_path:
         skill_owner_state_path = is_skill_owner_state_alias(target_path, data_root)
-    if skill_owner_state_path:
+    if skill_owner_state_path and not cyber:
         return (
             "⚠️ DATA_WRITE_BLOCKED: skill review, enablement, grants, and "
             "marketplace provenance are owner/review controlled state. Edit "
@@ -365,7 +355,7 @@ def _data_write(
             "Skills UI toggle, or the desktop launcher grant flow."
         )
     # Block marketplace/launcher sidecars for every data_write path, not only heal mode.
-    if (
+    if not cyber and (
         (_resolved_binding is not None and _binding_skill_control_plane_path(_resolved_binding))
         or is_skill_control_plane_path(lexical_target, data_root)
         or is_skill_control_plane_path(target_path, data_root)
@@ -376,7 +366,7 @@ def _data_write(
             "SKILL.openclaw.md, .seed-origin) are owner/review controlled. "
             "Edit the payload's user-authored files instead and rerun skill_review."
         )
-    if (
+    if not cyber and (
         _is_workspace_executor_control_state_path(lexical_target, ctx_data_root)
         or _is_workspace_executor_control_state_path(target_path, ctx_data_root)
         or _is_workspace_executor_control_state_path(lexical_target, data_root)
@@ -400,7 +390,7 @@ def _data_write(
             same_parent = False
         if same_parent and target_path.name.lower() == settings_path.name.lower():
             matches = True
-    if matches:
+    if matches and not cyber:
         return (
             "⚠️ DATA_WRITE_BLOCKED: settings.json is the canonical owner-edited "
             "file. Tool-level writes must route through /api/settings (which "
@@ -674,7 +664,7 @@ def _write_file(
                     # Batch items honor the declared mode like the single-file path below:
                     # silently overwriting here destroyed every prior chunk of a chunked
                     # large-file write while reporting success (#447 D2).
-                    with target.open("a", encoding="utf-8") as fh:
+                    with target.open("a", encoding="utf-8", newline="") as fh:
                         fh.write(body)  # append is intentionally NOT atomized
                 else:
                     # Deferral 5: batch items overwrite too — shrink-guard each (parity with the
@@ -699,7 +689,7 @@ def _write_file(
                 return f"⚠️ WRITE_FILE_BLOCKED: artifact_store path blocked: {block_reason}"
         target.parent.mkdir(parents=True, exist_ok=True)
         if mode == "append":
-            with target.open("a", encoding="utf-8") as fh:
+            with target.open("a", encoding="utf-8", newline="") as fh:
                 fh.write(content)  # append is intentionally NOT atomized
         else:
             # Deferral 5: shrink-guard the full overwrite (e.g. active_workspace rewrites)
@@ -728,6 +718,10 @@ def _edit_text(
     force: bool = False,
     _resolved_binding: ResolvedResourceBinding | None = None,
 ) -> str:
+    from ouroboros.config import get_runtime_mode
+    from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+
+    cyber = mode_has_unrestricted_agency(get_runtime_mode())
     normalized, block = _access_or_block(ctx, root, "edit")
     if block:
         return block
@@ -773,7 +767,7 @@ def _edit_text(
     selected_payload = normalized == "skill_payload" or bound_skill_payload
     try:
         target = binding.target_path
-        if selected_payload and (
+        if not cyber and selected_payload and (
             _binding_skill_control_plane_path(binding)
             or is_skill_control_plane_path(target, binding.state_drive_root)
         ):
@@ -782,7 +776,7 @@ def _edit_text(
                 "marketplace, dependency, and self-authored markers are "
                 "control-plane state. Edit user-authored payload files instead."
             )
-        if normalized == "runtime_data":
+        if normalized == "runtime_data" and not cyber:
             if is_skill_control_plane_path(target, binding.state_drive_root):
                 return (
                     "⚠️ EDIT_TEXT_BLOCKED: skill provenance, launcher seed, "
@@ -961,19 +955,21 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
 
     def _mask_user_files_matches(result_text: str) -> str:
         # Same egress seam as _read_file (#447 В23): a search over the owner's
-        # home surfaces file CONTENT in the match lines, so raw credential
-        # bytes must be masked here too — on BOTH the rg path and the Python
-        # fallback. Names/paths stay; values become ***.
+        # home surfaces file CONTENT in the match lines, so bytes in a
+        # recognized credential format or a PEM block are masked here too, on
+        # BOTH the rg path and the Python fallback; secrets in unrecognized
+        # formats are not detected. Names/paths stay; masked values become ***.
         if normalized != "user_files" and not subagent_readonly:
             return result_text
-        masked_text, masked = mask_secret_bytes(
-            result_text, mask_opaque=normalized not in {"active_workspace", "system_repo"},
-        )
+        if normalized == "user_files" and _raw_owner_secret_access_allowed(ctx):
+            return result_text
+        masked_text, masked = mask_secret_bytes(result_text)
         if masked:
             masked_text += (
-                f"\n⚠️ SECRET_BYTES_MASKED: {masked} secret-shaped span(s) in these "
-                "matches were replaced with ***; raw credentials never enter model "
-                "context. Reference them by location, not value."
+                f"\n⚠️ SECRET_BYTES_MASKED: {masked} span(s) in these matches matched "
+                "a recognized credential format or a PEM block and were replaced with "
+                "***; secrets in unrecognized formats are not detected. Reference the "
+                "masked ones by location, not value."
             )
         return masked_text
 
@@ -1204,8 +1200,12 @@ def _durable_descendant_of(
 def _forward_to_worker(
     ctx: ToolContext, task_id: str, message: str, relayed_from_task_id: str = "",
 ) -> str:
-    """Forward a message to a running worker task's mailbox."""
-    from ouroboros.owner_mailbox import write_task_message
+    """Write a task-tree message into a running task's mailbox: one writer for a
+    descendant (an ancestor's or relayed sibling's message) and for any active
+    independent root the host lists (a message from an independent task, owner
+    6C). Never owner text; WRITTEN, not read -- the recipient drains it later."""
+    from ouroboros.owner_mailbox import PROVENANCE_INDEPENDENT_TASK, write_task_message
+    from ouroboros.peer_roster import host_listed_independent_root
     from ouroboros.task_results import STATUS_RUNNING, validate_task_id
     from ouroboros.task_status import FINAL_STATUSES, load_effective_task_result
 
@@ -1218,11 +1218,11 @@ def _forward_to_worker(
     data = load_effective_task_result(status_drive_root, tid)
     status = str(data.get("status") or "").lower()
     if not data:
-        return f"⚠️ TASK_NOT_FOUND: task {tid} is not registered."
+        return _publish_tool_result(ctx, ToolResult(status="unavailable", code="LEGACY_UNAVAILABLE", text=(f"⚠️ TASK_NOT_FOUND: task {tid} is not registered.")))
     if status in FINAL_STATUSES:
-        return f"⚠️ TASK_NOT_ACTIVE: task {tid} is already {status}."
+        return _publish_tool_result(ctx, ToolResult(status="blocked", code="LEGACY_BLOCKED", text=(f"⚠️ TASK_NOT_ACTIVE: task {tid} is already {status}.")))
     if status != STATUS_RUNNING:
-        return f"⚠️ TASK_NOT_ACTIVE: task {tid} is {status or 'unknown'}, not running."
+        return _publish_tool_result(ctx, ToolResult(status="blocked", code="LEGACY_BLOCKED", text=(f"⚠️ TASK_NOT_ACTIVE: task {tid} is {status or 'unknown'}, not running.")))
     # AR2-6: no NEW steering writes while a cancellation is pending. The
     # effective status honestly stays ``running`` (cancel_state=pending rides
     # beside it), so the checks above pass — consult the same predicate the
@@ -1233,19 +1233,25 @@ def _forward_to_worker(
 
         if cancel_pending(status_drive_root, tid):
             return (
-                f"⚠️ TASK_CANCEL_PENDING: task {tid} has a pending cancellation — the "
+                _publish_tool_result(ctx, ToolResult(status="blocked", code="LEGACY_BLOCKED", text=(f"⚠️ TASK_CANCEL_PENDING: task {tid} has a pending cancellation — the "
                 "supervisor is tearing it down; the message was NOT delivered. Wait for "
-                "the settled outcome or start a new task."
+                "the settled outcome or start a new task.")))
             )
     except Exception:
         log.debug("forward_to_worker cancel-pending check failed for %s", tid, exc_info=True)
     current_task_id = str(getattr(ctx, "task_id", "") or "").strip()
     if not current_task_id:
         return "⚠️ TASK_FORBIDDEN: forward_to_worker requires an active task context."
-    if not _durable_descendant_of(status_drive_root, tid, data, current_task_id):
-        return f"⚠️ TASK_FORBIDDEN: task {tid} is not a child or descendant of the current task."
     relayed_from = str(relayed_from_task_id or "").strip()
     provenance = "ancestor_task"
+    listed_root = None
+    if not _durable_descendant_of(status_drive_root, tid, data, current_task_id):
+        listed_root = host_listed_independent_root(status_drive_root, tid)
+        if listed_root is None:
+            return f"⚠️ TASK_FORBIDDEN: task {tid} is neither a descendant of the current task nor an active independent root the host lists."
+        if relayed_from:
+            return f"⚠️ TASK_FORBIDDEN: a relayed message reaches only your own descendants; task {tid} is an independent root."
+        provenance = PROVENANCE_INDEPENDENT_TASK
     if relayed_from:
         try:
             relayed_from = validate_task_id(relayed_from)
@@ -1261,6 +1267,9 @@ def _forward_to_worker(
             )
         provenance = "peer_via_ancestor"
     child_drive = str(data.get("child_drive_root") or data.get("headless_child_drive_root") or data.get("drive_root") or "").strip()
+    if not child_drive and listed_root is not None:
+        # A root drains its own listed drive, else the canonical root -- never the SENDER's drive.
+        child_drive = str(listed_root.get("drive_root") or "").strip() or str(status_drive_root)
     mailbox_drive = pathlib.Path(child_drive) if child_drive else pathlib.Path(ctx.drive_root)
     written = write_task_message(
         mailbox_drive,
@@ -1272,7 +1281,10 @@ def _forward_to_worker(
         msg_id=uuid.uuid4().hex,
     )
     if not written:
-        return f"⚠️ TASK_MESSAGE_UNWRITTEN: message to task {tid} was not persisted."
+        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ERROR", text=(f"⚠️ TASK_MESSAGE_UNWRITTEN: message to task {tid} was not persisted.")))
+    if listed_root is not None:
+        return (f"Message forwarded to task {tid}: written to its mailbox as a message from this task "
+                "(never owner text); it reads it at its next checkpoint. Files cannot be attached to messages between tasks.")
     return f"Message forwarded to task {tid}"
 
 
@@ -1439,6 +1451,8 @@ def get_tools() -> List[ToolEntry]:
             "name": "escalate",
             "description": (
                 "Escalate a decision up the responsibility chain instead of guessing. "
+                "List 2-6 real options, mark your recommendation with recommended=true on that option, "
+                "and let each option's detail name what it gains and what it costs. "
                 "A root task asks the OWNER (a typed quiz card with option buttons); "
                 "a subagent asks its PARENT task (a typed mailbox frame the parent "
                 "answers with forward_to_worker or escalates higher, verbatim). "
@@ -1446,25 +1460,31 @@ def get_tools() -> List[ToolEntry]:
                 "A live root, including ordinary Main or Project conversation, may set wait_for_answer=true when the answer is necessary: "
                 "after the current tool batch it waits without model calls, preserving its browser "
                 "and freeing active worker capacity. Addressed owner text resumes your judgment. "
-                "Stop and existing task deadlines remain effective; questions expire only at task end."
+                "Stop and existing task deadlines remain effective. The card outlives the task: "
+                "an answer that arrives later reaches the chat as an ordinary owner message."
             ),
             "parameters": {"type": "object", "properties": {
                 "question": {"type": "string", "description": "The decision being escalated (markdown renders in chat)"},
                 "options": {"type": "array", "items": {"type": "object", "properties": {
                     "label": {"type": "string", "description": "Short option label (button text, max 120)"},
                     "detail": {"type": "string", "description": "Optional one-line consequence of this option (max 500)"},
+                    "recommended": {"type": "boolean", "description": "True on the ONE option you recommend"},
                 }, "required": ["label"]}, "description": "2-6 mutually exclusive options"},
                 "stake": {"type": "string", "description": "What depends on this decision (optional, max 500)"},
                 "assumption": {"type": "string", "description": "For optional clarification, the assumption you continue under (max 500); may be empty for required waiting."},
                 "wait_for_answer": {"type": "boolean", "default": False, "description": "Live roots: wait for addressed owner input before another model round."},
+                "max_wait_minutes": {"type": "integer", "description": "Optional bound for wait_for_answer: resume with a system notice after N minutes if no answer arrives (the card stays open)."},
             }, "required": ["question", "options"]},
         }, _escalate),
         ToolEntry("forward_to_worker", {
             "name": "forward_to_worker",
             "description": (
-                "Send an addressed task-tree message to a running child or descendant. "
-                "The mailbox preserves you as the ancestor sender; it never labels this "
-                "message as owner dialogue. Arbitrary unrelated tasks remain unreachable."
+                "Write an addressed task-tree message into a running task's mailbox: a child "
+                "or descendant of yours (delivered as the ancestor's message), or any active "
+                "independent root the host lists (delivered as a message from an independent "
+                "task). It is never labelled owner dialogue, files cannot be attached, and the "
+                "result says the message was written, not read: the task drains it at its next "
+                "checkpoint."
             ),
             "parameters": {"type": "object", "properties": {
                 "task_id": {"type": "string", "description": "ID of the running task to forward to"},

@@ -27,7 +27,7 @@ class _Consciousness:
         return None
 
 
-def _ctx(tmp_path, *, pending=None, running=None, ephemeral=None, direct=None):
+def _ctx(tmp_path, *, pending=None, running=None, direct=None):
     return types.SimpleNamespace(
         DRIVE_ROOT=tmp_path,
         PENDING=list(pending or []),
@@ -36,7 +36,6 @@ def _ctx(tmp_path, *, pending=None, running=None, ephemeral=None, direct=None):
         update_state=lambda fn: fn({"owner_id": 1, "owner_chat_id": 1}),
         consciousness=_Consciousness(),
         get_chat_agent=lambda: types.SimpleNamespace(_busy=False),
-        handle_chat_ephemeral=ephemeral or (lambda *_a, **_k: None),
         handle_chat_direct=direct or (lambda *_a, **_k: None),
         send_with_budget=lambda *_a, **_k: (_ for _ in ()).throw(
             AssertionError("routing receipts must not create assistant bubbles")
@@ -63,7 +62,6 @@ def test_project_single_pending_root_gets_zero_call_mailbox_delivery(tmp_path, m
     ctx = _ctx(
         tmp_path,
         pending=[pending],
-        ephemeral=lambda *_a, **_k: calls.append("ephemeral"),
         direct=lambda *_a, **_k: calls.append("direct"),
     )
 
@@ -90,7 +88,7 @@ def test_project_single_pending_root_gets_zero_call_mailbox_delivery(tmp_path, m
     server._process_bridge_updates(Bridge(), 0, ctx)
 
     assert drain_owner_messages(tmp_path, "pending-root") == ["continue with the failing test"]
-    assert "ephemeral" not in calls and "direct" not in calls
+    assert "direct" not in calls
     assert calls[-1][1]["status"] == "delivered"
     assert calls[-1][1]["target"] == "pending-root"
     annotation = latest_chat_annotations(tmp_path)["owner-1"]
@@ -154,7 +152,6 @@ def test_project_swarm_bypasses_single_root_mailbox_for_new_managed_root(tmp_pat
     ctx = _ctx(
         tmp_path,
         pending=[pending],
-        ephemeral=lambda cid, text, image, **kwargs: calls.append((cid, text, kwargs)),
         direct=lambda *_a, **_k: calls.append("direct"),
     )
 
@@ -172,20 +169,23 @@ def test_project_swarm_bypasses_single_root_mailbox_for_new_managed_root(tmp_pat
         def broadcast(self, _payload):
             return None
 
-    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(
+        "supervisor.events._handle_promote_chat_to_task",
+        lambda event, _ctx: calls.append(("promote", event)) or {"status": "scheduled"},
+    )
     monkeypatch.setattr("supervisor.message_bus.log_chat", lambda *_a, **_k: None)
     server._process_bridge_updates(Bridge(), 0, ctx)
 
     assert drain_owner_messages(tmp_path, "pending-root") == []
-    assert len(calls) == 1 and calls[0] != "direct"
-    metadata = calls[0][2]["task_metadata"]
-    assert metadata["force_plan"] is True
-    assert metadata["routing_contract"]["valid_actions"] == ["promote_chat_to_task"]
-    assert metadata["routing_contract"]["on_uncertain_or_invalid_target"] == "promote_chat_to_task"
-    assert metadata["routing_contract"]["manual_options"] == []
+    assert len(calls) == 1 and calls[0][0] == "promote"
+    event = calls[0][1]
+    assert event["force_plan"] is True
+    assert event["project_id"] == "racer" and event["chat_id"] == chat_id
+    assert event["objective"] == "deeply fix the new issue"
+    assert "routing_contract" not in event
 
 
-def test_empty_main_swarm_uses_ephemeral_router_not_direct_lane(tmp_path, monkeypatch):
+def test_main_swarm_admits_root_in_main_without_model_routing(tmp_path, monkeypatch):
     import server
     from ouroboros.projects_registry import create_project
 
@@ -193,7 +193,6 @@ def test_empty_main_swarm_uses_ephemeral_router_not_direct_lane(tmp_path, monkey
     create_project(tmp_path, "racer", name="Racer")
     ctx = _ctx(
         tmp_path,
-        ephemeral=lambda cid, text, image, **kwargs: calls.append(("ephemeral", kwargs)),
         direct=lambda *_a, **_k: calls.append(("direct", {})),
     )
 
@@ -211,14 +210,18 @@ def test_empty_main_swarm_uses_ephemeral_router_not_direct_lane(tmp_path, monkey
         def broadcast(self, _payload):
             return None
 
-    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(
+        "supervisor.events._handle_promote_chat_to_task",
+        lambda event, _ctx: calls.append(("promote", event)) or {"status": "scheduled"},
+    )
     monkeypatch.setattr("supervisor.message_bus.log_chat", lambda *_a, **_k: None)
     server._process_bridge_updates(Bridge(), 0, ctx)
 
-    assert [kind for kind, _kwargs in calls] == ["ephemeral"]
-    contract = calls[0][1]["task_metadata"]["routing_contract"]
-    assert contract["valid_actions"] == ["promote_chat_to_task", "route_to_project"]
-    assert contract["manual_options"] == []
+    assert [kind for kind, _kwargs in calls] == ["promote"]
+    event = calls[0][1]
+    assert event["project_id"] == "" and event["chat_id"] == 1
+    assert event["objective"] == "audit and fix it"
+    assert "routing_contract" not in event
 
 
 def test_project_zero_call_followup_advances_active_fence_then_falls_through_when_sealed(
@@ -283,7 +286,6 @@ def test_project_single_active_direct_root_gets_zero_call_mailbox_delivery(tmp_p
     calls = []
     ctx = _ctx(
         tmp_path,
-        ephemeral=lambda *_a, **_k: calls.append("ephemeral"),
         direct=lambda *_a, **_k: calls.append("direct"),
     )
     from supervisor.active_activity import get_direct_activity_registry
@@ -310,7 +312,7 @@ def test_project_single_active_direct_root_gets_zero_call_mailbox_delivery(tmp_p
     server._process_bridge_updates(Bridge(), 0, ctx)
 
     assert drain_owner_messages(tmp_path, "direct-racer") == ["also check the brakes"]
-    assert "ephemeral" not in calls and "direct" not in calls
+    assert "direct" not in calls
     assert calls[-1][1]["action"] == "mailbox_delivery"
     assert calls[-1][1]["target"] == "direct-racer"
 
@@ -380,7 +382,6 @@ def test_main_inline_decision_has_no_predecision_annotation(tmp_path, monkeypatc
     ctx = _ctx(
         tmp_path,
         direct=lambda cid, text, image, **kwargs: calls.append((cid, text, image, kwargs)),
-        ephemeral=lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("ordinary routing became ephemeral")),
     )
 
     broadcasts = []
@@ -686,7 +687,130 @@ def test_main_manifest_carries_working_dir_and_workspace_facts(tmp_path):
     assert final["workspace_mode"] == "external"
 
 
-def test_project_swarm_keeps_host_scope_when_registry_recheck_is_unavailable(
+def test_main_manifest_offers_owner_roots_not_swarm_children(tmp_path):
+    """I29 (owner decision batch 3, answer 6b=A): the predecessor window held the 16
+    newest results of ANY kind, so one swarm wave's children evicted the owner's own
+    roots and a result the owner had just read could not be continued from. Children
+    are skipped and counted as their OWN omission; the final_results count keeps its
+    cap-only meaning."""
+    import os
+
+    import server
+    from ouroboros.task_results import task_result_path, write_task_result
+
+    for index in range(16):
+        tid = f"root{index:02d}"
+        write_task_result(tmp_path, tid, "completed", objective=f"owner work {index}",
+                          ts=f"2026-08-10T00:00:{index:02d}Z")
+        os.utime(task_result_path(tmp_path, tid, create=False), (100 + index, 100 + index))
+    for index in range(2):
+        tid = f"child{index}"
+        write_task_result(tmp_path, tid, "completed", objective="helper work",
+                          parent_task_id="root15", root_task_id="root15",
+                          delegation_role="subagent", ts=f"2026-08-11T00:00:{index:02d}Z")
+        os.utime(task_result_path(tmp_path, tid, create=False), (900 + index, 900 + index))
+
+    manifest = server._main_routing_manifest(_ctx(tmp_path))
+    offered = [row["task_id"] for row in manifest["final_results"]]
+
+    assert len(offered) == 16
+    assert not [tid for tid in offered if tid.startswith("child")]
+    # The OLDEST owner root survives the cap the two children used to consume.
+    assert "root00" in offered
+    assert manifest["omissions"]["children"] == 2
+    assert manifest["omissions"]["final_results"] == 0
+
+
+def test_omissions_count_children_ordered_after_the_cap(tmp_path):
+    """The child count must not be a by-product of the capped loop: children older
+    than the 16th root were skipped but counted nowhere, and the cap number silently
+    absorbed them (A26 requires the two omissions to stay separate)."""
+    import os
+
+    import server
+    from ouroboros.task_results import task_result_path, write_task_result
+
+    for index in range(17):
+        tid = f"root{index:02d}"
+        write_task_result(tmp_path, tid, "completed", objective=f"owner work {index}",
+                          ts=f"2026-08-20T00:00:{index:02d}Z")
+        os.utime(task_result_path(tmp_path, tid, create=False), (900 + index, 900 + index))
+    for index in range(2):
+        tid = f"child{index}"
+        write_task_result(tmp_path, tid, "completed", objective="helper work",
+                          parent_task_id="root16", root_task_id="root16",
+                          delegation_role="subagent", ts=f"2026-08-01T00:00:{index:02d}Z")
+        os.utime(task_result_path(tmp_path, tid, create=False), (100 + index, 100 + index))
+
+    manifest = server._main_routing_manifest(_ctx(tmp_path))
+
+    assert len(manifest["final_results"]) == 16
+    assert manifest["omissions"]["children"] == 2      # counted even though they sort last
+    assert manifest["omissions"]["final_results"] == 1  # exactly the root cut by the cap
+
+
+def test_project_room_direct_chat_root_is_admitted_as_a_predecessor(tmp_path):
+    """The second half of the traced refusal (I29): a project room's direct-chat
+    root left the per-project pointer empty, so the room's own decision turn had no
+    predecessor to offer. With the pointer stamped, the promote admits it."""
+    import server
+    from ouroboros.projects_registry import create_project
+    from ouroboros.task_results import write_task_result
+    from ouroboros.tools.control_routing import _attach_predecessor_authority_from_metadata
+    from ouroboros.tools.project_journal import record_project_last_result
+
+    project = create_project(tmp_path, "racer", name="Racer")
+    write_task_result(tmp_path, "roomturn1", "completed", project_id="racer",
+                      objective="answer in the room", ts="2026-08-10T00:00:01Z")
+    record_project_last_result("racer", "roomturn1", tmp_path)
+
+    metadata = server._decision_turn_metadata(
+        _ctx(tmp_path), int(project["chat_id"]), "room-1", {"project_id": "racer"},
+    )
+    assert metadata["project_last_task_result"]["task_id"] == "roomturn1"
+
+    evt: dict = {}
+    refusal = _attach_predecessor_authority_from_metadata(
+        types.SimpleNamespace(task_metadata=metadata, drive_root=tmp_path,
+                              budget_drive_root=str(tmp_path)),
+        evt, "roomturn1",
+    )
+    assert refusal == ""
+    assert evt["predecessor_task_id"] == "roomturn1"
+
+
+def test_promoting_from_an_owner_root_still_succeeds_after_the_child_filter(tmp_path):
+    """CHECKLISTS item 21 positive path: the narrowing removes CHILDREN from the
+    predecessor window, and the owner's own root result stays fully promotable
+    through the same manifest -> authority route."""
+    import server
+    from ouroboros.projects_registry import create_project
+    from ouroboros.task_results import write_task_result
+    from ouroboros.tools.control_routing import _attach_predecessor_authority_from_metadata
+
+    create_project(tmp_path, "racer", name="Racer")  # keeps the Main manifest non-empty
+    write_task_result(tmp_path, "ownerroot1", "completed", objective="the owner's work",
+                      ts="2026-08-10T00:00:01Z")
+    write_task_result(tmp_path, "helper1", "completed", objective="helper work",
+                      parent_task_id="ownerroot1", root_task_id="ownerroot1",
+                      delegation_role="subagent", ts="2026-08-10T00:00:02Z")
+
+    metadata = server._decision_turn_metadata(_ctx(tmp_path), 1, "msg-1", {})
+    offered = [row["task_id"] for row in metadata["main_routing_manifest"]["final_results"]]
+    assert offered == ["ownerroot1"]
+
+    evt: dict = {}
+    refusal = _attach_predecessor_authority_from_metadata(
+        types.SimpleNamespace(task_metadata=metadata, drive_root=tmp_path,
+                              budget_drive_root=str(tmp_path)),
+        evt, "ownerroot1",
+    )
+    assert refusal == ""
+    assert evt["predecessor_task_id"] == "ownerroot1"
+    assert evt["predecessor_authority_source"]["tool"] == "get_task_result"
+
+
+def test_project_routing_facts_keep_host_scope_when_registry_recheck_is_unavailable(
     tmp_path, monkeypatch,
 ):
     import server
@@ -698,12 +822,14 @@ def test_project_swarm_keeps_host_scope_when_registry_recheck_is_unavailable(
     metadata = server._decision_turn_metadata(
         ctx,
         987654,
-        "project-swarm-1",
-        {"project_id": "racer", "force_plan": True, "force_plan_source": "swarm"},
+        "project-routing-1",
+        {"project_id": "racer"},
     )
 
     assert metadata["routing_contract"]["source_lane"] == "project"
-    assert metadata["routing_contract"]["valid_actions"] == ["promote_chat_to_task"]
+    assert metadata["routing_contract"]["valid_actions"] == [
+        "answer_inline", "steer_task", "promote_chat_to_task", "route_to_project", "needs_manual_target",
+    ]
     assert "main_routing_manifest" not in metadata
 
 
@@ -923,7 +1049,7 @@ def test_task_presentation_snapshot_bounds_existing_objective_and_does_not_make_
     assert first["task_name"].endswith("…")
 
 
-def test_project_completion_enqueues_once_for_root_and_never_for_child_or_ephemeral(
+def test_project_completion_enqueues_once_for_root_and_never_for_child_or_direct(
     tmp_path, monkeypatch,
 ):
     from ouroboros.projects_registry import bind_task_to_project, create_project, update_project
@@ -980,7 +1106,7 @@ def test_project_completion_enqueues_once_for_root_and_never_for_child_or_epheme
         "type": "send_message",
         "chat_id": 1,
         "task_id": "root-project",
-        "text": "Launch 🚀 › Ship release · Done\nRelease shipped.",
+        "text": "Launch 🚀 › Ship release · Done\nOpen the Project for details.",
         "role": "system",
         "system_type": "project_completion_summary",
         "delivery_id": "project-completion:root-project",
@@ -999,11 +1125,12 @@ def test_project_completion_enqueues_once_for_root_and_never_for_child_or_epheme
         {**result, "task_id": "child-project"}, done
     ) is False
     assert enqueue_project_completion_summary(
-        ctx.DRIVE_ROOT, {"_ephemeral": True}, "root-project", root, result, done
+        ctx.DRIVE_ROOT, {"_is_direct_chat": True}, "direct-event",
+        {**root, "id": "direct-event"}, {**result, "task_id": "direct-event"}, done
     ) is False
     assert enqueue_project_completion_summary(
-        ctx.DRIVE_ROOT, event, "root-project", root, result,
-        {**done, "ephemeral_decision": True},
+        ctx.DRIVE_ROOT, event, "direct-task", {**root, "id": "direct-task", "_is_direct_chat": True},
+        {**result, "task_id": "direct-task"}, done,
     ) is False
     assert len(queued) == 1
     assert queued[0]["progress_meta"]["target_label"] == "Launch 🚀 › Ship release"

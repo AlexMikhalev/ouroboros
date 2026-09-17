@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pathlib
-import re
 from typing import Any, Dict, Iterable, List
 
 from ouroboros.shell_parse import (
@@ -15,7 +14,7 @@ from ouroboros.shell_parse import (
     unwrap_env_argv,
 )
 from ouroboros.tool_access import ResolvedResourceBinding, resolve_shell_cwd
-from ouroboros.tools.shell_guards import interpreter_family, writer_target_tokens
+from ouroboros.tools.shell_guards import interpreter_family
 from ouroboros.workspace_executor import executor_ref_from_ctx, map_backend_path, map_host_path
 
 _DEFAULT_DENIED_OPERATIONS = frozenset({
@@ -216,22 +215,6 @@ def _policy_backend_spellings(ctx: Any, raw_path: str, resolved: pathlib.Path | 
     return {item for item in spellings if item}
 
 
-def _backend_cwd_relative_spellings(ctx: Any, work_dir: pathlib.Path, spellings: set[str]) -> set[str]:
-    try:
-        executor = executor_ref_from_ctx(ctx)
-        if executor is None:
-            return set()
-        backend_cwd = map_host_path(executor, pathlib.Path(work_dir)).rstrip("/")
-    except Exception:
-        return set()
-    relative: set[str] = set()
-    for spelling in spellings:
-        normalized = slash_normalize_path_text(spelling).rstrip("/")
-        if normalized.startswith(backend_cwd + "/"):
-            rel = normalized[len(backend_cwd) + 1:]
-            if rel:
-                relative.add(rel)
-    return relative
 
 
 def protected_artifact_paths(
@@ -496,10 +479,6 @@ def _inline_shell_command(argv: list[str], shell_name: str) -> str:
     return ""
 
 
-def _uses_powershell_encoded_command(argv: list[str], shell_name: str) -> bool:
-    if shell_name not in {"powershell", "pwsh"}:
-        return False
-    return any(str(arg or "").strip().lower() in _POWERSHELL_ENCODED_SWITCHES for arg in argv[1:])
 
 
 def _is_high_risk_interpreter(name: str) -> bool:
@@ -549,109 +528,6 @@ def _interpreter_read_operands(argv: list[str]) -> list[str]:
             continue
         return [token]
     return []
-
-
-# Content-read primitives that turn a mere protected-path MENTION inside interpreter
-# code into a real read/copy/introspection attempt. A mention alone is not enough:
-# an execute-allowed black-box artifact must stay invocable from harness code
-# (subprocess.run([path, ...]) probe matrices, differential compare loops) — those
-# capture the artifact's OUTPUT, which the policy deliberately permits.
-_READ_PRIMITIVE_RE = re.compile(
-    r"open\s*\(|read_bytes|read_text|\.read\s*\(|readinto|shutil\s*\.\s*(copy\w*|move)"
-    r"|copyfile|base64|b2a_|hexlify|fromfile|mmap|tobytes|pickle\.|np\.(load|fromfile)"
-    r"|\b(cat|cp|dd|od|xxd|hexdump|strings|objdump|readelf|nm|gdb|strace|ltrace|install)\b"
-    r"|sha\d+sum|md5sum|hashlib",
-    re.IGNORECASE,
-)
-
-
-# A mention sitting in SPAWN-PROGRAM position — the FIRST token of a process-
-# spawn call (pty.spawn / pexpect / subprocess / os.exec*/os.spawn*/Popen), i.e.
-# the program being executed — is an EXECUTE of the artifact, not a read, even
-# when pty/pipe OUTPUT reads (`os.read(fd)`, `child.read()`) sit nearby: those
-# read the program's output stream, which the execute-allowed policy deliberately
-# permits (round-2 structural exception; 9/48 residual smoke2 FPs were pty
-# differential probes running the reference AS the program).
-#
-# The tail admits ONLY the punctuation preceding the FIRST argv token: an
-# optional single leading positional (the `prog` of `os.execv(prog, [argv0,…])`,
-# `[^,()\[\]]*,`), then optional `[`, optional string-prefix + quote, whitespace.
-# This is the fix for the round-2 over-exemption (v6.56.0): a LATER argv element,
-# e.g. the `./ref` in `subprocess.run(['cat', './ref'])` where the spawned
-# PROGRAM is the read primitive `cat`, must NOT be exempt, or the whole
-# read/copy/hash block is bypassed. Only argv[0] — the program token
-# (`subprocess.run(['./ref', …])`, `os.execv('./ref', […])`) or its cosmetic
-# list echo (`os.execv('./ref', ['./ref', …])`, argv[0] is never a file that
-# gets read) — is exempt; a real read arg is always argv[1+].
-_SPAWN_CALL_BEFORE_RE = re.compile(
-    r"(?:pty\s*\.\s*spawn|pexpect\s*\.\s*\w*spawn\w*|subprocess\s*\.\s*(?:run|call|check_call|check_output|Popen)"
-    r"|\bPopen|os\s*\.\s*spawn\w+|os\s*\.\s*exec\w+|os\s*\.\s*posix_spawn\w*)"
-    r"\s*\(\s*(?:[^,()\[\]]*,\s*)?(?:\[\s*)?(?:[rbfRBF]{1,2})?[\"']?[\w./\\~-]*$",
-    re.IGNORECASE,
-)
-
-
-def _mention_in_spawn_position(text: str, idx: int, *, lookback: int = 90) -> bool:
-    lo = max(0, idx - lookback)
-    return bool(_SPAWN_CALL_BEFORE_RE.search(text[lo:idx]))
-
-
-def _read_primitive_near(text: str, needle: str, *, window: int = 120) -> bool:
-    """True when a content-read primitive appears within ``window`` chars of a
-    protected-path mention — proximity keeps hashing/catting of captured PROBE
-    OUTPUT elsewhere in the same script from false-positiving the block.
-    Mention occurrences in spawn-argv position are execute usages and are
-    skipped (see _SPAWN_CALL_BEFORE_RE)."""
-    if not text or not needle:
-        return False
-    start = 0
-    while True:
-        idx = text.find(needle, start)
-        if idx < 0:
-            return False
-        start = idx + 1
-        if _mention_in_spawn_position(text, idx):
-            continue
-        lo = max(0, idx - window)
-        hi = min(len(text), idx + len(needle) + window)
-        if _READ_PRIMITIVE_RE.search(text[lo:hi]):
-            return True
-
-
-# `<ident> = <str-prefix>?<quote>…<needle>…<quote>` or `= Path("…<needle>…")` — a
-# simple variable BOUND to the protected-path literal (the alias). Bounded: only
-# a direct literal assignment, not arbitrary dataflow.
-_ALIAS_BIND_TMPL = (
-    r"(\w+)\s*=\s*(?:pathlib\s*\.\s*)?(?:Path\s*\(\s*)?[rbfRBF]{0,2}[\"'][^\"'\n]*__NEEDLE__[^\"'\n]*[\"']"
-)
-
-
-def _protected_read_via_alias(text: str, needles) -> bool:
-    """Catch `p = '<protected>'; …; open(p).read()` / `p.read_bytes()` /
-    `shutil.copy(p, …)` — a protected READ hidden behind a simple variable alias,
-    which the proximity scan misses when the read sits far from the literal. Only
-    read/copy primitives applied to the alias trip this; execute-via-alias
-    (`subprocess.run([p])`, `os.execv(p, …)`) is deliberately NOT matched so the
-    benchmark-sanctioned differential-execute workflow stays allowed."""
-    if not text:
-        return False
-    for needle in needles:
-        if not needle:
-            continue
-        for m in re.finditer(_ALIAS_BIND_TMPL.replace("__NEEDLE__", re.escape(needle)), text):
-            alias = m.group(1)
-            if not alias:
-                continue
-            a = re.escape(alias)
-            read_of_alias = (
-                r"open\s*\(\s*" + a + r"\b"
-                r"|" + a + r"\s*\.\s*(?:read_bytes|read_text|read|open)\s*\("
-                r"|(?:shutil\s*\.\s*(?:copy\w*|move)|copyfile|hashlib\s*\.\s*\w+)\s*\(\s*" + a + r"\b"
-                r"|(?:read_bytes|read_text|hexlify|b2a_|fromfile|np\.(?:load|fromfile))\s*\(\s*" + a + r"\b"
-            )
-            if re.search(read_of_alias, text):
-                return True
-    return False
 
 
 def _git_subcommand_index(argv: list[str]) -> int | None:
@@ -831,232 +707,139 @@ def _git_static_introspection_is_path_limited(work_dir: pathlib.Path, candidates
     return False
 
 
+def _file_operand_tokens(argv: list[str]) -> list[str]:
+    """Bounded utility file roles; patterns, programs and option values are not files."""
+    first = pathlib.PurePath(argv[0]).name.lower().removesuffix(".exe") if argv else ""
+    if first == "find":
+        files = []
+        for token in argv[1:]:
+            if not files and token in {"-H", "-L", "-P", "--"}:
+                continue
+            if token.startswith("-") or token in _FIND_EXPRESSION_MARKERS:
+                break
+            files.append(token)
+        return files or ["."]
+    if first == "dd":
+        return [token[3:] for token in argv[1:] if token.startswith("if=")]
+    patterned = first in {"grep", "egrep", "fgrep", "rg", "ripgrep", "ag", "ack", "sed", "awk"}
+    if not patterned:
+        return [token for token in argv[1:] if token and not token.startswith("-")]
+    files, pattern_seen, index = [], False, 1
+    while index < len(argv):
+        token = argv[index]
+        if token == "--":
+            tail = argv[index + 1:]
+            return files + (tail if pattern_seen else tail[1:])
+        if token in {"-e", "--regexp", "--expression", "-f", "--file"}:
+            if index + 1 >= len(argv):
+                return files
+            if token in {"-f", "--file"}:
+                files.append(argv[index + 1])
+            pattern_seen, index = True, index + 2
+            continue
+        if token.startswith(("--regexp=", "--expression=", "-e")):
+            pattern_seen = True
+        elif token.startswith(("--file=", "-f")):
+            files.append(token.split("=", 1)[1] if token.startswith("--") else token[2:])
+            pattern_seen = True
+        elif (first == "awk" and token in {"-v", "-F"}) or token in {
+            "-A", "-B", "-C", "-m", "-g", "--glob", "--iglob", "--include", "--exclude", "--exclude-dir",
+        }:
+            index += 2
+            continue
+        elif first == "sed" and token == "-i" and index + 1 < len(argv) and argv[index + 1] == "":
+            index += 2
+            continue
+        elif token.startswith("-"):
+            # Unknown long options may consume a value; do not invent a file role.
+            if token.startswith("--") and "=" not in token and token not in {
+                "--line-number", "--recursive", "--fixed-strings", "--ignore-case", "--quiet", "--in-place",
+            }:
+                return files
+        elif not pattern_seen:
+            pattern_seen = True
+        elif first != "awk" or "=" not in token:
+            files.append(token)
+        index += 1
+    return files
+
+
+def _shell_operand_block(ctx, tokens, operation, work_dir, binding, shell_syntax=False) -> str:
+    candidates = []
+    for text in tokens:
+        if not text or any(char in text for char in "$`~"):
+            continue  # Unexpanded values are not concrete filesystem evidence.
+        if shell_syntax and _contains_shell_glob(text):
+            if reason := _glob_pattern_could_match_protected(ctx, work_dir, text, operation, binding):
+                return reason
+            continue
+        candidate = _resolve_candidate_path(ctx, work_dir, text)
+        if candidate is not None:
+            candidates.append(candidate)
+    if reason := any_protected_target(ctx, candidates, operation, binding):
+        return reason
+    if operation in _DIRECTORY_TARGET_OPERATIONS:
+        return _directory_contains_protected_target(ctx, candidates, operation, binding)
+    return ""
+
+
 def shell_block_reason(
-    ctx: Any,
-    raw_cmd: Any,
-    *,
-    cwd: str = "",
-    default_cwd: pathlib.Path | None = None,
+    ctx: Any, raw_cmd: Any, *, cwd: str = "", default_cwd: pathlib.Path | None = None,
     binding: ResolvedResourceBinding | None = None,
 ) -> str:
-    protected_paths = protected_artifact_paths(ctx, binding)
-    if not protected_paths:
+    from ouroboros.config import get_runtime_mode
+    from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+    from ouroboros.shell_parse import sequential_effective_cwds, directory_destination_child_name
+    from ouroboros.tools.shell_guards import direct_shell_rows, directory_destination_pairs, _writer_target_tokens_single
+
+    if mode_has_unrestricted_agency(get_runtime_mode()) or not protected_artifact_paths(ctx, binding):
         return ""
-    raw_argv = shell_argv(raw_cmd)
-    env_values = [
-        token.split("=", 1)[1]
-        for token in raw_argv
-        if "=" in token and not token.startswith("=") and token.split("=", 1)[1]
-    ]
-    argv = strip_leading_env_assignments(unwrap_env_argv(raw_argv))
-    if not argv:
-        return ""
-    first = pathlib.PurePath(argv[0]).name.lower().removesuffix(".exe")
-    if _uses_powershell_encoded_command(argv, first):
-        return (
-            "⚠️ RESOURCE_POLICY_BLOCKED: task_contract.resource_policy protects "
-            "black-box artifacts; PowerShell EncodedCommand is not allowed while "
-            "protected artifacts are declared."
-        )
-    if first in _SHELLS:
-        inline = _inline_shell_command(argv, first)
-        if inline:
-            return shell_block_reason(
-                ctx,
-                inline,
-                cwd=cwd,
-                default_cwd=default_cwd,
-                binding=binding,
-            )
-    operation = (
-        _git_static_introspection_operation(argv)
-        if first == "git"
-        else _find_operation(argv)
-        if first == "find"
-        else _SHELL_COMMAND_OPERATIONS.get(first)
-    )
-    high_risk = _is_high_risk_interpreter(first)
     if binding is not None:
         work_dir = pathlib.Path(binding.target_path)
     else:
         try:
-            work_dir, _cwd_root, _allowed = resolve_shell_cwd(ctx, cwd)
+            work_dir, _root, _allowed = resolve_shell_cwd(ctx, cwd)
         except Exception:
             work_dir = pathlib.Path(default_cwd or ".").resolve(strict=False)
-    try:
-        first_path = pathlib.Path(str(argv[0] or "")).expanduser()
-        first_target = first_path.resolve(strict=False) if first_path.is_absolute() else (pathlib.Path(work_dir) / first_path).resolve(strict=False)
-    except (OSError, TypeError, ValueError):
-        first_target = None
-    if first_target is not None:
-        for protected in protected_paths:
-            if first_target == pathlib.Path(protected).resolve(strict=False):
-                return block_reason_for_path(ctx, first_target, "execute", binding)
-    if first == "git":
-        work_dir = _git_work_dir(ctx, argv, pathlib.Path(work_dir))
-        candidate_tokens = [*env_values, *_git_candidate_tokens(argv)]
-    else:
-        candidate_tokens = [*env_values, *argv[1:]]
-    if first == "find" and not _find_has_explicit_start_path(argv):
-        candidate_tokens.append(".")
-    candidates: list[pathlib.Path] = []
-    glob_texts: list[str] = []  # v6.57.0 (1.6): checked precisely by pattern, not blanket-dir
-    write_target_texts = list(writer_target_tokens(argv))
-    candidate_tokens.extend(write_target_texts)
-    for raw in candidate_tokens:
-        text = str(raw or "")
-        if not text or text in {"|", "&&", "||", ";"}:
+    rows = direct_shell_rows(raw_cmd)
+    for (raw_argv, reads, writes, shell_syntax), row_cwd in zip(rows, sequential_effective_cwds(rows, work_dir)):
+        argv = strip_leading_env_assignments(unwrap_env_argv(raw_argv))
+        first = pathlib.PurePath(argv[0]).name.lower().removesuffix(".exe") if argv else ""
+        if first in {"cmd", "powershell", "pwsh"} and (inline := _inline_shell_command(argv, first)):
+            argv = shell_argv(inline)  # Retain the existing explicit Windows command-operand view.
+        # Redirections are independent operations, including around allowed execution.
+        write_targets = [*_writer_target_tokens_single(argv, direct_only=True, parse_redirects=False), *writes]
+        pairs = directory_destination_pairs(argv)
+        if pairs:
+            write_targets = list(writes)
+            for command, destination, source in pairs:
+                target = _resolve_candidate_path(ctx, row_cwd, destination)
+                child = directory_destination_child_name(command, argv, source)
+                write_targets.append(str(target / child) if target is not None and target.is_dir() and child else destination)
+        for tokens, operation in ((reads, "read_bytes"), (write_targets, "write")):
+            if reason := _shell_operand_block(ctx, tokens, operation, row_cwd, binding, shell_syntax):
+                return reason
+        if not argv:
             continue
-        if first == "dd" and text.startswith("if="):
-            text = text.split("=", 1)[1]
-        elif first == "dd" and "=" in text:
-            continue
-        if text.startswith("-") and not pathlib.Path(text).is_absolute():
-            continue
-        if _contains_shell_glob(text):
-            glob_texts.append(text)
-            continue
-        candidate = _resolve_candidate_path(ctx, pathlib.Path(work_dir), text)
-        if candidate is not None:
-            candidates.append(candidate)
-    if (
-        first == "git"
-        and operation == "static_introspection"
-        and not _git_static_introspection_is_path_limited(pathlib.Path(work_dir), candidates)
-        # Round-2: a plain worktree/staged `git diff` (the vcs_diff tool shape)
-        # cannot dump the protected binary, so do NOT fall back to blocking on the
-        # whole work_dir. A pathspec naming the protected file still blocks via the
-        # candidate tokens above; a rev/content-flag diff keeps the fallback.
-        and _git_diff_can_dump_content(argv)
-    ):
-        candidates.append(pathlib.Path(work_dir).resolve(strict=False))
-    if write_target_texts:
-        # Check ONLY the actual redirect/write targets. Screening every token here
-        # used to block any command that both redirects (to a scratch file) and
-        # merely MENTIONS an execute-allowed artifact — which is exactly the shape
-        # of a differential-testing loop (`ref ... > ref.out; exe ... > exe.out`).
-        write_candidates: list[pathlib.Path] = []
-        write_glob_texts: list[str] = []
-        for raw in write_target_texts:
-            text = str(raw or "")
-            if not text:
-                continue
-            if _contains_shell_glob(text):
-                # v6.57.0 (1.6): a write/delete GLOB (`rm -f *.out`) is checked by PATTERN,
-                # not by blanket-blocking its whole directory just because a protected file
-                # lives there — else cleaning scratch beside a black-box ref binary blocks.
-                write_glob_texts.append(text)
-                continue
-            candidate = _resolve_candidate_path(ctx, pathlib.Path(work_dir), text)
-            if candidate is not None:
-                write_candidates.append(candidate)
-        write_block = any_protected_target(ctx, write_candidates, "write", binding)
-        if write_block:
-            return write_block
-        write_dir_block = _directory_contains_protected_target(
-            ctx, write_candidates, "write", binding
-        )
-        if write_dir_block:
-            return write_dir_block
-        for gt in write_glob_texts:
-            gblock = _glob_pattern_could_match_protected(
-                ctx, pathlib.Path(work_dir), gt, "write", binding
-            )
-            if gblock:
-                return gblock
-    if operation:
-        direct_block = any_protected_target(ctx, candidates, operation, binding)
-        if direct_block:
-            return direct_block
-        for gt in glob_texts:
-            gblock = _glob_pattern_could_match_protected(
-                ctx, pathlib.Path(work_dir), gt, operation, binding
-            )
-            if gblock:
-                return gblock
-        if operation in _DIRECTORY_TARGET_OPERATIONS:
-            return _directory_contains_protected_target(
-                ctx, candidates, operation, binding
-            )
-        return ""
-    if not high_risk:
-        return ""
-    # Bare-token read check ONLY for the file(s) the interpreter itself opens
-    # (the script operand, or a `-m <module>` file operand): `python3 <protected>`
-    # and `python3 -m pdb <protected>` read the artifact's bytes and stay blocked,
-    # while quoted mentions inside -c/heredoc CODE TEXT and program argv are
-    # handled by the mention + read-primitive scan below.
-    script_candidates: list[pathlib.Path] = []
-    for operand in _interpreter_read_operands(argv):
-        if operand and not _contains_shell_glob(operand):
-            resolved_script = _resolve_candidate_path(ctx, pathlib.Path(work_dir), operand)
-            if resolved_script is not None:
-                script_candidates.append(resolved_script)
-    default_block = any_protected_target(
-        ctx, script_candidates, "read_bytes", binding
-    )
-    if default_block:
-        return default_block
-    tail_text = " ".join(str(part or "") for part in [*env_values, *argv[1:]])
-    tail_text_posix = slash_normalize_path_text(tail_text)
-    records = _artifact_records(ctx)
-    for protected in protected_paths:
-        protected = pathlib.Path(protected).resolve(strict=False)
-        needles = {str(protected), protected.as_posix(), slash_normalize_path_text(protected)}
-        for record in records:
-            for raw_path in record.get("paths") or []:
-                protected_path = _resolve_policy_path(ctx, str(raw_path), binding)
-                if protected_path is not None and _matches(protected, protected_path):
-                    backend_spellings = _policy_backend_spellings(ctx, str(raw_path), protected_path)
-                    needles.update(backend_spellings)
-                    needles.update(_backend_cwd_relative_spellings(ctx, pathlib.Path(work_dir), backend_spellings))
-        try:
-            rel = protected.relative_to(pathlib.Path(work_dir).resolve(strict=False))
-            if str(rel) not in {"", "."}:
-                needles.add(rel.as_posix())
-                needles.add(str(rel))
-                needles.add(slash_normalize_path_text(rel))
-        except Exception:
-            pass
-        mention_hits = [
-            needle for needle in needles
-            if needle and (needle in tail_text or slash_normalize_path_text(needle) in tail_text_posix)
-        ]
-        if mention_hits:
-            # An execute-denied artifact must not be reachable through interpreter
-            # indirection at all; an execute-allowed one is blocked only when a
-            # content-read primitive sits next to the mention (running the binary
-            # and capturing its stdout is the benchmark-sanctioned workflow).
-            execute_block = block_reason_for_path(ctx, protected, "execute", binding)
-            if execute_block:
-                return execute_block
-            if any(
-                _read_primitive_near(tail_text, needle)
-                or _read_primitive_near(tail_text_posix, slash_normalize_path_text(needle))
-                for needle in mention_hits
-            ):
-                return block_reason_for_path(ctx, protected, "read_bytes", binding)
-            # Alias-separated read: `p = './ref'; …pad…; open(p).read()` binds the
-            # protected literal to a variable, then reads it FAR from the literal
-            # (outside the proximity window). Catch a simple binding consumed by a
-            # read/copy primitive — execute-via-alias (subprocess.run([p])) is not
-            # a read and stays allowed.
-            if _protected_read_via_alias(tail_text, mention_hits):
-                return block_reason_for_path(ctx, protected, "read_bytes", binding)
-        parent = protected.parent.as_posix()
-        name = protected.name
-        stem = protected.stem
-        suffix = protected.suffix
-        if parent and parent in tail_text_posix and (name in tail_text or (stem and suffix and stem in tail_text and suffix in tail_text)):
-            # A SPLIT/constructed path (`Path(parent) / (stem + suffix)`) never
-            # contains the contiguous filename, so probe near whichever token is
-            # actually present — the full name when contiguous, else the stem.
-            # The read-primitive-near requirement + spawn-argv skip still apply
-            # (round-2: a differential EXECUTE of the split path isn't a read).
-            probe_needle = name if name in tail_text else stem
-            if probe_needle and (
-                _read_primitive_near(tail_text, probe_needle)
-                or _read_primitive_near(tail_text_posix, slash_normalize_path_text(probe_needle))
-            ):
-                return block_reason_for_path(ctx, protected, "read_bytes", binding)
+        first = pathlib.PurePath(argv[0]).name.lower().removesuffix(".exe")
+        executable = _resolve_candidate_path(ctx, row_cwd, argv[0])
+        if executable is not None and executable.exists() and (reason := block_reason_for_path(ctx, executable, "execute", binding)):
+            return reason
+        if first == "git":
+            operation = _git_static_introspection_operation(argv)
+            row_cwd = _git_work_dir(ctx, argv, row_cwd)
+            tokens = _git_candidate_tokens(argv)
+            candidates = [_resolve_candidate_path(ctx, row_cwd, token) for token in tokens]
+            if operation and not _git_static_introspection_is_path_limited(row_cwd, [p for p in candidates if p is not None]) and _git_diff_can_dump_content(argv):
+                tokens.append(str(row_cwd))
+        elif _is_high_risk_interpreter(first):
+            operation, tokens = "read_bytes", _interpreter_read_operands(argv)
+        elif pairs:
+            operation = "copy" if first == "cp" else "delete" if first == "mv" else None
+            tokens = [source for _command, _destination, source in pairs]
+        else:
+            operation = _find_operation(argv) if first == "find" else _SHELL_COMMAND_OPERATIONS.get(first)
+            tokens = _file_operand_tokens(argv) if operation else []
+        if operation and (reason := _shell_operand_block(ctx, tokens, operation, row_cwd, binding, shell_syntax)):
+            return reason
     return ""

@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { composeModelSource, createModelRolesEditor, modelContextNote,
-    modelSourceGroups, parseModelSource } from '../modules/model_roles.js';
+    modelSourceGroups, parseModelSource, sourceChoice, sourceFromChoice } from '../modules/model_roles.js';
+import { configuredApiProviders, routeChoiceGroups } from '../modules/route_editor_primitives.js';
 
 const { contract } = JSON.parse(readFileSync(new URL('./fixtures/onboarding_bootstrap.json', import.meta.url)));
 
@@ -15,14 +16,63 @@ test('source/model spelling is reversible and never embeds the account', () => {
     assert.equal(composeModelSource('openrouter', 'openai::owner-model'), 'openai::owner-model');
 });
 
-test('Models shows only model-capable sources, keeping a saved missing choice', () => {
-    const groups = modelSourceGroups({ sources: [{ id: 'codex', label: 'Codex' }],
-        providers: contract.providerProfiles });
+test('Models shows only model-capable sources and only providers with a stored key', () => {
+    const providers = configuredApiProviders({ OPENAI_API_KEY: '***set***' }, contract.providerProfiles);
+    const groups = modelSourceGroups({ sources: [{ id: 'codex', label: 'Codex' }], providers,
+        providerProfiles: contract.providerProfiles });
     assert.deepEqual(groups[0].options.map((row) => row.value), ['subscription:codex']);
-    assert.ok(groups[1].options.some((row) => row.value === 'openai'));
+    assert.deepEqual(groups[1].options.map((row) => row.value), ['api:openai', '']);
+    assert.equal(groups[1].options[0].label, 'OpenAI');
+    // Every other provider is a key the owner has not added; the tail says where.
+    assert.equal(groups[1].options.at(-1).disabled, true);
+    assert.match(groups[1].options.at(-1).label, /Accounts/);
+    // A model role cannot be delivered by an agent session, so that group is absent.
+    assert.deepEqual(groups.map((group) => group.label), ['Subscriptions · models', 'API keys']);
     const saved = modelSourceGroups({ current: 'subscription:future' });
     assert.equal(saved[0].options[0].value, 'subscription:future');
     assert.match(saved[0].options[0].label, /not checked/);
+});
+
+test('Models and the route editors draw the same groups, in the same order, from one builder', () => {
+    const args = { sources: [{ id: 'codex', label: 'Codex' }],
+        providers: configuredApiProviders({ OPENROUTER_API_KEY: 'k' }), catalogKnown: true, accountsKnown: true };
+    const shared = routeChoiceGroups({ modelSources: args.sources, providers: args.providers,
+        catalogKnown: true, accountsKnown: true, includeSessions: false });
+    assert.deepEqual(modelSourceGroups(args), shared);
+    // "Uses Main" is the only entry a model role adds on top of the shared list.
+    const inherited = modelSourceGroups({ ...args, current: 'inherit' });
+    assert.deepEqual(inherited[0].options, [{ value: 'inherit', label: 'Uses Main' }]);
+    assert.deepEqual(inherited.slice(1), shared);
+});
+
+test('a saved source whose key was removed stays selectable and says the key is gone', () => {
+    const groups = modelSourceGroups({ current: 'anthropic',
+        providers: configuredApiProviders({ OPENROUTER_API_KEY: 'k' }) });
+    const api = groups.find((group) => group.label === 'API keys').options;
+    assert.deepEqual(api.map((row) => row.value), ['api:openrouter', 'api:anthropic', '']);
+    assert.equal(api[1].label, 'Anthropic (no key)');
+    assert.ok(!api[1].disabled, 'the owner can still keep their own assignment');
+});
+
+test('the select vocabulary is shared while the stored spelling is unchanged', () => {
+    for (const [source, choice] of [['openrouter', 'api:openrouter'], ['openai', 'api:openai'],
+        ['subscription:codex', 'subscription:codex'], ['inherit', 'inherit']]) {
+        assert.equal(sourceChoice(source), choice);
+        assert.equal(sourceFromChoice(choice), source);
+        assert.ok(!choice.includes('::'), choice);
+    }
+});
+
+test('Models offers connection only after both source discovery and Accounts were read', () => {
+    for (const facts of [{}, { catalogKnown: true }, { accountsKnown: true }]) {
+        const groups = modelSourceGroups(facts);
+        assert.doesNotMatch(groups[0].options[0].label, /connect one/i);
+    }
+    const empty = modelSourceGroups({ catalogKnown: true, accountsKnown: true });
+    assert.match(empty[0].options[0].label, /No model sources listed/);
+    assert.match(empty[0].options[0].label, /connect one/i);
+    const saved = modelSourceGroups({ current: 'subscription:owner-source' });
+    assert.equal(saved[0].options[0].value, 'subscription:owner-source');
 });
 
 test('role pins and context survive a no-edit save, including identical model names', () => {
@@ -30,9 +80,9 @@ test('role pins and context survive a no-edit save, including identical model na
     const settings = {
         OUROBOROS_MODEL: 'claudexor::codex=gpt-test',
         OUROBOROS_MODEL_LIGHT: 'claudexor::codex=gpt-test',
-        OUROBOROS_MODEL_FALLBACKS: 'claudexor::codex=gpt-second, openai::model',
-        OUROBOROS_MODEL_ACCOUNTS: { main: 'personal', light: 'work', vision: 'work', fallback: ['reserve', ''], websearch: 'saved' },
-        OUROBOROS_MODEL_CONTEXT_WINDOWS: { main: 1000000, fallback: [872000, 0], deep_review: 250000 },
+        OUROBOROS_MODEL_FALLBACKS: 'claudexor::codex=gpt-second, openai::model, openai/gpt-5.6-terra',
+        OUROBOROS_MODEL_ACCOUNTS: { main: 'personal', light: 'work', vision: 'work', fallback: ['reserve', '', ''], websearch: 'saved' },
+        OUROBOROS_MODEL_CONTEXT_WINDOWS: { main: 1000000, fallback: [872000, 0, 0], deep_review: 250000 },
     };
     editor.load(settings, contract);
     const after = editor.collect();
@@ -67,4 +117,20 @@ test('the same role sheets are loaded by both actual UI hosts', () => {
             assert.ok(html.includes(`href="/static/${sheet}"`), `${file} loads ${sheet}`);
         }
     }
+});
+
+test('role disclosures draw a visible open/closed marker on their own line', () => {
+    const css = readFileSync(new URL('../model_roles.css', import.meta.url), 'utf8');
+    const block = (selector) => css.match(new RegExp(`${selector}\\s*\\{([^}]*)\\}`))?.[1] ?? '';
+    // `display` other than list-item drops the native ::marker, so the sheet
+    // must hide it explicitly and draw the house glyph pair itself.
+    const summary = block('\\.model-role-details\\s*>\\s*summary');
+    assert.match(summary, /list-style:\s*none/);
+    assert.match(summary, /color:\s*var\(--text-primary\)/);
+    assert.match(block('\\.model-role-details\\s*>\\s*summary::-webkit-details-marker'), /display:\s*none/);
+    assert.match(block('\\.model-role-details\\s*>\\s*summary::before'), /content:\s*"▸ "/);
+    assert.match(block('\\.model-role-details\\[open\\]\\s*>\\s*summary::before'), /content:\s*"▾ "/);
+    // The disclosure owns a full row under the status text instead of sharing its baseline.
+    assert.match(block('\\.model-role-notes'), /flex-wrap:\s*wrap/);
+    assert.match(block('\\.model-role-notes\\s*>\\s*\\.model-role-details'), /flex-basis:\s*100%/);
 });

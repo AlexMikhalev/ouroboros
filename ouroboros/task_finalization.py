@@ -69,11 +69,34 @@ def set_terminal_host_notice(usage: Dict[str, Any], *parts: str) -> None:
         usage.pop("terminal_host_notice", None)
 
 
+def terminal_host_notice_text(result: Dict[str, Any]) -> str:
+    """Host notices plus the latest stored delegated receipt, without rewriting history."""
+    from ouroboros.delegate_terminal import terminal_custody_notice
+
+    base = str(result.get("terminal_host_notice") or "")
+    custody = terminal_custody_notice(result)
+    if not custody or base == custody or base.endswith("\n\n" + custody):
+        return base
+    return "\n\n".join(part for part in (base, custody) if part)
+
+
+def terminal_custody_notice_text(result: Dict[str, Any]) -> str:
+    """The stored delegated-custody receipt, on its own, for the event builders.
+
+    Issue #1006: the custody fact is a typed row of the task card, so the live
+    send and the outbox replay carry it as its own field instead of folding it
+    into the host notice's text. Single-body transports keep the joined text.
+    """
+    from ouroboros.delegate_terminal import terminal_custody_notice
+
+    return terminal_custody_notice(result)
+
+
 def terminal_notice_text(result: Dict[str, Any]) -> str:
     """The same terminal notices on transports with one text body or no event stream."""
-    return "\n\n".join(str(result[key]) for key in (
-        "terminal_provider_notice", "terminal_host_notice",
-    ) if result.get(key))
+    return "\n\n".join(part for part in (
+        str(result.get("terminal_provider_notice") or ""), terminal_host_notice_text(result),
+    ) if part)
 
 
 def send_provider_death_notice(
@@ -146,26 +169,44 @@ def stamp_root_final_phase(
 def prepare_terminal_send_event(
     env_drive_root: Any, task: Dict[str, Any], text: str,
     usage: Dict[str, Any], send_event: Dict[str, Any],
-    *, ephemeral: bool, presence: bool,
+    *, presence: bool,
 ) -> Dict[str, Any]:
     """Preserve raw host salvage, then build the one live/replay projection."""
+    if model_execution := model_execution_projection(usage):
+        send_event.setdefault("progress_meta", {})["model_execution"] = model_execution
     if not presence and task.get("_is_direct_chat") and (task.get("metadata") or {}).get("_host_operation"):
         correlation = host_operation_reply_kwargs(task.get("origin_message_ref"))
         send_event.setdefault("progress_meta", {}).update(correlation.get("progress_meta", {}))
+    # Loop cleanup may have cancelled a run after the last model observation.
+    # Read the audit it already persisted before constructing this delivery.
+    from ouroboros.task_results import load_task_result
+
+    try:
+        current = load_task_result(
+            pathlib.Path(task.get("budget_drive_root") or env_drive_root), str(task.get("id") or ""),
+        ) or {}
+    except Exception:
+        log.warning("Current delegated receipt was unavailable at final delivery", exc_info=True)
+        current = {}
+    if isinstance(current.get("delegate_terminal_reconciliation"), dict):
+        usage["delegate_terminal_reconciliation"] = current["delegate_terminal_reconciliation"]
     origin = str(usage.get("terminal_origin") or "")
     notice = str(usage.get("terminal_provider_notice") or "")
-    if usage.get("terminal_host_notice") and not presence:
-        send_event["terminal_host_notice"] = usage["terminal_host_notice"]
-    if ephemeral and not presence:
-        # This final concludes the transient activity even if task_done is
-        # missed. emit_task_results adds its computed outcome/accounting facts
-        # before dispatch: completed means the turn ended, not that it succeeded.
-        send_event.setdefault("progress_meta", {})["task_terminal_status"] = "completed"
+    # Two facts, two rows: the base host notice keeps the untyped System row a
+    # replayed card concludes on, and current delegated custody travels in its
+    # own field so the delivery seam can type it as a card row (#1006).
+    host_notice = str(usage.get("terminal_host_notice") or "")
+    custody_notice = terminal_custody_notice_text(usage)
+    if not presence:
+        if host_notice:
+            send_event["terminal_host_notice"] = host_notice
+        if custody_notice:
+            send_event["terminal_custody_notice"] = custody_notice
     if origin not in _STAMPED_TERMINAL_ORIGINS:
         return send_event
     canonical_root = pathlib.Path(task.get("budget_drive_root") or env_drive_root)
     preserved_path = ""
-    if text and (origin == TERMINAL_ORIGIN_HOST_SALVAGE or (ephemeral and notice)):
+    if text and origin == TERMINAL_ORIGIN_HOST_SALVAGE:
         try:
             from ouroboros.observability import preserve_salvaged_output
 
@@ -177,13 +218,6 @@ def prepare_terminal_send_event(
         usage["terminal_salvage_path"] = preserved_path
     if presence:
         return send_event  # Presence's existing body renderer owns its delivery outcome.
-    if ephemeral:
-        if notice:
-            body = ("Preserved intermediate output (not a final answer):\n" + text
-                    if origin == TERMINAL_ORIGIN_HOST_SALVAGE and text else text)
-            body = provider_terminal_body(body, notice)
-            send_event.update(text=body, log_text=body)
-        return send_event  # no task-details promise on a turn with no durable task row
     from supervisor.terminal_delivery import project_terminal_result_event
 
     return project_terminal_result_event(
@@ -279,7 +313,7 @@ def register_final_answer_owed(
 ) -> None:
     """GR2-5 (§8-A2, ONE outbox for EVERY root): owe the final answer durably.
 
-    Called immediately BEFORE durable result persistence for every non-ephemeral
+    Called immediately BEFORE durable result persistence for every
     ROOT (``agent_task_pipeline.emit_task_results`` registers, then stores), so a
     crash in that window leaves an owed row the boot replay delivers instead of
     a persisted result nobody was told about — the cancel lanes are the ones that
@@ -431,7 +465,7 @@ def build_sealed_final_package(result_row: Any, final_text: str) -> Dict[str, An
         "artifact_manifest": manifest[:_SEALED_MANIFEST_MAX_FILES],
         **({"artifact_manifest_omitted": omitted} if omitted else {}),
         "completion_observations": row.get("completion_observations") or {"status": "unavailable"},
-        **({"terminal_host_notice": row["terminal_host_notice"]} if row.get("terminal_host_notice") else {}),
+        **({"terminal_host_notice": terminal_host_notice_text(row)} if terminal_host_notice_text(row) else {}),
     }
 
 
@@ -479,6 +513,32 @@ def sealed_final_prompt_section(sealed_final: Dict[str, Any] | None) -> str:
     )
 
 
+def model_execution_projection(usage: Dict[str, Any]) -> Dict[str, Any] | None:
+    """Project the last usable ordinary solve response, not post-task authorship."""
+    initial = usage.get("initial_model_request")
+    initial = initial if isinstance(initial, dict) else {}
+    calls = usage.get("llm_call_refs")
+    call = next((row for row in reversed(calls if isinstance(calls, list) else [])
+                 if isinstance(row, dict) and row.get("usable_solve_response") is True
+                 and row.get("llm_call_id")), {})
+    if not initial and not call:
+        return None
+    return {
+        "requested_model": initial.get("model"),
+        "requested_use_local": initial.get("use_local"),
+        "used_model": call.get("model"),
+        "reported_model": call.get("reported_model"),
+        "used_local": call.get("use_local"),
+        "provider": call.get("provider"),
+        "llm_call_id": call.get("llm_call_id"),
+        # The host's OWN last typed failure, beside the model it was running.
+        # A nanny that died on its own lane used to be reported by the reviewer
+        # role it played, so its death read as the delegated leaf's fault (I9).
+        "last_llm_error_kind": usage.get("_last_llm_error_kind") or None,
+        "source": "usable_solve_response" if call else "not_observed",
+    }
+
+
 def build_swarm_efficiency(env: Any, task: Dict[str, Any]) -> Dict[str, Any] | None:
     """Compact derived swarm-efficiency rollup: observed fan-out, or the
     zero-fanout disclosure block for a host-attested Swarm-intent task.
@@ -488,7 +548,7 @@ def build_swarm_efficiency(env: Any, task: Dict[str, Any]) -> Dict[str, Any] | N
 
     Computed from the durable ``swarm_fanout`` telemetry this task already emits
     (control.py:_emit_swarm_fanout): the number of children, the number of fan-out
-    waves, the summed inter-wave latency, and the set of model lanes REQUESTED —
+    emissions, the summed wall-clock intervals between them, and the set of model lanes REQUESTED —
     fanout events are written before any child starts, so effective lanes are not
     knowable here; they live on each child's own dispatch record.
     Returns None for a plain task (no fan-out), so the block only appears on real
@@ -498,7 +558,7 @@ def build_swarm_efficiency(env: Any, task: Dict[str, Any]) -> Dict[str, Any] | N
     disappearing, so a Swarm-button task that spawned zero children is
     distinguishable from a plain task. ``planned`` in that block is null — never
     inferred as 0 from the absence of events; a real planned figure exists only as
-    the waves' ``requested_count`` sum, surfaced under that exact name on
+    the emissions' ``requested_count`` sum, surfaced under that exact name on
     swarm-intent rollups.
 
     OMITTED (no reliable structured source today): ``observed_max_concurrency`` —
@@ -519,13 +579,13 @@ def build_swarm_efficiency(env: Any, task: Dict[str, Any]) -> Dict[str, Any] | N
             return None
         events_path = pathlib.Path(drive_root) / "logs" / "events.jsonl"
         child_ids: set[str] = set()
-        wave_count = 0
+        fanout_count = 0
         requested_count_total = 0
-        inter_wave_latency_total = 0.0
+        fanout_interval_total = 0.0
         lanes: list[str] = []
         # Read the FULL per-task events stream (not a tail window): the swarm_fanout
         # events can occur EARLY in a long fan-out task, so a bounded tail would
-        # silently undercount waves/children (P1 no-silent-loss). This runs once at
+        # silently undercount emissions/children (P1 no-silent-loss). This runs once at
         # finalization (not a hot path), for fan-out and Swarm-intent tasks.
         # Chain-aware (CPL4-C1): early fan-out events may already have rotated
         # into archive/events_*.jsonl by finalization time.
@@ -534,7 +594,7 @@ def build_swarm_efficiency(env: Any, task: Dict[str, Any]) -> Dict[str, Any] | N
                 continue
             if str(ev.get("parent_task_id") or ev.get("task_id") or "") != task_id:
                 continue
-            wave_count += 1
+            fanout_count += 1
             try:
                 requested_count_total += int(ev.get("requested_count") or 0)
             except (TypeError, ValueError):
@@ -543,10 +603,10 @@ def build_swarm_efficiency(env: Any, task: Dict[str, Any]) -> Dict[str, Any] | N
                 if str(tid or "").strip():
                     child_ids.add(str(tid))
             try:
-                inter_wave_latency_total += float(ev.get("inter_wave_latency_sec") or 0.0)
+                fanout_interval_total += float(ev.get("fanout_interval_sec", ev.get("inter_wave_latency_sec")) or 0.0)
             except (TypeError, ValueError):
                 pass
-            # The lane a wave ASKED for. A fan-out event is written before any child
+            # The lane a fan-out ASKED for. A fan-out event is written before any child
             # starts, so it cannot know what they ran on — that is a per-child
             # dispatch fact and lives on each child's own record.
             lane = str(ev.get("requested_model_lane") or "").strip()
@@ -567,8 +627,8 @@ def build_swarm_efficiency(env: Any, task: Dict[str, Any]) -> Dict[str, Any] | N
             return None
         rollup: Dict[str, Any] = {
             "subagent_count": len(child_ids),
-            "wave_count": wave_count,
-            "inter_wave_latency_sec_total": round(inter_wave_latency_total, 3),
+            "fanout_count": fanout_count,
+            "fanout_interval_sec_total": round(fanout_interval_total, 3),
             "lanes_requested": lanes,
         }
         try:
@@ -592,7 +652,7 @@ def build_swarm_efficiency(env: Any, task: Dict[str, Any]) -> Dict[str, Any] | N
             log.debug("swarm depth summary failed", exc_info=True)
         if swarm_intent:
             rollup["intent_source"] = "swarm"
-            # The planned figure under its existing event name — the waves'
+            # The planned figure under its existing event name — the emissions'
             # requested_count sum, no synonyms (rc-phaseC, fable 2.3 disposition).
             rollup["requested_count"] = requested_count_total
         return rollup

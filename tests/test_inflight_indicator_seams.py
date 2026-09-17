@@ -1,4 +1,4 @@
-"""Server integration seams of the in-flight direct/ephemeral turn indicator.
+"""Server integration seams of the in-flight direct turn indicator.
 
 Pins the three seams the browser contract depends on:
 
@@ -7,8 +7,9 @@ Pins the three seams the browser contract depends on:
    with the correct ``kind``/``client_message_id``/``project_id``.
 2. ``supervisor.events._handle_typing_start`` stamps ``kind`` and
    ``client_message_id`` from the registry onto the typing action — and leaves
-   them empty for untracked (queued managed) tasks, so the /api/state snapshot
-   never gains deletion authority over managed-task typing entries.
+   them empty for untracked tasks. No in-repo client reads the stamp (wire
+   compatibility): only the /api/state census inserts into the header live-set, so an empty
+   kind exempts nothing from that census's deletion authority.
 3. ``supervisor.message_bus.MessageBus.send_chat_action`` carries the typed
    fields on the broadcast ``typing`` frame, omitting absent optionals.
 """
@@ -63,9 +64,6 @@ def _patch_workers(monkeypatch, tmp_path):
     # Windows CI shard; same isolation precedent as
     # tests/test_promote_event_transport.py::_isolate_event_bus_shutdown_latch).
     monkeypatch.setattr(workers, "get_event_q", lambda: queue.Queue())
-    import ouroboros.project_naming as project_naming
-
-    monkeypatch.setattr(project_naming, "spawn_proactive_namer", lambda *a, **k: None)
     # Capture the turn's start announce (bridge typing frame) instead of
     # touching the real singleton bridge.
     bridge_probe = _BridgeProbe()
@@ -110,7 +108,7 @@ def test_run_chat_task_tracks_direct_turn_for_its_duration(tmp_path, monkeypatch
     assert announces[0]["phase"] == "thinking"
 
 
-def test_run_chat_task_tracks_ephemeral_turn_with_project_id(tmp_path, monkeypatch):
+def test_run_chat_task_tracks_direct_turn_with_project_id(tmp_path, monkeypatch):
     workers, bridge = _patch_workers(monkeypatch, tmp_path)
 
     agent = _RegistryProbeAgent()
@@ -123,20 +121,19 @@ def test_run_chat_task_tracks_ephemeral_turn_with_project_id(tmp_path, monkeypat
             "client_message_id": "cmid-flat",
             "project_id": "proj-x",
         },
-        ephemeral=True,
     )
 
     snap = agent.snapshot_during
     assert isinstance(snap, list) and len(snap) == 1
     turn = snap[0]
-    assert turn["kind"] == "ephemeral_decision"
+    assert turn["kind"] == "direct_chat"
     # Flat metadata key is the fallback when origin_message_ref is absent.
     assert turn["client_message_id"] == "cmid-flat"
     assert turn["project_id"] == "proj-x"
     assert get_direct_activity_registry().snapshot() == []
     announces = [c for c in bridge.calls if c["action"] == "typing"]
     assert len(announces) == 1
-    assert announces[0]["kind"] == "ephemeral_decision"
+    assert announces[0]["kind"] == "direct_chat"
 
 
 def test_run_chat_task_unregisters_and_keys_error_final_when_agent_raises(tmp_path, monkeypatch):
@@ -206,7 +203,7 @@ def test_typing_start_stamps_kind_for_registry_tracked_turn():
         "act-typed",
         chat_id=9,
         client_message_id="cmid-9",
-        kind="ephemeral_decision",
+        kind="direct_chat",
         phase="thinking",
     )
 
@@ -221,7 +218,7 @@ def test_typing_start_stamps_kind_for_registry_tracked_turn():
     assert call["chat_id"] == 9
     assert call["activity_id"] == "act-typed"
     assert call["client_message_id"] == "cmid-9"
-    assert call["kind"] == "ephemeral_decision"
+    assert call["kind"] == "direct_chat"
     assert call["phase"] == "thinking"
 
 
@@ -237,11 +234,28 @@ def test_typing_start_leaves_kind_empty_for_untracked_managed_task():
     assert len(ctx.bridge.calls) == 1
     call = ctx.bridge.calls[0]
     assert call["activity_id"] == "managed-task-1"
-    # No registry entry => no kind stamp => the client exempts this entry from
-    # /api/state snapshot deletion authority (managed tasks are not in the
-    # direct registry).
+    # No registry entry => no kind stamp (this ctx carries no RUNNING row to
+    # stamp "managed_task" from). No in-repo client reads the stamp; only the
+    # /api/state census inserts into the header live-set, so an absent kind
+    # exempts nothing.
     assert call["kind"] == ""
     assert call["client_message_id"] == ""
+
+
+def test_typing_start_without_drive_root_or_running_still_sends():
+    """Binding resolution is fail-soft: a ctx that carries neither DRIVE_ROOT
+    nor a RUNNING table still delivers the indicator to the chat the event
+    names — and 0 is the panel, a destination, not an absence."""
+    from supervisor.events import _handle_typing_start
+
+    ctx = _CtxProbe()
+    _handle_typing_start(
+        {"type": "typing_start", "chat_id": 0, "task_id": "act-rootless", "phase": "thinking"},
+        ctx,
+    )
+
+    assert len(ctx.bridge.calls) == 1
+    assert ctx.bridge.calls[0]["chat_id"] == 0
 
 
 # ---------------------------------------------------------------------------

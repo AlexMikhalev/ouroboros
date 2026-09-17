@@ -62,6 +62,12 @@ def handle_owner_wait(event: dict, ctx: Any) -> None:
         if event.get("phase") == "resume":
             if current.get("wait_id") == wait_id and current.get("state") == "waiting":
                 meta["owner_wait_resume_requested"] = True
+                reason = str(event.get("resume_reason") or "")
+                if reason:
+                    # Carried into the row the grant writes, so the projection
+                    # can say a bound ended the wait. The notice itself is the
+                    # worker's; this is the readable record beside it.
+                    meta["owner_wait"] = {**current, "resume_reason": reason}
             return
         if event.get("phase") != "park":
             return
@@ -116,31 +122,59 @@ def _resume_allowed(task_id: str, meta: dict, worker: Any) -> bool:
     return (not intent or intent.get("stop_policy") == "finalize_then_cancel") and _pool().repo_writer_task_allowed(meta["task"])
 
 
-def _grant_resume(task_id: str, meta: dict, worker: Any) -> bool:
+def _announce_wait_ended(task_id: str, quiz_id: str, chat_id: int) -> None:
+    """The bound closed and the pooled task resumed: one seam with the direct lane."""
+    from ouroboros.owner_wait import announce_wait_ended
+
+    announce_wait_ended(_pool().DRIVE_ROOT, task_id, quiz_id, chat_id)
+
+
+def _grant_resume(
+    task_id: str, meta: dict, worker: Any, *, exhausted_replacement: Any = None,
+) -> bool:
     from supervisor import queue
 
     with _queue_lock:
         if not _resume_allowed(task_id, meta, worker):
             return False
+        replacement = exhausted_replacement
+        if replacement is not None and (
+            _pool().WORKERS.get(replacement.wid) is not replacement
+            or not getattr(replacement, "readiness_exhausted", False)
+            or not getattr(replacement, "active_capacity", True)
+            or replacement.proc.is_alive()
+        ):
+            return False
         wait = meta["owner_wait"]
-        resumed = set_owner_wait(_pool().DRIVE_ROOT, task_id, {**wait, "state": "resumed"},
-                                 expected_wait_id=wait["wait_id"])
-        worker.active_capacity = True
-        meta["owner_wait"] = resumed
-        cold_handoff = meta["task"].pop("_owner_wait_resume", None)
+        cold_handoff = meta["task"].get("_owner_wait_resume")
         try:
+            resumed = set_owner_wait(_pool().DRIVE_ROOT, task_id, {**wait, "state": "resumed"},
+                                     expected_wait_id=wait["wait_id"])
+            if replacement is not None:
+                replacement.active_capacity = False
+            worker.active_capacity = True
+            meta["owner_wait"] = resumed
+            meta["task"].pop("_owner_wait_resume", None)
             if not queue.persist_queue_snapshot(reason="owner_wait_resumed"):
                 raise RuntimeError("owner wait resume snapshot was not persisted")
             _command(worker, task_id, resumed, "resume_granted")
         except Exception:
             worker.active_capacity = False
+            if replacement is not None:
+                replacement.active_capacity = True
             if cold_handoff is not None:
                 meta["task"]["_owner_wait_resume"] = cold_handoff
-            meta["owner_wait"] = set_owner_wait(_pool().DRIVE_ROOT, task_id, wait,
-                                                expected_wait_id=wait["wait_id"])
-            queue.persist_queue_snapshot(reason="owner_wait_grant_failed")
+            meta["owner_wait"] = wait
+            try:
+                set_owner_wait(_pool().DRIVE_ROOT, task_id, wait,
+                               expected_wait_id=wait["wait_id"])
+                queue.persist_queue_snapshot(reason="owner_wait_grant_failed")
+            except Exception:
+                log.warning("Owner-wait rollback remains unpersisted for %s", task_id, exc_info=True)
             raise
         meta.pop("owner_wait_resume_requested", None)
+        if str(resumed.get("resume_reason") or "") == "timeout" and str(resumed.get("quiz_id") or ""):
+            _announce_wait_ended(task_id, str(resumed["quiz_id"]), int((meta.get("task") or {}).get("chat_id") or 0))
         # A mailbox wake is the start of useful model work, not a new attempt.
         meta["last_progress_at"] = _pool().time.time()
         return True
@@ -150,6 +184,8 @@ def _grant_resume(task_id: str, meta: dict, worker: Any) -> bool:
 def maintain_owner_wait_capacity() -> None:
     """Resume original stacks before assigning fresh work, then fill lent slots."""
     pool = _pool()
+    if pool.disable_exhausted_worker_pool():
+        return
     with _queue_lock:
         if (not pool.WORKERS or pool._WORKER_POOL_DISABLED_REASON
                 or all(getattr(w, "active_capacity", True) for w in pool.WORKERS.values())):
@@ -169,13 +205,20 @@ def maintain_owner_wait_capacity() -> None:
             if not _resume_allowed(task_id, meta, worker):
                 continue
             active = [w for w in pool.WORKERS.values() if getattr(w, "active_capacity", True)]
+            exhausted = next((w for w in active
+                              if getattr(w, "readiness_exhausted", False)
+                              and not w.proc.is_alive()), None)
             idle = next((w for w in active if w.busy_task_id is None and not w.reaping), None)
-            if len(active) >= pool.MAX_WORKERS and idle is None:
+            if len(active) >= pool.MAX_WORKERS and idle is None and exhausted is None:
                 continue
-        if len(active) >= pool.MAX_WORKERS and not _retire_idle(idle):
+        if len(active) < pool.MAX_WORKERS:
+            exhausted = None
+        elif exhausted is None and not _retire_idle(idle):
             continue
         try:
-            _grant_resume(task_id, meta, worker)
+            if _grant_resume(task_id, meta, worker, exhausted_replacement=exhausted):
+                if exhausted is not None:
+                    retire_worker(exhausted.wid, exhausted)
         except Exception:
             log.warning("Owner wait resume remains pending for %s", task_id, exc_info=True)
     with _queue_lock:

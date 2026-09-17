@@ -10,6 +10,7 @@ import pytest
 
 from ouroboros import cancel_intents, loop, loop_llm_call, loop_transport, owner_mailbox
 from ouroboros import usage_accounting as accounting
+from ouroboros.delegate_shared import delegate_result
 from ouroboros.outcomes import REASON_OWNER_REQUESTED_FINALIZATION
 from ouroboros.task_results import write_task_result
 from supervisor.owner_stop import REASON_OWNER_STOPPED_DIRECT_TURN, owner_stop_control_id
@@ -76,13 +77,15 @@ def test_stop_arriving_in_real_backoff_keeps_only_actual_physical_attempts(
     assert trace["forced_finalization"]["source"] == "provider_outcome_unknown_no_resend"
     assert ("owner requested Wrap up" if owner_grace else "owner requested Stop") in usage["terminal_provider_notice"]
     assert "no terminal provider outcome" in usage["terminal_provider_notice"]
-    assert [row["reason_code"] for row in _events(execution / "logs", "llm_not_dispatched")] == ["finalize_control_pending"]
+    assert [row["reason_code"] for row in _events(execution / "logs", "llm_not_dispatched")] == ([] if owner_grace else ["finalize_control_pending"])
     assert not _events(execution / "logs", "llm_retry_deadline_exhausted")
-    assert mid not in ctx._loop_mailbox_seen_ids
-    assert mid not in owner_mailbox.acknowledged_task_message_ids(execution, "t-death", attempt_key=1)
     if owner_grace:
-        assert not cancel_intents.active_intent(canonical, "t-death").get("control_drained_at")
+        # Managed unknown waits use the ordinary round-top owner drain; no paid
+        # repeat was granted, and the current finalize intent is consumed there.
+        assert cancel_intents.active_intent(canonical, "t-death").get("control_drained_at")
     else:
+        assert mid not in ctx._loop_mailbox_seen_ids
+        assert mid not in owner_mailbox.acknowledged_task_message_ids(execution, "t-death", attempt_key=1)
         assert getattr(ctx, "_skip_post_task_synthesis", False)  # same Stop-now contract after loop exit
         from ouroboros import agent_task_pipeline
 
@@ -166,9 +169,9 @@ def test_paid_repeat_empty_peek_reuses_existing_wait_proof(tmp_path, monkeypatch
     assert ctx._loop_mailbox_seen_ids == {"old"}
 
 
-@pytest.mark.parametrize("with_leaf", [False, True])
-def test_wrapup_reason_survives_the_live_delegate_hold(tmp_path, monkeypatch, with_leaf):
-    from ouroboros import claudexor_daemon, delegate_custody, delegate_progress
+@pytest.mark.parametrize("with_leaf, during_hold", [(False, False), (True, False), (True, True)])
+def test_wrapup_reason_survives_the_live_delegate_hold(tmp_path, monkeypatch, with_leaf, during_hold):
+    from ouroboros import claudexor_daemon, delegate_custody, delegate_progress, delegate_hold
     from tests.test_delegate_hold import _configured_registry, _start_leaf, _loop_kwargs as hold_kwargs
 
     monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
@@ -179,11 +182,22 @@ def test_wrapup_reason_survives_the_live_delegate_hold(tmp_path, monkeypatch, wi
     if with_leaf:
         _start_leaf(tmp_path, task_id="t-death", run_id="fixture-leaf")
 
-    def death():
+    def request_wrapup():
         intent = cancel_intents.request_cancel(tmp_path, "t-death", requested_stop_policy=cancel_intents.STOP_POLICY_FINALIZE)
         owner_mailbox.write_owner_message(tmp_path, REASON_OWNER_REQUESTED_FINALIZATION, "t-death",
             msg_id=owner_stop_control_id(intent), kind=owner_mailbox.KIND_FINALIZE_NOW)
+
+    def death():
+        if not during_hold:
+            request_wrapup()
         return httpx.ReadError("controlled post-dispatch failure")
+
+    def hold(*args):
+        request_wrapup()
+        return delegate_result({"status": "progress", "wake_events": [{"kind": "finalize_now"}]})
+
+    if during_hold:
+        monkeypatch.setattr(delegate_hold, "supervised_wait", hold)
 
     llm = _LedgerLLM(tmp_path, death)
     kwargs = hold_kwargs(tmp_path, registry, [])

@@ -3,6 +3,8 @@ import re
 import shlex
 import sys
 
+import pytest
+
 from ouroboros.tools.registry import ToolRegistry
 
 
@@ -189,6 +191,21 @@ def _registry_under_fake_home(tmp_path, monkeypatch):
     monkeypatch.setattr(pathlib.Path, "home", lambda: home)
     registry = ToolRegistry(repo_dir=repo, drive_root=data)
     registry._ctx.task_id = "task1"
+    from ouroboros.tools import shell
+
+    original_env = shell._shell_env_for_cwd
+
+    def fixture_child_env(ctx, cwd):
+        return {**original_env(ctx, cwd), "HOME": str(home), "USERPROFILE": str(home),
+                "OUROBOROS_DATA_DIR": str(data), "OUROBOROS_SETTINGS_PATH": str(data / "settings.json")}
+
+    # Bind the process environment without moving the parent pytest live-data
+    # guard onto this fixture's production-shaped home/Ouroboros/data tree.
+    monkeypatch.setattr(shell, "_shell_env_for_cwd", fixture_child_env)
+    child_env = shell._shell_env_for_cwd(registry._ctx, registry._ctx.task_drive_root())
+    assert child_env["HOME"] == child_env["USERPROFILE"] == str(home)
+    assert child_env["OUROBOROS_DATA_DIR"] == str(data)
+    assert child_env["OUROBOROS_SETTINGS_PATH"] == str(data / "settings.json")
     return registry, repo, data, desktop
 
 
@@ -273,7 +290,7 @@ def test_user_files_root_blocks_workspace_parent_reads_home_secrets(tmp_path, mo
     assert not (home / "Ouroboros" / "AGENTS.md").exists()
 
 
-def test_user_files_root_blocks_case_insensitive_home_secret_writes(tmp_path, monkeypatch):
+def test_user_files_root_preserves_ordinary_credential_named_files(tmp_path, monkeypatch):
     monkeypatch.setattr("ouroboros.safety.check_safety", lambda *a, **k: (True, ""))
     registry, _repo, _data, _desktop = _registry_under_fake_home(tmp_path, monkeypatch)
     home = pathlib.Path.home()
@@ -283,14 +300,18 @@ def test_user_files_root_blocks_case_insensitive_home_secret_writes(tmp_path, mo
 
     # READS of credential-shaped paths are allowed for root (capinv-447 / В23=A)...
     library = registry.execute("read_file", {"root": "user_files", "path": "library/Keychains/login.keychain-db"})
-    # ...while credential-shaped WRITES keep the shape deny, case-insensitively.
+    # A project filename alone is not an owner credential store.
     creds = registry.execute("write_file", {"root": "user_files", "path": "Desktop/Credentials.json", "content": "{}"})
+    # A key/certificate SUFFIX is not a credential: the write lands (owner
+    # answer Q6 of batch 2 - refusal authority is leaves and locations, not names).
     pem = registry.execute("write_file", {"root": "user_files", "path": "Desktop/id_rsa.PEM", "content": "secret"})
 
     assert "USER_FILES_PATH_BLOCKED" not in library
     assert "keychain marker" in library
-    assert "credential-like" in creds
-    assert "credential-like" in pem
+    assert "ARTIFACT_OUTPUTS" in creds
+    assert (home / "Desktop/Credentials.json").read_text() == "{}"
+    assert "credential-like" not in pem
+    assert (home / "Desktop" / "id_rsa.PEM").read_text(encoding="utf-8") == "secret"
 
 
 def test_list_files_user_files_blocks_ouroboros_control_plane(tmp_path, monkeypatch):
@@ -332,7 +353,8 @@ def test_light_mode_blocks_runtime_data_as_artifact_workaround(tmp_path, monkeyp
     assert not (data / "uploads" / "report.html").exists()
 
 
-def test_light_mode_blocks_process_runtime_data_upload_writes(tmp_path, monkeypatch):
+@pytest.mark.serial
+def test_light_mode_executes_process_runtime_data_upload_writes(tmp_path, monkeypatch):
     monkeypatch.setattr("ouroboros.safety.check_safety", lambda *a, **k: (True, ""))
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
     registry, _repo, data, _desktop = _registry_under_fake_home(tmp_path, monkeypatch)
@@ -355,12 +377,12 @@ def test_light_mode_blocks_process_runtime_data_upload_writes(tmp_path, monkeypa
         },
     )
 
-    assert "LIGHT_MODE_BLOCKED" in result
-    assert "runtime_data" in result
-    assert not upload.exists()
+    assert "exit_code=0" in result, result
+    assert upload.exists()
 
 
-def test_light_mode_blocks_run_script_runtime_data_upload_writes(tmp_path, monkeypatch):
+@pytest.mark.serial
+def test_light_mode_executes_run_script_runtime_data_upload_writes(tmp_path, monkeypatch):
     monkeypatch.setattr("ouroboros.safety.check_safety", lambda *a, **k: (True, ""))
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
     registry, _repo, data, _desktop = _registry_under_fake_home(tmp_path, monkeypatch)
@@ -379,12 +401,12 @@ def test_light_mode_blocks_run_script_runtime_data_upload_writes(tmp_path, monke
         },
     )
 
-    assert "LIGHT_MODE_BLOCKED" in result
-    assert "runtime_data" in result
-    assert not upload.exists()
+    assert "exit_code=0" in result, result
+    assert upload.exists()
 
 
-def test_light_mode_blocks_relative_process_runtime_data_upload_writes(tmp_path, monkeypatch):
+@pytest.mark.serial
+def test_light_mode_executes_relative_process_runtime_data_upload_writes(tmp_path, monkeypatch):
     monkeypatch.setattr("ouroboros.safety.check_safety", lambda *a, **k: (True, ""))
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
     registry, _repo, data, _desktop = _registry_under_fake_home(tmp_path, monkeypatch)
@@ -408,12 +430,12 @@ def test_light_mode_blocks_relative_process_runtime_data_upload_writes(tmp_path,
         },
     )
 
-    assert "LIGHT_MODE_BLOCKED" in result
-    assert "runtime_data" in result
-    assert not upload.exists()
+    assert "exit_code=0" in result, result
+    assert upload.exists()
 
 
-def test_light_mode_blocks_env_runtime_data_upload_writes(tmp_path, monkeypatch):
+@pytest.mark.serial
+def test_light_mode_executes_env_runtime_data_upload_writes(tmp_path, monkeypatch):
     monkeypatch.setattr("ouroboros.safety.check_safety", lambda *a, **k: (True, ""))
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
     registry, _repo, data, _desktop = _registry_under_fake_home(tmp_path, monkeypatch)
@@ -427,19 +449,18 @@ def test_light_mode_blocks_env_runtime_data_upload_writes(tmp_path, monkeypatch)
         },
     )
 
-    assert "LIGHT_MODE_BLOCKED" in result
-    assert "runtime_data" in result
-    assert not upload.exists()
+    assert "exit_code=0" in result, result
+    assert upload.read_text() == "bad\n"
 
 
-def test_light_mode_blocks_interpreter_runtime_data_touch_without_write_marker(tmp_path, monkeypatch):
+
+@pytest.mark.serial
+def test_light_mode_executes_interpreter_runtime_data_touch_without_write_marker(tmp_path, monkeypatch):
     monkeypatch.setattr("ouroboros.safety.check_safety", lambda *a, **k: (True, ""))
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
     registry, _repo, data, _desktop = _registry_under_fake_home(tmp_path, monkeypatch)
     upload = data / "uploads" / "touch-report.html"
     python_exe = str(pathlib.Path(sys.executable))
-    if not pathlib.PurePath(python_exe).name.lower().endswith(".exe"):
-        python_exe = f"{python_exe}.exe"
 
     result = registry.execute(
         "run_command",
@@ -458,12 +479,12 @@ def test_light_mode_blocks_interpreter_runtime_data_touch_without_write_marker(t
         },
     )
 
-    assert "LIGHT_MODE_BLOCKED" in result
-    assert "runtime_data" in result
-    assert not upload.exists()
+    assert "exit_code=0" in result, result
+    assert upload.exists()
 
 
-def test_light_mode_blocks_home_runtime_data_upload_writes(tmp_path, monkeypatch):
+@pytest.mark.serial
+def test_light_mode_executes_home_runtime_data_upload_writes(tmp_path, monkeypatch):
     monkeypatch.setattr("ouroboros.safety.check_safety", lambda *a, **k: (True, ""))
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
     registry, _repo, data, _desktop = _registry_under_fake_home(tmp_path, monkeypatch)
@@ -489,15 +510,14 @@ def test_light_mode_blocks_home_runtime_data_upload_writes(tmp_path, monkeypatch
         },
     )
 
-    assert "LIGHT_MODE_BLOCKED" in home_result
-    assert "runtime_data" in home_result
-    assert "LIGHT_MODE_BLOCKED" in tilde_result
-    assert "runtime_data" in tilde_result
-    assert not home_upload.exists()
-    assert not tilde_upload.exists()
+    assert "exit_code=0" in home_result, home_result
+    assert "exit_code=0" in tilde_result, tilde_result
+    assert home_upload.read_bytes() == tilde_upload.read_bytes() == b""
 
 
-def test_light_mode_blocks_relative_run_script_runtime_data_upload_writes(tmp_path, monkeypatch):
+
+@pytest.mark.serial
+def test_light_mode_executes_relative_run_script_runtime_data_upload_writes(tmp_path, monkeypatch):
     monkeypatch.setattr("ouroboros.safety.check_safety", lambda *a, **k: (True, ""))
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
     registry, _repo, data, _desktop = _registry_under_fake_home(tmp_path, monkeypatch)
@@ -516,9 +536,8 @@ def test_light_mode_blocks_relative_run_script_runtime_data_upload_writes(tmp_pa
         },
     )
 
-    assert "LIGHT_MODE_BLOCKED" in result
-    assert "runtime_data" in result
-    assert not upload.exists()
+    assert "exit_code=0" in result, result
+    assert upload.exists()
 
 
 def test_light_run_script_allows_readonly_repo_analysis_with_external_write(tmp_path, monkeypatch):
@@ -546,7 +565,8 @@ def test_light_run_script_allows_readonly_repo_analysis_with_external_write(tmp_
     assert out.read_text(encoding="utf-8") == str(repo)
 
 
-def test_light_run_script_blocks_dynamic_repo_write_even_from_task_drive(tmp_path, monkeypatch):
+@pytest.mark.serial
+def test_light_run_script_executes_dynamic_repo_write_even_from_task_drive(tmp_path, monkeypatch):
     monkeypatch.setattr("ouroboros.safety.check_safety", lambda *a, **k: (True, ""))
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
     registry, repo, _data, _desktop = _registry_under_fake_home(tmp_path, monkeypatch)
@@ -565,11 +585,12 @@ def test_light_run_script_blocks_dynamic_repo_write_even_from_task_drive(tmp_pat
         },
     )
 
-    assert "LIGHT_MODE_BLOCKED" in result
-    assert not target.exists()
+    assert "exit_code=0" in result, result
+    assert target.read_text(encoding="utf-8") == "bad"
 
 
-def test_light_run_script_blocks_path_open_repo_write(tmp_path, monkeypatch):
+@pytest.mark.serial
+def test_light_run_script_executes_path_open_repo_write(tmp_path, monkeypatch):
     monkeypatch.setattr("ouroboros.safety.check_safety", lambda *a, **k: (True, ""))
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
     registry, repo, _data, _desktop = _registry_under_fake_home(tmp_path, monkeypatch)
@@ -586,8 +607,8 @@ def test_light_run_script_blocks_path_open_repo_write(tmp_path, monkeypatch):
         },
     )
 
-    assert "LIGHT_MODE_BLOCKED" in result
-    assert not target.exists()
+    assert "exit_code=0" in result, result
+    assert target.read_text(encoding="utf-8") == "bad"
 
 
 def test_light_run_script_allows_constant_expression_task_drive_write(tmp_path, monkeypatch):
@@ -712,7 +733,8 @@ def test_artifact_store_blocks_control_manifest_edits(tmp_path, monkeypatch):
     )
 
     assert "WRITE_FILE_BLOCKED" in write_result
-    assert "WRITE_FILE_BLOCKED" in hidden_result
+    assert "OK: wrote artifact_store:.meta/report.json" in hidden_result
+    assert (data / "task_results/artifacts/task1/.meta/report.json").read_text() == "{}"
     assert "EDIT_TEXT_BLOCKED" in edit_result
     assert not (data / "task_results" / "artifacts" / "task1" / ".artifact_manifest.json").exists()
 
@@ -1355,7 +1377,8 @@ def test_system_repo_write_targets_system_when_active_workspace_differs(tmp_path
     assert (repo / "x.txt").read_text(encoding="utf-8") == "x"
 
 
-def test_light_mode_blocks_interpreter_inline_repo_writes(tmp_path, monkeypatch):
+@pytest.mark.serial
+def test_light_mode_executes_interpreter_inline_repo_writes(tmp_path, monkeypatch):
     monkeypatch.setattr("ouroboros.safety.check_safety", lambda *a, **k: (True, ""))
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
     repo = tmp_path / "repo"
@@ -1368,8 +1391,8 @@ def test_light_mode_blocks_interpreter_inline_repo_writes(tmp_path, monkeypatch)
         {"cwd": str(repo), "script": "open('tmp_probe_no_write', 'w').write('x')"},
     )
 
-    assert "LIGHT_MODE_BLOCKED" in result
-    assert not (repo / "tmp_probe_no_write").exists()
+    assert "exit_code=0" in result, result
+    assert (repo / "tmp_probe_no_write").read_text(encoding="utf-8") == "x"
 
 
 def test_light_mode_default_root_does_not_treat_repo_skills_path_as_payload(tmp_path, monkeypatch):

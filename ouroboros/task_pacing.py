@@ -21,6 +21,8 @@ Design contract (owner-decided, sprint v6.55):
 from __future__ import annotations
 
 import logging
+import json
+import math
 import pathlib
 from dataclasses import dataclass, replace
 from typing import Any, Dict, Optional, Tuple
@@ -437,7 +439,11 @@ def resolve_cost_ceiling(
     margin resolves to ``exhausted_soft_land`` instead.
 
     An enabled non-root member keeps the propagated original root ceiling;
-    a later global balance never re-mints that early threshold. Actual global
+    a later global balance never re-mints that early threshold. A ROOT may
+    carry a producer's own ``root_cost_ceiling_usd`` below its hard cap (a
+    consciousness wake-up: what is left of its allowance); it lands the same
+    planning margin early, and at or below the margin it is an immediate soft
+    landing, exactly like a cap. Actual global
     and root dispatch fences still bind independently. Legacy missing carriers
     retain a disclosed local resolution, never a guessed original root fact.
 
@@ -491,6 +497,18 @@ def resolve_cost_ceiling(
                 basis_parts.append("root_cap_minus_margin")
             if non_root_member:
                 basis_parts.append("non_root_member")
+        if not non_root_member and root_ceiling_usd is not None and float(root_ceiling_usd) > 0:
+            margin = COST_PLANNING_MARGIN_USD
+            room = float(root_ceiling_usd) - margin
+            if room <= 0:
+                return CostCeiling(
+                    state=COST_CEILING_EXHAUSTED_SOFT_LAND,
+                    root_cap_usd=cap,
+                    planning_margin_usd=margin,
+                    basis="root_ceiling_at_or_below_planning_margin",
+                )
+            components.append(room)
+            basis_parts.append("root_ceiling_minus_margin")
         if inherited is not None:
             components.append(inherited)
             basis_parts.append("root_resolved_ceiling")
@@ -554,13 +572,16 @@ def cost_ceiling_disclosure(ceiling: CostCeiling) -> Dict[str, Any]:
         "root_cap_usd": ceiling.root_cap_usd,
         "planning_margin_usd": ceiling.planning_margin_usd,
         "basis": ceiling.basis,
+        "allocation": "unreserved_shared_pool",
         "rule": (
             "The graceful in-task cost stop of THIS task's whole tree, resolved once at task "
             "start: the root resolves min(configured share of global remaining, hard tree cap "
             "minus a planning margin); enabled descendants retain that original number. "
             "Legacy members without it disclose their local resolution. Crossing it asks for a "
             "best-effort final answer; the ledger fence at the full cap still binds "
-            "independently. Budget checkpoints during the task report the live tree spend."
+            "independently. This threshold reserves no money: concurrent tasks share the "
+            "global pool and may consume it before this task reaches its ceiling. "
+            "Budget checkpoints report observed spend and unreserved shared headroom."
         ),
     }
 
@@ -604,7 +625,7 @@ def tree_spend_line(tree_info: Any, ceiling: Optional[CostCeiling] = None) -> st
         bound = f" of ${cap:.2f} hard tree cap" if cap is not None else ""
     return (
         f"Task tree spend: ~${float(tree_info['accounted_usd']):.2f}{bound} "
-        "(ledger-accounted incl. in-flight holds, subagents included)"
+        "(ledger-accounted incl. in-flight holds, subagents included; ceiling is unreserved)"
     )
 
 
@@ -637,27 +658,43 @@ def prospective_wrapup_attempt_request(
     reasoning_effort: str, tools: Optional[list[Dict[str, Any]]] = None,
     allow_server_web_search: bool = False, prompt_tokens: int = 0,
     model_role: str = "main", model_account_override: Optional[str] = None,
+    model_turn_state: Any = None,
+    cache_affinity: str = "",
+    processing_preference: Optional[str] = None,
 ) -> Any:
-    """Build the conservative request facts from the prospective wire payload."""
+    """Build the conservative request facts from the prospective wire payload.
+
+    ``model_turn_state`` is the caller's active-turn transport slot. A candidate
+    that a forced send is admitted against must be priced from the SAME slot
+    value the send will carry, or the two payloads differ by that field alone."""
     from ouroboros.llm import _attempt_request, _finalized_physical_candidate
     from ouroboros.loop_llm_call import MAIN_LOOP_MAX_TOKENS
     from ouroboros.request_wire_recovery import request_wire_call_scope
     from ouroboros.pricing import infer_provider_from_model
     from ouroboros.usage_accounting import AttemptRequest, _merge_scope
+    from ouroboros.model_slots import resolve_processing_preference
+
+    processing_preference = resolve_processing_preference(model_role, override=processing_preference)
 
     if not callable(getattr(llm, "_resolve_remote_target", None)):
         return _merge_scope(AttemptRequest(
             model=model, provider=infer_provider_from_model(model),
             prompt_tokens_estimate=prompt_tokens,
             max_completion_tokens=MAIN_LOOP_MAX_TOKENS,
+            processing_preference=processing_preference,
+            force_unknown_reservation=bool(processing_preference),
         ))[0]
 
-    target = llm._resolve_remote_target(model)
+    target = {**llm._resolve_remote_target(model), "processing_preference": processing_preference}
     if target.get("provider") == "claudexor":
-        from ouroboros.llm_claudexor import _request
+        from ouroboros.llm_claudexor import _request, prepare_processing_target
 
+        target = prepare_processing_target(target)
         candidate = _request(target, messages, tools, {"reasoning_effort": reasoning_effort,
-            "model_role": model_role, "model_account_override": model_account_override})
+            "model_role": model_role, "model_account_override": model_account_override,
+            "model_turn_state": model_turn_state,
+            "processing_preference": processing_preference,
+            "cache_affinity": cache_affinity, "prospective": True})
         return _merge_scope(replace(_attempt_request(target, candidate),
             force_unknown_reservation=True, max_completion_tokens=MAIN_LOOP_MAX_TOKENS))[0]
     with request_wire_call_scope():
@@ -677,9 +714,13 @@ def prospective_wrapup_attempt_request(
 def prepared_wrapup_candidate(
     ctx: Any, messages: list[Dict[str, Any]], *, allow_server_web_search: bool,
 ) -> Tuple[Any, list[Dict[str, Any]]]:
-    """Prepare the exact first-send transcript and price that same payload."""
+    """Prepare the exact first-send transcript and price that same payload.
+
+    The forced send this candidate admits continues the loop's active transport
+    turn, so the candidate is built from that same owner slot."""
+    from ouroboros.llm_claudexor import cache_key_for_model
     from ouroboros.loop_llm_call import _prepare_main_messages
-    from ouroboros.model_slots import task_model_binding
+    from ouroboros.model_slots import task_model_binding, task_processing_preference
     from ouroboros.model_wait import current_model_wait
 
     owner_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
@@ -707,6 +748,13 @@ def prepared_wrapup_candidate(
         prompt_tokens=int(ctx.accumulated_usage.get("_context_prompt_estimate") or 0),
         model_role=role,
         model_account_override=account,
+        model_turn_state=getattr(owner_ctx, "model_turn_state", None),
+        # The admitted candidate must be the payload the send will produce: the
+        # main loop declares the same install-scoped cache affinity, so this
+        # prepared copy binds the same key as that dispatch does.
+        cache_affinity="" if getattr(ctx, "active_use_local", False) else cache_key_for_model(ctx.active_model),
+        processing_preference=task_processing_preference(
+            {"task_metadata": getattr(owner_ctx, "task_metadata", {})}, model_role=role),
     )
     return request, send_messages
 
@@ -857,7 +905,7 @@ def build_cost_budget_note(
     crossed = [(value, label) for value, label in _COST_BUDGET_THRESHOLDS if fraction_remaining <= value]
     unseen_crossed = [(value, label) for value, label in crossed if label not in seen]
     hard_stop = cost_ceiling_usd is not None
-    base_kind = "in-task cost ceiling" if hard_stop else "start-of-task budget snapshot (no in-task cost stop)"
+    base_kind = "unreserved in-task cost ceiling" if hard_stop else "unreserved start-of-task budget snapshot (no in-task cost stop)"
     if tree_basis:
         own_text = f"; own calls ~${task_cost:.2f}" if task_cost is not None else ""
         spent_line = (
@@ -997,10 +1045,10 @@ def _headroom_phrase(
     if wallet is None and ceiling_room is None:
         return "budget left unknown"
     if ceiling_room is None:
-        return f"${wallet:.2f} budget left (wallet binds)"
+        return f"${wallet:.2f} unreserved shared budget left (wallet binds)"
     if wallet is None or ceiling_room <= wallet:
-        return f"${ceiling_room:.2f} budget left (in-task cost ceiling binds)"
-    return f"${wallet:.2f} budget left (wallet binds)"
+        return f"${ceiling_room:.2f} unreserved budget left (in-task cost ceiling binds)"
+    return f"${wallet:.2f} unreserved shared budget left (wallet binds)"
 
 
 def _acceptance_rails_line_inner(
@@ -1257,3 +1305,91 @@ def build_intrinsic_pacing_note(
     if isinstance(ceiling, CostCeiling):
         checkpoint["cost_ceiling"] = cost_ceiling_disclosure(ceiling)
     return PacingNote(text=text, checkpoint=checkpoint)
+
+
+def record_tool_activity(ctx: Any, result: Dict[str, Any]) -> None:
+    """Count delivered typed results once, without replaying tool history.
+
+    The existing loop usage carrier also survives a native owner-wait handoff.
+    Durations are producer-reported intervals, not a partition of elapsed time;
+    absent measurements never become zero or a sleep/poll classification.
+    """
+    usage = getattr(ctx, "_accumulated_usage", None)
+    if not isinstance(usage, dict):
+        return
+    activity = usage.setdefault("_pacing_tool_activity", {})
+    name = str(result["fn_name"])
+    row = activity.setdefault(name, {
+        "calls": 0, "error_calls": 0, "duration_observations": 0,
+        "reported_duration_ms": None,
+    })
+    row["calls"] += 1
+    row["error_calls"] += int(bool(result.get("is_error")))
+    duration = (result.get("result_meta") or {}).get("duration_ms")
+    if (isinstance(duration, (int, float)) and not isinstance(duration, bool)
+            and math.isfinite(duration) and duration >= 0):
+        row["duration_observations"] += 1
+        row["reported_duration_ms"] = round((row["reported_duration_ms"] or 0) + duration, 3)
+
+
+def with_resource_facts(note: PacingNote, ctx: Any, usage: Optional[Dict[str, Any]]) -> PacingNote:
+    """Enrich an already-triggered advisory note from existing observation owners.
+
+    No new cadence, model call, admission decision or persistent store. Tool
+    counters are incremental; money uses the ledger's existing cached readers
+    only when an ordinary time/cost/intrinsic note fires. The two spend subsets
+    overlap and unknown, estimated and open cash keep their separate fields.
+    """
+    from ouroboros.usage_accounting import current_usage_scope, usage_breakdown, usage_projection
+
+    activity = (usage or {}).get("_pacing_tool_activity")
+    tools: Dict[str, Any] = {"status": "unavailable"}
+    if isinstance(activity, dict):
+        names = sorted(activity, key=lambda name: (-activity[name]["calls"], name))
+        shown, omitted = names[:10], names[10:]
+        tools = {
+            "status": "available", "source": "observed_tool_results",
+            "coverage": "captured results only; earlier results without counters are not reconstructed",
+            "calls": sum(row["calls"] for row in activity.values()),
+            "by_tool": [{"tool": name, **activity[name]} for name in shown],
+            "omitted_tools": len(omitted),
+            "omitted_calls": sum(activity[name]["calls"] for name in omitted),
+            "duration_basis": "reported intervals; may overlap; unmeasured calls are excluded",
+            "source_task_id": str(getattr(ctx, "task_id", "") or ""),
+            "source_path": str(pathlib.Path(ctx.drive_root) / "logs" / "tools.jsonl"),
+        }
+    spend: Dict[str, Any] = {"status": "unavailable", "source": "physical_attempt_ledger"}
+    scope = current_usage_scope()
+    if scope is not None and scope.root_task_id:
+        fields = ("settled_usd", "confirmed_usd", "estimated_usd", "accounted_usd",
+                  "reserved_usd", "unresolved_upper_bound_usd", "unknown_unmetered",
+                  "cost_final", "integrity_degraded", "physical_calls", "subscription_sessions")
+        def bucket(value: Any) -> Optional[Dict[str, Any]]:
+            return {key: value.get(key) for key in fields} if isinstance(value, dict) else None
+        try:
+            breakdown = usage_breakdown(scope.drive_root, root_task_id=scope.root_task_id)
+            global_budget = usage_projection(scope.drive_root, global_limit_usd=scope.global_limit_usd,
+                                             include_roots=False)
+            spend.update({
+                "status": "available", "root_task_id": scope.root_task_id,
+                "consistency": "separate ledger observations; concurrent work may change headroom",
+                "own_task": bucket((breakdown.get("by_task") or {}).get(scope.task_id)),
+                "tree": bucket(breakdown), "delegated_tree": bucket(breakdown.get("delegated")),
+                "overlap": "own_task and delegated_tree are subsets of tree; own_task may include delegated sessions",
+                "global": {
+                    **(bucket(global_budget) or {}),
+                    "limit_usd": global_budget.get("limit_usd"),
+                    "remaining_known_usd": global_budget.get("remaining_known_usd"),
+                    "allocation": "unreserved_shared_pool",
+                    "limit_source": (scope.global_limit_source or "usage_scope") if scope.global_limit_usd is not None else "settings_budget_resolver",
+                    "limit_revision": scope.global_limit_revision if scope.global_limit_usd is not None else None,
+                },
+            })
+        except Exception:
+            log.debug("Pacing spend facts unavailable", exc_info=True)
+    facts = {"tools": tools, "spend": spend}
+    return PacingNote(
+        text=note.text + "\nObserved resource facts (accounted money includes open holds):\n"
+             + json.dumps(facts, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        checkpoint={**note.checkpoint, "resource_facts": facts},
+    )

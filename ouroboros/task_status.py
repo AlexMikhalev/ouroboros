@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import pathlib
 import time
 from datetime import datetime, timezone
@@ -39,6 +40,8 @@ from ouroboros.task_results import (
     validate_task_id,
 )
 from ouroboros.utils import iter_jsonl_objects, read_json_dict
+
+log = logging.getLogger(__name__)
 
 
 # Terminal task statuses. Since the cancel redesign (Poltergeist sprint phase A)
@@ -228,19 +231,32 @@ def _load_queue_snapshot(drive_root: pathlib.Path) -> Dict[str, Any]:
 _SNAPSHOT_OWNERSHIP_FRESH_SEC = 10.0
 
 
-def _snapshot_is_stale(snapshot: Dict[str, Any]) -> bool:
-    """Whether the snapshot is too old to prove a dead worker (GR7-1a).
+def queue_snapshot_observation(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    """Date the existing queue observation, without asserting current capacity.
 
-    A missing or unparseable ``ts`` cannot prove freshness either, so it
-    reads as stale.
+    Context, scheduling receipts and cancellation observations share the same
+    freshness bound as live ownership. Counts belong to the captured snapshot;
+    even a fresh observation is not a reservation or a continuously live view.
     """
+    observation = {"source": "state/queue_snapshot.json", "ts": snapshot.get("ts"),
+                   "age_sec": None, "freshness": "unknown", "fresh": False}
+    if snapshot.get("_snapshot_missing") or snapshot.get("_snapshot_invalid"):
+        return observation
     raw = str(snapshot.get("ts") or "").strip().replace("Z", "+00:00")
     try:
         parsed = datetime.fromisoformat(raw)
         stamped = (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).timestamp()
-    except (TypeError, ValueError):
-        return True
-    return (time.time() - stamped) > _SNAPSHOT_OWNERSHIP_FRESH_SEC
+    except (TypeError, ValueError, OverflowError, OSError):
+        return observation
+    age = time.time() - stamped
+    fresh = age <= _SNAPSHOT_OWNERSHIP_FRESH_SEC
+    return {**observation, "age_sec": round(age, 3), "fresh": fresh,
+            "freshness": "fresh" if fresh else "stale"}
+
+
+def _snapshot_is_stale(snapshot: Dict[str, Any]) -> bool:
+    """Missing, unreadable or old observations cannot prove a dead worker."""
+    return not queue_snapshot_observation(snapshot)["fresh"]
 
 
 def task_has_live_queue_ownership(drive_root: pathlib.Path, task_id: str) -> bool:
@@ -321,11 +337,12 @@ def observe_cancellation_target(
         observation["task_result"] = {"status": None, "coverage": "unavailable"}
     try:
         snapshot = _load_queue_snapshot(pathlib.Path(drive_root))
-        fresh = not (snapshot.get("_snapshot_missing") or snapshot.get("_snapshot_invalid") or _snapshot_is_stale(snapshot))
+        queue_observation = queue_snapshot_observation(snapshot)
+        fresh = queue_observation["fresh"]
         state, _task = _queue_task_status(snapshot, target) if fresh else ("unknown", {})
-        observation["queue_snapshot"] = {"status": state or "not_listed", "ts": snapshot.get("ts"), "fresh": fresh}
+        observation["queue_snapshot"] = {**queue_observation, "status": state or "not_listed"}
     except Exception:
-        observation["queue_snapshot"] = {"status": "unknown", "fresh": False}
+        observation["queue_snapshot"] = {**queue_snapshot_observation({}), "status": "unknown"}
     if include_execution:
         try:
             from ouroboros.delegate_evidence import task_execution_evidence
@@ -389,7 +406,21 @@ def _is_stale_orphan_running_task(
     task_id: str,
     result: Dict[str, Any],
     events_index: Optional[_EventsTailIndex] = None,
+    queue_snapshot: Optional[Dict[str, Any]] = None,
 ) -> bool:
+    # Direct-chat actors are deliberately absent from PENDING/RUNNING.  The
+    # process-local registry is the authoritative owner for that execution;
+    # queue snapshots and pooled worker_boot rows cannot prove it dead.
+    try:
+        from supervisor.active_activity import get_direct_activity_registry
+
+        if get_direct_activity_registry().get(str(task_id or "")) is not None:
+            return False
+    except Exception:
+        # This helper is also imported by worker-side readers where the server's
+        # direct registry is not available.  Absence of that optional observation
+        # is not itself evidence of liveness, so retain the existing pooled path.
+        pass
     status = str(result.get("status") or "").lower()
     # ``interrupted`` is the transient pre-requeue marker (A.11): a record still
     # carrying it with no queued retry after a worker restart is the same orphan
@@ -414,6 +445,22 @@ def _is_stale_orphan_running_task(
     except Exception:
         pass
     if heartbeat and time.time() - heartbeat < _ORPHAN_RUNNING_GRACE_SECONDS:
+        return False
+    # A stale/missing snapshot cannot prove that a pooled owner is gone (the
+    # GR7-1a polarity ``task_has_live_queue_ownership`` already uses).  The
+    # destructive reconciler must keep the old row until a fresh snapshot or a
+    # separate positive recovery fact exists.  A batch caller passes the
+    # snapshot it already read, like ``events_index`` above.
+    try:
+        snapshot = (
+            queue_snapshot if isinstance(queue_snapshot, dict)
+            else _load_queue_snapshot(pathlib.Path(drive_root))
+        )
+        if snapshot.get("_snapshot_missing") or snapshot.get("_snapshot_invalid"):
+            return False
+        if _snapshot_is_stale(snapshot):
+            return False
+    except Exception:
         return False
     if events_index is None:
         events_index = _EventsTailIndex(pathlib.Path(drive_root))
@@ -511,7 +558,10 @@ def load_effective_task_result(
     )
 
 
-def reconcile_orphaned_running_tasks(drive_root: Any) -> int:
+def reconcile_orphaned_running_tasks(
+    drive_root: Any, *, exclude_task_ids: frozenset[str] = frozenset(),
+    expired_quizzes: Optional[List[Any]] = None,
+) -> int:
     """Durably finalize on-disk RUNNING task results the effective-status
     projection already considers terminal.
 
@@ -529,6 +579,10 @@ def reconcile_orphaned_running_tasks(drive_root: Any) -> int:
     reconciled. The monotonic guard in ``write_task_result`` additionally protects
     a genuinely newer terminal/cancel write. Idempotent; safe at boot and on a
     periodic supervisor tick.
+
+    ``expired_quizzes`` collects ``(task_id, quiz_id)`` for every question this
+    sweep expired, so the supervisor-side caller can send the same live frame the
+    task-done seam sends. This module stays free of a supervisor import.
     """
     from ouroboros.task_results import list_task_results, write_task_result
 
@@ -540,7 +594,21 @@ def reconcile_orphaned_running_tasks(drive_root: Any) -> int:
         return 0
     for row in running:
         task_id = str(row.get("task_id") or row.get("id") or "")
-        if not task_id:
+        if not task_id or task_id in exclude_task_ids:
+            continue
+        # An ACTIVE cancel intent means cancellation custody already owns this
+        # row and will settle it with its own outcome and text; at boot that
+        # custody is still inside the watchdog's minimum age, so healing here
+        # would win the race and publish infra_failed for a task the owner was
+        # told is being cancelled. An UNREADABLE intent store is the same
+        # refusal: this sweep never settles over an unknown cancel authority.
+        try:
+            from ouroboros.cancel_intents import has_active_intent
+
+            if has_active_intent(root, task_id, strict=True):
+                continue
+        except Exception:
+            log.debug("Orphan reconcile skipped %s: cancel authority unreadable", task_id, exc_info=True)
             continue
         try:
             effective = load_effective_task_result(root, task_id)
@@ -566,6 +634,25 @@ def reconcile_orphaned_running_tasks(drive_root: Any) -> int:
             healed += 1
         except Exception:
             continue
+        # This sweep is a terminal writer that never passes the task-done seam, so
+        # it closes the same per-task owner-control projections that seam closes:
+        # otherwise the record says "ended" while the card still shows an open
+        # question and the paired wait never releases. Both legs are idempotent
+        # and fail-soft, exactly as in the seam's own coordinator.
+        try:
+            from ouroboros.owner_hurry import reconcile_terminal as reconcile_hurry
+
+            reconcile_hurry(root, task_id)
+        except Exception:
+            log.debug("owner_hurry reconcile failed for healed %s", task_id, exc_info=True)
+        try:
+            from ouroboros.owner_quiz import reconcile_terminal as reconcile_quiz
+
+            expired = reconcile_quiz(root, task_id)
+            if expired_quizzes is not None:
+                expired_quizzes.extend((task_id, quiz_id) for quiz_id in expired)
+        except Exception:
+            log.debug("owner_quiz reconcile failed for healed %s", task_id, exc_info=True)
     return healed
 
 
@@ -737,7 +824,8 @@ def effective_task_result(
 
     parent_status = str(merged.get("status") or "").lower()
     if parent_status not in FINAL_STATUSES:
-        queue_status, queue_task = _queue_task_status(_load_queue_snapshot(pathlib.Path(drive_root)), task_id)
+        queue_snapshot = _load_queue_snapshot(pathlib.Path(drive_root))
+        queue_status, queue_task = _queue_task_status(queue_snapshot, task_id)
         if queue_status and queue_status != "unknown":
             merged["status"] = _merge_queue_status(parent_status, queue_status)
             for key in (
@@ -769,7 +857,10 @@ def effective_task_result(
                         bundle,
                         "task ended before artifact finalization",
                     )
-            elif _is_stale_orphan_running_task(pathlib.Path(drive_root), task_id, merged, _events_index):
+            elif _is_stale_orphan_running_task(
+                pathlib.Path(drive_root), task_id, merged, _events_index,
+                queue_snapshot=queue_snapshot,
+            ):
                 orphan_reason = (
                     "interrupted_retry_lost"
                     if parent_status == STATUS_INTERRUPTED
@@ -970,10 +1061,12 @@ def wait_for_effective_tasks(
     }
     if early is not None:
         out["early_return"] = early
-    # Live per-child status from the queue snapshot — kills the false "starved"/"dead"
-    # claim: the parent sees which children are actually RUNNING/SCHEDULED vs terminal.
+    # Keep the legacy status projection with the date of its queue evidence.
+    # Terminal result and worker ownership can differ during post-task work;
+    # a stale snapshot cannot establish what is still running now.
     try:
         _snap = _load_queue_snapshot(pathlib.Path(drive_root))
+        out["queue_snapshot_observation"] = queue_snapshot_observation(_snap)
         live: Dict[str, str] = {}
         for tid in ids:
             _st, _ = _queue_task_status(_snap, tid)
@@ -1189,12 +1282,14 @@ def format_subagent_absorption_message(
     omitted = 0
     from ouroboros.cost_projection import cost_display
 
+    from ouroboros.task_finalization import terminal_host_notice_text
+
     for child in terminal:
         cid = str(child.get("task_id") or child.get("id") or "")
         role = str(child.get("role") or "")
         result = provider_terminal_body(
             str(child.get("result") or "").strip(),
-            str(child.get("terminal_host_notice") or ""),
+            terminal_host_notice_text(child),
         )
         terminal_status = str(child.get("child_status") or "")
         status_suffix = (

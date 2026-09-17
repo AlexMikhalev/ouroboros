@@ -8,6 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from ouroboros.delegate_shared import delegate_result
+
 
 def _settings(*rows):
     return {
@@ -278,7 +280,7 @@ def test_large_bootstrap_delivers_full_work_without_question_channel(monkeypatch
     calls = []
     monkeypatch.setattr(runtime, "exact_start", lambda ctx, prompt, spec: (
         calls.append((prompt, spec))
-        or json.dumps({"status": "started", "run_id": "run-full", "custody_durable": True})
+        or delegate_result({"status": "started", "run_id": "run-full", "custody_durable": True})
     ))
     snapshot = _snapshot(_settings(_session_row(target="codex=gpt-5.6-sol")), "session-builder")
     dispatch = SimpleNamespace(executor="harness", blocked=False)
@@ -361,7 +363,7 @@ def test_pending_over_budget_recovery_replays_compact_body_and_full_fingerprint(
         delegate, "exact_start",
         lambda _ctx, prompt, spec: (
             calls.append((prompt, spec))
-            or json.dumps({"status": "started", "run_id": "run-source-recovered"})
+            or delegate_result({"status": "started", "run_id": "run-source-recovered"})
         ),
     )
     ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, task_id=task["id"])
@@ -413,7 +415,7 @@ def test_real_task_context_bootstraps_before_context_and_any_llm(monkeypatch, tm
     # wait on it: the first round arrives immediately with the live receipt.
     monkeypatch.setattr(runtime, "exact_start", lambda _ctx, _prompt, _spec: (
         order.append("physical_start")
-        or json.dumps({"status": "started", "run_id": "run-pre-start"})
+        or delegate_result({"status": "started", "run_id": "run-pre-start"})
     ))
     monkeypatch.setattr(
         supervision, "supervised_wait",
@@ -454,7 +456,8 @@ def test_real_task_context_bootstraps_before_context_and_any_llm(monkeypatch, tm
     assert _ctx._nanny_delegate_baseline == {"round": 0, "cost": 0.0}
 
 
-def test_actor_first_delegate_start_binds_snapshot_and_canonical_work_order(monkeypatch, tmp_path):
+@pytest.mark.parametrize("geometry", [{}, {"directory_strategy": "copy", "scope_paths": ["output.bin"]}])
+def test_actor_first_delegate_start_binds_snapshot_and_canonical_work_order(monkeypatch, tmp_path, geometry):
     import ouroboros.subagent_runtime as runtime
 
     snapshot = _snapshot(_settings(_session_row()), "session-builder")
@@ -462,7 +465,7 @@ def test_actor_first_delegate_start_binds_snapshot_and_canonical_work_order(monk
 
     monkeypatch.setattr(
         runtime, "exact_start",
-        lambda ctx, prompt, spec: calls.append((prompt, spec)) or json.dumps({
+        lambda ctx, prompt, spec: calls.append((prompt, spec)) or delegate_result({
             "status": "started", "run_id": "run-actor-first",
         }),
     )
@@ -474,10 +477,11 @@ def test_actor_first_delegate_start_binds_snapshot_and_canonical_work_order(monk
             "canonical_work_order": "OBJECTIVE\nBuild the patch",
             "work_order_fingerprint": "full-work-order-sha",
             "work_order_chars": 23,
+            **geometry,
         },
     )
 
-    out = json.loads(runtime.delegate_start_entry(ctx, ""))
+    out = json.loads(runtime.delegate_start_entry(ctx, "").text)
     assert out["status"] == "started"
     assert calls == [(
         "OBJECTIVE\nBuild the patch",
@@ -486,6 +490,7 @@ def test_actor_first_delegate_start_binds_snapshot_and_canonical_work_order(monk
             "compiled_work_order": True,
             "work_order_fingerprint": "full-work-order-sha",
             "_coordination_context": "",
+            **geometry,
         },
     )]
 
@@ -497,7 +502,7 @@ def test_selectorless_fresh_start_outside_actor_first_is_refused(tmp_path):
     ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path)
     ctx.task_id = "ordinary-root"
 
-    out = json.loads(runtime.delegate_start_entry(ctx, ""))
+    out = json.loads(runtime.delegate_start_entry(ctx, "").text)
 
     assert out["status"] == "refused"
     assert out["reason"] == "subagent_selection_required"
@@ -520,7 +525,7 @@ def test_actor_first_start_marks_physical_activity_and_closes_zero_run(monkeypat
             "exact_start_pending": True,
         },
     )
-    monkeypatch.setattr(delegate, "_delegate_start", lambda *_a, **_k: json.dumps({
+    monkeypatch.setattr(delegate, "_delegate_start", lambda *_a, **_k: delegate_result({
         "status": "started_uncustodied", "run_id": "run-live",
     }))
 
@@ -528,7 +533,7 @@ def test_actor_first_start_marks_physical_activity_and_closes_zero_run(monkeypat
         ctx,
         "OBJECTIVE\nBuild the patch",
         {"snapshot": snapshot, "compiled_work_order": True},
-    ))
+    ).text)
     assert started["status"] == "started_uncustodied"
     assert ctx._configured_actor_bootstrap["physical_started"] is True
     assert ctx._configured_actor_bootstrap["exact_start_pending"] is False
@@ -543,7 +548,7 @@ def test_actor_first_start_marks_physical_activity_and_closes_zero_run(monkeypat
         ctx,
         "OBJECTIVE\nBuild the patch",
         {"snapshot": snapshot, "compiled_work_order": True},
-    ))
+    ).text)
     assert refused["status"] == "refused"
     assert refused["reason"] == "zero_run_already_recorded"
 
@@ -577,7 +582,7 @@ def test_actor_first_exact_start_hydrates_terminal_zero_run_receipt(monkeypatch,
         ctx,
         "OBJECTIVE\nBuild the patch",
         {"snapshot": snapshot, "compiled_work_order": True},
-    ))
+    ).text)
     assert refused["reason"] == "zero_run_already_recorded"
     assert ctx._configured_actor_bootstrap["zero_run_decision"] == "unknown"
 
@@ -641,7 +646,7 @@ def test_actor_first_exact_start_blocks_unknown_zero_run_evidence(
         ctx,
         "OBJECTIVE\nBuild the patch",
         {"snapshot": snapshot, "compiled_work_order": True},
-    ))
+    ).text)
 
     assert refused["status"] == "refused"
     assert refused["reason"] == "zero_run_evidence_unavailable"
@@ -683,7 +688,7 @@ def test_valid_zero_run_wins_over_unrelated_malformed_receipt(monkeypatch, tmp_p
         ctx,
         "OBJECTIVE\nBuild the patch",
         {"snapshot": snapshot, "compiled_work_order": True},
-    ))
+    ).text)
 
     assert refused["reason"] == "zero_run_already_recorded"
     assert ctx._configured_actor_bootstrap["zero_run_decision"] == "complete"
@@ -706,7 +711,7 @@ def test_actor_first_delegate_start_rejects_alternate_snapshot(monkeypatch, tmp_
     )
     out = json.loads(runtime.delegate_start_entry(
         ctx, "retarget me", subagent_id="other-session",
-    ))
+    ).text)
     assert out["status"] == "refused"
     assert out["reason"] == "configured_actor_route_mismatch"
     assert out["host_fallback"] is False
@@ -746,7 +751,7 @@ def test_actor_first_retry_cannot_turn_coordination_prompt_into_work_order_prefi
     )
     out = json.loads(runtime.delegate_start_entry(
         ctx, "coordination text is not the canonical assignment", retry_of="inv-1",
-    ))
+    ).text)
     assert out["status"] == "refused"
     assert out["reason"] == "configured_work_order_unavailable"
 
@@ -758,7 +763,7 @@ def test_actor_first_legacy_retry_replays_recorded_partial_body(monkeypatch, tmp
     starts = []
     monkeypatch.setattr(runtime, "exact_start", lambda _ctx, prompt, spec: (
         starts.append((prompt, spec))
-        or json.dumps({"status": "started", "run_id": "run-retry"})
+        or delegate_result({"status": "started", "run_id": "run-retry"})
     ))
     snapshot = _snapshot(_settings(_session_row()), "session-builder")
     ctx = SimpleNamespace(
@@ -774,7 +779,7 @@ def test_actor_first_legacy_retry_replays_recorded_partial_body(monkeypatch, tmp
         project_id="", project_owned=False, route="codex",
         work_order_coverage="partial", work_order_source_request={"coverage": "partial"},
     )
-    out = json.loads(runtime.delegate_start_entry(ctx, "ignored", retry_of="inv-legacy"))
+    out = json.loads(runtime.delegate_start_entry(ctx, "ignored", retry_of="inv-legacy").text)
     assert out["status"] == "started"
     assert starts == [(stored_prompt, {"retry_of": "inv-legacy", "_resolved_binding": None})]
 
@@ -818,7 +823,7 @@ def test_actor_first_bootstrap_adopts_existing_handoff_without_new_start(monkeyp
     assert ctx._configured_actor_bootstrap["physical_started"] is True
     mismatch = json.loads(runtime.delegate_start_entry(
         ctx, "switch route", subagent_id="another-session",
-    ))
+    ).text)
     assert mismatch["reason"] == "configured_actor_route_mismatch"
 
 
@@ -862,7 +867,7 @@ def test_quiet_windows_renew_and_terminal_plus_mailbox_coalesce(tmp_path):
         )
         return json.dumps({"status": "completed", "run_id": run_id, "last_seq": 3})
 
-    out = json.loads(supervised_wait(ctx, "run-1", wait_once=wait_once))
+    out = json.loads(supervised_wait(ctx, "run-1", wait_once=wait_once).text)
     assert len(calls) == 3
     assert out["status"] == "completed"
     [message] = out["wake_events"]
@@ -900,7 +905,7 @@ def test_pending_wake_replays_until_post_injection_ack(tmp_path):
         wait_once=lambda *_a, **_k: json.dumps({
             "status": "no_progress", "run_id": "run-1", "last_seq": 4,
         }),
-    ))
+    ).text)
     assert first["wake_events"][0]["text"] == "full durable direction"
     assert acknowledged_task_message_ids(tmp_path, "child1") == set()
     replay = json.loads(supervised_wait(
@@ -908,7 +913,7 @@ def test_pending_wake_replays_until_post_injection_ack(tmp_path):
         wait_once=lambda *_a, **_k: (_ for _ in ()).throw(
             AssertionError("an unacknowledged wake must replay before another poll")
         ),
-    ))
+    ).text)
     assert replay == first
     assert acknowledge_pending_wake(ctx, replay)
     assert acknowledged_task_message_ids(tmp_path, "child1") == {"m1"}
@@ -944,7 +949,7 @@ def test_one_shot_checkpoint_is_reasoned_and_consumed(monkeypatch, tmp_path):
     out = json.loads(supervision.supervised_wait(
         ctx, "run-1", checkpoint_after_sec=1,
         checkpoint_reason="inspect a promised artifact", wait_once=wait_once,
-    ))
+    ).text)
     wake_id = out.pop("supervision_wake_id")
     assert wake_id
     coordination_context = out.pop("coordination_context")
@@ -1048,7 +1053,7 @@ def test_replacement_is_refused_before_gateway_or_post(monkeypatch, tmp_path):
     snapshot = _snapshot(_settings(_session_row()), "session-builder")
     out = json.loads(delegate.exact_start(
         ctx, "replacement work", {"snapshot": snapshot},
-    ))
+    ).text)
     assert out["status"] == "refused"
     assert out["reason"] == "replacement_requires_settlement"
     assert out["undisposed_patch_run_ids"] == ["run-old"]
@@ -1079,7 +1084,7 @@ def test_replacement_refuses_unreadable_custody_before_fail_soft_scan(
     snapshot = _snapshot(_settings(_session_row()), "session-builder")
     out = json.loads(delegate.exact_start(
         ctx, "replacement work", {"snapshot": snapshot},
-    ))
+    ).text)
     assert out["status"] == "refused"
     assert out["reason"] == "replacement_custody_unknown"
 
@@ -1398,3 +1403,36 @@ def test_only_approved_restart_causes_reserve_and_abrupt_gap_vetoes(monkeypatch,
     monkeypatch.setattr(custody, "reconcile_task_runs", lambda *_a, **_k: [])
     assert recovery.pre_adopt_planned_handoffs(tmp_path, []) == set()
     assert recovery._read(tmp_path, "child1")["veto_reason"] == "restart_transaction_missing"
+
+
+def test_review_substrate_runs_never_occupy_the_actors_delegation_slot(tmp_path):
+    """I4: the replacement fence counts the ACTOR's own runs, not review runs."""
+    from ouroboros import delegate_custody as custody
+    from ouroboros.delegate_recovery import unsettled_start_ids
+
+    custody._CUSTODY.clear()
+    custody.record_started(tmp_path, custody.RunCustody(
+        run_id="run-review-open", task_id="actor1", route_id="codex",
+        source="review_substrate",
+    ))
+    captured = custody.RunCustody(
+        run_id="run-review-surface", task_id="actor1", route_id="codex",
+        source="review_substrate:plan_review", snapshot_id="snap-review",
+    )
+    custody.record_started(tmp_path, captured)
+    custody.emit(tmp_path, custody.SETTLED,
+                 {"run_id": "run-review-surface", "task_id": "actor1"})
+    custody.record_patch_captured(tmp_path, captured)
+    custody._CUSTODY.clear()
+
+    assert unsettled_start_ids(tmp_path, "actor1") == {
+        "open_run_ids": [],
+        "pending_invocation_ids": [],
+        "undisposed_patch_run_ids": [],
+    }
+
+    custody.record_started(tmp_path, custody.RunCustody(
+        run_id="run-mine", task_id="actor1", route_id="codex",
+    ))
+    custody._CUSTODY.clear()
+    assert unsettled_start_ids(tmp_path, "actor1")["open_run_ids"] == ["run-mine"]

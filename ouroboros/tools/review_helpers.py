@@ -1,11 +1,12 @@
 """Shared helpers for the review stack (advisory, triad, scope reviews).
 
-No imports from other ouroboros.tools modules to avoid circular deps; the one
-sanctioned exception is the ``release_sync`` compatibility re-export of
-``check_worktree_version_sync`` (moved to its version-sync home).
+Keeps tool-runtime imports out to avoid circular dependencies. The pure result
+vocabulary preserves preflight failures; ``release_sync`` re-exports version sync.
 """
 
 from __future__ import annotations
+
+from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
 
 import json
 import logging
@@ -17,11 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from ouroboros.tools.release_sync import check_worktree_version_sync  # noqa: F401 - moved to its version-sync home; compatibility re-export
-from ouroboros.utils import (
-    sanitize_tool_result_for_log,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
-    truncate_review_artifact as _truncate_review_artifact,
-    utc_now_iso,
-)
+from ouroboros.utils import sanitize_tool_result_for_log, truncate_review_artifact as _truncate_review_artifact, utc_now_iso  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
 
 if TYPE_CHECKING:
     # Avoid runtime registry import; this module stays tool-module independent.
@@ -34,6 +31,15 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 # Shared review prompt budget. estimate_tokens under-counts real tokens, so the
 # non-blocking skip gate leaves headroom for default 1M-context reviewer models.
 REVIEW_PROMPT_TOKEN_BUDGET = 920_000
+
+
+def review_enforcement_blocks(enforcement: str | None = None) -> bool:
+    """Project action authority without changing configured policy or review facts."""
+    from ouroboros.config import get_review_enforcement, get_runtime_mode
+    from ouroboros.runtime_mode_policy import runtime_mode_at_least
+
+    selected = get_review_enforcement() if enforcement is None else enforcement
+    return selected == "blocking" and not runtime_mode_at_least(get_runtime_mode(), "cyber_pro")
 
 # Tokenizer-density calibration shared by every review surface (triad, scope, plan,
 # deep self-review). estimate_tokens (chars/4) tracks GPT-style tokenizers, but a
@@ -247,11 +253,11 @@ def review_wave_budget_gate(
     extra: dict | None = None,
     categories: str | list = "",
     slot_ids: str | list = "",
+    processing_preferences: str | list = "",
 ) -> Optional[dict]:
     """Shared review-wave budget admission (v6.69.0).
 
-    Returns the admission dict when the wave must be DECLINED (emitting one
-    typed ``review_wave_budget_insufficient`` event), else None. Every paid
+    Returns admission data when the wave must be declined, else None. Every paid
     review wave is admitted here as a whole — skill/plan/acceptance reviewers
     and, since the owner decision of 2026-09-05, the P3 commit gate
     (``surface="commit_gate"``: scope seats first, then the triad, each seat
@@ -262,9 +268,8 @@ def review_wave_budget_gate(
     every fence ``reserve_attempt`` enforces — the global TOTAL_BUDGET remainder
     (the scope's ``global_limit_usd``) and the task's root fence — the event naming
     the binding axis with both remainders. A wave that fits at admission time is
-    dispatched whole; one that does not is refused BEFORE any seat spends (a read-only
-    pre-check without a wave-level hold: the per-seat reservation stays the
-    enforcement). Fail-open on any error/unknown."""
+    dispatched whole; one that does not is refused before any seat spends.
+    Fail-open on any error/unknown."""
     try:
         from ouroboros.usage_accounting import current_usage_scope, review_wave_admission
 
@@ -282,6 +287,7 @@ def review_wave_budget_gate(
             global_limit_usd=scope.global_limit_usd,
             categories=categories,
             slot_ids=slot_ids,
+            processing_preferences=processing_preferences,
         )
         unpriced = int(admission.get("unpriced_slots") or 0)
         base = {
@@ -378,6 +384,50 @@ def build_skill_host_context(repo_dir: Path | None = None) -> str:
     return "\n\n".join(parts)
 
 
+# The canonical governance corpus a packed review surface owes IN FULL. Two of
+# the five are reference-book entrypoints, so their chapters are canonical too:
+# `is_canonical_governance_path` is the one predicate that answers for both
+# forms, and `canonical_governance_sources` resolves the actual population of a
+# given tree. Four surfaces used to keep their own copy of this list.
+CANONICAL_GOVERNANCE_DOCS = (
+    "BIBLE.md",
+    "docs/DEVELOPMENT.md",
+    "docs/DESIGN.md",
+    "docs/ARCHITECTURE.md",
+    "docs/CHECKLISTS.md",
+)
+
+
+def is_canonical_governance_path(path: str) -> bool:
+    """One of the canonical five, or a chapter of one of the two books."""
+    from ouroboros.reference_books import book_path_role
+
+    normalized = str(path or "").replace("\\", "/").lstrip("./")
+    return normalized in CANONICAL_GOVERNANCE_DOCS or book_path_role(normalized) == "chapter"
+
+
+def canonical_governance_sources(repo_dir: Path) -> tuple[str, ...]:
+    """Every canonical path a packed review inlines in full for THIS tree.
+
+    The five documents plus the chapters each book's entrypoint declares, so a
+    pack that inlined a composed book does not ALSO owe its chapters as
+    separate snapshots. A book that cannot be read contributes its entrypoint
+    alone — the reader that assembles it reports the failure; this resolver
+    must not turn an unreadable book into a claim of wider coverage.
+    """
+    from ouroboros.reference_books import BOOK_ENTRYPOINTS, load_reference_book
+
+    root = Path(repo_dir)
+    resolved = [doc for doc in CANONICAL_GOVERNANCE_DOCS if (root / doc).is_file()]
+    for book_id, entrypoint in BOOK_ENTRYPOINTS.items():
+        if entrypoint in resolved:
+            try:
+                resolved.extend(c.source_path for c in load_reference_book(root, book_id).chapters)
+            except (OSError, ValueError):
+                pass
+    return tuple(dict.fromkeys(resolved))
+
+
 def load_governance_doc(
     repo_dir: Path,
     rel_path: str,
@@ -385,9 +435,22 @@ def load_governance_doc(
     on_missing: str = "explicit",
     fallback: str = "",
 ) -> str:
-    """Load a governance/review document relative to ``repo_dir`` with explicit miss policy."""
+    """Load a governance/review document relative to ``repo_dir`` with explicit miss policy.
+
+    A reference-book entrypoint resolves to the COMPOSED book. The entrypoint
+    alone is an orientation page and a membership list: handing it to a review
+    surface that believes it received the architecture map would deliver zero
+    chapters while every caller's contract says "in full". An unassemblable
+    book takes the SAME miss policy as an unreadable file — one ladder, so a
+    failed book cannot render as a delivered one through a second wording.
+    """
+    from ouroboros.reference_books import BOOK_ENTRYPOINTS, compose_book, load_reference_book
+
     path = Path(repo_dir) / rel_path
+    book_id = next((key for key, entry in BOOK_ENTRYPOINTS.items() if entry == rel_path), None)
     try:
+        if book_id is not None:
+            return compose_book(load_reference_book(Path(repo_dir), book_id))
         if path.is_file():
             return path.read_text(encoding="utf-8")
     except Exception as exc:
@@ -755,7 +818,7 @@ def _run_review_preflight_tests(ctx: "Any", timeout: Optional[int] = None, *, fo
         return _truncate_review_artifact(output, limit=MAX_OUTPUT) if output else None
     except Exception as exc:
         logger.warning("_run_review_preflight_tests failed: %s", exc, exc_info=True)
-        return f"⚠️ Unexpected error running tests: {exc}"
+        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ERROR", text=(f"⚠️ Unexpected error running tests: {exc}")))
 
 
 def format_advisory_error(prefix: str, result_error: str, stderr_tail: str,

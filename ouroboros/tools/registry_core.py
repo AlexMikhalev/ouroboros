@@ -24,13 +24,18 @@ import ouroboros.tools.registry_guards as registry_guards
 import ouroboros.tools.shell_guards as shell_guards
 import ouroboros.tools.tool_resolution as tool_resolution
 from ouroboros.runtime_mode_policy import (
+    PROTECTED_RUNTIME_PATHS,
+    core_patch_notice,
     mode_allows_protected_write,
+    mode_has_unrestricted_agency,
+    runtime_mode_at_least,
     protected_paths_in,
     protected_write_block_message,
 )
 from ouroboros.tool_capabilities import (
     ACTING_SUBAGENT_MODE,
-    ACTING_SUBAGENT_TOOL_NAMES,
+    acting_tool_names_for_context,
+    schema_selection_tools_for_context,
     CORE_TOOL_NAMES,
     LOCAL_READONLY_SUBAGENT_MODE,
     LOCAL_READONLY_SUBAGENT_TOOL_NAMES,
@@ -62,6 +67,7 @@ from ouroboros.tools.tool_resolution import (
     _binding_set_targets_system_repo,
     _build_builtin_target_binding,
     _target_binding_operation,
+    _user_files_binding_reaches_repo,
     active_repo_dir_for,
     system_repo_dir_for,
 )
@@ -73,9 +79,9 @@ from ouroboros.tools.tool_result import (
     _install_tool_result_sidecar,
     _published_tool_result,
     _restore_tool_result_sidecar,
+    _replace_tool_result,
 )
 from ouroboros.tools.registry_guards import (
-    _EPHEMERAL_ALLOWED_TOOLS,
     _builtin_tool_availability,
     _disabled_tools,
     _resource_allowed,
@@ -267,6 +273,28 @@ def _protected_write_block_result(*, path: str, runtime_mode: str, action: str) 
     )
 
 
+def _append_shell_core_notice(
+    result: str | ToolResult, raw_cmd: Any, *, paths: list[str] | None = None,
+) -> str | ToolResult:
+    """Attach the same protected-change notice used by editor writes.
+
+    The shell guard deliberately returns ``None`` for Pro/Cyber rewrites, so
+    the post-execution path records that a protected surface was attempted
+    without turning the mode-aware allowance into an unreviewed success claim.
+    """
+    text = (" ".join(str(part) for part in raw_cmd)
+            if isinstance(raw_cmd, list) else str(raw_cmd or "")).replace("\\", "/").lower()
+    paths = list(paths or [path for path in sorted(PROTECTED_RUNTIME_PATHS) if path.lower() in text])
+    if not paths:
+        return result
+    notice = core_patch_notice(paths)
+    if isinstance(result, ToolResult):
+        if result.status == "blocked":
+            return result
+        return _replace_tool_result(result, text=result.text + "\n\n" + notice)
+    return str(result) + "\n\n" + notice
+
+
 class ToolRegistry:
     """Tool registry; modules export ``get_tools()``."""
 
@@ -448,7 +476,11 @@ class ToolRegistry:
         except (OSError, TypeError, ValueError, RuntimeError):
             return False
 
-    def _acting_tool_grants(self) -> set:
+    def _acting_tool_grants(self) -> set | None:
+        from ouroboros.config import get_runtime_mode
+
+        if mode_has_unrestricted_agency(get_runtime_mode()):
+            return None  # No inherited name filter; explicit task/resource facts still apply.
         tc = normalize_task_constraint(getattr(self._ctx, "task_constraint", None))
         return set(getattr(tc, "external_tool_grants", ()) or ()) if tc else set()
 
@@ -462,7 +494,7 @@ class ToolRegistry:
         pending.  Keep that exception bound to the private host bootstrap marker;
         the handler applies the same check again at execution time.
         """
-        if name in LOCAL_READONLY_SUBAGENT_TOOL_NAMES:
+        if name in LOCAL_READONLY_SUBAGENT_TOOL_NAMES | schema_selection_tools_for_context(self._ctx):
             return True
         if name != "verify_and_record" or not self._is_local_readonly_subagent():
             return False
@@ -479,18 +511,19 @@ class ToolRegistry:
 
     def initial_tool_names(self) -> frozenset[str]:
         if self._is_local_readonly_subagent():
-            names = set(LOCAL_READONLY_SUBAGENT_TOOL_NAMES)
+            names = set(LOCAL_READONLY_SUBAGENT_TOOL_NAMES | schema_selection_tools_for_context(self._ctx))
             if self._readonly_tool_allowed("verify_and_record"):
                 names.add("verify_and_record")
             return frozenset(names)
         if self._is_acting_subagent():
-            return ACTING_SUBAGENT_TOOL_NAMES
+            return acting_tool_names_for_context(self._ctx, self._entries)
         return frozenset(set(self.available_tools()) | set(META_TOOL_NAMES))
 
     def available_tools(self) -> List[str]:
         acting_subagent = self._is_acting_subagent()
         local_readonly_subagent = self._is_local_readonly_subagent()
-        disabled = _disabled_tools(self._ctx)
+        # A consciousness-origin task keeps its full schema set (dispatch-only policy, В31=B).
+        disabled = frozenset() if registry_guards.disabled_tools_dispatch_only(self._ctx) else _disabled_tools(self._ctx)
         return [
             e.name
             for e in self._entries.values()
@@ -499,7 +532,7 @@ class ToolRegistry:
             if _presence_tool_allowed(self._ctx, e.name)
             if _builtin_tool_availability(e.name, self._ctx)[0]
             if not local_readonly_subagent or self._readonly_tool_allowed(e.name)
-            if not acting_subagent or e.name in ACTING_SUBAGENT_TOOL_NAMES
+            if not acting_subagent or e.name in acting_tool_names_for_context(self._ctx, self._entries)
         ]
 
     def _schema_for_entry(self, entry: ToolEntry) -> Dict[str, Any]:
@@ -561,7 +594,7 @@ class ToolRegistry:
                 props = schema.get("parameters", {}).get("properties", {})
                 for field in ("root", "bucket", "skill_name"):
                     props.pop(field, None)
-        elif self._is_acting_subagent():
+        elif self._is_acting_subagent() and self._acting_tool_grants() is not None:
             # Advertise only what the acting profile can actually execute: writes go
             # ONLY to the isolated surface (active_workspace); reads use the read roots;
             # browser evaluate remains available on the current page; the browser
@@ -579,19 +612,17 @@ class ToolRegistry:
                 props = schema.get("parameters", {}).get("properties", {})
                 for field in ("root", "bucket", "skill_name"):
                     props.pop(field, None)
-            elif entry.name in tool_resolution._ROOT_ARG_REPO_WRITE_TOOLS or entry.name in _GENERIC_VCS_TARGET_TOOLS:
+            elif (entry.name in tool_resolution._ROOT_ARG_REPO_WRITE_TOOLS
+                  or entry.name in _GENERIC_VCS_TARGET_TOOLS
+                  or entry.name in {"read_file", "list_files", "search_code", "query_code"}):
                 schema = copy.deepcopy(schema)
                 root_schema = schema.get("parameters", {}).get("properties", {}).get("root", {})
-                if isinstance(root_schema.get("enum"), list):
-                    root_schema["enum"] = [root for root in root_schema["enum"] if root == "active_workspace"]
-            elif entry.name in {"read_file", "list_files", "search_code", "query_code"}:
-                # Acting profile reads its own surface + data roots, NOT the live
-                # system_repo (no system_repo in _POLICY['acting_subagent']).
-                schema = copy.deepcopy(schema)
-                root_schema = schema.get("parameters", {}).get("properties", {}).get("root", {})
-                allowed = {"active_workspace"} if entry.name in {"search_code", "query_code"} else {"active_workspace", "runtime_data", "task_drive", "artifact_store"}
-                if isinstance(root_schema.get("enum"), list):
-                    root_schema["enum"] = [root for root in root_schema["enum"] if root in allowed]
+                operation = _target_binding_operation(entry.name, {})
+                if isinstance(root_schema.get("enum"), list) and operation:
+                    root_schema["enum"] = [root for root in root_schema["enum"]
+                        if decide_tool_access(profile=active_tool_profile(self._ctx), root=root,
+                                              operation=operation).allow
+                        and (entry.name != "query_code" or root in {"active_workspace", "system_repo"})]
         return {"type": "function", "function": schema}
 
     def _schemas_for_entry(self, entry: ToolEntry) -> List[Dict[str, Any]]:
@@ -654,8 +685,9 @@ class ToolRegistry:
         acting_subagent = self._is_acting_subagent()
         acting_grants = self._acting_tool_grants() if acting_subagent else set()
         local_readonly_subagent = self._is_local_readonly_subagent()
-        ephemeral_turn = bool(getattr(self._ctx, "is_ephemeral_turn", False))
-        disabled_tools = _disabled_tools(self._ctx)
+        # Dispatch-only policy (В31=B): a consciousness-origin task is filtered by nothing here and
+        # records no disabled_by_contract omission, so its prefix matches an owner turn's exactly.
+        disabled_tools = frozenset() if registry_guards.disabled_tools_dispatch_only(self._ctx) else _disabled_tools(self._ctx)
         # Rebuild from the load-time facts, never from empty: a rebuilt schema
         # list must not erase module_load_failed omissions (H3, capinv-447).
         self._capability_omissions = [dict(item) for item in self._module_load_omissions]
@@ -673,8 +705,7 @@ class ToolRegistry:
             if _presence_tool_allowed(self._ctx, entry.name)
             if entry.name not in unavailable_tools
             if not local_readonly_subagent or self._readonly_tool_allowed(entry.name)
-            if not acting_subagent or entry.name in ACTING_SUBAGENT_TOOL_NAMES
-            if not ephemeral_turn or entry.name in _EPHEMERAL_ALLOWED_TOOLS  # CW3: default-deny allowlist
+            if not acting_subagent or entry.name in acting_tool_names_for_context(self._ctx, self._entries)
             for schema in self._schemas_for_entry(entry)
         ]
         if disabled_tools:
@@ -687,9 +718,8 @@ class ToolRegistry:
                 "details": {name: unavailable_tools[name] for name in sorted(unavailable_tools)},
             })
         # Live (enabled, granted, reviewed) extension tool schemas join normal tool
-        # discovery on every lane, the ephemeral decision turn included (issue #722,
-        # owner-approved 2026-09-08): liveness, acting-child grants and the network
-        # resource gate are their only filters, exactly as on a managed task.
+        # discovery: liveness, acting-child grants and the network resource
+        # gate remain their filters.
         extension_schemas: List[Dict[str, Any]] = []
         if not _resource_allowed(self._ctx, "network"):
             self._capability_omissions.append({"surface": "extensions", "reason": "resource_blocked", "resource": "network=false"})
@@ -708,7 +738,7 @@ class ToolRegistry:
                         for tool in _ext_tools.values()
                         if _ext_is_live(str(tool.get("skill") or ""), capability_root, repo_path=str(tool.get("skills_repo_path") or "") or None)
                         and _presence_tool_allowed(self._ctx, tool["name"])
-                        and (not acting_subagent or tool["name"] in acting_grants)
+                        and (not acting_subagent or acting_grants is None or tool["name"] in acting_grants)
                     ]
                 extension_tools = self._visible_dynamic_tools("extensions", extension_tools)
                 extension_schemas = [
@@ -727,9 +757,7 @@ class ToolRegistry:
 
         if not core_only:
             mcp_schemas = []
-            # Owner-configured MCP tools ride every lane, the ephemeral decision turn
-            # included (issue #722, owner-approved 2026-09-08): the network resource
-            # gate is their only lane filter, exactly as on a managed task.
+            # Owner-configured MCP tools retain the network resource gate.
             if not _resource_allowed(self._ctx, "network"):
                 self._capability_omissions.append({"surface": "mcp", "reason": "resource_blocked", "resource": "network=false"})
             else:
@@ -741,7 +769,7 @@ class ToolRegistry:
                         tool
                         for tool in _mgr.list_tools_for_registry()
                         if _presence_tool_allowed(self._ctx, tool["name"])
-                        if not acting_subagent or tool["name"] in acting_grants
+                        if not acting_subagent or acting_grants is None or tool["name"] in acting_grants
                     ]
                     mcp_tools = self._visible_dynamic_tools("mcp", mcp_tools)
                     mcp_schemas = [
@@ -754,7 +782,7 @@ class ToolRegistry:
                     slug_collisions = getattr(
                         _mgr, "tool_name_collisions", lambda: []
                     )()
-                    if acting_subagent:
+                    if acting_subagent and acting_grants is not None:
                         slug_collisions = [
                             item
                             for item in slug_collisions
@@ -796,13 +824,11 @@ class ToolRegistry:
                 continue
             if local_readonly_subagent and not self._readonly_tool_allowed(e.name):
                 continue
-            if acting_subagent and e.name not in ACTING_SUBAGENT_TOOL_NAMES:
+            if acting_subagent and e.name not in acting_tool_names_for_context(self._ctx, self._entries):
                 continue
-            if ephemeral_turn and e.name not in _EPHEMERAL_ALLOWED_TOOLS:
-                continue  # CW3: the core/initial envelope is allowlisted too, not just schemas(core_only=False)
             if (
                 (local_readonly_subagent and self._readonly_tool_allowed(e.name))
-                or (acting_subagent and e.name in ACTING_SUBAGENT_TOOL_NAMES)
+                or (acting_subagent and e.name in acting_tool_names_for_context(self._ctx, self._entries))
                 or e.name in CORE_TOOL_NAMES
                 or e.name in ("list_available_tools", "enable_tools")
             ):
@@ -833,7 +859,7 @@ class ToolRegistry:
         # reason instead of "not found" (2026-08-10 amendments). Deeper extension/
         # MCP policy reasons (grants, network) would need new plumbing — disclosed
         # residual, not built.
-        if requested in _disabled_tools(self._ctx):
+        if requested in _disabled_tools(self._ctx) and not registry_guards.disabled_tools_dispatch_only(self._ctx):
             return "disabled by this task's contract (disabled_tools)"
         if not _presence_tool_allowed(self._ctx, requested):
             return "outside this presence task's positive capability ceiling"
@@ -846,12 +872,10 @@ class ToolRegistry:
         available, reason, _detail = _builtin_tool_availability(requested, self._ctx)
         if not available:
             return f"unavailable ({reason})"
-        if getattr(self._ctx, "is_ephemeral_turn", False) and requested not in _EPHEMERAL_ALLOWED_TOOLS:
-            return "hidden on this ephemeral decision turn (allowlist)"
         acting_subagent = self._is_acting_subagent()
         if self._is_local_readonly_subagent() and not self._readonly_tool_allowed(requested):
             return "hidden by the read-only subagent profile"
-        if acting_subagent and requested not in ACTING_SUBAGENT_TOOL_NAMES:
+        if acting_subagent and requested not in acting_tool_names_for_context(self._ctx, self._entries):
             return "hidden by the acting subagent profile"
         return None
 
@@ -863,7 +887,7 @@ class ToolRegistry:
         local_readonly_subagent = self._is_local_readonly_subagent()
         # Declarative tool policy applies across ALL discovery sources (built-in, extension, MCP),
         # so enable_tools/discovery can never surface a disabled name — consistent with schemas()/execute().
-        if requested in _disabled_tools(self._ctx):
+        if requested in _disabled_tools(self._ctx) and not registry_guards.disabled_tools_dispatch_only(self._ctx):
             return None
         if not _presence_tool_allowed(self._ctx, requested):
             return None
@@ -883,11 +907,9 @@ class ToolRegistry:
                         "details": {requested: detail},
                     })
                 return None
-            if getattr(self._ctx, "is_ephemeral_turn", False) and requested not in _EPHEMERAL_ALLOWED_TOOLS:
-                return None  # CW3: allowlist-consistent with schemas()/execute() (so enable_tools can't surface a denied tool)
             if local_readonly_subagent and not self._readonly_tool_allowed(requested):
                 return None
-            if acting_subagent and requested not in ACTING_SUBAGENT_TOOL_NAMES:
+            if acting_subagent and requested not in acting_tool_names_for_context(self._ctx, self._entries):
                 return None
             return self._schema_for_entry(entry)
         try:
@@ -895,7 +917,7 @@ class ToolRegistry:
         except Exception:
             _ext_parse_name = None
         if _ext_parse_name and _ext_parse_name(name):
-            if acting_subagent and requested not in acting_grants:
+            if acting_subagent and acting_grants is not None and requested not in acting_grants:
                 return None
             if not _resource_allowed(self._ctx, "network"):
                 self._capability_omissions.append({"surface": "extensions", "reason": "resource_blocked", "resource": "network=false"})
@@ -930,7 +952,7 @@ class ToolRegistry:
             _mcp_get_manager = None
             _mcp_is_name = None
         if _mcp_get_manager and _mcp_is_name and _mcp_is_name(requested):
-            if acting_subagent and requested not in acting_grants:
+            if acting_subagent and acting_grants is not None and requested not in acting_grants:
                 return None
             if not _resource_allowed(self._ctx, "network"):
                 self._capability_omissions.append({"surface": "mcp", "reason": "resource_blocked", "resource": "network=false"})
@@ -1082,7 +1104,7 @@ class ToolRegistry:
         acting_subagent = self._is_acting_subagent()
         acting_self_worktree = acting_subagent and str(getattr(task_constraint, "surface", "") or "") == "self_worktree"
         acting_protected_grant = acting_subagent and bool(getattr(task_constraint, "protected_paths_grant", False))
-        acting_tool_grants = set(getattr(task_constraint, "external_tool_grants", ()) or ()) if acting_subagent else set()
+        acting_tool_grants = self._acting_tool_grants() if acting_subagent else set()
         entry = self._entries.get(name)
         ext_tool, extension_unavailable = extension_dispatch._extension_dispatch_candidate(self._ctx, name) if entry is None else (None, False)
         _mcp_is_name = None
@@ -1096,10 +1118,6 @@ class ToolRegistry:
             except Exception:
                 _mcp_is_name = None
         is_mcp = bool(_mcp_is_name and _mcp_is_name(name))
-        _eph = registry_guards._ephemeral_block_result(  # CW3: built-in allowlist; extension/MCP tools ride every lane
-            self._ctx, name, ext_tool, is_mcp, extension_unavailable=extension_unavailable)
-        if _eph is not None:
-            return _eph
         _resource_gate = registry_guards._capability_resource_guard_result(
             self._ctx, name, args, ext_tool, is_mcp)
         if _resource_gate is not None:
@@ -1188,6 +1206,12 @@ class ToolRegistry:
             _runtime_mode = _get_runtime_mode()
         except Exception:
             _runtime_mode = "advanced"
+        # A task's own mode cap (metadata.runtime_mode_cap — a consciousness wake-up at
+        # Act/Observe, В21=A) can only NARROW the install mode: every light gate below
+        # (repo mutation, protected writes, start_service, the shell write block) reads
+        # the stricter of the two through this one local; get_runtime_mode() is unchanged.
+        from ouroboros.consciousness_authority import effective_runtime_mode as _effective_runtime_mode
+        _runtime_mode = _effective_runtime_mode(_runtime_mode, getattr(self._ctx, "task_metadata", None))
         if is_mcp:
             return extension_dispatch._dispatch_mcp_tool_result(self._ctx, name, args)
         if entry is None:
@@ -1212,8 +1236,13 @@ class ToolRegistry:
         if name in _SYSTEM_INTRINSIC_REPO_MUTATION_TOOLS:
             light_targets_system = True
         elif resolved_binding is not None:
+            # The light gate reads the RESOLVED target, not the root label,
+            # exactly as it does for direct shell writes: a cyber_pro install
+            # resolves user_files to the whole host, so a repository path
+            # reached under THAT root is still Ouroboros self-modification.
             light_targets_system = (
                 _binding_set_is_light_restricted(self._ctx, resolved_binding) or acting_self_worktree
+                or _user_files_binding_reaches_repo(self._ctx, resolved_binding)
             )
         else:
             light_targets_system = not workspace_mode or acting_self_worktree
@@ -1259,7 +1288,8 @@ class ToolRegistry:
             )
             allow_protected = registry_guards._authorized_managed_update_resolver(self._ctx) or (
                 mode_allows_protected_write(_runtime_mode)
-                and (acting_protected_grant or not acting_subagent)
+                and (acting_protected_grant or not acting_subagent
+                     or runtime_mode_at_least(_runtime_mode, "cyber_pro"))
             )
             if protected_matches and not allow_protected:
                 first = protected_matches[0]
@@ -1289,6 +1319,7 @@ class ToolRegistry:
             messages=getattr(self._ctx, "messages", None),
             ctx=self._ctx,
             python_resolution=interpreter_resolution,
+            resolved_binding=resolved_binding,
         )
         if not is_safe:
             return ToolResult(status="blocked", code="SAFETY_VIOLATION", text=safety_msg)
@@ -1328,6 +1359,18 @@ class ToolRegistry:
             result = checked
         elif early_error is not None:
             return early_error
+
+        if (
+            name in _PROCESS_COMMAND_TOOLS
+            and mode_allows_protected_write(_runtime_mode)
+            and targets_system_repo
+            and getattr(self._ctx, "_protected_shell_notice_paths", None)
+        ):
+            result = _append_shell_core_notice(
+                result,
+                args.get("cmd", args.get("command", "")),
+                paths=getattr(self._ctx, "_protected_shell_notice_paths", None),
+            )
 
         return _compose_execute_result_result(name, result, _route_note, safety_msg) if _route_note or safety_msg else result
 

@@ -464,18 +464,44 @@ def test_turn_event_queue_stamps_by_value_at_the_producer():
     # Returned top-level event (llm_usage shape) is stamped the same way.
     assert proxy.stamp({"type": "llm_usage", "task_id": "turn1", "usage": {}})["chat_id"] == 42
 
+    # The lane fact rides the same events by the same rule (a stamped
+    # task_done keeps its own value; other tasks' events are untouched).
+    assert captured[-1]["data"]["_is_direct_chat"] is True
+    assert "cancelable" not in captured[-1]["data"]  # not a work frame
+    assert proxy.stamp({"type": "task_done", "task_id": "turn1", "_is_direct_chat": False})["_is_direct_chat"] is False
+    tool = proxy.stamp({"type": "log_event", "data": {"type": "tool_call_started", "task_id": "turn1", "tool": "read_file"}})
+    assert tool["data"]["cancelable"] is True and tool["data"]["_is_direct_chat"] is True
+    receipt = proxy.stamp({"type": "log_event", "data": {
+        "type": "tool_call_started", "task_id": "turn1", "tool": "promote_chat_to_task", "routing_action": "promote_chat_to_task"}})
+    assert "cancelable" not in receipt["data"] and receipt["data"]["_is_direct_chat"] is True
+
     # Another task's event and an already-addressed event are left alone.
     other = {"type": "log_event", "data": {"type": "x", "task_id": "other"}}
-    assert "chat_id" not in proxy.stamp(other)["data"]
+    assert "chat_id" not in proxy.stamp(other)["data"] and "_is_direct_chat" not in proxy.stamp(other)["data"]
     zero = {"type": "log_event", "data": {"type": "x", "task_id": "turn1", "chat_id": 0}}
     assert proxy.stamp(zero)["data"]["chat_id"] == 0
 
-    # _run_chat_task installs the proxy around agent.handle_task.
+    # The first-work callback (the lane hangs the turn namer on it) fires
+    # exactly once, on the first frame stamped as work — never on a receipt.
+    fired = []
+    named = _TurnEventQueue(SimpleNamespace(put=captured.append, put_nowait=captured.append), "turn2", 42,
+                            on_first_work=lambda: fired.append(1))
+    named.put_nowait({"type": "log_event", "data": {
+        "type": "tool_call_started", "task_id": "turn2", "tool": "promote_chat_to_task", "routing_action": "promote_chat_to_task"}})
+    named.put_nowait({"type": "log_event", "data": {"type": "llm_round_error", "task_id": "turn2"}})
+    assert fired == []
+    named.put_nowait({"type": "log_event", "data": {"type": "tool_call_started", "task_id": "turn2", "tool": "read_file"}})
+    named.put_nowait({"type": "log_event", "data": {"type": "tool_call_finished", "task_id": "turn2", "tool": "read_file"}})
+    named.put_nowait({"type": "log_event", "data": {"type": "tool_call_started", "task_id": "turn2", "tool": "run_command"}})
+    assert fired == [1]
+
+    # The execution half of the direct lane installs the proxy around
+    # agent.handle_task (admission registers the turn; execution runs it).
     import inspect
 
-    from supervisor.workers import _run_chat_task
+    from supervisor.worker_chat_lane import _execute_chat_task
 
-    src = inspect.getsource(_run_chat_task)
+    src = inspect.getsource(_execute_chat_task)
     assert "_TurnEventQueue" in src and "agent._event_queue = turn_queue" in src
 
 

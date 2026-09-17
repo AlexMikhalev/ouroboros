@@ -6,7 +6,6 @@ import asyncio
 import copy
 import json
 from contextlib import nullcontext
-from functools import partial
 from typing import Any
 
 from starlette.responses import JSONResponse
@@ -24,8 +23,7 @@ def history_wait_row(entry: dict) -> dict | None:
            if key not in {"type", "ts", "task_id", "quota_clock", "is_progress"} and not key.startswith("_")}
     return {"text": "", "role": "system", "ts": str(entry.get("ts") or ""), "is_progress": False,
             "system_type": "task_model_wait", "task_id": str(entry["task_id"]),
-            "model_waits": {str(entry["wait_id"]): row},
-            **({"ephemeral_decision": True} if entry.get("ephemeral_decision") else {})}
+            "model_waits": {str(entry["wait_id"]): row}}
 
 
 def history_wait_overlay(messages: list[dict], owner_limit: int) -> tuple[list[dict], list[dict], bool]:
@@ -110,7 +108,7 @@ def _live_task(task_id: str) -> dict:
         return task
 
 
-def _decide(root: Any, body: dict, *, get_background_model_wait: Any = None) -> JSONResponse:
+def _decide(root: Any, body: dict) -> JSONResponse:
     from ouroboros.gateway.owner_settings import CommitBoundary
     from ouroboros.owner_mailbox import KIND_MODEL_WAIT, write_owner_message
     from supervisor.queue import _task_drive_for_task
@@ -125,24 +123,15 @@ def _decide(root: Any, body: dict, *, get_background_model_wait: Any = None) -> 
     owner = None
 
     def phase_owner():
-        if task_id == "bg-consciousness":
-            return get_background_model_wait() if callable(get_background_model_wait) else None
-        from supervisor.active_activity import get_direct_activity_registry
         from ouroboros.post_task_checkpoint import post_task_model_wait
 
-        return (get_direct_activity_registry().ephemeral_model_wait(root, task_id)
-                or post_task_model_wait(root, task_id))
+        return post_task_model_wait(root, task_id)
 
     def live_task():
         if owner is None:
             return _live_task(task_id)
         if owner.closed or phase_owner() is not owner:
             raise WaitDecisionRefused("task_not_live")
-        if owner.task.get("_ephemeral_turn"):
-            from ouroboros.cancel_intents import cancel_pending
-
-            if cancel_pending(owner.canonical_root, task_id):
-                raise WaitDecisionRefused("cancel_pending")
         return owner.task
 
     def mutate(wait_id, transform):
@@ -167,8 +156,6 @@ def _decide(root: Any, body: dict, *, get_background_model_wait: Any = None) -> 
     try:
         task_id, wait_id, action = _action(body)
         owner = phase_owner()
-        if task_id == "bg-consciousness" and owner is None:
-            raise WaitDecisionRefused("task_not_live")
         task = live_task()
         attempt = int(task.get("_attempt") or 1)
 
@@ -247,11 +234,9 @@ def _decide(root: Any, body: dict, *, get_background_model_wait: Any = None) -> 
                           saved=saved())
 
 
-async def answer_model_wait_decision(
-    root: Any, body: dict, *, get_background_model_wait: Any = None,
-) -> tuple[int, dict]:
+async def answer_model_wait_decision(root: Any, body: dict) -> tuple[int, dict]:
     """Share the existing wait effect and settings-writer receipts across transports."""
-    decide = partial(_decide, get_background_model_wait=get_background_model_wait)
+    decide = _decide
     if body.get("persist_role") is True:
         from ouroboros.gateway.settings import _run_settings_writer
 

@@ -43,11 +43,16 @@ class DecisionRequest(TypedDict):
 
 class DecisionResponse(TypedDict, total=False):
     """Answer-ingress reply. 2xx carries the card's lifecycle state
-    (quiz: answered; duplicate marks an idempotent replay). A late answer to
-    a settled task is 409 with the true state (expired_terminal/answered),
-    so the card settles instead of inviting retries. Routing adds dispatched
+    (quiz: answered; duplicate marks an idempotent replay). A LATE quiz answer
+    — the card's task already finished — is also 2xx, adding
+    answered_after_terminal and forwarded: the answer is recorded and delivered
+    into the card's chat as an ordinary owner message, and forwarded=false with
+    a reason_code says when that chat is a machine or hidden destination with no
+    owner turn to start. 409 is left for a card that was already answered (and
+    for a non-root addressee). Routing adds dispatched
     (confirmed durable receipt), task_id (derived promoted id), latest_status
-    (superseding status on 409), and reason/detail diagnostics.
+    (superseding status on 409), reason/detail diagnostics, and cause (the
+    owner-facing sentence for a refused routing act).
 
     Model waits distinguish accepted (202, applied false) from the worker's
     applied_request_id. wait carries the current projection and revision;
@@ -61,12 +66,15 @@ class DecisionResponse(TypedDict, total=False):
     answered_index: int
     comment: str
     duplicate: bool
+    answered_after_terminal: bool
+    forwarded: bool
     error: str
     dispatched: str
     task_id: str
     latest_status: str
     reason: str
     detail: str
+    cause: str
     request_id: str
     applied: bool
     saved: Optional[bool]

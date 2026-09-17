@@ -999,3 +999,16 @@ def test_companion_processes_start_outside_the_registry_lock_after_publication(t
     failing = _api(LockProbeSupervisor(fail=True))
     with pytest.raises(RuntimeError, match="spawn failed"):
         failing._publish_registrations()
+
+
+def test_companion_base_env_forwards_login_identity_without_secrets(monkeypatch) -> None:
+    """The login name reaches a companion (its CLIs key keychain/credential lookups on it); a
+    secret-shaped sibling that merely starts the same way does not."""
+    from ouroboros.extension_companion import _companion_base_env
+
+    for key in ("USER", "LOGNAME", "USERNAME"):
+        monkeypatch.setenv(key, "synthetic-login")
+    monkeypatch.setenv("USER_API_TOKEN", "synthetic-host-only")
+    env = _companion_base_env()
+    assert env["USER"] == env["LOGNAME"] == env["USERNAME"] == "synthetic-login"
+    assert "USER_API_TOKEN" not in env

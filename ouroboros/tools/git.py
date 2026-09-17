@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
+
 import copy
 import json
 import hashlib  # noqa: F401
@@ -14,6 +16,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from ouroboros.config import get_runtime_mode  # noqa: F401
+from ouroboros.tools.review_helpers import review_enforcement_blocks
 from ouroboros.runtime_mode_policy import (
     core_patch_notice,  # noqa: F401
     format_protected_paths,  # noqa: F401
@@ -115,6 +118,8 @@ def _free_cycle_gate(
     disclosure and WITHOUT buying another review."""
     from ouroboros.config import get_review_enforcement
 
+    if getattr(ctx, "_review_cyber_pending", "") and not review_enforcement_blocks("blocking"):
+        return {"advisory_replay": ctx._review_cyber_pending, "replay_reason": "review_pending"}
     fp = pre_fingerprint.get("fingerprint", "")
     rebuttal_sha = compute_rebuttal_sha256(review_rebuttal)
     contract_fp = commit_review_contract_fingerprint()
@@ -167,7 +172,7 @@ def _free_cycle_gate(
             cycles_paid=int(ceiling["cycles_paid"]), cap=int(ceiling["cap"]),
             enforcement=enforcement, root_task_id=root_task_id, fingerprint=str(fp),
         )
-    if enforcement != "blocking":
+    if not review_enforcement_blocks(enforcement):
         # ADVISORY: neither state hard-blocks a commit — disclose loudly (typed
         # event + result message) and reuse the recorded outcome for free.
         # The identical-replay half of this branch is structurally near-dead
@@ -571,6 +576,12 @@ def _advisory_and_tests_gate(
             ctx, runner=lambda c, **kw: _run_review_preflight_tests(c, **kw))
         if test_err:
             msg = _tests_preflight_block_message(_managed_needs_proof, test_err)
+            if not review_enforcement_blocks("blocking"):
+                from ouroboros.tools.review import _handle_review_block_or_warning
+
+                ctx._last_review_block_reason = "tests_preflight_blocked"
+                _handle_review_block_or_warning(ctx, True, msg, "")
+                return None
             try:
                 run_cmd(["git", "reset", "HEAD"], cwd=ctx.repo_dir)
             except Exception:
@@ -962,6 +973,24 @@ def _check_ci_status_after_push(repo_dir: pathlib.Path) -> str:
         return ""
 
 
+def _publish_post_commit_test_fact(ctx, result: str, test_warning: str) -> str:
+    """Carry "the post-commit tests failed" as a TYPED fact beside the text.
+
+    A commit whose post-commit verification failed is PRESERVED and reported as
+    a success with a warning appended, so nothing about the call is an error and
+    nothing may make it one. The failing tests are still the most reflection
+    worthy thing the task did, and a reader that had to find the word in the
+    result body was a keyword gate standing in for a fact the producer holds
+    here. The text is returned byte-identical, which the registry's publication
+    rule requires.
+    """
+    if test_warning:
+        _publish_tool_result(ctx, ToolResult(
+            status="ok", code="OK", text=result, meta={"post_commit_tests": "failed"},
+        ))
+    return result
+
+
 def _format_commit_result(ctx, commit_message, push_status, test_warning):
     result = f"OK: committed to {ctx.branch_dev}: {commit_message}{push_status}"
     if test_warning:
@@ -1120,7 +1149,7 @@ def _publish_reviewed_commit(
                 result += f"\n⚠️ WARNING: untracked files remain: {files}"
         except Exception:
             pass
-    return result + ci_note
+    return _publish_post_commit_test_fact(ctx, result + ci_note, test_warning)
 
 
 def _repo_commit_push(ctx: ToolContext, commit_message: str,
@@ -1136,7 +1165,7 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str,
     _reset_commit_review_state(ctx)
     _commit_start = time.time()
     if not commit_message.strip():
-        return "⚠️ ERROR: commit_message must be non-empty."
+        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR", text=("⚠️ ERROR: commit_message must be non-empty.")))
     ctx._current_review_commit_message = commit_message
     # A managed marker authorizes exactly one reviewed two-parent resolution.
     from supervisor.update_merge import managed_assisted_tx_for
@@ -1413,7 +1442,11 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str,
                                    block_reason="managed_update_smoke_failed", block_details=_msg_pc,
                                    duration_sec=time.time() - _commit_start)
             return _msg_pc
-        return _format_commit_result(ctx, commit_message, "", test_warning_ref[0]) + "\n\n" + _msg_pc
+        return _publish_post_commit_test_fact(
+            ctx,
+            _format_commit_result(ctx, commit_message, "", test_warning_ref[0]) + "\n\n" + _msg_pc,
+            test_warning_ref[0],
+        )
     if not evolution_claim:
         push_status = _auto_push(ctx.repo_dir)
     return _publish_reviewed_commit(

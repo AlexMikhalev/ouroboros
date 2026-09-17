@@ -15,9 +15,11 @@ import math
 import pathlib
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
+from typing import Any, Callable, Dict, List, Literal, Mapping, Optional, Tuple
+from copy import deepcopy
 
 from ouroboros.context_layout import reference_doc_sections
+from ouroboros.reference_books import ReferenceBook
 from ouroboros.utils import estimate_tokens
 
 log = logging.getLogger(__name__)
@@ -35,8 +37,130 @@ def extract_plain_text_from_content(content: Any) -> str:
 
     return _extract_plain_text_from_content(content)
 
-ContextProfile = Literal["owner_max", "owner_low", "task_local_low"]
+ContextProfile = Literal["owner_max", "owner_low", "owner_nano", "task_local_low"]
 MeasurementBasis = Literal["fresh_route_usage", "fresh_model_usage", "cold_estimate"]
+
+
+@dataclass(frozen=True)
+class CallContextFit:
+    """Arithmetic for one prepared physical input, never dispatch authority."""
+
+    effective_max_tokens: int
+    strict_bound_proven: bool
+    fit_status: str
+    missing_evidence: Tuple[str, ...]
+    input_tokens: int
+    bound_tokens: Optional[int]
+    free_tokens: Optional[int]
+
+
+def project_tool_result_batch(
+    results: List[Dict[str, Any]], messages: List[Dict[str, Any]], tool_schemas: list,
+    *, drive_root: pathlib.Path, task_id: str,
+    fit_candidate: Callable[[list, list], Mapping[str, Any]],
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Retain full results before constructing a fitting multi-result view.
+
+    The caller supplies one completed call batch and its actual prospective
+    send measurement. No result is appended to the live transcript here;
+    source persistence, projection and callback failures never imply full read.
+    """
+    from ouroboros.artifacts import store_actor_source_bytes
+
+    rows = deepcopy(results)
+    full = [str(row["result"]) for row in rows]
+
+    def fit() -> Dict[str, Any]:
+        candidate = [*messages, *({"role": "tool", "tool_call_id": row["tool_call_id"],
+                                  "content": str(row["result"])} for row in rows)]
+        return dict(fit_candidate(deepcopy(candidate), deepcopy(tool_schemas)))
+
+    initial = fit()
+    if initial.get("accepted") is True:
+        return rows, {"status": "complete", "fit": initial}
+    sources = []
+    for row, text in zip(rows, full):
+        try:
+            source = store_actor_source_bytes(drive_root, task_id, category="tool_results",
+                source_id=str(row["tool_call_id"]), data=text.encode("utf-8"), extension="txt")
+        except (OSError, ValueError):
+            source = {}
+        sources.append(source)
+
+    def render(index: int, shown: int) -> None:
+        row, text, source = rows[index], full[index], sources[index]
+        info = {"source_ref": source, "source_status": "ready" if source else "source_unavailable",
+                "complete_chars": len(text), "complete_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                "requested_range": [0, len(text)], "delivered_range": [0, shown], "text_chars": shown,
+                "text_sha256": hashlib.sha256(text[:shown].encode("utf-8")).hexdigest()}
+        row["result"] = text[:shown] + "\n[Tool result source view]\n" + json.dumps(info, ensure_ascii=False, separators=(",", ":"))
+        row.update(result_partial=shown < len(text), result_source_ref=source,
+                   result_source_status=info["source_status"], result_source_view=info)
+        if shown < len(text) and isinstance(row.get("result_meta"), dict):
+            if "knowledge_source_complete" in row["result_meta"]:
+                row["result_meta"]["knowledge_source_complete"] = False
+
+    # Reserve every call's result envelope and source locator before allocating
+    # body text. A later result can never disappear because an earlier one grew.
+    for index in range(len(rows)):
+        render(index, 0)
+    minimum = fit()
+    if minimum.get("accepted") is not True:
+        return rows, {"status": "minimum_view_unfit", "fit": minimum}
+    for index, text in enumerate(full):
+        low, high = 0, len(text)
+        while low < high:
+            mid = (low + high + 1) // 2
+            render(index, mid)
+            if fit().get("accepted") is True:
+                low = mid
+            else:
+                high = mid - 1
+        render(index, low)
+    final = fit()
+    return rows, {"status": "projected" if final.get("accepted") is True else "minimum_view_unfit", "fit": final}
+
+
+def resolve_call_context_fit(
+    *, input_tokens: int, input_is_exact: bool, caller_max_tokens: int,
+    total_target_tokens: Optional[int], route_capacity_tokens: Optional[int],
+    minimum_free_tokens: int, tokenizer_template_provenance: Optional[Mapping[str, Any]],
+    output_limit_enforced: bool, reasoning_included_in_limit: Optional[bool],
+    route_capacity_confirmed: bool = False,
+) -> CallContextFit:
+    """Choose one output allowance after actual route/template preparation.
+
+    Positive capacity values are sizing observations; only the adapter's
+    separately attested facts establish a strict claim. Unknown evidence never
+    prohibits a route. Callers keep their existing recovery/admission policy;
+    this function creates no send, retry, reservation, or continuation identity.
+    """
+    if input_tokens < 0 or caller_max_tokens < 0 or minimum_free_tokens < 0:
+        raise ValueError("context measurements and token allowances must be nonnegative")
+    bounds = [int(value) for value in (total_target_tokens, route_capacity_tokens)
+              if value is not None and value > 0]
+    bound = min(bounds) if bounds else None
+    free = bound - input_tokens if bound is not None else None
+    effective = min(caller_max_tokens, max(0, free)) if free is not None else caller_max_tokens
+    missing = []
+    if not input_is_exact:
+        missing.append("exact_input_measurement")
+    if not tokenizer_template_provenance:
+        missing.append("tokenizer_template_provenance")
+    if not route_capacity_confirmed or not route_capacity_tokens:
+        missing.append("confirmed_serving_capacity")
+    if not output_limit_enforced:
+        missing.append("enforced_output_limit")
+    if reasoning_included_in_limit is not True:
+        missing.append("reasoning_within_measured_window")
+    fit_status = ("unknown_capacity" if free is None else "unfit" if free < 0
+                  else "insufficient_headroom" if free < minimum_free_tokens else "fits")
+    # An estimate alone cannot prescribe a zero-output physical request. Keep
+    # the caller's allowance and disclose that the proposed view needs fitting.
+    if not input_is_exact and effective == 0 and caller_max_tokens > 0:
+        effective = caller_max_tokens
+    return CallContextFit(effective, fit_status == "fits" and not missing,
+                          fit_status, tuple(missing), input_tokens, bound, free)
 
 
 @dataclass(frozen=True)
@@ -49,6 +173,7 @@ class ContextFitProjection:
     calibrated_tokens: int
     calibration_ratio: float
     fits_known_window: Optional[bool]
+    user_content_json: Optional[str] = None
 
     def system_message(self) -> Dict[str, Any]:
         return {"role": "system", "content": json.loads(self.system_content_json)}
@@ -59,7 +184,7 @@ class MainFitMeasurement:
     route_fp: str
     round_id: str
     profile: ContextProfile
-    rendered_mode: Literal["max", "low"]
+    rendered_mode: Literal["max", "low", "nano"]
     estimated_input_tokens: int
     response_reserve_tokens: int
     target_total_tokens: Optional[int]
@@ -108,15 +233,18 @@ class ContextFitPlan:
     model_role: str = "main"
     model_route: Dict[str, Any] = field(default_factory=dict)
     evidence_source: str = ""
+    nano_projection: Optional[ContextFitProjection] = None
 
     def projection(self, mode: str) -> ContextFitProjection:
+        if str(mode or "").lower() == "nano" and self.nano_projection is not None:
+            return self.nano_projection
         return self.low_projection if str(mode or "").lower() == "low" else self.max_projection
 
     def messages_for(self, mode: str) -> List[Dict[str, Any]]:
         projection = self.projection(mode)
         return [
             projection.system_message(),
-            {"role": "user", "content": json.loads(self.user_content_json)},
+            {"role": "user", "content": json.loads(projection.user_content_json or self.user_content_json)},
         ]
 
     def reproject_transcript(
@@ -175,6 +303,9 @@ class ContextCore:
     dynamic_text: str
     user_content_json: str
     docs_need_development: bool
+    reference_books: Tuple[ReferenceBook, ...] = ()
+    compact_reference_docs: bool = False
+    reference_book_errors: Tuple[str, ...] = ()
 
 
 def _render_context_system_content(
@@ -192,12 +323,14 @@ def _render_context_system_content(
     static_parts.extend(
         reference_doc_sections(
             env,
-            context_mode=mode,
+            context_mode="low" if core.compact_reference_docs else mode,
             include_development=core.docs_need_development,
             architecture_text=core.architecture_md,
             development_text=core.development_md,
+            books=core.reference_books,
         )
     )
+    static_parts.extend(core.reference_book_errors)
     # Stable governance/policy is first; mutable task evidence is last.  This is
     # the cache-friendly ordering recommended by both supported cache routes.
     return [
@@ -425,7 +558,7 @@ def measure_main_fit(
     *,
     drive_root: Optional[pathlib.Path] = None,
     profile: ContextProfile,
-    rendered_mode: Literal["max", "low"],
+    rendered_mode: Literal["max", "low", "nano"],
     round_id: str,
     automatic_pass_used: bool = False,
     reasoning_effort: str = "",
@@ -438,7 +571,7 @@ def measure_main_fit(
     from ouroboros.capability_evidence import (
         canonical_evidence_root, is_known, resolve_main_token_density,
     )
-    from ouroboros.context_budget import OWNER_LOW_TARGET_TOKENS
+    from ouroboros.context_budget import OWNER_LOW_TARGET_TOKENS, OWNER_NANO_TARGET_TOKENS, NANO_MIN_HEADROOM_TOKENS
 
     if drive_root is None:
         drive_root = canonical_evidence_root()
@@ -450,9 +583,10 @@ def measure_main_fit(
         provider=plan.provider,
         reasoning_effort=reasoning_effort,
     ) * density))
-    reserve = int(plan.output_reserve_tokens or 0)
+    reserve = NANO_MIN_HEADROOM_TOKENS if profile == "owner_nano" else int(plan.output_reserve_tokens or 0)
     total = estimated_input + reserve
-    target = OWNER_LOW_TARGET_TOKENS if profile == "owner_low" else None
+    target = (OWNER_NANO_TARGET_TOKENS if profile == "owner_nano"
+              else OWNER_LOW_TARGET_TOKENS if profile == "owner_low" else None)
     capacity = int(plan.window_tokens or 0) if is_known(plan, require_fresh=True) else None
     target_deficit = max(0, total - target) if target is not None else None
     capacity_deficit = max(0, total - capacity) if capacity is not None else None
@@ -492,11 +626,11 @@ def measure_main_fit(
 def _context_route(task: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Resolve the same effective settings and account identity on success or failure."""
     from ouroboros.capability_evidence import model_account_options
-    from ouroboros.config import load_settings
+    from ouroboros.config import runtime_settings
     from ouroboros.gateway.settings import _active_main_route
     from ouroboros.server_runtime import apply_runtime_provider_defaults
 
-    settings, _changed, _keys = apply_runtime_provider_defaults(load_settings())
+    settings, _changed, _keys = apply_runtime_provider_defaults(runtime_settings())
     local_override = task.get("use_local_model")
     route = _active_main_route(
         settings, model_override=str(task.get("model") or "").strip(),
@@ -581,7 +715,7 @@ def build_context_fit_plan(
 ) -> ContextFitPlan:
     """Deterministically project one captured core into ordinary-task Max and Low."""
     preferred = str(preferred_mode or "max").strip().lower()
-    if preferred not in {"low", "max"}:
+    if preferred not in {"low", "max", "nano"}:
         preferred = "max"
 
     meta = task.get("task_metadata") if isinstance(task.get("task_metadata"), dict) else {}
@@ -610,35 +744,67 @@ def build_context_fit_plan(
         str(route["model"] or ""),
     )
     known_window = is_known(evidence, require_fresh=True)
+    rendered = {}
+    input_source = None
 
     def _projection(mode: str) -> ContextFitProjection:
-        system_content = _render_context_system_content(env, core, mode=mode)
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": user_content},
-        ]
-        estimated = estimate_context_prompt_tokens(messages)
+        nonlocal input_source
+        from ouroboros.context_budget import NANO_MIN_HEADROOM_TOKENS, OWNER_NANO_TARGET_TOKENS
+
+        view_mode = "low" if core.compact_reference_docs or mode == "nano" else mode
+        if view_mode not in rendered:
+            system_content = _render_context_system_content(env, core, mode=view_mode)
+            messages = [{"role": "system", "content": system_content}, {"role": "user", "content": user_content}]
+            rendered[view_mode] = (json.dumps(system_content, ensure_ascii=False, sort_keys=True),
+                                   estimate_context_prompt_tokens(messages))
+        system_content_json, estimated = rendered[view_mode]
+        user_projection = None
+        target = OWNER_NANO_TARGET_TOKENS if mode == "nano" else None
+        if preferred == "nano" and target is not None and estimated + NANO_MIN_HEADROOM_TOKENS > target:
+            # The original owner input stays exact in the captured core and
+            # existing source store. Only its initial Nano delivery changes;
+            # this is neither the external-assignment compiler nor a summary.
+            try:
+                from ouroboros.artifacts import store_actor_source_bytes
+                if input_source is None:
+                    input_source = store_actor_source_bytes(env.drive_root, str(task["id"]),
+                        category="context_checkpoints", source_id="task_input",
+                        data=core.user_content_json.encode("utf-8"), extension="json")
+                source_content = (
+                    "[Exact task input source]\nThe complete original user input is stored as JSON at this source. "
+                    "Read its full content through the given reader in ranges before substantive decisions. "
+                    "This pointer is not a summary or a change to the task.\n"
+                    + json.dumps(input_source, ensure_ascii=False, sort_keys=True)
+                )
+                source_estimate = estimate_context_prompt_tokens([
+                    {"role": "system", "content": json.loads(system_content_json)},
+                    {"role": "user", "content": source_content}])
+                if source_estimate < estimated:
+                    user_projection = json.dumps(source_content, ensure_ascii=False)
+                    estimated = source_estimate
+            except (OSError, ValueError, KeyError):
+                log.warning("Exact task input source could not be retained; preserving complete input", exc_info=True)
         calibrated = int(estimated * ratio)
         fits = (
-            calibrated + output_reserve <= int(evidence.window_tokens or 0)
+            calibrated + (NANO_MIN_HEADROOM_TOKENS if mode == "nano" else output_reserve)
+            <= (min(OWNER_NANO_TARGET_TOKENS, int(evidence.window_tokens)) if mode == "nano"
+                else int(evidence.window_tokens or 0))
             if known_window
             else None
         )
         return ContextFitProjection(
             mode=mode,
-            system_content_json=json.dumps(
-                system_content,
-                ensure_ascii=False,
-                sort_keys=True,
-            ),
+            system_content_json=system_content_json,
             estimated_tokens=estimated,
             calibrated_tokens=calibrated,
             calibration_ratio=ratio,
             fits_known_window=fits,
+            user_content_json=user_projection,
         )
 
     max_projection = _projection("max")
     low_projection = _projection("low")
+    nano_projection = _projection("nano")
     # Prediction may request mutable-history reclaim, but it never changes the
     # owner's document projection. Task-local Low is authorized only after a
     # real provider overflow on this route.
@@ -654,6 +820,10 @@ def build_context_fit_plan(
             "dynamic_text": core.dynamic_text,
             "user_content": user_content,
             "docs_need_development": core.docs_need_development,
+            "compact_reference_docs": core.compact_reference_docs,
+            "reference_book_errors": core.reference_book_errors,
+            "reference_sources": [(book.book_id, source.source_path, source.sha256)
+                                  for book in core.reference_books for source in (book.entrypoint, *book.chapters)],
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -672,6 +842,7 @@ def build_context_fit_plan(
         user_content_json=core.user_content_json,
         max_projection=max_projection,
         low_projection=low_projection,
+        nano_projection=nano_projection,
         model_role=str(route.get("model_role") or "main"),
         model_route={
             "source": str(getattr(evidence, "source_id", "") or ""),

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ouroboros.config import runtime_setting
+
 import json
 import logging
 import os
@@ -71,42 +73,27 @@ def build_user_content(task: Dict[str, Any]) -> Any:
     metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
     if metadata.get("force_plan"):
         source = str(metadata.get("force_plan_source") or "operator").strip() or "operator"
-        if bool(task.get("_ephemeral_turn")):
-            plan_notice = (
-                "[SWARM_ROUTING_INTENT]\n"
-                f"Source: {source}.\n"
-                "Route this request into exactly one NEW managed root; do not execute it, answer it "
-                "inline, or steer an existing task. In Main, either promote_chat_to_task in Main or "
-                "route_to_project when an existing Project clearly fits. In a Project room, use "
-                "promote_chat_to_task and keep the host-owned current Project. The managed task, not "
-                "this short routing turn, owns plan_task and the work. After the routing tool returns, "
-                "write a short acknowledgement from its exact receipt; claim admission only when the "
-                "receipt says durably scheduled, and do not retry an unconfirmed/rejected attempt.\n"
-                "[/SWARM_ROUTING_INTENT]\n\n"
-            )
-        else:
-            from ouroboros.config import get_review_enforcement
+        from ouroboros.config import get_review_enforcement
 
-            review_enforcement = get_review_enforcement()
-            plan_notice = (
-                "[SWARM_INITIATIVE]\n"
-                f"Source: {source}.\n"
-                f"Resolved review enforcement: {review_enforcement}.\n"
-                "First call plan_task with the goal, the plan prose and a typed spec (in_scope, non_goals, "
-                "acceptance_claims, invariants, decisions, deferred, affected_resources, evidence). Then follow "
-                "OUROBOROS_REVIEW_ENFORCEMENT. Under blocking, continue analysis, evidence gathering, and "
-                "non-mutating preparation while review is open, but begin implementation only after review closes "
-                "or a real task-wide rail fires. Under advisory, you may proceed by judgment with explicit "
-                "disclosure. When the work decomposes into independent parts, fan out subagents within the "
-                "configured caps and reconcile them. State the chosen execution shape explicitly in the plan's "
-                "decisions or acceptance claims — delegation required, optional, or intentionally not used — so "
-                "reviewers can judge it. Parallel children each work from your base snapshot and cannot see each "
-                "other's edits; their patches integrate independently, so two children writing the same region of "
-                "the same file conflict at integration — expected mechanics, not a failure. Give children disjoint "
-                "write regions, or explicitly plan the parent-synthesis step that resolves the expected overlap. "
-                "Planning or reviewer unavailability must not replace useful work with a terminal planning error.\n"
-                "[/SWARM_INITIATIVE]\n\n"
-            )
+        review_enforcement = get_review_enforcement()
+        plan_notice = (
+            "[SWARM_INITIATIVE]\n"
+            f"Source: {source}.\n"
+            f"Resolved review enforcement: {review_enforcement}.\n"
+            "Plan review applies to this work (BIBLE P3); whether to ask, explore or plan first is "
+            "your judgment. Under blocking, continue analysis, evidence gathering, and "
+            "non-mutating preparation while review is open, but begin implementation only after review closes "
+            "or a real task-wide rail fires. Under advisory, you may proceed by judgment with explicit "
+            "disclosure. When the work decomposes into independent parts, fan out subagents within the "
+            "configured caps and reconcile them. State the chosen execution shape explicitly in the plan's "
+            "decisions or acceptance claims — delegation required, optional, or intentionally not used — so "
+            "reviewers can judge it. Parallel children each work from your base snapshot and cannot see each "
+            "other's edits; their patches integrate independently, so two children writing the same region of "
+            "the same file conflict at integration — expected mechanics, not a failure. Give children disjoint "
+            "write regions, or explicitly plan the parent-synthesis step that resolves the expected overlap. "
+            "Planning or reviewer unavailability must not replace useful work with a terminal planning error.\n"
+            "[/SWARM_INITIATIVE]\n\n"
+        )
         text = plan_notice + str(text or "")
     image_b64 = task.get("image_base64")
     attachment_image_blocks = _build_attachment_image_blocks(task)
@@ -297,26 +284,7 @@ def _scheduled_tasks_digest(env: Any, *, limit: int = 8) -> Optional[Dict[str, A
     return out
 
 
-# v6.70.0 LLM-first outcome contract for ephemeral decision turns (no gate): a
-# decision turn once ANSWERED a side-effect request with a promise ("I'll open
-# the PR") while its read-only toolset could not do the work and no task
-# existed — the owner watched a placebo. State the rule where the decision is
-# made instead of policing prose afterwards.
-_DECISION_TURN_OUTCOME_RULE = (
-    "This is a short DECISION turn: built-in tools are read/inspect only; the "
-    "owner's configured MCP tools and enabled extension tools are callable here. A request "
-    "carrying an external side effect (submit/publish/repair/commit/install/"
-    "write) MUST either become a real supervised task via promote_chat_to_task "
-    "or be explicitly declined in the answer. Ending this turn with a promise "
-    "of future work that no tool call actually scheduled is a forbidden "
-    "outcome — an unscheduled promise reads to the owner as work in motion. "
-    "After any routing tool call, the final no-tool response MUST be self-contained: "
-    "state what was attempted and the outcome known to you, because prose from the "
-    "tool-call round is transient progress and is not durable conversation history."
-)
-
-# Hoisted verbatim from ``build_runtime_section`` (same pattern as
-# ``_DECISION_TURN_OUTCOME_RULE``) to keep that builder under the hard method gate.
+# The owner-surface note is shared by the runtime-section builder.
 _OWNER_CLIENT_NOTE = (
     "owner_client is the client surface that SENT the message that started/steered "
     "this work. Provenance: browser observables are CLIENT-REPORTED (the owner's own "
@@ -337,7 +305,7 @@ _OWNER_CLIENT_NOTE = (
 from ouroboros.context_runtime_facts import (  # noqa: E402,F401 — re-exported public surface
     _delegation_capability_fact,
     _project_room_fact,
-    _promoted_task_toolset,
+    _queue_context_fact,
     _runtime_budget_info,
 )
 
@@ -393,6 +361,14 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
         runtime_mode = get_runtime_mode()
     except Exception:
         runtime_mode = os.environ.get("OUROBOROS_RUNTIME_MODE", "advanced")
+    if not bool(task.get("_is_direct_chat")):
+        # A root consciousness started carries a per-task mode cap (Act/Observe = light) that
+        # the dispatcher enforces: its Runtime block names the mode it actually runs in. The
+        # wake itself is a direct turn and keeps Main's block byte-identical (В31=B).
+        from ouroboros.consciousness_authority import effective_runtime_mode, is_consciousness_origin
+
+        if is_consciousness_origin(task.get("metadata")):
+            runtime_mode = effective_runtime_mode(str(runtime_mode or ""), task.get("metadata"))
     runtime_data = {
         "utc_now": utc_now_iso(),
         "repo_dir": str(env.repo_dir),
@@ -428,10 +404,11 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
     }
     runtime_data.update(_task_authority_projection(env, task))
     runtime_data["operational_reality_rule"] = (
-        "This live runtime context is authoritative over stale paths, tool lists, "
+        "This captured runtime context is authoritative over stale paths, tool lists, "
         "or capability assumptions embedded in the task text. Use the visible "
         "task_contract, [ATTACHMENTS], disabled_tools, filesystem roots, and queue "
-        "capacity here when they conflict with older prompt wording."
+        "observations here when they conflict with older prompt wording. Queue load is dated "
+        "evidence at context construction, not a continuously refreshed capacity reading."
     )
     if str(task.get("workspace_root") or "").strip():
         runtime_data["active_workspace"] = {
@@ -463,15 +440,15 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
                 s for s in VALID_WRITE_SURFACES if get_allow_mutative_subagents(s)
             ),
             "write_surfaces": sorted(VALID_WRITE_SURFACES),
-            "web_search_backend": os.environ.get("OUROBOROS_WEBSEARCH_BACKEND", "auto"),
+            "web_search_backend": runtime_setting("OUROBOROS_WEBSEARCH_BACKEND", "auto"),
             "main_web_search": {
-                "mode": os.environ.get("OUROBOROS_MAIN_WEB_SEARCH", "off"),
-                "engine": os.environ.get("OUROBOROS_MAIN_WEB_SEARCH_ENGINE", "auto"),
+                "mode": runtime_setting("OUROBOROS_MAIN_WEB_SEARCH", "off"),
+                "engine": runtime_setting("OUROBOROS_MAIN_WEB_SEARCH_ENGINE", "auto"),
             },
             "note": (
                 "allow_mutative_subagents is the MASTER gate (an explicit owner toggle "
                 "applies to every surface; when it is empty the runtime mode decides, "
-                "SURFACE-AWARE: advanced/pro allow every surface, light allows "
+                "SURFACE-AWARE: advanced/pro/cyber_pro allow every surface, light allows "
                 "external_workspace/genesis — they build outside the Ouroboros runtime — "
                 "and keeps self_worktree off). mutative_subagent_surfaces lists what is "
                 "actually schedulable RIGHT NOW. Read THIS before declaring you cannot "
@@ -507,41 +484,7 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
     except Exception:
         log.debug("Failed to build capability digest for context", exc_info=True)
     try:
-        from ouroboros.config import DATA_DIR, get_max_active_subagents_per_root, get_max_workers
-        from ouroboros.task_status import _load_queue_snapshot
-
-        # The supervisor persists the snapshot at the canonical data root, NOT a forked
-        # child drive — so read it from budget_drive_root (the main root for a subagent)
-        # or DATA_DIR. Reading env.drive_root would leave subagents (the actors most likely
-        # to mis-reason about "starved" siblings) with no live-queue honesty signal.
-        _snap_root = str(task.get("budget_drive_root") or "").strip() or str(DATA_DIR)
-        _snap = _load_queue_snapshot(_snap_root)
-        if not (_snap.get("_snapshot_missing") or _snap.get("_snapshot_invalid")):
-            _running = [r for r in (_snap.get("running") or []) if isinstance(r, dict)]
-            _pending = [r for r in (_snap.get("pending") or []) if isinstance(r, dict)]
-            _maxw = int(get_max_workers())
-            _reaping = int(_snap.get("reaping_count") or 0)
-            # Prefer the ACTUAL assignable-idle worker count persisted from the live pool
-            # (the real pool can be smaller than the configured max, and a mid-reap slot is
-            # unavailable); fall back to a derived estimate for older snapshots.
-            _assignable = _snap.get("assignable_idle_workers")
-            if _assignable is not None:
-                _free = max(0, int(_assignable))
-            else:
-                _free = max(0, _maxw - len(_running) - _reaping)
-            runtime_data["queue"] = {
-                "running_count": len(_running),
-                "pending_count": len(_pending),
-                "reaping_count": _reaping,
-                "max_workers": _maxw,
-                "worker_total": int(_snap.get("worker_total") or _maxw),
-                "free_worker_slots": _free,
-                "max_active_subagents_per_root": int(get_max_active_subagents_per_root()),
-                "note": (
-                    "live worker/queue load. Read THIS before claiming children are 'starved' "
-                    "or the queue is 'saturated' — derive resource facts from here, not guesses."
-                ),
-            }
+        runtime_data["queue"] = _queue_context_fact(task)
     except Exception:
         log.debug("Failed to build queue digest for context", exc_info=True)
     if budget_info:
@@ -569,28 +512,14 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
         runtime_data["owner_client"] = dict(_owner_client)
         runtime_data["owner_client_note"] = _OWNER_CLIENT_NOTE
     _current_chat = _meta.get("current_chat") if isinstance(_meta.get("current_chat"), dict) else None
-    _swarm_router = bool(_meta.get("force_plan")) and bool(task.get("_ephemeral_turn"))
     if _current_chat and (_current_chat.get("running_tasks") or _current_chat.get("addressable_root_tasks")):
         runtime_data["current_chat"] = _current_chat
         runtime_data["current_chat_rule"] = (
-            "Existing roots are context only for this Swarm turn; admit a new root and never steer them."
-            if _swarm_router else
             "addressable_root_tasks are RUNNING/PENDING roots in THIS chat. If a new message continues or "
             "redirects one of them, steer_task(task_id, message) it rather than spawning a duplicate; "
             "your judgment picks the target (or none -> answer inline / promote_chat_to_task). A "
             "message in a project room defaults to that project unless it clearly says otherwise."
         )
-    if _swarm_router:
-        # The router turn authors objectives/contracts for a task it will never
-        # run. Give it the bounded LIVE top-level tool catalog as a structural fact;
-        # the model still writes the contract itself (P5) — no contract text is
-        # ever scanned or gated.
-        try:
-            runtime_data["promoted_task_toolset"] = _promoted_task_toolset(env)
-        except Exception:
-            log.debug("Failed to build promoted-task toolset digest", exc_info=True)
-    if bool(task.get("_ephemeral_turn")) and not _swarm_router:
-        runtime_data["decision_turn_rule"] = _DECISION_TURN_OUTCOME_RULE
     _main_manifest = (
         _meta.get("main_routing_manifest")
         if isinstance(_meta.get("main_routing_manifest"), dict)
@@ -677,35 +606,70 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
     return out
 
 
+# An unauthored common orientation is a VISIBLE GAP, never silence. Static text: this
+# section is cached with the semi-stable block, so it carries no timestamp.
+_SHARED_UNDERSTANDING_GAP = (
+    "## Shared understanding\n\nNot authored yet. "
+    "knowledge_write(topic='overview', scope='global', content=...) creates it; "
+    "it is then loaded here in every context."
+)
+
+
 def build_knowledge_sections(
     env: Any,
     *,
     project_id: str = "",
     warn_large: bool = False,
     pattern_header: str = "## Known error patterns (Pattern Register)",
+    include_pattern_body: bool = True,
 ) -> List[str]:
     sections: List[str] = []
-    # Knowledge base index: for a project-scoped task load ONLY the current
-    # project's facts (`projects/<id>/knowledge`), isolated from the global
-    # memory/knowledge tree and from any other project (Phase 3b). The Pattern
-    # Register stays global (general error patterns are cross-project cognition).
+    # One mind keeps its authored common orientation across rooms. The generated
+    # inventory is navigation, not a substitute for that understanding; a
+    # project's shelf adds focus without hiding the common corpus.
+    from ouroboros.knowledge import (INDEX_FILE, OVERVIEW_TOPIC, inventory_knowledge,
+                                     read_knowledge_note, render_knowledge_index, resolve_knowledge_address)
+
     pid = str(project_id or "").strip()
+    global_address = resolve_knowledge_address(env.drive_path("memory").parent, OVERVIEW_TOPIC, "global")
+    authored_overview = False
+    try:
+        overview = read_knowledge_note(global_address)
+        overview_text = overview.source.text_at(overview.source.body_span) if overview.source else overview.text
+        if overview_text.strip():
+            authored_overview = overview.source is not None
+            sections.append(f"## Shared understanding\n\nSource: knowledge_read(topic='{OVERVIEW_TOPIC}', scope='global').\n\n" + overview_text)
+        else:
+            sections.append(_SHARED_UNDERSTANDING_GAP)  # present but empty is still unauthored
+    except FileNotFoundError:
+        sections.append(_SHARED_UNDERSTANDING_GAP)
+    except (OSError, UnicodeDecodeError) as exc:
+        sections.append(f"Shared understanding source unavailable: knowledge_read(topic='{OVERVIEW_TOPIC}', scope='global'). {type(exc).__name__}.")
+    knowledge_indexes = [(global_address.shelf / INDEX_FILE,
+                          "## Knowledge base\n\nGlobal navigation: knowledge_list(scope='global'); read linked topics with knowledge_read(topic=..., scope='global').",
+                          "knowledge index")]
     if pid:
         from ouroboros.project_facts import project_knowledge_dir
 
-        knowledge_index = (project_knowledge_dir(pid) / "index-full.md", f"## Project knowledge ({pid})", "project knowledge index")
-    else:
-        knowledge_index = (env.drive_path("memory/knowledge/index-full.md"), "## Knowledge base", "knowledge index")
-    for path, header, label in (
-        knowledge_index,
-        (env.drive_path("memory/knowledge/patterns.md"), pattern_header, "patterns register"),
-    ):
-        text = safe_read(path)
+        knowledge_indexes.append((project_knowledge_dir(pid) / INDEX_FILE,
+                                  f"## Project knowledge ({pid})", "project knowledge index"))
+    if include_pattern_body:
+        knowledge_indexes.append((env.drive_path("memory/knowledge/patterns.md"), pattern_header, "patterns register"))
+    for path, header, label in knowledge_indexes:
+        # The authored summary is the resident face of a note, so the index carries it
+        # whether or not a common orientation exists; the fresh inventory render also
+        # covers the case where the index file is absent (a note landed before any
+        # rebuild); an existing stale index is still read as written.
+        is_global_index = path == global_address.shelf / INDEX_FILE
+        text = (render_knowledge_index(inventory_knowledge(global_address), include_summaries=True)
+                if is_global_index and (authored_overview or not path.exists()) else safe_read(path))
         if not text.strip():
             continue
         if warn_large and len(text) > _LARGE_CONTEXT_SECTION_CHARS:
             log.warning("context: %s is large (%d chars)", label, len(text))
         sections.append(f"{header}\n\n{text}")
+    if not include_pattern_body:
+        sections.append("Pattern Register details: knowledge_read(topic='patterns', scope='global').")
     if pid:
         # Bounded per-project journal tail + workpad (multi-project, v6.32.0):
         # the project's durable progress memory rides along with its knowledge.
@@ -832,13 +796,14 @@ def _render_scratchpad_for_context(memory: "Memory", budget: int) -> str:
     return section
 
 
-def build_memory_sections(memory: Memory, partition: str = "all", durable_dialogue_gaps_out: Optional[List[Dict[str, Any]]] = None) -> List[str]:
+def build_memory_sections(memory: Memory, partition: str = "all", durable_dialogue_gaps_out: Optional[List[Dict[str, Any]]] = None,
+                          *, include_scratchpad: bool = True) -> List[str]:
     sections = []
 
     include_stable = partition in {"all", "stable"}
     include_volatile = partition in {"all", "volatile"}
 
-    if include_volatile:
+    if include_volatile and include_scratchpad:
         scratchpad_raw = memory.load_scratchpad()
         # WARNING is preserved on the RAW (pre-trim) value: it signals the rot
         # class is present, even when the helper trims it down for the consumer.
@@ -1136,7 +1101,6 @@ def _build_installed_skills_section(env: Any, *, max_lines: int = 100) -> str:
         if (
             not skill.get("enabled")
             or not bool(skill.get("executable_review"))
-            or skill.get("review_stale")
         ):
             continue
         name = _field(skill.get("name"), 80)
@@ -1154,6 +1118,8 @@ def _build_installed_skills_section(env: Any, *, max_lines: int = 100) -> str:
         ]
         meta = f"{kind}{', v' + version if version else ''}{', ' + review_status if review_status else ''}"
         lines.append(f"- {name} ({meta}): {description or 'No description.'}")
+        if skill.get("review_gate", {}).get("author_accepted"):
+            lines.append("  Current payload accepted by author under Advisory; reviewer evidence remains at its original hash.")
         if when:
             lines.append(f"  Trigger: {when}")
         # CPL-7 Model Experience: bounded prose; absent section renders nothing.
@@ -1214,8 +1180,22 @@ def _capture_context_core(
         fallback="You are Ouroboros. Your base prompt could not be loaded."
     )
     bible_md = safe_read(env.repo_path("BIBLE.md"))
-    architecture_md = safe_read(env.repo_path("docs/ARCHITECTURE.md"))
-    development_md = safe_read(env.repo_path("docs/DEVELOPMENT.md"))
+    from ouroboros.reference_books import BOOK_ENTRYPOINTS, compose_book, load_reference_book
+
+    books = []
+    book_text = {}
+    book_errors = []
+    for book_id, entrypoint in BOOK_ENTRYPOINTS.items():
+        try:
+            book = load_reference_book(env.repo_dir, book_id, read_bytes=lambda path: env.repo_path(path).read_bytes())
+            books.append(book)
+            book_text[book_id] = compose_book(book)
+        except (OSError, ValueError) as exc:
+            log.warning("Reference book unavailable (%s): %s", entrypoint, exc)
+            book_errors.append(f"Reference book source unavailable: {entrypoint}. {exc}. Full context is not established.")
+            book_text[book_id] = ""
+    architecture_md = book_text["architecture"]
+    development_md = book_text["development"]
 
     # A fork is an execution boundary, not a second mind.  Keep the agent's
     # writable Memory object task-local, but capture identity/dialogue from the
@@ -1242,47 +1222,14 @@ def _capture_context_core(
 
     from ouroboros.project_facts import resolve_project_id
 
-    # ------------------------------------------------------------------ #
-    # Reference-doc forms (D-ARCH unification, owner decision 2026-08-08).
-    #
-    # ARCHITECTURE.md follows the OWNER CONTEXT MODE alone: full-resident in
-    # max for EVERY task class — self-body, PROJECT tasks (with or without a
-    # folder), evolution, external/headless/delegated surfaces — and the
-    # lossless navigation map in low. OWNER'S MOTIVATION (recorded verbatim-in-
-    # spirit so it is not lost): architecture.md is Ouroboros's capability/
-    # tools/access map; it stays resident in max even for project/evolution
-    # work because without it the agent cannot reason about HOW to work
-    # effectively — context economy comes from dropping DEVELOPMENT.md for
-    # project work, never ARCHITECTURE. This removed the former max-mode
-    # ARCH→nav-map downgrade for the external-surface class (v6.17.0) and for
-    # evolution (v6.30.0); in low mode ARCH stays the nav map (the cheap mode).
-    #
-    # DEVELOPMENT.md (the self-engineering handbook) is what adapts, MODE-
-    # INDEPENDENTLY — the doc decision is deliberately DECOUPLED from workspace
-    # binding for ARCHITECTURE (binding a workspace fixes paths/tool profile/
-    # lease, it must not drag the capability map out of context in max).
-    #
-    # D-DEV (owner decision, 2026-08-08). OWNER'S MOTIVATION, recorded here so it
-    # is not lost: "DEVELOPMENT.md is the self-engineering handbook; it loads
-    # exactly when the work targets Ouroboros's own body — the signal is the repo
-    # binding, a path fact, never a guess from message text (P5)."
-    #
-    # The structural signal is therefore the ACTIVE REPO BINDING —
-    # `not _task_uses_external_context(task)`: no workspace bound, not a subagent,
-    # not an api/cli/scheduled surface — and NOT project membership. An earlier
-    # draft also dropped the handbook whenever `resolve_project_id` returned an id,
-    # which silently took it away from a DIRECT-CHAT turn in a project room even
-    # though that turn is still working on Ouroboros's own body with no workspace
-    # bound. Order:
-    #   1. an explicit context_requires_development on the task wins;
-    #   2. self-body work keeps it full (explicit context_requires_self_body_docs
-    #      or evolution/deep_self_review/review task types);
-    #   3. the external-surface class — a bound workspace (including a project
-    #      task's auto-provisioned genesis tree), a subagent, or an api/cli/
-    #      scheduled surface — works on ANOTHER codebase and gets the on-demand
-    #      pointer. `workspace="none"` binds no workspace, so such a task is not
-    #      external and keeps the handbook (its own territory);
-    #   4. everything else keeps the existing type/direct-chat semantics.
+    task_metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+    is_child = str(task.get("delegation_role") or task_metadata.get("delegation_role") or "") == "subagent"
+
+    # Max keeps the full capability/WHY map even for external work: binding a
+    # folder changes tools' default target, not the mind's knowledge of its body.
+    # Its handbook follows the active self-body binding, with explicit task
+    # requirements taking precedence. Low/Nano and children instead receive both
+    # books' authored orientation through the same captured-source projection.
     explicit_dev = task.get("context_requires_development")
     if explicit_dev is not None:
         docs_need_development = normalize_bool(explicit_dev)
@@ -1307,11 +1254,12 @@ def _capture_context_core(
         log.debug("Failed to build Available subagents catalog", exc_info=True)
     semi_stable_parts.extend(build_memory_sections(context_memory, partition="stable"))
 
-    semi_stable_parts.extend(build_knowledge_sections(context_env, project_id=resolve_project_id(task)))
+    semi_stable_parts.extend(build_knowledge_sections(context_env, project_id=resolve_project_id(task),
+                                                     include_pattern_body=not is_child))
 
     deep_review_path = context_env.drive_path("memory/deep_review.md")
     try:
-        if deep_review_path.exists():
+        if not is_child and deep_review_path.exists():
             dr_text = deep_review_path.read_text(encoding="utf-8")
             if dr_text.strip():
                 semi_stable_parts.append(
@@ -1327,13 +1275,13 @@ def _capture_context_core(
 
     semi_stable_text = "\n\n".join(semi_stable_parts)
 
-    health_section = build_health_invariants(
-        context_env, task_id=str(task.get("id") or "")
-    )
+    from ouroboros.tools.tool_resolution import active_repo_dir_for
+    active_root = str(active_repo_dir_for(ctx)) if ctx is not None else ""
+    health_section = build_health_invariants(context_env, task_id=str(task.get("id") or ""), active_root=active_root)
     dynamic_parts = []
     if health_section:
         dynamic_parts.append(health_section)
-    dynamic_parts.extend(build_memory_sections(context_memory, partition="volatile"))
+    dynamic_parts.extend(build_memory_sections(context_memory, partition="volatile", include_scratchpad=not is_child))
 
     registry_digest = _build_registry_digest(context_env)
     if registry_digest:
@@ -1393,11 +1341,19 @@ def _capture_context_core(
         _reflections_pid = resolve_project_id(task)
     except Exception:
         _reflections_pid = ""
-    dynamic_parts.extend(build_recent_sections(
-        context_memory, env, task_id=task.get("id", ""), thread_chat_id=int(task.get("chat_id") or 0),
-        project_id=_reflections_pid,
-    ))
-    task_metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+    if is_child:
+        dynamic_parts.append(
+            "## Working sources\n\n"
+            "The shared biography is loaded above. Your parent's selected discussion and working "
+            "sources are in this assignment's context. Other raw conversations, the global scratchpad "
+            "and earlier task reports are not preloaded: use chat_history, knowledge_read, "
+            "get_task_result or ask your parent for exact sources when useful."
+        )
+    else:
+        dynamic_parts.extend(build_recent_sections(
+            context_memory, env, task_id=task.get("id", ""), thread_chat_id=int(task.get("chat_id") or 0),
+            project_id=_reflections_pid,
+        ))
     try:
         from ouroboros.presence_context import build_presence_context_section
 
@@ -1421,6 +1377,9 @@ def _capture_context_core(
             build_user_content(task), ensure_ascii=False, sort_keys=True,
         ),
         docs_need_development=docs_need_development,
+        reference_books=tuple(books),
+        reference_book_errors=tuple(book_errors),
+        compact_reference_docs=is_child,
     )
 
 
@@ -1459,6 +1418,8 @@ def build_llm_messages(
     task: Dict[str, Any],
     review_context_builder: Optional[Any] = None,
     ctx: Any = None,
+    *, llm: Any = None, tool_schemas: Optional[List[Dict[str, Any]]] = None,
+    fit_candidate: Optional[Any] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     # Keep the legacy public shape while publishing the immutable plan on the
     # existing ToolContext for the ordinary loop.  Commit/scope reviewers do not
@@ -1471,6 +1432,45 @@ def build_llm_messages(
         preferred_mode=get_context_mode(),
         ctx=ctx,
     )
+    maintenance = None
+    if plan.preferred_mode == "nano" and llm is not None and ctx is not None:
+        from ouroboros.context_budget import NANO_MIN_HEADROOM_TOKENS, OWNER_NANO_TARGET_TOKENS
+        from ouroboros.consolidator import maintain_memory_pressure
+        import copy
+
+        def fits() -> bool:
+            proposed = plan.messages_for("nano")
+            if fit_candidate is not None:
+                return fit_candidate(proposed, tool_schemas or []).get("accepted") is True
+            return (estimate_context_prompt_tokens(proposed, tool_schemas)
+                    + NANO_MIN_HEADROOM_TOKENS <= OWNER_NANO_TARGET_TOKENS)
+
+        if not fits():
+            canonical_root = pathlib.Path(task.get("budget_drive_root") or getattr(env, "budget_drive_root", None) or memory.drive_root)
+            working_memory = memory if memory.drive_root.resolve() == canonical_root.resolve() else Memory(drive_root=canonical_root, repo_dir=memory.repo_dir)
+            maintenance_ctx = copy.copy(ctx)
+            maintenance_ctx.drive_root = canonical_root
+            maintenance_ctx.budget_drive_root = str(canonical_root)
+            maintenance_ctx.task_id = str(task.get("id") or getattr(ctx, "task_id", "") or "context_maintenance")
+            ctx.emit_progress_fn("Shared memory is larger than this working window; consolidating complete sources before continuing.")
+
+            def rebuild_and_fit() -> bool:
+                nonlocal plan
+                plan = build_context_fit_plan(env, memory, task, review_context_builder, preferred_mode="nano", ctx=ctx)
+                return fits()
+
+            maintenance = maintain_memory_pressure(working_memory, llm, maintenance_ctx, fits=rebuild_and_fit,
+                                                   current_topic=str(task.get("text") or ""))
+            from ouroboros.utils import append_jsonl
+
+            if not append_jsonl(canonical_root / "logs/events.jsonl", {
+                "ts": utc_now_iso(), "type": "context_memory_maintenance",
+                "task_id": maintenance_ctx.task_id, **maintenance,
+            }):
+                log.warning("Context memory maintenance receipt could not be written; source journals remain authoritative")
+            ctx._context_memory_maintenance = maintenance
+            if maintenance["status"] != "fitting":
+                ctx.emit_progress_fn("Shared memory remains larger than the measured working window; original sources were preserved.")
     if ctx is not None:
         ctx.context_fit_plan = plan
     messages = plan.messages_for(plan.initial_mode)
@@ -1486,5 +1486,9 @@ def build_llm_messages(
         "max_calibrated_tokens": plan.max_projection.calibrated_tokens,
         "low_estimated_tokens": plan.low_projection.estimated_tokens,
         "low_calibrated_tokens": plan.low_projection.calibrated_tokens,
+        "nano_estimated_tokens": plan.nano_projection.estimated_tokens if plan.nano_projection else None,
+        "nano_calibrated_tokens": plan.nano_projection.calibrated_tokens if plan.nano_projection else None,
     }}
+    if maintenance is not None:
+        cap_info["context_memory_maintenance"] = maintenance
     return messages, cap_info

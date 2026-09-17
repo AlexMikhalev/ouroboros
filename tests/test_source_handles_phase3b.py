@@ -78,7 +78,8 @@ def test_scratchpad_consolidation_journals_exact_replaced_blocks_and_ref(tmp_pat
         tmp_path / "memory" / "knowledge",
         _ConsolidationLLM(),
     )
-    assert usage == {"prompt_tokens": 10, "completion_tokens": 5}
+    assert usage["prompt_tokens"] == 10
+    assert usage["completion_tokens"] == 5
 
     blocks = memory.load_scratchpad_blocks()
     consolidated = blocks[0]

@@ -912,3 +912,56 @@ test('the skip choice refreshes a failed subscription preview before completion'
     step.detach();
     store.dispose();
 });
+
+test('the wizard roster offers the providers whose keys the owner has typed so far', async () => {
+    // docs/DESIGN.md §7: a source is CHOSEN. The wizard's keys are typed on the
+    // Accounts step, so the provider list is derived from the CURRENT draft on
+    // every entry into a step that shows these rows — never once at
+    // construction, when no key exists yet.
+    const store = createClaudexorStatusStore({
+        fetchImpl: async () => json(200, snapshotWith([])),
+        doc: { hidden: false, addEventListener() {}, removeEventListener() {} },
+        pollMs: 5000,
+    });
+    const dom = fakeDom();
+    const draft = { OUROBOROS_MODEL: 'openai/gpt-5.6-sol' };
+    const step = createAgentsStep({
+        doc: dom.doc,
+        store,
+        providerProfiles: { openai: { label: 'OpenAI' } },
+        previewPayload: () => ({ ...draft }),
+        previewTransport: async () => ({
+            source: 'onboarding_default',
+            diagnostics: [],
+            available_subagents: { enabled: true, items: [{
+                subagent_id: 'api_scout', recommended_use: 'Research.',
+                route: { kind: 'api_model', target_id: 'openai/gpt-5.6-luna' },
+            }] },
+        }),
+    });
+
+    try {
+        step.mount();
+        await flush();
+        await flush();
+        const html = () => dom.nodes.get('onboarding-available-subagents').innerHTML;
+        // No key typed yet: the group offers nothing but the pointer to Accounts,
+        // and the row's own OpenRouter spelling is rescued rather than swapped.
+        assert.match(html(), /<option value="" disabled>Add a key in Accounts for more<\/option>/);
+        assert.doesNotMatch(html(), /value="api:openai"/);
+        assert.match(html(), /value="api:openrouter" selected>OpenRouter \(no key\)</);
+
+        // The owner types an OpenAI key on Accounts and comes back: the provider
+        // is offered now, under the setup contract's name for it.
+        draft.OPENAI_API_KEY = 'sk-not-a-secret';
+        step.mount();
+        await flush();
+        assert.match(html(), /<option value="api:openai">OpenAI<\/option>/);
+        assert.doesNotMatch(html(), /value="api:anthropic"/);
+    } finally {
+        // A failed assertion must not leave the store polling: the runner would
+        // wait for that timer instead of reporting the failure.
+        step.detach();
+        store.dispose();
+    }
+});

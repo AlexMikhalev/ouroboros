@@ -20,7 +20,11 @@ from ouroboros.task_results import (
     STATUS_REJECTED_DUPLICATE,
     validate_task_id,
 )
-from ouroboros.task_status import load_effective_task_result, wait_for_effective_tasks
+from ouroboros.task_status import (
+    SETTLED_STATUSES,
+    load_effective_task_result,
+    wait_for_effective_tasks,
+)
 from ouroboros.tools.registry import ToolContext
 from ouroboros.utils import truncate_review_artifact
 from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
@@ -69,13 +73,15 @@ def _subtask_outcome_summary(data: Dict[str, Any], receipts: list | None = None)
             custody["unreconciled_omitted"] = len(unreconciled) - 10
             omitted_any = True
         if envelope:
-            open_ids = envelope.get("open_run_ids")
-            open_ids = [str(item) for item in open_ids] if isinstance(open_ids, list) else []
             custody["trigger"] = str(envelope.get("trigger") or "")
-            custody["open_run_ids"] = open_ids[:10]
-            if len(open_ids) > 10:
-                custody["open_run_ids_omitted"] = len(open_ids) - 10
-                omitted_any = True
+            custody["audit_status"] = str(envelope.get("audit_status") or "unknown")
+            for field in ("open_run_ids", "pending_invocation_ids", "undisposed_patch_run_ids", "terminal_runs"):
+                values = envelope.get(field)
+                values = list(values) if isinstance(values, list) else []
+                custody[field] = values[:10]
+                if len(values) > 10:
+                    custody[field + "_omitted"] = len(values) - 10
+                    omitted_any = True
         if omitted_any:
             # A bound must name a source the actor can resolve (BIBLE P1).
             # Retry lineage unions the ORIGINAL row's disclosure into this
@@ -159,10 +165,25 @@ def _subtask_outcome_summary(data: Dict[str, Any], receipts: list | None = None)
     return json.dumps(summary, ensure_ascii=False, indent=2, default=str)
 
 
+def _unchanged_result_reference(task_id: str, current_hash: str, known_hash: Any) -> Dict[str, Any]:
+    """Omit only an explicitly matched semantic body, never its current facts.
+
+    This is a conditional read, not evidence that the caller still remembers or
+    has accepted the result. The source request deliberately carries no condition.
+    """
+    if not isinstance(known_hash, str) or known_hash != current_hash:
+        return {}
+    return {
+        "result_unchanged": True,
+        "result_source": {"tool": "get_task_result", "arguments": {"task_id": task_id}},
+    }
+
+
 def _get_task_result(
     ctx: ToolContext, task_id: str, include_authority: bool = False,
     include_work_order_source: bool = False, source_start_char: Any = None,
     source_end_char: Any = None, include_completion_source: bool = False,
+    known_result_sha256: str = "",
 ) -> str:
     """Read a task result, or a bounded canonical work-order/completion source range."""
     metadata = getattr(ctx, "task_metadata", {}) if isinstance(getattr(ctx, "task_metadata", {}), dict) else {}
@@ -240,7 +261,20 @@ def _get_task_result(
     # the stored result no longer crashes the f-string with a TypeError).
     from ouroboros.cost_projection import cost_display
 
-    if status == STATUS_COMPLETED:
+    unchanged = _unchanged_result_reference(str(task_id), child_result_sha256, known_result_sha256)
+    if unchanged:
+        # Accounting, receipts, authority and capability facts are deliberately
+        # outside the join-ledger result identity; keep their current projection.
+        if data.get("duplicate_of"):
+            unchanged["duplicate_of"] = str(data["duplicate_of"])
+        output = (
+            f"Task {task_id} [{status}]: cost={cost_display(data)}\n"
+            f"child_result_sha256={child_result_sha256}\n\n"
+            f"[SUBTASK_OUTCOME]\n{outcome_summary}\n[/SUBTASK_OUTCOME]\n\n"
+            f"{json.dumps(unchanged, ensure_ascii=False)}\n"
+            "Result and trace are unchanged; omit known_result_sha256 to read them in full."
+        )
+    elif status == STATUS_COMPLETED:
         output = (
             f"Task {task_id} [{status}]: cost={cost_display(data)}\n"
             f"child_result_sha256={child_result_sha256}\n\n"
@@ -262,11 +296,11 @@ def _get_task_result(
             f"[SUBTASK_OUTCOME]\n{outcome_summary}\n[/SUBTASK_OUTCOME]\n\n"
             f"{result or 'No details available.'}"
         )
-    if trace:
+    if trace and not unchanged:
         output += f"\n\n[SUBTASK_TRACE]\n{trace}\n[/SUBTASK_TRACE]"
-    from ouroboros.task_finalization import provider_terminal_body
+    from ouroboros.task_finalization import provider_terminal_body, terminal_host_notice_text
 
-    return provider_terminal_body(output, str(data.get("terminal_host_notice") or ""))
+    return provider_terminal_body(output, terminal_host_notice_text(data))
 
 
 def _wait_attention_poll(
@@ -418,7 +452,9 @@ def cache_horizon_note(ctx: Any, elapsed_sec: Any) -> str:
     )
 
 
-def _wait_for_task(ctx: ToolContext, task_id: str, timeout_sec: int = 180) -> str:
+def _wait_for_task(
+    ctx: ToolContext, task_id: str, timeout_sec: int = 180, known_result_sha256: str = "",
+) -> str:
     """Wait for a subtask to reach a terminal status."""
     try:
         tid = validate_task_id(task_id)
@@ -459,7 +495,9 @@ def _wait_for_task(ctx: ToolContext, task_id: str, timeout_sec: int = 180) -> st
     horizon_note = cache_horizon_note(ctx, waited.get("elapsed_sec"))
     if horizon_note:
         extra += f"\n\n{horizon_note}"
-    return f"{header} after {waited.get('elapsed_sec', 0):.1f}s.{extra}\n\n{_get_task_result(ctx, tid)}"
+    result = (_get_task_result(ctx, tid, known_result_sha256=known_result_sha256)
+              if known_result_sha256 else _get_task_result(ctx, tid))
+    return f"{header} after {waited.get('elapsed_sec', 0):.1f}s.{extra}\n\n{result}"
 
 
 def _count_live_sibling_children(ctx: ToolContext, status_drive_root: Path, *, exclude_task_id: str) -> int:
@@ -488,6 +526,13 @@ def _count_live_sibling_children(ctx: ToolContext, status_drive_root: Path, *, e
 
 
 _UNMINTED_WAIT_GRACE_SEC = 30.0
+# The wait ceilings as READABLE facts, for the tool schemas and the expiry
+# disclosure. The literals stay inside ``min(int(timeout_sec), N)`` below —
+# test_cache_optimization scrapes the clamp out of the function source and a
+# named constant there would leave it nothing to find; the test beside it
+# asserts the two spellings agree.
+_WAIT_TASK_CLAMP_SEC = 3600
+_WAIT_TASKS_CLAMP_SEC = 7200
 
 
 def _unminted_wait_ids(ctx: ToolContext, status_drive_root: Path, task_ids: List[str]) -> List[str]:
@@ -585,6 +630,7 @@ def _wait_for_tasks(
     task_ids: List[str],
     timeout_sec: int = 600,
     mode: str = "all_terminal",
+    known_result_sha256_by_task: Dict[str, str] | None = None,
 ) -> str:
     """Wait for multiple subtasks and return a compact structural projection per child.
 
@@ -620,9 +666,13 @@ def _wait_for_tasks(
         if tid not in normalized_ids:
             normalized_ids.append(tid)
     try:
+        # The normalized RAW request, kept before the clamp: an expiry that
+        # reports the ceiling as the asked-for window hides the very fact the
+        # model needs, that its request was cut down.
+        requested_timeout = float(max(0, int(timeout_sec)))
         timeout = max(0, min(int(timeout_sec), 7200))
     except (TypeError, ValueError):
-        timeout = 600
+        requested_timeout, timeout = 600.0, 600
     normalized_mode = str(mode or "all_terminal").strip().lower()
     if normalized_mode not in {"all_terminal", "any_terminal"}:
         return _publish_tool_result(ctx, ToolResult(
@@ -728,8 +778,11 @@ def _wait_for_tasks(
             }
             # The result hash binds this limitation too; keep its host authorship
             # separate from the unchanged model answer, including an empty answer.
-            if "terminal_host_notice" in data:
-                projected["terminal_host_notice"] = data["terminal_host_notice"]
+            from ouroboros.task_finalization import terminal_host_notice_text
+
+            notice = terminal_host_notice_text(data)
+            if notice:
+                projected["terminal_host_notice"] = notice
             if data.get("duplicate_of"):
                 projected["duplicate_of"] = str(data.get("duplicate_of"))
             # A capability reduction is a SEMANTIC handoff fact, not forensics: it is
@@ -779,6 +832,14 @@ def _wait_for_tasks(
                         # (metered) contribution beside them is unknown.
                         _ee["native_contribution"] = "unknown"
                 projected["execution_evidence"] = _ee
+            known = (known_result_sha256_by_task.get(str(tid))
+                     if isinstance(known_result_sha256_by_task, dict) else None)
+            unchanged = (_unchanged_result_reference(str(tid), projected["child_result_sha256"], known)
+                         if data else {})
+            if unchanged:
+                projected.pop("result", None)
+                projected.pop("trace_summary", None)
+                projected.update(unchanged)
             public_tasks[str(tid)] = projected
         waited["tasks"] = public_tasks
         waited["tasks_note"] = (
@@ -794,6 +855,28 @@ def _wait_for_tasks(
             # set instead of re-polling phantoms. Carries children_roster plus
             # the disclosed children_roster_omitted count (never a silent cap).
             waited.update(_children_roster_projection(ctx, status_drive_root))
+    # Disclosed, not silent: the window ended while children were still live.
+    # FACTS only, and deliberately no advisory note — how wide a window to ask
+    # for next is the mind's call (unlike the short-circuit above, whose note
+    # names a broken wait SET); the long-term orientation lives in the schema
+    # description the model reads BEFORE it chooses a window. An id this tree
+    # never minted is disclosed as unknown, never counted as a live child.
+    projected = waited.get("tasks")
+    if (waited.get("timed_out") and not waited.get("all_terminal")
+            and isinstance(projected, dict) and projected):
+        live_ids = [
+            tid for tid in normalized_ids
+            if not (projected.get(tid) or {}).get("unknown_task_id")
+            and str((projected.get(tid) or {}).get("status") or "").strip().lower()
+            not in SETTLED_STATUSES
+        ]
+        if live_ids:
+            waited["wait_expired_with_live_children"] = {
+                "reason": "timeout_expired_before_terminal",
+                "requested_timeout_sec": requested_timeout,
+                "max_timeout_sec": float(_WAIT_TASKS_CLAMP_SEC),
+                "live_task_ids": live_ids,
+            }
     horizon_note = cache_horizon_note(ctx, waited.get("elapsed_sec"))
     if horizon_note:
         waited["cache_horizon_note"] = horizon_note

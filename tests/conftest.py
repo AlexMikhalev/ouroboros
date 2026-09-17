@@ -361,6 +361,31 @@ def pytest_unconfigure(config):  # noqa: ARG001
     _restore_pytest_child_isolation()
 
 
+_PHASE_EVENT_LOOPS = pytest.StashKey()
+
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_protocol(item, nextitem):  # noqa: ARG001
+    """Create both phase loops before fixtures can guard socket operations.
+
+    Windows loop construction opens a local socket pair. Network guards must
+    remain active throughout the test and its finalizers, so only construction
+    precedes fixture setup. This owner closes both loops even if a phase fails.
+    """
+    loops = []
+    try:
+        loops.append(asyncio.new_event_loop())
+        loops.append(asyncio.new_event_loop())
+        item.stash[_PHASE_EVENT_LOOPS] = loops
+        yield
+    finally:
+        for loop in loops:
+            loop.close()
+        asyncio.set_event_loop(None)
+        if _PHASE_EVENT_LOOPS in item.stash:
+            del item.stash[_PHASE_EVENT_LOOPS]
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_call(item):  # noqa: ARG001
     """Install a fresh asyncio event loop for the test *call* phase.
@@ -373,7 +398,7 @@ def pytest_runtest_call(item):  # noqa: ARG001
     after the call phase; a companion pytest_runtest_teardown hook
     installs a temporary loop for fixture finalizers.
     """
-    test_loop = asyncio.new_event_loop()
+    test_loop = item.stash[_PHASE_EVENT_LOOPS][0]
     asyncio.set_event_loop(test_loop)
     # Thread-hygiene baseline, taken AFTER every fixture is set up: a thread a module- or
     # session-scoped fixture starts on its first use (the E2E stub model server) belongs to
@@ -381,14 +406,30 @@ def pytest_runtest_call(item):  # noqa: ARG001
     # BODY leaves behind are named at teardown. Thread OBJECTS, not idents: CPython recycles
     # an ident once a baseline thread exits, so a leaked thread could inherit one.
     item.stash[_THREADS_BEFORE_ITEM] = set(threading.enumerate())
-    yield  # test body runs here
-    test_loop.close()
-    asyncio.set_event_loop(None)
+    try:
+        yield  # test body runs here
+    finally:
+        test_loop.close()
+        asyncio.set_event_loop(None)
 
 
 @pytest.fixture(autouse=True)
 def _rebind_runtime_roots_between_tests():
     _bind_pytest_runtime_roots()
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _unlatch_supervisor_event_bus_between_tests():
+    """A TestClient lifespan runs the server shutdown, whose ``workers.shutdown_event_q()``
+    latches ``_EVENT_Q_SHUTDOWN`` for the rest of the xdist worker; the next test in that
+    worker that publishes on the bus (``kill_workers_for_update``, a promote, a wake) then
+    raises "supervisor event bus is shutting down" against a fixture it never saw. Several
+    modules already unlatch it locally (test_promote_event_transport, test_inflight_indicator_seams);
+    this does it once for every test. A test that wants the latch sets it itself (monkeypatch)."""
+    from supervisor import workers
+
+    workers._EVENT_Q_SHUTDOWN = False
     yield
 
 
@@ -620,13 +661,15 @@ def pytest_runtest_teardown(item, nextitem):  # noqa: ARG001
     the loop.  This hook installs a temporary loop for teardown and
     closes it afterwards.
     """
-    teardown_loop = asyncio.new_event_loop()
+    teardown_loop = item.stash[_PHASE_EVENT_LOOPS][1]
     asyncio.set_event_loop(teardown_loop)
-    yield  # fixture finalizers and teardown run here
-    teardown_loop.close()
-    asyncio.set_event_loop(None)
-    _fail_if_the_password_resolver_leaked(item)
-    _fail_if_a_thread_leaked(item)
+    try:
+        yield  # fixture finalizers and teardown run here
+    finally:
+        teardown_loop.close()
+        asyncio.set_event_loop(None)
+        _fail_if_the_password_resolver_leaked(item)
+        _fail_if_a_thread_leaked(item)
 
 
 _PRISTINE_PASSWORD_RESOLVER = None

@@ -63,7 +63,12 @@ def test_stale_snapshot_is_unknown_not_the_fail_open_live_hint(tmp_path):
     from ouroboros.task_status import task_has_live_queue_ownership
     assert task_has_live_queue_ownership(tmp_path, "child") is True
     observation = observe_cancellation_target(tmp_path, "child")
-    assert observation["queue_snapshot"] == {"status": "unknown", "ts": "2000-01-01T00:00:00Z", "fresh": False}
+    queue_fact = observation["queue_snapshot"]
+    assert {key: queue_fact[key] for key in ("status", "ts", "fresh")} == {
+        "status": "unknown", "ts": "2000-01-01T00:00:00Z", "fresh": False,
+    }
+    assert queue_fact["freshness"] == "stale" and queue_fact["age_sec"] > 10
+    assert queue_fact["source"] == "state/queue_snapshot.json"
     assert observation["task_result"]["started_at"] is None
 
 
@@ -87,6 +92,28 @@ def test_observation_names_resolved_retry_and_discloses_a_later_target_change(tm
     assert widened["task_id"] == "original"
     assert widened["observation"]["observed_task_id"] == "retry"
     assert widened["observation"]["matches_cancel_target"] is False
+
+
+def test_agent_cancel_of_a_foreign_task_records_origin_without_a_parent_decision(tmp_path):
+    """A cancel outside the caller's own lineage must not discharge the REAL
+    parent's disposition duty (D#7). ``requested_by`` is the parent-decision
+    trigger, so the initiator fact rides ``source`` + ``request_origin``."""
+    write_task_result(tmp_path, "stranger", "running",
+                      parent_task_id="someone-else", root_task_id="someone-else",
+                      delegation_role="subagent")
+    _queue(tmp_path, "stranger")
+
+    response = _cancel_task(_caller(tmp_path), "stranger", "not mine but stop it")
+    assert response.startswith("Cancel requested:")
+    intent = cancel_intents.active_intent(tmp_path, "stranger")
+    assert intent["requested_by"] == ""
+    assert intent["source"] == "agent_tool"
+    assert intent["observation"]["request_origin"] == {
+        "kind": "agent_task", "task_id": "parent"}
+    from supervisor.cancel_publication import _intent_outcome_fields
+    fields = _intent_outcome_fields(intent)
+    assert "parent_decision" not in fields
+    assert fields["cancel_observation"] == intent["observation"]
 
 
 def test_completed_child_keeps_its_result(tmp_path):
@@ -121,3 +148,12 @@ def test_http_observation_records_transport_without_inventing_owner_identity(tmp
     assert intent["observation"]["request_origin"] == {
         "kind": "http_client", "source": "http_cascade" if cascade else "http_single"}
     assert "delegated_execution" not in intent["observation"]
+    # The durable origin fact rides ``source`` + ``observation.request_origin``.
+    # ``requested_by`` is NOT a display label: any non-empty value is the
+    # PARENT-DECISION trigger, so naming the owner here would stamp
+    # ``parent_decision=cancelled`` on a child whose real parent decided
+    # nothing, and the parent's forced-finalization would treat that child
+    # result as already dispositioned (D#7).
+    from supervisor.cancel_publication import _intent_outcome_fields
+    assert "parent_decision" not in _intent_outcome_fields(intent)
+    assert intent["source"] == ("http_cascade" if cascade else "http_single")

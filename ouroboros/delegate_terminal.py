@@ -16,8 +16,15 @@ def terminal_reconcile_task(
     *,
     gateway_factory: Optional[Callable[[], Any]] = None,
     trigger: str = "terminal_boundary",
+    deliberate_terminal: str = "",
 ) -> Dict[str, Any]:
-    """Reconcile durable starts, then re-audit runs, invocations, and patches."""
+    """Reconcile durable starts, then re-audit runs, invocations, and patches.
+
+    A still-live run is cancelled only behind a deliberate owner terminal
+    (``delegate_custody_reconcile._owner_terminal_is_deliberate``); otherwise it
+    is left live and disclosed as open, for the sweep to re-judge.
+    ``deliberate_terminal`` carries that verdict from a caller that has not
+    written its terminal result yet, which is every kill boundary."""
 
     mine = str(task_id or "")
     result: Dict[str, Any] = {
@@ -33,6 +40,7 @@ def terminal_reconcile_task(
     try:
         result["outcomes"] = custody.reconcile_task_runs(
             drive_root, mine, gateway_factory=gateway_factory,
+            deliberate_terminal=deliberate_terminal,
         )
     except Exception:
         log.warning("Terminal delegated custody reconciliation failed for %s", mine, exc_info=True)
@@ -62,12 +70,26 @@ def _audit_task_custody(drive_root: Any, mine: str, result: Dict[str, Any], *,
     audits; ``emit_evidence=False`` defers the evidence rows so a caller can
     compare the audit against the stored disclosure first (a no-op refresh must
     not append custody events every boot).
+
+    Runs and invocations a REVIEW surface owns are outside this audit's domain:
+    they are their panel's obligation, so they are never this task's open
+    delegation, pending invocation or terminal receipt (issue #1006).
     """
+    if snapshot is None:
+        # An unshared audit replayed the rotated chain once per projection plus
+        # a private pass for terminal_runs; one snapshot serves them all (I18).
+        # A failed read leaves the audit's own fail-closed arms untouched.
+        try:
+            snapshot = custody_audit_snapshot(drive_root)
+        except Exception:
+            log.debug("Custody audit snapshot unavailable for %s", mine, exc_info=True)
     state = snapshot.get("state") if snapshot is not None else None
     pending = snapshot.get("pending") if snapshot is not None else None
-    # The keyword rides only when a snapshot is really shared, so the
-    # no-snapshot call shape stays byte-identical for every existing caller
-    # and test seam over these projections.
+    # Since the audit builds its own snapshot above, the keyword rides on EVERY
+    # call, not only on a shared batch: `state` is the documented contract of
+    # these projections, and a seam over them must accept it. It is dropped only
+    # when the snapshot read itself failed, so each projection then replays for
+    # itself and the fail-closed arms below stay reachable.
     state_kw: Dict[str, Any] = {} if state is None else {"state": state}
     audit_failure = ""
     if custody.custody_log_unreadable(drive_root):
@@ -75,7 +97,7 @@ def _audit_task_custody(drive_root: Any, mine: str, result: Dict[str, Any], *,
     try:
         open_ids = (
             [row.run_id for row in custody.open_runs(drive_root, **state_kw)
-             if row.task_id == mine]
+             if row.task_id == mine and not row.review_owned]
             if not audit_failure else []
         )
     except Exception:
@@ -88,6 +110,7 @@ def _audit_task_custody(drive_root: Any, mine: str, result: Dict[str, Any], *,
                             else custody.pending_invocations(drive_root))
                 if str(row.get("task_id") or "") == mine
                 and str(row.get("invocation_id") or "")
+                and not custody.review_owned_source(row.get("source"))
             ]
             if not audit_failure else []
         )
@@ -113,11 +136,28 @@ def _audit_task_custody(drive_root: Any, mine: str, result: Dict[str, Any], *,
         # Fail-closed like the audits above: an unreadable registration state
         # must not read as "no deferred retirements".
         audit_failure = audit_failure or "registration_audit_failed"
+    terminal_runs = []
+    try:
+        if not audit_failure:
+            # The LEAF's own identity, already on the replayed row (zero extra
+            # reads): without it a nanny terminal names only the role the host
+            # played and the reader asks why the leaf's model was broken (I9).
+            terminal_runs = sorted((
+                {"run_id": str(row.run_id), "state": str(row.terminal_state),
+                 "model": str(row.model), "profile_id": str(row.profile_id),
+                 "selected_subagent_id": str(row.selected_subagent_id)}
+                for row in state.values()
+                if row.task_id == mine and row.settled and not row.review_owned
+                and row.terminal_state in custody.TERMINAL_STATES
+            ), key=lambda row: row["run_id"])
+    except Exception:
+        audit_failure = audit_failure or "terminal_receipt_audit_failed"
     if not audit_failure:
         result.update({
             "open_run_ids": open_ids,
             "pending_invocation_ids": invocation_ids,
             "undisposed_patch_run_ids": patch_ids,
+            "terminal_runs": terminal_runs,
             # DISCLOSED, never unreconciled: a settled run's project registration
             # awaiting retirement is cleanup debt with its own retry lane - it
             # must not convert the task's outcome (the old coupling did).
@@ -135,6 +175,46 @@ def _audit_task_custody(drive_root: Any, mine: str, result: Dict[str, Any], *,
         })
     if emit_evidence:
         _emit_audit_evidence(drive_root, result)
+
+
+def terminal_custody_notice(result: Mapping[str, Any]) -> str:
+    """Render current stored custody beside unchanged model-authored history.
+
+    No live join, lifecycle mutation or inference from a missing run: only the
+    audit's separate execution/invocation/patch and confirmed terminal facts.
+    """
+    audit = result.get("delegate_terminal_reconciliation")
+    if not isinstance(audit, Mapping) or not audit:
+        return ""
+    if audit.get("audit_status") != "ok":
+        return "Current delegated execution could not be verified; custody remains unresolved in task details."
+    terminal = [row for row in (audit.get("terminal_runs") or []) if isinstance(row, dict)]
+    non_success = [row for row in terminal if row.get("state") != "succeeded"]
+    groups = [
+        ("Open delegated execution", audit.get("open_run_ids")),
+        ("Pending delegated invocations", audit.get("pending_invocation_ids")),
+        ("Pending patch decisions", audit.get("undisposed_patch_run_ids")),
+    ]
+    if not non_success and not any(values for _label, values in groups):
+        return ""
+    lines = []
+    if non_success:
+        # The leaf's model when the replayed row carried one, never a live join
+        # and never a guess: an older row without it simply says less.
+        shown = "; ".join(
+            f"{row.get('run_id')}: {row.get('state')}"
+            + (f" on {row.get('model')}" if row.get("model") else "")
+            for row in non_success[:10])
+        omitted = len(non_success) - 10
+        lines.append("Confirmed delegated terminal receipts: " + shown
+                     + (f" (+{omitted} more in task details)" if omitted > 0 else "") + ".")
+    for label, raw in groups:
+        values = [str(value) for value in raw] if isinstance(raw, list) else []
+        shown = ", ".join(values[:10]) or "none recorded by the current audit"
+        omitted = len(values) - 10
+        lines.append(label + ": " + shown
+                     + (f" (+{omitted} more in task details)" if omitted > 0 else "") + ".")
+    return "\n".join(lines)
 
 
 def _emit_audit_evidence(drive_root: Any, result: Mapping[str, Any]) -> None:
@@ -363,6 +443,7 @@ _ENVELOPE_DISCLOSURE_FIELDS = (
     "pending_invocation_ids",
     "undisposed_patch_run_ids",
     "deferred_project_retirements",
+    "terminal_runs",
 )
 
 

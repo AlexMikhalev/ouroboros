@@ -95,8 +95,11 @@ def test_completion_summary_event_text_is_plain_and_fully_normalized(
         ctx.DRIVE_ROOT, {"status": "completed"}, "root-project", root, result, done,
     ) is True
     assert queued[0]["text"] == (
-        f"Launch 🚀 › Ship release · Done\n{PLAIN_EXCERPT}"
+        "Launch 🚀 › Ship release · Done\nOpen the Project for details."
     )
+    # The model's own answer already lives in the room this row points at, so
+    # Main states the outcome and the way in, never a cut of the same bytes.
+    assert PLAIN_EXCERPT not in queued[0]["text"]
     for marker in ("#", "**", "`"):
         assert marker not in queued[0]["text"]
     # RO4 convergence: the producer already normalized, so the verbatim live
@@ -188,7 +191,7 @@ def test_history_normalizes_old_project_rows_on_read_without_rewriting_log(tmp_p
             "type": "project_started", "task_id": "root-project",
             "project_id": "launch", "project_name": "Launch",
             "target_label": "Launch › Ship",
-            "text": "# Launch › Ship · Started\nWork is running in this Project.",
+            "text": "# Launch › Ship · Started",
         },
         {
             "ts": "2026-08-21T00:00:02Z", "direction": "system", "chat_id": 1,
@@ -222,7 +225,7 @@ def test_history_normalizes_old_project_rows_on_read_without_rewriting_log(tmp_p
     by_type = {row.get("system_type"): row for row in payload["messages"] if row.get("role") == "system"}
 
     started = by_type["project_started"]
-    assert started["text"] == "Launch › Ship · Started\nWork is running in this Project."
+    assert started["text"] == "Launch › Ship · Started"
     assert started["markdown"] is False
 
     completion = by_type["project_completion_summary"]
@@ -370,9 +373,9 @@ def test_owner_requested_stop_is_done_on_the_host_row_too():
 
 A4_DECISION = {
     "status": "finalized_unaccepted",
+    "reason": "review_degraded",
     "rationale": "Acceptance reviewers did not reach a valid quorum.",
 }
-A4_CLAUSE = "Acceptance: finalized_unaccepted — Acceptance reviewers did not reach a valid quorum."
 
 
 def _a4_result(**overrides):
@@ -391,12 +394,16 @@ def _a4_result(**overrides):
 def test_host_verdict_states_an_unaccepted_acceptance_decision_in_its_own_words():
     """S5-04: a warning caused by REVIEW used to be explained by the execution
     reason that happened to sit beside it (``Reason: final_message``), which
-    named the delivery step rather than the cause."""
-    from ouroboros.project_dialogue import _completion_verdict
+    named the delivery step rather than the cause. The decision's own typed
+    reason now speaks, through the one shared table."""
+    from ouroboros.project_dialogue import TASK_CAUSE_PHRASES, _completion_verdict
 
-    assert _completion_verdict(_a4_result(), {}) == A4_CLAUSE
-    # The stored rationale already ends in a period; the clause must not double it.
-    assert not _completion_verdict(_a4_result(), {}).endswith("..")
+    verdict = _completion_verdict(_a4_result(), {})
+    assert verdict == TASK_CAUSE_PHRASES["review_degraded"]
+    assert not verdict.endswith("..")
+    # The stored reviewer rationale stays in the card, task_results and Logs:
+    # the row carries one sentence, and never the machine words beside it.
+    assert "quorum" not in verdict and "finalized_unaccepted" not in verdict
 
 
 def test_host_verdict_keeps_the_execution_reason_when_acceptance_was_reached():
@@ -406,69 +413,65 @@ def test_host_verdict_keeps_the_execution_reason_when_acceptance_was_reached():
         "execution": {"status": "ok"},
         "review": {"status": "pass", "acceptance_decision": {"status": "accepted"}},
     })
-    assert _completion_verdict(accepted, {}) == "Reason: final_message."
+    assert _completion_verdict(accepted, {}) == ""
     assert _completion_verdict({"status": "completed"}, {}) == ""
     # A hard failure explains itself by its execution reason, not by a decision.
+    # The custody debt this row names is one the row STILL owes: since owner item
+    # spam B that code is rendered only while delegated_runs_unreconciled is
+    # non-empty (see tests/test_terminal_truth_projection_p5.py), so the fixture
+    # carries the debt it claims.
     assert _completion_verdict(
         _a4_result(status="failed", reason_code="delegated_custody_unreconciled",
+                   delegated_runs_unreconciled=["run-a1"],
                    outcome_axes={"execution": {"status": "failed"},
                                  "review": {"acceptance_decision": dict(A4_DECISION)}}),
         {},
-    ) == "Reason: delegated_custody_unreconciled."
+    ) == "Some delegated work was never reconciled."
 
 
-def test_host_verdict_flattens_and_strips_a_markdown_rationale():
-    """These are durable plain-text rows: the rationale is free owner-visible
-    text up to 500 characters and may carry newlines and markdown markers."""
-    from ouroboros.project_dialogue import _completion_verdict
+def test_the_stored_reviewer_rationale_never_reaches_the_row(tmp_path):
+    """The rationale is free reviewer text up to 500 characters, with newlines
+    and markdown markers. It belongs where the full copy lives — the card, the
+    task result and Logs — and the row carries the one table sentence."""
+    from ouroboros.project_dialogue import TASK_CAUSE_PHRASES, _completion_verdict
+    from ouroboros.task_results import write_task_result
 
+    rationale = "## Verdict\n\nThe **tests** never ran with `pytest`. " * 12
     noisy = _a4_result(outcome_axes={
         "execution": {"status": "ok"},
         "review": {"status": "degraded", "acceptance_decision": {
-            "status": "revision_requested",
-            "rationale": "## Verdict\n\nThe **tests** never ran with `pytest`",
+            "status": "revision_requested", "reason": "evidence_refresh",
+            "rationale": rationale,
         }},
     })
     verdict = _completion_verdict(noisy, {})
-    assert verdict == "Acceptance: revision_requested — Verdict The tests never ran with pytest."
-    for marker in ("#", "**", "`", "\n"):
+    assert verdict == TASK_CAUSE_PHRASES["evidence_refresh"]
+    for marker in ("#", "**", "`", "\n", "pytest"):
         assert marker not in verdict
 
-    # A rationale that already terminates itself keeps its own punctuation: a
-    # question mark is as terminal as a period, and appending one would render
-    # "…did the tests run?." to the owner.
-    asking = _a4_result(outcome_axes={
-        "execution": {"status": "ok"},
-        "review": {"status": "degraded", "acceptance_decision": {
-            "status": "revision_requested", "rationale": "Did the tests ever run?",
-        }},
-    })
-    assert _completion_verdict(asking, {}) == "Acceptance: revision_requested — Did the tests ever run?"
+    # The complete text stays resolvable: the decision the row points at keeps
+    # the rationale the row no longer prints (BIBLE P1 — text or a pointer).
+    fields = {key: value for key, value in noisy.items()
+              if key not in {"task_id", "status"}}
+    write_task_result(tmp_path, "root-project", "completed", **fields)
+    stored = json.loads(
+        (tmp_path / "task_results" / "root-project.json").read_text(encoding="utf-8")
+    )
+    decision = stored["outcome_axes"]["review"]["acceptance_decision"]
+    assert decision["reason"] == "evidence_refresh"
+    assert "never ran with" in decision["rationale"]
 
 
-def test_host_verdict_keeps_the_full_bounded_acceptance_rationale():
-    from ouroboros.project_dialogue import _completion_verdict
-
-    rationale = ("Review evidence " + ("remains material and owner-visible. " * 9)).strip()
-    result = _a4_result(outcome_axes={
-        "execution": {"status": "ok"},
-        "review": {"status": "degraded", "acceptance_decision": {
-            "status": "revision_requested", "rationale": rationale,
-        }},
-    })
-
-    assert len(rationale) > 240
-    assert _completion_verdict(result, {}) == f"Acceptance: revision_requested — {rationale}"
-
-
-def test_host_verdict_states_a_decision_without_a_rationale_alone():
+def test_host_verdict_states_no_cause_for_a_decision_without_a_typed_reason():
+    """A status word is not a cause, and the collapsed status is already the
+    headline; a historical decision without a reason therefore says nothing."""
     from ouroboros.project_dialogue import _completion_verdict
 
     bare = _a4_result(outcome_axes={
         "execution": {"status": "degraded"},
         "review": {"status": "degraded", "acceptance_decision": {"status": "revision_requested"}},
     })
-    assert _completion_verdict(bare, {}) == "Acceptance: revision_requested."
+    assert _completion_verdict(bare, {}) == ""
 
 
 def test_host_verdict_leads_both_lifecycle_rows(tmp_path, monkeypatch):
@@ -500,9 +503,12 @@ def test_host_verdict_leads_both_lifecycle_rows(tmp_path, monkeypatch):
         tmp_path, {"status": "completed"}, "root-project", root, result, done,
     ) is True
     assert queued[0]["text"] == (
-        f"Launch 🚀 › Ship release · Done with warnings\n{A4_CLAUSE} Release shipped."
+        "Launch 🚀 › Ship release · Done with warnings\n"
+        "No reviewer verdict was established for this answer. "
+        "Open the Project for details."
     )
     assert "final_message" not in queued[0]["text"]
+    assert "Release shipped." not in queued[0]["text"]
 
     ordinary = _a4_result(
         reason_code="budget_exhausted",
@@ -514,7 +520,8 @@ def test_host_verdict_leads_both_lifecycle_rows(tmp_path, monkeypatch):
     ) is True
     assert queued[1]["text"] == (
         "Launch 🚀 › Ship release · Done with warnings\n"
-        "Reason: budget_exhausted. Release shipped."
+        "The task ran out of budget before it could finish cleanly. "
+        "Open the Project for details."
     )
 
     assert append_terminal_task_projection(tmp_path, "root-project", root, result, done)
@@ -524,11 +531,18 @@ def test_host_verdict_leads_both_lifecycle_rows(tmp_path, monkeypatch):
         if line.strip()
     ]
     projection = next(row for row in rows if row.get("summary_kind") == "terminal_root_projection")
-    assert A4_CLAUSE in projection["text"]
-    assert "Reason: final_message" not in projection["text"]
+    assert projection["text"] == (
+        "Done with warnings. Root task root-project. "
+        "No reviewer verdict was established for this answer."
+    )
+    assert "final_message" not in projection["text"]
+    # The room is the project and result_ref is the reader, so neither the id
+    # soup nor a tool name has to be spelled into owner-visible prose.
+    assert "get_task_result" not in projection["text"]
     assert projection["reason_code"] == "final_message"
+    assert projection["project_id"] == "launch"
+    assert projection["result_ref"]["reader"] == "get_task_result"
     assert projection["outcome"] == "Done with warnings"
-    assert projection["text"].endswith('Details: get_task_result(task_id="root-project")')
 
 
 def test_host_verdict_and_the_card_line_compose_the_same_sentence():
@@ -572,7 +586,110 @@ def test_terminal_row_reports_the_depth_request_only_when_one_exists(tmp_path):
         for line in (tmp_path / "logs" / "chat.jsonl").read_text(encoding="utf-8").splitlines()
         if line.strip()
     }
-    assert "Depth requested=2, permitted=4, achieved=2 (achieved)." in rows["swarm-root"]["text"]
+    # The depth facts stay on the task result, where a reader can compare them;
+    # the row states the outcome and the lineage, not a nesting audit.
+    assert rows["swarm-root"]["text"] == "Done. Root task swarm-root."
+    assert "Depth" not in rows["swarm-root"]["text"]
     assert "Depth" not in rows["flat-root"]["text"]
+    assert result["swarm_efficiency"]["depth"]["requested_depth"] == 2
     for marker in ("#", "**", "`"):
         assert marker not in rows["swarm-root"]["text"]
+
+
+def test_a_host_salvage_row_is_never_a_bare_headline_and_reason(tmp_path):
+    """Owner item I26: the blank Failed card over applied work.
+
+    ``result`` ALREADY held the salvaged text, so the row had the bytes and
+    published only a headline plus a reason code. The row now labels those
+    bytes, states its execution cause, and keeps pointing at the untruncated
+    copy; the markdown contract of this module still holds over the label.
+    """
+    from ouroboros.project_dialogue import (
+        SALVAGE_EXCERPT_LABEL, append_terminal_task_projection,
+    )
+
+    salvage = "## Applied\nRewrote the atlas builder and reran the suite."
+    task = {"id": "salvaged-root", "chat_id": 3, "role": "root"}
+    result = {
+        "task_id": "salvaged-root", "status": "failed", "result": salvage,
+        "terminal_origin": "host_salvage", "reason_code": "context_overflow",
+        "outcome_axes": {"execution": {"status": "failed"}},
+    }
+    done = {"chat_id": 3, "status": "failed", "outcome_axes": result["outcome_axes"]}
+    assert append_terminal_task_projection(tmp_path, "salvaged-root", task, result, done)
+
+    row = next(
+        json.loads(line)
+        for line in (tmp_path / "logs" / "chat.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    )
+    assert row["outcome"] == "Failed"
+    assert (
+        f"{SALVAGE_EXCERPT_LABEL}: Applied Rewrote the atlas builder and reran the suite."
+        in row["text"]
+    )
+    assert "context_overflow." in row["text"]
+    assert "get_task_result" not in row["text"]
+    for marker in ("#", "**", "`"):
+        assert marker not in row["text"]
+
+
+def test_a_cancelled_salvage_keeps_bytes_or_a_pointer_in_the_main_row(tmp_path, monkeypatch):
+    """The stop receipt is not in Main, so Main may not be reduced to a label.
+
+    The receipt is delivered to the task's OWN lineage chat (a project root's is
+    the project room). Reducing every receipted row to a bare label therefore
+    stripped the Main summary of the bytes AND of its only pointer, which is
+    strictly less than the plain invitation it replaced. Main keeps the labelled
+    excerpt; where the receipt really did land in the row's chat, the label
+    keeps the invitation beside it.
+    """
+    from ouroboros.project_dialogue import (
+        SALVAGE_EXCERPT_LABEL, enqueue_project_completion_summary,
+    )
+    from ouroboros.projects_registry import bind_task_to_project, create_project
+
+    project = create_project(tmp_path, "salvage", name="Salvage Project")
+    bind_task_to_project(
+        tmp_path, "salvage-root", project["id"], project["chat_id"],
+        origin={"absent": "system"},
+    )
+    queued = []
+    monkeypatch.setattr(
+        "supervisor.terminal_delivery.enqueue_terminal_delivery",
+        lambda _root, event, **_kwargs: queued.append(dict(event)) or True,
+    )
+    task = {"id": "salvage-root", "chat_id": project["chat_id"],
+            "project_id": project["id"], "title": "Stopped task"}
+    result = {
+        **task, "task_id": "salvage-root", "status": "cancelled",
+        "reason_code": "owner_requested_cancel", "result": "Rewrote the atlas builder. " * 20,
+        "terminal_origin": "host_salvage",
+        "cancel_receipt": {
+            "delivery_id": "cancel:salvage-root:1", "delivered_chat_id": project["chat_id"],
+        },
+    }
+    done = {"status": "cancelled", "reason_code": "owner_requested_cancel"}
+
+    assert enqueue_project_completion_summary(
+        tmp_path, {}, "salvage-root", task, result, done,
+    ) is True
+    text = queued[0]["text"]
+    assert f"{SALVAGE_EXCERPT_LABEL}: Rewrote the atlas builder." in text
+    # Bytes AND the pointer: this writer has no other way back to the full copy.
+    assert text.endswith("… Open the Project for details.")
+
+    # A root whose own lineage chat IS Main: there the receipt is a real second
+    # copy, so the label stands, but never without the invitation.
+    queued.clear()
+    main_bound = {**task, "chat_id": 1}
+    main_result = {
+        **result, "chat_id": 1,
+        "cancel_receipt": {"delivery_id": "cancel:salvage-root:1", "delivered_chat_id": 1},
+    }
+    assert enqueue_project_completion_summary(
+        tmp_path, {}, "salvage-root", main_bound, main_result, done,
+    ) is True
+    assert queued[0]["text"].endswith(
+        f"{SALVAGE_EXCERPT_LABEL}. Open the Project for details."
+    )

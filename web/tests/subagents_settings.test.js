@@ -6,6 +6,7 @@ import {
     ROUTE_KIND_AGENT_SESSION,
     ROUTE_KIND_API_MODEL,
     compoundSessionEffort,
+    configuredApiProviders,
     compoundSessionEffortConflict,
     normalizeRouteSpec,
     serializeRouteSpec,
@@ -26,7 +27,7 @@ import {
     validateAvailableSubagentsSetting,
 } from '../modules/subagents_settings.js';
 import { buildReviewerSlotsSetting } from '../modules/reviewer_slots.js';
-import { sessionRouteVerdict } from '../modules/subagent_status_primitives.js';
+import { rowMeta, rowStatus, sessionRouteVerdict } from '../modules/subagent_status_primitives.js';
 import { revealNewRow } from '../modules/ui_helpers.js';
 
 const CONTRACT_FIXTURE = JSON.parse(fs.readFileSync(
@@ -706,7 +707,7 @@ test('the card head carries the ordinal, the route mark, a two-word status and t
     // An API model's availability is only known when a child starts: the
     // second word says that instead of repeating the route mark beside it.
     const api = availableSubagentRowMarkup(apiRow(), { ...QUIET_STATE, dirty: true }, 0);
-    assert.match(api, /data-tone="neutral" title="Draft intent · API model · availability is checked when a child starts">Draft · Checked at start</);
+    assert.match(api, /data-tone="neutral" title="Draft intent · OpenRouter API model · availability is checked when a child starts">Draft · Checked at start</);
 });
 
 test('a fresh row invites instead of erroring until the owner tries to save', () => {
@@ -758,6 +759,68 @@ test('sessionRouteVerdict decides label, tone and sentence together', () => {
     assert.deepEqual(missing, { label: 'Unavailable', tone: 'warn', text: 'codex · currently unavailable' });
 });
 
+test('the verdict reads a reviewer row pin, spelled profile_id, not only the roster spelling', () => {
+    // Review-lane rows serialize their account pin as `profile_id`; roster rows
+    // use `credential_profile_id`. Reading one spelling judged every pinned
+    // reviewer row as unpinned — a worse falsehood than saying nothing.
+    const state = {
+        catalogKnown: true, accountsKnown: true, quotaKnown: true, statusError: '',
+        snapshot: {
+            harnesses: [{ id: 'codex', status: 'ok', enabled: true, models: [{ id: 'gpt-5.6-sol-high' }] }],
+            profiles: { harnessAccounts: [], profiles: [{
+                profile: { harness_id: 'codex', profile_id: 'koshak', enabled: true },
+                status: { verification: 'failed' },
+            }] },
+            quota: [],
+        },
+    };
+    const reviewerRow = { route: {
+        kind: ROUTE_KIND_AGENT_SESSION, target_id: 'codex=gpt-5.6-sol-high', profile_id: 'koshak',
+    } };
+    const live = sessionRouteVerdict(reviewerRow, state);
+    assert.equal(live.label, 'Unavailable');
+    assert.match(live.text, /pinned account koshak currently unavailable/);
+});
+
+test('an unpinned verdict intersects the usable accounts with the accounts carrying the model', () => {
+    // The live defect this pins: `gpt-5.4` was listed only by `gptopro6`, whose
+    // login is not verified, while a sibling account passed — "some account
+    // works" and "some account has this model" were both true of DIFFERENT
+    // accounts and the row still read Available.
+    const snapshot = (models) => ({
+        harnesses: [{ id: 'codex', status: 'ok', enabled: true, models }],
+        profiles: { harnessAccounts: [], profiles: [
+            { profile: { harness_id: 'codex', profile_id: 'gptopro6', enabled: true }, status: { verification: '' } },
+            { profile: { harness_id: 'codex', profile_id: 'koshak', enabled: true }, status: { verification: 'passed' } },
+        ] },
+        quota: [{ subject: { harness: 'codex', subject_id: 'koshak' }, freshness: 'fresh', constraints: [] }],
+    });
+    const facets = { catalogKnown: true, accountsKnown: true, quotaKnown: true, statusError: '' };
+    const row = { route: { kind: ROUTE_KIND_AGENT_SESSION, target_id: 'codex=gpt-5.4', profile_id: '' } };
+
+    const orphaned = sessionRouteVerdict(row, {
+        ...facets, snapshot: snapshot([{ id: 'gpt-5.4', credential_profile_id: 'gptopro6' }]),
+    });
+    assert.deepEqual(orphaned, {
+        label: 'No account', tone: 'warn', text: 'codex · no usable account currently carries gpt-5.4',
+    });
+    // The verified account carries it: the verdict is the one it always was.
+    const carried = sessionRouteVerdict(row, {
+        ...facets, snapshot: snapshot([{ id: 'gpt-5.4', credential_profile_id: 'koshak' }]),
+    });
+    assert.equal(carried.label, 'Available');
+    // A legacy engine stamps no account on its catalog entries, so it proves no
+    // absence: the older, weaker rule stands rather than a new accusation.
+    const legacy = sessionRouteVerdict(row, { ...facets, snapshot: snapshot([{ id: 'gpt-5.4' }]) });
+    assert.equal(legacy.label, carried.label);
+    assert.doesNotMatch(legacy.text, /carries/);
+    // No usable account at all keeps today's sentence, unqualified by a model.
+    const none = snapshot([{ id: 'gpt-5.4', credential_profile_id: 'gptopro6' }]);
+    none.profiles.profiles[1].status.verification = '';
+    assert.equal(sessionRouteVerdict(row, { ...facets, snapshot: none }).text,
+        'codex · no usable account currently');
+});
+
 test('the head dot takes the worse of the two status axes', () => {
     // docs/ARCHITECTURE.md §3: intent · availability, one dot whose tone is the
     // worse of the two — an unsaved draft is never shown as green success even
@@ -782,4 +845,72 @@ test('the head dot takes the worse of the two status axes', () => {
     assert.match(availableSubagentRowMarkup(sessionRow(), { ...live, baseline: 'generated' }, 0),
         /data-tone="neutral"[^>]*>Generated · Available</);
     assert.match(availableSubagentRowMarkup(apiRow(), live, 0), /data-tone="neutral"[^>]*>Saved · Checked at start</);
+});
+
+// ---------------------------------------------------------------------------
+// The source is CHOSEN, never spelled (docs/DESIGN.md §7): the roster card
+// offers the same grouped picker the review lanes and Models do, scoped to the
+// providers this install actually has a credential for.
+// ---------------------------------------------------------------------------
+
+test('the roster picker offers only credentialed providers and keeps a saved keyless one', () => {
+    const state = {
+        ...QUIET_STATE,
+        providers: configuredApiProviders({ OPENROUTER_API_KEY: 'k', OPENAI_API_KEY: '***set***' }),
+        providerProfiles: { openai: { label: 'OpenAI' } },
+    };
+    const html = availableSubagentRowMarkup(apiRow({ route: { kind: ROUTE_KIND_API_MODEL, target_id: 'openai::gpt-x' } }), state, 0);
+    assert.match(html, /<optgroup label="API keys">/);
+    assert.match(html, /<option value="api:openai" selected>OpenAI<\/option>/);
+    assert.match(html, /<option value="api:openrouter">OpenRouter<\/option>/);
+    assert.match(html, /<option value="" disabled>Add a key in Accounts for more<\/option>/);
+    assert.doesNotMatch(html, /value="api:anthropic"/, 'a provider with no key is not offered');
+    // The model field holds the model ALONE; the editor composes the prefix.
+    assert.match(html, /data-subagent-field="model"[^>]*value="gpt-x"/);
+    // The chip names the provider, and the exact stored id rides the meta line.
+    assert.match(html, />API · OpenAI<\/span>/);
+    assert.match(html, /data-subagent-meta[^>]*>stored as openai::gpt-x</);
+    assert.match(html, /title="Saved intent · OpenAI API model · availability is checked when a child starts"/);
+
+    // A saved provider whose key is gone stays selectable and says why.
+    const keyless = availableSubagentRowMarkup(
+        apiRow({ route: { kind: ROUTE_KIND_API_MODEL, target_id: 'anthropic::claude-opus-5' } }), state, 0);
+    assert.match(keyless, /<option value="api:anthropic" selected>Anthropic \(no key\)<\/option>/);
+    assert.match(keyless, />API · Anthropic<\/span>/);
+});
+
+test('the roster row status and meta name the source, never a bare channel', () => {
+    const base = { ...QUIET_STATE, providerProfiles: { openai: { label: 'OpenAI' } } };
+    const row = apiRow({ route: { kind: ROUTE_KIND_API_MODEL, target_id: 'openai::gpt-x' } });
+    assert.equal(rowStatus(row, base).text,
+        'Saved intent · OpenAI API model · availability is checked when a child starts');
+    assert.deepEqual(rowMeta(row, base, []), { text: 'stored as openai::gpt-x', tone: '' });
+    // An empty provider draft is still an invitation, not a stored id.
+    assert.match(rowMeta(apiRow({ route: { kind: ROUTE_KIND_API_MODEL, target_id: 'openai::' } }), base, []).text, /Choose how this subagent runs/);
+    // A subscription row answers to its source, not to an API provider.
+    const subscription = apiRow({ route: { kind: ROUTE_KIND_API_MODEL, target_id: 'claudexor::codex-models=gpt' } });
+    assert.match(rowStatus(subscription, base).text, /Subscription model/);
+    assert.deepEqual(rowMeta(subscription, base, []),
+        { text: 'stored as claudexor::codex-models=gpt', tone: '' });
+    // A session already spells harness and model in its own controls.
+    assert.deepEqual(rowMeta(sessionRow(), base, []), { text: '', tone: '' });
+    // An error and the fresh-row invitation still outrank the disclosure.
+    assert.deepEqual(rowMeta({ ...row, _uiAttempted: true }, base, ['Subagent 1 needs a model or agent-session route.']),
+        { text: 'Subagent 1 needs a model or agent-session route.', tone: 'error' });
+    assert.match(rowMeta(apiRow({ route: { kind: ROUTE_KIND_API_MODEL, target_id: '' } }), base, []).text,
+        /^Choose how this subagent runs/);
+});
+
+test('the editor derives its provider list from the settings document it is given', () => {
+    const editor = createAvailableSubagentsEditor({ doc: null, win: null });
+    assert.doesNotThrow(() => editor.setSourceContext({
+        settings: { OPENAI_API_KEY: '***set***' }, providerProfiles: { openai: { label: 'OpenAI' } },
+    }));
+    // The signature moves with the provider list, so a key typed in Accounts
+    // repaints these rows instead of leaving a stale picker on screen.
+    const state = { ...QUIET_STATE, setting: setting([apiRow()]), providers: [], providerProfiles: {} };
+    assert.notEqual(
+        availableSubagentsRenderSignature(state),
+        availableSubagentsRenderSignature({ ...state, providers: configuredApiProviders({ OPENAI_API_KEY: 'k' }) }),
+    );
 });

@@ -119,6 +119,37 @@ def _trace_call(result: str, *, is_error: bool = False):
     }
 
 
+def test_real_pr_receipt_survives_missing_scanner_evidence_and_keeps_advice():
+    receipt = {**_receipt(), "ruleset_sha256": ""}
+    encoded = serialize_skill_publish_result(
+        ok=True, status="pr_opened", reason_code="", skill="demo",
+        snapshot_hash=SNAPSHOT_HASH, scanner={"engine": "betterleaks"},
+        completed_stage="pr_opened", receipt=receipt, expected_repository=REPOSITORY,
+        extra_fields={
+            "safety_advisory": True, "scanner_status": "scanner_error",
+            "scanner_errors": "scanner_missing: Original repair hint",
+            "review_status": "blockers", "review_stale": True,
+            "reviewed_content_hash": "c" * 64,
+        },
+    )
+    call = _trace_call(encoded)
+    assert call["skill_publish_receipt"] == receipt
+    attempt = call["skill_publish_attempt"]
+    assert attempt["scanner_status"] == "scanner_error"
+    assert attempt["scanner_errors"] == "scanner_missing: Original repair hint"
+    assert attempt["review_status"] == "blockers" and attempt["review_stale"] is True
+    assert attempt["reviewed_content_hash"] == "c" * 64
+    outcome = _loop_outcome("pass")
+    apply_skill_publish_receipt_veto(outcome, _task(), {"tool_calls": [call]})
+    assert outcome["outcome_axes"]["objective"]["status"] == "pass"
+    assert validate_skill_publish_receipt(
+        receipt, expected_repository="other/repo", expected_snapshot_hash=SNAPSHOT_HASH,
+    ) is None
+    assert validate_skill_publish_receipt(
+        receipt, expected_repository=REPOSITORY, expected_snapshot_hash="d" * 64,
+    ) is None
+
+
 @pytest.mark.parametrize("safety_note", ["", "⚠️ SAFETY_WARNING: allowed with a warning."])
 @pytest.mark.parametrize("success", [False, True])
 def test_registry_notes_preserve_publication_trace_metadata(tmp_path, monkeypatch, safety_note, success):

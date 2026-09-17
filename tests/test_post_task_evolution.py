@@ -274,6 +274,35 @@ def test_evolve_start_after_stop_mints_fresh_campaign(tmp_path, monkeypatch):
     assert fresh.get("cycles_done") == 0
 
 
+def test_agent_stop_on_top_of_an_owner_stop_keeps_the_owner_stop(tmp_path, monkeypatch):
+    """В12 (round 2): a stop remembers who placed it and the key never outlives the stop —
+    an agent OFF while the owner's stop stands must not relabel it as the agent's, or the
+    agent's next ON would un-stick the owner's stop."""
+    from supervisor.events import _handle_toggle_evolution
+    import supervisor.evolution_lifecycle as lifecycle
+    import supervisor.queue as queue
+
+    (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+    captured = {}
+
+    def _fake_update_state(mutator):
+        live = {"owner_chat_id": 7, "evolution_owner_stopped": True}  # the owner's stop: no source
+        mutator(live)
+        captured.update(live)
+        return live
+
+    monkeypatch.setattr(state, "update_state", _fake_update_state)
+    monkeypatch.setattr(state, "DRIVE_ROOT", tmp_path)
+    monkeypatch.setattr(lifecycle, "complete_evolution_campaign", lambda reason="", *, status="stopped": None)
+    monkeypatch.setattr(queue, "stop_evolution_tasks", lambda reason="": {
+        "cancelled": [], "already_settled": [], "not_found": [], "failed": [], "intent_write_failed": []})
+    ctx = types.SimpleNamespace(PENDING=[], sort_pending=lambda: None, persist_queue_snapshot=lambda reason="": None,
+                                send_with_budget=lambda cid, text: None,
+                                load_state=lambda: {"owner_chat_id": 7, "evolution_owner_stopped": True})
+    _handle_toggle_evolution({"enabled": False}, ctx)
+    assert captured["evolution_owner_stopped"] is True and "evolution_stop_source" not in captured
+
+
 def test_toggle_evolution_off_wires_owner_stop(tmp_path, monkeypatch):
     """Owner-stop SITE wiring (closes the review gap that the downstream apply_pending_request
     tests could not): _handle_toggle_evolution(enabled=False) must set the durable
@@ -323,6 +352,7 @@ def test_toggle_evolution_off_wires_owner_stop(tmp_path, monkeypatch):
 
     assert captured["evolution_mode_enabled"] is False
     assert captured["evolution_owner_stopped"] is True   # durable owner-stop sentinel SET
+    assert captured["evolution_stop_source"] == "agent_tool"  # who stopped it: the tool, not the owner
     assert captured["post_task_autostop"] is False       # one-shot autostop cleared
     assert calls["complete"] == [("disabled via agent tool", "stopped")]  # terminal, not pause
     assert calls["start"] == []
@@ -536,10 +566,7 @@ def test_v5_apply_pending_refused_when_budget_floor_unmet(tmp_path, monkeypatch)
 
 def test_envelope_enable_rides_generic_settings_merge():
     """The post-task self-evolution enable rides the generic owner settings path
-    (like ALLOW_MUTATIVE_SUBAGENTS) so the Settings UI On/Off toggle persists. The
-    AGENT still cannot self-enable it: shell (_detect_evolution_owner_control_self_change),
-    browser JS (_blocks_post_task_evolution_js), POST /api/settings route guard, and
-    data_write (DATA_WRITE_BLOCKED) all block agent-originated changes (see test_acting_subagents)."""
+    (like ALLOW_MUTATIVE_SUBAGENTS) so the Settings UI On/Off toggle persists."""
     from ouroboros.gateway.settings import _merge_settings_payload
 
     merged = _merge_settings_payload(

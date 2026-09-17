@@ -184,13 +184,10 @@ def test_integrate_schema_states_the_finalization_consequence_and_the_reject_exi
 
     entry = next(e for e in get_tools() if e.name == "integrate_delegated_patch")
     description = str(entry.schema["description"])
-    assert "Done with warnings" in description
-    assert "delegated_custody_unreconciled" in description
-    assert "reject is the closing move" in description
-    assert "terminal owner's orphan" in description
-    assert "Applying requires the caller's active Git root or fresh payload binding" in description
-    assert "Rejecting a terminal-owner orphan requires only the owner's terminality" in description
-    assert "release a dead task's locks and snapshot" in description
+    assert "Undisposed snapshots or directory-copy results remain custody debt" in description
+    assert "direct runs do not create that debt" in description
+    assert "apply verifies its complete result" in description
+    assert "reject cannot undo" in description
     assert entry.schema["parameters"]["properties"]["decision"]["enum"] == [
         "apply", "reject"]
 
@@ -437,7 +434,7 @@ def test_wait_and_cancel_authority_did_not_widen_for_an_orphan(tmp_path, monkeyp
     second, skill, entry, capture = _payload_orphan(tmp_path, monkeypatch)
     waited = json.loads(delegate._delegate_wait(second, "run-p1", wait_sec=1))
     assert waited["reason"] == "run_not_owned", waited
-    cancelled = json.loads(delegate._delegate_cancel(second, "run-p1", "stop"))
+    cancelled = json.loads(delegate._delegate_cancel(second, "run-p1", "stop").text)
     assert cancelled["reason"] == "run_not_owned", cancelled
     assert entry.patch_disposed == ""
     custody._CUSTODY.clear()

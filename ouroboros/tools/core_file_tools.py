@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import bisect
+import hashlib
 import json
 import logging
 import pathlib
@@ -17,8 +18,6 @@ from ouroboros.project_facts import filter_out_project_store as _filter_out_proj
 from ouroboros.project_facts import project_store_access_block as _project_store_access_block
 from ouroboros.protected_artifacts import block_reason_for_path
 from ouroboros.credential_shapes import (  # noqa: F401 — historical facade surface (tools/core re-exports)
-    CREDENTIAL_FILE_SUFFIXES,
-    CREDENTIAL_NAME_RE,
     SUBAGENT_CREDENTIAL_FILE_NAMES as _SUBAGENT_SECRET_FILE_NAMES,
 )
 from ouroboros.tool_access import (
@@ -42,12 +41,25 @@ from ouroboros.tools.core_secret_paths import (  # noqa: F401 — re-exported mo
     _filter_subagent_secret_listing,
 )
 from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
-from ouroboros.utils import read_text, safe_relpath
+from ouroboros.utils import safe_relpath
 
 log = logging.getLogger(__name__)
 
 
 _SKILL_OWNER_STATE_FILENAMES = SKILL_OWNER_STATE_FILENAMES
+
+
+def _raw_owner_secret_access_allowed(ctx: ToolContext) -> bool:
+    """Cyber Pro owner mode may inspect explicitly selected home-file bytes."""
+    if is_restricted_subagent_profile(ctx):
+        return False
+    try:
+        from ouroboros.config import get_runtime_mode
+        from ouroboros.runtime_mode_policy import runtime_mode_at_least
+
+        return runtime_mode_at_least(get_runtime_mode(), "cyber_pro")
+    except Exception:
+        return False
 
 
 def _direct_resource_binding(
@@ -107,7 +119,7 @@ def _render_line_slice(path: str, content: str, max_lines: int = 2000, start_lin
     if mask_secrets:
         from ouroboros.secret_masking import mask_secret_bytes
 
-        content, masked = mask_secret_bytes(content, mask_opaque=False, preserve_layout=True)
+        content, masked = mask_secret_bytes(content, preserve_layout=True)
     start_raw, max_raw = _coerce_line_window(start_line, max_lines)
     max_raw = max(1, max_raw)
     lines = content.splitlines(keepends=True)
@@ -139,13 +151,32 @@ def _render_line_slice(path: str, content: str, max_lines: int = 2000, start_lin
     if not body:
         first_line, line_ends = end + 1, ()  # nothing complete was delivered: an EMPTY range, never an inverted one
     if extent is not None:
+        source_start = sum(len(line) for line in lines[:start - 1]) + min(offset, len(window))
         extent.update({"start_line": start, "end_line": end, "total_lines": total, "start_char": offset,
                        "first_line": first_line, "body_start": len(header), "body_chars": len(body),
-                       "partial_head": partial_head, "line_ends": line_ends})
+                       "partial_head": partial_head, "line_ends": line_ends,
+                       "complete_chars": len(original_content),
+                       "complete_sha256": hashlib.sha256(original_content.encode("utf-8")).hexdigest(),
+                       "source_start_char": source_start, "source_end_char": source_start + len(body),
+                       "range_basis": "unicode_text_universal_newlines", "source_masked": bool(masked)})
     rendered = header + body
     if masked and body != "".join(original_content.splitlines(keepends=True)[start - 1:end])[offset:]:
         rendered += f"\n⚠️ SECRET_BYTES_MASKED: source contains {masked} secret-shaped span(s); matching bytes replaced with *."
     return rendered
+
+
+def _read_source_text(target: pathlib.Path, extent: Optional[Dict[str, Any]]) -> str:
+    """Bind the reader's text projection to the bytes from the same open.
+
+    Keep the existing universal-newline text ABI. Character ranges address that
+    text; source_revision names the actual file bytes, including CRLF. Reopening
+    only to hash could bind a delivered view to a different concurrent revision.
+    """
+    raw = target.read_bytes()
+    content = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    if extent is not None:
+        extent.update(source_revision=hashlib.sha256(raw).hexdigest(), source_bytes=len(raw))
+    return content
 
 
 def _coerce_start_char(start_char: Any = 0) -> int:
@@ -177,12 +208,25 @@ def _is_skill_owner_state_target(target: pathlib.Path, data_root: pathlib.Path) 
 
 
 class _ListingFailure(Exception):
-    """A failed list_files state that must surface as a FIRST-CLASS tool error.
+    """A CONFINEMENT refusal: the resolved target escapes its root.
 
-    v6.54.3 (review round 4): path-escape / not-found / not-a-directory used to
-    return warning strings INSIDE an ok-shaped JSON list — the exact
-    error-inside-success shape the TB2.1 post-mortem showed silently poisoning
-    reasoning. _list_files renders this as a leading ⚠️ LIST_FILES_ERROR."""
+    v6.54.3 (review round 4): a refusal to list used to return a warning string
+    INSIDE an ok-shaped JSON list — the exact error-inside-success shape the
+    TB2.1 post-mortem showed silently poisoning reasoning. _list_files renders
+    this as a leading ⚠️ LIST_FILES_ERROR, a first-class tool error. Discovery
+    misses are the ``_ListingMiss`` subclass below and are NOT errors."""
+
+
+class _ListingMiss(_ListingFailure):
+    """The read-only DISCOVERY case: the named directory is simply not there.
+
+    A confinement refusal and a miss are different outcomes. Looking for a
+    directory that does not exist (or naming a file where a directory was
+    expected) is what discovery IS, and colouring the whole task's execution
+    axis for it made a later success on a differently-spelled path unable to
+    credit the recovery. _list_files renders this as its own result with a
+    leading ⚠️ LIST_FILES_NOT_FOUND and warning severity — still an explicit,
+    marked refusal to list, never an error string inside an ok-shaped listing."""
 
 
 def _list_dir(root: pathlib.Path, rel: str, max_entries: int = 500) -> List[str]:
@@ -195,9 +239,9 @@ def _list_dir(root: pathlib.Path, rel: str, max_entries: int = 500) -> List[str]
     except ValueError:
         raise _ListingFailure(f"Path escapes root: {rel}") from None
     if not target.exists():
-        raise _ListingFailure(f"Directory not found: {rel}")
+        raise _ListingMiss(f"Directory not found: {rel}")
     if not target.is_dir():
-        raise _ListingFailure(f"Not a directory: {rel}")
+        raise _ListingMiss(f"Not a directory: {rel}")
     items = []
     # A hard iterdir/permission/race failure PROPAGATES: _list_files renders it
     # as a first-class "⚠️ LIST_FILES_ERROR" tool error, never an ok-shaped JSON
@@ -213,9 +257,9 @@ def _list_dir(root: pathlib.Path, rel: str, max_entries: int = 500) -> List[str]
 
 def _list_user_files_dir(ctx: ToolContext, root: pathlib.Path, target: pathlib.Path, max_entries: int = 500) -> List[str]:
     if not target.exists():
-        raise _ListingFailure(f"Directory not found: {target}")
+        raise _ListingMiss(f"Directory not found: {target}")
     if not target.is_dir():
-        raise _ListingFailure(f"Not a directory: {target}")
+        raise _ListingMiss(f"Not a directory: {target}")
     items: List[str] = []
     hidden = 0
     # A hard iterdir/permission/race failure PROPAGATES to the first-class
@@ -278,7 +322,7 @@ def _repo_read(
             text="⚠️ REPO_READ_BLOCKED: this subagent cannot read repo secret or control files.",
         ))
     try:
-        content = read_text(target)
+        content = _read_source_text(target, extent)
     except FileNotFoundError:
         norm = path.strip().lstrip("./").replace("\\", "/")
         base = norm.rsplit("/", 1)[-1]
@@ -381,7 +425,8 @@ def _data_read(
         if _resolved_binding is not None
         else pathlib.Path(ctx.drive_root)
     )
-    if _is_skill_owner_state_target(target, state_root) and target.name.lower() != "review.json":
+    if (not _raw_owner_secret_access_allowed(ctx)
+            and _is_skill_owner_state_target(target, state_root) and target.name.lower() != "review.json"):
         # Owner item A.20: this refusal was the one in the family that shipped WITHOUT
         # the warning marker, so the adapter read a policy denial as a successful read
         # and the model was handed the refusal as if it were file content. The marker
@@ -392,7 +437,7 @@ def _data_read(
             text="⚠️ DATA_READ_BLOCKED: skill owner state is not readable through generic data tools.",
         ))
     try:
-        content = read_text(target)
+        content = _read_source_text(target, extent)
         start_raw, max_raw = _coerce_line_window(start_line, max_lines)
         # The cognitive full-read shortcut only applies to a DEFAULT read: an explicit
         # start_char is a sub-line cursor request and must be honored, not swallowed.
@@ -401,7 +446,7 @@ def _data_read(
                 if is_restricted_subagent_profile(ctx):
                     from ouroboros.secret_masking import mask_secret_bytes
 
-                    content, masked = mask_secret_bytes(content, mask_opaque=False, preserve_layout=True)
+                    content, masked = mask_secret_bytes(content, preserve_layout=True)
                     if masked:
                         content += f"\n⚠️ SECRET_BYTES_MASKED: {masked} secret-shaped span(s) replaced with *."
                 return content
@@ -501,9 +546,9 @@ def _profile_roots_hint(ctx: ToolContext, operation: str) -> str:
     model turns a dead-end error into a self-correcting retry instead of a
     probe loop over blocked roots (v6.70.0)."""
     try:
-        from ouroboros.tool_access import _POLICY
+        from ouroboros.tool_access import _POLICY, _effective_policy_profile
 
-        policy = _POLICY.get(active_tool_profile(ctx), {})
+        policy = _POLICY.get(_effective_policy_profile(active_tool_profile(ctx)), {})
         visible = sorted(root for root, ops in policy.items() if operation in ops)
         return f" Roots your profile can {operation}: {', '.join(visible) or '(none)'}."
     except Exception:
@@ -602,7 +647,7 @@ def _stamp_read_view(ctx: ToolContext, target: Any, opened: str, opened_root: st
     structural: ``_read_file`` resets it on entry and the episode clears it
     before every dispatch (these are the ONLY writers — a static test pins the
     writer set). Disclosure only — never gates or alters the read."""
-    if extent:
+    if "body_start" in extent:
         ctx.last_read_view = {"target": str(target), "opened_path": str(opened),
                               "opened_root": str(opened_root), **extent}
     return rendered
@@ -698,23 +743,30 @@ def _read_file(
             status="blocked", code="LEGACY_BLOCKED", text=block_msg,
         ))
     try:
-        content = read_text(target)
+        content = _read_source_text(target, extent)
+        raw_owner_secret_access = _raw_owner_secret_access_allowed(ctx)
         rendered = _render_line_slice(_root_display_path(normalized, path), content,
                                       max_lines=max_lines, start_line=start_line, start_char=start_char,
-                                      extent=extent, mask_secrets=is_restricted_subagent_profile(ctx))
-        if normalized == "user_files":
+                                      extent=extent, mask_secrets=(
+                                          is_restricted_subagent_profile(ctx) and not raw_owner_secret_access
+                                      ))
+        if normalized == "user_files" and not raw_owner_secret_access:
             # Egress seam for owner-home reads (#447 X1/В23): the file may be
-            # read, but raw credential bytes never enter model context/history —
-            # the masked form (***) may. Masking happens on the rendered slice;
-            # the search egress applies the same seam to its match lines.
+            # read; bytes in a recognized credential format or a PEM block leave
+            # as the masked form (***), and secrets in unrecognized formats are
+            # not detected at all (owner answer 5=A removed the opaque-run rule).
+            # Masking happens on the rendered slice; the search egress applies
+            # the same seam to its match lines.
             from ouroboros.secret_masking import mask_secret_bytes
 
             rendered, masked = mask_secret_bytes(rendered)
             if masked:
+                extent["source_masked"] = True
                 rendered += (
-                    f"\n⚠️ SECRET_BYTES_MASKED: {masked} secret-shaped span(s) in this "
-                    "view were replaced with ***; raw credentials never enter model "
-                    "context. Reference them by location, not value."
+                    f"\n⚠️ SECRET_BYTES_MASKED: {masked} span(s) in this view matched a "
+                    "recognized credential format or a PEM block and were replaced with "
+                    "***; secrets in unrecognized formats are not detected. Reference "
+                    "the masked ones by location, not value."
                 )
         if normalized == "task_drive":
             # D7 coverage acknowledgement: what counts as read is what the DELIVERY
@@ -822,6 +874,12 @@ def _list_files(
             elif normalized in {"task_drive", "skill_payload", "artifact_store", "user_files"}:
                 items = _filter_subagent_secret_listing(items, binding.base_path, ctx=ctx)
         return json.dumps(items, ensure_ascii=False, indent=2)
+    except _ListingMiss as exc:
+        # A miss is discovery, not a failed tool: the same warning severity the
+        # absent-memory-file read already uses (DATA_NOT_YET_CREATED below).
+        return _publish_tool_result(ctx, ToolResult(
+            status="ok", code="LEGACY_WARNING", text=f"⚠️ LIST_FILES_NOT_FOUND: {exc}",
+        ))
     except _ListingFailure as exc:
         return _publish_tool_result(ctx, ToolResult(
             status="error", code="LEGACY_TOOL_ERROR", text=f"⚠️ LIST_FILES_ERROR: {exc}",

@@ -18,11 +18,11 @@ from ouroboros.llm_attempt import (
     _attempt_request,
     _candidate_before_dispatch,
     _execute_candidate,
+
+    _finalized_physical_candidate,
     _is_structured_context_overflow_exception,
-    _physical_candidate,
 )
 from ouroboros.usage_accounting import PhysicalAttemptCapture, UsageAccountingError
-
 
 # The moved warnings keep the logger identity they were emitted under.
 log = logging.getLogger("ouroboros.llm")
@@ -33,6 +33,7 @@ class LocalContextTooLargeError(RuntimeError):
 
 
 # Lives beside its proxy constant; the historical private name stays importable.
+
 from ouroboros.context_budget import estimate_message_chars as _estimate_message_chars
 
 
@@ -75,7 +76,10 @@ def _compact_markdown_sections(
         parts.append(preamble)
 
     for title, section in sections:
-        if title in preserve_titles:
+        # Production headings carry a provenance suffix the preserve sets do not spell
+        # out ("## Identity (from `memory/identity.md` — ...)"), so an exact-only match
+        # silently compacts the very sections this mode exists to keep.
+        if title in preserve_titles or title.split("(")[0].strip() in preserve_titles:
             parts.append(section)
             continue
         omitted_chars = max(0, len(section))
@@ -93,8 +97,9 @@ _LOCAL_COMPACTION_MODES = {
         "Use a larger-context model or read the source file directly if this section becomes necessary.",
     ),
     "semi_stable": (
-        {"Identity"},
-        "Identity was preserved; non-core stable memory sections were compacted for local execution.",
+        {"Identity", "Shared understanding"},
+        "Identity and the shared understanding were preserved; non-core stable memory "
+        "sections were compacted for local execution.",
     ),
     "dynamic": (
         {
@@ -117,7 +122,6 @@ _LOCAL_COMPACTION_MODES = {
             "Runtime context",
             "Health Invariants",
             "Recent observations",
-            "Background consciousness info",
         },
         "Non-core sections were compacted for local execution.",
     ),
@@ -127,6 +131,26 @@ _LOCAL_COMPACTION_MODES = {
 def _compact_local_text(text: str, mode: str) -> str:
     preserve_titles, reason = _LOCAL_COMPACTION_MODES[mode]
     return _compact_markdown_sections(text, preserve_titles=preserve_titles, reason=reason)
+
+
+def local_context_limits(max_tokens: int) -> Tuple[int, int]:
+    """Current local window and effective output cap, shared with caller preflight."""
+    ctx_len = 0
+    local_max = min(max_tokens, 2048)
+    try:
+        from ouroboros.local_model import get_manager
+        manager = get_manager()
+        evidence_fn = getattr(manager, "serving_context_evidence", None)
+        if callable(evidence_fn):
+            evidence = evidence_fn() or {}
+            ctx_len = int(evidence.get("context_window") or 0)
+        if ctx_len <= 0:
+            ctx_len = int(manager.get_context_length() or 0)
+        if ctx_len > 0:
+            local_max = min(max_tokens, max(256, ctx_len // 4))
+    except Exception:
+        pass
+    return ctx_len, local_max
 
 
 class _LocalLaneMixin:
@@ -173,23 +197,17 @@ class _LocalLaneMixin:
             f"({compacted_chars} chars > target {target_chars})."
         )
 
-    def _chat_local(
-        self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]],
-        max_tokens: int,
-        tool_choice: str,
-        timeout: Optional[float] = None,
+    def _build_local_candidate(
+        self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]],
+        max_tokens: int, tool_choice: str, timeout: Optional[float] = None,
+        processing_preference: Optional[str] = None,
+        context_mode: Optional[str] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        """Send a chat request to the local llama-cpp-python server."""
-        client = self._get_local_client()
-
+        """Prepare the complete local payload for sizing and actual dispatch."""
         messages = self._normalize_system_message_placement(messages)
         clean_messages = self._strip_openrouter_roundtrip_metadata(
             self._copy_messages_with_cache_policy(
-                messages,
-                allow_message_cache_control=False,
-                flatten_tool_content_blocks=True,
+                messages, allow_message_cache_control=False, flatten_tool_content_blocks=True,
             )
         )
         # Local llama.cpp has no vision; avoid flattening base64 into the prompt.
@@ -200,47 +218,72 @@ class _LocalLaneMixin:
             for idx, block in enumerate(content):
                 if isinstance(block, dict) and str(block.get("type") or "") in ("image_url", "image"):
                     content[idx] = {"type": "text", "text": "[image omitted: model has no vision]"}
-        local_max = min(max_tokens, 2048)
-        ctx_len = 0
-        try:
-            from ouroboros.local_model import get_manager
-            ctx_len = get_manager().get_context_length()
-            if ctx_len > 0:
-                local_max = min(max_tokens, max(256, ctx_len // 4))
-        except Exception:
-            pass
-
+        ctx_len, local_max = local_context_limits(max_tokens)
         if ctx_len > 0:
             clean_messages = self._prepare_messages_for_local_context(clean_messages, ctx_len, local_max)
-
         for msg in clean_messages:
             content = msg.get("content")
+            if content is None and msg.get("role") == "assistant":
+                msg["content"] = ""
             if isinstance(content, list):
                 msg["content"] = "\n\n".join(
-                    b.get("text", "") for b in content
-                    if isinstance(b, dict) and b.get("type") == "text"
+                    b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
                 )
-
         clean_tools = None
         if tools:
-            clean_tools = [
-                {k: v for k, v in t.items() if k != "cache_control"}
-                for t in tools
-            ]
-
-        kwargs: Dict[str, Any] = {
-            "model": "local-model",
-            "messages": clean_messages,
-            "max_tokens": local_max,
-        }
+            clean_tools = [{k: v for k, v in t.items() if k != "cache_control"} for t in tools]
+        kwargs: Dict[str, Any] = {"model": "local-model", "messages": clean_messages, "max_tokens": local_max}
         if clean_tools:
             kwargs["tools"] = clean_tools
             kwargs["tool_choice"] = tool_choice
         if timeout and timeout > 0:
             kwargs["timeout"] = float(timeout)
 
-        candidate = _physical_candidate(kwargs)
-        local_target = {"provider": "local", "usage_model": "local-model"}
+        from ouroboros.model_slots import resolve_processing_preference
+        from ouroboros.local_model import get_manager
+        evidence = get_manager().serving_context_evidence() or {}
+        preference = resolve_processing_preference(override=processing_preference)
+        target = {"provider": "local", "resolved_model": "local-model", "usage_model": "local-model",
+                  "processing_preference": preference, "context_window_tokens": evidence.get("context_window"),
+                  "context_window_confirmed": evidence.get("confirmed") is True,
+                  "context_mode": context_mode}
+        return target, kwargs
+
+    def _finalize_local_candidate(self, target: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Measure on the serving instance, then bind the output allowance before send.
+
+        This explicit stage may perform bounded, non-generating loopback I/O.
+        The payload builder and shared context arithmetic remain pure.
+        """
+        from ouroboros.local_model import get_manager
+
+        manager = get_manager()
+        measure = getattr(manager, "measure_prepared_input", None)
+        # Bind the provider-clean physical payload before measuring. Host-only
+        # metadata must not affect the measured input or candidate hash.
+        candidate = _finalized_physical_candidate(target, payload, "chat.completions")
+        if callable(measure):
+            evidence = measure(candidate)
+            if isinstance(evidence, dict) and evidence.get("supported"):
+                target["local_input_measurement"] = evidence
+                # Rebuild from the original prepared source so the exact
+                # measured input and output cap are sealed together.
+                candidate = _finalized_physical_candidate(target, payload, "chat.completions")
+        return candidate
+
+    def _chat_local(
+        self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]],
+        max_tokens: int, tool_choice: str, timeout: Optional[float] = None,
+        processing_preference: Optional[str] = None,
+        context_mode: Optional[str] = None,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """Send exactly the previously prepared complete local candidate."""
+        client = self._get_local_client()
+        local_target, candidate = self._build_local_candidate(
+            messages, tools, max_tokens, tool_choice, timeout, processing_preference, context_mode)
+        candidate = self._finalize_local_candidate(local_target, candidate)
+        clean_tools = candidate.get("tools")
+        preference = local_target["processing_preference"]
         # ONE physical attempt per call. Re-sending here spent the caller's
         # physical-attempt budget without the caller authorising it, so a
         # transient local failure now surfaces to the single retry policy that
@@ -248,10 +291,24 @@ class _LocalLaneMixin:
         # the attempts it authorises.
         try:
             request = _attempt_request(local_target, candidate, source="llm.local")
+            before = _candidate_before_dispatch(candidate, request)
+
+            def check_instance(reservation):
+                measured = local_target.get("local_input_measurement") or {}
+                if measured.get("supported"):
+                    from ouroboros.local_model import get_manager
+                    from ouroboros.usage_accounting import PhysicalAttemptPreparationFailed
+
+                    current = get_manager().serving_context_evidence()
+                    if (current.get("process_id") != measured.get("process_id") or not current.get("confirmed")
+                            or current.get("context_window") != measured.get("context_window")):
+                        raise PhysicalAttemptPreparationFailed("The measured local model instance changed before dispatch")
+                return before(reservation)
+
             resp = _execute_candidate(
                 request,
                 lambda: client.chat.completions.create(**candidate),
-                _candidate_before_dispatch(candidate, request),
+                check_instance,
             )
         except UsageAccountingError:
             raise
@@ -287,4 +344,8 @@ class _LocalLaneMixin:
         # returned usage alone could not attribute the call.
         usage["provider"] = "local"
         usage["resolved_model"] = "local-model"
+        if preference:
+            from ouroboros._usage_response import processing_receipt
+
+            usage["processing"] = processing_receipt("local", usage, requested=preference)
         return msg, usage

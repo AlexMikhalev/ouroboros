@@ -134,6 +134,7 @@ def bootstrap_before_context(ctx: Any, task: Mapping[str, Any], dispatch: Any) -
         return ""
     snapshot = task.get("configured_subagent") if isinstance(task.get("configured_subagent"), dict) else {}
     route = snapshot.get("route") if isinstance(snapshot.get("route"), dict) else {}
+    ctx._configured_subagent_route_kind = str(route.get("kind") or "")
     if str(route.get("kind") or "") != "agent_session":
         return ""
     # Hydrate immutable route/work-order authority before every recovery
@@ -205,14 +206,21 @@ def _pre_start_leaf(
     waiting is the model's own ``delegate_wait`` decision, so owner messages,
     hurry controls and parallel children stay live for the whole run."""
 
+    from ouroboros.delegate_shared import delegate_payload
     from ouroboros.subagent_runtime import delegate_start_entry
 
-    started_raw = delegate_start_entry(ctx, "")
+    # The start wrapper answers with the family's NATIVE result; the receipt below
+    # carries the producer's own payload, never a stringified result object. An
+    # UNREADABLE payload proves nothing about the run's absence, so it wakes the
+    # model with the fault rather than claiming a $0 unrun terminal.
+    started = delegate_start_entry(ctx, "", **{
+        key: actor_bootstrap[key] for key in ("directory_strategy", "scope_paths")
+        if key in actor_bootstrap
+    })
     try:
-        payload = json.loads(started_raw) if isinstance(started_raw, str) else {}
-    except (TypeError, ValueError):
+        payload = delegate_payload(started)
+    except (AttributeError, TypeError, ValueError):
         payload = {}
-    payload = payload if isinstance(payload, dict) else {}
     status = str(payload.get("status") or "")
     if status in {"started", "started_uncustodied"}:
         # Idempotent beside the start wrapper's own marker: the host episode
@@ -638,6 +646,8 @@ def _prepare_actor_first_bootstrap(
         "route_available": not bool(getattr(dispatch, "blocked", False)),
         "exact_start_pending": True,
         "physical_started": False,
+        **{key: task[key] if key == "directory_strategy" else list(task[key])
+           for key in ("directory_strategy", "scope_paths") if key in task},
     }
     zero_run_evidence_gaps: set[str] = set()
     durable_zero_run = _durable_zero_run_receipt(

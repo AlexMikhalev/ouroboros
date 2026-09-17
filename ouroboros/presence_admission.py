@@ -24,7 +24,7 @@ from ouroboros.presence_capabilities import (
     resolve_presence_profile_state,
 )
 from ouroboros.presence_profile import PresenceProfileError, parse_presence_profile
-from ouroboros.skill_loader import find_skill, review_status_allows_execution
+from ouroboros.skill_loader import find_skill
 
 
 class PresenceAdmissionError(ValueError):
@@ -54,6 +54,7 @@ class PresenceAdmission:
     state_fingerprint: str
     selection_fingerprint: str
     capability_ceiling: PresenceCapabilityCeiling
+    workspace_root: str = ""
 
 
 def _component_error(exc: Any) -> PresenceAdmissionError:
@@ -154,12 +155,13 @@ def admit_presence_turn(
             "presence_behavior_skill_disabled",
             "binding.behavior_skill",
         )
-    if skill.review.is_stale_for(skill.content_hash):
+    gate = skill.review.gate_for(skill.content_hash)
+    if gate["blocking_reason"] == "review_stale":
         raise PresenceAdmissionError(
             "presence_behavior_review_stale",
             "binding.behavior_skill",
         )
-    if not review_status_allows_execution(skill.review.status):
+    if not gate["executable_review"]:
         raise PresenceAdmissionError(
             "presence_behavior_review_not_executable",
             "binding.behavior_skill",
@@ -173,6 +175,18 @@ def admit_presence_turn(
                 "binding.behavior_skill",
             )
         state = load_presence_state(root, skill.name)
+        from ouroboros.workspace_admission import WorkspaceRootError, validate_workspace_root
+
+        try:
+            workspace = validate_workspace_root(
+                state.workspace_root,
+                system_repo_dir=Path(__file__).resolve().parents[1],
+                drive_root=root,
+            )
+        except WorkspaceRootError as exc:
+            raise PresenceAdmissionError(
+                "presence_workspace_unusable", "presence_state.workspace_root", str(exc),
+            ) from exc
         state_digest = presence_state_fingerprint(state)
         resolution = resolve_presence_profile_state(
             profile,
@@ -206,6 +220,7 @@ def admit_presence_turn(
         state_fingerprint=state_digest,
         selection_fingerprint=resolution.selection_fingerprint,
         capability_ceiling=ceiling,
+        workspace_root=str(workspace) if workspace is not None else "",
     )
 
 

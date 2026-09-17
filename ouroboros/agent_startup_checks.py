@@ -25,6 +25,7 @@ from ouroboros.utils import (
     update_json_locked,
     utc_now_iso,
 )
+from ouroboros.config import runtime_setting
 
 log = logging.getLogger(__name__)
 
@@ -93,6 +94,11 @@ def task_result_authority_projection(
         for key, value in row.items()
         if key not in _TASK_RESULT_PROCESS_EVIDENCE_FIELDS
     }
+    from ouroboros.task_finalization import terminal_host_notice_text
+
+    notice = terminal_host_notice_text(row)
+    if notice:
+        authority["terminal_host_notice"] = notice
     contract = row.get("task_contract")
     if isinstance(contract, dict):
         authority["task_contract"] = copy.deepcopy(contract)
@@ -289,14 +295,12 @@ def persist_early_origin_stub(
 ) -> None:
     """Merge-persist ingress authority before the convertible task card exists.
 
-    Ephemeral/origin-less turns write nothing. A storage failure is loud but
+    Origin-less turns write nothing. A storage failure is loud but
     non-fatal: the owner's task outlives its start message, and the subsequent
     full RUNNING write will encounter the same storage fault. ``write_result``
     preserves the existing agent test seam while production uses the canonical
     task-result writer.
     """
-    if bool(task.get("_ephemeral_turn")):
-        return
     ref = task.get("origin_message_ref")
     if not (isinstance(ref, dict) and ref):
         return
@@ -724,7 +728,6 @@ def check_stray_server_processes(env: Any) -> Tuple[Dict[str, Any], int]:
 def _hot_store_thresholds() -> Tuple[Tuple[str, int, str], ...]:
     from ouroboros.context_budget import (
         EVENTS_LOG_WARN_BYTES,
-        BG_OBSERVATIONS_WARN_BYTES,
         PROGRESS_LOG_WARN_BYTES,
         SCHEDULED_TASKS_WARN_BYTES,
         SKILL_REVIEW_ROOT_TASKS_WARN_BYTES,
@@ -741,23 +744,16 @@ def _hot_store_thresholds() -> Tuple[Tuple[str, int, str], ...]:
     )
     return (
         (
-            "state/consciousness_observations.jsonl",
-            BG_OBSERVATIONS_WARN_BYTES,
-            "Background consciousness replays this append-only inbox on wake; "
-            "acknowledged rows past GC retention fold into an archive segment "
-            "at startup (unacknowledged rows never) — growth past this size "
-            "means a large unacknowledged backlog or a gap-blocked fold.",
-        ),
-        (
             "state/usage_attempts.jsonl",
             USAGE_LEDGER_WARN_BYTES,
             "Every reservation re-reads the ledger under the monetary lock "
             "(~0.5s hold at 20MB — see usage_ledger.py); size-triggered "
             "compaction (usage_compaction.py, CPL4-C6) should hold the file "
-            "far below this — growth past it means compaction is broken, the "
-            "unfoldable residue itself is this large, or the lock directory "
-            "takes no kernel locks so compaction refuses on the name tier "
-            "(see the usage_ledger_compaction_refused event in events.jsonl).",
+            "far below this — growth can mean broken compaction, a large "
+            "unfoldable residue, a policy abort, or refusal on the name tier "
+            "(no kernel locks). Check usage_ledger_compaction_refused or "
+            "usage_ledger_compaction_skipped in events.jsonl; the two snapshot-race "
+            "exits before archive/swap only log warnings, without a typed event.",
         ),
         ("logs/events.jsonl", EVENTS_LOG_WARN_BYTES, rotation_expected),
         ("logs/tools.jsonl", TOOLS_LOG_WARN_BYTES, rotation_expected),
@@ -792,9 +788,9 @@ def hot_store_growth_notes(env: Any) -> list:
 
     Reused live by context.py::build_health_invariants (the
     check_stray_server_processes pattern). Deliberately NOT TTL-cached
-    (contrast context._STRAY_PROBE_CACHE): nine os.stat calls per task turn
-    are orders of magnitude cheaper than the pgrep probe that cache exists
-    for, and a stale reading would delay the regression signal."""
+    (contrast context._STRAY_PROBE_CACHE): eight os.stat calls plus two shallow
+    iterdir passes per task turn are orders of magnitude cheaper than the pgrep
+    probe that cache exists for, and a stale reading would delay the signal."""
     from supervisor.state import ISOLATED_BENCHMARK_SENTINEL
 
     drive_root = pathlib.Path(getattr(env, "drive_root", None) or env.drive_path("state").parent)
@@ -854,6 +850,24 @@ def hot_store_growth_notes(env: Any) -> list:
             "replay scans this chain on ownership questions. Investigate chain "
             "indexing/compaction; archives are durable history and are never deleted."
         )
+    from ouroboros.context_budget import RETAINED_EXECUTION_DRIVES_WARN_COUNT
+    from ouroboros.headless import HEADLESS_TASKS_DIR, TASK_DRIVES_DIR
+    retained_drive_count = 0
+    for retained_root in (
+        drive_root / HEADLESS_TASKS_DIR,
+        drive_root / TASK_DRIVES_DIR,
+    ):
+        try:
+            retained_drive_count += sum(path.is_dir() for path in retained_root.iterdir())
+        except OSError:
+            pass
+    if retained_drive_count > RETAINED_EXECUTION_DRIVES_WARN_COUNT:
+        notes.append(
+            "WARNING: HOT STORE GROWTH — retained execution drives under "
+            f"state/headless_tasks and task_drives total {retained_drive_count} "
+            f"(threshold {RETAINED_EXECUTION_DRIVES_WARN_COUNT}). Terminal-task retention "
+            "or pruning is lagging; inspect lifecycle GC without recursively sizing drives."
+        )
     return notes
 
 
@@ -912,7 +926,7 @@ def verify_system_state(env: Any, git_sha: str) -> None:
         issues += 1
         log.warning("WORLD.md missing — environment profile not available")
 
-    configured_model = os.environ.get("OUROBOROS_MODEL", "")
+    configured_model = runtime_setting("OUROBOROS_MODEL", "")
     checks["model"] = {"configured": configured_model or "(not set)"}
     if not configured_model:
         issues += 1

@@ -1,8 +1,8 @@
 """The runtime section's FACT builders: what the host can honestly say it knows.
 
-Extracted whole from ``context.py`` at its module ceiling (v7 leaf) so the four
+Extracted whole from ``context.py`` at its module ceiling (v7 leaf) so the
 facts the runtime section renders keep one home: the project room a task sits in,
-the budget rails it runs under, the toolset a promoted task materialized, and the
+the budget rails it runs under, and the
 configured delegation route with its honestly-labeled historical observations.
 Each returns a plain projection and reads no context state, so nothing here can
 change what the section MEANS — only what it reports. ``context`` re-exports every
@@ -12,13 +12,50 @@ name, so historical imports and monkeypatch targets keep working unchanged.
 from __future__ import annotations
 
 import logging
-import os
 import pathlib
 from typing import Any, Dict, List, Optional
 
 from ouroboros.task_pacing import in_task_cost_ceiling_disclosure as _in_task_cost_ceiling
+from ouroboros.config import runtime_setting
 
 log = logging.getLogger(__name__)
+
+
+def _queue_context_fact(task: Dict[str, Any]) -> Dict[str, Any]:
+    """One dated canonical-queue view, frozen with the task's ContextCore."""
+    from ouroboros.config import DATA_DIR, get_max_active_subagents_per_root, get_max_workers
+    from ouroboros.task_status import _load_queue_snapshot, queue_snapshot_observation
+
+    root = pathlib.Path(task.get("budget_drive_root") or DATA_DIR)
+    snapshot = _load_queue_snapshot(root)
+    fact = {**queue_snapshot_observation(snapshot), "source_root": str(root),
+            "max_workers": int(get_max_workers()),
+            "max_active_subagents_per_root": int(get_max_active_subagents_per_root())}
+    if snapshot.get("_snapshot_missing") or snapshot.get("_snapshot_invalid"):
+        return {**fact, "note": "Queue observation unavailable; current capacity is unknown."}
+    for key in ("running", "pending"):
+        rows = snapshot.get(key)
+        fact[key + "_count"] = sum(isinstance(row, dict) for row in rows) if isinstance(rows, list) else None
+    fact["reaping_count"] = snapshot.get("reaping_count")
+    fact["worker_total"] = snapshot.get("worker_total")
+    assignable = snapshot.get("assignable_idle_workers")
+    if assignable is not None:
+        fact["free_worker_slots"] = max(0, int(assignable))
+        fact["free_worker_slots_basis"] = "recorded_assignable_idle_workers"
+    elif fact["running_count"] is not None:
+        fact["free_worker_slots"] = max(0, fact["max_workers"] - fact["running_count"]
+                                          - int(fact["reaping_count"] or 0))
+        fact["free_worker_slots_basis"] = "legacy_estimate_from_configured_limit"
+    else:
+        fact["free_worker_slots"] = None
+        fact["free_worker_slots_basis"] = "unknown"
+    fact["note"] = (
+        "Last recorded queue counts at ts; freshness and age were measured when this context "
+        "was built and do not refresh during the task. Stale or unknown observations do not "
+        "establish current load. Legacy free-slot estimates are not measured capacity. "
+        "Scheduling owns admission; these observations reserve no slots."
+    )
+    return fact
 
 
 def _project_room_fact(task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -94,7 +131,7 @@ def _runtime_budget_info(env: Any, task: Dict[str, Any], ctx: Any = None) -> Dic
         log.error("Budget authority unavailable for runtime context", exc_info=True)
         budget_info = {"status": "unavailable"}
     try:
-        root_cap = float(os.environ.get("OUROBOROS_PER_TASK_COST_USD", "0") or 0)
+        root_cap = float(runtime_setting("OUROBOROS_PER_TASK_COST_USD", "0") or 0)
     except (TypeError, ValueError):
         root_cap = 0.0
     if root_cap > 0:
@@ -109,52 +146,6 @@ def _runtime_budget_info(env: Any, task: Dict[str, Any], ctx: Any = None) -> Dic
     return budget_info
 
 
-def _promoted_task_toolset(env: Any) -> Dict[str, Any]:
-    """The LIVE built-in toolset available to an ordinary promoted task.
-
-    Workspace focus changes the default target, not the top-level principal's
-    tool names. The projection therefore asks the real registry once and keeps
-    credential omissions typed instead of maintaining a second static catalog.
-    Dynamic extension/MCP availability remains task-time state.
-    """
-    from types import SimpleNamespace
-
-    from ouroboros.tools.registry import ToolRegistry, _builtin_tool_availability
-
-    registry = ToolRegistry(pathlib.Path(env.repo_dir), pathlib.Path(getattr(env, "drive_root", ".")))
-
-    probe = SimpleNamespace(
-        task_id="promote_toolset_probe",
-        task_metadata={},
-        task_contract={},
-        task_constraint=None,
-        is_workspace_mode=lambda: False,
-        is_ephemeral_turn=False,
-    )
-    registry.set_context(probe)
-    top_level_tools = set(registry.available_tools())
-    # Typed omissions: registered built-ins that live availability removes right
-    # now (credential gates). Named with their reason so the router can tell
-    # "does not exist" from "exists but currently unavailable".
-    unavailable = {}
-    for name in registry._entries:
-        available, reason, detail = _builtin_tool_availability(name, probe)
-        if not available:
-            unavailable[name] = f"{reason}: {detail}" if detail else reason
-    return {
-        "top_level_tools": sorted(top_level_tools),
-        **({"unavailable_builtin_tools": dict(sorted(unavailable.items()))} if unavailable else {}),
-        "rule": (
-            "LIVE built-in tool availability, evaluated by the real tool "
-            "registry at promote time. Project focus changes the default root, "
-            "not this ordinary top-level toolset. unavailable_builtin_tools "
-            "exist but are currently unusable (e.g. missing credentials) — do "
-            "not demand them. Dynamic extension/MCP tools are NOT listed (their "
-            "availability is unknowable at promote time). If an objective/"
-            "expected_output demands specific BUILT-IN tools, demand only names "
-            "listed here."
-        ),
-    }
 
 
 def _delegation_capability_fact() -> Optional[Dict[str, Any]]:

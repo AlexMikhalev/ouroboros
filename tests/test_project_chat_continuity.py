@@ -3,12 +3,14 @@ and durable owner-message persistence through the REAL routing chain.
 
 Pins the four server seams of the continuity contract:
 
-1. ``gateway.state._chat_activities_snapshot_safe`` unites direct/ephemeral
+1. ``gateway.state._chat_activities_snapshot_safe`` unites direct
    registry turns with ROOT managed queue tasks (``queued``/``working``/
    ``finalizing``), deriving ``finalizing`` from the durable
    ``root_phase_checkpoint``.
 2. ``supervisor.events._handle_typing_start`` stamps ``kind="managed_task"``
-   on typing from RUNNING queue ROOTS (subagents keep the kind-less legacy).
+   on typing from RUNNING queue ROOTS (children stay kind-less). No in-repo
+   client reads the stamp (wire compatibility); it is not authority over any
+   client-side set.
 3. ``agent_task_pipeline.emit_task_results`` marks a root's early final answer
    with ``progress_meta.task_phase="finalizing"`` exactly while post-task
    synthesis is still owed.
@@ -25,6 +27,7 @@ owner row and its routing annotation.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import types
 from types import SimpleNamespace
@@ -115,35 +118,82 @@ def test_chat_activities_snapshot_projects_queue_roots_with_phases(tmp_path, mon
     assert rows["running-root"]["phase"] == "working"
     assert rows["running-root"]["started_at"] == 111.0
     assert rows["finalizing-root"]["phase"] == "finalizing"
-    # Subagents are never snapshot activities: no snapshot source may gain
-    # deletion authority over their kind-less client entries.
+    # Subagents are never census activities: the census enumerates direct
+    # turns and managed ROOTS by design, and their own task cards carry the
+    # children.
     assert "queued-child" not in rows
     assert "running-child" not in rows
 
 
-def test_snapshot_rehomes_converted_task_through_binding(tmp_path, monkeypatch):
-    """A mid-run "turn into project" conversion binds the task to the project
-    without touching its queue row; the snapshot re-homes chat/project ids
-    through the same task-binding projection /api/state already serves."""
+@pytest.mark.serial
+@pytest.mark.parametrize("kind", ["direct_chat", "managed_task"])
+@pytest.mark.parametrize("bound", [False, True])
+def test_snapshot_rehomes_activity_without_changing_sources(tmp_path, monkeypatch, kind, bound):
+    """Both live owners follow their Project binding without rewriting ingress."""
     import supervisor.queue as queue_mod
     from ouroboros.gateway import state as gateway_state
 
+    registry = get_direct_activity_registry()
+    if kind == "direct_chat":
+        registry.register("root", chat_id=1, client_message_id="owner-message")
+    direct_rows = registry.snapshot()
+    original_direct = copy.deepcopy(direct_rows)
+    running = {} if kind == "direct_chat" else {
+        "root": {"task": _root_task("root", chat_id=1, project_id=""), "started_at": 9.0},
+    }
+    original_running = copy.deepcopy(running)
+    bindings = {"root": {"project_id": "task-converted", "chat_id": 77}} if bound else {}
+    original_bindings = copy.deepcopy(bindings)
     monkeypatch.setattr(queue_mod, "PENDING", [])
-    monkeypatch.setattr(queue_mod, "RUNNING", {
-        "converted-root": {"task": _root_task("converted-root", chat_id=1, project_id=""), "started_at": 9.0},
-    })
+    monkeypatch.setattr(queue_mod, "RUNNING", running)
     gateway_state._FINALIZING_MEMO.clear()
 
-    rows = {
-        row["activity_id"]: row
-        for row in gateway_state._chat_activities_snapshot_safe(
-            tmp_path,
-            {"converted-root": {"project_id": "task-converted", "chat_id": 77}},
-        )
-    }
+    rows = gateway_state._chat_activities_snapshot_safe(tmp_path, bindings, direct_turns=direct_rows)
 
-    assert rows["converted-root"]["chat_id"] == 77
-    assert rows["converted-root"]["project_id"] == "task-converted"
+    expected = original_direct[0] if kind == "direct_chat" else {
+        "activity_id": "root", "chat_id": 1, "project_id": "",
+        "kind": "managed_task", "phase": "working", "started_at": 9.0,
+        "client_message_id": "", "task_attempt": 1,
+    }
+    assert rows == [{**expected, **bindings.get("root", {})}]
+    assert direct_rows == original_direct
+    assert registry.snapshot() == original_direct
+    assert running == original_running
+    assert bindings == original_bindings
+    if direct_rows:
+        assert rows[0] is not direct_rows[0]
+
+
+@pytest.mark.serial
+def test_bound_direct_activity_question_uses_project_without_mutating_raw_snapshot(tmp_path, monkeypatch):
+    from ouroboros.gateway import state as gateway_state
+    from ouroboros.owner_quiz import record_asked
+    from ouroboros.owner_wait import set_owner_wait
+    from ouroboros.projects_registry import create_project
+    from ouroboros.task_results import STATUS_RUNNING, write_task_result
+    from supervisor import queue
+
+    project = create_project(tmp_path, "waiting-project", name="Waiting Project")
+    write_task_result(tmp_path, "direct", STATUS_RUNNING)
+    record_asked(tmp_path, "direct", quiz_id="q1", question="Proceed?", options=["Yes", "No"], wait_for_answer=True)
+    set_owner_wait(tmp_path, "direct", {"quiz_id": "q1", "wait_id": "w1", "state": "waiting"})
+    registry = get_direct_activity_registry()
+    registry.register("direct", chat_id=1, client_message_id="owner-message")
+    direct_rows = registry.snapshot()
+    original_direct = copy.deepcopy(direct_rows)
+    monkeypatch.setattr(queue, "PENDING", [])
+    monkeypatch.setattr(queue, "RUNNING", {})
+    gateway_state._FINALIZING_MEMO.clear()
+
+    rows = gateway_state._chat_activities_snapshot_safe(
+        tmp_path, {"direct": {"project_id": project["id"], "chat_id": project["chat_id"]}},
+        direct_turns=direct_rows,
+    )
+
+    assert rows[0]["required_question"]["project_id"] == project["id"]
+    assert rows[0]["required_question"]["quiz_state"] == "open"
+    assert direct_rows == original_direct
+    assert registry.snapshot() == original_direct
 
 
 def test_finalizing_probe_follows_checkpoint_lifecycle(tmp_path):
@@ -202,7 +252,11 @@ def test_active_chat_activity_contract_mirrors_direct_turn_shape():
     from ouroboros.gateway.contracts import ActiveChatActivity, ActiveDirectTurn, StateResponse
     import pathlib
 
-    assert ActiveChatActivity.__annotations__ == ActiveDirectTurn.__annotations__
+    fields = ActiveChatActivity.__annotations__
+    assert {key: value for key, value in fields.items() if key != "required_question"} == ActiveDirectTurn.__annotations__
+    assert set(fields) - set(ActiveDirectTurn.__annotations__) == {"required_question"}
+    from typing import get_type_hints
+    assert "NotRequired" in str(get_type_hints(ActiveChatActivity, include_extras=True)["required_question"])
     assert "active_chat_activities" in StateResponse.__annotations__
     api_types = (
         pathlib.Path(__file__).resolve().parents[1] / "web" / "modules" / "api_types.js"
@@ -264,7 +318,7 @@ def test_typing_start_registry_kind_outranks_queue_stamp():
     from supervisor.events import _handle_typing_start
 
     get_direct_activity_registry().register(
-        "turn-1", chat_id=4, kind="ephemeral_decision", client_message_id="cmid-9",
+        "turn-1", chat_id=4, kind="direct_chat", client_message_id="cmid-9",
     )
     ctx = SimpleNamespace(
         bridge=_BridgeProbe(),
@@ -275,7 +329,54 @@ def test_typing_start_registry_kind_outranks_queue_stamp():
         ctx,
     )
 
-    assert ctx.bridge.calls[0]["kind"] == "ephemeral_decision"
+    assert ctx.bridge.calls[0]["kind"] == "direct_chat"
+
+
+def test_typing_start_addresses_the_bound_project_chat(tmp_path):
+    """A task bound to a project AFTER admission keeps its origin chat on the
+    queue row, so the frame must resolve the binding at emission or the
+    indicator types into Main while the work lives in the project room."""
+    from ouroboros.projects_registry import bind_task_to_project
+    from supervisor.events import _handle_typing_start
+
+    binding = bind_task_to_project(
+        tmp_path, "root-bound", "typing-proj", 4242, origin={"absent": "system"}
+    )
+    ctx = SimpleNamespace(
+        bridge=_BridgeProbe(),
+        DRIVE_ROOT=tmp_path,
+        RUNNING={"root-bound": {"task": _root_task("root-bound", chat_id=1)}},
+    )
+    _handle_typing_start(
+        {"type": "typing_start", "chat_id": 1, "task_id": "root-bound", "phase": "thinking"},
+        ctx,
+    )
+
+    assert binding["project_chat_id"] == 4242
+    assert ctx.bridge.calls[0]["chat_id"] == 4242
+    assert ctx.bridge.calls[0]["kind"] == "managed_task"
+
+
+def test_typing_start_addresses_the_bound_project_chat_for_a_direct_turn(tmp_path):
+    """The same binding-first order for a registry-tracked turn, which never
+    appears in the RUNNING table at all."""
+    from ouroboros.projects_registry import bind_task_to_project
+    from supervisor.events import _handle_typing_start
+
+    bind_task_to_project(
+        tmp_path, "turn-bound", "typing-turn-proj", 4343, origin={"absent": "system"}
+    )
+    get_direct_activity_registry().register(
+        "turn-bound", chat_id=1, kind="direct_chat", client_message_id="cmid-4",
+    )
+    ctx = SimpleNamespace(bridge=_BridgeProbe(), DRIVE_ROOT=tmp_path, RUNNING={})
+    _handle_typing_start(
+        {"type": "typing_start", "chat_id": 1, "task_id": "turn-bound", "phase": "thinking"},
+        ctx,
+    )
+
+    assert ctx.bridge.calls[0]["chat_id"] == 4343
+    assert ctx.bridge.calls[0]["kind"] == "direct_chat"
 
 
 # ---------------------------------------------------------------------------
@@ -336,20 +437,6 @@ def test_completed_checkpoint_suppresses_finalizing_marker(tmp_path, monkeypatch
     assert "task_phase" not in (send.get("progress_meta") or {})
 
 
-def test_ephemeral_final_keeps_decision_meta_without_phase_marker(tmp_path, monkeypatch):
-    events = _emit_final(tmp_path, monkeypatch, {
-        "id": "eph-1", "type": "task", "chat_id": 1, "text": "2+2?",
-        "_is_direct_chat": True, "_ephemeral_turn": True,
-    })
-
-    send = next(evt for evt in events if evt["type"] == "send_message")
-    # The ephemeral final carries its own conclusion and outcome, without
-    # a post-task finalizing hold or managed-task authority.
-    assert send["progress_meta"]["ephemeral_decision"] is True
-    assert send["progress_meta"]["task_terminal_status"] == "completed"
-    done = next(evt for evt in events if evt["type"] == "task_done")
-    assert send["progress_meta"]["outcome_axes"] == done["outcome_axes"]
-    assert "task_phase" not in send["progress_meta"]
 
 
 # ---------------------------------------------------------------------------
@@ -575,7 +662,6 @@ def test_owner_project_message_survives_into_history_with_annotation(tmp_path, m
         update_state=lambda fn: fn({"owner_id": 1, "owner_chat_id": 1}),
         consciousness=_Consciousness(),
         get_chat_agent=lambda: types.SimpleNamespace(_busy=False),
-        handle_chat_ephemeral=lambda *a, **k: pytest.fail("mailbox delivery must not run a turn"),
         handle_chat_direct=lambda *a, **k: pytest.fail("mailbox delivery must not run a turn"),
         send_with_budget=lambda *a, **k: pytest.fail("routing receipts must not create bubbles"),
     )

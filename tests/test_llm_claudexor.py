@@ -66,26 +66,44 @@ def test_display_redacts_typed_details_without_mutating_custody():
     assert "REDACTED" in error.display_message and error.problem["context"] == context
 
 
-@pytest.mark.parametrize("code,status,unknown,kind,retry,wait", [
-    ("invalid_request", 400, False, "bad_request", False, ""),
-    ("auth_required", 401, False, "auth_error", False, "auth"),
-    ("subscription_window_exhausted", 429, False, "subscription_window_exhausted", True, "quota"),
-    ("invalid_request", 400, True, "provider_outcome_unknown", False, ""),
+@pytest.mark.parametrize("code,status,unknown,kind,retry,wait,vendor", [
+    ("provider_failed", 400, False, "context_overflow", False, "", "context_length_exceeded"),
+    ("invalid_request", 400, False, "context_overflow", False, "", " context_length_exceeded "),
+    ("invalid_request", 400, False, "bad_request", False, "", "string_above_max_length"),
+    ("invalid_request", 400, False, "request_too_large", False, "", "max_tokens_exceeded"),
+    ("invalid_request", 400, False, "auth_error", False, "", "invalid_api_key"),
+    ("invalid_request", 400, False, "provider_transient", True, "", "rate_limit_exceeded"),
+    ("invalid_request", 400, False, "bad_request", False, "", None),
+    ("invalid_request", 400, False, "bad_request", False, "", 42),
+    ("invalid_request", 400, False, "bad_request", False, "", "  "),
+    ("auth_required", 401, False, "auth_error", False, "auth", "context_length_exceeded"),
+    ("subscription_window_exhausted", 429, False, "subscription_window_exhausted", True, "quota", "context_length_exceeded"),
+    ("unsupported_parameter", 400, False, "bad_request", False, "", "context_length_exceeded"),
+    ("invalid_request", 400, True, "provider_outcome_unknown", False, "", "context_length_exceeded"),
 ])
-@pytest.mark.parametrize("vendor,parameter", [("string_above_max_length", "instructions"),
-    ("string_above_max_length", "max_tokens"), ("rate_limit_exceeded", "input"), ("context_length_exceeded", "input")])
-def test_display_never_changes_classification_wait_or_compaction(code, status, unknown, kind, retry, wait, vendor, parameter):
+def test_vendor_facts_reach_shared_readers_without_changing_wrapper_custody(code, status, unknown, kind, retry, wait, vendor):
     from ouroboros.context_compaction import _typed_context_overflow
+    from ouroboros.llm_attempt import _is_structured_context_overflow_exception
     from ouroboros.loop_llm_call import classify_llm_exception
     from ouroboros.model_wait import model_wait_reason
 
-    error = transport.ClaudexorModelError({"code": code, "message": "Controlled model refusal", "retryable": True,
-        "context": {"httpStatus": status, "vendorCode": vendor, "parameter": parameter}}, unknown=unknown)
-    assert error.display_message  # Computing a human view must not mutate behavioral readers.
+    problem = {"code": code, "message": "Controlled model refusal", "retryable": True,
+        "context": {"httpStatus": status, "vendorCode": vendor, "parameter": "input"}}
+    error = transport.ClaudexorModelError(problem, unknown=unknown, operation_id="op-1", route=ROUTE)
     classified = classify_llm_exception(error)
+    assert error.display_message and classify_llm_exception(error) == classified
     assert classified.kind == kind and classified.retry_same_request is retry
     assert model_wait_reason(error) == wait
-    assert not _typed_context_overflow(error)
+    assert _typed_context_overflow(error) is (kind == "context_overflow")
+    assert _is_structured_context_overflow_exception(error) is (kind == "context_overflow")
+    wrapper = "model_outcome_unknown" if unknown else code
+    assert error.code == wrapper and error.problem == problem
+    assert error.body == ({"code": wrapper} if unknown else problem)
+    assert error.operation_id == "op-1" and error.route == ROUTE
+    facts = ua._provider_exception_facts(error)
+    assert facts[1] == wrapper
+    expected_type = vendor.strip() if not unknown and code in {"provider_failed", "invalid_request"} and isinstance(vendor, str) else ""
+    assert facts[2] == (expected_type or "ClaudexorModelError")
     typed = transport.ClaudexorModelError({"code": "context_length_exceeded", "message": "Controlled refusal"})
     assert _typed_context_overflow(typed) and classify_llm_exception(typed).kind == "context_overflow"
 
@@ -109,7 +127,7 @@ class Gateway:
         self.results = results or [result()]
         self.dispatch = dispatch or ["response_received"] * len(self.results)
         self.uploads = []
-        self.operations = {}
+        self.accepted_operations = {}
         self.creates = []
         self.reads = []
         self.acks = []
@@ -120,17 +138,25 @@ class Gateway:
         self.pending = False
         self.read_error = False
         self.raw_result = None
+        self.operation_catalog = []
+        self.catalog_reads = 0
+        self.capture_requests = []
+
+    def operations(self):
+        self.catalog_reads += 1
+        return deepcopy(self.operation_catalog)
 
     def upload_model_request(self, payload, *, idempotency_key):
         self.uploads.append((deepcopy(payload), idempotency_key))
         return REF
 
-    def create_model_operation(self, ref, *, idempotency_key):
+    def create_model_operation(self, ref, *, idempotency_key, **options):
         assert ref == REF
+        self.capture_requests.append(deepcopy(options))
         self.creates.append(idempotency_key)
-        if idempotency_key not in self.operations:
-            self.operations[idempotency_key] = len(self.operations)
-        index = self.operations[idempotency_key]
+        if idempotency_key not in self.accepted_operations:
+            self.accepted_operations[idempotency_key] = len(self.accepted_operations)
+        index = self.accepted_operations[idempotency_key]
         if self.lose_create:
             self.lose_create = False
             raise ClaudexorUnavailable("daemon_unreachable", "lost create reply")
@@ -144,7 +170,8 @@ class Gateway:
 
     def detail(self, index):
         value = self.results[index]
-        return {"id": f"op-{index}", "state": "running" if self.pending else "succeeded" if value["outcome"] == "completed" else "failed",
+        succeeded = value["outcome"] == "completed" and value["message"] is not None
+        return {"id": f"op-{index}", "state": "running" if self.pending else "succeeded" if succeeded else "failed",
                 "dispatch": {"state": "started" if self.pending else self.dispatch[index], "route": value["route"]},
                 "response": {"state": "absent"} if self.pending else {"state": "ready", "ref": REF},
                 "problem": value["problem"]}
@@ -289,7 +316,7 @@ def test_lost_create_reply_rejoins_without_second_physical_attempt(setup):
     answer, usage = client.chat([{"role": "user", "content": "hi"}], MODEL)
     assert answer["content"] == "Ответ 🐍"
     assert len(gateway.creates) == 2 and gateway.creates[0] == gateway.creates[1]
-    assert len(gateway.operations) == 1 and len(usage["ledger_attempt_ids"]) == 1
+    assert len(gateway.accepted_operations) == 1 and len(usage["ledger_attempt_ids"]) == 1
     assert [row["state"] for row in ledger(root)] == ["reserved", "dispatched", "settled"]
 
 
@@ -359,7 +386,9 @@ def test_confirmed_ordinary_model_failure_keeps_helper_fallback_policy(code):
 
 @pytest.mark.parametrize("code", ["auth_required", "subscription_window_exhausted", "model_outcome_unknown", "model_operation_interrupted"])
 def test_helper_fallback_never_swallows_resource_control_or_unknown(code):
-    error = transport.ClaudexorModelError({"code": code, "message": "Controlled retained outcome"})
+    error = transport.ClaudexorModelError({"code": code, "message": "Controlled retained outcome",
+        "context": {"vendorCode": "context_length_exceeded", "parameter": "input"}})
+    assert not error.type
     with pytest.raises(transport.ClaudexorModelError) as caught:
         transport.propagate_model_error(error)
     assert caught.value is error
@@ -373,7 +402,7 @@ def test_control_connect_failure_after_acceptance_stays_unknown(setup):
     error = raised.value
     assert error.code == "model_outcome_unknown" and error.operation_id == "op-0"
     assert not is_pre_dispatch_transport_failure(error) and not is_retryable_transport_death(error)
-    assert ledger(root)[-1]["state"] == "unresolved" and len(gateway.operations) == 1
+    assert ledger(root)[-1]["state"] == "unresolved" and len(gateway.accepted_operations) == 1
     assert not gateway.acks
 
 
@@ -388,7 +417,7 @@ def test_proven_never_started_quota_attempts_do_not_spend_generation_limit(setup
         client.chat([], MODEL)
         with pytest.raises(ua.PhysicalAttemptLimitExceeded):
             client.chat([], MODEL)
-    assert len(gateway.operations) == 4
+    assert len(gateway.accepted_operations) == 4
     assert [r['state'] for r in ledger(root)].count('settled') == 1
 
 
@@ -400,7 +429,7 @@ def test_unknown_outcome_keeps_its_generation_limit_claim(setup):
             client.chat([], MODEL)
         with pytest.raises(ua.PhysicalAttemptLimitExceeded):
             client.chat([], MODEL)
-    assert len(gateway.operations) == 1
+    assert len(gateway.accepted_operations) == 1
 
 
 def test_confirmed_provider_failure_settles_real_usage_before_raising(setup):
@@ -420,10 +449,12 @@ def test_confirmed_provider_failure_settles_real_usage_before_raising(setup):
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
-def test_field_refusal_retains_then_acknowledges_once_with_display(setup, asynchronous):
+@pytest.mark.parametrize("code,vendor", [("invalid_request", "string_above_max_length"),
+    ("invalid_request", "context_length_exceeded"), ("provider_failed", "context_length_exceeded")])
+def test_field_refusal_retains_then_acknowledges_once_with_display(setup, asynchronous, code, vendor):
     root, gateway, client = setup
-    problem = {"code": "invalid_request", "message": "Codex model request was refused (HTTP 400).", "retryable": False,
-               "context": {"httpStatus": 400, "vendorCode": "string_above_max_length", "parameter": "instructions"}}
+    problem = {"code": code, "message": "Codex model request was refused (HTTP 400).", "retryable": False,
+               "context": {"httpStatus": 400, "vendorCode": vendor, "parameter": "input"}}
     gateway.results = [result(outcome="failed", problem=problem)]
     acknowledge = gateway.acknowledge_model_result
 
@@ -438,26 +469,49 @@ def test_field_refusal_retains_then_acknowledges_once_with_display(setup, asynch
         else:
             client.chat([], MODEL, model_role="main")
     error = caught.value
-    assert error.problem == problem and error.body == problem and error.code == "invalid_request"
+    assert error.problem == problem and error.body == problem and error.code == code and error.type == vendor
     assert error.status_code == 400 and error.retryable is False
     assert error.operation_id == "op-0" and error.model_role == "main" and error.route == ROUTE
-    assert "provider_code=string_above_max_length, parameter=instructions" in error.display_message[:220]
+    assert f"provider_code={vendor}, parameter=input" in error.display_message[:220]
     assert error.physical_attempt_capture.state == "settled"
     assert error.usage["claudexor"]["result_custody"]["state"] == "acknowledged"
-    assert len(gateway.operations) == len(gateway.creates) == len(gateway.acks) == 1
+    assert len(gateway.accepted_operations) == len(gateway.creates) == len(gateway.acks) == 1
     assert [row["state"] for row in ledger(root)] == ["reserved", "dispatched", "settled"]
 
 
-def test_proven_not_started_releases_and_never_fabricates_provider_usage(setup):
+@pytest.mark.parametrize("code,vendor", [("unsupported_parameter", ""),
+    ("provider_failed", "context_length_exceeded"), ("invalid_request", "context_length_exceeded")])
+def test_proven_not_started_releases_and_never_fabricates_provider_usage(setup, code, vendor):
     root, gateway, client = setup
-    gateway.results = [result(outcome="failed", problem={"code": "unsupported_parameter", "message": "temperature unsupported"})]
+    gateway.results = [result(outcome="failed", problem={"code": code, "message": "Controlled refusal",
+        "context": {"httpStatus": 400, "vendorCode": vendor, "parameter": "input"}})]
     gateway.dispatch = ["not_started"]
     with pytest.raises(transport.ClaudexorModelNotDispatched) as raised:
         client.chat([{"role": "user", "content": "hi"}], MODEL, temperature=0.2)
     assert raised.value.physical_attempt_capture.state == "released"
+    assert raised.value.physical_attempt_capture.provider_code == code
+    assert raised.value.physical_attempt_capture.provider_error_type == (vendor or "ClaudexorModelNotDispatched")
     assert gateway.uploads[0][0]["options"]["temperature"] == 0.2
     assert [row["state"] for row in ledger(root)] == ["reserved", "dispatched", "released"]
-    assert len(gateway.operations) == 1
+    assert len(gateway.accepted_operations) == 1
+
+
+def test_typed_subject_refusal_suppresses_next_auto_preference(setup):
+    _, gateway, client = setup
+    refusal = result(outcome="failed", problem={
+        "code": "subscription_window_exhausted", "message": "window spent",
+        "context": {"httpStatus": 429},
+    })
+    gateway.results = [refusal, result()]
+    gateway.dispatch = ["not_started", "response_received"]
+    messages = [result()["message"]]
+
+    with pytest.raises(transport.ClaudexorModelNotDispatched):
+        client.chat(messages, MODEL, cache_affinity="execution-refusal")
+    client.chat(messages, MODEL, cache_affinity="execution-refusal")
+
+    assert gateway.uploads[0][0]["account"]["preferredProfileId"] == "account-a"
+    assert gateway.uploads[1][0]["account"] == {"mode": "auto"}
 
 
 @pytest.mark.parametrize("change", [{"credentialProfileId": "account-b", "accountFingerprint": "fingerprint-b"},
@@ -474,7 +528,7 @@ def test_native_reset_requires_actual_account_change_and_keeps_canonical_tools(s
     if not set(change) & {"credentialProfileId", "accountFingerprint"}:
         with pytest.raises(transport.ClaudexorModelNotDispatched):
             client.chat(messages, MODEL)
-        assert len(gateway.operations) == 1
+        assert len(gateway.accepted_operations) == 1
     else:
         _, usage = client.chat(messages, MODEL)
         assert len(usage["ledger_attempt_ids"]) == 2
@@ -495,7 +549,7 @@ def test_ack_failure_preserves_paid_result_and_does_not_repeat(setup, error):
     answer, usage = client.chat([{"role": "user", "content": "hi"}], MODEL)
     assert answer == result()["message"] and retained(root) == result()
     assert usage["claudexor"]["result_custody"]["state"] == "pending"
-    assert len(gateway.operations) == 1 and ledger(root)[-1]["state"] == "settled"
+    assert len(gateway.accepted_operations) == 1 and ledger(root)[-1]["state"] == "settled"
 
 
 def test_failed_local_result_retention_withholds_ack_but_keeps_answer(setup, monkeypatch):
@@ -541,13 +595,14 @@ def test_async_tools_and_capture_remain_in_callers_context(setup):
         assert answer == result()["message"]
 
     asyncio.run(run())
-    assert len(gateway.operations) == 1 and ledger(root)[-1]["state"] == "settled"
+    assert len(gateway.accepted_operations) == 1 and ledger(root)[-1]["state"] == "settled"
 
 
-def test_legacy_async_tools_still_refuse_before_provider_io(setup):
+def test_gigachat_async_tools_still_refuse_before_provider_io(setup, monkeypatch):
     _, gateway, client = setup
-    with pytest.raises(ValueError, match="does not support tool calls"):
-        asyncio.run(client.chat_async([], "openai::some-model", tools=[{"type": "function"}]))
+    monkeypatch.setattr(client, "_resolve_remote_target", lambda _: {"provider": "gigachat"})
+    with pytest.raises(ValueError, match="does not support GigaChat tool calls"):
+        asyncio.run(client.chat_async([], "gigachat::some-model", tools=[{"type": "function"}]))
     assert not gateway.creates
 
 
@@ -639,7 +694,7 @@ def test_observer_failure_does_not_lose_response_or_repeat_generation(setup):
 
     answer, _ = client.chat([], MODEL, model_operation_observer=failed)
     assert answer == result()["message"] and retained(root) == result()
-    assert len(gateway.operations) == 1 and ledger(root)[-1]["state"] == "settled"
+    assert len(gateway.accepted_operations) == 1 and ledger(root)[-1]["state"] == "settled"
 
 
 def test_async_local_switch_projects_its_new_capture_to_the_caller(setup, monkeypatch):
@@ -701,16 +756,19 @@ def test_pending_operation_has_no_whole_generation_http_deadline(setup, monkeypa
     assert not gateway.cancels and ledger(root)[-1]["state"] == "settled"
 
 
-def test_unknown_engine_outcome_retains_response_without_resend_or_false_zero(setup):
+@pytest.mark.parametrize("code,vendor", [("engine_died", ""), ("provider_failed", "context_length_exceeded"),
+                                      ("invalid_request", "context_length_exceeded")])
+def test_unknown_engine_outcome_retains_response_without_resend_or_false_zero(setup, code, vendor):
     root, gateway, client = setup
     gateway.results = [result(outcome="unknown", cash=0, knowledge="unknown", problem={
-        "code": "engine_died", "message": "Provider outcome is unknown"})]
+        "code": code, "message": "Provider outcome is unknown", "context": {"vendorCode": vendor, "parameter": "input"}})]
     gateway.dispatch = ["unknown"]
     with pytest.raises(transport.ClaudexorModelError) as raised:
         client.chat([{"role": "user", "content": "hi"}], MODEL)
-    assert raised.value.code == "model_outcome_unknown"
+    assert raised.value.code == "model_outcome_unknown" and not raised.value.type
     assert retained(root) == gateway.results[0] and not gateway.acks
-    assert len(gateway.operations) == 1 and ledger(root)[-1]["state"] == "unresolved"
+    assert len(gateway.accepted_operations) == 1 and ledger(root)[-1]["state"] == "unresolved"
+    assert ledger(root)[-1].get("cost_usd") is None
 
 
 def test_continuation_repair_is_bounded_to_one_unstarted_operation(setup):
@@ -721,7 +779,7 @@ def test_continuation_repair_is_bounded_to_one_unstarted_operation(setup):
     gateway.dispatch = ["not_started", "not_started"]
     with pytest.raises(transport.ClaudexorModelNotDispatched):
         client.chat([result()["message"]], MODEL)
-    assert len(gateway.operations) == 2
+    assert len(gateway.accepted_operations) == 2
     assert [row["state"] for row in ledger(root)] == ["reserved", "dispatched", "released"] * 2
 
 
@@ -734,7 +792,7 @@ def test_unreleased_attempt_cannot_authorize_continuation_repair(setup, monkeypa
     with pytest.raises(transport.ClaudexorModelNotDispatched) as raised:
         client.chat([result()["message"]], MODEL)
     assert raised.value.physical_attempt_capture.state == "unresolved"
-    assert len(gateway.operations) == 1 and ledger(root)[-1]["state"] == "unresolved"
+    assert len(gateway.accepted_operations) == 1 and ledger(root)[-1]["state"] == "unresolved"
 
 
 def test_model_switch_strips_native_envelope_but_not_tool_results():
@@ -753,7 +811,7 @@ def test_caller_control_interrupts_pending_operation_without_false_success(setup
     gateway.pending = True
     with pytest.raises(transport.ClaudexorModelError) as raised:
         client.chat([{"role": "user", "content": "hi"}], MODEL,
-                    model_poll_control=lambda: "deadline_exceeded" if gateway.operations else None)
+                    model_poll_control=lambda: "deadline_exceeded" if gateway.accepted_operations else None)
     assert raised.value.control_reason == "deadline_exceeded"
     assert gateway.cancels == [("op-0", "host_cancelled")]
     assert ledger(root)[-1]["state"] == "unresolved" and not gateway.acks
@@ -824,7 +882,7 @@ def test_missing_old_account_does_not_authorize_native_reset(setup):
     gateway.dispatch = ["not_started"]
     with pytest.raises(transport.ClaudexorModelNotDispatched):
         client.chat([message], MODEL)
-    assert len(gateway.operations) == 1
+    assert len(gateway.accepted_operations) == 1
 
 
 def test_caller_control_before_create_proves_no_dispatch(setup):
@@ -913,3 +971,75 @@ def test_async_cancellation_leaves_io_owner_to_cancel_and_close(setup):
         release.set()
     assert gateway.cancels == [("op-0", "host_cancelled")]
     assert ledger(root)[-1]["state"] == "unresolved" and not gateway.acks
+
+
+TURN = {"route": ROUTE, "format": "codex.turn.v1", "payload": {"turnState": "opaque-turn-state"}}
+EARLIER = {"route": ROUTE, "format": "codex.turn.v1", "payload": {"turnState": "earlier-turn"}}
+
+
+@pytest.fixture
+def turn_engine(monkeypatch):
+    """A serving engine whose strict request schema accepts the active-turn field."""
+    monkeypatch.setattr(transport, "owned_engine_version",
+                        lambda: transport.config.CLAUDEXOR_MODEL_TURN_STATE_MIN_VERSION)
+
+
+@pytest.mark.parametrize("version,opted", [("3.10.4", True), ("4.0.0", True), ("3.10.3", False), ("", False)])
+def test_active_turn_is_offered_only_where_the_request_schema_accepts_it(setup, monkeypatch, version, opted):
+    _, gateway, client = setup
+    monkeypatch.setattr(transport, "owned_engine_version", lambda: version)
+    slot = transport.ModelTurnState()
+    client.chat([{"role": "user", "content": "hi"}], MODEL, model_turn_state=slot)
+    payload = gateway.uploads[-1][0]
+    # Absent is the legacy stateless shape; explicit null opts into an empty turn.
+    assert ("nativeContinuation" in payload) is opted
+    assert payload.get("nativeContinuation") is None and slot.envelope is None
+
+
+def test_request_carries_a_copy_of_the_slot_value(turn_engine):
+    slot = transport.ModelTurnState(deepcopy(TURN))
+    payload = transport._request({"source": "codex", "resolved_model": "exact-model"}, [], None,
+                                 {"model_turn_state": slot})
+    assert payload["nativeContinuation"] == TURN
+    payload["nativeContinuation"]["payload"]["turnState"] = "mutated inside the frozen request"
+    assert slot.envelope == TURN
+
+
+def test_dispatched_result_replaces_the_slot_and_the_next_send_replays_it(setup, turn_engine):
+    _, gateway, client = setup
+    gateway.results = [{**result(), "nativeContinuation": deepcopy(TURN)} for _ in range(2)]
+    gateway.dispatch = ["response_received"] * 2
+    slot = transport.ModelTurnState()
+    client.chat([{"role": "user", "content": "hi"}], MODEL, model_turn_state=slot)
+    assert slot.envelope == TURN and gateway.uploads[0][0]["nativeContinuation"] is None
+    client.chat([{"role": "user", "content": "hi"}], MODEL, model_turn_state=slot)
+    assert gateway.uploads[-1][0]["nativeContinuation"] == TURN
+
+
+def test_a_result_without_an_envelope_leaves_the_turn_stateless(setup, turn_engine):
+    _, gateway, client = setup
+    slot = transport.ModelTurnState(deepcopy(EARLIER))
+    client.chat([{"role": "user", "content": "hi"}], MODEL, model_turn_state=slot)
+    assert gateway.uploads[-1][0]["nativeContinuation"] == EARLIER and slot.envelope is None
+
+
+@pytest.mark.parametrize("dispatch,outcome", [("not_started", "completed"), ("unknown", "unknown")])
+def test_a_not_dispatched_or_unknown_outcome_never_touches_the_slot(setup, turn_engine, dispatch, outcome):
+    _, gateway, client = setup
+    gateway.results = [{**result(outcome=outcome), "nativeContinuation": deepcopy(TURN)}]
+    gateway.dispatch = [dispatch]
+    slot = transport.ModelTurnState(deepcopy(EARLIER))
+    with pytest.raises(transport.ClaudexorModelError):
+        client.chat([{"role": "user", "content": "hi"}], MODEL, model_turn_state=slot)
+    assert slot.envelope == EARLIER
+
+
+def test_the_active_turn_token_never_reaches_usage_the_ledger_or_ordinary_logs(setup, turn_engine):
+    root, gateway, client = setup
+    gateway.results = [{**result(), "nativeContinuation": deepcopy(TURN)}]
+    slot = transport.ModelTurnState()
+    _, usage = client.chat([{"role": "user", "content": "hi"}], MODEL, model_turn_state=slot)
+    assert slot.envelope == TURN and repr(slot) == "ModelTurnState(active=True)"
+    token = TURN["payload"]["turnState"]
+    assert token not in json.dumps(usage, default=str) and token not in json.dumps(ledger(root))
+    assert all(token not in path.read_text(encoding="utf-8") for path in (root / "logs").glob("*.jsonl"))

@@ -83,7 +83,8 @@ def test_full_plan_review_disposition_repeat_and_tail_delta(_harness):
     ctx = _harness.make_ctx()
     goal = "full chosen goal\n" * 22_000 + "GOAL_TAIL"
     spec = {"in_scope": ["full requirement\n" * 22_000 + "SCOPE_TAIL_A"],
-            "acceptance_claims": ["full criterion\n" * 22_000 + "CLAIM_TAIL"]}
+            "acceptance_claims": ["full criterion\n" * 22_000 + "CLAIM_TAIL"],
+            "affected_paths": []}  # required on every submitted spec (owner 9=A)
     assert _control(_call(ctx, spec, goal=goal)) == {"outcome": "REVIEW_REQUIRED", "closed": True}
     state = _state(_harness)
     fingerprint = state["waves"][-1]["request_fingerprint"]
@@ -166,11 +167,13 @@ def test_spec_source_is_in_the_existing_child_promotion_closure(tmp_path, compac
         state["waves"] = [task_results._compact_plan_review_wave(state["waves"][0])]
     ref = state["waves"][0]["spec_source_ref"]
     copied, receipt = promote_child_task_refs(parent, child, "large-plan", {"plan_review_state": state})
-    assert receipt["status"] == "complete" and receipt["promoted_source_handle_count"] == 1
-    copied_ref = copied["plan_review_state"]["waves"][0]["spec_source_ref"]
+    assert receipt["status"] == "complete"
+    copied_wave = copied["plan_review_state"]["waves"][0]
+    copied_ref = copied_wave["spec_source_ref"]
     assert copied_ref["sha256"] == ref["sha256"]
     shutil.rmtree(child)
     assert json.loads(read_actor_source_bytes(parent, "large-plan", copied_ref)) == spec
+    assert artifacts.read_wave(parent, "large-plan", copied_wave["wave_artifact"])["spec"] == spec
 
 
 def test_last_resort_hot_state_fit_preserves_exact_source_references(tmp_path):

@@ -79,6 +79,162 @@ def _settings_app(monkeypatch, settings_path):
     return app
 
 
+@pytest.fixture
+def cyber_settings(isolated_settings, monkeypatch):
+    from ouroboros import config as cfg
+
+    for key in cfg.SETTINGS_DEFAULTS:
+        monkeypatch.delenv(key, raising=False)
+    initial = {
+        "OUROBOROS_RUNTIME_MODE": "cyber_pro", "OUROBOROS_SAFETY_MODE": "full",
+        "OUROBOROS_CONTEXT_MODE": "max", "OUROBOROS_CONTEXT_MODE_AUTO_LOW": "false",
+        "OUROBOROS_REVIEW_ENFORCEMENT": "blocking",
+        **{key: "original-install-fact" for key in cfg.ENDPOINT_AUTHORED_SETTINGS},
+    }
+    isolated_settings.write_text(json.dumps(initial), encoding="utf-8")
+    cfg.apply_settings_to_env(cfg.load_settings())
+    cfg.initialize_runtime_mode_baseline("cyber_pro")
+    return isolated_settings
+
+
+def test_cyber_save_settings_can_configure_supervisor_and_keys(cyber_settings):
+    from ouroboros import config as cfg
+
+    chosen = {
+        "OUROBOROS_SAFETY_MODE": "off", "OUROBOROS_RUNTIME_MODE": "pro",
+        "OUROBOROS_MODEL": "openai/test-model", "SERVICE_API_KEY": "owner-test-key",
+    }
+    cfg.save_settings({**cfg.load_settings(), **chosen})
+
+    stored = json.loads(cyber_settings.read_text(encoding="utf-8"))
+    assert {key: stored[key] for key in chosen} == chosen
+    assert stored["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] == "false"
+    assert cfg.get_runtime_mode() == "cyber_pro", "saved access is restart-bound"
+
+
+@pytest.mark.parametrize("key,value", [
+    ("OUROBOROS_SAFETY_MODE", "off"), ("OUROBOROS_CONTEXT_MODE", "low"), ("OUROBOROS_CONTEXT_MODE", "nano"),
+])
+def test_pro_lowering_ratchets_use_effective_boot_mode(cyber_settings, monkeypatch, key, value):
+    from ouroboros import config as cfg
+
+    cfg.reset_runtime_mode_baseline_for_tests()
+    cfg.initialize_runtime_mode_baseline("pro")
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "cyber_pro")
+    before = cyber_settings.read_bytes()
+    with pytest.raises(PermissionError, match="lowering refused"):
+        cfg.save_settings({**cfg.load_settings(), key: value})
+    assert cyber_settings.read_bytes() == before
+
+
+def test_cyber_generic_post_saves_controls_and_preserves_fact_provenance(cyber_settings, monkeypatch):
+    from ouroboros import config as cfg
+    from ouroboros.gateway import settings as settings_mod
+
+    app = _settings_app(monkeypatch, cyber_settings)
+    monkeypatch.setattr(settings_mod, "_apply_settings_to_env", cfg.apply_settings_to_env)
+    chosen = {
+        "OUROBOROS_RUNTIME_MODE": "pro", "OUROBOROS_SAFETY_MODE": "off",
+        "OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS": "true", "OUROBOROS_MODEL": "openai/test-model",
+        "OUROBOROS_CONTEXT_MODE": "low", "OUROBOROS_REVIEW_ENFORCEMENT": "advisory",
+        "SERVICE_API_KEY": "owner-test-key",
+    }
+    response = TestClient(app).post("/api/settings", json={
+        **chosen, "OUROBOROS_CONTEXT_MODE_AUTO_LOW": "true", "OUROBOROS_CONTEXT_MODE": "low",
+        **{key: "forged-fact" for key in cfg.ENDPOINT_AUTHORED_SETTINGS},
+    })
+    assert response.status_code == 200, response.text
+    stored = json.loads(cyber_settings.read_text(encoding="utf-8"))
+    assert {key: stored[key] for key in chosen} == chosen
+    assert stored["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] == "false"
+    assert all(stored[key] == "original-install-fact" for key in cfg.ENDPOINT_AUTHORED_SETTINGS)
+    assert response.json()["restart_required"] is True
+    assert "OUROBOROS_RUNTIME_MODE" in response.json()["restart_keys"]
+    assert response.json()["next_task_changed"] is True
+    assert cfg.get_runtime_mode() == os.environ["OUROBOROS_RUNTIME_MODE"] == "cyber_pro"
+    # An unrelated later save keeps the pending next-boot value and does not author facts.
+    later = TestClient(app).post("/api/settings", json={"TOTAL_BUDGET": 25})
+    assert later.status_code == 200, later.text
+    assert json.loads(cyber_settings.read_text())["OUROBOROS_RUNTIME_MODE"] == "pro"
+    events = [json.loads(line) for line in (cyber_settings.parent / "logs/events.jsonl").read_text().splitlines()]
+    change = next(event for event in events if event.get("action") == "settings_controls")
+    assert change["changes"]["OUROBOROS_SAFETY_MODE"] == {"old": "full", "new": "off"}
+    assert change["changes"]["OUROBOROS_CONTEXT_MODE"] == {"old": "max", "new": "low"}
+    assert change["changes"]["OUROBOROS_REVIEW_ENFORCEMENT"] == {"old": "blocking", "new": "advisory"}
+    assert "owner-test-key" not in json.dumps(change)
+
+
+@pytest.mark.parametrize("mode,status", [("cyber_pro", 200), ("pro", 409)])
+@pytest.mark.parametrize("context_mode", ["low", "nano"])
+def test_context_owner_endpoint_allows_cyber_during_work(cyber_settings, monkeypatch, mode, status, context_mode):
+    from ouroboros import config as cfg
+    from ouroboros.gateway import settings as settings_mod
+    from supervisor.active_activity import get_direct_activity_registry
+
+    cfg.reset_runtime_mode_baseline_for_tests()
+    cfg.initialize_runtime_mode_baseline(mode)
+    app = Starlette(routes=[Route(
+        "/api/owner/context-mode", endpoint=settings_mod.api_owner_context_mode, methods=["POST"])])
+    app.state.drive_root = cyber_settings.parent
+    registry = get_direct_activity_registry()
+    registry.register("settings-author", 1)
+    try:
+        assert settings_mod._has_running_agent_tasks()
+        response = TestClient(app).post("/api/owner/context-mode", json={"mode": context_mode})
+    finally:
+        registry.unregister("settings-author")
+    assert response.status_code == status, response.text
+    assert json.loads(cyber_settings.read_text())["OUROBOROS_CONTEXT_MODE"] == (context_mode if status == 200 else "max")
+
+
+@pytest.mark.parametrize("has_context", [True, False])
+@pytest.mark.parametrize("context_mode", ["low", "nano"])
+def test_cyber_can_self_lower_context_and_author_its_marker(cyber_settings, has_context, context_mode):
+    from ouroboros import config as cfg
+
+    if not has_context:
+        raw = json.loads(cyber_settings.read_text())
+        raw.pop("OUROBOROS_CONTEXT_MODE")
+        raw.pop("OUROBOROS_CONTEXT_MODE_AUTO_LOW")
+        cyber_settings.write_text(json.dumps(raw))
+    cfg.save_settings({**cfg.load_settings(), "OUROBOROS_CONTEXT_MODE": context_mode})
+    stored = json.loads(cyber_settings.read_text())
+    assert stored["OUROBOROS_CONTEXT_MODE"] == context_mode
+    assert cfg.load_settings()["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] == "false"
+    assert cfg.load_settings()["OUROBOROS_CONTEXT_MODE"] == context_mode
+
+
+def test_cyber_context_save_retains_current_task_snapshot(cyber_settings, monkeypatch):
+    from ouroboros import config as cfg
+    from ouroboros.gateway import settings as settings_mod
+    from ouroboros.settings_integrity import task_settings_scope, task_settings_snapshot
+
+    app = _settings_app(monkeypatch, cyber_settings)
+    monkeypatch.setattr(settings_mod, "_apply_settings_to_env", cfg.apply_settings_to_env)
+    snapshot = task_settings_snapshot(cfg.load_settings(), dict(os.environ))
+    with task_settings_scope(snapshot):
+        response = TestClient(app).post("/api/settings", json={
+            "OUROBOROS_CONTEXT_MODE": "low", "OUROBOROS_REVIEW_ENFORCEMENT": "advisory",
+        })
+        assert response.status_code == 200, response.text
+        assert cfg.get_owner_context_mode() == "max"
+        assert cfg.get_review_enforcement() == "blocking"
+    assert cfg.get_owner_context_mode() == "low"
+    assert cfg.get_review_enforcement() == "advisory"
+    assert snapshot.settings["OUROBOROS_CONTEXT_MODE"] == "max"
+
+
+def test_cyber_still_cannot_write_a_pinned_benchmark_snapshot(cyber_settings, monkeypatch):
+    import hashlib
+    from ouroboros import config as cfg
+
+    before = cyber_settings.read_bytes()
+    monkeypatch.setenv(cfg.SETTINGS_INTEGRITY_ENV, hashlib.sha256(before).hexdigest())
+    with pytest.raises(cfg.SettingsIntegrityError, match="immutable"):
+        cfg.save_settings({**cfg.load_settings(), "OUROBOROS_SAFETY_MODE": "off"})
+    assert cyber_settings.read_bytes() == before
+
+
 def test_a_contended_lock_aborts_before_the_precondition_and_the_write(isolated_settings):
     from ouroboros.gateway.owner_settings import SettingsLockUnavailable, _owner_write_settings
 
@@ -222,6 +378,28 @@ def test_generic_settings_save_validates_and_canonicalizes_available_subagents(
     parsed = parse_configured_subagents(canonical)
     assert parsed.items[0].name == ""
     assert '"name"' not in canonical
+
+
+def test_generic_settings_save_projects_model_role_objects_as_json(
+        monkeypatch, isolated_settings,
+):
+    from ouroboros import config as cfg
+    from ouroboros.gateway import settings as settings_mod
+
+    app = _settings_app(monkeypatch, isolated_settings)
+    monkeypatch.setattr(settings_mod, "_apply_settings_to_env", cfg.apply_settings_to_env)
+    response = TestClient(app).post("/api/settings", json={
+        "OUROBOROS_MODEL_ACCOUNTS": {"main": "", "fallback": ["work", ""]},
+        "OUROBOROS_MODEL_CONTEXT_WINDOWS": {"main": 131072, "fallback": [0, 65536]},
+    })
+
+    assert response.status_code == 200, response.text
+    stored = json.loads(isolated_settings.read_text(encoding="utf-8"))
+    assert json.loads(stored["OUROBOROS_MODEL_ACCOUNTS"]) == {
+        "fallback": ["work", ""], "main": "",
+    }
+    assert json.loads(os.environ["OUROBOROS_MODEL_ACCOUNTS"])["main"] == ""
+    assert json.loads(os.environ["OUROBOROS_MODEL_CONTEXT_WINDOWS"])["main"] == 131072
 
 
 def test_generic_settings_save_rejects_malformed_available_subagents_without_write(

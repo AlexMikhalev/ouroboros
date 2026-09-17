@@ -12,8 +12,7 @@ Strictly fail-closed per line: an unparseable line, a row without a
 readable ``ts``, a row with nothing to digest, or a row whose STORED digest
 disagrees with the text it claims to describe is carried through
 BYTE-IDENTICAL. The scratchpad journal (typed rows, its own eviction
-contract) and the consciousness observation inbox (unacknowledged rows must
-survive verbatim) are deliberately NOT in scope.
+contract) is deliberately NOT in scope.
 
 This is the only sweep that DESTROYS content rather than whole dead files,
 so its three guards are load-bearing (audit #15-11):

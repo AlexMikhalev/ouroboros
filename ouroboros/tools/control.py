@@ -57,7 +57,6 @@ from ouroboros.subagent_runtime import (
     select_subagent_snapshot,  # noqa: F401
 )
 from ouroboros.tool_capabilities import ACTING_SUBAGENT_MODE, LOCAL_READONLY_SUBAGENT_MODE  # noqa: F401
-from ouroboros.tool_policy import swarm_router_turn  # noqa: F401
 from ouroboros.tools.registry import ToolContext, ToolEntry  # noqa: F401
 from ouroboros.utils import append_jsonl, atomic_write_json, truncate_review_artifact, utc_now_iso, run_cmd  # noqa: F401
 
@@ -103,18 +102,24 @@ log = logging.getLogger(__name__)
 # 300-line function gate; v6.70.0 added the ground-truth-probe contract).
 _PROMOTE_CHAT_DESCRIPTION = (
     "Promote real work out of this conversation into a supervised pooled task "
-    "while the conversation remains available. Use it "
-    "whenever a chat request needs tools/files/multi-step work rather than a "
-    "conversational answer. Before framing the objective around an EXISTING artifact "
+    "while the conversation remains available. Tools, files and several steps can "
+    "stay in the conversation; promote when independent work is useful — its own "
+    "queue slot, admission and reviews, steerable from chat — or when the owner "
+    "explicitly asks for a separate task. "
+    "Before framing the objective around an EXISTING artifact "
     "('check/fix/extend the X skill/file'), ground-truth its existence with one cheap probe "
     "first (skills: list_skills; files: list_files) — memory of past work is not evidence "
     "the referent still exists. Always give a short, human-readable task `title`. To "
-    "CREATE A NEW NAMED PROJECT and do the work there (owner asked to 'create a "
-    "project called X and …'), set `project_name` — the project is created now "
-    "and this task runs inside it (my own judgment: the owner's phrasing is intent, "
-    "not a keyword trigger — I name the project from what they actually want it "
-    "called, and do not just answer or spawn a project-less task). `project_id` "
-    "scopes to an existing project. When this new task continues one specific "
+    "CREATE A NEW NAMED PROJECT and start the work there (owner asked to 'create a "
+    "project called X and …'), set `project_name` — the project is created now and "
+    "a NEW independent task starts in it; the task you are in stays where it is. To "
+    "move THIS task into a project use ensure_project_scope instead (my own judgment: "
+    "the owner's phrasing is intent, not a keyword trigger — I name the project from "
+    "what they actually want it called, and do not just answer or spawn a project-less "
+    "task). `project_id` starts the new task in an existing project. If your task "
+    "carries a planning obligation (Swarm force_plan) that no plan review has met, the "
+    "obligation moves to the new task and your own further work here is unplanned. "
+    "When this new task continues one specific "
     "completed result shown by the host (the Main manifest or Project last-result "
     "preview), pass its internal id as `predecessor_task_id`; pass an empty string for fresh work. "
     "`workspace_root` points at a working folder. A project-scoped task inherits "
@@ -156,10 +161,10 @@ def get_tools() -> List[ToolEntry]:
                 "properties": {
                     "objective": {"type": "string", "description": "What the task must accomplish."},
                     "title": {"type": "string", "description": "A short human-readable task name (<=80 chars, e.g. 'Tic-tac-toe game'). Reused as the project name if the owner later turns the task into a project — so coin a clean, concise one.", "default": ""},
-                    "project_name": {"type": "string", "description": "Set ONLY to create a brand-new NAMED project now and run this task inside it (e.g. 'airi research'). The display name; a filesystem id is derived from it.", "default": ""},
+                    "project_name": {"type": "string", "description": "Set ONLY to create a brand-new NAMED project now and start a NEW independent task in it (e.g. 'airi research'); to move THIS task into a project use ensure_project_scope. The display name; a filesystem id is derived from it.", "default": ""},
                     "expected_output": {"type": "string", "description": "What done looks like.", "default": ""},
                     "project_id": {"type": "string", "description": "Optional EXISTING project scope (filesystem-clean id).", "default": ""},
-                    "workspace_root": {"type": "string", "description": "Optional absolute working-folder path (validated at admission: must be a git worktree root outside the Ouroboros repo/data). When omitted for a project-scoped task, the project's registered working_dir is used by default.", "default": ""},
+                    "workspace_root": {"type": "string", "description": "Optional absolute working-folder path (validated at admission as an ordinary folder or Git worktree root outside the Ouroboros repo/data). Git-specific operations require a Git worktree; ordinary file and process work is supported directly in a validated folder. When omitted for a project-scoped task, the project's registered working_dir is used by default. Leave empty to work in Ouroboros's own repository (the Main default).", "default": ""},
                     "workspace": {"type": "string", "description": "Pass 'none' to opt OUT of the project room's default working folder (a folder-less task in a folder-ful project). Leave empty otherwise.", "default": ""},
                     "source": {"type": "string", "description": "Attach or clone the project's working folder in ONE move: a git URL (https://... or git@host:path — cloned server-side into the projects root; private repos fail typed auth_required) or an existing folder path (validated attach). The folder is registered on the project (provenance + trusted_at) and becomes this task's active workspace. Use for 'help me debug this GitHub repo / this folder' asks.", "default": ""},
                     "predecessor_task_id": {"type": "string", "description": "Required explicit selector: pass an empty string for fresh work, or the completed result id shown by the host routing manifest to continue it."},
@@ -170,14 +175,17 @@ def get_tools() -> List[ToolEntry]:
         ToolEntry("ensure_project_scope", {
             "name": "ensure_project_scope",
             "description": (
-                "Create (or attach to) a named Ouroboros PROJECT and scope THE CURRENT running "
-                "task into it. Use this when you are ALREADY working a task and realize it should "
-                "be a named project (the owner asked to 'create a project called X', or the work "
-                "has grown into a real deliverable) — instead of a bare filesystem mkdir. Unlike "
-                "promote_chat_to_task (which creates a NEW task in a project), this binds the task "
-                "you are in: its journal_write and per-project knowledge start working, and its "
-                "live progress routes to the project thread. Idempotent for the same project; it "
-                "will NOT re-scope a task that already belongs to a different project."
+                "Create (or attach to) a named Ouroboros PROJECT and bind THE CURRENT running "
+                "task to it DURABLY. Use this when you are ALREADY working a task and realize it "
+                "should be a named project (the owner asked to 'create a project called X', or the "
+                "work has grown into a real deliverable) — instead of a bare filesystem mkdir. "
+                "Unlike promote_chat_to_task (which starts a NEW independent task in a project), "
+                "this binds the task you are in: its journal_write and per-project knowledge start "
+                "working, and its live progress routes to the project thread. The result states "
+                "the REAL outcome the host recorded — the durable binding, a typed refusal, or "
+                "unconfirmed — never a promise. Idempotent for the same project; a task already "
+                "bound to a different project stays there (a requested name is carried to that "
+                "project as a rename). A planning obligation stays with this task."
             ),
             "parameters": {
                 "type": "object",
@@ -224,11 +232,14 @@ def get_tools() -> List[ToolEntry]:
         ToolEntry("steer_task", {
             "name": "steer_task",
             "description": (
-                "Deliver a follow-up/steering message to a host-listed RUNNING/PENDING owner root — YOU "
-                "pick from current_chat.addressable_root_tasks in a Project room, or from "
-                "main_routing_manifest.root_tasks in Main (including Project-bound roots). Use it when a message continues or redirects a task already "
-                "in flight, instead of spawning a duplicate. The message reaches that task's mailbox and "
-                "it picks it up at its next step. If no running task clearly fits, use promote_chat_to_task "
+                "Deliver a message to any host-listed active independent root (a running or pending "
+                "root task; hidden/headless roots included) — YOU pick from current_chat.addressable_root_tasks, "
+                "main_routing_manifest.root_tasks, or the [INDEPENDENT_ROOTS] note. Use it when a message "
+                "continues or redirects a task already in flight, instead of spawning a duplicate. Who "
+                "you are decides how it lands: in an owner conversation turn it is delivered as the "
+                "owner's steering text; from a task it is written as a message from THIS task (never "
+                "owner text, no file attachments), and the result says written, not read. The task picks "
+                "it up at its next step. If no running task clearly fits, use promote_chat_to_task "
                 "(new work) or answer inline — never steer a task you are unsure about."
             ),
             "parameters": {"type": "object", "properties": {
@@ -261,8 +272,8 @@ def get_tools() -> List[ToolEntry]:
                 "inherit it), and you verify their combined files with integrate_subagent_patch. Use genesis only when EACH child "
                 "should own its OWN standalone durable repo (e.g. best-of-N separate builds). "
                 "Harness-delegated work uses a private snapshot; integrate_delegated_patch handles that separate patch. "
-                "Mutative children still cannot commit, run "
-                "review/runtime/skills lifecycle, enable tools, or write cognitive memory. Nested delegation "
+                "Mutative children cannot commit, enable tools or write cognitive memory. Cyber-effective "
+                "children inherit selected review, skill and runtime tools; explicit task restrictions remain. Nested delegation "
                 "is allowed within configured depth/cap limits — use delegation_intent / may_mutate / "
                 "may_fan_out to tell a child to recurse further, so a 'maximum subagents / grandchildren' "
                 "request propagates structurally instead of collapsing into one flat layer. "
@@ -315,20 +326,23 @@ def get_tools() -> List[ToolEntry]:
         ToolEntry("update_scratchpad", {
             "name": "update_scratchpad",
             "description": "Append a block to your working memory (scratchpad). Each call adds a "
-                           "timestamped block; oldest blocks are auto-evicted when the cap (10) is reached. "
+                           "timestamped block; oldest blocks are auto-evicted when either cap is reached "
+                           "(10 blocks, 60000 characters of content). "
                            "Write what matters NOW — active tasks, decisions, observations. "
                            "Persists across sessions, read at every task start. "
-                           "No-op on a project-scoped task (no per-project scratchpad); use knowledge_write for project facts.",
+                           "Project rooms included — the scratchpad is the same working memory in every room.",
             "parameters": {"type": "object", "properties": {
                 "content": {"type": "string", "description": "Content for this scratchpad block"},
             }, "required": ["content"]},
         }, _update_scratchpad),
         ToolEntry("send_user_message", {
             "name": "send_user_message",
-            "description": "Send a separate reply to the owner during ongoing work, or reach out "
-                           "with an insight, a question, or an invitation to collaborate. "
-                           "The reply appears in the conversation and leaves the task running. "
-                           "Progress stays in the task card; the final answer is delivered automatically.",
+            "description": "Send a separate reply to the owner while work continues: the first "
+                           "line of longer work (what I am about to do and why), or a mid-work "
+                           "insight, a question, or an invitation to collaborate. It appears in "
+                           "the conversation as a normal reply and leaves the work running; later "
+                           "progress stays in the card and the final answer is delivered "
+                           "automatically.",
             "parameters": {"type": "object", "properties": {
                 "text": {"type": "string", "description": "Message text"},
                 "reason": {"type": "string", "description": "Why you're reaching out (logged, not sent)"},
@@ -343,14 +357,14 @@ def get_tools() -> List[ToolEntry]:
                            "Use this only after substantive reflection or real experience — not on a "
                            "greeting or trivial turn. This is the only correct way to write identity; "
                            "never write memory/identity.md through write_file/edit_text. "
-                           "No-op on a project-scoped task (identity is global and continuous, never per-project).",
+                           "Project rooms included — identity is the same continuous file in every room.",
             "parameters": {"type": "object", "properties": {
                 "content": {"type": "string", "description": "Full identity content (prefer evolving over rewriting from scratch)"},
             }, "required": ["content"]},
         }, _update_identity),
         ToolEntry("toggle_evolution", {
             "name": "toggle_evolution",
-            "description": "Enable or disable evolution mode. When enabled, Ouroboros runs continuous self-improvement cycles. Enabling requires runtime_mode 'advanced' or 'pro'; it is refused in 'light' mode.",
+            "description": "Enable or disable evolution mode. When enabled, Ouroboros runs continuous self-improvement cycles. Enabling requires runtime_mode 'advanced', 'pro', or 'cyber_pro'; it is refused in 'light' mode.",
             "parameters": {"type": "object", "properties": {
                 "enabled": {"type": "boolean", "description": "true to enable, false to disable"},
                 "objective": {"type": "string", "default": "", "description": "Optional Evolution Campaign objective when enabling."},
@@ -363,6 +377,9 @@ def get_tools() -> List[ToolEntry]:
                 "action": {"type": "string", "enum": ["start", "stop", "status"], "description": "Action to perform"},
             }, "required": ["action"]},
         }, _toggle_consciousness),
+        ToolEntry("set_next_wakeup", {
+            "name": "set_next_wakeup", "description": "Choose the consciousness wake-up interval in seconds: how long after a wake-up ends the next one starts (clamped into the owner's OUROBOROS_BG_WAKEUP_MIN/MAX bounds; a wake-up calling this sets its own next one; a pending wake-up keeps its time; stored for later when consciousness is off).", "parameters": {"type": "object", "properties": {"seconds": {"type": "integer", "description": "Seconds from the end of a wake-up to the next one"}}, "required": ["seconds"]},
+        }, _set_next_wakeup),
         ToolEntry("switch_model", {
             "name": "switch_model",
             "description": "Switch to a different LLM model or reasoning effort level. "
@@ -379,6 +396,7 @@ def get_tools() -> List[ToolEntry]:
             "description": "Read the effective result or exact authority of a task, including one bounded canonical work-order source range when requested.",
             "parameters": {"type": "object", "required": ["task_id"], "properties": {
                 "task_id": {"type": "string", "description": "Task ID returned by scheduling or exposed by the host routing manifest."},
+                "known_result_sha256": {"type": "string", "description": "Optional child_result_sha256 from a previous read. An exact match omits only unchanged result/trace text, retaining current facts and a full-read reference. Omit for full text; explicit authority/source requests always return their requested view."},
                 "include_authority": {"type": "boolean", "default": False,
                                       "description": "Return the exact selected result, task contract, origin, artifact references, and current plan-review authority."},
                 "include_work_order_source": {"type": "boolean", "default": False,
@@ -394,7 +412,10 @@ def get_tools() -> List[ToolEntry]:
             "description": "Wait for ONE subtask to reach a terminal status and return its effective result. May return EARLY (before terminal) if the child raises a tree_note blocker/question/interface_contract/review_requested/delegation_constraint beacon — the result then carries a [CHILD_BEACONS] block so you can steer, review, or override it. An unread message in your own mailbox also returns early so the ordinary loop can deliver and acknowledge it; the child keeps running. With SEVERAL children in flight, prefer wait_tasks(any_terminal) to absorb whichever finishes first rather than blocking serially on one id at a time.",
             "parameters": {"type": "object", "required": ["task_id"], "properties": {
                 "task_id": {"type": "string", "description": "Task ID to check"},
-                "timeout_sec": {"type": "integer", "default": 180, "description": "Maximum seconds to wait (default 180)."},
+                "known_result_sha256": {"type": "string", "description": "Optional child_result_sha256 already obtained for this task. An exact match returns unchanged without repeating result/trace; current facts remain. Omit to return full text. This does not change when the wait ends."},
+                "timeout_sec": {"type": "integer", "default": 180, "description":
+                                "Maximum seconds to wait (default 180); a larger value is clamped to "
+                                f"{_WAIT_TASK_CLAMP_SEC}. Size the window to the child's expected life."},
             }},
         }, _wait_for_task, timeout_sec=7200),
         ToolEntry("wait_tasks", {
@@ -402,7 +423,11 @@ def get_tools() -> List[ToolEntry]:
             "description": "Wait for MULTIPLE subtasks at once and return a compact structural projection per child (task_id, status, accounted_upper_bound_usd, cost_final, child_result_sha256, outcome_axes, result, trace_summary, capability_delta when the child has something to disclose, duplicate_of) — the right tool to ABSORB a batch of independent children you scheduled in one burst. The full per-child envelope stays on disk in task_results/<task_id>.json (child_result_sha256 pins the exact result you saw; get_task_result returns the full result text plus trace/outcome summaries). With mode=any_terminal it returns as soon as the FIRST child finishes (handle it, then call again for the rest) instead of blocking serially. The JSON also includes live_child_status (running/scheduled/terminal per child) and may early_return (before all terminal) on a child tree_note blocker/question/interface_contract/review_requested/delegation_constraint beacon so you can steer, review, or override mid-flight, or on an unread message in your own mailbox (reason=owner_mailbox_pending); the ordinary loop then handles delivery and acknowledgement. An id no surface of this tree ever minted (no task result, no queue row, no tree-ledger row) is flagged unknown_task_id — 'not yet registered or never scheduled' — and unknown_task_ids + a compact children_roster of your ACTUAL direct children are attached so you can repair the wait set instead of re-polling phantoms.",
             "parameters": {"type": "object", "required": ["task_ids"], "properties": {
                 "task_ids": {"type": "array", "items": {"type": "string"}, "description": "Task IDs returned by schedule_subagent."},
-                "timeout_sec": {"type": "integer", "default": 600, "description": "Maximum seconds to wait (default 600)."},
+                "known_result_sha256_by_task": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Optional task_id to previously obtained child_result_sha256 map. Matching children omit only result/trace and return result_unchanged plus a full-read reference. Missing or different hashes return the usual complete body/trace. Current status/cost/outcome/capability facts remain; wait timing is unchanged."},
+                "timeout_sec": {"type": "integer", "default": 600, "description":
+                                "Maximum seconds to wait (default 600); a larger value is clamped to "
+                                f"{_WAIT_TASKS_CLAMP_SEC}. Size the window to the children's expected life; "
+                                "an expired wait returns the still-live ids and this ceiling."},
                 "mode": {"type": "string", "enum": ["all_terminal", "any_terminal"], "default": "all_terminal"},
             }},
         }, _wait_for_tasks, timeout_sec=7200),
@@ -427,8 +452,6 @@ from ouroboros.tools.control_routing import (  # noqa: E402, F401 -- intentional
     _attach_client_surface,
     _attach_origin_from_metadata,
     _attach_predecessor_authority_from_metadata,
-    _attach_swarm_intent,
-    _cached_swarm_handoff,
     _finish_swarm_handoff,
     _list_projects,
     _predecessor_selector_error,
@@ -443,6 +466,7 @@ from ouroboros.tools.control_runtime import (  # noqa: E402, F401 -- intentional
     _request_deep_self_review,
     _request_restart,
     _send_user_message,
+    _set_next_wakeup,
     _set_tool_timeout,
     _switch_model,
     _toggle_consciousness,
@@ -484,6 +508,8 @@ from ouroboros.tools.control_scheduling import (  # noqa: E402, F401 -- intentio
 )
 from ouroboros.tools.control_task_results import (  # noqa: E402, F401 -- intentional public re-exports
     _UNMINTED_WAIT_GRACE_SEC,
+    _WAIT_TASK_CLAMP_SEC,
+    _WAIT_TASKS_CLAMP_SEC,
     _children_roster_projection,
     _count_live_sibling_children,
     _get_task_result,

@@ -1,10 +1,9 @@
-"""Publish one immutable reviewed skill snapshot through a GitHub pull request."""
+"""Publish one captured skill snapshot, preserving review and scanner evidence."""
 
 from __future__ import annotations
 
 import base64
 import json
-import os
 import pathlib
 import re
 from dataclasses import asdict, dataclass, field
@@ -19,10 +18,12 @@ from ouroboros.config import (
     SKILL_SOURCE_SELF_AUTHORED,
     SKILL_SOURCE_USER_REPO,
     get_light_model,
+    get_runtime_mode,
     get_ouroboroshub_catalog_url,
 )
 from ouroboros.llm import LLMClient
 from ouroboros.marketplace.provenance import write_publication_record
+from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
 from ouroboros.skill_loader import SkillPayloadUnreadable, _sanitize_skill_name
 from ouroboros.skill_publish_eligibility import PUBLISHABLE_STATUSES
 from ouroboros.skill_publish_github import (
@@ -60,6 +61,7 @@ from ouroboros.tool_access import (
 from ouroboros.tools.github import github_token_from_env_or_settings
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.utils import utc_now_iso
+from ouroboros.config import runtime_setting
 
 _BRANCH_SEGMENT_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _PROVENANCE_SLUG_MAX = 128
@@ -96,6 +98,7 @@ class _PublishAttempt:
     warning_count: int = 0
     audited_false_positive_count: int = 0
     version_change: Dict[str, str] = field(default_factory=dict)
+    advice: Dict[str, Any] = field(default_factory=dict)
 
     def mark(self, stage: str, **facts: str) -> None:
         if stage not in SKILL_PUBLISH_STAGES:
@@ -148,7 +151,7 @@ class _PublishAttempt:
             repair_hint=repair_hint,
             receipt=receipt,
             expected_repository=expected_repository,
-            extra_fields=extra_fields,
+            extra_fields={**self.advice, **dict(extra_fields or {})},
         )
 
 
@@ -195,7 +198,8 @@ def _validate_local_skill(
     }
     if loaded.source == SKILL_SOURCE_NATIVE and not (loaded.skill_dir / ".seed-origin").is_file():
         allowed_sources.add(SKILL_SOURCE_NATIVE)
-    if loaded.source not in allowed_sources:
+    cyber = mode_has_unrestricted_agency(get_runtime_mode())
+    if loaded.source not in allowed_sources and not cyber:
         raise _PublishFailure(
             "skill_source_unsupported",
             "Copy or adapt the skill into a publishable user-managed source, then retry.",
@@ -205,12 +209,12 @@ def _validate_local_skill(
             "skill_load_failed",
             "Repair the installed skill payload, then retry.",
         )
-    if normalize_skill_review_status(loaded.review.status) not in PUBLISHABLE_STATUSES:
+    if normalize_skill_review_status(loaded.review.status) not in PUBLISHABLE_STATUSES and not cyber:
         raise _PublishFailure(
             "review_not_publishable",
             "Resolve review blockers or pending review work, then retry.",
         )
-    if str(getattr(loaded.review, "review_profile", "") or "") == "owner_attested":
+    if str(getattr(loaded.review, "review_profile", "") or "") == "owner_attested" and not cyber:
         raise _PublishFailure(
             "review_owner_attested",
             "Run the full skill review for public publication, then retry.",
@@ -460,7 +464,17 @@ def _close_unterminated_fence(body: str) -> str:
     return f"{body}{separator}{fence[0] * fence[1]}\n"
 
 
-def _author_checklist(review: Any) -> str:
+def _author_checklist(review: Any, snapshot_hash: str = "") -> str:
+    if mode_has_unrestricted_agency(get_runtime_mode()):
+        reviewed_hash = str(review.reviewed_content_hash or review.content_hash or "")
+        return (
+            "## Author Checklist\n"
+            "- Cyber Pro publication: review and scanner findings are advisory.\n"
+            f"- Local review status: {review.status}; profile: {review.review_profile or 'none'}.\n"
+            f"- Reviewed hash: {reviewed_hash or 'unavailable'}; published snapshot: {snapshot_hash}.\n"
+            "- Published bytes match the captured snapshot; no clean or fresh review is inferred.\n"
+            "- The pull request is the only requested public effect.\n"
+        )
     advisory = bool(_advisory_findings_section(review))
     review_line = (
         "- Fresh review with no blockers verified locally; advisory findings are disclosed below."
@@ -561,8 +575,24 @@ def _scan(
         owner_task_id=str(ctx.task_id or ""),
         honor_inline_allowances=honor_inline_allowances,
     )
-    attempt.observe_scan(result, include_findings=False)
-    if result.status == "scanner_error":
+    cyber = mode_has_unrestricted_agency(get_runtime_mode())
+    attempt.observe_scan(result, include_findings=cyber)
+    if cyber:
+        previous = attempt.advice.get("scanner_status")
+        attempt.advice["scanner_status"] = (
+            "scanner_error" if "scanner_error" in {previous, result.status}
+            else "findings" if "findings" in {previous, result.status} else result.status
+        )
+        if result.status == "scanner_error":
+            error = f"{result.reason_code}: {result.repair_hint}"
+            known = str(attempt.advice.get("scanner_errors") or "")
+            attempt.advice["scanner_errors"] = "\n".join(dict.fromkeys([*known.splitlines(), error]))
+        if result.status == "scanner_error" or result.blocker_count:
+            ctx.emit_progress_fn(
+                f"Cyber Pro publication advice: {result.reason_code or result.status}; "
+                f"high-confidence findings={result.blocker_count}. Publication continues."
+            )
+    if result.status == "scanner_error" and not cyber:
         raise _PublishFailure(
             result.reason_code or "scanner_report_invalid",
             result.repair_hint or "Repair the Betterleaks runtime, then retry.",
@@ -592,7 +622,7 @@ def _select_optional_pr_core(
         {"pr-body-model-prompt.txt": prompt.encode("utf-8")},
         honor_inline_allowances=False,
     )
-    if prompt_scan.blocker_count:
+    if prompt_scan.blocker_count and not mode_has_unrestricted_agency(get_runtime_mode()):
         return fallback
     try:
         model = get_light_model()
@@ -602,7 +632,7 @@ def _select_optional_pr_core(
             model_role="light",
             reasoning_effort="low",
             max_tokens=8192,
-            use_local=os.environ.get("USE_LOCAL_LIGHT", "").lower() in {"true", "1"},
+            use_local=runtime_setting("USE_LOCAL_LIGHT", "").lower() in {"true", "1"},
             timeout=_PR_BODY_MODEL_TIMEOUT_SEC,
         )
         _record_llm_usage(ctx, model, usage)
@@ -621,7 +651,7 @@ def _select_optional_pr_core(
         {"optional-pr-body.md": body.encode("utf-8")},
         honor_inline_allowances=False,
     )
-    return fallback if body_scan.blocker_count else body
+    return fallback if body_scan.blocker_count and not mode_has_unrestricted_agency(get_runtime_mode()) else body
 
 
 def _scan_public_derived(
@@ -637,12 +667,13 @@ def _scan_public_derived(
         named_bytes,
         honor_inline_allowances=False,
     )
-    attempt.observe_scan(result)
-    if result.blocker_count:
-        raise _PublishFailure(
-            "secret_blocked",
-            "Remove or rotate the high-confidence candidate, then retry.",
-        )
+    if not mode_has_unrestricted_agency(get_runtime_mode()):
+        attempt.observe_scan(result)
+        if result.blocker_count:
+            raise _PublishFailure(
+                "secret_blocked",
+                "Remove or rotate the high-confidence candidate, then retry.",
+            )
     return result
 
 
@@ -677,7 +708,7 @@ def _render_pr_body(
     prefix_parts.append(_close_unterminated_fence(core.strip()).rstrip())
     selected = "\n\n".join(prefix_parts) + "\n"
     selected = _strip_generated_h2_sections(selected, _GENERATED_H2_HEADINGS).rstrip()
-    host_sections = [_author_checklist(review).strip()]
+    host_sections = [_author_checklist(review, snapshot.content_hash).strip()]
     if attempt.version_change:
         before = json.dumps(attempt.version_change["catalog_version"], ensure_ascii=False)
         after = json.dumps(attempt.version_change["proposed_version"], ensure_ascii=False)
@@ -697,9 +728,13 @@ def _render_pr_body(
         f"- Engine: {attempt.scanner.get('engine', '')} "
         f"{attempt.scanner.get('version', '')}\n"
         f"- Ruleset SHA-256: {attempt.scanner.get('ruleset_sha256', '')}\n"
-        f"- blockers=0; warnings={attempt.warning_count}; "
+        f"- blockers={attempt.blocker_count}; warnings={attempt.warning_count}; "
         f"audited={attempt.audited_false_positive_count}.\n"
     )
+    if attempt.advice:
+        attestation += f"- Scanner status: {attempt.advice.get('scanner_status', 'not_run')}.\n"
+        if attempt.advice.get("scanner_errors"):
+            attestation += f"- Scanner errors (advisory): {attempt.advice['scanner_errors']}\n"
     return body_without_attestation.rstrip() + "\n\n" + attestation
 
 
@@ -749,7 +784,8 @@ def _submit_skill_to_hub(
     attempt = _PublishAttempt(skill=_safe_result_skill(skill))
     expected_repository = ""
     try:
-        if not confirm_public_submission:
+        cyber = mode_has_unrestricted_agency(get_runtime_mode())
+        if not confirm_public_submission and not cyber:
             raise _PublishFailure(
                 "confirmation_required",
                 "Confirm this public submission, then retry.",
@@ -767,6 +803,15 @@ def _submit_skill_to_hub(
         expected_repository = f"{owner}/{repo}"
         snapshot = capture_skill_publish_snapshot(loaded)
         attempt.snapshot_hash = snapshot.content_hash
+        if cyber:
+            attempt.advice.update({
+                "safety_advisory": True,
+                "review_status": str(loaded.review.status),
+                "review_profile": str(loaded.review.review_profile or ""),
+                "reviewed_content_hash": str(loaded.review.reviewed_content_hash or loaded.review.content_hash or ""),
+                "review_stale": loaded.review.is_stale_for(snapshot.content_hash),
+                "review_record": str(canonical_data_root(ctx) / "state" / "skills" / safe_skill / "review.json"),
+            })
         attempt.mark("snapshot_captured")
         if not snapshot.manifest.version.strip():
             raise _PublishFailure(
@@ -781,8 +826,9 @@ def _submit_skill_to_hub(
             {item.path: item.content for item in snapshot.public_files},
             honor_inline_allowances=True,
         )
-        attempt.observe_scan(payload_scan)
-        if payload_scan.blocker_count:
+        if not cyber:
+            attempt.observe_scan(payload_scan)
+        if payload_scan.blocker_count and not cyber:
             raise _PublishFailure(
                 "secret_blocked",
                 "Remove or rotate the high-confidence candidate, then retry.",
@@ -801,7 +847,7 @@ def _submit_skill_to_hub(
                 preliminary,
                 honor_inline_allowances=False,
             )
-            if preliminary_scan.blocker_count:
+            if preliminary_scan.blocker_count and not cyber:
                 attempt.observe_scan(preliminary_scan)
                 raise _PublishFailure(
                     "secret_blocked",
@@ -1003,7 +1049,7 @@ def _submit_skill_to_hub(
 _PUBLISH_SCHEMA = {
     "name": "submit_skill_to_hub",
     "description": (
-        "Publish one immutable reviewed skill snapshot to OuroborosHub by "
+        "Publish one immutable skill snapshot to OuroborosHub by "
         "opening a GitHub pull request. A failed result is repair evidence "
         "for the next agent turn; success contains a validated PR receipt."
     ),
@@ -1022,8 +1068,8 @@ _PUBLISH_SCHEMA = {
             "confirm_public_submission": {
                 "type": "boolean",
                 "description": (
-                    "Must be true: confirms the human approved this public "
-                    "OuroborosHub submission."
+                    "Required outside Cyber Pro: confirms the human approved "
+                    "this public OuroborosHub submission. Cyber Pro may proceed without it."
                 ),
             },
         },

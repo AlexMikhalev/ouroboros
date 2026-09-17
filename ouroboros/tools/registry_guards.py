@@ -1,4 +1,4 @@
-"""Host-owned pre-dispatch guards: capability/resource, ephemeral, managed-update and skill-payload constraints.
+"""Host-owned pre-dispatch guards: capability/resource, managed-update and skill-payload constraints.
 
 Every span is extracted VERBATIM from the parent's tip bytes by
 scripts/v7next_transplant.py (D18/D33 module-handle split, proof-checked);
@@ -11,13 +11,10 @@ from __future__ import annotations
 import logging
 import os
 import pathlib
-import re
 
 from typing import TYPE_CHECKING
 
-from ouroboros.artifacts import task_artifact_dir_path, task_id_for_artifacts
 from ouroboros.tools.tool_result import ToolResult
-from ouroboros.tools.write_shape import _no_deliverables_decision, _workspace_write_candidates
 
 if TYPE_CHECKING:  # annotation-only imports (inert at runtime)
     from ouroboros.contracts.task_constraint import TaskConstraint
@@ -61,37 +58,6 @@ def _executor_backend_candidate_allowed(ctx: Any, candidate: str, allowed_roots:
         return False
 
 
-def _command_mentions_protected_root(cmd_path_lower: str, root_text: str) -> bool:
-    """Boundary-aware path containment for the workspace shell guard.
-
-    True only when ``root_text`` (a normalised, lower-cased protected root path)
-    appears in the command as a whole path or a parent prefix at a real path
-    boundary — NOT as an incidental substring of an unrelated path that merely
-    shares the prefix (e.g. protected ``/x/data`` must not match ``/x/database``).
-    Used as a coarse catch-all for runtime paths embedded in non-tokenised text
-    (e.g. inside a ``python -c`` string); the precise per-token containment loop
-    still does the authoritative active/protected classification.
-    """
-    if not root_text:
-        return False
-    norm = root_text.rstrip("/")
-    if not norm:
-        return False
-    span = len(norm)
-    limit = len(cmd_path_lower)
-    start = 0
-    while True:
-        idx = cmd_path_lower.find(norm, start)
-        if idx < 0:
-            return False
-        end = idx + span
-        nxt = cmd_path_lower[end] if end < limit else ""
-        # Boundary = end-of-string, a path separator (child path), or a shell
-        # token delimiter (the exact path). A trailing path char (letter/digit/
-        # ``.``/``-``/``_``) means a DIFFERENT sibling path → keep scanning.
-        if nxt == "" or nxt == "/" or nxt in " \t\"')(;:,&|<>":
-            return True
-        start = end
 
 
 def _stray_skill_payload_failsoft(root_arg: str, workspace_mode: bool, task_constraint: Any) -> bool:
@@ -111,6 +77,10 @@ def _managed_update_code_tool_block_result(ctx: Any, name: str) -> ToolResult | 
     """Block a repo-mutating code tool while a managed-update assisted merge is staged for
     ANOTHER task (P2/SC2). Returns a blocked result, or ``None`` when allowed (this is the
     authorized resolution task, or no managed tx is active). A corrupt tx marker fails closed."""
+    from ouroboros.config import get_runtime_mode
+    from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+
+    cyber = mode_has_unrestricted_agency(get_runtime_mode())
     try:
         from supervisor.update_merge import managed_assisted_tx_for
 
@@ -118,6 +88,15 @@ def _managed_update_code_tool_block_result(ctx: Any, name: str) -> ToolResult | 
             getattr(ctx, "task_id", ""),
             getattr(ctx, "task_metadata", None),
         )[1]:
+            if cyber:
+                from ouroboros.safety import _emit_durable_safety_event
+
+                _emit_durable_safety_event(ctx, {
+                    "type": "safety_advisory", "tool": name,
+                    "assessment": "A separate managed update is in progress.",
+                    "execution_allowed": True,
+                })
+                return None
             return ToolResult(
                 status="blocked",
                 code="ACCESS_BLOCKED",
@@ -128,6 +107,9 @@ def _managed_update_code_tool_block_result(ctx: Any, name: str) -> ToolResult | 
                 ),
             )
     except Exception:
+        if cyber:
+            log.warning("Managed update state unavailable for Cyber call %s; proceeding", name)
+            return None
         return ToolResult(
             status="unavailable",
             code="CAPABILITY_UNAVAILABLE",
@@ -170,7 +152,10 @@ def _subagent_and_update_guard_result(
             "Nested readonly delegation is allowed only through schedule_subagent "
             "within configured depth/cap limits."
         ))
-    if acting_subagent and entry is not None and name not in _registry().ACTING_SUBAGENT_TOOL_NAMES:
+    from ouroboros.tool_capabilities import acting_tool_names_for_context
+
+    acting_allowed_names = acting_tool_names_for_context(registry._ctx, registry._entries)
+    if acting_subagent and entry is not None and name not in acting_allowed_names:
         return ToolResult(status="blocked", code="ACCESS_BLOCKED", text=(
             "⚠️ ACTING_SUBAGENT_BLOCKED: this mutative subagent may read and "
             "write inside its assigned write root and run shell/services "
@@ -179,7 +164,7 @@ def _subagent_and_update_guard_result(
             "tools, or write cognitive memory; the parent applies isolated patches "
             "or verifies shared external files and is the sole live-body committer."
         ))
-    if acting_subagent and entry is None and (ext_tool or is_mcp) and name not in acting_tool_grants:
+    if acting_subagent and entry is None and (ext_tool or is_mcp) and acting_tool_grants is not None and name not in acting_tool_grants:
         return ToolResult(status="blocked", code="ACCESS_BLOCKED", text=(
             "⚠️ ACTING_SUBAGENT_TOOL_NOT_GRANTED: extension/MCP tool "
             f"{name!r} is not in this acting subagent's external_tool_grants. "
@@ -320,6 +305,14 @@ def _disabled_tools(ctx: Any) -> frozenset:
     (e.g. the agent's web_search/browser/VLM tools for a faithful benchmark)
     WITHOUT setting web/network=false — so shell network egress (git/pip) stays
     available. Withholding web tools does not withhold unrelated network tools.
+
+    Enforced twice — the schema filters in ``registry_core`` hide the names and
+    ``_capability_resource_guard_result`` refuses them at dispatch — EXCEPT for a
+    consciousness-origin task (``disabled_tools_dispatch_only``): its list is
+    enforced at dispatch only, so a wake-up's tool schemas and its capability
+    manifest are byte-identical to an owner turn's and the provider prompt cache
+    prefix is shared (owner decision В31=B). The model then sees tools it may not
+    call and gets the typed refusal instead; the wake message names the level.
     """
     metadata = getattr(ctx, "task_metadata", {}) if isinstance(getattr(ctx, "task_metadata", {}), dict) else {}
     contract = metadata.get("task_contract") if isinstance(metadata.get("task_contract"), dict) else {}
@@ -344,6 +337,13 @@ def _disabled_tools(ctx: Any) -> frozenset:
     if "preflight_review" in names:
         names.add("advisory_review")
     return frozenset(names)
+
+
+def disabled_tools_dispatch_only(ctx: Any) -> bool:
+    """Whether ``disabled_tools`` binds at dispatch only (a consciousness-origin task)."""
+    from ouroboros.consciousness_authority import is_consciousness_origin
+
+    return is_consciousness_origin(getattr(ctx, "task_metadata", None))
 
 
 _GITHUB_TOKEN_TOOLS = frozenset({
@@ -537,49 +537,6 @@ def _payload_dispatch_constraint(
     return synthesized or task_constraint, None
 
 
-_EPHEMERAL_ALLOWED_TOOLS = frozenset({
-    # read / inspect
-    "read_file", "query_code", "search_code", "list_files", "web_search", "browse_page",
-    "chat_history", "recent_tasks", "get_task_result", "vcs_diff", "vcs_status",
-    "analyze_screenshot", "vlm_query",
-    # decide / route / spawn-owner-task / reply
-    "route_to_project", "promote_chat_to_task", "steer_task", "list_projects", "send_photo",
-})
-
-
-def _ephemeral_block_result(
-    ctx: Any,
-    name: str,
-    ext_tool: Any = None,
-    is_mcp: bool = False,
-    *,
-    extension_unavailable: bool = False,
-) -> ToolResult | None:
-    """CW3: a short ephemeral decision turn may call ONLY the allowlisted read/decision
-    built-ins (_EPHEMERAL_ALLOWED_TOOLS); every other built-in (durable/control/review/
-    skill mutator, run_command) fails closed. Default-deny, so a new mutator can never
-    silently become reachable. The owner's dynamic surfaces are not gated here (issue
-    #722, owner-approved 2026-09-08): configured MCP tools and enabled, granted,
-    reviewed extension tools ride every lane behind their own gates (extension
-    liveness, acting-child grants, the network resource guard), exactly as on a managed
-    task — the model decides inline vs promote_chat_to_task; a dead extension name
-    (``extension_unavailable``) keeps its EXTENSION_UNAVAILABLE answer instead of the
-    allowlist text. The turn answers inline or promote_chat_to_task's the durable work
-    into a supervised task."""
-    if not getattr(ctx, "is_ephemeral_turn", False) or ext_tool or extension_unavailable or is_mcp:
-        return None
-    if name not in _EPHEMERAL_ALLOWED_TOOLS:
-        text = (
-            f"⚠️ EPHEMERAL_TURN_RESTRICTED: '{name}' is not in the decision-turn allowlist "
-            "(read/inspect + answer/route/spawn/steer only) — a short same-route turn must "
-            "not do durable/control/review/skill work or run shell. Answer inline, or "
-            "promote_chat_to_task to do it in a supervised task."
-        )
-    else:
-        return None
-    return ToolResult(status="blocked", code="ACCESS_BLOCKED", text=text)
-
-
 def _blocked_path_note(path_text: Any, spelled: Any = "") -> str:
     """The ``Blocked path:`` clause of both Guard-B messages: the RESOLVED path
     and, when the model's own spelling differs (a relative operand, a symlink
@@ -706,6 +663,88 @@ def _resolved_shell_cwd(
     return pathlib.Path(work_dir)
 
 
+def _direct_shell_write_block(self, raw_cmd: Any, work_dir: pathlib.Path, runtime_mode: str, binding: Any) -> ToolResult | None:
+    """Apply existing resource authority to certain direct writes, never mentions."""
+    from dataclasses import replace
+    from ouroboros.tool_access import _process_root_candidates, _resolve_target_in_selected_base, decide_tool_access, path_is_relative_to
+    from ouroboros.tools.deliverables_shell import _command_path
+    from ouroboros.tools.shell_guards import direct_utility_target_rows, directory_destination_pairs
+    from ouroboros.tools.core import _binding_skill_control_plane_path, is_skill_control_plane_path
+    from ouroboros.shell_parse import directory_destination_child_name
+    from ouroboros.runtime_mode_policy import mode_allows_protected_write, protected_paths_in
+    from ouroboros.tools.shell_audit import _presence_allows_user_output
+
+    rows = direct_utility_target_rows(raw_cmd)
+    if not any(row[1] for row in rows):
+        return None
+    items = _registry()._binding_items(binding)
+    selected = items[0] if items else _registry().build_resolved_resource_binding(
+        self._ctx, operation="shell", process_cwd=str(work_dir))
+    roots = list(dict.fromkeys([(selected.root, selected.base_path, selected.source, selected.skill_name),
+                               *_process_root_candidates(self._ctx, "shell")]))
+    system_repo = pathlib.Path(getattr(self._ctx, "system_repo_dir", None) or self._ctx.repo_dir)
+
+    def _refuse_write(target: pathlib.Path, token: str) -> ToolResult:
+        if self._is_acting_subagent():
+            return _workspace_write_block_outside_root_result(target.resolve(strict=False), work_dir, token)
+        light_internal = runtime_mode == "light" and any(
+            path_is_relative_to(target, root) for root in _git_protected_roots(self))
+        code = "LIGHT_MODE_BLOCKED" if light_internal else "WORKSPACE_BLOCKED"
+        prefix = "LIGHT_MODE_BLOCKED" if light_internal else "WORKSPACE_SHELL_BLOCKED"
+        return ToolResult(status="blocked", code=code, text=(
+            f"⚠️ {prefix}: explicit write target {target} is outside the resources this task may write. "
+            f"Selected process root: {work_dir}. The process was not started."))
+
+    for (argv, targets, _inline, _unknown), cwd in zip(rows, _registry().sequential_effective_cwds(rows, work_dir)):
+        for command, destination, source in directory_destination_pairs(argv):
+            directory = _command_path(self._ctx, cwd, destination)
+            child = directory_destination_child_name(command, argv, source)
+            if directory is not None and directory.is_dir() and child:
+                targets = [token for token in targets if token != destination] + [str(directory / child)]
+        for token in targets:
+            if not token or token == "/dev/null" or any(char in token for char in "$`*?{}~"):
+                continue  # Unexpanded/computed words are not concrete target evidence.
+            target = _command_path(self._ctx, cwd, token)
+            if target is None:
+                continue
+            # The light gate is root-independent: ``runtime_mode`` here is the
+            # EFFECTIVE mode (the install mode capped per task), and a cyber_pro
+            # install resolves user_files to the whole host, which would admit a
+            # repository target under that name for a light-capped task.
+            if runtime_mode == "light" and path_is_relative_to(target, system_repo):
+                return _refuse_write(target, token)
+            for root, base, source, skill in roots:
+                if not decide_tool_access(profile=selected.profile, root=root, operation="write").allow:
+                    continue
+                try:
+                    resolved = _resolve_target_in_selected_base(
+                        self._ctx, root=root, base_path=base, path=str(target), operation="write")
+                    target_binding = replace(selected, root=root, base_path=base, target_path=resolved,
+                                             operation="write", source=source, skill_name=skill)
+                    if (root == "skill_payload" and _binding_skill_control_plane_path(target_binding)
+                            or is_skill_control_plane_path(resolved, target_binding.state_drive_root)):
+                        return ToolResult(status="blocked", code="SKILL_PAYLOAD_BLOCKED", text=(
+                            f"⚠️ SKILL_PAYLOAD_BLOCKED: explicit write target {resolved} is skill control-plane state. "
+                            "Edit user-authored payload files instead. The process was not started."))
+                    if _registry().binding_targets_system_repo(self._ctx, target_binding):
+                        if runtime_mode == "light" or (protected_paths_in([resolved.relative_to(base).as_posix()])
+                                                       and not mode_allows_protected_write(runtime_mode)):
+                            continue
+                    # Process output uses the existing shell/write grant owner,
+                    # including a remapped Deliverables logical path prefix.
+                    if root == "user_files":
+                        if not _presence_allows_user_output(self._ctx, resolved):
+                            continue
+                    elif not _registry()._presence_binding_allowed(self._ctx, target_binding):
+                        continue
+                    break
+                except (OSError, ValueError, RuntimeError):
+                    continue
+            else:
+                return _refuse_write(target, token)
+    return None
+
+
 def _external_workspace_git_block(
     self, raw_cmd: Any, work_dir: pathlib.Path,
 ) -> ToolResult | None:
@@ -739,505 +778,12 @@ def _external_workspace_git_block(
     )
 
 
-def _external_runtime_protected_paths(
-    self, binding: Any = None,
-) -> tuple[list, list, list, list]:
-    """Ouroboros runtime roots that an EXTERNAL-workspace task must not touch via
-    shell (system repo + EVERY data drive incl child/budget + owner credential
-    locations) plus the task's own exempt task_drive/artifact_store roots. Returns
-    (protected_texts, allowed_texts, protected_paths, allowed_paths): the *_texts
-    feed the embedded-string boundary check; the *_paths feed token resolution
-    (relative->cwd, ~->home, symlink canonicalization) so relative/symlink bypasses
-    are closed. SSOT for the read + write guards."""
-    meta = getattr(self._ctx, "task_metadata", {}) if isinstance(getattr(self._ctx, "task_metadata", {}), dict) else {}
-    protected_values = [getattr(self._ctx, "system_repo_dir", None) or getattr(self._ctx, "repo_dir", None),
-                        getattr(self._ctx, "drive_root", None)]
-    try:
-        from ouroboros.config import DATA_DIR as _PARENT_DATA_DIR
-        protected_values.append(_PARENT_DATA_DIR)
-    except Exception:
-        pass
-    for _dk in ("drive_root", "child_drive_root", "headless_child_drive_root", "budget_drive_root"):
-        if meta.get(_dk):
-            protected_values.append(meta.get(_dk))
-    # Owner/runtime credential locations, as ABSOLUTE paths. Blocking by
-    # absolute containment (not a substring marker) means the OWNER's personal
-    # secrets (~/.ssh/id_rsa, ~/.aws) are off-limits while a
-    # project-relative file merely NAMED like a credential (site/.ssh/config, a
-    # project .env) stays the task's own — and a non-path token like
-    # "os.environ" can never spuriously match.
-    try:
-        from ouroboros.credential_shapes import owner_credential_locations
-
-        owner_paths, owner_configs = owner_credential_locations(pathlib.Path.home())
-        protected_values.extend(owner_paths)
-    except Exception:
-        owner_configs = []
-    def _text_forms(value: Any) -> list:
-        # Both the as-given and the symlink-resolved form, so a command using
-        # /var/... matches a root resolved to /private/var/... (macOS) and vice
-        # versa. In production ($HOME paths) the two coincide.
-        out = []
-        for variant in (value, None):
-            try:
-                p = pathlib.Path(value)
-                if variant is None:
-                    p = p.resolve(strict=False)
-                t = str(p).replace("\\", "/").lower().rstrip("/")
-                if t and t not in out:
-                    out.append(t)
-            except Exception:
-                continue
-        return out
-
-    def _resolved(value: Any):
-        try:
-            return pathlib.Path(value).resolve(strict=False)
-        except Exception:
-            return None
-
-    protected_texts: list = []
-    protected_paths: list = []
-    for v in protected_values:
-        if not v:
-            continue
-        for t in _text_forms(v):
-            if t not in protected_texts:
-                protected_texts.append(t)
-        rp = _resolved(v)
-        if rp is not None and rp not in protected_paths:
-            protected_paths.append(rp)
-    allowed_texts = [text for path in owner_configs for text in _text_forms(path)]
-    allowed_paths: list = []  # owner_configs are exact files, not allowed subtrees
-    task_id = task_id_for_artifacts(self._ctx)
-    for data_root in (getattr(self._ctx, "drive_root", None), meta.get("drive_root"), meta.get("budget_drive_root")):
-        if not data_root:
-            continue
-        for rp_src in (pathlib.Path(data_root) / "task_drives" / task_id, task_artifact_dir_path(pathlib.Path(data_root), task_id, create=False)):
-            for t in _text_forms(rp_src):
-                if t not in allowed_texts:
-                    allowed_texts.append(t)
-            rp = _resolved(rp_src)
-            if rp is not None and rp not in allowed_paths:
-                allowed_paths.append(rp)
-    # An explicitly selected system repo or exact skill payload is an
-    # authorized process target. Keep every other runtime/credential root
-    # protected, but do not re-block that exact binding merely because the
-    # task also has an external workspace focus.
-    for item in _registry()._binding_items(binding):
-        if item.root not in {"system_repo", "skill_payload"}:
-            continue
-        selected = pathlib.Path(item.base_path)
-        for t in _text_forms(selected):
-            if t not in allowed_texts:
-                allowed_texts.append(t)
-        rp = _resolved(selected)
-        if rp is not None and rp not in allowed_paths:
-            allowed_paths.append(rp)
-    return protected_texts, allowed_texts, protected_paths, allowed_paths
 
 
-def _external_shell_runtime_or_secret_block(
-    self, raw_cmd: Any, cmd_path_lower: str, args: Dict[str, Any],
-    work_dir: Optional[pathlib.Path] = None,
-    binding: Any = None,
-) -> ToolResult | None:
-    """Apply the external-task boundary to shared physical inspection targets.
-
-    File tools remain the primary resolved access path. Shell inspection is
-    best-effort over explicit operands/literals; it cannot prove arbitrary
-    computed paths. All shell lanes agree about cwd, wrappers and symlinks,
-    while external tasks retain their own allowed/protected resource roots.
-    """
-    from ouroboros.tools.shell_guards import shell_inspection_paths
-
-    _, allowed_texts, protected_paths, allowed_paths = _external_runtime_protected_paths(self, binding)
-    if work_dir is None:
-        work_dir = _resolved_shell_cwd(self, args, binding)
-        if isinstance(work_dir, ToolResult):
-            return work_dir
-    for target in shell_inspection_paths(
-        raw_cmd, work_dir=pathlib.Path(work_dir), drive_root=self._ctx.drive_root,
-    ):
-        if str(target).replace("\\", "/").lower() in allowed_texts:
-            continue
-        if any(target.is_relative_to(root) for root in allowed_paths):
-            continue
-        if any(target.is_relative_to(root) for root in protected_paths):
-            return ToolResult(
-                status="blocked",
-                code="WORKSPACE_BLOCKED",
-                text=(
-                    "⚠️ WORKSPACE_SHELL_BLOCKED: shell command targets the Ouroboros runtime "
-                    "(system repo / data drive) or an owner credential path. External-workspace "
-                    "tasks may not read or write those; use the gated read_file tool for any "
-                    "inspection you need. Run your command against the task's own surfaces "
-                    "instead: the active workspace root (e.g. /app) or scratch such as /tmp."
-                ),
-            )
-    return None
 
 
-def _protected_shell_block(
-    self, raw_cmd, cmd_path_lower, binding, acting_self_worktree, writeish,
-) -> ToolResult | None:
-    """Apply payload/core write guards to the selected physical target."""
-    items = _registry()._binding_items(binding)
-    targets_skill = bool(items) and all(item.root == "skill_payload" for item in items)
-    targets_system = (
-        _registry()._binding_set_targets_system_repo(self._ctx, binding)
-        or acting_self_worktree
-    )
-    if (targets_skill or targets_system) and any(
-        name in cmd_path_lower
-        for name in (
-            *_registry().SKILL_PAYLOAD_CONTROL_FILENAMES,
-            *(_registry().SKILL_PAYLOAD_CONTROL_DIRNAMES - {"__pycache__"}),
-        )
-    ) and writeish:
-        return ToolResult(
-            status="blocked",
-            code="SAFETY_VIOLATION",
-            text=(
-                "⚠️ SAFETY_VIOLATION: Shell command would modify a skill "
-                "provenance / launcher seed / dependency marker (.clawhub.json, "
-                ".ouroboroshub.json, .self_authored.json, SKILL.openclaw.md, .seed-origin, "
-                ".ouroboros_env, node_modules). "
-                "Use marketplace lifecycle flows or edit user-authored "
-                "payload files instead."
-            ),
-        )
-    if _authorized_managed_update_resolver(self._ctx):
-        return None
-    if targets_system and _registry().shell_writer_targets_protected(raw_cmd):
-        return ToolResult(
-            status="blocked",
-            code="SAFETY_VIOLATION",
-            text=(
-                "⚠️ CRITICAL SAFETY_VIOLATION: Shell command would modify "
-                "a protected core/contract/release file. Protected: "
-                + ", ".join(sorted(_registry().PROTECTED_RUNTIME_PATHS))
-            ),
-        )
-    if targets_system:
-        for cf in _registry().PROTECTED_RUNTIME_PATHS_LOWER:
-            # The MODE-AWARE composition fact, not the coarse legacy scan: a
-            # pure read that merely mentions a protected name (`grep -n delete
-            # ouroboros/safety.py`, `sed -n 1,40p BIBLE.md`, a python open('r'))
-            # is not a modification; every write shape still blocks here.
-            if cf in cmd_path_lower and writeish:
-                return ToolResult(
-                    status="blocked",
-                    code="SAFETY_VIOLATION",
-                    text=(
-                        "⚠️ CRITICAL SAFETY_VIOLATION: Shell command would modify "
-                        "a protected core/contract/release file. Protected: "
-                        + ", ".join(sorted(_registry().PROTECTED_RUNTIME_PATHS))
-                    ),
-                )
-    return None
 
 
-def _workspace_shell_write_block(
-    self,
-    args: Dict[str, Any],
-    raw_cmd: Any,
-    cmd_path_lower: str,
-    explicit_write_targets: list[str],
-    target_rows: list,
-    executable_path_tokens: set[str],
-    runtime_mode: str,
-    acting_subagent: bool,
-    binding: Any,
-) -> ToolResult | None:
-    """Authorize root writes by resource; keep children inside their write surface."""
-
-    items = _registry()._binding_items(binding)
-    if not items:
-        return ToolResult(
-            status="blocked",
-            code="WORKSPACE_BLOCKED",
-            text="⚠️ WORKSPACE_SHELL_BLOCKED: process target was not resolved.",
-        )
-    deliverables_block = ToolResult(
-        status="blocked",
-        code="WORKSPACE_BLOCKED",
-        text="⚠️ WORKSPACE_SHELL_BLOCKED: write-like shell target is not an allowed Deliverables path.",
-    )
-    selected = items[0]
-    work_dir = pathlib.Path(selected.target_path).resolve(strict=False)
-    selected_base = pathlib.Path(selected.base_path).resolve(strict=False)
-    allowed_relative_roots = list(dict.fromkeys((selected_base, work_dir)))
-    allowed_data_roots: list[pathlib.Path] = []
-    meta = (
-        getattr(self._ctx, "task_metadata", {})
-        if isinstance(getattr(self._ctx, "task_metadata", {}), dict)
-        else {}
-    )
-    for data_root in (getattr(self._ctx, "drive_root", None), meta.get("budget_drive_root")):
-        if not data_root:
-            continue
-        task_id = task_id_for_artifacts(self._ctx)
-        for root_path in (
-            pathlib.Path(data_root) / "task_drives" / task_id,
-            task_artifact_dir_path(pathlib.Path(data_root), task_id, create=False),
-        ):
-            resolved_root = pathlib.Path(root_path).resolve(strict=False)
-            if resolved_root not in allowed_data_roots:
-                allowed_data_roots.append(resolved_root)
-    if selected.root in {"task_drive", "artifact_store"}:
-        allowed_data_roots.append(selected_base)
-    # Executor-backed commands use backend path spellings (for example
-    # ``/deliverables/report.html``), while the policy roots above are host
-    # paths. Keep the configured Deliverables root separate from the generic
-    # allow-root list: every descendant must still pass the target-specific
-    # user-files policy (hidden/credential/symlink checks) below.
-    deliverables_root_lexical: pathlib.Path | None = None
-    deliverables_root_lexical_alias: pathlib.Path | None = None
-    deliverables_root_physical: pathlib.Path | None = None
-    try:
-        candidate_deliverables = _registry().resource_root_path(self._ctx, "deliverables")
-        # Retain the configured spelling even when the root itself is
-        # malformed or protected. Descendants must then take the
-        # target-specific path and fail closed before a broader
-        # workspace/data allow-root can accidentally admit them.
-        deliverables_root_physical = pathlib.Path(candidate_deliverables).resolve(strict=False)
-        deliverables_root_lexical = _registry()._deliverables_root_lexical()
-        deliverables_root_lexical_alias = _registry()._deliverables_root_lexical_alias()
-    except (OSError, TypeError, ValueError, RuntimeError):
-        pass
-
-    def _deliverables_target_decision(path: pathlib.Path) -> bool | None:
-        """Decide Deliverables descendants before generic root admission.
-
-        Deliverables can be configured inside the selected workspace.  A
-        generic workspace-root fast path must not skip the user-files
-        hidden/credential/symlink checks for such a target. ``None`` means
-        that the candidate is outside Deliverables and may use the normal
-        workspace-root checks.
-        """
-        if deliverables_root_lexical is None:
-            return None
-        try:
-            lexical_path = pathlib.Path(path).expanduser()
-            if not lexical_path.is_absolute():
-                lexical_path = pathlib.Path(os.path.abspath(lexical_path))
-            in_deliverables = (
-                deliverables_root_lexical is not None
-                and (
-                    lexical_path.is_relative_to(deliverables_root_lexical)
-                    or _registry()._lexical_path_is_relative_to_casefold(lexical_path, deliverables_root_lexical)
-                    or _registry()._lexical_path_is_relative_to_casefold(
-                        lexical_path, deliverables_root_lexical_alias,
-                    )
-                    or _registry()._lexical_path_is_relative_to_casefold(
-                        lexical_path, deliverables_root_physical,
-                    )
-                )
-            )
-        except (OSError, TypeError, ValueError):
-            return False
-        resolved_path = pathlib.Path(path).resolve(strict=False)
-        physically_in_deliverables = (
-            deliverables_root_physical is not None
-            and (
-                resolved_path.is_relative_to(deliverables_root_physical)
-                or _registry()._path_is_relative_to_casefold(
-                    resolved_path, deliverables_root_physical,
-                )
-            )
-        )
-        if not in_deliverables and not physically_in_deliverables:
-            return None
-        return self._deliverables_shell_target_allowed(
-            resolved_path,
-            lexical_candidate=lexical_path,
-        )
-
-    if direct_target_block := _registry().direct_deliverable_target_block(
-        self._ctx,
-        work_dir,
-        [list(row[0]) for row in target_rows],
-        deliverables_root_physical,
-        _deliverables_target_decision,
-    ):
-        return ToolResult(
-            status="blocked",
-            code="WORKSPACE_BLOCKED",
-            text=direct_target_block,
-        )
-
-    allowed_write_roots = [*allowed_relative_roots, *allowed_data_roots]
-    # The root's existing user_files authority is independent of cwd.
-    # Acting children retain their isolated write surface in every mode.
-    pro_workspace_passthrough = (
-        str(runtime_mode or "").strip().lower() == "pro" and not acting_subagent
-    )
-    protected_roots = [
-        getattr(self._ctx, "system_repo_dir", None) or getattr(self._ctx, "repo_dir", None),
-        getattr(self._ctx, "drive_root", None),
-    ]
-    try:
-        from ouroboros.config import DATA_DIR as parent_data_dir
-
-        protected_roots.append(parent_data_dir)
-    except Exception:
-        pass
-    for key in ("drive_root", "child_drive_root", "headless_child_drive_root", "budget_drive_root"):
-        if meta.get(key):
-            protected_roots.append(meta.get(key))
-    allowed_texts = [
-        str(root).replace("\\", "/").lower().rstrip("/")
-        for root in [*allowed_relative_roots, *allowed_data_roots]
-    ]
-    protected_paths = []
-    for root_value in protected_roots:
-        try:
-            root_path = pathlib.Path(root_value).resolve(strict=False)
-        except Exception:
-            continue
-        protected_paths.append(root_path)
-        if any(root_path.is_relative_to(root) for root in allowed_relative_roots):
-            continue
-        root_text = str(root_path).replace("\\", "/").lower()
-        if _command_mentions_protected_root(cmd_path_lower, root_text) and not any(
-            _command_mentions_protected_root(cmd_path_lower, text)
-            for text in allowed_texts
-        ):
-            return _workspace_write_block_runtime_result(root_path)
-    # Deliverables is a TARGET policy: a merely mentioned path takes no
-    # Deliverables decision, while every candidate keeps the
-    # protected-runtime-root scans below.
-    row_cwds = _registry().sequential_effective_cwds(target_rows, work_dir)
-    for token_text, is_write, row_index in _workspace_write_candidates(
-        target_rows, explicit_write_targets, raw_cmd,
-    ):
-        candidate_cwd = row_cwds[row_index] if 0 <= row_index < len(row_cwds) else work_dir
-        decide_deliverables = (
-            _deliverables_target_decision if is_write else _no_deliverables_decision
-        )
-        if token_text in executable_path_tokens and not is_write:
-            continue
-        candidates = [token_text] if _registry().is_absolute_path_text(token_text) else []
-        if token_text.startswith(("./", "../")):
-            candidates.append(token_text)
-        elif (
-            token_text
-            and not token_text.startswith("-")
-            and token_text not in {"|", "&&", "||", ";", ">", ">>", "<", "<<"}
-            and (
-                token_text in explicit_write_targets
-                or "/" in token_text
-                or "\\" in token_text
-            )
-        ):
-            candidates.append(token_text)
-        for candidate in candidates:
-            root_write_allowed = pro_workspace_passthrough
-            if is_write and not acting_subagent and not root_write_allowed:
-                try:
-                    _registry().build_resolved_resource_binding(
-                        self._ctx, root="user_files", operation="write",
-                        path=str((candidate_cwd / pathlib.Path(candidate)).resolve(strict=False)),
-                    )
-                    root_write_allowed = True
-                except (OSError, ValueError, RuntimeError):
-                    pass
-            if candidate == "/dev/null":
-                continue
-            if _registry().is_absolute_path_text(candidate):
-                mapped_executor_lexical = _executor_backend_candidate_path(self._ctx, candidate)
-                if mapped_executor_lexical is not None:
-                    mapped_executor = mapped_executor_lexical.resolve(strict=False)
-                    deliverables_decision = decide_deliverables(mapped_executor_lexical)
-                    if deliverables_decision is not None:
-                        if deliverables_decision:
-                            continue
-                        return deliverables_block
-                    if any(mapped_executor.is_relative_to(root) for root in allowed_write_roots):
-                        continue
-                    for protected_path in protected_paths:
-                        try:
-                            mapped_executor.relative_to(protected_path)
-                            return _workspace_write_block_runtime_result(mapped_executor, candidate)
-                        except Exception:
-                            pass
-                if _executor_backend_candidate_allowed(
-                    self._ctx,
-                    candidate,
-                    allowed_write_roots,
-                ):
-                    continue
-                windows_drive_path = bool(re.match(r"^[A-Za-z]:[\\/]", candidate))
-                unc_path = candidate.startswith("\\\\")
-                # On the native Windows host, resolve drive paths exactly as
-                # POSIX paths are resolved below. This canonicalizes directory
-                # symlinks/junctions before containment: a workspace alias stays
-                # allowed, while an in-workspace spelling whose nested link exits
-                # the root is blocked. Keep lexical handling for foreign Windows
-                # spellings seen on POSIX and for UNC paths (which may require a
-                # network lookup merely to evaluate the guard).
-                if (not windows_drive_path and not unc_path) or (
-                    os.name == "nt" and windows_drive_path
-                ):
-                    try:
-                        resolved = pathlib.Path(candidate).resolve(strict=False)
-                    except Exception:
-                        continue
-                    # Keep the pre-resolution spelling so a symlink child
-                    # cannot resolve into another allowed root and bypass
-                    # the Deliverables policy.
-                    deliverables_decision = decide_deliverables(pathlib.Path(candidate))
-                    if deliverables_decision is not None:
-                        if deliverables_decision:
-                            continue
-                        return deliverables_block
-                    if any(resolved.is_relative_to(root) for root in allowed_write_roots):
-                        continue
-                    for protected_path in protected_paths:
-                        try:
-                            resolved.relative_to(protected_path)
-                            return _workspace_write_block_runtime_result(resolved, candidate)
-                        except Exception:
-                            pass
-                    if is_write and not root_write_allowed:
-                        return _workspace_write_block_outside_root_result(resolved, work_dir, candidate)
-                    continue
-                deliverables_decision = decide_deliverables(pathlib.Path(candidate))
-                if deliverables_decision is not None:
-                    if deliverables_decision:
-                        continue
-                    return deliverables_block
-                if any(_registry().path_text_is_inside(candidate, root) for root in allowed_write_roots):
-                    continue
-                for protected_path in protected_paths:
-                    if _registry().path_text_is_inside(candidate, protected_path):
-                        return _workspace_write_block_runtime_result(candidate)
-                if is_write and not root_write_allowed:
-                    return _workspace_write_block_outside_root_result(candidate, work_dir)
-                continue
-            resolved = (candidate_cwd / pathlib.Path(candidate)).resolve(strict=False)
-            # The lexical relative spelling is authoritative for detecting
-            # a Deliverables-origin target; the helper then canonicalizes
-            # it and rejects symlink escapes.
-            deliverables_decision = decide_deliverables(
-                candidate_cwd / pathlib.Path(candidate)
-            )
-            if deliverables_decision is not None:
-                if deliverables_decision:
-                    continue
-                return deliverables_block
-            if any(resolved.is_relative_to(root) for root in allowed_write_roots):
-                continue
-            for protected_path in protected_paths:
-                try:
-                    resolved.relative_to(protected_path)
-                    return _workspace_write_block_runtime_result(resolved, candidate)
-                except Exception:
-                    pass
-            if is_write and not root_write_allowed:
-                return _workspace_write_block_outside_root_result(resolved, work_dir, candidate)
-    return None
 
 
 def _shell_git_and_runtime_block(
@@ -1250,8 +796,6 @@ def _shell_git_and_runtime_block(
     runtime is protected (Q4=A unwind, 2026-08-08) — while raw non-git shell
     in external workspaces still cannot read the runtime/secrets;
     self_worktree keeps the strict read-only git policy."""
-    from ouroboros.git_shell_policy import is_readonly_git_command
-
     if not _registry().shell_argv(raw_cmd):
         return None
     if workspace_mode and not acting_self_worktree:
@@ -1260,24 +804,6 @@ def _shell_git_and_runtime_block(
             return work_dir
         if git_block := _external_workspace_git_block(self, raw_cmd, work_dir):
             return git_block
-        # Even READ-only, non-git shell (cat/head/grep/python) must not
-        # reach the runtime or secrets — the raw-shell bypass of the
-        # user_files path guard stays closed (top-level external tasks).
-        # READ-ONLY GIT IS EXEMPT (owner Q4=A "read-only everywhere"; the
-        # f14baf8f false-block class): `git -C <system repo>
-        # status|log|diff|show|rev-parse` is the vcs_status-equivalent
-        # lane, already readable via gated read_file. The secret surface
-        # stays closed: the exemption is ALL-or-nothing per segment
-        # (`git status && cat <data>/settings.json` is not exempt) and
-        # write-aware — `is_readonly_git_command` refuses `--output=` and
-        # `--no-index`, so neither a runtime write nor a settings dump
-        # can ride "read-only git".
-        if _registry().is_external_workspace(self._ctx) and not is_readonly_git_command(raw_cmd):
-            if ext_block := _external_shell_runtime_or_secret_block(
-                self, raw_cmd, cmd_path_lower, args, work_dir=work_dir,
-                binding=binding,
-            ):
-                return ext_block
         return None
     if workspace_mode:
         # Acting self_worktree: a checkout of the Ouroboros repo itself; the
@@ -1352,8 +878,6 @@ def _shell_git_and_runtime_block(
     # race): git via wrapper (nice/xargs) or interpreter code is not
     # classified here; the LLM safety layer still reviews intent, and the
     # light-mode post-exec dirtiness tripwire backstops.
-    if "git" not in cmd_path_lower:
-        return None
     work_dir = _resolved_shell_cwd(self, args, binding)
     if isinstance(work_dir, ToolResult):
         return work_dir

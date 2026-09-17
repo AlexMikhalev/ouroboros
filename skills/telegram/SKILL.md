@@ -1,7 +1,7 @@
 ---
 name: telegram
 description: Owner-only Telegram text bridge and Mini App gateway for the existing Ouroboros interface.
-version: 1.2.1
+version: 1.2.3
 type: extension
 entry: plugin.py
 plugin_api: "2.0"
@@ -47,6 +47,8 @@ cancelled).
 
 Version 1.2.1 marks questions that wait for an owner answer and clears the
 waiting line after an answer submitted through Telegram.
+Version 1.2.3 serves the stored settings on GET settings/save so the Settings
+form shows saved values before Save, and shortens the four long option labels.
 
 The Mini App exposes the unchanged Ouroboros SPA through the established
 owner-authenticated sidecar and a pinned Cloudflare Quick Tunnel. It is enabled

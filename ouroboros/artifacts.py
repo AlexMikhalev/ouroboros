@@ -142,6 +142,13 @@ def stage_task_attachments(
     declared = list(attachments) if isinstance(attachments, list) else []
     if not declared:
         return []
+    try:
+        from ouroboros.config import get_runtime_mode
+        from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+
+        allow_owner_sensitive = mode_has_unrestricted_agency(get_runtime_mode())
+    except Exception:
+        allow_owner_sensitive = False
 
     def _display_label(item: Any, raw_path: str, ordinal: int) -> str:
         if isinstance(item, dict):
@@ -170,14 +177,8 @@ def stage_task_attachments(
             return False
 
     # SSOT secret detection: reuse the shared credential-shape vocabulary so a
-    # credential SOURCE (e.g. ~/.ssh/id_rsa, credentials.json, *.pem) is never copied in.
-    from ouroboros.credential_shapes import (
-        BENIGN_DOT_NAMES,
-        CREDENTIAL_COMPONENT_NAMES,
-        CREDENTIAL_FILE_NAMES,
-        CREDENTIAL_FILE_SUFFIXES,
-        CREDENTIAL_NAME_RE,
-    )
+    # credential SOURCE (e.g. ~/.ssh/id_rsa, credentials.json) is never copied in.
+    from ouroboros.credential_shapes import user_files_mutation_shape_reason
 
     # G10 (capinv-447): BOTH attachment routes get ONE policy. A path-selected
     # attachment is judged on its host path; a /api/chat/upload byte upload sits
@@ -195,36 +196,23 @@ def stage_task_attachments(
 
     def _secret_source_reason(src: pathlib.Path) -> str:
         """Rule-named reason the source must not be staged, or ``""``."""
+        from ouroboros.workspace_patch_rules import _sensitive_untracked_reason
+
         if _uploads_root is not None:
             try:
                 src.relative_to(_uploads_root)
             except ValueError:
                 pass
             else:
-                from ouroboros.workspace_patch_rules import _sensitive_untracked_reason
-
                 original = _upload_name_re.sub("", src.name)
                 reason = _sensitive_untracked_reason(original)
                 return f"uploaded file name {original!r}: {reason}" if reason else ""
-        for part in src.parts:
-            part_lower = part.lower()
-            if part_lower in CREDENTIAL_COMPONENT_NAMES:
-                return f"credential/control directory component {part!r}"
-            # DEFAULT-DENY dotted components: a non-allowlisted dotted SOURCE component is
-            # potentially credential-bearing, so an enumerated-blocklist gap (e.g.
-            # ~/.terraform.d/credentials.tfrc.json) can't auto-stage a secret. Owner-
-            # supplied attachments only — defense-in-depth, not a live agent-exfil path.
-            if part.startswith(".") and part_lower not in BENIGN_DOT_NAMES:
-                return f"non-allowlisted hidden path component {part!r}"
+        physical_reason = user_files_mutation_shape_reason(src, pathlib.Path.home())
+        if physical_reason:
+            return physical_reason
         name = src.name
-        name_lower = name.lower()
-        if name_lower in CREDENTIAL_FILE_NAMES:
-            return f"credential-shaped file name {name!r}"
-        if CREDENTIAL_NAME_RE.search(name):
-            return f"credential-shaped token in file name {name!r}"
-        if name_lower.endswith(CREDENTIAL_FILE_SUFFIXES):
-            return f"private key / certificate suffix on {name!r}"
-        return ""
+        reason = _sensitive_untracked_reason(name)
+        return f"file name {name!r}: {reason}" if reason else ""
 
     try:
         artifact_root = task_artifact_dir_path(drive_root, task_id, create=False).resolve(strict=False)
@@ -264,7 +252,7 @@ def stage_task_attachments(
             if not source.is_file():
                 manifest.append(_rejected(ordinal, label, "source_not_file"))
                 continue
-            if secret_rule := _secret_source_reason(source):
+            if (secret_rule := _secret_source_reason(source)) and not allow_owner_sensitive:
                 log.info("stage_task_attachments: skipped secret source %s (%s)", source.name, secret_rule)
                 # Reason stays a closed vocabulary; the RULE that fired is named
                 # separately so the owner sees exactly why (G10, capinv-447).
@@ -649,6 +637,12 @@ def artifact_store_path_block_reason(
 ) -> str:
     """Return a block reason for task-artifact control/provenance paths."""
 
+    from ouroboros.config import get_runtime_mode
+    from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+
+    if mode_has_unrestricted_agency(get_runtime_mode()):
+        return ""
+
     try:
         candidate = pathlib.Path(path)
         if base_path is not None:
@@ -661,9 +655,11 @@ def artifact_store_path_block_reason(
         parts = candidate.parts
     except TypeError:
         parts = (str(path),)
-    for part in parts:
-        if part.startswith("."):
-            return "artifact_store hidden/control metadata paths are reserved"
+    from ouroboros.headless import SCRATCH_MANIFEST_NAME
+
+    if any(part in {_ARTIFACT_MANIFEST, _ARTIFACT_MANIFEST + ".lock", SCRATCH_MANIFEST_NAME}
+           for part in parts):
+        return "artifact_store task metadata paths are reserved"
     if parts == ("verification_receipts.jsonl",):
         return "artifact_store verification receipt authority path is reserved"
     return ""
@@ -1031,6 +1027,12 @@ def delegated_capture_read_target(
     the capture prefix (the owning task's own capture dir, never a broader
     surface) re-anchor here. Returns None when the path is not a capture path
     or the base already IS canonical (ordinary single-drive tasks).
+
+    This anchor is deliberately OWNER-ONLY: it rebinds the caller's own
+    ``<task_id>`` prefix. A capture the ORPHAN disposition rule authorizes
+    lives under ANOTHER task's prefix and is resolved by the sibling
+    ``delegate_shared.orphan_capture_read_target``, which asks
+    ``orphan_disposition_status`` before returning a path.
     """
     prefix = DELEGATED_CAPTURE_PREFIX
     if rel_text != prefix and not rel_text.startswith(prefix + "/"):

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
 import math
-import os
 import pathlib
-from typing import Any, Dict, List, Literal, Mapping, MutableSet, Optional, Sequence, Tuple
+from dataclasses import asdict, replace
+from typing import Any, Callable, Dict, List, Literal, Mapping, MutableSet, Optional, Sequence, Tuple
 
 from ouroboros.context_budget import (
     CONTEXT_OVERFLOW_CODES as _TYPED_CONTEXT_OVERFLOW_CODES,
@@ -25,6 +26,7 @@ from ouroboros.context_budget import (
     _UnsafeVisual,
 )
 from ouroboros.anthropic_native_custody import anthropic_tool_unit_active, custody_private_key
+from ouroboros.config import runtime_setting
 
 log = logging.getLogger(__name__)
 
@@ -187,7 +189,7 @@ def _capsule_metadata(message: Mapping[str, Any]) -> Tuple[bool, Optional[Dict[s
         str(block.get("type") or "") == "text"
         and version == _CAPSULE_VERSION
         and generation >= 1
-        and str(meta.get("retention") or "") == "summarized"
+        and str(meta.get("retention") or "") in {"summarized", "source_view"}
         and bool(str(meta.get("unit_id") or "").strip())
         and str(meta.get("visible_sha256") or "") == _sha256(text)
         and len(source_unit_sha256) == 64 and set(source_unit_sha256) <= _SHA256_HEX
@@ -387,7 +389,7 @@ def _summarizer_spec() -> Dict[str, Any]:
     from ouroboros.config import get_light_model
 
     model = str(get_light_model() or "")
-    use_local = os.environ.get("USE_LOCAL_LIGHT", "").strip().lower() in {"1", "true", "yes", "on"}
+    use_local = runtime_setting("USE_LOCAL_LIGHT", "").strip().lower() in {"1", "true", "yes", "on"}
     route: Dict[str, Any] = {"model": model, "use_local": use_local}
     if use_local:
         route.update({"provider": "local", "resolved_model": model})
@@ -750,12 +752,8 @@ def _persist_reclaim_checkpoint(
     task_id: str,
 ) -> Optional[Dict[str, Any]]:
     from ouroboros.observability import new_call_id, persist_call
-    payload = {"messages": list(messages), "request": {
-            "route_fp": request.route_fp, "round_id": request.round_id,
-            "transcript_sha256": request.transcript_sha256,
-            "measurement_basis": request.measurement_basis, "measurement_density": float(request.measurement_density),
-            "reclaim_goal_tokens": int(request.reclaim_goal_tokens),
-        },
+    payload = {"messages": list(messages), "request": asdict(request),
+        "observed_view_revision": context_reclaim_transcript_sha256(messages),
         "selection_fingerprint": selection.fingerprint, "selected_unit_ids": [item.unit.unit_id for item in selection.units],
     }
     try:
@@ -794,13 +792,18 @@ def _capsule_message(
     parts: Sequence[_Part],
     checkpoint_ref: Mapping[str, Any],
     request: ContextReclaimRequest,
+    *, retention: str = "summarized",
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     unit = selected.unit
     generation = unit.generation + 1
-    text = (
-        f"[Context capsule generation {generation}; exact source retained by checkpoint]\n"
-        + str(summary or "").strip()
-    )
+    label = ("Historical source: read-only projection, not live assistant/tool turns; "
+             "private transport data omitted; exact original retained by checkpoint"
+             if retention == "source_view" else
+             f"Context capsule generation {generation}; exact source retained by checkpoint")
+    text = f"[{label}]\n" + str(summary or "").strip()
+    if retention == "source_view":
+        address = {"checkpoint_ref": dict(checkpoint_ref), "unit_id": unit.unit_id, "raw_sha256": unit.raw_sha256}
+        text = f"[{label}]\nSource reference: {_canonical_json(address)}\n" + str(summary or "").strip()
     source_hashes = _unique_strings([
         *unit.lineage_hashes, unit.raw_sha256, unit.source_sha256,
         *(part.sha256 for part in parts),
@@ -809,7 +812,7 @@ def _capsule_message(
     metadata: Dict[str, Any] = {
         "version": _CAPSULE_VERSION,
         "generation": generation,
-        "retention": "summarized",
+        "retention": retention,
         "unit_id": unit.unit_id,
         "source_unit_sha256": unit.raw_sha256,
         "source_length_chars": len(unit.source_text),
@@ -851,6 +854,7 @@ def _receipt(
     goal_reached: bool = False,
     checkpoint_ref: Optional[Dict[str, Any]] = None,
     capsule_refs: Sequence[Dict[str, Any]] = (),
+    **view_facts: Any,
 ) -> ContextReclaimReceipt:
     return ContextReclaimReceipt(
         status=status,
@@ -862,7 +866,165 @@ def _receipt(
         goal_reached=bool(goal_reached),
         checkpoint_ref=checkpoint_ref,
         capsule_refs=tuple(dict(item) for item in capsule_refs),
+        **view_facts,
     )
+
+
+def _view_source_messages(messages: Sequence[Mapping[str, Any]]) -> list:
+    """Compare source while ignoring only the host's cache presentation."""
+    normalized = copy.deepcopy(list(messages))
+    first_user = next((i for i, m in enumerate(normalized) if m.get("role") == "user"), None)
+    for idx, message in enumerate(normalized):
+        message.pop("cache_control", None)
+        content = message.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    block.pop("cache_control", None)
+            if ((message.get("role") == "tool" or idx == first_user) and len(content) == 1
+                    and isinstance(content[0], dict) and set(content[0]) == {"type", "text"}
+                    and content[0]["type"] == "text" and isinstance(content[0]["text"], str)):
+                message["content"] = content[0]["text"]
+    return normalized
+
+
+def _materialize_replacements(messages: list, replacements: Mapping[int, tuple]) -> tuple[list, list]:
+    """Publish complete units at their existing positions; preserve every other turn."""
+    rebuilt, capsule_refs = [], []
+    pending = dict(replacements)
+    idx = 0
+    while idx <= len(messages):
+        replacement = pending.pop(idx, None)
+        if replacement is not None:
+            end, added, refs = replacement
+            rebuilt.extend(added)
+            capsule_refs.extend(refs)
+            idx = end + 1
+        elif idx < len(messages):
+            rebuilt.append(messages[idx])
+            idx += 1
+        else:
+            break
+    return rebuilt, capsule_refs
+
+
+def _restored_source_views(refs: Sequence[Mapping[str, Any]], *, drive_root: pathlib.Path,
+                           task_id: str, request: ContextReclaimRequest) -> tuple[list, list]:
+    """Retrieve exact checkpoint-local units as source text, never live protocol turns."""
+    from ouroboros.artifacts import read_actor_source_bytes
+
+    messages, capsule_refs = [], []
+    for ref in _unique_refs(refs):
+        checkpoint = ref.get("checkpoint_ref")
+        payload = json.loads(read_actor_source_bytes(drive_root, task_id, checkpoint))
+        original = payload.get("messages") if isinstance(payload, Mapping) else None
+        if not isinstance(original, list) or not all(isinstance(m, Mapping) for m in original):
+            raise ValueError("checkpoint has no complete message source")
+        unit = next((u for u in _atomic_units(original)
+                     if u.unit_id == ref.get("unit_id") and u.raw_sha256 == ref.get("raw_sha256")), None)
+        if unit is None:
+            raise ValueError("checkpoint unit identity or full raw hash does not match")
+        unit = replace(unit, source_refs=_unique_refs([*unit.source_refs, ref]))
+        message, capsule_ref = _capsule_message(
+            _SelectedUnit(unit, 0, ""), unit.source_text, [_part(unit.unit_id, unit.source_text)],
+            checkpoint, request, retention="source_view")
+        messages.append(message)
+        capsule_refs.append(capsule_ref)
+    return messages, capsule_refs
+
+
+def _authored_view(
+    messages: list, request: ContextReclaimRequest, *, observed_messages: Optional[Sequence[Mapping[str, Any]]],
+    observed_tool_schemas: Optional[Sequence[Mapping[str, Any]]],
+    tool_schemas: Sequence[Mapping[str, Any]], fit_candidate: Optional[Callable[[list, list], Mapping[str, Any]]],
+    drive_root: pathlib.Path, task_id: str, trace_refs: Mapping[str, Any],
+) -> Tuple[list, ContextReclaimReceipt, None]:
+    """Materialize one actor's selection through the existing unit/checkpoint/capsule engine."""
+    before_sha = context_reclaim_transcript_sha256(messages)
+    observed = copy.deepcopy(list(observed_messages)) if observed_messages is not None else []
+    observed_sha = context_reclaim_transcript_sha256(observed)
+    facts = {"observed_view_revision": observed_sha, "view_revision": before_sha,
+             "schema_names": request.schema_names, "restored_unit_refs": _unique_refs(request.restore_unit_refs)}
+    if (not isinstance(request.working_note, str) or observed_messages is None or request.expected_view_revision != observed_sha
+            or _view_source_messages(messages[:len(observed)]) != _view_source_messages(observed)):
+        return messages, _receipt("binding_mismatch", before_sha=before_sha, **facts), None
+    if any(not isinstance(ref, Mapping) or not ref for ref in request.restore_unit_refs):
+        return messages, _receipt("source_unavailable", before_sha=before_sha, **facts), None
+    if not callable(fit_candidate):
+        return messages, _receipt("fit_rejected", before_sha=before_sha,
+                                  fit={"accepted": False, "reason": "fit_callback_missing"}, **facts), None
+    units = _atomic_units(observed, trace_refs_by_tool_call_id=trace_refs,
+                          measurement_density=request.measurement_density)
+    keep = set(request.keep_unit_ids) if request.keep_unit_ids is not None else {u.unit_id for u in units}
+    if not keep <= {u.unit_id for u in units}:
+        return messages, _receipt("binding_mismatch", before_sha=before_sha, **facts), None
+    authored = [u for u in units if (_capsule_metadata(observed[u.start])[1] or {}).get("authorship") == "actor"]
+    removed = [u for u in units if u.unit_id not in keep or u in authored]
+    facts["retained_unit_ids"] = tuple(u.unit_id for u in units if u not in removed)
+    visible_sources = [meta for u in units if u not in removed
+                       if (meta := _capsule_metadata(observed[u.start])[1]) and meta.get("retention") == "source_view"]
+    restore = [ref for ref in facts["restored_unit_refs"] if not any(
+        meta["unit_id"] == ref.get("unit_id") and meta["source_unit_sha256"] == ref.get("raw_sha256")
+        and meta["checkpoint_ref"] == ref.get("checkpoint_ref") for meta in visible_sources)]
+    same_note = (len(authored) == 1 and removed == authored
+                 and observed[authored[0].start]["content"][0]["text"].partition("\n")[2] == request.working_note.strip())
+    messages_unchanged = not restore and (same_note or not removed and not request.working_note.strip())
+    schemas_unchanged = (list(observed_tool_schemas) == list(tool_schemas) if observed_tool_schemas is not None
+                         else request.schema_names is None)
+    no_op = messages_unchanged and schemas_unchanged
+    if messages_unchanged:
+        facts["retained_unit_ids"] = tuple(u.unit_id for u in units)
+    checkpoint_ref, selection, capsule_refs = None, None, []
+    candidate = messages
+    if not messages_unchanged:
+        try:
+            restored, restored_capsules = _restored_source_views(
+                restore, drive_root=drive_root, task_id=task_id, request=request)
+        except (OSError, ValueError, TypeError, KeyError):
+            return messages, _receipt("source_unavailable", before_sha=before_sha, **facts), None
+        fingerprint = _sha256(_canonical_bytes({"observed": observed_sha, "removed": [u.unit_id for u in removed],
+                                               "working_note": request.working_note, "restore": restore}))
+        selection = _Selection(tuple(_SelectedUnit(u, 0, "") for u in removed), fingerprint, 0)
+        checkpoint_ref = _persist_reclaim_checkpoint(observed, request, selection,
+                                                     drive_root=drive_root, task_id=task_id)
+        if checkpoint_ref is None:
+            return messages, _receipt("checkpoint_failed", before_sha=before_sha, selection=selection, **facts), None
+        source_refs = _unique_refs([ref for u in removed for ref in (*u.source_refs, {
+            "checkpoint_ref": checkpoint_ref, "unit_id": u.unit_id, "raw_sha256": u.raw_sha256})])
+        source = [m for u in removed for m in observed[u.start:u.end + 1]]
+        combined = _unit_from_slice(source, 0, len(source) - 1, trace_refs_by_tool_call_id=trace_refs,
+                                    measurement_density=request.measurement_density)
+        combined = replace(combined, unit_id=f"view:{fingerprint}", generation=max((u.generation for u in removed), default=0),
+                           lineage_hashes=_unique_strings([h for u in removed for h in u.lineage_hashes]),
+                           source_refs=source_refs)
+        note, note_ref = _capsule_message(_SelectedUnit(combined, 0, ""), request.working_note,
+                                         [_part(combined.unit_id, combined.source_text)], checkpoint_ref, request)
+        note["content"][0]["_context_capsule"]["authorship"] = "actor"
+        replacements = {u.start: (u.end, [], []) for u in removed}
+        at = removed[0].start if removed else len(observed)
+        replacements[at] = (removed[0].end if removed else at - 1,
+                            [*restored, note], [*restored_capsules, note_ref])
+        candidate, capsule_refs = _materialize_replacements(messages, replacements)
+        facts["source_refs"] = _unique_refs([*source_refs, checkpoint_ref, *facts["restored_unit_refs"]])
+    try:
+        fit = dict(fit_candidate(copy.deepcopy(candidate), copy.deepcopy(list(tool_schemas))))
+    except Exception as exc:
+        fit = {"accepted": False, "reason": f"fit_callback_failed:{type(exc).__name__}"}
+    facts["fit"] = fit
+    if context_reclaim_transcript_sha256(messages) != before_sha:
+        return messages, _receipt("binding_mismatch", before_sha=before_sha, selection=selection,
+                                  checkpoint_ref=checkpoint_ref, **facts), None
+    if fit.get("accepted") is not True:
+        return messages, _receipt("fit_rejected", before_sha=before_sha, selection=selection,
+                                  checkpoint_ref=checkpoint_ref, **facts), None
+    after_sha = context_reclaim_transcript_sha256(candidate)
+    facts["view_revision"] = after_sha
+    reclaimed = (_context_tokens_for_messages(messages, request.measurement_density)
+                 - _context_tokens_for_messages(candidate, request.measurement_density))
+    return candidate, _receipt("no_op" if no_op else "applied", before_sha=before_sha, after_sha=after_sha,
+                               selection=selection, checkpoint_ref=checkpoint_ref, capsule_refs=capsule_refs,
+                               reclaimed_tokens=reclaimed, goal_reached=reclaimed >= request.reclaim_goal_tokens,
+                               **facts), None
 
 
 def compact_tool_history_llm(
@@ -874,8 +1036,19 @@ def compact_tool_history_llm(
     task_id: str = "context_compaction",
     trace_refs_by_tool_call_id: Optional[Mapping[str, Any]] = None,
     negative_memo: Optional[MutableSet[str]] = None,
+    observed_messages: Optional[Sequence[Mapping[str, Any]]] = None,
+    observed_tool_schemas: Optional[Sequence[Mapping[str, Any]]] = None,
+    tool_schemas: Sequence[Mapping[str, Any]] = (),
+    fit_candidate: Optional[Callable[[list, list], Mapping[str, Any]]] = None,
 ) -> Tuple[list, ContextReclaimReceipt, Optional[Dict[str, Any]]]:
-    """Reclaim atomically; ``keep_recent`` is the manual-tool retention control."""
+    """Return a candidate and receipt; the caller owns atomic view publication.
+
+    Legacy ``keep_recent`` requests use Light. An explicit ``working_note``
+    uses the actor's observed snapshot/selection, requires a non-generating prospective
+    ``fit_candidate(messages, tools)`` returning ``accepted`` plus fit facts,
+    and never calls Light. Supply observed schemas to prove a whole-view no-op
+    when selecting schemas. Missing fit evidence leaves current messages intact.
+    """
 
     before_sha = context_reclaim_transcript_sha256(messages)
     effective_request = request or ContextReclaimRequest(
@@ -890,6 +1063,12 @@ def compact_tool_history_llm(
     if str(effective_request.transcript_sha256 or "") != before_sha:
         return messages, _receipt("binding_mismatch", before_sha=before_sha), None
     _reclaim_tokens_for_byte_delta(0, effective_request.measurement_density)
+    root = pathlib.Path(drive_root) if drive_root is not None else pathlib.Path("../data").resolve(strict=False)
+    if effective_request.working_note is not None:
+        return _authored_view(messages, effective_request, observed_messages=observed_messages,
+                              observed_tool_schemas=observed_tool_schemas,
+                              tool_schemas=tool_schemas, fit_candidate=fit_candidate, drive_root=root,
+                              task_id=str(task_id or "context_compaction"), trace_refs=trace_refs_by_tool_call_id or {})
 
     memo = negative_memo if negative_memo is not None else set()
     trace_refs = trace_refs_by_tool_call_id or {}
@@ -905,7 +1084,6 @@ def compact_tool_history_llm(
     if selection is None:
         return messages, _receipt(empty_status, before_sha=before_sha), None
 
-    root = pathlib.Path(drive_root) if drive_root is not None else pathlib.Path("../data").resolve(strict=False)
     checkpoint_ref = _persist_reclaim_checkpoint(
         messages, effective_request, selection, drive_root=root, task_id=str(task_id or "context_compaction"),
     )
@@ -914,7 +1092,7 @@ def compact_tool_history_llm(
             "checkpoint_failed", before_sha=before_sha, selection=selection,
         ), None
 
-    replacements: Dict[int, Tuple[int, Dict[str, Any], Dict[str, Any]]] = {}
+    replacements: Dict[int, tuple] = {}
     memo_candidates: List[str] = []
     usage_total: Dict[str, Any] = {}
     summary_failures = 0
@@ -956,7 +1134,7 @@ def compact_tool_history_llm(
         ) >= selected.unit.context_size_tokens:
             memo_candidates.append(selected.negative_memo_key)
             continue
-        replacements[selected.unit.start] = (selected.unit.end, replacement, capsule_ref)
+        replacements[selected.unit.start] = (selected.unit.end, [replacement], [capsule_ref])
 
     if context_reclaim_transcript_sha256(messages) != before_sha:
         receipt = _receipt("binding_mismatch", before_sha=before_sha, selection=selection,
@@ -970,19 +1148,7 @@ def compact_tool_history_llm(
         receipt = _receipt(status, before_sha=before_sha, selection=selection, checkpoint_ref=checkpoint_ref)
         return messages, receipt, usage_total or None
 
-    rebuilt: List[Dict[str, Any]] = []
-    capsule_refs: List[Dict[str, Any]] = []
-    idx = 0
-    while idx < len(messages):
-        replacement = replacements.get(idx)
-        if replacement is None:
-            rebuilt.append(messages[idx])
-            idx += 1
-            continue
-        end, capsule, capsule_ref = replacement
-        rebuilt.append(capsule)
-        capsule_refs.append(capsule_ref)
-        idx = end + 1
+    rebuilt, capsule_refs = _materialize_replacements(messages, replacements)
 
     before_tokens = _context_tokens_for_messages(messages, effective_request.measurement_density)
     after_tokens = _context_tokens_for_messages(rebuilt, effective_request.measurement_density)

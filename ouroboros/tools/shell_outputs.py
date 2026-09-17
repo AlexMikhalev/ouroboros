@@ -61,6 +61,12 @@ def _protected_output_source_reason(
 ) -> str:
     """Return a block reason for protected/control-plane output sources."""
 
+    from ouroboros.config import get_runtime_mode
+    from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+
+    if mode_has_unrestricted_agency(get_runtime_mode()):
+        return ""
+
     try:
         from ouroboros.protected_artifacts import block_reason_for_path
 
@@ -492,18 +498,6 @@ def _register_process_outputs(
     else:
         prefix = "ARTIFACT_OUTPUT_NOTE"
     return "\n\n" + prefix + ":\n" + "\n".join(f"- {note}" for note in notes), failed, registered
-
-
-_SENSITIVE_OUTPUT_NAMES = frozenset({".env", ".env.local", "credentials.json", "secrets.json", "token.json"})
-
-
-_SENSITIVE_OUTPUT_SUFFIXES = (".key", ".pem", ".p12", ".pfx")
-
-
-_SENSITIVE_OUTPUT_MARKERS = ("api_key", "apikey", "access_token", "bearer_token", "credential", "password", "refresh_token", "secret")
-
-
-_SENSITIVE_OUTPUT_COMPONENT_NAMES = _SENSITIVE_OUTPUT_NAMES | frozenset({"secret", "secrets", "credential", "credentials", "token", "tokens"})
 
 
 def _sensitive_output_component_reason(parts: tuple[str, ...]) -> str:

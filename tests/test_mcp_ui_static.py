@@ -19,6 +19,11 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 WEB = REPO_ROOT / "web" / "modules"
 
 
+def _node_bin():
+    bundled = pathlib.Path.home() / ".claudexor" / "node" / "bin" / "node"
+    return str(bundled if bundled.exists() else pathlib.Path(shutil.which("node") or "node"))
+
+
 @pytest.fixture(scope="module")
 def settings_ui_source() -> str:
     return (WEB / "settings_ui.js").read_text(encoding="utf-8")
@@ -132,7 +137,7 @@ def test_settings_ui_mcp_section_describes_hot_reload(settings_ui_source: str) -
 
 def test_mcp_ui_roundtrip_preserves_environment_and_unsupported_fields():
     """Execute the real JS projection; this is not a browser/visual receipt."""
-    node = shutil.which("node")
+    node = _node_bin()
     if not node:
         pytest.skip("Node is unavailable")
     script = r'''
@@ -158,6 +163,47 @@ assert.ok(!host.innerHTML.includes('value="/project/"quoted""'));
 applyMcpSettings({ MCP_SERVERS: [{ ...server, env_from_settings: '{unfinished', args: 'unsupported' }] });
 assert.equal(collectMcpSettings().MCP_SERVERS[0].env_from_settings, '{unfinished');
 assert.equal(collectMcpSettings().MCP_SERVERS[0].args, 'unsupported');
+'''
+    result = subprocess.run([node, "--input-type=module", "-e", script], cwd=REPO_ROOT,
+                            capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr
+
+
+def test_mcp_test_button_preserves_saved_url_only_credentials():
+    """Exercise the registered click handler, not a copy of its payload expression."""
+    node = _node_bin()
+    if not node:
+        pytest.skip("Node is unavailable")
+    script = r'''
+import assert from 'node:assert/strict';
+import { applyMcpSettings } from './web/modules/mcp_settings.js';
+let click, requests = [];
+const message = { hidden: true, dataset: {} };
+const button = { disabled: false, addEventListener: (_kind, handler) => { click = handler; } };
+const card = { dataset: { mcpIndex: '0' }, querySelectorAll: () => [], querySelector: (selector) =>
+    selector === '[data-mcp-test]' ? button : selector === '[data-mcp-message]' ? message : null };
+const host = { innerHTML: '', querySelectorAll: () => [card] };
+globalThis.document = { getElementById: (id) => id === 'mcp-servers-list' ? host : null };
+globalThis.fetch = async (url, options) => {
+    if (url === '/api/mcp/status') return { ok: false };
+    assert.equal(url, '/api/mcp/test');
+    requests.push(JSON.parse(options.body));
+    return { ok: true, json: async () => ({ ok: true, tool_count: 1 }) };
+};
+for (const server of [
+    { id: 'saved', url: 'https://***@host.test/mcp', auth_token: '' },
+    { id: 'saved', url: 'https://host.test/mcp', auth_token: '***' },
+    { id: 'new', url: 'https://new:credential@host.test/mcp', auth_token: '' },
+    { id: '', url: 'https://host.test/mcp', auth_token: '' },
+]) {
+    applyMcpSettings({ MCP_SERVERS: [server] });
+    await click();
+    const body = requests.at(-1);
+    assert.equal(body.server.url, server.url);
+    assert.equal(body.server_id, requests.length <= 2 ? 'saved' : undefined);
+    assert.match(message.textContent, /Test OK/);
+    assert.equal(button.disabled, false);
+}
 '''
     result = subprocess.run([node, "--input-type=module", "-e", script], cwd=REPO_ROOT,
                             capture_output=True, text=True, timeout=15)

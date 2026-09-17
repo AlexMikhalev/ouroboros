@@ -25,6 +25,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 from ouroboros.config import WORKER_READY_MAX_ATTEMPTS, WORKER_READY_WINDOW_SEC
+from ouroboros.review_owner_custody import reconcile_confirmed_dead_review_owners
 from supervisor.state import append_jsonl
 from ouroboros.outcomes import EXECUTION_INFRA_FAILED, terminal_outcome_axes
 from ouroboros.utils import utc_now_iso
@@ -315,7 +316,8 @@ def _open_ready_slot(
 ) -> None:
     """The child confirmed ready: open the slot (if it is still ours) and verify its SHA."""
     with _queue_lock:
-        owned = _pool().WORKERS.get(wid) is slot
+        owned = (_pool().WORKERS.get(wid) is slot
+                 and not getattr(slot, "readiness_exhausted", False))
         if owned:
             slot.reaping = False
     observed_sha = str(row.get("git_sha") or "").strip()
@@ -346,7 +348,8 @@ def _release_booting_slot(
     ``died_during_boot`` carries the exit code; ``watcher_error`` carries the error type and message.
     """
     with _queue_lock:
-        owned = _pool().WORKERS.get(wid) is slot
+        owned = (_pool().WORKERS.get(wid) is slot
+                 and not getattr(slot, "readiness_exhausted", False))
         if owned:
             slot.reaping = False
     _supervisor_row({
@@ -371,8 +374,7 @@ def kill_worker_tree(pid: int, *, keep_services: bool = False) -> None:
     additionally spares the deliberately kept session services a verifier
     still needs when ONE task is cancelled or timed out; a generation change
     ends those services with the generation, so the pool paths leave it off.
-    Windows ``taskkill /T`` cannot spare anything (``platform_layer`` says so):
-    there the worker's whole tree, a daemon it spawned included, still dies.
+    The platform helper applies the same retained-subtree contract on every OS.
     """
     from ouroboros.platform_layer import kill_pid_tree
     from supervisor import queue as _q
@@ -426,12 +428,18 @@ def _replace_unready_slot(wid: int, slot: Any, owner_chat_id: int, started: floa
                     slot.reaping = False  # the crash detector recovers the dead slot
         return
     log.error("Worker %d never confirmed ready in %d attempts; slot parked until restart", wid, attempt)
+    with _queue_lock:
+        if _pool().WORKERS.get(wid) is not slot:
+            return
+        slot.readiness_exhausted = True
+        slot.reaping = True
     if owner_chat_id:
         _pool().send_with_budget(
             owner_chat_id,
             f"⚠️ Worker slot {wid} never confirmed ready in {attempt} attempts "
             f"({WORKER_READY_WINDOW_SEC:.0f}s window each); the slot is parked. Use /restart.",
         )
+    _pool().disable_exhausted_worker_pool()
 
 
 def _worker_pids_path() -> pathlib.Path:
@@ -483,11 +491,11 @@ def reap_orphaned_workers() -> int:
     try:
         from ouroboros.utils import read_json_dict
         from ouroboros.platform_layer import (
-            force_kill_pid,
             kill_process_group_id,
             process_command,
             process_group_id,
         )
+        from supervisor.queue import _retained_daemon_pids
     except Exception:
         return 0
     data = read_json_dict(_worker_pids_path()) or {}
@@ -509,9 +517,13 @@ def reap_orphaned_workers() -> int:
         if sys.executable not in cmd and "multiprocessing" not in cmd:
             continue  # PID reused by an unrelated process — do not touch it
         pgid = process_group_id(pid)
-        if pgid and pgid == pid:
+        spared = _retained_daemon_pids()
+        shares_retained_group = bool(pgid) and any(process_group_id(root) == pgid for root in spared)
+        # Capture and stop ordinary descendants before their parent disappears.
+        # This is the same selective owner as every current-worker teardown.
+        kill_worker_tree(pid)
+        if pgid and pgid == pid and not shares_retained_group:
             kill_process_group_id(pgid)  # the worker's own setsid session
-        force_kill_pid(pid)
         killed.append(pid)
     if killed:
         try:
@@ -525,7 +537,10 @@ def reap_orphaned_workers() -> int:
 
 
 @_serialized_worker_lifecycle
-def kill_workers_for_update(*, result_reason: str, terminal_status: str = "interrupted") -> List[str]:
+def kill_workers_for_update(
+    *, result_reason: str, terminal_status: str = "interrupted",
+    preserve_running_task_ids: Optional[set[str]] = None,
+) -> List[str]:
     """Stop the current pool and return anything whose death could not be proven."""
     with _queue_lock:
         fenced = list(_pool().WORKERS.values())
@@ -536,12 +551,15 @@ def kill_workers_for_update(*, result_reason: str, terminal_status: str = "inter
             terminal_status=terminal_status,
             disable_reason="managed_update",
             preserve_pending=True,
+            preserve_running_task_ids=set(preserve_running_task_ids or ()),
+            reconcile_review_custody=False,  # Final death proof below owns this batch.
         )
         if kill_ok is False:
             teardown_error = "teardown:queue_snapshot_persist_failed"
     except Exception as exc:
         teardown_error = f"teardown:{type(exc).__name__}: {exc}"
     survivors: List[str] = []
+    dead_review_pids: set[int] = set()
     for worker in fenced:
         try:
             if worker.proc.is_alive() and worker.proc.pid:
@@ -550,11 +568,10 @@ def kill_workers_for_update(*, result_reason: str, terminal_status: str = "inter
             if worker.proc.is_alive():
                 survivors.append(f"worker:{worker.proc.pid or worker.wid}")
             else:
-                _pool()._reconcile_confirmed_dead_review_owner(
-                    int(getattr(worker.proc, "pid", 0) or 0)
-                )
+                dead_review_pids.add(int(getattr(worker.proc, "pid", 0) or 0))
         except Exception as exc:
             survivors.append(f"worker:{worker.wid}:{type(exc).__name__}")
+    reconcile_confirmed_dead_review_owners(_pool().DRIVE_ROOT, dead_review_pids)
     if teardown_error:
         survivors.append(teardown_error)
     return survivors
@@ -667,3 +684,63 @@ def _spawn_worker_slot(wid: int, old: Any = None, *, ready_attempt: int = 1) -> 
     ).start()
     # Do not reset _LAST_SPAWN_TIME here; respawn grace would hide crash storms.
     return True
+
+
+def _worker_pool_execution_state(
+    pool: Any = None, *, running: Any = None,
+) -> Dict[str, Any]:
+    """Queue capacity without the separate repository-writer admission policy."""
+    pool = _pool().WORKERS if pool is None else pool
+    running = _pool().RUNNING if running is None else running
+    with _queue_lock:
+        disabled_reason = str(_pool()._WORKER_POOL_DISABLED_REASON or "")
+        worker_count = len(pool)
+        exhausted = False
+        capacity = False
+        for worker in pool.values():
+            exhausted = exhausted or bool(getattr(worker, "readiness_exhausted", False))
+            if getattr(worker, "active_capacity", True):
+                capacity = capacity or not getattr(worker, "readiness_exhausted", False)
+                continue
+            # The original stack can reclaim an exhausted replacement's reservation.
+            task_id = getattr(worker, "busy_task_id", None)
+            meta = running.get(task_id) or {}
+            wait = meta.get("owner_wait") or {}
+            if (not getattr(worker, "reaping", False)
+                    and meta.get("worker_id") == getattr(worker, "wid", None)
+                    and wait.get("state") == "waiting"
+                    and wait.get("task_attempt") == meta.get("attempt")
+                    and wait.get("source_ref")
+                    and worker.proc.is_alive()):
+                capacity = True
+        if not disabled_reason and exhausted and not capacity:
+            disabled_reason = "worker_readiness_exhausted"
+    available = worker_count > 0 and not disabled_reason
+    return {
+        "available": available,
+        "reason_code": "" if available else "worker_pool_unavailable",
+        "disabled_reason": disabled_reason or ("no_workers" if not worker_count else ""),
+        "worker_count": worker_count,
+    }
+
+
+def disable_exhausted_worker_pool() -> bool:
+    """Use the existing terminalization owner only after all recoverable capacity is gone."""
+    # Health checks must not delay event intake behind another lifecycle operation.
+    # Admission already reads exhaustion independently; cleanup retries on the next tick.
+    if not _WORKER_LIFECYCLE_LOCK.acquire(blocking=False):
+        return False
+    try:
+        with _queue_lock:
+            # A dead/finishing task may still own a saved child result. Its existing
+            # completion/reaper must settle that result before pending-only disablement.
+            if (not _pool().WORKERS or _pool().RUNNING or _pool()._worker_pool_execution_state()["disabled_reason"]
+                    != "worker_readiness_exhausted"):
+                return False
+        return _pool().kill_workers(
+            disable_reason="worker_readiness_exhausted", terminal_status="failed",
+            result_reason=("Worker startup attempts were exhausted before this task could run. "
+                           "Use /restart to restore the worker pool, then submit the task again."),
+        )
+    finally:
+        _WORKER_LIFECYCLE_LOCK.release()

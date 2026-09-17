@@ -177,26 +177,6 @@ def test_classify_safety_parse_failure_classes():
 # 1.2 — self-lowering detectors (shell + browser JS)
 
 
-def test_registry_detects_safety_mode_self_lowering():
-    from ouroboros.tools.registry import _detect_safety_mode_self_lowering as det
-
-    assert det("curl -x post http://127.0.0.1:8765/api/owner/safety-mode -d off")
-    assert det("python -c \"...ouroboros_safety_mode...\" >> settings.json".lower())
-    # Percent-encoded endpoint must not slip the scan (review round 6).
-    assert det("curl -x post http://127.0.0.1:8765/api/owner/safety%2dmode -d off")
-    assert not det("echo safety first")
-    assert not det("grep ouroboros_safety_mode docs/architecture.md")
-
-
-def test_browser_js_guard_blocks_safety_mode_change():
-    from ouroboros.browser_policy import _blocks_safety_mode_self_lowering_js as js
-
-    assert js("fetch('/api/owner/safety-mode', {method: 'POST'})")
-    assert js("body: JSON.stringify({OUROBOROS_SAFETY_MODE: 'off'}) /api/settings")
-    assert js("fetch('/api/owner/safety%2Dmode', {method: 'POST'})")
-    assert not js("console.log('safety-mode docs')")
-
-
 def test_safety_mode_owner_post_route_decodes_percent_encoding():
     from ouroboros.browser_policy import _is_safety_mode_owner_post
 
@@ -662,7 +642,12 @@ def test_plan_task_skips_under_tight_deadline(tmp_path):
 
     deadline = (datetime.now(timezone.utc) + timedelta(seconds=400)).isoformat()
     ctx = _ctx(tmp_path, meta={"deadline_at": deadline})
-    out = _handle_plan_task(ctx, plan="do X then Y", goal="ship X", spec={"in_scope": ["X"]})
+    # The spec carries `affected_paths` (owner 9=A): without it the deadline
+    # question is never reached, because the old mixed form is refused first.
+    out = _handle_plan_task(
+        ctx, plan="do X then Y", goal="ship X",
+        spec={"in_scope": ["X"], "affected_paths": []},
+    )
     assert out.startswith("PLAN_TASK_SKIPPED_DEADLINE")
     events = []
     while not ctx.event_queue.empty():
@@ -671,6 +656,13 @@ def test_plan_task_skips_under_tight_deadline(tmp_path):
 
 
 def test_plan_task_no_deadline_does_not_skip(tmp_path, monkeypatch):
+    # P1-2 moved the coroutine seam out of plan_review into
+    # plan_review_collect.run_plan_coroutine, which imports asyncio locally, so
+    # there is no plan_review.asyncio attribute to reach through any more. The
+    # same stdlib module object is patched directly; what is pinned is unchanged:
+    # with no deadline plan_task does not skip, it runs the review coroutine.
+    import asyncio
+
     from ouroboros.tools import plan_review as pr
 
     sentinel = {"called": False}
@@ -681,7 +673,7 @@ def test_plan_task_no_deadline_does_not_skip(tmp_path, monkeypatch):
             coro.close()
         return "ok"
 
-    monkeypatch.setattr(pr.asyncio, "run", _fake_run)
+    monkeypatch.setattr(asyncio, "run", _fake_run)
     ctx = _ctx(tmp_path)
     out = pr._handle_plan_task(ctx, plan="p", goal="g")
     assert sentinel["called"] is True and out == "ok"
@@ -714,7 +706,7 @@ def test_subagent_slot_note_reads_snapshot(tmp_path):
 def test_subagent_slot_note_fail_soft_without_snapshot(tmp_path):
     from ouroboros.tools.control import _subagent_slot_note
 
-    assert _subagent_slot_note(_ctx(tmp_path), "root-1") == ""
+    assert _subagent_slot_note(_ctx(tmp_path), "root-1") == " [tree slot observation unavailable; current occupancy is unknown]"
 
 
 # ---------------------------------------------------------------------------

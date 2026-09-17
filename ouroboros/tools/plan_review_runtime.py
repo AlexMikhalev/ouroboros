@@ -17,10 +17,12 @@ import inspect
 import json
 import logging
 import pathlib
+import time
 from typing import Any, Dict, List, Optional
 
 from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
 
+from ouroboros.config import EFFORT_SCALE
 from ouroboros.deadline_utils import parse_deadline_ts, utc_now
 from ouroboros.llm import LLMClient
 from ouroboros.review_execution_projection import review_executions_from_actor_usage
@@ -38,7 +40,23 @@ from ouroboros.tools.plan_review_artifacts import (  # noqa: E402, F401 - compat
     persist_wave as persist_plan_review_wave_artifact,
     read_wave as read_plan_review_wave_artifact,
 )
-PLAN_REVIEW_EFFORT = "high"
+# The one caller-facing strength axis of a review panel: the plan envelope may
+# declare the panel's effort for THIS order as the default rung of each row's
+# ladder (explicit per-row effort and compound route slugs still outrank it; the
+# owner's review-effort setting applies when nothing is declared). Owner
+# decision 2026-09-11 (batch 1/Q6, batch 2/Q3=A): the setting is the default,
+# Ouroboros may order stronger or weaker; a different strength is a different
+# envelope and re-dispatches a paid panel within OUROBOROS_REVIEW_MAX_CYCLES.
+REVIEWER_EFFORT_SCHEMA = {
+    "type": "string", "enum": list(EFFORT_SCALE),
+    "description": (
+        "Optional reviewer-panel strength for THIS order (the default rung of each "
+        "reviewer row's effort ladder; an explicit per-row effort or a compound route "
+        "slug still wins; omitted = the owner's review-effort setting). A different "
+        "strength is a different envelope: it re-dispatches a paid panel within "
+        "OUROBOROS_REVIEW_MAX_CYCLES, while the same strength replays free."
+    ),
+}
 # ``None`` means no plan-local cognition cutoff.  The substrate settles against
 # the owner deadline or shared transport bound, keeping the historical 560s
 # number from being reused as an HTTP timeout.
@@ -66,7 +84,13 @@ def _task_objective(ctx: ToolContext) -> str:
     if not isinstance(contract, dict) or not contract:
         contract = metadata.get("task_contract") if isinstance(metadata, dict) else {}
     contract = contract if isinstance(contract, dict) else {}
-    return str(contract.get("objective") or contract.get("description") or "")
+    objective = str(contract.get("objective") or contract.get("description") or "")
+    context = str(contract.get("context") or "").strip()
+    if context:  # the contract's context rides with the objective, redacted like every owner text
+        from ouroboros.observability import redact_projection
+
+        objective += f"\n\nContract context: {redact_projection(context).value}"
+    return objective
 
 
 def _governance_text(system_root: pathlib.Path, rel_path: str) -> str:
@@ -74,6 +98,19 @@ def _governance_text(system_root: pathlib.Path, rel_path: str) -> str:
 
     text = load_governance_doc(system_root, rel_path, on_missing="explicit")
     return "" if text.startswith("[⚠️ OMISSION") else text
+
+
+def _architecture_navigation(system_root: pathlib.Path, architecture_text: str) -> str:
+    """The Architecture book as a chapter-addressed map, or the supplied text."""
+    from ouroboros.context_layout import book_navigation, generate_doc_nav_map
+    from ouroboros.reference_books import BOOK_ENTRYPOINTS, load_reference_book
+
+    try:
+        return book_navigation(load_reference_book(system_root, "architecture"))
+    except (OSError, ValueError):
+        return generate_doc_nav_map(
+            architecture_text, title="ARCHITECTURE.md",
+            rel_path=BOOK_ENTRYPOINTS["architecture"])
 
 
 def _session_task_text(system_prompt: str, user_content: str, session_root: str) -> str:
@@ -86,6 +123,8 @@ def _session_task_text(system_prompt: str, user_content: str, session_root: str)
         "repository documents you MAY read raw, and MUST read in full when the pack marks them "
         "MANDATORY FULL READS (a self-modification plan), even if the agent also declared them as "
         "evidence. Retrieve any OTHER repository context with your own tools.\n\n"
+        + "The own-room source handle is the canonical redacted dialogue. Read omitted ranges "
+        "from that artifact only; raw chat/mailbox logs do not replace the redacted source.\n\n"
         + system_prompt + "\n\n" + user_content
     )
 
@@ -115,8 +154,10 @@ def build_plan_review_packet(
         if bible_text.strip():
             bible_nav_map = generate_doc_nav_map(bible_text, title="BIBLE.md", rel_path="BIBLE.md")
         if architecture_text.strip():
-            architecture_nav_map = generate_doc_nav_map(
-                architecture_text, title="ARCHITECTURE.md", rel_path="docs/ARCHITECTURE.md")
+            # `architecture_text` is the COMPOSED book (the constitutional pack
+            # needs it whole); the pointer view must address each physical
+            # chapter instead of offsets into the membership page.
+            architecture_nav_map = _architecture_navigation(system_root, architecture_text)
 
     def system(by_retrieval: bool) -> str:
         return build_plan_review_system_prompt(
@@ -183,9 +224,51 @@ def publish_plan_review_projection(
     )
 
 
+def completed_historical_feedback(ctx: ToolContext, wave: dict) -> Optional[list[dict]]:
+    """Read a settled historical cycle without changing its original verdict.
+
+    The supplement writer already validated complete producer custody. Resolve
+    its immutable sources again for this read; unavailable bytes are not a reason
+    to buy the same review again or claim that feedback was delivered.
+    """
+    from ouroboros.artifacts import read_actor_source_bytes
+    from ouroboros.tools.plan_review_artifacts import PlanReviewSourceUnavailable
+
+    cycle = wave.get("cycle_index")
+    supplements = [row for row in wave.get("historical_supplements") or []
+                   if row.get("cycle_index") == cycle]
+    if not supplements or not wave.get("paid") or plan_wave_has_in_flight(wave):
+        return None
+    root = pathlib.Path(str(getattr(ctx, "budget_drive_root", "") or ctx.drive_root))
+    task_id = str(ctx.task_id)
+    feedback = []
+    try:
+        for row in supplements:
+            payload = json.loads(read_actor_source_bytes(root, task_id, row["source_ref"]))
+            if not isinstance(payload, dict) or not isinstance(payload.get("result"), dict):
+                raise ValueError("historical feedback has no complete result object")
+            result = payload["result"]
+            if (payload.get("kind") != "plan_review_historical_supplement"
+                    or payload.get("task_id") != task_id
+                    or payload.get("request_fingerprint") != wave.get("request_fingerprint")
+                    or payload.get("cycle_index") != cycle
+                    or payload.get("retry_key") != wave.get("retry_key")
+                    or result.get("operation_id") != row.get("operation_id")
+                    or result.get("slot_id") != row.get("slot_id")
+                    or "text" not in result
+                    or result.get("operation_state") != row.get("operation_state")
+                    or result.get("operation_state") not in {"settled", "late_settled", "not_dispatched"}):
+                raise ValueError("historical feedback does not match its recorded cycle and operation")
+            feedback.append({**row, "result": result})
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise PlanReviewSourceUnavailable(f"PLAN_REVIEW_SOURCE_UNAVAILABLE: {exc}") from exc
+    return feedback
+
+
 def publish_rendered_wave(
     ctx: ToolContext, wave: dict, *, cap, cycles_paid: int, enforcement: str,
     cached: bool = False, notes=None, reminder: str = "", head: str = "",
+    historical_feedback: Optional[list[dict]] = None,
 ) -> str:
     """Render one recorded wave and publish it as the typed plan result (D02).
 
@@ -198,7 +281,7 @@ def publish_rendered_wave(
     outcome, closed = wave_control_state(wave)
     text = head + _render_wave(
         wave, cap=cap, cycles_paid=cycles_paid, enforcement=enforcement,
-        cached=cached, notes=notes, reminder=reminder,
+        cached=cached, notes=notes, reminder=reminder, historical_feedback=historical_feedback,
     )
     return publish_plan_review_projection(
         ctx, {"aggregate_signal": outcome, "closed": closed}, text)
@@ -261,17 +344,21 @@ def record_raw_plan_request_attempt(
     return fingerprint
 
 
-def plan_review_slots() -> list:
+def plan_review_slots(default_effort: str = "") -> list:
     """The configured commit-triad rows as plan-review ``ReviewSlot`` objects:
     the shared ``triad_delivery_slots`` builder (one reader of the triad rows
     for plan, skill and acceptance review) with plan review's own slot
-    properties — timeout, output budget, temperature, and ``PLAN_REVIEW_EFFORT``
-    as the effort default. Both delivery kinds ride; slot ids are the rows' own.
+    properties — timeout, output budget, temperature — and the envelope's
+    declared ``reviewer_effort`` as the rows' default rung (``''`` = the owner's
+    review-effort setting, exactly like the commit triad). The declaration is an
+    ARGUMENT of this builder only, never a contextvar: the commit gate, scope,
+    acceptance and skill review keep reading the untouched rows. Both delivery
+    kinds ride; slot ids are the rows' own.
     """
     from ouroboros.reviewer_slot_config import triad_delivery_slots
 
     return triad_delivery_slots(
-        role_hint="plan reviewer", default_effort=PLAN_REVIEW_EFFORT,
+        role_hint="plan reviewer", default_effort=str(default_effort or ""),
         timeout_sec=PLAN_REVIEW_SLOT_TIMEOUT_SEC, max_tokens=PLAN_REVIEW_MAX_TOKENS,
         default_temperature=0.2,
     )
@@ -302,10 +389,20 @@ async def run_plan_review_slots(
     session_root: str = "",
     output_contract: str = "",
     slot_messages: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    slot_session_tasks: Optional[Dict[str, str]] = None,
+    native_mandatory_read_chars: int = 0,
+    request_policy: Optional[dict] = None,
     session_threads: Optional[Dict[str, str]] = None,
     retry_key: str = "",
+    reconcile_only: bool = False,
+    reconciliation_identity: Optional[dict] = None,
+    release_at_dispatch: bool = False,
 ) -> list[dict]:
     """ONE ``ReviewRequest`` fanned across the configured rows through the substrate.
+
+    ``release_at_dispatch`` returns at the dispatch barrier (drain window 0): slots
+    still running come back as typed ``pending_dispatch`` rows and settle into
+    process-local custody for a later $0 collection (``plan_review_collect``).
 
     api_chat rows read ``messages`` (system + user packet); agent_session rows read
     ``session_task``/``session_root``/``policy.output_contract`` and retrieve the
@@ -325,6 +422,7 @@ async def run_plan_review_slots(
             system_prompt, user_content, plan_user_stable_len(user_content),
         ),
         slot_messages=dict(slot_messages or {}),
+        slot_session_tasks=dict(slot_session_tasks or {}),
         task_id=str(getattr(ctx, "task_id", "") or "plan_review"),
         call_type="plan_review",
         max_tokens=PLAN_REVIEW_MAX_TOKENS,
@@ -334,10 +432,15 @@ async def run_plan_review_slots(
         session_root=session_root,
         session_threads=dict(session_threads or {}),
         retry_key=str(retry_key or ""),
+        reconcile_only=reconcile_only,
+        drain_deadline=time.monotonic() if release_at_dispatch else None,
+        reconciliation_identity=dict(reconciliation_identity or {}),
         # The paid cycle's identity (plan fingerprint + cycle) owns its cache
         # split: a revised plan under the same task/model/slot starts cold.
         usage_attribution={"review_wave_id": str(retry_key or "")} if retry_key else {},
-        policy={"output_contract": output_contract} if output_contract else {},
+        policy=dict(request_policy) if request_policy is not None else {"output_contract": output_contract,
+                "native_data_root": str(getattr(ctx, "budget_drive_root", None) or ctx.drive_root),
+                "native_mandatory_read_chars": native_mandatory_read_chars},
     )
     loop = asyncio.get_running_loop()
     wait_context = copy_wait_context()
@@ -436,6 +539,7 @@ def _plan_row_from_actor(actor: Dict[str, Any], slot: Any) -> dict:
         "auth_route_receipt": usage.get("auth_route_receipt") or {},
         "profile_continuity_receipt": usage.get("profile_continuity_receipt") or {},
         "applied_profile": str(usage.get("applied_profile") or ""),
+        "recovery_binding": dict(actor.get("recovery_binding") or {}),
         "operation_id": str(actor.get("operation_id") or ""),
         "operation_state": str(actor.get("operation_state") or "settled"),
         "late_result_pending": bool(actor.get("late_result_pending")),
@@ -472,6 +576,7 @@ def plan_row_typed_facts(row: Dict[str, Any]) -> Dict[str, Any]:
             or str(row.get("operation_state") or "settled") != "settled" \
             or pending_invocation_id or delegated_run_id:
         facts.update({
+            "recovery_binding": dict(row.get("recovery_binding") or {}),
             "operation_id": str(row.get("operation_id") or ""),
             "operation_state": str(row.get("operation_state") or "settled"),
             "late_result_pending": bool(row.get("late_result_pending")),
@@ -486,9 +591,12 @@ def synthesize_plan_review_wave(
     fingerprint: str, previous: Optional[dict], manifest: dict, manifest_hash: str,
     constitutional: bool, constitutional_note: str, cycle_index: int, retry_key: str,
     enforcement: str, cap: Any, quorum: int, configured_slots: list,
-    health_evidence: Any,
+    health_evidence: Any, reviewer_effort: str = "", dispositions: Optional[list] = None,
 ) -> tuple[dict, set[str], dict]:
-    """Validate raw actor rows and build one durable plan-review wave."""
+    """Validate raw actor rows and build one durable plan-review wave. ``dispositions``
+    are the ones already recorded on the wave being collected (an author's answers
+    given while slots were still in flight); they ride the collected wave and its
+    closure instead of being wiped by the re-synthesis."""
     from ouroboros.tools import plan_spec
 
     ids = plan_spec.spec_ids(spec)
@@ -538,14 +646,15 @@ def synthesize_plan_review_wave(
         "constitutional_note": constitutional_note, "findings": list(agg["findings"]),
         "aggregate": aggregate, "reasons": list(agg["reasons"]), "counts": dict(agg["counts"]),
         "closed": plan_spec.closure_after_disposition(
-            aggregate, agg["findings"], [], enforcement,
-        )["closed"], "dispositions": [], "actors": slot_records,
+            aggregate, agg["findings"], list(dispositions or []), enforcement,
+        )["closed"], "dispositions": list(dispositions or []), "actors": slot_records,
         "custody_pending": False,
         "actors_degraded": [str(r["slot_id"]) for r in slot_records if not r["ok"]],
         "enforcement": enforcement, "cycle_cap": cap,
         "paid": any(_row_has_physical_dispatch(row) for row in slot_records),
         "health_epoch": plan_health_epoch(health_evidence),
         "reviewer_config_fingerprint": plan_reviewer_config_fingerprint(configured_slots),
+        "reviewer_effort": str(reviewer_effort or ""),  # the envelope's declared panel strength ('' = setting)
         **plan_quorum_unreachable_facts(slot_records, quorum=quorum), "reviewed_at": utc_now_iso(),
     }
     # A partially-settled paid cycle is not yet allowed to mutate the next
@@ -613,22 +722,65 @@ def plan_row_disclosures(row: Dict[str, Any]) -> List[str]:
     return [f"profile_continuity: cannot_verify ({reason})"]
 
 
-def plan_wave_progress_line(aggregate: str, counts: Dict[str, Any], *, cycles_paid: int, cap: Any) -> str:
+_PROGRESS_REASON_CHARS = 160
+_PROGRESS_REASONS_SHOWN = 4
+
+
+def plan_slot_reasons(wave: Optional[Dict[str, Any]]) -> str:
+    """The failed slots' typed reasons, deduplicated in order, the first four
+    shown and the rest counted (``failure_code`` when the row carries one, else
+    its error text, each bounded by ``truncate_review_artifact``)."""
+    from ouroboros.utils import truncate_review_artifact
+
+    reasons: List[str] = []
+    for actor in (wave or {}).get("actors") or []:
+        if not isinstance(actor, dict) or actor.get("ok"):
+            continue
+        reason = str(actor.get("failure_code") or actor.get("error") or "unknown")
+        reason = truncate_review_artifact(reason, limit=_PROGRESS_REASON_CHARS).replace("\n", " ")
+        if reason not in reasons:
+            reasons.append(reason)
+    shown = "; ".join(reasons[:_PROGRESS_REASONS_SHOWN])
+    if len(reasons) > _PROGRESS_REASONS_SHOWN:
+        shown += f" (+{len(reasons) - _PROGRESS_REASONS_SHOWN} more in the task result)"
+    return shown
+
+
+def plan_wave_progress_line(
+    aggregate: str, counts: Dict[str, Any], *, cycles_paid: int, cap: Any,
+    wave: Optional[Dict[str, Any]] = None,
+) -> str:
     """The wave's final owner-visible progress line (pure; ``plan_review.py``
     sits at its size pin, so the formatting lives here). Honest DEGRADED:
     zero-count tails must never read as a clean result, so the
-    parseable/configured ratio and the distrust are named inline; every other
-    aggregate renders byte-identically to the plain form."""
+    parseable/configured ratio and the distrust are named inline, with the
+    failed slots' typed reasons (deduplicated, bounded) and the late-result
+    clause when reviewers are still working; every other aggregate renders
+    byte-identically to the plain form."""
     verdict = (
         f"DEGRADED ({counts['parseable']}/{counts['configured']} "
         "parseable reviewers; counts are untrusted)"
         if aggregate == "DEGRADED" else aggregate
     )
-    return (
+    line = (
         f"📐 plan_task: {verdict} — {counts['blocking']} blocking / "
         f"{counts['note']} note / {counts['need_evidence']} need_evidence; "
         f"cycles paid {cycles_paid}{'' if cap is None else f'/{cap}'}"
     )
+    reasons = plan_slot_reasons(wave) if aggregate == "DEGRADED" else ""
+    if reasons:
+        line += f"; slot reasons: {reasons}"
+    if (wave or {}).get("custody_pending"):
+        line += "; late result pending (reviewer slots still in flight, not yet collected)"
+    if (wave or {}).get("reviewer_effort"):
+        line += f"; declared reviewer effort {wave['reviewer_effort']}"
+    return line
+
+
+def plan_no_dispatch_line(wave: Dict[str, Any]) -> str:
+    """The separate progress line for an attempt that dispatched no new reviewer
+    cycle (every row a typed $0 refusal), naming the typed reasons."""
+    return f"📐 plan_task: no new reviewer cycle dispatched: {plan_slot_reasons(wave) or 'no typed reason recorded'}"
 
 
 # Root exploration log (plan F3/S8): the task's OWN tool calls before this call,
@@ -708,6 +860,9 @@ def emit_plan_review_advisory_open(
            json.dumps(wave.get("health_epoch") or [], sort_keys=True, default=str))
     if key in _ADVISORY_OPEN_SEEN:
         return
+    from ouroboros.config import get_review_enforcement
+    from ouroboros.tools.review_helpers import review_enforcement_blocks
+
     row = {
         "type": "plan_review_advisory_open",
         "surface": "plan_review",
@@ -718,7 +873,8 @@ def emit_plan_review_advisory_open(
         "paid": bool(wave.get("paid")),
         "cycles_paid": int(cycles_paid),
         "cap": cap,
-        "enforcement": "advisory",
+        "enforcement": get_review_enforcement(),
+        "decision_authority": "cyber_pro" if not review_enforcement_blocks("blocking") else "advisory",
         # Bounded per-slot typed facts: who failed, with what code, until when.
         "slots": [
             {"slot_id": a.get("slot_id"), "ok": bool(a.get("ok")),
@@ -1028,6 +1184,18 @@ def plan_wave_replay_decision(slots_fn: Any, existing: Dict[str, Any]) -> tuple:
     return plan_health_epoch(fresh) != normalized, fresh
 
 
+def plan_pending_actors(wave: Dict[str, Any]) -> list[dict]:
+    """Physical pending rows, retaining the original critic records unchanged."""
+    settled = {
+        row.get("operation_id") for row in wave.get("historical_supplements") or []
+        if row.get("cycle_index") == wave.get("cycle_index")
+        and row.get("operation_state") in {"settled", "late_settled", "not_dispatched"}
+    }
+    return [row for row in wave.get("actors") or [] if isinstance(row, dict)
+            and (row.get("late_result_pending") or row.get("operation_state") in {"pending_dispatch", "in_flight"})
+            and row.get("operation_id") not in settled]
+
+
 def plan_wave_has_in_flight(wave: Dict[str, Any]) -> bool:
     """Whether a paid wave must re-enter exact custody reconciliation.
 
@@ -1058,11 +1226,7 @@ def plan_wave_has_in_flight(wave: Dict[str, Any]) -> bool:
             or str(actor.get("status") or "").strip().lower() == "not_dispatched"
         ):
             return True
-    return any(
-        str(actor.get("operation_state") or "") == "in_flight"
-        or bool(actor.get("late_result_pending"))
-        for actor in actors or []
-    )
+    return bool(plan_pending_actors(wave))
 
 
 def plan_in_flight_custody_error(
@@ -1118,7 +1282,16 @@ def plan_quorum_unreachable_facts(slot_records: List[dict], *, quorum: int) -> D
     }
 
 
-def plan_slot_fit(slots: list, *, prompt_chars: int, quorum: int) -> tuple[list, list[dict], str]:
+def effective_plan_slots(slots: list) -> list:
+    """Resolve existing task-local owner model choices before sizing or sending."""
+    from ouroboros.review_records import apply_review_model_override
+    from ouroboros.model_wait import current_model_wait
+
+    waiter = current_model_wait()
+    return [apply_review_model_override(slot, waiter.overrides) for slot in slots] if waiter else list(slots)
+
+
+def plan_slot_fit(slots: list, *, prompt_chars: int, quorum: int, slot_prompt_chars: Optional[dict] = None) -> tuple[list, list[dict], str]:
     """``(callable_slots, oversize_rows, error)`` for ONE shared packet fanned across
     mixed-window slots — the review organ's calibrated per-slot input caps
     (`review_synthesis.per_slot_input_token_limits`, Capability Evidence windows) against
@@ -1126,11 +1299,7 @@ def plan_slot_fit(slots: list, *, prompt_chars: int, quorum: int) -> tuple[list,
     (ok=False, $0) so it is REPORTED as not participating; fewer callable slots than the
     review quorum is a loud typed refusal, never a silent absence of review."""
     from ouroboros.tools.review_synthesis import per_slot_input_token_limits
-    from ouroboros.review_records import apply_review_model_override
-    from ouroboros.model_wait import current_model_wait
-
-    waiter = current_model_wait()
-    slots = [apply_review_model_override(slot, waiter.overrides) for slot in slots] if waiter else slots
+    slots = effective_plan_slots(slots)
 
     # Only api_chat rows are sized: a RETRIEVING (agent_session) row's model id is an opaque
     # harness target, not a provider route (`reviewer_window.reviewer_route(session=True)`), and
@@ -1143,6 +1312,7 @@ def plan_slot_fit(slots: list, *, prompt_chars: int, quorum: int) -> tuple[list,
     estimated = max(1, (max(0, int(prompt_chars)) + 3) // 4)  # utils.estimate_tokens on the packet
     callable_slots, oversize = [], []
     for slot in slots:
+        estimated = max(1, (int((slot_prompt_chars or {}).get(str(slot.slot_id), prompt_chars)) + 3) // 4)
         cap = 0 if slot_retrieves(slot) else int(limits[str(slot.slot_id)])
         if slot_retrieves(slot) or estimated <= cap:
             callable_slots.append(slot)
@@ -1172,7 +1342,7 @@ def plan_slot_fit(slots: list, *, prompt_chars: int, quorum: int) -> tuple[list,
 
 def plan_fanout_inputs(
     slots: list, *, resume: Optional[dict], replay_snapshot: Any,
-    prompt_chars: int, quorum: int,
+    prompt_chars: int, quorum: int, slot_prompt_chars: Optional[dict] = None,
 ) -> dict:
     """Freeze a paid resume's actors, or prepare one fresh health/fit fan-out."""
     if resume is not None:
@@ -1189,17 +1359,14 @@ def plan_fanout_inputs(
             "oversize_rows": [], "health_evidence": resume.get("health_evidence") or {},
             "error": "",
         }
-    from ouroboros.review_records import apply_review_model_override
-    from ouroboros.model_wait import current_model_wait
-    waiter = current_model_wait()
-    slots = [apply_review_model_override(slot, waiter.overrides) for slot in slots] if waiter else slots
+    slots = effective_plan_slots(slots)
     health_evidence = (
         plan_panel_health_snapshot(slots)
         if replay_snapshot is PLAN_NO_SNAPSHOT else replay_snapshot
     )
     live_slots, health_skip_rows = plan_health_skip_rows(slots, health_evidence)
     callable_slots, oversize_rows, fit_error = plan_slot_fit(
-        live_slots, prompt_chars=prompt_chars, quorum=quorum)
+        live_slots, prompt_chars=prompt_chars, quorum=quorum, slot_prompt_chars=slot_prompt_chars)
     return {
         "callable_slots": callable_slots, "health_skip_rows": health_skip_rows,
         "oversize_rows": oversize_rows, "health_evidence": health_evidence,

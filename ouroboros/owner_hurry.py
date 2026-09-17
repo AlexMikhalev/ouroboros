@@ -474,11 +474,10 @@ def force_plan_decision(
     ``enforcement`` is supplied by the loop wrapper from ITS module namespace so
     the existing ``loop.get_review_enforcement`` test/monkeypatch seam holds.
     """
+    reconcile_transferred_obligation(ctx)
     metadata = getattr(ctx, "task_metadata", {})
     metadata = metadata if isinstance(metadata, dict) else {}
     not_required = {"required": False, "allow": True, "status": "not_required"}
-    if bool(getattr(ctx, "is_ephemeral_turn", False)):
-        return not_required
     from ouroboros.task_results import (
         current_plan_review_wave, load_plan_review_state, plan_review_gate_projection,
     )
@@ -502,23 +501,108 @@ def force_plan_decision(
         enforcement = get_review_enforcement()
     hurry_armed = latched(ctx) is not None
     effective = "advisory" if hurry_armed else enforcement
+    if str(effective or "").lower() == "blocking" and isinstance(state, dict):
+        from ouroboros.tools.plan_review_collect import collect_before_gate
+
+        state = collect_before_gate(ctx, state)
     decision = {
         "required": True,
         "self_opened": not bool(metadata.get("force_plan")),
         **plan_review_gate_projection(state, effective, hard_rail=hard_rail),
     }
+    wave = {} if decision.get("closed") else (current_plan_review_wave(state) or {})
     if decision.get("reviewer_slots_degraded"):
         # The reminder's replay promise is conditional on the recorded wave's
         # structural health epoch (empty epoch = a re-dispatch is PAID), so the
         # epoch fact rides the decision for plan_review_reminder.
-        decision["degraded_health_epoch"] = (
-            (current_plan_review_wave(state) or {}).get("health_epoch") or "")
+        decision["degraded_health_epoch"] = wave.get("health_epoch") or ""
+    if wave.get("custody_pending"):
+        # A paid reviewer slot can still settle (plan_review_runtime records the
+        # wave DEGRADED and open for exactly that reason), so the disclosure must
+        # say a result is still owed instead of implying the panel is over.
+        decision["review_late_result_pending"] = True
     if hurry_armed and str(enforcement or "").lower() == "blocking":
         # Attribution only (task detail); the durable state and the configured
         # global enforcement are byte-identical before/after.
         decision["owner_hurry_local_advisory"] = True
         decision["configured_enforcement"] = "blocking"
     return decision
+
+
+def reconcile_transferred_obligation(ctx: Any) -> str:
+    """Release the worker's copy of an obligation the supervisor already moved.
+
+    A promote/route admitted AFTER the tool's wait returned unconfirmed still
+    records the transfer durably (the promoter's task result carries
+    ``force_plan_transfer.to``); without this read the worker's metadata kept
+    ``force_plan`` and its finalization held for a plan the new root owes.
+    Returns the task id the obligation moved to, or '' when nothing moved."""
+    metadata = getattr(ctx, "task_metadata", {})
+    metadata = metadata if isinstance(metadata, dict) else {}
+    if metadata.get("force_plan") is not True:
+        return ""
+    task_id = str(getattr(ctx, "task_id", "") or "").strip()
+    root = _canonical_root(ctx)
+    if not task_id or root is None:
+        return ""
+    try:
+        from ouroboros.task_results import load_task_result
+
+        transfer = (load_task_result(root, task_id) or {}).get("force_plan_transfer")
+    except Exception:
+        log.debug("force_plan transfer read failed for %s", task_id, exc_info=True)
+        return ""
+    moved_to = str((transfer or {}).get("to") or "").strip() if isinstance(transfer, dict) else ""
+    if moved_to:
+        release_force_plan_obligation(ctx, moved_to)
+    return moved_to
+
+
+def unmet_force_plan_obligation(ctx: Any) -> Dict[str, Any]:
+    """Does THIS task still owe a plan review nobody has started (owner 3=A)?
+
+    A Swarm-admitted root carries ``force_plan`` in its metadata; the obligation
+    is MET once the task entered the plan-review gate (a wave recorded for it --
+    ``_plan_review_engaged`` on the same durable state ``force_plan_decision``
+    projects), because from then on the gate binds the task itself. Only an
+    UNMET obligation follows the work a promote moves elsewhere. An unreadable
+    state is not proof of anything and transfers nothing (I-17: a gate that
+    cannot read its authority is engaged, not absent).
+    """
+    if reconcile_transferred_obligation(ctx):
+        return {"unmet": False, "reason": "transferred"}
+    metadata = getattr(ctx, "task_metadata", {})
+    metadata = metadata if isinstance(metadata, dict) else {}
+    if metadata.get("force_plan") is not True:
+        return {"unmet": False, "reason": "not_required"}
+    task_id = str(getattr(ctx, "task_id", "") or "").strip()
+    root = _canonical_root(ctx)
+    if not task_id or root is None:
+        return {"unmet": False, "reason": "no_task_identity"}
+    from ouroboros.task_results import load_plan_review_state
+
+    try:
+        state = load_plan_review_state(root, task_id)
+    except (OSError, TimeoutError, ValueError):
+        log.warning("Unable to read durable force-plan review state", exc_info=True)
+        return {"unmet": False, "reason": "plan_review_state_unreadable"}
+    if _plan_review_engaged(state):
+        return {"unmet": False, "reason": "plan_review_engaged"}
+    return {
+        "unmet": True,
+        "source": str(metadata.get("force_plan_source") or "operator").strip() or "operator",
+    }
+
+
+def release_force_plan_obligation(ctx: Any, transferred_to: str) -> None:
+    """The worker's copy of the fact the supervisor released in the promote
+    transaction: ``force_plan_decision`` reads this metadata, so the promoter's
+    own finalization stops requiring a plan the new root now owes."""
+    metadata = getattr(ctx, "task_metadata", None)
+    if not isinstance(metadata, dict):
+        return
+    metadata["force_plan"] = False
+    metadata["force_plan_transferred_to"] = str(transferred_to or "")
 
 
 def plan_review_reminder(decision: Dict[str, Any]) -> str:
@@ -530,7 +614,24 @@ def plan_review_reminder(decision: Dict[str, Any]) -> str:
     if status == "legacy_open_requires_resubmission":
         return (
             f"{tag} An open plan review from a previous schema cannot be honored. Re-call "
-            "plan_task with your goal, plan and spec to start a fresh review before finalizing."
+            "plan_task with your goal, plan and spec — including affected_paths, the files the "
+            "work will change ([] when none) — to start a fresh review before finalizing."
+        )
+    from ouroboros.review_cycles import review_max_cycles
+
+    cap = review_max_cycles()
+    if cap is not None and int(decision.get("cycles_paid") or 0) >= cap:
+        return (
+            f"{tag} The paid plan-review cycle cap is reached; the task cannot dispatch another paid panel "
+            "for either an unchanged or revised request. The recorded findings and lawful free "
+            "dispositions remain available; a disposition does not close blocking findings "
+            "or a degraded wave. Existing in-flight custody can still settle."
+        )
+    if decision.get("custody_pending"):
+        return (
+            f"{tag} Plan review is OPEN: reviewer work is still running or awaiting collection. "
+            "The recorded wave retains those results; no final reviewer quorum is established yet. "
+            "Implementation stays held while the review is open."
         )
     if decision.get("reviewer_slots_degraded"):
         # B2: facts, never a retry coach (P5). The replay promise is CONDITIONAL —
@@ -555,13 +656,15 @@ def plan_review_reminder(decision: Dict[str, Any]) -> str:
         )
     if outcome == "REVISE_PLAN":
         return (
-            f"{tag} Blocking plan review requires a revised spec. Change the spec and call "
+            f"{tag} Blocking plan review requires a revised spec. Change the spec — it carries "
+            "affected_paths, the files the work will change ([] when none) — and call "
             "plan_task again (or reject the blocking findings with a rationale via "
             "review_disposition). Continue analysis and non-mutating preparation, but do not "
             "begin the work before the review closes or a real task-wide rail fires."
         )
     return (
-        f"{tag} Call plan_task with a concrete goal, plan and spec. If review infrastructure "
+        f"{tag} Call plan_task with a concrete goal, plan and spec, whose affected_paths lists "
+        "the files the work will change ([] when none). If review infrastructure "
         "is unavailable, continue analysis and non-mutating preparation, but do not begin the "
         "work before the review closes or a real task-wide rail fires."
     )
@@ -574,21 +677,32 @@ def plan_review_disclosure(decision: Dict[str, Any], forced_reason: str = "") ->
     if not decision.get("required") or decision.get("status") == "closed":
         return ""
     outcome = str(decision.get("outcome") or "")
-    if decision.get("reviewer_slots_degraded"):
+    if decision.get("custody_pending") or decision.get("review_late_result_pending"):
+        outcome = f"{outcome or 'open'}; reviewer work is running or awaiting collection"
+    elif decision.get("reviewer_slots_degraded"):
         outcome = f"{outcome or 'open'}; no parseable reviewer quorum"
     subject = "Blocking plan review" if decision.get("enforcement") == "blocking" else "Plan review"
+    # The wave is still OPEN at finalization, so the verb says so: "remained"
+    # told the owner a panel had ended that nobody had closed. When a paid slot
+    # can still settle, the same sentence carries that typed fact.
+    late = (
+        " A paid reviewer slot can still settle, so a late result is still owed."
+        if decision.get("review_late_result_pending") else ""
+    )
     if decision.get("status") == "rail_degraded":
-        rail_reason = str(forced_reason or decision.get("reason") or "task_rail")
+        rail_reason = str(forced_reason or decision.get("reason") or "")
         detail = f" ({outcome})" if outcome else ""
+        # An absent rail reason renders as absence, never as an internal token.
+        rail = f"the task-wide rail `{rail_reason}`" if rail_reason else "a task-wide rail"
         return (
-            f"\n\n⚠️ {subject} remained open{detail} when the task-wide rail "
-            f"`{rail_reason}` required best-effort finalization."
+            f"\n\n⚠️ {subject} is open{detail}; {rail} required best-effort "
+            f"finalization.{late}"
         )
     if decision.get("status") == "cycles_exhausted" and decision.get("enforcement") == "blocking":
         return (
             f"\n\n⚠️ Blocking plan review stayed open ({outcome or 'open'}) with the review-cycle "
-            f"cap spent ({decision.get('cycles_paid')} paid cycle(s)); the task is finalized as "
-            "blocked_with_evidence — the planned work must not be treated as done."
+            f"cap spent ({decision.get('cycles_paid')} paid cycle(s)); the task ends blocked "
+            "with its evidence recorded; the planned work must not be treated as done."
         )
     if decision.get("quorum_unreachable") and decision.get("enforcement") == "blocking":
         # B2b: the agent chose the honest blocked terminal while the reviewer quorum
@@ -598,13 +712,13 @@ def plan_review_disclosure(decision: Dict[str, Any], forced_reason: str = "") ->
             f"\n\n⚠️ Blocking plan review stayed open ({outcome or 'open'}) with its reviewer "
             "quorum structurally unreachable (typed window-exhausted reviewer lanes"
             + (f"; earliest recorded reset {reset}" if reset else "")
-            + "); the task is finalized as blocked_with_evidence — the planned work must "
-            "not be treated as done."
+            + "); the task ends blocked with its evidence recorded; the planned work "
+            "must not be treated as done."
         )
     if decision.get("allow"):
         return (
-            f"\n\n⚠️ Plan review remained {outcome or 'unavailable'}; work proceeded under the "
-            "owner-selected advisory enforcement."
+            f"\n\n⚠️ Plan review is still open ({outcome or 'unavailable'}); work proceeded "
+            f"under the owner-selected advisory enforcement.{late}"
         )
     return ""
 

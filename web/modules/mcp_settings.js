@@ -318,10 +318,11 @@ function bindCardEvents(card) {
             testBtn.disabled = true;
             setMessage('Testing connection...', 'muted');
             try {
-                // Masked token + server_id lets Test use saved auth with edited URL/transport.
+                // Saved identity lets the backend rehydrate either credential form.
                 const sid = String(server.id || '').trim();
                 const tokenMasked = looksMasked(server.auth_token);
-                const body = sid && tokenMasked
+                const urlMasked = String(server.url || '').includes('://***@');
+                const body = sid && (tokenMasked || urlMasked)
                     ? { server_id: sid, server: { ...server } }
                     : { server: serverForTest(server) };
                 const data = await jsonPost('/api/mcp/test', body, { rejectOkFalse: true });

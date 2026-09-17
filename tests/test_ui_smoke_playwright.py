@@ -19,6 +19,13 @@ from tests.ui_chat_viewport_smoke import _CAPTURE_TEST_SOCKET, _emit_ws_frame
 REPO_ROOT = os.path.dirname(os.path.dirname(__file__))
 
 
+def _fixture_python() -> str:
+    """Use the real Windows interpreter, bypassing the venv PID redirector."""
+    if os.name == "nt":
+        return str(getattr(sys, "_base_executable", sys.executable))
+    return sys.executable
+
+
 def _open_review_checkpoint(card, *, open_card=True):
     if open_card:
         card.locator(":scope > [data-live-summary-button]").click()
@@ -266,48 +273,51 @@ def direct_server_with_data(tmp_path):
             "OUROBOROS_HOST_SERVICE_PORT": str(port + 1),
             "OUROBOROS_NETWORK_PASSWORD": "ui-smoke-password",
         }
+        if os.name == "nt":
+            site = pathlib.Path(sys.executable).resolve().parent.parent / "Lib" / "site-packages"
+            if site.is_dir():
+                env["PYTHONPATH"] = os.pathsep.join([str(site), env.get("PYTHONPATH", "")])
         url = f"http://127.0.0.1:{port}"
-        active_proc = None
+        active_proc = active_container = None
 
         def stop_server() -> None:
-            nonlocal active_proc
-            if active_proc is None or active_proc.poll() is not None:
+            nonlocal active_proc, active_container
+            proc, container = active_proc, active_container
+            active_proc = active_container = None
+            if container is None:
                 return
-            from ouroboros.platform_layer import IS_WINDOWS, kill_process_tree
-
-            # Windows terminate() is an immediate TerminateProcess, so the parent
-            # can disappear before its worker tree and bypass the timeout cleanup.
-            # taskkill /T must own that path from the start.
-            if IS_WINDOWS:
-                kill_process_tree(active_proc)
-                active_proc.wait(timeout=5)
-                active_proc = None
-                return
-            active_proc.terminate()
             try:
-                active_proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                # A timed-out UI-smoke server still owns its worker pool. Killing
-                # only the parent leaks ten orphan workers into later smoke tests,
-                # producing suite-order history/card timeouts. The server starts in
-                # its own process group below, so the shared cross-platform helper
-                # can close the complete tree without touching pytest.
-                kill_process_tree(active_proc)
-                active_proc.wait(timeout=5)
+                if proc is not None and proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        pass  # The container below also owns surviving descendants.
             finally:
-                active_proc = None
+                try:
+                    # Parent exit never proves the entire incarnation is gone.
+                    error = container.reap()
+                finally:
+                    container.close()
+                if error:
+                    if proc is not None:
+                        proc.poll()  # Collect an exited parent without masking the reap failure.
+                    raise RuntimeError(f"UI fixture process cleanup failed: {error}")
+                if proc is not None:
+                    proc.wait(timeout=5)
 
         def start_server() -> None:
-            nonlocal active_proc
-            from ouroboros.platform_layer import subprocess_new_group_kwargs
+            nonlocal active_proc, active_container
+            from ouroboros.process_containment import ProcessContainer
 
-            active_proc = subprocess.Popen(
-                [sys.executable, "server.py"],
+            # Reap consumes the token/Job: every restart needs fresh containment.
+            active_container = ProcessContainer()
+            active_proc = active_container.spawn(
+                [_fixture_python(), "server.py"],
                 cwd=REPO_ROOT,
                 env=env,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                **subprocess_new_group_kwargs(),
             )
             _wait_health(url)
             _wait_supervisor_ready(url)
@@ -318,7 +328,12 @@ def direct_server_with_data(tmp_path):
 
         try:
             start_server()
-            yield {"url": url, "data_dir": data_dir, "restart_server": restart_server}
+            yield {
+                "url": url, "data_dir": data_dir, "restart_server": restart_server,
+                # A seed that must survive into the next boot (queue snapshot, state files) has to
+                # land while no server runs: the main loop persists its own snapshot every tick.
+                "stop_server": stop_server, "start_server": start_server,
+            }
         finally:
             stop_server()
 
@@ -996,7 +1011,7 @@ def test_ui_smoke_collapsed_activity_line_named_vs_unnamed(
                         }"""
                     )
                     assert geometry["title"]["lines"] <= 2.2, geometry
-                    assert geometry["activity"]["lines"] <= 2.2, geometry
+                    assert geometry["activity"]["lines"] <= 3.2, geometry
                     assert geometry["scrollWidth"] <= geometry["clientWidth"] + 1, geometry
                     named_meta = named.locator('[data-live-meta]').inner_text().split()
                     # Final ledger: the plain amount, never the open-ledger ceiling.
@@ -1030,14 +1045,12 @@ def test_ui_smoke_collapsed_activity_line_named_vs_unnamed(
                     assert bands["named-act"]["finished"] is True, bands
                     assert bands["unnamed-act"]["finished"] is False, bands
                     assert bands["running-act"]["finished"] is False, bands
-                    for slot, low in (("title", 0.9), ("activity", 1.9)):
-                        heights = [bands[task_id][slot]["height"] for task_id in bands]
-                        assert max(heights) - min(heights) <= 1, bands
-                        assert all(low <= bands[task_id][slot]["lines"] <= low + 0.3 for task_id in bands), bands
-                    assert bands["unnamed-act"]["activity"]["display"] != "none", bands
-                    assert bands["unnamed-act"]["activity"]["visibility"] == "hidden", bands
-                    # D23 (owner, 2026-09-02): a FINISHED card folds an empty activity
-                    # band; a running card keeps the two-line reserve (31.08 seam).
+                    assert all(0.9 <= bands[task_id]["title"]["lines"] <= 1.2 for task_id in bands), bands
+                    assert 2.9 <= bands["named-act"]["activity"]["lines"] <= 3.2, bands
+                    assert 0.9 <= bands["running-act"]["activity"]["lines"] <= 1.2, bands
+                    assert bands["unnamed-act"]["activity"]["display"] == "none", bands
+                    # Useful root activity sizes naturally up to three lines; empty activity
+                    # reserves no band on either running or finished cards.
                     _emit_ws_frame(page, {
                         "type": "chat", "role": "assistant", "is_progress": True,
                         "chat_id": 1, "task_id": "done-empty", "suggested_name": "Quick task",
@@ -2366,6 +2379,7 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
             messageWidth: usableMessageWidth,
             rootWidth: root.getBoundingClientRect().width,
             deepestWidth: deepest.getBoundingClientRect().width,
+            rootMainTop: main.top,
             rootMainBottom: main.bottom,
             rootSideTop: side.top,
             rootSideBottom: side.bottom,
@@ -2390,13 +2404,19 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
         assert facts["rootWidth"] - facts["deepestWidth"] <= 40, facts
         # Narrow regime: the side controls share the chip row, the title takes its own
         # full-width row below both.
-        assert facts["rootSideTop"] < facts["rootMainBottom"], facts
+        # Main and side controls start on one flex row. A terminal projection may
+        # make the main box zero-height; their shared top still distinguishes it
+        # from a real wrap, whose row gap would move the side down.
+        assert abs(facts["rootSideTop"] - facts["rootMainTop"]) <= 1, facts
         assert facts["rootTitleTop"] >= max(facts["rootMainBottom"], facts["rootSideBottom"]) - 1, facts
         assert all(card["scrollWidth"] <= card["clientWidth"] + 1 for card in facts["cardFacts"]), facts
         assert min(card["titleWidth"] for card in facts["cardFacts"]) >= 160, facts
         assert 0.9 <= min(card["titleLines"] for card in facts["cardFacts"]), facts
         assert max(card["titleLines"] for card in facts["cardFacts"]) <= 2.2, facts
-        assert max(card["activityLines"] for card in facts["cardFacts"]) <= 2.2, facts
+        assert max(card["activityLines"] for card in facts["cardFacts"]
+                   if not card["collapsedChild"]) <= 3.2, facts
+        assert max(card["activityLines"] for card in facts["cardFacts"]
+                   if card["collapsedChild"]) <= 1.2, facts
         # #623: a collapsed child keeps its identity row — the title beside the
         # chip, the summary at most two bands (the side wraps under only when a
         # 160px title cannot share the row), never a third band for the title.
@@ -2406,7 +2426,9 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
                 assert card["summaryBottom"] - card["mainTop"] <= 2.2 * card["titleHeight"] + 8, card
         assert all(card["activityTitle"] is None for card in facts["cardFacts"]), facts
         deepest = page.locator('.chat-live-card[data-task-id="layout-child-10"]')
-        assert "pty-tests · gemini-3.6-flash" in deepest.inner_text()
+        assert deepest.locator(':scope > .chat-live-summary-button [data-live-title]').inner_text() == "pty-tests"
+        assert "Agent model: gemini-3.6-flash" in deepest.locator(
+            ':scope > .chat-live-summary-button [data-live-meta]').inner_text()
         deepest.locator(":scope > [data-live-summary-button]").click()
         line_toggle = deepest.locator(":scope > [data-live-timeline] .chat-live-line-toggle").last
         line_toggle.wait_for(state="visible", timeout=5_000)
@@ -2421,13 +2443,14 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
                     lineClient: line.clientWidth,
                     lineScroll: line.scrollWidth,
                     titleWidth: title.getBoundingClientRect().width,
+                    titleScrollWidth: title.scrollWidth,
                     text: line.innerText,
                 };
             }"""
         )
         assert expanded["cardScroll"] <= expanded["cardClient"] + 1, expanded
         assert expanded["lineScroll"] <= expanded["lineClient"] + 1, expanded
-        assert expanded["titleWidth"] >= 150, expanded
+        assert expanded["titleWidth"] >= min(expanded["titleScrollWidth"], 150) - 1, expanded
         assert long_url in expanded["text"], expanded
 
     def assert_jump_geometry(page, scope_selector, *, require_overflow=True):
@@ -2552,14 +2575,13 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
                 assert wide_facts[2]["left"] - wide_facts[1]["left"] >= 30, wide_facts
                 assert all(card["scroll"] <= card["client"] + 1 for card in wide_facts), wide_facts
                 for card in wide_facts[:2]:
-                    assert min(card["mainBottom"], card["sideBottom"]) \
-                        > max(card["mainTop"], card["sideTop"]), wide_facts
+                    assert abs(card["mainTop"] - card["sideTop"]) <= 1, wide_facts
                 # #623: the depth-2 collapsed child is in the 560px container regime
                 # (wrap allowed) yet keeps ONE identity row: chip, title, side controls.
                 deep = wide_facts[2]
                 assert deep["wrap"] == "wrap", wide_facts
                 assert abs(deep["titleTop"] - deep["mainTop"]) <= 4, wide_facts
-                assert deep["sideTop"] < deep["mainBottom"], wide_facts
+                assert abs(deep["mainTop"] - deep["sideTop"]) <= 1, wide_facts
 
                 # The 620-700px column (laptop with the project panel open): the root
                 # card takes up to 620px there and keeps its single-row header.
@@ -2662,6 +2684,7 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
                             cardScroll: card.scrollWidth,
                             titleWidth: title.width,
                             titleTop: title.top,
+                            mainTop: main.top,
                             mainBottom: main.bottom,
                             sideTop: side.top,
                             sideBottom: side.bottom,
@@ -2672,7 +2695,7 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
                 assert panel_facts["cardWidth"] >= panel_facts["panelWidth"] * 0.9, panel_facts
                 assert panel_facts["cardScroll"] <= panel_facts["cardClient"] + 1, panel_facts
                 assert panel_facts["titleWidth"] >= 180, panel_facts
-                assert panel_facts["sideTop"] < panel_facts["mainBottom"], panel_facts
+                assert abs(panel_facts["mainTop"] - panel_facts["sideTop"]) <= 1, panel_facts
                 assert panel_facts["titleTop"] >= max(panel_facts["mainBottom"], panel_facts["sideBottom"]) - 1, panel_facts
                 assert_jump_geometry(
                     wide, "#panel-pchat-layout-project", require_overflow=False
@@ -3603,9 +3626,13 @@ def test_ui_smoke_cancel_run_button_eligibility_and_cancelled_state(direct_serve
     data_dir = direct_server_with_data["data_dir"]
     logs_dir = data_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
+    # Seed while no server runs (the live loop rewrites the queue snapshot every tick).
+    direct_server_with_data["stop_server"]()
     (logs_dir / "chat.jsonl").write_text("", encoding="utf-8")
     rows = [
-        # Pooled live root: carries the supervisor's host-attested marker.
+        # Pooled live root: carries the supervisor's host-attested marker AND is
+        # genuinely running (dispatched at boot, held in its first model call) so
+        # the census vouches for it (the 09.09 rule).
         {"ts": "2026-07-29T10:00:00+00:00", "chat_id": 1, "task_id": "live-root",
          "content": "Working on the big thing", "cancelable": True},
         # Direct-chat-turn shape: same card shape, NO marker -> no button.
@@ -3618,9 +3645,6 @@ def test_ui_smoke_cancel_run_button_eligibility_and_cancelled_state(direct_serve
          "subagent_event": "scheduled", "subagent_task_id": "sub-child1",
          "parent_task_id": "live-root", "subagent_role": "researcher",
          "cancelable": True},
-        # Reusable background-consciousness slot: never eligible.
-        {"ts": "2026-07-29T10:00:03+00:00", "chat_id": 1, "task_id": "bg-consciousness",
-         "content": "Background thinking", "cancelable": True},
         # A root that was force-cancelled before this reload.
         {"ts": "2026-07-29T10:00:04+00:00", "chat_id": 1, "task_id": "gone-root",
          "content": "Was working before the cancel", "cancelable": True},
@@ -3640,6 +3664,10 @@ def test_ui_smoke_cancel_run_button_eligibility_and_cancelled_state(direct_serve
             "execution": {"status": "cancelled"},
         },
     }) + "\n", encoding="utf-8")
+    from tests.test_s3_task_control_browser import _hold_live_root, _release_mock_model
+
+    _hold_live_root(data_dir, "live-root")
+    direct_server_with_data["start_server"]()
 
     try:
         with sync_playwright() as pw:
@@ -3652,9 +3680,9 @@ def test_ui_smoke_cancel_run_button_eligibility_and_cancelled_state(direct_serve
                 cancel_btn = live.locator('[data-cancel-run]')
                 cancel_btn.wait_for(state="attached", timeout=30_000)
                 assert cancel_btn.inner_text().strip() == "Stop…"
-                # Marker-less direct-turn shape, subagent child, reusable slot,
-                # and the finished cancelled root must NOT offer the action.
-                for absent_id in ("direct-turn", "sub-child1", "bg-consciousness", "gone-root"):
+                # Marker-less direct-turn shape, subagent child and the
+                # finished cancelled root must NOT offer the action.
+                for absent_id in ("direct-turn", "sub-child1", "gone-root"):
                     card = page.locator(f'.chat-live-card[data-task-id="{absent_id}"]')
                     card.wait_for(state="attached", timeout=30_000)
                     assert card.locator('[data-cancel-run]').count() == 0, absent_id
@@ -3677,6 +3705,7 @@ def test_ui_smoke_cancel_run_button_eligibility_and_cancelled_state(direct_serve
                 page.screenshot(path=str(data_dir.parent / "cancel-run.png"), full_page=True)
             finally:
                 browser.close()
+                _release_mock_model()
     except PlaywrightError as exc:
         if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
             pytest.skip(str(exc))

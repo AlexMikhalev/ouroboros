@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import pathlib
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
 from ouroboros.utils import (
@@ -13,7 +13,6 @@ from ouroboros.utils import (
     replace_atomic,
     utc_now_iso,
     read_text,
-    write_text,
 )
 
 from ouroboros.platform_layer import (
@@ -47,6 +46,17 @@ def _consolidation_route() -> Tuple[str, bool]:
 
 
 CONSOLIDATION_REASONING_EFFORT = "medium"
+
+
+def retain_memory_source(context: Any, source_id: str, data: bytes, extension: str = "md") -> Dict[str, Any]:
+    """Use existing immutable source storage with a reader valid after this task."""
+    from ouroboros.artifacts import store_actor_source_bytes, task_artifact_dir_path
+    root, task_id = pathlib.Path(context.drive_root).resolve(), str(context.task_id or "consolidation")
+    ref = store_actor_source_bytes(root, task_id, category="context_checkpoints",
+                                  source_id=source_id, data=data, extension=extension)
+    path = task_artifact_dir_path(root, task_id, create=False) / ref["path"]
+    return {**ref, "task_id": task_id, "canonical_root": str(root), "read": {"tool": "read_file",
+            "arguments": {"root": "runtime_data", "path": path.relative_to(root).as_posix(), "start_line": 1}}}
 
 
 def _ordered_chat_generation_paths(source_path: pathlib.Path) -> List[pathlib.Path]:
@@ -121,6 +131,8 @@ def consolidate(
     meta_path: pathlib.Path,
     llm_client: Any,
     identity_text: str = "",
+    *, knowledge_context: Any = None, force_tail: bool = False, compact_chronicle: bool = False,
+    pressure_fits: Optional[Callable[[], bool]] = None,
 ) -> Optional[Dict[str, Any]]:
     lock_path = meta_path.parent / ".consolidation.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -133,13 +145,23 @@ def consolidate(
             log.info("Chat block consolidation already running, skipping")
             return None
 
-        return _run_block_consolidation(
+        usage = _run_block_consolidation(
             source_path=chat_path,
             blocks_path=blocks_path,
             meta_path=meta_path,
             llm_client=llm_client,
             identity_text=identity_text,
+            knowledge_context=knowledge_context,
+            force_tail=force_tail,
         )
+        if (compact_chronicle and not (usage or {}).get("_consolidation_errors")
+                and not (pressure_fits is not None and pressure_fits())):
+            reduced = _compact_chronicle(blocks_path, llm_client, identity_text, knowledge_context)
+            merged = _merge_consolidation_usage(*([usage] if usage else []), reduced)
+            # A fixed-key merge would drop this receipt; a chronicle-only pass wrote no block.
+            merged["_blocks_written"] = (usage or {}).get("_blocks_written", 0)
+            usage = merged
+        return usage
     finally:
         if lock_fd is not None:
             try:
@@ -222,6 +244,8 @@ def _run_block_consolidation(
     meta_path: pathlib.Path,
     llm_client: Any,
     identity_text: str,
+    knowledge_context: Any = None,
+    force_tail: bool = False,
 ) -> Optional[Dict[str, Any]]:
     meta = _load_meta(meta_path)
     segments, last_offset, gap_detected = _resolve_generation_segments(meta, source_path)
@@ -254,14 +278,17 @@ def _run_block_consolidation(
         return None
     segments, segment_sigs, segment_entries, all_entries, last_offset = captured
     new_entries = all_entries[last_offset:]
-    if len(new_entries) < BLOCK_SIZE:
+    if not new_entries or (len(new_entries) < BLOCK_SIZE and not force_tail):
         return None
 
     total_usage: Dict[str, Any] = {
         "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "cost": 0.0,
     }
+    # A failed SUFFIX chunk still advances the successful PREFIX, so the stale-error
+    # clear below must know whether THIS run recorded a failure it would erase.
+    run_failed = False
     new_blocks: List[Dict[str, Any]] = []
-    chunks_to_process = len(new_entries) // BLOCK_SIZE
+    chunks_to_process = (len(new_entries) + BLOCK_SIZE - 1) // BLOCK_SIZE if force_tail else len(new_entries) // BLOCK_SIZE
     processed = 0
 
     for i in range(chunks_to_process):
@@ -269,6 +296,14 @@ def _run_block_consolidation(
         formatted = _format_entries_for_block(chunk)
         first_ts = str(chunk[0].get("ts", "unknown"))
         last_ts = str(chunk[-1].get("ts", "unknown"))
+        source_hash = hashlib.sha256(json.dumps([identity_text, formatted], ensure_ascii=False).encode("utf-8")).hexdigest()
+        retry = meta.get("consolidation_retry") or {}
+
+        def remember_refusal(input_limit: Dict[str, Any]) -> None:
+            # The caller still holds .consolidation.lock. Persist before another
+            # part can enter a quota wait or propagate an owner/deadline stop.
+            meta["consolidation_retry"] = {"source_sha256": source_hash, "input_limit": input_limit}
+            atomic_write_json(meta_path, meta)
 
         content, usage = _create_block_summary(
             llm_client=llm_client,
@@ -277,15 +312,24 @@ def _run_block_consolidation(
             last_ts=last_ts,
             identity_text=identity_text,
             message_count=len(chunk),
+            _retry=retry.get("input_limit") if retry.get("source_sha256") == source_hash else None,
+            _on_refusal=remember_refusal,
+            knowledge_context=knowledge_context,
         )
 
-        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-            total_usage[key] += usage.get(key, 0)
-        if total_usage["cost"] is not None:
-            if usage.get("cost") is None:
-                total_usage["cost"] = None
-            else:
-                total_usage["cost"] += float(usage["cost"])
+        total_usage = _merge_consolidation_usage(total_usage, usage)
+        if (meta.get("consolidation_retry") or {}).get("source_sha256") == source_hash:
+            meta.pop("consolidation_retry", None)
+        if not content and usage.get("_consolidation_retry"):
+            meta["consolidation_retry"] = {"source_sha256": source_hash, "input_limit": usage["_consolidation_retry"]}
+        # A refused part that was split and then fully summarized still carries its
+        # attempt errors in usage; only a chunk that produced NO content failed.
+        if usage.get("_consolidation_errors") and not (content and content.strip()):
+            run_failed = True
+            meta["last_consolidation_error"] = dict(
+                usage["_consolidation_errors"][-1], cursor_offset=last_offset + processed,
+                chat_log_signature=segment_sigs[0], message_count=len(chunk),
+            )
 
         if content and content.strip():
             first_date, last_date = first_ts[:10], last_ts[:10]
@@ -301,21 +345,45 @@ def _run_block_consolidation(
                 "range": range_str,
                 "message_count": len(chunk),
                 "content": content.strip(),
+                **({"knowledge_entries": usage["_knowledge_entries"]} if usage.get("_knowledge_entries") else {}),
             })
             processed += len(chunk)
         else:
             log.warning("Block summary empty for chunk %d, will retry next cycle", i)
             break
 
+    # Set after the last merge of this stretch: _merge_consolidation_usage forwards
+    # fixed keys only, so an earlier assignment would be dropped by the next merge.
+    total_usage["_blocks_written"] = len(new_blocks)
     if not new_blocks:
-        _advance_cursor(meta, segments, segment_sigs, segment_entries, last_offset + processed)
         atomic_write_json(meta_path, meta)
-        return total_usage if total_usage["prompt_tokens"] or total_usage["completion_tokens"] else None
+        return total_usage
+
+    pending_knowledge = [(block, block.pop("knowledge_entries")) for block in new_blocks
+                         if block.get("knowledge_entries")]
+    if pending_knowledge:
+        source = {"path": str(source_path), "generations": segment_sigs,
+                  "start_offset": last_offset, "end_offset": last_offset + processed,
+                  "nominations": [{"range": block["range"], "entries": entries}
+                                  for block, entries in pending_knowledge]}
+        source_id = hashlib.sha256(json.dumps(source, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        ref = {"read": {"tool": "read_file", "arguments": {
+            "root": "runtime_data", "path": "memory/knowledge_history.jsonl"}},
+            "canonical_root": str(knowledge_context.drive_root), "entry_id": source_id}
+        if not append_jsonl(pathlib.Path(knowledge_context.drive_root) / "memory" / "knowledge_history.jsonl", {
+            "ts": utc_now_iso(), "type": "dialogue_knowledge_nominations", "entry_id": source_id,
+            "source_ref": ref, **source,
+        }, ensure_record_boundary=True, require_lock=True):
+            log.warning("Dialogue knowledge nominations could not be retained; preserving original blocks/cursor")
+            total_usage["_blocks_written"] = 0
+            return total_usage
+        for block, _entries in pending_knowledge:
+            block["knowledge_source_ref"] = ref
 
     existing_blocks = _load_blocks(blocks_path)
     all_blocks = existing_blocks + new_blocks
 
-    if len(all_blocks) > MAX_SUMMARY_BLOCKS:
+    if len(all_blocks) > MAX_SUMMARY_BLOCKS and content.strip():
         compress_count = min(ERA_COMPRESS_COUNT, len(all_blocks) - 1)
         old_blocks = all_blocks[:compress_count]
         remaining = all_blocks[compress_count:]
@@ -323,86 +391,520 @@ def _run_block_consolidation(
         # their exact chronological positions, and an era may only compress ONE
         # CONTIGUOUS run of ordinary summary blocks — never a span that bridges
         # a known discontinuity.
-        def _is_gap(block: Any) -> bool:
-            return isinstance(block, dict) and bool(block.get("gap_id"))
-
-        run_start = next((i for i, b in enumerate(old_blocks) if not _is_gap(b)), None)
+        run_start = next((i for i, b in enumerate(old_blocks) if not _is_gap_block(b)), None)
         era = None
         if run_start is not None:
             run_end = run_start
-            while run_end < len(old_blocks) and not _is_gap(old_blocks[run_end]):
+            while run_end < len(old_blocks) and not _is_gap_block(old_blocks[run_end]):
                 run_end += 1
             era, era_usage = _compress_blocks_to_era(
                 old_blocks[run_start:run_end], llm_client, identity_text,
+                **({"knowledge_context": knowledge_context} if knowledge_context is not None else {}),
             )
+            total_usage = _merge_consolidation_usage(total_usage, era_usage)
         if era is not None:
             all_blocks = [
                 *old_blocks[:run_start], era, *old_blocks[run_end:], *remaining,
             ]
-            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-                total_usage[key] += era_usage.get(key, 0)
-            if total_usage["cost"] is not None:
-                if era_usage.get("cost") is None:
-                    total_usage["cost"] = None
-                else:
-                    total_usage["cost"] += float(era_usage["cost"])
 
     _write_locked_json(blocks_path, all_blocks)
 
+    if knowledge_context is not None:
+        published: List[Dict[str, Any]] = []
+        for block, entries in pending_knowledge:
+            block["knowledge_writes"] = _write_knowledge_entries(
+                pathlib.Path(knowledge_context.drive_root) / "memory" / "knowledge",
+                entries, context=knowledge_context)
+            published.extend(block["knowledge_writes"])
+            if any(not outcome["ok"] for outcome in block["knowledge_writes"]):
+                append_jsonl(pathlib.Path(knowledge_context.drive_root) / "memory" / "knowledge_history.jsonl", {
+                    "ts": utc_now_iso(), "type": "dialogue_knowledge_writes_incomplete",
+                    "source_ref": block["knowledge_source_ref"], "outcomes": block["knowledge_writes"],
+                })
+        if pending_knowledge:
+            # Nominations were durable before mutation. Outcome facts belong to
+            # the same blocks, so a failed write is available to later learning.
+            _write_locked_json(blocks_path, all_blocks)
+            # Era compression later replaces these blocks with one object carrying no
+            # knowledge_writes, so this batch receipt lives in meta, not in a scan of
+            # dialogue_blocks.json. A fully published batch clears it; a run with no
+            # nominations at all leaves the older receipt standing.
+            # Count what was NOMINATED, not only what produced an outcome: an entry
+            # the writer skipped as malformed was not published either.
+            nominated = sum(len(entries) for _block, entries in pending_knowledge)
+            failed = nominated - sum(1 for outcome in published if outcome["ok"])
+            meta.pop("last_unpublished_nominations", None)
+            if failed > 0:
+                meta["last_unpublished_nominations"] = {"entry_id": ref["entry_id"],
+                                                        "failed": failed, "total": nominated}
+
     _advance_cursor(meta, segments, segment_sigs, segment_entries, last_offset + processed)
+    if not run_failed:  # An advance by a run that recorded no failure retires a stale error.
+        meta.pop("last_consolidation_error", None)
     meta["last_consolidated_at"] = utc_now_iso()
     atomic_write_json(meta_path, meta)
 
     log.info("Block consolidation: %d messages -> %d new blocks (total %d)",
              processed, len(new_blocks), len(all_blocks))
+    total_usage["_blocks_written"] = len(new_blocks)
     return total_usage
 
 
-def _call_consolidation_llm(llm_client: Any, prompt: str, label: str) -> Tuple[str, Dict[str, Any]]:
+def _merge_consolidation_usage(*usages: Dict[str, Any]) -> Dict[str, Any]:
+    """Combine helper usage without turning absent spend/counters into zero."""
+    merged: Dict[str, Any] = {}
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens", "cost"):
+        values = [usage.get(key) for usage in usages]
+        merged[key] = None if None in values else sum(values)
+    for key in ("ledger_attempt_ids", "_consolidation_errors"):
+        merged[key] = [value for usage in usages for value in usage.get(key, [])]
+    return merged
+
+
+class KnowledgeReadContext:
+    """Reads made by this existing Light operation, before its nominations."""
+
+    def __init__(self, context: Any, call_type: str = "memory_consolidation"):
+        from ouroboros.tools.knowledge import get_tools
+        from ouroboros.tools.compact_context import get_tools as context_tools
+        from ouroboros.tools.core import get_tools as core_tools
+
+        self.context = context
+        self.call_type = call_type
+        self.reads: Dict[Tuple[str, str], str] = {}
+        self.read_ranges: Dict[Tuple[str, str, str], Tuple[int, List[Tuple[int, int]]]] = {}
+        self.pending_delivery: List[Dict[str, Any]] = []
+        self.required_source: Optional[Dict[str, Any]] = None
+        self.tools = [{"type": "function", "function": tool.schema} for tool in get_tools()
+                      if tool.name in {"knowledge_read", "knowledge_list"}]
+        self.tools.extend({"type": "function", "function": tool.schema} for tool in context_tools())
+        self.tools.extend({"type": "function", "function": tool.schema} for tool in core_tools() if tool.name == "read_file")
+
+    def read_call(self, call: Dict[str, Any]) -> Dict[str, Any]:
+        from ouroboros.tools.knowledge import _knowledge_list, _knowledge_read
+        from ouroboros.tools.tool_result import (
+            _install_tool_result_sidecar, _published_tool_result, _restore_tool_result_sidecar,
+        )
+
+        function = call.get("function") or {}
+        name = function.get("name")
+        meta, status = {}, "error"
+        try:
+            arguments = function.get("arguments") or "{}"
+            args = json.loads(arguments) if isinstance(arguments, str) else arguments
+            if name in {"knowledge_read", "read_file"}:
+                sentinel = object()
+                token = _install_tool_result_sidecar(self.context, sentinel)
+                try:
+                    if name == "read_file":
+                        from ouroboros.tools.core_file_tools import _read_file
+                        text = _read_file(self.context, **args)
+                    else:
+                        text = _knowledge_read(self.context, **args)
+                    result = _published_tool_result(self.context, sentinel)
+                    meta = dict(getattr(result, "meta", {}))
+                    status = getattr(result, "status", "")
+                    if name == "read_file" and self.context.last_read_view:
+                        meta["read_file_source"] = dict(self.context.last_read_view)
+                        status = "ok"
+                finally:
+                    _restore_tool_result_sidecar(token)
+            elif name == "knowledge_list":
+                text = _knowledge_list(self.context, **args)
+            elif name == "compact_context":
+                from ouroboros.tools.compact_context import _compact_context
+                text = _compact_context(self.context, **args)
+            else:
+                text = "This memory operation supports knowledge_read, knowledge_list, read_file and compact_context."
+        except (ValueError, KeyError, TypeError, OSError) as exc:
+            text = f"Knowledge read unavailable: {type(exc).__name__}: {exc}"
+        return {"tool_call_id": str(call.get("id") or ""), "fn_name": name,
+                "result": text, "result_meta": meta, "status": status}
+
+    def accept_delivery(self) -> None:
+        """Credit only source characters in the request the model answered."""
+        for row in self.pending_delivery:
+            if row.get("status") != "ok":
+                continue
+            meta = row.get("result_meta") or {}
+            source = meta.get("knowledge_source") or {}
+            try:
+                file = meta.get("read_file_source")
+                if file:
+                    if file.get("source_masked"):
+                        continue
+                    scope, topic, revision = file["opened_root"], file["opened_path"], file["source_revision"]
+                    total, start, end = file["complete_chars"], file["source_start_char"], file["source_end_char"]
+                    header, body = file["body_start"], file["body_chars"]
+                else:
+                    args = source["read"]["arguments"]
+                    scope, topic, revision = args["scope"], args["topic"], source["revision"]
+                    total, start, end = source["complete_chars"], source["start_char"], source["end_char"]
+                    header, body = meta["knowledge_body_start"], meta["knowledge_body_chars"]
+                if (not all(type(n) is int for n in (total, start, end, header, body))
+                        or not 0 <= start <= end <= total or body != end - start or header < 0):
+                    continue
+                shown = (row["result_source_view"]["delivered_range"][1]
+                         if row.get("result_partial") else len(row["result"]))
+                if shown < header:
+                    continue
+                delivered_end = start + min(body, shown - header)
+                key = (scope, topic, revision)
+                old_total, ranges = self.read_ranges.get(key, (total, []))
+                self.reads.pop((scope, topic), None)
+                if old_total != total:
+                    continue
+                merged: List[Tuple[int, int]] = []
+                for lo, hi in sorted([*ranges, (start, delivered_end)]):
+                    if merged and lo <= merged[-1][1]:
+                        merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
+                    else:
+                        merged.append((lo, hi))
+                self.read_ranges[key] = (total, merged)
+                if merged == [(0, total)]:
+                    self.reads[(scope, topic)] = revision
+            except (KeyError, TypeError, ValueError):
+                continue
+        self.pending_delivery = []
+
+    def source_complete(self) -> bool:
+        ref = self.required_source
+        args = ref["read"]["arguments"] if ref else {}
+        return ref is None or self.reads.get((args["root"], args["path"])) == ref["sha256"]
+
+    def next_messages(self, values: dict, message: dict, *, fit_candidate: Callable,
+                      facts: dict, round_id: str) -> list:
+        """Complete one tool batch, apply the actor's view, then project its results."""
+        from dataclasses import asdict
+        from ouroboros.context_budget import ContextReclaimRequest, SummarizerContextOverflow
+        from ouroboros.context_compaction import compact_tool_history_llm, context_reclaim_transcript_sha256
+        from ouroboros.context_fit import project_tool_result_batch
+
+        rows = [self.read_call(call) for call in message["tool_calls"]]
+        before = [*values["messages"], {**message, "role": "assistant"}]
+
+        def tool_messages(results):
+            return [{"role": "tool", "tool_call_id": row["tool_call_id"], "content": row["result"]}
+                    for row in results]
+
+        pending = getattr(self.context, "_pending_compaction", None)
+        if pending is not None:
+            self.context._pending_compaction = None
+            receipt = {"status": "authored_note_required",
+                       "reason": "This Light operation uses your authored view. Call inspect=true, then supply working_note and keep_unit_ids; no helper was called."}
+            if isinstance(pending, dict):
+                observed = pending["observed"]
+                complete = [*before, *tool_messages(rows)]
+                request = ContextReclaimRequest(
+                    route_fp=str(facts.get("route_fp") or "unknown"), round_id=round_id,
+                    transcript_sha256=context_reclaim_transcript_sha256(complete),
+                    measurement_basis="cold_estimate", measurement_density=facts.get("measurement_density", 1.0),
+                    reclaim_goal_tokens=0,
+                    **{key: pending[key] for key in ("working_note", "expected_view_revision", "keep_unit_ids", "restore_unit_refs", "schema_names")})
+                candidate, applied, _usage = compact_tool_history_llm(
+                    complete, request=request, observed_messages=observed["messages"],
+                    observed_tool_schemas=observed["tool_schemas"], tool_schemas=values["tools"],
+                    fit_candidate=fit_candidate, drive_root=self.context.drive_root,
+                    task_id=str(self.context.task_id or "consolidation"))
+                facts_receipt = asdict(applied)
+                # Full provenance already lives in the checkpoint/capsule.
+                # Replaying that growing lineage in every tool reply can fill
+                # the very window the actor just reclaimed.
+                receipt = {key: facts_receipt[key] for key in (
+                    "status", "checkpoint_ref", "view_revision", "reclaimed_tokens", "fit") if key in facts_receipt}
+                receipt["receipt_ref"] = retain_memory_source(self.context, "memory_context_view",
+                    json.dumps(facts_receipt, ensure_ascii=False).encode("utf-8"), "json")
+                if applied.status in {"applied", "no_op"}:
+                    before = candidate[:-len(rows)]  # the new completed batch is preserved verbatim
+            for row in rows:
+                if row["fn_name"] == "compact_context":
+                    row["result"] = json.dumps({"context_view": receipt}, ensure_ascii=False)
+        projected, projection = project_tool_result_batch(
+            rows, before, values["tools"], drive_root=self.context.drive_root,
+            task_id=str(self.context.task_id or "consolidation"), fit_candidate=fit_candidate)
+        self.pending_delivery = projected
+        if projection["status"] == "minimum_view_unfit":
+            raise SummarizerContextOverflow("Memory tool-result source locators exceed the current working window")
+        return [*before, *tool_messages(projected)]
+
+    def bind_entries(self, entries: Any) -> List[Dict[str, Any]]:
+        from ouroboros.tools.knowledge import _address
+
+        bound = []
+        for entry in entries if isinstance(entries, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                address = _address(self.context, entry.get("topic"), entry.get("scope", ""))
+            except (ValueError, TypeError):
+                continue
+            # The host records what THIS operation actually read. Model-supplied
+            # revision text cannot attest an unread note; absent read permits
+            # creation only, because the common writer requires existing CAS.
+            bound.append({**entry, "scope": address.scope,
+                          "expected_revision": self.reads.get((address.scope, address.topic)),
+                          "canonical_root": str(address.canonical_root),
+                          "task_id": str(getattr(self.context, "task_id", "") or "")})
+        return bound
+
+
+KNOWLEDGE_MAINTENANCE_PROMPT = """
+You may use knowledge_list and knowledge_read to understand existing notes before
+nominating a durable revision. Keep the original episode below as evidence, read
+the complete CURRENT note before replacing it, and preserve its sources, uncertainty,
+unknown metadata and useful links. A new observation may correct an old interpretation;
+do not merely repeat fragments. New topics may be created without a prior read.
+Understanding of the people involved — preferences, recurring reactions, shared history,
+tentative interpretations with their source — is ordinary knowledge to nominate in global scope;
+a pattern across several moments is worth more than one; revise the existing note rather than minting a rule,
+and an explicit standing request stays explicit. Author a YAML summary for a new or meaningfully revised note —
+the summary is what stays resident in the index — and revise it when the note's meaning changes.
+The note overview (scope global) is the shared orientation loaded into every future context; keep it
+current, and when none exists and this episode gives real understanding, create it after reading the index.
+Scope is a separate field, never a topic prefix.
+Do not treat the generated index or earlier previews as authored truth. Patterns and
+improvement-backlog retain their dedicated semantic maintainers; nominate ordinary
+knowledge here. If no memory change is useful, nominate none. This is the same memory
+operation, not another mandatory analysis or review.
+Read large notes using explicit start_char/end_char ranges. Read coverage belongs
+to one exact revision; repeat or overlapping reads do not fill unread gaps.
+Use compact_context(inspect=true) before the view fills, then give your own
+working_note and selected complete unit IDs to retain. Source checkpoints preserve
+the original reads; keep your current conclusions while reading the next range.
+This Light operation supports authored views; keep_last_n alone returns guidance
+without calling another helper. All tools remain available in this operation.
+"""
+
+
+def _call_consolidation_llm(
+    llm_client: Any, prompt: str, label: str, *, fixed_prompt: str = "",
+    input_limit: Optional[Dict[str, Any]] = None,
+    model_route: Optional[Dict[str, Any]] = None,
+    knowledge: Optional[KnowledgeReadContext] = None,
+    source_ref: Optional[Dict[str, Any]] = None,
+) -> Tuple[str, Dict[str, Any]]:
+    from contextlib import nullcontext
+    from math import ceil
+    from ouroboros.capability_evidence import is_known
+    from ouroboros.context_budget import SummarizerContextOverflow
+    from ouroboros.context_fit import (
+        _failed_route_evidence, _route_calibration_ratio, estimate_context_prompt_tokens, resolve_context_fit_route,
+    )
+    from ouroboros.tools.compact_context import record_context_view
+    from ouroboros.model_slots import MODEL_ACCOUNTS_KEY, model_role_option
+    from ouroboros.model_wait import current_model_wait
+    from ouroboros.provider_models import parse_claudexor_model, provider_for_model
+
+    facts: Dict[str, Any] = {}
+    prepared_values: Dict[str, Any] = {}
+    model_route = model_route if model_route is not None else {}
+    invoked = False
+    usages: List[Dict[str, Any]] = []
+    waiter = current_model_wait()
+    if knowledge:
+        from ouroboros.llm_claudexor import ModelTurnState
+        turn_state = ModelTurnState()
+
+    def prepare(values: Dict[str, Any], *, check_fit: bool = True) -> Dict[str, Any]:
+        # Use the same role, captured pin (including Auto), local flag and
+        # observed account as dispatch. Revalidate after an owner route switch.
+        observed = values.pop("_model_observed_route", None)
+        if knowledge:
+            from ouroboros.llm_claudexor import turn_state_for_route
+            values["model_turn_state"] = turn_state_for_route(
+                turn_state, "local" if values["use_local"] else provider_for_model(values["model"]))
+        prepared_values.clear()
+        prepared_values.update(values)
+        task = {
+            "model": values["model"], "use_local_model": values["use_local"],
+            "model_role": values["model_role"],
+            "credential_profile_id": values["model_account_override"],
+            "model_route": observed,
+        }
+        try:
+            # Local health and subscription catalogs establish identity without
+            # a generation. Other providers keep their cache-only preparation.
+            route, evidence = resolve_context_fit_route(
+                task, allow_fetch=values["use_local"] or provider_for_model(values["model"]) == "claudexor",
+            )
+        except Exception:
+            log.debug("Consolidation capacity unavailable; retaining unknown capacity", exc_info=True)
+            try:
+                route, evidence = _failed_route_evidence(task)
+            except Exception:
+                # The fallback shares the same settings reader. Its failure
+                # cannot invalidate the Light request already captured above.
+                facts.clear()
+                model_route.clear()
+                log.warning("Consolidation route metadata unavailable; capacity remains unknown", exc_info=True)
+                return values
+        options = route.get("options") or {}
+        model_route.clear()
+        if route["provider"] == "claudexor":
+            source, native_model = parse_claudexor_model(route["model"])
+            model_route.update(
+                source=source, model=native_model,
+                credentialProfileId=getattr(evidence, "credential_profile_id", "") or options.get("credential_profile_id", ""),
+                accountFingerprint=getattr(evidence, "account_fingerprint", "") or options.get("account_fingerprint", ""),
+            )
+        density = _route_calibration_ratio(None, evidence.route_fp, route["model"])
+        def measure(messages: List[Dict[str, Any]]) -> int:
+            return ceil(estimate_context_prompt_tokens(
+                messages, values["tools"],
+                provider=route["provider"], reasoning_effort=values["reasoning_effort"],
+            ) * density)
+        window = int(evidence.window_tokens) if is_known(evidence, require_fresh=True) else None
+        output_reserve = values["max_tokens"]
+        if values["use_local"]:
+            from ouroboros.llm_local import local_context_limits
+            _local_window, output_reserve = local_context_limits(output_reserve)
+        limit = window - output_reserve if window is not None else None
+        binding = dict(route_fp=evidence.route_fp, capacity_tokens=window, output_reserve_tokens=output_reserve)
+        byte_limit = (input_limit["input_bytes"] if input_limit
+                      and all(input_limit.get(key) == value for key, value in binding.items()) else None)
+        request_text = (values["messages"][0]["content"] if len(values["messages"]) == 1 else
+                        json.dumps(values["messages"], ensure_ascii=False, separators=(",", ":")))
+        facts.update(binding, input_tokens=measure(values["messages"]), provider=route["provider"],
+                     fixed_tokens=measure([{"role": "user", "content": fixed_prompt}]),
+                     measurement_density=density, input_limit=limit, byte_limit=byte_limit,
+                     input_bytes=len(request_text.encode("utf-8")), fixed_bytes=len(fixed_prompt.encode("utf-8")))
+        if check_fit and ((limit is not None and facts["input_tokens"] > limit)
+                          or (byte_limit is not None and facts["input_bytes"] > byte_limit)):
+            raise SummarizerContextOverflow("Complete consolidation request exceeds the route input capacity")
+        return values
+
+    def fit_candidate(messages: list, tools: list) -> Dict[str, Any]:
+        # Reuse the captured preparation facts; binary-searching a view performs
+        # no catalog/network reads and never changes the operation's model route.
+        tokens = ceil(estimate_context_prompt_tokens(
+            messages, tools, provider=facts.get("provider", ""),
+            reasoning_effort=prepared_values.get("reasoning_effort")) * facts.get("measurement_density", 1.0))
+        text = messages[0]["content"] if len(messages) == 1 else json.dumps(messages, ensure_ascii=False, separators=(",", ":"))
+        size = len(text.encode("utf-8"))
+        accepted = ((facts.get("input_limit") is None or tokens <= facts["input_limit"])
+                    and (facts.get("byte_limit") is None or size <= facts["byte_limit"]))
+        return {"accepted": accepted, "input_tokens": tokens, "input_bytes": size,
+                "input_limit": facts.get("input_limit"), "output_reserve_tokens": facts.get("output_reserve_tokens"),
+                "measurement_basis": "canonical_visible_estimate", "strict_bound_proven": False}
+
     try:
         model, use_local = _consolidation_route()
-        msg, usage = llm_client.chat(
-            messages=[{"role": "user", "content": prompt}],
-            model=model,
-            model_role="light",
-            tools=None,
-            reasoning_effort="low",
-            max_tokens=16384,
-            use_local=use_local,
-        )
-        return msg.get("content", ""), usage
-    except Exception as e:
+        values = dict(messages=[{"role": "user", "content": prompt}], model=model,
+                      model_role="light", tools=knowledge.tools if knowledge else None,
+                      reasoning_effort="low", max_tokens=16384,
+                      use_local=use_local,
+                      model_account_override=model_role_option(MODEL_ACCOUNTS_KEY, "light"))
+        if waiter:
+            values.update(waiter.overrides.get("light", {}))
+        # Carry part-to-part evidence only on initial preparation. A wait's
+        # reprepare without an observed receipt rediscovers Auto after rotation.
+        try:
+            values = prepare({**values, "_model_observed_route": dict(model_route)})
+        except SummarizerContextOverflow:
+            if knowledge is None:
+                raise
+            source_ref = source_ref or retain_memory_source(knowledge.context, label, prompt.encode("utf-8"))
+            knowledge.required_source = source_ref
+            pointer = (f"Complete source and instructions for {label} are retained here. "
+                       "Read the whole source through read_file in ranges before your final response. "
+                       "Use compact_context with your authored working_note while progressing through ranges; "
+                       "preserve the whole temporal horizon, uncertainty and source references. "
+                       "This locator is not a summary. Knowledge reads and all current tools remain available.\n"
+                       + json.dumps(source_ref, ensure_ascii=False))
+            values = prepare({**prepared_values, "messages": [{"role": "user", "content": pointer}],
+                              "_model_observed_route": dict(model_route)})
+        while True:
+            with waiter.register_reprepare("light", prepare) if waiter else nullcontext():
+                invoked = True
+                if knowledge:
+                    from ouroboros.llm_observability import chat_observed
+                    record_context_view(knowledge.context, values["messages"], values["tools"])
+                    msg, usage = chat_observed(
+                        llm_client, drive_root=knowledge.context.drive_root,
+                        task_id=str(knowledge.context.task_id or "consolidation"),
+                        call_type=knowledge.call_type, **values)
+                else:
+                    msg, usage = llm_client.chat(**values)
+            usages.append(usage)
+            if knowledge:
+                # A wait may have re-prepared this same call with another route;
+                # pin its final canonical view before executing the returned tools.
+                record_context_view(knowledge.context, prepared_values["messages"], prepared_values["tools"])
+                knowledge.accept_delivery()
+            if isinstance(usage.get("claudexor"), dict):
+                model_route.clear()
+                model_route.update(usage["claudexor"].get("route") or {})
+            calls = msg.get("tool_calls") or []
+            if knowledge is not None and calls:
+                invoked = False
+                messages = knowledge.next_messages(prepared_values, msg, fit_candidate=fit_candidate,
+                                                    facts=facts, round_id=str(len(usages)))
+                values = prepare({**prepared_values, "messages": messages, "_model_observed_route": dict(model_route)})
+                continue
+            content = msg.get("content") or ""
+            if content.strip():
+                if knowledge and not knowledge.source_complete():
+                    response_ref = retain_memory_source(knowledge.context, "incomplete_memory_response", content.encode("utf-8"))
+                    return "", {**_merge_consolidation_usage(*usages), "_consolidation_errors": [{
+                        "kind": "source_incomplete", "message": "The complete retained source was not delivered; originals are preserved.",
+                        "source_ref": knowledge.required_source, "response_ref": response_ref}]}
+                return content, _merge_consolidation_usage(*usages)
+            usages.pop()  # the empty response is added once as the failed result below
+            break
+        kind, message, preflight = "empty_summary", "Consolidation returned no summary", False
+    except Exception as error:
         from ouroboros.llm_claudexor import propagate_model_error
-        propagate_model_error(e)
-        log.error("%s failed: %s", label, e, exc_info=True)
-        return "", {"cost": 0}
+        propagate_model_error(error)
+        from ouroboros.loop_llm_call import classify_llm_exception
+        from ouroboros.transport_custody import _capture_on_chain
+
+        capture = _capture_on_chain(error)
+        if getattr(error, "route", None):
+            # A refusal belongs to the actual account, which can differ from
+            # catalog discovery. Rebind its facts without masking the refusal
+            # with a second preflight exception or sending another request.
+            prepare({**prepared_values, "_model_observed_route": error.route}, check_fit=False)
+        preflight = isinstance(error, SummarizerContextOverflow) or not invoked
+        kind = ("context_overflow" if isinstance(error, SummarizerContextOverflow)
+                else "provider_outcome_unknown" if getattr(capture, "state", "") in {"dispatched", "unresolved"}
+                else classify_llm_exception(error).kind)
+        message = str(error)
+        usage = dict(getattr(error, "usage", None) or {})
+        usage.setdefault("cost", None if invoked else 0.0)
+        if preflight:
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                usage.setdefault(key, 0)
+        usage["ledger_attempt_ids"] = list(getattr(error, "ledger_attempt_ids", []))
+    from ouroboros.utils import sanitize_tool_result_for_log
+
+    if knowledge is not None and usages and kind == "context_overflow":
+        kind = "knowledge_source_unfit"  # splitting the original episode cannot shrink a requested note
+    fact = dict(facts, kind=kind, message=sanitize_tool_result_for_log(message), preflight_only=preflight)
+    log.warning("%s failed (%s): %s", label, kind, fact["message"])
+    return "", {**_merge_consolidation_usage(*usages, usage), "_consolidation_errors": [fact]}
 
 
-def _create_block_summary(
-    llm_client: Any,
+def _block_prompt(
     messages_text: str,
     first_ts: str,
     last_ts: str,
     identity_text: str,
     message_count: int,
-) -> Tuple[str, Dict[str, Any]]:
+) -> str:
     first_date = first_ts[:10]
     first_time = first_ts[11:16]
     last_time = last_ts[11:16]
-
-    identity_section = ""
-    if identity_text:
-        identity_section = f"\n## Identity context\n{identity_text}\n"
-
-    prompt = f"""You are a memory consolidator for Ouroboros, a self-modifying AI agent.
-Create a detailed episodic memory entry from these {message_count} messages.
+    identity_section = f"\n## Identity context\n{identity_text}\n" if identity_text else ""
+    return f"""You are a memory consolidator for Ouroboros, a self-modifying AI agent.
+Create a detailed episodic memory entry from the supplied source of {message_count} messages.
+The source may be one contiguous part of the block; summarize only the supplied part.
 
 ## Rules
 1. Header: ### Block: {first_date} {first_time} - {last_time}
-2. Preserve: decisions, agreements, technical discoveries, emotional moments, task outcomes, what worked/failed
+2. Preserve: decisions, agreements, technical discoveries, emotional and personal moments (what someone felt, asked for, enjoyed or disliked — quote them), task outcomes, what worked/failed
 3. Compress: routine tool calls, repetitive back-and-forth
 4. Quote key phrases directly when important
-5. First person as Ouroboros: "I did...", "the user asked..."
+5. First person as Ouroboros: "I did..."; call people by the names the messages give; when no name is known, describe the speaker honestly rather than inventing one
 6. Length: 200-500 words depending on content density
 7. Include task_ids when referencing specific tasks
 {identity_section}
@@ -410,13 +912,90 @@ Create a detailed episodic memory entry from these {message_count} messages.
 {messages_text}
 """
 
-    return _call_consolidation_llm(llm_client, prompt, "Block summary LLM call")
+
+def _split_consolidation_text(text: str) -> Optional[Tuple[str, str]]:
+    """Split a source payload near its midpoint without dropping any bytes."""
+    if len(text) < 2:
+        return None
+    midpoint = len(text) // 2
+    radius = max(1, len(text) // 4)
+    before = text.rfind("\n", 1, midpoint + 1)
+    after = text.find("\n", midpoint, len(text) - 1)
+    candidates = [p + 1 for p in (before, after) if p > 0 and abs((p + 1) - midpoint) <= radius]
+    split_at = min(candidates, key=lambda p: abs(p - midpoint)) if candidates else midpoint
+    if not 0 < split_at < len(text):
+        return None
+    return text[:split_at], text[split_at:]
+
+
+def _create_block_summary(
+    llm_client: Any, messages_text: str, first_ts: str, last_ts: str,
+    identity_text: str, message_count: int,
+    _retry: Optional[Dict[str, Any]] = None,
+    _on_refusal: Optional[Callable[[Dict[str, Any]], None]] = None,
+    knowledge_context: Any = None,
+) -> Tuple[str, Dict[str, Any]]:
+    """Summarize a complete logical block, splitting only to fit its Light route.
+
+    Parts cover the source in order without clipping. Any failed/empty part
+    withholds the entire block and its cursor; unknown/control failures never
+    authorize another part. A real refusal lowers the same route's byte limit
+    for remaining parts and the next cycle, independent of density calibration.
+    """
+    pending, summaries, usages = [messages_text], [], []
+    model_route: Dict[str, Any] = {}
+    input_limit = _retry
+    knowledge_entries: List[Dict[str, Any]] = []
+    def result(content: str) -> Tuple[str, Dict[str, Any]]:
+        return content, {**_merge_consolidation_usage(*usages), "_consolidation_retry": input_limit,
+                         **({"_knowledge_entries": knowledge_entries} if knowledge_entries else {})}
+
+    fixed = _block_prompt("", first_ts, last_ts, identity_text, message_count)
+    knowledge_instruction = (KNOWLEDGE_MAINTENANCE_PROMPT + "\nAfter the episodic summary, optionally add "
+                             'a final line KNOWLEDGE_ENTRIES_JSON: [{"topic":"...","scope":"global","content":"complete updated Markdown"}].\n'
+                             if knowledge_context is not None else "")
+    fixed = knowledge_instruction + fixed
+    while pending:
+        part = pending.pop()
+        prompt = knowledge_instruction + _block_prompt(part, first_ts, last_ts, identity_text, message_count)
+        knowledge = KnowledgeReadContext(knowledge_context) if knowledge_context is not None else None
+        content, usage = _call_consolidation_llm(
+            llm_client, prompt, "Block summary LLM call", fixed_prompt=fixed, input_limit=input_limit,
+            model_route=model_route,
+            knowledge=knowledge,
+        )
+        usages.append(usage)
+        if content.strip():
+            if knowledge is not None:
+                from ouroboros.reflection import _extract_trailing_json
+                content, entries = _extract_trailing_json(content, "KNOWLEDGE_ENTRIES_JSON:")
+                knowledge_entries.extend(knowledge.bind_entries(entries))
+            summaries.append(content.strip())
+            continue
+        failure = usage["_consolidation_errors"][-1]
+        if failure["kind"] != "context_overflow":
+            return result("")
+        if not failure["preflight_only"] and "input_bytes" in failure:
+            input_limit = {key: failure[key] for key in (
+                "route_fp", "capacity_tokens", "output_reserve_tokens",
+            )}
+            input_limit["input_bytes"] = failure["input_bytes"] - 1
+            failure["byte_limit"] = input_limit["input_bytes"]
+            if _on_refusal is not None:
+                _on_refusal(input_limit)
+        split = _split_consolidation_text(part)
+        if split is None or any(failure.get(limit) is not None and failure[fixed] > failure[limit]
+                                for fixed, limit in (("fixed_tokens", "input_limit"), ("fixed_bytes", "byte_limit"))):
+            return result("")
+        pending.extend(reversed(split))
+    return result("\n\n".join(summaries))
 
 
 def _compress_blocks_to_era(
     blocks: List[Dict[str, Any]],
     llm_client: Any,
     identity_text: str,
+    knowledge_context: Any = None,
 ) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
     start_date = blocks[0].get("range", "unknown")[:10]
     last_range = blocks[-1].get("range", "unknown")
@@ -440,8 +1019,13 @@ Write as Ouroboros (first person). Aim for 30-40% of original length.
 
 {combined}
 """
+    if knowledge_context is not None:
+        prompt += "\n## Current task and identity context\n" + identity_text
 
-    content, usage = _call_consolidation_llm(llm_client, prompt, "Era compression")
+    source_ref = (retain_memory_source(knowledge_context, "chronicle_blocks",
+                  json.dumps(blocks, ensure_ascii=False).encode("utf-8"), "json") if knowledge_context else None)
+    knowledge = KnowledgeReadContext(knowledge_context, "era_compression") if knowledge_context else None
+    content, usage = _call_consolidation_llm(llm_client, prompt, "Era compression", knowledge=knowledge)
     if not content or not content.strip():
         log.warning("Era compression returned empty — keeping original blocks (Bible P1)")
         return None, usage
@@ -451,8 +1035,117 @@ Write as Ouroboros (first person). Aim for 30-40% of original length.
         "range": f"{start_date} to {end_date}",
         "message_count": sum(b.get("message_count", 0) for b in blocks),
         "content": content.strip(),
+        **({"source_ref": source_ref} if source_ref else {}),
     }
     return era, usage
+
+
+def _is_gap_block(block: Any) -> bool:
+    """The writer's gap ID and the legacy marker still read by Memory."""
+    return isinstance(block, dict) and bool(block.get("gap_id") or "[MEMORY GAP]" in str(block.get("content") or ""))
+
+
+def _compact_chronicle(blocks_path: pathlib.Path, llm_client: Any,
+                       identity_text: str, context: Any) -> Dict[str, Any]:
+    """Reduce every contiguous historical span, preserving gaps and exact sources."""
+    blocks = _load_blocks(blocks_path)
+    reduced, usages, start = [], [], 0
+    while start < len(blocks):
+        if _is_gap_block(blocks[start]):
+            reduced.append(blocks[start])
+            start += 1
+            continue
+        end = start + 1
+        while end < len(blocks) and not _is_gap_block(blocks[end]):
+            end += 1
+        run = blocks[start:end]
+        era, usage = _compress_blocks_to_era(run, llm_client, identity_text, context)
+        usages.append(usage)
+        if era and len(era["content"]) < sum(len(b.get("content", "")) for b in run):
+            reduced.append(era)
+        else:
+            reduced.extend(run)
+        if usage.get("_consolidation_errors"):
+            reduced.extend(blocks[end:])
+            break
+        start = end
+    if reduced != blocks:
+        _mutate_locked_json_list(blocks_path, lambda live:
+            reduced + live[len(blocks):] if live[:len(blocks)] == blocks else live)
+    return _merge_consolidation_usage(*usages)
+
+
+def maintain_memory_pressure(memory: Any, llm_client: Any, context: Any, *,
+                             fits: Callable[[], bool], current_topic: str = "") -> Dict[str, Any]:
+    """One existing maintenance batch, called only after measured core pressure.
+
+    The caller's callback only rebuilds/measures. It owns the normal send and
+    decides whether remaining immutable context fits; this helper has no cadence.
+    """
+    root = pathlib.Path(memory.drive_root)
+    chat, blocks, meta = root / "logs/chat.jsonl", root / "memory/dialogue_blocks.json", root / "memory/dialogue_meta.json"
+    shelf = root / "memory/knowledge"
+    tracked = [blocks, meta, memory.scratchpad_blocks_path(), memory.scratchpad_path(),
+               shelf / "overview.md", shelf / "index-full.md", memory.identity_path()]
+    def snapshot() -> Dict[str, Any]:
+        result = {}
+        for path in tracked:
+            raw = path.read_bytes() if path.exists() else None
+            result[str(path)] = {"sha256": hashlib.sha256(raw).hexdigest() if raw is not None else None,
+                                 "bytes": len(raw) if raw is not None else 0}
+        return result
+    before, actions, usages = snapshot(), [], []
+    def result() -> Dict[str, Any]:
+        after = snapshot()
+        changed = [{"path": path, "before": before[path], "after": after[path]}
+                   for path in before if before[path] != after[path]]
+        return {"status": "fitting" if fits() else "progress" if changed else "no_progress",
+                "actions": actions, "changed_sources": changed, "usage": _merge_consolidation_usage(*usages)}
+    if fits():
+        return result()
+    identity = "## Current task\n" + current_topic if current_topic else ""
+    if memory.identity_path().exists():
+        identity_ref = retain_memory_source(context, "maintenance_identity", memory.identity_path().read_bytes())
+        identity += "\nExact identity source, available through read_file; no identity rewrite is authorized here:\n" + json.dumps(identity_ref)
+    if chat.exists() or blocks.exists():
+        usage = consolidate(chat, blocks, meta, llm_client, identity, knowledge_context=context,
+                            force_tail=True, compact_chronicle=True, pressure_fits=fits)
+        if usage is not None:
+            usages.append(usage)
+        actions.append({"owner": "dialogue_consolidation", "usage": usage})
+        if fits() or (usage or {}).get("_consolidation_errors"):
+            return result()
+    if memory.load_scratchpad_blocks():
+        usage = consolidate_scratchpad(memory, shelf, llm_client, identity,
+                                        pressure=True, knowledge_context=context)
+        if usage is not None:
+            usages.append(usage)
+        actions.append({"owner": "scratchpad_consolidation", "usage": usage})
+        if fits() or (usage or {}).get("_consolidation_errors"):
+            return result()
+    if (shelf / "overview.md").exists() or (shelf / "index-full.md").exists():
+        knowledge = KnowledgeReadContext(context, "knowledge_maintenance")
+        prompt = KNOWLEDGE_MAINTENANCE_PROMPT + (
+            "\nThe shared memory projection exceeds the current task's measured working window. "
+            "Read the complete global overview with knowledge_read, then nominate a shorter authored "
+            "overview preserving the whole scope of current understanding and source-relative links to details. "
+            "Do not remove useful uncertainty or evidence merely to save space. Use ordinary knowledge notes "
+            "for detail when useful. Return JSON: {\"knowledge_entries\": [...]}.\n" + identity)
+        if not (shelf / "overview.md").exists():
+            prompt += "\nNo authored overview exists. This is the complete legacy inventory/context source, " \
+                      "not an authored summary; create an honest overview after reading it:\n" + read_text(shelf / "index-full.md")
+        source_ref = retain_memory_source(context, "knowledge_maintenance", prompt.encode("utf-8"))
+        raw, usage = _call_consolidation_llm(llm_client, prompt, "Knowledge maintenance", knowledge=knowledge, source_ref=source_ref)
+        usages.append(usage)
+        action = {"owner": "knowledge_maintenance", "source_ref": source_ref, "usage": usage}
+        if raw.strip():
+            try:
+                entries = knowledge.bind_entries(json.loads(raw).get("knowledge_entries"))
+                action["writes"] = _write_knowledge_entries(shelf, entries, context=context)
+            except (ValueError, TypeError, AttributeError) as exc:
+                action["error"] = str(exc)
+        actions.append(action)
+    return result()
 
 def _format_entries_for_block(entries: List[Dict[str, Any]]) -> str:
     lines = []
@@ -647,33 +1340,14 @@ def _read_chat_entries(path: pathlib.Path) -> List[Dict[str, Any]]:
     return entries
 
 def _rebuild_knowledge_index(knowledge_dir: pathlib.Path, *, _locked: bool = False) -> None:
-    if not _locked:
-        from ouroboros.tools.knowledge import _knowledge_write_lock
+    """Compatibility entrypoint; the common knowledge owner renders every index."""
+    from contextlib import nullcontext
+    from ouroboros.knowledge import KnowledgeAddress, knowledge_write_lock, rebuild_knowledge_index
 
-        with _knowledge_write_lock(knowledge_dir):
-            _rebuild_knowledge_index(knowledge_dir, _locked=True)
-        return
-    try:
-        if not knowledge_dir.exists():
-            return
-        entries = []
-        for md_file in sorted(knowledge_dir.glob("*.md")):
-            if md_file.name.startswith("_") or md_file.name == "index-full.md":
-                continue
-            topic = md_file.stem
-            first_line = ""
-            try:
-                first_line = next(
-                    (line.strip()[:120] for line in md_file.read_text(encoding="utf-8").splitlines()
-                     if line.strip() and not line.strip().startswith("#")),
-                    "",
-                )
-            except Exception:
-                pass
-            entries.append(f"- **{topic}**: {first_line}" if first_line else f"- **{topic}**")
-        write_text(knowledge_dir / "index-full.md", "# Knowledge Base Index\n\n" + "\n".join(entries) + "\n")
-    except Exception:
-        log.warning("Failed to rebuild knowledge index", exc_info=True)
+    address = KnowledgeAddress(knowledge_dir.parent.parent, knowledge_dir, "overview")
+    with nullcontext() if _locked else knowledge_write_lock(knowledge_dir):
+        rebuild_knowledge_index(address)
+
 
 from ouroboros.context_budget import (
     SCRATCHPAD_CONSOLIDATION_THRESHOLD_CHARS as SCRATCHPAD_CONSOLIDATION_THRESHOLD,
@@ -693,12 +1367,14 @@ def consolidate_scratchpad(
     knowledge_dir: pathlib.Path,
     llm_client: Any,
     identity_text: str = "",
+    *, pressure: bool = False, knowledge_context: Any = None,
 ) -> Optional[Dict[str, Any]]:
     blocks = memory.load_scratchpad_blocks()
 
-    if len(blocks) < 3:
+    if not blocks or (len(blocks) < 3 and not pressure):
         return None
-    return _consolidate_scratchpad_blocks(memory, blocks, knowledge_dir, llm_client, identity_text)
+    return _consolidate_scratchpad_blocks(memory, blocks, knowledge_dir, llm_client, identity_text,
+                                        pressure=pressure, knowledge_context=knowledge_context)
 
 
 def _consolidate_scratchpad_blocks(
@@ -707,12 +1383,13 @@ def _consolidate_scratchpad_blocks(
     knowledge_dir: pathlib.Path,
     llm_client: Any,
     identity_text: str,
+    *, pressure: bool = False, knowledge_context: Any = None,
 ) -> Optional[Dict[str, Any]]:
     total_chars = sum(len(b.get("content", "")) for b in blocks)
-    if total_chars <= SCRATCHPAD_CONSOLIDATION_THRESHOLD:
+    if total_chars <= SCRATCHPAD_CONSOLIDATION_THRESHOLD and not pressure:
         return None
 
-    compress_count = max(2, len(blocks) // 2)
+    compress_count = len(blocks) if pressure else max(2, len(blocks) // 2)
     old_blocks = blocks[:compress_count]
 
     old_content = "\n\n---\n\n".join(
@@ -728,9 +1405,9 @@ The oldest {compress_count} blocks need compression.
 Rules:
 1. Identify insights, patterns, lessons, and architectural decisions worth
    preserving long-term. Output them as knowledge_entries with topic + content.
-   Each "topic" must be a short kebab-case slug (lowercase letters/digits/hyphens,
-   e.g. "api-gotchas"), not a sentence — a topic with spaces or punctuation is
-   rejected and the entry is dropped.
+   Topics are source-relative Markdown paths; preserve their exact identities.
+   For an existing topic, read its complete current source using knowledge_read,
+   then propose the full revised note, not a blind append of the new fragment.
 2. Compress the old blocks into a SINGLE shorter summary block. Keep active
    tasks, unresolved questions, admin instructions still in force. Remove
    stale/completed items and routine status updates.
@@ -743,21 +1420,23 @@ Identity context: {identity_text if identity_text else "(not available)"}
 
 {old_content}
 
-Respond with JSON only (no fences):
-{{"knowledge_entries": [{{"topic": "kebab-case-slug", "content": "text"}}], "compressed_block": "single compressed block text"}}
+Respond with JSON only (no fences), after any useful knowledge reads:
+{{"knowledge_entries": [{{"topic": "topic/path", "scope": "global", "content": "complete Markdown note"}}], "compressed_block": "single compressed block text"}}
 """
 
+    usage: Dict[str, Any] = {}
     try:
-        model, use_local = _consolidation_route()
-        msg, usage = llm_client.chat(
-            messages=[{"role": "user", "content": prompt}],
-            model=model,
-            model_role="light",
-            reasoning_effort="low",
-            max_tokens=16384,
-            use_local=use_local,
-        )
-        raw = (msg.get("content") or "").strip()
+        from ouroboros.tools.registry import ToolContext
+
+        context = knowledge_context or ToolContext(repo_dir=getattr(memory, "repo_dir", None) or memory.drive_root,
+                              drive_root=memory.drive_root)
+        knowledge = KnowledgeReadContext(context, "scratchpad_consolidation")
+        raw, usage = _call_consolidation_llm(
+            llm_client, KNOWLEDGE_MAINTENANCE_PROMPT + prompt, "Scratchpad consolidation",
+            knowledge=knowledge)
+        raw = raw.strip()
+        if not raw:
+            return usage
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
 
@@ -767,14 +1446,10 @@ Respond with JSON only (no fences):
         if not compressed_text or not compressed_text.strip():
             log.warning("Scratchpad block consolidation returned empty, skipping")
             return usage
+        if pressure and len(compressed_text) >= sum(len(b.get("content", "")) for b in old_blocks):
+            return usage  # an authored expansion is not pressure relief
 
-        from ouroboros.tools.knowledge import _knowledge_write_lock
-
-        with _knowledge_write_lock(knowledge_dir):
-            _write_knowledge_entries(
-                knowledge_dir, result.get("knowledge_entries", []), _locked=True,
-            )
-            _rebuild_knowledge_index(knowledge_dir, _locked=True)
+        entries = knowledge.bind_entries(result.get("knowledge_entries"))
 
         compressed_block = {
             "ts": utc_now_iso(),
@@ -793,25 +1468,31 @@ Respond with JSON only (no fences):
             "entry_id": source_entry_id,
             "source_blocks": old_blocks,
             "source_ref": source_ref,
+            "knowledge_entries": entries,
         }):
             log.error("Scratchpad consolidation source journal write failed; preserving blocks")
             return usage
         compressed_block["metadata"] = {"source_ref": source_ref}
+        writes = _write_knowledge_entries(knowledge_dir, entries, context=context)
+        if writes:
+            compressed_block["metadata"]["knowledge_writes"] = writes
+            if any(not row["ok"] for row in writes):
+                compressed_block["content"] += (
+                    "\n\nSome nominated knowledge updates were not published; their complete "
+                    "proposals and original episode remain in the source journal referenced by this block.")
+                append_jsonl(memory.journal_path(), {
+                    "ts": utc_now_iso(), "type": "knowledge_writes_incomplete",
+                    "source_ref": source_ref, "knowledge_writes": writes,
+                })
 
         # Merge-aware replace UNDER the write lock: blocks appended DURING the
         # slow LLM call live only on disk — building the new list from the
         # pre-call snapshot would silently drop them. Re-read inside the lock
-        # and keep every block outside the compressed window (ts+source key).
-        compressed_keys = {
-            (str(b.get("ts") or ""), str(b.get("source") or "")) for b in old_blocks
-        }
-
+        # and keep every block outside the exact compressed source window.
         def _merge_survivors(live_blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-            survivors = [
-                b for b in live_blocks
-                if (str(b.get("ts") or ""), str(b.get("source") or "")) not in compressed_keys
-            ]
-            return [compressed_block] + survivors
+            if live_blocks[:len(old_blocks)] != old_blocks:
+                return live_blocks  # source changed; ts/source keys alone cannot authorize replacement
+            return [compressed_block] + live_blocks[len(old_blocks):]
 
         new_blocks = memory.mutate_scratchpad_blocks(_merge_survivors)
 
@@ -824,39 +1505,42 @@ Respond with JSON only (no fences):
         from ouroboros.llm_claudexor import propagate_model_error
         propagate_model_error(e)
         log.error("Scratchpad block consolidation failed: %s", e, exc_info=True)
-        return None
+        return {**usage, "_consolidation_errors": [*usage.get("_consolidation_errors", []), {
+            "kind": "scratchpad_consolidation_failed", "message": f"{type(e).__name__}: {e}"}]}
 
 
 def _write_knowledge_entries(
-    knowledge_dir: pathlib.Path,
-    entries: List[Dict[str, Any]],
-    *,
-    _locked: bool = False,
-) -> None:
-    # Validate topics through the ONE knowledge-topic validator (P7/C9.4) instead of
-    # a private char-filter that silently munged names into a different file than
-    # the knowledge tool would. An invalid topic is skipped + logged, never coerced.
-    from ouroboros.tools.knowledge import _sanitize_topic
+    knowledge_dir: pathlib.Path, entries: List[Dict[str, Any]], *, context: Any = None,
+) -> List[Dict[str, Any]]:
+    """Publish only source-aware nominations through the common note writer."""
+    from ouroboros.knowledge import KnowledgeAddress, sanitize_topic, write_knowledge_note
+    from ouroboros.tools.knowledge import _address, _record_backlog_history
 
-    if not _locked:
-        from ouroboros.tools.knowledge import _knowledge_write_lock
-
-        with _knowledge_write_lock(knowledge_dir):
-            _write_knowledge_entries(knowledge_dir, entries, _locked=True)
-            _rebuild_knowledge_index(knowledge_dir, _locked=True)
-        return
-
-    knowledge_dir.mkdir(parents=True, exist_ok=True)
+    outcomes = []
     for entry in entries:
-        topic = entry.get("topic", "").strip()
-        kb_content = entry.get("content", "").strip()
-        if not topic or not kb_content:
+        if not isinstance(entry, dict):
+            continue
+        topic, content = entry.get("topic"), entry.get("content")
+        if not isinstance(content, str) or not content.strip():
             continue
         try:
-            safe_topic = _sanitize_topic(topic)
-        except ValueError:
-            log.debug("consolidator: skipping invalid knowledge topic %r", topic)
-            continue
-        kb_path = knowledge_dir / f"{safe_topic}.md"
-        existing = read_text(kb_path) if kb_path.exists() else ""
-        write_text(kb_path, existing.rstrip() + "\n\n" + kb_content if existing else f"# {topic}\n\n{kb_content}\n")
+            topic = sanitize_topic(topic)
+            address = (_address(context, topic, str(entry.get("scope") or "")) if context is not None
+                       else KnowledgeAddress(knowledge_dir.parent.parent, knowledge_dir, topic))
+            if topic == "improvement-backlog":
+                from ouroboros.improvement_backlog import backlog_path, merge_backlog_text
+                merged = merge_backlog_text(address.canonical_root, content)
+                if merged >= 0:
+                    _record_backlog_history(backlog_path(address.canonical_root), topic, "overwrite",
+                                            str(entry.get("task_id") or ""))
+                outcomes.append({"topic": topic, "scope": "global", "ok": merged >= 0,
+                                 "reason": "backlog_merge" if merged >= 0 else "unparseable_backlog"})
+                continue
+            result = write_knowledge_note(address, content, expected_revision=entry.get("expected_revision"),
+                                          task_id=str(entry.get("task_id") or ""))
+            outcomes.append({"topic": topic, "scope": address.scope, "ok": result.ok,
+                             "reason": result.reason,
+                             "source_ref": result.current.source_ref() if result.current else None})
+        except (ValueError, OSError) as exc:
+            outcomes.append({"topic": topic, "ok": False, "reason": str(exc)})
+    return outcomes

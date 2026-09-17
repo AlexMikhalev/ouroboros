@@ -290,8 +290,10 @@ def overlay_env(base: "dict[str, str]", env_overlay: "dict[str, str] | None") ->
 
 
 def _env_with_overlay(env_overlay: "dict[str, str] | None") -> dict[str, str]:
-    """``os.environ`` copy with the caller's overlay applied on top."""
-    return overlay_env(dict(os.environ), env_overlay)
+    """Task environment with the caller's overlay applied on top."""
+    from ouroboros.settings_integrity import runtime_environ
+
+    return overlay_env(runtime_environ(), env_overlay)
 
 
 def _execute_local(
@@ -1146,6 +1148,11 @@ def service_env() -> dict[str, str]:
         "PATH",
         "HOME",
         "USERPROFILE",
+        # Login name, not a secret: keychain/identity lookups need it (a CLI
+        # whose credentials are keyed by account name finds nothing without it).
+        "USER",
+        "LOGNAME",
+        "USERNAME",
         "APPDATA",
         "LOCALAPPDATA",
         "TMPDIR",

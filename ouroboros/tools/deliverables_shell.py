@@ -8,13 +8,6 @@ from collections.abc import Callable, Sequence
 
 from ouroboros.shell_parse import directory_destination_child_name
 from ouroboros.tools.shell_guards import directory_destination_pairs
-from ouroboros.credential_shapes import (
-    BENIGN_DOT_NAMES,
-    CREDENTIAL_COMPONENT_NAMES,
-    CREDENTIAL_FILE_NAMES,
-    CREDENTIAL_FILE_SUFFIXES,
-    CREDENTIAL_NAME_RE,
-)
 from ouroboros.tool_access import (
     _path_is_relative_to_casefold,
     user_files_path_block_reason,
@@ -47,27 +40,14 @@ def _short_option_present(argv: Sequence[str], wanted: str) -> bool:
 
 
 def lexical_user_files_block_reason(candidate: pathlib.Path) -> str:
-    """Retain hidden/credential semantics before a target symlink is resolved."""
-    try:
-        parts = pathlib.Path(candidate).expanduser().parts
-    except (OSError, TypeError, ValueError):
-        return "path could not be inspected"
-    for part in parts:
-        lower = part.lower()
-        if not part or part in {"/", "\\"}:
-            continue
-        if lower in CREDENTIAL_COMPONENT_NAMES:
-            return "path is hidden or credential-like (secret/credential directory)"
-        if part.startswith(".") and lower not in BENIGN_DOT_NAMES:
-            return "path is hidden or credential-like (non-allowlisted hidden component)"
-    name = pathlib.PurePath(str(candidate)).name.lower()
-    if (
-        name in CREDENTIAL_FILE_NAMES
-        or CREDENTIAL_NAME_RE.search(name)
-        or name.endswith(CREDENTIAL_FILE_SUFFIXES)
-    ):
-        return "path name is credential-like"
-    return ""
+    """Classify actual owner stores, not ordinary project path components."""
+    from ouroboros.credential_shapes import user_files_mutation_shape_reason
+    from ouroboros.config import get_runtime_mode
+    from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+
+    if mode_has_unrestricted_agency(get_runtime_mode()):
+        return ""
+    return user_files_mutation_shape_reason(candidate, pathlib.Path.home())
 
 
 def _command_path(ctx, work_dir: pathlib.Path, token: str) -> pathlib.Path | None:

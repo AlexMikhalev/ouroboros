@@ -55,6 +55,7 @@ from ouroboros.tools.review_helpers import (
     format_name_status_for_preflight,
     format_review_history_entry as _format_review_entry,
     REVIEW_PROMPT_TOKEN_BUDGET,  # noqa: F401 — patchable seam (see note above)
+    review_enforcement_blocks,
     single_line as _single_line,
 )
 
@@ -71,8 +72,9 @@ def get_tools():
                 "name": "task_acceptance_review",
                 "description": (
                     "Record a task-result claim, checklist, evidence, and optional agent disposition. "
-                    "For a root task in auto/required mode this is a cheap evidence call: the host runs "
-                    "the only authoritative reviewer panel after the turn becomes structurally eligible. "
+                    "For a root task in auto/required mode, nominate the complete ready task result: "
+                    "after all tool results in this round, the host advances the same review operation "
+                    "used by final delivery. Settling review does not finish the task. "
                     "Child-task and off-mode behavior is unchanged."
                 ),
                 "parameters": {
@@ -82,16 +84,26 @@ def get_tools():
                         "goal": {"type": "string", "description": "Original task goal."},
                         "evidence": {"type": "object", "description": "Relevant tool trace, artifacts, tests, and observed facts. To select earlier tool records from the host's complete retained trajectory, supply tool_trajectory_indices: [zero-based source indices]. The host materializes these records with their corpus-SHA addresses; a bounded or missing record stays partial/unavailable. Your own prose remains agent-supplied evidence."},
                         "checklist": {"type": "string", "default": "", "description": "Optional acceptance checklist."},
+                        "acceptance_subject": {
+                            "type": "object",
+                            "description": "Main's current subject decision, naming the exact owner_source_sha256 from the latest observation; optionally supply complete effective_criteria or material_tool_indices for changed requirements/evidence.",
+                            "properties": {
+                                "owner_source_sha256": {"type": "string"},
+                                "effective_criteria": {"type": "string"},
+                                "material_tool_indices": {"type": "array", "items": {"type": "integer"}},
+                            },
+                            "required": ["owner_source_sha256"],
+                        },
                         "agent_disposition": {
                             "type": "string",
                             "enum": ["accepted", "rejected", "partial", "deferred"],
                             "default": "",
-                            "description": "Optional agent-authored stance on the acceptance review: accepted, rejected, partial, or deferred. Advisory only.",
+                            "description": "Explicit author stance. After receiving the first host review, supply this with rationale to finish Advisory for your current result, including a revised answer, without another panel. Before first feedback it is evidence only; later tool effects or owner/evidence supersession require a new stance. Never creates reviewer PASS.",
                         },
                         "rationale": {
                             "type": "string",
                             "default": "",
-                            "description": "Optional concise rationale for agent_disposition, especially when rejecting, partially accepting, or deferring reviewer feedback. If rationale is provided without a disposition, the stance defaults to partial.",
+                            "description": "Rationale required for an explicit Advisory author finish. Rationale without agent_disposition records a partial stance only and does not end review.",
                         },
                         "obligation_dispositions": {
                             "type": "array",
@@ -126,6 +138,7 @@ def _handle_task_acceptance_review(
     agent_disposition: str = "",
     rationale: str = "",
     obligation_dispositions: Optional[list] = None,
+    acceptance_subject: Optional[dict] = None,
 ) -> str:
     from ouroboros.config import get_task_review_mode
     from ouroboros.review_evidence import (
@@ -222,6 +235,7 @@ def _handle_task_acceptance_review(
     if disposition or agent_rationale or normalized_ob:
         agent_decision = {
             "disposition": disposition or "partial",
+            "explicit_finish": bool(disposition),
             "rationale": agent_rationale[:1000],
             "source": "agent_task_acceptance_review_tool",
         }
@@ -280,6 +294,7 @@ def _handle_task_acceptance_review(
                 "provenance": evidence.get("__provenance__") or {},
             },
             "agent_supplied": evidence.get("agent_supplied") or {},
+            "acceptance_subject": acceptance_subject,
         }
         if agent_decision:
             deferred["agent_decision"] = agent_decision
@@ -449,6 +464,7 @@ _REVIEW_PROMPT_TEMPLATE_DYNAMIC = """\
 {changed_files}
 
 {rebuttal_section}{review_history_section}
+{task_evidence_section}
 """
 
 
@@ -538,11 +554,22 @@ def _preflight_check(commit_message: str, staged_files: str,
         f for f in new_files
         if f.startswith(("ouroboros/", "supervisor/")) and f.endswith(".py")
     ]
-    if new_logic_files and "docs/ARCHITECTURE.md" not in active_staged:
+    # The Architecture book is the obligation, not one file: a new module is
+    # documented in the CHAPTER that owns its subsystem, and demanding an
+    # entrypoint edit would only buy a membership-list touch that documents
+    # nothing. Any staged source of the book satisfies it.
+    from ouroboros.reference_books import BOOK_ENTRYPOINTS, book_entrypoint_for
+
+    architecture_entrypoint = BOOK_ENTRYPOINTS["architecture"]
+    documented = any(
+        book_entrypoint_for(staged) == architecture_entrypoint for staged in active_staged
+    )
+    if new_logic_files and not documented:
         return (
             "⚠️ PREFLIGHT_BLOCKED: New files added in ouroboros/ or supervisor/ "
-            "but docs/ARCHITECTURE.md is not staged.\n"
-            "  New structural additions must be documented in ARCHITECTURE.md "
+            "but no source of the Architecture book is staged.\n"
+            "  New structural additions must be documented in the Architecture book "
+            f"(`{architecture_entrypoint}` or a `docs/architecture/` chapter) "
             "(Bible P6: authenticity / architectural mirror).\n"
             f"  New files: {new_logic_files[:5]}\n"
             f"  Currently staged: {', '.join(sorted(staged_set)) or '(none)'}"
@@ -687,9 +714,12 @@ def _handle_review_block_or_warning(
     blocked_msg: str,
     advisory_prefix: str,
 ) -> Optional[str]:
-    """Either block immediately or downgrade to advisory warning."""
-    if blocking_review:
+    """Apply action authority while preserving the independent review signal."""
+    cyber = not review_enforcement_blocks("blocking")
+    if blocking_review and not cyber:
         return blocked_msg
+    if cyber:
+        advisory_prefix = "Cyber Pro: review does not prohibit action; original signal follows. "
     _record_advisory_override(ctx, blocked_msg)
     _append_review_warning(ctx, advisory_prefix + blocked_msg)
     ctx._review_iteration_count = 0
@@ -710,6 +740,8 @@ def _record_advisory_override(ctx: ToolContext, blocked_msg: str) -> None:
         append_jsonl(ctx.drive_logs() / "events.jsonl", {
             "ts": utc_now_iso(),
             "type": "review_advisory_override",
+            "review_enforcement": _cfg.get_review_enforcement(),
+            "decision_authority": "cyber_pro" if not review_enforcement_blocks("blocking") else "advisory",
             "block_reason": reason,
             "message_head": str(blocked_msg or "")[:600],
             "task_id": str(getattr(ctx, "task_id", "") or ""),
@@ -882,7 +914,13 @@ def _triad_session_task(ctx: ToolContext, **sections) -> str:
     same session task text; a managed subject inlines its authoritative delta."""
     from ouroboros.tools.review_subject import build_triad_session_task
 
-    return build_triad_session_task(**sections)
+    # Governance always comes from the system repository, and the nav maps must
+    # address the physical chapter a section lives in.
+    governance_root = getattr(ctx, "repo_dir", None)
+    return build_triad_session_task(
+        governance_repo_dir=pathlib.Path(governance_root) if governance_root else None,
+        **sections,
+    )
 
 
 def _capture_triad_staged_diff(
@@ -940,7 +978,7 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
     ctx._triad_withheld_seat_records = []  # reset Q28-dropped seat records
     ctx._review_degraded_reasons = []  # reset degraded participation markers
     review_enforcement = _cfg.get_review_enforcement()
-    blocking_review = review_enforcement == "blocking"
+    blocking_review = review_enforcement_blocks(review_enforcement)
 
     diff_text, subject, capture_block = _capture_triad_staged_diff(ctx, target_repo, blocking_review)
     if diff_text is None:  # capture failed: block (blocking) or advisory-skip (None)
@@ -1070,6 +1108,13 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
                            session_profile=row_plan["session_profiles"][i], use_local=row_plan["use_local"][i])
                  for i in api_indices]
 
+    from ouroboros.review_evidence import commit_review_evidence_section, materialize_commit_review_session_view
+
+    task_evidence = dict(getattr(ctx, "_commit_review_evidence", None) or {})
+    if any(route is ReviewRouteKind.AGENT_SESSION for route in row_routes):
+        task_evidence = materialize_commit_review_session_view(task_evidence, target_repo)
+        ctx._commit_review_evidence = task_evidence
+    task_evidence_compact = False
     goal_section = build_goal_section(goal, scope, commit_message)
     scope_section = build_scope_section(scope)
 
@@ -1094,8 +1139,15 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
             review_history_section=review_history_section,
             diff_text=staged_diff,
             changed_files=review_changed,
+            task_evidence_section=commit_review_evidence_section(task_evidence, delivery="packet", compact=task_evidence_compact),
         )
         return stable + "\n" + dynamic, len(stable) + 1
+
+    def _compact_task_evidence():
+        nonlocal task_evidence_compact
+        task_evidence_compact = True
+    if task_evidence:
+        _assemble_prompt.compact_optional_evidence = _compact_task_evidence
 
     # P3 stays one-pass. The api pack, its fit ladder and the fixed_overflow
     # gate exist ONLY for the api rows (5.2/5.7): a session row retrieves with
@@ -1168,7 +1220,7 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
         "prompt": prompt, "stable_prefix_len": stable_prefix_len,
         "models": models, "routes": row_routes, "row_plan": row_plan,
         "session_task": session_task, "target_repo": target_repo,
-        "blocking_review": blocking_review,
+        "blocking_review": blocking_review, "task_evidence": task_evidence,
     }, None, False
 
 
@@ -1178,7 +1230,7 @@ def _review_actor_label(row: dict) -> str:
 
 def _dispatch_unified_review(ctx: ToolContext, commit_message: str, prepared: dict) -> Optional[str]:
     """Dispatch an assembled triad packet and post-process the panel verdict."""
-    blocking_review = prepared["blocking_review"]
+    blocking_review = prepared["blocking_review"] and review_enforcement_blocks("blocking")
     try:
         result_json = _handle_multi_model_review(
             ctx,
@@ -1191,6 +1243,7 @@ def _dispatch_unified_review(ctx: ToolContext, commit_message: str, prepared: di
             session_root=str(prepared["target_repo"]),
             row_plan=prepared["row_plan"],
             retry_key=str(prepared.get("retry_key") or ""),
+            task_evidence=prepared.get("task_evidence"),
         )
         result = json.loads(result_json)
     except Exception as e:
@@ -1301,7 +1354,9 @@ def _dispatch_unified_review(ctx: ToolContext, commit_message: str, prepared: di
         _record_advisory_override(ctx, "; ".join(critical_fails[:5]))
         _append_review_warning(
             ctx,
-            "Review enforcement=Advisory: critical review findings did not block commit.",
+            ("Cyber Pro: critical review findings do not prohibit action."
+             if not review_enforcement_blocks("blocking") else
+             "Review enforcement=Advisory: critical review findings did not block commit."),
         )
         for finding in getattr(ctx, "_last_review_critical_findings", []) or []:
             _append_review_warning(ctx, finding)

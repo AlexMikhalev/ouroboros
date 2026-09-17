@@ -134,7 +134,16 @@ def test_admission_freezes_reviewed_behavior_runtime_digests_and_authority(tmp_p
     assert admission.origin == binding.origin
     assert admission.destination == binding.destination
     assert admission.capability_ceiling.skill_name == "community-helper"
-    assert [grant.name for grant in admission.capability_ceiling.tool_grants] == ["chat_history"]
+    # The reviewed profile selected chat_history; the rest is the constant
+    # cognitive baseline every admitted conversation carries.
+    assert [grant.name for grant in admission.capability_ceiling.tool_grants] == [
+        "chat_history",
+        "knowledge_list",
+        "knowledge_read",
+        "knowledge_write",
+        "update_identity",
+        "update_scratchpad",
+    ]
     assert admission.capability_ceiling.skill_content_hash == admission.skill_content_hash
     assert admission.capability_ceiling.profile_fingerprint == admission.profile_fingerprint
     assert admission.capability_ceiling.state_fingerprint == admission.state_fingerprint

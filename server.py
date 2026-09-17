@@ -65,6 +65,7 @@ from ouroboros.server_routing_context import (  # noqa: F401
     _scoped_task_metadata,
     _task_belongs_to_chat,
     _task_result_ground_truth,
+    main_lane_routing_metadata,
 )
 from ouroboros.server_owner_routing import (  # noqa: F401
     _owner_evolution_stop,
@@ -81,6 +82,8 @@ from ouroboros.server_liveness import (  # noqa: F401
 )
 from ouroboros.server_maintenance import (  # noqa: F401
     _LAST_CANCEL_INTENT_SWEEP,
+    _migrate_startup_cancel_latches,
+    _startup_worker_pids,
     _installed_skill_names,
     _periodic_supervisor_maintenance,
     _periodic_zombie_reconcile,
@@ -168,6 +171,21 @@ def _has_active_evolution_transaction() -> bool:
 
 
 def _restart_current_process(host: str, port: int) -> None:
+    # Every direct restart reaches this seam, including an assisted update whose
+    # native waits were already moved to PENDING before its resolver ran.
+    try:
+        from ouroboros.delegate_recovery import PLANNED_RESTART_TRANSACTION_ENV, arm_active_planned_restart_transaction
+        from ouroboros.server_restart import _RESTARTABLE_UPDATE_PHASES
+        from supervisor.update_merge import read_update_tx_strict
+
+        if any((DATA_DIR / "state" / name).exists() for name in ("owner_restart_no_resume.flag", "panic_stop.flag")):
+            os.environ.pop(PLANNED_RESTART_TRANSACTION_ENV, None)
+        else:
+            status, tx = read_update_tx_strict()
+            if status == "valid" and tx.get("phase") in _RESTARTABLE_UPDATE_PHASES:
+                arm_active_planned_restart_transaction(DATA_DIR)
+    except Exception:
+        log.warning("Direct restart transaction could not be armed; continuation remains unconfirmed", exc_info=True)
     _restart_current_process_impl(
         host, port, repo_dir=REPO_DIR, log=log,
         owner_initiated=_owner_restart_requested.is_set(),
@@ -194,31 +212,45 @@ _supervisor_thread: Optional[threading.Thread] = None
 _consciousness: Any = None
 
 
+def _clock_of(iso_value: Any) -> str:
+    """``HH:MM`` in the server's local time for an ISO instant (``?`` when absent)."""
+    from ouroboros.deadline_utils import parse_deadline_ts
+
+    parsed = parse_deadline_ts(str(iso_value or ""))
+    return parsed.astimezone().strftime("%H:%M") if parsed is not None else "?"
+
+
 def _describe_bg_consciousness_state(requested_enabled: bool) -> dict:
+    """Project the alarm clock's snapshot into one honest status + detail line."""
     snapshot = _consciousness.status_snapshot() if _consciousness else {}
-    idle_reason = snapshot.get("last_idle_reason")
+    outcome = str(snapshot.get("last_wake_outcome") or "")
+    next_at = _clock_of(snapshot.get("next_wake_at"))
     if not requested_enabled:
         status, detail = "disabled", "Background consciousness is off."
-    elif not snapshot.get("running"):
-        status, detail = "stopped", "Enabled in state, but the background thread is not running."
-    elif snapshot.get("paused"):
-        status, detail = "paused", "Paused while another foreground task is active."
-    elif any(row.get("state") == "waiting" for row in snapshot.get("model_waits", {}).values()):
-        status, detail = "model_wait", "Model access wait; no worker slot held."
-    elif idle_reason == "thinking":
-        status, detail = "running", "Background consciousness is thinking now."
-    elif idle_reason == "budget_blocked":
-        status, detail = "budget_blocked", "Background consciousness hit its budget allocation and is waiting."
+    elif not snapshot:
+        status, detail = "stopped", "Enabled in state, but the alarm clock was not constructed (supervisor init failed)."
+    elif snapshot.get("live_wake_task_id"):
+        status, detail = "thinking", f"Wake-up {snapshot['live_wake_task_id']} is running as a Main turn."
+    elif outcome == "skipped:waiting_for_first_conversation":
+        status, detail = "waiting_for_first_conversation", "No owner chat is bound yet; the first conversation binds it."
+    elif outcome == "skipped:allowance_exhausted":
+        spent, daily = snapshot.get("spent_24h_usd"), snapshot.get("daily_usd")
+        status = "allowance_exhausted"
+        at_least = "at least " if int(snapshot.get("unknown_unmetered") or 0) > 0 else ""
+        degraded = "; ledger integrity degraded" if snapshot.get("integrity_degraded") else ""
+        detail = (f"Daily allowance spent ({at_least}${float(spent or 0):.2f} of ${float(daily or 0):.2f} in the last 24 h{degraded}); "
+                  f"next check at {_clock_of(snapshot.get('allowance_resets_at')) if snapshot.get('allowance_resets_at') else next_at}.")
+    elif outcome == "skipped:allowance_unknown":
+        status, detail = "allowance_unknown", f"The usage ledger could not be read ({snapshot.get('last_error') or 'unknown error'}); retry at {next_at}."
+    elif outcome.startswith("rejected:"):
+        status, detail = "wake_rejected", f"The last wake-up was refused ({outcome.split(':', 1)[1]}); next attempt at {next_at}."
+    elif outcome == "failed":
+        status, detail = "wake_failed", f"The last wake-up failed ({snapshot.get('last_error') or 'runner error'}); next attempt at {next_at}, backing off."
     else:
-        status, detail = "running", "Background consciousness is idle between wakeups."
-        wakeup = int(snapshot.get("next_wakeup_sec") or 0)
-        if wakeup > 0:
-            detail += f" Next wakeup in {wakeup}s."
-    if idle_reason == "error_backoff" and snapshot.get("last_error"):
-        status = "error_backoff"
-        detail = f"Waiting to retry after an internal error: {snapshot['last_error']}"
-
-    return {"enabled": requested_enabled, "status": status, "detail": detail, **snapshot}
+        status, detail = "sleeping", f"Sleeping until {next_at}."
+        if snapshot.get("pending_reason"):
+            detail += f" Early wake pending: {snapshot['pending_reason']}."
+    return {**snapshot, "enabled": requested_enabled, "status": status, "detail": detail}
 
 
 def _start_supervisor_if_needed(settings: dict) -> bool:
@@ -380,9 +412,15 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
             # Everything reversible is behind us (checkout landed, no-resume
             # intent durable): from here the restart always follows, and every
             # unconfirmed stop is a critical diagnostic, never a deferral.
-            _stop_owned_work(ctx)
+            stopped_task_ids = _stop_owned_work(ctx)
             try:
-                reply("Stopping active task. New settings apply to the next message.", "")
+                # Say only what happened: with nothing owned the stop sentence
+                # named a task that was never running.
+                reply(
+                    "Stopping active task. New settings apply to the next message."
+                    if stopped_task_ids else "New settings apply to the next message.",
+                    "",
+                )
             except Exception:
                 log.warning("Failed to send owner restart stop notice; continuing restart", exc_info=True)
             _request_restart_exit(owner=True)
@@ -438,6 +476,9 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
             # autonomous re-arm until the owner /evolve starts again. Set True on stop,
             # cleared (False) on turn_on — the only owner-authorized clear.
             st2["evolution_owner_stopped"] = (not turn_on)
+            # An owner's stop carries no agent source (absent = owner-placed, sticky against
+            # toggle_evolution); an owner's start drops a stale one with the flag.
+            st2.pop("evolution_stop_source", None)
             # Owner-initiated evolution must not inherit a stale post-task one-shot
             # autostop, which would disable the owner's campaign after one cycle.
             st2["post_task_autostop"] = False
@@ -459,8 +500,8 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
                 ctx.save_state(_bg_s)
                 reply(f"🧠 {result}")
             else:
-                bg_status = "running" if ctx.consciousness.is_running else "stopped"
-                reply(f"🧠 Background consciousness: {bg_status}")
+                described = _describe_bg_consciousness_state(bool(ctx.load_state().get("bg_consciousness_enabled")))
+                reply(f"🧠 Background consciousness: {described['status']} — {described['detail']}")
         elif lowered.startswith("/status"):
             from supervisor.state import status_text
 
@@ -571,6 +612,7 @@ def _run_supervisor(settings: dict) -> None:
         except Exception:
             log.debug("Failed to stop previous consciousness instance", exc_info=True)
         _consciousness = None
+    prior_worker_pids: set[int] | None = None
     try:
         ensure_legacy_imported(pathlib.Path(DATA_DIR))
 
@@ -607,10 +649,11 @@ def _run_supervisor(settings: dict) -> None:
             persist_queue_snapshot, restore_pending_from_snapshot,
             cancel_task_by_id, queue_deep_self_review_task, sort_pending,
         )
+        from supervisor.direct_roots import publish_direct_roots
         from supervisor.workers import (
             init as workers_init, get_event_q, WORKERS, PENDING, RUNNING,
             spawn_workers, kill_workers, assign_tasks, ensure_workers_healthy,
-            handle_chat_direct, handle_chat_ephemeral, auto_resume_after_restart,
+            handle_chat_direct, auto_resume_after_restart,
         )
 
         max_workers = int(settings.get("OUROBOROS_MAX_WORKERS", 10))
@@ -628,7 +671,10 @@ def _run_supervisor(settings: dict) -> None:
         import types
         import queue as _queue_mod
 
-        restored_pending = restore_pending_from_snapshot()
+        _migrate_startup_cancel_latches(DATA_DIR)
+        prior_worker_pids = _startup_worker_pids(DATA_DIR)
+        interrupted_running: list = []
+        restored_pending = restore_pending_from_snapshot(terminalized=interrupted_running)
         kill_workers(preserve_pending=True)
         spawn_workers(max_workers)
         persist_queue_snapshot(reason="startup")
@@ -638,46 +684,35 @@ def _run_supervisor(settings: dict) -> None:
             pre_adopt_planned_handoffs(DATA_DIR, list(PENDING))
         except Exception:
             log.debug("Planned delegate pre-adoption failed", exc_info=True)
-        _resume_interrupted_project_deletions()
-        # Original startup order preserved: drive prunes, custody sweep (reap
-        # orphaned processes), THEN worktree prune.
-        _startup_prune_sweeps()
         _startup_custody_sweep()
+        recovered_files = _run_startup_task_recovery(
+            DATA_DIR, REPO_DIR, skip_live_data=_pytest_default_real_data_dir,
+            prior_worker_pids=prior_worker_pids,
+        )
+        _resume_interrupted_project_deletions()
+        _startup_prune_sweeps(preserve_task_sources=bool(
+            recovered_files["unresolved"] or recovered_files["protected"] or recovered_files["errors"]))
         _startup_worktree_prune()
 
         _prune_delegated_snapshots()
 
-        try:
-            from ouroboros.observability import prune_observability_blobs
-            from ouroboros.tools.services import prune_service_logs
-
-            observability_report = prune_observability_blobs(DATA_DIR)
-            service_report = prune_service_logs(DATA_DIR)
-            if (
-                observability_report.get("enabled")
-                or observability_report.get("manifest_count")
-                or observability_report.get("blob_count")
-                or observability_report.get("deleted_manifests")
-                or observability_report.get("deleted_blobs")
-                or observability_report.get("errors")
-                or service_report.get("deleted_dirs")
-                or service_report.get("deleted_files")
-                or service_report.get("errors")
-            ):
-                append_jsonl(DATA_DIR / "logs" / "events.jsonl", {
-                    "ts": utc_now_iso(),
-                    "type": "runtime_artifact_prune",
-                    "observability": observability_report,
-                    "services": service_report,
-                })
-        except Exception:
-            log.debug("Runtime artifact prune failed", exc_info=True)
-
-        if restored_pending > 0:
+        if restored_pending > 0 or interrupted_running:
             st_boot = load_state()
             if st_boot.get("owner_chat_id"):
-                send_with_budget(int(st_boot["owner_chat_id"]),
-                    f"♻️ Restored pending queue from snapshot: {restored_pending} tasks.")
+                # The second clause states an INTENT, not an outcome: restore only
+                # fences an interrupted task with a durable cancel intent, and
+                # cancellation custody writes its terminal result a watchdog
+                # window later (task_lifecycle._INTENT_WATCHDOG_MIN_AGE_SEC).
+                notice = ["♻️"]
+                if restored_pending > 0:
+                    notice.append(f"Restored pending queue from snapshot: {restored_pending} tasks.")
+                if interrupted_running:
+                    count = len(interrupted_running)
+                    notice.append(
+                        f"Cancelling {count} task{'' if count == 1 else 's'} that "
+                        f"{'was' if count == 1 else 'were'} still running when the server stopped."
+                    )
+                send_with_budget(int(st_boot["owner_chat_id"]), " ".join(notice))
         _startup_retired_settings_notice(settings)
 
         auto_resume_after_restart()
@@ -691,9 +726,8 @@ def _run_supervisor(settings: dict) -> None:
                 return None
 
         _consciousness = BackgroundConsciousness(
-            drive_root=DATA_DIR, repo_dir=REPO_DIR,
-            event_queue=get_event_q(), owner_chat_id_fn=_get_owner_chat_id,
-        )
+            drive_root=DATA_DIR, repo_dir=REPO_DIR, owner_chat_id_fn=_get_owner_chat_id,
+            routing_metadata_fn=lambda cid: main_lane_routing_metadata(_event_ctx, cid))  # _event_ctx is built below
 
         _bg_st = load_state()
         if _bg_st.get("bg_consciousness_enabled"):
@@ -714,12 +748,28 @@ def _run_supervisor(settings: dict) -> None:
             safe_restart=safe_restart, kill_workers=kill_workers, spawn_workers=spawn_workers,
             sort_pending=sort_pending, consciousness=_consciousness,
             handle_chat_direct=handle_chat_direct,
-            handle_chat_ephemeral=handle_chat_ephemeral, request_restart=_request_restart_exit,
+            request_restart=_request_restart_exit,
         )
     except Exception as exc:
         _supervisor_error = f"Supervisor init failed: {exc}"
         _consciousness = None
         log.critical("Supervisor initialization failed", exc_info=True)
+        try:
+            # Provider-configured lifespan normally relies on this supervisor
+            # owner for boot recovery. If initialization itself fails, keep the
+            # same custody pass instead of serving with orphan RUNNING rows.
+            recovery_pids = prior_worker_pids
+            if recovery_pids is None:
+                try:
+                    recovery_pids = _startup_worker_pids(DATA_DIR)
+                except Exception:
+                    recovery_pids = None
+            _run_startup_task_recovery(
+                DATA_DIR, REPO_DIR, skip_live_data=_pytest_default_real_data_dir,
+                prior_worker_pids=recovery_pids,
+            )
+        except Exception:
+            log.critical("Startup recovery after supervisor initialization failure failed", exc_info=True)
         _supervisor_ready.set()
         _supervisor_thread = None
         return
@@ -787,7 +837,10 @@ def _run_supervisor(settings: dict) -> None:
                 check_scheduled_tasks()
             except Exception:
                 log.warning("Scheduled task check failed", exc_info=True)
-            _periodic_supervisor_maintenance(_last_custody_reap, _last_review_job_reconcile)
+            _periodic_supervisor_maintenance(
+                _last_custody_reap, _last_review_job_reconcile,
+                on_orphans_healed=lambda count: _consciousness and _consciousness.notify(f"orphans_healed:{count}"),
+            )
             # Loop-tick restart drain (no sleep, events keep flowing): while
             # draining a deferred restart, skip starting new work the restart
             # deadline would immediately chop (evolution / pending project tasks).
@@ -804,6 +857,12 @@ def _run_supervisor(settings: dict) -> None:
             if _restart_requested.is_set():
                 break  # restart just triggered (drain done) — exit without assigning new work (bridge intake already ran early this iteration)
             persist_queue_snapshot(reason="main_loop")
+            publish_direct_roots(_event_ctx.DRIVE_ROOT)
+            if _consciousness is not None:
+                try:
+                    _consciousness.tick(time.time())
+                except Exception:
+                    log.warning("Consciousness alarm tick failed", exc_info=True)
 
             crash_count = 0
             time.sleep(0.5)
@@ -1234,7 +1293,6 @@ async def lifespan(app):
         init_global_event_bus().set_loop(_event_loop)
         init_global_supervisor(lifespan_drive_root)
         host_service_app = create_host_service_app(lifespan_drive_root)
-        host_service_app.state.get_background_model_wait = getattr(app.state, "get_background_model_wait", None)
         host_port = host_service_port()
         # Bind before starting the asyncio task: uvicorn's bind-error SystemExit
         # otherwise escapes run_forever and kills the main server. Keep that
@@ -1271,11 +1329,11 @@ async def lifespan(app):
     # Startup-only: after the prior process generation is gone, finalize orphaned
     # RUNNING results and resolve an indeterminate post-task synthesis phase.
     # The periodic zombie sweep intentionally does not perform this recovery.
-    _run_startup_task_recovery(
-        lifespan_drive_root,
-        REPO_DIR,
-        skip_live_data=pytest_default_real_data_dir,
-    )
+    if not has_startup_ready_provider(settings):
+        _run_startup_task_recovery(
+            lifespan_drive_root, REPO_DIR, skip_live_data=pytest_default_real_data_dir,
+            prior_worker_pids=None if pytest_default_real_data_dir else _startup_worker_pids(lifespan_drive_root),
+        )
 
     # Reload enabled+reviewed extensions across restarts.
     try:
@@ -1327,6 +1385,47 @@ async def lifespan(app):
         yield
     finally:
         _supervisor_stop.set()  # first: the loop must know a teardown owns what follows
+        log.info("Server shutting down...")
+        # Let the loop leave its current tick BEFORE workers are killed and the
+        # bridge/Manager go down: a tick still running would otherwise respawn
+        # a killed worker or meet BrokenPipe/EOF. Bounded well inside the
+        # launcher's force-exit budget; the stop flag already suppresses the
+        # crash counter if the join times out.
+        supervisor_thread = _supervisor_thread
+        if supervisor_thread is not None and supervisor_thread.is_alive():
+            supervisor_thread.join(timeout=2)
+        # Terminal custody FIRST: this is the teardown's one irreversible durable
+        # write and every wait below it is best effort (ARCHITECTURE, Shutdown).
+        try:
+            restart_requested = _restart_requested.is_set()
+            from supervisor.workers import kill_workers
+            cleanup_status, cleanup_reason = _shutdown_task_cleanup_args(restart_requested)
+            kill_workers(
+                force=True,
+                terminal_status=cleanup_status,
+                result_reason=cleanup_reason,
+                **_restart_cleanup_kwargs(),
+                **_managed_update_pending_kwargs(),
+            )
+            # Record an explicit shutdown cause so a task interrupted by the shutdown is
+            # never later read as a worker crash storm. Diagnostic, so it runs AFTER the
+            # custody write: append_jsonl waits up to two seconds for the log lock, and
+            # that wait must never spend the force-exit budget on unterminalized workers.
+            try:
+                from ouroboros.utils import append_jsonl, utc_now_iso
+                append_jsonl(
+                    lifespan_drive_root / "logs" / "supervisor.jsonl",
+                    {
+                        "ts": utc_now_iso(),
+                        "type": "server_shutdown",
+                        "cause": "restart_requested" if restart_requested else "external_signal",
+                        "restart_exit": restart_requested,
+                    },
+                )
+            except Exception:
+                log.debug("Failed to record server_shutdown event", exc_info=True)
+        except Exception:
+            pass
         if extension_reconcile_task is not None:
             extension_reconcile_task.cancel()
             with suppress(asyncio.CancelledError, asyncio.TimeoutError):
@@ -1348,15 +1447,6 @@ async def lifespan(app):
         with suppress(asyncio.CancelledError):
             await ws_heartbeat_task
 
-        log.info("Server shutting down...")
-        # Let the loop leave its current tick BEFORE workers are killed and the
-        # bridge/Manager go down: a tick still running would otherwise respawn
-        # a killed worker or meet BrokenPipe/EOF. Bounded well inside the
-        # launcher's force-exit budget; the stop flag already suppresses the
-        # crash counter if the join times out.
-        supervisor_thread = _supervisor_thread
-        if supervisor_thread is not None and supervisor_thread.is_alive():
-            supervisor_thread.join(timeout=2)
         try:
             from ouroboros.local_model import get_manager
             get_manager().stop_server()
@@ -1384,34 +1474,6 @@ async def lifespan(app):
                 supervisor.stop_all()
         except Exception:
             pass
-        try:
-            restart_requested = _restart_requested.is_set()
-            # Record an explicit shutdown cause so a task interrupted by the
-            # shutdown is never later read as a worker crash storm.
-            try:
-                from ouroboros.utils import append_jsonl, utc_now_iso
-                append_jsonl(
-                    lifespan_drive_root / "logs" / "supervisor.jsonl",
-                    {
-                        "ts": utc_now_iso(),
-                        "type": "server_shutdown",
-                        "cause": "restart_requested" if restart_requested else "external_signal",
-                        "restart_exit": restart_requested,
-                    },
-                )
-            except Exception:
-                log.debug("Failed to record server_shutdown event", exc_info=True)
-            from supervisor.workers import kill_workers
-            cleanup_status, cleanup_reason = _shutdown_task_cleanup_args(restart_requested)
-            kill_workers(
-                force=True,
-                terminal_status=cleanup_status,
-                result_reason=cleanup_reason,
-                **_restart_cleanup_kwargs(),
-                **_managed_update_pending_kwargs(),
-            )
-        except Exception:
-            pass
         if _restart_requested.is_set():
             try:
                 # A planned restart whose landed checkout pins another engine ends
@@ -1436,7 +1498,6 @@ app.app.state.app_start = APP_START  # type: ignore[attr-defined]
 app.app.state.supervisor_ready_event = _supervisor_ready  # type: ignore[attr-defined]
 app.app.state.get_supervisor_error = lambda: _supervisor_error  # type: ignore[attr-defined]
 app.app.state.describe_bg_consciousness_state = _describe_bg_consciousness_state  # type: ignore[attr-defined]
-app.app.state.get_background_model_wait = lambda: _consciousness.live_model_wait() if _consciousness else None
 app.app.state.request_restart = _request_restart_exit  # type: ignore[attr-defined]
 app.app.state.runtime_branch_defaults = _runtime_branch_defaults  # type: ignore[attr-defined]
 app.app.state.bind_host = _BIND_HOST  # type: ignore[attr-defined]

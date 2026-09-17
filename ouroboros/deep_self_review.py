@@ -27,7 +27,7 @@ receipts, coverage and completeness so consecutive reports stay comparable.
 from __future__ import annotations
 
 import logging
-import os
+import json
 import pathlib
 import posixpath
 import time
@@ -53,7 +53,8 @@ from ouroboros.shell_parse import is_absolute_path_text  # noqa: E402
 from ouroboros.utils import atomic_write_json, estimate_tokens, utc_now_iso  # noqa: E402
 from ouroboros.config import get_context_mode  # noqa: E402
 from ouroboros.provider_models import provider_for_model, provider_has_credentials  # noqa: E402
-from ouroboros.context_layout import generate_doc_nav_map  # noqa: E402
+from ouroboros.context_layout import book_navigation  # noqa: E402
+from ouroboros.reference_books import BOOK_ENTRYPOINTS, compose_book, load_reference_book  # noqa: E402
 from ouroboros.reviewer_slot_config import (  # noqa: E402
     ROUTE_KIND_API,
     ROUTE_KIND_SESSION,
@@ -64,6 +65,7 @@ from ouroboros.reviewer_slot_config import (  # noqa: E402
 from ouroboros.usage_accounting import BudgetExceeded  # noqa: E402
 from ouroboros.outcomes import REASON_DEEP_SELF_REVIEW_PACK_UNFIT  # noqa: E402
 from ouroboros.triad_review import REVIEW_REPORT_CONTRACT  # noqa: E402
+from ouroboros.config import runtime_setting
 
 # Output reservation inside the reviewer's 1M window (same class of fix as
 # scope_review._SCOPE_INPUT_TOKEN_LIMIT): 920K input + 100K output exceeds 1M
@@ -138,8 +140,10 @@ How to work: you are reading the repository yourself with read-only tools. Read
 `BIBLE.md` IN FULL first (about {bible_chars:,} chars — in bounded chunks): every
 finding is checked against it, and a report that did not read it is not a deep
 self-review. The memory files below are inlined byte-exact; `docs/ARCHITECTURE.md`,
-`docs/DEVELOPMENT.md` and `docs/CHECKLISTS.md` are given as navigation maps — read the
-sections you need on demand. Then inspect the code (search_code, query_code,
+`docs/DEVELOPMENT.md` are book entrypoints; their overviews identify the actual
+physical chapter sources. `docs/CHECKLISTS.md` has its own navigation map. Read
+the needed sources on demand, using lines local to the physical file you open,
+never treating composed-book line numbers as an entrypoint address. Then inspect the code (search_code, query_code,
 read_file), cross-reference interactions between modules and follow call chains out
 of the files you open. Prioritize: CRITICAL > IMPORTANT > ADVISORY.
 
@@ -335,27 +339,38 @@ def build_review_pack(
     memory = _append_memory_whitelist(memory_parts, skipped, drive_root=drive_root)
     memory_text = "\n".join(memory_parts)
 
-    # Low context mode: render ARCHITECTURE.md as a navigation map (full sections
-    # read on demand) and exclude it from the atlas full-file selection instead of
-    # inlining ~32K tokens. Reuses the atlas ``already_included`` mechanism so the
-    # shared commit-gate atlas (scope / plan review) is unaffected.
+    # The atlas still owns repository selection. Composed books have one
+    # physical closure, included once here and excluded from duplicate atlas
+    # content. Legacy Max monoliths retain their original atlas delivery.
     nav_parts: list[str] = []
-    already_included: frozenset[str] = frozenset()
-    if get_context_mode() == "low":
+    book_parts: list[str] = []
+    book_views: list[dict] = []
+    already_included: set[str] = set()
+    low = get_context_mode() == "low"
+    for book_id, entrypoint in BOOK_ENTRYPOINTS.items():
+        if entrypoint not in tracked:
+            continue
         try:
-            arch_text = (repo_dir / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
-        except Exception:
-            arch_text = ""
-        if arch_text.strip():
-            nav_parts.append(
-                generate_doc_nav_map(
-                    arch_text, title="ARCHITECTURE.md", rel_path="docs/ARCHITECTURE.md"
-                )
+            book = load_reference_book(repo_dir, book_id)
+        except (OSError, ValueError) as exc:
+            return "", {"file_count": 0, "total_chars": 0, "skipped": [f"FATAL: {entrypoint} book unavailable: {exc}"]}
+        if book.legacy and not (low and book_id == "architecture"):
+            continue
+        sources = (book.entrypoint, *book.chapters)
+        partial = low and book_id == "architecture"
+        already_included.update(s.source_path for s in sources)
+        book_views.append({"book_id": book_id, "delivery": "overview" if partial else "full",
+                           "sources": [{"path": s.source_path, "sha256": s.sha256, "size": len(s.raw)} for s in sources]})
+        if partial:
+            # The chapter-addressed view (introductions + per-chapter section
+            # index and line ranges), the same one the context layout serves.
+            navigation = f"## {entrypoint} (navigation map)\n\n" + book_navigation(book)
+            nav_parts.append(navigation
                 + "\n\nNote for this deep self-review call: this surface has no tool loop, "
                 "so the navigation map is an index of omitted sections, not an actionable "
-                "read_file instruction. Flag any needed full ARCHITECTURE.md section explicitly."
-            )
-            already_included = frozenset({"docs/ARCHITECTURE.md"})
+                "read_file instruction. Flag any needed full Architecture chapter explicitly.")
+        else:
+            book_parts.append(f"## Reference book: {entrypoint}\n\n" + compose_book(book))
 
     # Reserve the (bounded) omission section inside the atlas's fixed budget —
     # it is appended to the pack after the atlas fills, so an unreserved section
@@ -363,6 +378,7 @@ def build_review_pack(
     atlas_fixed_tokens = (
         int(fixed_prompt_tokens)
         + estimate_tokens(memory_text)
+        + estimate_tokens("\n".join(book_parts))
         + estimate_tokens("\n".join(nav_parts))
         + _OMISSION_SECTION_RESERVE_TOKENS
     )
@@ -375,7 +391,7 @@ def build_review_pack(
             ReviewContextAtlasRequest(
                 repo_dir=repo_dir,
                 tracked_paths=tuple(tracked),
-                already_included=already_included,
+                already_included=frozenset(already_included),
                 fixed_prompt_tokens=atlas_fixed_tokens,
                 target_total_tokens=min(850_000, hard_budget),
                 hard_total_tokens=hard_budget,
@@ -408,10 +424,17 @@ def build_review_pack(
         for record in atlas.omitted
         if record.disposition not in {"already_included", "manifest_only"}
     )
-    parts = [atlas.text]
+    if book_views:
+        atlas.manifest["reference_book_views"] = book_views
+        for row in atlas.manifest.get("coverage", []):
+            view = next((v for v in book_views if any(s["path"] == row.get("path") for s in v["sources"])), None)
+            if view:
+                row["reason"] = ("physical book source included in full composition" if view["delivery"] == "full"
+                                 else "book overview only; full chapter text omitted from this one-packet delivery")
+    parts = [*book_parts, atlas.text]
     parts.extend(nav_parts)
     parts.extend(memory_parts)
-    file_count = len(atlas.selected) + memory["inlined"]
+    file_count = len(atlas.selected) + memory["inlined"] + sum(len(v["sources"]) for v in book_views if v["delivery"] == "full")
     _append_omission_section(parts, skipped)
 
     pack_text = "\n".join(parts)
@@ -484,14 +507,14 @@ def _packed_credentials(configured: str) -> Tuple[str, Optional[str]]:
     """The packed row's payable spelling, or the typed credentials reason."""
     provider = provider_for_model(configured)
     if provider == "openai":
-        if provider_has_credentials("openai") and not os.environ.get("OPENAI_BASE_URL"):
+        if provider_has_credentials("openai") and not runtime_setting("OPENAI_BASE_URL"):
             return "", configured
         return f"no direct OpenAI credentials for {configured} (or OPENAI_BASE_URL redirects the route)", None
     if configured.startswith("openai/"):
         # OpenRouter route with a direct-OpenAI rewrite fallback.
         if provider_has_credentials("openrouter"):
             return "", configured
-        if provider_has_credentials("openai") and not os.environ.get("OPENAI_BASE_URL"):
+        if provider_has_credentials("openai") and not runtime_setting("OPENAI_BASE_URL"):
             slug = configured.split("/", 1)[1]
             if slug.endswith("-pro"):
                 # A `-pro` suffix is an OpenRouter ROUTING slug (reasoning
@@ -635,7 +658,10 @@ def _repo_relative(path: Any, repo_dir: pathlib.Path) -> str:
 
 
 def _native_read_coverage(usage: Dict[str, Any], repo_dir: pathlib.Path) -> Dict[str, Dict[str, Any]]:
-    """R8: how much of each mandatory read the host OBSERVED, from the episode's
+    """Prefer the native operation's exact manifest-bound source coverage.
+
+    Historical receipts retain only their explicitly labelled line evidence.
+    R8: how much of each mandatory read the host OBSERVED, from the episode's
     receipts — the merged line intervals of every executed repository-root
     ``read_file`` receipt for the path (a single result is capped, so a full
     read of BIBLE.md is multi-chunk by construction).
@@ -656,6 +682,27 @@ def _native_read_coverage(usage: Dict[str, Any], repo_dir: pathlib.Path) -> Dict
     traversal shapes before dispatch — see ``_repo_relative``). Disclosure,
     never a refusal: the report is delivered with the flag in its header.
     """
+    exact = usage.get("native_read_coverage")
+    sources = exact.get("sources") if isinstance(exact, dict) else None
+    if isinstance(sources, list) and sources:
+        out = {}
+        for index, source in enumerate(sources):
+            source = source if isinstance(source, dict) else {}
+            root, path = str(source.get("root") or ""), str(source.get("path") or f"source[{index}]")
+            address = path if root in _REPO_ROOTS else f"{root}:{path}"
+            if address in out:
+                address = f"{root}:{path}@{source.get('source_revision', index)}"
+            total, covered = source.get("complete_chars"), source.get("covered_chars")
+            known = (type(total) is int and type(covered) is int and 0 <= covered <= total
+                     and isinstance(source.get("source_revision"), str) and len(source["source_revision"]) == 64)
+            state = ("read" if source.get("status") == "complete" and known else
+                     "partial" if source.get("status") == "incomplete" and known and covered else
+                     "missing" if source.get("status") == "incomplete" and known else "unobserved")
+            out[address] = {**source, "state": state, "covered_chars": covered if known else 0,
+                            "complete_chars": total if known else 0,
+                            "fraction": round(covered / total, 3) if known and total else 1.0 if state == "read" else 0.0,
+                            "evidence_basis": "source_ranges"}
+        return out
     receipts = [r for r in (usage.get("native_tool_receipts") or []) if isinstance(r, dict)]
     capped = int(usage.get("native_tool_calls") or 0) > len(receipts)
     out: Dict[str, Dict[str, Any]] = {}
@@ -666,6 +713,7 @@ def _native_read_coverage(usage: Dict[str, Any], repo_dir: pathlib.Path) -> Dict
             named = r.get("opened_path") if isinstance(r.get("opened_path"), str) and r.get("opened_path") else r.get("path")
             root = r.get("opened_root") if isinstance(r.get("opened_root"), str) and r.get("opened_root") else str(r.get("root") or "")
             if (r.get("tool") != "read_file" or r.get("outcome") != "executed"
+                    or r.get("delivered") is False
                     or root not in _REPO_ROOTS or _repo_relative(named, repo_dir) != rel):
                 continue
             if not all(isinstance(r.get(k), int) for k in ("start_line", "end_line", "total_lines")):
@@ -691,7 +739,8 @@ def _native_read_coverage(usage: Dict[str, Any], repo_dir: pathlib.Path) -> Dict
         else:
             state = "partial" if covered else "missing"
         out[rel] = {"state": state, "covered_lines": covered, "total_lines": total,
-                    "fraction": round(covered / total, 3) if total else 0.0}
+                    "fraction": round(covered / total, 3) if total else 0.0,
+                    "evidence_basis": "legacy_lines"}
     return out
 
 
@@ -723,7 +772,11 @@ def _delivery_incomplete(delivery: str, usage: Dict[str, Any], message: Optional
     sets no usage finish reason at all) — meaning the report hit the output
     reserve; a session's completeness is not host-observable."""
     if delivery == "native_tool_rounds":
-        return str(usage.get("native_incomplete") or "") or "none"
+        reported = str(usage.get("native_incomplete") or "")
+        coverage = usage.get("native_read_coverage") or {}
+        if not reported and coverage.get("sources") and coverage.get("status") != "complete":
+            reported = "required_source_coverage_incomplete"
+        return reported or "none"
     if delivery == "api_packet":
         msg = message if isinstance(message, dict) else {}
         cut = (str(usage.get("response_finish_reason") or "") == "length"
@@ -761,6 +814,7 @@ def _provenance_header(delivery: str, model: str, usage: Dict[str, Any], memory:
             "end_reason": usage.get("native_end_reason", ""),
             "transcript": f"{usage.get('native_transcript_chars', 0)}/{usage.get('native_transcript_bound', 0)}",
             "landing": f"{usage.get('native_landing_notified', False)}/{usage.get('native_landing_sent', False)}",
+            "coverage_basis": usage.get("deep_review_coverage_basis", "legacy_lines"),
         })
     elif delivery == "api_packet":
         facts["attestation"] = "packed"
@@ -798,7 +852,8 @@ def _failed(text: str, *, reason_code: str, usage: Optional[Dict[str, Any]] = No
     return text, out
 
 
-def _retrieving_task(repo_dir: pathlib.Path, drive_root: pathlib.Path) -> Tuple[str, Dict[str, Any]]:
+def _retrieving_task(repo_dir: pathlib.Path, drive_root: pathlib.Path, *,
+                     required_sources_ref: Optional[dict] = None) -> Tuple[str, Dict[str, Any]]:
     """The route-owned task text for a retrieving row: role + method, the
     memory whitelist inline (byte-exact, as the packed pack carries it), and
     the governance navigation maps. BIBLE.md is a mandatory READ, never
@@ -811,8 +866,17 @@ def _retrieving_task(repo_dir: pathlib.Path, drive_root: pathlib.Path) -> Tuple[
     memory_parts: list[str] = []
     skipped: list[str] = []
     memory = _append_memory_whitelist(memory_parts, skipped, drive_root=drive_root)
+    navigation = []
+    for book_id, entrypoint in BOOK_ENTRYPOINTS.items():
+        if not (repo_dir / entrypoint).is_file():
+            navigation.append(f"[Missing reference book: {entrypoint}]")
+            continue
+        book = load_reference_book(repo_dir, book_id)
+        navigation.append(f"## {entrypoint} (navigation map)\n\n" + book_navigation(book))
+    navigation.append(governance_nav_maps(repo_dir, tuple(p for p in _NAV_MAP_DOCS if p not in BOOK_ENTRYPOINTS.values())))
     parts = [
         _ROLE_PROMPT + _RETRIEVING_METHOD.format(bible_chars=len(bible)),
+        *navigation,
         "## Memory (runtime data root, inlined byte-exact)",
         *memory_parts,
         # EVERY whitelisted entry gets its disposition here — the omission
@@ -821,8 +885,24 @@ def _retrieving_task(repo_dir: pathlib.Path, drive_root: pathlib.Path) -> Tuple[
         f"Memory dispositions ({memory['total']} whitelisted): "
         + "; ".join(f"{rel} {d}" for rel, d in memory["dispositions"].items()),
     ]
-    parts.append(governance_nav_maps(repo_dir, _NAV_MAP_DOCS))
+    if required_sources_ref:
+        parts.append("Read the complete required source manifest through its exact source handle and cover every listed source across your working views: "
+                     + json.dumps(required_sources_ref, ensure_ascii=False))
     return "\n\n".join(parts), {"memory": memory, "bible_chars": len(bible)}
+
+
+def _review_usage_scope(current: Any) -> Any:
+    """The review's own usage scope: ``source`` names the surface; the CATEGORY stays the
+    tree's when that tree is one consciousness started (``consciousness``/``consciousness_task``),
+    because the rolling allowance discovers its roots by that category — a review root whose
+    only priced rows said ``deep_self_review`` was invisible to it (review round 3)."""
+    from dataclasses import replace
+
+    from ouroboros.consciousness_allowance import CONSCIOUSNESS_CATEGORIES
+
+    category = str(getattr(current, "category", "") or "")
+    keep = category in CONSCIOUSNESS_CATEGORIES
+    return replace(current, category=category if keep else "deep_self_review", source="deep_self_review")
 
 
 def _run_retrieving_review(
@@ -834,11 +914,13 @@ def _run_retrieving_review(
     *,
     task_id: str,
     deadline_at: str,
+    required_sources: Optional[list] = None,
+    required_sources_ref: Optional[dict] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """A retrieving row (native episode or delegated session) through the
     shared executor seam, exactly like the advisory: hand-built request, slot
     and assignment; the product is the report text."""
-    from dataclasses import asdict, replace as _dc_replace
+    from dataclasses import asdict
 
     from ouroboros.config import get_finalization_grace_sec, get_task_abs_ceiling_sec
     from ouroboros.deadline_utils import review_operation_timeout_sec
@@ -847,7 +929,10 @@ def _run_retrieving_review(
     from ouroboros.review_substrate import ReviewRequest
     from ouroboros.usage_accounting import UsageScope, current_usage_scope, usage_scope
 
-    task_text, task_facts = _retrieving_task(repo_dir, drive_root)
+    task_text, task_facts = _retrieving_task(repo_dir, drive_root, required_sources_ref=required_sources_ref)
+    policy = {"output_contract": _REPORT_CONTRACT, "native_data_root": str(drive_root)}
+    if required_sources is not None:
+        policy.update(native_required_sources=required_sources, native_required_sources_ref=required_sources_ref or {})
     request = ReviewRequest(
         surface="deep_self_review",
         goal="Deep self-review of the whole Ouroboros system against BIBLE.md.",
@@ -859,7 +944,7 @@ def _run_retrieving_review(
         # REAL runtime root (R5), readable by the reviewer's own tools; memory
         # coverage itself is the inline whitelist in the task (byte-exact,
         # disposition-disclosed) — never receipts.
-        policy={"output_contract": _REPORT_CONTRACT, "native_data_root": str(drive_root)},
+        policy=policy,
         deadline_at=deadline_at,
     )
     # The logical window: the task's absolute ceiling narrowed by the owner
@@ -892,7 +977,7 @@ def _run_retrieving_review(
         )
     except Exception:
         log.debug("deep self-review prompt custody write failed", exc_info=True)
-    scope = _dc_replace(current_usage_scope() or UsageScope(), category="deep_self_review", source="deep_self_review")
+    scope = _review_usage_scope(current_usage_scope() or UsageScope())
     memory = task_facts["memory"]
     try:
         with usage_scope(scope):
@@ -930,17 +1015,21 @@ def _run_retrieving_review(
                        reason_code="deep_self_review_error", usage=usage)
     if delivery == "native_tool_rounds":
         detail = _native_read_coverage(usage, repo_dir)
+        usage["deep_review_coverage_basis"] = "source_ranges" if any(c["evidence_basis"] == "source_ranges" for c in detail.values()) else "legacy_lines"
         coverage = {rel: (f"partial({c['fraction']:.2f})" if c["state"] == "partial" else c["state"])
                     for rel, c in detail.items()}
         for rel, c in detail.items():
             if c["state"] != "read":
+                covered, total, unit = (c["covered_chars"], c["complete_chars"], "characters") if c["evidence_basis"] == "source_ranges" else (c["covered_lines"], c["total_lines"], "lines")
+                missing = f"no delivered range matching the required source revision of {rel}" if c["evidence_basis"] == "source_ranges" else f"no executed repository-root read_file receipt for {rel}"
+                unobserved = f"the exact required source extent of {rel} is unobserved" if c["evidence_basis"] == "source_ranges" else f"the {rel} read extent is unobserved (receipts capped or extent not recorded)"
                 usage["capability_delta"].append({
                     "kind": "capability_delta",
                     "requested": f"mandatory full read of {rel}",
                     "effective": {
-                        "partial": f"{c['covered_lines']} of {c['total_lines']} lines of {rel} delivered (merged receipts)",
-                        "missing": f"no executed repository-root read_file receipt for {rel}",
-                    }.get(c["state"], f"the {rel} read extent is unobserved (receipts capped or extent not recorded)"),
+                        "partial": f"{covered} of {total} {unit} of {rel} delivered (merged receipts)",
+                        "missing": missing,
+                    }.get(c["state"], unobserved),
                     "reason": f"deep_review_mandatory_read_{c['state']}",
                 })
     else:
@@ -969,10 +1058,12 @@ def _run_retrieving_review(
     completeness = "complete" if incomplete == "none" else (
         "completeness not host-observed" if incomplete == "unobserved" else f"INCOMPLETE ({shown_reason})")
     if delivery == "native_tool_rounds":
-        reads = "; ".join(
-            f"{rel} " + (f"{c['fraction']:.0%} read ({c['covered_lines']}/{c['total_lines']} lines)" if c["state"] == "partial"
-                         else {"read": "read in full", "missing": "NOT read"}.get(c["state"], "read extent unobserved"))
-            for rel, c in detail.items())
+        reads = []
+        for rel, c in detail.items():
+            covered, total, unit = (c["covered_chars"], c["complete_chars"], "characters") if c["evidence_basis"] == "source_ranges" else (c["covered_lines"], c["total_lines"], "lines")
+            reads.append(f"{rel} " + (f"{c['fraction']:.0%} read ({covered}/{total} {unit})" if c["state"] == "partial"
+                         else {"read": "read in full", "missing": "NOT read"}.get(c["state"], "read extent unobserved")))
+        reads = "; ".join(reads)
         human = (
             f"Deep self-review: native inspection episode on {shown_model} — {int(usage.get('native_rounds') or 0)} rounds, "
             f"{int(usage.get('native_tool_calls') or 0)} tool calls ({len(usage.get('native_tool_receipts') or [])} host-observed receipts); "
@@ -1283,6 +1374,8 @@ def run_deep_self_review(
     task_id: str = "",
     deadline_at: str = "",
     slot: Optional[ConfiguredReviewerSlot] = None,
+    required_sources: Optional[list] = None,
+    required_sources_ref: Optional[dict] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """Execute the deep self-review on the configured row.
 
@@ -1297,6 +1390,9 @@ def run_deep_self_review(
     refusal is budget vocabulary for the agent's budget-pause rail, not a
     review error.
     ``slot`` overrides the configured row (tests, callers that already resolved it).
+    ``required_sources`` and its exact source handle come from the caller's
+    existing immutable review assembler; this consumer never infers the
+    complete required surface from a working-tree scan.
     """
     try:
         try:
@@ -1313,6 +1409,7 @@ def run_deep_self_review(
         if row.retrieves:
             return _run_retrieving_review(
                 repo_dir, drive_root, llm, emit_progress, row, task_id=task_id, deadline_at=deadline_at,
+                required_sources=required_sources, required_sources_ref=required_sources_ref,
             )
         return _run_packed_review(repo_dir, drive_root, llm, emit_progress, row, str(model or ""))
     except BudgetExceeded:

@@ -251,6 +251,7 @@ def _maybe_inject_time_budget_milestone(
     )
     if note is None:
         return False
+    note = task_pacing.with_resource_facts(note, tools._ctx, accumulated_usage)
     _loop()._append_or_merge_user_message(messages, note.text)
     _loop()._emit_checkpoint_event(event_queue, task_id, drive_logs, note.checkpoint)
     return True
@@ -293,6 +294,7 @@ def _maybe_inject_cost_budget_milestone(
     )
     if note is None:
         return False
+    note = task_pacing.with_resource_facts(note, tools._ctx, accumulated_usage)
     _loop()._append_or_merge_user_message(messages, note.text)
     _loop()._emit_checkpoint_event(event_queue, task_id, drive_logs, note.checkpoint)
     return True
@@ -485,8 +487,11 @@ def _nanny_finalization_message(
     one execution), only the accusation when custody has no rows yet (a
     pending/uncustodied start is an attempt, not a choice)."""
     try:
-        if "delegate_start" not in set(tools.available_tools()):
-            return ""  # the verbs are invisible here; "you chose not to" would be false
+        from ouroboros.tools import registry_guards
+
+        if "delegate_start" not in set(tools.available_tools()) or "delegate_start" in registry_guards._disabled_tools(
+                getattr(tools, "_ctx", None)):
+            return ""  # the verb is invisible or withheld here; "you chose not to" would be false
     except Exception:
         log.debug("nanny nudge: toolset visibility check failed", exc_info=True)
     evidence: Dict[str, Any] = {}

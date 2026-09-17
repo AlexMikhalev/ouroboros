@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
-# The delegation_role value background consciousness stamps on its shared tool
-# context before every tool call. Owner-delivery gating keys on it, so both
-# sides import this one name instead of repeating the literal.
-BACKGROUND_DELEGATION_ROLE: str = "background"
+from collections.abc import Iterable
 
 OWNER_DELIVERY_TOOL_NAMES: frozenset[str] = frozenset({
     "send_user_message", "send_photo", "send_video", "send_file", "send_links",
+})
+
+# One class: an actor's own memory. Reading and revising what I know about my
+# work and about the people I talk with is a cognitive capability of this mind,
+# not an authority over settings, delivery, or anything outside it. Every room
+# carries it — the main chat, a project room, and an admitted presence
+# conversation, whose ceiling compiles this set in
+# ouroboros/presence_authority.py::build_presence_capability_ceiling.
+COGNITIVE_MEMORY_TOOL_NAMES: frozenset[str] = frozenset({
+    "knowledge_read", "knowledge_write", "knowledge_list",
+    "update_scratchpad", "update_identity", "chat_history",
 })
 
 CORE_TOOL_NAMES: frozenset[str] = frozenset({
@@ -39,9 +47,8 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset({
     # set today, this makes the coupling explicit).
     "list_projects", "route_to_project", "promote_chat_to_task", "steer_task",
     "ensure_project_scope",
-    "update_scratchpad", "update_identity",
-    "chat_history", "recent_tasks",
-    "knowledge_read", "knowledge_write", "knowledge_list",
+    *COGNITIVE_MEMORY_TOOL_NAMES,
+    "recent_tasks",
     "web_search",
     "browse_page", "browser_action", "analyze_screenshot", "view_image",
     "ocr_pdf", "youtube_transcript", "extract_video_frames",
@@ -130,6 +137,24 @@ ACTING_SUBAGENT_TOOL_NAMES: frozenset[str] = frozenset({
     "list_available_tools",
 })
 
+def schema_selection_tools_for_context(ctx: object) -> frozenset[str]:
+    """Existing Nano view controls select schemas without granting capabilities."""
+    from ouroboros.config import get_context_mode
+
+    mode = str(getattr(ctx, "active_context_mode", "") or get_context_mode())
+    return META_TOOL_NAMES | {"compact_context"} if mode == "nano" else frozenset()
+
+
+def acting_tool_names_for_context(ctx: object, registered_names: Iterable[str]) -> frozenset[str]:
+    """Project the actual catalog; inherited acting labels do not veto Cyber."""
+    from ouroboros.config import get_runtime_mode
+    from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+
+    if mode_has_unrestricted_agency(get_runtime_mode()):
+        return frozenset(registered_names)
+    return ACTING_SUBAGENT_TOOL_NAMES | schema_selection_tools_for_context(ctx)
+
+
 READ_ONLY_PARALLEL_TOOLS: frozenset[str] = frozenset({
     "read_file", "list_files",
     "search_code", "query_code", "recent_tasks",
@@ -175,6 +200,18 @@ UNTRUNCATED_REPO_READ_PATHS: frozenset[str] = frozenset({
     "docs/CHECKLISTS.md",
     "docs/DEVELOPMENT.md",
 })
+
+# Whole DIRECTORIES whose repository reads keep the same guarantee: the runtime
+# prompts, and the two reference books' chapters. A prefix rather than a list
+# of the current chapter filenames, because a hand-maintained population is
+# exactly what goes stale when a book gains, splits or renames a chapter -- and
+# a silently capped chapter read is a partial governance source that reads like
+# a complete one. Four chapters exceed the 80,000-char `read_file` result cap.
+UNTRUNCATED_REPO_READ_PREFIXES: tuple[str, ...] = (
+    "prompts/",
+    "docs/architecture/",
+    "docs/development/",
+)
 
 # Per-tool char caps; omitted tools use DEFAULT_TOOL_RESULT_LIMIT.
 TOOL_RESULT_LIMITS: dict[str, int] = {
@@ -228,4 +265,59 @@ REVIEWED_MUTATIVE_TOOLS: frozenset[str] = frozenset({
 # whose remote branch/commit/PR effects must settle before control returns.
 FOREGROUND_MUTATIVE_TOOLS: frozenset[str] = frozenset({
     "submit_skill_to_hub",
+})
+
+
+# The routing-verb family: each control tool whose call IS an addressing act,
+# keyed by the tool the model calls, with the control event types it emits.
+# The one owner of that membership: the typed action stamped on task_done reads
+# the event side (``control_events._mark_typed_routing_action``), the receipt
+# stamp on the live tool-call frames reads the tool side
+# (``routing_action_for_tool`` in the tool executor), and the task metrics count
+# the calls through the same table. The owner's message carries the routing
+# receipt for such a call; the turn's activity block shows the call as a
+# receipt row, never as content of its own (owner decision 11.09). The scope
+# verb rides the same receipt rail (``ensure_project_scope`` moves THIS task;
+# its receipt is the Started annotation and the project pointer).
+ROUTING_VERBS: dict[str, frozenset[str]] = {
+    "promote_chat_to_task": frozenset({"promote_chat_to_task"}),
+    "route_to_project": frozenset({"promote_chat_to_task", "routing_manual_target"}),
+    "steer_task": frozenset({"steer_task"}),
+    "ensure_project_scope": frozenset({"ensure_project_scope"}),
+}
+
+
+def routing_action_for_tool(name: object) -> str:
+    """The addressing action one tool call represents; '' for ordinary work."""
+    tool = str(name or "").strip()
+    return tool if tool in ROUTING_VERBS else ""
+
+
+# The verbs that START work or CHANGE the world outside this mind's own memory —
+# the exception list a consciousness wake-up at the Observe level does without
+# (``ouroboros/consciousness_authority.py``; owner decision В10', PLAN 5.4).
+# An exception list, not an allowlist: a new READ tool is available to Observe
+# by default (that is the point of the level), and a new mutating verb is added
+# HERE, next to the routing family it extends. The registry's own
+# ``mutates_worktree`` marker is the second source for the same fact —
+# tests/test_consciousness_authority.py pins that every entry carrying it is
+# named below, so the table cannot drift away from the catalog. Publication
+# (``FOREGROUND_MUTATIVE_TOOLS``) joins the set at the authority module.
+OBSERVE_WORLD_MUTATION_TOOLS: frozenset[str] = frozenset({
+    # starting or steering work (steer_task stays: the nanny of a running campaign)
+    "promote_chat_to_task", "schedule_subagent", "schedule_followup", "plan_task",
+    "route_to_project", "ensure_project_scope", "delegate_start", "initiate_presence",
+    "cancel_task", "override_delegation_constraint", "request_deep_self_review",
+    # writing files, running processes, integrating patches
+    "write_file", "edit_text", "apply_patch", "edit_batch",
+    "run_command", "run_script", "start_service", "stop_service", "verify_and_record",
+    "skill_exec", "run_ci_tests",  # an enabled skill's script; a branch push + workflow dispatch
+    # repository refs the catalog marks mutates_worktree
+    "vcs_pull_ff", "vcs_restore", "vcs_revert",
+    "fetch_pr_ref", "create_integration_branch", "cherry_pick_pr_commits",
+    "stage_adaptations", "stage_pr_merge",
+    # the world beyond the repository: forms, skills, project notes
+    "browser_action", "submit_skill_to_hub", "toggle_skill", "skill_owner_action",
+    "journal_write", "workpad_write",
+    "create_github_issue", "comment_on_issue", "comment_on_pr", "close_github_issue",
 })

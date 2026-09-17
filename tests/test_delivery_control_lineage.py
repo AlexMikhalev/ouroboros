@@ -45,6 +45,8 @@ def _start_control_episode(
         '{"delivery_control":"replace","full_answer":7}',
         '{"delivery_control":"replace","full_answer":"one","full_answer":"two"}',
         '{"delivery_control":"keep","extra":true}',
+        '{"delivery_control":"keep","pending_review":"later"}',
+        '{"delivery_control":"replace","full_answer":"x","pending_review":true}',
         '```json\n{"delivery_control":"publish"}\n```',
     ],
 )
@@ -151,7 +153,6 @@ def test_no_episode_protocol_json_is_byte_exact_passthrough(tmp_path, raw):
     "raw",
     [
         'Docs quote {"delivery_control":"keep"} before continuing.',
-        'Final prose.\n{"delivery_control":"keep"}',
         '{"delivery_control":"replace","full_answer":"cut',
         '{"payload":{"delivery_control":"keep","delivery_control":"replace"}}',
         '{"full_answer":"one","full_answer":"two"}',
@@ -528,7 +529,7 @@ def test_provider_terminal_incomplete_equal_text_replace_is_fresh(
         (True, 'Final prose.\n{"delivery_control":"keep"}'),
     ],
 )
-def test_provider_terminal_incomplete_preserves_unbound_json_residuals(
+def test_provider_terminal_incomplete_respects_protocol_lineage(
     tmp_path, monkeypatch, episode, raw,
 ):
     if episode:
@@ -558,8 +559,9 @@ def test_provider_terminal_incomplete_preserves_unbound_json_residuals(
         provider_terminal=True,
     )
 
-    assert text == raw
-    assert registry._ctx._delivery_candidate.full_text == raw
+    expected = _candidate.full_text if episode else raw
+    assert text == expected
+    assert registry._ctx._delivery_candidate.full_text == expected
 
 
 @pytest.mark.parametrize(
@@ -628,13 +630,17 @@ def test_forced_historical_keep_after_late_owner_directive_stays_stale(
     assert text.startswith(retained.full_text)
     assert "STALE-EVIDENCE NOTICE — RESUME REQUIRED (host)" in _usage["terminal_host_notice"]
     assert published.evidence_revision == retained.evidence_revision
+    assert published.owner_source_sha256 == retained.owner_source_sha256
     assert published.acceptance_binding["stale_evidence"] is True
-    assert returned_trace["delivery_candidate"]["evidence_current"] is False
+    # The owner corpus changed without a Main acknowledgment. Its meaning is
+    # still undecided, so the material-evidence revision must not be invented.
+    assert returned_trace["delivery_candidate"]["owner_source_current"] is False
+    assert returned_trace["delivery_candidate"]["evidence_current"] is True
     forced = returned_trace["forced_finalization"]
     assert forced["source"] == (
         "model_control_retained_stale_evidence_resume_required"
     )
-    assert forced["current_evidence_revision"] > retained.evidence_revision
+    assert forced["current_evidence_revision"] == retained.evidence_revision
 
 
 @pytest.mark.parametrize(
@@ -959,3 +965,24 @@ def test_multi_improvement_stale_replace_is_decoded_before_acceptance_and_delive
     delivered_rows = [row for row in chat_rows if row.get("task_id") == "issue-449"]
     assert [row["text"] for row in delivered_rows] == [decoded]
     assert delivered_rows[0]["format"] == "markdown"
+
+
+@pytest.mark.parametrize("verb", ["keep", "replace", "publish"])
+def test_post_episode_trailing_control_retains_answer_on_both_rails(tmp_path, verb):
+    loop, registry, ctx, trace, candidate = _start_control_episode(tmp_path)
+    payload = {"delivery_control": verb}
+    if verb == "replace":
+        payload["full_answer"] = "Unusable embedded replacement."
+    raw = "A stray control preamble.\n" + json.dumps(payload)
+    before = (candidate.revision, candidate.content_sha256, copy.deepcopy(candidate.acceptance_binding))
+    before_messages = copy.deepcopy(ctx.messages)
+
+    assert loop._resolve_delivery_control(raw, registry, ctx, trace) == (
+        "resolved", candidate.full_text,
+    )
+    assert loop._resolve_forced_delivery_control(registry._ctx, raw) == (
+        candidate.full_text, "", True, False,
+    )
+    assert (candidate.revision, candidate.content_sha256, candidate.acceptance_binding) == before
+    assert ctx.messages == before_messages
+    assert candidate.repair_attempted is False

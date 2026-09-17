@@ -5,15 +5,45 @@
 // this module only decides which positive/negative facts a card may honestly
 // claim.
 
-import { accountRows, nextUpAccount, quotaConstraintFact } from './claudexor_status_store.js';
+import { accountRows, familyLabel, nextUpAccount, quotaConstraintFact } from './claudexor_status_store.js';
 import {
     ROUTE_KIND_AGENT_SESSION,
     describeExecutionEvidence,
     harnessModelsKnown,
     modelsGapNote,
-    routeSupportsAccount,
+    routeModelFields,
+    sourceIdentityLabel,
     splitSessionTarget,
+    accountScopedModelCatalog,
 } from './route_editor_primitives.js';
+
+/**
+ * The card's source chip (owner decision 4A): the provider behind an API row,
+ * the model source behind a subscription, the agent behind a session. A
+ * retained daemon product name is evidence only while the catalog read is
+ * known — during a gap `familyLabel` falls back to the presentation catalog.
+ */
+export function rowIdentity(row, state = {}) {
+    const session = row?.route?.kind === ROUTE_KIND_AGENT_SESSION;
+    // `harness` is the session's own harness OR the subscription source's
+    // credential harness; a direct API route has neither and shows the channel
+    // mark. Never split the stored target here: only the model-sources catalog
+    // maps an opaque source id to a harness.
+    const fields = routeModelFields(row?.route, state.modelSources, {
+        providerProfiles: state.providerProfiles,
+    });
+    const label = sourceIdentityLabel(row?.route, {
+        modelSources: state.modelSources,
+        providerProfiles: state.providerProfiles,
+        harnesses: [{
+            id: fields.harness,
+            display_name: familyLabel(fields.harness, state.snapshot, { catalogKnown: state.catalogKnown }),
+        }],
+    });
+    return session || fields.subscription
+        ? { harnessId: fields.harness || fields.source, label, channel: '' }
+        : { harnessId: 'api', label, channel: 'api' };
+}
 
 export function harnessMap(snapshot) {
     return Object.fromEntries((snapshot?.harnesses || [])
@@ -73,12 +103,20 @@ function verdict([label, tone], text) {
     return { label, tone, text };
 }
 
+// Actors store the pin as `credential_profile_id`, reviewer rows as
+// `profile_id`; the verdict reads both, or a pinned reviewer row would be
+// judged as an unpinned one.
+function routePin(route) {
+    return String(route?.credential_profile_id || route?.profile_id || '');
+}
+
 export function sessionRouteVerdict(row, state, nowMs = Date.now()) {
     const { harness, model } = splitSessionTarget(row?.route?.target_id);
     if (!state?.catalogKnown || !state?.accountsKnown) {
         return verdict(NOT_CHECKED, 'Agent session · live availability not checked');
     }
-    const harnessEntry = harnessMap(state.snapshot)[harness];
+    const pin = routePin(row?.route);
+    const harnessEntry = accountScopedModelCatalog(harnessMap(state.snapshot)[harness], pin);
     if (!harnessEntry) return verdict(UNAVAILABLE, `${harness} · currently unavailable`);
     if (!harnessModelsKnown(harnessEntry, state.catalogKnown)) {
         return verdict(NOT_CHECKED, `${harness} · model availability not checked`);
@@ -88,7 +126,6 @@ export function sessionRouteVerdict(row, state, nowMs = Date.now()) {
     }
 
     const rows = accountRows(state.snapshot).filter((account) => account.harness === harness);
-    const pin = String(row?.route?.credential_profile_id || '');
     if (pin) {
         const account = rows.find((candidate) => String(candidate.profile_id || '') === pin);
         if (!account || account.enabled === false
@@ -106,9 +143,21 @@ export function sessionRouteVerdict(row, state, nowMs = Date.now()) {
         || (harnessEntry.status && String(harnessEntry.status) !== 'ok')) {
         return verdict(UNAVAILABLE, `${harness} · currently unavailable`);
     }
-    if (!rows.some((account) => account.enabled !== false
-        && String(account?.status?.verification || '') === 'passed')) {
-        return verdict(NO_ACCOUNT, `${harness} · no usable account currently`);
+    const usable = rows.filter((account) => account.enabled !== false
+        && String(account?.status?.verification || '') === 'passed');
+    if (!usable.length) return verdict(NO_ACCOUNT, `${harness} · no usable account currently`);
+    // "Some account carries this model" and "some account is usable" are two
+    // questions, and `gpt-5.4` — listed only by an unverified account — used to
+    // pass both while no single account could answer yes to BOTH. An
+    // account-view catalog stamps each entry with the account that carries it,
+    // so the two sets are intersected here; a legacy catalog carries no such
+    // provenance (empty `carriers`) and keeps the older, weaker rule.
+    const carriers = new Set((model ? (harnessEntry.models || []) : [])
+        .filter((entry) => String(entry?.id || entry?.value || entry || '') === String(model))
+        .map((entry) => String(entry?.credential_profile_id || ''))
+        .filter(Boolean));
+    if (carriers.size && !usable.some((account) => carriers.has(String(account.profile_id || '')))) {
+        return verdict(NO_ACCOUNT, `${harness} · no usable account currently carries ${model}`);
     }
     if (!state.quotaKnown) return verdict(NOT_CHECKED, `${harness} · account ready; quota not checked`);
     const pool = nextUpAccount(state.snapshot, harness);
@@ -147,15 +196,21 @@ function intentAxis(state) {
 export function rowStatus(row, state) {
     const intent = intentAxis(state);
     if (row.route.kind !== ROUTE_KIND_AGENT_SESSION) {
+        // The sentence names the SOURCE the owner picked, not a bare channel:
+        // "API model" alone left two rows on different providers reading
+        // identically (owner decision 4A).
+        const fields = routeModelFields(row.route, state.modelSources, {
+            providerProfiles: state.providerProfiles,
+        });
         return {
             label: `${intent.word} · Checked at start`,
             tone: worseTone(intent.tone, 'neutral'),
-            text: `${intent.text} · ${routeSupportsAccount(row.route) ? 'Subscription model' : 'API model'} · availability is checked when a child starts`,
+            text: `${intent.text} · ${fields.subscription ? 'Subscription model' : `${fields.providerLabel} API model`} · availability is checked when a child starts`,
         };
     }
     const live = sessionRouteVerdict(row, state);
     const { harness } = splitSessionTarget(row.route.target_id);
-    const gap = modelsGapNote(harnessMap(state.snapshot)[harness], state.catalogKnown);
+    const gap = modelsGapNote(accountScopedModelCatalog(harnessMap(state.snapshot)[harness], routePin(row.route)), state.catalogKnown);
     return {
         label: `${intent.word} · ${live.label}`,
         tone: worseTone(intent.tone, live.tone),
@@ -179,7 +234,17 @@ function executionFor(snapshot, subagentId) {
 // invitation, not an error); the last actual run; nothing.
 export function rowMeta(row, state, errors) {
     if (row._uiAttempted && errors.length) return { text: errors[0], tone: 'error' };
-    if (!String(row.route?.target_id || '').trim()) return { text: ROUTE_HINT, tone: '' };
+    const session = row.route?.kind === ROUTE_KIND_AGENT_SESSION;
+    // An empty draft (`openai::` with no model yet) is still an invitation.
+    if (!String(row.route?.target_id || '').trim()
+        || (!session && !routeModelFields(row.route).model.trim())) return { text: ROUTE_HINT, tone: '' };
     const evidence = describeExecutionEvidence(executionFor(state.snapshot, row.subagent_id));
-    return { text: evidence ? `Last actual run: ${evidence}` : '', tone: '' };
+    // The exact stored spelling is disclosed here, where it informs, and never
+    // in a placeholder, where it would instruct (docs/DESIGN.md §7). A session
+    // target already reads as harness plus model in its own controls.
+    const saved = session ? '' : `stored as ${String(row.route.target_id).trim()}`;
+    return {
+        text: [saved, evidence ? `Last actual run: ${evidence}` : ''].filter(Boolean).join(' · '),
+        tone: '',
+    };
 }

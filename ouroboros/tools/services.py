@@ -26,7 +26,7 @@ from ouroboros.process_interpreters import (
     interpreter_path_overlay,
 )
 from ouroboros.tools.registry import ToolContext, ToolEntry
-from ouroboros.config import load_settings
+from ouroboros.config import load_settings, runtime_settings
 from ouroboros.tools.tool_result import (
     ToolResult,
     _publish_tool_result,
@@ -371,6 +371,7 @@ def _start_service(
 ) -> str:
     if not isinstance(cmd, list) or not cmd or not all(str(x).strip() for x in cmd):
         return "⚠️ TOOL_ARG_ERROR (start_service): cmd must be a non-empty array of strings."
+    proposed_env = dict(env or {})
     try:
         refs = validate_process_env(env_from_settings)
         if refs:
@@ -378,13 +379,18 @@ def _start_service(
             # references; literal env keeps its existing process capability.
             from ouroboros.presence_authority import presence_ceiling_from_context
 
-            if (active_tool_profile(ctx) not in (_TOP_LEVEL_PRINCIPAL_PROFILES | {"operator_control"})
+            from ouroboros.config import get_runtime_mode
+            from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+
+            cyber_actor = (active_tool_profile(ctx) == "acting_subagent"
+                           and mode_has_unrestricted_agency(get_runtime_mode()))
+            if (not cyber_actor and active_tool_profile(ctx) not in (_TOP_LEVEL_PRINCIPAL_PROFILES | {"operator_control"})
                     or presence_ceiling_from_context(ctx) is not None):
                 return _publish_tool_result(ctx, ToolResult(
                     status="blocked", code="ACCESS_BLOCKED",
                     text="⚠️ SERVICE_ENV_REFERENCE_BLOCKED: this task cannot select settings-backed service environment. A root task can start the service; existing literal environment and configured MCP access remain available.",
                 ))
-        env, secret_values = resolve_process_env(env, refs, settings=load_settings() if refs else None)
+        env, secret_values = resolve_process_env(env, refs, settings=runtime_settings(settings_reader=load_settings) if refs else None)
     except ValueError as exc:
         return f"⚠️ TOOL_ARG_ERROR (start_service): {exc}"
     service_name, name_error = _sanitize_service_name(name)
@@ -411,20 +417,22 @@ def _start_service(
         # names every allowed root as label=path instead of a bare rootless
         # ValueError echo; the SHELL_CWD_BLOCKED status is a typed policy denial.
         return shell_cwd_block_message(ctx, cwd, operation="service", error=exc)
-    try:
-        from ouroboros.protected_artifacts import shell_block_reason
+    if _resolved_binding is None:
+        # Registry dispatch has already checked this exact prepared binding.
+        # A direct handler caller uses the same Supervisor before the first
+        # process effect, rather than a second black-box text detector.
+        from ouroboros.safety import check_safety
 
-        protected_block = shell_block_reason(
-            ctx,
-            cmd,
-            cwd=str(workdir),
-            default_cwd=workdir,
-            binding=binding,
-        )
-        if protected_block:
-            return protected_block
-    except Exception:
-        pass
+        allowed, advice = check_safety("start_service", {
+            "cmd": cmd, "cwd": str(workdir), "name": service_name,
+            "env": proposed_env, "env_from_settings": refs,
+        }, messages=getattr(ctx, "messages", None), ctx=ctx, resolved_binding=binding)
+        if not allowed:
+            return _publish_tool_result(ctx, ToolResult(
+                status="blocked", code="SAFETY_VIOLATION", text=advice,
+            ))
+        if advice:
+            ctx.emit_progress_fn(advice)
     declared_outputs = [str(item) for item in (outputs or []) if str(item or "").strip()]
     try:
         from ouroboros.tools.shell import _snapshot_declared_outputs
@@ -957,7 +965,7 @@ def get_tools() -> List[ToolEntry]:
                 },
                 "name": {"type": "string", "default": "service"},
                 "env": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Ordinary literal environment overrides, passed unchanged on local and Docker executors over the minimal host baseline. Use env_from_settings for secrets."},
-                "env_from_settings": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Root tasks only: environment name to saved setting key. References override literal env; Settings-classified secrets are masked in diagnostics. Children retain their existing literal environment and configured MCP access."},
+                "env_from_settings": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Root tasks and Cyber acting tasks: environment name to saved setting key. References override literal env; Settings-classified secrets are masked in diagnostics. Explicit read-only tasks retain their existing limits."},
                 "readiness": {"type": "object", "default": {}, "description": "Optional {log_contains|stdout_contains, timeout_sec} readiness probe."},
                 "outputs": {"type": "array", "items": {"type": "string"}, "default": [], "description": "Files generated by the service to copy into the task artifact store when the service stops."},
                 "keep_alive": {"type": "boolean", "default": False, "description": "Leave this service running after the task ends (e.g. a dev server the user or an external verifier still needs). It stays custody-ledgered and dies with the server session or panic."},

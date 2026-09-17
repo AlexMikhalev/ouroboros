@@ -34,6 +34,25 @@ def _attach_dir(drive, task_id):
 
 
 class TestStageTaskAttachments:
+    def test_cyber_owner_attachment_can_stage_credential_named_source(self, tmp_path, monkeypatch):
+        from ouroboros import config
+        from ouroboros.artifacts import stage_task_attachments
+        from ouroboros.runtime_mode_policy import _RUNTIME_MODE_RANK
+
+        monkeypatch.setattr(config, "get_runtime_mode", lambda: "cyber_pro")
+        monkeypatch.setitem(_RUNTIME_MODE_RANK, "cyber_pro", 3)
+        monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: tmp_path))
+        drive = _drive(tmp_path)
+        src = tmp_path / ".ssh" / "id_rsa"
+        src.parent.mkdir()
+        src.write_text("owner key", encoding="utf-8")
+
+        manifest = stage_task_attachments(drive, "cyber-task", [{"path": str(src)}])
+
+        assert manifest[0]["status"] == "staged"
+        staged = _attach_dir(drive, "cyber-task") / manifest[0]["relpath"].split("/", 1)[1]
+        assert staged.read_text(encoding="utf-8") == "owner key"
+
     def test_stages_into_artifact_store(self, tmp_path):
         from ouroboros.artifacts import stage_task_attachments
 
@@ -92,7 +111,7 @@ class TestStageTaskAttachments:
             assert str(src) != str(value)
         assert "/" not in entry["relpath"].split("/", 1)[1]  # single attachments/ component
 
-    def test_secret_source_skipped_credentials(self, tmp_path):
+    def test_ordinary_credential_named_source_is_staged(self, tmp_path):
         from ouroboros.artifacts import stage_task_attachments
 
         drive = _drive(tmp_path)
@@ -106,16 +125,17 @@ class TestStageTaskAttachments:
         )
         labels = {m["label"] for m in manifest if m["status"] == "staged"}
         assert "ok.txt" in labels
-        assert "credentials.json" not in labels
+        assert "credentials.json" in labels
         assert len(manifest) == 2
-        assert manifest[0]["status"] == "rejected"
-        assert manifest[0]["reason"] == "secret_source"
+        assert manifest[0]["status"] == "staged"
+        assert pathlib.Path(manifest[0]["abs_path"]).read_bytes() == secret.read_bytes()
         assert manifest[0]["ordinal"] == 0
 
-    def test_secret_source_skipped_ssh_dir(self, tmp_path):
+    def test_secret_source_skipped_ssh_dir(self, tmp_path, monkeypatch):
         from ouroboros.artifacts import stage_task_attachments
 
         drive = _drive(tmp_path)
+        monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: tmp_path))
         ssh = tmp_path / ".ssh"
         ssh.mkdir()
         key = ssh / "id_rsa"
@@ -128,7 +148,7 @@ class TestStageTaskAttachments:
             "status": "rejected",
             "reason": "secret_source",
             "label": "id_rsa",
-            "rule": "credential/control directory component '.ssh'",
+            "rule": "path is hidden or credential-like (owner credential location)",
         }]
 
     def test_image_source_marked_is_image(self, tmp_path):
@@ -509,10 +529,6 @@ class TestDesktopChatFullSetStaging:
         # isolation precedent as tests/test_inflight_indicator_seams.py::
         # _patch_workers).
         monkeypatch.setattr(workers, "get_event_q", lambda: queue.Queue())
-        # Avoid the proactive namer spinning a real thread/LLM in this unit test
-        # (it is a local `from ouroboros.project_naming import ...`, so patch source).
-        import ouroboros.project_naming as project_naming
-        monkeypatch.setattr(project_naming, "spawn_proactive_namer", lambda *a, **k: None)
 
         # Two uploads on disk: an image and a non-image PDF.
         img_src = tmp_path / "photo.png"
@@ -566,8 +582,6 @@ class TestDesktopChatFullSetStaging:
         # lifespan in this xdist worker must not abort the turn before
         # handle_task.
         monkeypatch.setattr(workers, "get_event_q", lambda: queue.Queue())
-        import ouroboros.project_naming as project_naming
-        monkeypatch.setattr(project_naming, "spawn_proactive_namer", lambda *a, **k: None)
 
         b64 = base64.b64encode(_PNG_BYTES).decode("ascii")
         agent = _FakeChatAgent()

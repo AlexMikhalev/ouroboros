@@ -20,8 +20,10 @@ from typing import Any, Dict
 from ouroboros.dialogue_provenance import presence_provenance_fields
 from ouroboros.llm_claudexor import propagate_model_error
 from ouroboros.outcomes import normalize_outcome_axes
+from ouroboros.subagent_messages import initiator_meta
 from ouroboros.synthesis_cost_text import _summary_row_cost_fields, _synthesis_cost_text, _synthesis_cost_usd, _synthesis_usage_snapshot_text
 from ouroboros.task_finalization import sealed_final_prompt_section
+from ouroboros.tool_capabilities import routing_action_for_tool
 from ouroboros.utils import append_jsonl, truncate_review_artifact as _truncate_with_notice, utc_now_iso
 
 
@@ -41,8 +43,38 @@ def _atp():
     return agent_task_pipeline
 
 
+def task_tool_metrics(llm_trace: dict) -> dict:
+    """Project recorded calls once; unknown names never become an empty census."""
+    unavailable = bool(llm_trace.get("loop_evidence_unavailable"))
+    calls = llm_trace.get("tool_calls") or []
+    metrics = {
+        "tool_calls": None if unavailable else len(calls),
+        "tool_errors": None if unavailable else sum(
+            1 for call in calls if isinstance(call, dict) and call.get("is_error")),
+        # The addressing calls among them (tool_capabilities owns the family), so
+        # a replayed block can tell a receipt-only turn from real work without
+        # a client list of tool names.
+        "routing_tool_calls": None if unavailable else sum(
+            1 for call in calls if isinstance(call, dict) and routing_action_for_tool(call.get("tool"))),
+        "tool_call_counts": None,
+    }
+    if unavailable or llm_trace.get("recovered_post_task_synthesis") or not isinstance(llm_trace.get("tool_calls"), list):
+        return metrics
+    counts: dict[str, int] = {}
+    for call in calls:
+        name = call.get("tool") if isinstance(call, dict) else None
+        if not isinstance(name, str) or not name.strip():
+            return metrics
+        name = name.strip()
+        counts[name] = counts.get(name, 0) + 1
+    metrics["tool_call_counts"] = counts
+    return metrics
+
+
 def build_trace_summary(llm_trace: dict) -> str:
     """Return a compact human-readable summary of tool calls and agent notes."""
+    if llm_trace.get("loop_evidence_unavailable"):
+        return "## Tool trace (call count unknown)\nThe failed loop supplied no verified execution trace."
     tool_calls = llm_trace.get("tool_calls", []) or []
     notes = llm_trace.get("reasoning_notes", []) or []
 
@@ -174,11 +206,40 @@ def _apply_reflection_memory_actions(
         return 0
 
 
-def _child_task_evidence(env: Any, task: Dict[str, Any], limit: int = 6000) -> str:
-    """Return compact evidence from child/subagent results for parent experience review."""
+def _child_failure_classes(rows: Any) -> list:
+    """The sorted TYPED execution FAILURE classes among the children.
+
+    Read off the same ``outcome_axes`` the evidence walk already normalized, so
+    the root's reflection can carry what its subtree did without a second
+    collector, a second walk, or children reflecting on their own.
+
+    Only genuine failures count. "Not ok" is a much wider set: a child the parent
+    cancelled in an ordinary cascade, one that soft-landed ``best_effort`` on a
+    rail, a ``degraded`` one, and an ``interrupted`` one that is not even
+    terminal all end non-ok without anything having gone wrong, and admitting
+    them opened the Pattern Register - a paid rewrite of the register - on clean
+    roots with nothing to learn."""
+    from ouroboros.outcomes import EXECUTION_FAILED, EXECUTION_INFRA_FAILED
+
+    failures = {EXECUTION_FAILED, EXECUTION_INFRA_FAILED}
+    classes = set()
+    for row in rows or []:
+        axes = row.get("outcome_axes") if isinstance(row, dict) else None
+        execution = axes.get("execution") if isinstance(axes, dict) else None
+        status = str(execution.get("status") or "").strip() if isinstance(execution, dict) else ""
+        if status in failures:
+            classes.add(status)
+    return sorted(classes)
+
+
+def _child_task_evidence(env: Any, task: Dict[str, Any], limit: int = 6000) -> tuple:
+    """Compact evidence from child/subagent results for parent experience review.
+
+    Returns the prompt text AND the rows it was rendered from: the caller needs
+    the typed child outcomes, and one walk is the only walk (P7)."""
     task_id = str(task.get("id") or "")
     if not task_id:
-        return ""
+        return "", []
     try:
         from ouroboros.cost_projection import resolve_cost_pair
         from ouroboros.task_results import list_task_results
@@ -187,6 +248,8 @@ def _child_task_evidence(env: Any, task: Dict[str, Any], limit: int = 6000) -> s
         for item in list_task_results(env.drive_root):
             if not isinstance(item, dict):
                 continue
+            if str(item.get("task_id") or item.get("id") or "") == task_id:
+                continue  # the persisted root names its own subtree too
             if str(item.get("parent_task_id") or "") != task_id and str(item.get("root_task_id") or "") != task_id:
                 continue
             # ABI-3: resolve the stored pair (legacy read tolerance, deprecated
@@ -203,11 +266,11 @@ def _child_task_evidence(env: Any, task: Dict[str, Any], limit: int = 6000) -> s
                 "result": _truncate_with_notice(item.get("result", ""), 1600),
             })
         if not rows:
-            return ""
-        return _truncate_with_notice(json.dumps(rows, ensure_ascii=False, indent=2), limit)
+            return "", []
+        return _truncate_with_notice(json.dumps(rows, ensure_ascii=False, indent=2), limit), rows
     except Exception:
         log.debug("Failed to collect child task evidence", exc_info=True)
-        return ""
+        return "", []
 
 
 def _pre_synthesis_usage_snapshot(
@@ -289,8 +352,10 @@ def _run_task_summary(env, llm, task, usage, llm_trace, drive_logs, review_evide
         task_id = str(task.get("id") or "unknown")
         canonical_root = pathlib.Path(task.get("budget_drive_root") or drive_logs.parent)
         summary_id = f"task-narrative:{task_id}"
-        n_tool_calls = len(llm_trace.get("tool_calls", []) or [])
-        rounds = int(usage.get("rounds") or 0)
+        tool_metrics = task_tool_metrics(llm_trace)
+        n_tool_calls = tool_metrics["tool_calls"]
+        rounds = None if usage.get("loop_evidence_unavailable") else int(usage.get("rounds") or 0)
+        round_text = "round count unknown" if rounds is None else f"{rounds}r"
         cost_text = _synthesis_cost_text(usage)
         outcome_axes = normalize_outcome_axes(usage)
         reason_code = str(usage.get("reason_code") or "")
@@ -308,7 +373,11 @@ def _run_task_summary(env, llm, task, usage, llm_trace, drive_logs, review_evide
                 "project_id": str(task.get("project_id") or ""), "chat_id": int(task.get("chat_id") or 0), "delegation_role": str(task.get("delegation_role") or ""), "role": str(task.get("role") or ""),
                 "status": str(stored_result.get("status") or "completed"), "outcome": completion_status_label(stored_result, usage), "outcome_phase": outcome_phase(stored_result, usage),
                 "outcome_final": False, "outcome_authority": "pre_finalization_narrative_context",
-                "text": value, "tool_calls": n_tool_calls, "rounds": rounds, "outcome_axes": outcome_axes, "reason_code": reason_code,
+                # The chat block reads its chrome, the addressing fact and the
+                # origin label from this row when the task result has been pruned.
+                "_is_direct_chat": bool(task.get("_is_direct_chat")), **initiator_meta(task),
+                **({"typed_routing_action": str(usage["typed_routing_action"])} if usage.get("typed_routing_action") else {}),
+                "text": value, **tool_metrics, "rounds": rounds, "outcome_axes": outcome_axes, "reason_code": reason_code,
                 "result_ref": result_ref, "source_coverage": {"task_result": result_ref}, **_summary_row_cost_fields(usage), **presence_fields,
                 **({"review_projection": review_projection} if review_projection.get("panels") else {}),
             }
@@ -316,11 +385,11 @@ def _run_task_summary(env, llm, task, usage, llm_trace, drive_logs, review_evide
                 canonical_root, result_root, row, status=str(stored_result.get("status") or ""),
             )
         # Skip LLM summary for trivial tasks.
-        if n_tool_calls == 0 and rounds <= 1:
+        if n_tool_calls in (None, 0) and (rounds is None or rounds <= 1):
             goal = _truncate_with_notice(task.get("text", ""), 200)
             summary_text = (
                 f"Task {task_id} ({task.get('type', 'user')}): "
-                f"{goal}. {rounds}r, {cost_text}." + project_thread_note_for_task(task)
+                f"{goal}. {round_text}, {cost_text}." + project_thread_note_for_task(task)
             )
             _append_summary(summary_text)
             return
@@ -335,7 +404,7 @@ def _run_task_summary(env, llm, task, usage, llm_trace, drive_logs, review_evide
             review_section = "(review evidence unavailable)"
         prompt = _TASK_SUMMARY_PROMPT.format(
             task_id=task_id, goal=goal or "(no goal text)",
-            task_type=task.get("type", "user"), rounds=rounds,
+            task_type=task.get("type", "user"), rounds="unknown" if rounds is None else rounds,
             cost_text=cost_text,
             usage_snapshot=_synthesis_usage_snapshot_text(usage),
             sealed_final=sealed_final_prompt_section(sealed_final),
@@ -364,7 +433,7 @@ def _run_task_summary(env, llm, task, usage, llm_trace, drive_logs, review_evide
             log.warning("Task summary LLM call failed, using fallback", exc_info=True)
             summary_text = (
                 f"Task {task_id} ({task.get('type', 'user')}): "
-                f"{_truncate_with_notice(goal, 200)}. {rounds}r, {cost_text}."
+                f"{_truncate_with_notice(goal, 200)}. {round_text}, {cost_text}."
             )
         if summary_text:
             summary_text += project_thread_note_for_task(task)
@@ -402,11 +471,25 @@ def _run_chat_consolidation(env, memory, llm, task, drive_logs):
             )
 
             with usage_scope(chat_scope):
+                from ouroboros.tools.registry import ToolContext
+                knowledge_context = ToolContext(
+                    repo_dir=getattr(env, "repo_dir", env.drive_root),
+                    drive_root=pathlib.Path(task.get("budget_drive_root") or env.drive_root),
+                    budget_drive_root=str(task.get("budget_drive_root") or env.drive_root),
+                    task_id=str(_id or ""), project_id=str(task.get("project_id") or ""))
                 u = consolidate(chat_path=chat_path, blocks_path=blocks_path,
-                                meta_path=meta_path, llm_client=_llm, identity_text=_ident)
+                                meta_path=meta_path, llm_client=_llm, identity_text=_ident,
+                                knowledge_context=knowledge_context)
             if u:
+                # A run that produced no block and a run that never happened look the
+                # same in this stream without a written count; last_error_kind names the
+                # LAST error any attempt recorded (recovered splits keep theirs), which
+                # is weaker than "the run failed" and is reported under that honest name.
+                errors = u.get("_consolidation_errors") or []
                 append_jsonl(_logs / "events.jsonl", {"ts": utc_now_iso(),
                     "type": "chat_block_consolidation", "task_id": _id,
+                    "blocks_written": u.get("_blocks_written"),
+                    "last_error_kind": (errors[-1] or {}).get("kind") if errors else None,
                     "cost_usd": (
                         round(float(u["cost"]), 6)
                         if u.get("cost") is not None
@@ -463,19 +546,31 @@ def _run_reflection(env: Any, llm: Any, task: Dict[str, Any],
             should_generate_reflection, generate_reflection, append_reflection_routed,
         )
         synthesis_cost = _synthesis_cost_usd(usage)
+        # The one walk happens BEFORE the decision, because a root whose only
+        # failures are its children cannot be recognized without it: children do
+        # not reflect, so their classes have to reach this gate to be learned
+        # from at all. Still one walk, and its rows serve the prompt below.
+        child_evidence, child_rows = _child_task_evidence(env, task)
+        child_classes = _child_failure_classes(child_rows)
         if should_generate_reflection(
             llm_trace,
             task=task,
             rounds=int(usage.get("rounds", 0)),
             cost_usd=synthesis_cost,
+            child_failure_classes=child_classes,
         ):
             trace_summary = build_trace_summary(llm_trace)
-            child_evidence = _child_task_evidence(env, task)
             try:
                 reflection_usage = dict(usage)
                 # Reflection's legacy durable cost_usd field now records this
                 # same subtree snapshot instead of silently reverting to own cost.
                 reflection_usage["cost"] = synthesis_cost
+                from ouroboros.tools.registry import ToolContext
+                knowledge_context = ToolContext(
+                    repo_dir=getattr(env, "repo_dir", env.drive_root),
+                    drive_root=pathlib.Path(task.get("budget_drive_root") or env.drive_root),
+                    project_id=str(task.get("project_id") or ""),
+                    task_id=str(task.get("id") or ""))
                 entry = generate_reflection(
                     task, llm_trace, trace_summary,
                     llm, reflection_usage,
@@ -483,6 +578,8 @@ def _run_reflection(env: Any, llm: Any, task: Dict[str, Any],
                     child_evidence=child_evidence,
                     usage_snapshot_text=_synthesis_usage_snapshot_text(usage),
                     sealed_final_text=sealed_final_prompt_section(sealed_final),
+                    child_failure_classes=child_classes,
+                    knowledge_context=knowledge_context,
                 )
                 entry = {**entry, **presence_provenance_fields(task)}
                 append_reflection_routed(env, task, entry)

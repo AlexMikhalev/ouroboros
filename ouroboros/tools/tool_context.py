@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # annotation-only imports (inert at runtime)
     from ouroboros.contracts.task_constraint import TaskConstraint
+    from ouroboros.llm_claudexor import ModelTurnState
     from typing import Any
     from typing import Callable
     from typing import Dict
@@ -63,6 +64,11 @@ class ToolContext:
     # the per-project store under the canonical data dir instead of memory/knowledge.
     project_id: str = ""
     task_metadata: Dict[str, Any] = field(default_factory=dict)
+    # The latest owner message this turn actually DRAINED from its mailbox
+    # (``{"msg_id", "client_message_id", "text", "ts"}``), stamped by the loop's
+    # drain seam; ``None`` while the turn still acts only on the message that
+    # started it.
+    last_owner_delivery: Optional[Dict[str, Any]] = None
     executor_ref: Dict[str, Any] = field(default_factory=dict)
     pending_events: List[Dict[str, Any]] = field(default_factory=list)
     current_chat_id: Optional[int] = None
@@ -82,6 +88,13 @@ class ToolContext:
     # switch_model can refuse switching to a sub-1M route while the transcript is max-sized.
     active_context_mode: str = ""
 
+    # The active-turn transport slot every model call of ONE loop invocation
+    # shares (ordinary rounds, fallback candidates and forced finalization).
+    # `run_llm_loop` mints a fresh empty one at entry, so a next loop — and a
+    # cold restart — begins a new turn even where the transcript is identical.
+    # Opaque transport only: mechanism in `llm_claudexor.ModelTurnState`.
+    model_turn_state: Optional[ModelTurnState] = None
+
     # Per-task browser state.
     browser_state: BrowserState = field(default_factory=BrowserState)
 
@@ -92,6 +105,9 @@ class ToolContext:
     # Conversation messages for safety checks.
     messages: Optional[List[Dict[str, Any]]] = None
 
+    # Borrowed loop trace; restored when the owning loop exits.
+    _execution_trace: Optional[Dict[str, Any]] = field(default=None, repr=False)
+
     # Structured task constraints, e.g. skill repair payload confinement.
     task_constraint: Optional[TaskConstraint] = None
     task_contract: Dict[str, Any] = field(default_factory=dict)
@@ -101,12 +117,6 @@ class ToolContext:
 
     # True inside handle_chat_direct, not a queued worker task.
     is_direct_chat: bool = False
-    # CW3 (v6.34.0): a SHORT-LIVED same-route "decision" turn (run while the chat
-    # agent is busy). It may answer / route / spawn / steer, but is barred from
-    # durable cognitive-memory / evolution / settings / control-plane mutators
-    # (the WS10 ephemeral contract) — enforced in schemas()/execute().
-    is_ephemeral_turn: bool = False
-
     # Pre-commit review state.
     _review_advisory: List[Any] = field(default_factory=list)
     _review_iteration_count: int = 0

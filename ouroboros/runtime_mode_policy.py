@@ -12,6 +12,139 @@ import pathlib
 from dataclasses import dataclass
 from typing import Iterable
 
+from ouroboros.settings_scales import _RUNTIME_MODE_RANK
+
+
+def runtime_mode_rank(runtime_mode: str) -> int:
+    """Return the ordered runtime-mode rank without duplicating the vocabulary.
+
+    ``settings_scales`` is the owner of the persisted enum and rank. Unknown
+    values remain below every known mode.
+    """
+    return int(_RUNTIME_MODE_RANK.get(str(runtime_mode or "").strip().lower(), -1))
+
+
+def runtime_mode_at_least(runtime_mode: str, minimum: str) -> bool:
+    """Whether ``runtime_mode`` meets the named ordered capability floor."""
+    mode_rank = runtime_mode_rank(runtime_mode)
+    minimum_rank = runtime_mode_rank(minimum)
+    return mode_rank >= 0 and minimum_rank >= 0 and mode_rank >= minimum_rank
+
+
+def mode_has_unrestricted_agency(runtime_mode: str) -> bool:
+    """Whether internal permission and review decisions are advisory only.
+
+    Cyber Pro keeps independent findings and actual operation failures intact;
+    those facts do not grant an internal mechanism authority to veto an action.
+    Consumers use the existing effective runtime-mode source, not saved future
+    settings or a second task-local permission flag.
+    """
+    return runtime_mode_at_least(runtime_mode, "cyber_pro")
+
+
+def protected_bible_history_delete_reason(
+    raw_cmd: object, *,
+    protect_bible: bool = True, identity_path: pathlib.Path | None = None,
+    cwd: pathlib.Path | None = None, bible_path: pathlib.Path | None = None,
+) -> str:
+    """Return a refusal for physical BIBLE deletion or repository history rewrites.
+
+    This is deliberately a small argv/verb predicate at the existing shell
+    guard seam.  It does not classify arbitrary content or restrict ordinary
+    ``rm`` commands elsewhere.
+    """
+    try:
+        from ouroboros.shell_parse import collect_leading_env, shell_segments
+
+        delete_heads = {"rm", "unlink", "mv"}
+        history_verbs = {"filter-branch", "filter-repo", "rebase", "replace"}
+        work_dir = cwd or pathlib.Path.cwd()
+        bible_target = (bible_path or work_dir / "BIBLE.md").resolve(strict=False)
+
+        def _protected_target(candidate: str) -> bool:
+            path = pathlib.Path(candidate.replace("\\", "/"))
+            target = (work_dir / path).resolve(strict=False)
+            if protect_bible and str(target).casefold() == str(bible_target).casefold():
+                return True
+            return bool(identity_path is not None and (
+                str(target).casefold() == str(identity_path.resolve(strict=False)).casefold()
+            ))
+
+        def _bible_path(
+            words: list[str], *, path_flag_only: bool = False,
+        ) -> bool:
+            """Recognize an explicit BIBLE.md path, including --path= forms."""
+            candidates: list[str] = []
+            expect_value = False
+            for word in words:
+                token = str(word).strip("'\"")
+                if expect_value:
+                    candidates.append(token)
+                    expect_value = False
+                    continue
+                if token in {"--path", "--path-file", "--paths"}:
+                    expect_value = True
+                    continue
+                if token.startswith("--path="):
+                    candidates.append(token.split("=", 1)[1])
+                    continue
+                if not path_flag_only:
+                    candidates.append(token)
+            return any(
+                _protected_target(candidate)
+                for candidate in candidates
+            )
+
+
+        for segment in shell_segments(raw_cmd):
+            _env, argv = collect_leading_env(segment)
+            if not argv:
+                continue
+            head = pathlib.PurePath(str(argv[0])).name.lower().removesuffix(".exe")
+            words = [str(item).replace("\\", "/") for item in argv[1:]]
+            if head in {"sh", "bash", "zsh"}:
+                nested = ""
+                for index, word in enumerate(words[:-1]):
+                    if word in {"-c", "--command"}:
+                        nested = words[index + 1]
+                        break
+                if nested:
+                    nested_reason = protected_bible_history_delete_reason(
+                        nested, protect_bible=protect_bible,
+                        identity_path=identity_path, cwd=cwd, bible_path=bible_target,
+                    )
+                    if nested_reason:
+                        return nested_reason
+                    continue
+            operands = [word for word in words if not word.startswith("-")]
+            bible = _bible_path(operands[:-1] if head == "mv" else words)
+            if head in delete_heads and bible:
+                label = "IDENTITY" if any(
+                    pathlib.PurePath(word.strip("'\"")).name.casefold() == "identity.md"
+                    for word in words
+                ) else "BIBLE"
+                return f"{label}_DELETE_BLOCKED: protected identity history must remain physically present."
+            if head == "git":
+                verbs = [word.lower() for word in words if not word.startswith("-")]
+                deleting = bool(verbs and (
+                    verbs[0] in {"rm", "mv"}
+                    or verbs[0] == "update-index" and any(flag in words for flag in ("--remove", "--force-remove"))
+                ))
+                git_targets = operands[1:-1] if verbs and verbs[0] == "mv" else operands[1:]
+                if deleting and _bible_path(git_targets):
+                    label = "IDENTITY" if any(
+                        pathlib.PurePath(word.strip("'\"")).name.casefold() == "identity.md"
+                        for word in words
+                    ) else "BIBLE"
+                    return f"{label}_DELETE_BLOCKED: git rm/git mv cannot remove or rename protected identity files."
+                if verbs and verbs[0] in history_verbs and _bible_path(
+                    words, path_flag_only=(verbs[0] in {"filter-branch", "filter-repo"})
+                ):
+                    return "BIBLE_HISTORY_REWRITE_BLOCKED: BIBLE history must remain physically recoverable."
+        return ""
+    except Exception:
+        return ""
+
 
 SAFETY_CRITICAL_PATHS = frozenset({
     "BIBLE.md",
@@ -168,7 +301,7 @@ def protected_paths_in(paths: Iterable[str]) -> list[ProtectedPath]:
 
 
 def mode_allows_protected_write(runtime_mode: str) -> bool:
-    return str(runtime_mode or "").strip().lower() == "pro"
+    return runtime_mode_at_least(runtime_mode, "pro")
 
 
 def format_protected_paths(paths: Iterable[ProtectedPath | str]) -> str:
@@ -193,17 +326,26 @@ def protected_write_block_message(
 ) -> str:
     norm = normalize_repo_path(path)
     category = protected_path_category(norm)
+    target_modes = "runtime_mode='pro' or 'cyber_pro'" if str(runtime_mode).strip().lower() == "cyber_pro" else "runtime_mode='pro'"
     return (
         f"⚠️ CORE_PROTECTION_BLOCKED: runtime_mode={runtime_mode!r} refuses "
         f"to {action} protected {category or 'core'} path: {norm}. "
-        "Switch to runtime_mode='pro' and let the normal triad + scope review "
+        f"Switch to {target_modes} and let the normal triad + scope review "
         "cover the protected core/contract/release change before commit."
     )
 
 
 def core_patch_notice(paths: Iterable[ProtectedPath | str]) -> str:
+    from ouroboros.config import get_runtime_mode
+
+    if mode_has_unrestricted_agency(get_runtime_mode()):
+        return (
+            "⚠️ CORE_PATCH_NOTICE: Cyber Pro is editing Ouroboros core/contract/release "
+            f"surface(s): {format_protected_paths(paths)}. Independent review evidence "
+            "remains separate from Ouroboros's decision to continue."
+        )
     return (
-        "⚠️ CORE_PATCH_NOTICE: runtime_mode='pro' is editing protected "
+        "⚠️ CORE_PATCH_NOTICE: runtime_mode='pro' or 'cyber_pro' is editing protected "
         "Ouroboros core/contract/release surface(s): "
         f"{format_protected_paths(paths)}. These changes can be committed only "
         "through the normal triad + scope review pipeline."

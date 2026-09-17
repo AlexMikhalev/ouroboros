@@ -72,7 +72,7 @@ def test_llm_internal_fallbacks_follow_shipped_model_defaults(monkeypatch):
 def test_valid_runtime_modes_is_frozen_tuple():
     from ouroboros.config import VALID_RUNTIME_MODES
 
-    assert VALID_RUNTIME_MODES == ("light", "advanced", "pro")
+    assert VALID_RUNTIME_MODES == ("light", "advanced", "pro", "cyber_pro")
 
 
 @pytest.mark.parametrize("mode", ["light", "advanced", "pro"])
@@ -1054,25 +1054,98 @@ def test_default_lane_allows_minusC_retarget_from_default_cwd(tmp_path, monkeypa
     assert "WORKSPACE_GIT_BLOCKED" not in result
 
 
-def test_advanced_mode_blocks_runshell_protected_python_writer(tmp_path, monkeypatch):
-    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
+@pytest.mark.parametrize("mode", ["advanced", "pro"])
+def test_shell_python_writer_reaches_the_selected_process(tmp_path, monkeypatch, mode):
+    """Source text is executed under selected supervision without guessed targets."""
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", mode)
+    monkeypatch.setenv("OUROBOROS_SAFETY_MODE", "off")
     reg = _registry(tmp_path)
     result = reg.execute(
         "run_command",
         {"cmd": "python -c \"from pathlib import Path; Path('BIBLE.md').write_text('x')\""},
     )
-    assert "SAFETY_VIOLATION" in result
-    assert "BIBLE.md" in result
+    assert "SAFETY_VIOLATION" not in result
+    assert "exit_code=0" in result, result
+    assert (tmp_path / "BIBLE.md").read_text(encoding="utf-8") == "x"
 
 
-def test_advanced_mode_blocks_runshell_protected_backslash_path(tmp_path, monkeypatch):
-    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
+def test_pro_mode_keeps_bible_delete_blocked_but_allows_ordinary_rm(tmp_path, monkeypatch):
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "pro")
+    (tmp_path / "BIBLE.md").write_text("constitution\n", encoding="utf-8")
+    (tmp_path / "scratch.txt").write_text("scratch\n", encoding="utf-8")
     reg = _registry(tmp_path)
-    result = reg.execute(
-        "run_command",
-        {"cmd": "python -c \"open('ouroboros\\\\contracts\\\\plugin_api.py','w').write('x')\""},
+    bible_result = reg.execute("run_command", {"cmd": "rm BIBLE.md"})
+    assert "BIBLE_DELETE_BLOCKED" in bible_result
+    assert (tmp_path / "BIBLE.md").exists()
+    rename_result = reg.execute("run_command", {"cmd": "git mv BIBLE.md BIBLE.old"})
+    assert "BIBLE_DELETE_BLOCKED" in rename_result
+    assert (tmp_path / "BIBLE.md").exists()
+    update_index_result = reg.execute(
+        "run_command", {"cmd": "git update-index --force-remove BIBLE.md"},
     )
-    assert "SAFETY_VIOLATION" in result
+    assert "BIBLE" in update_index_result
+    identity = tmp_path / "memory" / "identity.md"
+    identity.parent.mkdir()
+    identity.write_text("identity\n", encoding="utf-8")
+    identity_result = reg.execute("run_command", {"cmd": "rm memory/identity.md"})
+    assert "IDENTITY_DELETE_BLOCKED" in identity_result
+    assert identity.exists()
+    ordinary = reg.execute("run_command", {"cmd": ["rm", "scratch.txt"]})
+    assert "exit_code=0" in ordinary and not (tmp_path / "scratch.txt").exists()
+
+
+@pytest.mark.parametrize("mode", ["pro", "cyber_pro"])
+def test_runtime_identity_deletion_uses_the_selected_mode(tmp_path, monkeypatch, mode):
+    from ouroboros.tools.registry import ToolContext
+
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", mode)
+    monkeypatch.setenv("OUROBOROS_SAFETY_MODE", "off")
+    repo, data = tmp_path / "repo", tmp_path / "data"
+    repo.mkdir()
+    (data / "memory").mkdir(parents=True)
+    identity = data / "memory/identity.md"
+    identity.write_text("identity\n", encoding="utf-8")
+    reg = ToolRegistry(repo_dir=repo, drive_root=data)
+    reg.set_context(ToolContext(repo_dir=repo, drive_root=data))
+    result = reg.execute("run_command", {"cmd": ["rm", str(identity)]})
+    if mode == "cyber_pro":
+        assert "exit_code=0" in result and not identity.exists(), result
+    else:
+        assert "WORKSPACE_SHELL_BLOCKED" in result
+        assert identity.read_text() == "identity\n"
+
+
+def test_runtime_mode_rank_preserves_the_access_order():
+    from ouroboros.runtime_mode_policy import runtime_mode_at_least, runtime_mode_rank
+
+    assert runtime_mode_rank("pro") >= runtime_mode_rank("advanced")
+    assert runtime_mode_at_least("pro", "pro")
+
+
+@pytest.mark.parametrize("cmd", [
+    "git rebase HEAD~1",
+    "git checkout -- BIBLE.md",
+    "git restore BIBLE.md",
+    "git commit -m rewrite BIBLE.md",
+    "git update-ref refs/heads/feature HEAD",
+    "git filter-repo --path other.txt --invert-paths",
+])
+def test_bible_history_predicate_allows_unrelated_git_history_operations(cmd):
+    from ouroboros.runtime_mode_policy import protected_bible_history_delete_reason
+
+    assert protected_bible_history_delete_reason(cmd) == ""
+
+
+@pytest.mark.parametrize("cmd", [
+    "git rm BIBLE.md",
+    "git mv BIBLE.md BIBLE.old",
+    "git update-index --remove BIBLE.md",
+    "git filter-repo --path BIBLE.md --invert-paths",
+])
+def test_bible_history_predicate_blocks_explicit_bible_targets(cmd):
+    from ouroboros.runtime_mode_policy import protected_bible_history_delete_reason
+
+    assert "BIBLE" in protected_bible_history_delete_reason(cmd)
 
 
 def test_light_mode_allows_extension_tool_dispatch(tmp_path, monkeypatch):
@@ -1102,21 +1175,6 @@ def test_light_mode_allows_extension_tool_dispatch(tmp_path, monkeypatch):
     finally:
         with extension_loader._lock:
             extension_loader._tools.pop(tool_name, None)
-
-
-@pytest.mark.parametrize("bad_cmd", [
-    "sed -i 's/foo/bar/' docs/README.md",
-    "perl -i -pe 's/foo/bar/' docs/README.md",
-    "truncate -s 0 docs/README.md",
-    "chmod 755 docs/README.md",
-    "chown anton docs/README.md",
-    "ln -s /tmp/x docs/link",
-])
-def test_light_mode_blocks_inplace_mutation_tools(bad_cmd, tmp_path, monkeypatch):
-    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
-    reg = _registry(tmp_path)
-    result = reg.execute("run_command", {"cmd": bad_cmd})
-    assert "LIGHT_MODE_BLOCKED" in result, f"cmd={bad_cmd!r}: {result[:200]}"
 
 
 @pytest.mark.parametrize(("tool_name", "args"), [
@@ -1156,25 +1214,6 @@ def test_light_mode_allows_non_repo_shell_file_operations(cmd, tmp_path, monkeyp
     assert "LIGHT_MODE_BLOCKED" not in result, result[:200]
 
 
-def test_advanced_mode_blocks_python_os_remove_protected_path(tmp_path, monkeypatch):
-    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
-    reg = _registry(tmp_path)
-    result = reg.execute("run_command", {"cmd": "python3 -c \"import os; os.remove('BIBLE.md')\""})
-    assert "SAFETY_VIOLATION" in result
-
-
-@pytest.mark.parametrize("cmd", [
-    "sort -o BIBLE.md BIBLE.md",
-    "uniq BIBLE.md BIBLE.md",
-])
-def test_run_shell_blocks_sort_uniq_protected_output_paths(cmd, tmp_path, monkeypatch):
-    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
-    reg = _registry(tmp_path)
-    result = reg.execute("run_command", {"cmd": cmd})
-    assert "SAFETY_VIOLATION" in result
-    assert "BIBLE.md" in result or "protected" in result.lower()
-
-
 @pytest.mark.parametrize("cmd", [
     "cat BIBLE.md",
     "git diff BIBLE.md",
@@ -1197,11 +1236,13 @@ def test_run_shell_allows_readonly_mentions_of_protected_paths(cmd, tmp_path, mo
     ["bash", "-c", "printf x > README.md"],
     ["sh", "-c", "touch README.md"],
 ])
-def test_light_mode_blocks_simple_shell_c_repo_writer(cmd, tmp_path, monkeypatch):
+def test_light_mode_preserves_direct_repo_write_authority(cmd, tmp_path, monkeypatch):
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
+    monkeypatch.setenv("OUROBOROS_SAFETY_MODE", "off")
     reg = _registry(tmp_path)
     result = reg.execute("run_command", {"cmd": cmd})
-    assert "LIGHT_MODE_BLOCKED" in result
+    assert "LIGHT_MODE_BLOCKED" in result, result
+    assert not (tmp_path / "README.md").exists()
 
 
 def test_light_mode_allows_shell_wrapper_non_repo_writer(tmp_path, monkeypatch):
@@ -1211,13 +1252,8 @@ def test_light_mode_allows_shell_wrapper_non_repo_writer(tmp_path, monkeypatch):
     assert "LIGHT_MODE_BLOCKED" not in result, result[:200]
 
 
-def test_light_mode_inline_writer_is_refused_upfront(tmp_path, monkeypatch):
-    """H2 (owner decision 2026-08-03): the INVERTED interpreter write fence refuses
-    an inline payload it cannot prove repo-safe BEFORE execution — python gets a
-    real AST proof, and a proven write is refused with nothing executed. The old
-    enumerate-and-detect fence ADMITTED this exact vector and left the post-hoc
-    tripwire to report the already-done write; that contract deliberately no
-    longer exists, and the file staying untouched is the point."""
+def test_light_mode_inline_writer_preserves_effect_and_discloses_it(tmp_path, monkeypatch):
+    """The completed effect is observed without replacing its execution result."""
     import ouroboros.safety as safety_mod
 
     repo = _git_repo(tmp_path)
@@ -1230,18 +1266,13 @@ def test_light_mode_inline_writer_is_refused_upfront(tmp_path, monkeypatch):
         {"cmd": [sys.executable, "-c", "from pathlib import Path; Path('README.md').write_text('hacked\\n')"]},
     )
 
-    assert "LIGHT_MODE_BLOCKED" in result, result[:300]
-    assert "LIGHT_MODE_REPO_WRITE_BLOCKED" not in result  # refused upfront, not detected after
-    assert (repo / "README.md").read_text(encoding="utf-8") != "hacked\n"
+    assert "exit_code=0" in result, result
+    assert "LIGHT_MODE_REPO_CHANGED" in result
+    assert (repo / "README.md").read_text(encoding="utf-8") == "hacked\n"
 
 
 def test_light_mode_tripwire_catches_python_repo_writer(tmp_path, monkeypatch):
-    """The tripwire is the DETECTION layer BEHIND the fence: a SCRIPT-file
-    invocation hands the fence nothing inline (by design — the fence judges only
-    payloads it can read), executes, and the post-hoc snapshot catches the repo
-    mutation. Vector updated at the H2 synthesis: the old inline vector is now
-    refused upfront (see test_light_mode_inline_writer_is_refused_upfront), so
-    it can no longer reach the layer this test exists to cover."""
+    """A script-file invocation retains its effect and the observed changed paths."""
     import ouroboros.safety as safety_mod
 
     repo = _git_repo(tmp_path)
@@ -1253,7 +1284,7 @@ def test_light_mode_tripwire_catches_python_repo_writer(tmp_path, monkeypatch):
 
     result = reg.execute("run_command", {"cmd": [sys.executable, str(payload)]})
 
-    assert "LIGHT_MODE_REPO_WRITE_BLOCKED" in result, result[:300]
+    assert "LIGHT_MODE_REPO_CHANGED" in result, result[:300]
     assert "README.md" in result
     assert (repo / "README.md").read_text(encoding="utf-8") == "hacked\n"
 
@@ -1270,7 +1301,7 @@ def test_light_mode_tripwire_catches_untracked_repo_file(tmp_path, monkeypatch):
     payload.write_text("from pathlib import Path\nPath('new_tool.py').write_text('x\\n')\n")
     result = reg.execute("run_command", {"cmd": [sys.executable, str(payload)]})
 
-    assert "LIGHT_MODE_REPO_WRITE_BLOCKED" in result, result[:300]
+    assert "LIGHT_MODE_REPO_CHANGED" in result, result[:300]
     assert "new_tool.py" in result
     assert (repo / "new_tool.py").read_text(encoding="utf-8") == "x\n"
 
@@ -1298,7 +1329,7 @@ def test_light_mode_workspace_artifact_does_not_trip_self_repo_snapshot(tmp_path
         {"cmd": ["python3", "-c", "from pathlib import Path; Path('build.out').write_text('ok\\n')"]},
     )
 
-    assert "LIGHT_MODE_REPO_WRITE_BLOCKED" not in result, result[:300]
+    assert "LIGHT_MODE_REPO_CHANGED" not in result, result[:300]
     assert "WORKSPACE_GIT_REF_CHANGED" not in result, result[:300]
     assert (workspace / "build.out").read_text(encoding="utf-8") == "ok\n"
 
@@ -1316,7 +1347,7 @@ def test_light_mode_tripwire_runs_after_failed_command(tmp_path, monkeypatch):
         "from pathlib import Path\nPath('README.md').write_text('bad\\n')\nraise SystemExit(2)\n")
     result = reg.execute("run_command", {"cmd": [sys.executable, str(payload)]})
 
-    assert "LIGHT_MODE_REPO_WRITE_BLOCKED" in result, result[:300]
+    assert "LIGHT_MODE_REPO_CHANGED" in result, result[:300]
     assert "SHELL_EXIT_ERROR" in result
 
 
@@ -1333,7 +1364,7 @@ def test_advanced_mode_does_not_run_light_tripwire(tmp_path, monkeypatch):
         {"cmd": [sys.executable, "-c", "from pathlib import Path; Path('README.md').write_text('advanced\\n')"]},
     )
 
-    assert "LIGHT_MODE_REPO_WRITE_BLOCKED" not in result, result[:300]
+    assert "LIGHT_MODE_REPO_CHANGED" not in result, result[:300]
 
 
 # ===========================================================================

@@ -6,6 +6,7 @@ of looping on the same answer. See the trace-audit finalization-loop class."""
 from __future__ import annotations
 
 import json
+import pytest
 import tempfile
 import types as _t
 from pathlib import Path
@@ -31,8 +32,9 @@ def test_criteria_shape_valid_partial_at_non_solved_tier_is_valid():
     # honest partial contributes as a valid NON-clean vote at best_effort
     assert _criteria_shape_valid(partial, "best_effort") is True
     assert _criteria_shape_valid(partial, "blocked_with_evidence") is True
-    # ...but NOT at solved (incoherent — solved still requires all supported)
-    assert _criteria_shape_valid(partial, "solved") is False
+    # A contradictory claimed tier is preserved; the clean reducer rejects it.
+    assert _criteria_shape_valid(partial, "solved") is True
+    assert _criteria_have_supported_evidence(partial) is False
 
 
 def test_criteria_shape_valid_solved_still_requires_all_supported_with_refs():
@@ -627,3 +629,78 @@ def test_the_terminal_pair_keeps_the_objective_best_effort():
     from ouroboros.outcomes import _ACCEPTANCE_BLOCKED_TERMINAL_REASONS
 
     assert "revision_unavailable_on_forced_rail" not in _ACCEPTANCE_BLOCKED_TERMINAL_REASONS
+
+
+@pytest.mark.parametrize("criterion_status", ["partial", "missing", "rejected"])
+def test_solved_partial_pass_preserves_judgment_without_clean_objective(tmp_path, criterion_status):
+    from ouroboros.outcomes import _objective_axis, _review_axis
+
+    class Reviewer:
+        def chat(self, **_kwargs):
+            return {"content": json.dumps({
+                "verdict": "PASS", "outcome_tier": "solved",
+                "completion_coach": "The remaining criterion is honestly incomplete.",
+                "criteria_used": [{"criterion": "requested check", "status": criterion_status}],
+                "findings": [],
+            })}, {}
+
+    result = run_review_request(
+        ReviewRequest(surface="task_acceptance", goal="g", task_id="root",
+                      policy={"min_successful_slots": 2, "classify_outcome_tier": True}),
+        slots=[ReviewSlot(slot_id=f"s{i}", model=f"m{i}") for i in range(3)],
+        drive_root=tmp_path, llm=Reviewer(),
+    )
+    assert result.aggregate_signal == "PASS"
+    assert task_acceptance_is_clean(result) is False
+    for actor in result.actors:
+        assert actor["parse_status"] == "valid"
+        assert actor["signal"] == actor["semantic_verdict"] == "PASS"
+        assert actor["quorum_contribution"] is True
+        assert actor["parsed"]["outcome_tier"] == "solved"
+        assert actor["parsed"]["criteria_used"][0]["status"] == criterion_status
+    record = {**vars(result), "authority": "host_root", "enforcement_impact": "degrades_completion"}
+    review = _review_axis({"review_runs": [record]})
+    objective = _objective_axis(review)
+    assert review["status"] == "pass"
+    assert review["outcome_tier"] == objective["outcome_tier"] == "solved"
+    assert objective["status"] == "best_effort"
+
+
+def test_a_quiz_answer_unbinds_the_advisory_author_finish(tmp_path, monkeypatch):
+    """P1-6(g), the second consumer: the advisory author finish is bound to the
+    directive count captured with the intent; an owner quiz answer drained afterwards
+    grows the corpus, so the intent no longer binds and no finish is minted."""
+    import queue
+
+    import pytest
+
+    from ouroboros import loop as loop_mod
+    from ouroboros.loop_acceptance_review import _finish_advisory_author
+    from ouroboros.loop_delivery import delivery_evidence_fingerprint
+    from ouroboros.loop_round_limits import _drain_incoming_messages
+    from ouroboros.owner_mailbox import KIND_QUIZ_ANSWER, write_owner_message
+    from tests.test_acceptance_delivery import _acceptance_ctx
+
+    ctx = _acceptance_ctx(tmp_path)
+    ctx.tools._ctx._owner_directives = [{"source": "initial_user", "content": "goal"}]
+    binding = ctx.review_binding["binding_hash"]
+    ctx.llm_trace["review_runs"] = [{"authority": "host_root", "feedback_delivered": True,
+                                     "binding_hash": binding, "aggregate_signal": "FAIL"}]
+    ctx.llm_trace["acceptance_decision"] = {
+        "agent_disposition": "accepted", "agent_rationale": "done",
+        "agent_finish_intent": {"review_binding_hash": binding, "tool_count": 0, "owner_directives": 1,
+                                "evidence_fingerprint": delivery_evidence_fingerprint(ctx.tools._ctx, ctx.llm_trace)},
+    }
+    monkeypatch.setattr(loop_mod, "get_review_enforcement", lambda: "advisory")
+
+    def _bound(*_a, **_k):
+        raise RuntimeError("intent bound: the finish proceeds")
+
+    monkeypatch.setattr(loop_mod, "_end_task_acceptance_fence", _bound)
+    with pytest.raises(RuntimeError, match="intent bound"):
+        _finish_advisory_author(ctx)  # the captured count matches: the finish proceeds
+    write_owner_message(tmp_path, "[Owner quiz answer] quiz q1\nThe owner chose option 1: ship", task_id="root-delivery",
+                        msg_id="qa-1", kind=KIND_QUIZ_ANSWER)
+    _drain_incoming_messages(ctx.messages, queue.Queue(), tmp_path, "root-delivery", None, set(), owner_ctx=ctx.tools._ctx)
+    assert [row["source"] for row in ctx.tools._ctx._owner_directives] == ["initial_user", "owner_quiz_answer"]
+    assert _finish_advisory_author(ctx) is False  # premises changed: no author finish on the old intent

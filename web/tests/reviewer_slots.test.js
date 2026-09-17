@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { createClaudexorStatusStore } from '../modules/claudexor_status_store.js';
 import { serviceBannerLine } from '../modules/harness_accounts.js';
 import { renderSettingsPage } from '../modules/settings_ui.js';
 
+import { configuredApiProviders } from '../modules/route_editor_primitives.js';
 import {
+    API_CHOICE_PREFIX,
     API_ROUTE_CHOICE,
     CATEGORIES,
     ROUTE_KIND_API,
@@ -26,15 +29,21 @@ import {
     pinnedAccountWarning,
     profileOptionsFor,
     renderReviewerSlotsSection,
+    repaintSignature,
     reviewerRouteIdentityMarkup,
     routeChoiceGroups,
     sessionModelOptions,
+    sessionVerdictNote,
     splitSessionTarget,
     subagentOptionsFor,
     SUBAGENT_CHOICE_PREFIX,
+    advisoryDeliveryNote,
     advisoryReferenceTransition,
     encodeReviewerChoice,
+    lastRunMetaPrefix,
+    lastRunRouteChanged,
     reviewerChoiceGroups,
+    savedTargetNote,
 } from '../modules/reviewer_slots.js';
 
 test('reviewer routes reuse the shared visible harness identity without claiming execution', () => {
@@ -46,7 +55,8 @@ test('reviewer routes reuse the shared visible harness identity without claiming
         target_id: 'claude=claude-fable-5',
     }, harnesses, { catalogKnown: true });
     assert.match(known, /data-harness-identity="claude"/);
-    assert.match(known, /Claude Code Max/);
+    // The chip names the SOURCE, not the channel alone (owner decision 4A).
+    assert.match(known, />Claude Code Max · agent</);
     assert.match(known, /fill="currentColor"/);
     assert.doesNotMatch(known, /executed|status|available/i);
 
@@ -54,12 +64,18 @@ test('reviewer routes reuse the shared visible harness identity without claiming
         kind: ROUTE_KIND_SESSION,
         target_id: 'claude=claude-fable-5',
     }, harnesses, { catalogKnown: false });
-    assert.match(unread, /Claude Code/);
+    assert.match(unread, />Claude Code · agent</);
     assert.doesNotMatch(unread, /Claude Code Max/);
 
+    // An API row says WHICH provider serves it; an unprefixed id is OpenRouter.
     const api = reviewerRouteIdentityMarkup({ kind: ROUTE_KIND_API, target_id: 'openai/gpt' });
     assert.match(api, /data-presentation-kind="channel"/);
-    assert.match(api, />API</);
+    assert.match(api, />API · OpenRouter</);
+    assert.match(reviewerRouteIdentityMarkup({ kind: ROUTE_KIND_API, target_id: 'openai::gpt-5.6-terra' }),
+        />API · OpenAI</);
+    // A subscription row names its model source, never the aggregator.
+    assert.match(reviewerRouteIdentityMarkup({ kind: ROUTE_KIND_API, target_id: 'claudexor::codex-models=gpt' },
+        {}, { modelSources: [{ id: 'codex-models', label: 'Codex' }] }), />Codex · model</);
 });
 
 
@@ -244,30 +260,84 @@ test('a disabled account is offered with a "(disabled)" label, still selectable'
     assert.ok(options.every((o) => !o.disabled), 'every account stays selectable');
 });
 
+test('an account is offered under the name the Accounts tab gives it', () => {
+    // The index carries the Accounts-tab name beside the id, so the migrated
+    // default login — named by its login email there — stopped reading as a
+    // missing account here. The id still rides the label (it is what the
+    // setting stores) and stays the option VALUE.
+    const options = profileOptionsFor([
+        { id: 'codex-default', enabled: true, name: 'owner@example.com' },
+        { id: 'koshak', enabled: true, name: 'koshak' },
+        'koshak',
+    ], '');
+    assert.deepEqual(options.map((o) => o.value), ['', 'codex-default', 'koshak', 'koshak']);
+    assert.equal(options[1].label, 'Account: owner@example.com · codex-default (pinned)');
+    // A name that IS the id says it once.
+    assert.equal(options[2].label, 'Account: koshak (pinned)');
+    // A plain id string carries no name of its own and reads unchanged.
+    assert.equal(options[3].label, 'Account: koshak (pinned)');
+
+    const disabled = profileOptionsFor([
+        { id: 'codex-default', enabled: false, name: 'owner@example.com' },
+    ], '');
+    assert.equal(disabled[1].label,
+        'Account: owner@example.com · codex-default (pinned) (disabled)');
+});
+
 test('the provider shown for a delegated row is the harness name, never Claudexor', () => {
     const groups = routeChoiceGroups({
         harnesses: [{ id: 'codex', display_name: 'Codex CLI', status: 'ok', enabled: true }],
+        providers: [{ id: 'openrouter', label: 'OpenRouter' }],
     });
     const flat = JSON.stringify(groups);
     assert.ok(flat.includes('Codex CLI'));
     assert.ok(!/claudexor/i.test(flat), 'the aggregator brand must not appear as a provider');
-    // The route select carries ROUTES only (finding #6): one API entry, one
-    // entry per harness — never the flat model catalog. Both groups labeled.
-    assert.equal(groups[0].label, 'API');
-    assert.deepEqual(groups[0].options, [{ value: API_ROUTE_CHOICE, label: 'API model' }]);
-    assert.equal(groups[1].options[0].value, 'session:codex');
+    // The route select carries SOURCES only (finding #6): the subscription
+    // models, one entry per API provider with a stored key, one entry per
+    // harness — never the flat model catalog. Every group is labeled.
+    assert.deepEqual(groups.map((group) => group.label),
+        ['Subscriptions · models', 'API keys', 'Agents · sessions']);
+    assert.deepEqual(groups[1].options,
+        [{ value: `${API_CHOICE_PREFIX}openrouter`, label: 'OpenRouter' },
+         { value: '', disabled: true, label: 'Add a key in Accounts for more' }]);
+    assert.equal(groups[2].options[0].value, 'session:codex');
+    // The legacy bare choice is still ACCEPTED as input; nothing emits it.
+    assert.deepEqual(decodeRouteChoice(API_ROUTE_CHOICE), { kind: ROUTE_KIND_API, provider: 'openrouter' });
+});
+
+test('the API keys group lists only providers this install has a credential for', () => {
+    // Decision 2=A: an unusable provider is not offered, the group always says
+    // where keys are added, and a saved provider whose key is gone stays
+    // SELECTABLE and labelled — a save must not silently re-home the lane.
+    const providers = configuredApiProviders({ OPENROUTER_API_KEY: 'k', OPENAI_API_KEY: '***set***' });
+    const apiOptions = (args) => routeChoiceGroups({ providers, ...args })
+        .find((group) => group.label === 'API keys').options;
+    assert.deepEqual(apiOptions({}).map((option) => option.label),
+        ['OpenRouter', 'OpenAI', 'Add a key in Accounts for more']);
+    assert.equal(apiOptions({}).at(-1).disabled, true);
+    assert.deepEqual(routeChoiceGroups({}).find((group) => group.label === 'API keys').options,
+        [{ value: '', disabled: true, label: 'Add a key in Accounts for more' }]);
+
+    const keyless = apiOptions({ currentChoice: `${API_CHOICE_PREFIX}anthropic` });
+    const saved = keyless.find((option) => option.value === `${API_CHOICE_PREFIX}anthropic`);
+    assert.equal(saved.label, 'Anthropic (no key)');
+    assert.ok(!saved.disabled, 'the saved choice stays selectable');
+    // The owner never sees the stored separator in any option value.
+    for (const group of routeChoiceGroups({ providers, modelSources: [{ id: 'codex-models' }], harnesses: [{ id: 'codex' }] })) {
+        for (const option of group.options) assert.ok(!option.value.includes('::'), option.value);
+    }
 });
 
 test('a saved session route survives a discovery list that no longer contains its harness', () => {
     // Same rule as profileOptionsFor: the select's value must EXIST as an
     // option or the browser silently redraws the row as the first choice.
     const groups = routeChoiceGroups({ harnesses: [{ id: 'codex' }], currentChoice: 'session:claude' });
-    const session = groups[1].options;
+    const session = groups[2].options;
     assert.deepEqual(session.map((o) => o.value), ['session:codex', 'session:claude']);
     assert.match(session[1].label, /not in discovery/);
     // A choice discovery DOES list gains no duplicate.
     const listed = routeChoiceGroups({ harnesses: [{ id: 'codex' }], currentChoice: 'session:codex' });
-    assert.deepEqual(listed[1].options.map((o) => o.value), ['session:codex']);
+    assert.deepEqual(listed[2].options.map((o) => o.value), ['session:codex']);
 });
 
 test('no :: syntax anywhere in encoded choices or composed targets', () => {
@@ -285,13 +355,15 @@ test('no :: syntax anywhere in encoded choices or composed targets', () => {
 
 test('route choice round-trips through encode/decode', () => {
     // The API choice no longer carries the model id — the free-text input
-    // does — so encode collapses every api row to the ONE api option, and a
+    // does — so encode collapses every api row to its PROVIDER's option, and a
     // fresh row (target '') displays exactly that option, not the first
     // catalog model (finding #6c).
     const apiRow = { route: { kind: ROUTE_KIND_API, target_id: 'openai/gpt-5.6-luna' } };
-    assert.equal(encodeRouteChoice(apiRow), API_ROUTE_CHOICE);
-    assert.equal(encodeRouteChoice({ route: { kind: ROUTE_KIND_API, target_id: '' } }), API_ROUTE_CHOICE);
-    assert.deepEqual(decodeRouteChoice(encodeRouteChoice(apiRow)), { kind: ROUTE_KIND_API });
+    assert.equal(encodeRouteChoice(apiRow), `${API_CHOICE_PREFIX}openrouter`);
+    assert.equal(encodeRouteChoice({ route: { kind: ROUTE_KIND_API, target_id: '' } }), `${API_CHOICE_PREFIX}openrouter`);
+    assert.equal(encodeRouteChoice({ route: { kind: ROUTE_KIND_API, target_id: 'openai::gpt-x' } }), `${API_CHOICE_PREFIX}openai`);
+    assert.deepEqual(decodeRouteChoice(encodeRouteChoice(apiRow)),
+        { kind: ROUTE_KIND_API, provider: 'openrouter' });
     const sessionRow = { route: { kind: ROUTE_KIND_SESSION, target_id: 'codex=gpt-5.6-sol' } };
     assert.deepEqual(decodeRouteChoice(encodeRouteChoice(sessionRow)),
         { kind: ROUTE_KIND_SESSION, harness: 'codex' });
@@ -396,8 +468,71 @@ test('capability badges display facts and never configure', () => {
     const sessionRow = { route: { kind: ROUTE_KIND_SESSION, target_id: 'codex' } };
     assert.ok(capabilityBadge(sessionRow, { codex: { status: 'ok' } }).includes('route ok'));
     assert.ok(capabilityBadge(sessionRow, {}).includes('not discovered'));
+    // An API badge names the credential the row spends, never a bare channel.
     const apiRow = { route: { kind: ROUTE_KIND_API, target_id: 'openai/gpt-5.6-luna' } };
-    assert.equal(capabilityBadge(apiRow, {}), 'API delivery');
+    assert.equal(capabilityBadge(apiRow, {}), 'OpenRouter API key');
+    assert.equal(capabilityBadge({ route: { kind: ROUTE_KIND_API, target_id: 'openai::gpt-x' } }, {}),
+        'OpenAI API key');
+    assert.equal(capabilityBadge({ route: { kind: ROUTE_KIND_API, target_id: 'claudexor::codex=gpt' } }, {}),
+        'Model call through subscription');
+});
+
+test('a review-lane session row carries the live availability verdict beside its badge', () => {
+    // The quiet meta line used to say only what the harness DOES ("agent
+    // session … route ok") — a fact about the harness, never about whether any
+    // account can actually run the selected model. It now carries the same
+    // sentence the Available-subagents cards show. An API row keeps its line
+    // unchanged: an API model is only ever checked when the call starts.
+    const view = (models) => ({
+        catalogKnown: true, accountsKnown: true, quotaKnown: true,
+        harnesses: [{ id: 'codex', status: 'ok', enabled: true, models }],
+        snapshot: {
+            profiles: { harnessAccounts: [], profiles: [
+                { profile: { harness_id: 'codex', profile_id: 'signed-out', enabled: true }, status: { verification: '' } },
+                { profile: { harness_id: 'codex', profile_id: 'koshak', enabled: true }, status: { verification: 'passed' } },
+            ] },
+            quota: [{ subject: { harness: 'codex', subject_id: 'koshak' }, freshness: 'fresh', constraints: [] }],
+        },
+    });
+    const session = { slot_id: 't1', route: { kind: ROUTE_KIND_SESSION, target_id: 'codex=gpt-x', profile_id: '' } };
+    // Only the signed-out account lists the model, so no ONE account can run it.
+    assert.equal(sessionVerdictNote(session, view([{ id: 'gpt-x', credential_profile_id: 'signed-out' }])),
+        'codex · no usable account currently carries gpt-x');
+    // The verified account carries it: the row says so instead of accusing.
+    assert.equal(sessionVerdictNote(session, view([{ id: 'gpt-x', credential_profile_id: 'koshak' }])),
+        'codex · available now');
+    // The badge beside it is untouched, and says what it always said.
+    assert.match(capabilityBadge(session, { codex: { status: 'ok' } }), /agent session — retrieves context with its own tools · route ok/);
+    // An API row and a configured-subagent reference add no verdict sentence.
+    const empty = view([{ id: 'gpt-x', credential_profile_id: 'koshak' }]);
+    assert.equal(sessionVerdictNote({ slot_id: 't2', route: { kind: ROUTE_KIND_API, target_id: 'openai::gpt-x' } }, empty), '');
+    assert.equal(sessionVerdictNote({ slot_id: 't3', subagent_id: 'scout' }, empty), '');
+});
+
+test('the harness status tail yields to a row verdict, and the repaint gate watches what the verdict reads', () => {
+    const sessionRow = { route: { kind: ROUTE_KIND_SESSION, target_id: 'codex=gpt-x', profile_id: 'koshak' } };
+    // One availability claim per line: with a verdict beside it the badge drops `route ok`.
+    assert.equal(capabilityBadge(sessionRow, { codex: { status: 'ok' } }, { routeStatus: false }),
+        'agent session — retrieves context with its own tools');
+    assert.match(capabilityBadge(sessionRow, { codex: { status: 'ok' } }), / · route ok$/);
+    // A pinned account that logs in, or spends its window, must repaint the row
+    // even though the catalog, the facets and the pin index are unchanged.
+    const view = (verification, constraints) => ({
+        catalogKnown: true, accountsKnown: true, quotaKnown: true, triad: [sessionRow], scope: [],
+        advisory: { route: { kind: ROUTE_KIND_API, target_id: '' } }, deepReview: { route: { kind: ROUTE_KIND_API, target_id: '' } },
+        harnesses: [{ id: 'codex', status: 'ok', enabled: true, models: [{ id: 'gpt-x', credential_profile_id: 'koshak' }] }],
+        profilesByHarness: { codex: [{ id: 'koshak', enabled: true }] },
+        snapshot: {
+            profiles: { harnessAccounts: [], profiles: [{ profile: { harness_id: 'codex', profile_id: 'koshak', enabled: true }, status: { verification } }] },
+            quota: [{ subject: { harness: 'codex', subject_id: 'koshak' }, freshness: 'fresh', constraints }],
+        },
+    });
+    const loggedOut = repaintSignature(view('', []));
+    const loggedIn = repaintSignature(view('passed', []));
+    const spent = repaintSignature(view('passed', [{ id: 'w', used_ratio: 1, window_seconds: 3600, resets_at: '2999-01-01T00:00:00Z' }]));
+    assert.notEqual(loggedOut, loggedIn);
+    assert.notEqual(loggedIn, spent);
+    assert.equal(repaintSignature(view('passed', [])), loggedIn, 'an unchanged tick repaints nothing');
 });
 
 test('the session model-options fragment guards a saved model discovery no longer lists', () => {
@@ -554,7 +689,8 @@ test('the one flat reviewer picker leads with roster references, then the inline
     assert.equal(refGroups[0].label, 'Available subagents');
     assert.deepEqual(refGroups[0].options.map((o) => o.value), [`${SUBAGENT_CHOICE_PREFIX}deep`]);
     assert.match(refGroups[0].options[0].label, /^#deep · API/);
-    assert.deepEqual(refGroups.slice(1).map((g) => g.label), ['API', 'Agents — subscriptions']);
+    assert.deepEqual(refGroups.slice(1).map((g) => g.label),
+        ['Subscriptions · models', 'API keys', 'Agents · sessions']);
     assert.ok(!refGroups.slice(1).flatMap((g) => g.options).some((o) => o.value === 'session:gone'));
 
     // An inline row: its own choice threads down so an undiscovered harness
@@ -572,9 +708,19 @@ test('the one flat reviewer picker leads with roster references, then the inline
     const emptyGroups = reviewerChoiceGroups({ roster: [], row: { subagent_id: '' }, harnesses });
     assert.notEqual(emptyGroups[0].label, 'Available subagents');
 
-    // The advisory api label rides through.
-    const advisory = reviewerChoiceGroups({ roster: [], row: { subagent_id: '' }, harnesses, apiLabel: 'API model (inspection episode)' });
-    assert.equal(advisory[0].options[0].label, 'API model (inspection episode)');
+    // The configured providers ride through to the shared API keys group; no
+    // surface narrows that group's wording for itself any more.
+    const providers = configuredApiProviders({ OPENAI_API_KEY: 'k' });
+    const advisory = reviewerChoiceGroups({
+        roster: [], row: { subagent_id: '', route: { kind: ROUTE_KIND_API, target_id: 'openai::gpt-x' } },
+        harnesses, providers,
+    });
+    assert.deepEqual(advisory.find((g) => g.label === 'API keys').options.map((o) => o.value),
+        [`${API_CHOICE_PREFIX}openai`, '']);
+    // …and an unconfigured row's own provider is rescued, never swapped away.
+    const keyless = reviewerChoiceGroups({ roster: [], row: { subagent_id: '' }, harnesses, providers });
+    assert.deepEqual(keyless.find((g) => g.label === 'API keys').options.map((o) => o.label),
+        ['OpenAI', 'OpenRouter (no key)', 'Add a key in Accounts for more']);
 });
 
 test('an advisory reference switch keeps an explicit effort override; crossing from inline clears it', () => {
@@ -668,15 +814,15 @@ test('the runs-as line shows APPLIED account/access and honest absence for an un
 test('an unread facet never accuses a saved row of being undiscovered', () => {
     // Same empty discovery, two different worlds.
     const discoveredMiss = routeChoiceGroups({ harnesses: [], currentChoice: 'session:codex' });
-    assert.match(discoveredMiss[1].options[0].label, /not in discovery/);
+    assert.match(discoveredMiss[2].options[0].label, /not in discovery/);
 
     const cannotAsk = routeChoiceGroups({ harnesses: [], currentChoice: 'session:codex', catalogKnown: false });
-    assert.equal(cannotAsk[1].options[0].value, 'session:codex', 'the saved option SURVIVES');
-    assert.equal(cannotAsk[1].options[0].label, 'codex (not checked)',
+    assert.equal(cannotAsk[2].options[0].value, 'session:codex', 'the saved option SURVIVES');
+    assert.equal(cannotAsk[2].options[0].label, 'codex (not checked)',
         'and is labelled unchecked, never undiscovered');
     assert.doesNotMatch(JSON.stringify(cannotAsk), /not in discovery/);
     // The empty-group placeholder stops promising a sign-in that would not help.
-    const emptyGroup = routeChoiceGroups({ harnesses: [], catalogKnown: false })[1].options[0];
+    const emptyGroup = routeChoiceGroups({ harnesses: [], catalogKnown: false })[2].options[0];
     assert.doesNotMatch(emptyGroup.label, /sign in under Providers/);
 });
 
@@ -709,13 +855,13 @@ test('an unread facet is labelled "not checked", never "not in discovery"', () =
 
     // The saved ROUTE is not called undiscovered before the catalog was read.
     const route = routeChoiceGroups({ harnesses: [], currentChoice: 'session:codex', catalogKnown: false });
-    assert.match(route[1].options[0].label, /not checked/);
-    assert.doesNotMatch(route[1].options[0].label, /not in discovery/);
+    assert.match(route[2].options[0].label, /not checked/);
+    assert.doesNotMatch(route[2].options[0].label, /not in discovery/);
 
     // Emptiness states ABSENCE only when the catalog was actually read.
-    const emptyRead = routeChoiceGroups({ harnesses: [], catalogKnown: true })[1].options[0];
+    const emptyRead = routeChoiceGroups({ harnesses: [], catalogKnown: true })[2].options[0];
     assert.match(emptyRead.label, /None available/);
-    const emptyUnread = routeChoiceGroups({ harnesses: [], catalogKnown: false })[1].options[0];
+    const emptyUnread = routeChoiceGroups({ harnesses: [], catalogKnown: false })[2].options[0];
     assert.doesNotMatch(emptyUnread.label, /None available/);
 });
 
@@ -754,7 +900,7 @@ test('facets are independent: an unread ACCOUNT store does not silence the CATAL
     const groups = routeChoiceGroups({
         harnesses: [{ id: 'codex' }], currentChoice: 'session:claude', catalogKnown: true,
     });
-    assert.match(groups[1].options.at(-1).label, /not in discovery/);
+    assert.match(groups[2].options.at(-1).label, /not in discovery/);
 
     const pins = profileOptionsFor([], 'koshak', { accountsKnown: false });
     assert.doesNotMatch(pins[1].label, /not in discovery/);
@@ -800,7 +946,7 @@ test('neither facet gap is dropped: the tab banner names it and the section clai
     // …and a read that merely did not land never claims nobody asked.
     assert.doesNotMatch(catalogLine.text, /was not asked/);
     // The route select points at that one sentence instead of writing a second.
-    const empty = routeChoiceGroups({ harnesses: [], catalogKnown: catalogDied.catalogKnown })[1].options[0];
+    const empty = routeChoiceGroups({ harnesses: [], catalogKnown: catalogDied.catalogKnown })[2].options[0];
     assert.match(empty.label, /see the service banner above/);
     // With the accounts read, the SAME pin is now genuinely missing and says so.
     assert.match(pinnedAccountWarning({ ...pinnedRows, accountsKnown: catalogDied.accountsKnown }),
@@ -867,4 +1013,135 @@ test('the missing-account warning walks the deep self-review row too (items 2/21
     assert.equal(pinnedAccountWarning({ deepReview: { route: { kind: ROUTE_KIND_API, target_id: 'openai/x' } }, profilesByHarness: {}, accountsKnown: true }), '');
     // An unread accounts facet licenses no claim.
     assert.equal(pinnedAccountWarning({ deepReview, profilesByHarness: {}, accountsKnown: false }), '');
+});
+
+// ---------------------------------------------------------------------------
+// The source is CHOSEN, never spelled (docs/DESIGN.md §7). A reviewer row's
+// provider comes from the one grouped picker; the editor composes the stored
+// `provider::model` spelling, and the row says which provider serves it.
+// ---------------------------------------------------------------------------
+
+test('an API reviewer row names its provider and discloses the exact stored id', () => {
+    const profiles = { openai: { label: 'OpenAI' } };
+    const row = { slot_id: 't1', route: { kind: ROUTE_KIND_API, target_id: 'openai::gpt-x' } };
+    // The picker value carries the provider and never the stored separator.
+    assert.equal(encodeReviewerChoice(row), `${API_CHOICE_PREFIX}openai`);
+    assert.ok(!encodeReviewerChoice(row).includes('::'));
+    // The chip and the badge both name the provider; the meta line carries the
+    // exact stored spelling, which no placeholder ever asks the owner to type.
+    assert.match(reviewerRouteIdentityMarkup(row.route, {}, { providerProfiles: profiles }),
+        />API · OpenAI</);
+    assert.equal(capabilityBadge(row, {}, { providerProfiles: profiles }), 'OpenAI API key');
+    assert.equal(savedTargetNote(row), 'stored as openai::gpt-x');
+
+    // A bare id IS the OpenRouter spelling, and reads as OpenRouter everywhere.
+    const bare = { slot_id: 't2', route: { kind: ROUTE_KIND_API, target_id: 'x-ai/grok-4.6' } };
+    assert.equal(encodeReviewerChoice(bare), `${API_CHOICE_PREFIX}openrouter`);
+    assert.match(reviewerRouteIdentityMarkup(bare.route), />API · OpenRouter</);
+    assert.equal(savedTargetNote(bare), 'stored as x-ai/grok-4.6');
+    // An empty provider draft has no model to disclose yet.
+    assert.equal(savedTargetNote({ slot_id: 't3', route: { kind: ROUTE_KIND_API, target_id: 'openai::' } }), '');
+
+    // A session row spells its harness and model in its own controls, so the
+    // meta line adds nothing; an empty draft has no stored id to disclose.
+    assert.equal(savedTargetNote({ route: { kind: ROUTE_KIND_SESSION, target_id: 'codex=gpt' } }), '');
+    assert.equal(savedTargetNote({ route: { kind: ROUTE_KIND_API, target_id: '' } }), '');
+    assert.equal(savedTargetNote({ subagent_id: 'deep' }), '');
+});
+
+test('choosing a provider starts an empty draft; returning to one restores ITS draft', () => {
+    // What the picker's change handler does: a new source starts empty (it must
+    // not inherit another provider's model), while the per-source memory hands
+    // back the draft the owner had typed for the provider they return to.
+    const openai = { kind: ROUTE_KIND_API, target_id: 'openai::gpt-x' };
+    const switched = advisoryRouteTransition(openai, decodeRouteChoice(`${API_CHOICE_PREFIX}anthropic`));
+    assert.deepEqual(switched.route, { kind: ROUTE_KIND_API, target_id: 'anthropic::' },
+        'the provider is kept as a transient draft, the model is not carried across');
+    const drafted = { kind: ROUTE_KIND_API, target_id: 'anthropic::claude-opus-5' };
+    const back = advisoryRouteTransition(drafted, decodeRouteChoice(`${API_CHOICE_PREFIX}openai`), switched.memory);
+    assert.deepEqual(back.route, openai, 'the OpenAI draft comes back, not an empty field');
+    const again = advisoryRouteTransition(back.route, decodeRouteChoice(`${API_CHOICE_PREFIX}anthropic`), back.memory);
+    assert.deepEqual(again.route, drafted);
+    // A provider that was never drafted still starts empty.
+    assert.deepEqual(advisoryRouteTransition(back.route, decodeRouteChoice(`${API_CHOICE_PREFIX}deepseek`), back.memory).route,
+        { kind: ROUTE_KIND_API, target_id: 'deepseek::' });
+    // Re-picking the provider the row already uses changes nothing at all.
+    assert.deepEqual(advisoryRouteTransition(openai, decodeRouteChoice(`${API_CHOICE_PREFIX}openai`), back.memory).route,
+        openai);
+});
+
+test('a last-run receipt is read against the route that produced it', () => {
+    const receipt = (requested) => ({
+        ts: '2026-09-13T10:00:00Z',
+        requested,
+        effective: { route: 'agent_session:claude', model: 'claude-opus-5', profile_id: 'proton5' },
+    });
+    const apiRow = { route: { kind: ROUTE_KIND_API, target_id: 'openai::gpt-x' } };
+    const sessionRow = { route: { kind: ROUTE_KIND_SESSION, target_id: 'claude=claude-opus-5' } };
+    const ranOnClaude = { route_kind: 'agent_session', model: '', session_target: 'claude=claude-opus-5', subagent_id: '' };
+
+    // Same route: nothing to warn about.
+    assert.equal(lastRunRouteChanged(receipt(ranOnClaude), sessionRow), false);
+    assert.equal(lastRunMetaPrefix(receipt(ranOnClaude), sessionRow), 'Last run');
+    // The model inside a session is APPLIED evidence, not the assignment.
+    assert.equal(lastRunRouteChanged(receipt(ranOnClaude),
+        { route: { kind: ROUTE_KIND_SESSION, target_id: 'claude=claude-fable-5' } }), false);
+    // A different harness, a different kind, a different API model, and a
+    // reference the row no longer holds are each a changed route.
+    assert.equal(lastRunRouteChanged(receipt(ranOnClaude), apiRow), true);
+    assert.equal(lastRunRouteChanged(receipt(ranOnClaude),
+        { route: { kind: ROUTE_KIND_SESSION, target_id: 'codex' } }), true);
+    assert.equal(lastRunRouteChanged(
+        receipt({ route_kind: 'api_chat', model: 'openai::gpt-old', session_target: '', subagent_id: '' }), apiRow), true);
+    assert.equal(lastRunRouteChanged(
+        receipt({ route_kind: 'api_chat', model: 'openai::gpt-x', session_target: '', subagent_id: '' }), apiRow), false);
+    assert.equal(lastRunRouteChanged(
+        receipt({ route_kind: 'api_chat', model: '', session_target: '', subagent_id: 'deep' }), apiRow), true);
+    assert.equal(lastRunRouteChanged(
+        receipt({ route_kind: 'api_chat', model: '', session_target: '', subagent_id: 'deep' }),
+        { subagent_id: 'deep' }), false);
+
+    // A receipt older than the `requested` field has no comparison subject, so
+    // it claims nothing rather than accusing the row of having changed.
+    assert.equal(lastRunRouteChanged({ effective: { route: 'api_chat', model: 'openai/x' } }, apiRow), false);
+    assert.equal(lastRunMetaPrefix({ effective: {} }, apiRow), 'Last run');
+
+    // The wording NAMES the earlier route, so the receipt stays readable as
+    // evidence about something the row no longer is.
+    assert.equal(
+        lastRunMetaPrefix(receipt(ranOnClaude), apiRow, { harnesses: { claude: { display_name: 'Claude Code' } } }),
+        'Last run, before this row changed (it ran as a Claude Code session)');
+    assert.equal(
+        lastRunMetaPrefix(receipt({ route_kind: 'api_chat', model: 'openai::gpt-old' }), sessionRow,
+            { providerProfiles: { openai: { label: 'OpenAI' } } }),
+        'Last run, before this row changed (it ran as an API model on OpenAI)');
+    assert.equal(
+        lastRunMetaPrefix(receipt({ route_kind: 'api_chat', model: 'claudexor::codex-models=gpt' }), sessionRow,
+            { modelSources: [{ id: 'codex-models', label: 'Codex' }] }),
+        'Last run, before this row changed (it ran as a model on Codex)');
+    assert.equal(
+        lastRunMetaPrefix(receipt({ route_kind: 'api_chat', subagent_id: 'deep' }), apiRow),
+        'Last run, before this row changed (it ran as the configured subagent #deep)');
+});
+
+test('no reviewer control teaches the stored prefix, and the advisory says what it delivers', () => {
+    // docs/DESIGN.md §7: the stored spellings are never a field placeholder or
+    // a help-text instruction. The retired "provider/model-id" placeholder is
+    // exactly that instruction, so it may not come back in any control.
+    const source = readFileSync(new URL('../modules/reviewer_slots.js', import.meta.url), 'utf8');
+    assert.doesNotMatch(source, /provider\/model-id/);
+    assert.match(source, /modelPlaceholder: 'Empty uses the default model'/);
+    assert.match(source, /modelPlaceholder: 'Choose a model'/);
+
+    // The advisory's ONE delivery difference is said beside the row that picks
+    // it, now that the picker's API entry is a plain provider name.
+    assert.equal(advisoryDeliveryNote({ route: { kind: ROUTE_KIND_API, target_id: 'openai::gpt-x' } }, {}),
+        'OpenAI API key \u2014 runs a bounded inspection episode');
+    assert.equal(advisoryDeliveryNote({ route: { kind: ROUTE_KIND_API, target_id: 'claudexor::codex=gpt' } }, {}),
+        'Model call through subscription \u2014 runs a bounded inspection episode');
+    // A session reviewer reads the repository itself; it runs no episode here.
+    const session = advisoryDeliveryNote({ route: { kind: ROUTE_KIND_SESSION, target_id: 'codex' } },
+        { codex: { status: 'ok' } });
+    assert.match(session, /agent session — retrieves context with its own tools/);
+    assert.doesNotMatch(session, /inspection episode/);
 });
