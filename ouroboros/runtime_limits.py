@@ -212,6 +212,15 @@ def get_post_task_evolution_budget_usd() -> float:
     return _clamped_number_setting("OUROBOROS_POST_TASK_EVOLUTION_BUDGET_USD", low=0.0)
 
 
+# Share of a reviewer's USABLE window that CHANGE-CLASS governance may occupy
+# inline (`tools/governance_context.py` tiers 2 and 3 together): the handbook
+# chapters the change activates and, for a packet row, the architecture sections
+# that name a touched file. The rest of both books arrives as navigation the
+# reviewer reads on demand, so a 272K-token governance corpus can never crowd
+# out the change itself. Structural, not a settings key.
+REVIEW_GOVERNANCE_INLINE_SHARE = 0.20
+
+
 # Per-root active-child ceiling (v6.82: 50->500) and absolute host-visible nesting ceiling, used by supervisor gates and ARCHITECTURE §7.
 MAX_ACTIVE_SUBAGENTS_HARD_CAP, MAX_SUBAGENT_DEPTH_HARD_CAP = 500, 10
 

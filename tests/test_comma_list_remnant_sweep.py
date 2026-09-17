@@ -67,7 +67,7 @@ _RETIRED_KEY_MENTION_ALLOWLIST = {
     ("ouroboros/review_model_routes.py", "OUROBOROS_REVIEW_MODELS"): ("derived env plane reader (get_review_models)", 1),
     ("ouroboros/review_model_routes.py", "OUROBOROS_SCOPE_REVIEW_MODELS"): ("derived env plane reader (get_scope_review_models)", 1),
     ("ouroboros/review_model_routes.py", "OUROBOROS_SCOPE_REVIEW_MODEL"): ("derived env plane reader (singular fallback)", 2),
-    ("ouroboros/tools/scope_review_budget.py", "OUROBOROS_SCOPE_REVIEW_MODEL"): ("derived env plane reader (budget fallback)", 1),
+    ("ouroboros/tools/scope_review.py", "OUROBOROS_SCOPE_REVIEW_MODEL"): ("derived env plane reader (scope model fallback)", 1),
     # -- raw-dict tolerance: retired-model default refresh over dicts fed
     #    directly (load_settings purges the keys first; ABI-10-commented).
     ("ouroboros/server_runtime.py", "OUROBOROS_REVIEW_MODELS"): ("raw-dict retired-model default refresh", 8),
@@ -83,7 +83,7 @@ _RETIRED_KEY_MENTION_ALLOWLIST = {
     #    OUROBOROS_REVIEWER_SLOTS member keeps the check live; the retired
     #    spellings are harmless startswith vestiges kept for raw-dict callers).
     ("ouroboros/gateway/settings.py", "OUROBOROS_REVIEW_MODELS"): ("changed-key warning trigger", 1),
-    ("ouroboros/gateway/settings.py", "OUROBOROS_SCOPE_REVIEW_MODEL"): ("changed-key warning trigger", 2),
+    ("ouroboros/gateway/settings.py", "OUROBOROS_SCOPE_REVIEW_MODEL"): ("changed-key warning trigger", 1),
     # -- retirement prose (names the key to say it is retired/ignored).
     ("ouroboros/review_execution.py", "OUROBOROS_REVIEW_ROUTES"): ("retirement prose", 1),
     ("ouroboros/review_execution.py", "OUROBOROS_SCOPE_REVIEW_ROUTES"): ("retirement prose", 1),

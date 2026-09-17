@@ -63,7 +63,7 @@ EXCLUSION_CLASSES = frozenset({
 # Lane-level disclosed limit for delegated/harness model calls (agent_session
 # executor lanes): the host never holds the final wire bytes there, so their
 # accounting rows carry this marker instead of a fabricated seal (same honesty
-# pattern as the scope session's ``host_file_read_attestation: unobserved``).
+# pattern as the scope brief's ``read_provenance_expected`` fact).
 MODEL_SEND_SEAL_UNOBSERVED = "unobserved"
 
 VIOLATION_EVENT_TYPE = "model_send_invariant_violation"

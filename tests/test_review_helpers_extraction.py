@@ -70,9 +70,6 @@ _MOVED_OWNERS = {
     "_VENDORED_SUFFIXES": review_file_pack,
     "_is_probably_binary": review_file_pack,
     "_raw_bytes_binary": review_file_pack,
-    "build_advisory_changed_context": review_file_pack,
-    "build_full_repo_pack": review_file_pack,
-    "build_head_snapshot_section": review_file_pack,
     "build_touched_file_pack": review_file_pack,
     "format_name_status_for_preflight": review_file_pack,
     "iter_repo_pack_entries": review_file_pack,
@@ -169,13 +166,13 @@ def test_review_prompt_text_reads_nothing_from_the_repository():
     )
 
 
-def test_review_helper_leaves_are_review_stack_members():
-    from ouroboros.tools.review_context_atlas import _REVIEW_STACK_PATHS, _is_force_include
+def test_review_helper_leaves_are_review_substrate_members():
+    """A PR editing either leaf must trip the contributor lane's trusted rerun."""
+    from scripts.run_external_review import _REVIEW_SUBSTRATE_PATHS
 
     for module in _LEAVES:
         rel = pathlib.Path(module.__file__).relative_to(REPO).as_posix()
-        assert rel in _REVIEW_STACK_PATHS, rel
-        assert _is_force_include(rel), rel
+        assert rel in _REVIEW_SUBSTRATE_PATHS, rel
 
 
 def test_review_helpers_extraction_size_bounds_have_meaningful_headroom():

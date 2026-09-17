@@ -2971,16 +2971,17 @@ def test_ui_smoke_v679_subagent_depth_zero_round_trips_through_settings(direct_s
             pytest.skip(str(exc))
         raise
 @pytest.mark.ui_browser
-def test_ui_owner_context_mode_and_scope_review_ack(direct_server_with_data):
-    """Owner context intent and scope-review ack, driven in a real browser.
+def test_ui_owner_context_mode_and_scope_slot_save(direct_server_with_data):
+    """Owner context intent and a scope-slot save, driven in a real browser.
 
-    Two claimed-complete owner flows that source-string tests cannot certify:
+    Two owner flows that source-string tests cannot certify:
 
     1. OWNER MAX. Switching an explicit Low to Max succeeds without a Main-route
        context-window confirmation; the frozen compatibility field remains false.
-    2. SCOPE-REVIEW CAPABILITY ACK. Saving a scope-review slot whose route has no >=1M evidence
-       must raise the owner confirm and, on accept, persist a route-scoped capability ack and say
-       so in the settings status line.
+    2. SCOPE SLOT. Saving a scope row whose route has no window evidence at all
+       completes with no confirmation: window size is not a condition of scope
+       authority (owner decision 2026-09-17), so there is nothing to confirm and
+       no ack is written.
     """
     pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")
     from playwright.sync_api import Error as PlaywrightError
@@ -3034,10 +3035,12 @@ def test_ui_owner_context_mode_and_scope_review_ack(direct_server_with_data):
                 assert after["context_mode"] == "max"
                 assert after["context_mode_auto_low"] is False
 
-                # 2. Scope-review capability notice -> owner confirm -> route-scoped ack.
-                # 6.2: the scope route is a review-lane row — pick the API-model
-                # route in the grouped combobox and type the id. D-10 moved the
-                # lanes out of Models into their own Agents tab.
+                # 2. A scope slot saves with no window question anywhere.
+                # 6.2: the scope route is a review-lane row. D-10 moved the lanes
+                # out of Models into their own Agents tab. The seeded row is
+                # already an API row, so retyping its model id is the whole edit —
+                # the grouped combobox offers `api:<provider>` values, never a
+                # bare `api`, so nothing is selected here.
                 page.click('[data-nav-page="settings"]')
                 page.wait_for_selector("#s-context-mode", state="attached", timeout=30_000)
                 page.locator('[data-settings-tab="agents"]').click()
@@ -3046,37 +3049,31 @@ def test_ui_owner_context_mode_and_scope_review_ack(direct_server_with_data):
                     '#reviewer-scope-rows .reviewer-slot-row [data-slot-route]'
                 ).first
                 scope_route.wait_for(state="visible", timeout=30_000)
-                scope_route.select_option("api")
+                assert str(scope_route.input_value()).startswith("api"), scope_route.input_value()
                 custom_input = page.locator(
                     '#reviewer-scope-rows .reviewer-slot-row [data-slot-custom-api]'
                 ).first
                 custom_input.wait_for(state="visible", timeout=30_000)
-                custom_input.fill("openai-compatible::scope-reviewer-x")
+                custom_input.fill("scope-reviewer-x")
                 page.locator("#btn-save-settings").click()
-                # The capability ack is an in-app dialog since the native-dialog
-                # class ban (tests/test_web_dialogs_static.py); Playwright's
-                # page.on("dialog") hook only fires for window.alert/confirm/prompt.
-                ack_dialog = page.locator(".confirm-dialog")
-                ack_dialog.wait_for(state="visible", timeout=60_000)
-                ack_text = ack_dialog.inner_text()
-                page.screenshot(path=str(evidence_dir / "v6800-scope-review-ack.png"), full_page=True)
-                ack_dialog.locator("[data-confirm-ok]").last.click()
                 page.wait_for_function(
-                    "() => (document.querySelector('#settings-status')?.textContent || '')"
-                    ".includes('scope-review route')",
+                    "() => !document.querySelector('#btn-save-settings').disabled",
                     timeout=60_000,
                 )
+                page.screenshot(path=str(evidence_dir / "scope-slot-save-no-window-question.png"),
+                                full_page=True)
 
-                assert "1,000,000-token context window" in ack_text
-                assert "openai-compatible::scope-reviewer-x" in ack_text, "the ack must name the exact route"
+                # No dialog of any kind: the owner is never asked to confirm a
+                # reviewer's window, so a route with no evidence saves silently.
+                assert page.locator(".confirm-dialog").count() == 0
                 status_text = page.locator("#settings-status").inner_text()
-                assert "Confirmed the required context window for 1 scope-review route(s)." in status_text
-                evidence = json.loads((data_dir / "state" / "capability_evidence.json").read_text(encoding="utf-8"))
-                acked = [
-                    entry for entry in (evidence.get("acks") or evidence.get("probes") or {}).values()
-                    if str(entry.get("model") or "") == "openai-compatible::scope-reviewer-x"
-                ]
-                assert acked, "no route-scoped capability evidence was stored for the acked reviewer"
+                assert "context window" not in status_text, status_text
+                assert "Settings saved" in status_text or "No changes" in status_text, status_text
+                saved_slots = json.loads(settings_path.read_text(encoding="utf-8"))["OUROBOROS_REVIEWER_SLOTS"]
+                assert "scope-reviewer-x" in json.dumps(saved_slots)
+                evidence_path = data_dir / "state" / "capability_evidence.json"
+                evidence = json.loads(evidence_path.read_text(encoding="utf-8")) if evidence_path.exists() else {}
+                assert not (evidence.get("owner_acks") or {}), "a scope slot save wrote an owner window ack"
             finally:
                 browser.close()
     except PlaywrightError as exc:

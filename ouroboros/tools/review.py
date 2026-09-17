@@ -38,7 +38,7 @@ from ouroboros.tools.review_synthesis import quorum_input_token_limit as _quorum
 from ouroboros.tools.review_helpers import (
     REPO_ROOT as _REPO_ROOT,
     load_checklist_section as _load_checklist_section_precise,
-    load_governance_doc,
+    load_governance_doc,  # noqa: F401 -- retained test/facade patch seam
     build_touched_file_pack,
     triad_pack_exclusions,
     build_goal_section,
@@ -402,9 +402,12 @@ def _load_checklist_section() -> str:
 
 
 # The triad prompt is assembled STABLE-FIRST for provider prompt caching:
-# fixed instructions + checklist + governance docs form a byte-stable prefix
-# reused across review rounds (marked with a cache breakpoint at dispatch),
-# while goal/scope/files/diff/history are the per-commit dynamic tail.
+# fixed instructions plus the tier-1 governance rules (the Repo Commit Checklist,
+# the standing disclosures, and BIBLE.md through the constitutional head) form a
+# byte-stable prefix reused across review rounds AND across commits (marked with
+# a cache breakpoint at dispatch). The change-class governance selection
+# (`tools/governance_context.py` tiers 2 and 3) and the navigation maps open the
+# dynamic tail, ahead of goal/scope/files/diff/history.
 _REVIEW_PROMPT_TEMPLATE_STABLE = """\
 {preamble}
 
@@ -433,17 +436,9 @@ Run the shared semantic-breadth guard before returning:
 
 - Output ONLY a valid JSON array.  No markdown fences, no text outside the JSON.
 
-## DEVELOPMENT.md
-
-{dev_guide_text}
-
-## DESIGN.md
-
-{design_text}
-
-## ARCHITECTURE.md
-
-{architecture_section}
+The governance documents this change activates follow below, then its evidence.
+Navigation maps identify sources not delivered to this tool-free packet row;
+state uncertainty where the supplied evidence cannot establish a rule.
 """
 
 _REVIEW_PROMPT_TEMPLATE_DYNAMIC = """\
@@ -923,6 +918,50 @@ def _triad_session_task(ctx: ToolContext, **sections) -> str:
     )
 
 
+def _triad_governance_usable_window(api_models: list, api_slots: list) -> int:
+    """The usable input window the packet's governance share is taken against.
+
+    Every api row receives the SAME stable prefix, so the share is sized against
+    the QUORUM limit the fit ladder already sizes the packet with (one SSOT),
+    never the narrowest row — one small slot degrades its own seat instead of
+    stripping the whole panel's rules."""
+    from ouroboros.reviewer_window import reviewer_window_binding
+
+    usable: dict = {}
+    for model, slot in zip(api_models, api_slots):
+        window = reviewer_context_window(model, **reviewer_window_binding(slot))
+        output_reserve, tokenizer_margin = window_scaled_reserves(
+            window, output_reserve=_review_output_budget(), tokenizer_margin=50_000)
+        usable[slot.slot_id] = max(0, int(window) - int(output_reserve) - int(tokenizer_margin))
+    return _quorum_input_token_limit(list(usable), usable) if usable else 0
+
+
+def _triad_governance_context(ctx: ToolContext, touched_paths: list,
+                              checklist_section: str, api_models: list, api_slots: list,
+                              *, delivery: str = "packet"):
+    """The triad's shared governance tiers for either delivery class.
+
+    ``BIBLE.md`` is inlined by every api row's constitutional head and the
+    standing disclosures ride the checklist section, so both are declared as
+    already delivered: the manifest records them as tier-1 inline without a
+    second copy in the prompt. Retrieving rows have no constitutional head, so
+    their task receives BIBLE.md inline from this shared builder."""
+    from ouroboros.tools.governance_context import GovernanceContext, governance_context
+
+    if not api_models:
+        return GovernanceContext()
+    return governance_context(
+        pathlib.Path(ctx.repo_dir),
+        surface="triad",
+        touched_paths=touched_paths,
+        usable_window_tokens=_triad_governance_usable_window(api_models, api_slots),
+        delivery=delivery,
+        checklist_section_text=checklist_section,
+        already_inline=(("BIBLE.md", "docs/CHECKLISTS_ARCHIVE.md") if delivery == "packet"
+                        else ("docs/CHECKLISTS_ARCHIVE.md",)),
+    )
+
+
 def _capture_triad_staged_diff(
     ctx: ToolContext, target_repo, blocking_review: bool
 ) -> tuple[Optional[str], Optional[Any], Optional[str]]:
@@ -1024,10 +1063,6 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
             "Review enforcement=Advisory: review checklist failed to load; commit proceeding anyway. ",
         ), True
 
-    dev_guide_text = load_governance_doc(pathlib.Path(ctx.repo_dir), "docs/DEVELOPMENT.md", on_missing="explicit")
-    design_text = load_governance_doc(pathlib.Path(ctx.repo_dir), "docs/DESIGN.md", on_missing="explicit")
-    architecture_text = load_governance_doc(pathlib.Path(ctx.repo_dir), "docs/ARCHITECTURE.md", on_missing="explicit")
-
     # Durable open obligations reduce review thrashing across restarts.
     _open_obs_for_review = []
     try:
@@ -1041,44 +1076,14 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
         ctx._review_history, open_obligations=_open_obs_for_review,
     )
 
-    # Build touched-file pack for full current context (managed: the reviewed
-    # resolution set; binary rows carry the M0 baseline identity). A plain
-    # commit withholds the two disclosed pack-exclusion classes (span-only
-    # release carriers, prefix-duplicated governance docs); a managed subject
-    # keeps every full text — its reviewed delta is M0→staged, not HEAD→staged.
-    try:
-        touched_paths = [f.strip() for f in review_changed.strip().splitlines() if f.strip()]
-        exclude_paths, exclusion_note = (set(), "") if subject is not None else triad_pack_exclusions(
-            pathlib.Path(target_repo), touched_paths, prefix_texts={
-                "docs/DEVELOPMENT.md": dev_guide_text, "docs/DESIGN.md": design_text,
-                "docs/ARCHITECTURE.md": architecture_text,
-            },
-        )
-        current_files_section, _omitted = build_touched_file_pack(
-            pathlib.Path(target_repo),
-            touched_paths,
-            represent_binary=subject is not None,
-            m0_tree=getattr(subject, "m0_tree", "") or "",
-            staged_tree=getattr(subject, "staged_tree", "") or "",
-            exclude_paths=exclude_paths,
-        )
-        if _omitted:
-            current_files_section += (
-                f"\n\n⚠️ OMISSION NOTE: {len(_omitted)} file(s) omitted from direct context: "
-                f"{', '.join(_omitted)}"
-            )
-        if exclusion_note:
-            current_files_section += f"\n\n{exclusion_note}"
-        if not current_files_section.strip():
-            current_files_section = "(no touched files could be read)"
-    except Exception as e:
-        log.warning("Failed to build touched file pack for triad review: %s", e)
-        current_files_section = f"(touched file pack unavailable: {e})"
+    touched_paths = [f.strip() for f in review_changed.strip().splitlines() if f.strip()]
 
     # Per-row identity/delivery/strength from the ONE reviewer-slot SSOT (6.1):
     # structured rows when configured, the shipped default panel otherwise
     # (ABI 7.0/ABI-10: the comma-list migration read is gone). A malformed
-    # configuration is an infra failure, never a silent api spend.
+    # configuration is an infra failure, never a silent api spend. Resolved
+    # BEFORE the packet's governance and file evidence: only the api rows
+    # receive a packet at all, and their windows size its governance share.
     from ouroboros.review_execution import ReviewRouteKind
     from ouroboros.reviewer_slot_config import commit_triad_delivery
 
@@ -1108,6 +1113,46 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
                            session_profile=row_plan["session_profiles"][i], use_local=row_plan["use_local"][i])
                  for i in api_indices]
 
+    # Which governance documents this packet carries in full, and which arrive as
+    # navigation: ONE decision for every review surface (governance_context).
+    # BIBLE.md rides the constitutional head of every api row and the standing
+    # disclosures ride the checklist section, so both are declared as already
+    # delivered rather than sent twice. An all-retrieving panel assembles no
+    # packet, so it asks for none.
+    governance = _triad_governance_context(
+        ctx, touched_paths, checklist_section, api_models, api_slots)
+
+    # Build touched-file pack for full current context (managed: the reviewed
+    # resolution set; binary rows carry the M0 baseline identity). A plain
+    # commit withholds the two disclosed pack-exclusion classes (span-only
+    # release carriers, prefix-duplicated governance docs); a managed subject
+    # keeps every full text — its reviewed delta is M0→staged, not HEAD→staged.
+    try:
+        exclude_paths, exclusion_note = (set(), "") if subject is not None else triad_pack_exclusions(
+            pathlib.Path(target_repo), touched_paths,
+            prefix_texts=dict(governance.inline_whole_documents),
+        )
+        current_files_section, _omitted = build_touched_file_pack(
+            pathlib.Path(target_repo),
+            touched_paths,
+            represent_binary=subject is not None,
+            m0_tree=getattr(subject, "m0_tree", "") or "",
+            staged_tree=getattr(subject, "staged_tree", "") or "",
+            exclude_paths=exclude_paths,
+        )
+        if _omitted:
+            current_files_section += (
+                f"\n\n⚠️ OMISSION NOTE: {len(_omitted)} file(s) omitted from direct context: "
+                f"{', '.join(_omitted)}"
+            )
+        if exclusion_note:
+            current_files_section += f"\n\n{exclusion_note}"
+        if not current_files_section.strip():
+            current_files_section = "(no touched files could be read)"
+    except Exception as e:
+        log.warning("Failed to build touched file pack for triad review: %s", e)
+        current_files_section = f"(touched file pack unavailable: {e})"
+
     from ouroboros.review_evidence import commit_review_evidence_section, materialize_commit_review_session_view
 
     task_evidence = dict(getattr(ctx, "_commit_review_evidence", None) or {})
@@ -1118,6 +1163,12 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
     goal_section = build_goal_section(goal, scope, commit_message)
     scope_section = build_scope_section(scope)
 
+    # The change-class governance block opens the DYNAMIC half: tier 1 stays in
+    # the cache-marked prefix (byte-stable across commits), the selection and the
+    # navigation maps travel with the change they were chosen for.
+    governance_tail = "\n\n".join(
+        part for part in (governance.selected_inline, governance.navigation) if part.strip())
+
     def _assemble_prompt(files_section: str, staged_diff: str) -> tuple:
         """Return (prompt, stable_prefix_len): the stable governance prefix is
         byte-identical across rounds and becomes the cache-marked block."""
@@ -1127,11 +1178,8 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
             json_contract=REVIEW_JSON_ARRAY_CONTRACT,
             anti_pattern_lock_guard=REPO_ANTI_PATTERN_LOCK_GUARD,
             checklist_section=checklist_section,
-            dev_guide_text=dev_guide_text or "(DEVELOPMENT.md not found)",
-            design_text=design_text or "(DESIGN.md not found)",
-            architecture_section=architecture_text or "(ARCHITECTURE.md not found)",
-        )
-        dynamic = _REVIEW_PROMPT_TEMPLATE_DYNAMIC.format(
+        ) + (f"\n{governance.stable_inline}\n" if governance.stable_inline.strip() else "")
+        dynamic = (f"{governance_tail}\n\n" if governance_tail else "") + _REVIEW_PROMPT_TEMPLATE_DYNAMIC.format(
             goal_section=goal_section,
             scope_section=scope_section,
             current_files_section=files_section,
@@ -1203,7 +1251,18 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
                 return None, fit_error, True
 
     session_task = ""
+    session_governance = None
     if len(api_models) < len(models):
+        retrieving_indices = [i for i in range(len(models)) if i not in api_indices]
+        if not api_models:  # Packet seats may have yielded to the retrieving quorum.
+            retrieving_indices = list(range(len(models)))
+        retrieving_slots = [ReviewSlot(
+            slot_id=row_plan["slot_ids"][i], model=models[i], route=row_routes[i],
+            session_profile=row_plan["session_profiles"][i], use_local=row_plan["use_local"][i])
+            for i in retrieving_indices]
+        session_governance = _triad_governance_context(
+            ctx, touched_paths, checklist_section,
+            [models[i] for i in retrieving_indices], retrieving_slots, delivery="retrieving")
         session_task = _triad_session_task(
             ctx,
             goal_section=goal_section,
@@ -1211,16 +1270,23 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
             checklist_section=checklist_section,
             rebuttal_section=rebuttal_section,
             review_history_section=review_history_section,
-            dev_guide_text=dev_guide_text,
-            architecture_text=architecture_text,
+            governance=session_governance,
             subject=subject,
         )
 
+    # The governance manifest is the packet's disclosure record: which rules were
+    # inlined, which arrived as navigation and why (BIBLE P1). It rides the
+    # prepared packet so the durable prompt record and the api rows' actor
+    # records can carry it.
+    ctx._last_triad_governance_manifest = list(governance.manifest)
     return {
         "prompt": prompt, "stable_prefix_len": stable_prefix_len,
         "models": models, "routes": row_routes, "row_plan": row_plan,
         "session_task": session_task, "target_repo": target_repo,
         "blocking_review": blocking_review, "task_evidence": task_evidence,
+        "governance_manifest": list(governance.manifest),
+        "governance_packet_slots": [slot.slot_id for slot in api_slots],
+        "governance_retrieving_manifest": list(session_governance.manifest) if session_governance else [],
     }, None, False
 
 
@@ -1288,6 +1354,14 @@ def _dispatch_unified_review(ctx: ToolContext, commit_message: str, prepared: di
     critical_fails, advisory_warns, errored_models, _triad_raw = _collect_review_findings(ctx, model_results)
     models_total = len(model_results)
     triad_raw = getattr(ctx, "_last_triad_raw_results", []) or []
+    # Every delivery records which rules were actually inlined for that row.
+    _governance_manifest = list(prepared.get("governance_manifest") or [])
+    _packet_slots = set(prepared.get("governance_packet_slots") or [])
+    for record in triad_raw:
+        if _governance_manifest and record.get("slot_id") in _packet_slots:
+            record["governance_manifest"] = _governance_manifest
+        elif prepared.get("governance_retrieving_manifest"):
+            record["governance_manifest"] = prepared["governance_retrieving_manifest"]
     pending_models = [_review_actor_label(r) for r in triad_raw if (
         r.get("late_result_pending") or str(r.get("operation_state") or "")
         in {"in_flight", "custody_lost"})]

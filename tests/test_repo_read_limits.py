@@ -300,60 +300,49 @@ def test_wake_context_architecture_before_knowledge_base(tmp_path):
         )
 
 
-def test_triad_review_prompt_includes_architecture_md(tmp_path):
-    """Triad review prompt must include ARCHITECTURE.md even when it is not in touched files."""
+def test_triad_review_prompt_reaches_architecture_md_by_navigation():
+    """The triad packet no longer inlines the reference books whole.
+
+    Owner decision 2026-09-17: one SSOT (`tools/governance_context.py`) tiers the
+    governance corpus. The architecture map is delivered as book navigation for
+    every reviewer, with the sections that name a touched file selected for a
+    packet row — so ARCHITECTURE.md remains REACHED in full (every chapter named
+    with line ranges, read on demand) instead of being pasted in full into every
+    api row. The prompt templates must not carry a whole-book placeholder, and
+    nothing may be omitted silently."""
+    from ouroboros.tools.governance_context import governance_context
     from ouroboros.tools.review import (
         _REVIEW_PROMPT_TEMPLATE_DYNAMIC,
         _REVIEW_PROMPT_TEMPLATE_STABLE,
     )
-    from ouroboros.tools.review_helpers import CRITICAL_FINDING_CALIBRATION, load_governance_doc
+    from ouroboros.tools.review_helpers import REPO_ROOT
 
-    # Write a fake ARCHITECTURE.md
-    docs_dir = tmp_path / "docs"
-    docs_dir.mkdir()
-    arch_content = "# ARCHITECTURE TEST CONTENT UNIQUE_MARKER_12345"
-    (docs_dir / "ARCHITECTURE.md").write_text(arch_content, encoding="utf-8")
+    for placeholder in ("{architecture_section}", "{dev_guide_text}", "{design_text}"):
+        assert placeholder not in _REVIEW_PROMPT_TEMPLATE_STABLE, (
+            f"{placeholder} inlines a whole reference book into every api row; the "
+            "governance tiers deliver the map as navigation instead."
+        )
+        assert placeholder not in _REVIEW_PROMPT_TEMPLATE_DYNAMIC
 
-    arch_text = load_governance_doc(tmp_path, "docs/ARCHITECTURE.md", on_missing="explicit")
-    assert arch_text == arch_content, (
-        "load_governance_doc should read the full file content"
+    context = governance_context(
+        REPO_ROOT,
+        surface="triad",
+        touched_paths=["web/modules/chat.js"],
+        usable_window_tokens=200_000,
+        delivery="packet",
+        checklist_section_text="## Repo Commit Checklist\n",
+        already_inline=("BIBLE.md", "docs/CHECKLISTS_ARCHIVE.md"),
     )
-
-    # Verify the STABLE template (the cache-marked governance prefix) carries
-    # the {architecture_section} placeholder.
-    assert "{architecture_section}" in _REVIEW_PROMPT_TEMPLATE_STABLE, (
-        "_REVIEW_PROMPT_TEMPLATE_STABLE must contain {architecture_section} placeholder. "
-        "ARCHITECTURE.md must be a first-class section in the triad review prompt."
-    )
-
-    # Render both template halves and verify the content appears
-    rendered = _REVIEW_PROMPT_TEMPLATE_STABLE.format(
-        preamble="PREAMBLE",
-        critical_calibration=CRITICAL_FINDING_CALIBRATION,
-        json_contract="JSON",
-        anti_pattern_lock_guard="LOCK",
-        checklist_section="CHECKLIST",
-        dev_guide_text="DEVGUIDE",
-        design_text="DESIGNGUIDE",
-        architecture_section=arch_text,
-    ) + _REVIEW_PROMPT_TEMPLATE_DYNAMIC.format(
-        goal_section="GOAL",
-        scope_section="",
-        current_files_section="FILES",
-        rebuttal_section="",
-        review_history_section="",
-        diff_text="DIFF",
-        changed_files="changed_file.py",
-        task_evidence_section="",
-    )
-    assert "UNIQUE_MARKER_12345" in rendered, (
-        "ARCHITECTURE.md content must appear in the rendered triad review prompt"
-    )
-    assert "## ARCHITECTURE.md" in rendered
-    assert "DESIGNGUIDE" in rendered, (
-        "DESIGN.md content must appear in the rendered triad review prompt"
-    )
-    assert "## DESIGN.md" in rendered
+    # The map is named, addressable and never inlined whole.
+    assert "docs/ARCHITECTURE.md" in [row["path"] for row in context.manifest]
+    assert 'read_file(root="system_repo"' in context.navigation
+    assert "docs/architecture/03-web-ui-pages-and-buttons.md" in context.navigation
+    inlined_whole = [row["path"] for row in context.manifest
+                     if row["disposition"] == "inline" and row["tier"] == 3 and "#" not in row["path"]]
+    assert inlined_whole == []
+    # Every governance document has a disposition and a reason: no silent drop.
+    assert all(row["reason"] and row["disposition"] in ("inline", "navigation")
+               for row in context.manifest)
 
 
 def test_governance_doc_load_emits_explicit_omission_marker_on_missing(tmp_path):

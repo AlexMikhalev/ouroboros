@@ -57,14 +57,18 @@ unresolved.
 Triad slots review the staged diff against `docs/CHECKLISTS.md`; duplicate
 model ids remain independent slots and `config.adaptive_quorum` owns quorum. A managed-update resolution commit reviews the declared M0→S resolution delta
 (the managed exception: `docs/architecture/06-agent-core.md` § "Git and commit
-review"). Scope slots inspect touched context plus the repository Atlas through the
-guaranteed-fit ladder (`docs/architecture/06-agent-core.md` § "Review stack");
-an artifact owed in full cannot buy fit by degrading into an invalid review. Owner-selected Low records the distinct
-BIBLE P3 scope skip; other route or assembly failure is not a clean verdict.
-An agent-session scope slot delivers by retrieval: its verdict is
-authoritative once its window is sourced at ≥200K, and "the host did not
-observe which files it read" is a provenance disclosure, never a
-missing-authority finding. The gate is one logical reviewer interaction per
+review"). Scope slots deliver by RETRIEVAL, in every context mode: each row receives the
+brief — intent, touched-path manifest, repository index, governance tiers, the
+staged change and the change-relative required-source manifest — and reaches the
+rest of the body with its own read-only tools
+(`docs/architecture/06-agent-core.md` § "Review stack"). The reviewer's window
+neither grants nor removes that verdict's authority. Reading coverage is diagnostic on every route. Preserve complete, incomplete,
+declared-empty and unobserved facts beside the exact verdict; none removes a
+responding reviewer from quorum, blocks a commit or automatically starts a
+paid repeat. The author decides whether a concrete gap needs further reading.
+Native receipts attest delivered ranges; a session's journal provides weaker
+inferences and unknown extents remain unknown. A route or brief-assembly failure is not a clean
+verdict. The gate is one logical reviewer interaction per
 API slot, with at most one bounded second physical send on a same-route
 transport rail for a PACKET api row; a hosted agent-session slot is one
 multistep execution whose local extraction reuses its collected transcript.
@@ -143,7 +147,7 @@ it to a separate agent context for read-only review; same-conversation
 self-review does not count, and unavailable review is recorded `NOT_RUN`,
 never silently presented as clean. `CONTRIBUTING.md` owns the public procedure
 and evidence fields. `scripts/run_external_review.py --contributor` is
-maintainer-grade large-window tooling: it freezes the configured triad/scope
+maintainer-grade tooling: it freezes the configured triad/scope
 rows, binds each row to its dispatched prompt receipt and observed response
 receipt, and records exact base/head/tree/diff hashes, route/model/profile
 facts, terminal settlement, capability deltas, and full redacted

@@ -204,7 +204,9 @@ def resolve_root_task_id(ctx: ToolContext) -> str:
 
 def commit_review_contract_fingerprint() -> str:
     """Identity of the commit gate's live review contract (Q22): triad roster+
-    routes, scope rows, enforcement, and the shipped prompt-contract text. A
+    routes, scope rows with their effective delivery class, enforcement, and the
+    shipped prompt-contract text — including the retrieving scope output
+    contract and the required-source policy version. A
     changed fingerprint lapses free-refusal/replay authority (a new paid
     review is allowed and refusals never quote across the change). Fail-open
     "" — an unknown contract never matches, so nothing is refused on it.
@@ -217,6 +219,8 @@ def commit_review_contract_fingerprint() -> str:
         from ouroboros.review_substrate import scope_reviewer_slots
         from ouroboros.reviewer_slot_config import commit_triad_delivery
         from ouroboros.tools.review_helpers import CRITICAL_FINDING_CALIBRATION, REVIEW_PREAMBLE
+        from ouroboros.tools.scope_required_sources import SCOPE_REQUIRED_SOURCES_POLICY
+        from ouroboros.tools.scope_review import SCOPE_RETRIEVING_OUTPUT_CONTRACT
         from ouroboros.triad_review import REVIEW_JSON_ARRAY_CONTRACT
 
         row_plan = commit_triad_delivery()
@@ -254,6 +258,10 @@ def commit_review_contract_fingerprint() -> str:
                 str(getattr(slot, "session_target", "") or ""),
                 str(getattr(slot, "session_profile", "") or ""),
                 str(getattr(slot, "effort", "") or ""),
+                # The EFFECTIVE delivery class of this scope row: what the row
+                # receives and how its coverage is observed, not the wire kind.
+                "native_retrieval" if getattr(slot, "native_retrieval", False)
+                else "agent_session" if getattr(slot, "retrieves", False) else "packet",
             ]
             for slot in scope_slots
         ]
@@ -261,8 +269,15 @@ def commit_review_contract_fingerprint() -> str:
         if any(scope_actor_ids):
             for row, actor in zip(scope_rows, scope_actor_ids):
                 row.append(actor)
+        # The retrieving scope contract and the required-source policy are part
+        # of what a scope reviewer is asked and owed, so a change to either
+        # lapses recorded free-replay authority instead of surviving it.
+        # Governance-document CONTENTS stay out (docs/development 05).
         prompt_contract = hashlib.sha256(
-            "\n".join([REVIEW_PREAMBLE, CRITICAL_FINDING_CALIBRATION, REVIEW_JSON_ARRAY_CONTRACT]).encode("utf-8")
+            "\n".join([
+                REVIEW_PREAMBLE, CRITICAL_FINDING_CALIBRATION, REVIEW_JSON_ARRAY_CONTRACT,
+                SCOPE_RETRIEVING_OUTPUT_CONTRACT, SCOPE_REQUIRED_SOURCES_POLICY,
+            ]).encode("utf-8")
         ).hexdigest()
         payload = json.dumps(
             {
@@ -876,9 +891,10 @@ def _check_overlapping_review_attempt(ctx: ToolContext) -> Optional[str]:
 
 
 def review_failure_is_technical(facts: Dict[str, Any]) -> bool:
-    """Classify producer facts only; candidate and owner admission stay separate."""
+    """Classify delivery failures; read coverage is diagnostic, not a failure."""
     return (
-        facts.get("failure_phase") in {"context", "delivery", "format", "window_authority"}
+        facts.get("failure_phase") in {
+            "context", "delivery", "format", "window_authority"}
         and facts.get("operation_state") not in {"in_flight", "custody_lost"}
         and not facts.get("pending_invocation_id") and not facts.get("late_result_pending")
     )

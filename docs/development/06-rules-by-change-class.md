@@ -193,8 +193,8 @@ Enforcement: `tests/test_protected_artifacts_policy.py` and
 `devtools/` is tracked operator code outside runtime package discovery and the
 runtime import graph; runtime modules, `server.py`, web modules, and build
 scripts must not import it. Touched devtool files receive normal triad/scope
-review; unrelated files may remain manifest-only in broad Atlas packs so
-operator code does not drown core review. Generated outputs live in an
+review; unrelated files appear to a scope reviewer as index rows it may open on
+demand, so operator code does not drown core review. Generated outputs live in an
 explicit external root, never in `repo/` or live `data/`; domain-specific
 architecture and methodology live beside the devtool, not in core governance
 docs. No automated import guard — review-only (triad/scope review of touched
@@ -788,8 +788,11 @@ owner, owed terminal delivery, cascade postconditions — lives in ARCHITECTURE
   `tests/test_model_chooser_browser.py`, `tests/test_subscription_role_routes_browser.py`.
 - Models, actors and reviewers share source/model/account controls. Preserve
   exact pins on ordinary save/reload and catalog failure; a source's credential
-  harness comes from its metadata, never an assumed equal name. A referenced
-  reviewer stays a native-inspection actor, not an inline packed review.
+  harness comes from its metadata, never an assumed equal name. Delivery is a
+  property of the row's surface and reference, not of its model or account:
+  every scope and deep-review row retrieves, a referenced reviewer stays a
+  native-inspection actor, and changing a model or an account never silently
+  turns one into an inline packet row.
 - One capability, one section: the task-actor story lives in Agents →
   Available subagents (`web/modules/subagents_settings.js`), editing one
   canonical `OUROBOROS_SUBAGENTS` object (list-level Enabled, at most ten

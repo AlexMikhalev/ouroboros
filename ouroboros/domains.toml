@@ -328,6 +328,7 @@ D20 = "Presence"
 "ouroboros/review_evidence_sections.py" = "D06"
 "ouroboros/review_evidence_refs.py" = "D06"
 "ouroboros/review_execution.py" = "D06"
+"ouroboros/review_session_reads.py" = "D06"
 "ouroboros/review_execution_projection.py" = "D06"
 "ouroboros/review_native_episode.py" = "D06"
 "ouroboros/review_owner_custody.py" = "D06"
@@ -485,6 +486,7 @@ D20 = "Presence"
 "ouroboros/tools/review_multi_model.py" = "D06"
 "ouroboros/tools/review_admission.py" = "D06"
 "ouroboros/tools/review_binary_context.py" = "D06"
+"ouroboros/tools/governance_context.py" = "D06"
 "ouroboros/tools/review_context_atlas.py" = "D06"
 "ouroboros/tools/review_helpers.py" = "D06"
 "ouroboros/tools/review_file_pack.py" = "D06"
@@ -494,8 +496,7 @@ D20 = "Presence"
 "ouroboros/tools/review_subject.py" = "D06"
 "ouroboros/tools/review_synthesis.py" = "D06"
 "ouroboros/tools/scope_review.py" = "D06"
-"ouroboros/tools/scope_review_budget.py" = "D06"
-"ouroboros/tools/scope_review_pack.py" = "D06"
+"ouroboros/tools/scope_required_sources.py" = "D06"
 "ouroboros/tools/scope_review_contract.py" = "D06"
 "ouroboros/tools/scope_review_session.py" = "D06"
 "ouroboros/tools/scope_window.py" = "D06"
@@ -691,7 +692,6 @@ allowed = [
   "D05->D19",
   "D06->D01",
   "D06->D02",
-  "D06->D03",
   "D06->D04",
   "D06->D07",
   "D06->D09",
@@ -848,6 +848,7 @@ lazy_only = [
   "D05->D07",
   "D05->D14",
   "D05->D20",
+  "D06->D03",
   "D06->D05",
   "D06->D08",
   "D06->D15",

@@ -1,11 +1,11 @@
 """The optional ``deep_review`` reviewer row (Ф3, owner decisions R6/R7).
 
 Deep self-review joins the shared reviewer-row vocabulary as ONE optional
-singleton row: absent, the packed api row is synthesized from the legacy model
-key ``OUROBOROS_MODEL_DEEP_SELF_REVIEW`` (the invisible migration source), so
-every existing install keeps today's exact delivery; present, the row picks the
-delivery through the same ``retrieves`` predicate every other surface uses, and
-its own effort outranks the surface key.
+singleton row: absent, the api row is synthesized from the legacy model key
+``OUROBOROS_MODEL_DEEP_SELF_REVIEW`` (the invisible migration source), so every
+existing install keeps a working row; present, the row names its route and its
+own effort outranks the surface key. Delivery is retrieval either way — an api
+row is the bounded native inspection episode, a session row a delegated run.
 """
 
 import asyncio
@@ -115,10 +115,10 @@ def test_deep_review_identity_is_fixed_and_cannot_be_reused_by_another_row(env):
         parse_reviewer_slots(json.dumps(body))
 
 
-def test_deep_review_slot_synthesizes_the_packed_row_from_the_model_key(env):
-    """No row saved (structured without the key, or legacy comma keys): the
-    delivery is today's exact one — a packed api row on the legacy model key,
-    NEVER a retrieving row an install did not ask for."""
+def test_deep_review_slot_synthesizes_the_api_row_from_the_model_key(env):
+    """No row saved (structured without the key, or legacy comma keys): a BARE
+    api row on the legacy model key — the same route the install already had,
+    with no fabricated subagent binding (`subagent_id` stays empty)."""
     for setup in ("structured", "legacy"):
         if setup == "structured":
             env.setenv(REVIEWER_SLOTS_ENV, _payload())
@@ -198,11 +198,10 @@ def test_reviewer_slots_endpoint_reports_the_deep_review_row_and_its_limit(env):
 
 
 # ---------------------------------------------------------------------------
-# The three deliveries of ``run_deep_self_review`` on the row.
+# The two deliveries of ``run_deep_self_review`` on the row.
 # ---------------------------------------------------------------------------
 
 import copy  # noqa: E402
-import hashlib  # noqa: E402
 import time  # noqa: E402
 from datetime import datetime, timedelta, timezone  # noqa: E402
 from unittest import mock  # noqa: E402
@@ -210,20 +209,11 @@ from unittest import mock  # noqa: E402
 from ouroboros import deep_self_review  # noqa: E402
 from ouroboros.deep_self_review import (  # noqa: E402
     _REPORT_CONTRACT,
-    _SYSTEM_PROMPT,
     deep_review_route,
     run_deep_self_review,
 )
 from ouroboros.review_execution import ReviewAttemptResult, ReviewRouteKind, ReviewRouteUnavailable  # noqa: E402
 from ouroboros.reviewer_slot_config import ConfiguredReviewerSlot, reviewer_slot_last_executions  # noqa: E402
-
-# The packed system prompt of the pre-row deep review (v6.114.0): the packed
-# delivery's wire payload is byte-identical after the row landed.
-_PACKED_PROMPT_SHA256 = "1bc81d4cde90757119d1cefd76c863232cf5c234aa0eef1568781149ac9e9aa5"
-
-
-def test_packed_system_prompt_is_byte_identical_to_the_pre_row_review():
-    assert hashlib.sha256(_SYSTEM_PROMPT.encode("utf-8")).hexdigest() == _PACKED_PROMPT_SHA256
 
 
 class _ScriptedLLM:
@@ -288,7 +278,7 @@ def _session_row():
 def test_native_row_runs_the_inspection_episode_over_repo_and_memory(review_repo, review_drive, monkeypatch):
     """A configured-subagent api row is a NATIVE episode through the shared
     executor seam: the task carries the role prompt, the memory whitelist
-    inline byte-exact, BIBLE.md as a mandatory read and the governance
+    inline byte-exact, BIBLE.md delivered inline and the governance
     navigation maps; the data plane is the REAL runtime root; the report
     comes back behind the host header with host-observed coverage."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
@@ -305,25 +295,26 @@ def test_native_row_runs_the_inspection_episode_over_repo_and_memory(review_repo
     assert header.startswith(
         "<!-- deep-review provenance: delivery=native_tool_rounds, model=openai/fake-deep, memory=3/7, "
         "memory_missing=registry.md,WORLD.md,index-full.md,improvement-backlog.md, "
-        "coverage=BIBLE.md:read, incomplete=none, attestation=host_observed, rounds=3, tool_calls=2, receipts=2, "
+        "coverage=BIBLE.md:delivered_inline, incomplete=none, attestation=host_observed, rounds=3, tool_calls=2, receipts=2, "
         "end_reason=final_answer, transcript=")
     assert "_Deep self-review: native inspection episode on openai/fake-deep — 3 rounds, 2 tool calls" in header
-    assert "BIBLE.md read in full; memory 3/7 inlined (omitted: registry.md missing, WORLD.md missing, index-full.md missing, improvement-backlog.md missing); complete_" in header
+    assert "BIBLE.md delivered inline in full; memory 3/7 inlined (omitted: registry.md missing, WORLD.md missing, index-full.md missing, improvement-backlog.md missing); complete_" in header
     assert usage["deep_review_memory"]["inlined"] == 3 and usage["deep_review_memory"]["dispositions"]["memory/WORLD.md"] == "missing"
     assert usage["native_rounds"] == 3 and usage["host_file_read_attestation"] == "host_observed"
     assert usage["resolved_model"] == "openai/fake-deep" and "execution_status" not in usage
     assert not [d for d in usage.get("capability_delta", []) if str(d.get("reason", "")).startswith("deep_review_")]
     # The episode task: role prompt + method, memory inline byte-exact, BIBLE
-    # as a sized mandatory read, nav maps, and the REPORT contract (never the
+    # inline in full, nav maps, and the REPORT contract (never the
     # JSON array the executors fall back to).
     first = llm.calls[0]["messages"]
     task = next(m["content"] for m in first if m["role"] == "user")
     assert "deep self-review of the Ouroboros project" in task
-    assert "`BIBLE.md` IN FULL first" in task and f"about {len(_BIBLE):,} chars" in task
+    assert "delivered IN FULL below" in task and f"{len(_BIBLE):,} chars" in task
+    assert task.count(_BIBLE) == 1
     assert "## FILE: drive/memory/identity.md\nI am Ouroboros.\n" in task
     assert "## FILE: drive/memory/knowledge/patterns.md\n## Patterns\n- class A\n" in task
     assert "Memory dispositions (7 whitelisted): memory/identity.md inlined; memory/scratchpad.md inlined; memory/registry.md missing" in task
-    assert "docs/ARCHITECTURE.md (navigation map)" in task and "Deep self-review" in task
+    assert "ARCHITECTURE.md (navigation map)" in task and "Deep self-review" in task
     assert "Deliver the report itself as plain markdown prose" in task
     assert "Begin with one line naming what you read" in task
     assert "JSON array" not in task
@@ -338,9 +329,9 @@ def test_native_row_runs_the_inspection_episode_over_repo_and_memory(review_repo
     assert any("native_tool_rounds" in line for line in progress)
 
 
-def test_native_row_missing_mandatory_read_is_disclosed_not_refused(review_repo, review_drive, monkeypatch):
-    """R8: a native episode that never opened BIBLE.md still delivers — with
-    the miss in the header, a typed capability_delta, and the runs-as row."""
+def test_native_row_needs_no_second_read_of_inline_bible(review_repo, review_drive, monkeypatch):
+    """Inline delivery satisfies the exact constitution source without a tool read.
+    The older line-only receipt fold remains explicit below."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     llm = _ScriptedLLM([
         {"tool_calls": [_tool_call("read_file", {"path": "ouroboros/loop.py"}, "c1")]},
@@ -348,10 +339,10 @@ def test_native_row_missing_mandatory_read_is_disclosed_not_refused(review_repo,
     ])
     text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row())
     assert text.endswith(_REPORT)
-    assert "coverage=BIBLE.md:missing" in text and "BIBLE.md NOT read; memory 3/7 inlined" in text and text.split("\n")[1].endswith("; complete_")
-    deltas = [d for d in usage["capability_delta"] if d["reason"] == "deep_review_mandatory_read_missing"]
-    assert deltas and deltas[0]["requested"] == "mandatory full read of BIBLE.md"
-    assert reviewer_slot_last_executions()[DEEP_REVIEW_SLOT_ID]["capability_delta"] == usage["capability_delta"]
+    assert "coverage=BIBLE.md:delivered_inline" in text and "BIBLE.md delivered inline in full; memory 3/7 inlined" in text
+    assert text.split("\n")[1].endswith("; complete_")
+    assert not [d for d in usage.get("capability_delta", []) if d["reason"].startswith("deep_review_")]
+    assert reviewer_slot_last_executions()[DEEP_REVIEW_SLOT_ID]["status"] == "responded"
 
     def cov(receipts, calls=None):
         return deep_self_review._native_read_coverage(
@@ -383,7 +374,7 @@ def test_native_row_missing_mandatory_read_is_disclosed_not_refused(review_repo,
         text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row())
         receipt = usage["native_tool_receipts"][0]
         assert (receipt["path"], receipt["opened_path"], receipt["eof"], receipt["total_lines"]) == (spelled, "BIBLE.md", True, total), receipt
-        assert "coverage=BIBLE.md:read" in text and "BIBLE.md read in full" in text, (spelled, text.split("\n")[0])
+        assert "coverage=BIBLE.md:delivered_inline" in text and "BIBLE.md delivered inline in full" in text, (spelled, text.split("\n")[0])
         assert not [d for d in usage.get("capability_delta", []) if d["reason"].startswith("deep_review_")]
     # ...and on the OPENED root: a padded root spelling the registry reads as a
     # repository root credits `read` (the raw `root` stays the model's spelling).
@@ -392,7 +383,7 @@ def test_native_row_missing_mandatory_read_is_disclosed_not_refused(review_repo,
         text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row())
         receipt = usage["native_tool_receipts"][0]
         assert (receipt["root"], receipt["opened_root"], receipt["opened_path"], receipt["eof"]) == (root, root.strip(), "BIBLE.md", True), receipt
-        assert "coverage=BIBLE.md:read" in text, (root, text.split("\n")[0])
+        assert "coverage=BIBLE.md:delivered_inline" in text, (root, text.split("\n")[0])
         assert not [d for d in usage.get("capability_delta", []) if d["reason"].startswith("deep_review_")]
     # A receipt without an opened path is matched by its raw spelling, where a
     # `..` component names nothing (refused before dispatch, nothing rendered).
@@ -464,7 +455,7 @@ def test_session_row_runs_through_the_session_executor_with_the_report_contract(
     """An agent_session row: the same hand-built request rides the seam, the
     report contract and the real data root travel in the policy, the slot
     carries the row's target/pin and an explicit logical window narrowed by
-    the owner deadline, and coverage is honestly `unobserved`."""
+    the owner deadline, and tool reading stays distinct from observed inline delivery."""
     import ouroboros.review_execution as review_execution
 
     _FakeSessionExecutor.instances = []
@@ -478,10 +469,10 @@ def test_session_row_runs_through_the_session_executor_with_the_report_contract(
     assert text.startswith(
         "<!-- deep-review provenance: delivery=agent_session, model=gpt-5.6-sol, memory=3/7, "
         "memory_missing=registry.md,WORLD.md,index-full.md,improvement-backlog.md, "
-        "coverage=BIBLE.md:unobserved, incomplete=unobserved, attestation=unobserved, "
+        "coverage=BIBLE.md:delivered_inline, incomplete=unobserved, attestation=unobserved, "
         f"generated_at={usage['deep_review_generated_at']}, source_revision=unknown -->\n"
-        "_Deep self-review: agent session codex=gpt-5.6-sol (model gpt-5.6-sol) — reads not host-observed "
-        "(coverage unobserved); memory 3/7 inlined (omitted: registry.md missing, WORLD.md missing, index-full.md missing, "
+        "_Deep self-review: agent session codex=gpt-5.6-sol (model gpt-5.6-sol) — tool reads not host-observed; "
+        "BIBLE.md delivered inline in full; memory 3/7 inlined (omitted: registry.md missing, WORLD.md missing, index-full.md missing, "
         "improvement-backlog.md missing); completeness not host-observed_\n"
         f"Report generated at {usage['deep_review_generated_at']}; reviewed source revision: unknown (not captured).\n\n")
     # A session carries NO round/receipt facts — by construction, not by key absence.
@@ -580,15 +571,15 @@ def test_memory_fact_precedes_every_runs_as_record_and_rides_the_returned_usage(
 
 def test_availability_follows_the_row_not_the_model_key(env, monkeypatch):
     """Route-aware availability (`deep_review_route`, the ONE availability
-    reader — agent, tool and runner all call it): the packed row keeps the
-    ≥1M/OPENAI_BASE_URL rule, a native row needs its model's credentials, a
+    reader — agent, tool and runner all call it): an api row needs its model's
+    credentials (a bare route and a subagent reference read the SAME rule), a
     session row needs a healthy delegated route (the substrate's own reader),
     and a malformed setting is the typed reason — never a fallback onto the key."""
     for key in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
         monkeypatch.delenv(key, raising=False)
     reason, identity = deep_review_route(_row())
     assert reason.startswith("no OpenRouter or direct OpenAI credentials for openai/fake-deep") and identity is None
-    assert deep_review_route(_native_row())[0] == "no provider credentials for openai/fake-deep"
+    assert deep_review_route(_native_row())[0] == reason
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     assert deep_review_route(_row()) == ("", "openai/fake-deep")
     assert deep_review_route(_native_row()) == ("", "openai/fake-deep")
@@ -635,40 +626,6 @@ def test_unavailable_row_never_runs_and_returns_typed_usage(review_repo, review_
     assert "deep_review has unknown keys" in text and usage["reason_code"] == "deep_self_review_unavailable"
 
 
-def test_packed_row_keeps_the_wire_shape_and_records_its_execution(review_repo, review_drive, monkeypatch):
-    """The packed delivery is unchanged on the wire — two messages, the golden
-    system prompt, tools=None, the 100K output reserve — and now also leaves
-    its runs-as row like every other reviewer row."""
-    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
-    monkeypatch.setenv("OUROBOROS_EFFORT_DEEP_SELF_REVIEW", "high")
-    llm = mock.Mock()
-    llm.chat.return_value = ({"content": "Review result."}, {"cost": 0.02, "prompt_tokens": 10})
-    pack = "y" * 400
-    with mock.patch.object(deep_self_review, "build_review_pack",
-                           return_value=(pack, {"file_count": 3, "total_chars": len(pack), "skipped": [], "context_manifest": {"ok": 1}})):
-        text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None,
-                                           slot=_row(effort="xhigh"))
-    kwargs = llm.chat.call_args.kwargs
-    assert kwargs["messages"] == [{"role": "system", "content": _SYSTEM_PROMPT}, {"role": "user", "content": pack}]
-    assert kwargs["model"] == "openai/fake-deep" and kwargs["tools"] is None and kwargs["temperature"] is None
-    assert kwargs["max_tokens"] == 100_000 and kwargs["no_proxy"] is True
-    assert kwargs["reasoning_effort"] == "xhigh"  # the row's effort outranks the surface key (R6)
-    assert text == (
-        "<!-- deep-review provenance: delivery=api_packet, model=openai/fake-deep, memory=0/7, "
-        "coverage=pack:3_files, incomplete=none, attestation=packed, window=assumed_1000000, "
-        f"generated_at={usage['deep_review_generated_at']}, source_revision=unknown -->\n"
-        "_Deep self-review: one packed API review on openai/fake-deep — 3 files; memory 0/7 inlined; "
-        "window 1,000,000 (unknown, full window assumed); complete_\n"
-        f"Report generated at {usage['deep_review_generated_at']}; reviewed source revision: unknown (not captured).\n\n"
-        "Review result."
-    )
-    assert usage["deep_review_memory"] == {"inlined": 0, "total": 7, "dispositions": {}}  # the mocked pack carried no memory fact
-    assert usage["resolved_model"] == "openai/fake-deep" and usage["cost"] == 0.02
-    last = reviewer_slot_last_executions()[DEEP_REVIEW_SLOT_ID]
-    assert last["effective"]["route"] == "api_chat" and last["effective"]["model"] == "openai/fake-deep"
-    assert last["requested"]["effort"] == "xhigh" and last["status"] == "responded"
-
-
 def test_agent_keeps_the_previous_report_when_the_review_fails(tmp_path, monkeypatch):
     """`memory/deep_review.md` is overwritten ONLY by a delivered report: a
     typed failure goes to the task result and a typed `task_error` event."""
@@ -701,7 +658,7 @@ def test_agent_keeps_the_previous_report_when_the_review_fails(tmp_path, monkeyp
 
     def _ok(**kwargs):
         seen.update(kwargs)
-        return "<!-- deep-review provenance: delivery=api_packet -->\n_x_\n\nNEW REPORT", {"resolved_model": "openai/x", "cost": 0.0}
+        return "<!-- deep-review provenance: delivery=native_tool_rounds -->\n_x_\n\nNEW REPORT", {"resolved_model": "openai/x", "cost": 0.0}
 
     monkeypatch.setattr(deep_self_review, "run_deep_self_review", _ok)
     events = agent.handle_task(task)
@@ -798,42 +755,6 @@ def test_header_sanitizes_hostile_values_and_builds_session_facts_by_constructio
     assert "-->" not in human2 and "\n" not in human2 and "OMISSION NOTE" in human2 and "t" * 121 not in human2
 
 
-def test_packed_incomplete_follows_the_provider_finish_reason(review_repo, review_drive, monkeypatch):
-    """Item 11: a packed report cut by the output reserve is labelled so
-    (`response_finish_reason == "length"`), never "complete"."""
-    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
-    llm = mock.Mock()
-    pack = "y" * 200
-    stats = {"file_count": 2, "total_chars": len(pack), "skipped": [],
-             "memory": {"inlined": 1, "total": 7, "dispositions": {"memory/identity.md": "inlined"}}}
-    for finish, expected in (("length", "output_reserve"), ("stop", "none"), (None, "none")):
-        usage_in = {"cost": 0.0, **({"response_finish_reason": finish} if finish else {})}
-        llm.chat.return_value = ({"content": "Cut repo"}, usage_in)
-        with mock.patch.object(deep_self_review, "build_review_pack", return_value=(pack, stats)):
-            text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_row())
-        comment = text.split("\n")[0]
-        assert f"incomplete={expected}" in comment, (finish, comment)
-        assert ("INCOMPLETE (output_reserve" in text) == (expected == "output_reserve")
-        assert usage["deep_review_memory"] == stats["memory"] and "memory=1/7" in comment
-        assert "execution_status" not in usage  # a cut report is a product, disclosed — not a failure
-    # The direct-Anthropic lane (the shipped `anthropic::` deep default) sets
-    # NO usage finish reason; its cut marker is the message's `stop_reason`.
-    for message, expected in (
-        ({"content": "Cut repo", "stop_reason": "max_tokens"}, "output_reserve"),
-        ({"content": "Whole repo", "stop_reason": "end_turn"}, "none"),
-        # Fail-safe for a NON-normalized message shape only: the OpenAI-compatible
-        # normalizer keeps finish_reason in usage (`response_finish_reason`), so a
-        # message-level finish_reason is not a shipped contract — this pins the
-        # arm's fail-safe reading of an unexpected shape, nothing more.
-        ({"content": "Cut repo", "finish_reason": "length"}, "output_reserve"),
-    ):
-        llm.chat.return_value = (message, {"cost": 0.0})
-        with mock.patch.object(deep_self_review, "build_review_pack", return_value=(pack, stats)):
-            text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_row())
-        assert f"incomplete={expected}" in text.split("\n")[0], (message, text.split("\n")[0])
-        assert ("INCOMPLETE (output_reserve" in text) == (expected == "output_reserve")
-
-
 def test_memory_dispositions_are_disclosed_per_whitelisted_entry(review_repo, tmp_path, monkeypatch):
     """Item 23: a partially initialized data root — one inlined, one empty, one
     oversized, four missing — is disclosed per entry in the task text, the
@@ -870,86 +791,94 @@ def test_memory_dispositions_are_disclosed_per_whitelisted_entry(review_repo, tm
     worst = ",".join(rel.rsplit("/", 1)[-1] for rel in _MEMORY_WHITELIST)
     assert len(worst) <= _HEADER_VALUE_MAX_CHARS
     assert "memory 1/7 inlined (omitted: scratchpad.md empty, registry.md missing, WORLD.md oversized" in text.split("\n")[1]
-    # The packed pack states the same dispositions in its omission section.
-    dulwich_index = mock.Mock(); dulwich_index.__iter__ = mock.Mock(return_value=iter([b"ouroboros/loop.py", b"BIBLE.md"]))
-    dulwich_repo = mock.Mock(); dulwich_repo.open_index.return_value = dulwich_index
-    with mock.patch("dulwich.repo.Repo", mock.Mock(return_value=dulwich_repo)):
-        pack, stats = deep_self_review.build_review_pack(review_repo, drive)
-    assert stats["memory"]["dispositions"] == expected and stats["memory"]["inlined"] == 1
-    omitted = pack[pack.index("## OMITTED FILES"):]
-    assert "drive/memory/scratchpad.md (empty: no content)" in omitted
-    assert "drive/memory/WORLD.md (oversized: >1024KB)" in omitted
-    assert "drive/memory/registry.md (missing: not present under the data root)" in omitted
 
 
 def test_native_read_extent_rides_the_receipts_and_drives_coverage(review_repo, review_drive, monkeypatch):
     """Item 20 end to end: the reader's own window facts reach the receipts
     (extended contract: start_line/end_line/total_lines/eof), two chunks that
-    cover BIBLE.md read as `read`, one line as `partial`, a data-root BIBLE.md
+    cover inspection.md read as `read`, one line as `partial`, a data-root inspection.md
     as `missing`, and an episode-truncated read counts only delivered lines."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    from ouroboros.tools.scope_required_sources import source_text_identity
+
+    (review_repo / "inspection.md").write_text(_BIBLE, encoding="utf-8")
+
+    def required():
+        return [{"root": "system_repo", "path": "inspection.md",
+                 **source_text_identity((review_repo / "inspection.md").read_bytes())}]
     total = len(_BIBLE.splitlines())
     half = total // 2
     llm = _ScriptedLLM([
-        {"tool_calls": [_tool_call("read_file", {"path": "BIBLE.md", "max_lines": half}, "c1")]},
-        {"tool_calls": [_tool_call("read_file", {"path": "BIBLE.md", "start_line": half + 1, "max_lines": 500}, "c2")]},
+        {"tool_calls": [_tool_call("read_file", {"path": "inspection.md", "max_lines": half}, "c1")]},
+        {"tool_calls": [_tool_call("read_file", {"path": "inspection.md", "start_line": half + 1, "max_lines": 500}, "c2")]},
         {"content": _REPORT},
     ])
-    text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row())
+    text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row(), required_sources=required())
     receipts = usage["native_tool_receipts"]
     assert receipts[0]["outcome"] == "executed"  # the outcome vocabulary is unchanged
     assert (receipts[0]["start_line"], receipts[0]["end_line"], receipts[0]["total_lines"], receipts[0]["eof"]) == (1, half, total, False)
     assert (receipts[1]["start_line"], receipts[1]["end_line"], receipts[1]["eof"]) == (half + 1, total, True)
-    assert "coverage=BIBLE.md:read" in text and "BIBLE.md read in full" in text
+    assert "coverage=inspection.md:read" in text and "inspection.md read in full" in text
     assert not [d for d in usage.get("capability_delta", []) if d["reason"].startswith("deep_review_")]
 
     # One line: partial, with the fraction in the header and a typed delta.
-    llm = _ScriptedLLM([{"tool_calls": [_tool_call("read_file", {"path": "BIBLE.md", "max_lines": 1}, "c1")]}, {"content": _REPORT}])
-    text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row())
-    assert f"coverage=BIBLE.md:partial({1 / total:.2f})" in text
-    assert f"BIBLE.md {1 / total:.0%} read (1/{total} lines)" in text
+    llm = _ScriptedLLM([{"tool_calls": [_tool_call("read_file", {"path": "inspection.md", "max_lines": 1}, "c1")]}, {"content": _REPORT}])
+    text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row(), required_sources=required())
+    assert f"coverage=inspection.md:partial({len(_BIBLE.splitlines(keepends=True)[0]) / len(_BIBLE):.2f})" in text
+    assert f"inspection.md {len(_BIBLE.splitlines(keepends=True)[0]) / len(_BIBLE):.0%} read ({len(_BIBLE.splitlines(keepends=True)[0])}/{len(_BIBLE)} characters)" in text
     delta = next(d for d in usage["capability_delta"] if d["reason"] == "deep_review_mandatory_read_partial")
-    assert delta["effective"] == f"1 of {total} lines of BIBLE.md delivered (merged receipts)"
+    assert delta["effective"] == f"{len(_BIBLE.splitlines(keepends=True)[0])} of {len(_BIBLE)} characters of inspection.md delivered (merged receipts)"
 
-    # A BIBLE.md under the DATA plane does not satisfy the repository read.
-    (review_drive / "BIBLE.md").write_text(_BIBLE, encoding="utf-8")
-    llm = _ScriptedLLM([{"tool_calls": [_tool_call("read_file", {"path": "BIBLE.md", "root": "runtime_data"}, "c1")]}, {"content": _REPORT}])
-    text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row())
+    # An inspection.md under the DATA plane does not satisfy the repository read.
+    (review_drive / "inspection.md").write_text(_BIBLE, encoding="utf-8")
+    llm = _ScriptedLLM([{"tool_calls": [_tool_call("read_file", {"path": "inspection.md", "root": "runtime_data"}, "c1")]}, {"content": _REPORT}])
+    text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row(), required_sources=required())
     assert usage["native_tool_receipts"][0]["root"] == "runtime_data" and usage["native_tool_receipts"][0]["eof"] is True
     assert usage["native_tool_receipts"][0]["opened_root"] == "runtime_data"  # the opened root never credits a data-plane read
-    assert "coverage=BIBLE.md:missing" in text
+    assert "coverage=inspection.md:missing" in text
 
     # The episode's own result bound cut the body: only complete delivered lines count.
-    monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", "50000")
-    (review_repo / "BIBLE.md").write_text("".join(f"line {i:05d} " + "b" * 60 + "\n" for i in range(1500)), encoding="utf-8")
-    llm = _ScriptedLLM([{"tool_calls": [_tool_call("read_file", {"path": "BIBLE.md"}, "c1")]}, {"content": _REPORT}])
-    text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row())
+    # The bound must leave room for a CUT-but-inline result beside the task the
+    # governance tiers deliver, or the result rides a stored source instead.
+    monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", "120000")
+    (review_repo / "inspection.md").write_text("".join(f"line {i:05d} " + "b" * 60 + "\n" for i in range(1500)), encoding="utf-8")
+    llm = _ScriptedLLM([{"tool_calls": [_tool_call("read_file", {"path": "inspection.md"}, "c1")]}, {"content": _REPORT}])
+    text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row(), required_sources=required())
     receipt = usage["native_tool_receipts"][0]
     assert receipt["total_lines"] == 1500 and receipt["start_line"] == 1
     assert receipt["end_line"] < 1500 and receipt["eof"] is False
     tool_msg = [m for m in llm.calls[1]["messages"] if m.get("role") == "tool"][0]["content"]
-    assert "RESULT TRUNCATED" in tool_msg and f"line {receipt['end_line']:05d}" in tool_msg
-    assert f"line {receipt['end_line'] + 1:05d} " + "b" * 60 + "\n" not in tool_msg  # the first cut line is not counted
-    assert "coverage=BIBLE.md:partial(" in text
+    # Source labels begin at zero; receipt line addresses begin at one.
+    assert "RESULT TRUNCATED" in tool_msg
+    assert f"line {receipt['end_line'] - 1:05d} " + "b" * 60 + "\n" in tool_msg
+    assert f"line {receipt['end_line']:05d} " + "b" * 60 + "\n" not in tool_msg
+    assert "coverage=inspection.md:partial(" in text
 
 
 def test_a_registry_refused_read_never_inherits_the_previous_reads_extent(review_repo, review_drive, monkeypatch):
     """The stamp-leak class (round 3): a `read_file` the registry refuses BEFORE
     dispatch (its binding layer — path traversal) never reaches the reader, so
-    it carries NO extent, and its `..` path is never folded onto `BIBLE.md`:
+    it carries NO extent, and its `..` path is never folded onto `inspection.md`:
     after a real read of another file the mandatory read is `missing` with
-    its typed delta; after a real PARTIAL read of BIBLE.md the traversal
+    its typed delta; after a real PARTIAL read of inspection.md the traversal
     shapes never lift it to `read`."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    from ouroboros.tools.scope_required_sources import source_text_identity
+
+    (review_repo / "inspection.md").write_text(_BIBLE, encoding="utf-8")
+
+    def required():
+        return [{"root": "system_repo", "path": "inspection.md",
+                 **source_text_identity((review_repo / "inspection.md").read_bytes())}]
     # ONE traversal shape at the coverage level; the refusal trio itself is the
     # executor suite's receipt-level pin (test_read_file_receipts_carry_the_delivered_extent).
-    shapes = ("a/../BIBLE.md", "/BIBLE.md")
+    shapes = ("a/../inspection.md", "/inspection.md")
     llm = _ScriptedLLM([
         {"tool_calls": [_tool_call("read_file", {"path": "docs/ARCHITECTURE.md"}, "c1")]
                        + [_tool_call("read_file", {"path": p}, f"c{i}") for i, p in enumerate(shapes, 2)]},
         {"content": _REPORT},
     ])
-    text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row())
+    text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row(), required_sources=required())
     receipts = usage["native_tool_receipts"]
     assert receipts[0]["path"] == "docs/ARCHITECTURE.md" and receipts[0]["eof"] is True
     tool_msgs = {m["tool_call_id"]: m["content"] for m in llm.calls[1]["messages"] if m.get("role") == "tool"}
@@ -957,31 +886,30 @@ def test_a_registry_refused_read_never_inherits_the_previous_reads_extent(review
         assert tool_msgs[f"c{i + 1}"].startswith("⚠️ READ_FILE_ERROR") and receipts[i]["path"] == p
         assert receipts[i]["outcome"] == "executed"  # the registry answered with text; the vocabulary is unchanged
         assert not any(k in receipts[i] for k in ("start_line", "end_line", "total_lines", "eof", "opened_path", "opened_root")), receipts[i]
-    assert "coverage=BIBLE.md:missing" in text and "BIBLE.md NOT read" in text
-    assert [d["reason"] for d in usage["capability_delta"]] == ["deep_review_mandatory_read_missing"]
+    assert "coverage=inspection.md:missing" in text and "inspection.md NOT read" in text
+    assert "deep_review_mandatory_read_missing" in [d["reason"] for d in usage["capability_delta"]]
     # A real PARTIAL read followed by a traversal shape stays partial — never `read`.
-    total = len(_BIBLE.splitlines())
     llm = _ScriptedLLM([
-        {"tool_calls": [_tool_call("read_file", {"path": "BIBLE.md", "max_lines": 1}, "c1"),
-                        _tool_call("read_file", {"path": "a/../BIBLE.md"}, "c2")]},
+        {"tool_calls": [_tool_call("read_file", {"path": "inspection.md", "max_lines": 1}, "c1"),
+                        _tool_call("read_file", {"path": "a/../inspection.md"}, "c2")]},
         {"content": _REPORT},
     ])
-    text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row())
-    assert f"coverage=BIBLE.md:partial({1 / total:.2f})" in text
+    text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row(), required_sources=required())
+    assert f"coverage=inspection.md:partial({len(_BIBLE.splitlines(keepends=True)[0]) / len(_BIBLE):.2f})" in text
     assert "total_lines" not in usage["native_tool_receipts"][1]
     # The path rule itself: `..` is kept as spelled (matches no mandatory read);
     # a clean relative or in-repo absolute spelling still normalizes.
-    assert deep_self_review._repo_relative("a/../BIBLE.md", review_repo) == "a/../BIBLE.md"
-    assert deep_self_review._repo_relative("BIBLE.md/../BIBLE.md", review_repo) == "BIBLE.md/../BIBLE.md"
+    assert deep_self_review._repo_relative("a/../inspection.md", review_repo) == "a/../inspection.md"
+    assert deep_self_review._repo_relative("inspection.md/../inspection.md", review_repo) == "inspection.md/../inspection.md"
     assert deep_self_review._repo_relative("./docs//ARCHITECTURE.md", review_repo) == "docs/ARCHITECTURE.md"
-    assert deep_self_review._repo_relative(str(review_repo / "BIBLE.md"), review_repo) == "BIBLE.md"
+    assert deep_self_review._repo_relative(str(review_repo / "inspection.md"), review_repo) == "inspection.md"
     # Feed an actual Windows-normalized spelling through the POSIX receipt owner.
     # It uses posixpath directly and no longer imports an OS-native path module.
     windows_path = ntpath.normpath("./docs//ARCHITECTURE.md")
     assert deep_self_review._repo_relative(windows_path, review_repo) == "docs/ARCHITECTURE.md"
     assert deep_self_review._repo_relative("./docs//ARCHITECTURE.md", review_repo) == "docs/ARCHITECTURE.md"
     assert deep_self_review._repo_relative(".\\docs\\ARCHITECTURE.md", review_repo) == "docs/ARCHITECTURE.md"
-    assert deep_self_review._repo_relative("a\\..\\BIBLE.md", review_repo) == "a/../BIBLE.md"
+    assert deep_self_review._repo_relative("a\\..\\inspection.md", review_repo) == "a/../inspection.md"
 
 
 
@@ -1025,7 +953,7 @@ def test_coverage_deltas_never_mutate_the_executors_usage(review_repo, review_dr
     monkeypatch.setattr(native_episode.NativeToolRoundReviewExecutor, "execute", spy)
     # An exhausted report episode: the EXECUTOR itself owns a non-empty delta
     # list (`native_transcript_bound_before_final_answer`); the record then
-    # appends its coverage delta — to ITS copy only.
+    # keeps its own delta list, separate from the executor's.
     (review_repo / "big.txt").write_text("x" * 60_000, encoding="utf-8")
     draft = "# Draft\n\nCRITICAL: something.\n"
     llm = _ScriptedLLM([{"content": draft, "tool_calls": [_tool_call("read_file", {"path": "big.txt"}, "c1")]}] + [
@@ -1035,7 +963,7 @@ def test_coverage_deltas_never_mutate_the_executors_usage(review_repo, review_dr
     executor_list = attempts[0].usage["capability_delta"]
     assert [d["reason"] for d in executor_list] == ["native_transcript_bound_before_final_answer"]
     assert [d["reason"] for d in usage["capability_delta"]] == [
-        "native_transcript_bound_before_final_answer", "deep_review_mandatory_read_missing"]
+        "native_transcript_bound_before_final_answer"]
     assert usage["capability_delta"] is not executor_list and len(executor_list) == 1
 
 
@@ -1080,76 +1008,3 @@ def test_slot_override_with_an_empty_target_or_unknown_kind_is_refused_typed(rev
         assert text.startswith("❌ Deep self-review unavailable: ") and fragment in text
         assert usage["reason_code"] == "deep_self_review_unavailable"
     assert not llm.chat.called
-
-
-
-# ---------------------------------------------------------------------------
-# Fix batch №1 — the packed delivery's ≥1M floor (codex sol, item 22).
-# ---------------------------------------------------------------------------
-
-
-def test_packed_row_refuses_a_confirmed_sub_1m_window_and_discloses_an_unknown_one(review_repo, review_drive, monkeypatch):
-    """A packed review's guarantee IS its ≥1M pack: a route whose evidence puts
-    the window below the floor is refused typed (never a silently shrunk
-    pack); an unknown window keeps the documented full-window assumption and
-    says so in the header; a confirmed ≥1M route runs unlabeled."""
-    from ouroboros import reviewer_window
-    from ouroboros.reviewer_window import REVIEWER_FULL_WINDOW, ReviewerWindow
-
-    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
-    llm = mock.Mock()
-    llm.chat.return_value = ({"content": "Review result."}, {"cost": 0.0})
-    pack = "y" * 200
-    stats = {"file_count": 2, "total_chars": len(pack), "skipped": [], "memory": {"inlined": 0, "total": 7, "dispositions": {}}}
-    windows = {"answer": ReviewerWindow(window_tokens=200_000, status="confirmed", model="openai/fake-deep")}
-    monkeypatch.setattr(reviewer_window, "resolve_reviewer_window", lambda model_id, **_k: windows["answer"])
-
-    reason, identity = deep_review_route(_row())
-    assert identity is None and "needs a ≥1,000,000-token window" in reason
-    assert "openai/fake-deep is confirmed at 200,000 tokens" in reason and "native or session deep_review row" in reason
-    with mock.patch.object(deep_self_review, "build_review_pack", return_value=(pack, stats)):
-        text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_row())
-    assert text.startswith("❌ Deep self-review unavailable: the packed deep review needs a ≥1,000,000-token window")
-    assert usage["reason_code"] == "deep_self_review_unavailable" and not llm.chat.called
-
-    # Evidence landing between the availability read and the run is caught by the runner itself.
-    calls = iter([ReviewerWindow(window_tokens=0), ReviewerWindow(window_tokens=131_072, status="confirmed")])
-    monkeypatch.setattr(reviewer_window, "resolve_reviewer_window", lambda model_id, **_k: next(calls))
-    with mock.patch.object(deep_self_review, "build_review_pack", return_value=(pack, stats)):
-        text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_row())
-    assert "131,072 tokens" in text and not llm.chat.called
-
-    # Unknown window: dispatched on the full-window assumption, disclosed.
-    windows["answer"] = ReviewerWindow(window_tokens=0)
-    monkeypatch.setattr(reviewer_window, "resolve_reviewer_window", lambda model_id, **_k: windows["answer"])
-    assert deep_review_route(_row()) == ("", "openai/fake-deep")
-    with mock.patch.object(deep_self_review, "build_review_pack", return_value=(pack, stats)):
-        text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_row())
-    assert llm.chat.call_count == 1 and f"window=assumed_{REVIEWER_FULL_WINDOW}" in text.split("\n")[0]
-    assert "window 1,000,000 (unknown, full window assumed)" in text.split("\n")[1]
-
-    # Confirmed ≥1M: available, the window stated as a fact.
-    windows["answer"] = ReviewerWindow(window_tokens=REVIEWER_FULL_WINDOW, status="confirmed")
-    with mock.patch.object(deep_self_review, "build_review_pack", return_value=(pack, stats)):
-        text, _usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_row())
-    assert llm.chat.call_count == 2 and f"window={REVIEWER_FULL_WINDOW}" in text.split("\n")[0]
-    assert "(unknown" not in text
-    # ONE window fact per run: the object validated against the floor IS the
-    # object the pack is sized and labeled with. Availability reads once, the
-    # run reads once — a third evidence value (here a confirmed 200K) is never
-    # consumed, so it can never size a call the floor check did not see.
-    seen = []
-    sequence = iter([ReviewerWindow(window_tokens=0), ReviewerWindow(window_tokens=0),
-                     ReviewerWindow(window_tokens=200_000, status="confirmed")])
-
-    def _resolve(model_id, **_k):
-        seen.append(model_id)
-        return next(sequence)
-
-    monkeypatch.setattr(reviewer_window, "resolve_reviewer_window", _resolve)
-    before = llm.chat.call_count
-    with mock.patch.object(deep_self_review, "build_review_pack", return_value=(pack, stats)):
-        text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_row())
-    assert len(seen) == 2 and llm.chat.call_count == before + 1
-    assert f"window=assumed_{REVIEWER_FULL_WINDOW}" in text.split("\n")[0] and "200" not in text.split("\n")[0]
-    assert next(sequence).window_tokens == 200_000  # the third fact was never read

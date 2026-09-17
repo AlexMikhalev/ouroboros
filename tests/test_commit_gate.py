@@ -1180,11 +1180,13 @@ def test_advisory_prompt_strictness_formulations():
 
 
 def test_advisory_prompt_references_architecture_doc_via_read_tool():
-    """Advisory prompt must inline ARCHITECTURE.md content when available.
+    """The advisory brief NAMES ARCHITECTURE.md with the read instruction.
 
-    The v4.15.1 prompt restores ARCHITECTURE.md directly into the advisory context so
-    the reviewer always sees version-sync and module-structure facts without an extra
-    read step. The touched-file pack must avoid duplicating it separately.
+    The map is the one governance tier that is never inlined whole (the
+    governance tiers, owner decision 2026-09-17): a retrieving reviewer reads
+    the version-sync and module-structure facts it needs from the exact
+    chapter, so the brief carries the addressable navigation instead of the
+    body.
     """
     import subprocess
     adv_mod = _get_advisory_module()
@@ -1202,10 +1204,12 @@ def test_advisory_prompt_references_architecture_doc_via_read_tool():
 
         prompt = adv_mod._build_advisory_prompt(repo_dir, "test commit")
 
-        assert "ARCHITECTURE.md" in prompt, "Prompt must include an ARCHITECTURE.md section"
-        assert "## ARCHITECTURE.md" in prompt, "Prompt should expose ARCHITECTURE.md as a first-class section"
-        assert "Ouroboros v99.0.0" in prompt, (
-            "ARCHITECTURE.md content should now be inlined for advisory review"
+        assert "docs/ARCHITECTURE.md" in prompt, "the brief must name ARCHITECTURE.md"
+        assert 'read_file(root="system_repo"' in prompt, (
+            "the brief must carry the instruction that reaches it"
+        )
+        assert "Ouroboros v99.0.0" not in prompt, (
+            "the map is delivered as navigation, never inlined whole"
         )
 
 

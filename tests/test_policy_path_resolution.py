@@ -10,7 +10,6 @@ from ouroboros.runtime_mode_policy import (
     is_protected_runtime_path,
 )
 from ouroboros.review import candidate_repo_paths
-from ouroboros.tools import review_context_atlas
 from supervisor import update_merge_policy
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -20,21 +19,6 @@ pytestmark = pytest.mark.serial
 @pytest.fixture(scope="module")
 def candidate_paths() -> set[str]:
     return set(candidate_repo_paths(REPO_ROOT))
-
-
-def test_review_stack_paths_resolve(candidate_paths: set[str]):
-    missing = sorted(
-        path
-        for path in review_context_atlas._REVIEW_STACK_PATHS
-        if path not in candidate_paths or not (REPO_ROOT / path).is_file()
-    )
-    unresolved = sorted(
-        path
-        for path in review_context_atlas._REVIEW_STACK_PATHS
-        if not review_context_atlas._is_force_include(path)
-    )
-    assert not missing, f"review stack paths do not exist in the candidate: {missing}"
-    assert not unresolved, f"review stack paths bypass Atlas resolution: {unresolved}"
 
 
 def test_protected_runtime_paths_and_prefixes_resolve(candidate_paths: set[str]):
@@ -74,12 +58,10 @@ def test_hot_code_paths_resolve(candidate_paths: set[str]):
     assert not unresolved, f"hot-code paths bypass merge classification: {unresolved}"
 
 
-def test_size_ratchet_manifest_is_protected_review_and_merge_authority():
+def test_size_ratchet_manifest_is_protected_runtime_and_merge_authority():
     path = "ouroboros/size_ratchet_manifest.py"
 
     assert path in PROTECTED_RUNTIME_PATHS
     assert is_protected_runtime_path(path)
-    assert path in review_context_atlas._REVIEW_STACK_PATHS
-    assert review_context_atlas._is_force_include(path)
     assert path in update_merge_policy.HOT_CODE_PATHS
     assert update_merge_policy.is_hot_code(path)

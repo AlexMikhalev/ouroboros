@@ -2083,6 +2083,14 @@
    "is_error": false,
    "status": "ok"
   },
+  "ident:SCOPE_COVERAGE_SHORTFALL:named": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "ident:SCOPE_COVERAGE_SHORTFALL:plain": {
+   "is_error": false,
+   "status": "ok"
+  },
   "ident:SCOPE_QUORUM_NOT_MET:named": {
    "is_error": false,
    "status": "ok"
@@ -3203,6 +3211,10 @@
    "is_error": false,
    "status": "ok"
   },
+  "shape:safety_violation": {
+   "is_error": true,
+   "status": "safety_violation"
+  },
   "shape:scratchpad_legacy_upgrade": {
    "is_error": false,
    "status": "ok"
@@ -3286,10 +3298,6 @@
   "shape:unknown_tool_extension_down": {
    "is_error": false,
    "status": "ok"
-  },
-  "shape:safety_violation": {
-   "is_error": true,
-   "status": "safety_violation"
   }
  }
 }

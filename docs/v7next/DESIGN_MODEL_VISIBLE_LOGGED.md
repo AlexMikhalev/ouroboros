@@ -158,7 +158,7 @@ Delegated/harness model calls (`agent_session` executor lanes) are a
 lane-level instance of `provider_side_transform`: the host never holds the
 final wire bytes, so those lanes carry a disclosed
 `model_send_seal: unobserved` limit (same honesty pattern as the scope
-session's `host_file_read_attestation: unobserved`) rather than a fake seal.
+session's `read_provenance_expected` fact) rather than a fake seal.
 
 ## 5. Divergence classes and their canonicalization contract
 

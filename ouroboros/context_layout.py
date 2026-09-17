@@ -75,7 +75,8 @@ def generate_doc_nav_map(text: str, *, title: str, rel_path: str, instructions: 
             "",
         ]
     if not headings:
-        out.append(f"- (no `##`/`###`/`####` headings; read `{rel_path}` directly)")
+        out.append("- (no `##`/`###`/`####` headings; "
+                   + (f"read `{rel_path}` directly)" if instructions else f"source: `{rel_path}`)"))
     for idx, (level, htitle, lineno) in enumerate(headings):
         end = total
         for later_level, _later_title, later_lineno in headings[idx + 1:]:
@@ -87,7 +88,7 @@ def generate_doc_nav_map(text: str, *, title: str, rel_path: str, instructions: 
     return "\n".join(out)
 
 
-def book_navigation(book: ReferenceBook) -> str:
+def book_navigation(book: ReferenceBook, *, instructions: bool = True) -> str:
     """The compact, CHAPTER-ADDRESSED view of one reference book.
 
     The authored introductions are the overview (there is no second editable
@@ -108,6 +109,7 @@ def book_navigation(book: ReferenceBook) -> str:
             book.entrypoint.text,
             title=pathlib.PurePosixPath(book.entrypoint.source_path).name,
             rel_path=book.entrypoint.source_path,
+            instructions=instructions,
         )
     return overview_book(
         book,
@@ -117,6 +119,7 @@ def book_navigation(book: ReferenceBook) -> str:
             rel_path=chapter.source_path,
             instructions=False,
         ),
+        instructions=instructions,
     ).text
 
 

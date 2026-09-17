@@ -189,19 +189,19 @@ Ouroboros can produce review evidence in a structured SHA-bound packet. Its
 contributor mode uses the reviewer slots actually configured on the machine:
 `api_chat`, `agent_session`, or a mixture.
 
-Treat this command as **maintainer / large-window tooling**, not the default
-contributor path. The scope reviewer's required-artifact pack (protected
-runtime paths, prompts, contracts, canonical docs, the review stack) is
-required regardless of how small the diff is, and on a default install it
-can exceed the configured scope slot's context window even after every
-degradation step — the run then fails closed with `SCOPE_REVIEW_BLOCKED`
-and still preserves the evidence packet (marked incomplete). The documented
-routes past that pack budget are: configure the scope row as an
-`agent_session` reviewer (a different delivery class — it reads the
-repository with its own tools instead of being handed one assembled pack,
-and needs its own confirmed 200K+ window), or configure an API scope slot
-whose confirmed context window fits the pack. The agentic checklist review
-above needs neither.
+Treat this command as **maintainer tooling**, not the default contributor
+path. What a scope reviewer is owed in full is change-relative: the touched
+protected runtime paths, prompts and frozen contracts, with their declared
+families and cross-language twins. Everything else it reaches itself with
+read-only tools, so the run does not depend on a very large reviewer window.
+What it does depend on is the reading actually happening: a reviewer that
+leaves a required source unread produces a coverage gap, which keeps its
+findings but supplies no authoritative verdict, and the packet records that
+plainly instead of presenting it as clean. A scope review that cannot run at
+all — an unreadable repository, an unavailable review subject, a reviewer that
+failed or answered outside the contract — is reported as
+`SCOPE_REVIEW_BLOCKED` with its cause, and the evidence packet is preserved
+and marked incomplete. The agentic checklist review above needs none of this.
 
 Configured API slots need their provider credentials and a positive finite
 `TOTAL_BUDGET`. Agent-session slots need their configured agent route and
