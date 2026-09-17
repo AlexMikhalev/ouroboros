@@ -7,6 +7,7 @@ Docker daemon, upstream package, or provider credential is used.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import pathlib
 from types import SimpleNamespace
@@ -19,9 +20,11 @@ from devtools.benchmarks.cybergym.cybergym_adapter import (
     CyberGymError,
     append_cybergym_result,
     campaign_execution_lock,
+    run_campaign,
     task_slug,
 )
 from devtools.benchmarks.cybergym.cybergym_reconcile import reconcile_main
+from devtools.benchmarks.cybergym.cybergym_wire import GatewayTransportError
 from devtools.benchmarks.cybergym.cybergym_result_index import (
     append_cybergym_late_result,
     effective_task_rows,
@@ -435,6 +438,92 @@ def test_reconcile_supersedes_settled_transport_failure_without_resettling(
     report = _read_manifest(run_dir)["extra"]["reconcile_passes"][-1]
     assert report["late_delivered"][0]["disposition"] == "late_delivered"
     assert fake.released == [(task_id, attempt_id)]
+
+
+@pytest.mark.parametrize("prior_cost,actual,final,admitted", [
+    (None, 7.31, True, True), (None, 20.0, True, True), (None, 0.0, True, True),
+    (None, 25.0, True, False), (None, None, True, False),
+    (None, 7.31, False, False), (20.0, 7.31, True, False),
+])
+def test_campaign_late_result_preserves_historical_held_cost(
+    prior_cost, actual, final, admitted, tmp_path, monkeypatch,
+):
+    """A lost paid attempt can deliver later without refunding its held bound."""
+    task_id = "arvo:1"
+    root = _write_run(tmp_path / "run", [task_id])
+    dispatched = []
+
+    def original_attempt(task, task_dir):
+        attempt = task.metadata["attempt_id"]
+        dispatched.append(attempt)
+        checkpoint = root / "checkpoints" / task_slug(task_id) / attempt / "gateway_checkpoint.json"
+        checkpoint.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint.write_text(json.dumps({
+            "gateway_task_id": "gateway-" + attempt, "status": "submitted",
+        }), encoding="utf-8")
+        if prior_cost is None:
+            raise GatewayTransportError("bounded gateway poll exhausted")
+        return {"status": "infra_failed", "lifecycle": "executor_failed",
+                "cost_usd": prior_cost, "cost_final": True, "cost_estimated": False}
+
+    rows = run_campaign([task_id], run_root=root, executor=original_attempt,
+                        estimated_cost_usd=20.0, budget_cap_usd=3000.0)
+    attempt, = dispatched
+    assert rows[0]["cost_usd"] == prior_cost
+    ledger = BudgetLedger(root / "claims.jsonl", cap_usd=3000.0)
+    assert ledger.attempt_state(attempt) == "settled"
+    assert ledger.projection().settled_usd == 20.0
+    ledger_before = (root / "claims.jsonl").read_bytes()
+    # Historical events carry no settlement-basis tag; recovery must use them.
+    assert not any("basis" in event for event in ledger.events())
+    poc = b"late official final PoC"
+    digest = hashlib.sha256(poc).hexdigest()
+    outcome = {
+        "status": "completed", "lifecycle": "official_verified",
+        "observed_effort": "high", "cost_usd": actual,
+        "cost_final": final, "cost_estimated": False, "final_poc_sha256": digest,
+        "trials": [{"trial_id": "final", "is_final": True, "poc_hash": digest,
+                    "vul_exit_code": 1, "fix_exit_code": 0}],
+        "runtime_result": {"task_id": "gateway-" + attempt, "status": "completed",
+                           "cost_usd": actual, "cost_final": final, "cost_estimated": False},
+    }
+
+    class LateExecutor(_FakeExecutor):
+        def reconcile_task(self, spec, task_dir, attempt_id, checkpoint):
+            task_dir.mkdir(parents=True, exist_ok=True)
+            (task_dir / "final.poc").write_bytes(poc)
+            return super().reconcile_task(spec, task_dir, attempt_id, checkpoint)
+
+        def release_reconciled_workspace(self, spec, attempt_id):
+            # Both paired rows, including the disclosure, precede cleanup.
+            assert _read_rows(root / task_slug(task_id)) == _read_rows(root)
+            assert _read_rows(root)[-1]["ledger_accounted_usd"] == 20.0
+            return super().release_reconciled_workspace(spec, attempt_id)
+
+    fake = LateExecutor(outcome)
+    _install_fake_executor(monkeypatch, fake)
+    assert reconcile_main(_reconcile_args(root)) == (0 if admitted else 2)
+    if admitted:
+        delivered = _read_rows(root)[-1]
+        assert delivered["official_success"] is True
+        assert delivered["row_role"] == "late_delivery"
+        assert delivered["cost_usd"] == actual
+        assert delivered["cost_final"] is True
+        assert delivered["ledger_accounted_usd"] == 20.0
+        assert fake.released == [(task_id, attempt)]
+        # A crash-torn task-local pair is repaired without repeating delivery.
+        task_index = root / task_slug(task_id) / "result_index.jsonl"
+        task_index.write_text(json.dumps(rows[0]) + "\n", encoding="utf-8")
+        assert reconcile_main(_reconcile_args(root)) == 0
+        assert _read_rows(root / task_slug(task_id)) == _read_rows(root)
+        assert len(_read_rows(root)) == 2
+        assert fake.reconciled == [(task_id, attempt)]
+    else:
+        assert reconcile_main(_reconcile_args(root)) == 2
+        assert fake.released == []
+        assert len(_read_rows(root)) == 1
+    assert (root / "claims.jsonl").read_bytes() == ledger_before
+    assert dispatched == [attempt]
 
 
 def test_reconcile_supersedes_unresolved_transport_failure_and_settles_measured(

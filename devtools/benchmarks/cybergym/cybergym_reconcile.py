@@ -43,6 +43,9 @@ from typing import Any
 
 from devtools.benchmarks.cybergym.cybergym_adapter import (
     _TERMINAL_GATEWAY_STATUSES,
+    _active_attempt_liability,
+    _finished_attempt_actual_usd,
+    _terminal_gateway_accounting,
     DEFAULT_LEVEL,
     BudgetLedger,
     CyberGymError,
@@ -636,13 +639,18 @@ def _append_row_if_unrecorded(run_dir: pathlib.Path, row: Mapping[str, Any]) -> 
         return True
 
 
-def _settled_attempt_cost_usd(ledger: BudgetLedger, attempt_id: str) -> float:
-    """Return the durable settled amount for an attempt, or refuse ambiguity."""
+def _settled_attempt_accounting(
+    ledger: BudgetLedger, attempt_id: str, prior_row: Mapping[str, Any],
+) -> tuple[float, bool]:
+    """Return settled amount and proof it held a no-evidence attempt's bound."""
 
+    events = ledger.events()
     latest: Mapping[str, Any] | None = None
-    for event in ledger.events():
+    latest_index = -1
+    for index, event in enumerate(events):
         if str(event.get("attempt_id") or "") == str(attempt_id):
             latest = event
+            latest_index = index
     kind = (
         str(latest.get("event", latest.get("kind", "")) or "").lower()
         if latest is not None
@@ -656,7 +664,18 @@ def _settled_attempt_cost_usd(ledger: BudgetLedger, attempt_id: str) -> float:
         raise LedgerError("settled attempt has no finite cost") from exc
     if not math.isfinite(cost):
         raise LedgerError("settled attempt has no finite cost")
-    return cost
+    # Historical no-evidence settlements have no basis tag. Join the original
+    # outcome with the exact liability it held, using the settlement owner's
+    # existing projection; a previously measured amount must still agree.
+    held_bound = False
+    if not _terminal_gateway_accounting(prior_row.get("runtime_result")) and all(
+        prior_row.get(key) is None
+        for key in ("cost_usd", "cost_upper_bound_usd", "unresolved_upper_bound_usd")
+    ):
+        held_bound = round(cost, 6) == round(
+            _active_attempt_liability(events[:latest_index], attempt_id), 6,
+        )
+    return cost, held_bound
 
 
 def _record_reconcile_pass(manifest: dict[str, Any], report: Mapping[str, Any]) -> None:
@@ -1086,13 +1105,20 @@ def reconcile_main(args: argparse.Namespace) -> int:
                         if not math.isfinite(delivered_cost):
                             raise LedgerError("late terminal row has no finite cost")
                         if claim_state_at_entry == "settled":
-                            # An already-settled claim is terminal accounting:
-                            # the redelivered row must agree with it exactly.
-                            settled_cost = _settled_attempt_cost_usd(ledger, attempt_id)
-                            if round(settled_cost, 6) != round(delivered_cost, 6):
+                            settled_cost, held_bound = _settled_attempt_accounting(
+                                ledger, attempt_id, recorded_rows[attempt_key],
+                            )
+                            if round(settled_cost, 6) != round(delivered_cost, 6) and not (
+                                held_bound and _finished_attempt_actual_usd(row) is not None
+                                and round(delivered_cost, 6) <= round(settled_cost, 6)
+                            ):
                                 raise LedgerError(
                                     "late terminal cost disagrees with settled claim"
                                 )
+                            if held_bound:
+                                # Keep the paid claim unchanged; disclose its
+                                # conservative amount beside the measured cost.
+                                row["ledger_accounted_usd"] = settled_cost
                         checkpoint_value = json.loads(
                             checkpoint.read_text(encoding="utf-8")
                         )

@@ -217,10 +217,9 @@ first-turn fallback allowance does not authorize cross-family substitution.
 
 No model price is hardcoded in this adapter.  Cost is read from the exact
 provider route and usage record.  A missing or `null` cost is `cost unknown`,
-not zero.  A finished or failed attempt settles any known actual; otherwise
-its strongest known upper bound remains campaign liability, falling back to
-the original reservation.  An unknown bound blocks further paid dispatch.
-Only an explicit settled/released transition removes that liability.
+not zero.  Known final cost, measured non-final cost, and a finished attempt
+with no cost evidence have separate settlement rules (§10); all preserve
+campaign liability.  An unknown bound blocks further paid dispatch.
 
 ## 5. No-swarm and tool policy
 
@@ -477,24 +476,10 @@ finalization grace (30 min) instead of cancelling it, and a cancellation
 custody poll that observes such a frame keeps custody for the same grace.
 CyberGym r9 (2026-09-04) wrote off nine finished tasks whose finalization
 outlived the 300 s custody window; their completed results landed 1-15 min
-later.  On the server side the workspace patch bounds the untracked files it
-carries (``OUROBOROS_PATCH_MAX_UNTRACKED_FILES``, 400; time budget
-``OUROBOROS_PATCH_UNTRACKED_TIME_BUDGET_SEC``, 120 s) and discloses the
-surplus under ``untracked_excluded``; the PoC is read from the workspace, not
-from the patch, so scoring is unaffected.
-
-Two agent-side guards are part of the treatment and are disclosed here because
-they shape what a task can do inside that deadline.  A single assistant turn
-executes at most ``OUROBOROS_MAX_TOOL_CALLS_PER_TURN`` tool calls (32); the
-surplus is pruned from the turn, the model is told what was discarded, and the
-task's event log carries a ``tool_call_burst_truncated`` checkpoint (a degenerate
-1113-call turn otherwise overflowed the context window and ended the task).
-The blocking post-task cognition chain (consolidation, summary, reflection) is
-skipped when the task's ``deadline_at`` is nearer than
-``OUROBOROS_POST_TASK_COGNITION_MIN_REMAINING_SEC`` (900 s); the PoC is already
-final at that point, and the skip is recorded as ``post_task_cognition_skipped``.
-Without the guard the supervisor's deadline kill landed mid-reflection, and a task
-whose work had finished in time was lost or published cost-non-final.
+later.  Workspace patch capture discloses its existing per-file exclusions
+under ``untracked_excluded``.  Eligible binary or larger-than-5-MiB untracked
+outputs travel as separate file artifacts instead of Git patch blobs.  The
+PoC is read from the workspace independently of the patch.
 
 The summary always names the metric, numerator, denominator, task-data hash,
 source order, model identity, provider distribution, effort, and whether the
@@ -535,6 +520,13 @@ with requested tasks having neither rows nor checkpoints is
 `reconcile_incomplete`.  The row is fsynced first, claim settlement follows,
 and the exact workspace is released only after the ledger proves a terminal
 state; a later pass resumes any crash window without re-running the agent.
+When a transport failure already settled at its held bound without measured
+cost, a later final measured amount at or below that bound may supersede the
+failure.  The late row retains its measured ``cost_usd`` and separately
+discloses the unchanged claim as ``ledger_accounted_usd``.  Recovery proves
+the bound from the original no-cost row and pre-settlement claim history,
+including historical untagged settlements.  It refunds nothing and refuses
+an amount above the held bound or a conflicting previously measured cost.
 
 Every run is append-only under an external output root such as
 `bench_runs/cybergym/<tag>_<timestamp>/`.  Large image/binary caches use the
@@ -611,10 +603,12 @@ owner-authorized full run the launcher applies the explicit runtime tree cap
 runtime tree cap and the latter is the separate campaign-ledger reservation.
 Both values are visible without conflating their roles, and paid invocations
 must state the runtime cap explicitly.  A new claim still requires a finite
-per-task estimate.  A finished attempt with numeric terminal accounting
-settles that amount.  Otherwise its explicit unresolved upper bound remains
-liability, falling back to the original reservation; a wholly unknown bound
-blocks new dispatch.  A nullable provider cost is never interpreted as zero.
+per-task estimate.  A finished attempt with known final, non-estimated cost
+settles that amount.  Measured but non-final or unattested cost remains
+unresolved at its known bound.  A finished attempt with no cost evidence
+settles at its current held liability, preserving the campaign projection
+without claiming that amount as its measured invoice.  A wholly unknown
+bound blocks new dispatch.  A nullable provider cost is never interpreted as zero.
 The watchdog stops before crossing the cap and cannot raise the cap or rewrite
 settled rows.
 

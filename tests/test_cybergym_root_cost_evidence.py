@@ -163,6 +163,9 @@ def test_explicit_legacy_estimate_is_not_repaired_by_new_proof(value):
     frame = _frame()
     frame["cost_estimated"] = value
     assert _accept(frame) is None
+    projected = _terminal_gateway_accounting(frame)
+    assert projected["cost_estimated"] is True
+    assert projected["cost_final"] is False
 
 
 @pytest.mark.parametrize("phase", ["pending_once", "running", "", None])
@@ -283,7 +286,10 @@ def test_closed_snapshot_preserves_explicit_finality(marker):
     projected = _terminal_gateway_accounting(frame)
     assert projected["cost_usd"] == pytest.approx(1.05)
     assert projected.get("cost_final") is (True if marker is True else False if marker != "absent" else None)
-    assert "cost_estimated" not in projected
+    if marker is True:
+        assert projected["cost_estimated"] is False
+    else:
+        assert "cost_estimated" not in projected
 
 
 def test_closed_snapshot_cannot_override_explicit_partiality():

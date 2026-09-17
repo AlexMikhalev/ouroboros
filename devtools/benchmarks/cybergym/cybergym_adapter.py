@@ -670,6 +670,9 @@ def _terminal_gateway_accounting(payload: Mapping[str, Any] | None) -> dict[str,
         "non_final_rows", "unknown_unmetered", "reserved_usd", "unresolved_upper_bound_usd",
     ))):
         projected["cost_final"] = False
+    # Coherent explicit finality supplies the absent estimate flag on every path.
+    if projected.get("cost_final") is True and not estimated_present:
+        projected["cost_estimated"] = False
     return projected
 
 
