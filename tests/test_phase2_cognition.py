@@ -157,7 +157,7 @@ def test_missing_role_terminal_root_is_never_labeled_child(tmp_path):
     row = next(row for row in _chat_rows(tmp_path) if row.get("task_id") == "roleless-root")
     assert row["summary_kind"] == "terminal_root_projection"
     assert row["role"] == "root"
-    assert "role=root" in row["text"]
+    assert "Root task roleless-root." in row["text"]
 
 
 def test_terminal_child_projection_is_idempotent_and_honest_for_all_outcomes(tmp_path):
@@ -201,7 +201,9 @@ def test_terminal_child_projection_is_idempotent_and_honest_for_all_outcomes(tmp
         assert row["result_ref"] == {
             "kind": "task_result", "task_id": task_id, "reader": "get_task_result",
         }
-        assert f'get_task_result(task_id="{task_id}")' in row["text"]
+        # The reader is a typed field; a host row never spells a tool name.
+        assert "get_task_result" not in row["text"]
+        assert f"(child {task_id} of project-root)" in row["text"]
 
 
 def test_terminal_projection_dedup_does_not_lose_concurrent_chat_append(tmp_path):
@@ -403,6 +405,7 @@ def test_split_authored_narrative_keeps_only_canonical_result_ref_after_child_gc
 
 
 def test_duplicate_task_done_after_child_copyback_appends_one_canonical_projection(tmp_path):
+    from ouroboros.headless import prepare_terminal_task_files
     from ouroboros.task_results import STATUS_COMPLETED, load_task_result, write_task_result
     from supervisor import events
 
@@ -431,6 +434,9 @@ def test_duplicate_task_done_after_child_copyback_appends_one_canonical_projecti
     event = {"task_id": "child-copy", "worker_id": 7, "task_type": "task",
              "chat_id": 41, "status": "completed"}
 
+    prepared = prepare_terminal_task_files(tmp_path, task)
+    assert not prepared["error"]
+    event["_files_prepared_attempt"] = int(task.get("_attempt") or 1)
     events._handle_task_done(event, ctx)
     events._handle_task_done(event, ctx)
 
@@ -468,10 +474,13 @@ def test_child_projection_enters_main_cognition_and_project_lineage_not_main_ui(
     project_context = "\n\n".join(
         build_recent_sections(Memory(tmp_path), env=None, thread_chat_id=project_chat)
     )
-    assert "Reviewed exact SHA" in main_context
-    assert "parent=root" in main_context
-    assert "Reviewed exact SHA" in project_context
-    assert "parent=root" in project_context
+    # ``memory._format_chat_line`` renders the text and drops every typed
+    # field, so lineage must stay in words. The child's own answer is not
+    # repeated here: it is a turn of its own in the room this row lives in.
+    assert "(child child-review of root)" in main_context
+    assert "Reviewed exact SHA" not in main_context
+    assert "(child child-review of root)" in project_context
+    assert "Reviewed exact SHA" not in project_context
 
     import asyncio
 
@@ -496,11 +505,21 @@ def test_child_projection_enters_main_cognition_and_project_lineage_not_main_ui(
         {"chat_id": 1, "status": "completed"},
     )
     main_context = "\n\n".join(build_recent_sections(Memory(tmp_path), env=None))
-    assert "Unscoped child truth" in main_context
+    assert "researcher (child child-main of main-root)" in main_context
+    assert "Unscoped child truth" not in main_context
     main_rows = json.loads(asyncio.run(endpoint(SimpleNamespace(
         query_params={"chat_id": "1"},
     ))).body)["messages"]
-    assert not any(row.get("task_id") == "child-main" for row in main_rows)
+    # The synthetic cognitive text is never a Main bubble. Its compact typed
+    # terminal observation can cross a page boundary to close older narration,
+    # but carries neither current task authority nor the cognitive result text.
+    [evidence] = [row for row in main_rows if row.get("task_id") == "child-main"]
+    assert evidence["system_type"] == "task_summary"
+    assert evidence["summary_kind"] == "terminal_result_projection"
+    assert evidence["text"] == "" and evidence["is_progress"] is False
+    assert evidence["historical_terminal"]["status"] == "completed"
+    assert not {"task_terminal_status", "outcome_axes", "review_projection", "result"} & evidence.keys()
+    assert "Unscoped child truth" not in json.dumps(main_rows)
 
 
 def test_project_build_reads_canonical_scratchpad_and_mutates_only_project_workpad(

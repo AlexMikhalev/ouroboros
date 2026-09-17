@@ -1223,10 +1223,11 @@ def test_normal_key_probe_stays_single_model_but_contributor_probes_all(monkeypa
 
 
 def _git(repo: Path, *args: str) -> str:
+    patch = args[:1] == ("diff",) and "--binary" in args
     proc = subprocess.run(
-        ["git", *args], cwd=str(repo), capture_output=True, text=True, check=True,
+        ["git", *args], cwd=str(repo), capture_output=True, text=not patch, check=True,
     )
-    return proc.stdout
+    return proc.stdout.decode("utf-8", errors="surrogateescape") if patch else proc.stdout
 
 
 def test_isolated_checkout_freezes_the_reviewed_tree(tmp_path, monkeypatch):

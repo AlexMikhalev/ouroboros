@@ -71,7 +71,6 @@ def _write_snapshot(tmp_path, running_ids=()):
 def _live_chat_agent(monkeypatch, task_id=TURN_ID, *, accepting=True):
     """The chat agent mid-turn, shaped exactly as agent.py leaves it (the
     fields steering.py and workers.chat_turn_liveness read)."""
-    from supervisor import workers
 
     import threading
 
@@ -83,7 +82,9 @@ def _live_chat_agent(monkeypatch, task_id=TURN_ID, *, accepting=True):
         _task_started_ts=1000.0, _last_activity_ts=1000.0,
         _owner_message_admission_lock=threading.Lock(),
     )
-    monkeypatch.setattr(workers, "_chat_agent", agent, raising=False)
+    from supervisor.active_activity import get_direct_activity_registry
+
+    get_direct_activity_registry().register(task_id, chat_id=agent._current_chat_id, actor=agent)
     return agent
 
 
@@ -148,7 +149,7 @@ def test_live_direct_chat_turn_is_owned_and_admitted_by_every_owner_control(tmp_
     assert queue.resume_budget_paused_task(TURN_ID)["error"] == "task_not_pending"
 
 
-def test_ephemeral_decision_turn_is_not_an_owner_addressable_task(tmp_path, monkeypatch):
+def test_closed_conversation_admission_is_not_owner_addressable(tmp_path, monkeypatch):
     _isolate_queue(monkeypatch, tmp_path)
     _live_chat_agent(monkeypatch, accepting=False)
     from supervisor.queue_transitions import task_has_live_ownership

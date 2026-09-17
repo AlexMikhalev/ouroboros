@@ -32,6 +32,25 @@ def _workflow() -> dict:
     return yaml.safe_load(CI_PATH.read_text(encoding="utf-8"))
 
 
+def test_pull_requests_run_only_the_narrow_publish_browser_proof():
+    job = _workflow()["jobs"]["ui-smoke"]
+    assert " ".join(job["if"].split()) == (
+        "github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'"
+        " || startsWith(github.ref, 'refs/tags/v')"
+    )
+    steps = {step.get("name"): step for step in job["steps"] if step.get("name")}
+    narrow = steps["Run Publish admission browser proof"]
+    assert narrow["if"] == "github.event_name == 'pull_request'"
+    assert narrow["run"] == (
+        'python -m pytest tests/test_skill_publish_browser.py -o addopts="" -m ui_browser -q --tb=short'
+    )
+    assert narrow["env"]["OUROBOROS_RUN_UI_SMOKE"] == "1"
+    assert narrow["env"]["OUROBOROS_EXPECT_BROWSER_ENGINES"] == "chromium"
+    for name in ("Install full UI smoke WebKit", "Run host UI smoke", "Run browser tools Chromium/WebKit smoke"):
+        assert steps[name]["if"] == "github.event_name != 'pull_request'"
+    assert "secrets." not in _job_text("ui-smoke")
+
+
 def _triggers(workflow: dict) -> dict:
     # YAML 1.1 reads a bare `on:` key as the boolean True; PyYAML follows it.
     return workflow.get("on") or workflow.get(True) or {}

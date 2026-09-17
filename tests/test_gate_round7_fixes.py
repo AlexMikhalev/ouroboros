@@ -284,8 +284,12 @@ def test_gr7_2_split_drive_child_answer_never_replaces_the_settled_canonical(
                  "child_drive_root": str(child_drive)},
         "worker_id": 0,
     }
-    write_task_result(qenv.drive, task_id, STATUS_COMPLETED, chat_id=5,
+    from ouroboros.headless import prepare_terminal_task_files
+
+    write_task_result(child_drive, task_id, STATUS_COMPLETED, chat_id=5,
                       result="the canonical settled answer")
+    # Complete the real adoption before testing a stale replica against CURRENT.
+    assert not prepare_terminal_task_files(qenv.drive, qenv.q.RUNNING[task_id]["task"])["error"]
     write_task_result(child_drive, task_id, STATUS_COMPLETED,
                       result="a DIFFERING child answer")
     row_path = task_result_path(qenv.drive, task_id)
@@ -448,8 +452,9 @@ def test_gr7_4_completed_delivery_dedups_across_a_changed_note(tmp_path):
     replay = td.build_completed_result_event(
         tmp_path, task, "sid7", stored, unreconciled_runs=[],
     )
-    assert "run-a" in first["text"] and "run-a" not in replay["text"], (
-        "the disclosure still rides the text"
+    assert first["text"] == replay["text"] == "the answer", "the answer is the model's words"
+    assert "run-a" in first["terminal_custody_notice"] and "terminal_custody_notice" not in replay, (
+        "the disclosure rides the custody row (#1006)"
     )
     assert first["delivery_id"] == replay["delivery_id"], (
         "GR7-4: identity comes from the stable core, never the mutable note"

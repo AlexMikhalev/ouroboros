@@ -14,6 +14,8 @@ import {
 import {
     isTerminalTaskDetail,
     summarizeChatLiveEvent,
+    summarizeLogEvent,
+    taskDoneIsTerminal,
     taskOutcomeSeverity,
     taskTerminalPhase,
 } from '../modules/log_events.js';
@@ -70,57 +72,58 @@ test('hydration inserts managed queue roots with their queue phase', () => {
     assert.equal(updated.get('root-2').phase, 'queued');
 });
 
-test('snapshot absence concludes a managed entry seen before the request barrier', () => {
+test('a complete census concludes every entry it does not list, whatever its kind', () => {
     const existing = new Map([
-        ['done-root', { activityId: 'done-root', kind: 'managed_task', phase: 'working', startedAt: 100 }],
-        // Registered AFTER the snapshot request went out: the barrier protects it.
-        ['fresh-root', { activityId: 'fresh-root', kind: 'managed_task', phase: 'working', startedAt: 9_000 }],
-        // Kind-less legacy/subagent typing entry: no snapshot source tracks it.
-        ['legacy', { activityId: 'legacy', kind: '', phase: 'thinking', startedAt: 100 }],
+        ['done-root', { activityId: 'done-root', kind: 'managed_task', phase: 'working' }],
+        ['second-root', { activityId: 'second-root', kind: 'managed_task', phase: 'working' }],
+        // Kind-less entries were exempt while typing frames wrote this map; the
+        // census is now its only writer, so a complete listing is total.
+        ['legacy', { activityId: 'legacy', kind: '', phase: 'thinking' }],
     ]);
-    const updated = computeHydratedDirectActivities(existing, [], 1, 5_000);
-    assert.ok(!updated.has('done-root'));
-    assert.ok(updated.has('fresh-root'));
-    assert.ok(updated.has('legacy'));
+    assert.equal(computeHydratedDirectActivities(existing, [], 1, null, true).size, 0);
+    // An incomplete listing (supervisor not ready, or a source failed) deletes nothing.
+    assert.equal(computeHydratedDirectActivities(existing, [], 1, null, false).size, 3);
 });
 
-test('a managed typing entry upgrades to the snapshot kind and phase', () => {
+test('an existing entry upgrades to the census kind and phase', () => {
     const existing = new Map([
-        ['root-1', { activityId: 'root-1', kind: 'managed_task', phase: 'working', startedAt: 50 }],
+        ['root-1', { activityId: 'root-1', kind: 'managed_task', phase: 'working', clientMessageId: 'cm-1' }],
     ]);
     const snapshot = [
         { activity_id: 'root-1', chat_id: 1, kind: 'managed_task', phase: 'finalizing' },
     ];
-    const updated = computeHydratedDirectActivities(existing, snapshot, 1, 5_000);
+    const updated = computeHydratedDirectActivities(existing, snapshot, 1);
     assert.equal(updated.get('root-1').phase, 'finalizing');
-    assert.equal(updated.get('root-1').startedAt, 50);  // client clock preserved
+    assert.equal(updated.get('root-1').clientMessageId, 'cm-1');  // submission link survives
 });
 
-test('managed queue loss candidates require prior host kind and request-start ordering', () => {
+test('managed queue loss candidates require prior host kind', () => {
     const existing = new Map([
-        ['lost-root', { activityId: 'lost-root', kind: 'managed_task', phase: 'working', startedAt: 100 }],
-        ['fresh-root', { activityId: 'fresh-root', kind: 'managed_task', phase: 'working', startedAt: 5_000 }],
-        ['kindless-child', { activityId: 'kindless-child', kind: '', phase: 'thinking', startedAt: 100 }],
-        ['direct-turn', { activityId: 'direct-turn', kind: 'direct_chat', phase: 'thinking', startedAt: 100 }],
+        ['lost-root', { activityId: 'lost-root', kind: 'managed_task', phase: 'working' }],
+        ['kindless-child', { activityId: 'kindless-child', kind: '', phase: 'thinking' }],
+        ['direct-turn', { activityId: 'direct-turn', kind: 'direct_chat', phase: 'thinking' }],
     ]);
-    const result = reconcileHydratedDirectActivities(existing, [], 1, 5_000);
+    const result = reconcileHydratedDirectActivities(existing, [], 1);
 
     assert.deepEqual(result.departedManagedTaskIds, ['lost-root']);
     assert.deepEqual(result.disappearedManagedTaskIds, ['lost-root']);
-    assert.ok(!result.activities.has('lost-root'));
-    assert.ok(result.activities.has('fresh-root'));  // equality is newer-than-snapshot safe
-    assert.ok(result.activities.has('kindless-child'));  // subagent/legacy has no snapshot authority
-    assert.ok(!result.activities.has('direct-turn'));  // header-only removal, no task-detail authority
+    assert.equal(result.activities.size, 0);  // the complete census deletes every unlisted id
+    // Only host-stamped managed roots carry task-detail authority; the rest are
+    // header-only conclusions of record.
+    assert.deepEqual(
+        result.concludedDirectActivities.map((row) => row.activityId),
+        ['kindless-child', 'direct-turn'],
+    );
 });
 
 test('managed rehome departs locally without becoming globally missing', () => {
     const existing = new Map([
-        ['root-1', { activityId: 'root-1', kind: 'managed_task', phase: 'working', startedAt: 100 }],
+        ['root-1', { activityId: 'root-1', kind: 'managed_task', phase: 'working' }],
     ]);
     const rehomed = [
         { activity_id: 'root-1', chat_id: 9, kind: 'managed_task', phase: 'working' },
     ];
-    const result = reconcileHydratedDirectActivities(existing, rehomed, 1, 5_000);
+    const result = reconcileHydratedDirectActivities(existing, rehomed, 1);
 
     assert.equal(result.activities.size, 0);
     assert.deepEqual(result.departedManagedTaskIds, ['root-1']);
@@ -129,7 +132,7 @@ test('managed rehome departs locally without becoming globally missing', () => {
 
     // The same global fact is returned after the local entry is already gone,
     // allowing a caller to clear an earlier retry candidate without recapture.
-    const later = reconcileHydratedDirectActivities(new Map(), rehomed, 1, 6_000);
+    const later = reconcileHydratedDirectActivities(new Map(), rehomed, 1);
     assert.ok(later.globallyActiveActivityIds.has('root-1'));
     assert.deepEqual(later.disappearedManagedTaskIds, []);
 });
@@ -137,13 +140,12 @@ test('managed rehome departs locally without becoming globally missing', () => {
 test('concluded managed roots cannot be recaptured or resurrected by an old snapshot', () => {
     const concluded = new Map([['done-root', 123]]);
     const existing = new Map([
-        ['done-root', { activityId: 'done-root', kind: 'managed_task', phase: 'working', startedAt: 100 }],
+        ['done-root', { activityId: 'done-root', kind: 'managed_task', phase: 'working' }],
     ]);
     const result = reconcileHydratedDirectActivities(
         existing,
         [{ activity_id: 'done-root', chat_id: 1, kind: 'managed_task', phase: 'working' }],
         1,
-        5_000,
         concluded,
     );
     assert.equal(result.activities.size, 0);
@@ -158,10 +160,15 @@ test('durable detail terminality is narrow and outcome labels stay unchanged', (
         assert.equal(isTerminalTaskDetail({ status }), true, status);
     }
     for (const post_task_synthesis of ['pending_once', 'running']) {
-        assert.equal(isTerminalTaskDetail({
-            status: 'completed',
-            root_phase_checkpoint: { post_task_synthesis },
-        }), false, `completed/${post_task_synthesis}`);
+        for (const status of ['completed', 'failed']) {
+            const record = { type: 'task_done', status, root_phase_checkpoint: { post_task_synthesis } };
+            assert.equal(isTerminalTaskDetail(record), false, `${status}/${post_task_synthesis}`);
+            assert.equal(taskDoneIsTerminal(record), false);
+            assert.equal(summarizeChatLiveEvent(record).terminal, false);
+            const headline = status === 'failed' ? 'Failed' : 'Working';
+            assert.equal(summarizeChatLiveEvent(record).headline, headline);
+            assert.equal(summarizeLogEvent(record).headline, headline);
+        }
     }
     assert.equal(isTerminalTaskDetail({
         status: 'completed',
@@ -169,8 +176,8 @@ test('durable detail terminality is narrow and outcome labels stay unchanged', (
     }), true, 'completed/completed');
     assert.equal(isTerminalTaskDetail({
         status: 'failed',
-        root_phase_checkpoint: { post_task_synthesis: 'running' },
-    }), true, 'failed/running');
+        root_phase_checkpoint: { post_task_synthesis: 'degraded' },
+    }), true, 'failed/degraded');
     assert.equal(taskTerminalPhase({ status: 'completed' }), 'done');
     assert.equal(taskTerminalPhase({ status: 'cancelled' }), 'cancelled');
     assert.equal(taskTerminalPhase({ status: 'failed' }), 'error');
@@ -270,23 +277,23 @@ test('typed terminal status is the phase authority even without a legacy status 
     assert.equal(taskTerminalPhase({ task_terminal_status: 'completed' }), 'done');
 });
 
-test('removed direct/ephemeral rows come back as conclusions of record (#369)', () => {
+test('removed direct rows come back as conclusions of record (#369)', () => {
     const existing = new Map([
-        ['direct-turn', { activityId: 'direct-turn', kind: 'direct_chat', phase: 'thinking', startedAt: 100, clientMessageId: 'cm-1' }],
-        ['eph-turn', { activityId: 'eph-turn', kind: 'ephemeral_decision', phase: 'thinking', startedAt: 100 }],
-        ['done-before', { activityId: 'done-before', kind: 'direct_chat', phase: 'thinking', startedAt: 100 }],
-        ['still-live', { activityId: 'still-live', kind: 'direct_chat', phase: 'thinking', startedAt: 100 }],
+        ['direct-turn', { activityId: 'direct-turn', kind: 'direct_chat', phase: 'thinking', clientMessageId: 'cm-1' }],
+        ['direct-second', { activityId: 'direct-second', kind: 'direct_chat', phase: 'thinking' }],
+        ['done-before', { activityId: 'done-before', kind: 'direct_chat', phase: 'thinking' }],
+        ['still-live', { activityId: 'still-live', kind: 'direct_chat', phase: 'thinking' }],
     ]);
     const snapshot = [
         { activity_id: 'still-live', chat_id: 1, kind: 'direct_chat', phase: 'thinking', started_at: 0.1 },
     ];
     const concluded = new Set(['done-before']);
-    const result = reconcileHydratedDirectActivities(existing, snapshot, 1, 5_000, concluded);
+    const result = reconcileHydratedDirectActivities(existing, snapshot, 1, concluded);
     assert.deepEqual(
         result.concludedDirectActivities,
         [
             { activityId: 'direct-turn', clientMessageId: 'cm-1' },
-            { activityId: 'eph-turn', clientMessageId: '' },
+            { activityId: 'direct-second', clientMessageId: '' },
         ],
     );
     // Already-concluded and still-live rows are never re-concluded.

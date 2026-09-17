@@ -96,15 +96,17 @@ def handle_routing_decision(
                      "decision_id": decision_id}
     from ouroboros.project_dialogue import (
         append_chat_annotation,
-        chat_annotation_receipt,
         latest_chat_annotations,
+        routing_refusal_cause,
     )
 
-    receipt = chat_annotation_receipt(drive_root, client_message_id, token)
+    # The card is live only while its token is the message's LATEST act:
+    # receipts are kept per token, but a newer routing attempt on the same
+    # message supersedes the picker, so the click reads the latest row and
+    # settles instead of retrying when the token no longer matches.
+    latest = latest_chat_annotations(drive_root).get(client_message_id, {})
+    receipt = latest if str(latest.get("routing_token") or "") == token else {}
     if not receipt:
-        # The refusal row was superseded (a newer routing attempt re-minted
-        # the token) or never existed — the card settles instead of retrying.
-        latest = latest_chat_annotations(drive_root).get(client_message_id, {})
         return 409, {"ok": False, "error": "decision_superseded",
                      "decision_id": decision_id,
                      "state": "superseded",
@@ -196,10 +198,10 @@ def handle_routing_decision(
             "message": origin_text,
             "chat_id": chat_id,
             "client_message_id": client_message_id,
-            # The option list was host-built for this exact message's lane and
-            # the owner picked the row explicitly — global root addressing is
-            # the validated intent, not a widening.
-            "allow_global_root": True,
+            # The owner clicked: an owner turn by construction. The option list
+            # was host-built for this exact message's lane, and the room veto
+            # reads that lane from the origin chat (Main sees every root).
+            "issuer": {"kind": "owner_turn"},
             "attachment_uploads": attachment_uploads,
             **provenance,
             "ts": utc_now_iso(),
@@ -216,6 +218,9 @@ def handle_routing_decision(
             # routing decision on a refused message, so it wears the
             # route_to_project receipt label regardless of source chat.
             "routed_from_main": True,
+            # The owner's click, not a model turn, issued this promote: a
+            # refusal is told by the handler's typed System row (no narrator).
+            "host_initiated": True,
             "client_message_id": client_message_id,
             "attachment_uploads": attachment_uploads,
             **provenance,
@@ -315,9 +320,18 @@ def handle_routing_decision(
         # the latest row — re-assert the refusal under the ORIGINAL token so
         # the card the UI re-opens still validates and replays cleanly.
         _reopen_refusal()
+        reason = str(outcome.get("reason") or outcome_status)
+        # The same act the receipt wore, so the sentence carries its prefix.
+        receipt_action = (
+            "steer_task" if action == "steer_task"
+            else ("route_to_project" if evt.get("routed_from_main") else "promote_chat_to_task")
+        )
         return 409, {"ok": False, "error": "dispatch_rejected",
                      "decision_id": decision_id, "state": "open",
-                     "reason": str(outcome.get("reason") or outcome_status)}
+                     "reason": reason,
+                     # The owner-facing sentence from the host's own table (the
+                     # toast shows it instead of the raw code).
+                     "cause": routing_refusal_cause(receipt_action, "needs_manual_target", reason, None)}
     # Unconfirmed: honestly retriable — the derived identities make a replay
     # of the SAME request byte-identical, so the supervisor dedupes it.
     return 503, {"ok": False, "error": "dispatch_unconfirmed",

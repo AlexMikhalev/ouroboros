@@ -11,11 +11,12 @@ import inspect
 
 def test_knowledge_module_has_no_raw_journal_appends():
     import ouroboros.tools.knowledge as knowledge
+    import ouroboros.knowledge as knowledge_store
 
-    src = inspect.getsource(knowledge)
-    assert 'open(history_path, "a"' not in src
-    assert 'open(journal_path, "a"' not in src
-    assert src.count("append_jsonl(") >= 3  # both history writers + the journal
+    sources = [inspect.getsource(knowledge), inspect.getsource(knowledge_store)]
+    assert all('open(history_path, "a"' not in src for src in sources)
+    assert all('open(journal_path, "a"' not in src for src in sources)
+    assert sum(src.count("append_jsonl(") for src in sources) >= 3
 
 
 def test_knowledge_history_rows_land_via_locked_seam(tmp_path, monkeypatch):

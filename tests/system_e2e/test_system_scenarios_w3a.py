@@ -253,6 +253,8 @@ S11_GOAL = "Write the w3a plan-review smoke note."
 S11_SPEC_V1 = {
     "in_scope": ["w3a plan-review smoke"],
     "acceptance_claims": ["The plan-review smoke completes with a recorded chronicle."],
+    # Required on every submitted spec (owner 9=A); the smoke note changes no repository file.
+    "affected_paths": [],
 }
 S11_SPEC_V2 = {
     **S11_SPEC_V1,
@@ -656,7 +658,11 @@ def test_s16_freshness_refreshes_advisory_then_rejects_post_verdict_mutation(
             # previous stale episode.
             advisory_state = task_drive.advisory_review()
             runs = advisory_state.get("advisory_runs") or []
-            assert runs, advisory_state
+            assert len(runs) == 2, advisory_state
+            assert len({r.get("snapshot_hash") for r in runs}) == 2, runs
+            original_hash = json.loads(preflight_result)["snapshot_hash"]
+            assert any(r.get("snapshot_hash") == original_hash and r.get("status") == "stale"
+                       for r in runs), runs
             statuses = {str(r.get("status") or "") for r in runs if isinstance(r, dict)}
             assert "stale" in statuses, runs
 
@@ -682,7 +688,7 @@ def test_s16_freshness_refreshes_advisory_then_rejects_post_verdict_mutation(
             assert kinds.count("advisory_review") == 2, kinds
             assert kinds.count("triad_review") == 3, kinds
             assert kinds.count("scope_review") == 1, kinds
-            assert kinds.index("advisory_review") < kinds.index("triad_review"), kinds
+            assert max(i for i, kind in enumerate(kinds) if kind == "advisory_review") < kinds.index("triad_review"), kinds
             review_script.assert_consumed()
         finally:
             server.stop()

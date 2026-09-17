@@ -21,8 +21,10 @@ export const ACTION_RESUME = 'resume';
 export const ACTION_STOP_NOW = 'stop_now';
 
 // Logical slots that may host multiple independent cycles (v6.82: shared so
-// control eligibility and the chat card layer read the same truth).
-export const REUSABLE_TASK_IDS = new Set(['bg-consciousness', 'active']);
+// control eligibility and the chat card layer read the same truth). A
+// consciousness wake-up is NOT one of them: it is an ordinary direct turn with
+// its own task id and its own durable result.
+export const REUSABLE_TASK_IDS = new Set(['active']);
 
 /**
  * v6.82 (P5): may this live card offer the stop/hurry control?

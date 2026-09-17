@@ -161,8 +161,8 @@ def test_markerless_native_is_user_managed_in_every_runtime_mode(
     )
     assert "BLOCKED" in sidecar_write
     assert "BLOCKED" in sidecar_edit
-    assert "SAFETY_VIOLATION" in sidecar_shell
-    assert "SAFETY_VIOLATION" in existing_sidecar_shell
+    assert "SKILL_PAYLOAD_BLOCKED" in sidecar_shell
+    assert "SKILL_PAYLOAD_BLOCKED" in existing_sidecar_shell
     assert not (user_payload / ".seed-origin").exists()
     assert "real" in (user_payload / ".clawhub.json").read_text(encoding="utf-8")
 
@@ -242,8 +242,8 @@ def test_direct_operator_can_read_native_payload_but_not_mutate_or_forge_sidecar
         "write_file",
         {**selector, "path": ".seed-origin", "content": "forged\n"},
     )
-    assert "BLOCKED" in ordinary_write
-    assert "BLOCKED" in sidecar_write
+    assert "SKILL_PAYLOAD_ARG_ERROR" in ordinary_write
+    assert "SKILL_PAYLOAD_ARG_ERROR" in sidecar_write
     assert not (payload / "new.txt").exists()
     assert (payload / ".seed-origin").read_text(encoding="utf-8") == "launcher-seed\n"
 

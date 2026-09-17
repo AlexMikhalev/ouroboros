@@ -79,6 +79,8 @@ _ROUTE_ENV_NAMES = (
     "OUROBOROS_MODEL_LIGHT",
     "OUROBOROS_LLM_TRANSPORT_READ_TIMEOUT_SEC",
     "OUROBOROS_OBSERVABILITY_KEEP_RAW",
+    "OUROBOROS_MODEL_ACCOUNTS",
+    "OUROBOROS_MODEL_CONTEXT_WINDOWS",
 )
 
 # Class-level caches LLMClient uses as process-global memory. Reset per case.
@@ -309,6 +311,8 @@ def _install_fakes(stack: contextlib.ExitStack, recorder: _Recorder, spec: Dict[
     stack.enter_context(mock.patch("openai.AsyncOpenAI", async_cls))
     stack.enter_context(mock.patch.object(httpx, "Client", httpx_cls))
     stack.enter_context(mock.patch.object(httpx, "AsyncClient", httpx_cls))
+    if spec.get("model_operation"):
+        _install_model_operation_fake(stack, recorder, spec)
 
     def _post(url: str, *, headers: Optional[Dict[str, str]] = None, json: Any = None,
               timeout: Any = None, trust_env: Any = None, **_rest: Any) -> Any:
@@ -423,7 +427,10 @@ def _install_fakes(stack: contextlib.ExitStack, recorder: _Recorder, spec: Dict[
 
         stack.enter_context(mock.patch.object(
             local_model_module, "get_manager",
-            lambda: types.SimpleNamespace(get_context_length=lambda: int(ctx_len)),
+
+            lambda: types.SimpleNamespace(serving_context_evidence=lambda: {
+                "context_window": int(ctx_len) if ctx_len else None, "confirmed": bool(ctx_len)},
+                measure_prepared_input=lambda payload: {"supported": False}),
         ))
 
 
@@ -440,6 +447,47 @@ def _gigachat_completion(body: Dict[str, Any]) -> Any:
         choices=[types.SimpleNamespace(message=gmsg)],
         usage=types.SimpleNamespace(**usage) if usage else None,
     )
+
+
+def _install_model_operation_fake(stack: contextlib.ExitStack, recorder: _Recorder, spec: dict) -> None:
+    """Record model operations without pretending they use Chat Completions JSON.
+
+    Reuse the owned-gateway fake and the real LLM/ledger/CAS adapter. A retried
+    control POST with the same idempotency key remains one physical send.
+    """
+    from ouroboros import llm_claudexor
+    from tests.test_llm_claudexor import Gateway, result
+
+    class ModelGateway(Gateway):
+        def create_model_operation(self, ref, *, idempotency_key):
+            if idempotency_key not in self.accepted_operations:
+                payload = self.uploads[-1][0]
+                step = recorder.record("claudexor.model_operation", payload=payload)
+                if step.get("kind") == "error" and step.get("code") != "provider_policy_refusal":
+                    _raise_step(step)
+                value = copy.deepcopy(step.get("model_result") or result(outcome="failed", problem={
+                    "code": step.get("code"), "message": step.get("message")}, route={
+                    "source": payload["source"], "model": payload["model"],
+                    "credentialProfileId": "conformance-profile", "accountFingerprint": "conformance-identity"}))
+                index = len(self.accepted_operations)
+                if index == 0:
+                    self.results[0], self.dispatch[0] = value, "response_received"
+                else:
+                    self.results.append(value)
+                    self.dispatch.append("response_received")
+            return super().create_model_operation(ref, idempotency_key=idempotency_key)
+
+        def get_model_result(self, operation_id, *, expected_ref, timeout_sec=None, raw_bytes=False):
+            # Caller timeout binds this actual control read, NOT generation duration.
+            recorder.sends[int(operation_id.removeprefix("op-"))]["timeout"] = timeout_sec
+            return super().get_model_result(operation_id, expected_ref=expected_ref,
+                                           timeout_sec=timeout_sec, raw_bytes=raw_bytes)
+
+    gateway = ModelGateway()
+    gateway.lose_create = bool(spec.get("lose_model_create_reply"))
+    gateway.pending = bool(spec.get("cancel_model_after_create"))
+    recorder.model_gateway = gateway
+    stack.enter_context(mock.patch.object(llm_claudexor, "ensure_owned_gateway", lambda: gateway))
 
 
 # ---------------------------------------------------------------------------
@@ -562,10 +610,15 @@ def _observe(spec: Dict[str, Any]) -> Dict[str, Any]:
 
         client_args = spec.get("client") or {}
         client = LLMClient(**client_args)
+        call = copy.deepcopy(spec["call"])
+        if spec.get("cancel_model_after_create"):
+            call["kwargs"]["model_poll_control"] = lambda: "cancelled" if recorder.model_gateway.accepted_operations else None
         try:
-            result = _call_route(client, spec["call"])
+            result = _call_route(client, call)
         except BaseException as exc:  # noqa: BLE001 - the raise IS the projection
             observed["raised"] = {"type": type(exc).__name__, "message": str(exc)}
+            if spec.get("model_operation"):
+                observed["raised"].update(code=getattr(exc, "code", ""), control_reason=getattr(exc, "control_reason", ""))
         else:
             observed["returned"] = _project_result(result, str(spec["call"].get("project") or ""))
 
@@ -582,6 +635,10 @@ def _observe(spec: Dict[str, Any]) -> Dict[str, Any]:
     if ledger:
         observed["physical_attempts"] = ledger
     observed["unused_script_steps"] = len(recorder.script)
+    if spec.get("model_operation"):
+        gateway = recorder.model_gateway
+        observed["model_control"] = {"create_posts": len(gateway.creates), "operations": len(gateway.accepted_operations),
+                                     "unique_create_keys": len(set(gateway.creates)), "cancels": gateway.cancels}
     return _jsonable(observed)
 
 

@@ -6,6 +6,8 @@ stay closed), and rows are absent on historical results (forward-only)."""
 
 import json
 
+import pytest
+
 from ouroboros.review_evidence import (
     acceptance_evidence_ref_vocabulary,
     annotate_criteria_evidence_resolution,
@@ -109,6 +111,50 @@ def test_vocabulary_enumerates_packet_exhibits_exactly():
     # Robust to junk input.
     assert acceptance_evidence_ref_vocabulary(None) == {}
     assert acceptance_evidence_ref_vocabulary("junk") == {}
+
+
+def test_trajectory_record_refs_need_materialized_membership_and_host_provenance():
+    from ouroboros.review_evidence_refs import trajectory_record_ref
+    source = {"sha256": "a" * 64}
+    ref = trajectory_record_ref(source, 17)
+    packet = {"tool_trajectory_source_ref": source, "tool_trajectory_selected": [{
+        "ref": ref, "source_index": 17, "result": "ok", "args": "",
+        "args_complete": True, "result_complete": True}],
+        "__provenance__": {"tool_trajectory_selected": "tool_result"}}
+    assert acceptance_evidence_ref_vocabulary(packet)[ref] == "tool_record"
+    assert trajectory_record_ref(source, 0) not in acceptance_evidence_ref_vocabulary(packet)
+    assert trajectory_record_ref({}, 17) == ""
+    assert trajectory_record_ref(source, True) == ""
+    packet["__provenance__"]["tool_trajectory_selected"] = "agent_supplied"
+    assert acceptance_evidence_ref_vocabulary(packet)[ref] == "unattested_section"
+    packet["tool_trajectory_source_ref"] = {"sha256": "b" * 64}
+    assert ref not in acceptance_evidence_ref_vocabulary(packet)
+
+
+@pytest.mark.parametrize("field", ["sha256", "corpus_sha256"])
+@pytest.mark.parametrize("identity", [None, "", "bad", "A" * 64, 17])
+def test_malformed_corpus_identity_does_not_fall_back_to_copy_digest(field, identity):
+    from ouroboros.review_evidence_refs import trajectory_record_ref
+
+    assert trajectory_record_ref({"sha256": "b" * 64, "corpus_sha256": "a" * 64, field: identity}, 0) == ""
+
+
+def test_promoted_corpus_identity_keeps_membership_and_provenance_requirements():
+    from ouroboros.review_evidence_refs import trajectory_record_ref
+
+    source = {"sha256": "b" * 64, "corpus_sha256": "a" * 64}
+    ref = trajectory_record_ref(source, 17)
+    assert ref == trajectory_record_ref({"sha256": "a" * 64}, 17)
+    packet = {"tool_trajectory_source_ref": source, "tool_trajectory_selected": [{
+        "ref": ref, "source_index": 17, "result": "ok", "args": "",
+        "args_complete": True, "result_complete": True}],
+        "__provenance__": {"tool_trajectory_selected": "tool_result"}}
+    assert acceptance_evidence_ref_vocabulary(packet)[ref] == "tool_record"
+    assert trajectory_record_ref(source, 0) not in acceptance_evidence_ref_vocabulary(packet)
+    packet["tool_trajectory_selected"][0]["result_complete"] = False
+    assert acceptance_evidence_ref_vocabulary(packet)[ref] == "partial"
+    packet["__provenance__"]["tool_trajectory_selected"] = "agent_supplied"
+    assert acceptance_evidence_ref_vocabulary(packet)[ref] == "unattested_section"
 
 
 def test_agent_supplied_and_intent_sections_never_resolve():

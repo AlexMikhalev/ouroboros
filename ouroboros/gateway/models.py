@@ -381,10 +381,127 @@ async def _load_provider(
         return provider_id, [], str(exc), stage, duration_ms
 
 
+def account_catalog_supported(operations: list[dict], path: str) -> bool:
+    """Opt in only when this exact operation declares the accounts query view."""
+    return any(
+        operation.get("method") == "GET" and operation.get("path") == path
+        and any(parameter.get("name") == "view" and parameter.get("location") == "query"
+                and "accounts" in (parameter.get("enum") or [])
+                for parameter in operation.get("parameters", []) if isinstance(parameter, dict))
+        for operation in operations if isinstance(operation, dict)
+    )
+
+
+def account_catalog_models(envelope: dict):
+    """Keep each model attached to the account and original catalog that reported it."""
+    for account in envelope.get("accounts", []):
+        catalog = account.get("catalog")
+        if isinstance(catalog, dict):
+            for model in catalog.get("models", []):
+                if isinstance(model, dict):
+                    yield account, catalog, model
+
+
+def _subscription_model_catalog(source_id: str = "", profile_id: str = "") -> dict:
+    """Read raw transport catalogs from the owned engine, never CLI model inventory.
+
+    Account-view engines enumerate every enabled account, retaining independent
+    capabilities and failures. Older engines keep selected-account discovery.
+    API-only installs do not provision a daemon while browsing model settings.
+    """
+    from ouroboros.claudexor_daemon import read_owned_gateway, owned_daemon_provisioned
+
+    result = {"items": [], "errors": [], "model_sources": []}
+    if not source_id and not owned_daemon_provisioned():
+        return result
+    try:
+        with read_owned_gateway() as gateway:
+            try:
+                operations = gateway.operations()
+            except Exception:
+                operations = []  # Discovery compatibility never invents new query support.
+            account_view = account_catalog_supported(operations, "/v2/model-sources/:id/models")
+            source_view = account_catalog_supported(operations, "/v2/model-sources")
+            sources = gateway.list_model_sources(**({"view": "accounts"} if source_view else {})).get("sources", [])
+            if account_view:
+                result.update(account_catalogs=[], partial=False)
+            result["model_sources"] = sources
+            for source in sources:
+                identifier = str(source.get("id") or "")
+                if source_id and identifier != source_id:
+                    continue
+                try:
+                    catalog = gateway.list_source_models(identifier, credential_profile_id=profile_id or None,
+                        **({"view": "accounts"} if account_view else {}))
+                except Exception as exc:
+                    result["errors"].append({"provider_id": "claudexor", "source_id": identifier,
+                        "code": str(getattr(exc, "code", "catalog_unavailable")), "error": str(exc)})
+                    if account_view:
+                        result["partial"] = True
+                    continue
+                if account_view:
+                    result["account_catalogs"].append(catalog)
+                    result["partial"] = result["partial"] or catalog.get("partial", False)
+                    for account in catalog.get("accounts", []):
+                        # A readable account carrying a problem (spent window, cooldown) is account state,
+                        # already on its items and account_catalogs; only a missing catalog is a read failure.
+                        if account.get("catalog") is None:
+                            problem = account.get("problem") or {}
+                            result["errors"].append({"provider_id": "claudexor", "source_id": identifier,
+                                "credential_profile_id": account.get("credentialProfileId"),
+                                "code": problem.get("code", "catalog_unavailable"),
+                                "error": problem.get("message", "This account catalog could not be read."),
+                                "availability": account.get("availability"), "problem": account.get("problem")})
+                    records = account_catalog_models(catalog)
+                else:
+                    records = ((None, catalog, model) for model in catalog.get("models", []))
+                for account, catalog, model in records:
+                    model_id = str(model.get("id") or "")
+                    if not model_id:
+                        continue
+                    entry = _build_model_catalog_entry("claudexor", str(source.get("label") or identifier),
+                        model_id, str(model.get("label") or model_id), source="Claudexor")
+                    entry.update({
+                        "source_id": identifier,
+                        "value": f"claudexor::{identifier}={model_id}",
+                        "credential_profile_id": catalog.get("credentialProfileId"),
+                        "account_fingerprint": catalog.get("accountFingerprint"),
+                        "context_window": model.get("contextWindow"),
+                        "max_context_window": model.get("maxContextWindow"),
+                        "max_output_tokens": model.get("maxOutputTokens"),
+                        "is_default": model.get("isDefault", False),
+                        "supported_options": model.get("supportedOptions", []),
+                        "reasoning_efforts": model.get("reasoningEfforts", []),
+                        "default_reasoning_effort": model.get("defaultReasoningEffort"),
+                        "input_modalities": model.get("inputModalities", []),
+                        "provenance": catalog.get("provenance"),
+                        "observed_at": catalog.get("observedAt"),
+                    })
+                    if account is not None:
+                        entry.update(availability=account.get("availability"), problem=account.get("problem"),
+                                     processing=model.get("processing"))
+                    result["items"].append(entry)
+            if source_id and not any(str(source.get("id") or "") == source_id for source in sources):
+                result["errors"].append({"provider_id": "claudexor", "source_id": source_id,
+                    "code": "model_source_unavailable", "error": "This engine does not provide the selected model transport."})
+    except Exception as exc:
+        result["errors"].append({"provider_id": "claudexor", "source_id": source_id,
+            "code": str(getattr(exc, "code", "catalog_unavailable")), "error": str(exc)})
+    return result
+
+
 async def api_model_catalog(_request: Request) -> JSONResponse:
+    query = _request.query_params if _request is not None else {}
+    source_id = str(query.get("source_id") or "").strip()
+    profile_id = str(query.get("credential_profile_id") or "").strip()
+    if profile_id and not source_id:
+        return json_error("credential_profile_id requires source_id", 400)
+    subscription = await asyncio.to_thread(_subscription_model_catalog, source_id, profile_id)
+    if source_id:
+        return JSONResponse(subscription)
     settings = load_settings()
-    items: list[dict[str, str]] = []
-    errors: list[dict[str, str]] = []
+    items = list(subscription["items"])
+    errors = list(subscription["errors"])
     seen_values: set[str] = set()
     specs = _provider_specs(settings)
 
@@ -413,6 +530,7 @@ async def api_model_catalog(_request: Request) -> JSONResponse:
 
     items.sort(key=lambda item: (item.get("provider", "").lower(), item.get("name", "").lower()))
     return JSONResponse({
+        **subscription,
         "items": items,
         "errors": errors,
     })

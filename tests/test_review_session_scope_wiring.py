@@ -2,9 +2,8 @@
 
 Split by theme out of ``tests/test_review_agent_session_route.py``. This module
 owns the scope/triad surface wiring: session rows never build the API pack, the
-mixed fanout keeps one route per row, sourced window evidence alone carries
-blocking authority, and an all-retrieving scope panel blocks instead of failing
-open.
+mixed fanout keeps one route per row, and a retrieving review's independent
+findings no longer change severity based on its working-window size.
 """
 
 import json
@@ -219,7 +218,7 @@ def _scope_matrix_with_critical():
         (1_000_000, "designated_default_sentinel"),
     ],
 )
-def test_session_scope_without_sourced_window_evidence_is_advisory_only(
+def test_session_scope_preserves_findings_when_window_evidence_is_small_or_unknown(
     tmp_path, fake_route, monkeypatch, window, provenance
 ):
     """A retrieving scope row's FINDINGS certify nothing without SOURCED window
@@ -235,23 +234,20 @@ def test_session_scope_without_sourced_window_evidence_is_advisory_only(
     `blocked=False` here is what made the P3 gate fail open — the api row's
     `sub_floor` twin blocked on the identical panel shape.
     """
+    from ouroboros import config as cfg
+    monkeypatch.setattr(cfg, "get_review_enforcement", lambda: "blocking")
     result = _run_session_scope(
         tmp_path, fake_route, monkeypatch, window=window, provenance=provenance,
         rows=_scope_matrix_with_critical(),
     )
 
-    assert result.status == "session_advisory", result.status
+    assert result.status == "responded", result.status
     assert result.blocked is True
-    assert "authoritative scope verdict required to commit" in result.block_message
-    # The critical was preserved as advisory evidence, not discarded...
-    assert result.critical_findings == []
-    reasons = " ".join(str(f.get("reason") or "") for f in result.advisory_findings)
-    assert "[advisory-only session scope reviewer]" in reasons
+    reasons = " ".join(str(f.get("reason") or "") for f in result.critical_findings)
+    assert "[advisory-only session scope reviewer]" not in reasons
     assert "contradicts a documented invariant" in reasons
-    # ...and the reason it cannot gate is disclosed on the record.
     items = {str(f.get("item") or "") for f in result.advisory_findings}
-    assert "scope_review_session_window_unproven" in items, items
-    assert "SCOPE_SESSION_ADVISORY_ONLY" in reasons
+    assert "scope_review_session_window_unproven" not in items
 
 
 def test_session_scope_with_sourced_window_evidence_keeps_blocking_authority(
@@ -488,7 +484,7 @@ def _all_session_scope_panel(tmp_path, monkeypatch, *, window, provenance):
     return blocked, message or "", reason, manifest
 
 
-def test_all_retrieving_scope_panel_blocks_instead_of_failing_open(tmp_path, monkeypatch):
+def test_all_retrieving_scope_panel_uses_findings_without_window_authority_gate(tmp_path, monkeypatch):
     """A scope panel of retrieving rows with no sourced window evidence yields ZERO
     authoritative verdicts — and must BLOCK, exactly as the api panel does.
 
@@ -503,15 +499,9 @@ def test_all_retrieving_scope_panel_blocks_instead_of_failing_open(tmp_path, mon
         tmp_path, monkeypatch, window=0, provenance="",
     )
 
-    assert blocked is True, "the blocking scope gate must not pass a zero-authoritative panel"
-    assert reason == "scope_blocked", reason
-    assert "SCOPE_REVIEW_BLOCKED" in message
-    assert "authoritative scope verdict required to commit" in message
-    # The shortfall is still disclosed, not merely converted into a block.
-    assert manifest["scope_responded_count"] == 0, manifest
-    assert manifest["scope_session_advisory_only_count"] == 2, manifest
-    assert any("scope_session_advisory_only" in str(r)
-               for r in manifest["scope_degraded_reasons"]), manifest
+    assert blocked is False
+    assert manifest["scope_responded_count"] == 2, manifest
+    assert manifest.get("scope_session_advisory_only_count", 0) == 0
 
 
 def test_retrieving_and_api_panels_agree_on_an_unestablished_window(tmp_path, monkeypatch):
@@ -555,10 +545,7 @@ def test_a_retrieving_row_can_actually_reach_sourced_evidence(tmp_path, monkeypa
     from ouroboros import capability_evidence as ce
     from ouroboros.gateway import settings as smod
     from ouroboros.reviewer_window import SESSION_ROUTE_PROVIDER
-    from ouroboros.tools.scope_review_session import (
-        SESSION_WINDOW_FLOOR,
-        session_window_is_authoritative,
-    )
+    from ouroboros.tools.scope_review_session import SESSION_WINDOW_FLOOR, session_scope_authority
     from ouroboros.tools.scope_window import scope_window
 
     monkeypatch.setattr(ce, "DATA_DIR", tmp_path, raising=False)
@@ -581,13 +568,15 @@ def test_a_retrieving_row_can_actually_reach_sourced_evidence(tmp_path, monkeypa
 
     # Before the ack the row cannot authorise...
     before = scope_window("codex=gpt-5.6-sol", session=True)
-    assert session_window_is_authoritative(before.window_tokens, before.status) is False
+    assert session_scope_authority([], [], scope_model="fixture", window=before.window_tokens,
+        provenance=before.status, phrase="unknown", result_kwargs={}) == ([], [], None)
 
     # ...and the ack the UI records against that exact route is what restores it.
     ce.record_owner_ack(tmp_path, provider=ack_route["provider"], model=ack_route["model"],
                         base_url=ack_route["base_url"], window_tokens=SESSION_WINDOW_FLOOR)
     after = scope_window("codex=gpt-5.6-sol", session=True)
-    assert session_window_is_authoritative(after.window_tokens, after.status) is True
+    assert session_scope_authority([], [], scope_model="fixture", window=after.window_tokens,
+        provenance=after.status, phrase="asserted", result_kwargs={}) == ([], [], None)
 
 
 def test_session_schema_floor_matches_each_surfaces_clean_contract():
@@ -740,3 +729,22 @@ def test_skill_review_legacy_session_dispatch_keeps_shared_profile_pin(
     assert starts[0]["credentialProfileId"] == "legacy-profile"
     assert starts[0]["model"] == "fake-small"
     assert starts[0]["effort"] == "high"
+
+
+def test_scope_book_navigation_uses_physical_chapter_sources(tmp_path):
+    from ouroboros.tools.scope_review_session import governance_nav_maps
+    from tests.test_reference_books import sources
+
+    for path, raw in sources().items():
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+    text = governance_nav_maps(tmp_path, ("docs/ARCHITECTURE.md",))
+    assert "docs/architecture/runtime.md" in text
+    assert "Processes carry the work" in text
+    assert "The full startup mechanism" not in text
+    assert 'root="system_repo"' in text
+    (tmp_path / "docs/architecture/runtime.md").unlink()
+    missing = governance_nav_maps(tmp_path, ("docs/ARCHITECTURE.md",))
+    assert "Required coverage is incomplete" in missing
+    assert "no `##`" not in missing

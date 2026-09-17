@@ -25,15 +25,16 @@ export function desiredLiveCardPhase(record = {}, terminalPhase = 'done') {
             className: 'chat-live-phase working finalizing',
         };
     }
+    if (record.modelWaiting) return {
+        phase: 'working', text: 'Waiting for access', className: 'chat-live-phase working waiting',
+    };
     return { phase: 'working', text: 'Working', className: 'chat-live-phase working' };
 }
 
 // A replayed final may preserve only an already-terminal phase. Ordinary DOM
 // progress is presentation state, not terminal outcome truth.
-export function replayTerminalPhase(taskState, record) {
-    return taskState?.completedPhase
-        || (record?.finished ? record?.phaseEl?.dataset?.phase : '')
-        || 'done';
+export function replayTerminalPhase(record) {
+    return (record?.finished ? record?.phaseEl?.dataset?.phase : '') || 'done';
 }
 
 // Preserve the authoritative unfinished phase fact across an optimistic owner
@@ -73,5 +74,44 @@ export function setLiveCardPhase(record, phase = 'working', text = '', className
     if (phaseEl.getAttribute('aria-live') !== 'polite') phaseEl.setAttribute('aria-live', 'polite');
     if (phaseEl.getAttribute('aria-atomic') !== 'true') phaseEl.setAttribute('aria-atomic', 'true');
     if (phaseEl.getAttribute('aria-label') !== activeLabel) phaseEl.setAttribute('aria-label', activeLabel);
-    return changed;
+    return setLiveCardTypingVisible(record, !record.finished) || changed;
+}
+
+// Phase and activity share this one animation writer. A subscription wait
+// remains unfinished without pretending the paused role is doing computation.
+export function setLiveCardTypingVisible(record, visible) {
+    if (!record?.inlineTypingEl) return false;
+    const display = visible && !record.modelWaiting && !record.reviewAnchor && !record.historicalUnavailable && !record.historicalUnconfirmed ? '' : 'none';
+    if (record.inlineTypingEl.style.display === display) return false;
+    record.inlineTypingEl.style.display = display;
+    return Boolean(record.inlineTypingEl.isConnected);
+}
+
+// Shared inert anatomy; the caller retains the reason (review or missing
+// historical outcome), and no runtime lifecycle status is invented.
+export function setInertCardPresentation(record, enabled) {
+    if (!record?.phaseEl) return;
+    record.phaseEl.hidden = enabled;
+    if (record.root?.dataset) record.root.dataset.inert = enabled ? '1' : '0';
+    setLiveCardTypingVisible(record, !enabled && !record.finished);
+}
+
+export function setHistoricalUnavailable(record, enabled) {
+    if (!record || (Boolean(record.historicalUnavailable) === enabled && !record.historicalUnconfirmed)) return false;
+    record.historicalUnavailable = enabled;
+    record.historicalUnconfirmed = false;
+    setInertCardPresentation(record, enabled || Boolean(record.reviewAnchor));
+    if (!enabled && !record.reviewAnchor) {
+        const desired = desiredLiveCardPhase(record);
+        setLiveCardPhase(record, desired.phase, desired.text, desired.className);
+    }
+    return true;
+}
+
+export function setHistoricalUnconfirmed(record) {
+    if (!record || record.finished || record.reviewAnchor || record.historicalUnavailable
+            || record.historicalUnconfirmed) return false;
+    record.historicalUnconfirmed = true;
+    setInertCardPresentation(record, true);
+    return true;
 }

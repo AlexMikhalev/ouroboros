@@ -91,50 +91,37 @@ def test_main_route_to_existing_project_explicitly_selects_predecessor_or_stays_
     assert "predecessor_task_id" in route_tool.schema["parameters"]["properties"]
 
 
-def test_main_swarm_route_carries_intent_and_emits_only_once(tmp_path, monkeypatch):
+def test_managed_swarm_routes_distinct_work_without_a_conversation_latch(tmp_path, monkeypatch):
     create_project(tmp_path, "racer", name="Racer")
     monkeypatch.setattr(
-        "ouroboros.tools.control._wait_for_promotion_admission",
-        lambda *_args, **_kwargs: {"status": "unconfirmed", "reason": "confirmation_timeout"},
+        "ouroboros.tools.control_events._wait_for_promotion_admission",
+        lambda *_args, **_kwargs: {"status": "scheduled"},
     )
     events = []
-    ctx = _ctx(
-        tmp_path,
-        events,
-        task_metadata={
-            "client_message_id": "swarm-route-1",
-            "force_plan": True,
-            "force_plan_source": "swarm",
-        },
-        is_ephemeral_turn=True,
-        project_id="",
-    )
-
-    first = _route_to_project(ctx, "racer", "Audit and fix this in Racer", predecessor_task_id="")
-    second = _route_to_project(ctx, "racer", "Audit and fix this in Racer", predecessor_task_id="")
-
-    assert first == second
-    assert len(events) == 1
-    assert events[0]["force_plan"] is True
-    assert events[0]["force_plan_source"] == "swarm"
-    assert ctx._swarm_handoff_attempt["task_id"] == events[0]["task_id"]
+    ctx = _ctx(tmp_path, events, project_id="", task_metadata={
+        "client_message_id": "swarm-root-1", "force_plan": True, "force_plan_source": "swarm",
+    })
+    first = _route_to_project(ctx, "racer", "Audit Racer", predecessor_task_id="")
+    second = _route_to_project(ctx, "racer", "Research a separate design", predecessor_task_id="")
+    assert "durably scheduled" in first and "durably scheduled" in second
+    assert len(events) == 2
+    assert events[0]["task_id"] != events[1]["task_id"]
+    assert all("force_plan" not in event for event in events)
+    assert not hasattr(ctx, "_swarm_handoff_attempt")
 
 
-def test_project_swarm_route_to_other_project_is_rejected_without_event(tmp_path):
+def test_managed_swarm_uses_ordinary_project_routing(tmp_path, monkeypatch):
     create_project(tmp_path, "beta", name="Beta")
-    events = []
-    ctx = _ctx(
-        tmp_path,
-        events,
-        task_metadata={"force_plan": True, "force_plan_source": "swarm"},
-        is_ephemeral_turn=True,
-        project_id="alpha",
+    monkeypatch.setattr(
+        "ouroboros.tools.control_events._wait_for_promotion_admission",
+        lambda *_args, **_kwargs: {"status": "scheduled"},
     )
-
+    events = []
+    ctx = _ctx(tmp_path, events, project_id="alpha", task_metadata={"force_plan": True})
     out = _route_to_project(ctx, "beta", "Audit and fix this in Beta", predecessor_task_id="")
-
-    assert "SWARM_PROJECT_SCOPE_OWNED" in out
-    assert events == []
+    assert "durably scheduled" in out
+    assert events[0]["project_id"] == "beta"
+    assert "force_plan" not in events[0]
 
 
 def test_route_to_missing_project_emits_typed_manual_target(tmp_path):
@@ -170,7 +157,7 @@ def test_manual_target_preserves_valid_predecessor_and_rejects_unreadable_one(tm
     (result_dir / "previous.json").write_text(json.dumps({"_schema_version": 1, **predecessor}), encoding="utf-8")
     preview = server._task_result_ground_truth(predecessor)
     events = []
-    metadata = {"main_routing_manifest": {"final_results": [preview]}}
+    metadata = {"client_message_id": "owner-4", "main_routing_manifest": {"final_results": [preview]}}
 
     out = _route_to_project(
         _ctx(tmp_path, events, task_metadata=metadata),
@@ -186,7 +173,7 @@ def test_manual_target_preserves_valid_predecessor_and_rejects_unreadable_one(tm
         "kind": "task_result", "task_id": "gone", "tool": "get_task_result",
         "arguments": {"task_id": "gone", "include_authority": True},
     }
-    unreadable_metadata = {"main_routing_manifest": {"final_results": [{
+    unreadable_metadata = {"client_message_id": "owner-4", "main_routing_manifest": {"final_results": [{
         "task_id": "gone", "authority_source": unreadable_source,
     }]}}
     rejected_events = []
@@ -201,10 +188,28 @@ def test_manual_target_preserves_valid_predecessor_and_rejects_unreadable_one(tm
 
 def test_route_rejects_dirty_project_id(tmp_path):
     events = []
-    out = _route_to_project(_ctx(tmp_path, events), "Bad Name!", "msg", predecessor_task_id="")
+    metadata = {"client_message_id": "owner-3"}
+    out = _route_to_project(_ctx(tmp_path, events, task_metadata=metadata), "Bad Name!", "msg", predecessor_task_id="")
     assert "ROUTING_UNCONFIRMED" in out
     assert events[0]["routing_token"]
     assert events[0]["reason"] == "invalid_project_id"
+
+
+def test_a_task_issuer_gets_a_typed_refusal_and_no_owner_picker(tmp_path):
+    """7=A: a pooled or Swarm root routing to a missing, malformed or unnamed project gets
+    ROUTE_REJECTED in its own result; no manual-target event is emitted, so no picker or ack
+    can reach an owner surface under an empty message id (the 14.09 incident's class)."""
+    events = []
+    for target, failure in (("ghost", "target_not_found"), ("Bad Name!", "invalid_project_id"), ("", "target_unspecified")):
+        ctx = _ctx(tmp_path, events, task_id="root-1", task_metadata={
+            "root_task_id": "root-1",
+            "routing_contract": {"manual_options": [{"task_id": "task-1", "title": "Fix it"}]},
+        })
+        out = _route_to_project(ctx, target, "continue the work there", predecessor_task_id="")
+        assert out.startswith(f"⚠️ ROUTE_REJECTED ({failure})"), out
+        assert "list_projects" in out
+        assert not hasattr(ctx, "_typed_routing_action_emitted")
+    assert events == []
 
 
 def test_route_empty_target_is_the_typed_abstention_path(tmp_path):
@@ -251,3 +256,89 @@ def test_route_tool_uncertainty_contract_requires_manual_target():
     assert "needs_manual_target" in description
     assert "New task in Project" in description
     assert "answer inline and offer" not in description
+
+
+def test_a_task_issuer_with_an_unmet_obligation_moves_it_through_route_to_project(tmp_path, monkeypatch):
+    """Owner 3=A on the sibling verb: a Swarm root routing new work into an existing
+    project carries its unmet planning obligation on the promote event it emits, so
+    the new root owes the plan and the sender is told the obligation moved."""
+    create_project(tmp_path, "racer", name="Racer")
+    monkeypatch.setattr(
+        "ouroboros.tools.control_events._wait_for_promotion_admission",
+        lambda *_args, **_kwargs: {"status": "scheduled", "force_plan_transfer": {"from": "swarm-root", "released": True}},
+    )
+    monkeypatch.setattr("ouroboros.owner_hurry.release_force_plan_obligation", lambda *_a, **_k: None)
+    events = []
+    ctx = _ctx(tmp_path, events, task_id="swarm-root", task_metadata={
+        "force_plan": True, "force_plan_source": "swarm", "root_task_id": "swarm-root",
+    })
+    out = _route_to_project(ctx, "racer", "Implement it in Racer", predecessor_task_id="")
+    assert "durably scheduled" in out and "planning obligation (force_plan) moved to task" in out
+    assert events[0]["type"] == "promote_chat_to_task"
+    assert events[0]["force_plan"] is True and events[0]["force_plan_source"] == "swarm"
+    assert events[0]["force_plan_transferred_from"] == "swarm-root"
+
+
+
+def test_route_refusal_keeps_the_typed_code_and_carries_the_models_words_as_detail(tmp_path):
+    """The receipt's machine `reason` stays the host's typed code — the cause
+    table reads it — while the model's free-text explanation rides `detail`
+    beside it. With no options there is nothing to choose, so the durable row
+    carries the host's cause sentence instead of «Choose a target»."""
+    from ouroboros.project_dialogue import chat_annotation_receipt
+    from supervisor.events import _handle_routing_manual_target
+
+    events = []
+    metadata = {"client_message_id": "owner-9", "routing_contract": {"manual_options": []}}
+    out = _route_to_project(
+        _ctx(tmp_path, events, task_metadata=metadata),
+        "ghost", "continue it there", reason="I could not find it", predecessor_task_id="",
+    )
+
+    assert "ROUTING_UNCONFIRMED" in out
+    assert events[0]["reason"] == "target_not_found"
+    assert events[0]["detail"] == "I could not find it"
+    assert events[0]["options"] == []
+
+    class _Ctx:
+        DRIVE_ROOT = tmp_path
+
+        @staticmethod
+        def append_jsonl(path, row):
+            pass
+
+    _handle_routing_manual_target(events[0], _Ctx)
+    row = chat_annotation_receipt(tmp_path, "owner-9", events[0]["routing_token"])
+    assert (row["status"], row["reason"]) == ("needs_manual_target", "target_not_found")
+    assert row["detail"] == "I could not find it"
+    assert row["cause"] == "Not started: that project does not exist"
+
+
+def test_route_abstention_without_a_target_leaves_the_receipt_target_empty(tmp_path):
+    """An unnamed destination is a typed abstention (`target_unspecified`), never a
+    task id: the durable row keeps `target` empty (so no task-label lookup runs on
+    a reason code) and the owner line reads the host's sentence."""
+    from ouroboros.project_dialogue import chat_annotation_receipt
+    from supervisor.events import _handle_routing_manual_target
+
+    events = []
+    metadata = {"client_message_id": "owner-10", "routing_contract": {"manual_options": []}}
+    _route_to_project(
+        _ctx(tmp_path, events, task_metadata=metadata),
+        "", "continue it somewhere", reason="", predecessor_task_id="",
+    )
+    assert events[0]["reason"] == "target_unspecified"
+    assert events[0]["requested_target"] == ""
+
+    class _Ctx:
+        DRIVE_ROOT = tmp_path
+
+        @staticmethod
+        def append_jsonl(path, row):
+            pass
+
+    _handle_routing_manual_target(events[0], _Ctx)
+    row = chat_annotation_receipt(tmp_path, "owner-10", events[0]["routing_token"])
+    assert row["target"] == ""
+    assert (row["status"], row["reason"]) == ("needs_manual_target", "target_unspecified")
+    assert row["cause"] == "Not started: no destination was chosen"

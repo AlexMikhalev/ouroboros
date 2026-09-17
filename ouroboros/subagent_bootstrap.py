@@ -7,12 +7,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping
 
-from ouroboros.subagent_work_order import (
-    WorkOrderBudgetExceeded,
-    build_work_order_source_request,
-    compile_external_work_order,
-    route_source_request_channel,
-)
+from ouroboros.subagent_work_order import compile_external_work_order
 
 
 def _with_coordination_context(ctx: Any, raw: str) -> str:
@@ -139,6 +134,7 @@ def bootstrap_before_context(ctx: Any, task: Mapping[str, Any], dispatch: Any) -
         return ""
     snapshot = task.get("configured_subagent") if isinstance(task.get("configured_subagent"), dict) else {}
     route = snapshot.get("route") if isinstance(snapshot.get("route"), dict) else {}
+    ctx._configured_subagent_route_kind = str(route.get("kind") or "")
     if str(route.get("kind") or "") != "agent_session":
         return ""
     # Hydrate immutable route/work-order authority before every recovery
@@ -210,14 +206,21 @@ def _pre_start_leaf(
     waiting is the model's own ``delegate_wait`` decision, so owner messages,
     hurry controls and parallel children stay live for the whole run."""
 
+    from ouroboros.delegate_shared import delegate_payload
     from ouroboros.subagent_runtime import delegate_start_entry
 
-    started_raw = delegate_start_entry(ctx, "")
+    # The start wrapper answers with the family's NATIVE result; the receipt below
+    # carries the producer's own payload, never a stringified result object. An
+    # UNREADABLE payload proves nothing about the run's absence, so it wakes the
+    # model with the fault rather than claiming a $0 unrun terminal.
+    started = delegate_start_entry(ctx, "", **{
+        key: actor_bootstrap[key] for key in ("directory_strategy", "scope_paths")
+        if key in actor_bootstrap
+    })
     try:
-        payload = json.loads(started_raw) if isinstance(started_raw, str) else {}
-    except (TypeError, ValueError):
+        payload = delegate_payload(started)
+    except (AttributeError, TypeError, ValueError):
         payload = {}
-    payload = payload if isinstance(payload, dict) else {}
     status = str(payload.get("status") or "")
     if status in {"started", "started_uncustodied"}:
         # Idempotent beside the start wrapper's own marker: the host episode
@@ -626,41 +629,9 @@ def _prepare_actor_first_bootstrap(
     """Freeze exact actor authority while keeping a new physical start pending."""
     snapshot = task.get("configured_subagent") if isinstance(task.get("configured_subagent"), dict) else {}
     route = snapshot.get("route") if isinstance(snapshot.get("route"), dict) else {}
-    try:
-        work_order = compile_external_work_order(task)
-        work_order_fingerprint = sha256(work_order.encode("utf-8")).hexdigest()
-        work_order_chars = len(work_order)
-        source_prompt = ""
-        source_request: dict[str, Any] = {}
-        source_channel: dict[str, Any] = {}
-    except WorkOrderBudgetExceeded as exc:
-        source_prompt, source_request = build_work_order_source_request(task, exc)
-        source_channel = {"status": "unverified", "reason": "not_checked"}
-        route_id = str(route.get("target_id") or "")
-        resolved_route = getattr(getattr(dispatch, "executor_resolution", None), "route", None)
-        channel_route_id = str(getattr(resolved_route, "route_id", "") or route_id)
-        gateway = None
-        try:
-            from ouroboros.claudexor_daemon import ensure_owned_gateway
-
-            gateway = ensure_owned_gateway()
-            source_channel = route_source_request_channel(gateway, channel_route_id)
-        except Exception as channel_error:  # noqa: BLE001 - unknown is typed
-            source_channel = {
-                "status": "unverified",
-                "reason": "capability_probe_failed",
-                "detail": type(channel_error).__name__,
-                "route": channel_route_id,
-            }
-        finally:
-            if gateway is not None:
-                try:
-                    gateway.close()
-                except Exception:
-                    pass
-        work_order = ""
-        work_order_fingerprint = exc.sha256
-        work_order_chars = exc.chars
+    work_order = compile_external_work_order(task)
+    work_order_fingerprint = sha256(work_order.encode("utf-8")).hexdigest()
+    work_order_chars = len(work_order)
 
     route_id = str(route.get("target_id") or "")
     ctx._configured_actor_bootstrap = {
@@ -670,14 +641,13 @@ def _prepare_actor_first_bootstrap(
         "selected_subagent_id": str(snapshot.get("selected_subagent_id") or ""),
         "config_fingerprint": str(snapshot.get("config_fingerprint") or ""),
         "canonical_work_order": work_order,
-        "source_prompt": source_prompt,
-        "source_request": source_request,
-        "source_channel": source_channel,
         "work_order_fingerprint": work_order_fingerprint,
         "work_order_chars": work_order_chars,
         "route_available": not bool(getattr(dispatch, "blocked", False)),
         "exact_start_pending": True,
         "physical_started": False,
+        **{key: task[key] if key == "directory_strategy" else list(task[key])
+           for key in ("directory_strategy", "scope_paths") if key in task},
     }
     zero_run_evidence_gaps: set[str] = set()
     durable_zero_run = _durable_zero_run_receipt(
@@ -712,7 +682,6 @@ def _prepare_actor_first_bootstrap(
             "work_order_fingerprint": work_order_fingerprint,
             "work_order_chars": work_order_chars,
             "work_order_complete": bool(work_order),
-            **({"source_channel": source_channel} if source_channel else {}),
             "actor_first": True,
             "exact_start_pending": not bool(
                 durable_zero_run or zero_run_evidence_gaps

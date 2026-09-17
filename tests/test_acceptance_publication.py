@@ -142,6 +142,56 @@ def test_stale_child_read_and_copyback_keep_newest_canonical_panel(tmp_path):
     assert copied["result"] == "replica result"
 
 
+@pytest.mark.parametrize("superseded", [False, True])
+def test_promoted_refs_do_not_shadow_next_publication_or_regress_on_child_replay(tmp_path, monkeypatch, superseded):
+    from ouroboros import observability
+    from ouroboros.headless import copy_child_task_result, prepare_task_drive
+
+    parent = tmp_path / "canonical"
+    child = prepare_task_drive(parent, "applied", "empty")
+    ctx = _context(child)
+    ctx.budget_drive_root = parent
+    run = _run()
+    run["request"]["evidence"] = {"receipt": observability.write_blob(child, {"result": "first"})}
+    trace = {"review_runs": [run]}
+    review_projection.publish_acceptance_checkpoint(ctx, trace)
+    first = copy.deepcopy(load_task_result(parent, "applied")["review_projection"])
+    first_ref = first["panels"][0]["applied_source_ref"]
+    write_task_result(child, "applied", "completed", review_projection=first)
+    task = {"id": "applied", "drive_root": str(child)}
+    copied = copy_child_task_result(parent, task)
+    assert copied["review_projection"]["panels"][0]["applied_source_ref"] != first_ref
+    assert copied["review_projection"]["panels"][0]["publication_revision"] == 1
+    assert trace["_acceptance_publication_revision"] == 1
+
+    run["request"]["evidence"] = {"receipt": observability.write_blob(parent, {"result": "new publication"})}
+    run["superseded_by_revision"] = superseded
+    run["aggregate_signal"] = "FAIL"
+    review_projection.publish_acceptance_checkpoint(ctx, trace)
+    current = load_task_result(parent, "applied")["review_projection"]
+    assert current["panels"][0]["publication_revision"] == 2
+    assert _source(parent, current["panels"][0])["aggregate_signal"] == "FAIL"
+    missing = {**first_ref, "path": "source_handles/context_checkpoints/missing.json"}
+    promote = observability._promote_task_source_ref
+
+    def forbid_discarded_review(*args, **kwargs):
+        ref = args[3]
+        assert ref not in (first_ref, missing), "discarded child review was physically promoted"
+        return promote(*args, **kwargs)
+
+    monkeypatch.setattr(observability, "_promote_task_source_ref", forbid_discarded_review)
+    for revision in (1, 2):
+        stale = copy.deepcopy(first)
+        stale["panels"][0].update(publication_revision=revision, applied_source_ref=missing)
+        write_task_result(child, "applied", "completed", review_projection=stale)
+        copied = copy_child_task_result(parent, task)
+        assert copied["review_projection"] == current
+        assert copied["child_ref_promotion"]["status"] == "complete"
+        assert copied["child_ref_promotion"]["pending_refs"] == []
+        assert copied["child_ref_promotion"]["unavailable_refs"] == []
+        assert _source(parent, copied["review_projection"]["panels"][0])["request"]["evidence"] == run["request"]["evidence"]
+
+
 def test_new_task_attempt_is_not_deduplicated_with_previous_attempt(tmp_path):
     ctx = _context(tmp_path)
     first = {"review_runs": [_run()]}

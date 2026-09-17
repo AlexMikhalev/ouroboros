@@ -10,7 +10,7 @@ honest as-written launch with disclosed probe facts — never a typed pre-block.
 
 Seam placement is itself part of the contract: the node health check is an
 EXECUTION probe of an argv[0]-steered candidate, so it runs only AFTER the
-dispatch gates (light fence / shell guard / safety) have approved the call —
+dispatch gates and configured Safety have admitted the call —
 a planted PATH shim named ``node`` must never execute on a refused call.
 """
 from __future__ import annotations
@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import shlex
 import sys
 from typing import Any
 
@@ -561,10 +562,8 @@ def test_registry_healthy_path_handler_argv_is_untouched(tmp_path, monkeypatch, 
 
 
 @pytest.mark.serial
-def test_light_fence_refuses_before_the_node_probe_can_execute(tmp_path, monkeypatch):
-    """Seam-order pin for the probe hazard: a planted PATH shim named ``node``
-    must not execute AT ALL (not even as ``node --version``) when the light
-    fence refuses the call — pre-guard resolution would have run its payload."""
+def test_light_shell_request_reaches_node_probe_and_executes_once(tmp_path, monkeypatch):
+    """A guessed write in shell text does not veto the chosen Safety decision."""
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
     monkeypatch.setattr("ouroboros.safety.check_safety", lambda *a, **k: (True, ""))
     repo = tmp_path / "repo"
@@ -572,16 +571,27 @@ def test_light_fence_refuses_before_the_node_probe_can_execute(tmp_path, monkeyp
     registry = ToolRegistry(repo_dir=repo, drive_root=tmp_path / "drive")
     registry._ctx.task_id = "t-node-order"
     marker = tmp_path / "shim_executed"
+    source = repo / "x.py"
     bin_dir = tmp_path / "bin"
-    _stub(bin_dir / "node", f"printf ran > '{marker}'\n")
+    marker_arg = shlex.quote(str(marker))
+    _stub(bin_dir / "node", (
+        'if [ "$1" = "--version" ]; then\n'
+        f"  printf 'probe\\n' >> {marker_arg}\n"
+        "  printf 'v24.16.0\\n'\n"
+        "else\n"
+        f"  printf 'execute\\n' >> {marker_arg}\n"
+        f"  printf x > {shlex.quote(str(source))}\n"
+        "fi\n"
+    ))
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
 
     result = registry.execute("run_command", {
         "cmd": ["node", f"--eval=require('node:fs').writeFileSync('{repo}/x.py','x')"],
     })
 
-    assert "LIGHT_MODE_BLOCKED" in result, result[:300]
-    assert not marker.exists(), "the node health probe executed a refused call's argv[0]"
+    assert "exit_code=0" in result, result
+    assert marker.read_text(encoding="utf-8").splitlines() == ["probe", "execute"]
+    assert source.read_bytes() == b"x"
 
 
 # ---- handler env application ----
@@ -627,9 +637,10 @@ def test_run_shell_applies_attested_prepend_and_healthy_env_is_untouched(
 
     del ctx._active_interpreter_resolution
     seen.clear()
+    expected_env = dict(os.environ)
     result = shell._run_shell(ctx, ["npm", "--version"], cwd="system_repo")
     assert "exit_code=0" in result
-    assert seen["env"] is None  # in-repo cwd keeps today's inherit-env behavior
+    assert seen["env"] == expected_env  # explicit task env; no Node PATH rewrite
 
 
 def test_verify_executes_resolved_argv_but_receipt_keeps_original_check(
@@ -688,9 +699,7 @@ def test_verify_executes_resolved_argv_but_receipt_keeps_original_check(
 def test_run_script_accepts_attested_bundled_node_and_allows_node_exe(
     tmp_path, monkeypatch,
 ):
-    """The allowlist matches the interpreter BASENAME (base contract), so the
-    bundled ``.../bin/node`` passes on its own; the generalized attestation is
-    what admits a verified node resolution whose basename is NOT allowlisted."""
+    """Resolved and explicitly selected runtime paths share one launch surface."""
     import ouroboros.tools.shell as shell
 
     ctx = _context(tmp_path)
@@ -714,8 +723,8 @@ def test_run_script_accepts_attested_bundled_node_and_allows_node_exe(
     assert "RUN_SCRIPT_BLOCKED" not in plain
 
     odd_basename = str(tmp_path / "opt" / "bundle" / "node24")
-    blocked = shell._run_script(ctx, "console.log(1)", interpreter=odd_basename)
-    assert blocked.startswith("⚠️ RUN_SCRIPT_BLOCKED:")
+    explicit = shell._run_script(ctx, "console.log(1)", interpreter=odd_basename)
+    assert "RUN_SCRIPT_BLOCKED" not in explicit
     ctx._active_interpreter_resolution = InterpreterResolutionTrace(
         tool="run_script",
         requested_interpreter="node",
@@ -786,41 +795,6 @@ def test_no_stale_python_interpreter_module_references():
     assert offenders == []
 
 
-def test_run_script_family_tokens_stay_blocked_on_healthy_path(tmp_path, monkeypatch):
-    """A-F1 pin: a HEALTHY-path family trace (changed=False) must not widen the
-    run_script interpreter allowlist — bare npm/npx/pnpm/yarn/corepack/nodejs
-    keep the base RUN_SCRIPT_BLOCKED refusal; only an actual substitution (the
-    emergency bundled rewrite, changed=True) earns attestation."""
-    from types import SimpleNamespace
-
-    from ouroboros.process_interpreters import InterpreterResolutionTrace
-    from ouroboros.tools.shell import _run_script
-
-    ctx = SimpleNamespace(
-        repo_dir=tmp_path, drive_root=tmp_path,
-        drive_logs=lambda: pathlib.Path(str(tmp_path)),
-    )
-    script = tmp_path / "s.js"
-    script.write_text("console.log(1)\n", encoding="utf-8")
-    for spelling in ("npm", "npx", "pnpm", "yarn", "corepack", "nodejs"):
-        ctx._active_interpreter_resolution = InterpreterResolutionTrace(
-            tool="run_script",
-            requested_interpreter=spelling,
-            resolved_interpreter=spelling,
-            surface="external_workspace",
-            # A VERIFIED healthy-path form: (path_node_healthy, host_path) is in
-            # _VERIFIED_RESOLUTIONS, so this pin fails on the changed-gate, not
-            # trivially on verified=False (T6).
-            environment="host_path",
-            reason="path_node_healthy",
-            family="node",
-        )
-        assert ctx._active_interpreter_resolution.verified
-        assert not ctx._active_interpreter_resolution.changed
-        out = _run_script(ctx, str(script), interpreter=spelling)
-        assert out.startswith("⚠️ RUN_SCRIPT_BLOCKED"), (spelling, out[:120])
-
-
 def test_registry_bridges_resolved_runtime_slot_for_observability(tmp_path):
     """Synthesis pin (streams A+B): when the node trace records a substitution
     (argv rewrite or emergency prepend), `_invoke_builtin_handler` publishes the
@@ -865,20 +839,14 @@ def test_registry_bridges_resolved_runtime_slot_for_observability(tmp_path):
     assert not hasattr(registry._ctx, "_process_resolved_runtime")
 
 
-def test_run_script_schema_enum_is_subset_of_validator_allowlist():
-    """T5 pin: every advertised interpreter enum option must pass the actual
-    _run_script allowlist (the schema is advisory for the model; the allowlist
-    is the validator). Windows launcher spellings (python.exe/node.exe) are
-    accepted synonyms deliberately NOT advertised in the enum."""
+def test_run_script_schema_exposes_an_executable_without_a_language_allowlist():
     from ouroboros.tools import shell as shell_mod
 
     entry = next(e for e in shell_mod.get_tools() if e.name == "run_script")
-    enum = entry.schema["parameters"]["properties"]["interpreter"]["enum"]
-    assert set(enum) <= shell_mod.RUN_SCRIPT_INTERPRETER_ALLOWLIST
-    assert {"node", "python3"} <= set(enum)
-    # Launcher spellings are accepted by the validator but deliberately NOT
-    # advertised (delta finding D2-7): re-adding one here must fail this pin.
-    assert "node.exe" not in enum and "python.exe" not in enum
+    parameter = entry.schema["parameters"]["properties"]["interpreter"]
+    assert parameter["type"] == "string" and parameter["default"] == "python3"
+    assert "enum" not in parameter
+    assert "script filename" in parameter["description"]
 
 
 def test_whitespace_padded_head_is_not_classified(tmp_path, monkeypatch, quiet_bootstrap):

@@ -163,6 +163,36 @@ def test_compaction_preserves_money_and_projections_exactly(data_root):
                for row in groups if row.get("cost_usd") is not None)
 
 
+def test_processing_components_survive_compaction_without_becoming_cash(data_root):
+    _seed_mixed_ledger(data_root)
+    receipt = {"requested": "fast", "submitted": "fast", "submittedNative": "fast",
+               "observed": "mixed", "observedNative": ["fast", "standard"],
+               "source": "native_telemetry", "reason": None}
+    for index, knowledge in enumerate(("exact", "unknown")):
+        request = ua.AttemptRequest("claudexor::test=model", "claudexor", drive_root=data_root,
+                                    task_id=f"mode-{index}", root_task_id="root", reservation_usd=1,
+                                    processing_preference="fast")
+        hold = ua.reserve_attempt(request)
+        ua.mark_dispatched(hold)
+        ua.settle_attempt(hold, {"processing": receipt, "cost_evidence": {
+            "knowledge": knowledge, "cashUsd": 0 if knowledge == "exact" else None,
+            "valuationUsd": 5.25, "valuationKnowledge": "exact",
+            "processing": {"nativeMode": "fast", "kind": "paid_credits", "source": "native_policy"}}},
+            cost_usd=0 if knowledge == "exact" else None, cost_final=knowledge == "exact")
+    ua.record_subscription_session("session-modes", drive_root=data_root, route="claude",
+        attempt_execution=[{"attemptId": "one", "harnessId": "claude", "processing": receipt,
+                            "usageCost": {"cashUsd": 0, "cashKnowledge": "unknown",
+                                          "valuationUsd": 10, "valuationKnowledge": "exact", "unknownUsd": 2}}])
+    before = _projection_snapshot(data_root)
+    component = before[0]["processing_summary"]
+    assert component["valuation_usd"] == 20.5 and component["unclassified_usd"] == 2
+    assert component["unknown_cash_rows"] == 2 and component["observed_modes"] == {"mixed": 3}
+    assert _compact(data_root) is not None
+    assert _projection_snapshot(data_root) == before
+    assert _compact(data_root) is not None
+    assert _projection_snapshot(data_root) == before
+
+
 def test_group_sums_survive_beyond_the_default_decimal_precision(data_root, monkeypatch):
     """10**28 + 1 is 29 digits: the ambient 28-digit context loses the 1."""
     monkeypatch.setenv("TOTAL_BUDGET", "1e40")
@@ -898,3 +928,22 @@ def test_verify_abort_on_foreign_noncanonical_literal(data_root):
     before_bytes = path.read_bytes()
     assert _compact(data_root) is None
     assert path.read_bytes() == before_bytes
+
+
+def test_a_session_row_carrying_normalized_counters_survives_compaction(data_root):
+    """The optional input split rides an idempotency-bearing row, so the pass
+    retains its content rather than folding it into a baseline group."""
+    counters = {"total_tokens": 270, "cache_read_tokens": 130, "cache_write_tokens": None}
+    _seed_mixed_ledger(data_root)
+    ua.record_subscription_session("sess-counters", drive_root=data_root, route="claudexor:codex",
+                                   model="fable", task_id="t7", root_task_id="root", spend_usd=0.25,
+                                   input_token_usage=counters)
+    before = next(row for row in _ledger_rows(data_root) if row.get("session_id_sha256")
+                  and row.get("input_token_usage"))
+    assert _compact(data_root) is not None
+    after = next(row for row in _ledger_rows(data_root)
+                 if row.get("attempt_id") == before["attempt_id"])
+    resequenced = ("seq", "pre_compaction_seq")  # the pass renumbers, never rewrites
+    assert {key: value for key, value in after.items() if key not in resequenced} == \
+           {key: value for key, value in before.items() if key not in resequenced}
+    assert after["input_token_usage"] == counters

@@ -22,7 +22,11 @@ log = logging.getLogger(__name__)
 
 _SERVER_PROCESS_PID = int(os.environ.get("OUROBOROS_SERVER_PROCESS_PID") or "-1")
 _GLOBAL_SUPERVISOR: Optional["CompanionSupervisor"] = None
-_COMPANION_BASE_ENV_KEYS = {"PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "HOME", "USERPROFILE"}
+# The login identity rides along: CLIs a companion may call (gh, claude, codex,
+# cursor-agent) key their keychain/credential lookups on it (parity with
+# workspace_executor.service_env()).
+_COMPANION_BASE_ENV_KEYS = {"PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "HOME", "USERPROFILE",
+                            "USER", "LOGNAME", "USERNAME"}
 
 
 def _companion_base_env() -> Dict[str, str]:

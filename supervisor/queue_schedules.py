@@ -16,6 +16,7 @@ import pathlib
 import time
 import uuid
 from typing import Any, Dict, List
+from ouroboros.consciousness_authority import apply_consciousness_authority
 from ouroboros.contracts.task_contract import build_task_contract, normalize_allowed_resources
 from ouroboros.schedule_contract import RESERVED_TEMPLATE_FIELDS, schedule_slug
 from ouroboros.skill_loader import skill_identity_collision_names
@@ -255,7 +256,7 @@ def _task_from_schedule(record: Dict[str, Any]) -> Dict[str, Any]:
         "delegation_role": "root",
         "metadata": metadata,
     }
-    for key in ("attachments", "context", "expected_output", "constraints", "deadline_at"):
+    for key in ("attachments", "context", "expected_output", "constraints", "deadline_at", "project_id"):
         if key in template:
             task[key] = template[key]
     allowed_resources = normalize_allowed_resources(template.get("allowed_resources") or metadata.get("allowed_resources") or {})
@@ -264,7 +265,14 @@ def _task_from_schedule(record: Dict[str, Any]) -> Dict[str, Any]:
     existing_contract = template.get("task_contract") if isinstance(template.get("task_contract"), dict) else {}
     if existing_contract:
         task["task_contract"] = existing_contract
-    task["task_contract"] = build_task_contract(task)
+    task["task_contract"] = build_task_contract(apply_consciousness_authority(task))
+    presence = metadata.get("presence")
+    workspace = task["task_contract"]["workspace"]
+    if isinstance(presence, dict) and presence and workspace["root"]:
+        task.update(
+            workspace_root=workspace["root"], workspace_mode=workspace["mode"],
+            memory_mode="shared",
+        )
     task["metadata"]["schedule_id"] = str(record.get("id") or "")
     task["metadata"]["schedule_name"] = str(record.get("name") or "")
     task["metadata"]["schedule_trigger"] = dict(record.get("trigger") or {})
@@ -373,12 +381,25 @@ def check_scheduled_tasks() -> None:
             record["last_task_id"] = task["id"]
             record_scheduled_admission(task, admitted, record)
             if trigger_type == "once":
-                if not (isinstance(admitted, dict) and admitted.get("_admission_blocked")):
-                    # Consumed ONLY when admission succeeded (durable receipt, never re-fired); a
-                    # refused admission left the record enabled with last_error → next tick retries.
+                refused = isinstance(admitted, dict) and admitted.get("_admission_blocked")
+                permanent = (refused == "project_routing_fence"
+                             and admitted.get("_project_lifecycle") == "tombstoned")
+                if not refused or permanent:
+                    # A consumed receipt includes a permanent target refusal;
+                    # keep its failed task and last_error. Transient refusals retry.
                     record["enabled"] = False
                     record["completed_at"] = now.isoformat()
                     record["next_run_at"] = ""
+                elif str(refused).startswith("consciousness_"):
+                    # The consciousness door refused (the tree's allowance or concurrency —
+                    # a refusal that can last hours): the one-shot stays armed but its run
+                    # point moves forward by the alarm floor, so it is not re-fired on every
+                    # supervisor pass (a fresh task id, a failed result row and a ledger
+                    # read per pass). The same class the evolution scheduler pauses on.
+                    from ouroboros.config import get_bg_wakeup_min_sec
+
+                    trigger["run_at"] = (now + datetime.timedelta(seconds=int(get_bg_wakeup_min_sec()))).isoformat()
+                    record["trigger"] = trigger
             else:
                 try:
                     record["next_run_at"] = _next_cron_time(expr, now).isoformat()

@@ -789,3 +789,96 @@ def test_posix_release_does_not_retry_a_permission_refusal(tmp_path, monkeypatch
     assert len(attempts) == 1 and lock_path.exists()
     monkeypatch.undo()  # 3.11+ pathlib.unlink calls os.unlink live: the refuser must be gone first
     lock_path.unlink()
+
+
+# --------------------------------------------------------------------------- #
+# Shared sidecar locks: one file, one staleness contract
+# --------------------------------------------------------------------------- #
+def _live_holders_aged_lock(lock_path: pathlib.Path) -> tuple:
+    """A lock file stamped with a LIVE owner (this process) and back-dated far
+    past every stale window the sidecar takers use.  Age alone must not make it
+    evictable: the owner is alive and still inside its critical section."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text(f"pid={os.getpid()} ts=0\n", encoding="utf-8")
+    aged = time.time() - 600.0
+    os.utime(lock_path, (aged, aged))
+    return platform_layer._lock_identity(lock_path)
+
+
+def _custody_ledger_rewrite(drive: pathlib.Path):
+    """process_custody._rewrite_ledger -- same sidecar as append_jsonl(ledger)."""
+    from ouroboros import process_custody
+    from ouroboros.utils import jsonl_append_lock_path
+
+    path = process_custody.ledger_path(drive)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"pid": 4242, "event": "START_REQUESTED"}\n', encoding="utf-8")
+    return path, jsonl_append_lock_path(path), lambda: process_custody._rewrite_ledger(drive, [])
+
+
+def _skill_review_history_append(drive: pathlib.Path):
+    """skill_review_history.append_history_once -- same sidecar as its own
+    append_jsonl writer of the very same history file."""
+    from ouroboros import skill_review_history
+    from ouroboros.utils import jsonl_append_lock_path
+
+    path = skill_review_history.review_history_path(drive, "demo")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"")
+    return path, jsonl_append_lock_path(path), lambda: skill_review_history.append_history_once(
+        drive, "demo", {"job_id": "job-1", "ts": "2026-01-01T00:00:00Z"},
+    )
+
+
+def _supervisor_log_rotation(drive: pathlib.Path):
+    """supervisor.state.rotate_jsonl_log_if_needed -- renames a log whose rows
+    append_jsonl writes under this same lock."""
+    from ouroboros.utils import jsonl_append_lock_path
+    from supervisor import state as supervisor_state
+
+    path = drive / "logs" / "chat.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"role": "user"}\n', encoding="utf-8")
+    return path, jsonl_append_lock_path(path), lambda: supervisor_state.rotate_jsonl_log_if_needed(
+        drive, "chat.jsonl", "chat", max_bytes=8,
+    )
+
+
+def _durable_json_update(drive: pathlib.Path):
+    """utils.update_json_locked -- the <file>.lock sidecar that cancel-intent
+    projection and task-result quarantine take on the very same files."""
+    from ouroboros.utils import update_json_locked
+
+    path = drive / "state" / "durable.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"generation": 1}\n', encoding="utf-8")
+    return path, path.with_name(path.name + ".lock"), lambda: update_json_locked(
+        path, lambda current: {"generation": 2}, timeout_sec=0.3,
+    )
+
+
+@pytest.mark.parametrize("build", [
+    _custody_ledger_rewrite,
+    _skill_review_history_append,
+    _supervisor_log_rotation,
+    _durable_json_update,
+], ids=["process_custody", "skill_review_history", "supervisor_rotation", "update_json_locked"])
+def test_a_shared_sidecar_taker_never_evicts_a_live_holders_lock(tmp_path, monkeypatch, build):
+    """Every writer of one lock file must judge staleness the same way.
+
+    An age-only taker unlinks a LIVE holder's lock and then enters a critical
+    section the holder believes it owns -- the Windows `results=[True, True]`
+    class from the observation inbox, one lock file per authority.  Pinned on
+    the NAME tier, where nothing but the staleness contract stands between the
+    contender and the eviction.
+    """
+    monkeypatch.setattr(platform_layer, "kernel_file_locks_enforced", lambda _path: False)
+    target, lock_path, invoke = build(tmp_path)
+    before = target.read_bytes()
+    identity = _live_holders_aged_lock(lock_path)
+
+    with contextlib.suppress(TimeoutError):
+        invoke()  # the contender: it must wait the holder out, never evict it
+
+    assert platform_layer._lock_identity(lock_path) == identity, "the live holder's lock was evicted"
+    assert target.read_bytes() == before, "a second writer entered the holder's critical section"

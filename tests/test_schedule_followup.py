@@ -106,6 +106,36 @@ def test_once_schedule_survives_a_refused_admission_and_retries(tmp_path, monkey
     assert record.get("last_error") == ""
 
 
+def test_once_schedule_refused_by_the_consciousness_door_defers_by_the_alarm_floor(tmp_path, monkeypatch):
+    """A one-shot a wake scheduled and the consciousness door refuses (allowance, concurrency —
+    a refusal that can last hours) must not re-fire on every supervisor pass: the record stays
+    armed, its run point moves forward by the alarm floor (opus round 4)."""
+    import datetime
+
+    queue, pending = _queue(tmp_path)
+    monkeypatch.setenv("OUROBOROS_BG_WAKEUP_MIN", "900")
+    queue.upsert_scheduled_task({
+        "id": "fu-conscious", "name": "Follow-up", "enabled": True, "source": "task_followup",
+        "trigger": {"type": "once", "run_at": "2000-01-01T00:00:00+00:00"},
+        "task": {"type": "task", "text": "resume later",
+                 "metadata": {"initiator": "consciousness", "usage_category": "consciousness_task"}},
+    })
+    fires: list = []
+    monkeypatch.setattr(
+        queue, "enqueue_task",
+        lambda task: fires.append(task["id"]) or {**task, "_admission_blocked": "consciousness_allowance_exhausted",
+                                                 "_admission_detail": "$20.00 of $20.00 spent in the last 24 h"})
+    before = datetime.datetime.now(datetime.timezone.utc)
+    queue.check_scheduled_tasks()
+    queue.check_scheduled_tasks()  # the very next pass: NOT due again
+    assert len(fires) == 1 and pending == []
+    record = queue.list_scheduled_tasks(tmp_path)["tasks"][0]
+    assert record["enabled"] is True and not record.get("completed_at")
+    assert "consciousness_allowance_exhausted" in str(record.get("last_error") or "")
+    run_at = datetime.datetime.fromisoformat(record["trigger"]["run_at"])
+    assert run_at >= before + datetime.timedelta(seconds=890)
+
+
 def test_re_enabled_completed_once_never_refires(tmp_path):
     """Round-3 exactly-once: a consumed one-shot (non-empty completed_at) must not
     fire again even when the owner flips enabled back on from the UI — re-arming
@@ -318,6 +348,43 @@ def test_schedule_followup_root_id_falls_back_to_task_id_never_the_string_none(t
 
     record = list_scheduled_tasks(pathlib.Path(tmp_path / "data").resolve())["tasks"][0]
     assert record["task"]["metadata"]["origin_root_task_id"] == "root-3"
+
+
+def test_schedule_followup_preserves_source_project_and_chat(tmp_path):
+    ctx = _ctx(tmp_path, task_id="project-task")
+    ctx.project_id = "memory-atlas"
+    ctx.current_chat_id = 233966548
+
+    assert _followup(ctx).startswith("FOLLOWUP_SCHEDULED")
+    from supervisor.queue import list_scheduled_tasks
+
+    record = list_scheduled_tasks(pathlib.Path(tmp_path / "data").resolve())["tasks"][0]
+    assert record["task"]["chat_id"] == 233966548
+    assert record["task"]["project_id"] == "memory-atlas"
+    from supervisor.queue_schedules import _task_from_schedule
+    from ouroboros.project_facts import resolve_project_id
+
+    queued = _task_from_schedule(record)
+    assert queued["project_id"] == "memory-atlas"
+    assert resolve_project_id(queued) == "memory-atlas"
+    assert queued["chat_id"] == 233966548
+
+
+def test_schedule_followup_of_an_unscoped_task_invents_no_project_address(tmp_path):
+    """Preserving a source address must not become a new addressing policy: an
+    unscoped task's follow-up keeps the existing owner-chat default."""
+    from supervisor.queue import list_scheduled_tasks
+    from supervisor.queue_schedules import _task_from_schedule
+    from ouroboros.project_facts import resolve_project_id
+
+    assert _followup(_ctx(tmp_path, task_id="plain-task")).startswith("FOLLOWUP_SCHEDULED")
+    record = list_scheduled_tasks(pathlib.Path(tmp_path / "data").resolve())["tasks"][0]
+    assert "project_id" not in record["task"]
+    assert "chat_id" not in record["task"]
+
+    queued = _task_from_schedule(record)
+    assert resolve_project_id(queued) == ""
+    assert queued["chat_id"] == 0  # the existing owner_chat_id default, unchanged
 
 
 # ------------------------------------------------- gateway + digest + queue GC

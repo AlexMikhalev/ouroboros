@@ -18,6 +18,12 @@ PACING_INTERVAL_DEFAULT_SEC = 600
 # Supervisor-loop liveness deadline (WS3, v6.34.0): a watchdog thread flags the main supervisor loop STALLED if it has not ticked within this many seconds (healthy tick ~0.5s, real wedges only). 0 disables.
 SUPERVISOR_LIVENESS_DEADLINE_DEFAULT_SEC = 90
 
+# Caller wait windows, not process lifetime or permission to terminate a startup.
+CLAUDEXOR_STARTUP_WAIT_SEC = 20.0
+CLAUDEXOR_STARTUP_POLL_SEC = 0.25
+CLAUDEXOR_ADMISSION_WAIT_SEC = 5.0
+CLAUDEXOR_ADMISSION_POLL_SEC = 0.15
+
 
 # Shipped router profile. Keeping the root-loop role policy beside the direct
 # provider profiles gives onboarding, runtime defaults, and tests one vocabulary
@@ -73,6 +79,11 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_SERVER_HOST": "127.0.0.1",
     "OUROBOROS_HOST_SERVICE_PORT": 8767,
     "OUROBOROS_MODEL": OPENROUTER_DEFAULTS["main"],
+    # Role-owned choices; empty account and zero window mean Auto, not healthy/known.
+    "OUROBOROS_MODEL_ACCOUNTS": "{}",
+    "OUROBOROS_MODEL_CONTEXT_WINDOWS": "{}",
+    "OUROBOROS_PROCESSING_PREFERENCE": "",
+    "OUROBOROS_MODEL_PROCESSING_PREFERENCES": "{}",
     # Worker lanes; empty means "use OUROBOROS_MODEL" (one model by default, per-lane
     # override optional). HEAVY = mutative first-level subagents; LIGHT = auto/deep bulk.
     "OUROBOROS_MODEL_HEAVY": OPENROUTER_DEFAULTS["heavy"],
@@ -154,9 +165,13 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_PACING_INTERVAL_SEC": PACING_INTERVAL_DEFAULT_SEC,
     "OUROBOROS_TOOL_TIMEOUT_SEC": 600,
     "OUROBOROS_VISION_CAPTION_TIMEOUT_SEC": 90,
-    "OUROBOROS_BG_MAX_ROUNDS": 10,
-    "OUROBOROS_BG_WAKEUP_MIN": 30,
-    "OUROBOROS_BG_WAKEUP_MAX": 7200,
+    # Consciousness: MIN/MAX bound the wake-up interval the MODEL picks (set_next_wakeup); autonomy is what a
+    # wake may do; DAILY_USD is its rolling-24h spend ceiling (0 = may not spend), MAX_TASKS its concurrent roots (0 = none).
+    "OUROBOROS_BG_WAKEUP_MIN": 900,
+    "OUROBOROS_BG_WAKEUP_MAX": 14400,
+    "OUROBOROS_CONSCIOUSNESS_AUTONOMY": "act",
+    "OUROBOROS_CONSCIOUSNESS_DAILY_USD": 20.0,
+    "OUROBOROS_CONSCIOUSNESS_MAX_TASKS": 2,
     # Post-task self-evolution envelope (V4). Owner-enabled capability whose
     # CONTENT stays LLM-first; default OFF. When enabled, after a qualifying task
     # the worker may promote one high-value code-class backlog item into the
@@ -222,7 +237,7 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_RESTART_DRAIN_MAX_SEC": 120,
     # Runtime mode: light | advanced | pro; pro still requires review gates.
     "OUROBOROS_RUNTIME_MODE": "advanced",
-    # Context mode: low | max. Owner-only working-context size profile. max = full always-on docs +
+    # Context mode: nano | low | max. Owner-only working-context size profile. max = full always-on docs +
     # current memory granularity; low = ARCHITECTURE as a navigation map + deeper memory consolidation,
     # sized for ~200k / local models. Cognitive-horizon knob (BIBLE P1): the agent cannot lower it
     # (owner-only), and it never changes model / reasoning-effort / output-token budgets.
@@ -283,7 +298,7 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_EFFORT_REVIEW": "high",
     "OUROBOROS_EFFORT_SCOPE_REVIEW": "high",
     "OUROBOROS_EFFORT_DEEP_SELF_REVIEW": "high",
-    "OUROBOROS_EFFORT_CONSCIOUSNESS": "high",
+    "OUROBOROS_EFFORT_CONSCIOUSNESS": "",  # empty = the Task / Chat effort (a wake-up is an ordinary Main turn)
     "OUROBOROS_RETURN_REASONING": True,
     "OUROBOROS_REASONING_SUMMARY": "auto",
     "GITHUB_TOKEN": "",
@@ -362,6 +377,7 @@ RETIRED_SETTING_KEYS: tuple[str, ...] = (
     "OUROBOROS_SOFT_TIMEOUT_SEC",
     "OUROBOROS_HARD_TIMEOUT_SEC",
     "OUROBOROS_REVIEW_NATIVE_MAX_ROUNDS",  # a ceiling on rounds; bounds are transcript/deadline/ledger
+    "OUROBOROS_BG_MAX_ROUNDS",  # a wake is an ordinary Main turn: OUROBOROS_MAX_ROUNDS + the per-task cost cap bound it
 )
 
 

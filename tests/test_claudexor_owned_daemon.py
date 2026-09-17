@@ -11,6 +11,7 @@ import shlex
 import pytest
 
 from ouroboros import claudexor_daemon as owned
+from tests._governance_docs_shared import architecture_text
 
 
 def _write_descriptor(config_dir: pathlib.Path, *, port: int = 45678) -> None:
@@ -2536,12 +2537,9 @@ class _UnpublishedChild:
         self.terminated += 1
 
 
-def test_a_spawn_that_never_publishes_a_descriptor_does_not_leave_the_child_running(
+def test_a_live_startup_survives_its_callers_wait_until_explicit_stop(
         monkeypatch, tmp_path):
-    """A failed startup cleans up its own child before a retry can spawn another.
-    The Popen fixture reports termination and wait like a real completed child;
-    signal failure and retained custody are covered in test_process_custody_stop.
-    """
+    """Wait expiry preserves the live child; explicit Stop owns termination."""
     import sys
 
     from ouroboros.gateways.claudexor import ClaudexorUnavailable
@@ -2564,11 +2562,13 @@ def test_a_spawn_that_never_publishes_a_descriptor_does_not_leave_the_child_runn
     manager = owned.OwnedClaudexorDaemon()
     with pytest.raises(ClaudexorUnavailable) as err:
         manager.ensure_running()
-    assert err.value.code == "daemon_spawn_failed"
-
-    # The child we started is stopped, and the handle is forgotten so the next
-    # attempt starts ONE daemon rather than a second one beside a live orphan.
-    assert child.terminated == 1, "the spawned child was left running"
+    assert err.value.code == "daemon_starting"
+    assert child.terminated == 0
+    assert manager._proc is child
+    with pytest.raises(ClaudexorUnavailable, match="retry joins"):
+        manager.ensure_running(startup_wait_sec=0)
+    assert manager._proc is child
+    assert manager.stop() is True
     assert manager._proc is None
     assert manager.stop() is False
 
@@ -2715,7 +2715,8 @@ def test_exited_spawn_times_out_cleanly_with_bounded_liveness_probes(
         manager.ensure_running()
 
     assert err.value.code == "daemon_spawn_failed"
-    assert "writer lease lost" in str(err.value)
+    assert "poll=1" in str(err.value)
+    assert "startup log interval=0..18 bytes" in str(err.value)
     assert handshake_bounds
     assert clock.now == pytest.approx(owned._SPAWN_WAIT_SEC)
     assert all(started < owned._SPAWN_WAIT_SEC for started, _bound in handshake_bounds)
@@ -3014,7 +3015,7 @@ def test_staged_update_activates_only_at_the_next_natural_start(monkeypatch, tmp
         "spawn_supervised",
         lambda command, **_kwargs: spawns.append(list(command)) or _LiveChild(),
     )
-    monkeypatch.setattr(daemon, "_alive_endpoint", lambda **_kwargs: new_endpoint)
+    monkeypatch.setattr(daemon, "_alive_endpoint", lambda **_kwargs: new_endpoint if spawns else None)
 
     # Phase 1: the OLD endpoint keeps serving; the new target is only staged.
     assert daemon.ensure_running() is old_endpoint
@@ -3610,8 +3611,7 @@ def test_the_proxy_count_in_the_docs_matches_the_handlers_that_exist(tmp_path):
         f"does not say \"{expected} THIN proxies\""
     )
 
-    arch = (pathlib.Path(__file__).resolve().parents[1] / "docs" / "ARCHITECTURE.md") \
-        .read_text(encoding="utf-8")
+    arch = architecture_text()
     account_line = next(ln for ln in arch.splitlines() if "claudexor_accounts.py" in ln)
     assert f"{expected} thin proxies" in account_line.lower(), (
         "the gateway map still counts a different number of account proxies: "
@@ -3994,3 +3994,72 @@ def test_handshake_records_the_engine_build_sha_beside_its_version():
     unstamped = _handshake({"version": cx.CLAUDEXOR_MIN_VERSION})
     assert unstamped.engine_version == cx.CLAUDEXOR_MIN_VERSION
     assert unstamped.engine_build_sha == ""
+
+
+def test_a_failed_probe_never_un_proves_the_serving_engine_version(monkeypatch, tmp_path):
+    """The request-shape floor reads a PROVEN version, not the liveness field.
+
+    ``status_dict`` polls this singleton from the same server process that runs
+    the model lanes, so a transient handshake failure used to blank the version
+    a live caller had already been served — silently downgrading that caller's
+    request shape between a priced candidate and its send. Public status still
+    goes stale on every failure; the proven version only ever moves forward, on
+    another SUCCESSFUL handshake, which is how a deliberate stop or a planned
+    restart on a new pin publishes its engine.
+    """
+    from types import SimpleNamespace
+
+    from ouroboros import claudexor_runtime as runtime
+    from ouroboros.gateways import claudexor as gw
+
+    data_dir = tmp_path / "data"
+    config_dir = data_dir / "claudexor"
+    _point_owned_home(monkeypatch, config_dir, data_dir)
+    _write_descriptor(config_dir)
+    monkeypatch.setattr(owned, "verify_owned_home", lambda **_kw: "")
+    monkeypatch.setattr(gw, "discover_daemon_at", lambda _path: object())
+    monkeypatch.setattr(runtime, "get_runtime_manager",
+                        lambda: SimpleNamespace(status=lambda **_kw: {"state": "ready"}))
+
+    class Serving:
+        engine_version = "3.10.4"
+
+        def __init__(self, _endpoint):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def handshake(self, **_kw):
+            return {"engine": {"sha": "a" * 40}}
+
+    monkeypatch.setattr(gw, "ClaudexorGateway", Serving)
+    manager = owned.OwnedClaudexorDaemon()
+    monkeypatch.setattr(owned, "get_owned_daemon", lambda: manager)
+    assert manager._classify_liveness()[1] == "running"
+    assert owned.owned_engine_version() == "3.10.4" and manager._engine_version == "3.10.4"
+
+    class Timeout(Serving):
+        def handshake(self, **_kw):
+            raise gw.ClaudexorUnavailable("daemon_unreachable", "handshake timed out")
+
+    monkeypatch.setattr(gw, "ClaudexorGateway", Timeout)
+    # The Accounts/Agents poll itself: it drives the failing probe.
+    assert manager.status_dict()["engine_version"] == ""
+    assert manager._engine_version == "" and owned.owned_engine_version() == "3.10.4"
+
+    # The other failure branch (no descriptor) cannot retract it either.
+    (config_dir / "daemon" / "control-api.json").unlink()
+    assert manager._classify_liveness() == (None, "not_provisioned", "")
+    assert owned.owned_engine_version() == "3.10.4"
+
+    class Replacement(Serving):
+        engine_version = "3.11.0"
+
+    _write_descriptor(config_dir)
+    monkeypatch.setattr(gw, "ClaudexorGateway", Replacement)
+    assert manager._classify_liveness()[1] == "running"
+    assert owned.owned_engine_version() == "3.11.0"

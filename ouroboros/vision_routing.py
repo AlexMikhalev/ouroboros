@@ -14,6 +14,7 @@ from ouroboros.deadline_utils import owner_deadline_exhausted, transport_timeout
 from ouroboros.observability import new_call_id, persist_call
 from ouroboros.provider_models import supports_vision
 from ouroboros.utils import emit_cognitive_operation_event
+from ouroboros.config import runtime_setting
 
 log = logging.getLogger(__name__)
 
@@ -44,16 +45,24 @@ class VisionRoutingContext:
     use_local: bool = False
     task_attempt: Any = None
     deadline_ts: Any = None
+    model_role: str = "main"
+    model_account_override: str | None = None
 
 
 def resolve_vision_caption_model(ctx: Any, llm: Any, *, use_local: bool = False) -> str:
-    import os
+    from ouroboros.model_wait import current_model_wait
 
-    explicit_raw = str(os.environ.get("OUROBOROS_MODEL_VISION", "") or "").strip()
+    wait = current_model_wait()
+    override = wait.overrides.get("vision") if wait is not None else None
+    if override:
+        return ("" if override.get("use_local") or supports_vision(
+            override["model"], model_role="vision") is False else override["model"])
+
+    explicit_raw = str(runtime_setting("OUROBOROS_MODEL_VISION", "") or "").strip()
     explicit = str(get_vision_model() or "").strip()
     if use_local and not explicit_raw:
         return ""
-    if explicit and supports_vision(explicit):
+    if explicit and supports_vision(explicit, model_role="vision") is not False:
         return explicit
     candidates = [
         str(getattr(ctx, "model", "") or "").strip(),
@@ -71,7 +80,7 @@ def resolve_vision_caption_model(ctx: Any, llm: Any, *, use_local: bool = False)
     except Exception:
         pass
     for candidate in candidates:
-        if candidate and supports_vision(candidate):
+        if candidate and supports_vision(candidate, model_role="vision") is not False:
             return candidate
     return ""
 
@@ -97,6 +106,8 @@ def _caption_for_block(
     url = _image_url_from_block(block)
     model = resolve_vision_caption_model(ctx, llm, use_local=bool(getattr(ctx, "use_local", False)))
     url_digest = sha256(url.encode("utf-8", errors="replace")).hexdigest()
+    # Reuse already completed visual work even when its generating account is
+    # unavailable later; the caption is content, not that account's capability.
     key = f"{url_digest}|{model}|v1"
     if key in memo:
         return str(memo[key] or "")
@@ -145,6 +156,8 @@ def _caption_for_block(
             ),
         )
     except Exception as exc:
+        from ouroboros.llm_claudexor import propagate_model_error
+        propagate_model_error(exc)
         emit_cognitive_operation_event(
             event_queue,
             task_id=task_id,
@@ -222,9 +235,6 @@ def prepare_messages_for_send(
     routing: VisionRoutingContext,
 ) -> List[Dict[str, Any]]:
     mode = get_image_input_mode()
-    model_supports_inline = (not routing.use_local) and supports_vision(routing.model)
-    if (mode == "inline" and model_supports_inline) or (mode == "auto" and model_supports_inline):
-        return messages
     has_image = any(
         isinstance(msg.get("content"), list)
         and any(isinstance(block, dict) and str(block.get("type") or "") in {"image_url", "image"} for block in msg["content"])
@@ -232,6 +242,11 @@ def prepare_messages_for_send(
         if isinstance(msg, dict)
     )
     if not has_image:
+        return messages
+    if mode in {"inline", "auto"} and not routing.use_local and supports_vision(
+        routing.model, model_role=routing.model_role,
+        model_account_override=routing.model_account_override,
+    ) is not False:
         return messages
     if mode == "off":
         rewrite_to_caption = False

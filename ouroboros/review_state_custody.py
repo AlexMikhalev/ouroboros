@@ -93,7 +93,11 @@ def checkpoint_pending_review_invocation(
     The existing advisory-review state remains the only ledger.  This narrow
     locked patch is deliberately stricter than a whole-attempt merge: triad and
     scope start concurrently, so each may update only its exact reserved row
-    and may never overwrite the other surface's token.
+    and may never overwrite the other surface's token. A commit or review-only
+    action may already have finished while its reserved reviewer is starting.
+    Its logical status does not revoke that physical operation's custody; the
+    paid attempt, retry key and exact in-flight slot below are the authority.
+    This checkpoint records no verdict and never changes the commit status.
     """
     expected = {
         "review_retry_key": str(review_retry_key or ""),
@@ -116,7 +120,6 @@ def checkpoint_pending_review_invocation(
         )
         if (
             current is None
-            or current.status != "reviewing"
             or not current.paid
             or current.review_retry_key != expected["review_retry_key"]
         ):

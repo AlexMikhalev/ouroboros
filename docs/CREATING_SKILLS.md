@@ -825,6 +825,15 @@ def register(api):
     # configuration writes and markdown/json for explanatory diagnostics.
     # Rich widget-only components (media, stream, map, kanban, module JS)
     # belong on the Widgets page, not Settings.
+    # Hydration: before rendering a form/action the host issues GET on the
+    # component's own route. Answer 2xx with a JSON object
+    # {field_name: current_value} (strings) to pre-fill those fields; omit a
+    # field to show its declared default/first option, and never return a
+    # secret. 404/405 means "no current values", so the form renders from
+    # defaults; a failed read makes the host disable Save and tell the owner
+    # to reload. Password fields are never pre-filled, so treat an empty
+    # password on save as "unchanged". Reference: skills/telegram/plugin.py,
+    # GET+POST settings/save.
     api.register_settings_section(
         "config",
         title="Search settings",
@@ -1389,6 +1398,10 @@ the leaf and while it creates only the root `SKILL.md` or `skill.json`. Once the
 manifest exists, ordinary discovery, preflight, and fresh review resume.
 Grouping directories, unknown or colliding identities, nested manifests, and
 path escapes are still refused; no parallel `external` payload is created.
+
+An ordinary `.env.example` is included in the payload hash, review and publication
+snapshot, including after ClawHub archive import. Its name does not exempt its
+contents from the existing publication scan.
 
 Only literal Betterleaks `high` confidence blocks an outbound publication call.
 `medium`, `low`, missing, and unknown confidence remain redacted warnings. For

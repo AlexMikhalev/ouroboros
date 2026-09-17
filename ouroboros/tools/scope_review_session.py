@@ -15,6 +15,7 @@ module load.
 from __future__ import annotations
 
 import pathlib
+import json
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
@@ -50,11 +51,23 @@ def governance_nav_maps(repo_dir: pathlib.Path, doc_paths: Tuple[str, ...]) -> s
     complete-subtree line range, read on demand by the session with its own tools.
     ``generate_doc_nav_map`` is the one existing mapper — no second repository
     scanner (§8 item 8)."""
-    from ouroboros.context_layout import generate_doc_nav_map
+    from ouroboros.context_layout import book_navigation, generate_doc_nav_map
+    from ouroboros.reference_books import BOOK_ENTRYPOINTS, load_reference_book
 
     parts: list[str] = []
     for rel_path in doc_paths:
-        text = load_governance_doc(repo_dir, rel_path, on_missing="placeholder")
+        book_id = next((key for key, path in BOOK_ENTRYPOINTS.items() if path == rel_path), None)
+        if book_id is not None:
+            try:
+                book = load_reference_book(repo_dir, book_id)
+            except (OSError, ValueError) as exc:
+                parts.append(f"Reference book source unavailable: {rel_path}. {exc}. Required coverage is incomplete.")
+                continue
+            # One map per book, addressed to the chapter the section lives in.
+            parts.append(book_navigation(book))
+            continue
+        else:
+            text = load_governance_doc(repo_dir, rel_path, on_missing="placeholder")
         if str(text or "").strip():
             parts.append(generate_doc_nav_map(text, title=rel_path, rel_path=rel_path))
     return (
@@ -88,6 +101,9 @@ def build_scope_session_task(
     drive_root: Optional[pathlib.Path] = None,
     governance_repo_dir: Optional[pathlib.Path] = None,
     managed_subject: Optional[Any] = None,
+    task_evidence_section: str = "",
+    required_sources: Optional[list] = None,
+    required_sources_ref: Optional[dict] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """The scope task in SESSION delivery, plus its forensic coverage manifest.
 
@@ -184,6 +200,7 @@ def build_scope_session_task(
             "your own tools)"
         ),
         critical_calibration=CRITICAL_FINDING_CALIBRATION,
+        task_evidence_section=task_evidence_section,
     )
     manifest: Dict[str, Any] = {
         # D-12's ratified spelling. It is deliberately NOT `agent_session`: that
@@ -204,81 +221,21 @@ def build_scope_session_task(
         "excluded_sensitive": {"policy": "preserved", "host_enforced": False},
         "nav_mapped_docs": list(_CANONICAL_CONTEXT_DOCS),
     }
+    if required_sources is not None:
+        manifest["native_required_sources"] = required_sources
+        manifest["native_required_sources_ref"] = dict(required_sources_ref or {})
+        task_text += ("\nThe required source surface is independent from your working window. "
+                      "Read it completely in the order you choose; preserve your own conclusions "
+                      "and exact source references across focus changes. Missing or unread sources "
+                      "remain explicit gaps. Required source manifest: "
+                      + json.dumps(required_sources_ref or {}, ensure_ascii=False))
     return task_text, manifest
 
 
-# --------------------------------------------------------------------------
-# Session authority (the floor this delivery's verdict actually rests on)
-# --------------------------------------------------------------------------
-# The api (push) delivery's authority rests on the whole assembled pack fitting
-# the reviewer's context, so its floor is the constitutional >=1M. This delivery
-# assembles NO pack, so that floor is not its test — but a verdict may only gate
-# a commit if the reviewer's window has been ESTABLISHED. Hence: SOURCED evidence
-# (confirmed | asserted) at or above SESSION_WINDOW_FLOOR.
-#
-# The floor coincides numerically with scope_review's conservative fallback
-# window, which is exactly why PROVENANCE and not the number is the gate: a
-# reviewer nobody ever probed resolves to that same number under
-# `unknown_conservative`, and admitting it would be "assumed adequate" — the one
-# thing BIBLE P3 forbids ("treated as too small rather than assumed adequate").
+# Retained only for the existing settings-notice import during coordinated
+# integration. This value has no review-authority consumer here; the settings
+# owner removes its obsolete acknowledgement notice in the same phase.
 SESSION_WINDOW_FLOOR = 200_000
-SOURCED_PROVENANCE = frozenset({"confirmed", "asserted"})
-
-
-def session_window_is_authoritative(window: Any, provenance: str) -> bool:
-    """Whether a retrieving row's window evidence can carry a BLOCKING verdict."""
-    return str(provenance or "") in SOURCED_PROVENANCE and int(window or 0) >= SESSION_WINDOW_FLOOR
-
-
-def _unproven_window_sentence(scope_model: str, phrase: str) -> str:
-    """The ONE sentence naming why this row's window authorises nothing.
-
-    Both the advisory finding and the block message are built from it, so the
-    disclosure the owner reads and the reason the commit stopped cannot drift."""
-    return (
-        f"retrieving scope reviewer {scope_model} has a {phrase}, which does not meet "
-        f"the >={SESSION_WINDOW_FLOOR} SOURCED-evidence floor this owner-declared "
-        "agentic delivery needs to carry a blocking verdict (BIBLE P3: a window that "
-        "cannot be established by evidence is treated as too small, never assumed "
-        "adequate)."
-    )
-
-
-def _restoration_sentence() -> str:
-    """What the owner can do to get an authoritative verdict back."""
-    return (
-        "Owner-ack this route's window (the scope-slot save offers the ack), configure "
-        "a reviewer with confirmed window evidence, or deliver this row over the api "
-        "route to restore an authoritative verdict."
-    )
-
-
-def session_window_unproven_finding(scope_model: str, phrase: str) -> Dict[str, Any]:
-    """Disclosure for a retrieving row whose window is not SOURCED >= the floor.
-
-    ``phrase`` is the caller's already-formatted provenance wording, so the
-    honest four-way phrasing keeps its single owner in ``scope_review``."""
-    return {
-        "verdict": "FAIL",
-        "severity": "advisory",
-        "item": "scope_review_session_window_unproven",
-        "reason": (
-            f"⚠️ SCOPE_SESSION_ADVISORY_ONLY: {_unproven_window_sentence(scope_model, phrase)} "
-            "Its findings are ADVISORY-ONLY and are not counted toward the authoritative "
-            "scope quorum; the row therefore cannot supply the authoritative scope verdict "
-            f"required to commit. {_restoration_sentence()}"
-        ),
-        "model": scope_model,
-    }
-
-
-def session_window_unproven_block_message(scope_model: str, phrase: str) -> str:
-    """The retrieving row's BLOCK message — the twin of the api row's sub-floor one."""
-    return (
-        f"⚠️ SCOPE_REVIEW_BLOCKED: {_unproven_window_sentence(scope_model, phrase)} Its "
-        "findings were preserved as advisory evidence, but it cannot supply the "
-        f"authoritative scope verdict required to commit. {_restoration_sentence()}"
-    )
 
 
 def session_scope_authority(
@@ -291,39 +248,11 @@ def session_scope_authority(
     phrase: str,
     result_kwargs: Dict[str, Any],
 ) -> Tuple[list, list, Any]:
-    """The retrieving delivery's whole authority decision.
+    """Window size does not change a retrieving review's independent findings.
 
-    ``(critical, advisory, early_result)``: with SOURCED evidence at or above the
-    floor the row keeps blocking authority and nothing changes (``early_result``
-    is None, so the caller proceeds to its normal blocking logic). Otherwise its
-    criticals are PRESERVED as advisory evidence (never discarded — a real finding
-    stays readable), tagged so their origin is unmistakable, the disclosure names
-    what would restore an authoritative verdict, and the typed
-    ``session_advisory`` result is returned.
-
-    That result BLOCKS, exactly as the api row's ``sub_floor`` twin does. The two
-    halves of the same sentence are easy to confuse, so both are stated: the row's
-    FINDINGS are advisory (an unestablished window cannot certify a verdict) and
-    the PANEL is short one authoritative verdict (which is what stops the commit).
-    Returning ``blocked=False`` here made the blocking scope gate of BIBLE P3 fail
-    OPEN: a panel of retrieving rows produced zero authoritative verdicts, the
-    aggregate's partial-quorum shortfall only fires above zero responders, and the
-    commit sailed through a gate the owner had every reason to believe was armed —
-    while the identical api panel blocked. Authority is decided in ONE place per
-    delivery (here for retrieving rows, ``_apply_scope_authority`` for api rows);
-    the quorum aggregate stays a discloser, never a second decider."""
-    if session_window_is_authoritative(window, provenance):
-        return critical_findings, advisory_findings, None
-    for finding in critical_findings:
-        finding["severity"] = "advisory"
-        finding["reason"] = "[advisory-only session scope reviewer] " + str(finding.get("reason", ""))
-    advisory = list(critical_findings) + list(advisory_findings)
-    advisory.append(session_window_unproven_finding(scope_model, phrase))
-    from ouroboros.tools.scope_review import ScopeReviewResult
-
-    return [], advisory, ScopeReviewResult(
-        blocked=True,
-        block_message=session_window_unproven_block_message(scope_model, phrase),
-        critical_findings=[], advisory_findings=advisory,
-        status="session_advisory", **result_kwargs,
-    )
+    Native delivery reports exact required-source coverage separately; vendor
+    sessions retain unobserved read provenance. The common review owner decides
+    completeness/enforcement from those facts, including effective Cyber policy.
+    A smaller or unknown window never rewrites a critical finding as advisory.
+    """
+    return critical_findings, advisory_findings, None

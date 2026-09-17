@@ -97,14 +97,74 @@ def test_validate_workspace_root_is_shared_ssot(tmp_path):
         validate_workspace_root(str(sub), system_repo_dir=tmp_path / "sys", drive_root=tmp_path / "data")
 
 
-def test_resolve_room_workspace_defaults_to_project_working_dir(tmp_path):
+@pytest.mark.parametrize("kind", ["ordinary", "dirty", "unborn", "linked"])
+def test_workspace_admission_preserves_existing_folder_state(tmp_path, kind):
+    from ouroboros.workspace_admission import validate_workspace_root
+
+    ws = tmp_path / "workspace"
+    if kind == "linked":
+        source = tmp_path / "source"
+        _init_git_repo(source)
+        subprocess.run(["git", "worktree", "add", "--detach", str(ws)], cwd=source, check=True)
+    elif kind == "dirty":
+        _init_git_repo(ws)
+        (ws / "README.md").write_text("owner edits\n", encoding="utf-8")
+        (ws / ".gitignore").write_text("ignored\n", encoding="utf-8")
+        (ws / "ignored").write_bytes(b"owner ignored bytes")
+    else:
+        ws.mkdir()
+        if kind == "unborn":
+            subprocess.run(["git", "init", "-q"], cwd=ws, check=True)
+    (ws / "notes.txt").write_text("existing notes\n", encoding="utf-8")
+    before = {p.relative_to(ws): p.read_bytes() for p in ws.rglob("*") if p.is_file()}
+
+    assert validate_workspace_root(
+        ws, system_repo_dir=tmp_path / "sys", drive_root=tmp_path / "data",
+    ) == ws.resolve()
+    assert {p.relative_to(ws): p.read_bytes() for p in ws.rglob("*") if p.is_file()} == before
+
+
+def test_workspace_admission_plain_folder_does_not_require_git_binary(tmp_path, monkeypatch):
+    from ouroboros.workspace_admission import validate_workspace_root
+
+    ws = tmp_path / "documents"
+    ws.mkdir()
+
+    def missing_git(*args, **kwargs):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr("ouroboros.workspace_admission.subprocess.run", missing_git)
+    assert validate_workspace_root(
+        ws, system_repo_dir=tmp_path / "sys", drive_root=tmp_path / "data",
+    ) == ws.resolve()
+
+
+@pytest.mark.parametrize("kind", ["broken_linked", "bare"])
+def test_workspace_admission_does_not_disguise_invalid_git_as_plain(tmp_path, kind):
+    from ouroboros.workspace_admission import WorkspaceRootError, validate_workspace_root
+
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    if kind == "bare":
+        subprocess.run(["git", "init", "--bare", "-q"], cwd=ws, check=True)
+    else:
+        (ws / ".git").write_text("gitdir: /missing/worktree/gitdir\n", encoding="utf-8")
+    with pytest.raises(WorkspaceRootError):
+        validate_workspace_root(ws, system_repo_dir=tmp_path / "sys", drive_root=tmp_path / "data")
+
+
+@pytest.mark.parametrize("use_git", [False, True])
+def test_resolve_room_workspace_defaults_to_project_working_dir(tmp_path, use_git):
     from ouroboros.projects_registry import create_project, update_project
     from ouroboros.workspace_admission import resolve_room_workspace
 
     data = tmp_path / "data"
     data.mkdir()
     ws = tmp_path / "roomdir"
-    _init_git_repo(ws)
+    if use_git:
+        _init_git_repo(ws)
+    else:
+        ws.mkdir()
     create_project(data, "room", name="Room", origin="test")
     update_project(data, "room", working_dir=str(ws))
 

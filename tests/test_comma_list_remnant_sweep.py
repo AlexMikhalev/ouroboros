@@ -122,6 +122,7 @@ _COMMA_SPLIT_ALLOWLIST = {
     "ouroboros/model_slots.py": ("generic model-list parser (OUROBOROS_MODEL_FALLBACKS et al.)", 1),
     "ouroboros/provider_models.py": ("declared-model list parser over the derived plane", 1),
     "ouroboros/gateway/models.py": ("Provider Test deterministic-model resolver", 1),
+    "web/modules/model_roles.js": ("existing ordered fallback model setting, never reviewer configuration", 1),
 }
 
 

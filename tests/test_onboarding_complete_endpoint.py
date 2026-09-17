@@ -963,12 +963,17 @@ def test_install_time_status_cannot_be_forged_from_the_payload(onboarding):
         "OUROBOROS_MODEL": "openai/gpt-5.6-luna",
     }), encoding="utf-8")
 
+    manual_slots = json.dumps({
+        "triad": [{"slot_id": "manual-triad", "route": {"kind": "api_chat", "target_id": "openai/custom"}}],
+        "scope": [{"slot_id": "manual-scope", "route": {"kind": "api_chat", "target_id": "openai/custom"}}],
+    })
+
     response = onboarding.client.post("/api/onboarding/complete", json={
         **WIZARD_PAYLOAD,
         "subscriptionsConnected": True,
         PRESET_MARKER_KEY: "",              # try to clear the latch
         "OUROBOROS_SUBSCRIPTION_PRESET_VERSION ": "1",
-        "OUROBOROS_REVIEWER_SLOTS": '{"triad": [], "scope": []}',
+        "OUROBOROS_REVIEWER_SLOTS": manual_slots,
         "OUROBOROS_SAFETY_MODE": "off",
     })
 
@@ -976,17 +981,17 @@ def test_install_time_status_cannot_be_forged_from_the_payload(onboarding):
     assert response.json()["preset"]["applied"] is False
     saved = onboarding.saved()
     assert not saved.get(PRESET_MARKER_KEY)
-    # Neither the reviewer slots nor safety mode ride through the wizard payload:
-    # the shared setup validator only copies the setup contract's own keys.
-    assert not saved.get("OUROBOROS_REVIEWER_SLOTS")
+    # Review is now an ordinary editable wizard surface. Its valid explicit
+    # value is preserved, but it cannot reopen presets or lower safety.
+    assert saved["OUROBOROS_REVIEWER_SLOTS"] == manual_slots
     assert saved.get("OUROBOROS_SAFETY_MODE", "") != "off"
 
 
-def test_subscription_alone_does_not_satisfy_the_launch_gate(onboarding):
-    """D-1: at least one API key or a local model. A subscription amplifies.
+def test_agent_only_inventory_does_not_invent_a_model_transport(onboarding):
+    """A declared subscription is checked, not trusted as raw model capability.
 
-    The shared setup validator is the first gate and refuses with its own
-    provider-list wording; nothing is written and the daemon is never asked."""
+    The fixture has only agent inventory, not model-operation catalog evidence.
+    It cannot provision Main and the atomic transaction must write nothing."""
     payload = {k: v for k, v in WIZARD_PAYLOAD.items() if k != "OPENROUTER_API_KEY"}
 
     response = onboarding.client.post(
@@ -995,13 +1000,11 @@ def test_subscription_alone_does_not_satisfy_the_launch_gate(onboarding):
     assert response.status_code == 400, response.text
     assert "local model" in response.json()["error"]
     assert not onboarding.settings_path.exists()
-    assert onboarding.calls["snapshot"] == 0
+    assert onboarding.calls["snapshot"] == 1
 
 
 def test_startup_gate_is_re_checked_after_normalization(monkeypatch, onboarding):
-    """Defence in depth on the SAME invariant: even if a payload passed the
-    shared validator, an install that would not be startup-ready is refused
-    before anything is saved — a subscription never fills that gap."""
+    """Missing model-capable access is refused after normalization and discovery."""
     import ouroboros.gateway.onboarding as gw_onboarding
 
     monkeypatch.setattr(
@@ -1013,9 +1016,9 @@ def test_startup_gate_is_re_checked_after_normalization(monkeypatch, onboarding)
         "/api/onboarding/complete", json={**WIZARD_PAYLOAD, "subscriptionsConnected": True})
 
     assert response.status_code == 400, response.text
-    assert "API key or a local model" in response.json()["error"]
+    assert response.json()["code"] == "model_source_unavailable"
     assert not onboarding.settings_path.exists()
-    assert onboarding.calls["snapshot"] == 0
+    assert onboarding.calls["snapshot"] == 1
 
 
 def test_non_object_body_is_refused(onboarding):

@@ -233,9 +233,11 @@ def scrub_native_custody(messages: Sequence[Mapping[str, Any]]) -> List[Dict[str
 
 
 def custody_private_key(value: Any) -> bool:
+    """Keys withheld from public/summarizer projections, not transport copies."""
     return str(value) in {
         ANTHROPIC_NATIVE_RECEIPT_KEY,
         ANTHROPIC_CONSUMED_RECEIPTS_KEY,
+        "nativeContinuation",
     }
 
 

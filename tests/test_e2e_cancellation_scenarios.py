@@ -100,6 +100,11 @@ from tests.fixtures_e2e_cancellation import (
 # Fixtures
 # ---------------------------------------------------------------------------
 
+def test_stub_finalization_marker_accepts_multipart_content():
+    assert StubModelServer._is_finalization_turn({
+        "messages": [{"content": [{"type": "text", "text": "[OWNER_STOP]"}]}],
+    })
+
 @pytest.fixture(scope="session")
 def e2e_clone(tmp_path_factory):
     """One throwaway clone of the checkout under test, shared by every scenario server."""
@@ -129,6 +134,64 @@ def mock_stack(tmp_path_factory, request):
 # Default lane: the driver's wire contract, and the real gateway's acceptance
 # of exactly the bodies the driver sends. No server, no model, no egress.
 # ===========================================================================
+
+@pytest.fixture
+def completion_stub():
+    """Exercise completion behavior without opening the HTTP listener."""
+    stub = object.__new__(StubModelServer)
+    stub.mode = "keepalive"
+    stub.spawned = 0
+    return stub
+
+
+@pytest.mark.parametrize("marker", ["[OWNER_STOP]", "[FINALIZE_NOW]"])
+@pytest.mark.parametrize("multipart", [False, True], ids=["string", "multipart"])
+def test_mock_finalization_completion(completion_stub, marker, multipart):
+    text = f"{marker} Summarize the verified work and stop."
+    content = [{"type": "text", "text": text}] if multipart else text
+    body = {
+        "messages": [{"role": "user", "content": content}],
+        "tools": [{"type": "function", "function": {"name": "list_files"}}],
+    }
+    message = completion_stub._completion(body, 1)["choices"][0]["message"]
+    assert message["content"] == "Final answer: the repository root was listed; stopping as asked."
+    assert not message.get("tool_calls")
+
+
+@pytest.mark.parametrize("multipart", [False, True], ids=["string", "multipart"])
+def test_mock_keepalive_completion(completion_stub, multipart):
+    text = "List the repository files and keep watching them."
+    content = [
+        {"type": "text", "text": text},
+        {"type": "image_url", "image_url": {"url": "https://example.test/[OWNER_STOP]"}},
+    ] if multipart else text
+    body = {
+        "messages": [{"role": "user", "content": content}],
+        "tools": [{"type": "function", "function": {"name": "list_files"}}],
+    }
+    message = completion_stub._completion(body, 1)["choices"][0]["message"]
+    assert message["content"] == "still working"
+    assert len(message["tool_calls"]) == 1
+    assert message["tool_calls"][0]["function"] == {
+        "name": "list_files", "arguments": json.dumps({"path": "."}),
+    }
+
+
+@pytest.mark.parametrize("marker", ["[OWNER_STOP]", "[FINALIZE_NOW]"])
+def test_mock_finalizes_after_production_multipart_append(completion_stub, marker):
+    from ouroboros.loop_messages import _append_or_merge_user_message
+
+    messages = [{"role": "user", "content": [{"type": "text", "text": "Keep watching."}]}]
+    _append_or_merge_user_message(messages, f"{marker} Summarize and stop.")
+    assert len(messages) == 1 and isinstance(messages[0]["content"], list)
+    body = {
+        "messages": messages,
+        "tools": [{"type": "function", "function": {"name": "list_files"}}],
+    }
+    message = completion_stub._completion(body, 1)["choices"][0]["message"]
+    assert message["content"] == "Final answer: the repository root was listed; stopping as asked."
+    assert not message.get("tool_calls")
+
 
 def test_scenario_manifest_is_covered():
     """Every E-id in the S5 inventory still has at least one test in this module."""
@@ -605,7 +668,13 @@ def test_e10_graceful_stop_keeps_the_intent_open_and_finalizes(e2e_clone, tmp_pa
             assert intent.get("source") == "http_graceful"
 
             final = server.wait_task(task_id, timeout=300)
-            assert final.get("status") in {"completed", "cancelled"}, final
+            # Keep the failure cause visible: the full task's contract/metadata
+            # otherwise hides these fields in the CI assertion preview.
+            assert final.get("status") == "completed", {
+                key: final.get(key) for key in (
+                    "status", "reason_code", "terminal_origin", "result", "outcome_axes",
+                )
+            }
             # The terminal reason is stamped by the finalization rail, which lands after
             # the status does — read it with a bound rather than in the same instant.
             reason = wait_until(lambda: task_result(data_root, task_id).get("reason_code"), 60)
@@ -613,6 +682,8 @@ def test_e10_graceful_stop_keeps_the_intent_open_and_finalizes(e2e_clone, tmp_pa
             assert reason == "owner_requested_finalization", {
                 "status": stored.get("status"), "reason_code": stored.get("reason_code"),
             }
+            assert stored.get("terminal_origin") == "model_final", stored.get("terminal_origin")
+            assert stored.get("result") == "Final answer: the repository root was listed; stopping as asked."
         finally:
             server.stop()
 

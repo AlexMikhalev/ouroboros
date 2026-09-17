@@ -89,6 +89,14 @@ _GIGACHAT_SUCCESS = {
              "usage": {"prompt_tokens": 10, "completion_tokens": 2}},
 }
 
+_MODEL_OPERATION_SUCCESS = {"kind": "response", "model_result": {
+    "outcome": "completed", "message": {"role": "assistant", "content": "ok"},
+    "route": {"source": "codex", "model": "model-x", "credentialProfileId": "conformance-profile",
+              "accountFingerprint": "conformance-identity"},
+    "usage": {"input_tokens": 10, "output_tokens": 2},
+    "cost": {"knowledge": "unknown", "cashUsd": None}, "problem": None,
+}}
+
 
 class ProviderDriver:
     """How one provider lane is exercised by the shared contract cases."""
@@ -178,6 +186,11 @@ PROVIDER_DRIVERS: Dict[str, ProviderDriver] = {
         env={"GIGACHAT_CREDENTIALS": "gigachat-conformance-key"},
         success_step=_GIGACHAT_SUCCESS, timeout_of=_client_timeout,
     ),
+    "claudexor": ProviderDriver(
+        "claudexor", model="claudexor::codex=model-x", env={},
+        success_step=_MODEL_OPERATION_SUCCESS, timeout_of=_row_timeout,
+        spec_extra={"model_operation": True},
+    ),
     "local": ProviderDriver(
         "local", model="local", env={"LOCAL_MODEL_PORT": "8799"},
         success_step=_openai_success(), timeout_of=_payload_timeout,
@@ -234,8 +247,8 @@ def test_usage_model_attribution_is_unambiguous_across_providers():
 
     client = LLMClient(api_key="conformance-key")
     usage_models = {}
-    for prefix, provider in PROVIDER_PREFIXES:
-        target = client._resolve_remote_target(f"{prefix}model-x")
+    for _prefix, provider in PROVIDER_PREFIXES:
+        target = client._resolve_remote_target(PROVIDER_DRIVERS[provider].model)
         usage_models.setdefault(target["usage_model"], provider)
     assert len(usage_models) == len(PROVIDER_PREFIXES), usage_models
 
@@ -320,6 +333,28 @@ def test_caller_timeout_reaches_the_transport(name):
         [driver.success_step], chat_kwargs={"timeout": 33.0}))
     assert "raised" not in observed, observed.get("raised")
     assert driver.timeout_of(observed["sends"][0]) == 33.0
+
+
+def test_model_operation_control_reply_loss_rejoins_one_physical_generation():
+    driver = PROVIDER_DRIVERS["claudexor"]
+    observed = _observe(driver.spec([driver.success_step], lose_model_create_reply=True))
+    assert "raised" not in observed
+    assert len(observed["sends"]) == 1 and observed["returned"]["ledger_attempt_count"] == 1
+    assert observed["physical_attempts"][0]["states"] == ["reserved", "dispatched", "settled"]
+    assert observed["unused_script_steps"] == 0
+    assert observed["model_control"] == {"create_posts": 2, "operations": 1, "unique_create_keys": 1, "cancels": []}
+
+
+def test_model_operation_host_control_cancels_without_fabricating_result_or_release():
+    driver = PROVIDER_DRIVERS["claudexor"]
+    observed = _observe(driver.spec([driver.success_step], cancel_model_after_create=True))
+    assert "returned" not in observed
+    assert observed["raised"]["code"] == "model_operation_interrupted"
+    assert observed["raised"]["control_reason"] == "cancelled"
+    assert observed["physical_attempts"][0]["states"] == ["reserved", "dispatched", "unresolved"]
+    assert len(observed["sends"]) == 1
+    assert observed["model_control"]["create_posts"] == observed["model_control"]["operations"] == 1
+    assert observed["model_control"]["cancels"] == [["op-0", "host_cancelled"]]
 
 
 @pytest.mark.parametrize(
@@ -474,7 +509,7 @@ def test_harness_point_refusal_without_a_route_is_typed(tmp_path, monkeypatch):
 
     monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "")
     ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path)
-    payload = json.loads(_delegate_start(ctx, "do a thing"))
+    payload = json.loads(_delegate_start(ctx, "do a thing").text)
     assert payload["status"] == "refused"
     assert payload["reason"] == "subagent_selection_required"
 

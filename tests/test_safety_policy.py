@@ -67,8 +67,11 @@ class _StubLLMClient:
 
 def _patch_llm_client(monkeypatch, stub: _StubLLMClient) -> None:
     import ouroboros.safety as safety
+    from ouroboros.llm import LLMClient
 
-    monkeypatch.setattr(safety, "LLMClient", lambda: stub)
+    factory = lambda: stub
+    factory.supports_response_format = LLMClient.supports_response_format
+    monkeypatch.setattr(safety, "LLMClient", factory)
 
 
 # ---------------------------------------------------------------------------

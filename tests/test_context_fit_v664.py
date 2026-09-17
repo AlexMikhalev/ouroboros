@@ -240,6 +240,62 @@ def test_route_rebind_keeps_owner_projection_on_small_confirmed_route(monkeypatc
     assert rebound.route_fp == "small-route"
 
 
+@pytest.mark.parametrize("window,estimated,expected_fit", [
+    (80_000, 35_000, True),
+    (500_000, 40_000, False),
+])
+def test_route_rebind_preserves_nano_on_model_account_fallback(
+    monkeypatch, tmp_path, window, estimated, expected_fit,
+):
+    from dataclasses import replace
+
+    from ouroboros import context, context_fit, loop
+    from ouroboros.tools.registry import ToolRegistry
+
+    plan = replace(
+        _plan(preferred="nano"),
+        nano_projection=replace(_projection("nano"), estimated_tokens=estimated),
+    )
+    registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
+    registry._ctx.task_id = "nano-fallback"
+    registry._ctx.event_queue = None
+    monkeypatch.setattr(
+        context,
+        "_context_fit_route",
+        lambda task, **_kw: (
+            {"model": task["model"], "provider": "claudexor", "use_local": False},
+            SimpleNamespace(
+                status="confirmed", stale=False, window_tokens=window,
+                route_fp="fallback-account-route", source_id="codex",
+                credential_profile_id="account-b", account_fingerprint="acct-fp",
+            ),
+        ),
+    )
+    monkeypatch.setattr(context_fit, "_route_calibration_ratio", lambda *_a, **_kw: 2.0)
+    messages = plan.messages_for("nano")
+
+    rebound, mode = loop._rebind_context_fit_plan(
+        plan,
+        registry,
+        messages,
+        model="claudexor::codex=fallback-model",
+        use_local=False,
+        preferred_mode="nano",
+        tool_schemas=[],
+        model_role="fallback:0",
+        credential_profile_id="account-b",
+    )
+
+    assert mode == "nano"
+    assert rebound.preferred_mode == rebound.initial_mode == "nano"
+    assert rebound.nano_projection is not None
+    assert rebound.nano_projection.calibrated_tokens == estimated * 2
+    assert rebound.nano_projection.fits_known_window is expected_fit
+    assert messages[0] == rebound.nano_projection.system_message()
+    assert rebound.model == "claudexor::codex=fallback-model"
+    assert rebound.model_route["credentialProfileId"] == "account-b"
+
+
 def test_route_rebind_a_b_a_forgets_the_old_a_cache_split(monkeypatch, tmp_path):
     from ouroboros import context, loop, usage_accounting
     from ouroboros.tools.registry import ToolRegistry

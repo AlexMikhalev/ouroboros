@@ -558,3 +558,73 @@ def test_review_skill_persist_false_does_not_write(tmp_path, monkeypatch):
     # Default state: nothing written.
     assert persisted.status == "pending"
     assert persisted.content_hash == ""
+
+
+@pytest.mark.parametrize("chaptered", [False, True], ids=["legacy", "chapters"])
+def test_skill_governance_is_complete_and_stable_across_checkouts(tmp_path, monkeypatch, chaptered):
+    import ouroboros.skill_review_prompt as prompt_owner
+
+    corpus = {"BIBLE.md": "# Constitution\n\nConstitutional body.\n"}
+    for book_id, entrypoint in (
+        ("architecture", "docs/ARCHITECTURE.md"),
+        ("development", "docs/DEVELOPMENT.md"),
+    ):
+        corpus[entrypoint] = f"# {book_id.title()}\n\nThe {book_id} introduction.\n"
+        if chaptered:
+            corpus[entrypoint] += (
+                f"\n## Chapters\n\n- [First]({book_id}/first.md)\n"
+                f"- [Second][second]\n\n[second]: {book_id}/second.md\n"
+            )
+            for name in ("first", "second"):
+                corpus[f"docs/{book_id}/{name}.md"] = (
+                    f"# {name.title()}\n\nThe {book_id} {name} introduction.\n"
+                    f"\n## Details\n\nThe complete {book_id} {name} body.\n"
+                )
+        else:
+            corpus[entrypoint] += f"\n## Details\n\nThe complete {book_id} monolith.\n"
+
+    monkeypatch.setattr(prompt_owner, "load_checklist_section", lambda _: "Checklist body.")
+    monkeypatch.setattr(prompt_owner, "build_skill_host_context", lambda _: "Host contract body.")
+    monkeypatch.chdir(tmp_path)
+    stable_prefixes = []
+    for name in ("checkout-one", "checkout-two"):
+        root = tmp_path / name
+        for path, text in corpus.items():
+            target = root / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(text.encode("utf-8"))
+        monkeypatch.setattr(prompt_owner, "_REPO_ROOT", root)
+        prompt, boundary = prompt_owner._build_review_prompt(
+            name, root / "external-skill", "{}", name, f"PAYLOAD-{name}",
+        )
+        stable = prompt[:boundary]
+        stable_prefixes.append(stable)
+        for text in corpus.values():
+            assert stable.count(text) == 1
+        assert str(root) not in stable
+        assert "PAYLOAD-" not in stable
+        assert "Skill gates do not collapse" in stable
+        assert "invariant 11" not in stable
+        assert prompt[boundary:].startswith("## Skill identity")
+        assert f"PAYLOAD-{name}" in prompt[boundary:]
+    assert stable_prefixes[0] == stable_prefixes[1]
+
+
+@pytest.mark.parametrize("chapter_body", [None, "# Chapter\n\n## Missing introduction\n\nBody.\n"])
+def test_skill_governance_discloses_unavailable_book_without_partial_body(tmp_path, chapter_body):
+    from ouroboros.skill_review_prompt import _load_governance_artifact
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "ARCHITECTURE.md").write_text(
+        "# Architecture\n\nEntrypoint body must not stand in for the whole book.\n"
+        "\n## Chapters\n\n- [Runtime](architecture/runtime.md)\n",
+        encoding="utf-8",
+    )
+    if chapter_body is not None:
+        (docs / "architecture").mkdir()
+        (docs / "architecture" / "runtime.md").write_text(chapter_body, encoding="utf-8")
+    text = _load_governance_artifact(tmp_path, "docs/ARCHITECTURE.md")
+    assert "OMISSION" in text and "docs/ARCHITECTURE.md" in text
+    assert "runtime.md" in text
+    assert "Entrypoint body must not stand in" not in text

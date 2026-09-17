@@ -92,7 +92,8 @@ DENSITY_PROBE_CALL_TYPE = "review_density_probe"
 DENSITY_PROBE_EVENT = "review_density_probe"
 
 
-def density_probe_before_size_refusal(ctx: Any, model: str, sample: str, *, surface: str) -> str:
+def density_probe_before_size_refusal(ctx: Any, model: str, sample: str, *, surface: str,
+                                       window_binding: Optional[dict] = None) -> str:
     """The commit gate's cold-start density rung; returns the shared probe's
     typed outcome (``capability_evidence.cold_start_density_probe``) plus
     ``"budget_refused"`` and ``"unavailable"`` (no ctx/drive root to record a
@@ -127,12 +128,16 @@ def density_probe_before_size_refusal(ctx: Any, model: str, sample: str, *, surf
             review_drive_root(ctx), _rv.LLMClient(), _progress, str(model), sample,
             task_id=str(getattr(ctx, "task_id", "") or "") or "commit_review",
             call_type=DENSITY_PROBE_CALL_TYPE, source="commit_gate_cold_start_probe",
+            model_role=(window_binding or {}).get("model_role", ""),
+            model_account_override=(window_binding or {}).get("credential_profile_id"),
         )
         reason = ""
     except BudgetExceeded as exc:
         outcome, reason = "budget_refused", str(exc)
         _progress(f"density probe refused by the budget ({reason}); the cold input cap stands.")
     except Exception as exc:
+        from ouroboros.llm_claudexor import propagate_model_error
+        propagate_model_error(exc)
         outcome, reason = "failed", f"{type(exc).__name__}: {exc}"
         log.warning("Density probe could not run (%s): %s", surface, exc, exc_info=True)
         _progress(f"density probe failed ({type(exc).__name__}); the cold input cap stands.")
@@ -147,7 +152,7 @@ def density_probe_before_size_refusal(ctx: Any, model: str, sample: str, *, surf
 
 def fit_triad_prompt(api_models: list, assemble, current_files_section: str,
                      diff_text: str, changed: str, target_repo, ctx=None,
-                     subject=None) -> tuple:
+                     subject=None, slots: Optional[list] = None) -> tuple:
     """The api pack's guaranteed-fit ladder (P3 one-pass): drop only evidence
     duplicated by the complete staged diff — full snapshots first, then unchanged
     diff context. Each api slot's limit uses its REAL window from Capability
@@ -162,9 +167,18 @@ def fit_triad_prompt(api_models: list, assemble, current_files_section: str,
     # Resolved through the review-module namespace on purpose: these names are
     # documented monkeypatch seams pinned by the fit-ladder tests.
     from ouroboros.tools import review as _rv
+    from ouroboros.reviewer_window import reviewer_window_binding
 
-    def _slot_input_limit(slot_model: str) -> int:
-        window = _rv.reviewer_context_window(slot_model)
+    if slots is not None and len(slots) != len(api_models):
+        raise ValueError("Triad capacity rows must align with the frozen packet models")
+    bindings = [reviewer_window_binding(slot) for slot in slots] if slots is not None else [{} for _ in api_models]
+    keys = [binding["model_role"].removeprefix("reviewer:") for binding in bindings] if slots is not None else api_models
+    if slots is not None and (not all(keys) or len(set(keys)) != len(keys)):
+        raise ValueError("Triad capacity requires unique stable slot IDs")
+
+    def _slot_input_limit(index: int) -> int:
+        slot_model = api_models[index]
+        window = _rv.reviewer_context_window(slot_model, **bindings[index])
         output_reserve, tokenizer_margin = _rv.window_scaled_reserves(
             window,
             output_reserve=_rv._review_output_budget(),
@@ -179,9 +193,12 @@ def fit_triad_prompt(api_models: list, assemble, current_files_section: str,
         ))
 
     estimate_tokens = _rv.estimate_tokens
-    slot_limits = {m: _slot_input_limit(m) for m in api_models}
-    input_limit = _rv._quorum_input_token_limit(api_models, slot_limits)
+    slot_limits = {key: _slot_input_limit(index) for index, key in enumerate(keys)}
+    input_limit = _rv._quorum_input_token_limit(keys, slot_limits)
     prompt, stable_prefix_len = assemble(current_files_section, diff_text)
+    if input_limit and estimate_tokens(prompt) > input_limit and getattr(assemble, "compact_optional_evidence", None):
+        assemble.compact_optional_evidence()
+        prompt, stable_prefix_len = assemble(current_files_section, diff_text)
     if input_limit and estimate_tokens(prompt) > input_limit:
         # Cold-start density rung: every api slot the full prompt overflows and
         # whose route has no fresh witness gets ONE bounded probe on a slice of
@@ -196,12 +213,22 @@ def fit_triad_prompt(api_models: list, assemble, current_files_section: str,
         outcomes = [
             density_probe_before_size_refusal(
                 ctx, m, prompt[:DENSITY_PROBE_SAMPLE_CHARS], surface="triad_review",
+                window_binding=bindings[index],
             )
-            for m in api_models if prompt_tokens > slot_limits.get(m, 0)
+            for index, m in enumerate(api_models) if prompt_tokens > slot_limits[keys[index]]
         ]
-        if "measured" in outcomes:
-            slot_limits = {m: _slot_input_limit(m) for m in api_models}
-            input_limit = _rv._quorum_input_token_limit(api_models, slot_limits)
+        from ouroboros.review_records import apply_review_model_override
+        from ouroboros.model_wait import current_model_wait
+        waiter = current_model_wait()
+        updated = [apply_review_model_override(slot, waiter.overrides) for slot in slots] if waiter and slots else slots
+        route_changed = updated != slots
+        if route_changed:
+            slots[:] = updated
+            api_models[:] = [slot.model for slot in slots]
+            bindings = [reviewer_window_binding(slot) for slot in slots]
+        if "measured" in outcomes or route_changed:
+            slot_limits = {key: _slot_input_limit(index) for index, key in enumerate(keys)}
+            input_limit = _rv._quorum_input_token_limit(keys, slot_limits)
     if input_limit and estimate_tokens(prompt) > input_limit:
         touched_paths = [line.strip() for line in changed.splitlines() if line.strip()]
         fit_note = (
@@ -310,7 +337,7 @@ def drop_api_rows(row_plan: dict) -> dict:
     ]
     filtered = dict(row_plan)
     for key in ("models", "routes", "efforts", "session_targets",
-                "session_profiles", "slot_ids", "subagent_ids"):
+                "session_profiles", "slot_ids", "subagent_ids", "use_local"):
         rows = list(row_plan.get(key) or [])
         filtered[key] = [rows[i] for i in keep if i < len(rows)]
     return filtered
@@ -355,6 +382,7 @@ def prepare_scope_review(
     captured here and re-seeded at dispatch).
     """
     sr = _scope()
+    window_binding = {"model_role": f"reviewer:{slot_id}", "credential_profile_id": session_profile} if slot_id else {}
     if sr._scope_review_skipped_in_low_context():
         return None, sr._low_context_skip_result(scope_model or sr._get_scope_model())
     try:
@@ -368,10 +396,24 @@ def prepare_scope_review(
     from ouroboros.review_execution import delivery_retrieves
 
     scope_model_id = scope_model or sr._get_scope_model()
+    from ouroboros.model_wait import current_model_wait
+    waiter = current_model_wait()
+    override = waiter.overrides.get(f"reviewer:{slot_id}", {}) if waiter else {}
+    if override and str(getattr(route, "value", route) or "") != "agent_session":
+        scope_model_id, session_profile = override["model"], override["model_account_override"]
+        window_binding.update(credential_profile_id=session_profile, use_local=override["use_local"])
     delegated = str(getattr(route, "value", route) or "") == "agent_session"
     # RETRIEVES class: a session row and a configured-subagent api row deliver
     # by retrieval — neither assembles the packet/atlas below.
     retrieves = delivery_retrieves(route, subagent_id)
+    from ouroboros.review_evidence import commit_review_evidence_section, materialize_commit_review_session_view
+
+    task_evidence = dict(getattr(ctx, "_commit_review_evidence", None) or {})
+    if delegated:
+        task_evidence = materialize_commit_review_session_view(task_evidence, repo_dir)
+        ctx._commit_review_evidence = task_evidence
+    task_evidence_section = commit_review_evidence_section(
+        task_evidence, delivery="session" if delegated else "native" if retrieves else "packet")
 
     from ouroboros.tools.review_binary_context import StagedDiffUnavailable
     from ouroboros.tools.review_subject import managed_review_subject
@@ -399,6 +441,7 @@ def prepare_scope_review(
                 drive_root=pathlib.Path(ctx.drive_root) if getattr(ctx, "drive_root", None) else None,
                 governance_repo_dir=governance_repo,
                 managed_subject=subject,
+                task_evidence_section=task_evidence_section,
             )
             sr._SCOPE_CONTEXT_MANIFEST.set(session_manifest)
             prompt, context_status = session_task, None
@@ -422,6 +465,8 @@ def prepare_scope_review(
                         governance_repo_dir=governance_repo,
                         represent_binary=subject is not None,
                         managed_subject=subject,
+                        window_binding=window_binding,
+                        task_evidence=task_evidence,
                     ),
                 )
 
@@ -438,16 +483,25 @@ def prepare_scope_review(
                     ctx, scope_model_id,
                     density_probe_sample(repo_dir, sr._current_scope_context_manifest()),
                     surface="scope_review",
+                    window_binding=window_binding,
                 )
-                if outcome == "measured":
+                latest = waiter.overrides.get(f"reviewer:{slot_id}", {}) if waiter else {}
+                changed = latest != override
+                if changed:
+                    override = latest
+                    scope_model_id, session_profile = override["model"], override["model_account_override"]
+                    window_binding.update(credential_profile_id=session_profile, use_local=override["use_local"])
+                if outcome == "measured" or changed:
                     prompt, context_status = _assemble()
                 if outcome not in ("warm", "no_sample", "unavailable"):
                     sr._record_ladder_steps(
                         list(sr._current_scope_context_manifest().get("ladder_steps") or [])
                         + [{"step": "density_probe", "model": scope_model_id, "outcome": outcome,
-                            "rebuilt": outcome == "measured"}]
+                            "rebuilt": outcome == "measured" or changed}]
                     )
     except (RuntimeError, StagedDiffUnavailable, OSError, ValueError) as exc:
+        from ouroboros.llm_claudexor import propagate_model_error
+        propagate_model_error(exc)
         return None, sr.ScopeReviewResult(
             blocked=True,
             block_message=(
@@ -464,7 +518,8 @@ def prepare_scope_review(
     # context_status is None and this returns None by construction — no route branch.
     signal_result = sr._handle_prompt_signals(
         prompt, context_status, scope_model=scope_model_id,
-        input_limit=sr._effective_scope_input_limit(scope_model=scope_model_id),
+        input_limit=sr._effective_scope_input_limit(scope_model=scope_model_id, window_binding=window_binding),
+        window_binding=window_binding,
         managed=subject is not None,
     )
     if signal_result is not None:
@@ -499,6 +554,8 @@ def prepare_scope_review(
         "session_target": session_target,
         "session_profile": session_profile,
         "subagent_id": subagent_id,
+        "window_binding": window_binding, "task_evidence": task_evidence,
+        "use_local": override.get("use_local"),
         "context_manifest": sr._current_scope_context_manifest(),
         "stable_prefix_len": int(sr._SCOPE_STABLE_PREFIX_LEN.get() or 0),
     }, None
@@ -524,6 +581,7 @@ def commit_gate_paid_seats(triad_prepared, triad_exited, scope_rows) -> list:
         TRIAD_ROLE_HINT, TRIAD_USER_TURN, _review_output_budget, triad_api_messages,
     )
     from ouroboros.triad_review import REVIEW_JSON_ARRAY_CONTRACT
+    from ouroboros.review_evidence import commit_review_evidence_section
 
     sr = _scope()
 
@@ -540,8 +598,12 @@ def commit_gate_paid_seats(triad_prepared, triad_exited, scope_rows) -> list:
         if row.get("final") is not None or _session(route):
             continue
         model = str(prepared.get("scope_model_id") or slot.model or "")
+        binding = {"model_role": f"reviewer:{slot_id}",
+                   "credential_profile_id": prepared.get("session_profile", str(getattr(slot, "session_profile", "") or "")),
+                   "use_local": prepared.get("use_local", getattr(slot, "use_local", None)),
+                   **(prepared.get("window_binding") or {})}
         output_tokens, _ = sr._window_scaled_reserves(
-            sr._scope_window(model).sizing_window(sr._SCOPE_FAILCLOSED_WINDOW)
+            sr._scope_window(model, **binding).sizing_window(sr._SCOPE_FAILCLOSED_WINDOW)
         )
         if delivery_retrieves(route, getattr(slot, "subagent_id", "")):
             chars = native_first_send_chars(
@@ -570,7 +632,7 @@ def commit_gate_paid_seats(triad_prepared, triad_exited, scope_rows) -> list:
             chars = native_first_send_chars(
                 str(triad_prepared.get("target_repo") or ""), surface="multi_model_review",
                 role_hint=TRIAD_ROLE_HINT, slot_id=slot_id,
-                session_task=str(triad_prepared.get("session_task") or ""),
+                session_task=str(triad_prepared.get("session_task") or "") + ("\n\n" + commit_review_evidence_section(triad_prepared["task_evidence"], delivery="native") if triad_prepared.get("task_evidence") else ""),
                 output_contract=REVIEW_JSON_ARRAY_CONTRACT,
             )
         else:

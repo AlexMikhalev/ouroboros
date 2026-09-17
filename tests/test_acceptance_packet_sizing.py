@@ -109,7 +109,7 @@ def test_positive_narrow_calibration_sheds_packet_until_acceptance_dispatches(
     slot = ReviewSlot(slot_id="slot_1", model="gigachat::GigaChat-3-Ultra", effort="high")
     monkeypatch.setattr(
         review_synthesis, "per_slot_input_token_limits",
-        lambda models, **_kwargs: {str(model): 60_000 for model in models},
+        lambda models, **kwargs: {slot.slot_id: 60_000 for slot in kwargs["slots"]},
     )
     budget = acceptance_packet_budget_chars([slot])
     evidence = _accept_enforce_budget({
@@ -128,7 +128,7 @@ def test_positive_narrow_calibration_sheds_packet_until_acceptance_dispatches(
     assert result.aggregate_signal == "PASS"
     monkeypatch.setattr(
         review_synthesis, "per_slot_input_token_limits",
-        lambda models, **_kwargs: {str(model): 1 for model in models},
+        lambda models, **kwargs: {slot.slot_id: 1 for slot in kwargs["slots"]},
     )
     assert acceptance_packet_budget_chars([slot]) == _ACCEPT_TOTAL_BUDGET
 

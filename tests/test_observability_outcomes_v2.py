@@ -304,11 +304,12 @@ def test_loop_outcome_distinguishes_success_empty_and_provider_failure():
 
     runtime_error = derive_loop_outcome(
         "⚠️ Error during processing: RuntimeError: boom",
-        {"rounds": 1},
+        {"rounds": 1, "execution_status": "infra_failed", "reason_code": "task_exception"},
         {"tool_calls": []},
     )
     assert runtime_error["outcome_axes"]["execution"]["status"] == EXECUTION_INFRA_FAILED
     assert runtime_error["reason_code"] == "task_exception"
+    assert runtime_error["failure"]["kind"] == "runtime"
 
     deep_unavailable = derive_loop_outcome(
         "❌ Deep self-review unavailable: no key",
@@ -425,6 +426,53 @@ def test_loop_outcome_distinguishes_success_empty_and_provider_failure():
     )
     assert real_error["outcome_axes"]["execution"]["status"] == EXECUTION_DEGRADED
     assert real_error["reason_code"] == "tool_failure"
+
+
+def test_a_listing_miss_then_a_success_elsewhere_leaves_execution_ok(tmp_path):
+    """Owner item I27: a read-only discovery miss does not colour the outcome.
+
+    The live case listed a folder whose name carried a non-breaking space, got a
+    first-class LIST_FILES_ERROR, found the right spelling on the very next call
+    and STILL finished as tool_failure / "Done with warnings": the recovery scan
+    credits a later success only for the SAME target signature, and a differently
+    spelled path can never match it. The producer names the miss instead, so no
+    failure is recorded to recover from and the scan stays untouched.
+
+    Run through the real registry, so this pins the producer and the outcome
+    together rather than a hand-written trace row."""
+    from ouroboros.loop_tool_execution import _typed_execution_failure
+    from ouroboros.project_dialogue import completion_status_label
+    from ouroboros.tools.registry import ToolRegistry
+
+    repo = tmp_path / "repo"
+    (repo / "ML Conf 2").mkdir(parents=True)
+    drive = tmp_path / "drive"
+    drive.mkdir()
+    tools = ToolRegistry(repo_dir=repo, drive_root=drive)
+
+    # The exact live shape: a NON-BREAKING space instead of a space.
+    nbsp_spelling = "ML\u00a0Conf 2"
+    miss = tools.execute_result("list_files", {"path": nbsp_spelling})
+    assert miss.text.startswith("⚠️ LIST_FILES_NOT_FOUND:")
+    assert (miss.status, miss.code) == ("ok", "LEGACY_WARNING")
+    assert _typed_execution_failure(True, miss) is False
+    found = tools.execute_result("list_files", {"path": "ML Conf 2"})
+    assert found.status == "ok" and not found.text.startswith("⚠️")
+
+    outcome = derive_loop_outcome(
+        "FINAL ANSWER: the deck folder is empty",
+        {"rounds": 2},
+        {"tool_calls": [
+            {"tool": "list_files", "args": {"path": nbsp_spelling}, "result": miss.text,
+             "status": miss.status, "is_error": _typed_execution_failure(True, miss)},
+            {"tool": "list_files", "args": {"path": "ML Conf 2"}, "result": found.text,
+             "status": found.status, "is_error": _typed_execution_failure(True, found)},
+        ]},
+    )
+    assert outcome["outcome_axes"]["execution"]["status"] == EXECUTION_OK
+    assert outcome["outcome_axes"]["execution"]["reason_code"] != "tool_failure"
+    assert outcome["failure"] is None
+    assert completion_status_label({"status": "completed", **outcome}, {}) == "Done"
 
 
 def test_forced_finalization_with_answer_is_best_effort():
@@ -1312,3 +1360,78 @@ def test_refreshing_an_omitted_ledger_stub_is_an_identity():
         assert refresh_verification_ledger_artifacts(
             dict(stub), {"status": status, "artifacts": [], "errors": []},
         ) == stub
+
+
+def test_task_exception_publishes_the_loop_s_accumulated_evidence(monkeypatch, tmp_path):
+    """The outer agent catch owns the terminal projection, not the evidence.
+
+    A lifecycle failure after real rounds must publish the loop's accumulated
+    trace and usage — never a ``0 calls`` projection built from the untouched
+    pre-loop defaults — and must not call an internal error a provider failure.
+    """
+    from ouroboros import agent as agent_module
+    from ouroboros import agent_task_pipeline
+    from ouroboros.agent import Env, OuroborosAgent
+    from ouroboros.task_results import STATUS_FAILED, load_task_result
+
+    repo, drive = tmp_path / "repo", tmp_path / "drive"
+    repo.mkdir()
+    drive.mkdir()
+    monkeypatch.setattr(OuroborosAgent, "_log_worker_boot_once", lambda self: None)
+    monkeypatch.setattr(agent_module, "build_llm_messages", lambda **_kwargs: ([], {}))
+    # The durable result is written before post-task cognition starts; the
+    # reflection thread is not this seam's subject.
+    monkeypatch.setattr(
+        agent_task_pipeline, "_run_post_task_processing_async", lambda *_a, **_kw: None)
+
+    def die_after_real_work(**_kwargs):
+        # Exactly what ``run_llm_loop`` attaches on an unexpected exit: the SAME
+        # in-memory accumulators the loop was filling.
+        exc = RuntimeError("owner wait refused a terminal continuation")
+        exc._ouroboros_loop_usage = {
+            "rounds": 7, "prompt_tokens": 4321, "completion_tokens": 210,
+            "execution_id": "exec_lifecycle_failure",
+        }
+        exc._ouroboros_loop_trace = {
+            "reasoning_notes": ["planned the edit"],
+            "tool_calls": [{
+                "tool": "write_file", "tool_call_id": "call-1", "result": "ok",
+                "trace_ref": {"call_id": "tool_write_file_1"},
+            }],
+        }
+        raise exc
+
+    monkeypatch.setattr(agent_module, "run_llm_loop", die_after_real_work)
+    agent = OuroborosAgent(Env(repo_dir=repo, drive_root=drive))
+    events = agent._handle_task_scoped({
+        "id": "lifecycle-fail", "type": "task", "chat_id": 1, "text": "do it",
+        "drive_root": str(drive), "budget_drive_root": str(drive),
+    })
+
+    stored = load_task_result(drive, "lifecycle-fail")
+    assert stored["status"] == STATUS_FAILED
+    assert stored["reason_code"] == "task_exception"
+    # The published trace counts the call that really happened.
+    assert stored["trace_summary"].startswith("## Tool trace (1 calls")
+    assert stored["trace_refs"]["execution_id"] == "exec_lifecycle_failure"
+    assert [ref["call_id"] for ref in stored["trace_refs"]["tool_call_refs"]] == [
+        "tool_write_file_1"]
+    # The loop's own tally rides the honest loop plane; an internal lifecycle
+    # error is a runtime failure, not a provider one.
+    assert stored["loop_outcome"]["usage"]["total_rounds"] == 7
+    assert stored["loop_outcome"]["usage"]["prompt_tokens"] == 4321
+    assert stored["loop_outcome"]["usage"]["completion_tokens"] == 210
+    execution = stored["outcome_axes"]["execution"]
+    assert execution["status"] == EXECUTION_INFRA_FAILED
+    assert execution["failure"] == {"kind": "runtime", "reason_code": "task_exception"}
+    # The original exception stays the evidence of what failed.
+    assert "RuntimeError: owner wait refused a terminal continuation" in stored["result"]
+    error_events = [
+        json.loads(line)
+        for line in (drive / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    task_error = next(row for row in error_events if row.get("type") == "task_error")
+    assert "owner wait refused a terminal continuation" in task_error["error"]
+    assert "die_after_real_work" in task_error["traceback"]
+    assert any(event.get("type") == "task_done" for event in events)

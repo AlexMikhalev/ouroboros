@@ -175,7 +175,8 @@ def test_pinned_engine_version_ruleset_and_contextual_fixture_multiset(tmp_path)
     }
 
 
-def test_pinned_engine_high_warning_sentinel_and_redaction_contract(tmp_path):
+@pytest.mark.parametrize("filename", ["generated_corpus.py", ".env.example"])
+def test_pinned_engine_high_warning_sentinel_and_redaction_contract(tmp_path, filename):
     binary = _binary()
     provider_tail = "".join(("aB3dE5fG", "7hJ9kL2m", "N4pQ6rS8", "tV0wX2yZ", "5cD7"))
     provider_candidate = "".join(("gh", "p_", provider_tail))
@@ -206,7 +207,7 @@ def test_pinned_engine_high_warning_sentinel_and_redaction_contract(tmp_path):
     ).encode("utf-8")
 
     result = scan_named_bytes(
-        {"generated_corpus.py": materialized},
+        {filename: materialized},
         executable=_executable(binary),
         drive_root=tmp_path / "drive",
     )
@@ -229,7 +230,8 @@ def test_pinned_engine_high_warning_sentinel_and_redaction_contract(tmp_path):
         _safe_absence(generated, serialized)
 
 
-def test_pinned_engine_annotation_audit_and_derived_forced_ignore(tmp_path):
+@pytest.mark.parametrize("filename", ["annotated.py", ".env.example"])
+def test_pinned_engine_annotation_audit_and_derived_forced_ignore(tmp_path, filename):
     binary = _binary()
     candidate = "".join(
         (
@@ -245,12 +247,12 @@ def test_pinned_engine_annotation_audit_and_derived_forced_ignore(tmp_path):
     annotated = f"token = {candidate!r}  # betterleaks:allow\n".encode("utf-8")
 
     payload = scan_named_bytes(
-        {"annotated.py": annotated},
+        {filename: annotated},
         executable=_executable(binary),
         drive_root=tmp_path / "payload-drive",
     )
     derived = scan_named_bytes(
-        {"annotated.py": annotated},
+        {filename: annotated},
         executable=_executable(binary),
         drive_root=tmp_path / "derived-drive",
         honor_inline_allowances=False,

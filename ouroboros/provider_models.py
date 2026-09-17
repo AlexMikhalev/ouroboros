@@ -5,10 +5,10 @@ deep_self_review.py)."""
 
 from __future__ import annotations
 
-import os
 
 from ouroboros.model_slots import ResolvedModelTarget, parse_fallback_chain
 from ouroboros.settings_defaults import OPENROUTER_DEFAULTS, OPENROUTER_REVIEW_DEFAULTS, SETTINGS_DEFAULTS  # noqa: F401
+from ouroboros.settings_integrity import runtime_setting
 
 # MiniMax exposes the same OpenAI-compatible API on two regional hosts. Keep the
 # mapping centralized so transport, capability evidence, and settings diagnostics
@@ -57,6 +57,7 @@ def normalize_deepseek_reasoning_effort(value: str) -> str:
 # Direct-provider prefix → canonical provider name. Un-prefixed models route
 # through OpenRouter. Order matters only for readability; prefixes are disjoint.
 PROVIDER_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("claudexor::", "claudexor"),
     ("openai::", "openai"),
     ("anthropic::", "anthropic"),
     ("minimax::", "minimax"),
@@ -109,6 +110,8 @@ PROVIDER_CREDENTIAL_GROUPS: dict[str, tuple[str, ...]] = {
         "OPENAI_API_KEY", "OPENAI_BASE_URL",
     ),
     "local": (),
+    # The owned engine holds credentials; no control token reaches model settings/env.
+    "claudexor": (),
 }
 
 # Active settings keys that hold a ROUTED model identity (prefix -> provider via
@@ -146,6 +149,16 @@ def provider_for_model(model: str) -> str:
         if name.startswith(prefix):
             return provider
     return "openrouter"
+
+
+def parse_claudexor_model(model: str) -> tuple[str, str]:
+    """Split the model transport's opaque source and model, never an account pin."""
+    if not str(model).startswith("claudexor::"):
+        raise ValueError("Not a Claudexor model identity")
+    source, separator, native_model = str(model)[len("claudexor::"):].partition("=")
+    if not separator or not source.strip() or not native_model.strip():
+        raise ValueError("Claudexor models use claudexor::<source>=<model>")
+    return source.strip(), native_model.strip()
 
 
 def resolve_model_target(
@@ -194,27 +207,32 @@ def fallback_candidate_targets(active_model: str = "") -> tuple[ResolvedModelTar
 
 
 def provider_has_credentials(provider: str) -> bool:
-    """Return True when the environment carries usable credentials for a provider."""
+    """Whether a route is configured; a managed engine's live readiness is separate."""
+    if provider == "claudexor":
+        return True  # A selected engine route needs no API key in Ouroboros.
     if provider == "local":
         return True
     if provider == "openai-compatible":
-        compat = str(os.environ.get("OPENAI_COMPATIBLE_API_KEY", "") or "").strip()
-        legacy_key = str(os.environ.get("OPENAI_API_KEY", "") or "").strip()
-        legacy_base = str(os.environ.get("OPENAI_BASE_URL", "") or "").strip()
+        compat = str(runtime_setting("OPENAI_COMPATIBLE_API_KEY", "") or "").strip()
+        legacy_key = str(runtime_setting("OPENAI_API_KEY", "") or "").strip()
+        legacy_base = str(runtime_setting("OPENAI_BASE_URL", "") or "").strip()
         return bool(compat or (legacy_key and legacy_base))
     if provider == "gigachat":
-        creds = str(os.environ.get("GIGACHAT_CREDENTIALS", "") or "").strip()
-        user = str(os.environ.get("GIGACHAT_USER", "") or "").strip()
-        password = str(os.environ.get("GIGACHAT_PASSWORD", "") or "").strip()
+        creds = str(runtime_setting("GIGACHAT_CREDENTIALS", "") or "").strip()
+        user = str(runtime_setting("GIGACHAT_USER", "") or "").strip()
+        password = str(runtime_setting("GIGACHAT_PASSWORD", "") or "").strip()
         return bool(creds or (user and password))
     env_key = PROVIDER_ENV_KEYS.get(provider, "OPENROUTER_API_KEY")
-    return bool(str(os.environ.get(env_key, "") or "").strip())
+    return bool(str(runtime_setting(env_key, "") or "").strip())
 
 
 def provider_has_credentials_in_settings(provider: str, settings: dict) -> bool:
     """Mapping-based twin used by pure config/default compilers (no ambient env)."""
     def get(key: str) -> str:
         return str((settings or {}).get(key, "") or "").strip()
+
+    if provider == "claudexor":
+        return True  # Selection declares the route; never persist a synthetic healthy bit.
 
     if provider == "local":
         return bool(get("LOCAL_MODEL_SOURCE"))
@@ -243,7 +261,7 @@ def model_has_credentials(model: str) -> bool:
 
 def local_only_review_route_env() -> bool:
     """Whether review slots must inherit the configured local Main route."""
-    local_main = str(os.environ.get("USE_LOCAL_MAIN", "") or "").strip().lower()
+    local_main = str(runtime_setting("USE_LOCAL_MAIN", "") or "").strip().lower()
     if local_main not in {"1", "true", "yes", "on"}:
         return False
     return not any(
@@ -272,12 +290,12 @@ def resolve_credentialed_model(default_model: str) -> str:
     # instead of testing the whole comma-string as one broken model id. Empty Light
     # (default -> Main) simply contributes nothing here.
     candidates: list[str] = []
-    light = str(os.environ.get("OUROBOROS_MODEL_LIGHT", "") or "").strip()
+    light = str(runtime_setting("OUROBOROS_MODEL_LIGHT", "") or "").strip()
     if light:
         candidates.append(light)
     candidates.extend(parse_fallback_chain())
     for env_name in ("OUROBOROS_MODEL",):
-        raw = str(os.environ.get(env_name, "") or "").strip()
+        raw = str(runtime_setting(env_name, "") or "").strip()
         if raw:
             candidates.append(raw)
     for candidate in candidates:
@@ -581,12 +599,41 @@ def update_vision_overlay(model_id: str, supports: bool) -> None:
         _VISION_OVERLAY[normalized] = bool(supports)
 
 
-def supports_vision(model_id: str) -> bool:
-    """True when the model accepts native image input blocks."""
+def supports_vision(model_id: str, *, model_role: str = "",
+                    model_account_override: str | None = None) -> bool | None:
+    """Image capability; None means unavailable subscription metadata, not blindness.
+
+    Subscription metadata belongs to this call's role/account, never the global
+    model-id overlay. Image senders preserve input when that fact is unknown;
+    the actual call can start the engine and return its normal typed refusal.
+    Metadata discovery itself must not start it or buy a model generation.
+    """
     # Local lanes have no vision regardless of family name; check the RAW id —
     # normalize_model_identity strips the " (local)" suffix.
     if str(model_id or "").strip().endswith(" (local)"):
         return False
+    if provider_for_model(model_id) == "claudexor":
+        from ouroboros.gateways.claudexor import ClaudexorUnavailable
+        from ouroboros.llm import LLMClient
+        from ouroboros.model_slots import MODEL_ACCOUNTS_KEY, model_role_option
+        from ouroboros.model_wait import current_model_wait
+
+        source, native_model = parse_claudexor_model(model_id)
+        wait = current_model_wait()
+        if model_account_override is None and wait is not None:
+            model_account_override = wait.overrides.get(model_role, {}).get("model_account_override")
+        account = (model_account_override if model_account_override is not None
+                   else model_role_option(MODEL_ACCOUNTS_KEY, model_role))
+        try:
+            catalog = LLMClient.claudexor_model_catalog(
+                source, account or None, requested_model=native_model)
+        except ClaudexorUnavailable:
+            return None
+        if catalog.get("source") != source or (account and catalog.get("credentialProfileId") != account):
+            return None
+        item = next((row for row in catalog.get("models", []) if row.get("id") == native_model), {})
+        modalities = item.get("inputModalities")
+        return "image" in modalities if isinstance(modalities, list) and modalities else None
     normalized = normalize_model_identity(model_id)
     if not normalized:
         return False

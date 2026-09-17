@@ -3,11 +3,26 @@
 from __future__ import annotations
 
 import pathlib
+import logging
 from typing import Any, Dict, Tuple
 
 from ouroboros.observability import new_call_id, persist_call
 from ouroboros.anthropic_native_custody import public_custody_projection
 from ouroboros.utils import sanitize_tool_result_for_log
+
+
+def persist_observed_call(root: Any, *, payload: Any, writer: Any = None, **identity: Any) -> dict:
+    """Best-effort public trace: opaque continuation never enters this projection.
+
+    Failure to write observability cannot discard an already useful response or
+    authorize another provider call. Private exact-byte transport custody uses
+    persist_call directly and retains its own stronger acknowledgement contract.
+    """
+    try:
+        return (writer or persist_call)(root, payload=public_custody_projection(payload), **identity)
+    except Exception:
+        logging.getLogger(__name__).warning("Failed to persist LLM observability payload", exc_info=True)
+        return {}
 
 
 def _root(drive_root: Any) -> pathlib.Path:
@@ -39,32 +54,27 @@ def chat_observed(
 
     root = _root(drive_root)
     call_id = new_call_id(call_type)
-    try:
-        persist_call(
-            root,
-            task_id=task_id or call_type,
-            call_id=f"{call_id}_request",
-            call_type=f"{call_type}_request",
-            payload={"kwargs": public_custody_projection(kwargs)},
-            manifest=_base_manifest(call_type, kwargs),
-        )
-    except Exception:
-        pass
+    traced_kwargs = {key: value for key, value in kwargs.items() if key != "model_context_observer"}
+    persist_observed_call(
+        root,
+        task_id=task_id or call_type,
+        call_id=f"{call_id}_request",
+        call_type=f"{call_type}_request",
+        payload={"kwargs": traced_kwargs},
+        manifest=_base_manifest(call_type, kwargs),
+    )
     try:
         msg, usage = llm.chat(**kwargs)
     except Exception as exc:
         safe = sanitize_tool_result_for_log(f"{type(exc).__name__}: {exc}")
-        try:
-            persist_call(
-                root,
-                task_id=task_id or call_type,
-                call_id=f"{call_id}_error",
-                call_type=f"{call_type}_error",
-                payload={"error": f"{type(exc).__name__}: {exc}", "kwargs": public_custody_projection(kwargs)},
-                manifest={**_base_manifest(call_type, kwargs), "status": "error", "error": safe},
-            )
-        except Exception:
-            pass
+        persist_observed_call(
+            root,
+            task_id=task_id or call_type,
+            call_id=f"{call_id}_error",
+            call_type=f"{call_type}_error",
+            payload={"error": f"{type(exc).__name__}: {exc}", "kwargs": traced_kwargs},
+            manifest={**_base_manifest(call_type, kwargs), "status": "error", "error": safe},
+        )
         raise
     try:
         from ouroboros.openai_chat_dispatch import CUSTOM_RECEIPTS_USAGE_KEY

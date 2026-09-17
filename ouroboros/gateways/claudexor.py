@@ -19,10 +19,12 @@ a ``ToolContext``, put in a child's environment, or handed to a harness sandbox.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import pathlib
+import re
 import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -58,6 +60,29 @@ _READ_TIMEOUT_SEC = 60.0
 # their total wall-clock bound outside this phase-local adapter.
 # Passed per request via ``_request(timeout_sec=...)``; it never changes the default.
 SHORT_POLL_TIMEOUT_SEC = 5.0
+# The httpx failures a READ-ONLY observer may retry as the same unresolved read: the
+# socket delivered no daemon answer, so nothing is known about the run and nothing
+# was claimed. Classified by exception TYPE plus received status, never by prose; a
+# received 4xx/5xx still wins (see ``_request``).
+_OBSERVATION_RETRYABLE_ERRORS = (
+    httpx.ReadTimeout, httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout,
+    httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError,
+)
+# ...and WHICH hole it was, for the observer that has to tell the owner apart a
+# daemon that is merely slow from one that is not there. Our own read bound
+# expiring says nothing about the daemon; a socket that could not be opened or
+# that broke mid-exchange says it did not answer. Classified by exception TYPE,
+# never by prose, and carried beside ``code`` rather than replacing it: the
+# model-control retry loop, the daemon liveness probe and the definite-unrun set
+# all key on ``daemon_unreachable`` for reasons that have nothing to do with an
+# observation.
+_OBSERVATION_READ_TIMEOUT = "observation_read_timeout"
+
+
+def _observation_reason(exc: BaseException) -> str:
+    """The typed reason for a read-only observation hole."""
+    return (_OBSERVATION_READ_TIMEOUT if isinstance(exc, httpx.ReadTimeout)
+            else "daemon_unreachable")
 _ATTEMPTS_REL = "attempts"
 _ATTEMPT_RECORD = "attempt.yaml"
 
@@ -76,11 +101,20 @@ class ClaudexorUnavailable(RuntimeError):
     """
 
     def __init__(self, code: str, message: str, *, status_code: int = 0,
-                 required_actions: tuple[str, ...] = ()) -> None:
+                 required_actions: tuple[str, ...] = (), observation_timeout: bool = False,
+                 observation_reason: str = "") -> None:
         super().__init__(message)
         self.code = str(code or "claudexor_unavailable")
         self.status_code = int(status_code or 0)
         self.required_actions = tuple(required_actions or ())
+        # Read-only observers may retry this exact HTTP read without claiming
+        # anything about the worker. A received HTTP refusal still wins.
+        self.observation_timeout = bool(observation_timeout)
+        # Which hole it was, for the observer only (``_observation_reason``):
+        # a read bound that expired against a live daemon is not the same fact
+        # as a socket that never carried an answer, and only the second is
+        # worth an owner-facing outage line.
+        self.observation_reason = str(observation_reason or "")
 
 
 # Cross-repo contract (B1): the engine's window-exhausted RunFailure codes. A
@@ -252,6 +286,28 @@ def _is_loopback(host: str) -> bool:
         return False
 
 
+def operation_query_supported(operations: list[dict], *, method: str, path: str,
+                              name: str, value: str) -> bool:
+    """Negotiate an exact query value from the serving operation's descriptor."""
+    return any(
+        operation.get("method") == method and operation.get("path") == path
+        and any(parameter.get("name") == name and parameter.get("location") == "query"
+                and isinstance(parameter.get("enum"), list) and value in parameter["enum"]
+                for parameter in (operation.get("parameters") or []) if isinstance(parameter, dict))
+        for operation in operations if isinstance(operation, dict)
+    )
+
+
+def account_catalog_supported(operations: list[dict], path: str) -> bool:
+    """Opt in only when this exact operation declares the accounts query view."""
+    return operation_query_supported(operations, method="GET", path=path, name="view", value="accounts")
+
+
+def model_failure_evidence_supported(operations: list[dict]) -> bool:
+    return operation_query_supported(operations, method="POST", path="/v2/model-operations",
+                                     name="captureFailureEvidence", value="true")
+
+
 class ClaudexorGateway:
     """Thin typed client over the Claudexor ``/v2`` control API."""
 
@@ -298,7 +354,8 @@ class ClaudexorGateway:
 
     def _request(self, method: str, path: str, *, json_body: Any = None,
                  headers: Optional[Dict[str, str]] = None,
-                 timeout_sec: Optional[float] = None) -> Any:
+                 timeout_sec: Optional[float] = None,
+                 content_body: Optional[bytes] = None, raw_bytes: bool = False) -> Any:
         # ``timeout_sec`` replaces the client's read default for THIS call only, for a
         # caller that is bounding ITSELF — today every `delegate_wait` poll, each asking
         # for what its window has left, floored at ``SHORT_POLL_TIMEOUT_SEC`` and never
@@ -322,17 +379,24 @@ class ClaudexorGateway:
         try:
             # Preserve received headers even when decoding or reading the body
             # fails. In particular, a 401/403 must survive a later read timeout.
-            with self._client.stream(method, path, json=json_body,
+            payload = {"content": content_body} if content_body is not None else {"json": json_body}
+            with self._client.stream(method, path, **payload,
                                      headers=headers or None, **bound) as response:
                 response.read()
         except httpx.HTTPError as exc:
+            retryable = (isinstance(exc, _OBSERVATION_RETRYABLE_ERRORS)
+                         and (response is None or response.status_code < 400))
             raise ClaudexorUnavailable(
                 "daemon_unreachable",
                 f"Claudexor daemon unreachable: {type(exc).__name__}: {exc}",
                 status_code=response.status_code if response is not None else 0,
+                observation_timeout=retryable,
+                observation_reason=_observation_reason(exc) if retryable else "",
             ) from exc
         if response.status_code >= 400:
             raise self._problem(response)
+        if raw_bytes:
+            return response.content
         if not response.content:
             return None
         try:
@@ -420,6 +484,167 @@ class ClaudexorGateway:
     def agent_capabilities(self) -> Dict[str, Any]:
         body = self._request("GET", "/v2/agent-capabilities")
         return body if isinstance(body, dict) else {}
+
+    # Model operations use the same private control transport, not Agent runs
+    # or the redacted/size-capped artifact surface. Callers own all admission,
+    # waiting, billing and explicit acknowledgement. The engine owns account
+    # choice; this client preserves the caller's Auto/pin request verbatim.
+
+    def list_model_sources(self, *, view: Optional[str] = None) -> Dict[str, Any]:
+        """Return the engine's opaque source ids and credential-harness bindings."""
+        from urllib.parse import urlencode
+
+        path = "/v2/model-sources"
+        if view is not None:
+            path += "?" + urlencode({"view": view})
+        return _model_object(self._request("GET", path))
+
+    def list_source_models(self, source: str,
+                           credential_profile_id: Optional[str] = None, *,
+                           requested_model: Optional[str] = None,
+                           timeout_sec: Optional[float] = None,
+                           view: Optional[str] = None) -> Dict[str, Any]:
+        """Preserve the exact-profile catalog envelope; an omitted pin means engine Auto."""
+        from urllib.parse import quote, urlencode
+
+        path = f"/v2/model-sources/{quote(str(source), safe='')}/models"
+        query = {}
+        if view is not None:
+            query["view"] = view
+        if credential_profile_id is not None:
+            query["credentialProfileId"] = credential_profile_id
+        if requested_model is not None:
+            query["requestedModel"] = requested_model
+        if query:
+            path += "?" + urlencode(query)
+        return _model_object(self._request("GET", path, **({"timeout_sec": timeout_sec} if timeout_sec is not None else {})))
+
+    def upload_model_request(self, request: Dict[str, Any], *,
+                             idempotency_key: str) -> Dict[str, Any]:
+        """Upload exact request JSON without spending a generation or logging content.
+
+        Stage keys derive from the caller's invocation identity, never the prompt.
+        An explicit retry can finish an uploaded/finalized handle after a lost
+        reply. A cancelled or still-writing upload remains a typed refusal; this
+        method never creates another upload or inference to hide that outcome.
+        """
+        from urllib.parse import quote
+
+        key = _model_idempotency_key(idempotency_key)
+        if not isinstance(request, dict):
+            raise ClaudexorUnavailable("invalid_model_payload", "Model request must be a JSON object")
+        try:
+            data = json.dumps(request, ensure_ascii=False, allow_nan=False,
+                              sort_keys=True, separators=(",", ":")).encode("utf-8")
+        except (TypeError, ValueError, UnicodeError) as exc:
+            raise ClaudexorUnavailable("invalid_model_payload", "Model request is not valid JSON") from exc
+        digest = "sha256:" + hashlib.sha256(data).hexdigest()
+        stage_key = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        created = _model_object(self._request(
+            "POST", "/v2/uploads",
+            json_body={"purpose": "model", "kind": "file", "mime": "application/json",
+                       # Bind create's existing metadata identity to the bytes too:
+                       # equal length alone would let an open upload change payload.
+                       "name": f"model-request-{digest.removeprefix('sha256:')}.json",
+                       "sizeBytes": len(data)},
+            headers={"Idempotency-Key": f"model-upload-{stage_key}"},
+        ))
+        upload_id = created.get("uploadId")
+        if not isinstance(upload_id, str) or not upload_id:
+            raise ClaudexorUnavailable("malformed_response", "Model upload returned no upload id")
+        path = f"/v2/uploads/{quote(upload_id, safe='')}"
+        try:
+            status = _model_object(self._request("GET", path))
+        except ClaudexorUnavailable as exc:
+            if exc.status_code != 404 or exc.code != "upload_not_found":
+                raise
+            # Finalize removes the upload handle but retains its idempotent receipt.
+        else:
+            if status.get("uploadId") != upload_id:
+                raise ClaudexorUnavailable("malformed_response", "Model upload status identity mismatch")
+            if status.get("state") == "open":
+                self._request("PUT", f"{path}/bytes", content_body=data,
+                              headers={"Content-Type": "application/octet-stream"})
+            elif status.get("state") != "uploaded":
+                raise ClaudexorUnavailable("model_upload_unavailable", "Model upload is not ready for finalization")
+        resource = _model_object(self._request(
+            "POST", f"{path}/finalize", json_body={"expectedSha256": digest},
+            headers={"Idempotency-Key": f"model-finalize-{stage_key}"},
+        ))
+        if resource.get("purpose") != "model":
+            raise ClaudexorUnavailable("resource_purpose_mismatch", "Model upload returned an Agent attachment")
+        ref = _model_payload_ref({name: resource.get(name) for name in ("resourceId", "sha256", "sizeBytes")})
+        if ref["sha256"] != digest or ref["sizeBytes"] != len(data):
+            raise ClaudexorUnavailable("model_payload_integrity_error", "Finalized model request differs from uploaded bytes")
+        return ref
+
+    def create_model_operation(self, request_ref: Dict[str, Any], *,
+                               idempotency_key: str, capture_failure_evidence: bool = False) -> Dict[str, Any]:
+        """Create or rejoin exactly one caller-identified generation; never mint a retry key."""
+        key = _model_idempotency_key(idempotency_key)
+        path = "/v2/model-operations" + ("?captureFailureEvidence=true" if capture_failure_evidence else "")
+        return _model_operation(self._request(
+            "POST", path, json_body={"request": _model_payload_ref(request_ref)},
+            headers={"Idempotency-Key": key},
+        ))
+
+    def get_model_operation(self, operation_id: str, *,
+                            timeout_sec: Optional[float] = None) -> Dict[str, Any]:
+        from urllib.parse import quote
+
+        return _model_operation(self._request(
+            "GET", f"/v2/model-operations/{quote(str(operation_id), safe='')}",
+            timeout_sec=timeout_sec,
+        ), operation_id)
+
+    def get_model_result(self, operation_id: str, *, expected_ref: Dict[str, Any],
+                         timeout_sec: Optional[float] = None,
+                         raw_bytes: bool = False) -> Dict[str, Any] | bytes:
+        """Read and verify the complete result, without ACK, redaction or artifact caps.
+
+        The expected reference comes from this operation's ready custody record.
+        Failure preserves that handle: only another read of the same operation is
+        appropriate here, never a new generation. The caller acknowledges after
+        it has retained the returned result under its own custody contract.
+        ``raw_bytes`` retains the exact verified JSON encoding for that custody;
+        it never skips the size, digest, UTF-8 or object validation below.
+        """
+        from urllib.parse import quote
+
+        ref = _model_payload_ref(expected_ref)
+        data = self._request(
+            "GET", f"/v2/model-operations/{quote(str(operation_id), safe='')}/result",
+            timeout_sec=timeout_sec, raw_bytes=True,
+        )
+        if len(data) != ref["sizeBytes"] or "sha256:" + hashlib.sha256(data).hexdigest() != ref["sha256"]:
+            raise ClaudexorUnavailable("model_payload_integrity_error", "Model result does not match its size and SHA-256")
+        try:
+            body = json.loads(data.decode("utf-8", errors="strict"), parse_constant=_reject_json_constant)
+        except (ValueError, UnicodeError) as exc:
+            raise ClaudexorUnavailable("malformed_response", "Model result is not valid UTF-8 JSON") from exc
+        body = _model_object(body)
+        return data if raw_bytes else body
+
+    def acknowledge_model_result(self, operation_id: str, sha256: str) -> Dict[str, Any]:
+        """Acknowledge only the exact result the caller has retained; no implicit ACK."""
+        from urllib.parse import quote
+
+        return _model_operation(self._request(
+            "POST", f"/v2/model-operations/{quote(str(operation_id), safe='')}/ack",
+            json_body={"sha256": sha256},
+        ), operation_id)
+
+    def cancel_model_operation(self, operation_id: str, *, reason_code: str = "") -> Dict[str, Any]:
+        """Request cancellation; the returned engine lifecycle, not this POST, proves settlement."""
+        from urllib.parse import quote
+
+        control = {"action": "cancel"}
+        if reason_code:
+            control["reasonCode"] = reason_code
+        return _model_operation(self._request(
+            "POST", f"/v2/model-operations/{quote(str(operation_id), safe='')}/control",
+            json_body=control,
+        ), operation_id)
 
     def harnesses(self) -> List[Dict[str, Any]]:
         """GET /v2/harnesses — per-harness status rows WITH the full manifest.
@@ -581,6 +806,65 @@ class ClaudexorGateway:
             raise self._problem(response)
         return response.content
 
+    def stream_run_artifact(self, run_id: str, path: str, sink: Any,
+                            *, expected: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Stream exact run bytes into a caller-owned temporary file.
+
+        The caller publishes only after this read verifies the manifest identity.
+        HTTP refusals and partial streams never become an empty successful file;
+        the existing small diagnostic-artifact reader keeps its bytes contract.
+        """
+        from urllib.parse import quote
+
+        digest, size = hashlib.sha256(), 0
+        response = None
+        try:
+            with self._client.stream(
+                "GET", f"/v2/runs/{quote(str(run_id), safe='')}/artifacts/{quote(str(path), safe='/')}",
+            ) as response:
+                if response.status_code >= 400:
+                    response.read()
+                    raise self._problem(response)
+                for chunk in response.iter_bytes(chunk_size=1024 * 1024):
+                    sink.write(chunk)
+                    digest.update(chunk)
+                    size += len(chunk)
+        except httpx.HTTPError as exc:
+            retryable = (isinstance(exc, _OBSERVATION_RETRYABLE_ERRORS)
+                         and (response is None or response.status_code < 400))
+            raise ClaudexorUnavailable(
+                "daemon_unreachable", f"Claudexor artifact read failed: {type(exc).__name__}",
+                status_code=response.status_code if response is not None else 0,
+                observation_timeout=retryable,
+                observation_reason=_observation_reason(exc) if retryable else "",
+            ) from exc
+        measured = {"size": size, "sha256": digest.hexdigest()}
+        if expected is not None:
+            want_size = expected.get("sizeBytes", expected.get("size"))
+            want_hash = str(expected.get("sha256") or "").removeprefix("sha256:")
+            if (want_size is not None and want_size != size) or want_hash != measured["sha256"]:
+                raise ClaudexorUnavailable("artifact_integrity_error", "Run artifact differs from its captured manifest")
+        return measured
+
+    def apply_run(self, run_id: str, request: Dict[str, Any], *, idempotency_key: str) -> Dict[str, Any]:
+        """Apply the existing run product; the caller retains intent and custody."""
+        from urllib.parse import quote
+
+        return _model_object(self._request(
+            "POST", f"/v2/runs/{quote(str(run_id), safe='')}/apply", json_body=request,
+            headers={"Idempotency-Key": idempotency_key},
+        ))
+
+    def decide_run(self, run_id: str, request: Dict[str, Any], *, idempotency_key: str) -> Dict[str, Any]:
+        """Submit an explicit disposition through the existing engine decision route."""
+        from urllib.parse import quote
+
+        body = self._request("POST", f"/v2/runs/{quote(str(run_id), safe='')}/decision", json_body=request,
+                             headers={"Idempotency-Key": idempotency_key})
+        if not isinstance(body, dict):
+            raise ClaudexorUnavailable("malformed_response", "Run decision returned a non-object response")
+        return body
+
     def answer_interaction(self, run_id: str, interaction_id: str,
                            answers: List[Dict[str, Any]]) -> Dict[str, Any]:
         """POST /v2/runs/:id/interactions/:iid/answer — deliver one answer set.
@@ -707,6 +991,22 @@ class ClaudexorGateway:
         models = body.get("models") if isinstance(body, dict) else None
         return [row for row in (models or []) if isinstance(row, dict)]
 
+    def harness_model_catalog(self, harness_id: str, *,
+                              credential_profile_id: Optional[str] = None,
+                              view: Optional[str] = None) -> Dict[str, Any]:
+        """Retain the catalog envelope for an explicitly negotiated view."""
+        from urllib.parse import quote, urlencode
+
+        path = f"/v2/harnesses/{quote(str(harness_id), safe='')}/models"
+        query = {}
+        if view is not None:
+            query["view"] = view
+        if credential_profile_id is not None:
+            query["credentialProfileId"] = credential_profile_id
+        if query:
+            path += "?" + urlencode(query)
+        return _model_object(self._request("GET", path))
+
     def setup_job_create(self, request: Dict[str, Any], *, idempotency_key: str = "") -> Dict[str, Any]:
         body = self._request(
             "POST", "/v2/setup/jobs", json_body=dict(request),
@@ -786,6 +1086,40 @@ class ClaudexorGateway:
             json_body={"name": str(name), "value": str(value)},
         )
         return body if isinstance(body, dict) else {}
+
+
+def _model_object(body: Any) -> Dict[str, Any]:
+    if not isinstance(body, dict):
+        raise ClaudexorUnavailable("malformed_response", "Model transport returned a non-object response")
+    return body
+
+
+def _model_operation(body: Any, operation_id: Optional[str] = None) -> Dict[str, Any]:
+    body = _model_object(body)
+    if (not isinstance(body.get("id"), str) or not body["id"]
+            or (operation_id is not None and body["id"] != operation_id)):
+        raise ClaudexorUnavailable("malformed_response", "Model operation response identity mismatch")
+    return body
+
+
+def _model_idempotency_key(value: str) -> str:
+    if not isinstance(value, str) or not value.strip() or len(value.strip()) > 256:
+        raise ClaudexorUnavailable("invalid_idempotency_key", "A stable caller-supplied model invocation key is required")
+    return value.strip()
+
+
+def _model_payload_ref(value: Dict[str, Any]) -> Dict[str, Any]:
+    if (not isinstance(value, dict) or set(value) != {"resourceId", "sha256", "sizeBytes"}
+            or not isinstance(value.get("resourceId"), str) or not value["resourceId"]
+            or not isinstance(value.get("sha256"), str)
+            or re.fullmatch(r"sha256:[a-f0-9]{64}", value["sha256"]) is None
+            or type(value.get("sizeBytes")) is not int or value["sizeBytes"] < 0):
+        raise ClaudexorUnavailable("model_payload_ref_invalid", "Invalid model payload reference")
+    return dict(value)
+
+
+def _reject_json_constant(_value: str) -> None:
+    raise ValueError("Non-finite JSON number")
 
 
 def pending_interactions(detail: Dict[str, Any]) -> List[Dict[str, Any]]:

@@ -56,10 +56,7 @@ def active_repo_dir_for(ctx: Any) -> pathlib.Path:
     """Return the active repo/workspace root for real and lightweight test contexts."""
     active = getattr(ctx, "active_repo_dir", None)
     if callable(active):
-        try:
-            candidate = active()
-        except Exception:
-            candidate = None
+        candidate = active()
         path = _coerce_real_path(candidate)
         if path is not None:
             return path
@@ -71,6 +68,11 @@ def active_repo_dir_for(ctx: Any) -> pathlib.Path:
         if workspace_mode:
             return workspace_path
 
+    from ouroboros.tool_access import project_room_lens_dir
+
+    room = project_room_lens_dir(ctx)
+    if room is not None:
+        return room
     return pathlib.Path(getattr(ctx, "repo_dir"))
 
 
@@ -461,6 +463,27 @@ def _binding_items(binding: Any) -> tuple[Any, ...]:
 def _binding_set_targets_system_repo(ctx: Any, binding: Any) -> bool:
     items = _binding_items(binding)
     return bool(items) and all(_registry().binding_targets_system_repo(ctx, item) for item in items)
+
+
+def _user_files_binding_reaches_repo(ctx: Any, binding: Any) -> bool:
+    """Whether a ``user_files`` target physically lands inside the Ouroboros repo.
+
+    ``binding_targets_system_repo`` compares the SELECTED ROOT's base, and
+    ``user_files`` resolves to the owner's home (the whole host on a cyber_pro
+    install), which can CONTAIN the repo. A repository path reached under that
+    name therefore answers no there while still being self-repo mutation, so the
+    light gate reads the resolved target instead of the root name. Only
+    ``user_files`` needs this: every other root's base is a data/payload
+    location the gate already classifies correctly.
+    """
+    from ouroboros.tool_access import path_is_relative_to
+
+    repo = system_repo_dir_for(ctx)
+    return any(
+        item.root == "user_files" and item.target_path is not None
+        and path_is_relative_to(pathlib.Path(item.target_path), repo)
+        for item in _binding_items(binding)
+    )
 
 
 def _binding_set_is_light_restricted(ctx: Any, binding: Any) -> bool:

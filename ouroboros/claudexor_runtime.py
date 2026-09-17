@@ -8,8 +8,9 @@ while credentials, daemon state, and runs remain under ``DATA_DIR/claudexor``.
 There is no mutable ``current`` pointer.  The code's exact pin is the next-spawn
 selection.  Installing a newer pin while an older daemon is alive therefore
 stages the immutable directory without hot-swapping the process; the next
-natural daemon start selects it.  Rolling Ouroboros back selects the older pin
-and its preserved directory again.
+daemon start selects it, and a planned restart whose landed checkout changed the
+pin ends the old daemon so that start follows (``server_restart``).  Rolling
+Ouroboros back selects the older pin and its preserved directory again.
 """
 
 from __future__ import annotations
@@ -459,11 +460,11 @@ class ClaudexorRuntimeManager:
         external = _compatibility_binary()
         return [external] if external else []
 
-    def resolve_cli_command(self) -> list[str]:
-        """Read-only exact managed CLI selection; never consult PATH/overrides."""
+    def resolve_cli_command(self, *, require_npm: bool = True) -> list[str]:
+        """Resolve the installed CLI; pure operator commands need Node, not npm."""
         if self._pin_error or self._pin is None or self._pin.cli_entrypoint is None:
             return []
-        return self._managed_cli_command()
+        return self._managed_cli_command(require_npm=require_npm)
 
     def ensure_cli_command(self) -> list[str]:
         """Provision the pin-bound closure and POSIX Node/npm CLI toolchain."""
@@ -1206,11 +1207,11 @@ class ClaudexorRuntimeManager:
             self._probe(command, pin)
         return command
 
-    def _managed_cli_command(self) -> list[str]:
+    def _managed_cli_command(self, *, require_npm: bool = True) -> list[str]:
         pin = self._pin
         if pin is None or pin.cli_entrypoint is None or not self._managed_metadata():
             return []
-        node = self._resolve_node_toolchain(pin)
+        node = self._resolve_node_toolchain(pin) if require_npm else self._resolve_node(pin)
         cli = managed_runtime_dir(pin) / pathlib.PurePosixPath(pin.cli_entrypoint)
         try:
             return [node, str(cli)] if node and cli.is_file() else []

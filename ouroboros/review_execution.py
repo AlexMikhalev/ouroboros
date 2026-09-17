@@ -10,11 +10,13 @@ The dependency runs one way: this module never imports the coordinator.
 
 from __future__ import annotations
 
+from ouroboros.config import runtime_setting
+from ouroboros.model_wait import monotonic_now
+
 import asyncio
 import hashlib
 import json
 import logging
-import os
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -39,7 +41,7 @@ from ouroboros.triad_review import (
     review_output_shape,
 )
 from ouroboros.deadline_utils import (
-    bounded_seconds, owner_deadline_exhausted,
+    bounded_seconds, caller_deadline_arguments, owner_deadline_exhausted,
     review_transport_timeout,
 )
 from ouroboros.config import get_finalization_grace_sec
@@ -428,7 +430,10 @@ class ApiChatReviewExecutor(ReviewSlotExecutor):
             self._chat_kwargs = {
                 "messages": self.messages,
                 "model": slot.model,
+                "model_role": f"reviewer:{slot.slot_id}",
+                "model_account_override": slot.session_profile,
                 "reasoning_effort": slot.effort,
+                "processing_preference": slot.processing_preference or None,
                 "max_tokens": int(request.max_tokens or slot.max_tokens),
                 "temperature": request.temperature if request.temperature is not None else slot.temperature,
                 "no_proxy": bool(request.no_proxy),
@@ -436,12 +441,19 @@ class ApiChatReviewExecutor(ReviewSlotExecutor):
                 "cache_affinity": f"{request.surface}:{request.task_id or 'review'}",
                 "use_local": bool(slot.use_local),
             }
+            default_temperature = getattr(request, "default_temperature", None)
+            if default_temperature is None:
+                default_temperature = getattr(slot, "default_temperature", None)
+            if default_temperature is not None:
+                self._chat_kwargs["default_temperature"] = default_temperature
         # Recompute this per physical send because the executor is reused for retries.
         self._chat_kwargs["timeout"] = review_transport_timeout(
             slot.model,
             getattr(slot, "transport_timeout_sec", None),
             getattr(request, "deadline_at", ""),
         )
+        self._chat_kwargs.update(caller_deadline_arguments(getattr(request, "deadline_at", ""),
+                                getattr(self, "_logical_deadline_monotonic", None), reserve_sec=get_finalization_grace_sec()))
         return self._chat_kwargs
 
     def execute(self) -> ReviewAttemptResult:
@@ -501,7 +513,7 @@ def review_session_route() -> Any:
     """
     from ouroboros.subagents import get_subagent_harness, parse_subagent_harness
 
-    raw = str(os.environ.get(REVIEW_SESSION_ROUTE_ENV, "")).strip()
+    raw = str(runtime_setting(REVIEW_SESSION_ROUTE_ENV, "")).strip()
     route = parse_subagent_harness(raw)
     if route is not None: return route
     if raw and raw.lower() != "off":
@@ -1291,7 +1303,7 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
         from ouroboros.deadline_utils import review_operation_timeout_sec
         logical_deadline = getattr(self, "_logical_deadline_monotonic", None)
         logical_timeout = (
-            max(0.001, float(logical_deadline) - time.monotonic())
+            max(0.001, float(logical_deadline) - monotonic_now())
             if logical_deadline is not None else
             review_operation_timeout_sec(getattr(slot, "timeout_sec", None),
                 route=getattr(slot, "route", None),

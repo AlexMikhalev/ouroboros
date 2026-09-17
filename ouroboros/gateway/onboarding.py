@@ -10,8 +10,8 @@ transaction:
 
 1. re-prove FRESH-INSTALL status server-side — a browser boolean is a request,
    never an authority;
-2. validate the wizard payload through the SHARED setup validator and the
-   startup gate (a subscription alone never satisfies it, D-1);
+2. validate the wizard payload through the SHARED setup validator; a pending
+   subscription draft is completed from exact model transport discovery;
 3. apply the ordinary provider normalization before compiling task routes;
 4. compile truthful API/local task actors with zero daemon reads, or read ONE
    fresh Claudexor snapshot when subscriptions were declared;
@@ -78,6 +78,7 @@ from ouroboros.subscription_install_presets import (
     HarnessDiscovery,
     SubscriptionInstallPreset,
     compile_install_preset,
+    preview_api_reviewer_slots,
 )
 
 log = logging.getLogger(__name__)
@@ -447,7 +448,11 @@ def _read_harness_snapshot() -> Dict[str, Any]:
     panel uses (no second discovery path)."""
     from ouroboros.gateway.claudexor_accounts import _status_payload
 
-    return _status_payload(True)
+    from ouroboros.gateway.models import _subscription_model_catalog
+
+    snapshot = _status_payload(True)
+    snapshot["model_catalog"] = _subscription_model_catalog()["items"]
+    return snapshot
 
 
 # The snapshot read runs on its OWN single worker, and one read is shared by
@@ -527,6 +532,7 @@ async def resolve_install_preset(
         configured_subagents=owner_draft,
         source=SOURCE_CONFIGURED if owner_draft is not None else SOURCE_ONBOARDING_DEFAULT,
         capability=capability,
+        model_catalog=snapshot.get("model_catalog") or (),
     )
     if not preset.ok:
         refusal = preset.refusal.as_dict() if preset.refusal else {}
@@ -648,13 +654,10 @@ def _prepared_settings(
     if error:
         return old_settings, {}, str(error)
     normalized, _changed, _keys = apply_runtime_provider_defaults(prepared)
-    if not has_startup_ready_provider(normalized):
-        # D-1: the launch gate is API-key-or-local-model. An agent
-        # subscription is an amplifier, never the thing that satisfies it.
+    connected, skipped = parse_subscription_intent(body)
+    if not has_startup_ready_provider(normalized) and not (connected and not skipped):
         return old_settings, {}, (
-            "Add at least one API key or a local model before finishing. An "
-            "agent subscription strengthens Ouroboros but cannot run the "
-            "main model on its own."
+            "Connect a model-capable subscription, an API key, or a local model before finishing."
         )
     return old_settings, normalized, ""
 
@@ -725,6 +728,8 @@ async def api_onboarding_subagents_preview(request: Request) -> JSONResponse:
     assert preset is not None
     return JSONResponse({
         "ok": True,
+        "model_settings": dict(preset.model_settings),
+        "reviewer_slots": preset.reviewer_slots or preview_api_reviewer_slots(current),
         "available_subagents": configured_subagents_dict(
             normalize_configured_subagents(preset.available_subagents)[0]
         ),
@@ -875,6 +880,26 @@ async def api_onboarding_complete(request: Request) -> JSONResponse:
         # R8 ordering: provider normalization has ALREADY run over `current`;
         # the structured preset keys land on top of it, never through it.
         current.update(preset.settings_keys())
+        # Finish receives the visible editor draft. A value equal to a shipped
+        # default is still explicit owner intent; only omitted fields (or an
+        # empty Main awaiting its first proposal) may be authored here.
+        current.update({key: value for key, value in preset.model_settings.items()
+                        if key not in body or (key == "OUROBOROS_MODEL" and not body[key])})
+
+    if not has_startup_ready_provider(current):
+        return unsaved_error("The connected accounts do not provide a Main model. Connect Codex, an API provider, or a local model.",
+                             400, code="model_source_unavailable")
+
+    if "OUROBOROS_REVIEWER_SLOTS" in body:
+        from ouroboros.reviewer_slot_config import reviewer_slot_save_check
+        raw_slots = body["OUROBOROS_REVIEWER_SLOTS"]
+        if not isinstance(raw_slots, str):
+            return unsaved_error("Reviewer slots must use their serialized JSON contract.", 400)
+        try:
+            reviewer_slot_save_check(raw_slots, subagents_raw=current.get(SUBAGENTS_SETTING))
+        except ValueError as exc:
+            return unsaved_error(str(exc), 400, code="invalid_reviewer_slots")
+        current["OUROBOROS_REVIEWER_SLOTS"] = raw_slots
 
     # The durable completion fact rides in the SAME write, whatever the preset
     # did: a completion that connected nothing must still close the window.

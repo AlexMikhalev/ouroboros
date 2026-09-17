@@ -312,7 +312,11 @@ def test_native_preflight_uses_existing_episode_and_monetary_custody(preflight, 
                 raise error
             return {"content": "[]"}, {"prompt_tokens": 10, "completion_tokens": 2, "cost": 0.0}
 
-    monkeypatch.setattr("ouroboros.llm.LLMClient", ControlledChat)
+    from ouroboros.llm import LLMClient
+
+    # Keep the class identity stable: native-tool discovery may lazily import
+    # callers that bind LLMClient while this controlled method is installed.
+    monkeypatch.setattr(LLMClient, "chat", ControlledChat.chat)
     if end == "crash":
         with pytest.raises(Crash):
             _run(preflight)

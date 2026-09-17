@@ -41,7 +41,7 @@ def test_prepare_onboarding_settings_requires_runnable_config():
     prepared, error = prepare_onboarding_settings(_base_payload(), {})
 
     assert prepared == {}
-    assert "Configure OpenRouter, OpenAI, OpenAI-compatible, Cloud.ru, MiniMax, DeepSeek, Anthropic, or a local model" in error
+    assert error == "Connect Codex, an API provider, or a local model before continuing."
 
 
 def test_prepare_onboarding_settings_accepts_openai_only_setup():
@@ -332,7 +332,7 @@ def test_prepare_onboarding_settings_rejects_openai_compatible_key_without_base_
     prepared, error = prepare_onboarding_settings(payload, {})
 
     assert prepared == {}
-    assert "Configure OpenRouter, OpenAI, OpenAI-compatible, Cloud.ru, MiniMax, DeepSeek, Anthropic, or a local model" in error
+    assert error == "Connect Codex, an API provider, or a local model before continuing."
 
 
 def test_onboarding_frontend_uses_base_url_first_compatible_validation():
@@ -396,8 +396,8 @@ def test_onboarding_steps_and_stylesheet_keep_their_owner_facing_shape():
     rails = {step["railCopy"] for step in contract["steps"]}
     css = (REPO / "web" / "onboarding.css").read_text(encoding="utf-8")
 
-    assert {"Add your access", "Choose models", "Choose review mode", "Set your budget"} <= titles
-    assert {"Keys + local", "model slots"} <= rails
+    assert {"Connect your accounts", "Choose models", "Choose review mode", "Review limits"} <= titles
+    assert {"Subscriptions + API", "model slots"} <= rails
     assert "@media (max-width: 720px)" in css
     assert "scroll-snap-type: x proximity;" in css
 
@@ -417,22 +417,14 @@ def test_setup_contract_exports_active_model_slots_only():
 # --------------------------------------------------------------------------
 
 
-def test_agents_step_follows_access_and_never_uses_the_retired_wording():
-    """It sits right after access — the step that explains what the access the
-    owner just typed already bought, and what an agent plan adds on top. Named
-    "agents" (D-10): these agents also build presentations and run ordinary
-    tasks, so "coding agents" is wrong in owner-facing copy."""
+def test_agents_share_accounts_in_the_five_step_onboarding():
+    """Subscriptions and API access share the first step, then the same role editors."""
     contract = build_setup_contract("web")
     ids = [step["id"] for step in contract["steps"]]
-    step = next(item for item in contract["steps"] if item["id"] == "agents")
-
-    assert ids.index("agents") == ids.index("providers") + 1
-    assert ids == ["providers", "agents", "models", "review_mode", "budget", "summary"]
+    assert ids == ["accounts", "models", "review_mode", "budget", "summary"]
     assert build_setup_bootstrap({}, "web")["stepOrder"] == ids
     assert "coding agent" not in repr(contract).lower()
-    # The step announces its own skippability where the owner reads it.
-    assert "Optional" in step["copy"] or "Optional" in step["railCopy"]
-    assert "Skippable" in step["footer"]
+    assert contract["steps"][0]["title"] == "Connect your accounts"
 
 
 def test_agents_step_is_skippable_and_cannot_block_completion():
@@ -449,13 +441,12 @@ def test_agents_step_is_skippable_and_cannot_block_completion():
 
 
 def test_agents_step_ladder_states_the_startup_gate_honestly():
-    """The rung that sells the subscription is the SAME rung that says a
-    subscription cannot run the main agent, and the footnote refuses both easy
-    lies ("free", "all reviewers move")."""
+    """Codex can start Models; other subscriptions remain agent connections."""
     source = (REPO / "web/modules/onboarding_agents_step.js").read_text(encoding="utf-8")
 
-    assert "keeps using the API key or local model" in source
-    assert "a plan cannot run it" in source
+    assert "Run models and agents without an API key" in source
+    assert "Claude Code, Cursor, and Antigravity remain agent connections" in source
+    assert "a plan cannot run it" not in source
     assert "not free" in source
     assert "Task acceptance stays on the API" not in source
     assert "commit, plan, skill review and task acceptance each follow their configured" in source

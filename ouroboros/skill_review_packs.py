@@ -83,9 +83,9 @@ def _read_skill_file(
     path: pathlib.Path, *, relpath: str = ""
 ) -> tuple[Optional[str], bytes, Optional[Dict[str, Any]]]:
     """Read one skill file: ``(text, sha256_digest, descriptor)`` — exactly one set.
-    Loadable executables (CONTENT magic bytes, never filename) hard-block review;
-    WebAssembly (``WASM_MAGIC``, even when its bytes decode as UTF-8) and other
-    non-UTF-8 files yield a typed descriptor instead of raw bytes."""
+    Native executable magic blocks ordinary review; Cyber retains these bytes
+    through a descriptor. Binary formats never become text merely because they
+    decode as UTF-8. Unreadable source remains an actual read failure."""
     try:
         data = path.read_bytes()
     except OSError as exc:
@@ -98,11 +98,18 @@ def _read_skill_file(
         text = None
     kind = executable_magic_kind(data, is_utf8_text=text is not None)
     if kind:
-        raise _SkillBinaryPayload(rel, len(data), kind)
+        from ouroboros.config import get_runtime_mode
+        from ouroboros.runtime_mode_policy import runtime_mode_at_least
+
+        if not runtime_mode_at_least(get_runtime_mode(), "cyber_pro"):
+            raise _SkillBinaryPayload(rel, len(data), kind)
     digest = hashlib.sha256(data).digest()
-    if text is not None and not data.startswith(WASM_MAGIC):
+    if text is not None and not kind and not data.startswith(WASM_MAGIC):
         return text, digest, None
-    return None, digest, binary_file_descriptor(rel, data, filename=path.name)
+    descriptor = binary_file_descriptor(rel, data, filename=path.name)
+    if kind:
+        descriptor["format_from_magic"] = kind
+    return None, digest, descriptor
 
 
 def _build_skill_file_packs(

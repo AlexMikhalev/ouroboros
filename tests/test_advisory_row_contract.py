@@ -109,9 +109,9 @@ def test_transport_to_advisory_consumer_preserves_normalized_findings(tmp_path, 
     monkeypatch.setattr(run, "advisory_review_route", lambda: "api_chat")
     monkeypatch.setattr(reviewer_slot_config, "advisory_slot_config", lambda: SimpleNamespace(effort="low"))
     monkeypatch.setattr("ouroboros.provider_models.model_has_credentials", lambda model: True)
-    monkeypatch.setattr(advisory, "_advisory_native_model", lambda: "test/model")
+    monkeypatch.setattr(advisory, "_advisory_native_model", lambda _slot=None: "test/model")
     monkeypatch.setattr(advisory, "_build_advisory_prompt", lambda *a, **k: "review prompt")
-    monkeypatch.setattr(advisory, "_predispatch_size_skip", lambda *a: None)
+    monkeypatch.setattr(advisory, "_predispatch_size_skip", lambda *a, **kw: None)
     monkeypatch.setattr(advisory, "_run_advisory_native", lambda *a, **k: (
         SimpleNamespace(success=True, result_text=raw, session_id="test", cost_usd=0,
                         usage={}, error="", stderr_tail=""), "test/model"))

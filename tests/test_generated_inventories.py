@@ -180,3 +180,76 @@ def test_noqa_f401_marker_detection():
     nodes = ast.parse(src).body
     flags = [inv._statement_has_noqa_f401(lines, n) for n in nodes]
     assert flags == [True, False, True, False]
+
+
+def _chapter_book():
+    from ouroboros.reference_books import load_reference_book
+
+    frozen = (
+        "## 11.1 What is frozen\n\n"
+        "| Contract | File | Anchored by |\n|---|---|---|\n"
+        "| `Thing` | `ouroboros/contracts/tool_abi.py` | `tests/test_contracts.py` |\n"
+    )
+    layout = (
+        "## Data layout (`~/Ouroboros/`)\n\n````\n~/Ouroboros/\n"
+        "├── data/\n│   ├── settings.json\n│   └── queue_snapshot.json\n````\n"
+    )
+    # Filenames carry no topic meaning; membership and actual headings own it.
+    corpus = {
+        "docs/ARCHITECTURE.md": b"# Book\n\nThe body and its reasons.\n\n## Chapters\n\n- [First](architecture/alpha.md)\n- [Second](architecture/omega.md)\n",
+        "docs/architecture/alpha.md": ("# Contracts\n\nWHY: old consumers must retain their contract.\n\n" + frozen).encode(),
+        "docs/architecture/omega.md": ("# Storage\n\nWHY: retained sources must remain discoverable.\n\n" + layout).encode(),
+    }
+    book = load_reference_book(pathlib.Path("/unused"), "architecture", corpus.__getitem__)
+    legacy_text = "# Book\n\nSame complete sources.\n\n" + frozen + "\n" + layout
+    legacy = load_reference_book(pathlib.Path("/unused"), "architecture", lambda _: legacy_text.encode())
+    return book, legacy, corpus
+
+
+@pytest.mark.parametrize("builder", ["build_frozen_inventory", "build_layout_inventory"])
+def test_chapter_migration_preserves_complete_inventory_and_physical_provenance(builder):
+    import hashlib
+
+    book, legacy, corpus = _chapter_book()
+    chapter_text, findings = getattr(inv, builder)(book)
+    old_text, old_findings = getattr(inv, builder)(legacy)
+    assert findings == old_findings == []
+    without_source = chapter_text.splitlines(keepends=True)
+    index = next(i for i, line in enumerate(without_source) if line.startswith("Source: "))
+    del without_source[index:index + 2]
+    assert "".join(without_source) == old_text
+    title = "11.1 What is frozen" if builder == "build_frozen_inventory" else "Data layout (`~/Ouroboros/`)"
+    view = inv.read_book_section(book, title)
+    ref = view.sources[0]
+    raw = corpus[ref.path]
+    assert ref.sha256 == hashlib.sha256(raw).hexdigest()
+    assert raw[ref.span.start_byte:ref.span.end_byte].decode() == view.text
+    assert f"`{ref.path}`, physical LF lines {ref.span.start_line}-{ref.span.end_line}" in chapter_text
+    assert ref.sha256 in chapter_text
+
+
+def test_data_layout_cannot_borrow_a_fence_from_another_section():
+    with pytest.raises(ValueError, match="one fenced tree"):
+        inv.layout_block("# Book\n\n## Data layout (`~/Ouroboros/`)\n\nMissing.\n\n## Other\n\n```\n├── wrong.json\n```\n")
+
+
+def test_frozen_section_uses_markdown_headings_not_fenced_examples():
+    text = (
+        "# Book\n\n```md\n### 11.1 What is frozen\nFake content\n```\n\n"
+        "## 11.1 What is frozen\n\nActual content\n\n## Next\n\nOutside\n"
+    )
+    section = inv.frozen_section_text(text)
+    assert "Actual content" in section
+    assert "Fake content" not in section and "Outside" not in section
+
+
+def test_missing_member_refuses_generator_before_partial_inventory(tmp_path, monkeypatch):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "ARCHITECTURE.md").write_text(
+        "# Book\n\nPurpose.\n\n## Chapters\n\n- [Missing](architecture/missing.md)\n"
+    )
+    monkeypatch.setattr(inv, "REPO_ROOT", tmp_path)
+    for builder in (inv.build_frozen_inventory, inv.build_layout_inventory):
+        with pytest.raises(FileNotFoundError, match="missing.md"):
+            builder()

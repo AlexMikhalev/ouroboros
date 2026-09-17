@@ -511,7 +511,6 @@ def _enqueue_through_supervisor(tmp_path, monkeypatch, *, parent_lane: str = "",
     from types import SimpleNamespace
 
     from supervisor import events as ev_module
-    from supervisor import events_schedule_task as schedule_module
     from ouroboros.tools.control import _schedule_task
     from tests._shared import configure_test_subagent
 
@@ -551,7 +550,6 @@ def _enqueue_through_supervisor(tmp_path, monkeypatch, *, parent_lane: str = "",
     event["depth"] = 0
     event["delegation_role"] = ""
 
-    monkeypatch.setattr(schedule_module, "_find_duplicate_task", lambda *a, **k: None)
     enqueued = []
 
     class FakeCtx:

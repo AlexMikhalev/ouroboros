@@ -403,7 +403,9 @@ def test_skill_review_contract_fingerprint_preserves_legacy_and_tracks_rows(monk
 
     monkeypatch.setenv("OUROBOROS_EFFORT_REVIEW", "high")
     legacy = skill_review_contract_fingerprint(["m1", "m2"], required_items=("a",))
-    assert legacy == "eb35c9d2d6daaf1afdece2baec2107aff2b8107c80ab2788597a8c55545a215a"
+    # The author-finality contract is part of the skill-review prompt contract;
+    # its deliberate wording change invalidates the old fingerprint.
+    assert legacy == "b0d298d70bf93185b2b88f647af3ab28233e18db517c13398d7b323c786dd16b"
     legacy_delivery = {
         "legacy_skill_fingerprint": True,
         "models": ["m1", "m2"], "routes": ["api_chat", "api_chat"],

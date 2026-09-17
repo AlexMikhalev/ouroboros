@@ -919,6 +919,24 @@ def test_s22_absorb_kill_recovery_absorbs_once_and_never_twice(
             assert server_b.wait_task(task_b, timeout=300).get("status") == "completed"
             absorbed = wait_until(
                 lambda: int(_campaign(data_root).get("absorbed_cycles_done") or 0) == 1, 300)
+            if not absorbed:
+                # Pytest truncates the campaign assertion. Preserve the exact
+                # boot/authority/lock facts before teardown, only on failure.
+                paths = [state_dir / "evolution_campaign.json", state_path,
+                         data_root / "locks" / "state.lock",
+                         state_dir / "evolution_campaign.json.lock",
+                         *state_dir.glob(marker_glob)]
+                for path in paths:
+                    try:
+                        detail = {"path": str(path.relative_to(data_root)),
+                                  "mtime": path.stat().st_mtime, "body": path.read_text(encoding="utf-8")}
+                    except (OSError, UnicodeError) as exc:
+                        detail = {"path": str(path.relative_to(data_root)), "error": str(exc)}
+                    print("S22 recovery file: " + json.dumps(detail, ensure_ascii=False))
+                for kind in ("worker_boot", "worker_ready", "restart_verify",
+                             "evolution_tx_reconciled", "evolution_tx_reconcile_blocked",
+                             "evolution_tx_abandoned"):
+                    print("S22 recovery events: " + json.dumps({kind: oracle.events(kind)}, ensure_ascii=False))
             assert absorbed, _campaign(data_root)
             campaign_b = _campaign(data_root)
             # NO LOSS: the transaction closed as absorbed by boot reconciliation,

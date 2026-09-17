@@ -63,7 +63,7 @@ def test_accounts_partial_quota_cards(direct_server_with_data):
             page.goto(direct_server_with_data["url"], wait_until="domcontentloaded")
             page.click('[data-nav-page="settings"]')
             page.wait_for_selector(".settings-shell")
-            page.click('[data-settings-tab="agents"]')
+            page.click('[data-settings-tab="providers"]')
             account = page.locator('.harness-account-row[data-profile="missing-reset"]')
             account.wait_for(state="visible")
             assert "100% used · availability not proven" in account.inner_text()
@@ -73,6 +73,7 @@ def test_accounts_partial_quota_cards(direct_server_with_data):
                 assert "harness-exhausted" in (limited.get_attribute("class") or "")
                 assert f"Limit reached · resets in {hours}" in limited.inner_text()
             page.locator("#harness-accounts-section").screenshot(path=str(evidence / "accounts-quota.png"))
+            page.click('[data-settings-tab="agents"]')
             page.locator("#available-subagents-editor").scroll_into_view_if_needed()
             page.wait_for_function("""() => [...document.querySelectorAll('[data-subagent-status]')]
                 .map(el => el.textContent).join('|') === 'Saved · Not checked|Saved · Limit reached|Saved · Limit reached'""")

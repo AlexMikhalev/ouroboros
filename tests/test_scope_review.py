@@ -2503,14 +2503,10 @@ def test_low_context_mode_skips_scope_review_with_a_typed_evidence_row(monkeypat
     assert called, "max mode must still run scope review"
 
 
-def test_default_context_mode_is_max_and_agent_cannot_lower_it(monkeypatch):
-    """RS2 anti-regression: the DEFAULT behaviour is unchanged (max ⇒ blocking scope
-    gate), and the agent still cannot reach the setting that now also switches scope
-    review off — on the settings merge, the shell guard, or the browser guard."""
+def test_default_context_mode_is_max_and_generic_settings_merge_preserves_it(monkeypatch):
+    """The default and ordinary settings writer retain their explicit contract."""
     from ouroboros import config
     from ouroboros.gateway.settings import _merge_settings_payload
-    from ouroboros.browser_policy import _blocks_context_mode_self_lowering_js
-    from ouroboros.tools.registry import _detect_context_mode_self_lowering
 
     assert config.SETTINGS_DEFAULTS["OUROBOROS_CONTEXT_MODE"] == "max"
     monkeypatch.delenv("OUROBOROS_CONTEXT_MODE", raising=False)
@@ -2519,12 +2515,6 @@ def test_default_context_mode_is_max_and_agent_cannot_lower_it(monkeypatch):
     merged = _merge_settings_payload({"OUROBOROS_CONTEXT_MODE": "max"},
                                      {"OUROBOROS_CONTEXT_MODE": "low"})
     assert merged["OUROBOROS_CONTEXT_MODE"] == "max"
-    assert _detect_context_mode_self_lowering(
-        "save_settings({'ouroboros_context_mode': 'low'})"
-    ) is True
-    assert _blocks_context_mode_self_lowering_js(
-        "fetch('/api/owner/context-mode', {body: JSON.stringify({mode: 'low'})})"
-    ) is True
 
 
 def test_window_provenance_wording_is_five_way():

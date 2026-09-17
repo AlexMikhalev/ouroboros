@@ -224,8 +224,10 @@ def test_openai_responses_web_search_disables_sdk_retries(tmp_path, monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "test")
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.setenv("OUROBOROS_WEBSEARCH_BACKEND", "openai")
-    monkeypatch.setattr(search, "reserve_attempt", lambda request: types.SimpleNamespace(attempt_id="attempt"))
-    monkeypatch.setattr(search, "mark_dispatched", lambda reservation: None)
+    monkeypatch.setattr(search, "reserve_attempt", lambda request: types.SimpleNamespace(
+        attempt_id="attempt", drive_root=tmp_path,
+    ))
+    monkeypatch.setattr(search, "mark_dispatched", lambda reservation, **_kwargs: None)
     monkeypatch.setattr(search, "settle_attempt", lambda *args, **kwargs: None)
 
     result = json.loads(search._web_search(Ctx(), "query"))

@@ -21,16 +21,11 @@ from ouroboros.tools.tool_result import (
 from ouroboros.usage_accounting import UsageAccountingError
 
 
-_EPHEMERAL_BUILTIN_TEXT = (
+_HISTORICAL_EPHEMERAL_BUILTIN_TEXT = (
     "⚠️ EPHEMERAL_TURN_RESTRICTED: 'update_identity' is not in the decision-turn allowlist "
     "(read/inspect + answer/route/spawn/steer only) — a short same-route turn must "
     "not do durable/control/review/skill work or run shell. Answer inline, or "
     "promote_chat_to_task to do it in a supervised task."
-)
-_EPHEMERAL_EXTERNAL_TEXT = (
-    "⚠️ EPHEMERAL_TURN_RESTRICTED: external tool 'ext_4_demo_ping' can have durable side "
-    "effects, which a short same-route decision turn must not do. Answer inline, "
-    "or promote_chat_to_task to do that work in a supervised task."
 )
 _LOCAL_READONLY_TEXT = (
     "⚠️ LOCAL_READONLY_SUBAGENT_BLOCKED: this subagent may inspect "
@@ -419,23 +414,18 @@ def test_registry_composer_is_the_exact_owner_reexport() -> None:
 
 def test_registry_guard_owner_facades_preserve_identity() -> None:
     from ouroboros.tools.registry import (
-        _EPHEMERAL_ALLOWED_TOOLS as allowlist_facade,
         _managed_update_code_tool_block as managed_facade,
     )
     from ouroboros.tools.registry_guards import (
-        _EPHEMERAL_ALLOWED_TOOLS,
         _managed_update_code_tool_block,
     )
 
-    assert allowlist_facade is _EPHEMERAL_ALLOWED_TOOLS
     assert managed_facade is _managed_update_code_tool_block
 
 
 @pytest.mark.parametrize(
     "scenario",
     (
-        "ephemeral_builtin",
-        "ephemeral_external",
         "local_readonly",
         "acting_builtin",
         "acting_external",
@@ -449,61 +439,53 @@ def test_registry_guard_native_outcomes_preserve_exact_text(
 ) -> None:
     import supervisor.update_merge as update_merge
     from ouroboros.tools.registry_guards import (
-        _ephemeral_block_result,
         _subagent_and_update_guard_result,
     )
 
-    ctx = SimpleNamespace(is_ephemeral_turn=True, task_id="task-1", task_metadata={})
+    ctx = SimpleNamespace(task_id="task-1", task_metadata={})
     # v7next adaptation: this tree's guard takes the REGISTRY (its read-only
     # allowlist grew the verify_and_record zero-run carve, tip drift), so the
     # fake carries the ctx and the plain allowlist predicate.
     from ouroboros.tool_capabilities import LOCAL_READONLY_SUBAGENT_TOOL_NAMES
 
     registry = SimpleNamespace(
-        _ctx=ctx,
+        _ctx=ctx, _entries={},
         _readonly_tool_allowed=lambda name: name in LOCAL_READONLY_SUBAGENT_TOOL_NAMES,
     )
-    if scenario == "ephemeral_builtin":
-        result = _ephemeral_block_result(ctx, "update_identity")
-        expected = ToolResult(status="blocked", code="ACCESS_BLOCKED", text=_EPHEMERAL_BUILTIN_TEXT)
-    elif scenario == "ephemeral_external":
-        result = _ephemeral_block_result(ctx, "ext_4_demo_ping", ext_tool={"name": "ext_4_demo_ping"})
-        expected = ToolResult(status="blocked", code="ACCESS_BLOCKED", text=_EPHEMERAL_EXTERNAL_TEXT)
-    else:
-        kwargs = {
-            "entry": object()
-            if scenario in {"local_readonly", "acting_builtin", "managed_active", "managed_unavailable"}
-            else None,
-            "ext_tool": {"name": "ext_4_demo_ping"} if scenario == "acting_external" else None,
-            "is_mcp": False,
-            "local_readonly_subagent": scenario == "local_readonly",
-            "acting_subagent": scenario in {"acting_builtin", "acting_external"},
-            "acting_tool_grants": (),
-            "repo_mutation": scenario in {"managed_active", "managed_unavailable"},
-        }
-        name = "ext_4_demo_ping" if scenario == "acting_external" else (
-            "write_file" if scenario.startswith("managed_") else "commit_reviewed"
-        )
-        if scenario == "managed_active":
-            monkeypatch.setattr(update_merge, "managed_assisted_tx_for", lambda *_args: (None, True))
-            expected = ToolResult(status="blocked", code="ACCESS_BLOCKED", text=_MANAGED_ACTIVE_TEXT)
-        elif scenario == "managed_unavailable":
-            def _unavailable(*_args):
-                raise RuntimeError("state unavailable")
+    kwargs = {
+        "entry": object()
+        if scenario in {"local_readonly", "acting_builtin", "managed_active", "managed_unavailable"}
+        else None,
+        "ext_tool": {"name": "ext_4_demo_ping"} if scenario == "acting_external" else None,
+        "is_mcp": False,
+        "local_readonly_subagent": scenario == "local_readonly",
+        "acting_subagent": scenario in {"acting_builtin", "acting_external"},
+        "acting_tool_grants": (),
+        "repo_mutation": scenario in {"managed_active", "managed_unavailable"},
+    }
+    name = "ext_4_demo_ping" if scenario == "acting_external" else (
+        "write_file" if scenario.startswith("managed_") else "commit_reviewed"
+    )
+    if scenario == "managed_active":
+        monkeypatch.setattr(update_merge, "managed_assisted_tx_for", lambda *_args: (None, True))
+        expected = ToolResult(status="blocked", code="ACCESS_BLOCKED", text=_MANAGED_ACTIVE_TEXT)
+    elif scenario == "managed_unavailable":
+        def _unavailable(*_args):
+            raise RuntimeError("state unavailable")
 
-            monkeypatch.setattr(update_merge, "managed_assisted_tx_for", _unavailable)
-            expected = ToolResult(
-                status="unavailable",
-                code="CAPABILITY_UNAVAILABLE",
-                text=_MANAGED_UNAVAILABLE_TEXT,
-            )
-        elif scenario == "local_readonly":
-            expected = ToolResult(status="blocked", code="ACCESS_BLOCKED", text=_LOCAL_READONLY_TEXT)
-        elif scenario == "acting_builtin":
-            expected = ToolResult(status="blocked", code="ACCESS_BLOCKED", text=_ACTING_BUILTIN_TEXT)
-        else:
-            expected = ToolResult(status="blocked", code="ACCESS_BLOCKED", text=_ACTING_EXTERNAL_TEXT)
-        result = _subagent_and_update_guard_result(registry, name, **kwargs)
+        monkeypatch.setattr(update_merge, "managed_assisted_tx_for", _unavailable)
+        expected = ToolResult(
+            status="unavailable",
+            code="CAPABILITY_UNAVAILABLE",
+            text=_MANAGED_UNAVAILABLE_TEXT,
+        )
+    elif scenario == "local_readonly":
+        expected = ToolResult(status="blocked", code="ACCESS_BLOCKED", text=_LOCAL_READONLY_TEXT)
+    elif scenario == "acting_builtin":
+        expected = ToolResult(status="blocked", code="ACCESS_BLOCKED", text=_ACTING_BUILTIN_TEXT)
+    else:
+        expected = ToolResult(status="blocked", code="ACCESS_BLOCKED", text=_ACTING_EXTERNAL_TEXT)
+    result = _subagent_and_update_guard_result(registry, name, **kwargs)
 
     assert result == expected
     assert dict(result.meta) == {}
@@ -512,18 +494,16 @@ def test_registry_guard_native_outcomes_preserve_exact_text(
 def test_registry_guard_allow_paths_return_no_result(monkeypatch) -> None:
     import supervisor.update_merge as update_merge
     from ouroboros.tools.registry_guards import (
-        _ephemeral_block_result,
         _subagent_and_update_guard_result,
     )
 
-    ctx = SimpleNamespace(is_ephemeral_turn=True, task_id="task-1", task_metadata={})
+    ctx = SimpleNamespace(task_id="task-1", task_metadata={})
     from ouroboros.tool_capabilities import LOCAL_READONLY_SUBAGENT_TOOL_NAMES
 
     registry = SimpleNamespace(
-        _ctx=ctx,
+        _ctx=ctx, _entries={},
         _readonly_tool_allowed=lambda name: name in LOCAL_READONLY_SUBAGENT_TOOL_NAMES,
     )
-    assert _ephemeral_block_result(ctx, "read_file") is None
     assert _subagent_and_update_guard_result(
         registry,
         "ext_4_demo_ping",
@@ -574,12 +554,18 @@ def test_registry_native_guards_precede_safety_and_physical_dispatch(
     )
     monkeypatch.setattr("ouroboros.extension_loader.is_extension_live", lambda *_args, **_kwargs: True)
 
-    ephemeral = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
-    ephemeral.set_context(ToolContext(repo_dir=tmp_path, drive_root=tmp_path, is_ephemeral_turn=True))
-    assert ephemeral.execute_result("ext_4_demo_ping", {}) == ToolResult(
+    # Acting-child grants still deny ungranted dynamic tools before dispatch.
+    from ouroboros.contracts.task_constraint import TaskConstraint
+
+    acting = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
+    acting.set_context(ToolContext(
+        repo_dir=tmp_path, drive_root=tmp_path,
+        task_constraint=TaskConstraint(mode="acting_subagent", allow_enable=False, surface="external_workspace"),
+    ))
+    assert acting.execute_result("ext_4_demo_ping", {}) == ToolResult(
         status="blocked",
         code="ACCESS_BLOCKED",
-        text=_EPHEMERAL_EXTERNAL_TEXT,
+        text=_ACTING_EXTERNAL_TEXT,
     )
 
     managed = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
@@ -620,7 +606,7 @@ def test_registry_native_guards_precede_safety_and_physical_dispatch(
     (
         # T1 §A.4: every one of these guards DENIED the call. The three whose first
         # line happened to carry no generic marker were recorded as clean successes.
-        (ToolResult(status="blocked", code="ACCESS_BLOCKED", text=_EPHEMERAL_BUILTIN_TEXT), True, "blocked"),
+        (ToolResult(status="blocked", code="ACCESS_BLOCKED", text=_HISTORICAL_EPHEMERAL_BUILTIN_TEXT), True, "blocked"),
         (ToolResult(status="blocked", code="ACCESS_BLOCKED", text=_LOCAL_READONLY_TEXT), True, "blocked"),
         (ToolResult(status="blocked", code="ACCESS_BLOCKED", text=_ACTING_EXTERNAL_TEXT), True, "blocked"),
         (ToolResult(status="blocked", code="ACCESS_BLOCKED", text=_MANAGED_ACTIVE_TEXT), True, "blocked"),

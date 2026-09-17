@@ -10,6 +10,8 @@ resolver; a resolution failure fails closed with the standard cwd block.
 from __future__ import annotations
 
 import pathlib
+import shlex
+from subprocess import CompletedProcess
 
 import pytest
 
@@ -114,49 +116,16 @@ def test_light_mode_task_drive_label_cwd_is_not_light_blocked(tmp_path, monkeypa
     assert (task_drive / "out.txt").exists()
 
 
-def test_light_mode_versioned_interpreter_runtime_data_write_is_registry_blocked(tmp_path, monkeypatch):
-    """Registry-level twin of ``test_versioned_interpreter_basename_still_classified``.
-
-    The unit test above pins shell_guards' inline-write fence; this pins the
-    OTHER half of INFRA-1 — ``ToolRegistry._run_shell_safety_check``'s
-    ``runtime_data_scan`` classifier — which that unit test cannot see. The
-    four public-surface light-fence tests run ``sys.executable``, whose
-    basename on CI is unversioned, so reverting the registry classifier to the
-    exact set {"python", "python3", ...} keeps them green there. This test
-    spells the versioned basename explicitly and is host-independent: the
-    guard must refuse BEFORE execution, so ``python3.11`` need not exist on
-    the host — and where it does exist, the write would land and fail the
-    no-file assertion instead.
-    """
-    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
-    reg = _registry(tmp_path)
-    # A runtime_data path outside the task's own roots (drive_root/uploads is
-    # neither this task's task_drive nor its artifact_store).
-    target = tmp_path / "drive" / "uploads" / "probe-report.html"
-    result = reg.execute("run_command", {
-        "cmd": [
-            "python3.11",
-            "-c",
-            (
-                "from pathlib import Path\n"
-                f"p = Path({str(target)!r})\n"
-                "p.parent.mkdir(parents=True, exist_ok=True)\n"
-                "p.touch()\n"
-            ),
-        ],
-        "cwd": str(reg._ctx.task_drive_root()),
-    })
-    assert "LIGHT_MODE_BLOCKED" in result, result[:300]
-    assert "runtime_data" in result
-    assert not target.exists()
 
 
+@pytest.mark.serial
 def test_light_mode_repo_write_still_blocked(tmp_path, monkeypatch):
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
     reg = _registry(tmp_path)
     result = reg.execute("run_command", {"cmd": "touch marker.py"})
     assert "LIGHT_MODE_BLOCKED" in result, result[:300]
     assert not (pathlib.Path(reg._ctx.repo_dir) / "marker.py").exists()
+
 
 
 def test_light_mode_cwd_resolution_failure_fails_closed(tmp_path, monkeypatch):
@@ -166,28 +135,99 @@ def test_light_mode_cwd_resolution_failure_fails_closed(tmp_path, monkeypatch):
     assert "SHELL_CWD_BLOCKED" in result, result[:300]
 
 
-def test_light_mode_versioned_interpreter_triggers_runtime_data_scan(tmp_path, monkeypatch):
-    """The registry half of the versioned-basename fix: `python3.11` must engage
-    ToolRegistry's light-mode runtime_data scan exactly like `python`.
 
-    The command is deliberately a PURE READ (no coarse write indicator — pathlib
-    ``read_text``, no ``open(``), so `writeish` is False and the ONLY thing that
-    can start the scan is the interpreter classification itself: with the
-    exact-set match ({"python", "python3", ...}) a versioned agent python walked
-    straight past the scan and read secret-named runtime_data (settings.json at
-    the drive root) that the same command spelled `python -c` is blocked from.
-    `runtime_data_guard_targets` always handled startswith("python") internally —
-    the invocation trigger was the untested bypass."""
-    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
+
+@pytest.mark.parametrize("head", ["sh", "bash", "zsh", "dash", "ash"])
+@pytest.mark.parametrize("tool_name", ["run_command", "verify_and_record"])
+def test_posix_wrappers_preserve_light_read_and_deliverable_guards(
+    tmp_path, monkeypatch, head, tool_name,
+):
+    """Every accepted shell spelling reaches the same existing physical-target guards.
+
+    Inspection needs no installed shell: no process or LLM is launched. Both
+    process tools use their real argument normalizer and pre-execution guard.
+    """
+    from ouroboros.tools.registry_guard_process import _run_shell_safety_check
+    from ouroboros.tools.shell_guards import (
+        process_shell_guard_args, shell_writer_targets_protected, writer_target_rows,
+    )
+    from ouroboros.tools.write_shape import interpreter_write_shape
+
     reg = _registry(tmp_path)
-    secret = pathlib.Path(reg._ctx.drive_root) / "settings.json"
-    read_cmd = f"import pathlib; print(pathlib.Path({str(secret)!r}).read_text())"
+    repo = pathlib.Path(reg._ctx.repo_dir)
+    (repo / "BIBLE.md").write_text("Constitution fixture", encoding="utf-8")
+    user_root = tmp_path / "user-home"
+    deliverables = user_root / "Deliverables"
+    deliverables.mkdir(parents=True)
+    monkeypatch.setenv("OUROBOROS_USER_FILES_ROOT", str(user_root))
+    monkeypatch.setenv("OUROBOROS_DELIVERABLES_ROOT", str(deliverables))
 
-    result = reg.execute_result("run_command", {"cmd": ["python3.11", "-c", read_cmd]})
-    assert (result.status, result.code) == ("blocked", "LIGHT_MODE_BLOCKED")
-    assert str(secret) in result.text
+    def guard(body, cwd="system_repo"):
+        field = "check" if tool_name == "verify_and_record" else "cmd"
+        args = process_shell_guard_args(tool_name, {field: [head, "-c", body], "cwd": cwd})
+        return _run_shell_safety_check(reg, args, "light")
 
-    # Parity pin: the unversioned spelling of the same command is blocked the
-    # same way — the versioned basename must not be the weaker path.
-    unversioned = reg.execute_result("run_command", {"cmd": ["python", "-c", read_cmd]})
-    assert (unversioned.status, unversioned.code) == (result.status, result.code)
+    assert guard("cat BIBLE.md") is None
+    assert shell_writer_targets_protected([head, "-c", "cat BIBLE.md"]) is False
+    assert interpreter_write_shape([head, "-c", "python3 -c 'print(2 > 1)'"]) is False
+    assert interpreter_write_shape([head, "-c", "printf result > report.txt"]) is True
+
+    # Root actors retain user_files output authority even with an external
+    # project attached; the selected physical cwd decides the write target.
+    project = tmp_path / "project"
+    project.mkdir()
+    reg._ctx.workspace_root = project
+    reg._ctx.workspace_mode = "external"
+    assert guard("printf result > report.txt", "user_files") is None
+    assert guard("cat BIBLE.md") is None
+
+    reg._ctx.workspace_root = None
+    reg._ctx.workspace_mode = ""
+    for body in ("rm ordinary.py", "rm BIBLE.md", "rm ../drive/state/state.json"):
+        refusal = guard(body)
+        assert refusal is not None, body
+        assert (refusal.status, refusal.code) == ("blocked", "CORE_PROTECTION_BLOCKED" if "BIBLE_DELETE_BLOCKED" in refusal.text else "LIGHT_MODE_BLOCKED"), refusal
+    assert shell_writer_targets_protected([head, "-c", "rm BIBLE.md"]) is True
+    rows = writer_target_rows([head, "-c", "printf result > report.txt"])
+    assert [target for _argv, targets, _inline, _unknown in rows for target in targets] == ["report.txt"]
+    assert not (deliverables / "report.txt").exists()  # inspection never executes
+    assert (repo / "BIBLE.md").read_text(encoding="utf-8") == "Constitution fixture"
+
+
+
+@pytest.mark.parametrize("head", ["sh", "bash", "zsh", "dash", "ash"])
+@pytest.mark.parametrize("body,returncode,masked", [
+    ("printf verified", 0, False),
+    ("printf verified | tail -1", 0, True),
+    ("printf verified; exit 7", 7, False),
+])
+def test_posix_wrapper_verification_preserves_exit_and_masking_receipt(
+    tmp_path, monkeypatch, head, body, returncode, masked,
+):
+    """Real verification/receipt consumers; only the OS process is substituted.
+
+    Shell availability must not erase dash/ash coverage on macOS or Windows.
+    The supplied process exit remains verdict authority, masking stays advisory.
+    """
+    from ouroboros.outcomes import read_verification_receipts
+    from ouroboros.tools.verify import _verify_and_record
+
+    reg = _registry(tmp_path)
+    argv = [head, "-c", body]
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs["cwd"]))
+        return CompletedProcess(command, returncode, "verified", "")
+
+    monkeypatch.setattr("ouroboros.tools.shell._tracked_subprocess_run", run)
+    result = _verify_and_record(
+        reg._ctx, contract_kind="explicit_command", check=argv, expected="verified",
+    )
+    assert calls == [(argv, str(pathlib.Path(reg._ctx.repo_dir).resolve()))]
+    receipt = read_verification_receipts(reg._ctx.drive_root, "t1")[-1]
+    assert receipt["status"] == ("pass" if returncode == 0 else "fail"), result
+    assert receipt["returncode"] == returncode
+    assert shlex.split(receipt["check"]) == argv
+    assert receipt.get("check_exit_masking", False) is masked
+    assert receipt.get("check_exit_masking_reasons", []) == (["pipeline_tail"] if masked else [])

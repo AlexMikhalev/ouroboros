@@ -27,7 +27,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import pathlib
 import re
 import threading
@@ -42,6 +41,7 @@ from ouroboros.utils import (
     read_json_dict,
     utc_now_iso,
 )
+from ouroboros.config import runtime_setting
 
 log = logging.getLogger(__name__)
 
@@ -58,6 +58,7 @@ STATUS_FAILED = "failed"
 SOURCE_PROVIDER_METADATA = "provider_metadata"
 SOURCE_LOCAL_HEALTH = "local_health"
 SOURCE_OWNER_ACK = "owner_ack"
+SOURCE_USER_SETTING = "user_setting"
 SOURCE_GENERATIVE_PROBE = "generative_probe"
 SOURCE_NONE = "none"
 
@@ -142,6 +143,10 @@ class CapabilityEvidence:
     ts: str = ""
     detail: str = ""
     stale: bool = False
+    source_id: str = ""
+    credential_profile_id: str = ""
+    account_fingerprint: str = ""
+    provenance: str = ""
 
     def to_json(self) -> Dict[str, Any]:
         return {
@@ -154,6 +159,10 @@ class CapabilityEvidence:
             "ts": self.ts,
             "detail": self.detail,
             "stale": bool(self.stale),
+            "source_id": self.source_id,
+            "credential_profile_id": self.credential_profile_id,
+            "account_fingerprint": self.account_fingerprint,
+            "provenance": self.provenance,
         }
 
 
@@ -195,8 +204,12 @@ def confirms_at_least(
     * a gate that would DOWNGRADE the owner's own cognitive horizon on a provider blip
       keeps the default ``False`` — this module's standing invariant is that an outage
       must never erase a prior confirmed record (P4/P1)."""
-    return is_known(evidence, require_fresh=require_fresh) and (
-        int(getattr(evidence, "window_tokens", 0) or 0) >= int(threshold)
+    # A role's ordinary sizing override is not the route-bound acknowledgement
+    # that a governance gate asks the owner to make through its dedicated path.
+    return (
+        getattr(evidence, "source", "") != SOURCE_USER_SETTING
+        and is_known(evidence, require_fresh=require_fresh)
+        and int(getattr(evidence, "window_tokens", 0) or 0) >= int(threshold)
     )
 
 
@@ -220,7 +233,10 @@ def _canonical_options(options: Optional[Dict[str, Any]]) -> Tuple[Tuple[str, st
     if not isinstance(options, dict):
         return ()
     # Only options that can change the effective window/route are fingerprinted.
-    relevant = ("beta", "anthropic_beta", "context_1m", "max_tokens", "tenant")
+    relevant = (
+        "beta", "anthropic_beta", "context_1m", "max_tokens", "tenant",
+        "source_id", "credential_profile_id", "account_fingerprint",
+    )
     return tuple(sorted((k, str(options[k])) for k in relevant if k in options))
 
 
@@ -243,6 +259,31 @@ def route_fingerprint(
         "options": _canonical_options(options),
     }, sort_keys=True, default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+
+def model_account_options(model: str, *, role: str = "", settings: Any = None,
+                          credential_profile_id: Optional[str] = None,
+                          model_route: Any = None) -> Dict[str, Any]:
+    """Exact account identity shared by Main and reviewer capacity readers.
+
+    A catalog's advertised account and an operation's observed account use the
+    same shape. Accept a carried identity only when source, model and pin match;
+    a profile name alone never supplies the missing account fingerprint.
+    """
+    from ouroboros.model_slots import MODEL_ACCOUNTS_KEY, model_role_option
+    from ouroboros.provider_models import parse_claudexor_model
+
+    source, native_model = parse_claudexor_model(model)
+    pin = (credential_profile_id if credential_profile_id is not None else
+           model_role_option(MODEL_ACCOUNTS_KEY, role, settings=settings))
+    options = {"source_id": source, "credential_profile_id": str(pin or "")}
+    observed = model_route if isinstance(model_route, dict) else {}
+    if (observed.get("source") == source and observed.get("model") == native_model
+            and (not pin or observed.get("credentialProfileId") == pin)
+            and observed.get("credentialProfileId") and observed.get("accountFingerprint")):
+        options.update(credential_profile_id=observed["credentialProfileId"],
+                       account_fingerprint=observed["accountFingerprint"])
+    return options
 
 
 # --- Persistence ---------------------------------------------------------------
@@ -790,6 +831,7 @@ def cold_start_density_probe(
     task_id: str,
     call_type: str,
     source: str,
+    model_role: str = "", model_account_override: Optional[str] = None,
 ) -> str:
     """The cold-start rung shared by the packed deep self-review and the commit
     gate (scope ladder and triad fit). Returns a typed outcome:
@@ -839,6 +881,7 @@ def cold_start_density_probe(
                     {"role": "user", "content": sample},
                 ],
                 model=model,
+                model_role=model_role, model_account_override=model_account_override,
                 tools=None,
                 reasoning_effort=DENSITY_PROBE_EFFORT,
                 max_tokens=DENSITY_PROBE_MAX_TOKENS,
@@ -848,6 +891,8 @@ def cold_start_density_probe(
     except BudgetExceeded:
         raise
     except Exception as exc:
+        from ouroboros.llm_claudexor import propagate_model_error
+        propagate_model_error(exc)
         log.warning("Token-density probe failed (%s): %s", call_type, exc, exc_info=True)
         emit_progress(f"Density probe failed ({type(exc).__name__}); the cold input cap stands.")
         return "failed"
@@ -855,13 +900,18 @@ def cold_start_density_probe(
     if real <= 0:
         emit_progress("Density probe returned no usage (prompt_tokens=0); the cold input cap stands.")
         return "no_usage"
+    actual_model = str(((usage or {}).get("model_role_route") or {}).get("model")
+                       or (usage or {}).get("resolved_model") or model)
     record_token_density(
         drive_root,
-        _normalized_density_model(model),
+        _normalized_density_model(actual_model),
         prompt_chars=len(DENSITY_PROBE_SYSTEM_PROMPT) + len(sample),
         prompt_tokens=real,
         source=source,
     )
+    if _normalized_density_model(actual_model) != _normalized_density_model(model):
+        emit_progress(f"Density witness belongs to the switched model {actual_model}; the original pack cap is unchanged.")
+        return "unrecorded"
     density, density_source = resolve_review_token_density(drive_root, model)
     emit_progress(f"Token density for {model}: {density:.2f} ({density_source}).")
     # A witness the store refused (too few chars, an insane ratio) leaves the
@@ -882,9 +932,21 @@ def record_owner_ack(
     headers: Optional[Dict[str, Any]] = None,
     options: Optional[Dict[str, Any]] = None,
     note: str = "",
+    expected_route_fp: str = "",
 ) -> Dict[str, Any]:
     """Persist a route-fingerprinted owner acknowledgement of a context window."""
     fp = route_fingerprint(provider=provider, base_url=base_url, model=model, headers=headers, options=options)
+    if expected_route_fp and expected_route_fp != fp:
+        raise ValueError("Capability acknowledgement route fingerprint mismatch")
+    binding_evidence = None
+    if provider == "claudexor":
+        if not isinstance(options, dict) or not all(options.get(key) for key in (
+            "source_id", "credential_profile_id", "account_fingerprint",
+        )):
+            raise ValueError("Subscription capability acknowledgement requires an exact account binding")
+        binding_evidence = _claudexor_metadata_evidence(model, base_url, headers, options)
+        if binding_evidence.stale or not binding_evidence.provenance or binding_evidence.route_fp != fp:
+            raise ValueError("Subscription account binding is not current; refresh the selected route")
     record = {
         "route_fp": fp,
         "window_tokens": int(window_tokens or 0),
@@ -899,6 +961,8 @@ def record_owner_ack(
             "options": list(_canonical_options(options)),
         },
     }
+    if binding_evidence is not None:
+        record["binding_evidence"] = binding_evidence.to_json()
     _store_evidence(drive_root, "owner_acks", fp, record)
     return record
 
@@ -919,6 +983,73 @@ def revoke_owner_ack(drive_root: Any, route_fp: str) -> bool:
 
 # --- Probing (opportunistic, cached) ------------------------------------------
 
+def _cached_evidence(record: Dict[str, Any], fp: str, model: str, provider: str,
+                     *, stale: bool = False, detail: str = "") -> CapabilityEvidence:
+    """Keep account provenance attached on every cached/stale projection."""
+    return CapabilityEvidence(
+        window_tokens=int(record.get("window_tokens") or 0),
+        status=str(record.get("status") or STATUS_UNPROBEABLE),
+        source=str(record.get("source") or SOURCE_NONE), route_fp=fp,
+        model=model, provider=provider, ts=str(record.get("ts") or ""),
+        detail=detail or str(record.get("detail") or ""), stale=stale,
+        source_id=str(record.get("source_id") or ""),
+        credential_profile_id=str(record.get("credential_profile_id") or ""),
+        account_fingerprint=str(record.get("account_fingerprint") or ""),
+        provenance=str(record.get("provenance") or ""),
+    )
+
+
+def _claudexor_metadata_evidence(model: str, base_url: str, headers: Any,
+                                options: Any) -> CapabilityEvidence:
+    """Resolve advertised capacity on the catalog's actual account, never CLI policy.
+
+    Auto discovery may select an account, but does not pin the subsequent operation.
+    The caller carries this binding as advertised preparation evidence and rebinds
+    on the operation's actual route before its next call. A profile name without
+    an account fingerprint cannot reuse a prior account's cached capacity.
+    """
+    from ouroboros.llm import LLMClient
+    from ouroboros.provider_models import parse_claudexor_model
+
+    source, native_model = parse_claudexor_model(model)
+    options = dict(options or {})
+    requested_profile = str(options.get("credential_profile_id") or "")
+    catalog = LLMClient.claudexor_model_catalog(source, requested_profile or None,
+                                              requested_model=native_model)
+    profile = str(catalog.get("credentialProfileId") or "")
+    fingerprint = str(catalog.get("accountFingerprint") or "")
+    observed = str(catalog.get("observedAt") or "")
+    provenance = str(catalog.get("provenance") or "")
+    if (
+        catalog.get("source") != source
+        or (options.get("source_id") and options["source_id"] != source)
+        or (requested_profile and profile != requested_profile)
+        or (options.get("account_fingerprint") and fingerprint != options["account_fingerprint"])
+    ):
+        raise ValueError("Claudexor model catalog account binding mismatch")
+    options.update(source_id=source, credential_profile_id=profile,
+                   account_fingerprint=fingerprint)
+    fp = route_fingerprint(provider="claudexor", model=model, base_url=base_url,
+                           headers=headers, options=options)
+    matches = [item for item in catalog.get("models", [])
+               if isinstance(item, dict) and item.get("id") == native_model]
+    window = max((value for item in matches
+                  for value in (item.get("contextWindow"), item.get("maxContextWindow"))
+                  if isinstance(value, int) and not isinstance(value, bool) and value > 0),
+                 default=0)
+    bound = bool(profile and fingerprint and provenance and parse_deadline_ts(observed))
+    if not bound:
+        window = 0
+    return CapabilityEvidence(
+        window, STATUS_CONFIRMED if window else STATUS_UNPROBEABLE,
+        SOURCE_PROVIDER_METADATA, fp, model, "claudexor", ts=observed,
+        detail="advertised account capacity" if window else "account capacity unknown",
+        stale=_age_seconds(observed) > _CONFIRMED_TTL_SEC,
+        source_id=source, credential_profile_id=profile,
+        account_fingerprint=fingerprint, provenance=provenance,
+    )
+
+
 def _openai_compatible_metadata_window(
     model: str, base_url: str, allow_fetch: bool, api_key: Optional[str] = None
 ) -> int:
@@ -936,8 +1067,8 @@ def _openai_compatible_metadata_window(
         import httpx
 
         if api_key is None:
-            from ouroboros.config import load_settings
-            api_key = str((load_settings() or {}).get("OPENAI_COMPATIBLE_API_KEY") or "")
+            from ouroboros.config import runtime_settings
+            api_key = str((runtime_settings() or {}).get("OPENAI_COMPATIBLE_API_KEY") or "")
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         resp = httpx.get(str(base_url).rstrip("/") + "/models", headers=headers, timeout=5.0)
         resp.raise_for_status()
@@ -976,8 +1107,8 @@ def _provider_metadata_window(
     if p in {"openai-compatible", "minimax"}:
         if p == "minimax" and api_key is None:
             try:
-                from ouroboros.config import load_settings
-                api_key = str((load_settings() or {}).get("MINIMAX_API_KEY") or "")
+                from ouroboros.config import runtime_settings
+                api_key = str((runtime_settings() or {}).get("MINIMAX_API_KEY") or "")
             except Exception:
                 api_key = ""
         return _openai_compatible_metadata_window(model, base_url, allow_fetch, api_key=api_key)
@@ -1019,12 +1150,12 @@ _PROBE_CANARIES = ["OBOCANARYBEGIN7Q", "OBOCANARYMID7Q", "OBOCANARYEND7Q"]
 
 
 def _generative_probe_enabled() -> bool:
-    return (os.environ.get("OUROBOROS_GENERATIVE_PROBE", "1") or "").strip().lower() not in {"", "0", "false", "no", "off"}
+    return (runtime_setting("OUROBOROS_GENERATIVE_PROBE", "1") or "").strip().lower() not in {"", "0", "false", "no", "off"}
 
 
 def _generative_probe_pad_chars() -> int:
     try:
-        return max(200_000, int(os.environ.get("OUROBOROS_GENERATIVE_PROBE_CHARS", "5000000") or "5000000"))
+        return max(200_000, int(runtime_setting("OUROBOROS_GENERATIVE_PROBE_CHARS", "5000000") or "5000000"))
     except (ValueError, TypeError):
         return 5_000_000
 
@@ -1085,17 +1216,28 @@ def probe(
     (hot-path callers) — a stale or absent record then reads as unknown."""
     fp = route_fingerprint(provider=provider, base_url=base_url, model=model, headers=headers, options=options)
     data = _load(drive_root)
+    account_options = options if isinstance(options, dict) else {}
+    subscription = provider == "claudexor" and not use_local
+    account_bound = all(account_options.get(key) for key in (
+        "source_id", "credential_profile_id", "account_fingerprint",
+    ))
 
     # Owner-ack always wins as ASSERTED evidence for its exact route.
     ack = data.get("owner_acks", {}).get(fp)
-    if ack:
+    if ack and (not subscription or account_bound):
         return CapabilityEvidence(
             window_tokens=int(ack.get("window_tokens") or 0), status=STATUS_ASSERTED,
             source=SOURCE_OWNER_ACK, route_fp=fp, model=model, provider=provider,
             ts=str(ack.get("ts") or ""), detail=f"owner-ack by {ack.get('owner') or 'owner'}",
+            source_id=str(account_options.get("source_id") or ""),
+            credential_profile_id=str(account_options.get("credential_profile_id") or ""),
+            account_fingerprint=str(account_options.get("account_fingerprint") or ""),
         )
 
     cached = data.get("probes", {}).get(fp)
+    if subscription and not account_bound and str((cached or {}).get("status") or "") in _KNOWN_STATUS:
+        # Model-only legacy evidence cannot certify any subscription account.
+        cached = None
     # An EXPLICIT generative probe (owner toggle/save, allow_generative=True) must run even
     # when a prior LAZY (allow_generative=False) call left a fresh UNPROBEABLE/FAILED record
     # — otherwise the owner's empirical probe is silently short-circuited and never fires.
@@ -1105,23 +1247,40 @@ def probe(
         age = _age_seconds(str(cached.get("ts") or ""))
         ttl = _CONFIRMED_TTL_SEC if cached.get("status") == STATUS_CONFIRMED else _FAILED_TTL_SEC
         if age <= ttl:
-            ev = CapabilityEvidence(
-                window_tokens=int(cached.get("window_tokens") or 0), status=str(cached.get("status") or STATUS_UNPROBEABLE),
-                source=str(cached.get("source") or SOURCE_NONE), route_fp=fp, model=model,
-                provider=provider, ts=str(cached.get("ts") or ""), detail=str(cached.get("detail") or ""),
-            )
-            return ev
+            return _cached_evidence(cached, fp, model, provider)
 
     if not allow_fetch:
         # Hot path: never block on the network. Return the (possibly stale) cache
         # marked stale, else unprobeable — both read as unknown for >=1M gates.
         if cached:
-            return CapabilityEvidence(
-                window_tokens=int(cached.get("window_tokens") or 0), status=str(cached.get("status") or STATUS_UNPROBEABLE),
-                source=str(cached.get("source") or SOURCE_NONE), route_fp=fp, model=model,
-                provider=provider, ts=str(cached.get("ts") or ""), detail="stale (no fetch on hot path)", stale=True,
-            )
+            return _cached_evidence(cached, fp, model, provider, stale=True,
+                                    detail="stale (no fetch on hot path)")
         return CapabilityEvidence(0, STATUS_UNPROBEABLE, SOURCE_NONE, fp, model, provider, detail="not probed")
+
+    if subscription:
+        try:
+            ev = _claudexor_metadata_evidence(model, base_url, headers, options)
+        except Exception as exc:
+            # Prior evidence may survive only on this exact account binding.
+            # Catalog/auth failures never authorize a generation probe or fallback.
+            if cached and str(cached.get("status") or "") in _KNOWN_STATUS:
+                return _cached_evidence(cached, fp, model, provider, stale=True,
+                                        detail="kept prior account evidence (catalog unavailable)")
+            ev = CapabilityEvidence(0, STATUS_FAILED, SOURCE_NONE, fp, model, provider,
+                                    ts=utc_now_iso(), detail=f"model catalog unavailable: {type(exc).__name__}")
+        _store_evidence(drive_root, "probes", ev.route_fp, ev.to_json())
+        if (not ev.stale and ev.provenance and parse_deadline_ts(ev.ts)
+                and ev.source_id and ev.credential_profile_id and ev.account_fingerprint):
+            # Metadata established the missing identity for this exact account.
+            # Reuse only its owner authority, never stale metadata over this read.
+            bound_options = {**account_options, "source_id": ev.source_id,
+                             "credential_profile_id": ev.credential_profile_id,
+                             "account_fingerprint": ev.account_fingerprint}
+            acknowledged = probe(drive_root, provider=provider, model=model, base_url=base_url,
+                                 headers=headers, options=bound_options, allow_fetch=False)
+            if acknowledged.source == SOURCE_OWNER_ACK:
+                return acknowledged
+        return ev
 
     # Live probe.
     window = 0
@@ -1162,10 +1321,8 @@ def probe(
     prior_win = int((prior or {}).get("window_tokens") or 0)
     prior_status = str((prior or {}).get("status") or "")
     if prior is not None and prior_status in _KNOWN_STATUS and prior_win > 0:
-        return CapabilityEvidence(
-            prior_win, prior_status, str(prior.get("source") or SOURCE_NONE), fp, model, provider,
-            ts=str(prior.get("ts") or ""), detail="kept prior evidence (probe blip)", stale=True,
-        )
+        return _cached_evidence(prior, fp, model, provider, stale=True,
+                                detail="kept prior evidence (probe blip)")
     if _metadata_fetch_transport_failed(provider, model, use_local):
         ev = CapabilityEvidence(0, STATUS_FAILED, SOURCE_NONE, fp, model, provider, ts=utc_now_iso(),
                                 detail="provider unreachable during probe")

@@ -868,7 +868,7 @@ def test_disposition_supersedes_the_exact_wave_before_hot_state(_harness) -> Non
     from ouroboros.tools.plan_review_artifacts import read_wave
     from tests.test_plan_review_engine import CLEAN, _call, _finding
 
-    note = json.dumps([_finding("n1", "note")])
+    note = json.dumps([_finding("n1", "need_evidence", locator="notes.md")])
     _harness.install({"s1": note, "s2": CLEAN, "s3": CLEAN})
     _call(_harness.make_ctx())
     prior = load_plan_review_state(_harness.drive, "task-1")["waves"][-1]
@@ -952,9 +952,9 @@ def test_degraded_progress_line_discloses_untrusted_counts(_harness) -> None:
     _harness.progress.clear()
     _call(_harness.make_ctx())
 
-    assert (
-        "📐 plan_task: DEGRADED (0/3 parseable reviewers; counts are untrusted) — "
-        "0 blocking / 0 note / 0 need_evidence; cycles paid 1/2"
+    assert (  # the failed slots' typed reasons ride the line, deduplicated: three identical reasons name it ONCE
+        "📐 plan_task: DEGRADED (0/3 parseable reviewers; counts are untrusted) — 0 blocking / 0 note / "
+        "0 need_evidence; cycles paid 1/2; slot reasons: no findings JSON array found (prose-only or unparseable response)"
     ) in _harness.progress
 
 

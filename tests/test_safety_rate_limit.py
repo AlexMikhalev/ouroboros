@@ -14,6 +14,10 @@ import time
 
 import pytest
 
+from tests.test_llm_claudexor import MODEL, result, setup as gateway_fixture
+
+subscription_transport = gateway_fixture
+
 
 @pytest.fixture(autouse=True)
 def _ensure_remote_key(monkeypatch):
@@ -27,8 +31,11 @@ def _ensure_remote_key(monkeypatch):
 
 def _patch_llm_client(monkeypatch, stub) -> None:
     import ouroboros.safety as safety
+    from ouroboros.llm import LLMClient
 
-    monkeypatch.setattr(safety, "LLMClient", lambda: stub)
+    factory = lambda: stub
+    factory.supports_response_format = LLMClient.supports_response_format
+    monkeypatch.setattr(safety, "LLMClient", factory)
 
 # ---------------------------------------------------------------------------
 # Rate-limit fail-open + bounded transcript (OB-02)
@@ -149,6 +156,70 @@ def test_exception_shaped_rate_limit_blocks_unchecked_after_one_retry(monkeypatc
     assert rows[0]["action"] == "blocked_unchecked_after_retry"
     assert rows[0]["error"], "the audit row carries the sanitized bounded error"
     assert rows[0]["task_id"] == "t-safety"
+
+
+@pytest.mark.parametrize("texts,allowed", [
+    (['Assessment: {"status":"SAFE","reason":"Scoped file read"}'], True),
+    (["No JSON verdict", "Still no JSON verdict"], False),
+])
+def test_subscription_safety_uses_light_pin_and_existing_text_verdict_parser(subscription_transport, monkeypatch, texts, allowed):
+    import ouroboros.safety as safety
+    from ouroboros.model_slots import MODEL_ACCOUNTS_KEY
+
+    root, gateway, _ = subscription_transport
+    monkeypatch.setenv(MODEL_ACCOUNTS_KEY, json.dumps({"light": "account-b"}))
+    monkeypatch.setattr(safety, "get_light_model", lambda: MODEL)
+    monkeypatch.setattr(safety, "_resolve_safety_routing", lambda: (False, False, None))
+    gateway.results = [result(cash=0, knowledge="exact") for _ in texts]
+    gateway.dispatch = ["response_received"] * len(texts)
+    for reply, text in zip(gateway.results, texts):
+        reply["message"] = {"role": "assistant", "content": text}
+    ok, message = safety._run_llm_check("fixture_tool", {"path": "README.md"}, [], _DriveCtx(root))
+    assert ok is allowed
+    assert len(gateway.creates) == len(texts)
+    assert message == "" if allowed else "unparseable" in message
+    for payload, _ in gateway.uploads:
+        assert payload["account"] == {"mode": "pin", "profileId": "account-b"}
+        assert "response_format" not in payload and "responseFormat" not in payload["options"]
+
+
+def test_subscription_safety_transient_429_keeps_one_retry_and_unavailable_outcome(subscription_transport, monkeypatch, _no_backoff):
+    import ouroboros.safety as safety
+
+    root, gateway, _ = subscription_transport
+    monkeypatch.setattr(safety, "get_light_model", lambda: MODEL)
+    monkeypatch.setattr(safety, "_resolve_safety_routing", lambda: (False, False, None))
+    gateway.results = [result(outcome="failed", cash=0, knowledge="exact", problem={
+        "code": "rate_limited", "message": "Request rate limit", "context": {"httpStatus": 429},
+    }) for _ in range(2)]
+    gateway.dispatch = ["response_received"] * 2
+    ok, message = safety._run_llm_check("fixture_tool", {}, [], _DriveCtx(root))
+    assert ok is False and message.startswith("⚠️ SAFETY_UNAVAILABLE:")
+    assert "SAFETY_VIOLATION" not in message and len(gateway.creates) == 2
+
+
+@pytest.mark.parametrize("cause", ["quota", "control"])
+def test_subscription_safety_preserves_resource_and_owner_control(subscription_transport, monkeypatch, cause):
+    import ouroboros.safety as safety
+    from ouroboros.llm_claudexor import ClaudexorModelError
+    from ouroboros.model_wait import ModelWaitInterrupted, task_model_wait_scope
+
+    root, gateway, _ = subscription_transport
+    monkeypatch.setattr(safety, "get_light_model", lambda: MODEL)
+    monkeypatch.setattr(safety, "_resolve_safety_routing", lambda: (False, False, None))
+    ctx = _DriveCtx(root)
+    if cause == "quota":
+        gateway.results = [result(outcome="failed", problem={"code": "subscription_window_exhausted", "message": "Quota"})]
+        gateway.dispatch = ["not_started"]
+        with pytest.raises(ClaudexorModelError) as caught:
+            safety._run_llm_check("fixture_tool", {}, [], ctx)
+        assert caught.value.code == "subscription_window_exhausted"
+    else:
+        with task_model_wait_scope(task={"id": ctx.task_id}, drive_root=root, event_queue=None,
+                                   worker_slot_held=True, owner_control=lambda: "owner_stopped"):
+            with pytest.raises(ModelWaitInterrupted) as caught:
+                safety._run_llm_check("fixture_tool", {}, [], ctx)
+        assert caught.value.control_reason == "owner_stopped" and gateway.creates == []
 
 
 def test_http200_body_rate_limit_blocks_unchecked_after_one_retry(monkeypatch, tmp_path, _no_backoff):

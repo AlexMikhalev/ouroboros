@@ -47,10 +47,6 @@ _MOVED_OWNERS = {
     "_subprocess_lock": shell_process,
     "_tracked_subprocess_run": shell_process,
     "kill_all_tracked_subprocesses": shell_process,
-    "_SENSITIVE_OUTPUT_COMPONENT_NAMES": shell_outputs,
-    "_SENSITIVE_OUTPUT_MARKERS": shell_outputs,
-    "_SENSITIVE_OUTPUT_NAMES": shell_outputs,
-    "_SENSITIVE_OUTPUT_SUFFIXES": shell_outputs,
     "_directory_fingerprint": shell_outputs,
     "_changed_path_covers": shell_outputs,
     "_directory_fingerprint_from_entries": shell_outputs,
@@ -119,16 +115,20 @@ def test_shell_catalog_schema_bytes_and_handler_owners_are_stable():
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode()
-    # Re-pinned for upstream ``d0caa69b`` ("tool refusals: name the unsupported
-    # argument and own the timeout alias once"), which deleted the duplicate
-    # ``timeout`` alias property from BOTH schemas because the alias now lives
-    # once in ``tool_resolution._TOOL_ARG_ALIASES["*"]``. That deletion is the
-    # only difference from the previous digest
-    # ``1e012faf410bf57c91a896d227aa4175cd08d38794c4b8f0404e390e79b1730a``:
-    # re-inserting the two removed properties into these very schema objects
-    # reproduces it byte for byte.
+    # run_script accepts any installed file interpreter; its temporary file
+    # lives in an ignored workspace directory or the existing task drive.
     assert hashlib.sha256(schema_bytes).hexdigest() == (
-        "0c0215cafdb54ee2231e43f9edafbe8aa21d4a5aa3841eba4ab45b5ab5e3eb42"
+        "2e6ebf9e5d81bc2fb321bd9615d66af2c6cd1e58f7bcc23a1a557353049e99f8"
+    )
+    original = json.loads(schema_bytes)
+    original[1]["description"] = (
+        "Run a short task-scoped temporary script with a declared interpreter. "
+        "Use for multi-line diagnostics or harness helpers; generated script files live under the task drive. "
+        "The underlying command result echoes the resolved cwd."
+    )
+    assert hashlib.sha256(json.dumps(original, sort_keys=True, ensure_ascii=False,
+                                    separators=(",", ":")).encode()).hexdigest() == (
+        "a85e03bfc1a9834116b3ada4ce86638a56a1fec267e289e23a5a8f31e8a12f60"
     )
     assert {
         entry.name: (entry.handler.__module__, entry.handler.__name__)

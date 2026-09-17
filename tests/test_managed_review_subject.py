@@ -576,6 +576,7 @@ def _row_plan(routes):
         "efforts": ["" for _ in routes],
         "session_targets": ["" for _ in routes],
         "session_profiles": ["" for _ in routes],
+        "use_local": [False for _ in routes],
         "slot_ids": [f"slot_{i}" for i, _ in enumerate(routes)],
     }
 

@@ -135,19 +135,18 @@ def test_agents_tab_sits_between_models_and_behavior() -> None:
     assert '<section class="settings-panel" data-settings-panel="agents">' in source
 
 
-def test_the_agents_panel_carries_one_banner_and_the_three_sections() -> None:
+def test_accounts_own_connections_and_agents_own_role_editors() -> None:
     panel = _panel("agents")
     for fragment in (
-        "renderAgentsServiceBanner()",
-        "renderAgentAccountsSection()",
         "renderReviewerSlotsSection()",
         "renderSubagentsSection()",
     ):
         assert fragment in panel, f"the Agents panel does not render {fragment}"
-    # Order follows the dependency direction: service banner, accounts,
-    # delegation roster, then the review lanes that reference its rows.
+    accounts = _panel("providers")  # Existing internal tab id, owner-facing Accounts.
+    assert "renderAgentsServiceBanner()" in accounts
+    assert "renderAgentAccountsSection()" in accounts
+    # The delegation roster precedes reviewers that reference its rows.
     order = [panel.index(f) for f in (
-        "renderAgentsServiceBanner()", "renderAgentAccountsSection()",
         "renderSubagentsSection()", "renderReviewerSlotsSection()",
     )]
     assert order == sorted(order), "the Agents panel sections are out of order"
@@ -163,7 +162,7 @@ def test_the_vacated_tabs_no_longer_render_the_moved_sections() -> None:
             f"{renderer} is rendered more than once — a section mounted in two "
             "panels would carry two drafts of the same settings keys"
         )
-    assert "renderAgentAccountsSection()" not in _panel("providers")
+    assert "renderAgentAccountsSection()" not in _panel("agents")
     models = _panel("models")
     assert "renderReviewerSlotsSection()" not in models
     assert "renderSubagentsSection()" not in models

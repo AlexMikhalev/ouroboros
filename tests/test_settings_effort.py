@@ -51,7 +51,7 @@ def test_effort_defaults_in_config():
     assert SETTINGS_DEFAULTS.get("OUROBOROS_EFFORT_REVIEW") == "high"
     assert SETTINGS_DEFAULTS.get("OUROBOROS_EFFORT_SCOPE_REVIEW") == "high"
     assert SETTINGS_DEFAULTS.get("OUROBOROS_EFFORT_DEEP_SELF_REVIEW") == "high"
-    assert SETTINGS_DEFAULTS.get("OUROBOROS_EFFORT_CONSCIOUSNESS") == "high"
+    assert SETTINGS_DEFAULTS.get("OUROBOROS_EFFORT_CONSCIOUSNESS") == ""  # empty = the Task / Chat effort
 
 
 def test_review_effort_default_carriers_stay_in_sync():
@@ -131,7 +131,8 @@ def test_vision_settings_defaults_and_setup_contract(monkeypatch):
     assert slots["vision"]["settingsToggleId"] == ""
     import pathlib
     settings_ui = (pathlib.Path(__file__).resolve().parents[1] / "web" / "modules" / "settings_ui.js").read_text(encoding="utf-8")
-    assert "'s-model-vision', ''," in settings_ui
+    assert "modelRolesHost('settings-model-roles')" in settings_ui
+    assert slots["vision"]["settingsInputId"] == "s-model-vision"
 
 
 def test_auto_grant_reviewed_skills_default_in_config():

@@ -25,6 +25,48 @@ _AUTOMATIC_CHAT_MAX_SCAN_ROWS = 5_000
 _SCRATCHPAD_MAX_BLOCKS = 10
 
 
+def render_scratchpad_markdown(
+    blocks: List[Dict[str, Any]], *, journal_pointer: bool = False,
+) -> str:
+    """Render scratchpad blocks the one way the runtime renders them.
+
+    SINGLE SOURCE OF TRUTH for the block markdown. Both the writer
+    (Memory._write_scratchpad_markdown, which persists memory/scratchpad.md)
+    and the consumer-side degradation path
+    (ouroboros/context.py::_render_scratchpad_for_context, which re-renders a
+    kept slice when the section exceeds its context budget) call this, so a
+    degraded context build reads in the SAME order as the file it stands in
+    for. Blocks arrive oldest-first (storage order) and are rendered
+    newest-first, which is the order the model has always read.
+
+    ``journal_pointer`` adds the retired/replaced-blocks pointer line; the
+    writer passes ``Memory.journal_path().exists()`` for it.
+    """
+    n = len(blocks)
+    parts = [f"## Scratchpad (working memory — {n}/{_SCRATCHPAD_MAX_BLOCKS} blocks)\n"]
+    if journal_pointer:
+        parts.append(
+            "Exact retired/replaced source blocks remain readable with "
+            "`read_file(root='runtime_data', "
+            "path='memory/scratchpad_journal.jsonl', start_line=1)`.\n\n"
+        )
+    for block in reversed(blocks):
+        ts = str(block.get("ts", ""))[:16]
+        source = block.get("source", "?")
+        content = block.get("content", "")
+        parts.append(f"### [{ts} — {source}]\n{content}\n\n---\n")
+        metadata = block.get("metadata") if isinstance(block.get("metadata"), dict) else {}
+        source_ref = metadata.get("source_ref") if isinstance(metadata.get("source_ref"), dict) else {}
+        entry_id = str(source_ref.get("entry_id") or "")
+        if entry_id:
+            parts.append(
+                "Exact replaced blocks: `read_file(root='runtime_data', "
+                "path='memory/scratchpad_journal.jsonl', start_line=1)`; "
+                f"locate `entry_id={entry_id}`.\n\n"
+            )
+    return "\n".join(parts)
+
+
 def _history_timestamp(value: Any, *, field: str = "ts") -> datetime:
     text = str(value or "").strip()
     if not text:
@@ -230,24 +272,38 @@ class Memory:
         if metadata:
             new_block["metadata"] = dict(metadata)
 
+        # Lazy import keeps ouroboros.context_budget optional at import time,
+        # matching ouroboros/consolidator.py:~674.
+        from ouroboros.context_budget import SCRATCHPAD_MAX_CONTENT_CHARS
+
         try:
             def _append(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 updated = [*blocks, new_block]
-                if len(updated) <= _SCRATCHPAD_MAX_BLOCKS:
-                    return updated
-                evicted = updated[:-_SCRATCHPAD_MAX_BLOCKS]
-                for eb in evicted:
+                # Evict oldest-first (FIFO) until BOTH caps are satisfied:
+                #   - _SCRATCHPAD_MAX_BLOCKS (count cap)
+                #   - SCRATCHPAD_MAX_CONTENT_CHARS (content-size cap, ibl-2b09abdadd25:
+                #     a count-only cap still lets N blocks' combined content run
+                #     well past the context section's char budget)
+                # The block we just appended (updated[-1]) is never an
+                # eviction target. Each eviction is journalled with a
+                # source_ref and FAILS HARD if the journal write does not
+                # land (no silent amputation, BIBLE P1).
+                while len(updated) > 1 and (
+                    len(updated) > _SCRATCHPAD_MAX_BLOCKS
+                    or sum(len(b.get("content", "")) for b in updated) > SCRATCHPAD_MAX_CONTENT_CHARS
+                ):
+                    evicted_block = updated.pop(0)
                     written = append_jsonl(self.journal_path(), {
                         "ts": utc_now_iso(),
                         "type": "block_evicted",
-                        "evicted_block_ts": eb.get("ts", ""),
-                        "evicted_block_source": eb.get("source", ""),
-                        "evicted_block_content": eb.get("content", ""),
+                        "evicted_block_ts": evicted_block.get("ts", ""),
+                        "evicted_block_source": evicted_block.get("source", ""),
+                        "evicted_block_content": evicted_block.get("content", ""),
                         "source_ref": self.scratchpad_journal_source_ref(),
                     })
                     if not written:
                         raise RuntimeError("scratchpad eviction journal write failed")
-                return updated[-_SCRATCHPAD_MAX_BLOCKS:]
+                return updated
 
             self.mutate_scratchpad_blocks(_append)
         except Exception:
@@ -350,30 +406,12 @@ class Memory:
             write_text(self.scratchpad_path(), self._default_scratchpad())
             return
 
-        n = len(blocks)
-        parts = [f"## Scratchpad (working memory — {n}/{_SCRATCHPAD_MAX_BLOCKS} blocks)\n"]
-        if self.journal_path().exists():
-            parts.append(
-                "Exact retired/replaced source blocks remain readable with "
-                "`read_file(root='runtime_data', "
-                "path='memory/scratchpad_journal.jsonl', start_line=1)`.\n\n"
-            )
-        for block in reversed(blocks):
-            ts = str(block.get("ts", ""))[:16]
-            source = block.get("source", "?")
-            content = block.get("content", "")
-            parts.append(f"### [{ts} — {source}]\n{content}\n\n---\n")
-            metadata = block.get("metadata") if isinstance(block.get("metadata"), dict) else {}
-            source_ref = metadata.get("source_ref") if isinstance(metadata.get("source_ref"), dict) else {}
-            entry_id = str(source_ref.get("entry_id") or "")
-            if entry_id:
-                parts.append(
-                    "Exact replaced blocks: `read_file(root='runtime_data', "
-                    "path='memory/scratchpad_journal.jsonl', start_line=1)`; "
-                    f"locate `entry_id={entry_id}`.\n\n"
-                )
-
-        write_text(self.scratchpad_path(), "\n".join(parts))
+        write_text(
+            self.scratchpad_path(),
+            render_scratchpad_markdown(
+                blocks, journal_pointer=self.journal_path().exists(),
+            ),
+        )
 
     def load_dialogue_blocks(self) -> List[Dict[str, Any]]:
         path = self.drive_root / "memory" / "dialogue_blocks.json"

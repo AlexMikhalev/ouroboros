@@ -551,22 +551,19 @@ def _create_isolated_checkout(
     if add.returncode != 0:
         raise RuntimeError(f"worktree add failed: {add.stderr.strip()}")
     if staged_patch.strip():
-        # TEXT stdin on purpose, symmetric with the text-mode capture that produced
-        # `staged_patch` (see the `git diff --cached --binary` capture sites and the
-        # test's helper): this exact pairing is the configuration Windows CI was
-        # green with through v6.87.5, and switching only this side to bytes broke
-        # CRLF worktrees there. On POSIX text mode is an identity. A staged BINARY
-        # file on a CRLF-translating platform can still fail the roundtrip — that
-        # failure is loud (RuntimeError with git's stderr), never silent.
+        # Capture and apply stay byte-paired: Windows text stdin translates LF,
+        # while text capture loses CRLF. Changing only stdin cannot repair bytes
+        # already normalized at capture. The public patch remains a str using
+        # the contributor snapshot's reversible UTF-8/surrogateescape contract.
         apply = subprocess.run(
             ["git", "apply", "--index", "--whitespace=nowarn", "--binary"],
-            cwd=str(checkout), input=staged_patch,
-            capture_output=True, text=True, timeout=120,
+            cwd=str(checkout), input=staged_patch.encode("utf-8", errors="surrogateescape"),
+            capture_output=True, timeout=120,
         )
         if apply.returncode != 0:
             raise RuntimeError(
                 "staged diff did not apply to the isolated checkout: "
-                f"{(apply.stderr or '').strip()}"
+                f"{(apply.stderr or b'').decode('utf-8', errors='replace').strip()}"
             )
     return checkout_root, checkout
 
@@ -1293,12 +1290,9 @@ def main() -> int:
     staged = (
         str(contributor_snapshot["patch"])
         if contributor_snapshot is not None
-        else subprocess.run(
-            ["git", "diff", "--cached", "--binary"],
-            cwd=str(REPO),
-            capture_output=True,
-            text=True,
-        ).stdout
+        else _git_bytes(["diff", "--cached", "--binary"]).decode(
+            "utf-8", errors="surrogateescape",
+        )
     )
     if not staged.strip():
         message = (
@@ -1451,10 +1445,9 @@ def main() -> int:
                 ["git", "add", "-A"],
                 cwd=str(checkout), capture_output=True, text=True, timeout=120,
             )
-            post_tree = subprocess.run(
-                ["git", "diff", "--cached", "--binary"],
-                cwd=str(checkout), capture_output=True, text=True, timeout=120,
-            ).stdout
+            post_tree = _git_bytes(
+                ["diff", "--cached", "--binary"], cwd=checkout,
+            ).decode("utf-8", errors="surrogateescape")
             if post_tree.strip() != staged.strip():
                 print(
                     "WARN: the reviewed checkout tree drifted from the staged "
@@ -1462,8 +1455,8 @@ def main() -> int:
                     "worktree before committing what was reviewed.",
                     file=sys.stderr,
                 )
-                (output_dir / "reviewed-tree-drift.diff").write_text(
-                    post_tree, encoding="utf-8",
+                (output_dir / "reviewed-tree-drift.diff").write_bytes(
+                    post_tree.encode("utf-8", errors="surrogateescape"),
                 )
                 if args.contributor:
                     outcome = {

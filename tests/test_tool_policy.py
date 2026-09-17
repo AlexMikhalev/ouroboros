@@ -41,7 +41,7 @@ def test_non_core_listing_excludes_core_media_tools():
 
 def test_loop_bootstraps_from_tool_policy():
     source = inspect.getsource(loop_mod)
-    assert "initial_tool_schemas(tools)" in source
+    assert "initial_tool_schemas(tools, context_mode=active_context_mode)" in source
     assert "schemas(core_only=True)" not in source
 
 
@@ -101,6 +101,18 @@ def test_enable_tools_does_not_duplicate_active_tool_schemas():
     names_after_extra_again = [schema["function"]["name"] for schema in tool_schemas]
     assert names_after_extra_again.count("plan_task") == 1
     assert "already active" in extra_again_result
+
+
+def test_nano_initial_view_uses_compact_schema_selection():
+    registry = _build_registry()
+    max_names = {schema["function"]["name"] for schema in initial_tool_schemas(registry)}
+    nano_names = {
+        schema["function"]["name"]
+        for schema in initial_tool_schemas(registry, context_mode="nano")
+    }
+    assert nano_names
+    assert nano_names <= max_names
+    assert len(nano_names) < len(max_names)
 
 
 def test_list_available_tools_hides_enabled_extra_tools():

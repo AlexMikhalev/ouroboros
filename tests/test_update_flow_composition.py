@@ -370,14 +370,14 @@ def test_conflicting_restore_after_full_flow_is_disclosed_not_dropped(tmp_path, 
 
 
 # ---------------------------------------------------------------------------
-# B4 + B11 — update x single-run proof: exactly ONE hermetic run across the
-# managed flow; the pre-commit run's evidence satisfies the post-commit gate.
+# B4 + B11 — update x runner proof: reuse only while HEAD and candidate match.
+# A commit requires new proof even when the staged tree stays byte-identical.
 # ---------------------------------------------------------------------------
 
 
-def test_managed_flow_runs_the_hermetic_suite_exactly_once(tmp_path, monkeypatch):
-    import ouroboros.preflight_runner as preflight_runner
+def test_managed_flow_runs_the_hermetic_suite_once_per_head(tmp_path, monkeypatch):
     import ouroboros.tools.git as git_mod
+    from tests.test_advisory_preflight import _stub_preflight_lanes
 
     repo, ctx, tx = tmrs._managed_resolution_repo(tmp_path, monkeypatch)
     drive = tmp_path / "data"
@@ -386,14 +386,9 @@ def test_managed_flow_runs_the_hermetic_suite_exactly_once(tmp_path, monkeypatch
     progress: list = []
     ctx.emit_progress_fn = progress.append
 
-    runs: list = []
-
-    def _counting_runner(repo_dir, **kwargs):
-        runs.append(str(repo_dir))
-        return None  # green
-
-    monkeypatch.setenv("OUROBOROS_PRE_PUSH_TESTS", "1")
-    monkeypatch.setattr(preflight_runner, "run_hermetic_pytest", _counting_runner)
+    # Exercise actual assembly, receipt creation and reuse. Physical pytest
+    # work is stubbed here; test_preflight_test_proof covers the real processes.
+    lanes = _stub_preflight_lanes(repo, monkeypatch)
 
     # _repo_commit_push ordering: the managed tx snapshot is taken BEFORE the
     # stage cycle — i.e. BEFORE the compensating preflight records its proof.
@@ -411,38 +406,35 @@ def test_managed_flow_runs_the_hermetic_suite_exactly_once(tmp_path, monkeypatch
         skip_advisory_pre_review=True, skip_tests=True,
     )
     assert outcome is None
-    assert runs == [str(repo)]
+    assert len(lanes) == 2 and len({worktree for worktree, _ in lanes}) == 1
     assert any("mandatory hermetic suite" in note for note in progress)
     evidence = update_merge.read_update_tx().get("tests_evidence") or {}
     assert evidence.get("tree")
+    proof = ctx._preflight_test_proof
+    assert proof.tree == evidence["tree"]
     assert git_mod._managed_candidate_needs_proof(ctx) is False
 
-    # Commit the exact candidate; the post-commit gate must REUSE the proof.
+    # Commit the exact candidate; the new HEAD requires a fresh test pair.
     tmrs._git(repo, "commit", "-q", "-m", "managed resolution")
     committed_tree = tmrs._git(repo, "rev-parse", "HEAD^{tree}").stdout.strip()
     assert committed_tree == evidence["tree"]
     # The REAL commit path's phase transition, driven with the same STALE
     # snapshot _repo_commit_push holds: the merge-write must preserve the
-    # in-attempt proof (synthesis wave W2 — a wholesale snapshot write here
-    # dropped tests_evidence and re-bought the suite at the post-commit gate).
+    # in-attempt forensic evidence (a wholesale write dropped tests_evidence).
     committing = update_merge.update_tx_phase(
         managed_tx, {"phase": "committing_assisted"}
     )
     assert committing["phase"] == "committing_assisted"
     assert (update_merge.read_update_tx().get("tests_evidence") or {}).get("tree") == evidence["tree"]
-    monkeypatch.setattr(
-        git_mod, "_post_commit_result",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("duplicate suite run")),
-    )
     gate = git_mod._managed_post_commit_tests_gate(
         ctx, "managed resolution", 0.0, True, [""], update_merge.read_update_tx(),
     )
     assert gate is None
-    assert runs == [str(repo)], "the managed flow paid for the hermetic suite twice"
-    assert any("no duplicate suite run" in note for note in progress)
+    assert len(lanes) == 4 and len({worktree for worktree, _ in lanes}) == 2
     # Synthesis F2: the authority the gate consulted is the PROCESS-HELD ctx
     # record pinned by the recording site — not the durable (forensic) tx copy.
-    assert committed_tree in getattr(ctx, "_managed_tests_proof_trees", set())
+    assert committed_tree == ctx._preflight_test_proof.tree == proof.tree
+    assert ctx._preflight_test_proof.head != proof.head
 
 
 def test_managed_phase_writes_merge_onto_fresh_tx_not_stale_snapshot(
@@ -452,18 +444,25 @@ def test_managed_phase_writes_merge_onto_fresh_tx_not_stale_snapshot(
     transition is a read-modify-write on a FRESH tx read. The commit flow's
     snapshot predates the compensating preflight's ``tests_evidence`` write —
     a wholesale snapshot write (the old ``write_update_tx(dict(snapshot))``)
-    silently dropped the proof, forcing a duplicate hermetic run at the
-    post-commit gate where a flaky red rolls back a green-proven candidate."""
+    silently dropped the forensic test receipt. The process-held proof, not
+    that durable telemetry, remains the reuse authority."""
+    from ouroboros.commit_admission import run_tests_preflight_with_proof
+    from ouroboros.tools.review_helpers import _run_review_preflight_tests
+    from tests.test_advisory_preflight import _stub_preflight_lanes
+
     repo, head, plan, tx = tua._materialized_conflict_tx(tmp_path, monkeypatch)
     meta = tua._authority_metadata(tx)
-    monkeypatch.setenv("OUROBOROS_PRE_PUSH_TESTS", "1")
+    lanes = _stub_preflight_lanes(repo, monkeypatch)
+    ctx = SimpleNamespace(task_id="resolver", task_metadata=meta, repo_dir=repo)
 
     # Snapshot BEFORE the stage cycle (git.py _repo_commit_push ordering).
     managed_tx, block = update_merge.managed_assisted_tx_for("resolver", meta)
     assert managed_tx and not block
 
-    # Mid-attempt, the compensating preflight went green -> durable proof.
-    tree = update_merge.record_managed_tests_evidence("resolver", meta)
+    # Mid-attempt, a runner-issued receipt is projected to durable telemetry.
+    assert run_tests_preflight_with_proof(ctx, runner=_run_review_preflight_tests) is None
+    tree = ctx._preflight_test_proof.tree
+    assert len(lanes) == 2
     assert tree and update_merge.managed_tests_evidence_covers(tree)
 
     # Site 1: the committing_assisted transition with the STALE snapshot.
@@ -934,16 +933,21 @@ def test_ctx_proof_survives_the_advisory_to_commit_boundary(tmp_path, monkeypatc
 
     import ouroboros.tools.claude_advisory_review as adv_mod
     import ouroboros.tools.git as git_mod
+    from ouroboros.commit_admission import run_tests_preflight_with_proof
+    from ouroboros.tools.review_helpers import _run_review_preflight_tests
+    from tests.test_advisory_preflight import _stub_preflight_lanes
 
     repo, head, plan, tx = tua._materialized_conflict_tx(tmp_path, monkeypatch)
     meta = tua._authority_metadata(tx)
-    monkeypatch.setenv("OUROBOROS_PRE_PUSH_TESTS", "1")
+    lanes = _stub_preflight_lanes(repo, monkeypatch)
     ctx = SimpleNamespace(task_id="resolver", task_metadata=meta, repo_dir=str(repo),
                           emit_progress_fn=lambda *_a, **_k: None)
 
-    # The advisory-side site records through the shared process-held helper...
-    tree = update_merge.record_managed_tests_proof(ctx)
-    assert tree and tree in ctx._managed_tests_proof_trees
+    # The advisory's test consumer lets the runner mint the actual proof.
+    assert run_tests_preflight_with_proof(ctx, runner=_run_review_preflight_tests) is None
+    proof = ctx._preflight_test_proof
+    assert proof and len(lanes) == 2
+    tree = proof.tree
     # Both gates run their pytest preflight through the commit-admission SSOT,
     # whose helper owns the green-run -> proof binding (Q3=A extraction).
     for site_src in (
@@ -951,7 +955,6 @@ def test_ctx_proof_survives_the_advisory_to_commit_boundary(tmp_path, monkeypatc
         inspect.getsource(git_mod._advisory_and_tests_gate),
     ):
         assert "run_tests_preflight_with_proof" in site_src
-    from ouroboros.commit_admission import run_tests_preflight_with_proof
     assert "record_managed_tests_proof(ctx)" in inspect.getsource(
         run_tests_preflight_with_proof)
 
@@ -961,13 +964,11 @@ def test_ctx_proof_survives_the_advisory_to_commit_boundary(tmp_path, monkeypatc
     tua._git(repo, "commit", "-q", "-m", "managed resolution")
     committed_tree = tua._git(repo, "rev-parse", "HEAD^{tree}").stdout.strip()
     assert committed_tree == tree
-    monkeypatch.setattr(
-        git_mod, "_post_commit_result",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("duplicate suite run")),
-    )
     assert git_mod._managed_post_commit_tests_gate(
         ctx, "msg", 0.0, True, [""], update_merge.read_update_tx(),
     ) is None
+    assert len(lanes) == 4 and ctx._preflight_test_proof.tree == tree
+    assert ctx._preflight_test_proof.head != proof.head
     # A FRESH ctx (restart analogue) holds no proof -> the mandate re-runs once.
     fresh = SimpleNamespace(task_id="resolver", task_metadata=meta, repo_dir=str(repo),
                             emit_progress_fn=lambda *_a, **_k: None)

@@ -15,7 +15,7 @@ patch-visibility changes. ``_SCOPE_REVIEW_SLOT_TIMEOUT_SEC`` keeps the tip's
 
 from __future__ import annotations
 
-import os
+from ouroboros.config import runtime_setting
 
 # The parent's private aliases move with their budget readers; the canonical
 # owners stay scope_window / review_helpers / reviewer_window / triad_review.
@@ -81,7 +81,7 @@ def _window_scaled_reserves(window: int) -> tuple:
     )
 
 
-def _effective_scope_input_limit(*, scope_model: str = "") -> int:
+def _effective_scope_input_limit(*, scope_model: str = "", window_binding: dict | None = None) -> int:
     """Scope input token cap for the configured reviewer, computed PER CALL.
 
     Two axes: the model's MEASURED tokenizer density sizes the prompt for its real
@@ -90,7 +90,7 @@ def _effective_scope_input_limit(*, scope_model: str = "") -> int:
     of a deterministic provider 400. Its blocking authority is checked separately and
     stays fail-closed."""
     model = scope_model or _sr()._get_scope_model()
-    window = _sr()._scope_window(model).sizing_window(_SCOPE_FAILCLOSED_WINDOW)
+    window = _sr()._scope_window(model, **(window_binding or {})).sizing_window(_SCOPE_FAILCLOSED_WINDOW)
     output_reserve, tokenizer_margin = _window_scaled_reserves(window)
     return max(0, _calibrated_input_token_limit(
         model,
@@ -111,10 +111,11 @@ def _get_scope_model() -> str:
             return models[0]
     except Exception:
         pass
-    return os.environ.get("OUROBOROS_SCOPE_REVIEW_MODEL", "").strip() or _SCOPE_MODEL_DEFAULT
+    return runtime_setting("OUROBOROS_SCOPE_REVIEW_MODEL", "").strip() or _SCOPE_MODEL_DEFAULT
 
 
-def _provider_error_is_oversize(usage: dict, prompt_tokens_est: int, scope_model: str) -> bool:
+def _provider_error_is_oversize(usage: dict, prompt_tokens_est: int, scope_model: str,
+                               window_binding: dict | None = None) -> bool:
     """Gateway-route oversize detection from ``usage['provider_error']``."""
     pe = usage.get("provider_error") if isinstance(usage, dict) else None
     if not isinstance(pe, dict):
@@ -131,7 +132,7 @@ def _provider_error_is_oversize(usage: dict, prompt_tokens_est: int, scope_model
     if message:
         return _is_provider_oversize_error(message)
     try:
-        input_limit = int(_sr()._effective_scope_input_limit(scope_model=scope_model) or 0)
+        input_limit = int(_sr()._effective_scope_input_limit(scope_model=scope_model, window_binding=window_binding) or 0)
     except Exception:
         input_limit = 0
     return input_limit > 0 and int(prompt_tokens_est or 0) >= int(0.8 * input_limit)

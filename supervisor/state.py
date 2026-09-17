@@ -74,6 +74,7 @@ def acquire_file_lock(lock_path: pathlib.Path, timeout_sec: float = 4.0,
         timeout_sec=timeout_sec,
         stale_sec=stale_sec,
         metadata=f"pid={os.getpid()} ts={utc_now_iso()}\n",
+        owner_aware_stale=True,
     )
 
 
@@ -940,7 +941,7 @@ def rotate_jsonl_log_if_needed(
     from ouroboros.utils import jsonl_append_lock_path
 
     lock_path = jsonl_append_lock_path(path)
-    lock_fd = acquire_exclusive_file_lock(lock_path, timeout_sec=2.0, stale_sec=10.0)
+    lock_fd = acquire_exclusive_file_lock(lock_path, timeout_sec=2.0, stale_sec=10.0, owner_aware_stale=True)
     if lock_fd is None:
         log.warning("%s rotation skipped: append lock busy", name)
         return

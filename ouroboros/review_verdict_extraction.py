@@ -246,6 +246,7 @@ def _extract_verdict_via_light_model(
         _scope = _replace(current_usage_scope() or UsageScope(), source="review_substrate.extraction")
         chat_kwargs = dict(
             messages=[{"role": "user", "content": prompt}], model=model,
+            model_role="light",
             max_tokens=8192, reasoning_effort="low", no_proxy=True,
         )
         transport = review_transport_timeout(model, transport_timeout_sec, deadline_at)
@@ -254,6 +255,8 @@ def _extract_verdict_via_light_model(
         with physical_attempt_limit(1), usage_scope(_scope):
             message, usage = llm.chat(**chat_kwargs)
     except Exception as exc:
+        from ouroboros.llm_claudexor import propagate_model_error
+        propagate_model_error(exc)
         log.warning("Review session verdict extraction failed: %s", exc)
         return None, {}
     content = message.get("content") if isinstance(message, dict) else ""

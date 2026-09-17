@@ -6,6 +6,10 @@ from there so both halves drive the same fake substrate.
 """
 from __future__ import annotations
 
+import json
+
+import pytest
+
 from tests import test_plan_review_engine as _engine
 
 CLEAN = _engine.CLEAN
@@ -15,6 +19,30 @@ _control = _engine._control
 _patch_health = _engine._patch_health
 _state = _engine._state
 harness = _engine.harness
+
+
+@pytest.mark.parametrize("enforcement", ["blocking", "advisory"])
+def test_note_only_wave_releases_real_finalization_without_paperwork(harness, enforcement):
+    from ouroboros.owner_hurry import force_plan_decision
+    from ouroboros.task_results import plan_review_gate_projection
+    from ouroboros.tools.plan_review_artifacts import read_wave
+
+    harness.state["enforcement"] = enforcement
+    sub = harness.install({"s1": json.dumps([
+        _engine._finding("n", "note", summary="A simpler alternative may fit the goal."),
+    ])})
+    ctx = harness.make_ctx(force_plan=True)
+    out = _call(ctx)
+    assert _control(out) == {"outcome": "REVIEW_REQUIRED", "closed": True}
+    state = _state(harness)
+    wave = state["waves"][-1]
+    assert wave["dispositions"] == [] and state["cycles_paid"] == 1
+    exact = read_wave(harness.drive, "task-1", wave["wave_artifact"])
+    assert exact["findings"][0]["summary"] == "A simpler alternative may fit the goal."
+    assert plan_review_gate_projection(state, enforcement)["allow"]
+    assert force_plan_decision(ctx, {}, enforcement=enforcement)["allow"]
+    assert _control(_call(ctx)) == {"outcome": "REVIEW_REQUIRED", "closed": True}
+    assert len(sub.calls) == 1
 
 
 def test_quorum_unreachable_releases_finalization_for_a_blocked_terminal(harness, monkeypatch):
@@ -41,7 +69,11 @@ def test_quorum_unreachable_releases_finalization_for_a_blocked_terminal(harness
     decision = force_plan_decision(ctx, {}, enforcement="blocking")
     assert decision["allow"] is True and decision["quorum_unreachable"] is True
     disclosure = plan_review_disclosure(decision)
-    assert "blocked_with_evidence" in disclosure and "structurally unreachable" in disclosure
+    # Owner-readable prose says the ending in words; the ledger identifier stays
+    # on the typed objective axis asserted below.
+    assert "the task ends blocked with its evidence recorded" in disclosure
+    assert "blocked_with_evidence" not in disclosure
+    assert "structurally unreachable" in disclosure
     assert "2030-01-01T00:00:00+00:00" in disclosure
     from ouroboros.outcomes import derive_loop_outcome
 

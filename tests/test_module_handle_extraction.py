@@ -62,14 +62,17 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "enqueue_task", "load_state", "persist_queue_snapshot",
     })),
     "supervisor/worker_chat_lane.py": ("supervisor/workers.py", "_pool", frozenset({
-        "DRIVE_ROOT", "REPO_DIR", "_chat_agent_lock", "_ephemeral_chat_lock",
+        "DRIVE_ROOT", "REPO_DIR", "_repo_writer_gate_lock", "chat_turn_liveness",
         "_get_chat_agent", "_origin_from_mapping", "_repo_writer_turn_allowed",
         "_report_binding_failure", "get_event_q", "load_state",
         "repo_writer_admission_closed", "send_with_budget",
     })),
     "supervisor/worker_pool_lifecycle.py": ("supervisor/workers.py", "_pool", frozenset({
-        "DRIVE_ROOT", "REPO_DIR", "WORKERS", "Worker", "_WORKER_PIDS_FILENAME",
-        "_get_ctx", "_reconcile_confirmed_dead_review_owner",
+        # Runtime676: execution reader/disable moved from the facade; RUNNING
+        # and patched sibling calls must remain late-bound through that facade.
+        "DRIVE_ROOT", "MAX_WORKERS", "REPO_DIR", "RUNNING", "WORKERS", "Worker", "_WORKER_PIDS_FILENAME",
+        "_WORKER_POOL_DISABLED_REASON", "_worker_pool_execution_state", "disable_exhausted_worker_pool",
+        "_get_ctx",
         "_verify_worker_sha_after_spawn", "get_event_q", "kill_workers", "load_state",
         "reconstruct_task_cost", "send_with_budget",
     })),
@@ -78,6 +81,9 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_apply_presence_promotion_authority", "_promoted_scheduled_outcome",
         "_reject_promoted_after_attachment_stage", "_relocate_promoted_attachments",
         "_stage_promoted_initial_attachments",
+    })),
+    "supervisor/worker_owner_wait.py": ("supervisor/workers.py", "_pool", frozenset({
+        "DRIVE_ROOT", "RUNNING", "WORKERS", "repo_writer_task_allowed", "time",
     })),
     # F2.2 lane rows (4fffefb1), pinned here by the ADOPTION truth wave: the four
     # queue/worker leaves the F2.2 cancel-organ train landed proof-green but never
@@ -113,12 +119,13 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "utc_now_iso",
     })),
     "supervisor/worker_health.py": ("supervisor/workers.py", "_pool", frozenset({
-        "CRASH_TS", "DRIVE_ROOT", "QUEUE_MAX_RETRIES", "RUNNING", "WORKERS",
+        # Runtime707: health hands off recovery; the reaper owns storm/respawn.
+        "DRIVE_ROOT", "QUEUE_MAX_RETRIES", "RUNNING", "WORKERS",
         "_LAST_SPAWN_TIME", "_SPAWN_GRACE_SEC", "_emit_task_done_terminal",
         "_ensure_workers_healthy_locked", "_reconcile_confirmed_dead_review_owner",
         "_worker_crash_storm_detected", "append_jsonl", "coerce_chat_identity",
-        "get_event_q", "kill_workers", "load_state", "reconstruct_task_cost",
-        "respawn_worker", "send_with_budget", "terminal_task_metadata",
+        "disable_exhausted_worker_pool", "get_event_q", "load_state", "reconstruct_task_cost",
+        "send_with_budget", "terminal_task_metadata",
         "utc_now_iso",
     })),
     # D10 lane rows (oracle ouroboros_v7_wip @ 9f691656). git_ops leaves carry
@@ -234,7 +241,8 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "cancel_and_verify", "close_absent_run", "daemon_says_absent", "emit",
         "is_terminal", "open_runs", "output_disposition", "pending_invocations",
         "record_containment_fault", "record_settled_unread", "record_started",
-        "replay", "retire_settled_registrations", "settle_run",
+        "replay", "retire_settled_registrations", "review_owned_source",
+        "settle_run", "summary_of",
     })),
     "ouroboros/tools/delegate_payload_patch.py": ("ouroboros/tools/delegate_integration.py", "_di", frozenset({
         "_rebind_payload_reference", "_resolved", "payload_content_hash",
@@ -277,12 +285,12 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_set_acceptance_decision", "_task_acceptance_eligible", "get_task_review_mode",
     })),
     "ouroboros/loop_acceptance_review.py": ("ouroboros/loop.py", "_loop", frozenset({
-        "_append_or_merge_user_message", "_begin_task_acceptance_fence",
+        "_append_or_merge_user_message", "_arm_delivery_control", "_begin_task_acceptance_fence",
         "_collect_acceptance_obligations", "_dispose_obligations_on_clean_pass",
         "_end_task_acceptance_fence", "_execute_task_acceptance_panel",
         "_extract_plain_text_from_content", "_format_obligations_clause",
         "_latch_final_answer_marker", "_mark_root_acceptance_checkpoint",
-        "_open_acceptance_obligations", "_set_acceptance_decision",
+        "_no_tool_final_answer", "_open_acceptance_obligations", "_replace_delivery_candidate", "_set_acceptance_decision",
         "_supersede_task_acceptance_for_evidence_change",
         "_supersede_task_acceptance_for_owner_followup", "_task_acceptance_eligible",
         "_task_acceptance_owner_generation_changed", "_task_acceptance_subtree_snapshot",
@@ -297,24 +305,25 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_SKILL_ACTION_HOLD_CONTROL",
         "_TREE_ACCOUNTING_MAX_STALE_SEC", "_append_or_merge_user_message",
         "_arm_delivery_control",
-        "_compose_delivery_suffix", "_current_delivery_candidate",
+        "_check_budget_limits", "_compose_delivery_suffix", "_current_delivery_candidate",
         "_delivery_evidence_state", "_emit_checkpoint_event",
         "_finalize_forced_services", "_finalize_task_services",
         "_force_plan_disclosure", "_forced_fallback_result",
-        "_forced_final_answer", "_forced_swarm_router_result",
+        "_forced_final_answer",
         "_hold_delivery_for_skill_action", "_live_delivery_candidate",
-        "_loop_tree_accounting", "_prepare_forced_prompt",
+        "_loop_tree_accounting", "_merge_finalization_trace", "_note_nanny_delegate_activity",
+        "_prepare_forced_prompt", "_prepare_post_tool_budget_context",
         "_publish_delivery_candidate",
         "_record_forced_finalization", "_server_web_allowed_by_task",
         "_undispositioned_children",
     })),
     "ouroboros/loop_delivery.py": ("ouroboros/loop.py", "_loop", frozenset({
         "DeliveryCandidate", "_LoopExitContext",
-        "_append_or_merge_user_message", "_arm_delivery_control",
-        "_child_disposition_state", "_compose_delivery_suffix",
+        "_append_or_merge_user_message", "_arm_delivery_control", "_begin_task_acceptance_fence",
+        "_child_disposition_state", "_current_delivery_candidate",
         "_compute_subagent_handoff", "_delivery_evidence_state",
-        "_delivery_replace_required", "_direct_child_results",
-        "_drain_incoming_messages", "_enforce_swarm_actions",
+        "_delivery_replace_required",
+        "_drain_incoming_messages", "_end_task_acceptance_fence", "_enforce_swarm_actions",
         "_extract_plain_text_from_content", "_finalize_task_services",
         "_force_plan_disclosure", "_forced_orphan_note",
         "_handle_text_response", "_live_delivery_candidate",
@@ -327,12 +336,13 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_supersede_delivery_acceptance_binding",
         "_supersede_task_acceptance_for_evidence_change",
         "_supersede_task_acceptance_for_owner_followup",
+        "_task_acceptance_owner_generation_changed",
     })),
     "ouroboros/loop_forced_finalization.py": ("ouroboros/loop.py", "_loop", frozenset({
         "DeliveryCandidate", "_LoopExitContext",
         "_append_or_merge_user_message", "_call_forced_model_once",
         "_child_disposition_state", "_claimed_child_dispositions",
-        "_compose_delivery_suffix", "_current_delivery_candidate",
+        "_current_delivery_candidate",
         "_degrade_retained_delivery_candidate", "_delivery_evidence_state",
         "_delivery_replace_required", "_direct_child_results",
         "_drain_forced_owner_directives", "_drain_incoming_messages",
@@ -341,7 +351,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_force_plan_disclosure", "_force_plan_reminder",
         "_forced_delegation_note", "_forced_fallback_result",
         "_forced_final_answer", "_forced_orphan_note",
-        "_forced_swarm_router_result", "_forced_unaccepted_binding",
+        "_forced_unaccepted_binding",
         "_live_delivery_candidate", "_load_direct_child_results",
         "_merge_finalization_trace", "_resolve_forced_delivery_control_body",
         "_project_child_result_dispositions", "_publish_delivery_candidate",
@@ -349,12 +359,11 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_record_forced_acceptance_bypass", "_record_forced_finalization",
         "_replace_delivery_candidate", "_run_task_acceptance_review_once",
         "_server_web_allowed_by_task",
-        "_service_finalization_evidence",
+        "_service_finalization_evidence", "_set_acceptance_decision",
         "_supersede_task_acceptance_for_owner_followup",
-        "_swarm_handoff_attempt", "call_llm_with_retry",
-        # Upstream e10b3cf3 replaced this leaf's inline dangling-revision write
-        # with the acceptance leaf's `terminalize_dangling_revision`, so the raw
-        # decision writer is no longer read here.
+        "call_llm_with_retry",
+        # Forced rails terminalize dangling revisions through the shared owner;
+        # source changes also record their own unaccepted decision through it.
         "terminalize_dangling_revision",
     })),
     "ouroboros/loop_messages.py": ("ouroboros/loop.py", "_loop", frozenset({
@@ -449,6 +458,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     })),
     "ouroboros/tools/preflight_review_run.py": ("ouroboros/tools/claude_advisory_review.py", "_car", frozenset({
         "SEVERITY_DRIVEN_ITEMS", "_advisory_native_model", "_advisory_review_diff",
+        "_api_window_skip_warning",
         "_build_advisory_prompt", "_format_advisory_error", "_get_changed_file_list",
         "_get_runtime_diagnostics", "_llm_extract_advisory_items",
         "_mandatory_read_corpus_chars", "_maybe_overflow_skip", "_predispatch_size_skip", "_persist_preflight_record",
@@ -467,9 +477,10 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_append_or_merge_user_message", "_current_delivery_candidate",
         "_emit_checkpoint_event", "_finalize_forced_services",
         "_forced_fallback_result", "_forced_final_answer",
-        "_handle_forced_finalization", "_owner_marked_content",
+        "_handle_forced_finalization", "_last_assistant_text", "_owner_marked_content",
         "_provider_unavailable_result", "_record_owner_directive",
-        "_task_deadline_epoch", "compact_tool_history_llm", "utc_now",
+        "_soft_land_exhausted_ceiling", "_task_deadline_epoch", "compact_tool_history_llm",
+        "provider_no_call_source", "utc_now",
     })),
 }
 

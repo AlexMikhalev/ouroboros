@@ -2,23 +2,162 @@
 
 The live-task census the restart drain consults, the teardown arguments that
 finalize interrupted tasks with an honest reason, the managed-update guard on
-preserving queued work, the checkout/update serialization gate, and the event
-bus shutdown. The restart transaction itself — the deferred drain record and
-the performer that raises the exit signal — stays in ``server.py`` for now:
-the upstream delegation train coupled it to the composition root through the
-planned-handoff transaction id (see docs/v7next/LEDGER_CORRECTIONS.md, D11).
+preserving queued work, the checkout/update serialization gate, the owned-work
+stop of the owner's manual Restart, the planned restart's engine-pin daemon stop,
+and the event bus shutdown. The restart
+transaction itself — the deferred drain record and the performer that raises
+the exit signal — stays in ``server.py`` for now: the upstream delegation
+train coupled it to the composition root through the planned-handoff
+transaction id (see docs/v7next/LEDGER_CORRECTIONS.md, D11).
 """
 
 from __future__ import annotations
 
+import pathlib
 import time
 from typing import Any
 
-from ouroboros.server_process import DATA_DIR, _owner_restart_requested, _restart_requested
+from ouroboros.server_process import DATA_DIR, _owner_restart_requested, _restart_requested, log
+
+_RESTARTABLE_UPDATE_PHASES = frozenset({"pending_boot_smoke", "applying_replace"})
+
+
+def _owned_live_task_ids(ctx: Any) -> list:
+    """Every id this generation's cancel intent can address: pooled tasks,
+    in-process direct/ephemeral activities and running post-task synthesis."""
+    from ouroboros.post_task_checkpoint import POST_TASK_SYNTHESIS_INFLIGHT, POST_TASK_SYNTHESIS_LOCK
+    from supervisor.active_activity import get_direct_activity_registry
+
+    task_ids = list(dict(ctx.RUNNING or {}))
+    task_ids.extend(str(row.get("activity_id") or "") for row in get_direct_activity_registry().snapshot())
+    root = str(pathlib.Path(DATA_DIR).resolve(strict=False))
+    with POST_TASK_SYNTHESIS_LOCK:
+        task_ids.extend(task_id for (path, task_id) in POST_TASK_SYNTHESIS_INFLIGHT if path == root)
+    return [tid for tid in dict.fromkeys(task_ids) if tid]
+
+
+def _stop_owned_work(ctx: Any) -> list:
+    """The owner's manual Restart: stop what this generation owns, then let it re-exec.
+
+    Runs AFTER the checkout gate and the durable no-resume flags, so nothing
+    here can veto: an unconfirmed step is a critical diagnostic with custody
+    retained, and the next generation's startup custody sweep reconciles the
+    remainder (owner restart is a no-resume cause; nothing is adopted). In
+    order: one durable cancel intent per owned live id, ``kill_workers`` with
+    Panic's ``reconcile_delegate_custody=False``, delegated-run cancellation
+    through the public owner-gone seam over the attach-only gateway, and the
+    attested owned-daemon stop exactly as Panic makes it. Between the cancel
+    intents and that stop nothing may call ``ensure_owned_gateway`` — it would
+    start a dead daemon — which is what the two flags above guarantee.
+
+    Returns the owned live task ids it addressed — captured ONCE, before the
+    stop makes them unreadable — so the caller can tell the owner what was
+    stopped instead of claiming a task was stopped when nothing was running.
+    """
+    from ouroboros.cancel_intents import request_cancel
+    from ouroboros.claudexor_daemon import read_owned_gateway
+    from ouroboros.delegate_custody import reconcile_orphaned_runs
+
+    stopped = _owned_live_task_ids(ctx)
+    for task_id in stopped:
+        try:
+            request_cancel(DATA_DIR, task_id, reason="Owner restart", source="owner_restart",
+                           requested_by="owner", requested_stop_policy="immediate",
+                           allow_settled_target=True)
+        except Exception:
+            log.warning("Owner restart: cancel intent for %s was not recorded", task_id, exc_info=True)
+    try:
+        confirmed = ctx.kill_workers(
+            force=True, terminal_status="cancelled",
+            result_reason="Owner restart stopped this task before process restart.",
+            reconcile_delegate_custody=False, **_managed_update_pending_kwargs(),
+        )
+    except Exception:
+        log.critical("Owner restart: worker shutdown raised; the restart proceeds and the next "
+                     "generation reconciles the remainder", exc_info=True)
+    else:
+        if confirmed is False:
+            log.critical("Owner restart: worker shutdown is unconfirmed; the restart proceeds and "
+                         "the next generation reconciles the remainder")
+    try:
+        reconcile_orphaned_runs(DATA_DIR, running_task_ids=set(), gateway_factory=read_owned_gateway)
+    except Exception:
+        log.warning("Owner restart: delegated-run cancellation did not complete; custody retained",
+                    exc_info=True)
+    _stop_owned_daemon("Owner restart")
+    return stopped
+
+
+def _stop_owned_daemon(label: str) -> None:
+    """The attested owned-daemon stop a restart makes; never a veto.
+
+    An unconfirmed stop was already disclosed by ``stop_outcome`` (critical log
+    plus the ``process_stop_unconfirmed`` supervisor row, custody retained); a
+    raising stop gets the same row here, as Panic records it. Either way the
+    restart proceeds and the next generation attaches to a still-live daemon.
+    """
+    from ouroboros.claudexor_daemon import CUSTODY_PURPOSE, get_owned_daemon
+    from ouroboros.utils import append_jsonl, utc_now_iso
+
+    try:
+        outcome = get_owned_daemon().stop_outcome()
+    except Exception as exc:
+        log.critical("%s: owned Claudexor stop raised %s; custody is unconfirmed", label, type(exc).__name__)
+        try:
+            append_jsonl(pathlib.Path(DATA_DIR) / "logs" / "supervisor.jsonl", {
+                "ts": utc_now_iso(), "type": "process_stop_unconfirmed",
+                "purpose": CUSTODY_PURPOSE, "reason": f"stop raised {type(exc).__name__}",
+            })
+        except Exception:
+            log.critical("%s: failed to record unconfirmed daemon stop", label)
+    else:
+        if outcome == "unconfirmed":  # stop_outcome already disclosed the remainder
+            log.critical("%s: owned Claudexor stop unconfirmed; custody retained, the "
+                         "restart proceeds and the next generation attaches to the live daemon", label)
+
+
+def _stop_owned_daemon_for_new_pin() -> None:
+    """A planned restart ends the owned daemon only when the landed checkout pins another engine.
+
+    Runs in the server lifespan teardown of every requested restart (planned
+    self-restart, managed update or rollback; the owner's manual Restart has
+    already stopped the daemon, so nothing answers). It compares the pin the
+    next generation selects — ``load_runtime_pin`` reads the checkout that
+    already landed, not this process's cached pin — with the serving engine's
+    handshake through the attach-only ``read_owned_gateway``. An unprovisioned
+    home, an unpublished or unreadable pin and an unreachable, foreign or
+    stopped daemon leave the existing handoff untouched: the next generation
+    attaches. A different version or build SHA makes the same attested stop the
+    manual Restart makes, so the next generation spawns the pinned engine; the
+    delegated runs that daemon served end with it, and the next generation's
+    startup sweep and resumed parents close them as absent (no invented spend).
+    """
+    from ouroboros.claudexor_daemon import owned_daemon_provisioned, read_owned_gateway
+    from ouroboros.claudexor_runtime import load_runtime_pin
+
+    if not owned_daemon_provisioned():
+        return
+    try:
+        pin = load_runtime_pin()
+        if pin is None:
+            return
+        with read_owned_gateway() as gateway:
+            serving = (gateway.engine_version, gateway.engine_build_sha)
+    except Exception as exc:
+        log.info("Planned restart keeps the owned Claudexor daemon: the engine pin comparison is "
+                 "unavailable (%s)", exc)
+        return
+    if serving == (pin.version, pin.build_sha):
+        return
+    log.warning("Planned restart stops the owned Claudexor daemon: engine %s (%s) is serving while the "
+                "checkout pins %s (%s); the next generation starts the pinned engine and the runs "
+                "in flight end with this one", serving[0] or "unknown", serving[1][:12] or "unknown",
+                pin.version, pin.build_sha[:12])
+    _stop_owned_daemon("Planned restart")
 
 
 def _live_running_task_ids(ctx: Any) -> list:
-    """RUNNING task ids with a fresh heartbeat — structured facts only.
+    """Pooled tasks with a fresh heartbeat and registered native executions.
 
     Heartbeat staleness belongs to the generic supervisor queue, not to the
     planning-scout wait policy.  The latter intentionally waits until terminal
@@ -37,7 +176,11 @@ def _live_running_task_ids(ctx: Any) -> list:
             hb = 0.0
         if hb and (now - hb) < HEARTBEAT_STALE_SEC:
             live.append(str(tid))
-    return live
+    from supervisor.active_activity import get_direct_activity_registry
+
+    return list(dict.fromkeys(live + [
+        row["activity_id"] for row in get_direct_activity_registry().snapshot()
+    ]))
 
 
 def _managed_update_pending_kwargs() -> dict:
@@ -90,8 +233,7 @@ def _safe_restart_serialized(safe_restart_fn, *, reason: str, unsynced_policy: s
                 "An update intent marker with no update transaction could not be removed; "
                 "restart was deferred rather than applying an orphaned update."
             )
-        allowed_phases = {"pending_boot_smoke", "applying_replace"}
-        if status == "valid" and str(tx.get("phase") or "") not in allowed_phases:
+        if status == "valid" and str(tx.get("phase") or "") not in _RESTARTABLE_UPDATE_PHASES:
             return False, "Managed update merge is still being resolved; restart was deferred."
         return safe_restart_fn(reason=reason, unsynced_policy=unsynced_policy)
     finally:

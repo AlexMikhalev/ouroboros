@@ -33,7 +33,7 @@ _MOVED_OWNERS = {
     "_owner_restart_requested": server_process,
     "_request_restart_exit": server_process,
     "_restart_requested": server_process,
-    "_active_direct_root": server_routing_context,
+    "_active_direct_roots": server_routing_context,
     "_addressable_root_tasks": server_routing_context,
     "_chat_running_tasks": server_routing_context,
     "_clip_marked": server_routing_context,

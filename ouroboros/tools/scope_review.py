@@ -1,9 +1,8 @@
 """Enforcement-aware Atlas-backed scope reviewer for the commit pipeline.
 
 Runs beside triad review and sees touched context plus a generated repo atlas. Critical findings follow
-``OUROBOROS_REVIEW_ENFORCEMENT``: blocking enforcement blocks, advisory
-enforcement reports them without blocking. Failed rows retain their original
-status and typed origin. The commit aggregate applies advisory permission to
+the selected enforcement outside Cyber; Cyber findings are advisory to action.
+Failed rows retain their original status and typed origin. The commit aggregate applies permission to
 technical failures independently of candidate, custody and owner admission.
 In owner-selected ``low`` context mode no reviewer runs and a typed skip is recorded.
 """
@@ -48,6 +47,7 @@ from ouroboros.tools.review_helpers import (
     build_touched_file_pack,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
     load_checklist_section,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
     review_drive_root,
+    review_enforcement_blocks,
     CRITICAL_FINDING_CALIBRATION,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
     BINARY_EXTENSIONS,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
     _SENSITIVE_EXTENSIONS,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
@@ -229,6 +229,7 @@ def _log_scope_result(
     prompt_chars: int = 0,
     prompt_tokens: int = 0,
     model_id: str = "",
+    window_binding: Optional[dict] = None,
 ) -> None:
     """Append a scope_review_complete event to events.jsonl.
 
@@ -239,7 +240,7 @@ def _log_scope_result(
     prompt_tokens = int(prompt_tokens or 0)
     if prompt_tokens <= 0 and prompt_chars:
         prompt_tokens = max(0, int(prompt_chars) // 4)
-    input_limit = _effective_scope_input_limit(scope_model=model_id)
+    input_limit = _effective_scope_input_limit(scope_model=model_id, window_binding=window_binding)
     try:
         append_jsonl(ctx.drive_logs() / "events.jsonl", {
             "ts": utc_now_iso(), "type": "scope_review_complete",
@@ -300,7 +301,7 @@ def _call_scope_llm(
     session_root: str = "",
     slot_effort: str = "",
     session_target: str = "",
-    session_profile: str = "", retry_key: str = "", subagent_id: str = "",
+    session_profile: str = "", retry_key: str = "", subagent_id: str = "", use_local: bool | None = None, task_evidence: dict = None,
 ) -> tuple:
     """Execute the scope review call synchronously — api pack or agent session.
 
@@ -326,26 +327,34 @@ def _call_scope_llm(
     # Output budget scales with the reviewer window: requesting the absolute
     # 100K reserve on a small-window model would 400 on input+max_tokens.
     _scope_output_tokens, _ = _window_scaled_reserves(
-        _scope_window(scope_model).sizing_window(_SCOPE_FAILCLOSED_WINDOW)
+        _scope_window(scope_model, **({"model_role": f"reviewer:{slot_id}",
+                      "credential_profile_id": session_profile, "use_local": use_local} if slot_id else {})).sizing_window(_SCOPE_FAILCLOSED_WINDOW)
     )
     messages: Any = [] if retrieves else scope_api_messages(prompt, int(_SCOPE_STABLE_PREFIX_LEN.get() or 0))
     try:
         from ouroboros.review_substrate import ReviewRequest, run_review_request
 
+        from ouroboros.review_evidence import commit_review_evidence_refs
+        evidence = task_evidence or {}
+        policy = {"output_contract": SCOPE_RETRIEVING_OUTPUT_CONTRACT} if retrieves else {}
+        if retrieves and not delegated and evidence:
+            policy["native_data_root"] = evidence["data_root"]
         request = ReviewRequest(
             surface="scope_review",
+            evidence={"task_execution": evidence} if evidence else {},
+            evidence_refs=commit_review_evidence_refs(evidence),
             goal=SCOPE_USER_TURN,
             messages=messages,
             task_id=str(getattr(ctx, "task_id", "") or "scope_review") if ctx is not None else "scope_review", retry_key=str(retry_key or ""),
             call_type="scope_review",
             max_tokens=_scope_output_tokens,
-            temperature=0.2,
+            default_temperature=0.2,
             no_proxy=True,
             session_task=session_task if retrieves else "",
             session_root=session_root if retrieves else "",
             reconcile_only=bool(getattr(ctx, "_review_reconcile_only", False)),
             deadline_at=_owner_deadline_at(ctx),
-            policy={"output_contract": SCOPE_RETRIEVING_OUTPUT_CONTRACT} if retrieves else {},
+            policy=policy,
         )
         row = scope_reviewer_slots([scope_model], effort=scope_effort)[0]
         slot = replace(
@@ -353,12 +362,13 @@ def _call_scope_llm(
             slot_id=slot_id or row.slot_id,
             timeout_sec=_SCOPE_REVIEW_SLOT_TIMEOUT_SEC,
             max_tokens=_scope_output_tokens,
-            temperature=0.2,
+            default_temperature=0.2,
             # The caller's fanned-out route is authoritative; never re-derive it.
             route=ReviewRouteKind.AGENT_SESSION if delegated else ReviewRouteKind.API_CHAT,
             # Empty keeps the shared session-route fallback.
             session_target=session_target if delegated else "",
-            session_profile=session_profile if delegated else "", subagent_id=str(subagent_id or ""),
+            session_profile=session_profile, subagent_id=str(subagent_id or ""),
+            use_local=row.use_local if use_local is None else use_local,
         )
         result = run_review_request(
             request,
@@ -377,6 +387,7 @@ def _call_scope_llm(
             "operation_id": str(actor.get("operation_id") or ""),
             "operation_state": str(actor.get("operation_state") or "settled"),
             "late_result_pending": bool(actor.get("late_result_pending")),
+            "recovery_binding": dict(actor.get("recovery_binding") or {}),
             "pending_invocation_id": str(actor.get("pending_invocation_id") or usage.get("pending_invocation_id") or ""),
             "delegated_run_id": str(actor.get("delegated_run_id") or usage.get("delegated_run_id") or ""),
             "failure_code": str(actor.get("failure_code") or ""),
@@ -390,6 +401,8 @@ def _call_scope_llm(
             return str(actor.get("raw_text") or ""), usage, error_msg
         return str(actor.get("raw_text") or ""), usage, ""
     except Exception as e:
+        from ouroboros.llm_claudexor import propagate_model_error
+        propagate_model_error(e)
         error_msg = (
             f"⚠️ SCOPE_REVIEW_BLOCKED: Scope reviewer ({scope_model}) failed — commit blocked.\n"
             f"Error: {type(e).__name__}: {e}\n"
@@ -453,6 +466,7 @@ def _handle_prompt_signals(
     input_limit: int = _SCOPE_INPUT_TOKEN_LIMIT,
     scope_model: str = "",
     managed: bool = False,
+    window_binding: Optional[dict] = None,
 ) -> Optional[ScopeReviewResult]:
     """Translate touched-context status into an early ScopeReviewResult.
 
@@ -464,7 +478,7 @@ def _handle_prompt_signals(
     if context_status.status == "budget_exceeded":
         token_count = context_status.token_count
         # Report the REAL window-scaled reserves, not the 1M constants.
-        _resolved = _scope_window(scope_model) if scope_model else ReviewerWindow(
+        _resolved = _scope_window(scope_model, **(window_binding or {})) if scope_model else ReviewerWindow(
             window_tokens=_SCOPE_MODEL_CONTEXT_WINDOW,
         )
         _window = _resolved.sizing_window(_SCOPE_FAILCLOSED_WINDOW)
@@ -565,6 +579,7 @@ def _apply_scope_authority(
     scope_model_id: str,
     result_kwargs: dict,
     delegated: bool = False, native_retrieval: bool = False,
+    window_binding: Optional[dict] = None,
 ) -> tuple[List[dict], List[dict], Optional[ScopeReviewResult]]:
     """One-pass P3 authority for THIS row's delivery: is the reviewer's window ESTABLISHED
     enough for its verdict to gate a commit? ``api_chat`` must fit the whole assembled pack
@@ -588,7 +603,7 @@ def _apply_scope_authority(
     disclosed on its own axis — ``capability_delta``, reason
     ``session_route_resolves_its_own_model`` — which is where a landing below the ask
     belongs, not in the window predicate."""
-    resolved = _scope_window(scope_model_id, session=delegated)
+    resolved = _scope_window(scope_model_id, session=delegated, **(window_binding or {}))
     if delegated or native_retrieval:
         # Native actor rows = the same retrieving class (P3 alternate mode, sourced >=200K floor).
         from ouroboros.tools.scope_review_session import session_scope_authority
@@ -678,8 +693,15 @@ def run_scope_review(
         route=route, session_task=session_task, session_root=str(repo_dir),
         slot_effort=slot_effort, session_target=session_target,
         session_profile=session_profile, retry_key=retry_key, subagent_id=subagent_id,
+        use_local=prepared.get("use_local"), task_evidence=prepared.get("task_evidence"),
     )  # type: ignore[arg-type]
     _usage = dict(usage or {})
+    host_route = _usage.get("model_role_route") or {}
+    actual_model = str(host_route.get("model") or scope_model_id)
+    window_binding = {"model_role": f"reviewer:{slot_id}" if slot_id else "",
+                      "credential_profile_id": host_route.get("credential_profile_id", session_profile),
+                      "use_local": host_route.get("use_local", prepared.get("use_local")),
+                      "model_route": (_usage.get("claudexor") or {}).get("route")}
     _review_refs = dict(_usage.pop("_review_refs", {}) or {})
     _prompt_ref = dict(_review_refs.get("prompt_ref") or {})
     _response_ref = dict(_review_refs.get("response_ref") or {})
@@ -727,7 +749,7 @@ def run_scope_review(
             **_operation,
         )
     # Usage emission happens once inside the shared review substrate.
-    if _provider_error_is_oversize(_usage, _prompt_tokens_est, scope_model_id):
+    if _provider_error_is_oversize(_usage, _prompt_tokens_est, actual_model, window_binding):
         # Some gateways report oversize as an empty body plus provider_error 400;
         # route independently-proven size errors through the same closed gate.
         _pe_msg = str((_usage.get("provider_error") or {}).get("message") or "")
@@ -828,9 +850,9 @@ def run_scope_review(
         **_operation,
     }
     critical_findings, advisory_findings, authority_block = _apply_scope_authority(
-        critical_findings, advisory_findings, scope_model_id=scope_model_id,
+        critical_findings, advisory_findings, scope_model_id=actual_model,
         result_kwargs=result_kwargs, delegated=delegated,
-        native_retrieval=bool(subagent_id) and not delegated)
+        native_retrieval=bool(subagent_id) and not delegated, window_binding=window_binding)
     if authority_block is not None:
         authority_block.failure_phase = "window_authority"
         authority_block.failure_code = authority_block.status
@@ -841,12 +863,12 @@ def run_scope_review(
         len(advisory_findings),
         prompt_chars=_prompt_chars,
         prompt_tokens=_prompt_tokens_est,
-        model_id=scope_model_id,
+        model_id=actual_model, window_binding=window_binding,
     )
 
     if critical_findings:
         from ouroboros import config as _cfg
-        if _cfg.get_review_enforcement() == "blocking":
+        if review_enforcement_blocks(_cfg.get_review_enforcement()):
             return ScopeReviewResult(
                 blocked=True,
                 block_message=_build_block_message(critical_findings, advisory_findings),

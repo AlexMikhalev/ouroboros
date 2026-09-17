@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import io
+import json
 import os
 import pathlib
+import zipfile
 
 import pytest
 
@@ -126,6 +129,47 @@ def test_snapshot_hash_parity_and_full_public_control_views(tmp_path):
     assert snapshot.manifest.install_specs() == [{"kind": "pip", "package": "example-package"}]
     with pytest.raises(dataclasses.FrozenInstanceError):
         snapshot.skill = "other"  # type: ignore[misc]
+
+
+def test_environment_template_roundtrips_import_list_review_and_publish(tmp_path, monkeypatch):
+    from ouroboros.marketplace.fetcher import stage
+    from ouroboros.skill_review_packs import _build_skill_file_packs
+    from ouroboros.tools.registry import ToolContext
+    from ouroboros.tools.skill_exec import _handle_list_skills
+    from ouroboros.tools.review_file_pack import build_touched_file_pack
+
+    drive = tmp_path / "drive"
+    payload = _write_skill(drive / "skills" / "external" / "demo")
+    template = payload / ".env.example"
+    content = b"APP_NAME=example\nAPI_TOKEN=\n"
+    template.write_bytes(content)
+    loaded = _reviewed_skill(payload, drive)
+    monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", "")
+    summary = json.loads(_handle_list_skills(ToolContext(repo_dir=tmp_path, drive_root=drive)))
+    row = next(item for item in summary["skills"] if item["name"] == "demo")
+    assert not row["load_error"] and row["content_hash"] == loaded.content_hash
+    packs = _build_skill_file_packs(payload, expected_content_hash=loaded.content_hash)
+    assert "### .env.example" in "\n".join(packs)
+    assert content.decode() in "\n".join(packs)
+    touched, omitted = build_touched_file_pack(payload, [".env.example"])
+    assert not omitted and "APP_NAME=example" in touched
+    snapshot = capture_skill_publish_snapshot(loaded)
+    assert snapshot.file(".env.example").content == content
+    assert ".env.example" in {item.path for item in snapshot.public_files}
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as packed:
+        for item in snapshot.public_files:
+            packed.writestr(item.path, item.content)
+    staged = stage(archive.getvalue(), slug="demo", version="1.2.3")
+    try:
+        assert (staged.staging_dir / ".env.example").read_bytes() == content
+        assert compute_content_hash(staged.staging_dir) == snapshot.content_hash
+    finally:
+        staged.cleanup()
+    template.write_bytes(content + b"APP_MODE=development\n")
+    assert loaded.review.is_stale_for(compute_content_hash(payload))
+    with pytest.raises(SkillPublishSnapshotError, match="snapshot_review_stale"):
+        capture_skill_publish_snapshot(loaded)
 
 
 def test_manifest_precedence_and_each_inventory_file_read_once(tmp_path, monkeypatch):
@@ -297,14 +341,15 @@ def test_snapshot_fails_closed_on_sensitive_or_unreadable_payload(tmp_path, monk
 
 
 @pytest.mark.skipif(os.name == "nt", reason="symlink creation is not portable on Windows")
-def test_snapshot_excludes_symlink_escape(tmp_path):
+@pytest.mark.parametrize("name", ["escape.txt", ".env.example"])
+def test_snapshot_excludes_symlink_escape(tmp_path, name):
     drive_root = tmp_path / "drive"
     skill_dir = _write_skill(drive_root / "skills" / "external" / "demo")
     outside = tmp_path / "outside.txt"
     outside.write_bytes(b"outside")
-    os.symlink(outside, skill_dir / "escape.txt")
+    os.symlink(outside, skill_dir / name)
     loaded = _reviewed_skill(skill_dir, drive_root)
 
     snapshot = capture_skill_publish_snapshot(loaded)
 
-    assert "escape.txt" not in {item.path for item in snapshot.full_files}
+    assert name not in {item.path for item in snapshot.full_files}

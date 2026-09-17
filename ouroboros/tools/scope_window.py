@@ -9,6 +9,7 @@ private alias, so its tests and callers keep exactly one patch point.
 from __future__ import annotations
 
 from ouroboros.config import review_model_uses_local
+from ouroboros.provider_models import provider_for_model
 from ouroboros.reviewer_window import (
     ReviewerWindow,
     resolve_reviewer_window as _resolve_reviewer_window,
@@ -59,7 +60,9 @@ def is_designated_default_reviewer(model: str) -> bool:
     return bool(model) and _normalized(model) == _normalized(SCOPE_MODEL_DEFAULT)
 
 
-def scope_window(model: str, *, session: bool = False) -> ReviewerWindow:
+def scope_window(model: str, *, session: bool = False, model_role: str = "",
+                 credential_profile_id: str | None = None, model_route: dict | None = None,
+                 use_local: bool | None = None) -> ReviewerWindow:
     """The scope reviewer's window AND its blocking authority, as ONE typed result.
 
     Replaces the deleted static per-model window table: a confirmed/asserted probe
@@ -91,13 +94,17 @@ def scope_window(model: str, *, session: bool = False) -> ReviewerWindow:
         # predicate does not apply to it (see `reviewer_window.reviewer_route`).
         resolved = _resolve_reviewer_window(
             model,
-            use_local=None if session else review_model_uses_local(model),
+            use_local=None if session else review_model_uses_local(model) if use_local is None else use_local,
             session=session,
+            **({"model_role": model_role, "credential_profile_id": credential_profile_id,
+                "model_route": model_route} if model_role or credential_profile_id is not None or model_route else {}),
         )
-        if int(resolved.window_tokens) > 0:
+        if int(resolved.window_tokens) > 0 or provider_for_model(model) == "claudexor":
             return resolved
     except Exception:
         pass
+    if provider_for_model(model) == "claudexor":
+        return ReviewerWindow(model=model)
     return ReviewerWindow(
         window_tokens=(
             SCOPE_MODEL_CONTEXT_WINDOW if is_designated_default_reviewer(model)
@@ -139,6 +146,5 @@ def window_provenance_phrase(window: int, provenance: str, observed_at: str = ""
         return f"EXPIRED, unverifiable {window}-token window{dated}"
     if provenance == WINDOW_SENTINEL:
         return f"designated-default {window}-token sentinel window"
-    return f"unknown window, conservatively treated as {window} tokens"
-
-
+    return (f"unknown window, conservatively treated as {window} tokens"
+            if window else "unknown window")

@@ -13,6 +13,7 @@ from ouroboros import (
     llm_anthropic,
     llm_attempt,
     llm_capability_policy,
+    llm_claudexor,
     llm_fallback,
     llm_gigachat,
     llm_local,
@@ -21,6 +22,7 @@ from ouroboros import (
     llm_pricing,
     llm_probe,
     llm_routing,
+    llm_stream,
 )
 from ouroboros.llm import LLMClient
 
@@ -30,6 +32,7 @@ PKG = REPO / "ouroboros"
 _LEAVES = (
     llm_attempt,
     llm_capability_policy,
+    llm_claudexor,
     llm_routing,
     llm_messages,
     llm_fallback,
@@ -42,6 +45,7 @@ _LEAVES = (
     # upstream. It is an llm_* leaf all the same, so the leaf rules bind it —
     # never import the parent, no cycles, real weight.
     llm_probe,
+    llm_stream,
 )
 
 # Module-level names that moved. llm.py re-exports every one of them, so its
@@ -88,6 +92,7 @@ _MIXIN_OWNERS = {
         "clamp_effort_for_route metadata_fetch_attempted_and_failed openrouter_context_length"
     ),
     (llm_routing, "_ProviderRoutingMixin"): (
+        "_chat_remote claudexor_model_sources claudexor_model_catalog supports_response_format "
         "_explicit_cache_affinity_identity _get_async_remote_client _get_client _get_local_client "
         "_get_remote_client _make_no_proxy_async_client _make_no_proxy_client _new_remote_client "
         "_no_proxy_timeout _openrouter_session_identity _parse_provider_model "
@@ -118,7 +123,8 @@ _MIXIN_OWNERS = {
         "_chat_gigachat _get_gigachat_client _gigachat_function_result _gigachat_messages "
         "_gigachat_text _new_gigachat_client _normalize_gigachat_response"
     ),
-    (llm_local, "_LocalLaneMixin"): "_chat_local _prepare_messages_for_local_context",
+
+    (llm_local, "_LocalLaneMixin"): "_chat_local _build_local_candidate _finalize_local_candidate",
     (llm_openai_compatible, "_OpenAICompatibleLaneMixin"): (
         "_build_remote_kwargs _normalize_remote_response _openrouter_main_web_search_tool "
         "extract_display_reasoning"
@@ -129,7 +135,7 @@ _MIXIN_OWNERS = {
 # Members llm.py keeps: the composition itself, the caller-facing chat surface,
 # and the tool-schema/tool-call translators every lane reaches by class name.
 _PARENT_MEMBERS = frozenset({
-    "__init__", "chat", "chat_async", "_chat_remote", "vision_query", "default_model",
+    "__init__", "chat", "chat_async", "vision_query", "default_model",
     "available_models", "_strip_reasoning_wrappers", "_parse_tool_calls_from_content",
     "_stringify_tool_description", "_sanitize_chat_completion_tools", "_build_anthropic_tools",
     "_gigachat_sanitize_schema", "_gigachat_functions",
@@ -205,14 +211,18 @@ def test_llm_client_member_inventory_is_unchanged():
     ``_build_remote_candidate`` — one provider-aware candidate builder serving both
     the direct-Anthropic send and ``task_pacing``'s prospective wrap-up estimate —
     homed on the Anthropic lane mixin. A member appearing or vanishing without that
-    kind of provenance is what this pin exists to catch.
+    kind of provenance is what this pin exists to catch. (4) The subscription
+    model integration adds three explicit route capability/catalog methods and
+    places complete remote dispatch with the existing provider/client owner.
+    Every prior member remains inherited; no dispatch semantics changed.
     """
     assert _defined_members(pathlib.Path(llm.__file__), "LLMClient") == _PARENT_MEMBERS
     moved = {name for names in _MIXIN_OWNERS.values() for name in names.split()}
     composed = sorted(moved | _PARENT_MEMBERS)
     assert hashlib.sha256(
         json.dumps(composed, separators=(",", ":")).encode()
-    ).hexdigest() == "034c5d6b3032e217705e5596276b671b65e55fdae0d63c2874f5e7d8f2959829"
+
+    ).hexdigest() == "e41b36df9a44c020082acd5db82ab40fb8a65811c5dd982ecac7df3325a5833c"
     for name in composed:
         assert hasattr(LLMClient, name), name
 

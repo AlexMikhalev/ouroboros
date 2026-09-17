@@ -20,6 +20,41 @@ PACKAGE = REPO / "ouroboros"
 
 _LEAVES = (settings_defaults, settings_scales, model_slots, review_model_routes, runtime_limits)
 
+# New subscription capabilities belong to the same leaves, but did not exist on
+# the historical extraction's facade and need not add compatibility re-exports.
+_ADDED_OWNERS = {
+    "IMMEDIATE_SETTINGS": settings_scales,
+    "RESTART_REQUIRED_SETTINGS": settings_scales,
+    "get_finalization_grace_sec": runtime_limits,
+    "NETWORK_WAIT_BACKOFF_MAX_SEC": runtime_limits,
+    "MODEL_ACCOUNTS_KEY": model_slots,
+    "MODEL_CONTEXT_WINDOWS_KEY": model_slots,
+    "MODEL_PROCESSING_PREFERENCES_KEY": model_slots,
+    "PROCESSING_PREFERENCE_KEY": model_slots,
+    "PROCESSING_PREFERENCES": model_slots,
+    "task_processing_preference": model_slots,
+    "normalize_processing_preference": model_slots,
+    "resolve_processing_preference": model_slots,
+    "MODEL_ROLE_SETTINGS": model_slots,
+    "normalize_model_role_options": model_slots,
+    "model_role_option": model_slots,
+    "task_model_binding": model_slots,
+    "apply_model_role_override": model_slots,
+    "CLAUDEXOR_MODEL_POLL_INTERVAL_SEC": runtime_limits,
+    "CLAUDEXOR_OPERATOR_STOP_TIMEOUT_SEC": runtime_limits,
+    "CLAUDEXOR_STOP_EXIT_WAIT_SEC": runtime_limits,
+    # Consciousness settings scaffolding: the alarm's SSOT default interval, the closed
+    # autonomy enum and the readers for the three consciousness keys.
+    "WAKE_DEFAULT_SEC": runtime_limits,
+    "USAGE_LEDGER_FOLD_MIN_AGE_SEC": runtime_limits,
+    "CONSCIOUSNESS_AUTONOMY_LEVELS": runtime_limits,
+    "get_consciousness_autonomy": runtime_limits,
+    "get_consciousness_daily_usd": runtime_limits,
+    "get_consciousness_max_tasks": runtime_limits,
+    "get_bg_wakeup_min_sec": runtime_limits,
+    "get_bg_wakeup_max_sec": runtime_limits,
+}
+
 _MOVED_OWNERS = {
     "WORKER_SPAWN_GRACE_SEC": runtime_limits,
     "WORKER_READY_WINDOW_SEC": runtime_limits,
@@ -35,6 +70,10 @@ _MOVED_OWNERS = {
     "EXTENSION_STREAM_METADATA_BYTES": runtime_limits,
     "WS_RELAY_BURST": runtime_limits,
     "WS_RELAY_REFILL_PER_SEC": runtime_limits,
+    "CLAUDEXOR_STARTUP_WAIT_SEC": settings_defaults,
+    "CLAUDEXOR_STARTUP_POLL_SEC": settings_defaults,
+    "CLAUDEXOR_ADMISSION_WAIT_SEC": settings_defaults,
+    "CLAUDEXOR_ADMISSION_POLL_SEC": settings_defaults,
     "ENDPOINT_AUTHORED_SETTINGS": settings_defaults,
     # v6.104.0 upstream: the OpenRouter shipped-model defaults arrive in the
     # vocabulary leaf the v7 split created for exactly this class of fact.
@@ -223,15 +262,15 @@ def test_settings_file_lifecycle_and_path_roots_stay_with_the_parent():
 
 
 def test_settings_extraction_owner_inventory_is_exact():
-    """Every moved name is owned by exactly one leaf, and no leaf grew a name the
-    parent never had (a new symbol would be a redesign, not an extraction)."""
+    """Every extracted or explicitly added name has exactly one declared owner."""
+    owners = {**_MOVED_OWNERS, **_ADDED_OWNERS}
     seen: dict[str, str] = {}
     for module in _LEAVES:
         for name in _top_level_names(pathlib.Path(module.__file__)):
             assert name not in seen, f"{name} owned by {seen.get(name)} and {module.__name__}"
             seen[name] = module.__name__
-            assert name in _MOVED_OWNERS, f"{module.__name__} owns an unmapped name: {name}"
-    assert set(seen) == set(_MOVED_OWNERS)
+            assert owners.get(name) is module, f"{module.__name__} owns an unmapped name: {name}"
+    assert set(seen) == set(owners)
 
 
 def test_settings_extraction_size_bounds_have_meaningful_headroom():

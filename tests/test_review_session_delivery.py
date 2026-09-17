@@ -437,9 +437,16 @@ def test_restart_reconciliation_settles_review_spend_to_the_recorded_root(
 
 def test_pending_invocation_recovery_replays_the_recorded_lineage(tmp_path, fake_route):
     """#112 Path B: a start whose POST outcome stayed unknown leaves ONLY the
-    START_REQUESTED row. Its pending-invocation record must carry the lineage,
-    and the sweep's recovery must replay it onto the recovered run's custody
-    and ledger row."""
+    START_REQUESTED row, and that record must carry the lineage rather than any
+    ambient scope — the stored record is the single source of a replay's facts.
+
+    Who replays it changed with issue #1006: this invocation belongs
+    to a REVIEW panel, and the review substrate rejoins it by its own exact key
+    (``review_session_custody``). The delegation sweep therefore RETAINS it
+    instead of re-POSTing it, which would bind a second reviewer nobody asked
+    for. The general recovery-and-replay mechanism for the task's own delegation
+    stays pinned in ``tests/test_delegated_run_custody.py``.
+    """
     from ouroboros.gateways.claudexor import ClaudexorUnavailable
     from ouroboros.usage_accounting import usage_scope
 
@@ -462,24 +469,17 @@ def test_pending_invocation_recovery_replays_the_recorded_lineage(tmp_path, fake
         "happy_farm", "wave-restart", "skill-triad-2",
     )
 
-    # The sweep recovers the invocation with NO ambient scope: the stored
-    # record is the single source of the replay's facts, lineage included.
+    # The delegation sweep names the owner and stands down: no POST, no bound
+    # run, and the invocation is still there for its panel to rejoin.
     result = custody._recover_pending_invocation(tmp_path, FakeGateway(), record)
-    assert result["action"] == "settle_attempted"
-    recovered = [r for r in _custody_rows(tmp_path)
-                 if r["type"] == custody.STARTED
-                 and r.get("recovered_from_pending_invocation")]
-    assert recovered and recovered[-1]["root_task_id"] == "t-root"
-    assert recovered[-1]["parent_task_id"] == "t-parent"
-    ledger = [json.loads(line) for line in
-              (tmp_path / "state" / "usage_attempts.jsonl").read_text().splitlines()
-              if line.strip()]
-    sessions = [r for r in ledger if r.get("kind") == "subscription_session"]
-    assert sessions and sessions[-1]["root_task_id"] == "t-root"
-    assert (sessions[-1]["review_skill"], sessions[-1]["review_wave_id"],
-            sessions[-1]["review_slot_id"]) == (
-        "happy_farm", "wave-restart", "skill-triad-2",
-    )
+    assert result == {
+        "invocation_id": record["invocation_id"], "task_id": "t-agent",
+        "action": "invocation_retained", "reason": "review_panel_owns_invocation",
+    }
+    assert [r for r in _custody_rows(tmp_path)
+            if r["type"] == custody.STARTED
+            and r.get("recovered_from_pending_invocation")] == []
+    assert custody.pending_invocations(tmp_path) == pending
 
 
 def test_retry_replays_the_stored_route_and_registers_nothing_new(tmp_path, fake_route,

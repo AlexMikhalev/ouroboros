@@ -58,7 +58,17 @@ def test_ceiling_compiles_exact_tools_scripts_resources_and_digest():
         ),
     )
 
-    assert [grant.name for grant in ceiling.tool_grants] == ["chat_history", "skill_exec"]
+    # The profile selected chat_history and one script; the cognitive baseline
+    # (own memory, no new authority) is compiled in beside them.
+    assert [grant.name for grant in ceiling.tool_grants] == [
+        "chat_history",
+        "knowledge_list",
+        "knowledge_read",
+        "knowledge_write",
+        "skill_exec",
+        "update_identity",
+        "update_scratchpad",
+    ]
     script = next(grant for grant in ceiling.tool_grants if grant.name == "skill_exec")
     assert [(item.argument_path, item.static_value) for item in script.bindings] == [
         (("skill",), "calendar"),
@@ -215,9 +225,34 @@ def test_registry_filters_schema_dispatch_and_resolved_targets(tmp_path):
     registry.set_context(ctx)
 
     names = {schema["function"]["name"] for schema in registry.schemas()}
-    assert names == {"presence_finish", "presence_cancel_work", "read_file"}
+    assert names == {
+        "presence_finish",
+        "presence_cancel_work",
+        "read_file",
+        "chat_history",
+        "knowledge_list",
+        "knowledge_read",
+        "knowledge_write",
+        "update_identity",
+        "update_scratchpad",
+    }
+    # Own memory is advertised and it runs; nothing that acts outside this mind
+    # comes with it, in the schemas or in dispatch.
+    assert "PRESENCE_CAPABILITY_BLOCKED" not in registry.execute(
+        "knowledge_write",
+        {"topic": "presence-note", "content": "what this exchange taught me", "scope": "global"},
+    )
+    assert (data / "memory" / "knowledge" / "presence-note.md").exists()
+    for blocked in ("write_file", "run_command", "send_user_message"):
+        assert blocked not in names
     assert "PRESENCE_CAPABILITY_BLOCKED" in registry.execute(
         "run_command", {"command": "pwd"}
+    )
+    assert "PRESENCE_CAPABILITY_BLOCKED" in registry.execute(
+        "write_file", {"root": "active_workspace", "path": "new.txt", "content": "no"}
+    )
+    assert "PRESENCE_CAPABILITY_BLOCKED" in registry.execute(
+        "send_user_message", {"text": "no"}
     )
     assert "PRESENCE_RESOURCE_BLOCKED" in registry.execute(
         "read_file", {"root": "active_workspace", "path": "private.txt"}

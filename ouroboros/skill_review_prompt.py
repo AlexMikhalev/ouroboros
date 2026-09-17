@@ -16,6 +16,7 @@ import logging
 import pathlib
 from typing import Any, Dict, List
 
+from ouroboros.reference_books import BOOK_ENTRYPOINTS, compose_book, load_reference_book
 from ouroboros.skill_review_history import count_attempts as _count_attempts_for_content
 from ouroboros.skill_review_status import CRITICAL_ITEMS
 from ouroboros.tools.review_helpers import (
@@ -67,6 +68,12 @@ def _load_governance_artifact(
     """Load governance context with an explicit omission marker on failure."""
     from ouroboros.tools.review_helpers import load_governance_doc
 
+    for book_id, entrypoint in BOOK_ENTRYPOINTS.items():
+        if relpath == entrypoint:
+            try:
+                return compose_book(load_reference_book(repo_root, book_id))
+            except (OSError, ValueError) as exc:
+                return f"[⚠️ OMISSION: {relpath} book could not be loaded: {exc}]"
     return load_governance_doc(repo_root, relpath, on_missing="explicit")
 
 
@@ -126,11 +133,11 @@ review enforcement mode.
 
 ## Governance context — docs/ARCHITECTURE.md
 
-Use Section 10 (Key Invariants), Section 12 (Host Service / Companion /
-Chat IDs), and Section 13 (External Skills Layer)
-as the binding description of what the skill is allowed to touch. In
-particular invariant 11 is the authoritative rule: skills must not write
-to the self-modifying repo, and reviewed execution is the primary gate.
+Use the named sections "Key Invariants", "Host Service, Companion Processes,
+and Chat IDs", and "External Skills Layer" as the binding description of what
+the skill is allowed to touch. The "Skill gates do not collapse" criterion
+keeps executable review, owner grants, dependencies, enablement, and execution
+distinct; apply the Skill Review Checklist's `no_repo_mutation` item.
 
 {architecture_text}
 
@@ -152,6 +159,12 @@ skill manipulates release metadata) is grounds for FAIL even when the
 Skill Review Checklist items permit the behaviour in isolation. Treat
 BIBLE.md as the tie-breaker when a skill looks checklist-compliant but
 contradicts the runtime's constitutional commitments.
+
+After the first actual review, the author may finish the advisory dialogue for
+the exact current content hash.
+That author disposition is a separate durable stance beside these raw findings;
+it is never a reviewer PASS, never valid for stale content, and never bypasses
+deterministic preflight or a blocking enforcement gate.
 
 {bible_text}
 

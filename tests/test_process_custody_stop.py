@@ -207,8 +207,8 @@ def test_unconfirmed_startup_child_cannot_be_replaced(monkeypatch, tmp_path):
     monkeypatch.setattr(claudexor_runtime, "get_runtime_manager", lambda: SimpleNamespace(ensure=lambda: pytest.fail("runtime provisioning before child exit")))
     monkeypatch.setattr(custody, "spawn_supervised", lambda *_a, **_kw: pytest.fail("duplicate spawn"))
     with pytest.raises(ClaudexorUnavailable) as caught:
-        manager.ensure_running()
-    assert caught.value.code == "daemon_stop_unconfirmed"
+        manager.ensure_running(startup_wait_sec=0)
+    assert caught.value.code == "daemon_starting"
     assert manager._proc.pid == 123
 
 

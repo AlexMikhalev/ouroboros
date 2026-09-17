@@ -23,7 +23,8 @@ def test_task_summary_prefers_direct_model_when_openrouter_missing(tmp_path, mon
     captured = {}
 
     class FakeLlm:
-        def chat(self, *, messages, model, reasoning_effort, max_tokens, use_local):
+        def chat(self, *, messages, model, reasoning_effort, max_tokens, use_local, model_role=""):
+            assert model_role == "light"
             captured["messages"] = messages
             captured["model"] = model
             captured["reasoning_effort"] = reasoning_effort
@@ -199,7 +200,8 @@ def test_task_summary_prompt_includes_review_evidence(tmp_path, monkeypatch):
     captured = {}
 
     class FakeLlm:
-        def chat(self, *, messages, model, reasoning_effort, max_tokens, use_local):
+        def chat(self, *, messages, model, reasoning_effort, max_tokens, use_local, model_role=""):
+            assert model_role == "light"
             captured["prompt"] = messages[0]["content"]
             return {"content": "summary with review evidence"}, {"cost": 0}
 
@@ -268,7 +270,8 @@ def test_multi_round_zero_tool_task_uses_llm_summary_prompt(tmp_path, monkeypatc
     captured = {}
 
     class FakeLlm:
-        def chat(self, *, messages, model, reasoning_effort, max_tokens, use_local):
+        def chat(self, *, messages, model, reasoning_effort, max_tokens, use_local, model_role=""):
+            assert model_role == "light"
             captured["prompt"] = messages[0]["content"]
             return {"content": "multi-round summary"}, {"cost": 0}
 

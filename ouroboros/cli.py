@@ -246,6 +246,12 @@ def _run_command(args: argparse.Namespace) -> int:
         result = client.request("GET", f"/api/tasks/{urllib.parse.quote(task_id)}")
     result = _await_cost_finality(client, task_id, result)
     exit_code = 0 if _is_terminal_success(result) else 1
+    if not args.jsonl:
+        from ouroboros.task_finalization import provider_terminal_body, terminal_notice_text
+
+        notice = terminal_notice_text(result)
+        if notice:
+            print(provider_terminal_body("", notice), file=sys.stderr)
     if args.patch_out:
         patch = _patch_from_result(client, task_id, result, strict=True)
         pathlib.Path(args.patch_out).expanduser().write_text(patch, encoding="utf-8")
@@ -358,7 +364,7 @@ def _evolve_command(args: argparse.Namespace) -> int:
         runtime_mode = str(client.request("GET", "/api/state").get("runtime_mode", "") or "")
         if runtime_mode == "light":
             _print_json({
-                "error": "evolution requires runtime_mode 'advanced' or 'pro'; refused in 'light' mode",
+                "error": "evolution requires runtime_mode 'advanced', 'pro', or 'cyber_pro'; refused in 'light' mode",
                 "runtime_mode": runtime_mode,
             })
             return 1
@@ -623,10 +629,10 @@ def _add_settings_parser(subparsers: argparse._SubParsersAction) -> None:
     setp.add_argument("value")
     setp.set_defaults(func=_settings_set_command)
     mode = sub.add_parser("runtime-mode")
-    mode.add_argument("mode", choices=["light", "advanced", "pro"])
+    mode.add_argument("mode", choices=["light", "advanced", "pro", "cyber_pro"])
     mode.set_defaults(func=_owner_runtime_mode_command)
     context_mode = sub.add_parser("context-mode")
-    context_mode.add_argument("mode", choices=["low", "max"])
+    context_mode.add_argument("mode", choices=["nano", "low", "max"])
     context_mode.set_defaults(func=_owner_context_mode_command)
     grant = sub.add_parser("auto-grant")
     grant.add_argument("enabled", choices=["on", "off"])
@@ -932,6 +938,14 @@ def _patch_from_result(
             raise PatchCLIError("workspace patch artifact is empty")
         return raw.decode("utf-8", errors="replace")
     if strict:
+        manifest_artifact = next((item for item in artifacts if item.get("kind") == "workspace_patch_manifest"), None)
+        if manifest_artifact is not None:
+            name = str(manifest_artifact.get("name") or "workspace_patch.json")
+            manifest = json.loads(client.get_bytes(
+                f"/api/tasks/{urllib.parse.quote(task_id)}/artifacts/{urllib.parse.quote(name)}"))
+            if manifest.get("capture_kind") in {"directory_direct", "engine_directory"} or manifest.get("file_outputs"):
+                raise PatchCLIError(
+                    f"This result is delivered as complete files rather than a Git patch; inspect {name} and its file references.")
         raise PatchCLIError("workspace patch artifact is missing")
     return ""
 

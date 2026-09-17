@@ -165,6 +165,12 @@ def test_fake_daemon_run_replay_refusals_and_cancel(tmp_path):
             summary = detail.get("summary") or {}
             assert summary.get("state") == "succeeded"
             assert summary.get("model") == daemon.applied_model
+            from ouroboros.gateways.claudexor import final_attempt_facts
+
+            assert final_attempt_facts(detail, run_id) == {
+                "attempt_id": "a01", "harness_id": daemon.harness_id,
+                "model": daemon.applied_model, "profile_id": daemon.applied_profile,
+            }
             assert summary.get("spendUsd") == 0.0 and summary.get("spendEstimated") is False
             assert (summary.get("authRoute") or {}).get("profileId") == daemon.applied_profile
             assert final_attempt_facts(detail, run_id) == {

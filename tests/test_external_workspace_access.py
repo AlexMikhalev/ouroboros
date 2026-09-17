@@ -23,7 +23,6 @@ from ouroboros.tool_access import (
     resolve_shell_cwd,
     user_files_path_block_reason,
 )
-from ouroboros.contracts.task_constraint import TaskConstraint
 from ouroboros.presence_authority import build_presence_capability_ceiling, presence_ceiling_payload
 from ouroboros.presence_capabilities import (
     PresenceProfileResolution,
@@ -32,7 +31,7 @@ from ouroboros.presence_capabilities import (
     PresenceToolTarget,
 )
 from ouroboros.presence_runtime import ResolvedPresenceRuntime
-from ouroboros.tools.registry import ToolContext, ToolRegistry, _command_mentions_protected_root
+from ouroboros.tools.registry import ToolContext, ToolRegistry
 from tests._typed_guard_shared import _shell_guard_text
 
 
@@ -129,13 +128,12 @@ def test_root_config_mutations_preserve_enumerated_credentials_without_dotdir_de
     for rel in (
         ".terraform.d/credentials.tfrc.json", ".cargo/credentials.toml", ".oci/config",
         ".pip/pip.conf", ".m2/settings.xml", ".mysql_history", ".kaggle/kaggle.json",
+        ".bash_history", ".cache/huggingface/token.json", ".gitconfig",
     ):
         assert user_files_path_block_reason(ctx, home / rel) == "", rel
         assert user_files_path_block_reason(ctx, home / rel, operation="read") == "", rel
     for rel in (
-        ".bash_history",
-        ".cache/huggingface/token.json", ".aws/credentials", ".ssh/id_rsa", ".gnupg/secring.gpg",
-        ".git/config", ".gitconfig",
+        ".aws/credentials", ".ssh/id_rsa", ".gnupg/secring.gpg", ".git/config",
     ):
         assert user_files_path_block_reason(ctx, home / rel) != "", f"mutation gate lost: {rel}"
         for op in ("read", "list", "search"):
@@ -161,9 +159,11 @@ def test_block_reason_protects_runtime_and_credentials_even_in_external(tmp_path
     # for READS too (location boundary, not a name shape).
     assert user_files_path_block_reason(ext, child / "memory" / "identity.md")
     assert user_files_path_block_reason(ext, child / "memory" / "identity.md", operation="read")
-    # Credential-like names: mutation stays shape-denied; root reads are
-    # location-only (capinv-447 / В23=A — bytes are masked at egress instead).
-    assert user_files_path_block_reason(ext, tmp_path / "scratch" / "id_rsa.pem")
+    # A credential-shaped NAME outside a credential location no longer refuses
+    # mutation either: the fence is the location (~/.ssh, ~/.aws, ...) and the
+    # exact credential leaves, never the suffix. Root reads stay location-only
+    # (capinv-447 / В23=A — bytes are masked at egress instead).
+    assert user_files_path_block_reason(ext, tmp_path / "scratch" / "id_rsa.pem") == ""
     assert user_files_path_block_reason(ext, tmp_path / "scratch" / "id_rsa.pem", operation="read") == ""
 
 
@@ -190,62 +190,13 @@ def test_shell_cwd_data_is_rejected_but_system_is_explicit_in_external(tmp_path)
     assert work_dir == (tmp_path / "system").resolve()
 
 
-def test_external_shell_read_cannot_reach_runtime_or_secrets(tmp_path):
-    """claudexor B1: even READ-only shell in external mode must not reach the
-    Ouroboros runtime (system repo / data drive) or credential paths — raw shell
-    must not bypass the user_files path guard."""
-    system = tmp_path / "system"
-    workspace = tmp_path / "workspace"
-    data = tmp_path / "data"
-    for p in (system, workspace, data):
-        p.mkdir()
-    (data / "settings.json").write_text("{}", encoding="utf-8")
-    reg = ToolRegistry(repo_dir=system, drive_root=data)
-    reg.set_context(ToolContext(repo_dir=system, drive_root=data, workspace_root=workspace, workspace_mode="external"))
-
-    # Runtime repo read -> blocked.
-    assert "WORKSPACE_SHELL_BLOCKED" in (_shell_guard_text(reg, {"cmd": ["cat", str(system / "BIBLE.md")]}, "advanced") or "")
-    # Data drive read -> blocked.
-    assert "WORKSPACE_SHELL_BLOCKED" in (_shell_guard_text(reg, {"cmd": ["cat", str(data / "settings.json")]}, "advanced") or "")
-    # Credential path read -> blocked (secret markers).
-    assert "WORKSPACE_SHELL_BLOCKED" in (_shell_guard_text(reg, {"cmd": ["cat", str(pathlib.Path.home() / ".ssh" / "id_rsa")]}, "advanced") or "")
-    # Embedded-string read of a secret -> blocked.
-    assert "WORKSPACE_SHELL_BLOCKED" in (_shell_guard_text(reg, {"cmd": ["python", "-c", f"open({str(data / 'settings.json')!r})"]}, "advanced") or "")
-    # A genuine host-scratch read -> allowed (None).
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-    (scratch / "note.txt").write_text("hi", encoding="utf-8")
-    assert _shell_guard_text(reg, {"cmd": ["cat", str(scratch / "note.txt")]}, "advanced") is None
-
-
-def test_external_shell_write_protects_child_drive(tmp_path):
-    """claudexor B2: the shell write guard's protected roots must include the
-    task's CHILD data drive (not only system repo + parent/budget)."""
-    system = tmp_path / "system"
-    workspace = tmp_path / "workspace"
-    data = tmp_path / "data"
-    child = tmp_path / "child-data"
-    for p in (system, workspace, data, child):
-        p.mkdir()
-    reg = ToolRegistry(repo_dir=system, drive_root=data)
-    reg.set_context(ToolContext(
-        repo_dir=system, drive_root=data, workspace_root=workspace, workspace_mode="external",
-        task_id="t", task_metadata={"drive_root": str(child)},
-    ))
-    # pro mode would otherwise pass an absolute outside-workspace write; the child
-    # drive control path must still be blocked.
-    out = _shell_guard_text(reg, {"cmd": ["touch", str(child / "memory" / "x")]}, "pro")
-    assert "WORKSPACE_SHELL_BLOCKED" in (out or "")
-
-
-def test_external_workspace_shell_can_write_configured_deliverable_only_at_top_level(
+def test_external_workspace_shell_delivers_files_and_reports_undeclared_outputs(
     tmp_path, monkeypatch,
 ):
     """A normal external workspace may copy a generated file to Deliverables.
 
-    The registry guard, rather than only the ``cwd=user_files`` resolver, must
-    admit the destination.  The same target remains unavailable to an acting
-    child; the root may also use its ordinary authorized home targets.
+    The declared-output resolver and the post-execution audit preserve the
+    real destination and disclose whether the generated file was registered.
     """
     system = tmp_path / "system"
     workspace = tmp_path / "workspace"
@@ -342,55 +293,11 @@ def test_external_workspace_shell_can_write_configured_deliverable_only_at_top_l
     )
     assert allowed is None
 
-    child_ctx = ToolContext(
-        repo_dir=system,
-        drive_root=data,
-        workspace_root=workspace,
-        workspace_mode="external",
-        task_id="deliverable-child-test",
-        task_constraint=TaskConstraint(
-            mode="acting_subagent",
-            surface="external_workspace",
-            write_root=str(workspace),
-        ),
-    )
-    reg.set_context(child_ctx)
-    child_blocked = _shell_guard_text(reg,
-        {"cmd": command, "cwd": str(workspace)}, "advanced",
-    )
-    assert child_blocked and "WORKSPACE_SHELL_BLOCKED" in child_blocked
 
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    targets = [
-        deliverables / ".env",
-        deliverables / "token.pem",
-        deliverables / ".ssh" / "key",
-    ]
-    try:
-        (deliverables / "escape").symlink_to(outside, target_is_directory=True)
-    except OSError:
-        pass
-    else:
-        targets.append(deliverables / "escape" / "written.txt")
-    for target in targets:
-        blocked_target = _shell_guard_text(reg,
-            {"cmd": ["touch", str(target)], "cwd": str(workspace)}, "advanced",
-        )
-        assert blocked_target and (
-            "WORKSPACE_SHELL_BLOCKED" in blocked_target
-            or "SUBAGENT_SECRET_READ_BLOCKED" in blocked_target
-        ), target
+def test_nested_deliverables_keep_declared_output_identity_and_custody(tmp_path, monkeypatch):
+    from ouroboros.tools.shell import _resolve_declared_output, _run_shell
 
-
-def test_nested_deliverables_keeps_target_policy_before_workspace_root(
-    tmp_path, monkeypatch,
-):
-    """A Deliverables root inside an allowed workspace does not inherit its bypasses."""
-    system = tmp_path / "system"
-    workspace = tmp_path / "workspace"
-    data = tmp_path / "data"
-    home = tmp_path / "home"
+    system, workspace, data, home = (tmp_path / name for name in ("system", "workspace", "data", "home"))
     for path in (system, workspace, data, home):
         path.mkdir()
     deliverables = workspace / "Deliverables"
@@ -401,295 +308,23 @@ def test_nested_deliverables_keeps_target_policy_before_workspace_root(
     source.write_text("ok", encoding="utf-8")
     monkeypatch.setenv("OUROBOROS_USER_FILES_ROOT", str(home))
     monkeypatch.setenv("OUROBOROS_DELIVERABLES_ROOT", str(deliverables))
-
-    ctx = ToolContext(
-        repo_dir=system,
-        drive_root=data,
-        workspace_root=workspace,
-        workspace_mode="external",
-        task_id="nested-deliverables-test",
-    )
-    reg = ToolRegistry(repo_dir=system, drive_root=data)
-    reg.set_context(ctx)
-    assert _shell_guard_text(reg,
-        {"cmd": ["touch", str(deliverables / "ordinary.txt")], "cwd": str(workspace)},
-        "advanced",
-    ) is None
-    for target in (
-        deliverables / ".hidden" / "file",
-        deliverables / ".ssh" / "key",
-        deliverables / "token.pem",
-    ):
-        blocked = _shell_guard_text(reg,
-            {"cmd": ["touch", str(target)], "cwd": str(workspace)}, "advanced",
+    ctx = ToolContext(repo_dir=system, drive_root=data, workspace_root=workspace,
+                      workspace_mode="external", task_id="nested-deliverables-test")
+    for relative in (".hidden/file", ".ssh/key"):
+        resolved, reason = _resolve_declared_output(
+            ctx, str(deliverables / relative), workspace, cwd_root="active_workspace",
         )
-        assert blocked and "WORKSPACE_SHELL_BLOCKED" in blocked
-
-    # cp/mv/ln directory syntax creates a child named after the source. The
-    # directory operand alone must not inherit the broader workspace root.
-    hidden_source = workspace / ".env"
-    hidden_source.write_text("secret", encoding="utf-8")
-    for command in (
-        ["cp", str(hidden_source), str(deliverables)],
-        ["cp", "-r", str(hidden_source), str(deliverables)],
-        ["cp", "-t" + str(deliverables), str(hidden_source)],
-        ["cp", "-Ssuffix", str(hidden_source), str(deliverables)],
-        ["cp", "--parents", "supervisor/../README.md", str(deliverables)],
-        ["cp", "--backup", str(hidden_source), str(deliverables)],
-        ["cp", "--reflink", str(hidden_source), str(deliverables)],
-        ["cp", "--sparse", str(hidden_source), str(deliverables)],
-        ["cp", "--context", str(hidden_source), str(deliverables)],
-        ["mv", str(hidden_source), str(deliverables)],
-        # Regression pin: the destination is refused by the per-candidate
-        # Deliverables decision either way, and the per-segment writer-target
-        # view now also shows the cp segment itself to the direct-target check
-        # (a leading `cd` used to hide it behind argv[0]).
-        ["sh", "-c", f"cd . && cp {hidden_source} {deliverables / '.env'}"],
-    ):
-        blocked = _shell_guard_text(reg,
-            {"cmd": command, "cwd": str(workspace)}, "advanced",
-        )
-        assert blocked and "WORKSPACE_SHELL_BLOCKED" in blocked
-
-    # cp -s/--symbolic-link creates a symlink from an ordinary source. It is
-    # distinct from cp's link-preservation flags, but its new payload must use
-    # the same Deliverables boundary.
-    for command in (
-        ["cp", "-s", str(source), str(deliverables)],
-        ["cp", "-as", str(source), str(deliverables)],
-        ["cp", "--symbolic-link", str(source), str(deliverables)],
-    ):
-        blocked = _shell_guard_text(reg,
-            {"cmd": command, "cwd": str(workspace)}, "advanced",
-        )
-        assert blocked and "WORKSPACE_SHELL_BLOCKED" in blocked
-
-    link_source = workspace / "ordinary.txt"
-    link_source.write_text("ordinary", encoding="utf-8")
-    try:
-        link_blocked = _shell_guard_text(reg,
-            {"cmd": ["ln", "-s", str(link_source), str(deliverables)], "cwd": str(workspace)},
-            "advanced",
-        )
-    except OSError:
-        pytest.skip("symlinks unavailable on this platform")
-    assert link_blocked and "WORKSPACE_SHELL_BLOCKED" in link_blocked
-
-    ordinary_move = workspace / "move-me.txt"
-    ordinary_move.write_text("move", encoding="utf-8")
-    assert _shell_guard_text(reg,
-        {"cmd": ["mv", str(ordinary_move), str(deliverables)], "cwd": str(workspace)},
-        "advanced",
-    ) is None
-    moved_link = workspace / "moved-link"
-    try:
-        moved_link.symlink_to(link_source)
-    except OSError:
-        pytest.skip("symlinks unavailable on this platform")
-    moved_link_blocked = _shell_guard_text(reg,
-        {"cmd": ["mv", str(moved_link), str(deliverables)], "cwd": str(workspace)},
-        "advanced",
-    )
-    assert moved_link_blocked and "WORKSPACE_SHELL_BLOCKED" in moved_link_blocked
-
-    # A regular source remains usable with link-preserving flags; only an
-    # actual source symlink needs the payload-target check.
-    assert _shell_guard_text(reg,
-        {"cmd": ["cp", "-P", str(ordinary_move), str(deliverables)], "cwd": str(workspace)},
-        "advanced",
-    ) is None
-    # The uppercase ``-S`` suffix option must not be mistaken for lowercase
-    # ``cp -s`` symlink creation when its attached suffix contains an ``s``.
-    assert _shell_guard_text(reg,
-        {"cmd": ["cp", "-Ssuffix", str(ordinary_move), str(deliverables)], "cwd": str(workspace)},
-        "advanced",
-    ) is None
-    # Attached suffix text that contains flag-like letters must not turn an
-    # ordinary symlink-following copy into link-preservation mode.
-    suffix_target = workspace / "suffix-target.txt"
-    suffix_target.write_text("suffix", encoding="utf-8")
-    suffix_link = workspace / "suffix-link"
-    try:
-        suffix_link.symlink_to(suffix_target)
-    except OSError:
-        pytest.skip("symlinks unavailable on this platform")
-    assert _shell_guard_text(reg,
-        {"cmd": ["cp", "-Sbak", str(suffix_link), str(deliverables)], "cwd": str(workspace)},
-        "advanced",
-    ) is None
-    relative_link = workspace / "relative-link"
-    try:
-        relative_link.symlink_to("../outside-target")
-    except OSError:
-        pytest.skip("symlinks unavailable on this platform")
-    for command in (
-        ["mv", str(relative_link), str(deliverables)],
-        ["cp", "-P", str(relative_link), str(deliverables)],
-        ["cp", "-d", str(relative_link), str(deliverables)],
-        ["cp", "--preserve=links", str(relative_link), str(deliverables)],
-    ):
-        blocked = _shell_guard_text(reg,
-            {"cmd": command, "cwd": str(workspace)}, "advanced",
-        )
-        assert blocked and "WORKSPACE_SHELL_BLOCKED" in blocked
-
-    # The same payload check applies when the destination is a new explicit
-    # pathname rather than an existing directory. Ordinary files keep this
-    # path, while link-preserving cp/mv and ln -s cannot smuggle an escaping
-    # symlink through the generic workspace root.
-    for command in (
-        ["mv", str(relative_link), str(deliverables / "move-explicit")],
-        ["cp", "-P", str(relative_link), str(deliverables / "copy-p-explicit")],
-        ["cp", "-d", str(relative_link), str(deliverables / "copy-d-explicit")],
-        ["cp", "-a", str(relative_link), str(deliverables / "copy-a-explicit")],
-        ["cp", "--preserve=links", str(relative_link), str(deliverables / "copy-links-explicit")],
-        ["cp", "-s", str(source), str(deliverables / "copy-s-explicit")],
-        ["cp", "--symbolic-link", str(source), str(deliverables / "copy-symbolic-explicit")],
-        ["ln", "-s", "../outside-target", str(deliverables / "ln-explicit")],
-        ["ln", "-s", "-r", "ordinary.txt", str(deliverables / "ln-relative-explicit")],
-        ["ln", "-sr", "ordinary.txt", str(deliverables / "ln-relative-cluster")],
-        ["ln", "-s", "--relative", "ordinary.txt", str(deliverables / "ln-relative-long")],
-    ):
-        blocked = _shell_guard_text(reg,
-            {"cmd": command, "cwd": str(workspace)}, "advanced",
-        )
-        assert blocked and "WORKSPACE_SHELL_BLOCKED" in blocked
-    assert _shell_guard_text(reg,
-        {"cmd": ["cp", str(ordinary_move), str(deliverables / "copy-explicit.txt")], "cwd": str(workspace)},
-        "advanced",
-    ) is None
-    assert _shell_guard_text(reg,
-        {"cmd": ["mv", str(ordinary_move), str(deliverables / "move-explicit.txt")], "cwd": str(workspace)},
-        "advanced",
-    ) is None
-
-    # Relative-link mode remains usable when the cwd-resolved source is inside
-    # Deliverables; the fix must not become a blanket denial of ``ln -r``.
-    inside = deliverables / "inside.txt"
-    inside.write_text("inside", encoding="utf-8")
-    assert _shell_guard_text(reg,
-        {"cmd": ["ln", "-s", "-r", str(inside), str(deliverables / "inside-link")], "cwd": str(workspace)},
-        "advanced",
-    ) is None
-
+        assert resolved == (deliverables / relative).resolve() and reason == ""
     link = deliverables / "link"
     try:
         link.symlink_to(outside, target_is_directory=True)
     except OSError:
         pytest.skip("symlinks unavailable on this platform")
-    blocked_link = _shell_guard_text(reg,
-        {"cmd": ["touch", str(link / "escaped.txt")], "cwd": str(workspace)},
-        "advanced",
-    )
-    assert blocked_link and "WORKSPACE_SHELL_BLOCKED" in blocked_link
-
-    alias = workspace / "public"
-    try:
-        alias.symlink_to(deliverables, target_is_directory=True)
-    except OSError:
-        pytest.skip("symlinks unavailable on this platform")
-    alias_into_deliverables = _shell_guard_text(reg,
-        {"cmd": ["touch", str(alias / ".env")], "cwd": str(workspace)},
-        "advanced",
-    )
-    assert alias_into_deliverables and "WORKSPACE_SHELL_BLOCKED" in alias_into_deliverables
-
-    from ouroboros.tools.shell import _resolve_declared_output, _run_shell
-
-    declared_hidden, hidden_reason = _resolve_declared_output(
-        ctx,
-        str(deliverables / ".hidden" / "file"),
-        workspace,
-        cwd_root="active_workspace",
-    )
-    assert declared_hidden is None and "hidden" in hidden_reason.lower()
-    declared_link, link_reason = _resolve_declared_output(
-        ctx,
-        str(link / "declared.txt"),
-        workspace,
-        cwd_root="active_workspace",
-    )
-    assert declared_link is None and "escapes" in link_reason.lower()
-
-    # A lexical hidden/credential name stays protected even when an existing
-    # Deliverables entry is a symlink whose resolved target is ordinary.
-    benign = deliverables / "benign.txt"
-    benign.write_text("ordinary", encoding="utf-8")
-    hidden_alias = deliverables / ".env"
-    try:
-        hidden_alias.symlink_to(benign)
-    except OSError:
-        pytest.skip("symlinks unavailable on this platform")
-    for command in (
-        ["touch", str(hidden_alias)],
-        ["cp", str(source), str(hidden_alias)],
-    ):
-        blocked = _shell_guard_text(reg,
-            {"cmd": command, "cwd": str(workspace)}, "advanced",
-        )
-        assert blocked and "WORKSPACE_SHELL_BLOCKED" in blocked
-
-    custody = _run_shell(
-        ctx,
-        ["cp", str(source), str(deliverables / "custody.txt")],
-        cwd=str(workspace),
-    )
+    resolved, reason = _resolve_declared_output(ctx, str(link / "declared.txt"), workspace, cwd_root="active_workspace")
+    assert resolved is None and "escapes" in reason.lower()
+    custody = _run_shell(ctx, ["cp", str(source), str(deliverables / "custody.txt")], cwd=str(workspace))
     assert "ARTIFACT_OUTPUT_UNDECLARED" in custody
-
-    child_ctx = ToolContext(
-        repo_dir=system,
-        drive_root=data,
-        workspace_root=workspace,
-        workspace_mode="external",
-        task_id="nested-deliverables-child-test",
-        task_constraint=TaskConstraint(
-            mode="acting_subagent",
-            surface="external_workspace",
-            write_root=str(workspace),
-        ),
-    )
-    child_registry = ToolRegistry(repo_dir=system, drive_root=data)
-    child_registry.set_context(child_ctx)
-    child_blocked = _shell_guard_text(child_registry,
-        {"cmd": ["touch", str(deliverables / "child.txt")], "cwd": str(workspace)},
-        "advanced",
-    )
-    assert child_blocked and "WORKSPACE_SHELL_BLOCKED" in child_blocked
-
-    executor_ref = {
-        "type": "docker_exec",
-        "id": "nested-deliverables-executor",
-        "container_name": "nested-deliverables-executor",
-        "network": "none",
-        "path_mappings": [
-            {"host_path": str(workspace), "backend_path": "/workspace"},
-            {"host_path": str(deliverables), "backend_path": "/deliverables"},
-        ],
-    }
-    executor_ctx = ToolContext(
-        repo_dir=system,
-        drive_root=data,
-        workspace_root=workspace,
-        workspace_mode="external",
-        task_id="nested-deliverables-executor-test",
-        executor_ref=executor_ref,
-    )
-    executor_registry = ToolRegistry(repo_dir=system, drive_root=data)
-    executor_registry.set_context(executor_ctx)
-    assert _shell_guard_text(executor_registry,
-        {"cmd": ["touch", "/deliverables/ordinary-backend.txt"], "cwd": str(workspace)},
-        "advanced",
-    ) is None
-    backend_hidden = _shell_guard_text(executor_registry,
-        {"cmd": ["touch", "/deliverables/.env"], "cwd": str(workspace)},
-        "advanced",
-    )
-    assert backend_hidden and "WORKSPACE_SHELL_BLOCKED" in backend_hidden
-    backend_link = _shell_guard_text(executor_registry,
-        {"cmd": ["touch", "/deliverables/link/backend.txt"], "cwd": str(workspace)},
-        "advanced",
-    )
-    assert backend_link and "WORKSPACE_SHELL_BLOCKED" in backend_link
+    assert (deliverables / "custody.txt").read_text() == "ok"
 
 
 def test_external_workspace_deliverables_guard_maps_executor_paths(tmp_path, monkeypatch):
@@ -768,18 +403,6 @@ def test_external_workspace_deliverables_guard_maps_executor_paths(tmp_path, mon
     assert "ARTIFACT_OUTPUT_UNDECLARED" in backend_result
     assert (deliverables / "backend.html").exists()
 
-    backend_hidden = _shell_guard_text(reg,
-        {"cmd": ["touch", "/deliverables/.env"], "cwd": str(workspace)},
-        "advanced",
-    )
-    assert backend_hidden and "WORKSPACE_SHELL_BLOCKED" in backend_hidden
-
-    allowed = _shell_guard_text(reg,
-        {"cmd": ["cp", "/workspace/dist/app.html", str(home / "not-deliverables.html")], "cwd": str(workspace)},
-        "advanced",
-    )
-    assert allowed is None
-
 
 def test_executor_deliverables_root_symlink_keeps_target_policy(tmp_path, monkeypatch):
     system = tmp_path / "system"
@@ -816,25 +439,17 @@ def test_executor_deliverables_root_symlink_keeps_target_policy(tmp_path, monkey
         task_id="deliverables-root-symlink-test",
         executor_ref=executor_ref,
     )
-    reg = ToolRegistry(repo_dir=system, drive_root=data)
-    reg.set_context(ctx)
-    assert _shell_guard_text(reg,
-        {"cmd": ["touch", "/deliverables/ordinary.txt"], "cwd": str(workspace)},
-        "advanced",
-    ) is None
-    hidden = _shell_guard_text(reg,
-        {"cmd": ["touch", "/deliverables/.env"], "cwd": str(workspace)},
-        "advanced",
-    )
-    assert hidden and "WORKSPACE_SHELL_BLOCKED" in hidden
-    escaped = _shell_guard_text(reg,
-        {"cmd": ["touch", "/deliverables/escape/file"], "cwd": str(workspace)},
-        "advanced",
-    )
-    assert escaped and "WORKSPACE_SHELL_BLOCKED" in escaped
+    from ouroboros.tools.shell import _resolve_declared_output
+
+    resolved, reason = _resolve_declared_output(ctx, "/deliverables/ordinary.txt", workspace, cwd_root="active_workspace")
+    assert resolved == (physical / "ordinary.txt").resolve() and reason == ""
+    resolved, reason = _resolve_declared_output(ctx, "/deliverables/.env", workspace, cwd_root="active_workspace")
+    assert resolved is None and "credential" in reason.lower()
+    resolved, reason = _resolve_declared_output(ctx, "/deliverables/escape/file", workspace, cwd_root="active_workspace")
+    assert resolved is None and "escapes" in reason.lower()
 
 
-def test_deliverables_carveout_rejects_a_root_containing_protected_drives(tmp_path, monkeypatch):
+def test_deliverables_keep_actual_runtime_sources_distinct_from_sibling_outputs(tmp_path, monkeypatch):
     runtime = tmp_path / "runtime"
     system = runtime / "repo"
     workspace = tmp_path / "workspace"
@@ -850,13 +465,13 @@ def test_deliverables_carveout_rejects_a_root_containing_protected_drives(tmp_pa
         workspace_mode="external",
         task_id="deliverable-broad-root-test",
     )
-    reg = ToolRegistry(repo_dir=system, drive_root=data)
-    reg.set_context(ctx)
-    blocked = _shell_guard_text(reg,
-        {"cmd": ["touch", str(runtime / "sibling.txt")], "cwd": str(workspace)},
-        "advanced",
-    )
-    assert blocked and "WORKSPACE_SHELL_BLOCKED" in blocked
+    from ouroboros.tools.shell import _resolve_declared_output
+
+    resolved, reason = _resolve_declared_output(ctx, str(runtime / "sibling.txt"), workspace, cwd_root="active_workspace")
+    assert resolved == (runtime / "sibling.txt").resolve() and reason == ""
+    for source in (system / "BIBLE.md", data / "settings.json"):
+        resolved, reason = _resolve_declared_output(ctx, str(source), workspace, cwd_root="active_workspace")
+        assert resolved is None and reason, source
 
 
 def test_malformed_deliverables_config_preserves_ordinary_home_authority_without_shell_crash(tmp_path, monkeypatch):
@@ -1020,11 +635,10 @@ def test_deliverables_carveout_respects_presence_resource_ceiling(tmp_path, monk
     )
     reg = ToolRegistry(repo_dir=system, drive_root=data)
     reg.set_context(ctx)
-    blocked = _shell_guard_text(reg,
-        {"cmd": ["cp", str(source), str(deliverables / "out.html")], "cwd": str(workspace)},
-        "advanced",
-    )
-    assert blocked and "WORKSPACE_SHELL_BLOCKED" in blocked
+    # The actual process cwd is the admitted workspace. A caller explicitly
+    # selecting a user_files process root still needs that resource grant.
+    blocked = reg.execute("run_command", {"cmd": ["true"], "cwd": str(deliverables)})
+    assert "PRESENCE" in blocked and "BLOCKED" in blocked, blocked
     assert not (deliverables / "out.html").exists()
 
 
@@ -1084,16 +698,27 @@ def test_deliverables_shell_presence_grant_preserves_declared_and_undeclared_cus
         {"cmd": command, "cwd": str(workspace)}, "advanced",
     ) is None
 
-    from ouroboros.tools.shell import _resolve_declared_output, _run_shell
+    from ouroboros.tools.shell import _resolve_declared_output
+    from ouroboros.artifacts import collect_task_artifact_records
+    from hashlib import sha256
 
-    result = _run_shell(ctx, command, cwd=str(workspace))
-    assert destination.exists()
+    monkeypatch.setattr("ouroboros.safety.check_safety", lambda *_a, **_kw: (True, ""))
+    result = reg.execute("run_command", {"cmd": command, "cwd": str(workspace)})
+    assert destination.read_bytes() == source.read_bytes() == b"ok", result
     assert "ARTIFACT_OUTPUT_UNDECLARED" in result
     resolved, reason = _resolve_declared_output(
         ctx, str(destination), workspace, cwd_root="active_workspace",
     )
     assert reason == ""
     assert resolved == destination.resolve()
+    declared = deliverables / "declared.html"
+    result = reg.execute("run_command", {"cmd": ["cp", str(source), str(declared)],
+        "cwd": str(workspace), "outputs": [str(declared)]})
+    assert "exit_code=0" in result and "registered output" in result, result
+    records = collect_task_artifact_records(data, ctx.task_id)
+    record = next(row for row in records if row["name"] == declared.name)
+    assert pathlib.Path(record["path"]).read_bytes() == declared.read_bytes() == source.read_bytes()
+    assert record["sha256"] == sha256(source.read_bytes()).hexdigest()
 
 
 def test_deliverables_presence_prefix_uses_logical_user_files_path(
@@ -1150,11 +775,8 @@ def test_deliverables_presence_prefix_uses_logical_user_files_path(
         cwd_root="active_workspace",
     )
     assert resolved is None and "presence" in reason.lower()
-    blocked = _shell_guard_text(reg,
-        {"cmd": ["touch", str(deliverables / "report.html")], "cwd": str(workspace)},
-        "advanced",
-    )
-    assert blocked and "WORKSPACE_SHELL_BLOCKED" in blocked
+    blocked = reg.execute("run_command", {"cmd": ["true"], "cwd": str(deliverables)})
+    assert "PRESENCE" in blocked and "BLOCKED" in blocked, blocked
 
 
 def test_nested_default_deliverables_presence_prefix_stays_narrow(
@@ -1274,54 +896,8 @@ def test_external_deliverables_presence_uses_logical_name_not_physical_basename(
     assert resolved == (physical_output / "report.html").resolve()
 
 
-def test_command_mentions_protected_root_is_boundary_aware():
-    root = "/x/ouroboros/data"
-    # Whole path or a child path → match (the real protected-path cases).
-    assert _command_mentions_protected_root(f"touch {root}", root)
-    assert _command_mentions_protected_root(f"touch {root}/state.json", root)
-    assert _command_mentions_protected_root(f"cat '{root}/x' ", root)
-    # A different sibling path that merely shares the string prefix → NOT a match.
-    assert not _command_mentions_protected_root("touch /x/ouroboros/database/x", root)
-    assert not _command_mentions_protected_root("touch /x/ouroboros/data-backup", root)
-    assert not _command_mentions_protected_root("", root)
-    assert not _command_mentions_protected_root("touch /other/path", root)
-
-
-def test_external_shell_read_blocks_relative_and_symlink_traversal(tmp_path):
-    """Round-2 review: the external read guard must resolve relative paths against
-    the cwd and canonicalize symlinks — string matching alone is bypassable."""
-    system = tmp_path / "system"
-    workspace = tmp_path / "workspace"
-    data = tmp_path / "data"
-    for p in (system, workspace, data):
-        p.mkdir()
-    (data / "settings.json").write_text("{}", encoding="utf-8")
-    reg = ToolRegistry(repo_dir=system, drive_root=data)
-    reg.set_context(ToolContext(repo_dir=system, drive_root=data, workspace_root=workspace, workspace_mode="external"))
-
-    # Relative traversal from the workspace cwd into the sibling data drive.
-    rel = _shell_guard_text(reg, {"cmd": ["cat", "../data/settings.json"], "cwd": str(workspace)}, "advanced")
-    assert "WORKSPACE_SHELL_BLOCKED" in (rel or ""), rel
-
-    # Intra-workspace symlink pointing at the data drive.
-    try:
-        (workspace / "evil").symlink_to(data, target_is_directory=True)
-    except OSError:
-        return  # platform without symlinks
-    sym = _shell_guard_text(reg, {"cmd": ["cat", "evil/settings.json"], "cwd": str(workspace)}, "advanced")
-    assert "WORKSPACE_SHELL_BLOCKED" in (sym or ""), sym
-    # A legitimate relative read inside the workspace stays allowed.
-    (workspace / "ok.txt").write_text("x", encoding="utf-8")
-    assert _shell_guard_text(reg, {"cmd": ["cat", "ok.txt"], "cwd": str(workspace)}, "advanced") is None
-
-
-def test_readonly_git_exemption_does_not_open_a_runtime_write_or_secret_read(tmp_path):
-    """The runtime/secret READ guard exempts commands proven read-only git in every
-    segment. Two git flag families are NOT read-only however read-only the
-    subcommand looks, and both were measured against real git: `--output=<file>`
-    (log/show/diff) TRUNCATES the file, and `--no-index` (diff/grep) prints ANY host
-    file. Riding the exemption, they let an external-workspace task overwrite
-    settings.json and read the credentials the guard exists to protect."""
+def test_git_output_targets_remain_distinct_from_read_operands(tmp_path):
+    """Git output flags identify an actual write; read operands remain reads."""
     system = tmp_path / "system"
     workspace = tmp_path / "workspace"
     data = tmp_path / "data"
@@ -1338,8 +914,8 @@ def test_readonly_git_exemption_does_not_open_a_runtime_write_or_secret_read(tmp
     assert _check(["git", "log", f"--output={data / 'settings.json'}"])
     assert _check(["git", "diff", "--output", str(system / "BIBLE.md")])
     assert _check(["git", "-C", "/tmp", "show", f"--output={data / 'logs' / 'chat.jsonl'}"])
-    # READ of the credential file through `--no-index`.
-    assert _check(["git", "diff", "--no-index", "/dev/null", str(data / "settings.json")])
+    # A read operand does not become a runtime mutation target.
+    assert _check(["git", "diff", "--no-index", "/dev/null", str(data / "settings.json")]) == ""
     # The exemption itself must survive: read-only git AT a runtime target, and an
     # `--output` that lands in host scratch, both stay allowed.
     assert _check(["git", "-C", str(system), "status"]) == ""

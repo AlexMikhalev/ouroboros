@@ -238,15 +238,13 @@ def test_local_candidate_is_measured_after_existing_local_transform(data_root, m
     monkeypatch.setattr(
         local_model,
         "get_manager",
-        lambda: SimpleNamespace(get_context_length=lambda: 8192),
+
+        lambda: SimpleNamespace(serving_context_evidence=lambda: {"context_window": 8192, "confirmed": True}, measure_prepared_input=lambda payload: {"supported": False}),
     )
     monkeypatch.setattr(
         client,
         "_prepare_messages_for_local_context",
-        lambda messages, ctx_len, max_tokens: [{
-            "role": "system",
-            "content": [{"type": "text", "text": "post-local-compactor"}],
-        }],
+        lambda messages, ctx_len, max_tokens: [{"role": "system", "content": "post-local-compactor"}],
     )
     tools = [{
         "type": "function",
@@ -270,6 +268,7 @@ def test_local_candidate_is_measured_after_existing_local_transform(data_root, m
     }]
     assert sent["max_tokens"] == 2048
     final = _rows(data_root)[-1]
+
     raw = _canonical_candidate_bytes(sent)
     assert final["candidate_raw_sha256"] == hashlib.sha256(raw).hexdigest()
     assert final["candidate_raw_size_bytes"] == len(raw)
@@ -297,7 +296,8 @@ def test_local_read_timeout_after_dispatch_is_not_retried(data_root, monkeypatch
     monkeypatch.setattr(
         local_model,
         "get_manager",
-        lambda: SimpleNamespace(get_context_length=lambda: 8192),
+
+        lambda: SimpleNamespace(serving_context_evidence=lambda: {"context_window": 8192, "confirmed": True}, measure_prepared_input=lambda payload: {"supported": False}),
     )
     with ua.usage_scope(_scope(data_root, "task-local-timeout")), ua.bind_physical_attempt_context(
         _physical_context("route-local-timeout")

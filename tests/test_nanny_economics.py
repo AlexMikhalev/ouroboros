@@ -90,7 +90,7 @@ def _start_with_contract(
     payload = json.loads(subagent_runtime.exact_start(ctx, prompt, {
         "snapshot": snapshot,
         "compiled_work_order": compiled_work_order,
-    }))
+    }).text)
     delegate._CUSTODY.clear()
     assert payload["status"] == "started", payload
     return seen["request"]
@@ -102,14 +102,14 @@ def test_the_contract_objective_rides_the_run_instructions_structurally(tmp_path
         "expected_output": "a verified module with passing tests",
     })
     instructions = request["instructions"]
-    assert "HOST TASK OBJECTIVE" in instructions
+    assert "HOST TASK CONTRACT AUTHORITY" in instructions
     assert "ghost-core module" in instructions
-    assert "HOST EXPECTED OUTPUT" in instructions
+    assert instructions.count("verified module with passing tests") == 1
     assert "verified module with passing tests" in instructions
     # The nanny did NOT have to copy the contract into the prompt.
     assert "ghost-core" not in request["prompt"]
     # The prohibitions stay the opening statement of the channel.
-    assert instructions.index("git commit") < instructions.index("HOST TASK OBJECTIVE")
+    assert instructions.index("git commit") < instructions.index("HOST TASK CONTRACT AUTHORITY")
 
 
 def test_direct_start_request_carries_complete_normalized_contract_authority(tmp_path, monkeypatch):
@@ -740,54 +740,13 @@ def test_forced_wrapup_over_a_succeeded_run_stays_silent_below_threshold(tmp_pat
 # -- Configured-session work order wire budget ---------------------------------
 
 
-def test_work_order_preserves_complete_fields_and_refuses_over_one_total_budget():
-    """No ordinary field becomes a misleading 4k prefix; the total wire bound is atomic."""
-    import pytest
+def test_work_order_preserves_complete_fields_above_former_total_budget():
+    from ouroboros.subagent_work_order import compile_external_work_order
 
-    from ouroboros.subagent_work_order import WorkOrderBudgetExceeded, compile_external_work_order
-    from ouroboros.tools.delegate import _ASSIGNMENT_FIELD_CHARS
-
-    limit = _ASSIGNMENT_FIELD_CHARS
-    assert limit == 250_000
-    ordinary = "яё𐍈🚀" * 2_000
-    rendered = compile_external_work_order({"id": "child", "objective": ordinary})
-    assert ordinary in rendered and "OMISSION NOTE" not in rendered
-    with pytest.raises(WorkOrderBudgetExceeded) as refused:
-        compile_external_work_order({"id": "child", "objective": "a" * (limit + 1)})
-    assert refused.value.chars > limit
-    assert len(refused.value.sha256) == 64
-
-
-def test_over_budget_source_request_is_a_small_partial_lens_without_a_prefix():
-    from ouroboros.subagent_work_order import (
-        WorkOrderBudgetExceeded,
-        build_work_order_source_request,
-        compile_external_work_order,
-    )
-
-    marker = "DECISIVE_SOURCE_MARKER"
-    task = {
-        "id": "child-source",
-        "objective": ("x" * 250_100) + marker,
-        "origin_message_ref": {"kind": "chat_message", "message_id": "m-1"},
-    }
-    with pytest.raises(WorkOrderBudgetExceeded) as refused:
-        compile_external_work_order(task)
-    prompt, envelope = build_work_order_source_request(task, refused.value)
-
-    assert len(prompt) < 10_000
-    assert marker not in prompt
-    assert envelope["coverage"] == "partial"
-    assert envelope["complete_chars"] == refused.value.chars
-    assert envelope["complete_sha256"] == refused.value.sha256
-    assert envelope["source"]["kind"] == "task_result"
-    assert envelope["source"]["tool"] == "get_task_result"
-    assert envelope["source"]["arguments"] == {
-        "task_id": "child-source", "include_authority": True,
-        "include_work_order_source": True,
-    }
-    assert envelope["source"]["projection"] == "canonical_work_order"
-    assert "cannot_verify" in prompt
+    objective = "яё𐍈🚀\n" * 55_000 + "DECISIVE_OBJECTIVE_TAIL"
+    rendered = compile_external_work_order({"id": "child", "objective": objective})
+    assert len(objective) > 250_000
+    assert objective in rendered and "OMISSION NOTE" not in rendered
 
 
 def test_an_ordinary_contract_field_reaches_the_run_instructions_complete(tmp_path, monkeypatch):
@@ -797,17 +756,17 @@ def test_an_ordinary_contract_field_reaches_the_run_instructions_complete(tmp_pa
         "expected_output": "ok",
     })
     instructions = request["instructions"]
-    start = instructions.index("HOST TASK OBJECTIVE")
-    end = instructions.index("HOST EXPECTED OUTPUT")
-    field = instructions[start:end]
-    assert "OMISSION NOTE" not in field
-    assert "O" * 4050 in field
+    assert "OMISSION NOTE" not in instructions
+    assert instructions.count("O" * 4050) == 1
 
 
-def test_atomic_compiled_work_order_sends_dynamic_brief_once(tmp_path, monkeypatch):
+@pytest.mark.parametrize("objective", [
+    "UNIQUE_ATOMIC_OBJECTIVE",
+    "яё𐍈🚀\n" * 55_000 + "LARGE_COMPILED_OBJECTIVE_TAIL",
+], ids=["short", "large-unicode"])
+def test_atomic_compiled_work_order_sends_dynamic_brief_once(tmp_path, monkeypatch, objective):
     from ouroboros.subagent_work_order import compile_external_work_order
 
-    objective = "UNIQUE_ATOMIC_OBJECTIVE"
     task = {
         "id": "t-nanny",
         "objective": objective,
@@ -825,6 +784,7 @@ def test_atomic_compiled_work_order_sends_dynamic_brief_once(tmp_path, monkeypat
         prompt=work_order,
         compiled_work_order=True,
     )
+    assert request["prompt"] == work_order
     assert request["prompt"].count(objective) == 1
     assert objective not in request["instructions"]
     assert "git commit" in request["instructions"]

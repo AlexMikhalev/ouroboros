@@ -82,11 +82,11 @@ def _settings(tmp_path, **extra):
     (tmp_path / "settings.json").write_text(json.dumps({"TELEGRAM_CHAT_ID": "42", **extra}), encoding="utf-8")
 
 
-def _send_card(plugin, tmp_path, monkeypatch):
+def _send_card(plugin, tmp_path, monkeypatch, *, wait_for_answer=False):
     _settings(tmp_path)
     monkeypatch.setattr(plugin, "TelegramClient", Client)
     api = Api(tmp_path)
-    asyncio.run(plugin._make_quiz(api)(dict(_EVENT)))
+    asyncio.run(plugin._make_quiz(api)({**_EVENT, "wait_for_answer": wait_for_answer}))
     return api
 
 
@@ -156,6 +156,34 @@ def test_tapped_option_reaches_the_decision_ingress_and_settles_the_card(tmp_pat
                            "\nAnswered: 2. postgres", [])]
 
 
+@pytest.mark.parametrize("required", [True, False])
+@pytest.mark.parametrize("answer_path", ["callback", "reply"])
+def test_settled_quiz_drops_only_required_wait_copy(tmp_path, monkeypatch, required, answer_path):
+    plugin = _load_plugin()
+    api = _send_card(plugin, tmp_path, monkeypatch, wait_for_answer=required)
+    assert ("Waiting for your answer" in _LAST_CLIENT[-1].panels[0][1]) is required
+    token = plugin.telegram_quiz.mint_token("task-1", "q1")
+    if answer_path == "callback":
+        Client.updates = [{"update_id": 70, "callback_query": {
+            "id": "cb", "data": f"qz:{token}:1", "from": {"id": 42},
+            "message": {"message_id": 555, "chat": {"id": 42, "type": "private"}},
+        }}]
+    else:
+        Client.updates = [{"update_id": 70, "message": {
+            "message_id": 600, "chat": {"id": 42, "type": "private"}, "from": {"id": 42},
+            "text": "Keep the prepared choice", "reply_to_message": {"message_id": 555},
+        }}]
+    posts = []
+    assert not _run_poller(plugin, api, monkeypatch, posts,
+                           reply=(200, {"ok": True, "state": "answered", "answered_index": 1}))
+    assert len(posts) == 1 and posts[0][0] == "/chat/decision"
+    text = _LAST_CLIENT[-1].edits[0][2]
+    assert "Waiting for your answer" not in text
+    assert ("Continuing meanwhile: sqlite meanwhile" in text) is not required
+    assert "Answered: " in text
+    assert _LAST_CLIENT[-1].edits[0][3] == []
+
+
 @pytest.mark.parametrize("answer_text", ["Use mysql instead", "  Use mysql instead\n", "2", "`/panic`", "The command is /panic"])
 def test_reply_to_the_card_is_the_owners_own_answer(tmp_path, monkeypatch, answer_text):
     plugin = _load_plugin()
@@ -223,12 +251,35 @@ def test_late_or_unknown_answers_are_toasted_honestly(tmp_path, monkeypatch):
     assert last.toasts == [("cb10", "This question was already answered.")]
     assert last.edits[0][2].endswith("\nAnswered: 1. sqlite")
 
-    # Task settled: expired.
+    # The task had finished, but the card outlived it (В17a=A): the host records
+    # the answer AND delivers it into the card's chat, so the tap succeeds and
+    # the card settles exactly as an ordinary answer does.
     Client.updates = [_callback(11, f"qz:{token}:1")]
-    _run_poller(plugin, api, monkeypatch, [], reply=(409, {"ok": False, "state": "expired_terminal"}))
+    _run_poller(plugin, api, monkeypatch, [],
+                reply=(200, {"ok": True, "state": "answered", "answered_index": 1,
+                             "answered_after_terminal": True, "forwarded": True}))
     last = _LAST_CLIENT[-1]
-    assert last.toasts == [("cb11", "This question has expired — the task moved on.")]
-    assert last.edits == []
+    assert last.toasts == [("cb11", "✅ The task had already finished — your answer "
+                                   "was delivered to the chat.")]
+    assert last.edits[0][2].endswith("\nAnswered: 2. postgres")
+    assert last.edits[0][3] == []  # the keyboard goes, as for any answer
+
+    # A card whose chat has no owner turn to start (machine/hidden): recorded,
+    # never claimed as delivered.
+    Client.updates = [_callback(16, f"qz:{token}:1")]
+    _run_poller(plugin, api, monkeypatch, [],
+                reply=(200, {"ok": True, "state": "answered", "answered_index": 1,
+                             "answered_after_terminal": True, "forwarded": False,
+                             "reason_code": "hidden_chat"}))
+    assert _LAST_CLIENT[-1].toasts == [
+        ("cb16", "✅ Answer recorded. The task had already finished and this card "
+                 "has no chat to deliver it to."),
+    ]
+
+    # A genuinely settled card (already answered by another surface) still 409s.
+    Client.updates = [_callback(17, f"qz:{token}:1")]
+    _run_poller(plugin, api, monkeypatch, [], reply=(409, {"ok": False, "state": "expired_terminal"}))
+    assert _LAST_CLIENT[-1].toasts == [("cb17", "This question has expired — the task moved on.")]
 
     # Unknown to the host.
     Client.updates = [_callback(12, f"qz:{token}:0")]
@@ -297,3 +348,18 @@ def test_owner_commands_keep_dispatch_when_replying_to_quiz(tmp_path, monkeypatc
     injected = _run_poller(plugin, api, monkeypatch, posts)
     assert posts == []
     assert [row["text"] for row in injected] == [command]
+
+
+def test_recommended_option_is_starred_in_the_button_caption(tmp_path, monkeypatch):
+    plugin = _load_plugin()
+    _settings(tmp_path)
+    monkeypatch.setattr(plugin, "TelegramClient", Client)
+    api = Api(tmp_path)
+    event = {**_EVENT, "options": [{"label": "sqlite"}, {"label": "postgres", "detail": "scales", "recommended": True}]}
+    asyncio.run(plugin._make_quiz(api)(event))
+    state = json.loads((tmp_path / "quiz_state.json").read_text(encoding="utf-8"))
+    (token, record), = state["quizzes"].items()
+    assert record["options"] == ["sqlite", "★ postgres"]
+    assert "1. sqlite\n2. ★ postgres" in record["text"]
+    keyboard = plugin.telegram_quiz.quiz_keyboard(token, record["options"])
+    assert [row[0]["text"] for row in keyboard] == ["1. sqlite", "2. ★ postgres"]

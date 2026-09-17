@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
+
 import copy
 import json
 import hashlib  # noqa: F401
@@ -14,6 +16,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from ouroboros.config import get_runtime_mode  # noqa: F401
+from ouroboros.tools.review_helpers import review_enforcement_blocks
 from ouroboros.runtime_mode_policy import (
     core_patch_notice,  # noqa: F401
     format_protected_paths,  # noqa: F401
@@ -115,6 +118,8 @@ def _free_cycle_gate(
     disclosure and WITHOUT buying another review."""
     from ouroboros.config import get_review_enforcement
 
+    if getattr(ctx, "_review_cyber_pending", "") and not review_enforcement_blocks("blocking"):
+        return {"advisory_replay": ctx._review_cyber_pending, "replay_reason": "review_pending"}
     fp = pre_fingerprint.get("fingerprint", "")
     rebuttal_sha = compute_rebuttal_sha256(review_rebuttal)
     contract_fp = commit_review_contract_fingerprint()
@@ -167,7 +172,7 @@ def _free_cycle_gate(
             cycles_paid=int(ceiling["cycles_paid"]), cap=int(ceiling["cap"]),
             enforcement=enforcement, root_task_id=root_task_id, fingerprint=str(fp),
         )
-    if enforcement != "blocking":
+    if not review_enforcement_blocks(enforcement):
         # ADVISORY: neither state hard-blocks a commit — disclose loudly (typed
         # event + result message) and reuse the recorded outcome for free.
         # The identical-replay half of this branch is structurally near-dead
@@ -396,14 +401,14 @@ def _tests_preflight_block_message(managed_needs_proof: bool, test_err: str) -> 
 
 def _managed_candidate_needs_proof(ctx: ToolContext) -> bool:
     """Managed single-run mandate (Q10): True when the authorized resolver's
-    CURRENT candidate tree carries no recorded green-suite proof (advisory ran
+    CURRENT candidate workload carries no recorded green-suite proof (advisory ran
     with skip_tests, or the tree changed since) — the compensating preflight
     must then run PRE-commit, before paid review and before any commit exists,
     regardless of skip_tests/doc-only, so a red candidate is fixed in place
     instead of committed and rolled back.
 
     AUTHORITY (synthesis F2): the proof consulted here is the PROCESS-HELD ctx
-    record pinned by ``record_managed_tests_proof`` when the host itself ran
+    record pinned by the hermetic runner when the host itself ran
     the suite — never the durable ``tests_evidence`` tx copy, which is a plain
     resolver-writable file (forensic only; a forged tree there must not
     suppress the mandatory run). A restart between the proof run and the
@@ -411,11 +416,9 @@ def _managed_candidate_needs_proof(ctx: ToolContext) -> bool:
     if not _authorized_managed_update_resolver(ctx):
         return False
     try:
-        from supervisor.update_merge import worktree_snapshot_tree
+        from ouroboros.commit_admission import preflight_test_proof_matches
 
-        cand_tree, _cand_err = worktree_snapshot_tree("HEAD")
-        proofs = getattr(ctx, "_managed_tests_proof_trees", None) or ()
-        return not (cand_tree and cand_tree in proofs)
+        return not preflight_test_proof_matches(ctx, ctx.repo_dir)
     except Exception:
         log.debug("managed proof check failed; running the preflight", exc_info=True)
         return True
@@ -573,6 +576,12 @@ def _advisory_and_tests_gate(
             ctx, runner=lambda c, **kw: _run_review_preflight_tests(c, **kw))
         if test_err:
             msg = _tests_preflight_block_message(_managed_needs_proof, test_err)
+            if not review_enforcement_blocks("blocking"):
+                from ouroboros.tools.review import _handle_review_block_or_warning
+
+                ctx._last_review_block_reason = "tests_preflight_blocked"
+                _handle_review_block_or_warning(ctx, True, msg, "")
+                return None
             try:
                 run_cmd(["git", "reset", "HEAD"], cwd=ctx.repo_dir)
             except Exception:
@@ -710,6 +719,7 @@ def _run_pre_push_tests(ctx: ToolContext, force: bool = False) -> Optional[str]:
         return run_hermetic_pytest(
             pathlib.Path(ctx.repo_dir),
             max_output=MAX_TEST_OUTPUT,
+            ctx=ctx,
         )
     except Exception as e:
         log.warning(f"Pre-push tests failed with exception: {e}", exc_info=True)
@@ -817,36 +827,21 @@ def _managed_post_commit_tests_gate(
     suite rolls the assisted merge back instead of shipping a warning (ordinary
     commits keep the warning-only contract later in the flow). The gate is
     MANDATORY: neither the caller's skip_tests nor OUROBOROS_PRE_PUSH_TESTS=0
-    can wave a managed merge through untested — but the mandate is "the full
-    suite provably ran green on the exact committed tree", not "run it twice":
-    when the resolver's pre-commit run (advisory preflight or the compensating
-    bypass preflight) pinned a PROCESS-HELD proof for a tree byte-identical to
-    the committed one, that proof is reused and the duplicate run is skipped
-    (Q10). The authority is the host-written ctx record (synthesis F2) — the
+    can wave a managed merge through untested. The shared runner reuses a
+    PROCESS-HELD proof only when candidate files, source index, HEAD and the
+    effective test/environment contract match, after the distinct post-commit
+    baseline checks. A commit changes HEAD and requires a fresh run; repeated
+    checks of the same subject may reuse it. The authority is the ctx record;
     durable ``tests_evidence`` tx copy is resolver-writable forensics and a
-    forged tree there never suppresses this run; a restart between the proof
-    and the commit re-runs the suite once. The terminal record carries the
+    forged tree there never suppresses this run; a restart loses the proof
+    and requires a fresh run. The terminal record carries the
     same review metadata/fingerprints as every sibling failure record, so an
     operator can reconstruct WHICH reviewed revision the gate rejected."""
     if not managed_tx:
         return None
     del skip_tests  # deliberately ignored for managed merges
-    try:
-        committed_tree = run_cmd(
-            ["git", "rev-parse", "HEAD^{tree}"], cwd=ctx.repo_dir
-        ).strip()
-    except Exception:
-        committed_tree = ""
-    proofs = getattr(ctx, "_managed_tests_proof_trees", None) or ()
-    if committed_tree and committed_tree in proofs:
-        try:
-            ctx.emit_progress_fn(
-                "Managed post-commit tests: reusing the green pre-commit hermetic "
-                "run (exact tree match) — no duplicate suite run."
-            )
-        except Exception:
-            pass
-        return None
+    # The shared runner rechecks the post-commit baseline before comparing the
+    # complete workload. A tree-only fast path here would skip both checks.
     post_test_error = _post_commit_result(
         ctx, commit_message, False, test_warning_ref, force=True,
     )
@@ -976,6 +971,24 @@ def _check_ci_status_after_push(repo_dir: pathlib.Path) -> str:
         )
     except Exception:
         return ""
+
+
+def _publish_post_commit_test_fact(ctx, result: str, test_warning: str) -> str:
+    """Carry "the post-commit tests failed" as a TYPED fact beside the text.
+
+    A commit whose post-commit verification failed is PRESERVED and reported as
+    a success with a warning appended, so nothing about the call is an error and
+    nothing may make it one. The failing tests are still the most reflection
+    worthy thing the task did, and a reader that had to find the word in the
+    result body was a keyword gate standing in for a fact the producer holds
+    here. The text is returned byte-identical, which the registry's publication
+    rule requires.
+    """
+    if test_warning:
+        _publish_tool_result(ctx, ToolResult(
+            status="ok", code="OK", text=result, meta={"post_commit_tests": "failed"},
+        ))
+    return result
 
 
 def _format_commit_result(ctx, commit_message, push_status, test_warning):
@@ -1136,7 +1149,7 @@ def _publish_reviewed_commit(
                 result += f"\n⚠️ WARNING: untracked files remain: {files}"
         except Exception:
             pass
-    return result + ci_note
+    return _publish_post_commit_test_fact(ctx, result + ci_note, test_warning)
 
 
 def _repo_commit_push(ctx: ToolContext, commit_message: str,
@@ -1152,7 +1165,7 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str,
     _reset_commit_review_state(ctx)
     _commit_start = time.time()
     if not commit_message.strip():
-        return "⚠️ ERROR: commit_message must be non-empty."
+        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR", text=("⚠️ ERROR: commit_message must be non-empty.")))
     ctx._current_review_commit_message = commit_message
     # A managed marker authorizes exactly one reviewed two-parent resolution.
     from supervisor.update_merge import managed_assisted_tx_for
@@ -1429,7 +1442,11 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str,
                                    block_reason="managed_update_smoke_failed", block_details=_msg_pc,
                                    duration_sec=time.time() - _commit_start)
             return _msg_pc
-        return _format_commit_result(ctx, commit_message, "", test_warning_ref[0]) + "\n\n" + _msg_pc
+        return _publish_post_commit_test_fact(
+            ctx,
+            _format_commit_result(ctx, commit_message, "", test_warning_ref[0]) + "\n\n" + _msg_pc,
+            test_warning_ref[0],
+        )
     if not evolution_claim:
         push_status = _auto_push(ctx.repo_dir)
     return _publish_reviewed_commit(

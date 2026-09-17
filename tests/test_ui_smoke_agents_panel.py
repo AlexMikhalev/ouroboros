@@ -224,7 +224,7 @@ def test_ui_smoke_agents_panel_list_editor(direct_server_with_data):
 def _wizard_step_until(page, predicate_js: str, forward: bool, limit: int = 8) -> None:
     """Walk the wizard with Next/Back until `predicate_js` holds. Steps that hold Continue
     until they have a value (a provider key, the main/light models) get placeholders — the
-    subject here is the Agents step and the summary's Finish, not those steps."""
+    subject here is Models' Available subagents and the summary's Finish, not those steps."""
     placeholders = {
         "#openrouter-key": "sk-or-placeholder-not-real",
         "#main-model": "openai/gpt-5.6-luna",
@@ -232,7 +232,12 @@ def _wizard_step_until(page, predicate_js: str, forward: bool, limit: int = 8) -
     }
     for _ in range(limit):
         if page.locator("#onboarding-available-subagents").count():
-            # The Agents step settles asynchronously (saved roster or generated draft);
+            # Models keeps the roster in a disclosure; open it as an owner would.
+            disclosure = page.locator("details.wizard-collapse").filter(
+                has=page.locator("#onboarding-available-subagents"))
+            if disclosure.count() and not disclosure.evaluate("node => node.open"):
+                disclosure.locator(":scope > summary").click()
+            # The roster settles asynchronously (saved roster or generated draft);
             # judge it only once it shows rows or its own failure line.
             page.wait_for_function(
                 "() => document.querySelectorAll('#onboarding-available-subagents .available-subagent-row').length"
@@ -269,16 +274,17 @@ _WIZARD_ON_SUMMARY_JS = "() => (document.querySelector('.step-title')?.textConte
 
 @pytest.mark.ui_browser
 def test_ui_smoke_agents_panel_wizard_finish_judges_the_roster(direct_server_with_data):
-    """First-run wizard (docs/ARCHITECTURE.md §2): an unrouted entry added on the Agents step
-    does not block Continue; Finish on the summary reports it and, back on Agents, the card
+    """First-run wizard (docs/ARCHITECTURE.md §2): an unrouted entry added on the Models step
+    does not block Continue; Finish on the summary reports it and, back on Models, the card
     is already tinted and self-naming; the fix reconciles line and tint together and the
     second Finish passes the wizard's own checks and enters saving (the save's provider
     round-trip is not this test's subject)."""
     pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")
     from playwright.sync_api import Error as PlaywrightError
     from playwright.sync_api import sync_playwright
+    from tests.test_subscription_setup_browser import capture
 
-    # A saved roster on an OpenRouter-shaped install: the Agents step's preview validates
+    # A saved roster on an OpenRouter-shaped install: the Models step's preview validates
     # the model setup the way a first run does, and the shared fixture's mock-LLM model is
     # not a confirmed main model — so this test mirrors an owner's machine instead.
     settings_path = direct_server_with_data["data_dir"] / "settings.json"
@@ -323,12 +329,15 @@ def test_ui_smoke_agents_panel_wizard_finish_judges_the_roster(direct_server_wit
                     f"Subagent {before + 1} needs")
                 assert not page.evaluate(
                     "() => document.querySelector('#onboarding-available-subagents [data-subagents-validation]').hidden")
+                tinted.scroll_into_view_if_needed()
+                capture(page, "wizard-roster-invalid")
 
                 tinted.locator('[data-subagent-field="model"]').fill("openai/gpt-5.6-luna")
                 page.wait_for_function(
                     "() => document.querySelector('#onboarding-available-subagents [data-subagents-validation]').hidden"
                     " && !document.querySelector('#onboarding-available-subagents .available-subagent-row[data-invalid]')",
                     timeout=5_000)
+                capture(page, "wizard-roster-repaired")
 
                 _wizard_step_until(page, _WIZARD_ON_SUMMARY_JS, forward=True)
                 page.click("#next-btn")

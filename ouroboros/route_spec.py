@@ -25,6 +25,13 @@ class RouteSpec:
     def is_session(self) -> bool:
         return self.kind == ROUTE_KIND_AGENT_SESSION
 
+    @property
+    def supports_account_pin(self) -> bool:
+        """Managed model transports share the same account field as agent sessions."""
+        from ouroboros.provider_models import provider_for_model
+
+        return self.is_session or provider_for_model(self.target_id) == "claudexor"
+
 
 def parse_route_spec(
     raw: Any,
@@ -65,14 +72,20 @@ def parse_route_spec(
         raise ValueError(
             f"{setting}: {where} session target {target!r} uses '::' — a delegated row is spelled harness[=model]"
         )
+    if kind == ROUTE_KIND_API_MODEL:
+        from ouroboros.provider_models import provider_for_model, parse_claudexor_model
+
+        if provider_for_model(target) == "claudexor":
+            parse_claudexor_model(target)  # Validate Auto too, before serialization or execution.
 
     raw_pin = raw.get(pin_key)
     if strict_strings and raw_pin is not None and not isinstance(raw_pin, str):
         raise ValueError(f"{setting}: {where} route.{pin_key} must be a string")
     pin = str(raw_pin or "").strip()
-    if reject_api_pin and pin and kind != ROUTE_KIND_AGENT_SESSION:
-        raise ValueError(f"{setting}: {where} route.{pin_key} is meaningful only for agent_session")
-    return RouteSpec(kind=kind, target_id=target, credential_profile_id=pin)
+    route = RouteSpec(kind=kind, target_id=target, credential_profile_id=pin)
+    if reject_api_pin and pin and not route.supports_account_pin:
+        raise ValueError(f"{setting}: {where} route.{pin_key} is meaningful only for agent_session or a managed model source")
+    return route
 
 
 def route_spec_dict(route: RouteSpec, *, api_kind: str, pin_key: str) -> dict[str, str]:
@@ -81,7 +94,7 @@ def route_spec_dict(route: RouteSpec, *, api_kind: str, pin_key: str) -> dict[st
         "kind": "agent_session" if route.is_session else api_kind,
         "target_id": route.target_id,
     }
-    if route.is_session:
+    if route.supports_account_pin:
         payload[pin_key] = route.credential_profile_id
     return payload
 

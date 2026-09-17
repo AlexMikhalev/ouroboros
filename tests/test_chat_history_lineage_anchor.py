@@ -18,6 +18,8 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from ouroboros.gateway.history import make_chat_history_endpoint
 from ouroboros.subagent_messages import SUBAGENT_MESSAGE_FIELDS
 
@@ -338,8 +340,9 @@ def test_a_folded_review_represents_the_task_it_is_shown_under(tmp_path):
     assert {m.get("task_id") for m in msgs if m.get("is_progress")} >= {"child1"}
 
 
-def test_a_finalizing_parent_counts_as_alive(tmp_path):
-    """`completed` with post-task synthesis still open is FINALIZING, not terminal.
+@pytest.mark.parametrize("status", ["completed", "failed"])
+def test_a_finalizing_parent_counts_as_alive(tmp_path, status):
+    """An answered root with open post-task synthesis is FINALIZING, not terminal.
 
     The file already treats that state as non-terminal for its own annotation;
     the anchor must agree, or a swarm vanishes in the seconds between the answer
@@ -353,7 +356,7 @@ def test_a_finalizing_parent_counts_as_alive(tmp_path):
         tmp_path, chat_lines=chat, progress_lines=progress,
         results={
             "root": {
-                "status": "completed",
+                "status": status,
                 "root_phase_checkpoint": {"post_task_synthesis": "running"},
             },
             "child1": {"status": "completed"},

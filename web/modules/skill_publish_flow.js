@@ -190,7 +190,7 @@ export function skillPublishDialogModel(preflight = {}) {
 }
 
 /** Build the exact ordinary managed-task request after explicit confirmation. */
-export function buildSkillPublishTask(preflight = {}) {
+export function buildSkillPublishTask(preflight = {}, { projectId = '', chatId } = {}) {
     const { skill, repository } = targetFromPreflight(preflight);
     if (!validTaskStart(preflight)) {
         throw new Error('Publish preflight does not authorize a task start.');
@@ -217,6 +217,9 @@ export function buildSkillPublishTask(preflight = {}) {
         warning_count: Number(preflight.warning_count || 0),
     };
     return {
+        source: 'web',
+        ...(text(projectId) ? { project_id: text(projectId) } : { chat_id: 1 }),
+        ...(chatId === undefined ? {} : { chat_id: chatId }),
         description: `Publish the installed skill "${skill}" to "${repository}" by opening a public GitHub pull request. Success requires a validated pull-request receipt for this exact skill and repository.`,
         type: 'skill_publish',
         expected_output: `Return only the validated GitHub pull-request URL opened in "${repository}" for the canonical skill "${skill}".`,
@@ -236,6 +239,8 @@ export async function runSkillPublishFlow(skill, {
     preflightImpl = skillPublishPreflight,
     dialogImpl = openConfirmDialog,
     createTaskImpl = createTask,
+    projectId = '',
+    chatId,
 } = {}) {
     const requestedSkill = text(typeof skill === 'string' ? skill : skill?.name);
     if (!requestedSkill) throw new Error('Skill name is required for publication.');
@@ -262,7 +267,7 @@ export async function runSkillPublishFlow(skill, {
         return { started: false, reason: 'cancelled', preflight };
     }
 
-    const payload = buildSkillPublishTask(preflight);
+    const payload = buildSkillPublishTask(preflight, { projectId, chatId });
     const task = await createTaskImpl(payload);
     return { started: true, task, payload, preflight };
 }

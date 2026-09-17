@@ -397,7 +397,16 @@ def classify_runtime_provider_change(before: dict, after: dict) -> str:
 
 
 def has_remote_provider(settings: dict) -> bool:
-    """Return True when any supported remote-provider credential is configured."""
+    """Return configured access, independently of a source's momentary health."""
+    from ouroboros.provider_models import parse_claudexor_model, provider_for_model
+
+    main = str(settings.get("OUROBOROS_MODEL") or "")
+    if provider_for_model(main) == "claudexor":
+        try:
+            parse_claudexor_model(main)
+            return True
+        except ValueError:
+            pass
     if any(
         str(settings.get(key, "") or "").strip()
         for key in (

@@ -516,13 +516,13 @@ def _create_task_from_body(request: Request, body: Any) -> JSONResponse:
     if task_type in {"evolution", "review", "deep_self_review"}:
         return json_error(
             f"task type {task_type!r} is internal-only and cannot be created via the task API "
-            "(use /evolve or /review); evolution additionally requires advanced/pro runtime mode",
+            "(use /evolve or /review); evolution additionally requires advanced/pro/cyber_pro runtime mode",
             400,
         )
     if workspace_root and task_type != "task":
         return json_error("external workspace tasks must use type='task'", 400)
     try:
-        chat_id = ingress_chat_id(body.get("chat_id"), drive_root, _task_project_id)
+        chat_id = ingress_chat_id(body.get("chat_id"), drive_root, _task_project_id, source=body.get("source"))
         depth = parse_task_depth(body.get("depth"), default=0)
     except ProjectThreadConflict as exc:
         return json_error(str(exc), 400)
@@ -906,7 +906,13 @@ def _task_get_response(request: Request) -> JSONResponse:
     drive_root = request_drive_root(request)
     data = load_effective_task_result(drive_root, task_id)
     if not data:
-        return json_error("task not found", 404)
+        try:
+            (task_results_dir(drive_root, create=False) / f"{task_id}.json").stat()
+        except FileNotFoundError:
+            return json_error("task not found", 404)
+        except OSError:
+            pass
+        return json_error("task result is unavailable", 503)
     payload = public_task_result(data)
     breakdown_view = _task_cost_breakdown_view(drive_root, data)
     if breakdown_view is not None:
@@ -1467,7 +1473,7 @@ def _render_attachment_lines(attachments: Any) -> str:
         label = str(item.get("label") or f"attachment {ordinal + 1}").strip()
         if status == "rejected":
             reason = str(item.get("reason") or "staging_failed").strip()
-            lines.append(f"- {label}: rejected (reason={reason}, ordinal={ordinal})")
+            lines.append(f"- {label}: rejected (reason={reason}, ordinal={ordinal})" + (f" rule: {rule}" if (rule := str(item.get("rule") or "").strip()) else ""))
             continue
         relpath = str(item.get("relpath") or "").strip()
         root = str(item.get("root") or "artifact_store").strip() or "artifact_store"

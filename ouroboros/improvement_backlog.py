@@ -575,6 +575,7 @@ def groom_backlog(drive_root: Any, *, cap: int = _GROOM_CAP) -> int:
             drive_root=pathlib.Path(drive_root),
             task_id="backlog_groom",
             call_type="backlog_groom",
+            model_role="light",
             messages=[{"role": "user", "content": prompt}],
             model=get_light_model(),
             reasoning_effort="low",
@@ -594,7 +595,9 @@ def groom_backlog(drive_root: Any, *, cap: int = _GROOM_CAP) -> int:
         kept_raw = _json.loads(content[start:end + 1])
         if not isinstance(kept_raw, list):
             return 0
-    except Exception:
+    except Exception as exc:
+        from ouroboros.llm_claudexor import propagate_model_error
+        propagate_model_error(exc)
         return 0
 
     # Anti-wipe: every kept item MUST map to an existing fingerprinted item — the

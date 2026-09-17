@@ -127,6 +127,7 @@ class TestCheckWorktreeReadiness:
 
     def test_paths_scoping(self, tmp_path):
         """When paths are provided, only those paths should be checked."""
+        selected = ["ouroboros/loop.py", "ouroboros/config.py"]
         def side_effect(cmd, **kwargs):
             result = MagicMock(returncode=0, stderr="")
             if "status" in cmd and "--porcelain" in cmd:
@@ -135,13 +136,14 @@ class TestCheckWorktreeReadiness:
                 else:
                     result.stdout = " M ouroboros/loop.py\n M tests/test_loop.py\n"
             elif "diff" in cmd:
+                assert cmd[cmd.index("--") + 1:] == selected
                 result.stdout = "small diff"
             else:
                 result.stdout = ""
             return result
 
         with patch("ouroboros.tools.review_helpers.subprocess.run", side_effect=side_effect):
-            warnings = check_worktree_readiness(tmp_path, paths=["ouroboros/loop.py"])
+            warnings = check_worktree_readiness(tmp_path, paths=selected)
             # With path scoping, only ouroboros/loop.py is visible → tests/ not in scope → warning
             assert any("test" in w.lower() for w in warnings)
 

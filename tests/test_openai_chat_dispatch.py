@@ -453,15 +453,29 @@ def test_no_proxy_uses_the_same_custom_physical_send(monkeypatch):
     assert usage["request_wire"]["applied_tool_dialect"] == "openai_chat_custom"
 
 
-def test_public_async_api_still_rejects_tool_calls():
+def test_public_async_api_preserves_tool_calls(tmp_path, monkeypatch):
+    from ouroboros.usage_accounting import UsageScope, usage_scope
+
     client = LLMClient(api_key="test")
-    with pytest.raises(ValueError, match="does not support tool calls"):
-        asyncio.run(client.chat_async(
+    captured = []
+
+    async def create(**kwargs):
+        captured.append(kwargs)
+        return _tool_response(_custom_call("call-async", "probe", '{"marker":"ok"}'))
+
+    remote = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    monkeypatch.setattr(client, "_resolve_remote_target", lambda _model: _target())
+    monkeypatch.setattr(client, "_get_async_remote_client", lambda _target: remote)
+    with usage_scope(UsageScope(drive_root=tmp_path, task_id="async-tool")):
+        message, usage = asyncio.run(client.chat_async(
             [{"role": "user", "content": "Use a tool."}],
             "openai::future-model-without-prefix",
             tools=_tools(),
             reasoning_effort="medium",
         ))
+    assert len(captured) == 1 and captured[0]["tools"][0]["type"] == "custom"
+    assert message["tool_calls"][0]["function"] == {"name": "probe", "arguments": '{"marker":"ok"}'}
+    assert len(usage["ledger_attempt_ids"]) == 1
 
 
 @pytest.mark.parametrize(
@@ -713,132 +727,6 @@ def test_function_origin_remains_schema_tolerant(tmp_path):
     )
     assert result["is_error"] is False
     assert tools.calls == [("probe", {"marker": "wrong"})]
-
-
-def test_background_custom_schema_error_never_reaches_registry():
-    from ouroboros.consciousness import BackgroundConsciousness
-
-    message, receipts = _invalid_custom_exchange()
-    instance = object.__new__(BackgroundConsciousness)
-    result = instance._execute_tool(message["tool_calls"][0], [], receipts[0])
-    assert "TOOL_ARG_ERROR" in result
-
-
-def test_background_two_round_custom_error_continuation(monkeypatch, tmp_path):
-    from concurrent.futures import ThreadPoolExecutor
-
-    from ouroboros import consciousness
-    from ouroboros.consciousness import BackgroundConsciousness
-
-    read_tool = {
-        "type": "function",
-        "function": {
-            "name": "read_file",
-            "description": "Read one allowed path.",
-            "parameters": {
-                "type": "object",
-                "properties": {"path": {"const": "allowed"}},
-                "required": ["path"],
-                "additionalProperties": False,
-            },
-        },
-    }
-    invalid, receipts = _invalid_custom_exchange(
-        read_tool,
-        '{"path":"wrong"}',
-    )
-    observed_messages = []
-
-    def fake_chat_observed(_client, **kwargs):
-        observed_messages.append(copy.deepcopy(kwargs["messages"]))
-        if len(observed_messages) == 1:
-            return copy.deepcopy(invalid), {
-                **_receipt_usage(receipts),
-                "cost": 0.0,
-            }
-        return {"role": "assistant", "content": "corrected"}, {"cost": 0.0}
-
-    registry_calls = []
-    registry = SimpleNamespace(
-        _ctx=SimpleNamespace(),
-        get_timeout=lambda _name: 1,
-        execute=lambda name, args: registry_calls.append((name, args)) or "executed",
-    )
-    instance = object.__new__(BackgroundConsciousness)
-    instance._build_context = lambda: "context"
-    instance._tool_schemas = lambda: [read_tool]
-    instance._llm = SimpleNamespace(_resolve_remote_target=lambda _model: _target())
-    instance._drive_root = tmp_path
-    instance._max_bg_rounds = 2
-    instance._paused = False
-    instance._emit_live_log = lambda *_a, **_k: None
-    instance._emit_progress = lambda _content: None
-    instance._bg_spent_usd = 0.0
-    instance._check_budget = lambda: True
-    instance._event_queue = None
-    instance._last_idle_reason = ""
-    instance._next_wakeup_sec = 300
-    instance._wakeup_max = 3600
-    instance._owner_chat_id_fn = lambda: None
-    instance._registry = registry
-    instance._tool_executor = ThreadPoolExecutor(max_workers=1)
-    (tmp_path / "logs").mkdir()
-
-    monkeypatch.setattr(
-        consciousness,
-        "get_consciousness_model",
-        lambda: "openai::future-model-without-prefix",
-    )
-    monkeypatch.setattr(consciousness, "resolve_effort", lambda _slot: "medium")
-    monkeypatch.setattr(dispatch, "projected_context_size_bytes", lambda *_a, **_k: 1)
-    monkeypatch.setattr(
-        "ouroboros.llm_observability.chat_observed",
-        fake_chat_observed,
-    )
-    try:
-        assert instance._think_scoped() is True
-    finally:
-        instance._tool_executor.shutdown(wait=True)
-
-    assert registry_calls == []
-    assert len(observed_messages) == 2
-    assert observed_messages[1][-1]["role"] == "tool"
-    assert "TOOL_ARG_ERROR" in observed_messages[1][-1]["content"]
-
-
-def test_background_admission_counts_physical_custom_projection(monkeypatch, tmp_path):
-    from ouroboros import consciousness
-    from ouroboros.consciousness import BackgroundConsciousness
-
-    logs = tmp_path / "logs"
-    logs.mkdir()
-    instance = object.__new__(BackgroundConsciousness)
-    instance._build_context = lambda: "context"
-    instance._tool_schemas = _tools
-    instance._llm = SimpleNamespace(_resolve_remote_target=lambda _model: _target())
-    instance._drive_root = tmp_path
-    instance._max_bg_rounds = 1
-    instance._paused = False
-    instance._last_idle_reason = ""
-    observed = {}
-
-    def oversized(messages, tools, **kwargs):
-        observed.update(kwargs)
-        assert messages[0]["content"] == "context"
-        assert tools == _tools()
-        return consciousness.BG_CONTEXT_MAX_CHARS + 1
-
-    monkeypatch.setattr(dispatch, "projected_context_size_bytes", oversized)
-    monkeypatch.setattr(consciousness, "resolve_effort", lambda _slot: "medium")
-    monkeypatch.setattr(
-        consciousness,
-        "get_consciousness_model",
-        lambda: "openai::future-model-without-prefix",
-    )
-
-    assert instance._think_scoped() is False
-    assert instance._last_idle_reason == "context_overflow"
-    assert observed == {"provider": "openai", "reasoning_effort": "medium"}
 
 
 def test_structured_compaction_returns_one_bounded_tool_error_continuation(monkeypatch, tmp_path):

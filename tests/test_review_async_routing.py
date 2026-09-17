@@ -44,7 +44,10 @@ def test_multi_model_review_async_uses_llm_client_chat_async(monkeypatch, tmp_pa
 
     assert calls
     assert calls[0]["model"] == "anthropic/claude-sonnet-4.6"
-    assert calls[0]["temperature"] == 0.2
+    # The review author supplies a host hint; the real client resolves it on
+    # the effective route. This recording fake observes intent, not wire bytes.
+    assert calls[0]["temperature"] is None
+    assert calls[0]["default_temperature"] == 0.2
     assert result["results"][0]["cached_tokens"] == 7
     assert result["results"][0]["cache_write_tokens"] == 2
     assert result["results"][0]["prompt_cache_ttl"] == "default"

@@ -34,6 +34,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from ouroboros.platform_layer import (
+    IS_WINDOWS,
     kill_process_group_id,
     kill_process_tree,
     pid_is_alive,
@@ -251,6 +252,11 @@ def _fingerprint_matches(entry: Dict[str, Any], *, require_measured: bool = Fals
     recorded_cmd = str(fp.get("cmd_sha256") or "")
     if require_measured and not ((recorded_boot or recorded_start) and recorded_cmd):
         return False
+    if IS_WINDOWS and not (recorded_boot or recorded_start):
+        # Before native Windows observations this hash came from submitted argv,
+        # not the live command spelling. Keep its old liveness-only retention;
+        # it never supplies the measured identity required to signal a process.
+        return not require_measured
     if recorded_boot or recorded_start:
         live_start = process_start_time(pid)
         if require_measured and not live_start:
@@ -303,9 +309,16 @@ def _read_ledger_records(
 ) -> tuple[bool, List[Dict[str, Any]], bytes]:
     """Return the latest-per-PID view and the exact bytes that produced it."""
     path = ledger_path(drive_root)
-    if not path.exists():
+    try:
+        path.stat()
+    except FileNotFoundError:
+        if strict and path.is_symlink():
+            return False, [], b""
         return True, [], b""
+    except OSError:
+        return False, [], b""
     entries: List[Dict[str, Any]] = []
+    snapshot = b""
     try:
         import json
 
@@ -313,7 +326,7 @@ def _read_ledger_records(
         # Match the compactor's physical JSONL boundaries. Unicode separators
         # inside JSON strings are payload bytes, not new ledger records.
         for raw_line in snapshot.splitlines():
-            line = raw_line.decode("utf-8", errors="replace").strip()
+            line = raw_line.decode("utf-8", errors="strict" if strict else "replace").strip()
             if not line:
                 continue
             try:
@@ -327,8 +340,8 @@ def _read_ledger_records(
                     return False, [], snapshot
                 continue
             entries.append(obj)
-    except OSError:
-        return False, [], b""
+    except (OSError, UnicodeError):
+        return False, [], snapshot
     # Last record per pid wins (a pid may be re-registered by a newer spawn).
     by_pid: Dict[int, Dict[str, Any]] = {}
     for entry in entries:
@@ -369,7 +382,7 @@ def _rewrite_ledger(
         from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
 
         lock_path = jsonl_append_lock_path(path)
-        lock_fd = acquire_exclusive_file_lock(lock_path, timeout_sec=2.0, stale_sec=10.0)
+        lock_fd = acquire_exclusive_file_lock(lock_path, timeout_sec=2.0, stale_sec=10.0, owner_aware_stale=True)
         if lock_fd is None:
             log.warning("process ledger rewrite skipped: append lock unavailable")
             return
@@ -525,6 +538,7 @@ def live_kept_service_pids(drive_root: pathlib.Path) -> "set[int]":
 
 def live_daemon_root_pids(
     drive_root: pathlib.Path, *, retained_purposes: Optional[set[str]] = None,
+    purposes: Optional[set[str]] = None, strict: bool = False,
 ) -> "set[int]":
     """PIDs of still-alive installation-owned (``daemon``-scope) ledger roots.
 
@@ -535,11 +549,21 @@ def live_daemon_root_pids(
     live, fingerprint-matching ``daemon`` rows qualify; ``kill_pid_tree`` spares
     an excluded pid together with its own descendants, so the delegated harness
     runs under the daemon survive too. Sparing is the safe direction — a row the
-    reaper would keep is a row a worker teardown must not kill.
+    reaper would keep is a row a worker teardown must not kill. Lifecycle admission
+    may restrict ``purposes`` and require a readable ledger with ``strict=True``;
+    absence is empty, corruption is unknown. Neither form grants signal authority.
     """
     pids: set[int] = set()
     try:
-        for entry in _read_ledger(pathlib.Path(drive_root)):
+        if strict:
+            readable, entries = _read_ledger_strict(pathlib.Path(drive_root))
+            if not readable:
+                raise OSError("process custody ledger is unreadable or corrupt")
+        else:
+            entries = _read_ledger(pathlib.Path(drive_root))
+        for entry in entries:
+            if purposes is not None and entry.get("purpose") not in purposes:
+                continue
             retained = entry.get("purpose") in (retained_purposes or set())
             if (entry.get("scope") != "daemon" and not retained) or not _fingerprint_matches(entry):
                 continue
@@ -547,6 +571,8 @@ def live_daemon_root_pids(
             if pid > 0:
                 pids.add(pid)
     except Exception:
+        if strict:
+            raise
         return pids
     return pids
 
@@ -566,9 +592,18 @@ def pending_process_stops(drive_root: pathlib.Path, purposes: "set[str]") -> Lis
     return pending
 
 
+def process_stop_snapshot(drive_root: pathlib.Path, purposes: "set[str]") -> List[Dict[str, Any]]:
+    """Capture this stop's ledger rows before an asynchronous shutdown request."""
+    readable, entries = _read_ledger_strict(pathlib.Path(drive_root))
+    if not readable:
+        raise OSError("process custody ledger is unreadable or corrupt")
+    return [entry for entry in entries if entry.get("purpose") in purposes and _fingerprint_matches(entry)]
+
+
 def stop_ledgered_processes(
     drive_root: pathlib.Path, purposes: "set[str]", *, timeout_sec: float = 5.0,
     unconfirmed: Optional[List[str]] = None,
+    expected_entries: Optional[List[Dict[str, Any]]] = None,
 ) -> List[int]:
     """Kill the installation's own processes of the named purposes, any scope.
 
@@ -589,7 +624,9 @@ def stop_ledgered_processes(
     failures = unconfirmed if unconfirmed is not None else []
     for entry in entries:
         purpose = str(entry.get("purpose") or "")
-        if purpose not in purposes or not _fingerprint_matches(entry, require_measured=True):
+        if (purpose not in purposes
+                or (expected_entries is not None and entry not in expected_entries)
+                or not _fingerprint_matches(entry, require_measured=True)):
             survivors.append(entry)
             continue
         pid = int(entry.get("pid") or 0)
@@ -743,6 +780,12 @@ def reap_orphaned_processes(
     _, entries, previous = _read_ledger_records(drive_root, strict=False)
     if not entries:
         return []
+    retained_roots = {
+        int(entry["pid"]) for entry in entries
+        if ((entry.get("scope") == "daemon" and not str(entry.get("purpose") or "").startswith("companion:"))
+            or entry.get("purpose") in (retained_purposes or set()))
+        and _fingerprint_matches(entry)
+    }
     reaped: List[int] = []
     survivors: List[Dict[str, Any]] = []
     for entry in entries:
@@ -834,11 +877,11 @@ def reap_orphaned_processes(
         try:
             pgid = int(entry.get("pgid") or 0)
             if pgid > 0:
-                kill_process_group_id(pgid)
-            else:
+                kill_process_group_id(pgid, **({"exclude_pids": retained_roots} if retained_roots else {}))
+            if pgid <= 0 or (retained_roots and pid_is_alive(pid)):
                 from ouroboros.platform_layer import kill_pid_tree
 
-                kill_pid_tree(pid)
+                kill_pid_tree(pid, exclude_pids=retained_roots)
             reaped.append(pid)
             append_jsonl(drive_root / "logs" / "supervisor.jsonl", {
                 "ts": utc_now_iso(),

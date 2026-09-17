@@ -51,6 +51,15 @@ CAMPAIGN_FATAL_PROVENANCE_REASONS = frozenset({
     "seed_head_unreadable",
 })
 
+# Non-secret role routing/options, not model IDs. Keep these in the manifest
+# vocabulary without parsing their JSON values as comma-separated model lists.
+MODEL_ROUTE_OPTION_KEYS = (
+    "OUROBOROS_MODEL_ACCOUNTS",
+    "OUROBOROS_MODEL_CONTEXT_WINDOWS",
+    "OUROBOROS_PROCESSING_PREFERENCE",
+    "OUROBOROS_MODEL_PROCESSING_PREFERENCES",
+)
+
 # Active projection used by every NEW run manifest and preflight. Heavy is not an
 # execution slot after Available subagents and must not leak in from ambient env/settings.
 ACTIVE_MODEL_SLOT_KEYS = (
@@ -68,6 +77,7 @@ ACTIVE_MODEL_SLOT_KEYS = (
     "OUROBOROS_EFFORT_TASK",
     "OUROBOROS_EFFORT_REVIEW",
     "OUROBOROS_EFFORT_SCOPE_REVIEW",
+    *MODEL_ROUTE_OPTION_KEYS,
 )
 
 # Historical READ vocabulary. Old durable manifests can still carry Heavy and retain
@@ -407,7 +417,7 @@ def openrouter_account_credits(api_key: str, *, timeout: int = 10) -> float | No
 
 def model_slot_snapshot(settings_path: pathlib.Path | None = None, *,
                         env_overrides: bool = True) -> dict[str, str]:
-    """Return configured model/review slots without exposing provider secrets.
+    """Return configured model/review slots and role options, without provider secrets.
 
     ``env_overrides`` models how the server being described gets its configuration. A server
     started in THIS process's environment reads settings.json but lets the environment win, so
@@ -429,7 +439,8 @@ def model_slot_snapshot(settings_path: pathlib.Path | None = None, *,
         if value is None:
             value = settings.get(key)
         if value not in (None, ""):
-            slots[key] = str(value)
+            slots[key] = (json.dumps(value, ensure_ascii=False)
+                          if key in MODEL_ROUTE_OPTION_KEYS and isinstance(value, dict) else str(value))
     return slots
 
 

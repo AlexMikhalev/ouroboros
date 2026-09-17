@@ -12,7 +12,7 @@
 [![Linux](https://img.shields.io/badge/Linux-x86__64-orange.svg)](https://ouroboros-agent.ai/install/#linux)
 [![Windows](https://img.shields.io/badge/Windows-x64-blue.svg)][download-windows-x64]
 [![OuroborosHub](https://img.shields.io/badge/OuroborosHub-skills%20marketplace-8A2BE2.svg)](https://github.com/razzant/OuroborosHub)
-[![Version 7.0.0-rc.15](https://img.shields.io/badge/version-7.0.0--rc.15-green.svg)](VERSION)
+[![Version 7.0.0](https://img.shields.io/badge/version-7.0.0-green.svg)](VERSION)
 
 Ouroboros is an open-source, general-purpose AI agent whose identity, durable memory, and history continue across tasks and restarts. It works on external projects, coordinates a live swarm of specialist agents, and can rewrite the implementation it runs on, including its code, architecture, prompts, tools, and dependencies. Reflection can also change how it understands itself without severing that continuity.
 
@@ -64,13 +64,13 @@ The desktop packages already contain an optional CLI installer. On macOS, after 
 
 </details>
 
-[download-macos-arm64]: https://github.com/razzant/ouroboros/releases/download/v7.0.0-rc.15/Ouroboros-7.0.0-rc.15.dmg
-[download-windows-x64]: https://github.com/razzant/ouroboros/releases/download/v7.0.0-rc.15/Ouroboros-7.0.0-rc.15-windows-x64.zip
-[download-linux-deb-amd64]: https://github.com/razzant/ouroboros/releases/download/v7.0.0-rc.15/ouroboros_7.0.0-rc.15_amd64.deb
-[download-linux-rpm-x86_64]: https://github.com/razzant/ouroboros/releases/download/v7.0.0-rc.15/ouroboros-7.0.0-rc.15-1.x86_64.rpm
-[download-linux-rpm-red80-x86_64]: https://github.com/razzant/ouroboros/releases/download/v7.0.0-rc.15/ouroboros-7.0.0-rc.15-1.red80.x86_64.rpm
-[download-linux-appimage-x86_64]: https://github.com/razzant/ouroboros/releases/download/v7.0.0-rc.15/Ouroboros-7.0.0-rc.15-linux-x86_64.AppImage
-[download-linux-x86_64]: https://github.com/razzant/ouroboros/releases/download/v7.0.0-rc.15/Ouroboros-7.0.0-rc.15-linux-x86_64.tar.gz
+[download-macos-arm64]: https://github.com/razzant/ouroboros/releases/download/v7.0.0/Ouroboros-7.0.0.dmg
+[download-windows-x64]: https://github.com/razzant/ouroboros/releases/download/v7.0.0/Ouroboros-7.0.0-windows-x64.zip
+[download-linux-deb-amd64]: https://github.com/razzant/ouroboros/releases/download/v7.0.0/ouroboros_7.0.0_amd64.deb
+[download-linux-rpm-x86_64]: https://github.com/razzant/ouroboros/releases/download/v7.0.0/ouroboros-7.0.0-1.x86_64.rpm
+[download-linux-rpm-red80-x86_64]: https://github.com/razzant/ouroboros/releases/download/v7.0.0/ouroboros-7.0.0-1.red80.x86_64.rpm
+[download-linux-appimage-x86_64]: https://github.com/razzant/ouroboros/releases/download/v7.0.0/Ouroboros-7.0.0-linux-x86_64.AppImage
+[download-linux-x86_64]: https://github.com/razzant/ouroboros/releases/download/v7.0.0/Ouroboros-7.0.0-linux-x86_64.tar.gz
 
 Ouroboros bundles [Claudexor](https://github.com/razzant/claudexor) as its local execution layer for delegated coding and hosted-agent review. Ouroboros owns the task, memory, review, and final integration, while Claudexor runs the selected connected coding harness and returns durable execution evidence. [Explore Claudexor](https://claudexor.ai/).
 
@@ -194,7 +194,7 @@ Chromium and WebKit binaries are bundled, but their distro-level shared librarie
 
 ### Connected coding subscriptions
 
-Use your existing **Codex, Claude Code, or Cursor subscriptions** for delegated coding and review. Ouroboros drives them through [Claudexor](https://github.com/razzant/claudexor), its bundled multi-harness engine. Connect accounts in **Settings → Agents**; no separate Claudexor install is needed. Release artifacts carry the exact reviewed engine and Node archives. Source checkouts obtain those same pinned archives on first use.
+Use your existing **Codex, Claude Code, or Cursor subscriptions** for delegated coding and review. Ouroboros drives them through [Claudexor](https://github.com/razzant/claudexor), its bundled multi-harness engine. Connect accounts in **Settings → Accounts** and choose their roles in **Agents**; no separate Claudexor install is needed. Release artifacts carry the exact reviewed engine and Node archives. Source checkouts obtain those same pinned archives on first use.
 
 ### Headless CLI with uv
 
@@ -291,7 +291,7 @@ ouroboros schedule add --name nightly-review --cron "0 2 * * *" "Run a maintenan
 ouroboros schedule list
 ```
 
-External workspaces must be separate Git worktree roots and may not overlap Ouroboros's own repository or data directory. Patch, streaming, detached-task, and schedule semantics are documented in the CLI help and the canonical [architecture](docs/ARCHITECTURE.md).
+External workspaces may be ordinary folders or separate Git worktree roots, and may not overlap Ouroboros's own repository or data directory. Git-specific operations use a Git worktree; ordinary file and process work runs directly in a validated folder. Patch, streaming, detached-task, and schedule semantics are documented in the CLI help and the canonical [architecture](docs/ARCHITECTURE.md).
 
 #### For Agents
 
@@ -449,8 +449,7 @@ and the reason.
 
 | Version | Date | Description |
 |---------|------|-------------|
-| 7.0.0-rc.15 | 2026-09-05 | **Release candidate of 7.0.0 — the round after the first paid run of the live stand on rc.14.** One runtime fix: the boot backfill of the cycle_outcome ledger and the reconcile's own tag now share the state lock, so a second booting worker can no longer duplicate the ledger row of an absorbed cycle (a race present since the outcome-ledger crash-window fix earlier in the 7.0.0 candidates). The live E2E stand is made faithful to the product's own policy: its self-modification scenario asks for a design-system-consistent accent change landed as a reviewed release with the version carriers bumped in the same diff (the triad enforces P9), budget admission waits on reservations in flight instead of halting the run, each lane reserves twice the per-task cap so the in-task cost ceiling binds like a real install, the UI probe opens its browser at use time and reports a closed target as a typed reason, the orphan scan names survivors, and the parity pin tolerates a tree that already carries the accent. Windows: the release-at-once pins time the hold, not the ledger append. |
-| 7.0.0-rc.14 | 2026-09-05 | **Release candidate of 7.0.0 — the audit round after rc.13.** Ten single-intent fixes verified against the first paid run of the live stand: a direct-chat "Stop now" also stops the paid post-task synthesis (summary, reflection, consolidation) through the existing skip marker; review-pack sizing no longer borrows another model's tokenizer density and rejects doubled-cache usage rows as witnesses (the scope pack that was refused at 48% of the reviewer's window now fits); the hermetic tests preflight scrubs every settings key the runtime projects into its environment; the owner is told in chat when retired settings keys are present and not honored; cloudflared is downloaded outside the install lock and the initiating settings save is bounded; the live stand's skill scenario is honest about its privileged permission, its nested test fan-out is capped per lane, and the pack meter measures the full scope input; the web no-undef gate walks catch-parameter patterns and states its guarantee; a conftest guard names any test that leaks a thread. |
+| 7.0.0 | 2026-09-08 | **v7: a modular runtime with full ordinary-conversation tools, complete delegated inputs and visible owner dialogue.** Main and Project conversations retain their chosen tools and working folders; required owner waits preserve the live browser without occupying pooled execution capacity. Publish admission is visible in its intended chat, and GitHub/image/plan failures retain their actual causes. Planning advice stays optional; source-backed evidence, separate host notices and exact-workload test reuse preserve honest review without new approval machinery. Integrates the subscription model and account-role controls, owned startup/restart custody and cross-platform repairs, with Claudexor pinned to 3.10.1. |
 | 6.114.0 | 2026-09-01 | **feat: capability preservation as a first-class invariant, shape-first OpenRouter failover, and a green 3-OS matrix.** Capability preservation joins the immune system as a first-class invariant (#447, stages 1-3: golden capability suite, seam pins that actually differentiate, executable item-21 triggers, binaries judged by magic bytes). Same-model OpenRouter provider failover is now derived from the shape of the replayed reasoning artifact instead of a hard-coded model-family roster (#468): readable text/summary artifacts stay failover-eligible for every family, a bare `response_id` no longer pins, sealed artifacts (encrypted/signed/redacted, not vouched by the anthropic/gemini roster — `openai/` excluded on 2026-07 field evidence) keep the continuity pin on both the dispatch and reroute paths, and the pin reason plus the refusing upstream provider reach durable telemetry. Delegation and chat truth converge: delegated-run questions ride the escalation hierarchy (#204), the routing picker dispatches real routes (#198), typed owner quiz cards and the escalation channel (Q-2a/Q-2b), live-first owner deliveries, honest chat-activity conclusions with budget-pause resume, review findings in the task-card Reviews checkpoint, persistent stable-target registrations, a hold on the live delegated leaf when a nanny round dies unknown, and healed cross-generation custody disclosures. Rich chat stack (markdown, media, galleries, links — Andrei Kaznacheev), Chat viewport stability, Dashboard/Updates one-verdict action surface, Settings effect honesty, skill Repair affordance after preflight failure, node/npm launches through an execution-probed runtime ladder, the `ultra` reasoning-effort tier (@ndrew1337), and an O(delta) in-lock ledger read with a guarded torn-tail append boundary (@deebosh). Claudexor runtime pinned to 3.9.5 with delayed-startup reconciliation, a foreground quota-refresh bridge, and preserved delegated text fragments; Updates restart state survives same-SHA reconnects. CI: the serial service-log suites no longer race the child, web source pins are CRLF-safe on Windows, and the size-ratchet manifest is exact. This tag also carries the untagged 6.113.5 (generation-safe browser cleanup after timed-out tools, #440 audit fix-forward). |
 | 6.113.5 | 2026-08-31 | **fix: browser cleanup after a timed-out tool is generation-safe (integrates community PR #429 by @mikemikimike, closes #409).** A stateful-tool timeout now retires the whole browser generation: the shared state slot is replaced with a fresh object, the abandoned worker keeps writing only into its retired one, and the close is queued on the retiring executor so it always runs on the owning worker thread — including the already-settled race — with the cognitive lease closing after that cleanup. A late infrastructure-error retry that observes a replaced generation closes only its own retired session, so it can no longer cross-thread-kill the next command's browser. Closes the follow-up findings of the #440 post-merge audit; the never-settling-worker session leak stays a disclosed residual of in-process Playwright. |
 | 6.113.4 | 2026-08-30 | **fix: release verification follows the family-mounted sign-in card.** The browser acceptance tests now re-resolve the active per-family login host after every account-list rebuild, matching the placement introduced by the roster UI while preserving the full cancellation, reconciliation, stale-poll, and terminal-race assertions. No lifecycle check is weakened and the managed Claudexor runtime remains pinned to 3.9.2. |
@@ -470,3 +469,8 @@ Older releases are preserved in this repository's history. Older 6.x rows (inclu
 [MIT License](LICENSE)
 
 Created by [Anton Razzhigaev](https://t.me/abstractDL) & Andrew Kaznacheev
+
+Thanks to [Praxis Relay](https://github.com/josephsteuerjr/praxis-relay) and
+[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) for the open-source
+ideas and implementations that informed Ouroboros's subscription-backed model
+transport through Claudexor.

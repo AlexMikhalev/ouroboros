@@ -289,14 +289,14 @@ def test_typed_retry_root_defers_self_review_and_is_host_eligible(
         content="retry complete",
         task_id=retry_id,
         task_type="task",
-        llm_trace={"tool_calls": []},
+        llm_trace={"tool_calls": [{"tool": "task_acceptance_review"}]},
         drive_root=tmp_path,
         messages=[],
         emit_progress=lambda _message, *, incident=None: None,
     ) is True
     assert seen == {
         "is_root_task": True,
-        "result": (True, "auto_nondirect"),
+        "result": (True, "auto_agent_request"),
     }
 
 

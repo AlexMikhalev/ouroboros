@@ -38,6 +38,8 @@ def test_applied_review_download_updates_before_task_terminal(direct_server_with
             page.add_init_script(f"({_CAPTURE_TEST_SOCKET})()")
             page.goto(direct_server_with_data["url"], wait_until="domcontentloaded")
             page.wait_for_function("() => window.__testSockets?.[0]?.readyState === 1")
+            # Initial history must finish before adding this client-only reference.
+            page.get_by_text("Ouroboros has awakened", exact=True).wait_for(state="visible")
             _emit_ws_frame(page, {"type": "chat", "role": "system", "system_type": "review_reference",
                                  "surface": "task_acceptance", "task_id": ctx.task_id,
                                  "chat_id": 1, "state_revision": "a" * 64})

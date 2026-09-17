@@ -47,7 +47,7 @@ from ouroboros.route_spec import (
     route_spec_dict,
 )
 
-from devtools.benchmarks.common.manifests import ACTIVE_MODEL_SLOT_KEYS
+from devtools.benchmarks.common.manifests import ACTIVE_MODEL_SLOT_KEYS, MODEL_ROUTE_OPTION_KEYS
 
 # Every model slot a single-model run pins. Superset that is correct for both the
 # settings.json-profile path (SWE-bench Pro) and the forwarded-env path
@@ -65,7 +65,12 @@ SINGLE_MODEL_SLOT_KEYS = (
 )
 
 BENCHMARK_SUBAGENT_ID = "benchmark-model"
-_ACTIVE_FIXED_MODEL_KEYS = tuple(key for key in ACTIVE_MODEL_SLOT_KEYS if "MODEL" in key)
+# Preserve the active manifest ordering, but compare only actual model-ID slots.
+# Role account/window maps and effort metadata never enter model-list parsing.
+_ACTIVE_FIXED_MODEL_KEYS = tuple(
+    key for key in ACTIVE_MODEL_SLOT_KEYS
+    if key in (*SINGLE_MODEL_SLOT_KEYS, "OUROBOROS_REVIEW_MODELS")
+)
 _ACTIVE_LOCAL_ROUTE_KEYS = (
     "USE_LOCAL_MAIN",
     "USE_LOCAL_LIGHT",
@@ -354,6 +359,7 @@ def runtime_actor_snapshot(
     return {
         "model": actual_model,
         "model_slots": active_model_slots,
+        "model_route_options": {key: settings[key] for key in MODEL_ROUTE_OPTION_KEYS if key in settings},
         "local_routes": local_routes,
         "reviewer_slots": reviewer_projection,
         "available_subagents": projection,

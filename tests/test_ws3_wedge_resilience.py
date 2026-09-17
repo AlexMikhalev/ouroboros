@@ -89,30 +89,27 @@ def test_chat_turn_wedged_detection():
     assert server._chat_turn_wedged(True, now - 100, now, 0) is False    # 0 = disabled
 
 
-def test_chat_turn_liveness_reads_agent_without_taking_the_lock(monkeypatch):
+def test_chat_turn_liveness_reads_all_actors_without_taking_admission_lock(monkeypatch):
     import types
-
     import supervisor.workers as w
+    from supervisor.active_activity import get_direct_activity_registry
 
-    monkeypatch.setattr(w, "_chat_agent", None)
-    assert w.chat_turn_liveness() == (False, None, None)
-
-    monkeypatch.setattr(w, "_chat_agent", types.SimpleNamespace(
-        _busy=True, _current_task_id="t1", _last_activity_ts=1234.0))
-    # Hold _chat_agent_lock to prove the liveness read never blocks on it (a wedged
-    # turn holds the lock for its whole duration — the watchdog must not deadlock).
-    assert w._chat_agent_lock.acquire(blocking=False)
+    registry = get_direct_activity_registry()
+    assert w.chat_turn_liveness() == []
+    for tid, stamp in (("t1", 1234.0), ("t2", 2345.0)):
+        registry.register(tid, 1, actor=types.SimpleNamespace(
+            _busy=True, _current_task_id=tid, _last_activity_ts=stamp))
+    assert w._repo_writer_gate_lock.acquire(blocking=False)
     try:
-        assert w.chat_turn_liveness() == (True, "t1", 1234.0)
+        assert w.chat_turn_liveness() == [("t1", 1234.0), ("t2", 2345.0)]
     finally:
-        w._chat_agent_lock.release()
+        w._repo_writer_gate_lock.release()
 
 
 def test_watchdog_alerts_on_chat_turn_wedge(monkeypatch):
     import types
 
     import server
-    import supervisor.workers as w
 
     monkeypatch.setenv("OUROBOROS_SUPERVISOR_LIVENESS_DEADLINE_SEC", "1")
     alerts = []
@@ -126,7 +123,9 @@ def test_watchdog_alerts_on_chat_turn_wedge(monkeypatch):
     monkeypatch.setattr("supervisor.state.load_state", lambda: {"owner_chat_id": 7})
     monkeypatch.setattr("supervisor.state.append_jsonl", lambda *a, **k: None)
     # The heartbeat stamp is MONOTONIC (OB-03) — seed it on the same clock.
-    monkeypatch.setattr(w, "_chat_agent", types.SimpleNamespace(
+    from supervisor.active_activity import get_direct_activity_registry
+
+    get_direct_activity_registry().register("wedged1", 1, actor=types.SimpleNamespace(
         _busy=True, _current_task_id="wedged1", _last_activity_ts=time.monotonic() - 100))
     stop = threading.Event()  # local per-test token
     try:
@@ -223,10 +222,11 @@ def test_wall_clock_jump_neither_fabricates_nor_masks_a_supervisor_stall(monkeyp
     jump must not MASK a real one.
     """
     import server
-    import supervisor.workers as w
 
     monkeypatch.setenv("OUROBOROS_SUPERVISOR_LIVENESS_DEADLINE_SEC", "1")
-    monkeypatch.setattr(w, "_chat_agent", None)  # isolate the stall half
+    from supervisor.active_activity import get_direct_activity_registry
+
+    get_direct_activity_registry().clear()  # isolate the stall half
     alerts = _collect_alerts(monkeypatch, 11)
 
     boot_mono = 500.0
@@ -264,7 +264,6 @@ def test_wall_clock_jump_neither_fabricates_nor_masks_a_chat_turn_wedge(monkeypa
     import types
 
     import server
-    import supervisor.workers as w
 
     monkeypatch.setenv("OUROBOROS_SUPERVISOR_LIVENESS_DEADLINE_SEC", "1")
     alerts = _collect_alerts(monkeypatch, 13)
@@ -277,7 +276,9 @@ def test_wall_clock_jump_neither_fabricates_nor_masks_a_chat_turn_wedge(monkeypa
     monkeypatch.setattr(server_liveness, "time", clock)
     agent_stub = types.SimpleNamespace(
         _busy=True, _current_task_id="wedged-mono", _last_activity_ts=boot_mono)
-    monkeypatch.setattr(w, "_chat_agent", agent_stub)
+    from supervisor.active_activity import get_direct_activity_registry
+
+    get_direct_activity_registry().register("wedged-mono", 1, actor=agent_stub)
     stop = threading.Event()  # local per-test token
     try:
         server._start_supervisor_liveness_watchdog([boot_mono], stop)

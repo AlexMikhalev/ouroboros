@@ -116,7 +116,7 @@ def cancellation_projection_lock(drive_root: Any) -> Iterator[None]:
 
     path = _intents_path(drive_root)
     lock_path = path.with_name(path.name + ".lock")
-    lock_fd = acquire_exclusive_file_lock(lock_path)
+    lock_fd = acquire_exclusive_file_lock(lock_path, owner_aware_stale=True)
     if lock_fd is None:
         raise TimeoutError("cancel-intent projection lock unavailable")
     try:

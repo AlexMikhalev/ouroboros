@@ -105,10 +105,12 @@ def predicted_subagent_profile(*, write_surface: str = "") -> ToolProfile:
 
 
 def project_room_lens_dir(ctx: Any) -> Optional[pathlib.Path]:
-    """Return a direct-chat room's verified project cwd, otherwise ``None``.
+    """Return a direct-chat room's selected folder, otherwise ``None``.
 
     Promoted/workspace/subagent tasks carry their own workspace; only a direct
-    chat without one may use the injected existing ``_project_room_dir``.
+    chat without one may use the host's ``_project_room_dir``. Its address stays
+    selected if the folder disappears: existence is an operation's concern,
+    never permission to switch back to the system repository.
     """
     if not bool(getattr(ctx, "is_direct_chat", False)):
         return None
@@ -117,12 +119,11 @@ def project_room_lens_dir(ctx: Any) -> Optional[pathlib.Path]:
     meta = getattr(ctx, "task_metadata", None)
     raw = str(meta.get("_project_room_dir") or "").strip() if isinstance(meta, dict) else ""
     if not raw:
+        note = str(meta.get("_project_room_note") or "") if isinstance(meta, dict) else ""
+        if note:
+            raise ValueError(note)
         return None
-    try:
-        candidate = pathlib.Path(raw).resolve(strict=False)
-        return candidate if candidate.is_dir() else None
-    except OSError:
-        return None
+    return pathlib.Path(raw).resolve(strict=False)
 
 
 def load_bound_skill(binding: ResolvedResourceBinding) -> Any:
@@ -171,12 +172,7 @@ def resource_root_path(
 ) -> pathlib.Path:
     if root == "active_workspace":
         active = getattr(ctx, "active_repo_dir", None)
-        candidate = None
-        if callable(active):
-            try:
-                candidate = active()
-            except Exception:
-                candidate = None
+        candidate = active() if callable(active) else project_room_lens_dir(ctx)
         if candidate is None or candidate.__class__.__module__.startswith("unittest.mock"):
             candidate = getattr(ctx, "repo_dir")
         return pathlib.Path(candidate).resolve(strict=False)

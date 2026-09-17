@@ -1,10 +1,13 @@
 import json
 import os
 import pathlib
+import shlex
 import subprocess
 import sys
 import threading
 import time
+
+import pytest
 from types import SimpleNamespace
 
 from ouroboros.tools.registry import ToolRegistry
@@ -760,73 +763,53 @@ def test_user_files_service_without_outputs_reports_audit_gap(tmp_path, monkeypa
     assert stopped["artifact_output_failed"] is False
 
 
-def test_light_start_service_blocks_runtime_data_upload_write(tmp_path, monkeypatch):
+@pytest.mark.serial
+@pytest.mark.parametrize("relative", [False, True])
+def test_light_service_python_body_executes_once_with_bound_environment(tmp_path, monkeypatch, relative):
+    from ouroboros.tools import services
+
     _force_light_runtime(monkeypatch)
-    monkeypatch.setattr("ouroboros.safety.check_safety", lambda *a, **k: (True, ""))
-    repo = tmp_path / "repo"
-    drive = tmp_path / "data"
-    repo.mkdir()
+    repo, drive, home = (tmp_path / name for name in ("repo", "data", "home"))
+    for path in (repo, drive, home):
+        path.mkdir()
     registry = ToolRegistry(repo_dir=repo, drive_root=drive)
     registry._ctx.task_id = "task-service-runtime-data"
     upload = drive / "uploads" / "report.html"
-    task_drive = registry._ctx.task_drive_root()
+    selected_path = "../../uploads/report.html" if relative else str(upload)
+    original_env = services._service_env
+    child_env = {**original_env(), "HOME": str(home), "USERPROFILE": str(home),
+                 "OUROBOROS_DATA_DIR": str(drive), "OUROBOROS_SETTINGS_PATH": str(drive / "settings.json")}
+    monkeypatch.setattr(services, "_service_env", lambda: dict(child_env))
+    decisions = []
 
-    result = registry.execute("start_service", {
-        "name": "runtime_data_writer",
-        "cmd": [
-            sys.executable,
-            "-c",
-            (
-                "from pathlib import Path\n"
-                f"p = Path({str(upload)!r})\n"
-                "p.parent.mkdir(parents=True, exist_ok=True)\n"
-                "p.write_text('bad')\n"
-            ),
-        ],
-        "cwd": str(task_drive),
-        "readiness": {"timeout_sec": 1},
-    })
+    def supervisor(name, args, *_a, **_kw):
+        if name == "start_service":
+            decisions.append((name, args["cmd"]))
+        return True, ""
 
-    assert "LIGHT_MODE_BLOCKED" in result
-    assert "runtime_data" in result
-    assert not upload.exists()
-    assert registry.execute("service_status", {"name": "runtime_data_writer"}).startswith("⚠️ SERVICE_NOT_FOUND")
-
-
-def test_light_start_service_blocks_relative_runtime_data_upload_write(tmp_path, monkeypatch):
-    _force_light_runtime(monkeypatch)
-    monkeypatch.setattr("ouroboros.safety.check_safety", lambda *a, **k: (True, ""))
-    repo = tmp_path / "repo"
-    drive = tmp_path / "data"
-    repo.mkdir()
-    registry = ToolRegistry(repo_dir=repo, drive_root=drive)
-    registry._ctx.task_id = "task-service-runtime-data"
-    upload = drive / "uploads" / "relative-report.html"
-    task_drive = registry._ctx.task_drive_root()
-
-    result = registry.execute("start_service", {
-        "name": "runtime_data_relative_writer",
-        "cmd": [
-            sys.executable,
-            "-c",
-            (
-                "from pathlib import Path\n"
-                "p = Path('../../uploads/relative-report.html')\n"
-                "p.parent.mkdir(parents=True, exist_ok=True)\n"
-                "p.write_text('bad')\n"
-            ),
-        ],
-        "cwd": str(task_drive),
-        "readiness": {"timeout_sec": 1},
-    })
-
-    assert "LIGHT_MODE_BLOCKED" in result
-    assert "runtime_data" in result
-    assert not upload.exists()
-    assert registry.execute("service_status", {"name": "runtime_data_relative_writer"}).startswith("⚠️ SERVICE_NOT_FOUND")
+    monkeypatch.setattr("ouroboros.safety.check_safety", supervisor)
+    body = ("import os, time\nfrom pathlib import Path\n"
+            f"p = Path({selected_path!r})\np.parent.mkdir(parents=True, exist_ok=True)\n"
+            "with p.open('a', newline='') as output: output.write('once\\n')\n"
+            + "\n".join(f"assert os.environ[{key!r}] == {child_env[key]!r}" for key in
+                        ("HOME", "USERPROFILE", "OUROBOROS_DATA_DIR", "OUROBOROS_SETTINGS_PATH"))
+            + "\nprint('READY', flush=True)\ntime.sleep(60)\n")
+    command = [sys.executable, "-c", body]
+    try:
+        started = registry.execute("start_service", {
+            "name": "python_writer", "cmd": command, "cwd": str(registry._ctx.task_drive_root()),
+            "readiness": {"log_contains": "READY", "timeout_sec": 3},
+        })
+        payload = json.loads(started)
+        assert payload["ready"] and payload["pid"] > 0, started
+        assert decisions == [("start_service", command)]
+        assert upload.read_bytes() == b"once\n"
+    finally:
+        services._stop_service(registry._ctx, name="python_writer")
+    assert registry.execute("service_status", {"name": "python_writer"}).startswith("⚠️ SERVICE_NOT_FOUND")
 
 
-def test_light_start_service_blocks_env_runtime_data_upload_write(tmp_path, monkeypatch):
+def test_light_start_service_blocks_explicit_runtime_data_upload_redirect(tmp_path, monkeypatch):
     _force_light_runtime(monkeypatch)
     monkeypatch.setattr("ouroboros.safety.check_safety", lambda *a, **k: (True, ""))
     repo = tmp_path / "repo"
@@ -838,13 +821,13 @@ def test_light_start_service_blocks_env_runtime_data_upload_write(tmp_path, monk
 
     result = registry.execute("start_service", {
         "name": "runtime_data_env_writer",
-        "cmd": ["sh", "-c", "mkdir -p \"$OUROBOROS_DATA_DIR/uploads\" && echo bad > \"$OUROBOROS_DATA_DIR/uploads/env-report.html\""],
+        "cmd": ["sh", "-c", f"mkdir -p {shlex.quote(str(upload.parent))} && echo bad > {shlex.quote(str(upload))}"],
         "cwd": str(registry._ctx.task_drive_root()),
         "readiness": {"timeout_sec": 1},
     })
 
-    assert "LIGHT_MODE_BLOCKED" in result
-    assert "runtime_data" in result
+    assert "BLOCKED" in result, result
+    assert str(upload.parent) in result
     assert not upload.exists()
     assert registry.execute("service_status", {"name": "runtime_data_env_writer"}).startswith("⚠️ SERVICE_NOT_FOUND")
 

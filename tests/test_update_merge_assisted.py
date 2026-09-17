@@ -1180,53 +1180,64 @@ def test_tests_evidence_records_only_for_authorized_resolver_and_live_suite(tmp_
     """Single-run contract (Q10): the pre-commit proof is recorded only by the
     AUTHORIZED resolver and only when the suite actually ran (an env-disabled
     suite must not forge a proof)."""
+    from ouroboros import preflight_runner as pr
+    from ouroboros.commit_admission import preflight_test_proof_matches
+    from tests.test_advisory_preflight import _stub_preflight_lanes
+
     repo, head, plan, tx = _materialized_conflict_tx(tmp_path, monkeypatch)
     meta = _authority_metadata(tx)
-
+    lanes = _stub_preflight_lanes(repo, monkeypatch)
+    ctx = SimpleNamespace(task_id="resolver", task_metadata=meta, repo_dir=repo)
+    assert update_merge.record_managed_tests_proof(ctx) == ""  # no execution yet
     monkeypatch.setenv("OUROBOROS_PRE_PUSH_TESTS", "0")
-    assert update_merge.record_managed_tests_evidence("resolver", meta) == ""
+    assert update_merge.record_managed_tests_proof(ctx) == ""
     monkeypatch.setenv("OUROBOROS_PRE_PUSH_TESTS", "1")
-    assert update_merge.record_managed_tests_evidence("other-task", meta) == ""
 
     # The proof covers what the hermetic runner actually tests: the live
     # worktree projection INCLUDING unstaged edits and untracked files.
+    (repo / "a.txt").write_text("the resolver's precious resolution, unstaged\n")
     (repo / "untracked_helper.py").write_text("VALUE = 1\n")
-    tree = update_merge.record_managed_tests_evidence("resolver", meta)
-    assert tree
+    assert pr.run_hermetic_pytest(repo, ctx=ctx, phase=pr.PRE_COMMIT_PHASE) is None
+    tree = update_merge.record_managed_tests_proof(ctx)
+    assert tree and len(lanes) == 2 and preflight_test_proof_matches(ctx, repo)
     assert _git(repo, "show", f"{tree}:untracked_helper.py").stdout == "VALUE = 1\n"
     assert "the resolver's precious resolution" in _git(repo, "show", f"{tree}:a.txt").stdout
     assert update_merge.managed_tests_evidence_covers(tree)
     assert not update_merge.managed_tests_evidence_covers("0" * 40)
     assert not update_merge.managed_tests_evidence_covers("")
-
-    # Fidelity guard: an untracked SYMLINK is not faithfully reproduced by the
-    # runner's untracked copy — no proof may be recorded for such a candidate.
+    foreign = SimpleNamespace(**{**vars(ctx), "task_id": "other-task"})
+    assert update_merge.record_managed_tests_proof(foreign, force=True) == ""
+    # The copied symlink is a regular file in the tested projection, which
+    # cannot prove the live candidate's different tree even after green lanes.
     (repo / "sneaky_link").symlink_to("a.txt")
-    assert update_merge.record_managed_tests_evidence("resolver", meta) == ""
+    assert pr.run_hermetic_pytest(repo, ctx=ctx, phase=pr.PRE_COMMIT_PHASE) is None
+    assert len(lanes) == 4 and not preflight_test_proof_matches(ctx, repo)
 
 
-def test_managed_post_commit_gate_reuses_exact_tree_proof(tmp_path, monkeypatch):
+def test_managed_post_commit_gate_reuses_matching_workload_proof(tmp_path, monkeypatch):
     """The managed gate's mandate is 'the suite provably ran green on the exact
     committed tree' — proof-by-identity skips the duplicate run; any mismatch
     still pays a fresh mandatory run. Synthesis F2: the AUTHORITY is the
     process-held ctx record — FORGED durable ``tests_evidence`` (the tx marker
     is a plain resolver-writable file) never suppresses the mandatory run."""
+    from ouroboros import preflight_runner as pr
     from ouroboros.tools import git as git_tool
+    from tests.test_advisory_preflight import _stub_preflight_lanes
 
     repo, head = _init_repo(tmp_path)
     _point_at(monkeypatch, tmp_path, repo, head)
+    ran = _stub_preflight_lanes(repo, monkeypatch)
+    _git(repo, "commit", "-qm", "candidate with suite").check_returncode()
     committed_tree = _git(repo, "rev-parse", "HEAD^{tree}").stdout.strip()
     ctx = SimpleNamespace(repo_dir=str(repo), emit_progress_fn=lambda *_a, **_k: None)
 
-    # Process-held proof for the exact committed tree -> no duplicate run.
-    ctx._managed_tests_proof_trees = {committed_tree}
-    monkeypatch.setattr(
-        git_tool, "_post_commit_result",
-        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("duplicate suite run")),
-    )
+    assert pr.run_hermetic_pytest(repo, ctx=ctx, phase=pr.PRE_COMMIT_PHASE) is None
+    proof = ctx._preflight_test_proof
+    assert proof.tree == committed_tree and len(ran) == 2
     assert git_tool._managed_post_commit_tests_gate(
         ctx, "msg", 0.0, True, [""], {"target_sha": "x" * 40},
     ) is None
+    assert len(ran) == 2 and ctx._preflight_test_proof is proof
 
     # F2(a): a FORGED durable evidence file (tree matches the committed tree)
     # WITHOUT a ctx record -> the gate still runs the mandatory suite.
@@ -1235,23 +1246,22 @@ def test_managed_post_commit_gate_reuses_exact_tree_proof(tmp_path, monkeypatch)
         "tests_evidence": {"tree": committed_tree},
     })
     forged_ctx = SimpleNamespace(repo_dir=str(repo), emit_progress_fn=lambda *_a, **_k: None)
-    ran = []
-    monkeypatch.setattr(
-        git_tool, "_post_commit_result",
-        lambda *_a, **_k: ran.append("suite") and None,
-    )
+    # An old tree-set spelling is also insufficient; it is negative evidence
+    # in this fixture, never installed as the successful proof.
+    forged_ctx._managed_tests_proof_trees = {committed_tree}
+    ran.clear()
     assert git_tool._managed_post_commit_tests_gate(
         forged_ctx, "msg", 0.0, True, [""], {"target_sha": "x" * 40},
     ) is None
-    assert ran == ["suite"], "forged durable tests_evidence suppressed the mandatory run"
+    assert len(ran) == 2, "forged durable/legacy evidence suppressed the mandatory lanes"
 
     # Mismatched ctx proof -> the mandatory run still happens too.
-    ctx._managed_tests_proof_trees = {"0" * 40}
+    ctx._preflight_test_proof = proof._replace(tree="0" * 40)
     ran.clear()
     assert git_tool._managed_post_commit_tests_gate(
         ctx, "msg", 0.0, True, [""], {"target_sha": "x" * 40},
     ) is None
-    assert ran == ["suite"]
+    assert len(ran) == 2
 
 
 def test_rollback_preserves_uncommitted_resolution_on_deterministic_branch(tmp_path, monkeypatch):

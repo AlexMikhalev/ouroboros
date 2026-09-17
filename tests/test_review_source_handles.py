@@ -100,3 +100,244 @@ def test_unavailable_review_projection_does_not_hide_valid_completion_source(tmp
     result = {"task_id": "source", "review_projection": {"panels": panels},
               "completion_observations": {"source_ref": ref}}
     assert artifacts.read_task_result_source_bytes(tmp_path, result, Path(ref["path"]).name, ref["path"]) == raw
+
+
+def _nested_acceptance_sources(child):
+    result = artifacts.store_actor_source_bytes(
+        child, "source", category="tool_results", source_id="command-output",
+        data=b"complete output beyond the preview", extension="txt",
+    )
+    trajectory = artifacts.persist_tool_trajectory_source(child, "source", [{
+        "tool": "run_command", "result": "preview", "result_partial": True,
+        "result_source_ref": result,
+    }])
+    raw = json.dumps({"authority": "host_root", "request": {
+        "surface": "task_acceptance", "evidence": {"tool_trajectory_source_ref": trajectory},
+    }}).encode()
+    checkpoint = artifacts.store_actor_source_bytes(
+        child, "source", category="context_checkpoints", source_id="acceptance",
+        data=raw, extension="json",
+    )
+    write_task_result(child, "source", "completed", **_field(checkpoint, "review"))
+    return checkpoint, trajectory, result
+
+
+@pytest.mark.parametrize("outer_already_copied", [False, True])
+def test_nested_acceptance_sources_survive_copy_back_and_cleanup(tmp_path, outer_already_copied):
+    parent = tmp_path / "canonical"
+    child = prepare_task_drive(parent, "source", "empty")
+    refs = _nested_acceptance_sources(child)
+    before = [artifacts.read_actor_source_bytes(child, "source", ref) for ref in refs]
+    if outer_already_copied:
+        artifacts.store_actor_source_bytes(parent, "source", category="context_checkpoints",
+                                           source_id="acceptance", data=before[0], extension="json")
+    for _ in range(2):
+        copied = copy_child_task_result(parent, {"id": "source", "drive_root": str(child)})
+        assert copied["child_ref_promotion"]["status"] == "complete"
+        assert copied["child_ref_promotion"]["promoted_source_handle_count"] == 3
+        assert copied["review_projection"]["panels"][0]["applied_source_ref"] == refs[0]
+    assert remove_subagent_task_drive(parent, "source") is True
+    assert not child.exists()
+    assert [artifacts.read_actor_source_bytes(parent, "source", ref) for ref in refs] == before
+    assert artifacts.collect_task_artifact_records(parent, "source") == []
+    # The trajectory producer preserves the complete original handle contract.
+    assert refs[1]["size"] == len(before[1])
+    assert refs[1]["sha256"] == hashlib.sha256(before[1]).hexdigest()
+    assert refs[1]["read"]["arguments"]["path"] == refs[1]["path"]
+
+
+def test_nested_copy_failure_holds_child_and_rechecks_existing_checkpoint(tmp_path, monkeypatch):
+    parent = tmp_path / "canonical"
+    child = prepare_task_drive(parent, "source", "empty")
+    checkpoint, trajectory, result = _nested_acceptance_sources(child)
+    store = artifacts.store_actor_source_bytes
+
+    def fail_output(*args, **kwargs):
+        if kwargs.get("source_id") == "command-output":
+            raise OSError("output copy failed")
+        return store(*args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(artifacts, "store_actor_source_bytes", fail_output)
+        copied = copy_child_task_result(parent, {"id": "source", "drive_root": str(child)})
+        promotion = copied["child_ref_promotion"]
+        assert promotion["status"] == "incomplete"
+        assert promotion["pending_refs"][0]["path"] == str(
+            artifacts.task_artifact_dir_path(child, "source") / result["path"])
+        assert artifacts.read_actor_source_bytes(parent, "source", checkpoint)
+        assert artifacts.read_actor_source_bytes(parent, "source", trajectory)
+        assert remove_subagent_task_drive(parent, "source") is False
+    copied = copy_child_task_result(parent, {"id": "source", "drive_root": str(child)})
+    assert copied["child_ref_promotion"]["status"] == "complete"
+    assert copied["child_ref_promotion"]["pending_refs"] == []
+    assert remove_subagent_task_drive(parent, "source") is True
+    assert artifacts.read_actor_source_bytes(parent, "source", result) == b"complete output beyond the preview"
+
+
+@pytest.mark.parametrize("selected", [False, True])
+@pytest.mark.parametrize("copy_failure", [False, True])
+@pytest.mark.parametrize("canonical_checkpoint", [False, True], ids=["child_checkpoint", "canonical_checkpoint"])
+def test_nested_trajectory_promotes_existing_call_blobs_without_crawling_prose(tmp_path, monkeypatch, selected, copy_failure, canonical_checkpoint):
+    from ouroboros.observability import persist_call, promote_child_task_refs, retry_pending_child_ref_promotions
+    from ouroboros.review_evidence import build_task_acceptance_evidence
+    from ouroboros.review_evidence_refs import acceptance_evidence_ref_vocabulary, resolve_criteria_evidence_refs
+    from ouroboros.task_results import load_task_result
+    from ouroboros.utils import sanitize_tool_args_for_log
+
+    parent = tmp_path / "canonical"
+    child = prepare_task_drive(parent, "source", "empty")
+    args = {"cmd": "x" * (4000 if selected else 100), "literal": str(child / "not-a-dependency.json")}
+    call = {"tool": "run_command", "tool_call_id": "call", "args": args, "result": "ok"}
+    trace = persist_call(child, task_id="source", call_id="call", call_type="tool", payload=call)
+    ctx = _context(child)
+    ctx.task_id = "source"
+    checkpoint_root = parent if canonical_checkpoint else child
+    ctx.task_metadata = {"budget_drive_root": str(checkpoint_root)}
+    evidence = build_task_acceptance_evidence(
+        ctx, drive_root=child, task_id="source",
+        llm_trace={"tool_calls": [{**call, "args": sanitize_tool_args_for_log("run_command", args), "trace_ref": trace}]},
+        agent_evidence={"tool_trajectory_indices": [0], "corpus_sha256": "f" * 64} if selected else None,
+    )
+    trajectory = evidence["tool_trajectory_source_ref"]
+    assert "corpus_sha256" not in trajectory  # The model cannot author the host handle.
+    section = "tool_trajectory_selected" if selected else "tool_trajectory"
+    citation = evidence[section][0]["ref"]
+    assert acceptance_evidence_ref_vocabulary(evidence)[citation] == "tool_record"
+    criteria = [{"criterion": "command", "status": "supported", "evidence_refs": [citation]}]
+    run = _run()
+    run["request"].update(task_id="source", evidence=evidence)
+    run["actors"][0]["parsed"]["criteria_used"] = criteria
+    review_trace = {"review_runs": [run]}
+    review_projection.publish_acceptance_checkpoint(ctx, review_trace)
+    checkpoint = review_trace["review_runs"][0]["applied_source_ref"]
+    original_checkpoint = artifacts.read_actor_source_bytes(checkpoint_root, "source", checkpoint)
+    write_task_result(child, "source", "completed",
+                      review_projection=load_task_result(checkpoint_root, "source")["review_projection"])
+    task = {"id": "source", "drive_root": str(child)}
+    if copy_failure:
+        store = artifacts.store_actor_source_bytes
+
+        def fail_corpus(*args, **kwargs):
+            if kwargs.get("source_id") == "acceptance_tool_trajectory":
+                raise OSError("corpus copy failed")
+            return store(*args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(artifacts, "store_actor_source_bytes", fail_corpus)
+            copied = copy_child_task_result(parent, task)
+            assert copied["child_ref_promotion"]["status"] == "incomplete"
+            assert copied["child_ref_promotion"]["pending_refs"]
+            assert remove_subagent_task_drive(parent, "source") is False
+        assert retry_pending_child_ref_promotions(parent)["completed"] == ["source"]
+    first_ref = None
+    for _ in range(2):
+        copied = copy_child_task_result(parent, task)
+        assert copied["child_ref_promotion"]["status"] == "complete"
+        ref = copied["review_projection"]["panels"][0]["applied_source_ref"]
+        first_ref = first_ref or ref
+        assert ref == first_ref
+        assert "corpus_sha256" not in ref  # Checkpoints keep their own byte identity.
+    assert artifacts.read_actor_source_bytes(checkpoint_root, "source", checkpoint) == original_checkpoint
+    assert remove_subagent_task_drive(parent, "source") is True
+    assert not child.exists()
+    # Rebase the already promoted source again, then repeat after the child is
+    # gone. Neither a second physical digest nor idempotent copying renames rows.
+    other = tmp_path / "another-canonical"
+    for destination, source_root in ((parent, child), (other, parent), (other, parent)):
+        copied, state = promote_child_task_refs(destination, source_root, "source", copied)
+        assert state["status"] == "complete" and not state["pending_refs"]
+        ref = copied["review_projection"]["panels"][0]["applied_source_ref"]
+        saved = json.loads(artifacts.read_actor_source_bytes(destination, "source", ref))
+        evidence = saved["request"]["evidence"]
+        promoted = evidence["tool_trajectory_source_ref"]
+        assert promoted["corpus_sha256"] == trajectory["sha256"]
+        assert promoted["sha256"] != promoted["corpus_sha256"]
+        assert promoted["artifact_ref"].startswith(f"artifact_store:{promoted['path']}#chars=")
+        raw = artifacts.read_actor_source_bytes(destination, "source", promoted)
+        assert hashlib.sha256(raw).hexdigest() == promoted["sha256"]
+        with pytest.raises(ValueError, match="sha256 verification"):
+            artifacts.read_actor_source_bytes(destination, "source", {**promoted, "sha256": trajectory["sha256"]})
+        assert saved["actors"][0]["parsed"]["criteria_used"] == criteria
+        assert evidence[section][0]["ref"] == citation
+        vocabulary = acceptance_evidence_ref_vocabulary(evidence)
+        assert vocabulary[citation] == "tool_record"
+        assert resolve_criteria_evidence_refs(criteria, vocabulary) == []
+        recovered, complete, issue = artifacts.materialize_tool_args_source(destination, json.loads(raw)[0])
+        assert complete and not issue and recovered == args
+        assert artifacts.collect_task_artifact_records(destination, "source") == []
+
+
+@pytest.mark.parametrize("outer_already_copied", [False, True])
+@pytest.mark.parametrize("loss", ["missing", "corrupt", "legacy_ref"])
+def test_nested_unavailable_source_is_disclosed_without_reconstructing_preview(tmp_path, loss, outer_already_copied):
+    parent = tmp_path / "canonical"
+    child = prepare_task_drive(parent, "source", "empty")
+    checkpoint, trajectory, result = _nested_acceptance_sources(child)
+    source_path = artifacts.task_artifact_dir_path(child, "source") / result["path"]
+    if loss == "missing":
+        source_path.unlink()
+    elif loss == "corrupt":
+        source_path.write_bytes(b"corrupt")
+    else:
+        # The historical producer dropped these fields; the filename is not a
+        # substitute for the missing producer-issued verification contract.
+        legacy = {k: v for k, v in trajectory.items() if k not in {"read", "size", "sha256"}}
+        raw = json.dumps({"request": {"surface": "task_acceptance", "evidence": {
+            "tool_trajectory_source_ref": legacy}}}).encode()
+        checkpoint = artifacts.store_actor_source_bytes(
+            child, "source", category="context_checkpoints", source_id="acceptance",
+            data=raw, extension="json")
+        write_task_result(child, "source", "completed", **_field(checkpoint, "review"))
+    if outer_already_copied:
+        artifacts.store_actor_source_bytes(
+            parent, "source", category="context_checkpoints", source_id="acceptance",
+            data=artifacts.read_actor_source_bytes(child, "source", checkpoint), extension="json")
+        # Same host publication on both roots must still publish its physical
+        # missing-source disclosure after the normal merge selects canonical.
+        projection = {"panels": [{"surface": "task_acceptance", "panel_id": "p",
+                                   "publication_revision": 1, "applied_source_ref": checkpoint}]}
+        write_task_result(parent, "source", "running", review_projection=projection)
+        write_task_result(child, "source", "completed", review_projection=projection)
+    copied = copy_child_task_result(parent, {"id": "source", "drive_root": str(child)})
+    assert copied["child_ref_promotion"]["unavailable_refs"]
+    promoted = copied["review_projection"]["panels"][0]["applied_source_ref"]
+    assert promoted != checkpoint
+    evidence = json.loads(artifacts.read_actor_source_bytes(parent, "source", promoted))["request"]["evidence"]
+    dependency = evidence["tool_trajectory_source_ref"]
+    if loss != "legacy_ref":
+        dependency = json.loads(artifacts.read_actor_source_bytes(parent, "source", dependency))[0]["result_source_ref"]
+    assert dependency["availability"] == "unavailable"
+    assert dependency["reason"] == {"missing": "source_missing", "corrupt": "digest_mismatch", "legacy_ref": "invalid_ref"}[loss]
+    assert not (artifacts.task_artifact_dir_path(parent, "source") / result["path"]).exists()
+
+
+def test_copyback_prepares_bulk_artifacts_and_selected_review_refs_outside_lock(tmp_path, monkeypatch):
+    from ouroboros import headless, observability
+
+    parent = tmp_path / "canonical"
+    child = prepare_task_drive(parent, "source", "empty")
+    _nested_acceptance_sources(child)
+    artifacts.store_task_artifact_bytes(child, "source", "report.txt", b"actual deliverable")
+    write_task_result(child, "source", "completed", artifacts=artifacts.collect_task_artifact_records(child, "source"))
+    lock = parent / "task_results" / "source.json.lock"
+    bulk_copy = headless._copy_child_artifacts_to_parent
+    promote = observability._promote_task_source_ref
+    observed = []
+
+    def copy_bulk(*args, **kwargs):
+        assert not lock.exists(), "bulk artifact copying entered the result lock"
+        observed.append("bulk")
+        return bulk_copy(*args, **kwargs)
+
+    def promote_review(*args, **kwargs):
+        assert not lock.exists(), "CURRENT review reference I/O entered the result lock"
+        observed.append("review")
+        return promote(*args, **kwargs)
+
+    monkeypatch.setattr(headless, "_copy_child_artifacts_to_parent", copy_bulk)
+    monkeypatch.setattr(observability, "_promote_task_source_ref", promote_review)
+    copied = copy_child_task_result(parent, {"id": "source", "drive_root": str(child)})
+    assert copied["child_ref_promotion"]["status"] == "complete"
+    assert observed[0] == "bulk" and "review" in observed
+    assert remove_subagent_task_drive(parent, "source") is True
+    assert (artifacts.task_artifact_dir_path(parent, "source") / "report.txt").read_bytes() == b"actual deliverable"

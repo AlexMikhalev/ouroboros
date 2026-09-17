@@ -39,7 +39,6 @@ def test_registry_core_extraction_preserves_only_proven_facades():
         "system_repo_dir_for",
     }
     guard_names = {
-        "_EPHEMERAL_ALLOWED_TOOLS",
         "_GITHUB_TOKEN_TOOLS",
         "_WEB_TOOLS",
         "_authorized_managed_update_resolver",
@@ -88,14 +87,13 @@ def test_registry_core_extraction_preserves_only_proven_facades():
 
     # Reduced Repair guards are gone; ordinary development keeps the same
     # registry authority as the other top-level tasks.
-    assert len(proven) == 28
+    assert len(proven) == 27
     # Tip adaptation of the reference pin: this tree's facade deliberately keeps
     # the broad HISTORICAL import surface (importers and monkeypatch targets are
     # not migrated in this window), so the reference's exact-32-name equality
     # over vars(registry) does not transfer. The durable fact it protected —
     # execution moved ONCE and the facade authors nothing — is pinned
-    # structurally instead: the module may DEFINE only the disclosed read-carve
-    # helper; everything else must be a re-export.
+    # structurally instead: the module defines no execution behavior.
     import ast
     import pathlib
 
@@ -107,7 +105,7 @@ def test_registry_core_extraction_preserves_only_proven_facades():
         for node in facade_ast.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     }
-    assert facade_defined == {"_owner_control_mention_blocks"}
+    assert facade_defined == set()
     assert all(hasattr(registry, name) for name in proven)
     assert registry.ToolRegistry is registry_core.ToolRegistry is tools_package.ToolRegistry
     assert registry.ToolContext is tool_context.ToolContext is tools_package.ToolContext

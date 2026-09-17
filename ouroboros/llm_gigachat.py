@@ -304,4 +304,9 @@ class _GigaChatLaneMixin:
             "cost_final": False,
         }
 
+        if target.get("processing_preference"):
+            from ouroboros._usage_response import processing_receipt
+
+            usage["processing"] = processing_receipt(
+                "gigachat", usage, requested=target["processing_preference"])
         return message, usage

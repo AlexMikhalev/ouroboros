@@ -78,6 +78,9 @@ class LocalModelManager:
         self._model_path: Optional[str] = None
         self._port: int = _LOCAL_MODEL_DEFAULT_PORT
         self._context_length: int = 0
+
+        self._serving_context_length: int = 0
+        self._measurement_route: bool = False
         self._model_name: str = ""
         self._download_progress: float = 0.0
         self._stderr_buf: bytes = b""
@@ -410,7 +413,7 @@ class LocalModelManager:
 
             python = sys.executable
             cmd = [
-                python, "-m", "llama_cpp.server",
+                python, "-m", "ouroboros.local_model_server",
                 "--model", model_path,
                 "--port", str(port),
                 "--n_gpu_layers", str(n_gpu_layers),
@@ -419,6 +422,9 @@ class LocalModelManager:
                 cmd.extend(["--chat_format", chat_format])
             effective_ctx = n_ctx if n_ctx > 0 else 16384
             self._context_length = effective_ctx
+
+            self._serving_context_length = effective_ctx
+            self._measurement_route = True
             cmd.extend(["--n_ctx", str(effective_ctx)])
 
             log.info("Starting local model server: %s", " ".join(cmd))
@@ -450,6 +456,8 @@ class LocalModelManager:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.PIPE,
                     stdin=subprocess.DEVNULL,
+                    env={**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, (
+                        str(pathlib.Path(__file__).resolve().parent.parent), os.environ.get("PYTHONPATH", ""))))},
                 )
                 _popen_kwargs.update(subprocess_new_group_kwargs())
                 self._proc = subprocess.Popen(cmd, **_with_hidden_subprocess(_popen_kwargs))
@@ -563,6 +571,9 @@ class LocalModelManager:
             self._status = "offline"
             self._error = None
             self._context_length = 0
+
+            self._serving_context_length = 0
+            self._measurement_route = False
             self._model_name = ""
             self._stderr_buf = b""
 
@@ -625,6 +636,44 @@ class LocalModelManager:
             "model_name": model_info.get("id", "unknown"),
             "context_length": ctx,
         }
+
+
+    def serving_context_evidence(self) -> Dict[str, Any]:
+        """The live owned server's configured window, distinct from training metadata."""
+        process = self._proc
+        capacity = int(getattr(self, "_serving_context_length", 0) or 0)
+        known = bool(process is not None and process.poll() is None and self._status == "ready" and capacity > 0)
+        return {"context_window": capacity if known else None, "confirmed": known,
+                "source": "owned_server_arguments" if known else "serving_window_unobserved",
+                "process_id": process.pid if known else None}
+
+    def measure_prepared_input(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Bounded read-only I/O to the same owned server; it never generates tokens."""
+        from ouroboros.local_model_server import input_fingerprint
+
+        evidence = self.serving_context_evidence()
+        unknown = {"supported": False, "input_is_exact": False, "reason": "measurement_unavailable"}
+        if not evidence["confirmed"] or not getattr(self, "_measurement_route", False):
+            return unknown
+        expected_pid = evidence["process_id"]
+        try:
+            import requests
+
+            with requests.Session() as session:
+                session.trust_env = False  # Owned loopback must not use an external proxy.
+                response = session.post(f"http://127.0.0.1:{self._port}/extras/measure_chat",
+                                        json=payload, timeout=5.0)
+                response.raise_for_status()
+                measured = response.json()
+            current = self.serving_context_evidence()
+            if (not isinstance(measured, dict) or measured.get("process_id") != expected_pid
+                    or current.get("process_id") != expected_pid or not current.get("confirmed")
+                    or measured.get("native_input_sha256") != input_fingerprint(payload)
+                    or measured.get("context_window") != current.get("context_window")):
+                return {**unknown, "reason": "measurement_route_changed"}
+            return measured
+        except Exception as error:
+            return {**unknown, "reason": f"measurement_unavailable:{type(error).__name__}"}
 
     def get_context_length(self) -> int:
         """Return cached context length, querying the server if needed."""

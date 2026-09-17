@@ -23,6 +23,11 @@ import pathlib
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from ouroboros.tools.review_helpers import (
+    CANONICAL_GOVERNANCE_DOCS,
+    canonical_governance_sources,
+    is_canonical_governance_path,
+)
 from ouroboros.tools.review_prompt_text import (
     _ANTI_THRASHING_RULE_VERDICT,
     _CONVERGENCE_RULE_TEXT,
@@ -89,13 +94,10 @@ def _current_scope_context_manifest() -> dict:
     return dict(_SCOPE_CONTEXT_MANIFEST.get({}) or {})
 
 
-_CANONICAL_CONTEXT_DOCS = (
-    "BIBLE.md",
-    "docs/DEVELOPMENT.md",
-    "docs/DESIGN.md",
-    "docs/ARCHITECTURE.md",
-    "docs/CHECKLISTS.md",
-)
+# The canonical corpus and its chapter membership have ONE owner
+# (`review_helpers`); this alias keeps the historical local spelling for the
+# reading order of `_load_canonical_context_docs` and `scope_review`'s import.
+_CANONICAL_CONTEXT_DOCS = CANONICAL_GOVERNANCE_DOCS
 
 
 _CURRENT_TOUCHED_CONTEXT_SKIP_PREFIXES = (
@@ -109,7 +111,7 @@ def _should_skip_current_touched_context(path: str) -> bool:
     full atlas anchors, ladder-degradable — but never canonical docs)."""
     norm = str(path or "").replace("\\", "/").lstrip("./")
     return (
-        norm in _CANONICAL_CONTEXT_DOCS
+        is_canonical_governance_path(norm)
         or any(norm.startswith(prefix) for prefix in _CURRENT_TOUCHED_CONTEXT_SKIP_PREFIXES)
     )
 
@@ -296,6 +298,7 @@ def _gather_scope_packs(
     diff_only_paths: Optional[list] = None,
     snapshot_included_paths: Optional[frozenset] = None,
     diff_only_reasons: Optional[dict] = None,
+    window_binding: Optional[dict] = None,
 ) -> str:
     """Collect the bounded wider repository atlas, failing closed on git errors."""
     # WHICH snapshots the fixed part holds is the assembler's fact, never re-derived
@@ -305,9 +308,11 @@ def _gather_scope_packs(
     # from requiredness classification. A canonical doc is claimed only if it exists.
     already_included = frozenset(
         set(snapshot_included_paths or frozenset())
-        | {doc for doc in _CANONICAL_CONTEXT_DOCS if (repo_dir / doc).is_file()}
+        # A canonical book is inlined as its COMPOSED text, so its declared
+        # chapters are already in the prompt and must not be owed again.
+        | set(canonical_governance_sources(repo_dir))
     )
-    _input_limit = _sr()._effective_scope_input_limit(scope_model=scope_model)
+    _input_limit = _sr()._effective_scope_input_limit(scope_model=scope_model, **({"window_binding": window_binding} if window_binding else {}))
     try:
         atlas = _sr().compile_review_context_atlas(
             _sr().ReviewContextAtlasRequest(
@@ -489,6 +494,8 @@ class _ScopePromptContext:
     # The managed resolution-delta artifact (review_subject.ManagedReviewSubject);
     # None for every ordinary commit — the pack then reads the staged diff.
     managed_subject: Optional[Any] = None
+    window_binding: Optional[dict] = None
+    task_evidence: Optional[dict] = None
 
 
 def _build_scope_prompt(
@@ -599,6 +606,8 @@ def _build_scope_prompt(
     if touched_status is not None:
         return None, touched_status
 
+    from ouroboros.review_evidence import commit_review_evidence_section
+    task_evidence_compact = False
     repo_pack_placeholder = "__GENERATED_SCOPE_ATLAS_PENDING__"
 
     def _assemble_prompt(current_files_section: str) -> str:
@@ -611,6 +620,7 @@ def _build_scope_prompt(
             diff_text=diff_text,
             repo_pack_placeholder=repo_pack_placeholder,
             critical_calibration=_sr().CRITICAL_FINDING_CALIBRATION,
+            task_evidence_section=commit_review_evidence_section(context.task_evidence or {}, delivery="packet", compact=task_evidence_compact),
         )
         _SCOPE_STABLE_PREFIX_LEN.set(stable_len)
         return prompt_text
@@ -625,6 +635,7 @@ def _build_scope_prompt(
         gather_kwargs = {
             "fixed_prompt_tokens": fixed_tokens, "drive_root": drive_root,
             "scope_model": scope_model, "compact": compact,
+            "window_binding": context.window_binding,
             # The ladder owns which snapshots survived; the atlas is TOLD —
             # the by-design carriers ride the same diff-only channel, reasoned.
             "diff_only_paths": list(diff_only_paths) + list(carrier_span_only),
@@ -650,7 +661,7 @@ def _build_scope_prompt(
     # touched files to diff-only (largest first); drop unchanged diff context.
     # Else CLOSED — atlas-required-beyond-diff artifacts never degrade to
     # diff-only, because the atlas refuses such a pack by design.
-    input_limit = _sr()._effective_scope_input_limit(scope_model=scope_model)
+    input_limit = _sr()._effective_scope_input_limit(scope_model=scope_model, **({"window_binding": context.window_binding} if context.window_binding else {}))
     _atlas_min_allowance = 35_000  # rendered-manifest + hard headroom allowance, see review_context_atlas
     diff_only_paths: list = []
     # FREE tier includes touched tests and eligible deletions (guards in the helper).
@@ -724,6 +735,11 @@ def _build_scope_prompt(
             # Even the manifest cannot fit beside the fixed part: shrink it for room.
             deficit = max(50_000, fixed_prompt_tokens + _atlas_min_allowance - input_limit)
 
+        if context.task_evidence and not task_evidence_compact:
+            task_evidence_compact = True
+            ladder_steps.append({"step": "task_evidence_excerpt_omitted", "source_ref": context.task_evidence.get("source_ref")})
+            continue
+
         # Degradable never holds atlas-required-beyond-diff paths: the atlas
         # refuses a diff-only required artifact by design, so that rung could
         # only convert this pack into a typed refusal, never into a fit.
@@ -747,7 +763,7 @@ def _build_scope_prompt(
             # budget_exceeded (blocked unless owner advisory). CAUSE travels separately.
             _record_ladder_steps(ladder_steps)
             known = _sr()._scope_window(
-                scope_model or _sr()._get_scope_model()
+                scope_model or _sr()._get_scope_model(), **(context.window_binding or {})
             ).sizing_window(_sr()._SCOPE_FAILCLOSED_WINDOW)
             return None, _sr()._TouchedContextStatus(
                 status="budget_exceeded" if known and known < _sr()._SCOPE_MODEL_CONTEXT_WINDOW else "fixed_overflow",

@@ -451,7 +451,7 @@ def update_json_locked(
     path = pathlib.Path(path)
     lock_path = path.with_name(path.name + ".lock")
     lock_fd = acquire_exclusive_file_lock(
-        lock_path, timeout_sec=timeout_sec, stale_sec=stale_sec
+        lock_path, timeout_sec=timeout_sec, stale_sec=stale_sec, owner_aware_stale=True,
     )
     if lock_fd is None:
         raise TimeoutError(

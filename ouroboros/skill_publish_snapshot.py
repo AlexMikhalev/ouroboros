@@ -8,6 +8,7 @@ import pathlib
 from dataclasses import dataclass
 from typing import Any
 
+from ouroboros.config import get_runtime_mode
 from ouroboros.contracts.skill_manifest import (
     SkillManifestError,
     parse_skill_manifest_text,
@@ -22,6 +23,7 @@ from ouroboros.skill_loader import (
     _iter_payload_files,
     reduce_skill_content_hash,
 )
+from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
 
 MAX_PUBLIC_PAYLOAD_BYTES = 5 * 1024 * 1024
 
@@ -248,11 +250,13 @@ def capture_skill_publish_candidate(loaded: LoadedSkill) -> SkillPublishSnapshot
 
 
 def capture_skill_publish_snapshot(loaded: LoadedSkill) -> SkillPublishSnapshot:
-    """Capture one candidate and bind it to the stored review hash."""
+    """Capture exact bytes; ordinary publication also requires critic freshness."""
 
     snapshot = capture_skill_publish_candidate(loaded)
-    stored_review_hash = str(getattr(loaded.review, "content_hash", "") or "")
-    if not stored_review_hash or snapshot.content_hash != stored_review_hash:
+    stored_review_hash = str(loaded.review.reviewed_content_hash or loaded.review.content_hash or "")
+    if (
+        not stored_review_hash or snapshot.content_hash != stored_review_hash
+    ) and not mode_has_unrestricted_agency(get_runtime_mode()):
         raise SkillPublishSnapshotError("snapshot_review_stale")
     return snapshot
 

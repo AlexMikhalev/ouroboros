@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import types
 import pytest
-from ouroboros import cancel_intents as ci
+from ouroboros import cancel_intents as ci, delegate_custody as dc
 from ouroboros.task_results import (
     STATUS_CANCELLED,
     STATUS_COMPLETED,
@@ -201,7 +201,8 @@ def test_unreconciled_delegated_runs_are_disclosed_on_the_cancelled_result(
                         lambda *_a, **_kw: [])
     monkeypatch.setattr(
         "ouroboros.delegate_custody.open_runs",
-        lambda *_a, **_kw: [types.SimpleNamespace(task_id=task_id, run_id="run-abc")],
+        # A REAL row: the audit reads the owner kind beside the ids.
+        lambda *_a, **_kw: [dc.RunCustody(task_id=task_id, run_id="run-abc")],
     )
     notes: list = []
     monkeypatch.setattr(
@@ -391,7 +392,8 @@ def test_reconcile_discloses_open_runs_even_when_outcomes_are_nonempty(qenv, mon
     )
     monkeypatch.setattr(
         "ouroboros.delegate_custody.open_runs",
-        lambda *_a, **_kw: [types.SimpleNamespace(task_id="rt1", run_id="run-open")],
+        # A REAL row: the audit reads the owner kind beside the ids.
+        lambda *_a, **_kw: [dc.RunCustody(task_id="rt1", run_id="run-open")],
     )
     assert qenv.tl._reconcile_delegated_runs_on_kill(qenv.q, "rt1") == ["run-open"]
     rows = [

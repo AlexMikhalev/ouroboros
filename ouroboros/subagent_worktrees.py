@@ -24,7 +24,7 @@ import stat
 import subprocess
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -417,12 +417,12 @@ class ExecutionSnapshotHandle:
 
     The snapshot is a detached ``git worktree`` of the AUTHORITY TARGET tree,
     checked out at a synthetic BASELINE commit that captures the target's real
-    current state: tracked + staged changes plus eligible untracked files
-    (sensitive/credential-shaped, junk and oversized-binary untracked files are
-    vetoed by the same predicate the workspace-patch capture uses). The run
-    writes ONLY here; its diff against ``baseline_sha`` is its whole
-    contribution, and the nanny applies or rejects that diff into the target
-    tree explicitly — never automatically.
+    current state: tracked + staged changes plus eligible untracked files.
+    Large and binary inputs are copied beside the Git baseline with exact
+    identities in ``file_baseline``; credential/junk exclusions stay shared
+    with workspace-patch capture. The run writes ONLY here; its Git diff and
+    file changes against these baselines form its contribution, and the nanny
+    applies or rejects that result into the target explicitly — never automatically.
     """
 
     snapshot_id: str
@@ -443,6 +443,8 @@ class ExecutionSnapshotHandle:
     # content hash — the whole-payload CAS baseline for the explicit apply.
     standalone: bool = False
     payload_hash: str = ""
+    file_baseline: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    capture_warnings: tuple = ()
 
 
 def _git_env_index(index_path: Path) -> Dict[str, str]:
@@ -474,9 +476,12 @@ def provision_execution_snapshot(
     """Snapshot ``target_root``'s REAL current tree into a private execution root.
 
     Baseline construction never touches the target's own index, HEAD or working
-    files: a TEMPORARY index is seeded from HEAD, ``git add -A`` stages the
-    real tree (tracked + staged + untracked, ``.gitignore`` respected), the
-    vetoed untracked files are removed from that index, and the resulting tree
+    files: a TEMPORARY index is seeded from HEAD and stages the eligible
+    tracked/staged/text inputs (``.gitignore`` respected). The execution copy
+    retains original regular-file bytes despite Git checkout filters; a Git
+    comparison binds the copied content to that same baseline. Binary and large
+    untracked inputs are streamed into the execution root outside Git's ODB,
+    with exact preimages retained in the existing snapshot record. The Git tree
     is committed as a synthetic baseline pinned by a ref under
     ``refs/ouroboros/delegated/``. The execution root is a detached worktree at
     that commit, registered durably BEFORE the caller records any start intent,
@@ -535,9 +540,14 @@ def provision_execution_snapshot(
             ).stdout.decode("utf-8", errors="surrogateescape")
             excluded: List[Dict[str, str]] = []
             eligible: List[str] = []
+            file_inputs: List[str] = []
+            capture_warnings: List[Dict[str, Any]] = []
             for rel in (p for p in untracked_raw.split("\0") if p):
-                reason = untracked_capture_veto_reason(target, rel)
-                if reason:
+                reference: List[str] = []
+                reason = untracked_capture_veto_reason(target, rel, file_outputs=reference, warnings=capture_warnings)
+                if reference:
+                    file_inputs.append(rel)
+                elif reason:
                     excluded.append({"path": rel, "reason": reason})
                 else:
                     eligible.append(rel)
@@ -575,8 +585,34 @@ def provision_execution_snapshot(
         try:
             wt_path.parent.mkdir(parents=True, exist_ok=True)
             _git(target, "worktree", "add", "--detach", str(wt_path), baseline_sha)
+            from ouroboros.artifacts import copy_artifact_file
+
+            # Git owns the baseline representation, but the child must see the
+            # source's actual working bytes, not checkout's CRLF/smudge rewrite.
+            # Read the existing tree inventory so deletions, links and gitlinks
+            # keep Git's semantics and excluded paths can never enter the copy.
+            for item in manifest_raw.split(b"\0"):
+                metadata, separator, raw_path = item.partition(b"\t")
+                if separator and metadata.split()[0] in (b"100644", b"100755"):
+                    relative = raw_path.decode("utf-8", errors="surrogateescape")
+                    original = target / relative
+                    if original.is_symlink():
+                        raise OSError(f"snapshot input changed from a regular file: {relative}")
+                    copy_artifact_file(original, wt_path / relative)
+            # A concurrent source edit must not appear as the child's work.
+            # Use the same Git representation as ordinary patch capture, once
+            # for the whole tree, before the separately tracked file inputs.
+            _git(wt_path, "diff", "--quiet", "--no-ext-diff", baseline_sha, "--")
+            from ouroboros.workspace_file_outputs import copy_snapshot_file_inputs
+            file_baseline = copy_snapshot_file_inputs(target, wt_path, file_inputs)
+            if file_baseline:
+                manifest_digest = hashlib.sha256(
+                    manifest_raw + json.dumps(file_baseline, sort_keys=True).encode("utf-8")
+                ).hexdigest()
+                entry_count += len(file_baseline)
         except Exception:
             # Do not leak the pinned baseline ref when the checkout failed.
+            _remove_paths(target, wt_path, "", allowed_root=root)
             _git(target, "update-ref", "-d", baseline_ref, check=False)
             raise
         handle = ExecutionSnapshotHandle(
@@ -592,6 +628,8 @@ def provision_execution_snapshot(
             created_at=time.time(),
             entry_count=entry_count,
             excluded_untracked=tuple(excluded),
+            file_baseline=file_baseline,
+            capture_warnings=tuple(capture_warnings),
         )
         try:
             entries = [

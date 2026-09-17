@@ -327,10 +327,10 @@ def test_nonblocking_post_task_snapshot_precedes_worker_dispatch(tmp_path, monke
     monkeypatch.setattr(pipeline, "_set_root_post_task_checkpoint", lambda *args, **kwargs: None)
 
     class DeferredThread:
-        def __init__(self, *, target, daemon):
+        def __init__(self, *, target, args=(), daemon):
             assert order == ["snapshot"]
             assert daemon is True
-            worker_targets.append(target)
+            worker_targets.append((target, args))
 
         def start(self):
             order.append("thread_start")
@@ -358,8 +358,8 @@ def test_nonblocking_post_task_snapshot_precedes_worker_dispatch(tmp_path, monke
     assert order == ["snapshot", "thread_start"]
     assert len(worker_targets) == 1
     with pipeline._POST_TASK_SYNTHESIS_LOCK:
-        pipeline._POST_TASK_SYNTHESIS_INFLIGHT.discard(
-            (str(tmp_path.resolve(strict=False)), "async-root")
+        pipeline._POST_TASK_SYNTHESIS_INFLIGHT.pop(
+            (str(tmp_path.resolve(strict=False)), "async-root"), None
         )
 
 

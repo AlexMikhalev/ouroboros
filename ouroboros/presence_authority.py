@@ -15,6 +15,7 @@ from ouroboros.presence_capabilities import (
     PresenceScriptTarget,
     PresenceToolTarget,
 )
+from ouroboros.tool_capabilities import COGNITIVE_MEMORY_TOOL_NAMES
 
 PRESENCE_CEILING_SCHEMA_VERSION = 1
 _SHA256_LEN = 64
@@ -317,6 +318,19 @@ def build_presence_capability_ceiling(
                     target.skill_name,
                 )
             )
+    # The cognitive baseline is part of the ceiling, not of the profile: an
+    # admitted conversation is still this mind, so it keeps its own memory in
+    # every room instead of losing what the exchange taught it. It adds no
+    # authority over settings, delivery, or the filesystem. A name the profile
+    # already selected keeps THAT grant, because its host-authored argument
+    # bindings are the exact facts apply_presence_argument_bindings overrides
+    # the model with; an unselected name arrives with no bindings at all.
+    selected = {grant.name for grant in tools}
+    tools.extend(
+        PresenceToolGrant(name)
+        for name in sorted(COGNITIVE_MEMORY_TOOL_NAMES)
+        if name not in selected
+    )
     provisional = PresenceCapabilityCeiling(
         skill_name=_text(skill_name, "skill_name"),
         skill_content_hash=_sha(skill_content_hash, "skill_content_hash"),

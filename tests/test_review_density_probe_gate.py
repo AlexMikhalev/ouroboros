@@ -469,9 +469,10 @@ def test_deep_review_and_gate_share_one_rung(tmp_path, drive, monkeypatch):
     assert not hasattr(deep_self_review, "_cold_start_density_probe")
     seen: list = []
 
-    def rung(drive_root, llm, emit_progress, model, sample, *, task_id, call_type, source):
+    def rung(drive_root, llm, emit_progress, model, sample, *, task_id, call_type, source,
+             model_role="", model_account_override=None):
         seen.append({"model": model, "task_id": task_id, "call_type": call_type, "source": source,
-                     "sample": len(sample)})
+                     "sample": len(sample), "model_role": model_role, "account": model_account_override})
         return "failed"
 
     repo = tmp_path / "repo"
@@ -497,3 +498,4 @@ def test_deep_review_and_gate_share_one_rung(tmp_path, drive, monkeypatch):
     assert [s["model"] for s in seen] == ["m/deep", "m/gate"]
     assert seen[0]["call_type"] == "deep_self_review_density_probe" and seen[1]["call_type"] == admission.DENSITY_PROBE_CALL_TYPE
     assert seen[0]["sample"] > 0, "the deep review measures on the real refused rows"
+    assert seen[0]["model_role"] == f"reviewer:{DEEP_REVIEW_SLOT_ID}" and seen[0]["account"] == ""

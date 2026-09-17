@@ -28,7 +28,8 @@ CODE_SPEC = {
     "invariants": ["no new dependencies", "public API unchanged"],
     "decisions": [{"choice": "exponential backoff", "rejected": ["fixed delay"], "why": "bursty upstream"}],
     "deferred": [{"what": "metrics emission", "why_safe_to_defer": "observability only"}, "log wording"],
-    "affected_resources": ["ouroboros/uploader.py"],
+    "affected_paths": ["ouroboros/uploader.py"],
+    "affected_resources": ["the upload pipeline", "the storage provider"],
     "evidence": ["ouroboros/uploader.py", "https://example.com/spec", "task:abc123"],
 }
 
@@ -40,7 +41,8 @@ DECK_SPEC = {
     "invariants": ["deadline Friday 17:00", "no confidential customer names"],
     "decisions": [{"choice": "one message per slide", "rejected": ["dense slides"], "why": "board attention"}],
     "deferred": ["colour palette"],
-    "affected_resources": [],
+    "affected_paths": [],
+    "affected_resources": ["the board deck"],
     "evidence": [],
 }
 
@@ -62,7 +64,7 @@ def test_normalize_spec_mints_ids_and_keeps_schema():
     assert spec["normalization_omissions"] == []
     assert list(spec) == [
         "goal", "in_scope", "non_goals", "acceptance_claims", "invariants", "decisions",
-        "deferred", "affected_resources", "evidence", "normalization_omissions",
+        "deferred", "affected_paths", "affected_resources", "evidence", "normalization_omissions",
     ]
 
 
@@ -77,25 +79,17 @@ def test_normalize_spec_errors_are_typed():
     assert plan_spec.normalize_spec("not a mapping") == ({}, ["spec: must be an object"])  # type: ignore[arg-type]
 
 
-def test_normalize_spec_bounds_lists_with_recorded_omission():
+def test_normalize_spec_preserves_lists_beyond_former_bounds():
+    items = [f"item {i}" for i in range(43)]
+    rejected = [f"r{i}" for i in range(10)]
     spec, errors = plan_spec.normalize_spec({
-        "goal": "g", "in_scope": [f"item {i}" for i in range(plan_spec.MAX_LIST_ITEMS + 3)],
+        "goal": "g", "in_scope": items,
+        "decisions": [{"choice": "c", "rejected": rejected}],
     })
     assert errors == []
-    assert len(spec["in_scope"]) == plan_spec.MAX_LIST_ITEMS
-    assert spec["normalization_omissions"] == [
-        f"in_scope: {plan_spec.MAX_LIST_ITEMS + 3} items declared, kept the first "
-        f"{plan_spec.MAX_LIST_ITEMS} (bound {plan_spec.MAX_LIST_ITEMS})"
-    ]
-    # B-10: nested cap on decision.rejected, recorded the same way.
-    spec, errors = plan_spec.normalize_spec({
-        "goal": "g", "decisions": [{"choice": "c", "rejected": [f"r{i}" for i in range(plan_spec.MAX_REJECTED_PER_DECISION + 2)]}],
-    })
-    assert errors == [] and len(spec["decisions"][0]["rejected"]) == plan_spec.MAX_REJECTED_PER_DECISION
-    assert spec["normalization_omissions"] == [
-        f"decisions[0].rejected: {plan_spec.MAX_REJECTED_PER_DECISION + 2} items declared, kept the first "
-        f"{plan_spec.MAX_REJECTED_PER_DECISION} (bound {plan_spec.MAX_REJECTED_PER_DECISION})"
-    ]
+    assert spec["in_scope"] == items
+    assert spec["decisions"][0]["rejected"] == rejected
+    assert spec["normalization_omissions"] == []
 
 
 def test_normalize_spec_goal_type_and_bool_scalars():
@@ -192,11 +186,11 @@ def test_constitutional_active_binding_alone_does_not_decide(tmp_path):
     system = tmp_path / "repo"
     system.mkdir()
     ok, note = plan_spec.resolve_constitutional(
-        active_root=system, system_repo_root=system, affected_resources=[], evidence=[],
+        active_root=system, system_repo_root=system, affected_paths=[], evidence=[],
     )
     assert ok is False and note.startswith("not constitutional")
     ok, _ = plan_spec.resolve_constitutional(
-        active_root=system, system_repo_root=system, affected_resources=["ouroboros/loop.py"], evidence=[],
+        active_root=system, system_repo_root=system, affected_paths=["ouroboros/loop.py"], evidence=[],
     )
     assert ok is True  # a relative path under the (system) active root still decides
 
@@ -208,56 +202,63 @@ def test_constitutional_declared_paths_relative_absolute_and_file_scheme(tmp_pat
     workspace.mkdir()
     ok, note = plan_spec.resolve_constitutional(
         active_root=workspace, system_repo_root=system,
-        affected_resources=["../repo/ouroboros/loop.py"], evidence=[],
+        affected_paths=["../repo/ouroboros/loop.py"], evidence=[],
     )
-    assert ok and "affected_resources" in note
-    # An EVIDENCE locator counts only when it actually exists: a plan that merely wants to
-    # LOOK at a repo file is constitutional, a typo pointing at nothing is not (E2E finding).
+    assert ok and "affected_paths" in note
+    # Owner 16=A: an EVIDENCE locator is something to LOOK AT, and reading a repo file is not
+    # changing it — existing or not, it never buys the constitutional pack on its own. Existence
+    # therefore stopped deciding anything, and the check went with it.
     (system / "BIBLE.md").write_text("# constitution\n", encoding="utf-8")
     ok, note = plan_spec.resolve_constitutional(
         active_root=workspace, system_repo_root=system,
-        affected_resources=["src/app.py"], evidence=[str(system / "BIBLE.md")],
+        affected_paths=["src/app.py"], evidence=[str(system / "BIBLE.md")],
     )
-    assert ok and "evidence" in note
+    assert ok is False and "EVIDENCE reads" in note and str(system / "BIBLE.md") in note
     ok, _ = plan_spec.resolve_constitutional(
         active_root=workspace, system_repo_root=system,
-        affected_resources=["src/app.py"], evidence=[str(system / "NO_SUCH_FILE.md")],
+        affected_paths=["src/app.py"], evidence=[str(system / "NO_SUCH_FILE.md")],
     )
     assert ok is False
     # ...while a TARGET counts whether or not it exists yet — creating a module is self-modification.
     ok, _ = plan_spec.resolve_constitutional(
         active_root=workspace, system_repo_root=system,
-        affected_resources=[str(system / "ouroboros" / "brand_new_module.py")], evidence=[],
+        affected_paths=[str(system / "ouroboros" / "brand_new_module.py")], evidence=[],
     )
     assert ok is True
     ok, _ = plan_spec.resolve_constitutional(
         active_root=workspace, system_repo_root=system,
-        affected_resources=["src/app.py"], evidence=["docs/x.md"],
+        affected_paths=["src/app.py"], evidence=["docs/x.md"],
     )
     assert ok is False
     # B-06: a system-repo path dressed as file:// is still a path.
     ok, note = plan_spec.resolve_constitutional(
         active_root=workspace, system_repo_root=system,
-        affected_resources=[f"file://{system}/ouroboros/loop.py"], evidence=[],
+        affected_paths=[f"file://{system}/ouroboros/loop.py"], evidence=[],
     )
     assert ok is True and "file://" in note
 
 
-def test_constitutional_evidence_selector_classifies_the_source_path(tmp_path):
+def test_constitutional_selector_classifies_the_source_path(tmp_path):
+    """A `::lines=A-B` suffix names a RANGE of one file: the path in front of it decides, on
+    either list — as a change target it escalates, as an evidence read it is only named."""
     system = tmp_path / "repo"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    evidence = _write(system / "docs" / "ARCHITECTURE.md", "# Architecture\n")
+    source = _write(system / "docs" / "ARCHITECTURE.md", "# Architecture\n")
 
     ok, note = plan_spec.resolve_constitutional(
-        active_root=workspace,
-        system_repo_root=system,
-        affected_resources=[],
-        evidence=[f"{evidence}::lines=1-1"],
+        active_root=workspace, system_repo_root=system,
+        affected_paths=[f"{source}::lines=1-1"], evidence=[],
     )
-
     assert ok is True
-    assert f"{evidence}::lines=1-1" in note
+    assert f"{source}::lines=1-1" in note
+
+    ok, note = plan_spec.resolve_constitutional(
+        active_root=workspace, system_repo_root=system,
+        affected_paths=[], evidence=[f"{source}::lines=1-1"],
+    )
+    assert ok is False
+    assert f"{source}::lines=1-1" in note and "EVIDENCE reads" in note
 
 
 def test_constitutional_payload_exempt_url_task_never_and_empty_false(tmp_path):
@@ -269,7 +270,7 @@ def test_constitutional_payload_exempt_url_task_never_and_empty_false(tmp_path):
     (system / "x").mkdir(parents=True)
     ok, _ = plan_spec.resolve_constitutional(
         active_root=workspace, system_repo_root=system,
-        affected_resources=[str(payload / "SKILL.md")], evidence=[], payload_roots=[payload],
+        affected_paths=[str(payload / "SKILL.md")], evidence=[], payload_roots=[payload],
     )
     assert ok is False
     # A payload root that resolves INSIDE the system repo still exempts: the roots come
@@ -279,22 +280,22 @@ def test_constitutional_payload_exempt_url_task_never_and_empty_false(tmp_path):
     nested = system / "data" / "skills" / "native" / "demo"
     ok, _ = plan_spec.resolve_constitutional(
         active_root=workspace, system_repo_root=system,
-        affected_resources=[str(nested / "SKILL.md")], evidence=[], payload_roots=[nested],
+        affected_paths=[str(nested / "SKILL.md")], evidence=[], payload_roots=[nested],
     )
     assert ok is False
     # A system path OUTSIDE every payload root is still constitutional.
     ok, _ = plan_spec.resolve_constitutional(
         active_root=workspace, system_repo_root=system,
-        affected_resources=[str(system / "ouroboros" / "loop.py")], evidence=[], payload_roots=[nested],
+        affected_paths=[str(system / "ouroboros" / "loop.py")], evidence=[], payload_roots=[nested],
     )
     assert ok is True
     ok, _ = plan_spec.resolve_constitutional(
-        active_root=workspace, system_repo_root=system, affected_resources=[],
+        active_root=workspace, system_repo_root=system, affected_paths=[],
         evidence=["https://github.com/razzant/ouroboros/blob/main/ouroboros/loop.py", "task:xyz"],
     )
     assert ok is False
     ok, note = plan_spec.resolve_constitutional(
-        active_root=workspace, system_repo_root=system, affected_resources=[], evidence=[],
+        active_root=workspace, system_repo_root=system, affected_paths=[], evidence=[],
     )
     assert ok is False and note.startswith("not constitutional")
 
@@ -407,7 +408,7 @@ def test_resolve_evidence_and_constitutional_never_raise_on_hostile_locators(tmp
     assert manifest["attached"] == []
     for locator in (long, "loop1", "\x00bad"):
         ok, _ = plan_spec.resolve_constitutional(
-            active_root=root, system_repo_root=tmp_path / "repo", affected_resources=[locator], evidence=[],
+            active_root=root, system_repo_root=tmp_path / "repo", affected_paths=[locator], evidence=[],
         )
         assert ok is False
     # A fifo / device is a non-regular file: refused, never opened (would block forever).
@@ -514,8 +515,8 @@ def test_validate_findings_demotes_and_drops_structurally():
     assert by_id["f1"]["class"] == "blocking" and by_id["f1"]["breaks"] == "claim_1"
     assert by_id["f2_2"]["class"] == "note" and by_id["f2_2"]["breaks"] == "claim_9"  # minted id, demoted
     assert by_id["n1"]["class"] == "note"
-    # I-03: a repeat is DEMOTED, not dropped — a re-asked question must not close the wave.
-    assert by_id["n2"]["class"] == "note" and by_id["n4"]["class"] == "note"
+    # I-03: deduplication must not turn an unresolved request into optional advice.
+    assert by_id["n2"]["class"] == "need_evidence" and by_id["n4"]["class"] == "need_evidence"
     assert by_id["n3"]["class"] == "need_evidence"
     assert by_id["x"]["class"] == "note"
     assert by_id["empty"]["class"] == "note" and by_id["empty"]["summary"] == "(missing summary)"
@@ -658,6 +659,27 @@ def test_closure_table_and_control_line_invariants():
     assert _control("GREEN", False) is None and _control("REVISE_PLAN", True) is None
 
 
+@pytest.mark.parametrize("enforcement", ["blocking", "advisory"])
+def test_optional_notes_do_not_require_disposition(enforcement):
+    note = dict(NOTE, finding_id="1:n")
+    need = dict(NEED, finding_id="2:e")
+    blocker = dict(BLOCK, finding_id="3:b")
+    closure = plan_spec.closure_after_disposition("REVIEW_REQUIRED", [note], [], enforcement)
+    assert closure["closed"] and closure["open_ids"] == []
+    mixed = plan_spec.closure_after_disposition("REVIEW_REQUIRED", [note, need], [], enforcement)
+    assert not mixed["closed"] and mixed["open_ids"] == ["2:e"]
+    disposed = [{"finding_id": "2:e", "decision": "defer", "rationale": "not needed to start"}]
+    assert plan_spec.closure_after_disposition(
+        "REVIEW_REQUIRED", [note, need], disposed, enforcement,
+    )["closed"]
+    rejected = [{"finding_id": "3:b", "decision": "reject", "rationale": "disagree"}]
+    below_quorum = plan_spec.closure_after_disposition(
+        "REVIEW_REQUIRED", [note, blocker], rejected, enforcement,
+    )
+    assert not below_quorum["closed"] and below_quorum["open_ids"] == ["3:b"]
+    assert not plan_spec.closure_after_disposition("DEGRADED", [note], [], enforcement)["closed"]
+
+
 # ------------------------------------------------------------------- B5 packet
 
 
@@ -684,6 +706,9 @@ def test_system_prompt_stance_and_bible_gating():
     assert "Convergence rule" not in plain
     assert "blocking" in lowered and "`breaks`" in plain
     assert "need_evidence" in plain
+    assert "important brainstorming opportunity" in plain
+    assert "optional `note` findings" in plain
+    assert "without a required disposition" in plain
     for phrase in ("Success conditions", "Load-bearing decisions", "Constraints and invariants",
                    "Deferrals", "Evidence sufficiency"):
         assert phrase in plain
@@ -749,7 +774,7 @@ def test_user_content_sections_in_order_with_omissions_and_prior_cycles(tmp_path
     manifest = plan_evidence.resolve_evidence(CODE_SPEC["evidence"], active_root=root, allowed_roots=[root])
     first = _packet(CODE_SPEC, manifest, log="ran: ls -la")
     order = ["## TASK OBJECTIVE", "## SPEC", "## PLAN PROSE", "## EVIDENCE", "### OMISSIONS",
-             "## ROOT EXPLORATION LOG", "## PRIOR CYCLES"]
+             "## OWN ROOM DIALOGUE", "## RELATED ROOMS", "## ROOT EXPLORATION LOG", "## PRIOR CYCLES"]
     positions = [first.index(h) for h in order]
     assert positions == sorted(positions)
     assert "OBJECTIVE-TEXT" in first and "PROSE-TEXT" in first and "ran: ls -la" in first
@@ -800,15 +825,15 @@ def test_prior_blocking_findings_survive_the_section_bound(monkeypatch):
     assert "no prior findings recorded" in empty_cycle2 and "First cycle" not in empty_cycle2
 
 
-def test_spec_section_is_bounded_structurally_never_clipped():
+def test_current_spec_is_complete_while_historical_json_views_remain_bounded():
     worst = {"goal": "g", "decisions": [
-        {"choice": "c" * 600, "rejected": ["r" * 600] * plan_spec.MAX_REJECTED_PER_DECISION, "why": "w" * 600}
+        {"choice": "c" * 600, "rejected": ["r" * 600] * 8, "why": "w" * 600}
         for _ in range(plan_spec.MAX_LIST_ITEMS)
     ], "in_scope": ["i" * 600] * plan_spec.MAX_LIST_ITEMS, "invariants": ["v" * 600] * plan_spec.MAX_LIST_ITEMS}
     spec, errors = plan_spec.normalize_spec(worst)
     assert errors == []
-    text, notes = plan_spec.bounded_json(plan_spec.spec_with_ids(spec), plan_spec.PACKET_SPEC_CHARS)
-    assert len(text) <= plan_spec.PACKET_SPEC_CHARS
+    text, notes = plan_spec.bounded_json(plan_spec.spec_with_ids(spec), 120_000)
+    assert len(text) <= 120_000
     json.loads(text)  # whole items only — always valid JSON
     assert notes and all("kept " in n and "full-set sha256=" in n for n in notes)
     packet = plan_packet.build_plan_review_user_content(
@@ -816,20 +841,23 @@ def test_spec_section_is_bounded_structurally_never_clipped():
         prior_cycles=[], dispositions=[], spec_delta=None, root_exploration_log=None,
     )
     spec_section = packet[packet.index("## SPEC"):packet.index("## PLAN PROSE")]
-    assert len(spec_section) < plan_spec.PACKET_SPEC_CHARS + 2000 and "OMISSION NOTE (structural)" in spec_section
+    assert len(spec_section) > 120_000 and "OMISSION NOTE" not in spec_section
+    rendered_spec = json.loads(spec_section.split("```json\n", 1)[1].split("\n```", 1)[0])
+    assert rendered_spec == plan_spec.spec_with_ids(spec)
     # Oversized scalars with no list left → typed omission object, never clipped JSON.
     text, notes = plan_spec.bounded_json({"blob": "x" * 500}, 100)
     assert json.loads(text)["omitted"] is True and "full_payload_sha256" in text and notes
 
 
-def test_user_content_bounds_are_disclosed_not_silent():
+def test_user_content_preserves_current_plan_prose():
     spec, _ = plan_spec.normalize_spec(DECK_SPEC)
     manifest = plan_evidence.resolve_evidence([], active_root=".", allowed_roots=["."])
     content = plan_packet.build_plan_review_user_content(
-        objective="o", goal=spec["goal"], plan_prose="P" * (plan_spec.PACKET_PROSE_CHARS + 500), spec=spec,
+        objective="o", goal=spec["goal"], plan_prose="P" * 40_500 + "DECISIVE_PLAN_TAIL", spec=spec,
         manifest=manifest, prior_cycles=[], dispositions=[], spec_delta=None, root_exploration_log=None,
     )
-    assert "OMISSION NOTE" in content and "(no evidence declared)" in content
+    assert "P" * 40_500 + "DECISIVE_PLAN_TAIL" in content
+    assert "OMISSION NOTE" not in content and "(no evidence declared)" in content
     assert "(not provided by host)" in content
 
 
@@ -850,11 +878,14 @@ def test_capped_reviewer_requests_are_rendered_even_when_the_agent_declared_noth
 
 def test_domain_independence_deck_spec_without_paths(tmp_path):
     spec, errors = plan_spec.normalize_spec(DECK_SPEC)
-    assert errors == [] and spec["affected_resources"] == [] and spec["evidence"] == []
+    # A deck changes no file: `affected_paths` is the empty claim, while the prose list still
+    # says what the work touches — and neither one is resolved into a file read.
+    assert errors == [] and spec["affected_paths"] == [] and spec["evidence"] == []
+    assert spec["affected_resources"] == ["the board deck"]
     assert plan_spec.spec_ids(spec) == frozenset({"goal", "claim_1", "claim_2", "invariant_1", "invariant_2", "decision_1", "deferred_1"})
     assert len(plan_spec.spec_hash(spec)) == 64
     ok, _ = plan_spec.resolve_constitutional(
-        active_root=tmp_path / "ws", system_repo_root=tmp_path / "repo", affected_resources=spec["affected_resources"], evidence=spec["evidence"],
+        active_root=tmp_path / "ws", system_repo_root=tmp_path / "repo", affected_paths=spec["affected_paths"], evidence=spec["evidence"],
     )
     assert ok is False
     manifest = plan_evidence.resolve_evidence(spec["evidence"], active_root=tmp_path, allowed_roots=[tmp_path])

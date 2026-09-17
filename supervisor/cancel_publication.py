@@ -130,6 +130,39 @@ def _cancel_result_fields(
     return payload
 
 
+def shutdown_cancel_text(intent: Dict[str, Any]) -> str:
+    """The owner sentence for a fence the snapshot restore minted, else "".
+
+    ONE producer for every lane that settles such a fence. The cause is a
+    property of the INTENT, not of the lane that happened to reach it: the task
+    was running when the previous server stopped. At an ordinary boot the pool is
+    empty when restore runs, so the fence settles through the miss lane below; a
+    worker that outlived SIGTERM is claimed and killed instead, and the owner has
+    to read the same cause either way. Every other intent returns the empty
+    string, so each lane keeps its own default sentence.
+    """
+    row = intent if isinstance(intent, dict) else {}
+    if (
+        str(row.get("reason") or "") == "server_shutdown"
+        and str(row.get("source") or "") == "snapshot_restore"
+    ):
+        return "Task cancelled: the server stopped while this task was still running."
+    return ""
+
+
+def _miss_lane_cancel_text(intent: Dict[str, Any]) -> str:
+    """The owner sentence for a cancel settled with nothing queued or running.
+
+    That is the ordinary shape of this lane and its default says so. A restore
+    fence is the one case where the same emptiness has a KNOWN cause, and saying
+    "was neither queued nor running" there would contradict the boot line and
+    strand the lost quiz without the cause its expiry carries.
+    """
+    return shutdown_cancel_text(intent) or (
+        "Task cancelled (was neither queued nor running at supervisor teardown)."
+    )
+
+
 def _intent_outcome_fields(intent: Dict[str, Any]) -> Dict[str, Any]:
     """``parent_decision`` written only at OUTCOME (phase A): a parent-requested
     cancel stamps its decision on the SETTLED cancelled result, never at intent
@@ -221,9 +254,9 @@ def _register_owed_terminal_delivery(
                 settled_status=stored_status,
             )
         elif stored_status == STATUS_COMPLETED:
-            # GR6-5a: the disclosure rides the completed text too, and the
-            # owed registration and the publish half must build the SAME text
-            # (one delivery id) — both pass the identical list.
+            # The disclosure rides the completed answer's custody row, and the
+            # owed registration and the publish half must build the SAME rows
+            # (one delivery id each) — both pass the identical list.
             event = build_completed_result_event(
                 pathlib.Path(q.DRIVE_ROOT), task, task_id, stored,
                 unreconciled_runs=list(unreconciled_runs or []),
@@ -281,6 +314,10 @@ def _publish_cancelled_task(
     from supervisor import workers
 
     from ouroboros.task_results import STATUS_CANCELLED
+    from ouroboros.headless import terminal_task_files_ready
+
+    if not terminal_task_files_ready(q.DRIVE_ROOT, {**stored, **task, "id": task_id}, stored):
+        return CANCEL_FAILED  # Publication/cleanup cannot outrun terminal source custody.
 
     settled_status = str((stored or {}).get("status") or STATUS_CANCELLED)
     # The row leaves RUNNING only NOW — death confirmed, terminal result durable.
@@ -335,17 +372,8 @@ def _publish_cancelled_task(
     # The helper serializes against shutdown with the lifecycle lock and starts
     # the child outside the queue lock; on failure the marker is cleared under
     # the lock so the crash detector can recover the slot on a later tick.
-    try:
-        workers.respawn_worker(worker.wid)
-    except Exception:
-        log.warning("Respawn after cancelling %s failed; clearing reaping for recovery", task_id, exc_info=True)
-        try:
-            with q._queue_lock:
-                slot = workers.WORKERS.get(worker.wid)
-                if slot is not None:
-                    slot.reaping = False
-        except Exception:
-            log.debug("Could not clear the slot marker for %s", task_id, exc_info=True)
+    from supervisor.task_reaper import _respawn_after_reap
+    _respawn_after_reap(q, workers, worker.wid, expected_worker=worker)
     if str(task.get("delegation_role") or "") == "subagent":
         try:
             from ouroboros.headless import remove_subagent_task_drive
@@ -415,6 +443,7 @@ def _custody_disclosure_fields(
 
 def _audit_delegated_runs_on_kill(
     q: Any, task_id: str, *, trigger: str = "cancel_publication",
+    deliberate_terminal: str = "",
 ) -> Dict[str, Any]:
     """Settle this task's open DELEGATED runs after its worker is dead; disclose
     what stayed open. Returns the FULL audit mapping (R2) — ``unreconciled``
@@ -444,7 +473,16 @@ def _audit_delegated_runs_on_kill(
     ``delegated_runs_unreconciled`` surface (result field, typed event,
     delivery note, ``audit_failed`` flavor), and periodic reconciliation
     remains the eventual closer. A pending-invocation audit failure surfaces
-    the same way. GR6-4 closes the quiet corner of the same class: a custody
+    the same way.
+
+    ``deliberate_terminal`` is the terminal status this caller is about to write
+    when the kill IS the task's own deliberate end (an owner cancellation). The
+    A4 ordering audits custody before that write, so the durable result the
+    inverted cancel floor reads does not exist yet; without this the owner's
+    cancel would leave the paid run live until the next periodic sweep. A host
+    bound (deadline, reap) passes nothing and keeps sparing the run.
+
+    GR6-4 closes the quiet corner of the same class: a custody
     log that EXISTS but cannot be OPENED used to replay as empty (audits as
     "cleanly reconciled") because ``_iter_rows`` swallows its own ``OSError``
     — the audit now probes readability first and reports the typed
@@ -458,6 +496,7 @@ def _audit_delegated_runs_on_kill(
 
         audit = terminal_reconcile_task(
             pathlib.Path(q.DRIVE_ROOT), task_id, trigger=trigger,
+            deliberate_terminal=deliberate_terminal,
         )
     except Exception:
         log.warning(
@@ -516,11 +555,11 @@ def _cascade_delivery_row_locked(q: Any, task_id: str) -> Dict[str, Any]:
     (Moved verbatim from ``task_lifecycle.py`` at its module-size boundary.)
     """
     for task in q.PENDING:
-        if isinstance(task, dict) and q._is_descendant_of(task, task_id) and task.get("chat_id"):
+        if isinstance(task, dict) and q._is_descendant_of(task, task_id) and task.get("chat_id") is not None:
             return dict(task)
     for meta in q.RUNNING.values():
         task = meta.get("task") if isinstance(meta, dict) else None
-        if isinstance(task, dict) and q._is_descendant_of(task, task_id) and task.get("chat_id"):
+        if isinstance(task, dict) and q._is_descendant_of(task, task_id) and task.get("chat_id") is not None:
             return dict(task)
     return {}
 
@@ -654,9 +693,13 @@ def _finalize_cancel_intent_on_miss(
         # GR5-3: neither queued nor running — the worker is gone, but its
         # delegated runs may still be live; audit custody like the kill path
         # and thread the disclosure into every miss-lane delivery below.
-        audit = _audit_delegated_runs_on_kill(q, task_id)
-        unreconciled = list(audit.get("unreconciled") or [])
+        # Read after child copyback: only an unsettled task will receive our
+        # cancelled write. An existing terminal keeps its own custody verdict.
         settled = _settled_status(q.DRIVE_ROOT, task_id)
+        audit = _audit_delegated_runs_on_kill(
+            q, task_id, **({} if settled else {"deliberate_terminal": STATUS_CANCELLED}),
+        )
+        unreconciled = list(audit.get("unreconciled") or [])
         if settled:
             _recover_stranded_reaping_slot(q, task_id, active)
             # D1b (R4): this branch performs no terminal write of its own, so
@@ -689,7 +732,7 @@ def _finalize_cancel_intent_on_miss(
                 # R2/R4: the audited list AND its envelope ride this single
                 # cancelled write — a clean audit clears a stale stored list.
                 **_custody_disclosure_fields(audit),
-                result="Task cancelled (was neither queued nor running at supervisor teardown).",
+                result=_miss_lane_cancel_text(active),
             ),
         )
         stored_status = str((stored or {}).get("status") or "")

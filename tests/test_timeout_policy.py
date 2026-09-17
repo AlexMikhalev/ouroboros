@@ -236,6 +236,9 @@ def test_plan_task_outer_envelope_covers_agent_session_lifetime(monkeypatch):
 
     # max(transport + 2*grace, task ceiling + grace), not a short API-only
     # wrapper that can return while an agent-session worker is still paid/live.
+    # The envelope bounds a caller that WAITS (an identical envelope resuming an
+    # in-flight wave); a fresh dispatch returns at the dispatch barrier by design
+    # (ReviewRequest.drain_deadline) with its workers in process-local custody.
     assert plan_review._plan_task_tool_timeout_sec() == 21_720.0
     entry = next(item for item in plan_review.get_tools() if item.name == "plan_task")
     assert entry.timeout_sec == 21_720.0
@@ -802,9 +805,12 @@ def test_expiring_strict_review_poll_keeps_the_subsecond_bound():
     assert 0 < gateway.timeout <= 0.001
 
 
-def test_strict_poll_splits_http_phase_budget_and_recomputes_retry():
-    import time
-    from ouroboros.delegate_progress import bounded_poll
+def test_strict_poll_splits_http_phase_budget_and_recomputes_retry(monkeypatch):
+    from types import SimpleNamespace
+    import ouroboros.delegate_progress as progress
+
+    clock = [100.0]
+    monkeypatch.setattr(progress, "time", SimpleNamespace(monotonic=lambda: clock[0]))
 
     class AtomicRace(Exception):
         code = "ENOENT"
@@ -816,25 +822,18 @@ def test_strict_poll_splits_http_phase_budget_and_recomputes_retry():
         def get_run(self, _run_id, *, timeout_sec=None):
             self.timeouts.append(timeout_sec)
             if len(self.timeouts) == 1:
-                # Guarantees monotonic advances between the two poll_bound
-                # computations, so the retry ask is measurably below the first.
-                time.sleep(0.01)
+                # A 10ms sleep can stay within one Windows clock tick. Model
+                # elapsed poll work explicitly while retaining the real thread.
+                clock[0] += 1.0
                 raise AtomicRace("/.git/objects/ab/tmp_obj_123")
             return {"summary": {"state": "succeeded"}}
 
     gateway = Gateway()
-    # A coarse budget below the 60s read default: the contract under test is
-    # the SPLIT (first ask bounded by the whole budget, retry ask recomputed
-    # from the remainder), not stopwatch accuracy.  The previous 0.08s budget
-    # required the first phase (thread spawn + 0.01s sleep + raise) to finish
-    # with window remaining inside 80ms of wall clock; on a loaded CI host the
-    # budget was already spent by the catch, so the injected AtomicRace
-    # escaped instead of earning its one re-read (same margin redesign as
-    # test_strict_poll_phase_budget_is_bounded_in_wall_time).
-    detail = bounded_poll(gateway, "run-1", 30.0, strict=True)
+    # Below the 60s read default, the retry must receive the whole remainder.
+    # The neighboring wall-time test independently covers a stalled HTTP phase.
+    detail = progress.bounded_poll(gateway, "run-1", 30.0, strict=True)
     assert detail == {"summary": {"state": "succeeded"}}
-    assert 0 < gateway.timeouts[0] <= 30.0
-    assert 0 < gateway.timeouts[1] < gateway.timeouts[0]
+    assert gateway.timeouts == [30.0, 29.0]
 
 
 def test_strict_poll_phase_budget_is_bounded_in_wall_time():
@@ -990,8 +989,8 @@ def test_forced_finalization_does_not_rebase_existing_grace(monkeypatch, tmp_pat
     )
     monkeypatch.setattr(loop_mod, "_finalize_forced_services", lambda *_args: None)
     monkeypatch.setattr(
-        loop_mod, "_forced_swarm_router_result",
-        lambda *_args: ("routed", {}, {}),
+        loop_mod, "_call_forced_model_once",
+        lambda *_args: "The final answer.",
     )
     loop_mod._forced_final_answer(
         ctx, prompt="finish", fallback_text="fallback",

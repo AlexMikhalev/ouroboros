@@ -1,6 +1,6 @@
 """capinv-447 WS2-a: credential-shape vocabulary is a leaf module; root READ
-authorization of user_files is location-only (В23=A), mutation keeps the shape
-deny, children stay location-denied, and denied children get typed disclosure
+authorization of user_files is location-only (В23=A), mutation protects physical
+owner stores, children stay location-denied, and denied children get typed disclosure
 instead of invisibility."""
 
 import os
@@ -26,6 +26,7 @@ def _root_ctx(tmp_path):
 def _home(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: home))
     monkeypatch.setenv("OUROBOROS_USER_FILES_ROOT", str(home))
     return home
 
@@ -51,18 +52,19 @@ def test_root_read_list_search_are_location_only(tmp_path, monkeypatch):
     )
 
 
-def test_mutation_operations_keep_credential_shape_deny(tmp_path, monkeypatch):
-    """Writes/edits (and unknown-operation callers, fail-closed) keep the
-    pre-capinv-447 shape gate: overwriting ~/.bashrc / ~/.ssh material is a
-    persistence hazard, not a read."""
+def test_mutation_operations_distinguish_ordinary_names_from_owner_stores(tmp_path, monkeypatch):
+    """Ordinary named files stay writable; real owner SSH and VCS stores do not."""
     home = _home(tmp_path, monkeypatch)
     ctx = _root_ctx(tmp_path)
     for op in ("", "write", "edit"):
-        assert "credential-like" in user_files_path_block_reason(
+        assert user_files_path_block_reason(
             ctx, home / "Desktop" / "Credentials.json", operation=op
-        )
+        ) == ""
         assert "hidden or credential-like" in user_files_path_block_reason(
             ctx, home / ".ssh" / "authorized_keys", operation=op
+        )
+        assert "VCS control directory" in user_files_path_block_reason(
+            ctx, home / "project" / ".git" / "config", operation=op
         )
     # Benign dotted project components stay writable under the allowlist.
     assert user_files_path_block_reason(ctx, home / ".github" / "ci.yml", operation="write") == ""
@@ -98,7 +100,7 @@ for op in ("read", "list", "search"):
 assert "ouroboros.credential_shapes" not in sys.modules, "read decision imported shapes"
 # Non-vacuity: the MUTATION branch does consult the shapes, so the hook fires.
 try:
-    ta.user_files_path_block_reason(ctx, pathlib.Path(home) / "x.pem", operation="write")
+    ta.user_files_path_block_reason(ctx, pathlib.Path(home) / "credentials.json", operation="write")
 except ImportError:
     print("OK")
 else:
@@ -112,7 +114,7 @@ else:
     assert "OK" in proc.stdout
 
 
-# ── restricted-child reads use exact credential leaves and real stores ──────
+# ── restricted-child reads protect runtime stores and VCS metadata ──────────
 
 def test_child_secret_shape_contract_preserved():
     from ouroboros.tools.core import (
@@ -126,22 +128,18 @@ def test_child_secret_shape_contract_preserved():
     for norm in ("memory/identity.md", "logs/progress.jsonl", "notes.txt",
                  "foo.pem", "my_api_key.json", "source/auth/service.py"):
         assert not _is_subagent_secret_data_path(norm), norm
-    for norm in (".git/config", "token.json", "config/.env", "deploy/credentials.json",
-                 "auth_token.json", "config/auth_token.json"):
+    for norm in (".git/config", "config/.env", "config/prod.env", "config/.env.local"):
         assert _is_subagent_secret_repo_path(norm), norm
-    # Owner-selected capability: suffixes and source-directory names alone
-    # cannot identify private credentials. Exact names above stay blocked.
+    # Ordinary project files are not owner stores merely because of their name.
     for norm in ("README.md", "src/main.py", "docs/token_economics.md", "settings.json",
-                 "auth/service.py", "ordinary.config", "deploy.key", "foo.pem", "my_api_key.json"):
+                 "auth/service.py", "ordinary.config", "deploy.key", "foo.pem", "my_api_key.json",
+                 "token.json", "deploy/credentials.json", "auth_token.json", "config/auth_token.json"):
         assert not _is_subagent_secret_repo_path(norm), norm
 
 
 def test_shape_vocabulary_is_single_sourced():
     from ouroboros import credential_shapes as cs
 
-    assert cs.CREDENTIAL_NAME_RE.search("api_key.json")
-    assert cs.CREDENTIAL_NAME_RE.search("my-token")
-    assert not cs.CREDENTIAL_NAME_RE.search("README.md")
     assert "settings.json" in cs.SUBAGENT_CREDENTIAL_FILE_NAMES
     assert ".ssh" in cs.CREDENTIAL_COMPONENT_NAMES
     assert cs.user_files_mutation_shape_reason(
@@ -176,7 +174,7 @@ def test_user_files_listing_shows_credential_shaped_entries_to_root(tmp_path, mo
 
 # ── denied children get typed disclosure, not invisibility ───────────────────
 
-def test_child_search_reports_omitted_secret_files(tmp_path, monkeypatch):
+def test_child_search_keeps_named_project_files_and_reports_actual_exclusions(tmp_path, monkeypatch):
     from ouroboros.contracts.task_constraint import TaskConstraint
     from ouroboros.tools import core as core_mod
     import ouroboros.code_search_rg as rg_mod
@@ -185,6 +183,7 @@ def test_child_search_reports_omitted_secret_files(tmp_path, monkeypatch):
     repo.mkdir()
     (repo / "notes.txt").write_text("needle here", encoding="utf-8")
     (repo / "secrets.json").write_text('"needle"', encoding="utf-8")
+    (repo / ".env.local").write_text('TOKEN=needle', encoding="utf-8")
 
     def _no_rg(*a, **k):
         raise RuntimeError("rg disabled for fallback test")
@@ -200,6 +199,7 @@ def test_child_search_reports_omitted_secret_files(tmp_path, monkeypatch):
     )
 
     result = core_mod._code_search(ctx, "needle", root="active_workspace", path=".")
-    assert "secrets.json" not in result
+    assert "secrets.json" in result
+    assert ".env.local" not in result
     assert "notes.txt" in result
     assert "secret/control file(s) omitted from this subagent's search" in result

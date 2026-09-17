@@ -36,6 +36,9 @@ class _MessageShapingMixin:
     ) -> List[Dict[str, Any]]:
         cleaned = scrub_native_custody(messages)
         for msg in cleaned:
+            for key in ("acceptance_observation", "_acceptance_observation"):
+                msg.pop(key, None)
+            msg.pop("nativeContinuation", None)
             content = msg.get("content")
             if not isinstance(content, list):
                 continue
@@ -102,7 +105,10 @@ class _MessageShapingMixin:
         other round-trip artifact is still stripped."""
         cleaned = scrub_native_custody(messages)
         for msg in cleaned:
-            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            if not isinstance(msg, dict):
+                continue
+            msg.pop("nativeContinuation", None)
+            if msg.get("role") != "assistant":
                 continue
             msg.pop("reasoning", None)
             msg.pop("reasoning_details", None)
@@ -301,6 +307,11 @@ class _MessageShapingMixin:
             for message in messages if isinstance(message, dict)
         )
         prepared = scrub_native_custody(messages) if switched and has_native_custody else messages
+        if switched and any(isinstance(message, dict) and "nativeContinuation" in message for message in prepared):
+            prepared = copy.deepcopy(prepared)
+            for message in prepared:
+                if isinstance(message, dict):
+                    message.pop("nativeContinuation", None)
         if cls._model_family(from_model) == cls._model_family(to_model):
             return prepared
         return cls._strip_openrouter_roundtrip_metadata(prepared)

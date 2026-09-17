@@ -113,7 +113,7 @@ def quarantine_task_result(path: pathlib.Path, reason: str) -> str:
     )
 
     lock_path = path.with_name(path.name + ".lock")
-    lock_fd = acquire_exclusive_file_lock(lock_path, timeout_sec=4.0, stale_sec=90.0)
+    lock_fd = acquire_exclusive_file_lock(lock_path, timeout_sec=4.0, stale_sec=90.0, owner_aware_stale=True)
     if lock_fd is None:
         log.warning("task-result quarantine skipped (lock timeout): %s", path)
         return "failed"

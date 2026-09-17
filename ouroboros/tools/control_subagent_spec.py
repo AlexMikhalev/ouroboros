@@ -57,7 +57,15 @@ def schedule_subagent_properties() -> Dict[str, Any]:
             "enum": ["read_only", "self_worktree", "external_workspace", "genesis"],
             "description": "read_only (or omit) = read-only child auditing THIS repo. A MUTATIVE child uses self_worktree (isolated repo patch), external_workspace (native children write shared files directly), or genesis (standalone project). See tool description for integration. Acting surfaces require mutative subagents enabled (default ON in advanced/pro).",
         },
-        "write_root": {"type": "string", "description": "For write_surface=external_workspace: the external project directory — a REAL external Git working tree, never runtime data. An installed non-Git skill payload is NOT an external workspace: delegate it directly with delegate_start(subagent_id=..., prompt=..., root='skill_payload', bucket=..., skill_name=...). OMIT write_root to build COOPERATIVELY from scratch — the host mints ONE shared git tree the whole subagent tree writes into together (deeper descendants inherit it), and you verify the combined files with integrate_subagent_patch without reapplying them. Ignored for self_worktree and genesis (both auto-provisioned)."},
+        "write_root": {"type": "string", "description": "For write_surface=external_workspace: the external project directory, with or without Git, never runtime data. An installed skill payload has its own resource address: delegate it directly with delegate_start(subagent_id=..., prompt=..., root='skill_payload', bucket=..., skill_name=...). OMIT write_root to build COOPERATIVELY from scratch — the host mints ONE shared git tree the whole subagent tree writes into together (deeper descendants inherit it), and you verify the combined files with integrate_subagent_patch without reapplying them. Ignored for self_worktree and genesis (both auto-provisioned)."},
+        "directory_strategy": {
+            "type": "string", "enum": ["direct", "copy"],
+            "description": "For an agent_session in an ordinary folder: direct works in the selected folder; copy works in a separate copy of scope_paths and returns changes for application. Choose according to the task and any owner preference. Omit for direct ordinary-folder work. Write-capable children only: a read-only child omits both this and scope_paths (direct with no scope is the same as omitting). Native/API children use shared files directly and do not support copy.",
+        },
+        "scope_paths": {
+            "type": "array", "items": {"type": "string"},
+            "description": "For an agent_session in an ordinary folder: relative copied inputs for copy, or capture footprint for direct (including future outputs). ['.'] explicitly selects the whole folder. Copy requires nonempty scope. Write-capable children only: a read-only child omits both this and directory_strategy (there is nothing for it to copy back or capture). Native children declare process outputs on their file/process tools instead.",
+        },
         "protected_paths_grant": {"type": "boolean", "default": False, "description": "Allow the child to modify protected paths in its self_worktree. Honored only in pro runtime mode; you still re-check at integration."},
         "external_tool_grants": {"type": "array", "items": {"type": "string"}, "description": "Optional extension/MCP tool names to grant this mutative child. Denied by default."},
         "allowed_origins": {
@@ -168,6 +176,38 @@ def _validated_schedule_fields(params: Dict[str, Any], *, ctx: Any = None) -> tu
             f"⚠️ TOOL_ARG_ERROR (schedule_subagent): memory_mode must be one of: {allowed}. "
             "memory_mode=shared is disabled for live local subagents until a sanitized shared-context mode exists."
         )
+    directory_options = {}
+    if "directory_strategy" in params:
+        strategy = params["directory_strategy"]
+        if strategy not in ("direct", "copy"):
+            return {}, "⚠️ TOOL_ARG_ERROR (schedule_subagent): directory_strategy must be direct or copy."
+        directory_options["directory_strategy"] = strategy
+    if "scope_paths" in params:
+        from pathlib import PurePosixPath, PureWindowsPath
+
+        paths = params["scope_paths"]
+        if not isinstance(paths, list) or any(
+            not isinstance(path, str) or not path.strip() or "\x00" in path
+            or PurePosixPath(path).is_absolute() or PureWindowsPath(path).drive
+            or PureWindowsPath(path).root or ".." in PurePosixPath(path).parts for path in paths
+        ):
+            return {}, "⚠️ TOOL_ARG_ERROR (schedule_subagent): scope_paths must be an array of nonempty relative paths."
+        directory_options["scope_paths"] = list(paths)
+    if directory_options.get("directory_strategy") == "copy" and not directory_options.get("scope_paths"):
+        return {}, "⚠️ TOOL_ARG_ERROR (schedule_subagent): copy requires scope_paths; use ['.'] to select the whole folder."
+    from ouroboros.delegate_directory import DIRECTORY_OPTIONS_NEED_WRITE, default_shaped_directory_options
+
+    # Folder geometry is a WRITE-side request: a read-only child reads the selected
+    # folder as it is, and the host's pre-start refuses geometry it can never serve —
+    # after a worker, a queue row and the child's first paid round. Refusing it HERE
+    # costs the parent one argument fix instead. `read_only` is the provider-safe
+    # alias for omitting the surface, so both spellings take the read-only path the
+    # scheduler's own constraint selector takes.
+    if str(params.get("write_surface") or "").strip().lower() in {"", "read_only"} and (
+        not default_shaped_directory_options(
+            directory_options.get("directory_strategy"), directory_options.get("scope_paths"))
+    ):
+        return {}, "⚠️ TOOL_ARG_ERROR (schedule_subagent): " + DIRECTORY_OPTIONS_NEED_WRITE
     from ouroboros.contracts.task_contract import normalize_allowed_origins, normalize_browser_origin, normalize_resource_policy
     from ouroboros.presence_authority import presence_ceiling_from_context
     from ouroboros.tools.core import is_restricted_subagent_profile
@@ -203,6 +243,7 @@ def _validated_schedule_fields(params: Dict[str, Any], *, ctx: Any = None) -> tu
         "acceptance_claims": acceptance_claims,
         "resource_policy": resource_policy,
         "parent_contract": parent,
+        **directory_options,
     }, ""
 
 

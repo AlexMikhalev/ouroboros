@@ -30,7 +30,6 @@ from ouroboros.skill_loader import (
     find_skill,
     grant_status_for_skill,
     load_enabled,
-    review_status_allows_execution,
 )
 from ouroboros.utils import append_jsonl, atomic_write_json, read_json_dict, utc_now_iso
 
@@ -232,9 +231,10 @@ class HostServiceContext:
 
     def _default_tool_schemas(self) -> list[dict[str, Any]]:
         try:
-            from supervisor.workers import _get_chat_agent
+            from supervisor.workers import REPO_DIR
+            from ouroboros.tools.registry import ToolRegistry
 
-            return list(_get_chat_agent().tools.schemas())
+            return list(ToolRegistry(pathlib.Path(REPO_DIR), self.data_dir).schemas())
         except Exception:
             log.debug("Host service could not read tool schemas", exc_info=True)
             return []
@@ -283,7 +283,7 @@ class HostServiceContext:
         loaded = find_skill(self.data_dir, skill_name)
         if loaded is None:
             raise HostServiceAuthError(f"skill {skill_name!r} is not installed")
-        if not review_status_allows_execution(loaded.review.status) or loaded.review.is_stale_for(loaded.content_hash):
+        if not loaded.review.gate_for(loaded.content_hash)["executable_review"]:
             raise HostServiceAuthError(f"skill {skill_name!r} does not have a fresh executable review")
         if not load_enabled(self.data_dir, skill_name):
             raise HostServiceAuthError(f"skill {skill_name!r} is disabled")
@@ -795,7 +795,7 @@ async def _api_presence_work(request: Request) -> JSONResponse:
 
 
 async def _api_chat_decision(request: Request) -> JSONResponse:
-    """Relay the owner's answer to a decision card (a quiz option or free answer).
+    """Relay the owner's answer through the shared owner-decision ingress.
 
     The SAME ingress as ``POST /api/decisions`` (``task_decision.answer_decision``):
     idempotent per ``request_id``, first answer wins, typed 404/409 refusals.
@@ -817,7 +817,7 @@ async def _api_chat_decision(request: Request) -> JSONResponse:
     from ouroboros.gateway.task_decision import answer_decision
 
     try:
-        status, payload = await answer_decision(ctx.data_dir, body)
+        status, payload = await answer_decision(ctx.data_dir, body, source=f"skill:{skill_name}")
     except Exception as exc:
         log.debug("Host service decision relay failed", exc_info=True)
         return _json_error(str(exc), 500)
@@ -938,8 +938,7 @@ def _operation_state(ctx: HostServiceContext, rows: list, inbound: Dict[str, Any
     when the host session that accepted the message is gone and nothing else
     answers. ``cancel_supported`` is true only for work THIS message started
     that the cancellation owner can address: a promoted task or a live direct
-    turn; an ephemeral decision turn (pre-promotion) and a message steered into
-    a pre-existing task are disclosed, not cancelled.
+    turn; a message steered into a pre-existing task is disclosed, not cancelled.
     """
     from ouroboros.project_dialogue import latest_chat_annotations, entry_matches_source_ref, owner_message_ref_is_valid
     from ouroboros.task_results import load_task_result
@@ -1054,7 +1053,6 @@ def _cancel_owned_operation(
         return 200, {"ok": True, "outcome": "already_terminal", **base}
     if not state.get("cancel_supported") or not state.get("task_id"):
         reason_code = state.get("reason") or {
-            "ephemeral_decision": "decision_turn_in_flight",
             "lost": "host_restarted_before_answer",
         }.get(str(state.get("phase") or state["status"]), "not_started")
         return 409, {"ok": False, "outcome": "cancel_unsupported", "reason": reason_code, **base}
@@ -1151,9 +1149,8 @@ async def _api_chat_cancel(request: Request) -> JSONResponse:
     the browser Stop uses — and the answer is its typed outcome: ``cancelled``,
     ``already_terminal``, ``unresolved`` (custody did not settle; the work is
     still live) or ``cancel_unsupported`` (nothing this request started is
-    addressable yet: still queued, an ephemeral decision turn in flight, or a
-    message the decision lane delivered into a pre-existing task). Never a
-    ``cancelled`` that did not happen.
+    addressable yet: still queued, or a message delivered into a pre-existing
+    task). Never a ``cancelled`` that did not happen.
     """
     ctx: HostServiceContext = request.app.state.host_service_context
     try:
