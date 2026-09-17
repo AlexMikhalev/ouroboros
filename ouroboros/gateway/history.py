@@ -100,6 +100,9 @@ _PROGRESS_META_FIELDS = (
     # the pointer on reload while its outer task_id stays empty.
     "lifecycle_pointer",
     "initiator",  # the turn's origin label (a consciousness wake-up)
+    # The frame's voice: a replayed host note must stay a host note, or a reload
+    # would hand the card title back to the very line live rendering refused it.
+    "narration",
 )
 
 _SKILL_REVIEW_STRING_FIELDS = (
@@ -890,11 +893,20 @@ def _collect_chat_rows(
                                 quiz[key] = _live[key]
                         if "wait_for_answer" not in _live:
                             quiz.pop("wait_for_answer", None)  # the bound closed: the card no longer waits
+                    if quiz.get("wait_for_answer") or quiz.get("wait_ended_at"):
+                        # The card header reads the same wait facts the Main pointer does: a
+                        # wait the owner resumed by ordinary input leaves no frame behind.
+                        from ouroboros.project_dialogue import owner_wait_projection
+
+                        quiz.update(owner_wait_projection(_qid, _quiz_source(_qtid)["wait"],
+                                                          _live if isinstance(_live, dict) else None))
                 rec.update(msg_type="quiz", quiz=quiz)
             if "task_terminal_status" in entry:
                 rec["task_terminal_status"] = str(entry.get("task_terminal_status") or "")
             _copy_task_summary_metadata(rec, entry)
-            for field in (*SUBAGENT_MESSAGE_FIELDS, "initiator"):  # lineage + the origin label
+            # Lineage, the origin label, and the host's card placement (card_row /
+            # card_row_id) — a stored key is replayed verbatim, an absent one is omitted.
+            for field in (*SUBAGENT_MESSAGE_FIELDS, "initiator", "card_row", "card_row_id"):
                 if field in entry:
                     rec[field] = entry[field]
             combined.append(rec)

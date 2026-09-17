@@ -566,6 +566,28 @@ def test_eligibility_probe_closes_its_gateway(tmp_path, monkeypatch, _quiet_prob
     assert closed == [True]
 
 
+def test_review_panel_work_is_not_a_leaf_this_nanny_may_hold_on(tmp_path, _quiet_probe):
+    """Issue #1006: the hold's cardinality is over the task's OWN delegation.
+    A live review slot beside the one real leaf must not read as two leaves, and
+    a review invocation is not a pending start of this task's own. With only
+    review rows there is no leaf at all, so no hold applies."""
+    registry = _configured_registry(tmp_path, task_id="t-review-hold")
+    custody._CUSTODY.pop("run-panel", None)
+    assert custody.record_started(tmp_path, custody.RunCustody(
+        run_id="run-panel", task_id="t-review-hold", route_id="codex",
+        source="review_substrate", category="task_acceptance_review"))
+    assert custody.record_start_requested(
+        tmp_path, run_id="", task_id="t-review-hold", invocation_id="inv-panel",
+        idempotency_key="inv-panel", request={"prompt": "packet"},
+        route="codex", source="review_substrate.extraction")
+    custody._CUSTODY.clear()
+    assert delegate_hold._single_live_run(registry._ctx) == ""
+
+    _start_leaf(tmp_path, task_id="t-review-hold", run_id="run-leaf")
+    custody._CUSTODY.clear()
+    assert delegate_hold._single_live_run(registry._ctx) == "run-leaf"
+
+
 def test_transport_dead_observation_keeps_the_hold_instead_of_a_refused_exit(
     tmp_path, monkeypatch, _quiet_probe,
 ):

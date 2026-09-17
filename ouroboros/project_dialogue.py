@@ -53,9 +53,62 @@ def _row_chat_id(row: Dict[str, Any]) -> int:
         return 0
 
 
+# The closed lifecycle vocabulary of a required Project question, shared with
+# web/modules/question_presentation.js: one leading word answers "is there an
+# unanswered question for me?", the rest is context. Both sides are pinned on the
+# rows this module actually emits by web/tests/fixtures/question_presentation_parity.json.
+QUESTION_STATUS = {
+    "waiting": "Waiting for your answer",
+    "open": "Unanswered · an answer is still accepted",
+    "resumed": "Unanswered · the task continued; an answer is still accepted",
+    "expired_terminal": "Unanswered · the task finished; a late answer is accepted as your message",
+    "answered": "You answered",
+    "superseded": "Replaced by a newer question",
+    "unknown": "Status unavailable",
+}
+_QUIZ_LIFECYCLE = {"open", "answered", "expired_terminal", "superseded"}
+
+
+def owner_wait_projection(quiz_id: str, owner_wait: Any, block: Any) -> Dict[str, Any]:
+    """Wait facts for one quiz, from evidence only: the task's ``owner_wait`` record when
+    it names this quiz (``waiting`` / ``resumed`` plus the timeout reason), a record that
+    moved on to another quiz (this wait is over), and the block's closed bound."""
+    waiting = owner_wait if isinstance(owner_wait, dict) else {}
+    block = block if isinstance(block, dict) else {}
+    facts: Dict[str, Any] = {}
+    if waiting.get("quiz_id") == quiz_id and waiting.get("state"):
+        facts["owner_wait_state"] = str(waiting["state"])
+        if waiting.get("resume_reason"):
+            facts["owner_wait_resume_reason"] = str(waiting["resume_reason"])
+    elif waiting.get("quiz_id") and str(waiting.get("quiz_id")) != quiz_id:
+        facts["owner_wait_state"] = "resumed"
+    if block.get("wait_ended_at"):
+        facts["wait_ended_at"] = str(block["wait_ended_at"])
+    return facts
+
+
+def question_status(state: str, facts: Dict[str, Any], wait_for_answer: bool) -> str:
+    """One status sentence; waiting needs positive wait evidence (a live record, or the
+    original required flag before any record exists), never an inference from silence."""
+    if state not in _QUIZ_LIFECYCLE:
+        return QUESTION_STATUS["unknown"]
+    if state != "open":
+        return QUESTION_STATUS[state]
+    wait_state = str(facts.get("owner_wait_state") or "")
+    resumed = wait_state == "resumed" or bool(facts.get("wait_ended_at"))
+    waiting = not resumed and (wait_state == "waiting" or (not wait_state and wait_for_answer))
+    return QUESTION_STATUS["waiting" if waiting else "resumed" if resumed else "open"]
+
+
 def project_question_pointer(row: Dict[str, Any], block: Any, project: Any,
                              owner_wait: Any = None) -> Optional[Dict[str, Any]]:
-    """Read projection of one required Project question; never another ask."""
+    """Read projection of one required Project question; never another ask.
+
+    The row is complete for display: question, option labels, the recorded answer and the
+    wait facts ride with the pointer, so the browser paints it from history or the live
+    frame alone and reads task detail only to open the original form."""
+    from ouroboros.contracts.chat_id_policy import WEB_UI_CHAT_ID
+
     quiz = row.get("quiz") if isinstance(row.get("quiz"), dict) else row
     task_id, quiz_id = str(row.get("task_id") or ""), str(quiz.get("quiz_id") or "")
     block = block if isinstance(block, dict) else {}
@@ -64,30 +117,36 @@ def project_question_pointer(row: Dict[str, Any], block: Any, project: Any,
             or not (quiz.get("wait_for_answer") is True or block.get("wait_for_answer") is True)):
         return None
     state = str(block.get("state") or "")
-    known = block.get("quiz_id") == quiz_id and state in {"open", "answered", "expired_terminal", "superseded"}
-    waiting = owner_wait if isinstance(owner_wait, dict) else {}
-    wait_state = str(waiting.get("state") or "") if waiting.get("quiz_id") == quiz_id else ""
-    resume_reason = str(waiting.get("resume_reason") or "") if wait_state else ""
+    known = block.get("quiz_id") == quiz_id and state in _QUIZ_LIFECYCLE
+    facts = owner_wait_projection(quiz_id, owner_wait, block)
+    # The block drops its required flag when its bound closes; the durable row keeps it.
+    still_required = bool(block.get("wait_for_answer")) if block else bool(quiz.get("wait_for_answer"))
     name = str(project.get("name") or "Project")
-    # A wait that ended on its own bound resumed WITHOUT an answer, so the
-    # question is still wanted: it keeps reading "Answer needed".
-    still_asking = wait_state != "resumed" or resume_reason == "timeout"
-    lead = ("Question status unavailable" if not known else "Question answered" if state == "answered"
-            # The task finished, but its card is still answerable (В17a=A).
-            else "Answer still possible" if state == "expired_terminal"
-            else "Question expired" if state == "superseded"
-            else "Answer needed" if still_asking else "Question")
-    return {
+    lead = question_status(state if known else "unknown", facts, still_required)
+    options = quiz.get("options") if isinstance(quiz.get("options"), list) else block.get("options")
+    labels = [str(option.get("label") if isinstance(option, dict) else option or "")
+              for option in (options if isinstance(options, list) else [])]
+    question = str(quiz.get("question") or row.get("text") or block.get("question") or "")
+    pointer: Dict[str, Any] = {
         "role": "system", "system_type": "project_question_pointer", "task_id": task_id,
         "quiz_id": quiz_id, "quiz_state": state if known else "unknown",
         "project_id": str(project["id"]), "project_name": name,
-        "project_chat_id": int(project["chat_id"]), "chat_id": 1,
+        "project_chat_id": int(project["chat_id"]), "chat_id": WEB_UI_CHAT_ID,
         "ts": str(block.get("asked_at") or row.get("ts") or ""),
         "text": f"{lead} in {name}", "is_progress": False, "markdown": False,
-        **({"owner_wait_state": wait_state} if wait_state else {}),
-        **({"owner_wait_resume_reason": resume_reason} if resume_reason else {}),
+        # Display fields only when known: a narrower producer must never blank a complete row.
+        **({"question": question} if question else {}),
+        **({"options": labels} if labels else {}),
+        **facts,
         **({"source_status": "unavailable"} if not known else {}),
     }
+    if still_required:
+        pointer["wait_for_answer"] = True
+    if isinstance(block.get("answered_index"), int) and not isinstance(block.get("answered_index"), bool):
+        pointer["answered_index"] = int(block["answered_index"])
+    if str(block.get("comment") or ""):
+        pointer["comment"] = str(block["comment"])
+    return pointer
 
 
 def _chat_paths(drive_root: Any) -> List[pathlib.Path]:

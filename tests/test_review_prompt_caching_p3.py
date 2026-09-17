@@ -2,7 +2,8 @@
 
 import queue
 
-from ouroboros.llm_claudexor import _request
+from ouroboros import config
+from ouroboros.llm_claudexor import _request, cache_key_for_model
 from ouroboros.loop_llm_call import call_llm_with_retry
 
 
@@ -16,7 +17,19 @@ def test_claudexor_request_projects_explicit_affinity_to_cache_key():
     assert payload["options"]["cacheKey"] == "execution-7"
 
 
-def test_main_loop_scopes_execution_affinity_to_claudexor(tmp_path):
+def test_cache_key_is_install_scoped_stable_and_header_safe(monkeypatch, tmp_path):
+    key = cache_key_for_model("claudexor::codex=gpt-6-astra")
+    assert key == cache_key_for_model("claudexor::codex=gpt-6-astra"), "same install + model -> same key"
+    assert key.startswith("ouroboros-gpt-6-astra-")
+    assert all(ch.isalnum() or ch in "._-" for ch in key), "must be a valid HTTP header value"
+    assert key != cache_key_for_model("claudexor::codex=gpt-5.6-sol"), "one shard per model"
+    assert cache_key_for_model("openrouter::openai/model") == ""
+    assert cache_key_for_model("openai/gpt-5.6-sol") == ""
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "other-install")
+    assert cache_key_for_model("claudexor::codex=gpt-6-astra") != key, "another data root is another install"
+
+
+def test_main_loop_shares_one_install_affinity_across_executions_on_claudexor(tmp_path):
     captured = []
 
     class LLM:
@@ -29,16 +42,21 @@ def test_main_loop_scopes_execution_affinity_to_claudexor(tmp_path):
 
     logs = tmp_path / "logs"
     logs.mkdir()
-    for model in ("claudexor::codex=model", "openrouter::openai/model"):
-        usage = {"execution_id": "execution-7"}
+    for model, execution in (("claudexor::codex=model", "execution-7"), ("claudexor::codex=model", "execution-8"),
+                             ("openrouter::openai/model", "execution-9")):
+        usage = {"execution_id": execution}
         message, _cost = call_llm_with_retry(
             LLM(), [{"role": "user", "content": "work"}], model, None, "medium", 1,
             logs, "task", 1, queue.Queue(), usage,
         )
         assert message["content"] == "done"
 
-    assert captured[0]["cache_affinity"] == "execution-7"
-    assert captured[1]["cache_affinity"] == ""
+    # Two executions of one install share the key, so the second one's first
+    # round is served the governance prefix the first one already paid for.
+    assert captured[0]["cache_affinity"] == cache_key_for_model("claudexor::codex=model")
+    assert captured[1]["cache_affinity"] == captured[0]["cache_affinity"]
+    assert "execution-7" not in captured[0]["cache_affinity"]
+    assert captured[2]["cache_affinity"] == ""
 
 
 def test_main_loop_projects_claudexor_options_outside_the_route(tmp_path):

@@ -46,11 +46,16 @@ def test_cleanup_receipt_is_carried_before_final_delivery_without_rewriting_answ
         presence=False,
     )
     assert event["text"] == text
-    assert event["terminal_host_notice"].startswith("Budget stop retained.")
+    # Two rows on the send event: the base host notice alone, and custody on
+    # its own field (#1006). Single-body transports still read the join below.
+    assert event["terminal_host_notice"] == "Budget stop retained."
     # The leaf's own model rides the replayed row, so the nanny's terminal is
     # not read as a verdict about the role the host played (I9).
-    assert "run-one: cancelled on fixture-model" in event["terminal_host_notice"]
-    assert "Pending patch decisions: run-one" in event["terminal_host_notice"]
+    assert "run-one: cancelled on fixture-model" in event["terminal_custody_notice"]
+    assert "Pending patch decisions: run-one" in event["terminal_custody_notice"]
+    joined = public_task_result({**stored, **usage})["terminal_host_notice"]
+    assert joined.startswith("Budget stop retained.")
+    assert event["terminal_custody_notice"] in joined
     assert load_task_result(tmp_path, "root") == before
 
 
@@ -114,3 +119,55 @@ def test_successful_settled_runs_add_no_unrelated_terminal_notice():
         "open_run_ids": [], "pending_invocation_ids": [], "undisposed_patch_run_ids": [],
     }}
     assert terminal_host_notice_text(row) == ""
+
+
+def test_a_tasks_own_reviewers_never_become_its_unreconciled_custody(tmp_path):
+    """Issue #1006: a task whose only open rows are its acceptance-review slots
+    audits CLEAN. Its terminal was «Done with warnings» over a run the review
+    panel owns, so the audit must not name it, and the notice stays empty."""
+    write_task_result(tmp_path, "root", "completed", result="verdict",
+                      delegated_runs_unreconciled=["run-review"])
+    assert custody.record_started(tmp_path, custody.RunCustody(
+        run_id="run-review", task_id="root", route_id="codex", model="review-model",
+        source="review_substrate", category="task_acceptance_review",
+        review_slot_id="triad_286lhb"))
+    assert custody.record_started(tmp_path, custody.RunCustody(
+        run_id="run-review-done", task_id="root", route_id="codex",
+        source="review_substrate:task_acceptance"))
+    assert custody.emit(tmp_path, custody.SETTLED, {
+        "run_id": "run-review-done", "task_id": "root", "route": "codex",
+        "state": "failed", "source": "review_substrate"})
+    assert custody.record_start_requested(
+        tmp_path, run_id="", task_id="root", invocation_id="inv-review",
+        idempotency_key="inv-review", request={"prompt": "packet"},
+        route="codex", source="review_substrate.extraction")
+    custody._CUSTODY.clear()
+
+    assert delegate_terminal.refresh_terminal_reconciliation(tmp_path, "root")
+    audit = load_task_result(tmp_path, "root")["delegate_terminal_reconciliation"]
+    assert audit["audit_status"] == "ok"
+    assert audit["open_run_ids"] == []
+    assert audit["pending_invocation_ids"] == []
+    assert audit["terminal_runs"] == []
+    assert audit["unreconciled"] == []
+    assert terminal_host_notice_text(load_task_result(tmp_path, "root")) == ""
+    custody._CUSTODY.clear()
+
+
+def test_the_tasks_own_open_run_still_shows_beside_its_reviewers(tmp_path):
+    """The regression pin for the exclusion above: only the REVIEW rows leave."""
+    write_task_result(tmp_path, "root", "completed", result="verdict",
+                      delegated_runs_unreconciled=["stale"])
+    assert custody.record_started(tmp_path, custody.RunCustody(
+        run_id="run-review", task_id="root", route_id="codex",
+        source="review_substrate"))
+    assert custody.record_started(tmp_path, custody.RunCustody(
+        run_id="run-leaf", task_id="root", route_id="codex", model="leaf-model"))
+    custody._CUSTODY.clear()
+
+    assert delegate_terminal.refresh_terminal_reconciliation(tmp_path, "root")
+    audit = load_task_result(tmp_path, "root")["delegate_terminal_reconciliation"]
+    assert audit["open_run_ids"] == audit["unreconciled"] == ["run-leaf"]
+    assert "Open delegated execution: run-leaf" in terminal_host_notice_text(
+        load_task_result(tmp_path, "root"))
+    custody._CUSTODY.clear()

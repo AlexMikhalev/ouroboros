@@ -2,9 +2,9 @@
 
 The letter is written by the LIGHT model slot with the ordinary task context (identity,
 memory, recent dialogue, governance — ``context.build_llm_messages`` with a synthetic task
-routed at the light model), fed the material of the update range: every first-parent commit
-between the running base and the official target, plus the README "Version History" rows
-those commits ADDED. Rows are recovered from the commit diffs rather than read from any
+routed at the light model), fed every commit reachable from the official target but not
+from the running base, including merged branches, plus the README "Version History" rows
+ADDED along the target's first-parent line. Rows are recovered from the commit diffs rather than read from any
 README snapshot, because the history table is capped (rows roll off inside one range) and
 untagged releases have no tag to look up.
 
@@ -131,15 +131,16 @@ def collect_range_material(
     max_bodies: int = DEFAULT_MAX_BODIES,
     max_rows: int = DEFAULT_MAX_ROWS,
 ) -> Dict[str, Any]:
-    """Collect the first-parent commits and the README history rows they added.
+    """Collect all base..target commits and primary-line README history additions.
 
     A release row is recognised by its own first cell (a version), so rows of the README's
     other tables are passed over rather than reported as dropped releases.
 
-    ``commits`` are EVERY first-parent commit of the range, newest-first: the subject of
+    ``commits`` are EVERY commit of the range, in Git's default newest-first order: the subject of
     each one always reaches the author, so a long range is never an invisible one. Only
     the bodies are bounded — the newest ``max_bodies`` are read at all, ``bodies_omitted``
-    discloses how many older ones were not. ``releases`` are every row added anywhere in the range,
+    discloses how many older ones were not. ``releases`` are rows added along the target's
+    first-parent line, excluding transient branch rows removed before merge,
     newest-first with first-wins per version; the newest ``max_rows`` keep their text and
     older rows stay as version and date (``rows_summarized``), malformed ones are counted
     in ``omitted_rows`` with the commits that carried them in ``omitted_row_commits``, so an
@@ -158,10 +159,10 @@ def collect_range_material(
     # the bodies of only the newest ``max_bodies`` — git never hands this process the bodies
     # of a whole long history just so most of them can be dropped again.
     rc, out, err = capture([
-        "git", "log", "--first-parent", "--format=%H%x1f%aI%x1f%s%x1e", spec,
+        "git", "log", "--format=%H%x1f%aI%x1f%s%x1e", spec,
     ])
     if rc != 0:
-        raise MaterialUnavailable(f"git log --first-parent {spec} failed (rc={rc}): {str(err)[:200]}")
+        raise MaterialUnavailable(f"git log {spec} failed (rc={rc}): {str(err)[:200]}")
     commits: List[Dict[str, Any]] = []
     for chunk in out.split("\x1e") if out.strip() else []:
         chunk = chunk.strip("\n")
@@ -174,7 +175,7 @@ def collect_range_material(
         commits.append({"sha": parts[0].strip(), "date": parts[1].strip(), "subject": parts[2].strip(), "body": ""})
     if commits and max_bodies > 0:
         rc, out, err = capture([
-            "git", "log", "--first-parent", "-n", str(int(max_bodies)), "--format=%H%x1f%b%x1e", spec,
+            "git", "log", "-n", str(int(max_bodies)), "--format=%H%x1f%b%x1e", spec,
         ])
         if rc != 0:
             raise MaterialUnavailable(f"git log bodies {spec} failed (rc={rc}): {str(err)[:200]}")
@@ -189,11 +190,15 @@ def collect_range_material(
     material["bodies_omitted"] = max(0, len(commits) - max_bodies)
     material["commits"] = commits
 
+    # Release rows describe the target's primary line, not temporary branch-local entries.
+    # Commit evidence above independently covers the complete graph. Full/sparse history
+    # prevents path simplification from hiding primary-line merges for a divergent base.
     # `--diff-merges=first-parent`, never `-m`: `-m` diffs a merge against EVERY parent, and the
     # second-parent comparison of an official merge re-emits rows that were already on the
     # first-parent line — presenting an old release as added inside this range.
     rc, out, err = capture([
-        "git", "log", "--first-parent", "--diff-merges=first-parent", "-p", "-U0",
+        "git", "log", "--first-parent", "--full-history", "--sparse",
+        "--diff-merges=first-parent", "-p", "-U0",
         "--format=%x01%H", spec, "--", "README.md",
     ])
     if rc != 0:
@@ -244,7 +249,7 @@ def material_text(material: Dict[str, Any]) -> str:
     # The disclosures live OUTSIDE the `releases` branch: a range whose every candidate row
     # was malformed has no rows to print and the omission is exactly what must still be said.
     if releases or material.get("omitted_rows"):
-        lines.append("Release notes added in this range (newest first):")
+        lines.append("Release notes added along the target's first-parent line in this range (newest first):")
         for row in releases:
             # The row's own commit travels with it: a row whose text is not rendered here
             # still names where to read it in full.
@@ -264,7 +269,7 @@ def material_text(material: Dict[str, Any]) -> str:
     # "(no commits in this range)".
     if commits or material.get("omitted_commit_chunks"):
         lines.append("")
-        lines.append("First-parent commits in this range (newest first, every one of them):")
+        lines.append("Commits in this range, including merged branches (newest first, every one of them):")
         for commit in commits:
             # The FULL sha, not a display prefix: the subject is a summary, the sha is the
             # only thing that makes the rest of that commit retrievable.
@@ -313,7 +318,8 @@ def _request_text(status: Dict[str, Any], material: Dict[str, Any], target_versi
         "this check; the facts above supersede it.)"
         + "\n\nWrite my human ONE short paragraph — no headings, no lists, no more than about "
         "120 words — about what this update brings, as myself and in the language my human and I "
-        "use together. Use only what the material says; "
+        "use together. Summarize the whole range, prioritizing meaningful user-visible and operational changes, "
+        "not just the latest or merge commit. Use only what the material says; "
         "if the material does not say something, I do not invent it. This paragraph is shown on "
         "the Updates page and becomes part of my own context; the commit history stays readable "
         "for detail. Reply with the paragraph only.\n"

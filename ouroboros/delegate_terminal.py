@@ -70,6 +70,10 @@ def _audit_task_custody(drive_root: Any, mine: str, result: Dict[str, Any], *,
     audits; ``emit_evidence=False`` defers the evidence rows so a caller can
     compare the audit against the stored disclosure first (a no-op refresh must
     not append custody events every boot).
+
+    Runs and invocations a REVIEW surface owns are outside this audit's domain:
+    they are their panel's obligation, so they are never this task's open
+    delegation, pending invocation or terminal receipt (issue #1006).
     """
     if snapshot is None:
         # An unshared audit replayed the rotated chain once per projection plus
@@ -93,7 +97,7 @@ def _audit_task_custody(drive_root: Any, mine: str, result: Dict[str, Any], *,
     try:
         open_ids = (
             [row.run_id for row in custody.open_runs(drive_root, **state_kw)
-             if row.task_id == mine]
+             if row.task_id == mine and not row.review_owned]
             if not audit_failure else []
         )
     except Exception:
@@ -106,6 +110,7 @@ def _audit_task_custody(drive_root: Any, mine: str, result: Dict[str, Any], *,
                             else custody.pending_invocations(drive_root))
                 if str(row.get("task_id") or "") == mine
                 and str(row.get("invocation_id") or "")
+                and not custody.review_owned_source(row.get("source"))
             ]
             if not audit_failure else []
         )
@@ -142,7 +147,8 @@ def _audit_task_custody(drive_root: Any, mine: str, result: Dict[str, Any], *,
                  "model": str(row.model), "profile_id": str(row.profile_id),
                  "selected_subagent_id": str(row.selected_subagent_id)}
                 for row in state.values()
-                if row.task_id == mine and row.settled and row.terminal_state in custody.TERMINAL_STATES
+                if row.task_id == mine and row.settled and not row.review_owned
+                and row.terminal_state in custody.TERMINAL_STATES
             ), key=lambda row: row["run_id"])
     except Exception:
         audit_failure = audit_failure or "terminal_receipt_audit_failed"

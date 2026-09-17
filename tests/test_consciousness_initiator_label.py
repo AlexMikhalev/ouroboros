@@ -40,11 +40,12 @@ def test_progress_heartbeat_and_final_frames_carry_the_initiator(monkeypatch, tm
     agent._emit_task_heartbeat("w1", "running")
     heartbeat = events.get_nowait()
     assert heartbeat["type"] == "task_heartbeat" and heartbeat["initiator"] == "consciousness"
-    # An owner's turn keeps its empty (non-subagent) meta exactly as before.
+    # An owner's turn carries no origin label. Its meta holds only the voice the
+    # worker stamps on every frame, so the wake label cannot leak onto it.
     agent._current_task_metadata = {"client_message_id": "c-1"}
     assert agent._subagent_progress_meta("progress") == {}
     agent._emit_progress("plain")
-    assert "progress_meta" not in events.get_nowait()
+    assert events.get_nowait()["progress_meta"] == {"narration": False}
 
     monkeypatch.setattr(pipeline, "_run_post_task_processing_async", lambda *a, **k: None)
     pending: list = []

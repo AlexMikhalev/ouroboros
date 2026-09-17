@@ -80,6 +80,18 @@ def terminal_host_notice_text(result: Dict[str, Any]) -> str:
     return "\n\n".join(part for part in (base, custody) if part)
 
 
+def terminal_custody_notice_text(result: Dict[str, Any]) -> str:
+    """The stored delegated-custody receipt, on its own, for the event builders.
+
+    Issue #1006: the custody fact is a typed row of the task card, so the live
+    send and the outbox replay carry it as its own field instead of folding it
+    into the host notice's text. Single-body transports keep the joined text.
+    """
+    from ouroboros.delegate_terminal import terminal_custody_notice
+
+    return terminal_custody_notice(result)
+
+
 def terminal_notice_text(result: Dict[str, Any]) -> str:
     """The same terminal notices on transports with one text body or no event stream."""
     return "\n\n".join(part for part in (
@@ -180,9 +192,16 @@ def prepare_terminal_send_event(
         usage["delegate_terminal_reconciliation"] = current["delegate_terminal_reconciliation"]
     origin = str(usage.get("terminal_origin") or "")
     notice = str(usage.get("terminal_provider_notice") or "")
-    host_notice = terminal_host_notice_text(usage)
-    if host_notice and not presence:
-        send_event["terminal_host_notice"] = host_notice
+    # Two facts, two rows: the base host notice keeps the untyped System row a
+    # replayed card concludes on, and current delegated custody travels in its
+    # own field so the delivery seam can type it as a card row (#1006).
+    host_notice = str(usage.get("terminal_host_notice") or "")
+    custody_notice = terminal_custody_notice_text(usage)
+    if not presence:
+        if host_notice:
+            send_event["terminal_host_notice"] = host_notice
+        if custody_notice:
+            send_event["terminal_custody_notice"] = custody_notice
     if origin not in _STAMPED_TERMINAL_ORIGINS:
         return send_event
     canonical_root = pathlib.Path(task.get("budget_drive_root") or env_drive_root)

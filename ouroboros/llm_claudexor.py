@@ -42,7 +42,9 @@ import asyncio
 import copy
 import contextvars
 from dataclasses import replace
+import hashlib
 import json
+import re
 import logging
 import threading
 import time
@@ -299,6 +301,27 @@ def _remember_failed_profile(target: dict, parameters: dict, error: ClaudexorMod
             and ((error.status_code == 0 and error.code not in _NON_PROVIDER_FAILURES)
                  or error.code in _PER_SUBJECT_REFUSALS)):
         _FAILED_PROFILE.set((*key, route["credentialProfileId"]))
+
+
+def cache_key_for_model(model: str) -> str:
+    """The Codex prompt-cache key every main-loop execution of this install shares.
+
+    The Codex backend reuses a cached prefix across conversations only when both
+    ``prompt_cache_key`` and the ``session_id`` header match (the adapter sets
+    both from ``cacheKey``), and per-conversation turn states stay valid under a
+    shared session (measured 2026-09-17). One key per data root and model
+    therefore lets a new task, child or consciousness cycle be served the
+    governance prefix it shares with its predecessors on its very first round,
+    instead of paying it cold under a per-execution key. Empty for every other
+    provider: API-compatible lanes keep their prefix-derived session identity.
+    """
+    from ouroboros.provider_models import provider_for_model
+
+    if provider_for_model(model) != "claudexor":
+        return ""
+    label = re.sub(r"[^A-Za-z0-9._-]+", "-", str(model).rsplit("=", 1)[-1]).strip("-")[:40] or "model"
+    digest = hashlib.sha256(f"{config.DATA_DIR}\0{model}".encode("utf-8")).hexdigest()[:16]
+    return f"ouroboros-{label}-{digest}"
 
 
 def _request(target: dict, messages: list, tools: list | None, parameters: dict) -> dict:

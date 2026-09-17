@@ -94,8 +94,8 @@ def _mutate_projection(
             return None
         if len(quizzes) > _QUIZ_CAP:
             # Evict CLOSED blocks first (oldest asked_at): an evicted OPEN
-            # block would resurrect as an "Awaiting answer" card on replay
-            # (the chat row froze state=open) whose click then 404s.
+            # block would resurrect as an unanswered card on replay (the chat
+            # row froze state=open) whose click then 404s.
             def _eviction_key(key: str):
                 block = quizzes[key]
                 closed = str(block.get("state") or STATE_OPEN) != STATE_OPEN

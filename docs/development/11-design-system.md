@@ -92,6 +92,17 @@ SPA, not a relocatable-page or multi-instance panel framework.
   action docked right); notifications use the shared toast host. Working,
   warning, error, and destructive states keep consistent meaning across
   Chat, Logs, Settings, and Skills.
+- System-message actions use `ui_helpers.createSystemMessageActions` around the
+  shared button, including question pointers, Project lifecycle and routing
+  receipts. Spacing above/below, wrap and focus clearance belong to this one
+  composition, never a global button margin or a nowrap text ancestor.
+  Question lifecycle words live once in `question_presentation.js` (pointer and
+  quiz header) and their Python twin `project_dialogue.QUESTION_STATUS`; a new
+  state is added to both sides in the same commit with a row in
+  `question_presentation_parity.json` (the pointer's data flow and precedence:
+  ARCHITECTURE "Chat and Projects"). Geometry and exact-question navigation are
+  exercised by `test_ui_coherence_browser.py`; answer delivery and the Main
+  answer preview by `test_ui_result_browser.py`.
 - A list editor reveals the entry it just added through
   `ui_helpers.revealNewRow(row, field)` — the one seam for "scrolled into
   view, caret in the first field" — and a freshly added entry shows no
@@ -99,6 +110,16 @@ SPA, not a relocatable-page or multi-instance panel framework.
   `tests/test_available_subagents_ui_static.py` pins the seam; the
   `ui_browser` acceptance in `tests/test_ui_smoke_agents_panel.py` pins the
   behaviour.
+- A host fact about a task is a row of that task's card, never a standalone
+  bubble beside it. The producer stamps the placement (`card_row` with
+  `card_row_id`); `chat.js` attaches the row to the card record in one helper
+  used by the live branch and by replay, and falls back to a standalone System
+  row only when the task has no card record in the page. A host fact that
+  belongs in the card but is produced without a placement fact is review debt
+  under this rule (CHECKLISTS item 30 checks conformance to it); the untyped terminal host notice and the admission
+  notices stay ordinary rows by design. A client-side list of row types is not
+  the rule (`docs/development/02`, an open default behind a closed exception
+  list).
 - Task outcome truth stays in `log_events.js::taskOutcomeSeverity` and
   `taskTerminalPhase`; `taskPresentation` is the one compact factual
   projection consumed by chips, live completion, history replay, and child
@@ -118,6 +139,21 @@ SPA, not a relocatable-page or multi-instance panel framework.
   into the client live-activity set (contract and residuals: ARCHITECTURE "Chat and Projects", the
   `DirectActivityRegistry` / `active_chat_activities` paragraph; enforced by
   `web/tests/chat_header_census.test.js`).
+- Narration leads; routine execution evidence stays compact; exceptions keep
+  their explanation and controls (semantics: DESIGN "Conversation activity
+  block"). The engineering obligations: a note is promoted on the typed
+  `narration` fact its producer stamps, never on a client reading of its text;
+  execution evidence is one bounded row per block, never a row per event and
+  never a client tool-name list; host snapshots of the same turn merge
+  field-wise, because an absent field is unknown rather than zero. A change
+  that draws one row or line per event is shown at a realistic burst size (a
+  multi-call turn, collapsed and expanded, at desktop and phone width) before
+  it is accepted; a two-event fixture proves layout only for itself. Enforced
+  by `web/tests/chat_activity_block.test.js`,
+  `web/tests/chat_addressing_card.test.js`,
+  `web/tests/progress_narration_voice.test.js` and
+  `tests/test_progress_narration_voice.py`; the visual check follows
+  "Responsive and accessible behavior" below.
 - Executor presentation consumes the existing task/run attempt facts. Keep
   `executor_observation` event-local through Agent, supervisor delivery, progress
   history and both Chat metadata paths; ordinary coordinator notes inherit none.

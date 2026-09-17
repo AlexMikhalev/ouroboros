@@ -111,17 +111,23 @@ def _leaf_probe_live(ctx: Any, run_id: str) -> bool:
 def _single_live_run(ctx: Any) -> str:
     """Return the run id iff custody holds EXACTLY one open run, no pending
     invocations, no open containment fault, a readable log, and the read-only
-    probe reads a positive non-terminal engine state."""
+    probe reads a positive non-terminal engine state.
+
+    The cardinality is over the task's OWN delegation: a run a review panel owns
+    is not a leaf this nanny may hold on, and it never makes the task's one real
+    leaf look like two (issue #1006)."""
     mine = str(getattr(ctx, "task_id", "") or "")
     try:
         root = custody.custody_root(ctx)
         if custody.custody_log_unreadable(root):
             return ""
-        open_rows = [row for row in custody.open_runs(root) if row.task_id == mine]
+        open_rows = [row for row in custody.open_runs(root)
+                     if row.task_id == mine and not row.review_owned]
         if len(open_rows) != 1:
             return ""
         if any(
             str(row.get("task_id") or "") == mine
+            and not custody.review_owned_source(row.get("source"))
             for row in custody.pending_invocations(root)
         ):
             return ""

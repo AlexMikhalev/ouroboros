@@ -502,8 +502,13 @@ def test_a_panel_that_settles_after_the_loop_exited_is_attached_through_the_reme
     assert "- acceptance-one: PASS" in rows[0]["text"]
     stored = load_task_result(f.ctx.drive_root, f.ctx.task_id)
     assert stored["status"] == "completed"
-    actor = stored["review_projection"]["panels"][-1]["actors"][0]
+    panel = stored["review_projection"]["panels"][-1]
+    actor = panel["actors"][0]
     assert actor["transport_status"] == "success" and actor["parse_status"] == "valid"
+    # The panel reviewed the bytes that shipped, so its settlement says so.
+    assert panel["late_settlement"] == {"note": rows[0]["text"], "reviewed_revision": "delivered",
+                                        "settled_after_terminal": True}
+    assert rows[0]["progress_meta"]["card_row"] == "reviews"
     assert len(f.review_sends) == 1, "the supplement bought nothing"
     assert not getattr(f.ctx, "_acceptance_settlement_traces", {}), "a settled wave releases its remembered trace"
 

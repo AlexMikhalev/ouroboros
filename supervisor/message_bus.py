@@ -1032,7 +1032,7 @@ class LocalChatBridge:
                                 if row.get("chat_id") == int(chat_id)), None)
                 pointer = project_question_pointer(msg, quiz_states(DATA_DIR, task_id).get(qid), project)
                 if pointer:
-                    self._broadcast_fn({
+                    frame = {
                         "type": "chat", "role": pointer["role"], "content": pointer["text"],
                         "ts": pointer["ts"], "system_type": pointer["system_type"],
                         "task_id": pointer["task_id"], "quiz_id": pointer["quiz_id"],
@@ -1041,7 +1041,13 @@ class LocalChatBridge:
                         "chat_id": pointer["chat_id"], "is_progress": False, "markdown": False,
                         "owner_wait_state": pointer.get("owner_wait_state", ""),
                         "source_status": pointer.get("source_status", ""),
-                    })
+                    }
+                    # The complete pointer row (ChatOutbound mirrors): present only when known.
+                    for key in ("question", "options", "answered_index", "comment", "wait_for_answer",
+                                "wait_ended_at", "owner_wait_resume_reason"):
+                        if key in pointer:
+                            frame[key] = pointer[key]
+                    self._broadcast_fn(frame)
             except Exception:
                 # The question is already delivered. History/activity reads heal
                 # this derived view without another quiz or paid execution.
@@ -1327,6 +1333,15 @@ def log_chat(
             record["initiator"] = str(meta.get("initiator") or "")
         if isinstance(meta.get("origin_message_ref"), dict):
             record["origin_message_ref"] = dict(meta["origin_message_ref"])
+        # The host's placement fact for a task-keyed System row: the row belongs
+        # to the task's card, not beside it. Only the two named placements are
+        # persisted, and the row's stable identity rides with one of them or not
+        # at all — a bare id without a placement names nothing on reload.
+        if meta.get("card_row") in ("timeline", "reviews"):
+            record["card_row"] = str(meta["card_row"])
+            card_row_id = str(meta.get("card_row_id") or "")
+            if card_row_id and len(card_row_id) <= 200:
+                record["card_row_id"] = card_row_id
         if filename:
             record["filename"] = filename
         if mime:

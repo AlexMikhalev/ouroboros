@@ -275,6 +275,13 @@
  * @property {number=} project_chat_id
  * @property {string=} source_status
  * @property {string=} owner_wait_state
+ * @property {string=} owner_wait_resume_reason
+ * @property {boolean=} wait_for_answer
+ * @property {string=} wait_ended_at
+ * @property {string=} question
+ * @property {string[]=} options
+ * @property {number=} answered_index
+ * @property {string=} comment
  * @property {"chat"} type
  * @property {"user"|"assistant"|"system"} role
  * @property {string} content
@@ -358,6 +365,14 @@
  *   The lane fact of a direct conversation turn, stamped by the host on the
  *   turn's own progress/tool frames and on every task_done; the chat block
  *   reads it before any census lists the turn.
+ * @property {boolean=} narration
+ *   The VOICE of a progress frame, stamped by the worker on every note it
+ *   emits: true only for the model's own round narration, false for every
+ *   host-authored note (checkpoints, fallback, plan, acceptance, nudge,
+ *   transport, density). Both stay visible rows; only narration may claim the
+ *   card title and the collapsed activity line. Absent = a frame that predates
+ *   the fact (an older worker, a supervisor note, a stored row), which keeps
+ *   the legacy reading that promoted every progress frame.
  * @property {string=} initiator
  *   The turn's origin label: "consciousness" on every frame and row of a
  *   self-initiated wake-up (and the roots it starts); absent on an owner's turn.
@@ -407,7 +422,10 @@
  *   bounded with an explicit omission marker, at most 8 rows per actor) and
  *   actors[].findings_omitted (exact count, 0 included). Both are emitted only
  *   when that reviewer produced a parsed response; their absence is a
- *   transport/parse hole, never "zero findings".
+ *   transport/parse hole, never "zero findings". panels[].late_settlement
+ *   ({note, reviewed_revision: "earlier"|"delivered", settled_after_terminal})
+ *   is the host-composed sentence of a panel that settled after its task ended;
+ *   the Reviews group prints the note verbatim.
  * @property {boolean=} worker_saturation_warning
  * @property {string=} source
  * @property {string=} sender_label
@@ -415,6 +433,13 @@
  * @property {string=} client_message_id
  * @property {Object=} transport
  * @property {string=} system_type
+ * @property {"timeline"|"reviews"=} card_row
+ *   A host-stamped placement fact for a task-keyed System row: "timeline" = a
+ *   timeline item of the task's card, "reviews" = the card's Reviews group
+ *   carries the fact (the row is still attached to the card); absent = an
+ *   ordinary row.
+ * @property {string=} card_row_id
+ *   The row's stable identity across live delivery, outbox replay and history.
  * @property {string=} target_label
  * @property {string=} project_id
  * @property {string=} project_name

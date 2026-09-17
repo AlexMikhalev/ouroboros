@@ -16,7 +16,8 @@ Main moves on — so they live together:
   delivery to the ordinary acceptance path with the collected verdicts in its
   dialogue history;
 * a panel that settles after its task ended is collected at $0, republished on
-  the task's own review projection and announced once in the task's room
+  the task's own review projection with the host's own settlement note, and
+  announced once in the task's room as one row of that card's Reviews group
   (``attach_late_acceptance_settlement``); no model turn starts (fork 2=A).
 """
 from __future__ import annotations
@@ -270,12 +271,31 @@ def _deliver_under_running_panel(ctx: Any, prior_run: Any) -> Optional[bool]:
     return False
 
 
+def _unsettled_head(run: Dict[str, Any]) -> str:
+    """The head of a panel that settled without a PASS or FAIL.
+
+    It states what the host holds (no settled verdict), not what the panel did:
+    DEGRADED can be a reviewer's own deliberate answer. A reviewer whose PHYSICAL
+    outcome the host does not know — custody lost, or a dispatch still owed —
+    did not stay silent, so the row names it as unknown.
+    """
+    unknown = sum(1 for actor in (run.get("actors") or [])
+                  if isinstance(actor, dict)
+                  and (bool(actor.get("late_result_pending"))
+                       or str(actor.get("operation_state") or "")
+                       in ("custody_lost", "pending_dispatch")))
+    tail = ("" if not unknown
+            else " — 1 reviewer's outcome is still unknown" if unknown == 1
+            else f" — {unknown} reviewers' outcomes are still unknown")
+    return "Reviewers later returned no settled verdict on this answer" + tail + "."
+
+
 def _late_settlement_text(run: Dict[str, Any], wave: Dict[str, Any]) -> str:
     """The owner row: which verdict, which revision, and the reviewers' own lines."""
     signal = str(run.get("aggregate_signal") or "").upper()
-    head = {"PASS": "Reviewers later passed this answer.",
-            "FAIL": "Reviewers later rejected this answer."}.get(
-        signal, "Reviewers later returned no settled verdict on this answer.")
+    head = ({"PASS": "Reviewers later passed this answer.",
+             "FAIL": "Reviewers later rejected this answer."}.get(signal)
+            or _unsettled_head(run))
     which = (" They reviewed the earlier version, which was rewritten before delivery."
              if run.get("superseded_by_revision") else " They reviewed the answer that was delivered.")
     return "\n".join([head + which, *_reviewer_lines(wave)])
@@ -318,11 +338,24 @@ def attach_late_acceptance_settlement(usage_ctx: Any, request: Any, wave: Dict[s
     if not advanced:
         log.debug("late acceptance settlement %s: nothing reconciled (still pending or already collected)", retry_key)
         return False
+    # The sentence has ONE author: it is stamped on the exact run this wave
+    # reconciled, so the republished projection carries the same bytes the row
+    # does and the card's Reviews group prints them verbatim.
+    settled = runs[-1]
+    note = _late_settlement_text(settled, wave)
+    settled["late_settlement"] = {
+        "note": note,
+        "reviewed_revision": "earlier" if settled.get("superseded_by_revision") else "delivered",
+        "settled_after_terminal": True,
+    }
     publish_acceptance_checkpoint(usage_ctx, trace, task_id=task_id, drive_root=_result_root(usage_ctx),
                                   chat_id=result.get("chat_id"))
     return bool(enqueue_terminal_delivery(root, {
         "type": "send_message", "chat_id": int(result.get("chat_id") or 0), "task_id": task_id,
-        "text": _late_settlement_text(runs[-1], wave),
+        "text": note,
         "role": "system", "system_type": LATE_SETTLEMENT_SYSTEM_TYPE,
         "delivery_id": f"acceptance-late:{retry_key}",
+        # The verdict belongs inside the task's card, in its Reviews group, and
+        # stays one row across live delivery, outbox replay and history.
+        "progress_meta": {"card_row": "reviews", "card_row_id": f"acceptance-late:{retry_key}"},
     }, event_queue=getattr(usage_ctx, "event_queue", None)))
