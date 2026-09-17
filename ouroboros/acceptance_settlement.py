@@ -161,35 +161,19 @@ def announce_acceptance_settlement(usage_ctx: Any, request: Any, wave: Dict[str,
         log.warning("Acceptance settlement delivery failed for %s", task_id, exc_info=True)
 
 
-def _bound_panel_run(tools_ctx: Any, llm_trace: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Read the physical panel bound to this wait without changing delivery authority."""
+def panel_awaiting_this_turn(tools_ctx: Any, llm_trace: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Read the panel this turn released without changing delivery authority.
+
+    The binding recorded when it went pending is the physical identity a
+    re-authored answer cannot move; current owner-source validation belongs
+    to delivery, never to the wait's settlement check.
+    """
     binding = str(getattr(tools_ctx, "_task_acceptance_pending", "") or "")
     if not binding:
         return None
     return next((run for run in reversed(llm_trace.get("review_runs") or [])
                  if isinstance(run, dict) and run.get("authority") == "host_root"
                  and str(run.get("binding_hash") or "") == binding), None)
-
-
-def panel_awaiting_this_turn(tools_ctx: Any, llm_trace: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """The panel THIS turn released, found by the binding the host recorded when
-    it went pending — the one identity a re-authored answer cannot move.
-
-    A panel bound under older owner input is not that panel: once Main has
-    acknowledged a newer owner source (the owner's words changed the premises,
-    owner rule 4=A), the latch clears and the ordinary path decides, while the
-    old panel keeps its custody and its verdicts still arrive as advice.
-    """
-    from ouroboros.loop_messages import owner_source_sha256
-
-    run = _bound_panel_run(tools_ctx, llm_trace)
-    if run is None:
-        return None
-    reviewed_source = str(run.get("owner_source_sha256") or "")
-    if reviewed_source and reviewed_source != str(owner_source_sha256(tools_ctx) or ""):
-        tools_ctx._task_acceptance_pending = ""
-        return None
-    return run
 
 
 def awaited_panel_has_settled(tools_ctx: Any, llm_trace: Dict[str, Any]) -> bool:
@@ -205,7 +189,7 @@ def awaited_panel_has_settled(tools_ctx: Any, llm_trace: Dict[str, Any]) -> bool
     from ouroboros.loop_acceptance_review import acceptance_run_pending
     from ouroboros.review_dispatch import reconcile_pending_acceptance_runs
 
-    run = _bound_panel_run(tools_ctx, llm_trace)
+    run = panel_awaiting_this_turn(tools_ctx, llm_trace)
     if run is None:
         return False
     if acceptance_run_pending(run):
@@ -264,6 +248,7 @@ def _deliver_under_running_panel(ctx: Any, prior_run: Any) -> Optional[bool]:
         _end_acceptance_terminal, _finish_cyber_acceptance,
         _set_applied_host_acceptance_impact, acceptance_run_pending,
     )
+    from ouroboros.loop_messages import owner_source_sha256
     from ouroboros.outcomes import ACCEPTANCE_ACCEPTED
 
     tools_ctx = ctx.tools._ctx
@@ -271,6 +256,12 @@ def _deliver_under_running_panel(ctx: Any, prior_run: Any) -> Optional[bool]:
         return None
     run = panel_awaiting_this_turn(tools_ctx, ctx.llm_trace)
     if run is None:
+        return None
+    # Older owner premises cannot authorize this delivery (owner rule 4=A).
+    # The panel keeps its physical custody and still arrives as advice.
+    reviewed_source = str(run.get("owner_source_sha256") or "")
+    if reviewed_source and reviewed_source != str(owner_source_sha256(tools_ctx) or ""):
+        tools_ctx._task_acceptance_pending = ""
         return None
     if acceptance_run_pending(run):
         if acceptance_wait_chosen(tools_ctx):
