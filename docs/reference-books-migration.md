@@ -322,3 +322,91 @@ the subtraction had merged, so no hunk had to choose between two copies.
 | new subsection "Shared behavior and data-flow changes" with its review-only enforcement | `docs/development/03-module-size-and-complexity.md` | Shared behavior and data-flow changes |
 | projection-over-replay first bullet rewritten as whole-operation growth reasoning | `docs/development/03-module-size-and-complexity.md` | Invariant: Projection over replay (hot readers of growing stores) |
 | item-24 trigger wording: data readers, startup/shutdown and other batch operations | `docs/development/03-module-size-and-complexity.md` | Invariant: Projection over replay (hot readers of growing stores) |
+
+## Compression pass (2026-09-18)
+
+Measured with `tiktoken` / `o200k_base` against `2cce3c0c16f8742fa564f000edf468ef5aef027f`.
+The entrypoints and membership stay unchanged. This pass rewrites prose and removes
+repeated implementation narration while retaining the operational inventories, essential
+rationale, limitations, mode distinctions and named owners. Internal sequencing can remain
+in code; the original approximate twofold reduction was a planning estimate, not an achieved result.
+
+### Composed views
+
+| View | Before tokens | After tokens | Change |
+|---|---:|---:|---:|
+| Architecture full | 156,307 | 140,326 | -10.22% |
+| Architecture navigation | 3,013 | 3,680 | +22.14% |
+| Development full | 57,322 | 49,056 | -14.42% |
+| Development navigation | 3,231 | 3,251 | +0.62% |
+
+Full composition shrinks; Architecture navigation grows because new H4 addresses make
+previously unstructured subjects discoverable. Chapter introductions remain the compact
+view, with exact physical paths and ranges. Context residency, cache ordering and cache
+markers are unchanged. These are source-token measurements, not a provider cache-hit benchmark.
+
+### Physical chapters
+
+| Chapter | Before tokens | After tokens |
+|---|---:|---:|
+| `docs/architecture/01-high-level-architecture.md` | 40,719 | 30,997 |
+| `docs/architecture/02-startup-onboarding-flow.md` | 2,945 | 2,749 |
+| `docs/architecture/03-web-ui-pages-and-buttons.md` | 18,966 | 17,538 |
+| `docs/architecture/04-server-api-endpoints.md` | 5,664 | 5,664 |
+| `docs/architecture/05-supervisor-loop.md` | 6,493 | 4,891 |
+| `docs/architecture/06-agent-core.md` | 54,072 | 52,335 |
+| `docs/architecture/07-configuration.md` | 8,375 | 8,051 |
+| `docs/architecture/08-git-branching-ci-and-build.md` | 3,956 | 3,772 |
+| `docs/architecture/09-shutdown-and-process-cleanup.md` | 2,677 | 2,244 |
+| `docs/architecture/10-key-invariants.md` | 3,168 | 3,163 |
+| `docs/architecture/11-frozen-contracts-v1.md` | 5,181 | 5,158 |
+| `docs/architecture/12-host-service-companions-and-chat-ids.md` | 2,202 | 1,984 |
+| `docs/architecture/13-external-skills-layer.md` | 1,455 | 1,346 |
+| `docs/development/01-role-and-authority.md` | 472 | 467 |
+| `docs/development/02-naming-and-boundaries.md` | 8,238 | 6,968 |
+| `docs/development/03-module-size-and-complexity.md` | 4,571 | 4,408 |
+| `docs/development/04-core-governance-artifacts.md` | 4,168 | 3,314 |
+| `docs/development/05-review-and-commit-protocol.md` | 2,557 | 2,313 |
+| `docs/development/06-rules-by-change-class.md` | 23,310 | 18,404 |
+| `docs/development/07-managed-update-rule.md` | 847 | 735 |
+| `docs/development/08-mutation-attribution-rule.md` | 557 | 509 |
+| `docs/development/09-process-custody-rule.md` | 2,034 | 1,849 |
+| `docs/development/10-platform-abstraction-rule.md` | 673 | 662 |
+| `docs/development/11-design-system.md` | 5,194 | 5,059 |
+| `docs/development/12-mcp-client-integration.md` | 580 | 546 |
+| `docs/development/13-gateway-boundary-pattern.md` | 428 | 407 |
+| `docs/development/14-build-and-ci.md` | 3,308 | 3,032 |
+
+### Corrections and retained owners
+
+| Subject | Corrected description / owner |
+|---|---|
+| Settings and native review | Architecture 07 keeps the auto-Low provenance tombstone, supported legacy normalization, the owner-ceiling/route-capacity minimum, and the Anthropic-family cache-marker scope of explicit TTL. |
+| Context delivery | Development 04 and Architecture 06 distinguish Max, Low/Nano and child views, disclose ignored handbook overrides and distinguish cannot-fit refusal from existing unreadable-book omission paths. |
+| Review delivery | Architecture 01/06 distinguish retrieving work orders from the evidence they may carry; Development 05 preserves session/native send rails and the known positive-capture compatibility residual. |
+| Extension adoption and CI | Architecture 03 states bounded per-generation adoption, and Architecture 08 names the actual release dependencies and system-E2E tag trigger. |
+| Enforcement and durability | Development 03 covers Python and JS size gates; Development 06 retains retention rules and their actual tests; Development 10 scopes atomic-write guarantees and optional fsync. |
+| Source locations | The artifact_versions directory is under task_results; the exported PluginAPI constant is FORBIDDEN_SKILL_SETTINGS. Registry probes establish membership, not semantic correctness or complete physical-layout proof. |
+| External provenance | Development 02 retains the dated API-panel, DeepSeek wire and Codex cache-affinity observations in its Mutable external-fact inventory. These are historical observations, not current tariffs or fresh provider guarantees. |
+
+### Relocations and prevention
+
+| Text | Retained owner / access |
+|---|---|
+| Live E2E operator manual | `devtools/e2e_live/README.md`; body preserved byte-for-byte after H4-to-H2 heading adjustment, with handbook stubs retaining their headings and complete pointers. |
+| Owner routing and retry binding | Architecture 06 "Owner routing verbs" and "Project binding by task and by origin"; handbook references now name these actual owners. |
+| Commit advisory and parsing | Architecture 06 "Commit advisory cycle", "Late completion and typed refusals", and "Session identity and advisory parsing". |
+| Headless patch capture | Architecture 06 "Headless finalization and workspace patch capture"; the module map points there. |
+| Module-local sequencing and repeated prose | Named module/docstring or existing chapter owner; the map retains addresses, capabilities, necessary codes/state and essential WHY. |
+
+Development "Documentation contract" replaces its earlier wording. CHECKLISTS item 7
+now explicitly reviews physical chapter ownership and semantic preservation. The existing
+residue scanner gains narrowly scoped conversation-code, bare-issue and Cyrillic patterns;
+its two declared exemptions remain. `tests/test_reference_book_budgets.py` gives all 27
+chapters a UTF-8 byte budget with approximately ten percent maintenance room in the existing
+official-CI `size_ratchet` lane. A justified increase changes the number in the same diff.
+No new local runtime or commit restriction is introduced.
+
+Ordinary upstream integration preserves the question-pointer and shared action-row contracts
+from the measured base. Locally edited chapter files may need conflict resolution on managed update.
+The existing local-compactor and handbook-override runtime issues remain separate follow-ups.
