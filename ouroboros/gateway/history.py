@@ -893,6 +893,13 @@ def _collect_chat_rows(
                                 quiz[key] = _live[key]
                         if "wait_for_answer" not in _live:
                             quiz.pop("wait_for_answer", None)  # the bound closed: the card no longer waits
+                    if quiz.get("wait_for_answer") or quiz.get("wait_ended_at"):
+                        # The card header reads the same wait facts the Main pointer does: a
+                        # wait the owner resumed by ordinary input leaves no frame behind.
+                        from ouroboros.project_dialogue import owner_wait_projection
+
+                        quiz.update(owner_wait_projection(_qid, _quiz_source(_qtid)["wait"],
+                                                          _live if isinstance(_live, dict) else None))
                 rec.update(msg_type="quiz", quiz=quiz)
             if "task_terminal_status" in entry:
                 rec["task_terminal_status"] = str(entry.get("task_terminal_status") or "")
