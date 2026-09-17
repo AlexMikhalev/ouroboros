@@ -42,10 +42,10 @@ of core" step in `.github/workflows/ci.yml`); the rest is review-only.
   installs stay safety-reviewed and `sudo` is non-interactive (`sudo -n`).
 - GitHub issue/PR tools take the same process binding as shell commands and an
   explicit `repo` in every dependent call; project focus overrides ambient
-  `GH_REPO`, a file-less Project or broken room binding refuses, native CLI
-  configuration proves configuration rather than authentication, and discovery
-  never logs in or probes the network. Presence may override its default repository
-  only through a host-selected argument binding.
+  `GH_REPO`; broken room bindings refuse, and file-less Projects need an
+  explicit repository. Native CLI configuration proves configuration rather than
+  authentication, and discovery never logs in or probes the network. Presence may
+  override its default repository only through a host-selected argument binding.
 - A process cwd decides relative paths, not the root task's write authority:
   preserve child write confinement and the real runtime/credential boundaries,
   and never reconstruct semantic permission from command words or guessed
