@@ -161,6 +161,16 @@ def announce_acceptance_settlement(usage_ctx: Any, request: Any, wave: Dict[str,
         log.warning("Acceptance settlement delivery failed for %s", task_id, exc_info=True)
 
 
+def _bound_panel_run(tools_ctx: Any, llm_trace: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Read the physical panel bound to this wait without changing delivery authority."""
+    binding = str(getattr(tools_ctx, "_task_acceptance_pending", "") or "")
+    if not binding:
+        return None
+    return next((run for run in reversed(llm_trace.get("review_runs") or [])
+                 if isinstance(run, dict) and run.get("authority") == "host_root"
+                 and str(run.get("binding_hash") or "") == binding), None)
+
+
 def panel_awaiting_this_turn(tools_ctx: Any, llm_trace: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """The panel THIS turn released, found by the binding the host recorded when
     it went pending — the one identity a re-authored answer cannot move.
@@ -172,12 +182,7 @@ def panel_awaiting_this_turn(tools_ctx: Any, llm_trace: Dict[str, Any]) -> Optio
     """
     from ouroboros.loop_messages import owner_source_sha256
 
-    binding = str(getattr(tools_ctx, "_task_acceptance_pending", "") or "")
-    if not binding:
-        return None
-    run = next((run for run in reversed(llm_trace.get("review_runs") or [])
-                if isinstance(run, dict) and run.get("authority") == "host_root"
-                and str(run.get("binding_hash") or "") == binding), None)
+    run = _bound_panel_run(tools_ctx, llm_trace)
     if run is None:
         return None
     reviewed_source = str(run.get("owner_source_sha256") or "")
@@ -200,7 +205,7 @@ def awaited_panel_has_settled(tools_ctx: Any, llm_trace: Dict[str, Any]) -> bool
     from ouroboros.loop_acceptance_review import acceptance_run_pending
     from ouroboros.review_dispatch import reconcile_pending_acceptance_runs
 
-    run = panel_awaiting_this_turn(tools_ctx, llm_trace)
+    run = _bound_panel_run(tools_ctx, llm_trace)
     if run is None:
         return False
     if acceptance_run_pending(run):

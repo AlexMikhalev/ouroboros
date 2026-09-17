@@ -4,6 +4,8 @@ from __future__ import annotations
 import copy
 import json
 
+import pytest
+
 from ouroboros import loop
 from tests.test_acceptance_async_loop import ANSWER, call, keep
 from tests.test_acceptance_async_loop import full_loop as _full_loop
@@ -11,7 +13,10 @@ from tests.test_acceptance_async_loop import full_loop as _full_loop
 full_loop = _full_loop  # noqa: F811 - pytest fixture re-export
 
 
-def test_prose_after_the_settled_verdict_wake_gets_its_repair_round_not_a_second_park(full_loop, monkeypatch):
+@pytest.mark.parametrize("owner_followup", [False, True], ids=["same_owner", "owner_followup"])
+def test_prose_after_the_settled_verdict_wake_gets_its_repair_round_not_a_second_park(
+    full_loop, monkeypatch, owner_followup,
+):
     """The wake after a settled panel re-offers the keep/replace control; a prose
     answer there is a malformed control, so the loop queues its ONE repair round.
     That round must run: the panel has already settled, so parking again would
@@ -21,6 +26,16 @@ def test_prose_after_the_settled_verdict_wake_gets_its_repair_round_not_a_second
     f.reviewer_verdict = "FAIL"
     monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "1")
     reauthored = ANSWER + " Budget: $12."
+    followup = "Also show the budget as an explicit dollar amount."
+
+    def park(ctx, checkpoint):
+        f.park(ctx, checkpoint)
+        if owner_followup and len(f.waits) == 1:
+            # The owner's new input reaches the same Main wake as the settled
+            # verdict. That panel no longer covers the current owner corpus.
+            f.incoming.put(followup)
+
+    f.ctx.owner_wait_callback = park
 
     def main(_llm, messages, *_a, **_kw):
         f.model_inputs.append(copy.deepcopy(messages))
@@ -31,7 +46,9 @@ def test_prose_after_the_settled_verdict_wake_gets_its_repair_round_not_a_second
             assert f.entered.wait(5) and not f.release.is_set()
             return keep(f), 0.0  # held under the running panel: the one legitimate park
         if f.model_step == 3:
-            assert f.settled.is_set() and "FAIL" in str(messages[-1].get("content"))
+            assert f.settled.is_set() and "FAIL" in str(messages)
+            if owner_followup:
+                assert followup in str(messages)
             return {"content": reauthored}, 0.0  # prose where the control object was due
         if f.model_step == 4:
             assert "[DELIVERY_CONTROL_REPAIR]" in str(messages[-1].get("content"))
