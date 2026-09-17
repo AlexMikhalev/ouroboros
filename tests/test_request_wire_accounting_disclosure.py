@@ -122,7 +122,7 @@ def wire_env(tmp_path, monkeypatch):
 
 def _store(evidence):
     path = evidence / "state" / wire.REQUEST_WIRE_STATE_FILE
-    return json.loads(path.read_text()) if path.exists() else None
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
 
 
 def _learned_actions(evidence):
@@ -136,7 +136,7 @@ def _learned_actions(evidence):
 
 def _rows(root):
     path = root / ua.LEDGER_REL
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def _capture(candidate, *, state="settled", attempt="attempt-wire", digest=None,
