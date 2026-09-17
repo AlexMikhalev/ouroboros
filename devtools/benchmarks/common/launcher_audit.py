@@ -84,6 +84,7 @@ MIGRATED_LAUNCHERS: tuple[str, ...] = (
     "swe_bench/swebench_predictions.py",
     "swe_bench_pro/pro_predictions.py",
     "harness_bench_fast/run_harness_bench_fast.py",
+    "cowork_bench/run_cowork_bench.py",
     "swe_bench_pro/e1v2/run_pro.py",
     "swe_bench_pro/e1v2/auto_run.py",
     "continual_learning/run_clb.py",
