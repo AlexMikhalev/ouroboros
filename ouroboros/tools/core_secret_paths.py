@@ -31,7 +31,17 @@ def is_restricted_subagent_profile(ctx: ToolContext) -> bool:
     # state. Acting children may WRITE their isolated surface but never read owner
     # secrets; the resource WRITE distinction lives in _local_readonly_resource_block.
     from ouroboros.tool_access import active_tool_profile
-    return active_tool_profile(ctx) in ("local_readonly_subagent", "acting_subagent")
+    profile = active_tool_profile(ctx)
+    if profile == "acting_subagent":
+        try:
+            from ouroboros.config import get_runtime_mode
+            from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+
+            if mode_has_unrestricted_agency(get_runtime_mode()):
+                return False
+        except Exception:
+            pass
+    return profile in ("local_readonly_subagent", "acting_subagent")
 
 
 def _is_subagent_secret_data_path(norm: str) -> bool:
@@ -70,13 +80,9 @@ def _is_subagent_secret_repo_path(norm: str, *, credential_names: bool = True) -
         return True
     if not credential_names:
         return False
-    # Exact credential names remain protected at every depth. Ordinary source
-    # directories such as src/auth and public certificate suffixes do not
-    # identify a credential store.
-    name = pathlib.PurePosixPath(text).name.lower()
-    if name in (_SUBAGENT_SECRET_FILE_NAMES - {"settings.json", "settings.json.lock"}):
-        return True
+    # A project filename alone does not identify an owner credential store.
     # Match the live dotenv forms, not an ordinary example/template payload.
+    name = pathlib.PurePosixPath(text).name.lower()
     if name.startswith(".env") or name.endswith(".env") or ".env." in name:
         return not name.endswith((".example", ".sample", ".template", ".dist"))
     return False

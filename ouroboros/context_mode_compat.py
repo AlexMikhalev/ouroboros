@@ -10,7 +10,7 @@ from ouroboros.utils import write_text_atomic
 
 log = logging.getLogger(__name__)
 
-VALID_CONTEXT_MODES = ("low", "max")
+VALID_CONTEXT_MODES = ("nano", "low", "max")
 _MIGRATION_WARNED_PATHS: set[str] = set()
 
 
@@ -40,7 +40,7 @@ def normalize_context_mode_compat(
     raw_mode = normalize_context_mode(normalized.get(mode_key))
     marker_is_false = owner_declared_low(normalized.get(marker_key))
     ambiguous_low = raw_mode == "low" and not marker_is_false
-    normalized[mode_key] = "low" if raw_mode == "low" and marker_is_false else "max"
+    normalized[mode_key] = raw_mode if raw_mode == "nano" or (raw_mode == "low" and marker_is_false) else "max"
     normalized[marker_key] = "false"
     warning_key = str((settings_path or Path("<memory>")).resolve(strict=False))
     if ambiguous_low and warn_ambiguous and warning_key not in _MIGRATION_WARNED_PATHS:

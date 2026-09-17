@@ -6,151 +6,6 @@ import json
 from hashlib import sha256
 from typing import Any, Mapping
 
-_WORK_ORDER_CHARS = 250_000
-# Historical import name retained for tests/callers which only need the public
-# wire budget. It is no longer a per-field truncation limit.
-_FIELD_CHARS = _WORK_ORDER_CHARS
-
-
-class WorkOrderBudgetExceeded(ValueError):
-    """A complete work order cannot fit the one explicit wire budget."""
-
-    def __init__(self, *, chars: int, sha256_hex: str) -> None:
-        super().__init__(f"complete work order is {chars} characters (budget {_WORK_ORDER_CHARS})")
-        self.chars = int(chars)
-        self.sha256 = str(sha256_hex)
-        self.limit = _WORK_ORDER_CHARS
-
-
-def _source_selector(task: Mapping[str, Any]) -> dict[str, Any]:
-    """Return stable, actor-resolvable pointers without copying the omitted brief.
-
-    The selector is deliberately a small manifest.  The complete work order remains
-    in the parent task's canonical authority; this prompt must never smuggle a prefix
-    of it under a different name and make the child believe that the prefix is the
-    contract.  The existing task-result reader exposes the same canonical projection
-    the host validates, so the owner can answer a precise range request through the
-    existing interaction channel.
-    """
-
-    task_id = str(task.get("id") or "")
-    # Reuse the canonical actor-readable authority-ref shape. A bespoke nested
-    # ``reader`` object looked descriptive but no existing materializer recognized
-    # it, which would make the source pointer itself another unverifiable claim.
-    selector: dict[str, Any] = {
-        "kind": "task_result",
-        "task_id": task_id,
-        "tool": "get_task_result",
-        "arguments": {
-            "task_id": task_id,
-            "include_authority": True,
-            "include_work_order_source": True,
-        },
-        "projection": "canonical_work_order",
-    }
-    return selector
-
-
-def build_work_order_source_request(
-    task: Mapping[str, Any], exc: WorkOrderBudgetExceeded,
-) -> tuple[str, dict[str, Any]]:
-    """Build the bounded interaction lens for a complete brief over the wire cap.
-
-    This is not a lossy work order.  It is an explicit partial-coverage envelope:
-    the child receives the full-brief digest and a source it can ask its host to
-    resolve, then requests only the exact range it needs.  The response is
-    intentionally carried by the existing AskUserQuestion/delegate_answer seam; no
-    second storage or retrieval subsystem is introduced here.
-    """
-
-    source = _source_selector(task)
-    envelope: dict[str, Any] = {
-        "schema": 1,
-        "kind": "complete_work_order",
-        "coverage": "partial",
-        "complete_chars": int(exc.chars),
-        "wire_budget_chars": int(exc.limit),
-        "complete_sha256": str(exc.sha256),
-        "source": source,
-        "request": {
-            "channel": "existing_interaction",
-            "before_substantive_work": True,
-            "ask_for": "one exact source character range at a time",
-            "include": ["complete_sha256", "source", "start_char", "end_char", "reason"],
-        },
-        "response": {
-            "include": [
-                "complete_sha256", "source", "start_char", "end_char", "text",
-            ],
-            "rule": (
-                "Answer delegate_answer with source_response={schema, kind, "
-                "complete_sha256, source, start_char, end_char, text}. The host "
-                "checks the exact canonical range and records only verified ranges. "
-                "A missing, mismatched, or partial response remains cannot_verify; "
-                "it never authorizes PASS, a destructive rewrite, or replacement "
-                "of this complete work order."
-            ),
-        },
-    }
-    prompt = (
-        "WORK ORDER SOURCE REQUEST\n"
-        "The complete external work order exceeded the host wire budget. This message "
-        "is an explicit partial-coverage lens, not the assignment and not a prefix of "
-        "the assignment. Do not perform substantive work, claim completeness, accept "
-        "a verdict, or replace the full contract from this message alone.\n\n"
-        "Use the harness's native question channel to ask your host for the smallest "
-        "exact source character range needed. Ask the nanny to answer with the "
-        "typed source_response field of delegate_answer. After an answer, verify the "
-        "returned source selector, range, digest, and completeness before relying on "
-        "it; request another range when needed.\n\n"
-        + json.dumps(envelope, ensure_ascii=False, sort_keys=True, indent=2)
-    )
-    return prompt, envelope
-
-
-def route_source_request_channel(gateway: Any, route_id: str) -> dict[str, Any]:
-    """Read the generic live interaction capability from a Claudexor manifest.
-
-    The route is opaque to Ouroboros.  Missing or failed capability evidence is
-    therefore unverified rather than an invitation to start with a partial
-    contract.  This mirrors the existing manifest reader used by review execution.
-    """
-
-    try:
-        rows = gateway.harnesses()
-    except Exception as exc:  # noqa: BLE001 - capability is unknown, not healthy
-        return {
-            "status": "unverified",
-            "reason": "capability_read_failed",
-            "detail": type(exc).__name__,
-            "route": str(route_id or ""),
-        }
-    for row in rows or []:
-        if not isinstance(row, dict) or str(row.get("id") or "") != str(route_id or ""):
-            continue
-        manifest = row.get("manifest") if isinstance(row.get("manifest"), dict) else {}
-        capabilities = (
-            manifest.get("capabilities")
-            if isinstance(manifest.get("capabilities"), dict) else {}
-        )
-        if not isinstance(capabilities.get("interactive"), bool):
-            return {
-                "status": "unverified",
-                "reason": "interactive_capability_missing",
-                "route": str(route_id or ""),
-            }
-        return {
-            "status": "available" if capabilities["interactive"] else "unavailable",
-            "reason": "interactive" if capabilities["interactive"] else "interactive_unsupported",
-            "route": str(route_id or ""),
-        }
-    return {
-        "status": "unverified",
-        "reason": "route_not_in_manifest",
-        "route": str(route_id or ""),
-    }
-
-
 def _text(value: Any) -> str:
     if isinstance(value, list):
         value = "\n".join(f"- {item}" for item in value if str(item).strip())
@@ -169,22 +24,12 @@ def assignment_instructions(ctx: Any) -> str:
         from ouroboros.contracts.task_contract import build_task_contract
 
         contract = build_task_contract({"task_contract": contract})
-    parts: list[str] = []
-    objective = _text(contract.get("objective"))
-    expected = _text(contract.get("expected_output"))
-    if objective:
-        parts.append(
-            "HOST TASK OBJECTIVE (immutable contract; the prompt is one assignment inside it): "
-            + objective
-        )
-    if expected:
-        parts.append("HOST EXPECTED OUTPUT: " + expected)
-    if contract:
-        parts.append(
-            "HOST TASK CONTRACT AUTHORITY (complete normalized JSON; exact strings are authority):\n"
-            + json.dumps(contract, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        )
-    return "\n\n".join(parts)
+    if not contract:
+        return ""
+    return (
+        "HOST TASK CONTRACT AUTHORITY (complete normalized JSON; exact strings are authority):\n"
+        + json.dumps(contract, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    )
 
 
 def _render_external_work_order(task: Mapping[str, Any]) -> str:
@@ -376,14 +221,9 @@ def validate_work_order_source_response(
 
 
 def compile_external_work_order(task: Mapping[str, Any]) -> str:
-    """Compile one complete brief or refuse instead of sending a false prefix."""
+    """Compile the complete chosen brief; transport limits belong to the recipient."""
 
-    rendered = _render_external_work_order(task)
-    if len(rendered) > _WORK_ORDER_CHARS:
-        raise WorkOrderBudgetExceeded(
-            chars=len(rendered), sha256_hex=sha256(rendered.encode("utf-8")).hexdigest(),
-        )
-    return rendered
+    return _render_external_work_order(task)
 
 
 def start_binding_fingerprints(ctx: Any, prompt: str) -> tuple[str, str]:
@@ -398,15 +238,14 @@ def start_binding_fingerprints(ctx: Any, prompt: str) -> tuple[str, str]:
 
 
 def work_order_fingerprint(task: Mapping[str, Any]) -> str:
-    """Digest the complete canonical brief, including an over-budget one."""
+    """Digest the complete canonical brief."""
 
     return sha256(_render_external_work_order(task).encode("utf-8")).hexdigest()
 
 
 __all__ = [
-    "WorkOrderBudgetExceeded", "assignment_instructions", "compile_external_work_order",
-    "build_work_order_source_request", "canonical_work_order_source",
+    "assignment_instructions", "compile_external_work_order", "canonical_work_order_source",
     "work_order_source_projection",
-    "route_source_request_channel", "validate_work_order_source_response",
+    "validate_work_order_source_response",
     "start_binding_fingerprints", "work_order_fingerprint",
 ]

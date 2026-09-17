@@ -22,6 +22,7 @@ from ouroboros import (
     llm_pricing,
     llm_probe,
     llm_routing,
+    llm_stream,
 )
 from ouroboros.llm import LLMClient
 
@@ -44,6 +45,7 @@ _LEAVES = (
     # upstream. It is an llm_* leaf all the same, so the leaf rules bind it —
     # never import the parent, no cycles, real weight.
     llm_probe,
+    llm_stream,
 )
 
 # Module-level names that moved. llm.py re-exports every one of them, so its
@@ -121,7 +123,8 @@ _MIXIN_OWNERS = {
         "_chat_gigachat _get_gigachat_client _gigachat_function_result _gigachat_messages "
         "_gigachat_text _new_gigachat_client _normalize_gigachat_response"
     ),
-    (llm_local, "_LocalLaneMixin"): "_chat_local _prepare_messages_for_local_context",
+
+    (llm_local, "_LocalLaneMixin"): "_chat_local _build_local_candidate _finalize_local_candidate",
     (llm_openai_compatible, "_OpenAICompatibleLaneMixin"): (
         "_build_remote_kwargs _normalize_remote_response _openrouter_main_web_search_tool "
         "extract_display_reasoning"
@@ -218,7 +221,8 @@ def test_llm_client_member_inventory_is_unchanged():
     composed = sorted(moved | _PARENT_MEMBERS)
     assert hashlib.sha256(
         json.dumps(composed, separators=(",", ":")).encode()
-    ).hexdigest() == "025221e4a003803c39da72098b267397c614ec744cb44530e3d8870f4cde5826"
+
+    ).hexdigest() == "e41b36df9a44c020082acd5db82ab40fb8a65811c5dd982ecac7df3325a5833c"
     for name in composed:
         assert hasattr(LLMClient, name), name
 

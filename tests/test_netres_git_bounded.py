@@ -131,8 +131,10 @@ def test_git_network_bounded_timeout_kills_tree_and_repo_stays_operable(tmp_path
     monkeypatch.setenv("NETRES_PID_DIR", str(pid_dir))
     monkeypatch.setenv("NETRES_STALE_LOCK", str(stale_lock))
 
+    # First execution of a new shim can spend several seconds in macOS's
+    # executable scan. Reach the hanging child before testing tree teardown.
     rc, out, err = update_source._git_network_bounded(
-        ["fetch", "origin"], cwd=clone, timeout=1.0,
+        ["fetch", "origin"], cwd=clone, timeout=10.0,
     )
 
     assert rc == update_source.FETCH_TIMEOUT_RC

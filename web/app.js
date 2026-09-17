@@ -3,6 +3,7 @@
 import { createWS } from './modules/ws.js';
 import { apiFetch, fetchJson } from './modules/api_client.js';
 import { loadVersion, initMatrixRain } from './modules/utils.js';
+import { bindScrollFade } from './modules/scroll_fade.js';
 import { initChat, createChatInstance } from './modules/chat.js';
 import { createStateSnapshotSequencer } from './modules/chat_activity.js';
 import { initFiles } from './modules/files.js';
@@ -236,10 +237,10 @@ const ctx = {
 mainChat = initChat(ctx);
 initFiles(ctx);
 
-function hydrateOpenChatsFromState(data, snapshotRequestedAt, snapshotGeneration) {
-    mainChat?.hydrateStateSnapshot?.(data, snapshotRequestedAt, snapshotGeneration);
+function hydrateOpenChatsFromState(data, snapshotRequestedAt) {
+    mainChat?.hydrateStateSnapshot?.(data, snapshotRequestedAt);
     for (const instance of projectInstances.values()) {
-        instance.hydrateStateSnapshot?.(data, snapshotRequestedAt, snapshotGeneration);
+        instance.hydrateStateSnapshot?.(data, snapshotRequestedAt);
     }
 }
 
@@ -274,7 +275,9 @@ function destroyProjectInstance(pid) {
     projectPaintRequests.delete(pid);
 }
 
+let projectNavigationGeneration = 0;
 function closeProjectPanel({ sync = true } = {}) {
+    projectNavigationGeneration += 1;
     const activeId = navState.activeProjectId;
     navState.activeProjectId = null;
     if (activeId) destroyProjectInstance(activeId);
@@ -286,10 +289,17 @@ function closeProjectPanel({ sync = true } = {}) {
     if (sync) syncNavigationState();
 }
 
-async function openProjectPanel(project, { closeDrawer = true } = {}) {
+async function openProjectPanel(project, { closeDrawer = true, openOnly = false, taskId = '', quizId = '' } = {}) {
     if (!project?.id || String(project.lifecycle || 'active') !== 'active') return;
+    const navigation = ++projectNavigationGeneration;
     if (navState.activeProjectId === project.id) {
-        closeProjectPanel();
+        if (!openOnly) closeProjectPanel();
+        else if (taskId && quizId) {
+            const inst = projectInstances.get(project.id);
+            await acknowledgeProjectAfterPaint(project, inst, { forcePaint: true });
+            if (navigation === projectNavigationGeneration && navState.activeProjectId === project.id)
+                await inst?.revealQuestion?.(taskId, quizId);
+        }
         return;
     }
     // perf2 P4.2: signal chat.js that a panel open is in flight so Main's
@@ -297,7 +307,7 @@ async function openProjectPanel(project, { closeDrawer = true } = {}) {
     projectPanelOpeningSince = Date.now();
     try {
         const movedToChat = await showPage('chat', { closeProject: false, closeDrawer: false });
-        if (movedToChat === false) return;
+        if (movedToChat === false || navigation !== projectNavigationGeneration) return;
         navState.activeProjectId = project.id;
         projectPanelTitle.textContent = project.name || project.id;
         // One live panel: every OTHER project instance is destroyed (or hidden and
@@ -334,7 +344,10 @@ async function openProjectPanel(project, { closeDrawer = true } = {}) {
         // ACK only the exact revision whose history was fetched and painted. chat.js
         // owns the paint receipt; an already-painted instance skips the forced
         // refetch — the server clamps the ACK, so no repaint is needed.
-        await acknowledgeProjectAfterPaint(project, inst, { forcePaint: !inst.hasPaintedHistory?.() });
+        await acknowledgeProjectAfterPaint(project, inst, { forcePaint: Boolean(quizId) || !inst.hasPaintedHistory?.() });
+        if (taskId && quizId && navigation === projectNavigationGeneration
+            && navState.activeProjectId === project.id && projectInstances.get(project.id) === inst)
+            await inst.revealQuestion?.(taskId, quizId);
     } finally {
         projectPanelOpeningSince = 0;
     }
@@ -627,7 +640,7 @@ window.addEventListener('ouro:open-project', (event) => {
     const project = event?.detail?.project;
     if (!project?.id) return;
     const resolved = lastProjectRows.find((item) => item.id === project.id) || project;
-    openProjectPanel(resolved);
+    openProjectPanel(resolved, { openOnly: true, taskId: event.detail.task_id || '', quizId: event.detail.quiz_id || '' });
 });
 
 // Resizable side sections: edge drag-handles write --sidebar-width /
@@ -722,7 +735,13 @@ initUpdateStatus(ctx);
 
 initOnboardingOverlay();
 
-initMatrixRain();
+const disposeMatrixRain = initMatrixRain();
+const disposeScrollFades = Array.from(document.querySelectorAll('.scroll-fade-y'), bindScrollFade);
+window.addEventListener('pagehide', (event) => {
+    if (event.persisted) return;
+    disposeMatrixRain();
+    disposeScrollFades.forEach((dispose) => dispose());
+});
 loadVersion();
 syncNavigationState();
 const hashPage = pageFromHash();
@@ -783,14 +802,8 @@ if (hashPage && hashPage !== state.activePage) showPage(hashPage);
     function findScrollableKeyboardNode(target) {
         let el = target;
         while (el && el !== document.body) {
-            if (
-                el.id === 'chat-messages'
-                || el.id === 'chat-input'
-                || el.classList?.contains('chat-messages')
-                || el.classList?.contains('chat-input')
-                || el.classList?.contains('chat-live-timeline')
-                || el.classList?.contains('sidebar-scroll')
-            ) return el;
+            const overflow = getComputedStyle(el).overflowY;
+            if (['auto', 'scroll'].includes(overflow) && el.scrollHeight > el.clientHeight) return el;
             el = el.parentElement;
         }
         return null;

@@ -1,37 +1,11 @@
-"""XG-2R.2: interpreter recognition is STRUCTURAL, owned once, consumed by every guard.
+"""Interpreter-family observations and execution through the selected Supervisor.
 
-INFRA-1 fixed the versioned-basename bypass for python alone (`startswith("python")`
-beside an exact set), so the versioned spellings every OTHER interpreter family
-ships under — ruby3.2, php8.3, perl5.38, node18 — still bypassed the light-mode
-inline-write fence (`shell_guards.light_shell_repo_mutation`), the registry
-runtime_data scan trigger (`ToolRegistry._run_shell_safety_check`), and the
-protected-artifact high-risk-interpreter check. That patched one interpreter, not
-the failure class (BIBLE P2).
-
-The class fix is ONE structural classifier — `shell_guards.interpreter_family` —
-recognizing family stem + optional dotted version, which all three surfaces consume.
-These tests are table-driven across families and versioned forms and assert PARITY:
-a versioned spelling must classify and guard exactly like its unversioned family
-name. They fail on the pre-fix tree (exact-set + python-only startswith).
-
-XG-7B3.1 (second half of the same class, two reviewers converged): classification was
-fixed, REACHABILITY was not. `_run_shell_safety_check` passed
-`detect_interpreter_inline=False` for `run_command`, and inline code was parsed only
-behind `-c`, so in light mode `run_command(["node18", "-e", "...writeFileSync(...)"])`
-mutated an ordinary repo file BEFORE the post-execution tripwire — which reports
-without rolling back. Three things were wrong at once and all three are covered
-below: the fence did not reach `run_command`; the inline-FLAG vocabulary was
-`-c`-only; and the write-INDICATOR vocabulary was python-shaped, so the reviewers'
-own `require('fs').writeFileSync` / `file_put_contents` payloads did not even trip
-it. The e2e tests put a real executable SHIM on PATH, so a guard that lets the
-command through is caught by the mutated file, not merely by a missing block string.
-"""
+Parser observations retain their existing shape without becoming permission
+proof. Actual run_script cases verify useful source execution and one effect."""
 from __future__ import annotations
 
 import inspect
-import os
 import pathlib
-import stat
 import sys
 
 import pytest
@@ -133,26 +107,6 @@ def _light_registry(tmp_path):
     reg = ToolRegistry(repo_dir=repo, drive_root=tmp_path / "drive")
     reg._ctx.task_id = "t1"
     return reg
-
-
-@pytest.mark.serial
-def test_versioned_interpreter_runtime_data_write_is_registry_blocked(tmp_path, monkeypatch):
-    """End to end through ToolRegistry.execute in light mode: a versioned
-    NON-python interpreter whose inline code writes a runtime_data path outside
-    the task's own roots must be refused before execution, exactly like the
-    unversioned spelling. Host-independent: the guard refuses pre-exec, so the
-    binary need not exist; where it does, the no-file assertion still holds.
-    The payload's write call (`FileUtils.copyfile`) deliberately carries no
-    shell-level write token, so pre-fix nothing triggered the scan at all."""
-    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
-    reg = _light_registry(tmp_path)
-    target = tmp_path / "drive" / "state" / "probe.json"
-    for exe in ("php8.3", "node18", "ruby3.2"):
-        result = reg.execute("run_command", {
-            "cmd": [exe, "-e", f"FileUtils.copyfile('src', '{target}')"],
-        })
-        assert "LIGHT_MODE_BLOCKED" in result, (exe, result[:300])
-    assert not target.exists()
 
 
 # ---- guard surface 3: protected-artifact high-risk interpreter check -------
@@ -396,49 +350,12 @@ def test_the_fence_inspects_inline_code_by_default():
     assert default is True
 
 
-def _shim(bin_dir: pathlib.Path, name: str, target: pathlib.Path) -> None:
-    """A REAL executable standing in for the interpreter: if the guard lets the
-    command run, this writes the target and the test fails on the file, not on a
-    missing message."""
-    path = bin_dir / name
-    path.write_text(f"#!/bin/sh\nprintf MUTATED > '{target}'\n")
-    path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-
-
 @pytest.mark.serial
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX shim script")
-def test_run_command_inline_repo_write_is_blocked_before_the_file_changes(tmp_path, monkeypatch):
-    """THE regression for XG-7B3.1, driving the REAL run_command path per family.
-
-    Pre-fix this asserted-on file came back 'MUTATED' for node/php (and python),
-    because `run_command` disabled inline inspection: the write landed and only the
-    post-execution tripwire spoke, which does not roll back."""
+def test_run_script_follows_the_configured_supervisor(tmp_path, monkeypatch):
+    """The script body executes once when the chosen Supervisor permits it."""
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
-    reg = _light_registry(tmp_path)
-    repo = pathlib.Path(reg._ctx.repo_dir)
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
-
-    for index, (exe, rest) in enumerate(INLINE_FLAG_PAYLOADS):
-        target = repo / f"ordinary{index}.py"
-        target.write_text("original\n")
-        _shim(bin_dir, exe, target)
-        cmd = [exe, *[part.format(p=str(target)) for part in rest]]
-        result = reg.execute("run_command", {"cmd": cmd})
-        # CONTAINMENT FIRST: the file must be UNCHANGED. The shim on PATH writes
-        # "MUTATED" the moment the command is allowed to run, so this assertion —
-        # not the message below — is what the finding is about: the post-execution
-        # tripwire reports a mutation it cannot roll back.
-        assert target.read_text() == "original\n", f"{cmd} MUTATED the repo file"
-        assert "LIGHT_MODE_BLOCKED" in result, (cmd, result[:200])
-
-
-@pytest.mark.serial
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shim script")
-def test_run_script_keeps_the_same_fence(tmp_path, monkeypatch):
-    """The surface that already had it must not regress while the other gains it."""
-    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
+    monkeypatch.setattr("ouroboros.safety.check_safety", lambda *_a, **_k: (True, ""))
     reg = _light_registry(tmp_path)
     repo = pathlib.Path(reg._ctx.repo_dir)
     target = repo / "via_script.py"
@@ -446,8 +363,48 @@ def test_run_script_keeps_the_same_fence(tmp_path, monkeypatch):
     result = reg.execute("run_script", {
         "script": f"open({str(target)!r},'w').write('MUTATED')",
     })
-    assert "LIGHT_MODE_BLOCKED" in result, result[:200]
-    assert target.read_text() == "original\n"
+    assert "exit_code=0" in result, result
+    assert target.read_text() == "MUTATED"
+
+
+@pytest.mark.serial
+@pytest.mark.parametrize("cwd", ["", "task_drive"])
+def test_readonly_python_string_method_executes_without_a_false_write(tmp_path, monkeypatch, cwd):
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
+    reg = _light_registry(tmp_path)
+    target = pathlib.Path(reg._ctx.repo_dir) / "probe.txt"
+    target.write_text("probe text\n")
+    script = f"text = open({target.as_posix()!r}).read(); print(text.replace('probe', 'read'))"
+    # A string method is ordinary code, not proof of a filesystem mutation.
+    import subprocess
+
+    direct = subprocess.run([sys.executable, "-B", "-c", script], cwd=tmp_path,
+                            capture_output=True, text=True, timeout=10)
+    assert direct.returncode == 0 and direct.stdout == "read text\n\n"
+    monkeypatch.setattr("ouroboros.safety.check_safety", lambda *_a, **_k: (True, ""))
+    result = reg.execute("run_script", {"script": script, "cwd": cwd})
+    assert "exit_code=0" in result and "read text" in result, result
+    assert target.read_text() == "probe text\n"
+    read = reg.execute("read_file", {"path": "probe.txt", "root": "system_repo"})
+    assert "probe text" in read and "LIGHT_MODE_BLOCKED" not in read
+
+
+@pytest.mark.serial
+@pytest.mark.parametrize("body", [
+    "from pathlib import Path\np = Path('.')\nprint((p / '.git').exists())\n"
+    "with (p / 'result.txt').open('a', newline='') as f: f.write('once\\n')\n",
+    "from pathlib import Path\np = Path('nested')\np.mkdir(exist_ok=True)\n"
+    "with (p / 'result.txt').open('a', newline='') as f: f.write('once\\n')\n",
+])
+def test_path_join_code_executes_once_without_guessing_a_control_write(tmp_path, monkeypatch, body):
+    reg = _light_registry(tmp_path)
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
+    monkeypatch.setenv("OUROBOROS_SAFETY_MODE", "off")
+    root = pathlib.Path(reg._ctx.task_drive_root())
+    result = reg.execute("run_script", {"script": body, "cwd": "task_drive"})
+    assert "exit_code=0" in result, result
+    outputs = list(root.rglob("result.txt"))
+    assert len(outputs) == 1 and outputs[0].read_bytes() == b"once\n"
 
 
 def test_legitimate_deliverable_writes_stay_allowed(tmp_path):

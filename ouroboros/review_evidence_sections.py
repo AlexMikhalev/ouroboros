@@ -1,19 +1,10 @@
-"""Bounded, provenance-tagged sections of the task-acceptance evidence packet.
+"""Provenance-tagged acceptance sections and their disclosed packet budget.
 
-Owns every typed section a reviewer reads, the cap vocabulary that bounds them,
-and the budget that keeps the assembled packet deterministically sized: the
-redacted working-tree diff, the pending-obligation predicate and its compact
-row, the packet content revision a panel is bound to, the normalized task
-contract, the protected-artifact set, the verification-receipt summary and the
-indexed exhibits the evidence-ref vocabulary enumerates, effective claims and
-their host-built support references, the tool trajectory at the actor's own
-per-tool result window, the leak-safe artifact manifest, and the owner corpus.
-Each section redacts before it publishes and discloses what it omitted.
-Assembling them into one packet, and the review status/summary projections,
-stay with ``review_evidence``; the capability-delta aggregate lives with its
-upstream owner ``delegate_evidence``. Extracted from ouroboros/review_evidence.py
-(v7 D06 split, re-cut on the v7next tip); review_evidence.py re-exports every
-name.
+Owns diff, obligations, source revision, contract/claims, protected artifacts,
+receipt exhibits/support, trajectory materialization, artifact and owner views.
+Each section redacts before publication and discloses omissions. Assembly and
+review status/summary projections belong to ``review_evidence`` (which re-exports
+these helpers); capability-delta aggregation belongs to ``delegate_evidence``.
 """
 
 from __future__ import annotations
@@ -273,7 +264,7 @@ def task_acceptance_evidence_revision(evidence: Dict[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _accept_redact_cap(value: Any, limit: int, suffix: str = "") -> str:
+def _accept_redact_cap(value: Any, limit: int | None, suffix: str = "") -> str:
     from ouroboros.observability import redact_projection
 
     if isinstance(value, str):
@@ -281,6 +272,8 @@ def _accept_redact_cap(value: Any, limit: int, suffix: str = "") -> str:
     else:
         # Structural masking first, then token redaction after serialization.
         red = redact_projection(json.dumps(redact_projection(value).value, ensure_ascii=False, default=str)).value
+    if limit is None:
+        return red
     if not suffix:
         return _ev().truncate_review_artifact(red, limit=limit)
     prefix = red[:-len(suffix)] if red.endswith(suffix) else red
@@ -500,8 +493,9 @@ def _accept_effective_claims(
     (contracts.task_contract.effective_acceptance_claims): ingress-contract
     claims first, the CLOSED plan wave's frozen claims only when ingress is
     empty. The plan-state lookup mirrors plan_task's own state location
-    (budget_drive_root first) and is FAIL-SOFT — a claims lookup must never
-    break packet building.
+    (budget_drive_root first). Generic lookup failures remain fail-soft; a
+    recorded full source that cannot be read reaches acceptance's existing
+    infrastructure-failure path instead of discarding known claims.
 
     A reviewed-and-frozen but never-closed wave binds NOTHING, and until now it
     was indistinguishable in the packet from a task that never had claims. It is
@@ -509,6 +503,7 @@ def _accept_effective_claims(
     reads ``none_open_plan_wave``. The exhibit sits in
     ``DECLARED_INTENT_SECTIONS``, so citing it can never resolve a criterion."""
     from ouroboros.contracts.task_contract import effective_acceptance_claims
+    from ouroboros.tools.plan_review_artifacts import PlanReviewSourceUnavailable
 
     claims, source = effective_acceptance_claims(contract)
     if claims:
@@ -525,6 +520,10 @@ def _accept_effective_claims(
 
         state = load_plan_review_state(pathlib.Path(str(root)), str(task_id))
         wave = closed_plan_review_wave(state)
+    except PlanReviewSourceUnavailable:
+        # The recorded claims exist. An unavailable full source must reach the
+        # existing acceptance infrastructure-failure path, never become no claims.
+        raise
     except Exception:
         return [], "", {}
     frozen, frozen_source = effective_acceptance_claims(contract, wave)
@@ -626,15 +625,30 @@ def _accept_claim_support_refs(contract: Dict[str, Any], receipts: list) -> list
     return out
 
 
-def _accept_trajectory(tool_calls: list, drive_root: Any = None, task_id: str = "") -> tuple:
+def _accept_trajectory(tool_calls: list, drive_root: Any = None, task_id: str = "",
+                       *, source_ref: Any = None, indices: list | None = None) -> tuple:
     """Build the bounded acceptance trajectory and resolve partial source handles."""
-    from ouroboros.artifacts import materialize_tool_result_source
+    from ouroboros.artifacts import materialize_tool_args_source, materialize_tool_result_source, read_actor_source_bytes
+    from ouroboros.review_evidence_refs import trajectory_record_ref
     from ouroboros.tool_capabilities import TOOL_RESULT_LIMITS
+    if indices is not None:
+        try:
+            tool_calls = json.loads(read_actor_source_bytes(drive_root, task_id, source_ref))
+            if not isinstance(tool_calls, list) or any(not isinstance(c, dict) for c in tool_calls):
+                raise ValueError("trajectory source is not a tool-call corpus")
+        except (OSError, TypeError, ValueError) as exc:
+            return [], 0, [{"tool": "tool_trajectory_selected", "status": "source_unavailable",
+                           "reason": f"{type(exc).__name__}: {exc}", "source_ref": source_ref or {}}]
     calls = [c for c in (tool_calls or []) if isinstance(c, dict)]
     omitted = max(0, len(calls) - _ACCEPT_TRAJECTORY_MAX_CALLS)
-    kept = calls[-_ACCEPT_TRAJECTORY_MAX_CALLS:] if omitted else calls
+    kept = (range(omitted, len(calls)) if indices is None else
+            sorted({i for i in indices if type(i) is int and 0 <= i < len(calls)}))
     out, unresolved = [], []
-    for c in kept:
+    if indices is not None and any(type(i) is not int or not 0 <= i < len(calls) for i in indices):
+        unresolved.append({"tool": "tool_trajectory_selected", "status": "not_materialized_for_reviewer",
+                           "reason": "invalid_source_index", "source_ref": source_ref or {}})
+    for index in kept:
+        c = calls[index]
         tool = str(c.get("tool") or "")
         result_value, result_complete, metadata = materialize_tool_result_source(
             drive_root, task_id, c,
@@ -646,20 +660,29 @@ def _accept_trajectory(tool_calls: list, drive_root: Any = None, task_id: str = 
         if not result_complete:
             unresolved.append(metadata)
         result_cap = TOOL_RESULT_LIMITS.get(tool, _ACCEPT_RESULT_CAP)
-        source_ref = metadata.get("source_ref", c.get("result_source_ref"))
-        source_ref = source_ref if isinstance(source_ref, dict) else {}
+        result_source = metadata.get("source_ref", c.get("result_source_ref"))
+        result_source = result_source if isinstance(result_source, dict) else {}
         materialized = c.get("result_partial") or not result_complete or "source_ref" in metadata
         if materialized:
             result_cap = max(result_cap, len(str(result_value)))
+        args_value, args_complete, args_issue = materialize_tool_args_source(drive_root, c)
+        if args_issue:
+            unresolved.append(args_issue)
+        args = _accept_redact_cap(args_value, None) if args_value not in (None, "", {}) else ""
+        result = _accept_redact_cap(result_value, None) if result_value not in (None, "") else ""
         row = {
             "tool": tool,
             "status": str(c.get("status") or ("error" if c.get("is_error") else "ok")),
             "is_error": bool(c.get("is_error")),
-            "args": _accept_redact_cap(c.get("args"), _ACCEPT_ARGS_CAP) if c.get("args") not in (None, "", {}) else "",
-            "result": _accept_redact_cap(result_value, result_cap, legacy_envelope) if result_value not in (None, "") else "",
+            "args": args if indices is not None else _ev().truncate_review_artifact(args, _ACCEPT_ARGS_CAP),
+            "result": result if indices is not None else _accept_redact_cap(result, result_cap, legacy_envelope),
         }
+        row.update(args_complete=args_complete and row["args"] == args,
+                   result_complete=result_complete and row["result"] == result)
+        if ref := trajectory_record_ref(source_ref, index):
+            row.update(ref=ref, source_index=index)
         if materialized:
-            row.update(result_complete=result_complete, result_source_ref=source_ref)
+            row["result_source_ref"] = result_source
         if legacy_envelope:
             row["_legacy_projection_envelope"] = legacy_envelope
         out.append(row)
@@ -725,8 +748,11 @@ def _accept_artifact_manifest(drive_root: Any, task_id: str, protected: set) -> 
 
 def _accept_enforce_budget(ev: Dict[str, Any], *, budget: int = 0) -> Dict[str, Any]:
     budget = int(budget or 0) or _ACCEPT_TOTAL_BUDGET
+    def _trajectory_rows() -> list:
+        return [*(ev.get("tool_trajectory") or []), *(ev.get("tool_trajectory_selected") or [])]
+
     def _finish() -> Dict[str, Any]:
-        for row in ev.get("tool_trajectory") or []:
+        for row in _trajectory_rows():
             if isinstance(row, dict):
                 row.pop("_legacy_projection_envelope", None)
         _sync_annotations()
@@ -741,10 +767,16 @@ def _accept_enforce_budget(ev: Dict[str, Any], *, budget: int = 0) -> Dict[str, 
                 overflow["packet_chars"] = final_size
         return ev
 
-    def _cap_result(row: Dict[str, Any], limit: int) -> None:
-        row["result"] = _accept_redact_cap(row.get("result"), limit, str(
-            row.get("_legacy_projection_envelope") or "",
-        ))
+    def _cap_field(row: Dict[str, Any], key: str, limit: int) -> int:
+        before = str(row.get(key) or "")
+        if len(before) <= limit:
+            return 0
+        suffix = str(row.get("_legacy_projection_envelope") or "") if key == "result" else ""
+        row[key] = _accept_redact_cap(before, limit, suffix)
+        if len(row[key]) >= len(before):
+            return 0
+        row[key + "_complete"] = False
+        return 1
 
     def _size() -> int:
         _sync_annotations()
@@ -776,8 +808,11 @@ def _accept_enforce_budget(ev: Dict[str, Any], *, budget: int = 0) -> Dict[str, 
         # These rows are part of the actual wire packet. Measuring before adding
         # them let a fitting intermediate view overflow without an overflow flag.
         trajectory_source_ref = ev.get("tool_trajectory_source_ref") or {}
-        unresolved_partials = [_partial_source(row) for row in (ev.get("tool_trajectory") or [])
-                               if isinstance(row, dict) and row.get("result_complete") is False]
+        unresolved_partials = [
+            _partial_source(row) for row in _trajectory_rows()
+            if isinstance(row, dict)
+            and (row.get("result_complete") is False or row.get("args_complete") is False)
+        ]
         if int(ev.get("tool_trajectory_omitted_leading", 0) or 0) > 0:
             unresolved_partials.append({
                 "tool": "tool_trajectory", "status": ("not_materialized_for_reviewer"
@@ -837,23 +872,24 @@ def _accept_enforce_budget(ev: Dict[str, Any], *, budget: int = 0) -> Dict[str, 
         omissions.append({"section": "tool_trajectory", "omitted": dropped, "reason": "evidence_budget"})
     # Re-cap against the FINAL annotated size. A cut can introduce source refs,
     # so remeasure after it; stop once it fits or no result can shrink further.
-    traj = ev.get("tool_trajectory")
+    traj = _trajectory_rows()
     while _size() > budget and isinstance(traj, list) and traj:
         non_traj = _size() - sum(len(str(c.get("result") or "")) for c in traj if isinstance(c, dict))
         share = max(700, (budget - non_traj) // len(traj) - 400)
-        recapped = 0
+        recapped = recapped_args = 0
         for c in traj:
-            if isinstance(c, dict) and len(str(c.get("result") or "")) > share:
-                before = len(str(c.get("result") or ""))
-                _cap_result(c, share)
-                if len(str(c.get("result") or "")) < before:
-                    c["result_complete"] = False
-                    recapped += 1
-        if not recapped:
+            if isinstance(c, dict):
+                recapped_args += _cap_field(c, "args", _ACCEPT_ARGS_CAP)
+                recapped += _cap_field(c, "result", share)
+        if not recapped and not recapped_args:
             break
         ev["tool_trajectory_complete"] = False
-        notes.append(f"re-capped {recapped} trajectory results to ~{share} chars each for budget")
-        omissions.append({"section": "tool_trajectory_results", "omitted": recapped, "reason": "evidence_budget"})
+        if recapped:
+            notes.append(f"re-capped {recapped} trajectory results to ~{share} chars each for budget")
+            omissions.append({"section": "tool_trajectory_results", "omitted": recapped, "reason": "evidence_budget"})
+        if recapped_args:
+            notes.append(f"re-capped {recapped_args} trajectory arguments for budget")
+            omissions.append({"section": "tool_trajectory_args", "omitted": recapped_args, "reason": "evidence_budget"})
     if _size() > budget and isinstance(ev.get("artifacts"), list):
         stripped = 0
         for a in ev["artifacts"]:
@@ -938,7 +974,7 @@ def _accept_owner_directives(ctx: Any, drive_root: Any, task_id: str) -> List[Di
     rows: List[Dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
 
-    def add(source: str, content: Any, msg_id: str = "") -> None:
+    def add(source: str, content: Any, msg_id: str = "", origin: Any = None) -> None:
         text = _owner_content_projection(content)
         if not text.strip():
             return
@@ -949,6 +985,10 @@ def _accept_owner_directives(ctx: Any, drive_root: Any, task_id: str) -> List[Di
         row = {"source": source, "content": text}
         if msg_id:
             row["msg_id"] = str(msg_id)
+        # The typed origin the recorder already resolved (a task message's source task,
+        # and the sibling it was relayed from) travels with the row: every reader of this
+        # one corpus sees a relayed proposal as such, without inferring it from the text.
+        row.update({key: str(value) for key, value in (origin or {}).items() if value})
         rows.append(row)
 
     recorded = getattr(ctx, "_owner_directives", None)
@@ -959,6 +999,7 @@ def _accept_owner_directives(ctx: Any, drive_root: Any, task_id: str) -> List[Di
                     str(item.get("source") or "task_local"),
                     item.get("content"),
                     str(item.get("msg_id") or ""),
+                    {key: item.get(key) for key in ("source_task_id", "relayed_from_task_id")},
                 )
 
     messages = getattr(ctx, "messages", None)

@@ -34,6 +34,15 @@ def _sub():
 
 _TIER_ORDER = {OUTCOME_TIER_SOLVED: 0, OUTCOME_TIER_BEST_EFFORT: 1, OUTCOME_TIER_BLOCKED: 2}
 
+# The reviewers' JSON keeps the identifier; the note the model READS (and may
+# echo to its human) says the assessment in words — the v6.61.4 token-parroting
+# class, where a ledger token becomes owner-facing prose by being quoted back.
+TIER_WORDS = {
+    OUTCOME_TIER_SOLVED: "a verified solution",
+    OUTCOME_TIER_BEST_EFFORT: "a partial result",
+    OUTCOME_TIER_BLOCKED: "blocked, with the evidence recorded",
+}
+
 
 _CRITERION_STATUSES = frozenset({"supported", "missing", "partial", "rejected"})
 
@@ -49,17 +58,13 @@ def _criteria_have_supported_evidence(criteria: Any) -> bool:
 
 
 def _criteria_shape_valid(criteria: Any, tier: str) -> bool:
-    """Shape + tier coherence for a reviewer's criteria_used (v6.71.1).
+    """Validate criterion structure independently of the reviewer's claimed tier.
 
-    SHAPE: a non-empty list of {criterion, status ∈ enum}, and every 'supported'
-    criterion names evidence_refs. COHERENCE: 'solved' still requires ALL criteria
-    'supported' with refs — the release-clean bar (task_acceptance_is_clean) is
-    unchanged; a non-solved tier (best_effort / blocked_with_evidence) may honestly
-    carry partial/missing/rejected criteria. This lets an honest PASS that marks one
-    criterion 'partial' contribute as a valid NON-clean vote instead of being demoted
-    to parse_status=malformed — the old all-must-be-'supported' gate (the prompt itself
-    offers 'partial') silently starved the honest-partial path and fueled acceptance
-    loops (BIBLE P2/P3; the FAIL-veto and clean-solved contracts are untouched)."""
+    A well-formed partial/missing/rejected criterion preserves the reviewer's
+    PASS and original tier. Only ``task_acceptance_is_clean`` decides whether
+    those facts authorize solved completion; a contradiction is not bad JSON.
+    ``tier`` remains in this shared callback signature for existing callers.
+    """
     if not (isinstance(criteria, list) and criteria):
         return False
     for item in criteria:
@@ -72,8 +77,6 @@ def _criteria_shape_valid(criteria: Any, tier: str) -> bool:
             return False
         if status == "supported" and not item.get("evidence_refs"):
             return False
-    if str(tier or "").strip().lower() == OUTCOME_TIER_SOLVED:
-        return _criteria_have_supported_evidence(criteria)
     return True
 
 
@@ -220,7 +223,7 @@ def _unresolved_evidence_ref_labels(run: Any) -> List[str]:
     return list(dict.fromkeys(labels))
 
 
-def panel_reason(run: Any) -> str:
+def panel_reason(run: Any, *, with_tier: bool = True) -> str:
     """One honest reason line naming the REAL blocker (v6.74.0, A6); shared by
     the capsule header, the compact projection fallback, and progress lines.
     Accepts a ``ReviewRunResult`` or its dict/namespace record."""
@@ -230,6 +233,9 @@ def panel_reason(run: Any) -> str:
         run = SimpleNamespace(**run)
     aggregate = str(getattr(run, "aggregate_signal", "") or "UNKNOWN").upper()
     tier = aggregate_outcome_tier(run)
+    # The tier is said in words (the reviewers' JSON keeps the identifier); the
+    # capsule header states it once itself and asks for the reason alone.
+    rated = f"rated {TIER_WORDS.get(tier, tier or 'unclassified')} — " if with_tier else ""
     if aggregate == "PASS":
         if task_acceptance_is_clean(run):
             return "clean acceptance"
@@ -240,11 +246,11 @@ def panel_reason(run: Any) -> str:
         if unresolved:
             more = f" (+{len(unresolved) - 3} more)" if len(unresolved) > 3 else ""
             return (
-                f"tier={tier or 'unclassified'} — cited evidence does not resolve "
+                f"{rated}cited evidence does not resolve "
                 f"against the packet: {', '.join(unresolved[:3])}{more}"
             )
         return (
-            f"tier={tier or 'unclassified'} — a PASS is not release-clean until "
+            f"{rated}a PASS is not release-clean until "
             "every criterion is supported"
         )
     if aggregate == "FAIL":
@@ -276,8 +282,8 @@ def panel_reason(run: Any) -> str:
                         break
         if named:
             compact = _sub().truncate_review_artifact(" ".join(named.split()), limit=300)
-            return f"tier={tier or 'unclassified'} — {compact}"
-        return f"tier={tier or 'unclassified'} — reviewer FAIL without a named finding"
+            return f"{rated}{compact}"
+        return f"{rated}reviewer FAIL without a named finding"
     reasons = [str(r) for r in (getattr(run, "degraded_reasons", None) or []) if str(r)]
     if len(reasons) > 4:
         return "; ".join(reasons[:4]) + f" ⚠️ OMISSION NOTE: +{len(reasons) - 4} more causes in the run record"
@@ -431,8 +437,8 @@ def build_improvement_capsule(
     # the agent sees WHAT failed instead of a bare ledger label.
     header = f"[Final improvement note] Review verdict: {aggregate_signal or 'UNKNOWN'}"
     if tier:
-        header += f" (tier: {tier})"
-    header += f" — {panel_reason(result)}."
+        header += f" — rated {TIER_WORDS.get(tier, tier)}"
+    header += f" — {panel_reason(result, with_tier=False)}."
     lines = [header]
     open_ids = [
         str(o.get("id"))
@@ -457,13 +463,15 @@ def build_improvement_capsule(
         # improves the result; otherwise produce your normal final answer" tail
         # was the measured cause of the do-nothing resubmit loop (SWE 1b311217:
         # 7 passes, zero tool calls). The anti-derailment guards stay verbatim.
-        "Three real moves are available: (1) FIX — change the work/answer so the next panel is "
+        "Four real moves are available: (1) FIX — change the work/answer so the next panel is "
         "clean; (2) REBUT — file obligation_dispositions (rejected + your reason) via the "
         "task_acceptance_review tool for findings you can show are wrong; the reviewer "
         "adjudicates the argument; (3) DECLARE UNREACHABLE — dispose an obligation as "
         "unsatisfiable in this environment (rejected + the concrete gap), and the reviewer "
         "judges reachability. Resubmitting the same answer with none of these moves changes "
-        "nothing. "
+        "nothing. (4) AUTHOR FINISH — under advisory enforcement, record accepted, rejected, "
+        "partial, or deferred with a rationale; the first panel's raw findings remain durable, "
+        "no reviewer PASS is fabricated, and Blocking enforcement still requires its own gate. "
         "Do not mention this review or the reviewer unless the user asked. "
         "The assessment tier above is an internal ledger label — never emit an internal ledger "
         "identifier as the deliverable itself."

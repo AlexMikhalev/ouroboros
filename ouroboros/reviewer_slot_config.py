@@ -59,6 +59,8 @@ from __future__ import annotations
 import contextlib as _contextlib
 import json
 import os
+from ouroboros.settings_integrity import runtime_environ, runtime_setting
+from ouroboros.model_slots import normalize_processing_preference, resolve_processing_preference
 import pathlib
 import threading
 from dataclasses import dataclass
@@ -118,6 +120,7 @@ class ConfiguredReviewerSlot:
     # time and the roster stays their SSOT. '' = ordinary direct row.
     subagent_id: str = ""
     use_local: Optional[bool] = None  # Runtime task override only; never a second settings policy.
+    processing_preference: str = ""  # Effective preference captured when the row is loaded.
 
     @property
     def is_session(self) -> bool:
@@ -180,6 +183,7 @@ class AdvisorySlotConfig:
     # (currently only the unmapped legacy Claude-SDK target migration).
     disabled_reason: str = ""
     use_local: Optional[bool] = None  # Runtime task override, not serialized configuration.
+    processing_preference: str = ""  # Effective preference, including a referenced actor's choice.
 
     @property
     def slot_id(self) -> str:
@@ -204,7 +208,7 @@ class ReviewerSlotConfig:
 
 
 def structured_reviewer_slots_raw() -> str:
-    return str(os.environ.get(REVIEWER_SLOTS_ENV, "") or "").strip()
+    return str(runtime_setting(REVIEWER_SLOTS_ENV, "") or "").strip()
 
 
 def structured_reviewer_slots_present() -> bool:
@@ -256,6 +260,14 @@ _ROSTER_ENV_OVERRIDE: "_contextvars.ContextVar[Optional[dict]]" = _contextvars.C
     "reviewer_roster_env_override", default=None)
 
 
+def _row_processing(raw: Any = None, *, role: str = "") -> str:
+    """Capture authored row/role/global precedence on the same settings plane."""
+    return resolve_processing_preference(
+        role, override=normalize_processing_preference(raw) or None,
+        settings=_ROSTER_ENV_OVERRIDE.get(),
+    )
+
+
 def _resolve_actor_slot(
     slot_id: str, subagent_id: str, effort: str, where: str,
 ) -> ConfiguredReviewerSlot:
@@ -283,7 +295,7 @@ def _resolve_actor_slot(
         # process env, which concurrent review dispatch could observe.
         _override = _ROSTER_ENV_OVERRIDE.get()
         snapshot, _legacy = select_subagent_snapshot(
-            _override if _override is not None else os.environ,
+            _override if _override is not None else runtime_environ(),
             subagent_id=subagent_id,
         )
     except SubagentSelectionError as exc:
@@ -310,17 +322,19 @@ def _resolve_actor_slot(
             slot_id=slot_id, kind=ROUTE_KIND_SESSION, target_id=target,
             effort=chosen_effort, session_target=target, profile_id=pin,
             subagent_id=subagent_id,
+            processing_preference=str(snapshot.get("processing_preference") or ""),
         )
     return ConfiguredReviewerSlot(
         slot_id=slot_id, kind=ROUTE_KIND_API, target_id=target,
         effort=chosen_effort, subagent_id=subagent_id, profile_id=pin,
+        processing_preference=str(snapshot.get("processing_preference") or ""),
     )
 
 
 def _parse_slot(row: Any, where: str, seen_ids: set) -> ConfiguredReviewerSlot:
     if not isinstance(row, dict):
         raise ValueError(f"{REVIEWER_SLOTS_ENV}: {where} is not an object")
-    unknown = sorted(set(row) - {"slot_id", "route", "subagent_id", "effort"})
+    unknown = sorted(set(row) - {"slot_id", "route", "subagent_id", "effort", "processing_preference"})
     if unknown:
         raise ValueError(
             f"{REVIEWER_SLOTS_ENV}: {where} has unknown keys: {unknown}"
@@ -358,6 +372,8 @@ def _parse_slot(row: Any, where: str, seen_ids: set) -> ConfiguredReviewerSlot:
             "subagent_id, not both — the roster row is the route's SSOT"
         )
     if actor_ref:
+        if "processing_preference" in row:
+            raise ValueError(f"{REVIEWER_SLOTS_ENV}: {where} inherits Processing from its subagent")
         return _resolve_actor_slot(
             slot_id, actor_ref, _valid_effort(row.get("effort"), where), where,
         )
@@ -383,6 +399,7 @@ def _parse_slot(row: Any, where: str, seen_ids: set) -> ConfiguredReviewerSlot:
         effort=effort,
         session_target=route.target_id if kind == ROUTE_KIND_SESSION else "",
         profile_id=route.credential_profile_id,
+        processing_preference=_row_processing(row.get("processing_preference")),
     )
 
 
@@ -414,15 +431,16 @@ def _resolve_advisory_actor(subagent_id: str, effort: str, enabled: bool) -> Adv
         enabled=enabled, kind=row.kind, target_id=row.target_id,
         effort=row.effort or ("low" if not row.is_session else ""),
         profile_id=row.profile_id, subagent_id=subagent_id,
+        processing_preference=row.processing_preference,
     )
 
 
 def _parse_advisory(raw: Any) -> AdvisorySlotConfig:
     if raw is None:
-        return AdvisorySlotConfig()
+        return AdvisorySlotConfig(processing_preference=_row_processing())
     if not isinstance(raw, dict):
         raise ValueError(f"{REVIEWER_SLOTS_ENV}: advisory must be an object")
-    unknown = sorted(set(raw) - {"enabled", "route", "kind", "target_id", "effort", "subagent_id"})
+    unknown = sorted(set(raw) - {"enabled", "route", "kind", "target_id", "effort", "subagent_id", "processing_preference"})
     if unknown:
         raise ValueError(
             f"{REVIEWER_SLOTS_ENV}: advisory has unknown keys: {unknown}"
@@ -453,6 +471,8 @@ def _parse_advisory(raw: Any) -> AdvisorySlotConfig:
             "route, not both — the roster row is the route's SSOT"
         )
     if actor_ref:
+        if "processing_preference" in raw:
+            raise ValueError(f"{REVIEWER_SLOTS_ENV}: advisory inherits Processing from its subagent")
         return _resolve_advisory_actor(
             actor_ref, _valid_effort(raw.get("effort"), "advisory"), enabled,
         )
@@ -513,6 +533,7 @@ def _parse_advisory(raw: Any) -> AdvisorySlotConfig:
         effort=effort,
         profile_id=shared_route.credential_profile_id,
         disabled_reason=disabled_reason,
+        processing_preference=_row_processing(raw.get("processing_preference")),
     )
 
 
@@ -523,7 +544,7 @@ def _parse_deep_review(raw: Any, seen_ids: set) -> Optional[ConfiguredReviewerSl
         return None
     if not isinstance(raw, dict):
         raise ValueError(f"{REVIEWER_SLOTS_ENV}: deep_review must be an object")
-    unknown = sorted(set(raw) - {"route", "subagent_id", "effort"})
+    unknown = sorted(set(raw) - {"route", "subagent_id", "effort", "processing_preference"})
     if unknown:
         raise ValueError(f"{REVIEWER_SLOTS_ENV}: deep_review has unknown keys: {unknown}")
     return _parse_slot({**raw, "slot_id": DEEP_REVIEW_SLOT_ID}, "deep_review", seen_ids)
@@ -619,6 +640,7 @@ def _default_config() -> ReviewerSlotConfig:
                 slot_id=slot_id_for_row(idx + 1, prefix=prefix),
                 kind=ROUTE_KIND_API,
                 target_id=str(model),
+                processing_preference=_row_processing(),
             )
             for idx, model in enumerate(
                 str(m) for m in (models or []) if str(m or "").strip()
@@ -628,7 +650,7 @@ def _default_config() -> ReviewerSlotConfig:
     return ReviewerSlotConfig(
         triad=_rows(get_review_models(), SLOT_ID_PREFIX),
         scope=_rows(get_scope_review_models(), SCOPE_SLOT_ID_PREFIX),
-        advisory=AdvisorySlotConfig(),
+        advisory=AdvisorySlotConfig(processing_preference=_row_processing()),
         source="default",
     )
 
@@ -698,6 +720,7 @@ def synthesized_deep_review_slot() -> ConfiguredReviewerSlot:
     return ConfiguredReviewerSlot(
         slot_id=DEEP_REVIEW_SLOT_ID, kind=ROUTE_KIND_API,
         target_id=get_deep_self_review_model(),
+        processing_preference=_row_processing(role="deep_review"),
     )
 
 
@@ -728,10 +751,12 @@ def _delivery_slot(
 
     # ABI-4: the local-route fact is read off the typed target constructed at
     # the review seam, not re-derived per model string here.
+    own_effort = _row_own_effort(row)
     return ReviewSlot(
         slot_id=row.slot_id,
         model=row.target_id,
         effort=row_effort(row, effort_surface, default=default_effort),
+        declared_effort=default_effort if default_effort and not own_effort else "",
         role_hint=role_hint,
         use_local=(row.use_local if row.use_local is not None else resolved_review_model_target(row.target_id).provider_route == "local"),
         route=(ReviewRouteKind.AGENT_SESSION if row.is_session
@@ -739,6 +764,7 @@ def _delivery_slot(
         session_target=row.session_target,
         session_profile=row.profile_id,
         subagent_id=row.subagent_id,
+        processing_preference=row.processing_preference,
         **slot_fields,
     )
 
@@ -853,6 +879,20 @@ def commit_triad_delivery() -> Dict[str, Any]:
     }
 
 
+def _row_own_effort(row: ConfiguredReviewerSlot) -> str:
+    """The effort the ROW itself carries: its explicit field, else a Cursor/Agy
+    compound slug's encoded effort; '' when the row leaves it to its caller."""
+    if row.effort:
+        return row.effort
+    if row.is_session:
+        return compound_session_effort(RouteSpec(
+            kind=SHARED_ROUTE_KIND_SESSION,
+            target_id=row.session_target or row.target_id,
+            credential_profile_id=row.profile_id,
+        )) or ""
+    return ""
+
+
 def row_effort(
     row: ConfiguredReviewerSlot,
     surface: str,
@@ -864,18 +904,11 @@ def row_effort(
     An explicit row field wins.  When it is absent, a Cursor/Agy compound model
     slug already carries the requested effort and therefore wins over the
     surface default.  Ordinary rows retain the existing surface default (or a
-    caller's established local default, as Plan Review does).
+    caller's declared default, as a plan review order may carry).
     """
-    if row.effort:
-        return row.effort
-    if row.is_session:
-        encoded = compound_session_effort(RouteSpec(
-            kind=SHARED_ROUTE_KIND_SESSION,
-            target_id=row.session_target or row.target_id,
-            credential_profile_id=row.profile_id,
-        ))
-        if encoded:
-            return encoded
+    own = _row_own_effort(row)
+    if own:
+        return own
     if default:
         return default
     from ouroboros.config import resolve_effort
@@ -946,11 +979,11 @@ def reviewer_slot_save_check(
 
 
 @_contextlib.contextmanager
-def roster_env_override(subagents_raw: str):
+def roster_env_override(subagents_raw: str, *, environ=None):
     """Parse reviewer rows against THIS roster instead of the process env —
     the save handler's incoming roster, or a benchmark container's one-model
     roster — without mutating the environment concurrent dispatch observes."""
-    overlay = dict(os.environ)
+    overlay = dict(runtime_environ() if environ is None else environ)
     overlay["OUROBOROS_SUBAGENTS"] = str(subagents_raw)
     token = _ROSTER_ENV_OVERRIDE.set(overlay)
     try:
@@ -959,7 +992,7 @@ def roster_env_override(subagents_raw: str):
         _ROSTER_ENV_OVERRIDE.reset(token)
 
 
-def project_reviewer_slots_into_env() -> None:
+def project_reviewer_slots_into_env(*, environ=None) -> None:
     """Project the structured config into the legacy comma keys, at env-apply time.
 
     No review surface reads these keys while the structured key is present —
@@ -985,10 +1018,12 @@ def project_reviewer_slots_into_env() -> None:
     """
     from ouroboros.settings_defaults import OPENROUTER_REVIEW_DEFAULTS
 
-    raw = structured_reviewer_slots_raw()
+    environ = os.environ if environ is None else environ
+    raw = str(environ.get(REVIEWER_SLOTS_ENV, "") or "").strip()
     if raw:
         try:
-            config = parse_reviewer_slots(raw)
+            with roster_env_override(str(environ.get("OUROBOROS_SUBAGENTS", "")), environ=environ):
+                config = parse_reviewer_slots(raw)
         except ValueError:
             import logging
 
@@ -1001,18 +1036,18 @@ def project_reviewer_slots_into_env() -> None:
             api_triad = [r.target_id for r in config.triad if not r.is_session]
             api_scope = [r.target_id for r in config.scope if not r.is_session]
             if api_triad:
-                os.environ["OUROBOROS_REVIEW_MODELS"] = ",".join(api_triad)
+                environ["OUROBOROS_REVIEW_MODELS"] = ",".join(api_triad)
             else:
-                os.environ.pop("OUROBOROS_REVIEW_MODELS", None)
+                environ.pop("OUROBOROS_REVIEW_MODELS", None)
             if api_scope:
-                os.environ["OUROBOROS_SCOPE_REVIEW_MODELS"] = ",".join(api_scope)
+                environ["OUROBOROS_SCOPE_REVIEW_MODELS"] = ",".join(api_scope)
             else:
-                os.environ.pop("OUROBOROS_SCOPE_REVIEW_MODELS", None)
-                os.environ.pop("OUROBOROS_SCOPE_REVIEW_MODEL", None)
-    if not os.environ.get("OUROBOROS_REVIEW_MODELS"):
-        os.environ["OUROBOROS_REVIEW_MODELS"] = ",".join(OPENROUTER_REVIEW_DEFAULTS["triad"])
-    if not os.environ.get("OUROBOROS_SCOPE_REVIEW_MODELS") and not os.environ.get("OUROBOROS_SCOPE_REVIEW_MODEL"):
-        os.environ["OUROBOROS_SCOPE_REVIEW_MODELS"] = ",".join(OPENROUTER_REVIEW_DEFAULTS["scope"])
+                environ.pop("OUROBOROS_SCOPE_REVIEW_MODELS", None)
+                environ.pop("OUROBOROS_SCOPE_REVIEW_MODEL", None)
+    if not environ.get("OUROBOROS_REVIEW_MODELS"):
+        environ["OUROBOROS_REVIEW_MODELS"] = ",".join(OPENROUTER_REVIEW_DEFAULTS["triad"])
+    if not environ.get("OUROBOROS_SCOPE_REVIEW_MODELS") and not environ.get("OUROBOROS_SCOPE_REVIEW_MODEL"):
+        environ["OUROBOROS_SCOPE_REVIEW_MODELS"] = ",".join(OPENROUTER_REVIEW_DEFAULTS["scope"])
 
 
 # ---------------------------------------------------------------------------
@@ -1067,6 +1102,8 @@ def record_reviewer_slot_executions(surface: str, actors: Any, slots_by_id: Dict
             slot = slots_by_id.get(getattr(actor, "slot_id", ""))
             if slot is None:
                 continue
+            if str(getattr(actor, "operation_state", "") or "") == "pending_dispatch":
+                continue  # released at the dispatch barrier: still running, recorded when it settles
             usage = dict(getattr(actor, "usage", {}) or {})
             route_kind = str(getattr(getattr(slot, "route", None), "value", "") or "api_chat")
             delegated_route = str(usage.get("delegated_route") or "")
@@ -1088,6 +1125,8 @@ def record_reviewer_slot_executions(surface: str, actors: Any, slots_by_id: Dict
                 # the model rule above forbids.
                 "verdict_method": str(usage.get("verdict_method") or ""),
             }
+            if isinstance(usage.get("processing"), dict):
+                effective["processing"] = dict(usage["processing"])
             # D29 applied account/access, verbatim from the engine receipt; absent
             # keys mean the telemetry predates the receipt — shown as absence.
             if usage.get("applied_profile"):
@@ -1100,12 +1139,17 @@ def record_reviewer_slot_executions(surface: str, actors: Any, slots_by_id: Dict
                 "requested": {
                     "route_kind": route_kind,
                     "model": str(getattr(slot, "model", "") or ""),
-                    "effort": str(getattr(slot, "effort", "") or ""),
+                    # The ROW's effort. A caller-declared one-off (plan review's
+                    # reviewer_effort) is disclosed separately, never shown as the
+                    # row's saved configuration.
+                    "effort": "" if getattr(slot, "declared_effort", "") else str(getattr(slot, "effort", "") or ""),
+                    **({"declared_effort": str(slot.declared_effort)} if getattr(slot, "declared_effort", "") else {}),
                     "session_target": str(getattr(slot, "session_target", "") or ""),
                     "profile_id": str(getattr(slot, "session_profile", "") or ""),
                     # Actor binding, when the row is a configured-subagent
                     # reference ('' = direct row) — disclosure, never routing.
                     "subagent_id": str(getattr(slot, "subagent_id", "") or ""),
+                    "processing_preference": str(getattr(slot, "processing_preference", "") or ""),
                 },
                 "effective": effective,
                 "capability_delta": usage.get("capability_delta") or [],

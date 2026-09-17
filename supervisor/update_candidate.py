@@ -333,9 +333,9 @@ class UpdateTxCorrupt(RuntimeError):
 def record_managed_tests_evidence(
     task_id: str, task_metadata: Optional[Dict[str, Any]] = None, *, force: bool = False,
 ) -> str:
-    """After a GREEN full hermetic pytest run inside the authorized resolver's flow,
-    pin the exact candidate tree the suite ran against (the live worktree projection —
-    what ``run_hermetic_pytest`` actually tests) into the tx as ``tests_evidence``.
+    """Legacy forensic snapshot of the authorized resolver's current worktree.
+    This does not establish which checkout a suite tested. New runner callers
+    publish their actual tested subject through ``record_managed_tests_proof``.
     An env-disabled legacy call records nothing. ``force`` is supplied only by
     the authorized host runner after its mandatory suite actually ran green;
     it does not replace resolver authorization. Returns the tree sha, or ''.
@@ -389,33 +389,28 @@ def record_managed_tests_evidence(
 
 
 def record_managed_tests_proof(ctx: Any, *, force: bool = False) -> str:
-    """PROCESS-HELD authority for the managed single-run contract (Q10).
+    """Publish forensic telemetry from the runner's process-held proof only.
 
-    Called by BOTH host recording sites — the compensating commit preflight
-    (``tools/git.py``) and the advisory pre-review preflight
-    (``tools/claude_advisory_review.py``) — immediately after the host itself
-    ran the full hermetic suite green. Pins the exact candidate tree on the
-    task ctx (host-written, in-process, out of the resolver's shell reach);
-    the durable tx copy stays as forensic telemetry via
-    ``record_managed_tests_evidence``. One ctx spans every tool call of one
-    task, so the proof survives the advisory→commit boundary; a server
-    restart between the proof run and the commit loses the ctx record and
-    re-runs the suite once (the safe direction). Returns the pinned tree."""
-    tree = record_managed_tests_evidence(
-        str(getattr(ctx, "task_id", "") or ""), getattr(ctx, "task_metadata", None), force=force,
+    A green/None return alone and a later snapshot of the live resolver tree
+    are not proof of the workload that ran. The shared runner owns authority;
+    this function neither mints it nor reads it back from the transaction.
+    """
+    from ouroboros.commit_admission import PreflightTestProof
+    from ouroboros.utils import utc_now_iso
+    from supervisor import update_merge as _um
+
+    if not force and os.environ.get("OUROBOROS_PRE_PUSH_TESTS", "1") != "1":
+        return ""
+    proof = getattr(ctx, "_preflight_test_proof", None)
+    if not getattr(ctx, "_preflight_tests_passed", False) or not isinstance(proof, PreflightTestProof):
+        return ""
+    tx = _um.authorized_assisted_task(
+        str(getattr(ctx, "task_id", "") or ""), getattr(ctx, "task_metadata", None),
     )
-    if tree:
-        proofs = getattr(ctx, "_managed_tests_proof_trees", None)
-        if not isinstance(proofs, set):
-            proofs = set()
-            try:
-                ctx._managed_tests_proof_trees = proofs
-            except Exception:
-                # A ctx that cannot carry the record simply keeps the mandatory
-                # gate run — never a durable-file fallback.
-                return tree
-        proofs.add(tree)
-    return tree
+    if not tx:
+        return ""
+    update_tx_phase_or_keep(tx, {"tests_evidence": {"tree": proof.tree, "at": utc_now_iso()}})
+    return proof.tree
 
 
 def update_tx_phase(base_tx: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
@@ -424,9 +419,9 @@ def update_tx_phase(base_tx: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str,
     The commit flow holds a tx snapshot taken at attempt start, while
     in-attempt writers merge keys into the DURABLE marker mid-attempt (e.g.
     the compensating tests preflight recording ``tests_evidence``). Writing
-    the stale snapshot wholesale silently drops those keys — the post-commit
-    gate would then re-buy the full hermetic suite it already holds proof for
-    (and a flaky red there rolls back a green-proven candidate). This helper
+    the stale snapshot wholesale silently drops that forensic evidence. The
+    process-held runner proof separately owns reuse of an unchanged subject.
+    This helper
     re-reads the durable tx and applies ONLY the caller's intended key changes
     on top, refusing to drop keys the durable record carries.
 

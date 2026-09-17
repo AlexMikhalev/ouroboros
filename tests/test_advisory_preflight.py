@@ -40,6 +40,33 @@ def _init_git_repo(repo: pathlib.Path) -> None:
     subprocess.run(["git", "config", "user.name", "Test"], cwd=str(repo), check=True)
 
 
+def _stub_preflight_lanes(repo, monkeypatch):
+    """Keep runner/checkout/proof real; stub only lane execution in composition tests."""
+    from ouroboros import preflight_runner as pr
+    from ouroboros.tools import git
+    from tests.test_preflight_test_proof import _suite
+
+    _suite(repo)
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
+    monkeypatch.setenv("OUROBOROS_PRE_PUSH_TESTS", "1")
+    monkeypatch.setenv("OUROBOROS_PREFLIGHT_TEST_WORKERS", "2")
+    monkeypatch.delenv("OUROBOROS_PREFLIGHT_SERIAL", raising=False)
+    monkeypatch.delenv("OUROBOROS_PREFLIGHT_TIMEOUT_SEC", raising=False)
+    monkeypatch.setattr(pr, "_verify_preflight_plugins", lambda *a: [])
+    monkeypatch.setattr(pr, "_observed_worker_ids", lambda *a: {"gw0", "gw1"})
+    monkeypatch.setattr("ouroboros.platform_layer.kill_processes_referencing", lambda *a: None)
+    monkeypatch.setattr(git, "_consecutive_test_failures", 0)
+    lanes = []
+
+    def green_lane(python, worktree, temp_root, args, timeout):
+        assert worktree != repo and (worktree / "candidate.txt").read_text() == "tested"
+        lanes.append((worktree, tuple(args)))
+        return 0, "green fixture lane", ""
+
+    monkeypatch.setattr(pr, "_execute_pytest_pass", green_lane)
+    return lanes
+
+
 def _write_release_files(repo: pathlib.Path, *, version: str, pyproject_version: str | None = None, minor_rows: int = 1) -> None:
     (repo / "docs").mkdir(exist_ok=True)
     (repo / "VERSION").write_text(version + "\n", encoding="utf-8")
@@ -702,10 +729,10 @@ class TestPreflightBlockedPersistence:
 
 
 class TestTestsPreflightProofBinding:
-    """The commit-admission SSOT owns the green-run -> Q10 proof coupling:
-    a green preflight ALWAYS records the managed proof (else the managed gate
-    pays a second identical full run), and the proof is only ever recorded off
-    a green run (else it forges admission evidence)."""
+    """Admission forwards only runner-minted evidence to managed telemetry.
+
+    A successful return without execution (including no suite) is not proof.
+    """
 
     def _ctx(self, tmp_path):
         from types import SimpleNamespace
@@ -720,15 +747,32 @@ class TestTestsPreflightProofBinding:
         ctx = self._ctx(tmp_path)
         err = run_tests_preflight_with_proof(ctx, runner=lambda c: "FAILED: 2 failed")
         assert err == "FAILED: 2 failed"
-        assert not getattr(ctx, "_managed_tests_proof_trees", None)
+        assert not getattr(ctx, "_preflight_test_proof", None)
+        assert ctx._preflight_tests_passed is False
 
     def test_green_run_records_the_managed_proof(self, tmp_path, monkeypatch):
-        from ouroboros.commit_admission import run_tests_preflight_with_proof
+        from ouroboros.commit_admission import preflight_test_proof_matches, run_tests_preflight_with_proof
+        from ouroboros.tools.review_helpers import _run_review_preflight_tests
+        from tests.test_update_merge_assisted import _init_repo
         import supervisor.update_merge as um
 
-        ctx = self._ctx(tmp_path)
+        repo, _ = _init_repo(tmp_path)
+        lanes = _stub_preflight_lanes(repo, monkeypatch)
+        ctx = self._ctx(repo)
         recorded = []
         monkeypatch.setattr(um, "record_managed_tests_proof",
-                            lambda c: recorded.append(c) or "tree-sha")
+                            lambda c: recorded.append((c, c._preflight_test_proof)) or c._preflight_test_proof.tree)
+        assert run_tests_preflight_with_proof(ctx, runner=_run_review_preflight_tests) is None
+        assert len(lanes) == 2 and len({worktree for worktree, _ in lanes}) == 1
+        assert recorded == [(ctx, ctx._preflight_test_proof)]
+        assert preflight_test_proof_matches(ctx, repo)
+
+    def test_none_without_runner_receipt_records_no_proof(self, tmp_path, monkeypatch):
+        from ouroboros.commit_admission import run_tests_preflight_with_proof
+
+        ctx = self._ctx(tmp_path)
+        monkeypatch.setattr("supervisor.update_merge.record_managed_tests_proof",
+                            lambda c: pytest.fail("None is not an execution receipt"))
         assert run_tests_preflight_with_proof(ctx, runner=lambda c: None) is None
-        assert recorded == [ctx]
+        assert ctx._preflight_test_proof is None
+        assert ctx._preflight_tests_passed is False

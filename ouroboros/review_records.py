@@ -17,6 +17,94 @@ from typing import Any, Dict, List, Optional
 from ouroboros.review_execution import ReviewRouteKind, delivery_retrieves
 
 
+# One semantic author-finality record shared by review owners.  Surfaces keep
+# their existing storage and reviewer evidence; this vocabulary only makes an
+# author's final stance explicit and hash-bound when a review is advisory.
+AUTHOR_DISPOSITION_VALUES = frozenset({"accepted", "rejected", "partial", "deferred"})
+
+
+def build_author_disposition(
+    *,
+    disposition: str,
+    rationale: str,
+    subject_hash: str,
+    reviewer_signal: str = "",
+    enforcement: str = "",
+    source: str = "author",
+    recorded_at: str = "",
+) -> Dict[str, Any]:
+    """Build one bounded, current-subject author-finality record.
+
+    This is a record helper, not a second review ledger.  Callers persist the
+    returned object in their existing plan/skill/acceptance/commit owners and
+    continue to retain raw reviewer rows beside it.  A missing hash or reason
+    is rejected so an author finish can never look like an unbound PASS.
+    """
+    value = str(disposition or "").strip().lower()
+    reason = " ".join(str(rationale or "").split()).strip()
+    subject = str(subject_hash or "").strip()
+    if value not in AUTHOR_DISPOSITION_VALUES:
+        raise ValueError("AUTHOR_DISPOSITION_INVALID: unknown disposition")
+    if not subject:
+        raise ValueError("AUTHOR_DISPOSITION_INVALID: subject_hash is required")
+    if not reason:
+        raise ValueError("AUTHOR_DISPOSITION_INVALID: rationale is required")
+    if len(reason) > 8_000:
+        raise ValueError("AUTHOR_DISPOSITION_INVALID: rationale is too large")
+    if not recorded_at:
+        from ouroboros.utils import utc_now_iso
+
+        recorded_at = utc_now_iso()
+    return {
+        "disposition": value,
+        "rationale": reason,
+        "subject_hash": subject,
+        "reviewer_signal": str(reviewer_signal or "").strip(),
+        "enforcement": str(enforcement or "").strip().lower(),
+        "recorded_at": str(recorded_at),
+        "source": str(source or "author"),
+    }
+
+
+def validate_author_disposition(
+    record: Any,
+    *,
+    subject_hash: str = "",
+    allow_stale: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """Validate and return a safe copy, rejecting malformed or stale records."""
+    if not isinstance(record, dict):
+        return None
+    try:
+        normalized = build_author_disposition(
+            disposition=record.get("disposition", ""),
+            rationale=record.get("rationale", ""),
+            subject_hash=record.get("subject_hash", ""),
+            reviewer_signal=record.get("reviewer_signal", ""),
+            enforcement=record.get("enforcement", ""),
+            source=record.get("source", "author"),
+            recorded_at=record.get("recorded_at", ""),
+        )
+    except (TypeError, ValueError):
+        return None
+    expected = str(subject_hash or "").strip()
+    if expected and normalized["subject_hash"] != expected and not allow_stale:
+        return None
+    return normalized
+
+
+def build_author_disposition_from_mapping(
+    value: Any, *, subject_hash: str, reviewer_signal: str = "", enforcement: str = "",
+) -> Dict[str, Any]:
+    """Parse the public two-field author finish envelope."""
+    if not isinstance(value, dict) or set(value) - {"disposition", "rationale"}:
+        raise ValueError("AUTHOR_DISPOSITION_INVALID: envelope fields are invalid")
+    return build_author_disposition(
+        disposition=value.get("disposition", ""), rationale=value.get("rationale", ""),
+        subject_hash=subject_hash, reviewer_signal=reviewer_signal, enforcement=enforcement,
+    )
+
+
 def apply_review_model_override(slot: Any, overrides: Dict[str, dict], *, slot_id: str = "") -> Any:
     """Project an explicit owner model choice onto one frozen reviewer row.
 
@@ -60,6 +148,13 @@ class ReviewSlot:
     subagent_id: str = ""
     # Host sampling hint, resolved at dispatch; an explicit temperature wins.
     default_temperature: float | None = None
+    # The effort this row runs at because the CALLER declared it for one order
+    # (plan review's ``reviewer_effort``): '' when the row's own effort, a
+    # compound route slug or the surface setting applied. Disclosure for the
+    # last-execution projection; identity already rides ``effort``.
+    declared_effort: str = ""
+    # Captured preference; empty explicitly preserves the legacy request shape.
+    processing_preference: str = ""
 
     @property
     def native_retrieval(self) -> bool:
@@ -99,6 +194,12 @@ class ReviewRequest:
     deadline_at: str = ""
     retry_key: str = ""
     reconcile_only: bool = False
+    # Absolute ``time.monotonic()`` instant after which the coordinator stops
+    # waiting for workers still in flight and returns their typed
+    # ``pending_dispatch`` rows; ``None`` waits each slot's own logical window.
+    drain_deadline: Optional[float] = None
+    # Existing surface fingerprints, carried only to physical provenance.
+    reconciliation_identity: Dict[str, Any] = field(default_factory=dict)
     task_attempt: Any = None
     default_temperature: float | None = None
 
@@ -147,6 +248,7 @@ class ReviewActorRecord:
     operation_id: str = ""
     operation_state: str = "settled"
     late_result_pending: bool = False
+    recovery_binding: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -163,6 +265,9 @@ class ReviewRunResult:
     # can never quietly look like an ordinary multi-reviewer PASS).
     single_reviewer_no_diversity: bool = False
     panel_id: str = ""
+    # The resolved roster belongs to this operation, including overrides in force
+    # at dispatch. Collection must not read a subsequently edited configuration.
+    slot_roster: List[Dict[str, Any]] = field(default_factory=list)
 
 
 HARDNESS_ADVISORY_VISIBLE = "advisory_visible"  # fed back as a compact capsule, never blocks

@@ -12,7 +12,6 @@ predicted authority, and any host-minted shared cooperative tree.
 
 from __future__ import annotations
 
-import json
 import logging
 import shutil
 import time
@@ -22,6 +21,7 @@ from typing import Any, Dict, List, Optional
 
 from ouroboros.artifacts import attachment_manifest_projection, resolve_attachment_manifest
 from ouroboros.config import get_max_subagent_depth
+from ouroboros.consciousness_authority import consciousness_origin_metadata
 from ouroboros.depth_evidence import parse_task_depth
 from ouroboros.contracts.task_contract import (
     build_task_contract,
@@ -59,6 +59,7 @@ from ouroboros.tools.control_subagent_spec import (
 from ouroboros.tools.registry import ToolContext, active_repo_dir_for, system_repo_dir_for
 from ouroboros.utils import append_jsonl, utc_now_iso
 from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
+from ouroboros.config import runtime_settings
 
 
 def _publish_scheduling_refusal(ctx: Any, status: str, code: str, text: str) -> str:
@@ -113,19 +114,19 @@ def _emit_swarm_fanout(
     objective: str,
     emitted_live: bool,
 ) -> None:
-    """Emit one durable swarm_fanout telemetry event per spawn wave (WS8).
+    """Emit one durable swarm_fanout telemetry event per fan-out emission.
 
     The name avoids task_/llm_/tool_ prefixes and the event sets no
     delegation_role/subagent_task_id, so the Logs UI never renders a phantom
     child card or folds it into a grouped-task lane (web/modules/log_events.js).
-    inter_wave_latency_sec reuses ``_last_wave_ts`` under the emit lock (no new
+    fanout_interval_sec reuses ``_last_fanout_ts`` under the emit lock (no new
     persistent state).
     """
     now = time.time()
     with _SCHEDULE_EMIT_LOCK:
-        prev = float(getattr(ctx, "_last_wave_ts", 0.0) or 0.0)
-        inter_wave = round(now - prev, 3) if prev > 0 else None
-        setattr(ctx, "_last_wave_ts", now)
+        prev = float(getattr(ctx, "_last_fanout_ts", 0.0) or 0.0)
+        fanout_interval = round(now - prev, 3) if prev > 0 else None
+        setattr(ctx, "_last_fanout_ts", now)
     evt = {
         "ts": utc_now_iso(),
         "type": "swarm_fanout",
@@ -138,14 +139,14 @@ def _emit_swarm_fanout(
         "task_ids": task_ids,
         "role": role,
         # The REQUEST. What the children actually ran on is a per-child DISPATCH
-        # fact and lives on each child's own record — a wave event written before
+        # fact and lives on each child's own record — a fan-out event written before
         # any child started cannot know it, and `effective_model_lanes` used to
         # claim it anyway.
         "requested_model_lane": requested_model_lane,
         "slot_count": len(task_ids),
         "objective_preview": objective[:200],
         "emitted_live": bool(emitted_live),
-        "inter_wave_latency_sec": inter_wave,
+        "fanout_interval_sec": fanout_interval,
     }
     try:
         append_jsonl(ctx.drive_logs() / "events.jsonl", evt)
@@ -160,10 +161,16 @@ def _subagent_slot_note(ctx: ToolContext, root_task_id: str) -> str:
     nothing here gates admission (the supervisor stays authoritative). Counts are
     from the last persisted snapshot, i.e. BEFORE this wave lands."""
     try:
+        from ouroboros.task_status import _load_queue_snapshot, queue_snapshot_observation
+
         status_root = Path(str(getattr(ctx, "budget_drive_root", "") or ctx.drive_root))
-        snap = json.loads((status_root / "state" / "queue_snapshot.json").read_text(encoding="utf-8"))
+        snap = _load_queue_snapshot(status_root)
+        observed = queue_snapshot_observation(snap)
     except Exception:
-        return ""
+        return " [tree slot observation unavailable; current occupancy is unknown]"
+    if (snap.get("_snapshot_missing") or snap.get("_snapshot_invalid")
+            or not isinstance(snap.get("running"), list) or not isinstance(snap.get("pending"), list)):
+        return " [tree slot observation unavailable; current occupancy is unknown]"
 
     def _is_tree_subagent(row: Any) -> bool:
         if not isinstance(row, dict):
@@ -181,8 +188,12 @@ def _subagent_slot_note(ctx: ToolContext, root_task_id: str) -> str:
         cap = int(get_max_active_subagents_per_root())
     except Exception:
         return ""
-    tail = "; children beyond the active cap WAIT for a free slot" if active >= cap else ""
-    return f" [tree slots before this wave: {active}/{cap} active, {queued} queued{tail}]"
+    return (
+        f" [tree slots before this wave: last recorded {active}/{cap} active, {queued} queued; "
+        f"source={status_root / observed['source']}, ts={observed['ts']}, "
+        f"age_sec={observed['age_sec']}, freshness={observed['freshness']}. "
+        "This observation does not reserve or prove current capacity.]"
+    )
 
 
 def _capability_mismatch_message(selected_profile: str, missing_caps: Any) -> str:
@@ -343,6 +354,21 @@ def _build_acting_constraint(
             "⚠️ TOOL_ARG_ERROR (schedule_subagent): write_surface must be one of "
             f"{allowed} (or omit it for a read-only subagent)."
         )
+    from ouroboros.consciousness_authority import task_mode_capped_light
+
+    # A per-task mode cap (a consciousness Act/Observe tree: light) keeps a self_worktree
+    # child off in EVERY install mode and toggle state — the tree may write, but never into
+    # its own repository, its children included (В21=A).
+    if write_surface == "self_worktree" and task_mode_capped_light(getattr(ctx, "task_metadata", None)):
+        return _publish_tool_result(ctx, ToolResult(
+            status="blocked", code="ACCESS_BLOCKED",
+            text=(
+                "⚠️ MUTATIVE_SUBAGENTS_DISABLED: this task's tree runs under a light cap (a "
+                "consciousness Act/Observe tree), so a self_worktree child (a checkout of the live "
+                "body) is never admitted for it — in any runtime mode, whatever the owner's toggle. "
+                "Schedule a read-only subagent (omit write_surface) or use an external surface."
+            ),
+        ))
     if not get_allow_mutative_subagents(write_surface):
         return _publish_tool_result(ctx, ToolResult(
             status="blocked", code="ACCESS_BLOCKED",
@@ -610,7 +636,7 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
     may_mutate = fields["may_mutate"]
     try:
         configured_subagent, legacy_selection = select_subagent_snapshot(
-            effective_runtime_subagent_settings(_ctl().load_settings()),
+            effective_runtime_subagent_settings(runtime_settings(settings_reader=_ctl().load_settings)),
             subagent_id=str(params.get("subagent_id") or ""),
             legacy_model_lane=params.get("model_lane"),
             legacy_executor=params.get("executor"),
@@ -620,6 +646,10 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
     except SubagentSelectionError as exc:
         return f"⚠️ {exc.code}: {exc.detail}"
     route = configured_subagent.get("route") if isinstance(configured_subagent.get("route"), dict) else {}
+    if fields.get("directory_strategy") == "copy" and route.get("kind") != "agent_session":
+        return _publish_scheduling_refusal(
+            ctx, "error", "TOOL_ARG_ERROR",
+            "⚠️ TOOL_ARG_ERROR (schedule_subagent): directory_strategy=copy is unsupported for native/API children, which use shared files directly; select an agent_session actor for copy.")
     requested_model_lane = "auto"  # bounded historical projection only
     requested_executor = "harness" if route.get("kind") == "agent_session" else "native"
 
@@ -772,6 +802,7 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
         "requested_executor": requested_executor,
         "configured_subagent": configured_subagent,
         "parent_cognitive_route": parent_cognitive_route,
+        **{key: fields[key] for key in ("directory_strategy", "scope_paths") if key in fields},
     }
     evt = {
         "type": "schedule_subagent",
@@ -798,6 +829,8 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
         "required_capabilities": required_caps,
         **intent_fields,
         "subagent_envelope": envelope,
+        # A child of a consciousness turn/tree carries the origin (label, category, level).
+        "origin_metadata": consciousness_origin_metadata(metadata),
     }
     _populate_subagent_event_extras(
         evt, current_chat_id=current_chat_id, child_drive=child_drive,

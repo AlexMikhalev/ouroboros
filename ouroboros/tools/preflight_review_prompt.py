@@ -29,6 +29,7 @@ from ouroboros.triad_review import (
     REVIEW_JSON_MATRIX_CONTRACT,
 )
 from ouroboros.tools.review_helpers import (
+    CANONICAL_GOVERNANCE_DOCS,
     build_rebuttal_section,
     REVIEW_SEVERITY_THRESHOLDS,
     REVIEW_THOROUGHNESS_BLOCK,
@@ -131,9 +132,10 @@ def _build_blocking_history_section(drive_root: pathlib.Path, repo_key: str = ""
 # (the mandatory-read pointers of `_build_advisory_prompt`); the CHECKLISTS
 # entry is the surface's one checklist section. `_mandatory_read_corpus_chars`
 # measures exactly these, never a remembered size.
-_MANDATORY_READ_DOCS = (
-    "BIBLE.md", "docs/CHECKLISTS.md", "docs/DEVELOPMENT.md", "docs/DESIGN.md", "docs/ARCHITECTURE.md",
-)
+# The canonical five, from their one owner. A book entrypoint measures as its
+# COMPOSED text here, because that is what the non-retrieving branch inlines
+# and what a retrieving reviewer is told to read in full.
+_MANDATORY_READ_DOCS = CANONICAL_GOVERNANCE_DOCS
 
 
 def _checklist_name(review_surface: str) -> str:
@@ -235,9 +237,9 @@ def _build_advisory_prompt(
         # precedent (plan_review_runtime's retrieving-session task and its
         # DEVELOPMENT.md "Core Governance Artifacts" row), NOT BIBLE P3
         # retrieving-scope. The advisory session pack deliberately contains
-        # only the staged diff, the changed-file pack, and PUBLIC repository
-        # documents — no redacted-class evidence — so the pointer form leaks
-        # nothing the api form redacts.
+        # the staged diff, changed-file pack and public repository documents.
+        # Selected task execution evidence is separately redacted and bound to
+        # its canonical source before either retrieving delivery runs.
         bible = _car()._mandatory_read_pointer(repo_dir, "BIBLE.md")
         checklists = _car()._mandatory_read_pointer(repo_dir, "docs/CHECKLISTS.md", section=checklist_name)
         dev_guide = _car()._mandatory_read_pointer(repo_dir, "docs/DEVELOPMENT.md")
@@ -361,6 +363,7 @@ def _build_advisory_prompt(
         "## ARCHITECTURE.md (System structure — critical for version sync and module checks)\n\n"
         f"{arch_doc}\n\n{skill_host_context}\n\n{blocking_history}\n\n"
         f"{build_rebuttal_section(str(prompt_context.get('review_rebuttal') or ''))}\n"
+        f"{prompt_context.get('task_evidence_section') or ''}\n"
         f"## Commit message\n\n{commit_message}\n\n"
         f"## Changed files (git status --porcelain)\n\n{changed_files}\n\n"
         "## Current touched files (full content — read these with read_file for deeper inspection)\n\n"

@@ -186,8 +186,11 @@ def test_the_check_lives_in_the_restart_teardown_and_the_handoff_performer_is_un
         kill_workers=lambda **kwargs: worker_calls.append(kwargs),
         persist_queue_snapshot=lambda **_kwargs: None, DRIVE_ROOT=tmp_path, REPO_DIR=tmp_path, RUNNING={},
     )
-    monkeypatch.setattr("ouroboros.delegate_recovery.prepare_planned_restart_handoffs",
-                        lambda root, running, restart_transaction_id="": {"sleeping-parent"})
+    def preserve_delegated(root, running, restart_transaction_id="", additional_task_ids=None):
+        assert not additional_task_ids  # This fixture has no native owner-wait participants.
+        return {"sleeping-parent"}
+
+    monkeypatch.setattr("ouroboros.delegate_recovery.prepare_planned_restart_handoffs", preserve_delegated)
     monkeypatch.setattr(server, "_request_restart_exit", lambda: None)
     server._perform_supervisor_restart(ctx)
     assert worker_calls[0]["preserve_running_task_ids"] == {"sleeping-parent"}

@@ -108,6 +108,8 @@ def _commit_attempt_from_dict(d: Dict[str, Any]) -> CommitAttemptRecord:
             else {} if raw_scope is None
             else {"raw_results": [_malformed_roster_row("scope_review")]}
         ),
+        author_disposition=(dict(d.get("author_disposition"))
+                            if isinstance(d.get("author_disposition"), dict) else {}),
         paid=bool(d.get("paid", False)),
         review_owner_pid=_coerce_int(d.get("review_owner_pid", 0)),
         raw_stripped=bool(d.get("raw_stripped", False)),
@@ -329,6 +331,12 @@ def _save_state_unlocked(drive_root: pathlib.Path, state: AdvisoryReviewState) -
     path = drive_root / _STATE_RELPATH
     path.parent.mkdir(parents=True, exist_ok=True)
     _prepare_state_for_persistence(state)
+    # Legacy/in-memory callers may construct pre-author-disposition
+    # CommitAttemptRecord objects directly.  Normalize the additive field before
+    # dataclasses.asdict so persistence remains backward compatible.
+    for attempt in state.attempts:
+        if not hasattr(attempt, "author_disposition"):
+            setattr(attempt, "author_disposition", {})
     data: Dict[str, Any] = {
         "state_version": _STATE_SCHEMA_VERSION,
         "schema_version": _STATE_SCHEMA_VERSION,
@@ -431,13 +439,18 @@ def advisory_commit_ready(
 ) -> bool:
     """SSOT for every ``repo_commit_ready`` projection (H5, capinv-447).
 
-    Mirrors the real advisory gate: fresh/bypassed/skipped coverage, or a
+    Mirrors the real advisory gate: Cyber retains action authority; otherwise
+    fresh/bypassed/skipped coverage, or a
     typed technical failure permitted under owner-selected advisory enforcement.
     ``matching_run`` is supplied only after the caller matches current repo/hash;
     permission never changes its failure status or makes it fresh. Obligations
     and debt block only under blocking enforcement. Triad, scope, custody and
     every other commit requirement remain independent.
     """
+    from ouroboros.tools.review_helpers import review_enforcement_blocks
+
+    if not review_enforcement_blocks("blocking"):
+        return True
     if not effectively_fresh:
         from ouroboros.config import get_review_enforcement
         from ouroboros.tools.commit_gate import review_failure_is_technical

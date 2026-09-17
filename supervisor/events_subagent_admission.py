@@ -269,8 +269,9 @@ def _compose_subagent_text(
             # (the dispatch-time executor note owns execution framing).
             "All changes land inside the write root only. Do NOT commit, run review / "
             "runtime / skills lifecycle, enable tools, or write cognitive memory. Your "
-            "changes are recorded as a workspace.patch for the parent: isolated self_worktree "
-            "patches are applied; shared external_workspace files are verified without reapplying. "
+            "Git changes are recorded as a workspace.patch; ordinary-folder outputs use their "
+            "registered file artifacts. Isolated self_worktree changes are applied; shared "
+            "external_workspace files are verified without reapplying. "
             "The parent is the sole committer of the live body. Nested delegation is "
             "allowed within configured depth/cap limits; depth bounds how DEEP delegation "
             "nests and never how strong a descendant is — ask for the lane you need.",
@@ -319,34 +320,29 @@ def _compose_subagent_text(
 
 
 def _validate_external_workspace(ctx, path: str) -> str:
-    """Reject an external_workspace that cannot produce a workspace.patch: it must
-    exist, be a git working tree, and live outside the Ouroboros repo/data roots."""
-    import pathlib as _pl
+    """Use the same ordinary-folder/Git geometry admission as project tasks."""
+    from ouroboros.workspace_admission import WorkspaceRootError, validate_workspace_root
+    from ouroboros.config import DATA_DIR
+    from ouroboros.tools.tool_resolution import system_repo_dir_for
 
     try:
-        p = _pl.Path(path).resolve(strict=False)
-    except Exception as exc:
-        return f"Subagent rejected: invalid external workspace path: {type(exc).__name__}: {exc}"
-    if not p.is_dir():
-        return f"Subagent rejected: external_workspace {p} does not exist or is not a directory."
-    if not (p / ".git").exists():
-        return f"Subagent rejected: external_workspace {p} is not a git working tree (needed to return a workspace.patch)."
-    candidates = [_pl.Path(getattr(ctx, "REPO_DIR", "") or ".").resolve(strict=False)]
-    try:
-        from ouroboros.config import DATA_DIR as _DD
-
-        candidates.append(_pl.Path(_DD).resolve(strict=False))
-    except Exception:
-        pass
-    for forbidden in candidates:
-        if p == forbidden or forbidden in p.parents or p in forbidden.parents:
-            return f"Subagent rejected: external_workspace {p} overlaps the Ouroboros repo or data root."
+        root = validate_workspace_root(
+            path, system_repo_dir=getattr(ctx, "REPO_DIR", None) or system_repo_dir_for(ctx),
+            drive_root=getattr(ctx, "DRIVE_ROOT", None) or getattr(ctx, "drive_root", None) or DATA_DIR,
+        )
+        if root is None:
+            return "Subagent rejected: external_workspace path is required."
+    except (WorkspaceRootError, OSError, ValueError) as exc:
+        return f"Subagent rejected: invalid external workspace: {exc}"
     return ""
 
 
 def _external_workspace_head(path: str) -> tuple[str, str]:
-    """Return (head, reject_detail) for an external git workspace."""
-    p = pathlib.Path(path)
+    """Return a Git base or an empty base for an admitted ordinary directory."""
+    p = pathlib.Path(path).expanduser().resolve(strict=False)
+    if p.is_dir() and not any((root / ".git").exists() or (root / ".git").is_symlink()
+                              for root in (p, *p.parents)):
+        return "", ""
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--verify", "HEAD"],
@@ -506,11 +502,12 @@ def _resolve_subagent_constraint(
     if head_detail:
         return readonly, workspace_root, workspace_mode, head_detail
     requested_base = constraint["base_sha"]
-    if requested_base and requested_base != current_head:
+    if current_head and requested_base and requested_base != current_head:
         return readonly, workspace_root, workspace_mode, (
             "Subagent rejected: external_workspace base_sha is stale "
             f"(requested {requested_base}, current {current_head})."
         )
+    resolved = str(pathlib.Path(resolved).expanduser().resolve(strict=False))
     constraint["write_root"] = resolved
     # Pinned as the admission-time PATCH BASE (so work the parent later commits
     # is still captured in the child's patch) — NOT a moved-HEAD tripwire: in a

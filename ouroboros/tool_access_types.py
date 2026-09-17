@@ -107,6 +107,7 @@ _TOP_LEVEL_PRINCIPAL_PROFILES: frozenset[str] = frozenset({
     "workspace_task",
     "external_workspace_task",
     "self_modification",
+    "operator_control",
 })
 
 

@@ -8,6 +8,8 @@ point to those blobs.
 from __future__ import annotations
 
 import copy
+import contextvars
+from contextlib import contextmanager
 import gzip
 import hashlib
 import logging
@@ -32,6 +34,49 @@ OBSERVABILITY_DIR = "observability"
 SCHEMA_VERSION = 1
 _PRIVATE_FILE_MODE = 0o600
 _PRIVATE_DIR_MODE = 0o700
+_PROMOTION_MEMO = contextvars.ContextVar("child_ref_promotion_memo", default=None)
+
+
+@contextmanager
+def child_ref_promotion_scope():
+    """One copy/retry owns its memo; nested closure reads share it, jobs do not."""
+    if _PROMOTION_MEMO.get() is not None:
+        yield
+        return
+    token = _PROMOTION_MEMO.set({})
+    try:
+        yield
+    finally:
+        _PROMOTION_MEMO.reset(token)
+
+
+def _file_identity(path: pathlib.Path) -> tuple:
+    stat = path.stat()
+    return (str(path), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+
+def _memo_read(key: tuple, reader: Callable[[], Any]) -> Any:
+    memo = _PROMOTION_MEMO.get()
+    if memo is None:
+        return reader()
+    if key not in memo:
+        memo[key] = reader()  # A failed read never enters the memo.
+    return copy.deepcopy(memo[key])
+
+
+def _memo_publish(key: tuple, payload: Any, writer: Callable[[], dict], *, ref_root=pathlib.Path()) -> dict:
+    memo = _PROMOTION_MEMO.get()
+    cached = memo.get(key) if memo is not None else None
+    if cached and cached[0] == payload:
+        try:
+            if _file_identity(ref_root / cached[1]["path"]) == cached[2]:
+                return dict(cached[1])
+        except OSError:
+            pass
+    ref = writer()
+    if memo is not None:
+        memo[key] = (copy.deepcopy(payload), dict(ref), _file_identity(ref_root / ref["path"]))
+    return ref
 
 # A trailing quantity/identity qualifier names METADATA about a credential —
 # a count, budget, or label — never the secret value itself (``token_estimate``,
@@ -229,7 +274,7 @@ def _observability_root(drive_root: pathlib.Path) -> pathlib.Path:
     base = pathlib.Path(drive_root)
     if not base.is_absolute():
         raise ValueError("observability drive_root must be an absolute path")
-    root = base / OBSERVABILITY_DIR
+    root = (base / OBSERVABILITY_DIR).resolve(strict=False)
     root.mkdir(parents=True, exist_ok=True)
     _chmod_private_dir(root)
     return root
@@ -323,19 +368,69 @@ def read_blob_ref(
     if not expected_sha:
         raise ValueError("observability blob ref has no sha256")
 
-    root = _observability_root(pathlib.Path(drive_root)).resolve(strict=False)
-    path = pathlib.Path(str(ref.get("path") or "")).resolve(strict=True)
+    path = _blob_ref_path(drive_root, ref)
+    def read():
+        with gzip.open(path, "rb") as handle:
+            raw = handle.read()
+        if len(raw) != expected_size or hashlib.sha256(raw).hexdigest() != expected_sha:
+            raise ValueError("observability blob ref failed size or sha256 verification")
+        return json.loads(raw.decode("utf-8")) if kind == "json" else raw.decode("utf-8", errors="replace")
+    return _memo_read(("blob", _file_identity(path), expected_sha, expected_size, kind), read)
+
+
+def _ref_path(drive_root: pathlib.Path, ref: dict, relative: pathlib.Path) -> pathlib.Path:
+    """Use an exact canonical locator only when the recorded locator is missing.
+
+    Existing out-of-scope files and corrupt bytes never get a second candidate.
+    A retired alias must still spell the same store suffix; no disk search.
+    The caller verifies the captured digest and identity after resolution.
+    """
+    base = pathlib.Path(drive_root)
+    if not base.is_absolute():
+        raise ValueError("observability drive_root must be an absolute path")
+    root = (base / OBSERVABILITY_DIR).resolve(strict=False)
+    original = pathlib.Path(str(ref.get("path") or ""))
+    try:
+        path = original.resolve(strict=True)
+    except FileNotFoundError:
+        suffix = (OBSERVABILITY_DIR, *relative.parts)
+        if not original.is_absolute() or original.parts[-len(suffix):] != suffix:
+            raise ValueError("observability ref points outside its drive")
+        path = (root / relative).resolve(strict=True)
     try:
         path.relative_to(root)
     except ValueError as exc:
-        raise ValueError("observability blob ref points outside its drive") from exc
-    with gzip.open(path, "rb") as handle:
-        raw = handle.read()
-    if len(raw) != expected_size or hashlib.sha256(raw).hexdigest() != expected_sha:
-        raise ValueError("observability blob ref failed size or sha256 verification")
-    if kind == "json":
-        return json.loads(raw.decode("utf-8"))
-    return raw.decode("utf-8", errors="replace")
+        raise ValueError("observability ref points outside its drive") from exc
+    return path
+
+
+def _blob_ref_path(drive_root: pathlib.Path, ref: dict) -> pathlib.Path:
+    digest, kind = str(ref.get("sha256") or ""), str(ref.get("kind") or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", digest) or kind not in {"json", "txt"}:
+        raise ValueError("observability blob ref has no valid sha256 or kind")
+    return _ref_path(drive_root, ref, pathlib.Path("blobs") / f"{digest}.{kind}.gz")
+
+
+def read_call_manifest_ref(drive_root: pathlib.Path, ref: dict, *, task_id: str) -> dict:
+    """Read one exact task/call manifest, including a retired store alias."""
+    call_id = str(ref.get("call_id") or "")
+    if not call_id or any(re.fullmatch(r"[A-Za-z0-9_.-]+", value) is None
+                          or value in {".", ".."} for value in (str(task_id), call_id)):
+        raise ValueError("observability call manifest task/call identity mismatch")
+    path = _ref_path(drive_root, ref, pathlib.Path("calls") / task_id / f"{call_id}.json")
+    path.relative_to((pathlib.Path(drive_root) / OBSERVABILITY_DIR / "calls").resolve(strict=False))
+    expected_sha = str(ref.get("sha256") or "")
+    def read():
+        raw = path.read_bytes()
+        if not expected_sha:
+            raise ValueError("observability call manifest ref has no sha256")
+        if hashlib.sha256(raw).hexdigest() != expected_sha:
+            raise ValueError("observability call manifest ref failed sha256 verification")
+        manifest = json.loads(raw.decode("utf-8"))
+        if not isinstance(manifest, dict) or str(manifest.get("task_id") or "") != str(task_id) or str(manifest.get("call_id") or "") != call_id:
+            raise ValueError("observability call manifest task/call identity mismatch")
+        return manifest
+    return _memo_read(("manifest", _file_identity(path), expected_sha, str(task_id), call_id), read)
 
 
 class ObservabilityPromotionSourceError(ValueError):
@@ -392,7 +487,13 @@ def promote_blob_ref(
         raise _promotion_source_error(exc) from exc
     if kind == "json" and transform_json is not None:
         payload = transform_json(payload)
-    promoted = write_blob(pathlib.Path(canonical_drive_root), payload, kind=kind)
+    if (pathlib.Path(source_drive_root) / OBSERVABILITY_DIR).resolve() == (pathlib.Path(canonical_drive_root) / OBSERVABILITY_DIR).resolve():
+        return {**ref, "path": str(_blob_ref_path(canonical_drive_root, ref))}
+    promoted = _memo_publish(
+        ("promote_blob", str(pathlib.Path(source_drive_root).resolve()),
+         str(pathlib.Path(canonical_drive_root).resolve()), str(ref.get("path")), ref.get("sha256"), kind),
+        payload, lambda: write_blob(pathlib.Path(canonical_drive_root), payload, kind=kind),
+    )
     # Re-read through the public verifier: a successful write alone is not
     # enough to publish a durable ref.
     read_blob_ref(pathlib.Path(canonical_drive_root), promoted, expected_kind=kind)
@@ -409,24 +510,9 @@ def promote_call_manifest_ref(
 ) -> Dict[str, Any]:
     """Verify, close over, and atomically rebase one persisted call manifest."""
 
-    source_root = _observability_root(pathlib.Path(source_drive_root)).resolve(strict=False)
-    calls_root = (source_root / "calls").resolve(strict=False)
     try:
-        path = pathlib.Path(str((ref or {}).get("path") or "")).resolve(strict=True)
-        path.relative_to(calls_root)
-        raw = path.read_bytes()
-        expected_sha = str((ref or {}).get("sha256") or "")
-        if not expected_sha:
-            raise ValueError("observability call manifest ref has no sha256")
-        if hashlib.sha256(raw).hexdigest() != expected_sha:
-            raise ValueError("observability call manifest ref failed sha256 verification")
-        manifest = json.loads(raw.decode("utf-8"))
-        if not isinstance(manifest, dict):
-            raise ValueError("observability call manifest is not an object")
-        manifest_task = str(manifest.get("task_id") or "")
-        call_id = str(manifest.get("call_id") or (ref or {}).get("call_id") or "")
-        if manifest_task != str(task_id) or not call_id:
-            raise ValueError("observability call manifest task/call identity mismatch")
+        manifest = read_call_manifest_ref(source_drive_root, ref, task_id=task_id)
+        call_id = str(manifest["call_id"])
     except Exception as exc:
         if isinstance(exc, ObservabilityPromotionSourceError):
             raise
@@ -452,21 +538,20 @@ def promote_call_manifest_ref(
                 nested,
                 transform_json=transform_json,
             )
+    if (pathlib.Path(source_drive_root) / OBSERVABILITY_DIR).resolve() == (pathlib.Path(canonical_drive_root) / OBSERVABILITY_DIR).resolve():
+        return {**ref, "path": str(_ref_path(canonical_drive_root, ref,
+                                  pathlib.Path("calls") / task_id / f"{call_id}.json"))}
     # Honest provenance: a promoted copy's accounting rows legitimately live in
     # the CHILD drive's ledger, so the model_send reconciliation sweep must not
     # read this copy as an orphan seal on the canonical drive.
     manifest.setdefault("promoted_call_manifest", True)
-    promoted = write_call_manifest(
-        pathlib.Path(canonical_drive_root),
-        task_id=str(task_id),
-        call_id=call_id,
-        manifest=manifest,
+    promoted = _memo_publish(
+        ("promote_manifest", str(pathlib.Path(source_drive_root).resolve()),
+         str(pathlib.Path(canonical_drive_root).resolve()), task_id, call_id, ref.get("sha256")),
+        manifest, lambda: write_call_manifest(pathlib.Path(canonical_drive_root),
+                                             task_id=str(task_id), call_id=call_id, manifest=manifest),
     )
-    promoted_path = pathlib.Path(str(promoted.get("path") or ""))
-    if not promoted_path.is_file() or hashlib.sha256(
-        promoted_path.read_bytes()
-    ).hexdigest() != str(promoted.get("sha256") or ""):
-        raise OSError("canonical observability call manifest verification failed")
+    read_call_manifest_ref(canonical_drive_root, promoted, task_id=task_id)
     return promoted
 
 
@@ -477,6 +562,7 @@ _PUBLISHED_CHILD_REF_FIELDS = frozenset(
         "review_evidence",
         "review_projection",
         "completion_observations",
+        "owner_wait",
         "verification_ledger",
         "root_phase_checkpoint",
         "plan_review_state",
@@ -543,7 +629,8 @@ def _is_manifest_ref(value: Any) -> bool:
 
 
 def _is_task_source_ref(value: Any) -> bool:
-    return bool(isinstance(value, dict) and value.get("kind") == "task_source")
+    return bool(isinstance(value, dict) and value.get("kind") == "task_source"
+                and value.get("availability") != "unavailable")
 
 
 def _task_source_contract_valid(ref: Dict[str, Any]) -> bool:
@@ -587,23 +674,19 @@ def _promote_task_source_ref(
             state["unavailable_refs"], _promotion_fact(ref, "invalid_ref")
         )
         return _typed_unavailable_ref(ref, "invalid_ref")
-    try:
-        from ouroboros.artifacts import (
-            read_actor_source_bytes,
-            store_actor_source_bytes,
-        )
+    from ouroboros.artifacts import read_actor_source_bytes, store_actor_source_bytes
 
-        read_actor_source_bytes(parent_root, task_id, ref)
-        # The destination already contains this exact verified handle.  Count
-        # the idempotent resolution just like a fresh promotion so concurrent
-        # copy-back callers publish the same deterministic custody projection.
-        state["promoted_source_handle_count"] += 1
-        return dict(ref)
-    except Exception:
-        pass
+    def read_source(root, source_ref):
+        path = (_task_artifact_dir(root, task_id, create=False) / source_ref["path"]).resolve(strict=True)
+        return _memo_read(("task_source", _file_identity(path), task_id,
+                           json.dumps(source_ref, sort_keys=True)),
+                          lambda: read_actor_source_bytes(root, task_id, source_ref))
 
     try:
-        raw = read_actor_source_bytes(child_root, task_id, ref)
+        try:
+            raw = read_source(parent_root, ref)
+        except Exception:
+            raw = read_source(child_root, ref)
     except Exception as exc:
         reason = _task_source_failure_reason(exc)
         _append_promotion_fact(
@@ -626,20 +709,48 @@ def _promote_task_source_ref(
     source = _task_artifact_dir(child_root, task_id, create=False).joinpath(
         *rel.parts
     )
+    # Inspect owned JSON closure even when an earlier attempt copied the outer source.
+    plan_wave_source = name_match.group(1).startswith("plan-review-wave-")
+    if name_match.group(2) == "json" and (plan_wave_source or name_match.group(1) in {
+        "acceptance", "acceptance_tool_trajectory",
+    }):
+        try:
+            payload = json.loads(raw)
+        except (ValueError, UnicodeError):
+            payload = None
+        meta = payload.get("artifact_meta") if isinstance(payload, dict) else None
+        plan_wave = plan_wave_source and isinstance(meta, dict) and meta.get("kind") == "plan_review_wave"
+        if plan_wave or (isinstance(payload, list) and name_match.group(1) == "acceptance_tool_trajectory") or (
+            isinstance(payload, dict) and isinstance(payload.get("request"), dict)
+            and payload["request"].get("surface") == "task_acceptance"
+        ):
+            rewritten = _rewrite_child_ref_tree(payload, parent_root, child_root, task_id, state)
+            if rewritten != payload:
+                raw = json.dumps(rewritten, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    # Preserve bytes for relative refs. Rebased absolute refs or unavailable
+    # dependencies mint a new source; never overwrite the old checkpoint.
+    changed = hashlib.sha256(raw).hexdigest() != expected_sha
+    target_ref = ref
     try:
-        promoted = store_actor_source_bytes(
-            parent_root,
-            task_id,
-            category=rel.parts[1],
-            source_id=name_match.group(1),
-            data=raw,
-            extension=name_match.group(2),
+        promoted = _memo_publish(
+            ("promote_source", str(parent_root.resolve()), task_id, str(rel)), raw,
+            lambda: store_actor_source_bytes(parent_root, task_id, category=rel.parts[1],
+                                             source_id=name_match.group(1), data=raw,
+                                             extension=name_match.group(2)),
+            ref_root=_task_artifact_dir(parent_root, task_id, create=False),
         )
-        if str(promoted.get("path") or "") != rel.as_posix():
+        if not changed and str(promoted.get("path") or "") != rel.as_posix():
             raise OSError("canonical task source path changed during promotion")
-        read_actor_source_bytes(parent_root, task_id, ref)
+        target_ref = {**ref, **promoted} if changed else ref
+        if changed and name_match.group(1) == "acceptance_tool_trajectory":
+            # Host-verified source identity survives locator rebasing; sha256
+            # still verifies the physical bytes of this promoted copy.
+            target_ref.setdefault("corpus_sha256", expected_sha)
+        if changed and "artifact_ref" in target_ref:
+            target_ref["artifact_ref"] = f"artifact_store:{promoted['path']}#chars=0-{len(raw.decode('utf-8'))}"
+        read_source(parent_root, target_ref)
         state["promoted_source_handle_count"] += 1
-        return dict(ref)
+        return dict(target_ref)
     except Exception as exc:
         # A CONCURRENT copy-back of the same task may have claimed this exact
         # content-addressed destination between our miss above and our write
@@ -650,12 +761,14 @@ def _promote_task_source_ref(
         # this caller must publish the same complete custody projection as the
         # winner. Only a still-unreadable destination is a pending ref.
         try:
-            read_actor_source_bytes(parent_root, task_id, ref)
+            if changed and target_ref is ref:
+                raise OSError("rewritten source not stored")
+            read_source(parent_root, target_ref)
         except Exception:
             pass
         else:
             state["promoted_source_handle_count"] += 1
-            return dict(ref)
+            return dict(target_ref)
         _append_promotion_fact(
             state["pending_refs"],
             _promotion_fact(
@@ -683,8 +796,9 @@ def _promote_known_observability_ref(
 
     source_root = child_root
     try:
-        ref_path = pathlib.Path(str(ref.get("path") or "")).resolve(strict=False)
-        ref_path.relative_to(_observability_root(parent_root).resolve(strict=False))
+        relative = (pathlib.Path("blobs") / f"{ref.get('sha256')}.{ref.get('kind')}.gz"
+                    if _is_blob_ref(ref) else pathlib.Path("calls") / task_id / f"{ref.get('call_id')}.json")
+        _ref_path(parent_root, ref, relative)
         source_root = parent_root
     except (OSError, ValueError):
         pass
@@ -841,49 +955,50 @@ def promote_child_task_refs(
     *, retry_only: bool = False,
 ) -> tuple[Dict[str, Any], Dict[str, Any]]:
     """Promote the bounded, task-owned ref closure published by child copy-back."""
-    parent_root = pathlib.Path(parent_drive_root)
-    child_root = pathlib.Path(child_drive_root)
-    rewritten = copy.deepcopy(child_result)
-    state: Dict[str, Any] = {
-        "schema_version": 1,
-        "status": "complete",
-        "promoted_ref_count": 0,
-        "promoted_source_handle_count": 0,
-        "pending_refs": [],
-        "unavailable_refs": [],
-    }
-    from ouroboros.artifacts import promote_task_attachment_refs
-    pending_inputs = any(row.get("kind") == "task_attachment" for row in
-                         (child_result.get("child_ref_promotion") or {}).get("pending_refs", []) if isinstance(row, dict))
-    if not retry_only or pending_inputs:
-        promote_task_attachment_refs(parent_root, child_root, task_id, rewritten, state)
-    for key in _PUBLISHED_CHILD_REF_FIELDS:
-        if key in {"task_contract", "attachment_manifest", "attachment_manifest_ref"}:
-            continue  # Input JSON and its file closure have one attachment-aware owner.
-        if key in rewritten:
-            rewritten[key] = _rewrite_child_ref_tree(
-                rewritten[key], parent_root, child_root, task_id, state,
-            )
-    artifacts = rewritten.get("artifacts")
-    if isinstance(artifacts, list):
-        from ouroboros.headless import _copy_child_artifacts_to_parent
-        from ouroboros.outcomes import artifact_bundle_from_result
+    with child_ref_promotion_scope():
+        parent_root = pathlib.Path(parent_drive_root)
+        child_root = pathlib.Path(child_drive_root)
+        rewritten = copy.deepcopy(child_result)
+        state: Dict[str, Any] = {
+            "schema_version": 1,
+            "status": "complete",
+            "promoted_ref_count": 0,
+            "promoted_source_handle_count": 0,
+            "pending_refs": [],
+            "unavailable_refs": [],
+        }
+        from ouroboros.artifacts import promote_task_attachment_refs
+        pending_inputs = any(row.get("kind") == "task_attachment" for row in
+                             (child_result.get("child_ref_promotion") or {}).get("pending_refs", []) if isinstance(row, dict))
+        if not retry_only or pending_inputs:
+            promote_task_attachment_refs(parent_root, child_root, task_id, rewritten, state)
+        for key in _PUBLISHED_CHILD_REF_FIELDS:
+            if key in {"task_contract", "attachment_manifest", "attachment_manifest_ref"}:
+                continue  # Input JSON and its file closure have one attachment-aware owner.
+            if key in rewritten:
+                rewritten[key] = _rewrite_child_ref_tree(
+                    rewritten[key], parent_root, child_root, task_id, state,
+                )
+        artifacts = rewritten.get("artifacts")
+        if isinstance(artifacts, list):
+            from ouroboros.headless import _copy_child_artifacts_to_parent
+            from ouroboros.outcomes import artifact_bundle_from_result
 
-        pending = {str(row.get("path") or "") for row in
-                   (child_result.get("child_ref_promotion") or {}).get("pending_refs", [])
-                   if isinstance(row, dict) and row.get("kind") == "task_artifact"}
-        selected = [row for row in artifacts if isinstance(row, dict)
-                    and (not retry_only or str(row.get("path") or "") in pending)]
-        if selected:
-            copied = _copy_child_artifacts_to_parent(parent_root, task_id, child_root, selected, promotion=state)
-            iterator = iter(copied)
-            rewritten["artifacts"] = ([next(iterator) if row in selected else row for row in artifacts]
-                                      if retry_only else copied)
-            rewritten.pop("artifact_bundle", None)
-            rewritten["artifact_bundle"] = artifact_bundle_from_result(rewritten)
-    if state["pending_refs"]:
-        state["status"] = "incomplete"
-    return rewritten, state
+            pending = {str(row.get("path") or "") for row in
+                       (child_result.get("child_ref_promotion") or {}).get("pending_refs", [])
+                       if isinstance(row, dict) and row.get("kind") == "task_artifact"}
+            selected = [row for row in artifacts if isinstance(row, dict)
+                        and (not retry_only or str(row.get("path") or "") in pending)]
+            if selected:
+                copied = _copy_child_artifacts_to_parent(parent_root, task_id, child_root, selected, promotion=state)
+                iterator = iter(copied)
+                rewritten["artifacts"] = ([next(iterator) if row in selected else row for row in artifacts]
+                                          if retry_only else copied)
+                rewritten.pop("artifact_bundle", None)
+                rewritten["artifact_bundle"] = artifact_bundle_from_result(rewritten)
+        if state["pending_refs"]:
+            state["status"] = "incomplete"
+        return rewritten, state
 
 
 def promote_child_task_ref_patch(
@@ -932,24 +1047,9 @@ def _retry_pending_child_ref_promotion(
     task_id: str,
     loaded_result: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Retry ref fields from CURRENT canonical authority under its result lock."""
-
-    from ouroboros.task_results import write_task_result
-
-    def _project(current: Dict[str, Any], _incoming: Dict[str, Any]) -> Dict[str, Any]:
-        current_status = str(current.get("status") or loaded_result.get("status") or "")
-        if not _has_pending_ref_promotion(current.get("child_ref_promotion")):
-            return {"status": current_status}
-        patch = promote_child_task_ref_patch(parent, child, task_id, current)
-        patch["status"] = current_status
-        return patch
-
-    settled = write_task_result(
-        parent,
-        task_id,
-        str(loaded_result.get("status") or ""),
-        _field_projector=_project,
-    )
+    """Retry CURRENT refs through the headless publication owner, then cleanup."""
+    from ouroboros.headless import retry_child_task_refs
+    settled = retry_child_task_refs(parent, child, task_id)
     from supervisor.terminal_delivery import cleanup_settled_owner_mailbox
 
     cleanup_settled_owner_mailbox(parent, task_id, {"drive_root": str(child)})
@@ -1005,6 +1105,31 @@ def retry_pending_child_ref_promotions(
     return report
 
 
+def call_manifest_path(drive_root: pathlib.Path, task_id: str, call_id: str) -> pathlib.Path:
+    """The shared address of a known call; resolving it creates nothing."""
+    root = pathlib.Path(drive_root)
+    if not root.is_absolute():
+        raise ValueError("observability drive_root must be an absolute path")
+    safe_task = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(task_id or "unknown")).strip("_") or "unknown"
+    safe_call = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(call_id)).strip("_")
+    return root / OBSERVABILITY_DIR / "calls" / safe_task / f"{safe_call}.json"
+
+
+def read_call_payload(drive_root: pathlib.Path, *, task_id: str, call_id: str) -> tuple:
+    """Read one exact call and its complete digest-verified existing CAS body."""
+    path = call_manifest_path(drive_root, task_id, call_id)
+    raw = path.read_bytes()
+    manifest = json.loads(raw)
+    if not isinstance(manifest, dict) or manifest.get("task_id") != task_id or manifest.get("call_id") != call_id:
+        raise ValueError("observability call identity mismatch")
+    payload = read_blob_ref(drive_root, manifest.get("full_payload_ref"))
+    ref = {"call_id": call_id, "manifest_ref": {"path": str(path), "call_id": call_id,
+           "sha256": hashlib.sha256(raw).hexdigest()},
+           "redacted_projection_ref": manifest.get("redacted_projection_ref"),
+           "full_payload_redacted": manifest.get("full_payload_redacted", True)}
+    return manifest, payload, ref
+
+
 def write_call_manifest(
     drive_root: pathlib.Path,
     *,
@@ -1014,9 +1139,9 @@ def write_call_manifest(
 ) -> Dict[str, Any]:
     """Write the small per-call manifest with refs into the private ledger."""
 
-    safe_task = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(task_id or "unknown")).strip("_") or "unknown"
-    safe_call = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(call_id or new_call_id("call"))).strip("_")
-    path = _observability_root(pathlib.Path(drive_root)) / "calls" / safe_task / f"{safe_call}.json"
+    path = call_manifest_path(drive_root, task_id, call_id or new_call_id("call"))
+    safe_call = path.stem
+    _observability_root(pathlib.Path(drive_root))
     path.parent.mkdir(parents=True, exist_ok=True)
     _chmod_private_dir(path.parent.parent)
     _chmod_private_dir(path.parent)
@@ -1383,14 +1508,12 @@ def salvaged_output_note(
     preserve_root: pathlib.Path | None = None,
 ) -> str:
     """Terminal-result suffix carrying the last persisted assistant text, or "".
-
     SSOT for every supervisor path that ends a task the task did not end itself
     (timeout kill, owner/agent cancellation). Those paths also DELETE the drive
     the text lives on, so a path that skips the salvage does not merely omit
     progress — it destroys the only copy (BIBLE P1). Keeping the note in one
     place is what makes "did this terminal path rescue the partial result?" a
     single answerable question instead of a per-call-site habit.
-
     The note itself is a bounded preview, but a truncated preview of a copy the
     caller is about to delete is not a rescue: when the preview loses content,
     the full text is preserved under ``preserve_root`` (the CANONICAL drive,
@@ -1399,7 +1522,6 @@ def salvaged_output_note(
     result is then the only copy there is, and it must be complete.
     """
     from ouroboros.utils import truncate_review_artifact
-
     try:
         salvaged = latest_llm_response_text(pathlib.Path(drive_root), str(task_id))
     except Exception:
@@ -1425,7 +1547,6 @@ def salvaged_output_note(
 
 def prune_observability_blobs(drive_root: pathlib.Path) -> Dict[str, Any]:
     """Startup observability census — counts only, never deletion.
-
     Forensic call manifests and CAS blobs are durable replay evidence,
     preserved indefinitely BY CONTRACT. The retirable half of this surface —
     ``OUROBOROS_OBSERVABILITY_RETENTION_DAYS``, a knob that was parsed,
@@ -1433,7 +1554,6 @@ def prune_observability_blobs(drive_root: pathlib.Path) -> Dict[str, Any]:
     7A): a documented no-op was a misleading operator surface. The key sits
     in ``RETIRED_SETTING_KEYS`` so stored ghosts drop on settings load.
     """
-
     root = pathlib.Path(drive_root) / OBSERVABILITY_DIR
     calls_root = root / "calls"
     blobs_root = root / "blobs"
@@ -1445,14 +1565,12 @@ def prune_observability_blobs(drive_root: pathlib.Path) -> Dict[str, Any]:
     }
     if not root.exists():
         return report
-
     for manifest_path in list(calls_root.glob("*/*.json")) if calls_root.exists() else []:
         try:
             manifest_path.stat()
             report["manifest_count"] += 1
         except Exception as exc:
             report["errors"].append(f"{manifest_path}: {type(exc).__name__}: {exc}")
-
     if blobs_root.exists():
         for blob_path in list(blobs_root.glob("*.gz")):
             try:
@@ -1460,19 +1578,16 @@ def prune_observability_blobs(drive_root: pathlib.Path) -> Dict[str, Any]:
                 report["blob_count"] += 1
             except Exception as exc:
                 report["errors"].append(f"{blob_path}: {type(exc).__name__}: {exc}")
-
     return report
 
 
 class SecretRedactingLogFilter(logging.Filter):
     """Mask secret-shaped values in every line of a stdlib logging handler.
-
     Root loggers propagate third-party INFO lines verbatim — httpx printed the
     full Telegram bot token inside its request-URL line every poll cycle.
     Reuses this module's redaction SSOT (token patterns incl. bot tokens, URL
     credentials, provider keys); any redaction failure keeps the original
     record rather than dropping the log line (v6.70.0)."""
-
     def filter(self, record: logging.LogRecord) -> bool:
         try:
             message = record.getMessage()

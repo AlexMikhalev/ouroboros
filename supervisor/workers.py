@@ -21,7 +21,7 @@ from supervisor.message_bus import coerce_chat_identity  # noqa: F401 -- worker_
 from ouroboros.config import DATA_DIR, REPO_DIR as CONFIG_REPO_DIR, WORKER_SPAWN_GRACE_SEC
 from ouroboros.depth_evidence import parse_task_depth
 from ouroboros.review_owner_custody import (
-    reconcile_confirmed_dead_review_owner as _reconcile_confirmed_dead_review_owner_for_root,
+    reconcile_confirmed_dead_review_owners as _reconcile_review_owners,
 )
 from ouroboros.utils import utc_now_iso
 
@@ -86,6 +86,10 @@ class Worker:
     # teardown (kill/join/archive/respawn) is handed to the background reaper. The slot
     # is unavailable for assignment until respawn_worker() installs a fresh Worker.
     reaping: bool = False
+    # A required owner wait keeps this process and task, lending only dispatch capacity.
+    active_capacity: bool = True
+    # Unlike temporary reaping, the readiness owner exhausted its bounded attempts.
+    readiness_exhausted: bool = False
 
 
 _EVENT_Q = None
@@ -100,7 +104,7 @@ def get_event_q():
     """Return the process-lifetime supervisor event bus, creating it lazily.
 
     Worker-pool generations are replaceable; the producers that publish onto
-    this bus (direct chat, consciousness, active turns, and workers) are not.
+    this bus (direct chat, active turns, and workers) are not.
     Rotating the queue during a pool respawn strands those producers on an
     undrained queue, so only a new server process creates a new bus.
     """
@@ -182,24 +186,16 @@ from supervisor.queue import _queue_lock
 
 
 def worker_pool_admission_state(ctx: Any = None) -> Dict[str, Any]:
-    """Return the user-facing managed-task executor admission state.
-
-    A busy or reaping pool is still a valid queue target.  Only an explicitly
-    disabled pool, or a genuinely absent pool after supervisor readiness, is
-    unavailable.  Internal boot/update recovery may enqueue before an initial
-    spawn and therefore does not use this user-ingress predicate.
-    """
-    pool = getattr(ctx, "WORKERS", WORKERS) if ctx is not None else WORKERS
-    with _queue_lock:
-        disabled_reason = str(_WORKER_POOL_DISABLED_REASON or "")
-        worker_count = len(pool)
+    """Busy/booting pools and live owner waits can queue work; exhausted pools cannot."""
+    state = _worker_pool_execution_state(
+        getattr(ctx, "WORKERS", None), running=getattr(ctx, "RUNNING", None),
+    )
     update_reason = repo_writer_admission_closed()
-    available = worker_count > 0 and not disabled_reason and not update_reason
+    available = state["available"] and not update_reason
     return {
-        "available": available,
+        **state, "available": available,
         "reason_code": "" if available else "worker_pool_unavailable",
-        "disabled_reason": disabled_reason or update_reason or ("no_workers" if not worker_count else ""),
-        "worker_count": worker_count,
+        "disabled_reason": state["disabled_reason"] or update_reason,
     }
 
 
@@ -209,7 +205,7 @@ def ensure_worker_pool_started(n: int = 0, *, allow_disabled_restart: bool = Fal
         # Update admission can be closed while the one authorized assisted
         # resolver is already running. That does not make an existing healthy
         # pool absent and must never trigger a second full-pool spawn.
-        if WORKERS and not _WORKER_POOL_DISABLED_REASON:
+        if _worker_pool_execution_state()["available"]:
             return True
     state = worker_pool_admission_state()
     if state["available"]:
@@ -220,12 +216,9 @@ def ensure_worker_pool_started(n: int = 0, *, allow_disabled_restart: bool = Fal
     return True
 
 
-_chat_agent = None
-# Serializes every direct-chat caller; _chat_agent has mutable per-call state.
 import threading as _threading
-_chat_agent_lock = _threading.Lock()
-_ephemeral_chat_lock = _threading.Lock()
-_repo_writer_gate_lock = _threading.Lock()
+# Admission and activity registration share this short lock; execution never holds it.
+_repo_writer_gate_lock = _threading.RLock()
 _repo_writer_gate_reason = ""
 
 
@@ -281,16 +274,10 @@ def repo_writer_task_allowed(task: Dict[str, Any]) -> bool:
 
 
 def drain_repo_writers(timeout: float = 30.0) -> List[str]:
-    """Wait for the two existing in-process writer lanes after admission closes."""
-    deadline = time.monotonic() + max(0.0, float(timeout))
-    blocked: List[str] = []
-    for label, lock in (("direct_chat", _chat_agent_lock), ("ephemeral_chat", _ephemeral_chat_lock)):
-        remaining = max(0.0, deadline - time.monotonic())
-        if not lock.acquire(timeout=remaining):
-            blocked.append(label)
-            continue
-        lock.release()
-    return blocked
+    """Wait for every registered execution after closing writer admission."""
+    from supervisor.active_activity import get_direct_activity_registry
+
+    return get_direct_activity_registry().wait_until_empty(float(timeout))
 
 
 def _repo_writer_turn_allowed(chat_id: int) -> bool:
@@ -308,48 +295,50 @@ def _repo_writer_turn_allowed(chat_id: int) -> bool:
 
 
 def _get_chat_agent():
-    global _chat_agent
-    if _chat_agent is None:
-        if not getattr(sys, 'frozen', False):
-            sys.path.insert(0, str(REPO_DIR))
-        from ouroboros.agent import make_agent
-        _chat_agent = make_agent(
-            repo_dir=str(REPO_DIR),
-            drive_root=str(DRIVE_ROOT),
-            event_queue=get_event_q(),
-        )
-    return _chat_agent
+    """Construct a fresh native actor; each turn owns its mutable state."""
+    if not getattr(sys, 'frozen', False) and str(REPO_DIR) not in sys.path:
+        sys.path.insert(0, str(REPO_DIR))
+    from ouroboros.agent import make_agent
+    from ouroboros.owner_wait import direct_owner_wait
+
+    agent = make_agent(
+        repo_dir=str(REPO_DIR), drive_root=str(DRIVE_ROOT), event_queue=get_event_q(),
+    )
+    agent.owner_wait_callback = direct_owner_wait
+    return agent
+
+
+def get_direct_chat_agent(task_id: str):
+    from supervisor.active_activity import get_direct_activity_registry
+
+    entry = get_direct_activity_registry().get(task_id)
+    return entry.actor if entry is not None else None
 
 
 def chat_turn_liveness():
-    """(busy, task_id, last_activity_ts) of the in-process direct-chat turn — read
-    WITHOUT taking _chat_agent_lock (a wedged turn holds that lock for its whole
-    duration, so the watchdog must never block on it). The supervisor liveness
-    watchdog (WS3) reads this to spot a heartbeat-silent direct turn, which is
-    in-process and therefore invisible to the worker RUNNING heartbeat table."""
-    agent = _chat_agent
-    if agent is None or not getattr(agent, "_busy", False):
-        return (False, None, None)
-    return (True, getattr(agent, "_current_task_id", None), getattr(agent, "_last_activity_ts", None))
+    """All in-process actors, read without taking any execution/admission lock."""
+    from supervisor.active_activity import get_direct_activity_registry
+
+    return [
+        (str(entry.activity_id), getattr(entry.actor, "_last_activity_ts", None))
+        for entry in get_direct_activity_registry().actors()
+        if getattr(entry.actor, "_busy", False)
+    ]
+
+
+def direct_chat_turns() -> List[Dict[str, Any]]:
+    from supervisor.active_activity import get_direct_activity_registry
+
+    return [turn for entry in get_direct_activity_registry().actors()
+            if (turn := direct_chat_turn(entry.activity_id)) is not None]
 
 
 def direct_chat_turn(task_id: str = "") -> Optional[Dict[str, Any]]:
-    """The in-process direct-chat turn as a queue-shaped task record, or None.
-
-    The ownership predicate (``task_has_live_ownership``), the owner-control
-    ingresses (cancel, hurry, decisions) and the graceful-stop episode resolve
-    a live direct turn through THIS one reader, so the durable running mirror
-    and the owner controls can never disagree about it again: a turn the
-    task list shows as running is addressable, and a turn that is not
-    addressable is not shown as live (the class the rc.7 QA regress hit —
-    ``running`` + cancel 404 + spend still growing). Read WITHOUT the
-    chat-agent lock, like ``chat_turn_liveness``: a wedged turn holds that
-    lock for its whole duration. ``task_id`` narrows the answer to that turn;
-    empty answers whichever direct turn is live. An ephemeral decision turn
-    (not ``_accepting_owner_messages``) is transport control, never an
-    owner-addressable task, and writes no durable running row either.
-    """
-    agent = _chat_agent
+    """Read one addressable actor through the same owner used by routing/controls."""
+    if not task_id:
+        turns = direct_chat_turns()
+        return turns[0] if len(turns) == 1 else None
+    agent = get_direct_chat_agent(task_id)
     if agent is None or not getattr(agent, "_busy", False):
         return None
     current = str(getattr(agent, "_current_task_id", "") or "")
@@ -396,7 +385,7 @@ def arm_direct_chat_turn(
     stamp the control's msg_id lands under (the immediate stop and the
     graceful owner-stop episode keep separate latches, so one never hides
     the other); ``extra_stamps`` ride along under the same lock."""
-    agent = _chat_agent
+    agent = get_direct_chat_agent(task_id)
     if agent is None:
         return None
     lock = getattr(agent, "_owner_message_admission_lock", None)
@@ -417,7 +406,7 @@ def stamp_direct_chat_turn(task_id: str, **fields: Any) -> bool:
     armed owner-stop control id, so a sweep tick re-arms idempotently instead
     of re-toasting). Stamps belong to ONE turn id and vanish with it. Returns
     False when that turn is not live (nothing to stamp)."""
-    agent = _chat_agent
+    agent = get_direct_chat_agent(task_id)
     if agent is None or direct_chat_turn(task_id) is None:
         return False
     stamps = getattr(agent, "_direct_turn_stamps", None)
@@ -662,8 +651,8 @@ from supervisor.log_addressing import TurnEventQueue as _TurnEventQueue  # noqa:
 # sink copy would be the second delivery of the same event. This is the
 # exactly-once contract test_log_forwarding pins with the production sink
 # installed. The set is a superset of the worker list because the direct-chat
-# agent and Background Consciousness run inside the server process and append
-# the same worker-shaped rows there.
+# agent (an owner's turn and a consciousness wake-up alike) runs inside the
+# server process and appends the same worker-shaped rows there.
 from supervisor.worker_process import WORKER_LOG_SINK_SUPPRESSED_TYPES  # noqa: E402 -- moved span, needed at import time below
 
 SERVER_LOG_SINK_SUPPRESSED_TYPES = WORKER_LOG_SINK_SUPPRESSED_TYPES | frozenset({
@@ -1091,7 +1080,7 @@ _WORKER_PIDS_FILENAME = "worker_pids.json"
 
 
 def _reconcile_confirmed_dead_review_owner(owner_pid: int) -> None:
-    _reconcile_confirmed_dead_review_owner_for_root(DRIVE_ROOT, owner_pid)
+    _reconcile_review_owners(DRIVE_ROOT, {owner_pid})
 
 
 from supervisor.worker_pool_lifecycle import _serialized_worker_lifecycle  # noqa: E402 -- moved span, decorator read at import time below
@@ -1174,6 +1163,7 @@ def kill_workers(
     preserve_pending: bool = False,
     preserve_running_task_ids: Optional[set[str]] = None,
     reconcile_delegate_custody: bool = True,
+    reconcile_review_custody: bool = True,
 ) -> bool:
     global _WORKER_POOL_DISABLED_REASON
     from supervisor import queue
@@ -1203,16 +1193,13 @@ def kill_workers(
         for w in WORKERS.values():
             w.proc.join(timeout=3)
         _kill_survivors()
+        dead_pids: set[int] = set()
         for w in WORKERS.values():
             try:
                 if w.proc.pid and not w.proc.is_alive():
-                    _reconcile_confirmed_dead_review_owner(int(w.proc.pid))
+                    dead_pids.add(int(w.proc.pid))
             except Exception:
-                log.debug(
-                    "Could not prove worker %s dead for review reconciliation",
-                    w.wid,
-                    exc_info=True,
-                )
+                log.debug("Cannot confirm worker %s dead", w.wid, exc_info=True)
         WORKERS.clear()
         orphaned_ids = []
         drained_ids = []
@@ -1289,14 +1276,16 @@ def kill_workers(
                     continue
                 if task_id in preserve_running:
                     successor = dict(task)
-                    successor["_attempt"] = int(meta.get("attempt") or task.get("_attempt") or 1) + 1
+                    continuing_wait = isinstance(successor.get("_owner_wait_resume"), dict)
+                    successor["_attempt"] = int(meta.get("attempt") or task.get("_attempt") or 1) + (0 if continuing_wait else 1)
                     try:
                         from ouroboros.owner_hurry import retry_reset
 
-                        retry_reset(
-                            queue._task_drive_for_task(task, str(task_id)),
-                            DRIVE_ROOT, str(task_id), reason="planned_restart_requeue",
-                        )
+                        if not continuing_wait:
+                            retry_reset(
+                                queue._task_drive_for_task(task, str(task_id)),
+                                DRIVE_ROOT, str(task_id), reason="planned_restart_requeue",
+                            )
                     except Exception:
                         log.debug(
                             "Planned-restart retry reset failed for %s", task_id,
@@ -1425,6 +1414,8 @@ def kill_workers(
             log.warning("Zombie prevention cleanup failed", exc_info=True)
         for terminal_id in orphaned_ids:
             RUNNING.pop(str(terminal_id), None)
+    if reconcile_review_custody:
+        _reconcile_review_owners(DRIVE_ROOT, dead_pids)
     try:
         snapshot_ok = queue.persist_queue_snapshot(reason="kill_workers") is not False
     except Exception:
@@ -2143,7 +2134,7 @@ from supervisor.worker_chat_lane import (  # noqa: E402, F401 -- intentional pub
     _run_chat_task,
     auto_resume_after_restart,
     handle_chat_direct,
-    handle_chat_ephemeral,
+    handle_wake_direct,
 )
 from supervisor.worker_health import (  # noqa: E402, F401 -- intentional public re-exports
     _emit_task_done_terminal,
@@ -2153,6 +2144,8 @@ from supervisor.worker_health import (  # noqa: E402, F401 -- intentional public
 )
 from supervisor.worker_pool_lifecycle import (  # noqa: E402, F401 -- intentional public re-exports
     _WORKER_LIFECYCLE_LOCK,
+    _worker_pool_execution_state,
+    disable_exhausted_worker_pool,
     _first_worker_event_since,
     _kill_survivors,
     _record_worker_pids,
@@ -2177,7 +2170,6 @@ from supervisor.worker_process import (  # noqa: E402, F401 -- intentional publi
 from supervisor.worker_promotion import (  # noqa: E402, F401 -- intentional public re-exports
     _admit_promoted_workspace,
     _canonical_promoted_repair_constraint,
-    _fail_promoted_task_loudly,
     _origin_from_mapping,
     _origin_from_task_record,
     _promote_duplicate_reason,

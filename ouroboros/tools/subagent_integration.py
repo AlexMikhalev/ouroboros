@@ -22,11 +22,13 @@ import pathlib
 import shutil
 import subprocess
 import tempfile
+import zipfile
 from typing import Any, Dict, List, Tuple, Union
 
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.artifacts import task_artifact_dir_path
 from ouroboros.task_results import load_task_result
+from ouroboros.workspace_file_outputs import file_output_changes, prepare_file_outputs, verify_file_outputs
 from ouroboros.review_state import invalidate_advisory_after_mutation
 from ouroboros.runtime_mode_policy import (
     mode_allows_protected_write,
@@ -170,6 +172,7 @@ def _verify_shared_external_workspace(
     target: pathlib.Path,
     patch_path: pathlib.Path,
     touched: List[str],
+    file_rows: List[Dict[str, Any]] = (),
 ) -> tuple[bool, List[str], str]:
     invalid: List[str] = []
     resolved_target = target.resolve(strict=False)
@@ -186,6 +189,13 @@ def _verify_shared_external_workspace(
         return False, invalid, ""
     if not (target / ".git").exists():
         return False, [], f"target {target} is not a git working tree"
+    try:
+        if not verify_file_outputs(file_rows, target):
+            return False, [], "registered file outputs do not match the shared workspace"
+    except (OSError, ValueError) as exc:
+        return False, [], str(exc)
+    if not patch_path.is_file() or not patch_path.stat().st_size:
+        return (True, [], "") if file_rows else (False, [], "workspace patch and file outputs are absent")
     proc = subprocess.run(
         ["git", "apply", "--check", "--reverse", str(patch_path)],
         cwd=str(target),
@@ -196,6 +206,31 @@ def _verify_shared_external_workspace(
         detail = (proc.stderr or proc.stdout or "").strip()
         return False, [], detail[:600] or "reverse patch check failed"
     return True, [], ""
+
+
+def _capped_self_repo_refusal(ctx: Any, child_task_id: str) -> str:
+    """A tree under the light per-task cap (a consciousness Act/Observe tree) may not land a
+    patch on the Ouroboros repository — protected paths or not, in every install mode. The
+    empty string when the task is not capped."""
+    from ouroboros.consciousness_authority import task_mode_capped_light
+
+    if not task_mode_capped_light(getattr(ctx, "task_metadata", None)):
+        return ""
+    return (
+        f"⚠️ INTEGRATE_CAPPED_TREE: child {child_task_id} produced a self_worktree patch (against "
+        "the Ouroboros system repo), but this task's tree runs under a light cap (a consciousness "
+        "Act/Observe tree): it may not land a patch on the Ouroboros repository, protected paths "
+        "or not, in any runtime mode."
+    )
+
+
+def _integration_runtime_mode(ctx: Any) -> str:
+    """The mode the protected-path gate of an integration reads: the stricter of the install
+    mode and the task's own cap (a consciousness Act/Observe tree is light), so a capped task
+    cannot land a system-repo patch the install mode alone would allow."""
+    from ouroboros.consciousness_authority import effective_runtime_mode
+
+    return effective_runtime_mode(get_runtime_mode(), getattr(ctx, "task_metadata", None))
 
 
 def _patch_touched_paths(patch_path: pathlib.Path, target: pathlib.Path, env: Any = None) -> tuple[set[str], str]:
@@ -344,13 +379,15 @@ def _target_is_system_repo(ctx: ToolContext) -> bool:
 def _is_host_minted_projects_tree(path: pathlib.Path) -> bool:
     """True when ``path`` is a host-minted genesis/coop tree — i.e. inside the
     durable subagent-projects root. Owner-attached folders never live there, so this
-    is the structural boundary for the coop no-op (and the checkpoint-commit)."""
+    is the structural boundary for the coop no-op (and the checkpoint-commit).
+    It asks the SAME containment predicate the orphan apply gate asks
+    (``delegate_shared.orphan_apply_target_ok``); here the projects root is both
+    the boundary and the containment root, so the two can never drift apart."""
     try:
         from ouroboros.config import get_subagent_projects_root
-        from ouroboros.tool_access import path_is_relative_to
+        from ouroboros.delegate_shared import orphan_apply_target_ok
 
-        projects_root = pathlib.Path(get_subagent_projects_root()).expanduser().resolve(strict=False)
-        return path_is_relative_to(pathlib.Path(path).resolve(strict=False), projects_root)
+        return orphan_apply_target_ok(path, get_subagent_projects_root())
     except Exception:
         return False
 
@@ -364,6 +401,7 @@ def _maybe_coop_noop_verdict(
     manifest: Dict[str, Any],
     child_result: Dict[str, Any],
     touched: List[str],
+    file_rows: List[Dict[str, Any]] = (),
 ) -> str:
     """Recognize the cooperative-build case for a NON-workspace parent and verify it
     read-only. Conditions (all structural): the child recorded a write_root that is a
@@ -378,7 +416,7 @@ def _maybe_coop_noop_verdict(
     target = pathlib.Path(child_root).resolve(strict=False)
     if not _is_host_minted_projects_tree(target):
         return ""
-    ok, invalid, detail = _verify_shared_external_workspace(target, patch_path, touched)
+    ok, invalid, detail = _verify_shared_external_workspace(target, patch_path, touched, file_rows)
     if not ok:
         verdict_path = _write_verdict(
             ctx,
@@ -426,6 +464,62 @@ def _maybe_coop_noop_verdict(
     )
 
 
+def _verify_directory_direct_result(
+    ctx: ToolContext, child_task_id: str, reason: str, target: pathlib.Path,
+    manifest: Dict[str, Any], artifact_dir: pathlib.Path,
+) -> str:
+    """Verify only registered postimages; direct effects are never replayed or rolled back."""
+    from ouroboros.artifacts import stream_artifact_file
+
+    verified: set[str] = set()
+    try:
+        if manifest.get("status") != "ready" or manifest.get("apply_state") != "already_applied":
+            raise ValueError("direct folder capture is not ready")
+        if pathlib.Path(str(manifest.get("workspace_root") or "")).resolve(strict=False) != target:
+            raise ValueError("direct folder capture root does not match its recorded child target")
+        outputs = manifest.get("registered_outputs")
+        if not isinstance(outputs, list):
+            raise ValueError("registered output records are unavailable")
+        for item in outputs:
+            source = pathlib.Path(item["source_path"]).resolve(strict=False)
+            source.relative_to(target)
+            artifact = pathlib.Path(item["path"]).resolve(strict=False)
+            artifact.relative_to(artifact_dir.resolve(strict=False))
+            if not item.get("sha256") or not isinstance(item.get("size"), int):
+                raise ValueError("registered output is missing its captured identity")
+            stream_artifact_file(artifact, expected=item)
+            if str(item.get("kind") or "").endswith("_manifest") and source.is_dir():
+                ledger = json.loads(artifact.read_text(encoding="utf-8"))
+                if pathlib.Path(str(ledger.get("source_path") or "")).resolve(strict=False) != source:
+                    raise ValueError("directory output ledger source does not match registration")
+                for member in ledger["files"]:
+                    path = (source / member["path"]).resolve(strict=False)
+                    path.relative_to(source)
+                    if not member.get("sha256") or not isinstance(member.get("size"), int):
+                        raise ValueError("directory member is missing its captured identity")
+                    stream_artifact_file(path, expected=member)
+                    verified.add(path.relative_to(target).as_posix())
+            elif not source.is_dir():
+                stream_artifact_file(source, expected=item)
+                verified.add(source.relative_to(target).as_posix())
+        outcome = "verified_registered_outputs" if verified else "direct_result_observed"
+        detail = (f"Verified {len(verified)} registered file postimage(s) in {target}. " if verified else
+                  f"Recorded the parent's acceptance of the direct child result in {target}; no file postimages were verified. ")
+        detail += "Other shell, GUI or external effects and the complete changed-file set remain unknown. No effects were re-applied or rolled back."
+        conflicts = []
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        outcome, detail = "direct_output_mismatch", f"Registered output verification failed: {exc}"
+        conflicts = [str(exc)]
+    verdict = _write_verdict(
+        ctx, child_task_id, outcome=outcome, reason=f"{reason + '. ' if reason else ''}{detail}",
+        files=sorted(verified), manifest=manifest, applied=False, conflicts=conflicts, protected=[], target=str(target),
+    )
+    if conflicts:
+        return f"⚠️ INTEGRATE_DIRECTORY_OUTPUT_MISMATCH: {detail}. Verdict: {verdict or '(unwritten)'}."
+    warning = _record_integration_disposition(ctx, child_task_id, "integrated", reason, detail)
+    return f"OK: {detail} Verdict: {verdict or '(unwritten)'}.{warning}"
+
+
 def _handle_external_workspace_integration(
     ctx: ToolContext,
     *,
@@ -437,6 +531,7 @@ def _handle_external_workspace_integration(
     manifest: Dict[str, Any],
     child_result: Dict[str, Any],
     touched: List[str],
+    file_rows: List[Dict[str, Any]] = (),
 ) -> str:
     parent_external_root, parent_external_reason = _parent_external_workspace_root(ctx, active_root)
     if parent_external_root is None:
@@ -452,7 +547,7 @@ def _handle_external_workspace_integration(
             patch_path=patch_path,
             manifest=manifest,
             child_result=child_result,
-            touched=touched,
+            touched=touched, file_rows=file_rows,
         )
         if coop_result:
             return coop_result
@@ -525,14 +620,20 @@ def _handle_external_workspace_integration(
             f"patch across workspaces. Verdict: {verdict_path or '(unwritten)'}."
         )
 
-    patch_touched, parse_error = _patch_touched_paths(patch_path, target)
+    if manifest.get("capture_kind") == "directory_direct":
+        return _verify_directory_direct_result(
+            ctx, child_task_id, reason, target, manifest, patch_path.parent,
+        )
+
+    patch_touched, parse_error = (_patch_touched_paths(patch_path, target)
+                                  if patch_path.is_file() and patch_path.stat().st_size else (set(), ""))
     if parse_error:
         return (
             f"⚠️ INTEGRATE_PATCH_UNREADABLE: cannot parse {child_task_id} workspace.patch for the "
             f"external workspace check (git apply --numstat failed): {parse_error[:300]}"
         )
-    authoritative_touched = sorted(patch_touched or set(touched))
-    verified, missing, mismatch_reason = _verify_shared_external_workspace(target, patch_path, authoritative_touched)
+    authoritative_touched = sorted(patch_touched | {row["path"] for row in file_rows} or set(touched))
+    verified, missing, mismatch_reason = _verify_shared_external_workspace(target, patch_path, authoritative_touched, file_rows)
     outcome = (
         "verified_shared_workspace"
         if verified
@@ -638,10 +739,24 @@ def _integrate_subagent_patch(
             reason,
             "rejected the child result after review",
         )
+        direct_note = (" Direct effects remain in the folder; rejecting this result does not undo them."
+                       if manifest.get("capture_kind") == "directory_direct" else "")
         return (
-            f"🚫 Rejected subagent patch from {child_task_id} ({len(touched)} file(s) not applied). "
+            f"🚫 Rejected subagent patch from {child_task_id} ({len(touched)} file(s) not applied).{direct_note} "
             f"Verdict: {verdict_path or '(unwritten)'}. Reason: {reason or '(none)'}."
             f"{_format_patch_exclusions(manifest)}{disposition_warning}"
+        )
+
+    if manifest.get("capture_kind") == "directory_direct":
+        if child_surface != "external_workspace":
+            return "⚠️ INTEGRATE_DIRECTORY_SURFACE_MISMATCH: direct folder results require external_workspace."
+        try:
+            active_root = pathlib.Path(ctx.active_repo_dir()).resolve(strict=False)
+        except Exception as exc:
+            return f"⚠️ INTEGRATE_TARGET_ERROR: {exc}"
+        return _handle_external_workspace_integration(
+            ctx, child_task_id=child_task_id, reason=reason, requested_target=str(target_root or "").strip(),
+            active_root=active_root, patch_path=patch_path, manifest=manifest, child_result=child_result, touched=touched,
         )
 
     status = str(manifest.get("status") or "")
@@ -651,16 +766,22 @@ def _integrate_subagent_patch(
             "nothing to apply."
             f"{_format_patch_exclusions(manifest)}"
         )
-    if not patch_path.exists():
+    try:
+        file_rows = file_output_changes(manifest, patch_path.parent)
+    except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as exc:
+        return f"⚠️ INTEGRATE_FILE_OUTPUTS_UNAVAILABLE: {exc}"
+    has_patch = patch_path.is_file() and patch_path.stat().st_size > 0
+    if not has_patch and (not file_rows or manifest.get("patch_size")):
         return f"⚠️ INTEGRATE_PATCH_MISSING: workspace.patch for {child_task_id} not found at {patch_path}."
     expected_digest = str(manifest.get("sha256") or "")
-    if expected_digest:
+    if has_patch and expected_digest:
         actual_digest = _sha256_file(patch_path)
         if actual_digest != expected_digest:
             return (
                 f"⚠️ INTEGRATE_PATCH_CORRUPT: sha256 mismatch for {child_task_id} "
                 f"(manifest {expected_digest[:12]} != file {actual_digest[:12]}); refusing to apply."
             )
+    touched = sorted(set(touched) | {row["path"] for row in file_rows})
 
     # Top-only routing for EVERY caller: integration always targets your OWN active
     # repo/worktree. An explicit target_root must equal it (no foreign target, which
@@ -697,7 +818,7 @@ def _integrate_subagent_patch(
             patch_path=patch_path,
             manifest=manifest,
             child_result=child_result,
-            touched=touched,
+            touched=touched, file_rows=file_rows,
         )
 
     # Fail-closed category guard (v6.56.0): a self_worktree child's patch is a
@@ -708,6 +829,9 @@ def _integrate_subagent_patch(
     # own workspace IS a self_worktree checkout stays legitimate top-only
     # routing and is not touched by this guard.
     if child_surface == "self_worktree":
+        capped = _capped_self_repo_refusal(ctx, child_task_id)
+        if capped:
+            return capped
         parent_ws_mode = str(getattr(ctx, "workspace_mode", "") or "").strip().lower()
         # Fire STRUCTURALLY whenever the parent's active root is a non-system
         # workspace (is_workspace_mode()), so an unrecognized external spelling
@@ -722,17 +846,18 @@ def _integrate_subagent_patch(
                 "task workspace; integrate it from a non-workspace parent task instead."
             )
 
-    runtime_mode = get_runtime_mode()
+    runtime_mode = _integration_runtime_mode(ctx)
     # Derive the changed-path set from the PATCH ITSELF (not the child-controlled
     # manifest) for the protected-path gate: a child must not be able to hide a
     # protected edit by omitting it from the manifest (sha256 verifies bytes only).
-    patch_touched, parse_error = _patch_touched_paths(patch_path, target)
+    patch_touched, parse_error = _patch_touched_paths(patch_path, target) if has_patch else (set(), "")
     if parse_error:
         return (
             f"⚠️ INTEGRATE_PATCH_UNREADABLE: cannot parse {child_task_id} workspace.patch for the "
             f"protected-path check (git apply --numstat failed): {parse_error[:300]}"
         )
-    protected = protected_paths_in(sorted(patch_touched))
+    touched = sorted(patch_touched | {row["path"] for row in file_rows})
+    protected = protected_paths_in(touched)
     if protected:
         grant_ok = (not is_acting) or bool(getattr(constraint, "protected_paths_grant", False))
         if not (mode_allows_protected_write(runtime_mode) and grant_ok):
@@ -756,26 +881,62 @@ def _integrate_subagent_patch(
         _git_lock = _acquire_git_lock(ctx)
     except Exception as exc:
         return f"⚠️ INTEGRATE_LOCK_TIMEOUT: could not acquire the repo git lock: {type(exc).__name__}: {exc}."
+    partial_applied = False
+    apply_attempted = False
     try:
-        proc = subprocess.run(
-            ["git", "apply", "--3way", "--index", str(patch_path)],
-            cwd=str(target), capture_output=True, text=True,
-        )
+        # Match --index semantics for file results too: never replace a parent's
+        # staged preimage merely because its working copy matches the child base.
+        index_tree = subprocess.run(
+            ["git", "write-tree"], cwd=str(target), capture_output=True, text=True, check=True,
+        ).stdout.strip() if file_rows else ""
+        with prepare_file_outputs(file_rows, target, baseline_sha=index_tree) as prepared:
+            apply_attempted = has_patch
+            proc = (subprocess.run(
+                ["git", "apply", "--3way", "--index", str(patch_path)],
+                cwd=str(target), capture_output=True, text=True,
+            ) if has_patch else subprocess.CompletedProcess([], 0, "", ""))
+            if proc.returncode == 0 and file_rows:
+                try:
+                    apply_attempted = True
+                    prepared.apply()
+                    if not prepared.verify_applied():
+                        raise OSError("file outputs changed before staging")
+                    paths = _stageable_paths(target, prepared.paths)
+                    if paths:
+                        stage = subprocess.run(
+                            ["git", "add", "--pathspec-from-file=-", "--pathspec-file-nul"],
+                            cwd=str(target), capture_output=True,
+                            input=b"\0".join(p.encode("utf-8", errors="surrogateescape") for p in paths) + b"\0",
+                        )
+                        if stage.returncode:
+                            raise OSError((stage.stderr or stage.stdout).decode("utf-8", errors="replace"))
+                except Exception as exc:
+                    partial_applied = has_patch
+                    try:
+                        prepared.rollback()
+                        detail = "file output writes reverted; inspect any applied text patch before retrying"
+                    except Exception as rollback_exc:
+                        partial_applied = True
+                        detail = f"file output rollback incomplete: {rollback_exc}"
+                    proc = subprocess.CompletedProcess([], 1, "", f"{exc}; {detail}")
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError, zipfile.BadZipFile) as exc:
+        proc = subprocess.CompletedProcess([], 1, "", str(exc))
     finally:
         _release_git_lock(_git_lock)
     if proc.returncode != 0:
         stderr = (proc.stderr or proc.stdout or "").strip()
         conflicts = [ln.strip() for ln in stderr.splitlines() if "conflict" in ln.lower() or "patch failed" in ln.lower()]
         _write_verdict(
-            ctx, child_task_id, outcome="conflict", reason=reason, files=touched,
-            manifest=manifest, applied=False, conflicts=conflicts or [stderr[:500]],
+            ctx, child_task_id, outcome="partially_applied" if partial_applied else "conflict", reason=reason, files=touched,
+            manifest=manifest, applied=partial_applied, conflicts=conflicts or [stderr[:500]],
             protected=[p.path for p in protected], target=str(target),
         )
-        return (
-            f"⚠️ INTEGRATE_CONFLICT: 3-way apply of {child_task_id} into {target} did not apply cleanly. "
-            f"git said: {stderr[:600]}\n"
-            "Inspect with vcs_diff and resolve, or run vcs_restore to abort, then retry or pick another child."
-        )
+        detail = ("Integration did not finish cleanly." if apply_attempted else
+                  "Result preparation failed. No file or patch apply was attempted.")
+        next_step = ("Inspect with vcs_diff and resolve, or run vcs_restore to abort, then retry or pick another child."
+                     if apply_attempted else "Inspect the existing target/index state with vcs_diff and resolve it, then retry.")
+        return (f"⚠️ INTEGRATE_CONFLICT: {child_task_id} into {target}: {detail} "
+                f"Details: {stderr[:600]}\n{next_step}")
 
     try:
         invalidate_advisory_after_mutation(
@@ -864,7 +1025,11 @@ def _compare_subagent_patches(ctx: ToolContext, task_ids: Any = None) -> str:
             f"- tracked changed: {len(tracked)} | untracked included: {len(untracked)}\n"
             f"- diffstat: {diffstat or '(none)'}{_format_patch_exclusions(manifest)}\n"
             + (f"- child summary: {result_summary}\n" if result_summary else "")
-            + (f"\n```diff\n{body}\n```\n" if body else "- (no patch body; nothing to apply)\n")
+            + (f"- direct result: {manifest['note']}\n" if manifest.get("capture_kind") == "directory_direct" else "")
+            + (f"- file results: {len(manifest.get('file_output_changes') or [])} captured change(s)\n"
+               if manifest.get("file_output_changes") else "")
+            + (f"\n```diff\n{body}\n```\n" if body else
+               "- No inline patch body; inspect the recorded result and file artifacts.\n")
         )
     parts.append(
         "\nUse integrate_subagent_patch(task_id=...) to apply an isolated patch or verify shared files, "
@@ -938,39 +1103,34 @@ def get_tools() -> List[ToolEntry]:
             {
                 "name": "integrate_delegated_patch",
                 "description": (
-                    "EXPLICITLY apply or reject the captured patch of ONE of your own delegated runs (delegate_start), or a terminal owner's orphan. Applying requires the caller's active Git root or fresh payload binding to equal the run's recorded target. Rejecting a terminal-owner orphan requires only the owner's terminality; it exists to release a dead task's locks and snapshot. A mutating delegated run edits a PRIVATE execution "
-                    "snapshot; its diff is captured at terminal, and NOTHING reaches your tree "
-                    "until you call this. apply = stage the run's diff into your active root "
-                    "(sha256-verified; under the repo git lock every touched path is first "
-                    "compared against the run's baseline, then applied to the working tree and "
-                    "staged; protected paths are gated only when the target IS the Ouroboros "
-                    "repo) — staged, never committed; you remain the sole committer. reject = "
-                    "record a rejection and discard. Either DURABLY RECORDED disposition "
-                    "releases the run's execution snapshot; a CONFLICT (a path drifted since "
-                    "the snapshot) keeps snapshot and patch as resolution material you own. "
-                    "For a skill-payload run (delegate_start root='skill_payload') apply is "
-                    "instead a LIVE apply into the non-Git payload, guarded by a whole-payload "
-                    "content-hash CAS — nothing is staged into your active root — and the "
-                    "skill's existing review goes STALE: it must be re-run before the skill "
-                    "is relied on. Read the captured diff (see delegate_wait's "
-                    "workspace_capture block) before applying — the run's output is a claim, "
-                    "not a verified result. Finalizing your task while one of your runs is neither "
-                    "applied nor rejected leaves your custody audit unreconciled: the task completes as "
-                    "Done with warnings (reason delegated_custody_unreconciled); reject is the closing move."
+                    "EXPLICITLY apply or reject the captured result of ONE terminal delegated run. "
+                    "Git runs edit a private execution snapshot; apply verifies its complete result "
+                    "against the recorded baseline under the repository lock, applies and stages "
+                    "changed files into your active root, and never commits. Skill-payload runs "
+                    "apply LIVE apply into the non-Git payload with content-hash CAS (nothing is staged into your active root) and make its review "
+                    "stale before reuse. Ordinary-folder copies use the engine's complete file "
+                    "manifest and per-file baseline checks; paths may select files and remaining "
+                    "results stay retained. Direct ordinary-folder work has already changed the "
+                    "source: apply acknowledges those effects, reject cannot undo them, and no full "
+                    "rollback is promised. Unapplied copies can be explicitly rejected; conflicts "
+                    "retain their snapshot and results. Read the captured result before deciding. "
+                    "Undisposed snapshots or directory-copy results remain custody debt; direct runs "
+                    "do not create that debt."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "run_id": {"type": "string", "description": "The delegated run whose captured patch to integrate (from delegate_start)."},
-                        "decision": {"type": "string", "enum": ["apply", "reject"], "default": "apply", "description": "apply = integrate the run's captured diff (Git targets: applied and STAGED into your active root; skill-payload runs: applied LIVE into the non-Git payload under the content-hash CAS, nothing staged anywhere); reject = record a rejection and release the snapshot."},
+                        "decision": {"type": "string", "enum": ["apply", "reject"], "default": "apply", "description": "apply = integrate the captured result: Git changes are STAGED into your active root; skill changes are applied LIVE into the non-Git payload with content-hash CAS; directory copies use engine file delivery. reject = explicit discard of unapplied results, never an undo of direct effects."},
+                        "paths": {"type": "array", "items": {"type": "string"}, "description": "For an engine directory copy, optionally select captured file paths to apply. Remaining changes stay retained until applied or explicitly rejected. Omit to apply the complete result."},
                         "reason": {"type": "string", "description": "Optional rationale recorded in the verdict and the durable disposition row."},
                         "acknowledge_ambiguous": {"type": "boolean", "default": False, "description": "Set true ONLY after inspecting an INTEGRATE_DELEGATED_APPLY_AMBIGUOUS state (a crashed apply left a durable unresolved intent): resolves that stale intent and re-runs the normal disposition guards, which re-verify the tree. A no-op when no ambiguity is pending."},
                     },
                     "required": ["run_id"],
                 },
             },
-            lambda ctx, run_id="", decision="apply", reason="", acknowledge_ambiguous=False: _integrate_delegated_patch(
-                ctx, run_id, decision, reason, acknowledge_ambiguous=bool(acknowledge_ambiguous)),
+            lambda ctx, run_id="", decision="apply", reason="", acknowledge_ambiguous=False, paths=None: _integrate_delegated_patch(
+                ctx, run_id, decision, reason, acknowledge_ambiguous=bool(acknowledge_ambiguous), paths=paths),
         ),
     ]
 

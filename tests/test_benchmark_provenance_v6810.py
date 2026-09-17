@@ -14,6 +14,7 @@ Two claims a benchmark artefact must never make falsely:
 
 from __future__ import annotations
 
+import ast
 import json
 import pathlib
 import re
@@ -539,6 +540,8 @@ def test_task_result_row_publishes_the_runtime_reason_alongside_the_adapter_stag
 # enforces — a new runtime code with no row here fails the suite, which is the only thing
 # that stops the vocabulary from being hand-copied beside the check again.
 _TRUNCATION_DECISIONS: dict[str, tuple[bool, str]] = {
+    "history_source_unavailable": (False, "gateway/history_paging.py: readable recent projection with explicit source gap; no task attempt was truncated"),
+    "late_answer_not_delivered": (False, "gateway/task_decision.py: a late quiz answer was recorded but its chat delivery failed (503, retry); no task attempt was truncated"),
     # -- truncating: the rail stopped the attempt, so reward 0 is not a capability fact ----
     "budget_exhausted": (True, "loop.py:287 per-task USD reservation rail"),
     "round_limit": (True, "loop.py:3128 _handle_round_limit, the round cap"),
@@ -653,6 +656,10 @@ _TRUNCATION_DECISIONS: dict[str, tuple[bool, str]] = {
         "gateway/task_decision.py verbatim-comment refusal (400) — refuses instead of truncating",
     ),
     "option_index_invalid": (False, "gateway/task_decision.py ingress refusal (400)"),
+    "quiz_history_write_failed": (
+        False,
+        "gateway/task_decision.py retryable owner-answer history append refusal (503); never a task terminal or trial truncation",
+    ),
     "mailbox_write_failed": (
         False,
         "gateway/task_hurry.py fail-closed hurry ingress refusal (503); never a task terminal",
@@ -695,6 +702,9 @@ _TRUNCATION_DECISIONS: dict[str, tuple[bool, str]] = {
         False,
         "gateway/skill_publish.py successful read-only preflight fact; never a task terminal",
     ),
+    "runtime_missing": (False, "Betterleaks runtime availability; no task finalization"),
+    "scanner_report_invalid": (False, "Publication scanner repair evidence; no task finalization"),
+    "task_admission_unavailable": (False, "Publication task was not admitted; no running task truncated"),
     # Issue #265: these are structured failures of one recoverable publish-tool
     # call. They return to the next LLM turn with a repair hint; none is the
     # managed task's terminal reason or evidence that a benchmark trial was cut
@@ -719,10 +729,29 @@ def _runtime_reason_code_literals() -> dict[str, str]:
     """Every literal reason code the runtime source assigns, with its first emitting line."""
     root = pathlib.Path(__file__).resolve().parents[1] / "ouroboros"
     found: dict[str, str] = {}
+
+    def values(node):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            yield node.value
+        elif isinstance(node, ast.IfExp):
+            yield from values(node.body)
+            yield from values(node.orelse)
+        elif isinstance(node, ast.BoolOp):
+            for value in node.values:
+                yield from values(value)
+
     for path in sorted(root.rglob("*.py")):
-        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        source = path.read_text(encoding="utf-8")
+        for lineno, line in enumerate(source.splitlines(), 1):
             for match in _REASON_CODE_LITERAL.finditer(line):
                 found.setdefault(match.group(1), f"{path.relative_to(root.parent)}:{lineno}")
+        # Conditional/fallback reason values remain producers; their spelling
+        # need not be adjacent to the keyword on one source line.
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.keyword) and node.arg == "reason_code":
+                for code in values(node.value):
+                    if code:
+                        found.setdefault(code, f"{path.relative_to(root.parent)}:{node.lineno}")
     for code in WIRE_REASON_CODES:
         found.setdefault(code, "ouroboros/request_wire_contract.py:WIRE_REASON_CODES")
     return found

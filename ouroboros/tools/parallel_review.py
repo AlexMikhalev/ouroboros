@@ -11,7 +11,7 @@ import time
 
 from ouroboros.utils import run_cmd
 from ouroboros.review_substrate import scope_reviewer_slots
-from ouroboros.tools.review_helpers import build_scope_actor_record, format_review_history_entry
+from ouroboros.tools.review_helpers import build_scope_actor_record, format_review_history_entry, review_enforcement_blocks
 from ouroboros.tools.scope_review import (
     run_scope_review,
     ScopeReviewResult,
@@ -160,7 +160,7 @@ def _format_scope_advisory_msg(scope_result) -> str:
     """Format advisory scope findings as a readable message (advisory enforcement path)."""
     parts = []
     if scope_result.critical_findings:
-        parts.append("Scope advisory findings (enforcement=advisory):\n" +
+        parts.append("Scope review findings:\n" +
                      "\n".join(f"  • {f['item']}: {f.get('reason', '')}"
                                 for f in scope_result.critical_findings))
     if scope_result.advisory_findings:
@@ -493,7 +493,7 @@ def _run_scope(ctx, commit_message, scope_rows, dispatch, *, goal, scope,
         )
         if partial_quorum_shortfall:
             from ouroboros.config import get_review_enforcement
-            if get_review_enforcement() == "blocking":
+            if review_enforcement_blocks(get_review_enforcement()):
                 blocked = True
                 block_messages.append(_qmsg)
         # Surface any non-blocking shortfall LOUDLY (advisory, never a silent
@@ -742,7 +742,7 @@ def run_parallel_review(
             from ouroboros.config import get_review_enforcement
 
             blocking_review = bool((triad_prepared or {}).get(
-                "blocking_review", get_review_enforcement() == "blocking"))
+                "blocking_review", review_enforcement_blocks(get_review_enforcement()))) and review_enforcement_blocks("blocking")
             if not hasattr(ctx, "_review_degraded_reasons"):
                 ctx._review_degraded_reasons = []
             ctx._review_degraded_reasons.append(
@@ -969,20 +969,22 @@ def aggregate_review_verdict(review_err, scope_result, triad_block_reason, triad
         "responded", "skipped_low_context_mode", "not_dispatched",
     }]
     technical_scope = bool(failed_scope) and all(review_failure_is_technical(row) for row in failed_scope)
-    if (get_review_enforcement() == "advisory"
+    cyber = not review_enforcement_blocks("blocking")
+    if cyber or (get_review_enforcement() == "advisory"
             and (not review_err or triad_block_reason == "fixed_overflow")
             and (scope_result is None or not scope_result.blocked or technical_scope)):
         from ouroboros.tools.review import _record_advisory_override
 
         disclosure = (
-            "Review enforcement=advisory: technical review failure permits continuing "
-            "on the independently bound candidate; failed or missing review is not a PASS.\n"
+            ("Cyber Pro: independent review does not prohibit action " if cyber else
+             "Review enforcement=advisory: technical review failure permits continuing ")
+            + "on the independently bound candidate; failed or missing review is not a PASS.\n"
             + combined_msg
         )
         ctx._last_review_block_reason = block_reason
         _record_advisory_override(ctx, disclosure)
         ctx._review_advisory.append(disclosure)
-        ctx._review_degraded_reasons = list(getattr(ctx, "_review_degraded_reasons", []) or []) + ["review_technical_failure_advisory"]
+        ctx._review_degraded_reasons = list(getattr(ctx, "_review_degraded_reasons", []) or []) + ["review_cyber_authority" if cyber else "review_technical_failure_advisory"]
         return False, combined_msg, block_reason, _combined_findings, _scope_advisory_items
 
     return True, combined_msg, block_reason, _combined_findings, _scope_advisory_items

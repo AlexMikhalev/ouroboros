@@ -12,7 +12,7 @@ import json
 import logging
 import pathlib
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from ouroboros.contracts.schema_versions import SCHEMA_VERSION_KEY
 from ouroboros.utils import utc_now_iso
@@ -96,16 +96,20 @@ def persist_queue_snapshot(reason: str = "") -> bool:
 
             _ws = list(_workers_mod.WORKERS.values())
             worker_total = len(_ws)
-            worker_pool_disabled_reason = str(
-                getattr(_workers_mod, "_WORKER_POOL_DISABLED_REASON", "") or ""
-            )
+            active_worker_count = sum(1 for w in _ws if getattr(w, "active_capacity", True))
+            parked_worker_count = worker_total - active_worker_count
+            worker_pool_disabled_reason = _workers_mod._worker_pool_execution_state()["disabled_reason"]
+            if worker_pool_disabled_reason == "no_workers":
+                worker_pool_disabled_reason = ""  # Absence is counted above, not an explicit disablement.
             reaping_count = sum(1 for _w in _ws if getattr(_w, "reaping", False))
             assignable_idle_workers = sum(
                 1 for _w in _ws
-                if getattr(_w, "busy_task_id", None) is None and not getattr(_w, "reaping", False)
+                if (getattr(_w, "busy_task_id", None) is None and not getattr(_w, "reaping", False)
+                    and getattr(_w, "active_capacity", True))
             )
         except Exception:
             worker_total = 0
+            active_worker_count = parked_worker_count = 0
             worker_pool_disabled_reason = "unknown"
             reaping_count = 0
             assignable_idle_workers = 0
@@ -152,6 +156,7 @@ def persist_queue_snapshot(reason: str = "") -> bool:
                 "review_reason": t.get("review_reason"), "review_source_task_id": t.get("review_source_task_id"),
                 "_budget_pause": t.get("_budget_pause"), "budget_resumed_at": t.get("budget_resumed_at"), "_terminalization_retry": t.get("_terminalization_retry"),
                 "_cancel_intent_authority_hold": t.get("_cancel_intent_authority_hold"),
+                "_owner_wait_resume": t.get("_owner_wait_resume"),
             },
         })
     running_rows = []
@@ -164,6 +169,7 @@ def persist_queue_snapshot(reason: str = "") -> bool:
         running_rows.append({
             "id": task_id, "type": task.get("type"), "priority": task.get("priority"),
             "attempt": meta.get("attempt"), "worker_id": meta.get("worker_id"),
+            "owner_wait": meta.get("owner_wait"), "started_at": started,
             "runtime_sec": round(max(0.0, now - started), 2) if started > 0 else 0.0,
             "quota_wait_sec": quota_waited_seconds(meta, now),
             "execution_sec": max(0.0, now - started - quota_waited_seconds(meta, now)) if started > 0 else 0.0,
@@ -177,6 +183,7 @@ def persist_queue_snapshot(reason: str = "") -> bool:
         "pending_count": len(pending_items), "running_count": len(running_items),
         "reaping_count": reaping_count,
         "worker_total": worker_total,
+        "active_worker_count": active_worker_count, "parked_worker_count": parked_worker_count,
         "worker_pool_disabled_reason": worker_pool_disabled_reason,
         "assignable_idle_workers": assignable_idle_workers,
         "acceptance_fences": acceptance_fences,
@@ -203,8 +210,102 @@ def parse_iso_to_ts(iso_ts: str) -> Optional[float]:
         return None
 
 
-def restore_pending_from_snapshot(max_age_sec: int = 900) -> int:
-    """Restore recent pending tasks from queue snapshot."""
+def _fence_snapshot_running_rows(rows: Any, *, restored_ids: "set[str]") -> "list[str]":
+    """Fence every RUNNING row that survived the shutdown with a durable cancel intent.
+
+    Restore is the last holder of the pre-restart running list, but it is NOT a
+    terminal writer: minting the intent hands each row to the one settle owner,
+    which claims it, kills a worker that outlived SIGTERM, reconciles, and only
+    then writes the terminal with its own text — expiring an open quiz and
+    closing the paired owner wait through the task-done seam. A second writer
+    here would race that surviving worker; an intent cannot. An UNREADABLE
+    cancel authority mints nothing: the unknown is disclosed, never fenced, and
+    neither is a row with no durable result — custody would settle that intent as
+    not_found and write nothing, leaving the boot notice naming a cancellation
+    that never happens. Returns the fenced task ids.
+    """
+    from ouroboros.cancel_intents import has_active_intent, request_cancel
+    from ouroboros.task_results import (
+        _TRULY_TERMINAL_STATUSES, STATUS_CANCEL_REQUESTED, load_task_result,
+    )
+
+    fenced: list[str] = []
+    unreadable: list[str] = []
+    unrecorded: list[str] = []
+    for row in rows if isinstance(rows, list) else []:
+        task_id = str(row.get("id") or "") if isinstance(row, dict) else ""
+        if not task_id or task_id in restored_ids:
+            continue
+        try:
+            stored = load_task_result(_queue().DRIVE_ROOT, task_id, strict=True) or {}
+            if not stored:
+                # Admission writes the durable scheduled row (task_admission.py
+                # :536-543), so even a failed RUNNING mirror leaves a readable
+                # row this loop fences; reaching here means the admission record
+                # is missing or was deleted, and custody cannot settle an id it
+                # has no record of, so the row is logged and never fenced.
+                unrecorded.append(task_id)
+                continue
+            status = str(stored.get("status") or "")
+            if status in _TRULY_TERMINAL_STATUSES or status == STATUS_CANCEL_REQUESTED:
+                continue
+            if has_active_intent(_queue().DRIVE_ROOT, task_id, strict=True):
+                continue  # cancellation custody already owns this row
+            intent = request_cancel(
+                _queue().DRIVE_ROOT, task_id,
+                reason="server_shutdown", source="snapshot_restore",
+            )
+        except Exception:
+            unreadable.append(task_id)
+            log.warning("Snapshot restore left running row %s unfenced: its cancel "
+                        "authority is unreadable", task_id, exc_info=True)
+            continue
+        if not intent.get("already_settled"):
+            fenced.append(task_id)
+    for kind, task_ids in (("queue_restore_running_fence_unreadable", unreadable),
+                           ("queue_restore_running_row_without_result", unrecorded)):
+        if task_ids:
+            _queue().append_jsonl(
+                _queue().DRIVE_ROOT / "logs" / "supervisor.jsonl",
+                {"ts": utc_now_iso(), "type": kind, "task_ids": task_ids},
+            )
+    return fenced
+
+
+def _record_queue_restore(
+    *, restored: int = 0, skipped_terminal: int = 0,
+    cancel_authority_holds: Optional[list] = None, blocked_admission: Optional[list] = None,
+    invalid_task_depth: Optional[list] = None, terminalized_running: Optional[list] = None,
+) -> None:
+    """The one durable row a restore leaves: what it revived, what it left to
+    cancellation custody, and which surviving RUNNING rows it fenced. A stale
+    snapshot with nothing to revive still records the fences it minted."""
+    if not (restored or skipped_terminal or blocked_admission or terminalized_running):
+        return
+    _queue().append_jsonl(
+        _queue().DRIVE_ROOT / "logs" / "supervisor.jsonl",
+        {
+            "ts": utc_now_iso(),
+            "type": "queue_restored_from_snapshot",
+            "restored_pending": restored,
+            "skipped_terminal": skipped_terminal,
+            "cancel_authority_holds": list(cancel_authority_holds or []),
+            "blocked_admission": list(blocked_admission or []),
+            "invalid_task_depth": list(invalid_task_depth or []),
+            "terminalized_running": list(terminalized_running or []),
+        },
+    )
+
+
+def restore_pending_from_snapshot(
+    max_age_sec: int = 900, *, terminalized: Optional[list] = None,
+) -> int:
+    """Restore recent pending tasks from queue snapshot.
+
+    Returns the number of PENDING rows revived. ``terminalized`` collects the ids
+    of surviving RUNNING rows fenced with a cancel intent, so the caller can name
+    them without changing what the returned count means.
+    """
     if _queue().PENDING:
         return 0
     try:
@@ -217,8 +318,7 @@ def restore_pending_from_snapshot(max_age_sec: int = 900) -> int:
         ts_unix = _queue().parse_iso_to_ts(ts)
         if ts_unix is None:
             return 0
-        if (time.time() - ts_unix) > max_age_sec:
-            return 0
+        stale = (time.time() - ts_unix) > max_age_sec
         from ouroboros.task_results import (
             _TRULY_TERMINAL_STATUSES, STATUS_CANCEL_REQUESTED, STATUS_CANCELLED,
             load_task_result, write_task_result,
@@ -230,6 +330,25 @@ def restore_pending_from_snapshot(max_age_sec: int = 900) -> int:
             for row in (snap.get("pending") or [])
             if isinstance(row, dict) and isinstance(row.get("task"), dict)
         ]
+        from ouroboros.owner_wait import restore_owner_wait_allowed
+
+        snapshot_pending = [
+            task for task in snapshot_pending
+            if (not task.get("_owner_wait_resume") and not stale)
+            or (task.get("_owner_wait_resume") and restore_owner_wait_allowed(_queue().DRIVE_ROOT, task))
+        ]
+        # The pre-restart RUNNING rows are read HERE, before the stale gate: this
+        # is the last moment the list exists, and a stale snapshot is exactly the
+        # case where nothing else will ever settle them.
+        fenced_running = _fence_snapshot_running_rows(
+            snap.get("running"),
+            restored_ids={str(task.get("id") or "") for task in snapshot_pending},
+        )
+        if terminalized is not None:
+            terminalized.extend(fenced_running)
+        if stale and not snapshot_pending:
+            _record_queue_restore(terminalized_running=fenced_running)
+            return 0
         snapshot_pending, pending_by_id, restored = restore_terminalization_retry_rows(
             snapshot_pending, pending=_queue().PENDING, running=_queue().RUNNING,
             queue_seq_counter_ref=_queue().QUEUE_SEQ_COUNTER_REF, sort_pending=_queue().sort_pending,
@@ -241,6 +360,10 @@ def restore_pending_from_snapshot(max_age_sec: int = 900) -> int:
                 {"ts": utc_now_iso(), "type": "queue_restore_invalid_budget_root_fences",
                  "action": "fail_closed_no_restore"},
             )
+            # The fence was already minted above, and the boot notice names it:
+            # a fail-closed exit may skip the restore, never the record of what
+            # it handed to cancellation custody.
+            _record_queue_restore(restored=restored, terminalized_running=fenced_running)
             return restored
         if malformed_fences:
             affected = [str(task.get("id") or "") for task in snapshot_pending if task.get("id")]
@@ -270,6 +393,7 @@ def restore_pending_from_snapshot(max_age_sec: int = 900) -> int:
                         )
             except Exception:
                 log.warning("Failed to terminalize tasks from invalid acceptance-fence snapshot", exc_info=True)
+            _record_queue_restore(restored=restored, terminalized_running=fenced_running)
             return restored
 
         skipped_terminal, invalid_depth_restore = 0, []
@@ -414,18 +538,12 @@ def restore_pending_from_snapshot(max_age_sec: int = 900) -> int:
                     "root_task_ids": sorted(fenced_roots),
                 },
             )
-        if restored > 0 or skipped_terminal > 0 or blocked_restore:
-            _queue().append_jsonl(
-                _queue().DRIVE_ROOT / "logs" / "supervisor.jsonl",
-                {
-                    "ts": utc_now_iso(),
-                    "type": "queue_restored_from_snapshot",
-                    "restored_pending": restored,
-                    "skipped_terminal": skipped_terminal,
-                    "cancel_authority_holds": cancel_authority_holds,
-                    "blocked_admission": blocked_restore, "invalid_task_depth": invalid_depth_restore,
-                },
-            )
+        _record_queue_restore(
+            restored=restored, skipped_terminal=skipped_terminal,
+            cancel_authority_holds=cancel_authority_holds,
+            blocked_admission=blocked_restore, invalid_task_depth=invalid_depth_restore,
+            terminalized_running=fenced_running,
+        )
         from supervisor.queue_transitions import sweep_orphaned_budget_fences
 
         sweep_orphaned_budget_fences(

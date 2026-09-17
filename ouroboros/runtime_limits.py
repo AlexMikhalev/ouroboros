@@ -8,17 +8,22 @@ falls back to the shipped value instead of disabling a rail.
 
 from __future__ import annotations
 
-import os
 from typing import Optional
 
 from ouroboros.settings_defaults import (
+    FINALIZATION_GRACE_DEFAULT_SEC,
     PACING_INTERVAL_DEFAULT_SEC,
     SETTINGS_DEFAULTS,
     SUPERVISOR_LIVENESS_DEADLINE_DEFAULT_SEC,
 )
+from ouroboros.settings_integrity import runtime_setting
 
 # Local model-operation status polling; not a provider deadline or quota timer.
 CLAUDEXOR_MODEL_POLL_INTERVAL_SEC = 0.25
+# Existing CLI RPC (10s), termination confirmation (20s), and process startup slack.
+CLAUDEXOR_OPERATOR_STOP_TIMEOUT_SEC = 35.0
+# Physical exit observation after a clean operator-stop receipt, not a task deadline.
+CLAUDEXOR_STOP_EXIT_WAIT_SEC = 5.0
 
 
 EXTENSION_STREAM_CHUNK_BYTES = 64 * 1024
@@ -60,7 +65,7 @@ def _clamped_number_setting(key: str, *, low, high=float("inf"), cast=float):
     shipped default. SSOT for the clamped scalar getters below — the seven of them were
     byte-identical except for key, caster and bounds (P7 DRY)."""
     try:
-        value = cast(os.environ.get(key, "") or SETTINGS_DEFAULTS[key])
+        value = cast(runtime_setting(key, "") or SETTINGS_DEFAULTS[key])
     except (TypeError, ValueError):
         value = cast(SETTINGS_DEFAULTS[key])
     return max(low, min(value, high))
@@ -69,7 +74,7 @@ def _clamped_number_setting(key: str, *, low, high=float("inf"), cast=float):
 def _bounded_positive_int_setting(key: str, *, default: int, hard_max: int, min_value: int = 1) -> int:
     """Bounded int setting; below ``min_value`` it is a typo and falls back to ``default``. Only
     subagent depth passes 0 — there an explicit 0 is a real owner choice, not unset (owner Q26)."""
-    raw = os.environ.get(key, SETTINGS_DEFAULTS.get(key, default))
+    raw = runtime_setting(key, SETTINGS_DEFAULTS.get(key, default))
     try:
         parsed = int(raw)
     except (TypeError, ValueError):
@@ -179,7 +184,7 @@ def get_vision_caption_timeout_sec() -> int:
 
 def get_pacing_interval_sec(settings: Optional[dict] = None) -> int:
     """Intrinsic self-pacing checkpoint cadence in seconds (0 disables)."""
-    raw = os.environ.get("OUROBOROS_PACING_INTERVAL_SEC")
+    raw = runtime_setting("OUROBOROS_PACING_INTERVAL_SEC")
     if raw is None and isinstance(settings, dict):
         raw = settings.get("OUROBOROS_PACING_INTERVAL_SEC")
     try:
@@ -191,7 +196,7 @@ def get_pacing_interval_sec(settings: Optional[dict] = None) -> int:
 
 def get_supervisor_liveness_deadline_sec(settings: Optional[dict] = None) -> int:
     """Supervisor-loop stall deadline in seconds (0 disables the watchdog)."""
-    raw = os.environ.get("OUROBOROS_SUPERVISOR_LIVENESS_DEADLINE_SEC")
+    raw = runtime_setting("OUROBOROS_SUPERVISOR_LIVENESS_DEADLINE_SEC")
     if raw is None and isinstance(settings, dict):
         raw = settings.get("OUROBOROS_SUPERVISOR_LIVENESS_DEADLINE_SEC")
     try:
@@ -250,8 +255,79 @@ def get_delegate_wait_sec() -> int:
         "OUROBOROS_DELEGATE_WAIT_SEC", low=1, high=get_delegate_wait_max_sec(), cast=int)
 
 
+# Consciousness wake-ups. The interval between wakes is the MODEL's choice (``set_next_wakeup``),
+# clamped to [``get_bg_wakeup_min_sec``, ``get_bg_wakeup_max_sec``]; WAKE_DEFAULT_SEC is the interval
+# used when it has chosen none — 55 minutes, just under the default ``OUROBOROS_PROMPT_CACHE_TTL``
+# of 1 h, so the shared prefix is still warm on TTL-metered routes when the next wake lands. SSOT
+# for the alarm; ``consciousness.py`` adopts these readers in P2.
+WAKE_DEFAULT_SEC = 3300
+CONSCIOUSNESS_AUTONOMY_LEVELS = ("observe", "act", "full")
+# The usage ledger keeps every attempt younger than this UNFOLDED (``usage_compaction``
+# ``_foldable_attempt_ids``): a folded group row is stamped with the compaction instant,
+# so only unfolded rows keep the true spend time the rolling consciousness allowance
+# (``consciousness_allowance``, a 24 h window) reads. Twice the window, so a root that
+# spent inside the window is still attributable when the window closes.
+USAGE_LEDGER_FOLD_MIN_AGE_SEC = 48 * 3600
+
+
+def get_consciousness_autonomy() -> str:
+    """What a consciousness wake may do: ``observe`` | ``act`` | ``full``. A closed enum read the
+    ``resolve_effort`` way — an unknown value is a typo, not a new level, and falls back to the
+    shipped default rather than widening or silently disabling what consciousness may do."""
+    value = str(runtime_setting("OUROBOROS_CONSCIOUSNESS_AUTONOMY", "") or "").strip().lower()
+    if value in CONSCIOUSNESS_AUTONOMY_LEVELS:
+        return value
+    return str(SETTINGS_DEFAULTS["OUROBOROS_CONSCIOUSNESS_AUTONOMY"])
+
+
+def get_consciousness_daily_usd() -> float:
+    """Rolling-24h USD ceiling on consciousness spend — its wakes plus the tasks they start.
+    ``0`` is a real owner choice, not unset: consciousness may not spend at all."""
+    return _clamped_number_setting("OUROBOROS_CONSCIOUSNESS_DAILY_USD", low=0.0)
+
+
+def get_consciousness_max_tasks() -> int:
+    """How many consciousness-started tasks may run at once; ``0`` = never start tasks (the explicit
+    zero of ``get_max_subagent_depth``). The hard max is a sanity ceiling — the real bounds are the
+    daily allowance and the worker pool, not this number."""
+    return _bounded_positive_int_setting(
+        "OUROBOROS_CONSCIOUSNESS_MAX_TASKS",
+        default=int(SETTINGS_DEFAULTS["OUROBOROS_CONSCIOUSNESS_MAX_TASKS"]),
+        hard_max=32,
+        min_value=0,
+    )
+
+
+def get_bg_wakeup_min_sec() -> int:
+    """Lower bound of the wake-up interval, floored at 60s so a typo cannot busy-wake the tick."""
+    return _clamped_number_setting("OUROBOROS_BG_WAKEUP_MIN", low=60, cast=int)
+
+
+def get_bg_wakeup_max_sec() -> int:
+    """Upper bound of the wake-up interval; never below the lower bound, so an inverted pair
+    collapses to a fixed interval instead of an empty range."""
+    return _clamped_number_setting(
+        "OUROBOROS_BG_WAKEUP_MAX", low=get_bg_wakeup_min_sec(), cast=int)
+
+
 def get_search_code_wall_sec() -> float:
     """Total wall-clock budget (seconds) for ONE search_code call — bounds both the rg
     directory walk and the batched rg loop so a scan over a very large root cannot run
     unbounded. Env/setting: ``OUROBOROS_SEARCH_CODE_WALL_SEC`` (floored at 5s)."""
     return _clamped_number_setting("OUROBOROS_SEARCH_CODE_WALL_SEC", low=5.0)
+
+
+def get_finalization_grace_sec(settings: Optional[dict] = None) -> int:
+    """Grace window in seconds: env, else the ``settings`` argument, else the
+    shipped default — the ``_clamped_number_setting`` shape. Deliberately NO
+    ``load_settings()`` fallback: a READ must never persist settings, and that
+    call runs the context-mode compatibility migration, which can WRITE a
+    normalized file under read-only observers (``task_pacing._reserve_sec``)."""
+    raw = runtime_setting("OUROBOROS_FINALIZATION_GRACE_SEC")
+    if raw is None and isinstance(settings, dict):
+        raw = settings.get("OUROBOROS_FINALIZATION_GRACE_SEC")
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        parsed = int(FINALIZATION_GRACE_DEFAULT_SEC)
+    return max(0, min(parsed, 300))

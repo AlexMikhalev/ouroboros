@@ -79,6 +79,40 @@ def _subagent_projects_read_hint(
         return ""
 
 
+def _delegated_capture_read_hint(ctx: Any, resolved: pathlib.Path) -> str:
+    """A targeted refusal for a path that IS a delegated-run capture.
+
+    The generic four-root text cannot bind ANOTHER task's artifact store, so an
+    authorized orphan disposer was told to use roots that structurally cannot
+    reach the capture it had been sent to dispose, and escalated a manual
+    file-attach question to the owner instead. Name the route that exists.
+
+    Derived from the PATH SHAPE alone: a refusal must not replay the custody
+    log, so this states the owning task and the capture directory (both in the
+    path) and names the tool, rather than resolving the run id.
+    """
+    try:
+        from ouroboros.artifacts import DELEGATED_CAPTURE_PREFIX
+        from ouroboros.headless import ARTIFACTS_DIR
+
+        artifacts_root = (
+            pathlib.Path(_tool_access().canonical_data_root(ctx)) / ARTIFACTS_DIR
+        ).resolve(strict=False)
+        parts = pathlib.Path(resolved).resolve(strict=False).relative_to(artifacts_root).parts
+        if len(parts) < 3 or parts[1] != DELEGATED_CAPTURE_PREFIX:
+            return ""
+        return (
+            f"this is a delegated-run capture owned by task {parts[0]} (capture directory "
+            f"{parts[1]}/{parts[2]}); user_files never binds another task's artifact store. "
+            "Dispose it with integrate_delegated_patch(run_id=...), which reads the patch and "
+            "verifies it against the recorded sha256 manifest; while you are authorized to "
+            "dispose it (the owning task is terminal and you are a top-level task), "
+            "read_file(root='artifact_store') reaches this absolute path too"
+        )
+    except Exception:
+        return ""
+
+
 def user_files_path_block_reason(
     ctx: Any,
     candidate: pathlib.Path,
@@ -97,6 +131,12 @@ def user_files_path_block_reason(
     """
 
     resolved = pathlib.Path(candidate).expanduser().resolve(strict=False)
+    from ouroboros.config import get_runtime_mode
+    from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+    from ouroboros.tool_access import active_tool_profile
+
+    if mode_has_unrestricted_agency(get_runtime_mode()) and active_tool_profile(ctx) != "local_readonly_subagent":
+        return ""
     home = _tool_access()._user_files_root()
     outside_home = not _tool_access().path_is_relative_to(resolved, home) and not _tool_access()._path_is_relative_to_casefold(resolved, home)
     # External-workspace tasks may reach host scratch outside home (/tmp, /build,
@@ -170,6 +210,9 @@ def user_files_path_block_reason(
                 projects_hint = _subagent_projects_read_hint(ctx, resolved, hard_protected_roots)
                 if projects_hint:
                     return projects_hint
+                capture_hint = _delegated_capture_read_hint(ctx, resolved)
+                if capture_hint:
+                    return capture_hint
                 return (
                     "path overlaps the Ouroboros repo/runtime workspace; use "
                     "root=active_workspace, root=task_drive, root=artifact_store, "
@@ -236,7 +279,12 @@ def resolve_user_file_path(
         # (/tmp, /build, sibling checkouts) — for them the generic
         # user_files_path_block_reason below stays the authority, mirroring its
         # own is_external_workspace carve-out.
-        if not allow_outside_home and not _tool_access().is_external_workspace(ctx):
+        from ouroboros.config import get_runtime_mode
+        from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+        from ouroboros.tool_access import active_tool_profile
+
+        cyber = mode_has_unrestricted_agency(get_runtime_mode()) and active_tool_profile(ctx) != "local_readonly_subagent"
+        if not allow_outside_home and not cyber and not _tool_access().is_external_workspace(ctx):
             home_resolved = home.resolve(strict=False)
             # Case-insensitive-platform parity with the user_files_path_block_reason
             # authority: a differently-cased safe home path must not be rejected

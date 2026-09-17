@@ -4,12 +4,13 @@ Also covers the core governance artifact invariants introduced in the
 'Core Governance Artifacts' section of docs/DEVELOPMENT.md:
   - repo_read default max_lines raised to 2000 so ARCHITECTURE.md is
     readable in a single call.
-  - BackgroundConsciousness._build_context() includes ARCHITECTURE.md.
+  - the wake-up's Main context (build_llm_messages) includes ARCHITECTURE.md.
   - Triad review prompt includes ARCHITECTURE.md even when not touched.
   - DEVELOPMENT.md contains the core governance artifact invariant rule.
 """
 
 from unittest.mock import MagicMock
+from tests._governance_docs_shared import development_text
 
 
 def _make_ctx(tmp_path):
@@ -82,17 +83,17 @@ def test_data_read_propagates_non_filenotfound_errors(tmp_path, monkeypatch):
     ctx = MagicMock()
     ctx.drive_path.side_effect = lambda p: tmp_path / p
 
-    def _raise_permission(path):
+    def _raise_permission(path, extent=None):
         raise PermissionError(13, "Permission denied", str(path))
 
-    monkeypatch.setattr(core_mod, "read_text", _raise_permission)
+    monkeypatch.setattr(core_mod, "_read_source_text", _raise_permission)
     with pytest.raises(PermissionError):
         _data_read(ctx, "memory/scratchpad.md")
 
-    def _raise_is_dir(path):
+    def _raise_is_dir(path, extent=None):
         raise IsADirectoryError(21, "Is a directory", str(path))
 
-    monkeypatch.setattr(core_mod, "read_text", _raise_is_dir)
+    monkeypatch.setattr(core_mod, "_read_source_text", _raise_is_dir)
     with pytest.raises(IsADirectoryError):
         _data_read(ctx, "memory/knowledge/")
 
@@ -108,10 +109,10 @@ def test_data_read_toctou_race_handled_by_sentinel(tmp_path, monkeypatch):
     ctx = MagicMock()
     ctx.drive_path.side_effect = lambda p: tmp_path / p
 
-    def _raise_file_not_found(path):
+    def _raise_file_not_found(path, extent=None):
         raise FileNotFoundError(2, "No such file or directory", str(path))
 
-    monkeypatch.setattr(core_mod, "read_text", _raise_file_not_found)
+    monkeypatch.setattr(core_mod, "_read_source_text", _raise_file_not_found)
 
     result = _data_read(ctx, "memory/racy.md")
     assert "DATA_NOT_YET_CREATED" in result
@@ -227,92 +228,75 @@ def test_repo_read_can_read_architecture_md_in_one_call(tmp_path):
     assert f"line {n_lines}" in result
 
 
-def test_consciousness_context_includes_architecture_md(tmp_path):
-    """BackgroundConsciousness._build_context must include ARCHITECTURE.md section."""
-    import queue
-    from unittest.mock import patch, MagicMock
+def _wake_context(tmp_path):
+    """The system text a consciousness wake-up gets: Main's own builder over a wake-shaped task."""
+    from ouroboros.context import build_llm_messages
+    from ouroboros.memory import Memory
 
-    # Minimal fake repo tree
+    class FakeEnv:
+        def drive_path(self, p):
+            return tmp_path / "data" / p
+
+        def repo_path(self, p):
+            return tmp_path / "repo" / p
+
+        @property
+        def repo_dir(self):
+            return tmp_path / "repo"
+
+        @property
+        def drive_root(self):
+            return tmp_path / "data"
+
+    drive_root = tmp_path / "data"
+    for rel in ("logs", "state", "memory"):
+        (drive_root / rel).mkdir(parents=True, exist_ok=True)
+    (drive_root / "state" / "state.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "repo" / "prompts").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "repo" / "prompts" / "SYSTEM.md").write_text("System prompt", encoding="utf-8")
+    task = {"id": "wake1", "type": "task", "text": "[Wake-up · heartbeat]", "_is_direct_chat": True,
+            "metadata": {"initiator": "consciousness", "usage_category": "consciousness",
+                         "consciousness_autonomy": "act"}}
+    messages, _cap = build_llm_messages(env=FakeEnv(), memory=Memory(drive_root=drive_root, repo_dir=tmp_path / "repo"), task=task)
+    return "\n\n".join(block["text"] for block in messages[0]["content"])
+
+
+def test_wake_context_includes_architecture_md(tmp_path):
+    """A consciousness wake-up reads the same governance artifacts as any Main turn."""
     repo_dir = tmp_path / "repo"
     (repo_dir / "docs").mkdir(parents=True)
     (repo_dir / "BIBLE.md").write_text("# BIBLE", encoding="utf-8")
     (repo_dir / "docs" / "ARCHITECTURE.md").write_text(
         "# ARCHITECTURE\n\nThis is the architecture doc.", encoding="utf-8"
     )
-    (repo_dir / "prompts" / "CONSCIOUSNESS.md").mkdir(parents=True, exist_ok=True) if False else None
-    # Consciousness prompt (optional — can be missing)
 
-    drive_root = tmp_path / "data"
-    (drive_root / "logs").mkdir(parents=True)
-    (drive_root / "state").mkdir(parents=True)
-    (drive_root / "state" / "state.json").write_text("{}", encoding="utf-8")
-    (drive_root / "memory").mkdir(parents=True)
-
-    eq = queue.Queue()
-
-    from ouroboros.consciousness import BackgroundConsciousness
-
-    with patch.object(BackgroundConsciousness, "_build_registry", return_value=MagicMock()), \
-         patch("ouroboros.consciousness.build_memory_sections", return_value=[]), \
-         patch("ouroboros.consciousness.build_health_invariants", return_value=""), \
-         patch("ouroboros.consciousness.build_runtime_section", return_value="## Runtime\n\nok"), \
-         patch("ouroboros.consciousness.build_recent_sections", return_value=[]):
-        bc = BackgroundConsciousness(
-            drive_root=drive_root,
-            repo_dir=repo_dir,
-            event_queue=eq,
-            owner_chat_id_fn=lambda: 1,
-        )
-        context = bc._build_context()
+    context = _wake_context(tmp_path)
 
     assert "## ARCHITECTURE.md" in context, (
-        "BackgroundConsciousness._build_context() must include a '## ARCHITECTURE.md' section. "
+        "the wake-up's Main context must include a '## ARCHITECTURE.md' section. "
         "This is a core governance artifact — see docs/DEVELOPMENT.md."
     )
     assert "This is the architecture doc." in context
 
 
-def test_consciousness_context_architecture_before_knowledge_base(tmp_path):
-    """ARCHITECTURE.md section must come before knowledge base in consciousness context."""
-    import queue
-    from unittest.mock import patch, MagicMock
-
+def test_wake_context_architecture_before_knowledge_base(tmp_path):
+    """ARCHITECTURE.md section must come before knowledge base in the wake-up's context."""
     repo_dir = tmp_path / "repo"
     (repo_dir / "docs").mkdir(parents=True)
     (repo_dir / "BIBLE.md").write_text("# BIBLE", encoding="utf-8")
     (repo_dir / "docs" / "ARCHITECTURE.md").write_text("# ARCH CONTENT", encoding="utf-8")
-
-    drive_root = tmp_path / "data"
-    (drive_root / "logs").mkdir(parents=True)
-    (drive_root / "state").mkdir(parents=True)
-    (drive_root / "state" / "state.json").write_text("{}", encoding="utf-8")
-    (drive_root / "memory").mkdir(parents=True)
-    kb = drive_root / "memory" / "knowledge"
+    kb = tmp_path / "data" / "memory" / "knowledge"
     kb.mkdir(parents=True)
     (kb / "index-full.md").write_text("# Knowledge base index", encoding="utf-8")
 
-    eq = queue.Queue()
-    from ouroboros.consciousness import BackgroundConsciousness
-
-    with patch.object(BackgroundConsciousness, "_build_registry", return_value=MagicMock()), \
-         patch("ouroboros.consciousness.build_memory_sections", return_value=[]), \
-         patch("ouroboros.consciousness.build_health_invariants", return_value=""), \
-         patch("ouroboros.consciousness.build_runtime_section", return_value="## Runtime\n\nok"), \
-         patch("ouroboros.consciousness.build_recent_sections", return_value=[]):
-        bc = BackgroundConsciousness(
-            drive_root=drive_root,
-            repo_dir=repo_dir,
-            event_queue=eq,
-            owner_chat_id_fn=lambda: 1,
-        )
-        context = bc._build_context()
+    context = _wake_context(tmp_path)
 
     arch_pos = context.find("## ARCHITECTURE.md")
     kb_pos = context.find("## Knowledge base")
-    assert arch_pos != -1, "ARCHITECTURE.md section not found in consciousness context"
+    assert arch_pos != -1, "ARCHITECTURE.md section not found in the wake-up's context"
     if kb_pos != -1:
         assert arch_pos < kb_pos, (
-            "ARCHITECTURE.md must appear before the knowledge base in consciousness context"
+            "ARCHITECTURE.md must appear before the knowledge base in the wake-up's context"
         )
 
 
@@ -360,6 +344,7 @@ def test_triad_review_prompt_includes_architecture_md(tmp_path):
         review_history_section="",
         diff_text="DIFF",
         changed_files="changed_file.py",
+        task_evidence_section="",
     )
     assert "UNIQUE_MARKER_12345" in rendered, (
         "ARCHITECTURE.md content must appear in the rendered triad review prompt"
@@ -392,76 +377,45 @@ def test_governance_doc_load_emits_explicit_omission_marker_on_missing(tmp_path)
     # Never raises — the function still degrades gracefully.
 
 
-def test_consciousness_logs_warning_when_architecture_md_missing(tmp_path):
-    """BackgroundConsciousness._build_context must log a warning when ARCHITECTURE.md is absent.
+def test_wake_context_logs_warning_when_architecture_md_missing(tmp_path, caplog):
+    """The Main context builder must log a warning when ARCHITECTURE.md is absent — the
+    wake-up (an ordinary Main turn) inherits it.
 
     Per the Core Governance Artifacts invariant in docs/DEVELOPMENT.md:
     'Log a warning if the file is missing or unavailable — do not silently skip.'
-
-    Uses a fresh MagicMock() per getLogger call to avoid mutating real logger singletons.
     """
-    import queue
-    from unittest.mock import patch, MagicMock
+    import logging
 
     repo_dir = tmp_path / "repo"
     (repo_dir / "docs").mkdir(parents=True)
     (repo_dir / "BIBLE.md").write_text("# BIBLE", encoding="utf-8")
     # Deliberately do NOT create docs/ARCHITECTURE.md
 
-    drive_root = tmp_path / "data"
-    (drive_root / "logs").mkdir(parents=True)
-    (drive_root / "state").mkdir(parents=True)
-    (drive_root / "state" / "state.json").write_text("{}", encoding="utf-8")
-    (drive_root / "memory").mkdir(parents=True)
-
-    eq = queue.Queue()
-    from ouroboros.consciousness import BackgroundConsciousness
-
-    # A single shared mock logger so all getLogger(name) calls return the same object.
-    # This avoids mutating any real logger singleton.
-    mock_logger = MagicMock()
-
-    with patch.object(BackgroundConsciousness, "_build_registry", return_value=MagicMock()), \
-         patch("ouroboros.consciousness.build_memory_sections", return_value=[]), \
-         patch("ouroboros.consciousness.build_health_invariants", return_value=""), \
-         patch("ouroboros.consciousness.build_runtime_section", return_value="## Runtime\n\nok"), \
-         patch("ouroboros.consciousness.build_recent_sections", return_value=[]), \
-         patch("logging.getLogger", return_value=mock_logger):
-        bc = BackgroundConsciousness(
-            drive_root=drive_root,
-            repo_dir=repo_dir,
-            event_queue=eq,
-            owner_chat_id_fn=lambda: 1,
-        )
-        context = bc._build_context()
+    with caplog.at_level(logging.WARNING, logger="ouroboros.context"):
+        context = _wake_context(tmp_path)
 
     # 1. ARCHITECTURE.md section must be absent from context (file doesn't exist)
     assert "## ARCHITECTURE.md" not in context, (
         "ARCHITECTURE.md section should not appear when file is missing"
     )
 
-    # 2. mock_logger.warning must have been called at least once with ARCHITECTURE.md in the message
-    warning_messages = [
-        str(call_args)
-        for call_args in mock_logger.warning.call_args_list
-    ]
-    arch_warnings = [w for w in warning_messages if "ARCHITECTURE.md" in w]
+    # 2. a warning naming ARCHITECTURE.md must have been logged
+    arch_warnings = [record.getMessage() for record in caplog.records
+                     if record.levelno >= logging.WARNING and "ARCHITECTURE.md" in record.getMessage()]
     assert arch_warnings, (
-        "BackgroundConsciousness._build_context() must call logger.warning with 'ARCHITECTURE.md' "
-        "when the file is missing. Core Governance Artifacts invariant in DEVELOPMENT.md. "
-        f"All warning calls: {warning_messages}"
+        "the Main context builder must log a warning naming 'ARCHITECTURE.md' when the file "
+        "is missing. Core Governance Artifacts invariant in DEVELOPMENT.md. "
+        f"All records: {[r.getMessage() for r in caplog.records]}"
     )
-    assert any("not found" in w or "empty" in w for w in arch_warnings), (
-        f"Warning message must indicate the file is missing/empty, got: {arch_warnings}"
+    assert any("not found" in w or "empty" in w or "unavailable" in w for w in arch_warnings), (
+        f"Warning message must indicate the file is missing/unavailable, got: {arch_warnings}"
     )
-
-
 def test_development_md_contains_core_governance_invariant():
     """docs/DEVELOPMENT.md must contain the core governance artifact invariant rule."""
     import pathlib
     dev_md = pathlib.Path(__file__).resolve().parent.parent / "docs" / "DEVELOPMENT.md"
     assert dev_md.exists(), "docs/DEVELOPMENT.md must exist"
-    content = dev_md.read_text(encoding="utf-8")
+    content = development_text()
 
     required_phrases = [
         "Core Governance Artifacts",

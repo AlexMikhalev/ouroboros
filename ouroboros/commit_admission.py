@@ -2,8 +2,8 @@
 
 These checks decide whether a candidate tree may spend paid review budget at
 all — release-metadata coherence (BIBLE P9), staged-Python syntax, and the
-hermetic pytest run whose green result doubles as the managed-update
-pre-commit proof (Q10 single-run contract). They are ADMISSION policy, shared
+hermetic pytest run whose execution receipt can cover an equivalent later
+preflight. They are ADMISSION policy, shared
 by the advisory pre-review gate and the commit gate; the critic delivery
 (which model reads the tree, over which transport) is a separate axis and
 lives on the review substrate.
@@ -15,12 +15,14 @@ drift apart.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import pathlib
 import re
 import subprocess
-from typing import List, Optional
+from typing import List, NamedTuple, Optional
 
 from ouroboros.tools.registry import ToolContext
 from ouroboros.utils import append_jsonl, utc_now_iso
@@ -226,30 +228,155 @@ def syntax_preflight_staged_py_files(
     )
 
 
-def run_tests_preflight_with_proof(ctx: ToolContext, *, runner) -> Optional[str]:
-    """Run the hermetic pytest preflight and bind its green result to the
-    managed-update proof (Q10 single-run contract).
+class PreflightTestProof(NamedTuple):
+    """Process-held receipt of the runner's tested checkout and workload.
 
-    ``runner`` is the caller's own seam (the advisory gate's
-    ``_run_advisory_tests``, the commit gate's imported
-    ``_run_review_preflight_tests``) so existing monkeypatch surfaces keep
-    working. The coupling this function owns is the invariant: a green run is
-    ALWAYS recorded as the proof for the exact candidate tree (else the
-    managed gate pays for a second identical full run), and the proof is only
-    ever recorded off a green run. The proof's authority is the PROCESS-HELD
-    ctx record (F2); the durable tx copy written alongside is forensic
-    telemetry only. Returns the runner's error text, or None when green.
+    Every workload binds HEAD as well as candidate files and the installed
+    index: even an ordinary unmarked test can read committed Git content.
+    No phase label, generated probe nonce or temporary pathname is a workload.
+    """
+
+    tree: str
+    index_tree: str
+    workload: tuple
+    head: str
+
+    def covers(self, candidate: PreflightTestProof | None) -> bool:
+        return candidate is not None and self == candidate
+
+
+def _executable_identity(executable: str) -> tuple:
+    import shutil
+
+    # Python locates pyvenv.cfg from the invocation path, before resolving the
+    # binary symlink. Equal binary/stat facts need not mean the same environment.
+    invocation = pathlib.Path(shutil.which(executable) or executable).absolute()
+    path = invocation.resolve(strict=True)
+    stat = path.stat()
+    return str(invocation), str(path), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
+
+
+def log_preflight_test_proof(ctx, proof: PreflightTestProof, *, reused: bool, phase: str,
+                             passes: list[tuple[str, float]] | None = None) -> None:
+    """Disclose the runner's actual proof on the existing event log, never read it as authority.
+
+    ``passes`` are the executed passes' own `(label, seconds)`. A green run renders
+    no pytest output at all, so this row is the only durable record of what the gate
+    cost against `budget_sec`; a reused proof executed nothing and reports none.
+    """
+    event = {
+        "ts": utc_now_iso(), "type": "preflight_test_proof",
+        "action": "reused" if reused else "created", "phase": phase,
+        "task_id": str(getattr(ctx, "task_id", "") or ""),
+        "pass_seconds": dict(passes or ()), "budget_sec": proof.workload[1],
+        "head": proof.head, "tree": proof.tree, "index_tree": proof.index_tree,
+        "workload_fingerprint": hashlib.sha256(json.dumps(
+            proof.workload, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest(),
+    }
+    metadata = getattr(ctx, "task_metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    root = (metadata.get("budget_drive_root") or getattr(ctx, "budget_drive_root", None)
+            or getattr(ctx, "drive_root", None))
+    try:
+        if root and append_jsonl(pathlib.Path(root) / "logs" / "events.jsonl", event):
+            return  # append_jsonl also forwards through the worker/server log sink.
+    except Exception:
+        log.warning("Preflight proof event could not be persisted", exc_info=True)
+    # Diagnostics cannot turn completed tests into a failed gate. Keep the
+    # binding visible even when no data root or durable log is available.
+    log.warning("Preflight proof event (not persisted): %s", json.dumps(event, sort_keys=True))
+
+
+def preflight_test_workload(
+    repo, *, timeout=None, pytest_args=None, passes=None, agent_python=None, probe_module="",
+) -> tuple:
+    """Effective runner inputs, with generated paths and probe names normalized."""
+    import sys
+    import tempfile
+    from ouroboros import preflight_runner as pr
+    from ouroboros.preflight_node import candidate_node_tests, resolve_node
+
+    base = pathlib.Path(tempfile.gettempdir()) / "ouroboros-preflight-contract"
+    env = pr._preflight_env(base, base / "repo")
+    environment = hashlib.sha256(json.dumps(env, sort_keys=True).encode()).hexdigest()
+    python = agent_python or os.environ.get("OUROBOROS_AGENT_PYTHON") or sys.executable or "python3"
+    specs = pr._preflight_pass_specs(pytest_args) if passes is None else passes
+    node_tests = tuple(candidate_node_tests(repo))
+    return (
+        tuple((p.label, tuple(pr._WORKER_PROBE_MODULE if probe_module and arg == probe_module else arg
+                             for arg in p.args), p.parallel) for p in specs),
+        pr._resolve_preflight_timeout(pr._DEFAULT_PREFLIGHT_TIMEOUT_SEC if timeout is None else timeout),
+        environment, _executable_identity(python),
+        (_executable_identity(resolve_node()), node_tests) if node_tests else (),
+        pr._WORKER_PROBE_SOURCE,
+    )
+
+
+def capture_preflight_test_subject(
+    repo, *, timeout=None, pytest_args=None, passes=None, agent_python=None, probe_module="",
+) -> PreflightTestProof | None:
+    """Describe the actual checkout before execution, or decline reuse.
+
+    Reuse the candidate serializer, pass compiler and environment owner. This
+    is not persisted authority and cannot turn a skipped/failed run into proof.
+    """
+    from ouroboros import preflight_runner as pr
+    from supervisor.update_candidate import worktree_snapshot_tree
+
+    repo = pathlib.Path(repo).resolve()
+    try:
+        index_tree, error = pr._capture_source_index_tree(repo, 8000)
+        if error or not index_tree:
+            return None
+        tree, error = worktree_snapshot_tree("HEAD", cwd=str(repo))
+        if error or not tree:
+            return None
+        head = pr._run_git(repo, ["rev-parse", "HEAD"])
+        if head.returncode:
+            return None
+        head = head.stdout.strip()
+        workload = preflight_test_workload(
+            repo, timeout=timeout, pytest_args=pytest_args, passes=passes,
+            agent_python=agent_python, probe_module=probe_module,
+        )
+        return PreflightTestProof(tree, index_tree, workload, head)
+    except (OSError, RuntimeError, subprocess.SubprocessError, TypeError, ValueError):
+        log.debug("test workload could not be bound; no proof reuse", exc_info=True)
+        return None
+
+
+def preflight_test_proof_matches(ctx, repo) -> bool:
+    proof = getattr(ctx, "_preflight_test_proof", None)
+    return isinstance(proof, PreflightTestProof) and proof.covers(capture_preflight_test_subject(repo))
+
+
+def preflight_test_workload_unchanged(proof, repo, *, timeout, pytest_args) -> bool:
+    try:
+        return proof.workload == preflight_test_workload(repo, timeout=timeout, pytest_args=pytest_args)
+    except (OSError, RuntimeError, subprocess.SubprocessError, TypeError, ValueError):
+        return False  # inability to bind reuse is not a failed test
+
+
+def run_tests_preflight_with_proof(ctx: ToolContext, *, runner) -> Optional[str]:
+    """Run the caller's seam; only the hermetic runner can attest execution.
+
+    None includes no-suite and policy skips. The runner stamps the ctx only
+    after every applicable lane and containment check succeeded (or matched a
+    process-held proof). Managed telemetry consumes that receipt, never a later
+    live-tree snapshot.
     """
     from ouroboros.tools.registry import _authorized_managed_update_resolver
 
     force = _authorized_managed_update_resolver(ctx)
-    ctx._preflight_tests_passed = False  # diagnostic only; not the managed proof
+    ctx._preflight_tests_passed = False
     test_err = runner(ctx, force=True) if force else runner(ctx)
     if test_err:
+        ctx._preflight_test_proof = None
         return str(test_err)
-    if not force and os.environ.get("OUROBOROS_PRE_PUSH_TESTS", "1") != "1":
-        return None  # the runner's policy skip is not a green proof
-    ctx._preflight_tests_passed = True
+    if not ctx._preflight_tests_passed:
+        ctx._preflight_test_proof = None
+        return None
     try:
         from supervisor.update_merge import record_managed_tests_proof
 

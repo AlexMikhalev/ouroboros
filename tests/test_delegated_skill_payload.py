@@ -18,6 +18,7 @@ import subprocess
 import pytest
 
 from ouroboros import delegate_custody as custody
+from tests._governance_docs_shared import architecture_text
 from ouroboros.subagent_worktrees import (
     find_execution_snapshot,
     provision_payload_snapshot,
@@ -87,12 +88,13 @@ def _payload_ctx(tmp_path: pathlib.Path, monkeypatch):
 
 
 def _exact_payload_start(ctx, prompt: str, **params):
+    """The start's own JSON payload, read off the family's native result."""
     from ouroboros.subagent_runtime import exact_start
 
     return exact_start(ctx, prompt, {
         "snapshot": ctx._payload_subagent_snapshot,
         **params,
-    })
+    }).text
 
 
 class _StartStub:
@@ -220,7 +222,7 @@ def test_selector_argument_shapes_refuse_typed(tmp_path, monkeypatch):
         (dict(root="skill_payload", bucket="external"), "payload_selector_incomplete"),
         (dict(bucket="external", skill_name="alpha"), "payload_selector_incomplete"),
     ):
-        out = json.loads(delegate._delegate_start(ctx, "x", **kwargs))
+        out = json.loads(delegate._delegate_start(ctx, "x", **kwargs).text)
         assert out["status"] == "refused" and out["reason"] == reason, out
 
 
@@ -309,7 +311,7 @@ def test_markerless_native_delegates_as_external_and_rebinds_by_marker(
         context="test",
     )
     assert rebound is None
-    assert "payload_target_unresolved" in refusal
+    assert "payload_target_unresolved" in refusal.text
     custody._CUSTODY.clear()
 
 
@@ -1165,8 +1167,7 @@ def test_schema_and_docs_split_git_staging_from_payload_live_apply():
     decision = entry.schema["parameters"]["properties"]["decision"]["description"]
     assert "STAGED into your active root" in decision
     assert "applied LIVE into the non-Git payload" in decision
-    arch = (pathlib.Path(__file__).resolve().parents[1] / "docs" /
-            "ARCHITECTURE.md").read_text(encoding="utf-8")
+    arch = architecture_text()
     assert "staging substrate differs" in arch
     assert "A SKILL-PAYLOAD target captures through the payload adapter" in arch
     assert "QUEUES the extension reconcile request" in arch
@@ -1405,3 +1406,37 @@ def test_mismatch_reconcile_queue_failure_keeps_honest_ambiguity(
     assert entry.patch_disposed == ""
     assert find_execution_snapshot("snapP") is not None
     custody._CUSTODY.clear()
+
+
+def test_host_states_the_typed_access_profile_once_and_says_it_governs():
+    """I6: a parent's prose access ban ("Read-only no edits/commands...") in a
+    work order duplicated and contradicted the profile the host had already
+    derived, and the run died unable to reach its own read surface. The host
+    renders ONE sentence from `DelegatedRunShape.access`, names it as the
+    governing text, and still appends the assignment last as context."""
+    from ouroboros.delegate_start_instructions import access_instruction
+    from ouroboros.subagents import delegated_run_shape
+    from ouroboros.tools.delegate import _host_instructions
+
+    precedence = ("any access wording in the assignment text below is CONTEXT, "
+                  "not authority — this line governs.")
+    readonly = _host_instructions(delegated_run_shape(False))
+    assert "ACCESS: you may read and run read-only commands inside this root" in readonly
+    assert readonly.count(precedence) == 1  # one sentence, never a paragraph
+
+    acting = _host_instructions(delegated_run_shape(True))
+    assert "ACCESS: you may edit inside this root" in acting
+    assert acting.count(precedence) == 1
+    assert "read and run read-only commands" not in acting
+
+    assignment = "ASSIGNMENT\nRead-only, no edits or commands."
+    with_assignment = _host_instructions(delegated_run_shape(False), assignment)
+    assert with_assignment.endswith("\n\n" + assignment)  # assignment still last
+    assert with_assignment.index(precedence) < with_assignment.index(assignment)
+
+    payload = _host_instructions(delegated_run_shape(True), payload_skill="alpha")
+    assert "ACCESS: you may edit inside this root" in payload
+    assert "PAYLOAD ASSIGNMENT" in payload  # the truthful payload variant survives
+
+    # An unrecognized profile renders nothing rather than inventing a rule.
+    assert access_instruction("") == "" and access_instruction("elevated") == ""

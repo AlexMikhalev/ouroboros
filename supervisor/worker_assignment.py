@@ -89,9 +89,91 @@ def _cancel_unauthorized_evolution(task: Dict[str, Any], reason: str) -> bool:
     return True
 
 
+def _mirror_assigned_running_status(task: Dict[str, Any]) -> None:
+    """Write the durable RUNNING mirror one step before the worker dispatches.
+
+    Assignment is the first host-visible execution fact, and it is one for a ROOT
+    too: both orphan healers key on the STORED status, so a root that exists only
+    in memory and the snapshot is a ghost a stale or absent snapshot leaves
+    forever. Never raises: a task that runs without its mirror is better than an
+    assignment tick that stops."""
+    if not str(task.get("drive_root") or ""):
+        return
+    try:
+        from ouroboros.task_results import STATUS_RUNNING, write_task_result
+
+        _is_subagent = str(task.get("delegation_role") or "") == "subagent"
+        _mirror = {
+            "root_task_id": task.get("root_task_id"),
+            "session_id": task.get("session_id"),
+            "actor_id": task.get("actor_id"),
+            "project_id": task.get("project_id"),
+            "role": task.get("role"),
+            "description": task.get("description"),
+            "objective": task.get("objective") or task.get("description"),
+        }
+        if _is_subagent:
+            from ouroboros.tools.control_delegation import stamp_task_assignment_depth
+            from ouroboros.config import get_max_subagent_depth
+
+            # Stamp the worker payload and canonical result from one
+            # projection; the achieved depth is a delegation fact.
+            _depth_fields = stamp_task_assignment_depth(
+                task, max_depth=get_max_subagent_depth(),
+            )
+            _mirror.update(
+                parent_task_id=task.get("parent_task_id"),
+                delegation_role=task.get("delegation_role"),
+                expected_output=task.get("expected_output"),
+                constraints=task.get("constraints"),
+                context=task.get("context"),
+                memory_mode=task.get("memory_mode"),
+                drive_root=task.get("drive_root"),
+                child_drive_root=task.get("child_drive_root") or task.get("drive_root"),
+                budget_drive_root=task.get("budget_drive_root"),
+                task_constraint=task.get("task_constraint"),
+                **_depth_fields,
+                # INTENT ONLY. This mirror is written at ASSIGNMENT, one
+                # step before the worker dispatches and resolves the
+                # child; naming `effective_model_lane`/`model` here wrote
+                # whatever the record happened to hold, which on a retry
+                # is the PREVIOUS attempt's resolution and on a fresh
+                # child is nothing at all.
+                model_lane=task.get("model_lane"),
+                requested_model_lane=task.get("requested_model_lane"),
+                parent_model_lane=task.get("parent_model_lane"),
+                requested_executor=task.get("requested_executor"),
+                task_group_id=task.get("task_group_id"),
+                task_group=task.get("task_group"),
+                subagent_envelope=task.get("subagent_envelope"),
+                configured_subagent=task.get("configured_subagent"),
+                parent_cognitive_route=task.get("parent_cognitive_route"),
+                metadata=task.get("metadata") if isinstance(task.get("metadata"), dict) else {},
+            )
+        else:
+            # A root carries neither the delegation identity nor a child
+            # drive. Writing None for what it lacks would ERASE what
+            # admission recorded, because this write MERGES.
+            _mirror["chat_id"] = task.get("chat_id")
+            _mirror = {key: value for key, value in _mirror.items() if value is not None}
+        write_task_result(
+            _pool().DRIVE_ROOT,
+            str(task.get("id") or ""),
+            STATUS_RUNNING,
+            **_mirror,
+            result=("Subagent assigned to a worker." if _is_subagent
+                    else "Assigned to a worker."),
+        )
+    except Exception:
+        log.debug("Failed to mirror the running assigned status", exc_info=True)
+
+
 def assign_tasks() -> None:
     from supervisor import queue
     from supervisor.state import budget_remaining, EVOLUTION_BUDGET_RESERVE
+    from supervisor.worker_owner_wait import maintain_owner_wait_capacity
+
+    maintain_owner_wait_capacity()
     with _queue_lock:
         st = _pool().load_state()
         # Cancellation/terminal custody wins before validating rows left in the
@@ -127,6 +209,8 @@ def assign_tasks() -> None:
                     continue
                 if isinstance(task.get("_budget_pause"), dict):
                     continue
+                if task.get("_owner_wait_resume"):
+                    continue  # Restore the checkpoint; the loop still owns its budget stop.
                 task_id = str(task.get("id") or "")
                 cost_fields = _pool().reconstruct_task_cost(
                     task_id, fields=True,
@@ -204,7 +288,8 @@ def assign_tasks() -> None:
                         "raising the limit does not resume them automatically.",
                     )
                 queue.persist_queue_snapshot(reason="budget_paused_before_dispatch")
-            return
+            if not any(task.get("_owner_wait_resume") for task in _pool().PENDING):
+                return
 
         # Evolution is hard-blocked in light runtime mode at the assignment
         # chokepoint too: a task restored from a snapshot or created before the
@@ -231,7 +316,8 @@ def assign_tasks() -> None:
 
 
         for w in _pool().WORKERS.values():
-            if w.busy_task_id is None and not getattr(w, "reaping", False) and _pool().PENDING:
+            if (w.busy_task_id is None and not getattr(w, "reaping", False)
+                    and getattr(w, "active_capacity", True) and _pool().PENDING):
                 # One-writer-per-project lease: recompute per assignment so a
                 # task assigned in THIS loop pass immediately occupies its lane.
                 leased = running_project_ids(_pool().RUNNING.values())
@@ -239,6 +325,8 @@ def assign_tasks() -> None:
                 # and project-leased candidates)
                 chosen_idx = None
                 for i, candidate in enumerate(_pool().PENDING):
+                    if remaining <= 0 and not candidate.get("_owner_wait_resume"):
+                        continue
                     if _pool()._invalid_depth_deferred(candidate, unresolved_invalid_id_set):
                         continue
                     if not _pool().repo_writer_task_allowed(candidate):
@@ -246,7 +334,7 @@ def assign_tasks() -> None:
                     if isinstance(candidate.get("_budget_pause"), dict):
                         continue
                     root_task_id = str(candidate.get("root_task_id") or "").strip()
-                    if root_task_id in queue.BUDGET_ROOT_FENCES:
+                    if root_task_id in queue.BUDGET_ROOT_FENCES and not candidate.get("_owner_wait_resume"):
                         continue
                     if str(candidate.get("type") or "") == "evolution" and remaining < EVOLUTION_BUDGET_RESERVE:
                         continue
@@ -288,65 +376,17 @@ def assign_tasks() -> None:
                     else:
                         _pool().PENDING.insert(chosen_idx, task)
                     continue
-                if str(task.get("delegation_role") or "") == "subagent" and str(task.get("drive_root") or ""):
-                    try:
-                        from ouroboros.task_results import STATUS_RUNNING, write_task_result
-                        from ouroboros.tools.control_delegation import stamp_task_assignment_depth
-                        from ouroboros.config import get_max_subagent_depth
-
-                        # Assignment is the first host-visible execution fact. Stamp
-                        # the worker payload and canonical result from one projection.
-                        _depth_fields = stamp_task_assignment_depth(
-                            task, max_depth=get_max_subagent_depth(),
-                        )
-                        write_task_result(
-                            _pool().DRIVE_ROOT,
-                            str(task.get("id") or ""),
-                            STATUS_RUNNING,
-                            parent_task_id=task.get("parent_task_id"),
-                            root_task_id=task.get("root_task_id"),
-                            session_id=task.get("session_id"),
-                            actor_id=task.get("actor_id"),
-                            delegation_role=task.get("delegation_role"),
-                            project_id=task.get("project_id"),
-                            role=task.get("role"),
-                            description=task.get("description"),
-                            objective=task.get("objective") or task.get("description"),
-                            expected_output=task.get("expected_output"),
-                            constraints=task.get("constraints"),
-                            context=task.get("context"),
-                            memory_mode=task.get("memory_mode"),
-                            drive_root=task.get("drive_root"),
-                            child_drive_root=task.get("child_drive_root") or task.get("drive_root"),
-                            budget_drive_root=task.get("budget_drive_root"),
-                            task_constraint=task.get("task_constraint"),
-                            **_depth_fields,
-                            # INTENT ONLY. This mirror is written at ASSIGNMENT, one
-                            # step before the worker dispatches and resolves the
-                            # child; naming `effective_model_lane`/`model` here wrote
-                            # whatever the record happened to hold, which on a retry
-                            # is the PREVIOUS attempt's resolution and on a fresh
-                            # child is nothing at all.
-                            model_lane=task.get("model_lane"),
-                            requested_model_lane=task.get("requested_model_lane"),
-                            parent_model_lane=task.get("parent_model_lane"),
-                            requested_executor=task.get("requested_executor"),
-                            task_group_id=task.get("task_group_id"),
-                            task_group=task.get("task_group"),
-                            subagent_envelope=task.get("subagent_envelope"),
-                            configured_subagent=task.get("configured_subagent"),
-                            parent_cognitive_route=task.get("parent_cognitive_route"),
-                            metadata=task.get("metadata") if isinstance(task.get("metadata"), dict) else {},
-                            result="Subagent assigned to a worker.",
-                        )
-                    except Exception:
-                        log.debug("Failed to mirror running subagent status", exc_info=True)
+                _mirror_assigned_running_status(task)
                 w.busy_task_id = task["id"]
                 w.in_q.put(task)
                 now_ts = time.time()
+                resume = task.get("_owner_wait_resume") or {}
                 _pool().RUNNING[task["id"]] = {
                     "task": dict(task), "worker_id": w.wid,
-                    "started_at": now_ts, "last_heartbeat_at": now_ts,
+                    "started_at": float(resume.get("started_at") or now_ts), "last_heartbeat_at": now_ts,
+                    "last_progress_at": now_ts,
+                    **({"model_wait_quota_clock": dict(resume["model_wait_quota_clock"])}
+                       if resume.get("model_wait_quota_clock") else {}),
                     "soft_sent": False, "attempt": int(task.get("_attempt") or 1),
                 }
                 task_type = str(task.get("type") or "")

@@ -116,8 +116,17 @@ def test_core_catalog_schema_bytes_and_handler_owners_are_stable():
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode()
+    # Rolled for P1-9 (owner Q7=B): the escalate description states the ABCD rule and
+    # QuizOption gained the optional `recommended` boolean. Rolled again for owner
+    # decision 6C (structural-health wave 2): the forward_to_worker description now
+    # names its second addressee, any host-listed independent root, delivered as a
+    # message from an independent task. Rolled again for owner decision В17a=A: the
+    # escalate description stops promising expiry at task end (a late answer reaches
+    # the chat as an ordinary owner message) and the optional `max_wait_minutes`
+    # bound joins its parameters. Diffing the whole catalog base to head shows
+    # exactly those edits and nothing else.
     assert hashlib.sha256(schema_bytes).hexdigest() == (
-        "1b60b6aa81c78f7886b68e5bb1c14b8262dd1a13d23f198e193502d68384ae87"
+        "532059cb95c431df39b0a950ced52e05228e88ec3ddd180bc0d2fa9a0cc8f616"
     )
     assert {
         entry.name: (entry.handler.__module__, entry.handler.__name__)

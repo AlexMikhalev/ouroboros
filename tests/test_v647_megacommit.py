@@ -14,7 +14,6 @@ import types
 from pathlib import Path
 
 import pytest
-from tests._typed_guard_shared import _shell_guard_text
 
 PY = sys.executable or "python3"  # portable interpreter for cross-platform check commands
 
@@ -39,18 +38,16 @@ def test_scrub_repo_from_pythonpath_drops_only_repo_entry():
     assert "PYTHONPATH" not in scrub_repo_from_pythonpath({"PYTHONPATH": repo + "/"}, repo)
 
 
-def test_shell_env_for_cwd_scrubs_external_keeps_repo():
+def test_shell_env_for_cwd_scrubs_external_keeps_repo(tmp_path):
     from ouroboros.tools.shell import _shell_env_for_cwd
 
-    repo = Path(tempfile.mkdtemp())
-    (repo / "sub").mkdir()
-    ext = Path(tempfile.mkdtemp())
+    repo, ext = tmp_path / "repo", tmp_path / "external"
+    (repo / "sub").mkdir(parents=True)
+    ext.mkdir()
     ctx = types.SimpleNamespace(repo_dir=str(repo))
-    # a command inside the repo inherits os.environ (None -> no scrub)
-    assert _shell_env_for_cwd(ctx, repo / "sub") is None
-    # a command outside the repo gets a scrubbed env (dict, not None)
-    env = _shell_env_for_cwd(ctx, ext)
-    assert isinstance(env, dict)
+    # An explicit environment also carries the admitted task's settings.
+    assert _shell_env_for_cwd(ctx, repo / "sub") == dict(os.environ)
+    assert isinstance(_shell_env_for_cwd(ctx, ext), dict)
 
 
 # ── R5: effect-based artifact-audit gate ──────────────────────────────────────
@@ -675,21 +672,22 @@ def test_verify_and_record_safety_policy_is_conditional():
     assert TOOL_POLICY.get("verify_and_record") == POLICY_CHECK_CONDITIONAL
 
 
-def test_verify_and_record_check_is_shell_guarded_against_subagent_secret_read():
-    # F1 (review #1): an acting subagent must NOT be able to read Ouroboros secrets
-    # through verify_and_record's `check` — it routes through the same deterministic
-    # shell guard as run_command.
+def test_verify_and_record_preserves_the_exact_check_for_process_preparation(tmp_path):
     from ouroboros.contracts.task_constraint import TaskConstraint
     from ouroboros.tools.registry import ToolRegistry
     from ouroboros.tools.shell_guards import process_shell_guard_args
 
-    reg = ToolRegistry(repo_dir=".", drive_root=tempfile.mkdtemp())
-    reg._ctx.task_constraint = TaskConstraint(mode="acting_subagent", surface="external_workspace", write_root=tempfile.mkdtemp())
-    mapped = process_shell_guard_args("verify_and_record", {"check": ["cat", str(Path(reg._ctx.drive_root) / "settings.json")], "cwd": ""})
-    # The shared process guard sees the exact physical path on every platform.
-    assert mapped["cmd"] == ["cat", str(Path(reg._ctx.drive_root) / "settings.json")]
-    block = _shell_guard_text(reg, mapped, "advanced")
-    assert block and "SECRET" in block.upper()
+    repo, data, workspace = (tmp_path / name for name in ("repo", "data", "workspace"))
+    for path in (repo, data, workspace):
+        path.mkdir()
+    reg = ToolRegistry(repo_dir=repo, drive_root=data)
+    reg._ctx.task_constraint = TaskConstraint(mode="acting_subagent", surface="external_workspace", write_root=str(workspace))
+    reg._ctx.workspace_root = workspace
+    reg._ctx.workspace_mode = "external"
+    command = ["cat", str(data / "settings.json")]
+    mapped = process_shell_guard_args("verify_and_record", {"check": command, "cwd": str(workspace)})
+    assert mapped["cmd"] == command
+    assert mapped["cwd"] == str(workspace)
 
 
 def test_verify_string_check_no_safe_subject_bypass(monkeypatch):

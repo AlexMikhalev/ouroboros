@@ -60,9 +60,6 @@ def _check_budget_limits(
         accumulated_usage["reason_code"] = "budget_exhausted"
         if ctx.round_idx <= 1:
             trace = ctx.llm_trace if isinstance(ctx.llm_trace, dict) else {}
-            router_result = _loop()._forced_swarm_router_result(ctx, trace, "budget_exhausted")
-            if router_result is not None:
-                return router_result
             tool_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
             suffix = (
                 _loop()._force_plan_disclosure(tool_ctx, trace, forced_reason="budget_exhausted")
@@ -351,6 +348,21 @@ class _LoopExitContext:
     drive_logs: pathlib.Path
     accumulated_usage: Dict[str, Any]
     llm_trace: Dict[str, Any]
+    trace_ctx: Any = None
+    previous_execution_trace: Any = None
+
+    def attach_exception_evidence(self, exc: Exception) -> None:
+        """The caller owns terminal projection; this loop owns its evidence.
+
+        Keep the same in-memory objects on the original exception so a lifecycle
+        failure cannot erase a completed multi-round trace. A failed attachment
+        leaves the caller's explicit unknown projection, never a new exception.
+        """
+        try:
+            setattr(exc, "_ouroboros_loop_usage", self.accumulated_usage)
+            setattr(exc, "_ouroboros_loop_trace", self.llm_trace)
+        except Exception:
+            log.debug("Loop exception evidence could not be attached", exc_info=True)
 
 
 def _handle_budget_exceeded(
@@ -512,6 +524,8 @@ def _cleanup_loop_resources(
     ctx: _LoopExitContext,
 ) -> None:
     """Release attempt-scoped executors, services, and delegated runs."""
+    if ctx.trace_ctx is not None:
+        ctx.trace_ctx._execution_trace = ctx.previous_execution_trace
     if stateful_executor:
         try:
             from ouroboros.tools.browser import cleanup_browser
@@ -538,7 +552,10 @@ def _cleanup_loop_resources(
         # A delegated run is a resource this task HOLDS, like a service or
         # an executor: a terminalized parent leaving one running has a
         # mutating process nothing is watching. The durable reconciler still
-        # covers a worker dying before here; this is the ordinary path.
+        # covers a worker dying before here; this is the ordinary path. The
+        # run is cancelled only behind a DELIBERATE owner terminal (B1-A); the
+        # durable result is usually not written yet at this point, so a live
+        # run is left to the next sweep, which re-reads it.
         release_task_runs(custody_root(ctx.tools._ctx), ctx.task_id)
     except Exception:
         log.debug("Failed to release delegated runs for task %s", ctx.task_id, exc_info=True)
@@ -639,6 +656,28 @@ def _finalize_task_services(ctx: _LoopExitContext) -> bool:
         seen.add(signature)
         ctx.llm_trace.setdefault("verification_events", []).append(event)
         return True
+
+
+def _finish_tool_round_budget(
+    ctx: _RoundLimitContext, budget_remaining_usd: Optional[float],
+    cost_ceiling: "task_pacing.CostCeiling", active_model: str,
+    active_use_local: bool, active_effort: str, tool_calls: Optional[list[Dict[str, Any]]] = None,
+) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
+    """Complete the existing budget decision after warm or cold owner input.
+
+    Only a freshly executed tool batch advances the nanny's metered baseline;
+    cold continuation owes the budget decision, never execution of old tools.
+    """
+    if tool_calls is not None:
+        _loop()._note_nanny_delegate_activity(ctx.tools._ctx, ctx.round_idx, ctx.accumulated_usage, tool_calls)
+    _loop()._prepare_post_tool_budget_context(
+        ctx.tools, ctx, ctx.llm_trace, active_model, active_use_local, active_effort)
+    result = _loop()._check_budget_limits(ctx, budget_remaining_usd, cost_ceiling=cost_ceiling)
+    if result is None:
+        return None
+    text, usage, trace = result
+    _loop()._merge_finalization_trace(ctx.llm_trace, trace)
+    return text, usage, ctx.llm_trace
 
 
 def _prepare_post_tool_budget_context(

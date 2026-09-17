@@ -107,7 +107,7 @@ def test_workspace_patch_excludes_binary_junk_and_oversize(tmp_path, monkeypatch
         cwd=repo, check=True, capture_output=True,
     )
     # Untracked additions: a real source file (keep), a compiled binary (drop),
-    # a redis dump + log junk (drop), and an oversize text file (drop).
+    # a redis dump (drop), a declared log (keep), and an oversize text file (drop).
     (repo / "fix.py").write_text("def fixed():\n    return 1\n", encoding="utf-8")
     (repo / "app").write_bytes(b"\x7fELF\x00\x01\x02\x03binary\x00blob")  # compiled binary
     (repo / "dump.rdb").write_bytes(b"REDIS\x00\x01")
@@ -123,7 +123,8 @@ def test_workspace_patch_excludes_binary_junk_and_oversize(tmp_path, monkeypatch
     excluded = {item["path"]: item["reason"] for item in manifest["untracked_excluded"]}
     assert "binary file" in excluded.get("app", "")
     assert "binary file" in excluded.get("dump.rdb", "") or "junk artifact" in excluded.get("dump.rdb", "")
-    assert "junk artifact" in excluded.get("run.log", "")
+    assert "run.log" in manifest["untracked_included"]
+    assert "run.log" not in excluded
     assert "junk artifact" in excluded.get("htmlcov/index.html", "")  # top-level htmlcov excluded
     assert "size cap" in excluded.get("big.txt", "")
     assert "fix.py" in manifest["untracked_included"]
@@ -131,7 +132,7 @@ def test_workspace_patch_excludes_binary_junk_and_oversize(tmp_path, monkeypatch
     assert "fix.py" in patch
     assert "diff --git a/app b/app" not in patch
     assert "dump.rdb" not in patch
-    assert "run.log" not in patch
+    assert "run.log" in patch
     assert "big.txt" not in patch
 
 
@@ -223,27 +224,30 @@ def test_workspace_patch_manifest_excludes_env_cache_dirs(tmp_path):
     assert any(item["kind"] == "workspace_patch_manifest" for item in artifacts)
 
 
-def test_workspace_patch_excludes_sensitive_untracked_file_but_keeps_tracked_diff(tmp_path):
-    """One credential-shaped untracked NAME must not annihilate the whole patch:
-    the file is a disclosed per-file exclusion, the tracked diff survives (#447)."""
+def test_workspace_patch_keeps_project_npmrc_and_tracked_diff(tmp_path):
+    """A project npm configuration is ordinary content, not the owner's ~/.npmrc."""
     repo = tmp_path / "repo"
     _init_repo_with_file(repo)
     (repo / "tracked.txt").write_text("new\n", encoding="utf-8")
-    (repo / ".npmrc").write_text("//registry.npmjs.org/:_authToken=secret\n", encoding="utf-8")
+    (repo / ".npmrc").write_text("registry=https://registry.npmjs.org/\n", encoding="utf-8")
     artifact_dir = tmp_path / "artifacts"
 
     artifacts, manifest = write_workspace_patch_artifacts(repo, artifact_dir, task={})
 
     assert manifest["status"] == ARTIFACT_STATUS_READY_WITH_CHANGES
     assert manifest["errors"] == []
-    assert manifest["sensitive_blocked"][0]["path"] == ".npmrc"
+    assert manifest["sensitive_blocked"] == []
+    assert ".npmrc" in manifest["untracked_included"]
     assert any(item["kind"] == "workspace_patch" for item in artifacts)
     patch_text = (artifact_dir / "workspace.patch").read_text(encoding="utf-8")
     assert "tracked.txt" in patch_text
-    assert "_authToken" not in patch_text
+    assert "registry=https://registry.npmjs.org/" in patch_text
 
 
-def test_workspace_patch_excludes_public_pem_and_disclosed_keeps_tracked_work(tmp_path):
+def test_workspace_patch_keeps_public_pem_because_a_suffix_is_not_key_material(tmp_path):
+    """A public certificate is ordinary work: the suffix no longer refuses it,
+    and nothing is reported as sensitive. Real key material is caught by the
+    content check pinned in the next test (owner answer 3=A)."""
     repo = tmp_path / "repo"
     _init_repo_with_file(repo)
     (repo / "tracked.txt").write_text("new\n", encoding="utf-8")
@@ -253,13 +257,11 @@ def test_workspace_patch_excludes_public_pem_and_disclosed_keeps_tracked_work(tm
     artifacts, manifest = write_workspace_patch_artifacts(repo, artifact_dir, task={})
 
     assert manifest["status"] == ARTIFACT_STATUS_READY_WITH_CHANGES
-    assert manifest["sensitive_blocked"] == [
-        {"path": "public.pem", "reason": "private key or certificate"}
-    ]
+    assert manifest["sensitive_blocked"] == []
     assert any(item["kind"] == "workspace_patch" for item in artifacts)
     patch_text = (artifact_dir / "workspace.patch").read_text(encoding="utf-8")
     assert "tracked.txt" in patch_text
-    assert "public.pem" not in patch_text
+    assert "public.pem" in patch_text
 
 
 def test_workspace_patch_excludes_private_key_material_by_content(tmp_path):
@@ -286,7 +288,7 @@ def test_workspace_patch_excludes_private_key_material_by_content(tmp_path):
     assert "PRIVATE KEY" not in patch_text
 
 
-def test_workspace_patch_excludes_sensitive_untracked_file_inside_excluded_dir(tmp_path):
+def test_workspace_patch_excludes_dependency_cache_without_inventing_secret_evidence(tmp_path):
     repo = tmp_path / "repo"
     _init_repo_with_file(repo)
     (repo / "tracked.txt").write_text("new\n", encoding="utf-8")
@@ -297,12 +299,15 @@ def test_workspace_patch_excludes_sensitive_untracked_file_inside_excluded_dir(t
     artifacts, manifest = write_workspace_patch_artifacts(repo, tmp_path / "artifacts", task={})
 
     assert manifest["status"] == ARTIFACT_STATUS_READY_WITH_CHANGES
-    assert manifest["counts"]["sensitive_blocked"] == 1
-    assert manifest["sensitive_blocked"][0]["path"] == "node_modules/pkg/service-account.json"
+    assert manifest["counts"]["sensitive_blocked"] == 0
+    assert manifest["untracked_excluded"] == [{
+        "path": "node_modules/pkg/service-account.json",
+        "reason": "env/cache directory segment: node_modules",
+    }]
     assert any(item["kind"] == "workspace_patch" for item in artifacts)
 
 
-def test_workspace_patch_excludes_common_credential_paths_but_still_produces_patch(tmp_path):
+def test_workspace_patch_keeps_project_credential_names_and_excludes_dotenv(tmp_path):
     repo = tmp_path / "repo"
     _init_repo_with_file(repo)
     (repo / "tracked.txt").write_text("new\n", encoding="utf-8")
@@ -317,14 +322,15 @@ def test_workspace_patch_excludes_common_credential_paths_but_still_produces_pat
 
     assert manifest["status"] == ARTIFACT_STATUS_READY_WITH_CHANGES
     assert {item["path"] for item in manifest["sensitive_blocked"]} == {
-        "credentials",
         "prod.env",
         "settings.env.local",
-        ".aws/credentials",
     }
+    assert {"credentials", ".aws/credentials"} <= set(manifest["untracked_included"])
     assert any(item["kind"] == "workspace_patch" for item in artifacts)
     patch_text = (artifact_dir / "workspace.patch").read_text(encoding="utf-8")
     assert "SECRET" not in patch_text
+    assert "a/credentials b/credentials" in patch_text
+    assert ".aws/credentials" in patch_text
 
 
 def test_workspace_patch_allows_benign_tokenizer_json(tmp_path):

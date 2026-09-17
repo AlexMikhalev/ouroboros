@@ -12,6 +12,7 @@ disposed by a live top-level task holding the same target.
 from __future__ import annotations
 
 import json
+import pytest
 import pathlib
 import subprocess
 
@@ -183,13 +184,10 @@ def test_integrate_schema_states_the_finalization_consequence_and_the_reject_exi
 
     entry = next(e for e in get_tools() if e.name == "integrate_delegated_patch")
     description = str(entry.schema["description"])
-    assert "Done with warnings" in description
-    assert "delegated_custody_unreconciled" in description
-    assert "reject is the closing move" in description
-    assert "terminal owner's orphan" in description
-    assert "Applying requires the caller's active Git root or fresh payload binding" in description
-    assert "Rejecting a terminal-owner orphan requires only the owner's terminality" in description
-    assert "release a dead task's locks and snapshot" in description
+    assert "Undisposed snapshots or directory-copy results remain custody debt" in description
+    assert "direct runs do not create that debt" in description
+    assert "apply verifies its complete result" in description
+    assert "reject cannot undo" in description
     assert entry.schema["parameters"]["properties"]["decision"]["enum"] == [
         "apply", "reject"]
 
@@ -307,12 +305,14 @@ def _disposed_rows(tmp_path):
     return [r for r in rows if str(r.get("type") or "") == custody.PATCH_DISPOSED]
 
 
+@pytest.mark.parametrize("direct_chat", [False, True])
 def test_top_level_task_may_reject_a_terminal_owners_payload_orphan(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, direct_chat):
     from ouroboros.subagent_worktrees import find_execution_snapshot
     from ouroboros.tools.subagent_integration import _integrate_delegated_patch
 
     second, skill, entry, capture = _payload_orphan(tmp_path, monkeypatch)
+    second.is_direct_chat = direct_chat
     out = _integrate_delegated_patch(second, "run-p1", "reject", "not wanted")
     assert "🚫 Rejected" in out, out
     assert "orphan of terminal task t-payload" in out, out
@@ -325,11 +325,13 @@ def test_top_level_task_may_reject_a_terminal_owners_payload_orphan(
     custody._CUSTODY.clear()
 
 
+@pytest.mark.parametrize("direct_chat", [False, True])
 def test_top_level_task_may_apply_a_terminal_owners_payload_orphan(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, direct_chat):
     from ouroboros.tools.subagent_integration import _integrate_delegated_patch
 
     second, skill, entry, capture = _payload_orphan(tmp_path, monkeypatch)
+    second.is_direct_chat = direct_chat
     out = _integrate_delegated_patch(second, "run-p1", "apply", "looks good")
     assert "✅ Integrated" in out, out
     assert "orphan of terminal task t-payload" in out, out
@@ -414,7 +416,6 @@ def test_non_top_level_profiles_may_not_dispose_an_orphan(tmp_path, monkeypatch)
     for constraint, direct_chat in (
             (TaskConstraint(mode="local_readonly_subagent"), False),
             (TaskConstraint(mode="acting_subagent", surface="worktree"), False),
-            (None, True),                       # direct chat = operator_control
     ):
         second.task_constraint = constraint
         second.is_direct_chat = direct_chat
@@ -433,7 +434,7 @@ def test_wait_and_cancel_authority_did_not_widen_for_an_orphan(tmp_path, monkeyp
     second, skill, entry, capture = _payload_orphan(tmp_path, monkeypatch)
     waited = json.loads(delegate._delegate_wait(second, "run-p1", wait_sec=1))
     assert waited["reason"] == "run_not_owned", waited
-    cancelled = json.loads(delegate._delegate_cancel(second, "run-p1", "stop"))
+    cancelled = json.loads(delegate._delegate_cancel(second, "run-p1", "stop").text)
     assert cancelled["reason"] == "run_not_owned", cancelled
     assert entry.patch_disposed == ""
     custody._CUSTODY.clear()

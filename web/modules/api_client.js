@@ -196,6 +196,14 @@ export function updateStrategyForPlan(plan = {}) {
 }
 
 export const apiClient = {
+    /** Read a recent window or replay one opaque, room-bound history page. */
+    chatHistory: ({ chatId = 1, cursor = null, signal } = {}) => {
+        const params = new URLSearchParams();
+        if (chatId !== 1) params.set('chat_id', String(chatId));
+        if (cursor) params.set('cursor', cursor);
+        const query = params.toString();
+        return fetchJson(`/api/chat/history${query ? `?${query}` : ''}`, { cache: 'no-store', signal });
+    },
     /** @returns {Promise<import('./api_types.js').HealthResponse>} */
     health: () => fetchJson('/api/health', { cache: 'no-store' }),
     /** @returns {Promise<import('./api_types.js').StateResponse>} */
@@ -267,7 +275,7 @@ export const apiClient = {
         `/api/owner/skills/${encodeURIComponent(skill)}/presence-runtime`,
         payload,
     ),
-    projectFromTask: (taskId, id, name, objectiveHint = '') => jsonPost('/api/projects/from-task', { task_id: taskId, id, name, objective_hint: objectiveHint }),
+    projectFromTask: (taskId, id, name) => jsonPost('/api/projects/from-task', { task_id: taskId, id, name }),
     /** @param {import('./api_types.js').ProjectCreateRequest} payload */
     projectCreate: (payload) => jsonPost('/api/projects', payload),
     projectUpdate: (projectId, name) => jsonPost(`/api/projects/${encodeURIComponent(projectId)}/update`, { name }),

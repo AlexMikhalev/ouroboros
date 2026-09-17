@@ -10,6 +10,8 @@ import os
 import pathlib
 import re
 import shlex
+import shutil
+import tempfile
 import signal  # noqa: F401
 import stat  # noqa: F401
 import subprocess
@@ -30,7 +32,7 @@ from ouroboros.runtime_mode_policy import (
     is_protected_runtime_path,  # noqa: F401
 )
 from ouroboros.tools.commit_gate import _invalidate_advisory
-from ouroboros.shell_parse import is_absolute_path_text, recover_stringified_argv  # noqa: F401
+from ouroboros.shell_parse import POSIX_SHELL_HEADS, is_absolute_path_text, recover_stringified_argv  # noqa: F401
 from ouroboros.tools.tool_result import _publish_process_result, _wrap_run_script_process_result
 from ouroboros.tools.verify import check_exit_masking  # noqa: F401 -- ONE exit-masking sensor shared with verify_and_record (pinned here); its disclosure lives in shell_audit
 from ouroboros.tools.registry import (
@@ -74,10 +76,6 @@ from ouroboros.tools.shell_effects import (  # noqa: F401
     _user_files_run_had_effect,
 )
 from ouroboros.tools.shell_outputs import (  # noqa: F401
-    _SENSITIVE_OUTPUT_COMPONENT_NAMES,
-    _SENSITIVE_OUTPUT_MARKERS,
-    _SENSITIVE_OUTPUT_NAMES,
-    _SENSITIVE_OUTPUT_SUFFIXES,
     _directory_fingerprint,
     _changed_path_covers,
     _directory_fingerprint_from_entries,
@@ -164,7 +162,7 @@ _SHELL_OPERATORS = frozenset(["&&", "||", "|", ";", ">", ">>", "<", "<<"])
 _GLUED_REDIRECT_RE = re.compile(
     r'^(?:(?:\d+>>?|>>?&?\d*|\d*>&\d*|&>>?)(?:\S.*)?|\d+<\S*|<<\S*|<)$'
 )
-_SHELL_INTERPRETERS = frozenset({"sh", "bash", "zsh", "fish", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe"})
+_SHELL_INTERPRETERS = POSIX_SHELL_HEADS | frozenset({"fish", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe"})
 _ENV_REF_PATTERN = re.compile(r'\$(?:\{[A-Z][A-Z0-9_]*\}|[A-Z][A-Z0-9_]*)')
 
 
@@ -543,14 +541,6 @@ def _run_shell(
         return f"⚠️ SHELL_ERROR: {e}. root={binding.root}, cwd={work_dir}"
 
 
-# The run_script interpreter VALIDATOR (SSOT; the schema enum below is the
-# advertised subset — Windows launcher spellings are accepted, not advertised).
-RUN_SCRIPT_INTERPRETER_ALLOWLIST = frozenset({
-    "python", "python3", "python.exe", "python3.exe",
-    "bash", "sh", "node", "node.exe", "ruby",
-})
-
-
 def _run_script(
     ctx: ToolContext,
     script: str,
@@ -572,30 +562,6 @@ def _run_script(
     bucket = str(kwargs.get("bucket") or "")
     skill_name = str(kwargs.get("skill_name") or "")
     interp = str(interpreter or "python3").strip()
-    allowed = RUN_SCRIPT_INTERPRETER_ALLOWLIST
-    resolver_attested = False
-    try:
-        from ouroboros.process_interpreters import InterpreterResolutionTrace
-
-        resolution = getattr(ctx, "_active_interpreter_resolution", None)
-        resolver_attested = bool(
-            isinstance(resolution, InterpreterResolutionTrace)
-            and resolution.verified
-            and resolution.tool == "run_script"
-            and (
-                resolution.requested_interpreter in {"python", "python3"}
-                if resolution.family == "python"
-                # A node attestation admits only an actual SUBSTITUTION (emergency
-                # rewrite); healthy paths have changed=False, so bare spellings
-                # still hit the allowlist (A-F1).
-                else (resolution.family == "node" and resolution.changed)
-            )
-            and resolution.resolved_interpreter == interp
-        )
-    except Exception:
-        resolver_attested = False
-    if pathlib.PurePath(interp).name not in allowed and not resolver_attested:
-        return f"⚠️ RUN_SCRIPT_BLOCKED: interpreter must be one of {sorted(allowed)}."
     body = str(script or "")
     if not body.strip():
         return "⚠️ TOOL_ARG_ERROR (run_script): script is required."
@@ -625,35 +591,46 @@ def _run_script(
             root = pathlib.Path(ctx.drive_root) / "tmp_scripts"
     root.mkdir(parents=True, exist_ok=True)
     suffix = ".py" if "python" in pathlib.PurePath(interp).name else ".sh"
+    run_dir = None
     script_path = root / f"script_{uuid.uuid4().hex}{suffix}"
-    script_path.write_text(body, encoding="utf-8")
     try:
-        os.chmod(script_path, 0o600)
-    except OSError:
-        pass
-    script_arg = str(script_path)
-    if executor_active:
-        executor = executor_ref_from_ctx(ctx)
-        if executor is not None and executor.kind != "local":
-            try:
-                script_arg = executor_map_host_path(executor, script_path)
-            except Exception as exc:
-                script_path.unlink(missing_ok=True)
-                return f"⚠️ RUN_SCRIPT_BLOCKED: executor-backed run_script could not map temp script path: {type(exc).__name__}: {exc}"
-    argv = [interp, script_arg, *[str(item) for item in (args or [])]]
-    try:
+        if active_workspace_script:
+            run_dir = pathlib.Path(tempfile.mkdtemp(prefix="script_", dir=root))
+            # Ignore only this invocation's files, not neighbouring user work.
+            (run_dir / ".gitignore").write_text("*\n", encoding="utf-8")
+            script_path = run_dir / f"script{suffix}"
+        script_path.write_text(body, encoding="utf-8")
+        try:
+            os.chmod(script_path, 0o600)
+        except OSError:
+            pass
+        script_arg = str(script_path)
+        if executor_active:
+            executor = executor_ref_from_ctx(ctx)
+            if executor is not None and executor.kind != "local":
+                try:
+                    script_arg = executor_map_host_path(executor, script_path)
+                except Exception as exc:
+                    return f"⚠️ RUN_SCRIPT_BLOCKED: executor-backed run_script could not map temp script path: {type(exc).__name__}: {exc}"
+        argv = [interp, script_arg, *[str(item) for item in (args or [])]]
         result = _run_shell(
             ctx, argv, cwd=cwd, outputs=outputs, scratch=scratch,
             _resolved_binding=binding, timeout_sec=timeout_sec, timeout=timeout,
         )
     finally:
         try:
-            script_path.unlink(missing_ok=True)
-            script_path.parent.rmdir()
-            if active_workspace_script:
-                script_path.parent.parent.rmdir()
-        except OSError:
-            pass
+            if run_dir is not None:
+                shutil.rmtree(run_dir)
+            else:
+                script_path.unlink(missing_ok=True)
+        except OSError as exc:
+            log.warning("Could not remove run_script scratch %s (%s)", run_dir or script_path, type(exc).__name__)
+        # These shared parents may contain another run or a user's file.
+        for parent in (root, root.parent) if active_workspace_script else (root,):
+            try:
+                parent.rmdir()
+            except OSError:
+                pass
     if pathlib.PurePath(interp).name in {"sh", "bash"}:
         result = _masked_green_disclosure(ctx, result, [interp, "-c", body])
     # POST-exec body audit: stat-confirmed user_files writes performed by the script
@@ -740,12 +717,12 @@ def get_tools() -> List[ToolEntry]:
             "name": "run_script",
             "description": (
                 "Run a short task-scoped temporary script with a declared interpreter. "
-                "Use for multi-line diagnostics or harness helpers; generated script files live under the task drive. "
+                "Use for multi-line diagnostics or harness helpers; generated scripts use a private run directory inside the mapped workspace or the task drive. "
                 "The underlying command result echoes the resolved cwd."
             ),
             "parameters": {"type": "object", "properties": {
                 "script": {"type": "string"},
-	                "interpreter": {"type": "string", "enum": ["python", "python3", "bash", "sh", "node", "ruby"], "default": "python3"},
+	                "interpreter": {"type": "string", "default": "python3", "description": "Installed executable name or path that accepts a script filename, such as python3, node, perl, zsh or lua. Receives the temporary script path followed by args. Use run_command for compiler or launcher subcommands."},
 	                "args": {"type": "array", "items": {"type": "string"}, "default": []},
 	                "cwd": {"type": "string", "default": "", "description": "Omit for active_workspace; use system_repo[/subdir] for Ouroboros or skill_payload[/subdir] with bucket+skill_name for a skill."},
 	                "bucket": {"type": "string", "enum": ["external", "clawhub", "ouroboroshub", "user_repo"], "description": "Physical skill location for cwd=skill_payload[/subdir]."},

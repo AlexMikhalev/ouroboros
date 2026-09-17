@@ -291,9 +291,11 @@ def test_task_status_stays_factual_in_main_and_project_chat(
         ).last
         child_line_toggle.focus()
         child_line_toggle.press("Enter")
-        assert "Reason: delegated_route_unavailable" in child.locator(
-            ":scope > [data-live-timeline]"
-        ).inner_text()
+        # The card says the cause in the owner's words; the machine code stays on
+        # the record half, never behind a `Reason:` label (PR #970).
+        child_timeline = child.locator(":scope > [data-live-timeline]").inner_text()
+        assert "The selected tool route was unavailable; the parent can continue." in child_timeline
+        assert "Reason:" not in child_timeline
         assert "delegated_route_unavailable" not in child_summary.inner_text()
         child_line_toggle.press("Space")
         child_summary.press("Space")

@@ -58,7 +58,7 @@ def test_run_llm_loop_preserves_assistant_tool_call_metadata(tmp_path, monkeypat
         tools=ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path),
         llm=FakeLLM(),
         drive_logs=tmp_path,
-        emit_progress=lambda _text, *, incident=None: None,
+        emit_progress=lambda _text, **_meta: None,
         incoming_messages=queue.Queue(),
         task_id="roundtrip",
         drive_root=tmp_path,
@@ -112,7 +112,7 @@ def test_direct_final_admission_fence_consumes_followup_before_return(tmp_path, 
         tools=registry,
         llm=FakeLLM(),
         drive_logs=tmp_path,
-        emit_progress=lambda _text, *, incident=None: None,
+        emit_progress=lambda _text, **_meta: None,
         incoming_messages=queue.Queue(),
         task_id="direct-fence",
         drive_root=tmp_path,
@@ -171,7 +171,7 @@ def test_budget_rail_after_dispatch_is_terminal_without_provider_fallback(tmp_pa
         tools=registry,
         llm=FakeLLM(),
         drive_logs=tmp_path,
-        emit_progress=lambda _text, *, incident=None: None,
+        emit_progress=lambda _text, **_meta: None,
         incoming_messages=queue.Queue(),
         event_queue=events,
         task_id="budget-task",
@@ -231,7 +231,7 @@ def test_run_llm_loop_narrates_reasoning_to_bubble_not_trace(tmp_path, monkeypat
         tools=ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path),
         llm=FakeLLM(),
         drive_logs=tmp_path,
-        emit_progress=lambda text, *, incident=None: emitted.append(text),
+        emit_progress=lambda text, **_meta: emitted.append(text),
         incoming_messages=queue.Queue(),
         task_id="narrate",
         drive_root=tmp_path,
@@ -277,7 +277,7 @@ def test_run_llm_loop_finalize_now_control_forces_best_effort_answer(tmp_path, m
         tools=registry,
         llm=FakeLLM(),
         drive_logs=tmp_path,
-        emit_progress=lambda _text, *, incident=None: None,
+        emit_progress=lambda _text, **_meta: None,
         incoming_messages=queue.Queue(),
         task_id="graceful1",
         drive_root=tmp_path,
@@ -343,7 +343,7 @@ def test_run_llm_loop_keeps_task_model_override_across_tool_rounds(tmp_path, mon
         tools=registry,
         llm=FakeLLM(),
         drive_logs=tmp_path,
-        emit_progress=lambda _text, *, incident=None: None,
+        emit_progress=lambda _text, **_meta: None,
         incoming_messages=queue.Queue(),
         task_id="subagent1",
         drive_root=tmp_path,
@@ -418,7 +418,7 @@ def test_run_llm_loop_enforces_swarm_force_plan_before_final(tmp_path, monkeypat
         tools=registry,
         llm=FakeLLM(),
         drive_logs=tmp_path,
-        emit_progress=lambda _text, *, incident=None: None,
+        emit_progress=lambda _text, **_meta: None,
         incoming_messages=queue.Queue(),
         task_id="task1",
         drive_root=tmp_path,
@@ -432,7 +432,6 @@ def test_run_llm_loop_enforces_swarm_force_plan_before_final(tmp_path, monkeypat
 def test_force_plan_decision_does_not_treat_trace_marker_as_authority(tmp_path, monkeypatch):
     ctx = SimpleNamespace(
         task_metadata={"force_plan": True},
-        is_ephemeral_turn=False,
         task_id="root1",
         drive_root=tmp_path,
         budget_drive_root=str(tmp_path),
@@ -501,14 +500,14 @@ def test_run_llm_loop_does_not_accept_failed_plan_task_for_swarm_force_plan(tmp_
         tools=registry,
         llm=FakeLLM(),
         drive_logs=tmp_path,
-        emit_progress=lambda _text, *, incident=None: None,
+        emit_progress=lambda _text, **_meta: None,
         incoming_messages=queue.Queue(),
         task_id="task1",
         drive_root=tmp_path,
     )
 
     assert result.startswith("done despite unavailable plan")
-    assert "advisory enforcement" in result
+    assert "advisory enforcement" in usage["terminal_host_notice"]
     assert calls["count"] == 3
     assert usage.get("reason_code") != "swarm_force_plan_not_called"
     assert trace["tool_calls"][0]["tool"] == "plan_task"
@@ -560,7 +559,7 @@ def test_run_llm_loop_injects_subagent_handoff_before_final_text(tmp_path, monke
         tools=ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path),
         llm=FakeLLM(),
         drive_logs=tmp_path,
-        emit_progress=lambda text, *, incident=None: progress.append(text),
+        emit_progress=lambda text, **_meta: progress.append(text),
         incoming_messages=queue.Queue(),
         task_id="parent1",
         drive_root=tmp_path,
@@ -629,7 +628,7 @@ def test_run_llm_loop_appends_orphan_note_when_finalizing_with_unhandled_child(t
         tools=ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path),
         llm=FakeLLM(),
         drive_logs=tmp_path,
-        emit_progress=lambda text, *, incident=None: progress.append(text),
+        emit_progress=lambda text, **_meta: progress.append(text),
         incoming_messages=queue.Queue(),
         task_id="parent1",
         drive_root=tmp_path,
@@ -638,9 +637,9 @@ def test_run_llm_loop_appends_orphan_note_when_finalizing_with_unhandled_child(t
     # Handoff, then one exact-disposition reminder, then honest forced best-effort.
     assert calls["count"] == 4
     assert sum(1 for item in progress if "Subagent handoff status refreshed" in item) == 1
-    # The forced best-effort prose is preserved AND the loud orphan note is appended.
+    # The forced best-effort prose is preserved beside the host-authored notice.
     assert result.startswith("Best effort: child1 is still running.")
-    assert "child1" in result and "NOTE: finalized" in result
+    assert "child1" in result and "NOTE: finalized" in _usage["terminal_host_notice"]
 
 def test_run_llm_loop_forces_best_effort_after_child_absorption_reminder(tmp_path, monkeypatch):
     from ouroboros.task_results import STATUS_RUNNING, write_task_result
@@ -687,7 +686,7 @@ def test_run_llm_loop_forces_best_effort_after_child_absorption_reminder(tmp_pat
         tools=tools,
         llm=FakeLLM(),
         drive_logs=tmp_path,
-        emit_progress=lambda text, *, incident=None: progress.append(text),
+        emit_progress=lambda text, **_meta: progress.append(text),
         incoming_messages=queue.Queue(),
         task_id="parent1",
         drive_root=tmp_path,
@@ -697,7 +696,7 @@ def test_run_llm_loop_forces_best_effort_after_child_absorption_reminder(tmp_pat
     assert usage["_best_effort_extracted"] is True
     assert "Child absorption reminder injected" in "\n".join(progress)
     assert "Child absorption reminder injected" in "\n".join(trace["reasoning_notes"])
-    assert "child task(s) not explicitly absorbed" in result
+    assert "child task(s) not explicitly absorbed" in usage["terminal_host_notice"]
     assert calls["count"] == 4
     # D2a: the absorption reminder round holds instead of arming — the new
     # messages of that round carry the reminder and NOT the JSON instruction
@@ -754,7 +753,7 @@ def test_run_llm_loop_does_not_include_current_subagent_in_own_handoff(tmp_path,
         tools=tools,
         llm=FakeLLM(),
         drive_logs=tmp_path,
-        emit_progress=lambda text, *, incident=None: progress.append(text),
+        emit_progress=lambda text, **_meta: progress.append(text),
         incoming_messages=queue.Queue(),
         task_id="child1",
         drive_root=tmp_path,

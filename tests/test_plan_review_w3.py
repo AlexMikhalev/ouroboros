@@ -8,6 +8,7 @@ Shares the engine harness with ``test_plan_review_engine`` (real ``ToolContext``
 from __future__ import annotations
 
 import json
+import pytest
 
 import ouroboros.tools.plan_review as pr
 from tests.test_plan_review_engine import CLEAN, DECK_SPEC, _call, _control, _finding, _slots, _state, _user_text
@@ -16,12 +17,118 @@ from tests.test_plan_review_engine import harness as _engine_harness  # the shar
 harness = _engine_harness  # noqa: F811 - pytest registers the fixture under this module's namespace
 
 
+@pytest.mark.parametrize("notice_prefix", ["", "source detail " * 4000], ids=["complete", "budgeted"])
+def test_task_locator_preserves_host_notice_and_invalidates_changed_evidence(harness, notice_prefix):
+    from ouroboros.task_results import load_task_result, write_task_result
+
+    answer = "The report is complete."
+    write_task_result(harness.drive, "previous", "completed", result=answer)
+    reader = pr._task_evidence_reader(harness.drive)
+    assert "terminal_host_notice" not in json.loads(reader("previous"))
+    first_notice = notice_prefix + "First source limitation."
+    write_task_result(harness.drive, "previous", "completed", terminal_host_notice=first_notice)
+    sub = harness.install({"s1": CLEAN, "s2": CLEAN, "s3": CLEAN})
+    ctx = harness.make_ctx()
+    spec = {**DECK_SPEC, "evidence": ["task:previous"]}
+    request = pr._PlanRequest(goal="Ship the deck", plan="Outline first, then draft each slide.", spec=spec)
+    packet = pr.build_plan_review_packet_for_dry_run(ctx, request)
+    assert _control(_call(ctx, spec=spec))["closed"] is True
+    first = _state(harness)["waves"][-1]
+    assert first["request_fingerprint"] == packet["fingerprint"]
+    attached = packet["manifest"]["attached"][0]
+    assert '"terminal_host_notice":' in attached["text"]
+    assert '"terminal_host_notice":' in _user_text(sub.calls[0]["request"].messages[1]["content"])
+    assert json.loads(reader("previous"))["result"] == answer
+    assert _control(_call(ctx, spec=spec))["closed"] is True and len(sub.calls) == 1
+
+    write_task_result(harness.drive, "previous", "completed",
+                      terminal_host_notice=notice_prefix + "Second source limitation.")
+    packet = pr.build_plan_review_packet_for_dry_run(ctx, request)
+    assert _control(_call(ctx, spec=spec))["closed"] is True
+    second = _state(harness)["waves"][-1]
+    assert second["request_fingerprint"] == packet["fingerprint"]
+    changed = packet["manifest"]["attached"][0]
+    assert len(sub.calls) == 2 and _state(harness)["cycles_paid"] == 2
+    assert second["request_fingerprint"] != first["request_fingerprint"]
+    assert changed["sha256"] != attached["sha256"]
+    assert load_task_result(harness.drive, "previous")["result"] == answer
+    if notice_prefix:
+        assert changed["text"] == attached["text"]  # The changed tail is beyond the view.
+        assert any(o["reason"].startswith("truncated_to_") for o in second["evidence_manifest"]["omissions"])
+    else:
+        assert json.loads(attached["text"])["terminal_host_notice"] == first_notice
+        assert json.loads(changed["text"])["terminal_host_notice"] == "Second source limitation."
+
+
+@pytest.mark.parametrize("decision", ["accept", "reject", "defer"])
+def test_closed_notes_allow_voluntary_disposition_without_new_authority(harness, decision):
+    notes = json.dumps([_finding("n1", "note"), _finding("n2", "note")])
+    sub = harness.install({"s1": notes, "s2": CLEAN, "s3": CLEAN})
+    ctx = harness.make_ctx()
+    assert _control(_call(ctx)) == {"outcome": "REVIEW_REQUIRED", "closed": True}
+    before = _state(harness)
+    wave = before["waves"][-1]
+    fingerprint = wave["request_fingerprint"]
+    prior_ref = wave["wave_artifact"]
+    exact_before = pr._read_plan_review_wave_artifact(harness.drive, "task-1", prior_ref)
+    items = [{"finding_id": "s1:n1", "decision": decision, "rationale": "Optional design judgment"}]
+
+    out = pr._handle_plan_task(ctx, review_disposition={"review_fingerprint": fingerprint, "items": items})
+
+    assert _control(out) == {"outcome": "REVIEW_REQUIRED", "closed": True}
+    assert "Notes are optional" in out and "neither reopens" in out
+    after = _state(harness)
+    annotated = after["waves"][-1]
+    assert annotated["dispositions"] == items  # n2 is not an obligation
+    assert after["cycles_paid"] == before["cycles_paid"] == 1
+    assert after["current_attempt"] == before["current_attempt"]
+    for key in ("spec", "spec_hash", "findings", "aggregate", "closed", "actors"):
+        assert annotated[key] == wave[key]
+    exact = pr._read_plan_review_wave_artifact(harness.drive, "task-1", annotated["wave_artifact"])
+    assert exact["supersedes_wave_artifact"] == prior_ref
+    assert exact["dispositions"] == items
+    assert pr._read_plan_review_wave_artifact(harness.drive, "task-1", prior_ref) == exact_before
+    assert _control(_call(ctx)) == {"outcome": "REVIEW_REQUIRED", "closed": True}
+    assert len(sub.calls) == 1
+
+
+def test_closed_note_annotation_keeps_input_validation_and_current_wave_binding(harness):
+    from ouroboros.task_results import record_plan_review_dispositions
+
+    sub = harness.install({"s1": json.dumps([_finding("n1", "note")]), "s2": CLEAN, "s3": CLEAN})
+    ctx = harness.make_ctx()
+    _call(ctx)
+    before = _state(harness)
+    fp = before["waves"][-1]["request_fingerprint"]
+    unknown = pr._handle_plan_task(ctx, review_disposition={"review_fingerprint": fp, "items": [
+        {"finding_id": "missing", "decision": "accept", "rationale": "r"},
+    ]})
+    assert unknown.startswith("ERROR: PLAN_REVIEW_DISPOSITION_INVALID")
+    assert _state(harness) == before
+    # Existing duplicate-disposition disclosure remains visible, but optional advice
+    # cannot become a new hold just because its annotation is malformed.
+    duplicate = pr._handle_plan_task(ctx, review_disposition={"review_fingerprint": fp, "items": [
+        {"finding_id": "s1:n1", "decision": "accept", "rationale": "r"},
+        {"finding_id": "s1:n1", "decision": "reject", "rationale": "r"},
+    ]})
+    assert "duplicate_disposition:s1:n1" in duplicate
+    assert _control(duplicate)["closed"] is True
+    _call(ctx, spec={**DECK_SPEC, "in_scope": ["a 4-slide deck"]})
+    current = _state(harness)
+    stale = pr._handle_plan_task(ctx, review_disposition={"review_fingerprint": fp, "items": []})
+    assert stale.startswith("ERROR: PLAN_REVIEW_DISPOSITION_STALE")
+    with pytest.raises(ValueError, match="PLAN_REVIEW_DISPOSITION_STALE"):
+        record_plan_review_dispositions(harness.drive, "task-1", fingerprint=fp, dispositions=[], closed=True)
+    assert _state(harness) == current
+    assert len(sub.calls) == 2
+
+
 def test_constitutional_packet_without_architecture_is_a_typed_failure(harness):
     """W3/D26: a self-modification packet without ARCHITECTURE.md is an assembly failure the
     agent sees, never a reviewer wave that silently lacks the document."""
     sub = harness.install({"s1": CLEAN, "s2": CLEAN, "s3": CLEAN})
     (harness.system / "docs" / "ARCHITECTURE.md").unlink()
-    spec = {**DECK_SPEC, "affected_resources": [str(harness.system / "ouroboros" / "loop.py")]}
+    spec = {**DECK_SPEC, "affected_paths": [str(harness.system / "ouroboros" / "loop.py")]}
     out = _call(harness.make_ctx(), spec=spec)
     assert "ARCHITECTURE.md" in out and "W3" in out
     assert sub.calls == []  # no reviewer was called
@@ -138,7 +245,8 @@ def test_reviewer_requests_are_bounded_like_declared_evidence(harness):
 def test_need_evidence_memory_is_bounded_per_task(harness):
     """W3 (delta review round 6): the per-task request memory (`need_evidence_seen`) is bounded
     (MAX_NEED_EVIDENCE_MEMORY) so the durable review state stays bounded whatever a panel asks
-    for; a request past the cap is demoted (never remembered), disclosed `need_evidence_memory_full`;
+    for; a request past the cap is never remembered, disclosed `need_evidence_memory_full`,
+    but still needs a free disposition instead of becoming optional advice;
     within one wave the memory accumulates across slots so the cap is exact."""
     from ouroboros.tools.plan_spec import MAX_NEED_EVIDENCE_MEMORY
 
@@ -166,8 +274,8 @@ def test_need_evidence_memory_is_bounded_per_task(harness):
     wave = state["waves"][-1]
     full = [d for a in wave["actors"] for d in a["disclosures"] if d.startswith("need_evidence_memory_full:")]
     assert len(full) == 2 * per_wave - MAX_NEED_EVIDENCE_MEMORY
-    kept = sum(1 for f in wave["findings"] if f["class"] == "need_evidence")
-    assert kept == MAX_NEED_EVIDENCE_MEMORY - per_wave
+    assert all(f["class"] == "need_evidence" for f in wave["findings"])
+    assert wave["closed"] is False
 
 
 
@@ -264,7 +372,7 @@ def test_session_task_is_the_compact_form_with_governance_by_mandatory_retrieval
     resolvable locators, never ~500k chars inline; api rows still get them inline."""
     harness.state["slots"] = _slots(("api1", "m/a"), ("sess1", "cursor=grok", "session"), ("api2", "m/b"))
     sub = harness.install({"api1": CLEAN, "sess1": CLEAN, "api2": CLEAN})
-    spec = {**DECK_SPEC, "affected_resources": [str(harness.system / "ouroboros" / "loop.py")]}
+    spec = {**DECK_SPEC, "affected_paths": [str(harness.system / "ouroboros" / "loop.py")]}
     _call(harness.make_ctx(), spec=spec)
     request = sub.calls[0]["request"]
     api_system = request.messages[0]["content"][0]["text"]
@@ -275,9 +383,12 @@ def test_session_task_is_the_compact_form_with_governance_by_mandatory_retrieval
     assert "slots and quorum." not in task and "Principle 3: Immune Integrity\n\nreview." not in task
     assert "Plan Review Checklist" in task and "REDACTED snapshot" in task
     # the governance documents are the ONE raw-read exception, even when the agent ALSO declared
-    # BIBLE.md as evidence (declaring it makes the plan constitutional): no contradictory orders
+    # BIBLE.md as evidence beside changing it (the change target is what makes the plan
+    # constitutional — owner 16=A): no contradictory orders
     sub = harness.install({"api1": CLEAN, "sess1": CLEAN, "api2": CLEAN})
-    _call(harness.make_ctx(task_id="task-2"), spec={**DECK_SPEC, "evidence": [str(harness.system / "BIBLE.md")]})
+    _call(harness.make_ctx(task_id="task-2"), spec={**DECK_SPEC,
+          "affected_paths": [str(harness.system / "BIBLE.md")],
+          "evidence": [str(harness.system / "BIBLE.md")]})
     task2 = sub.calls[0]["request"].session_task
     assert "MANDATORY FULL READS" in task2 and "even if the agent also declared them as evidence" in task2
     assert f"### {harness.system / 'BIBLE.md'}" in task2  # the redacted snapshot is still there too
@@ -299,16 +410,17 @@ def test_state_stays_persistable_at_the_worst_case_request_bounds(tmp_path):
 
     wide = "𝕏" * plan_spec.MAX_ITEM_CHARS  # 4-byte UTF-8 each
     n_items = plan_spec.MAX_LIST_ITEMS
-    # a MAXIMAL normalized spec: every list full, every string at the per-string bound, 4-byte chars
+    # A large operative spec beside maximally populated reviewer-request memory.
     spec = {
         "goal": "Ship", "acceptance_claims": [f"{wide[:-4]}c{i:03d}" for i in range(n_items)],
         "in_scope": [f"{wide[:-4]}i{i:03d}" for i in range(n_items)],
         "non_goals": [f"{wide[:-4]}n{i:03d}" for i in range(n_items)],
         "invariants": [f"{wide[:-4]}v{i:03d}" for i in range(n_items)],
         "decisions": [{"choice": wide, "why": wide,
-                       "rejected": [wide] * plan_spec.MAX_REJECTED_PER_DECISION} for _ in range(n_items)],
+                       "rejected": [wide] * 8} for _ in range(n_items)],
         "deferred": [{"what": wide, "why_safe_to_defer": wide} for _ in range(n_items)],
-        "affected_resources": [f"{wide[:-4]}a{i:03d}" for i in range(n_items)],
+        "affected_paths": [f"{wide[:-4]}a{i:03d}" for i in range(n_items)],
+        "affected_resources": [f"{wide[:-4]}r{i:03d}" for i in range(n_items)],
         "evidence": [f"{wide[:-4]}e{i:03d}" for i in range(n_items)],
     }
     normalized, errors = plan_spec.normalize_spec(spec)
@@ -425,7 +537,7 @@ def test_disposition_inputs_are_bounded_at_entry(harness):
     item count — so a $0 closure can always be persisted."""
     from ouroboros.tools import plan_spec
 
-    note = json.dumps([_finding("n1", "note")])
+    note = json.dumps([_finding("n1", "need_evidence", locator="notes.md")])
     harness.install({"s1": note, "s2": CLEAN, "s3": CLEAN})
     ctx = harness.make_ctx()
     _call(ctx)
@@ -542,9 +654,8 @@ def test_first_cycle_and_no_request_delta_cycle_carry_no_continuation_delta(harn
     assert not [d for row in wave2["actors"] for d in row.get("capability_delta") or []]
 
 
-def test_missing_requested_evidence_reask_is_demoted_and_keeps_the_wave_open(harness):
-    """Re-asking a locator the host already could not attach is a `need_evidence_repeat`
-    note: no new attachment, no new fingerprint, and the wave stays open at $0."""
+def test_missing_requested_evidence_reask_keeps_free_disposition_without_new_attachment(harness):
+    """A repeated need stays open, without growing request memory or buying another panel."""
     ask = json.dumps([_finding("f1", "need_evidence", breaks="goal", locator="gone.md",
                                summary="read it")])
     sub = harness.install({"s1": ask, "s2": CLEAN, "s3": CLEAN})
@@ -555,8 +666,18 @@ def test_missing_requested_evidence_reask_is_demoted_and_keeps_the_wave_open(har
     wave = _state(harness)["waves"][-1]
     assert wave["paid"] is True and wave["closed"] is False
     repeat = [f for f in wave["findings"] if f["locator"] == "gone.md"]
-    assert repeat and [f["class"] for f in repeat] == ["note"]  # demoted, never re-attached
+    assert repeat and [f["class"] for f in repeat] == ["need_evidence"]
     assert _control(out)["closed"] is False
+    assert _state(harness)["need_evidence_seen"] == ["gone.md"]
+    assert _control(_call(harness.make_ctx()))["closed"] is False  # Exact replay, not another panel.
+    assert len(sub.calls) == 1 and _state(harness)["cycles_paid"] == 2
+    disposed = pr._handle_plan_task(harness.make_ctx(), review_disposition={
+        "review_fingerprint": wave["request_fingerprint"],
+        "items": [{"finding_id": repeat[0]["finding_id"], "decision": "defer",
+                   "rationale": "The source is unavailable; it is not needed to begin this work."}],
+    })
+    assert _control(disposed) == {"outcome": "REVIEW_REQUIRED", "closed": True}
+    assert len(sub.calls) == 1 and _state(harness)["cycles_paid"] == 2
 
 
 def test_both_reviewer_routes_learn_the_range_selectors(harness):
@@ -572,10 +693,184 @@ def test_both_reviewer_routes_learn_the_range_selectors(harness):
     assert "::lines=A-B" in request.session_task
 
 
-def test_the_plan_spec_schema_discloses_both_halves_of_the_constitutional_trigger():
-    """The trigger reads `affected_resources` AND an existing `evidence` path; the schema the
-    agent sees says so, including that a non-existent path does not count."""
+def test_the_plan_spec_schema_names_affected_paths_as_the_only_resolved_list():
+    """The trigger reads ONE list — `affected_paths` — and the schema the agent sees says so:
+    required, files only, `[]` when none, and the other two lists explicitly not resolved."""
+    assert pr._SPEC_SCHEMA["required"] == ["affected_paths"]
     props = pr._SPEC_SCHEMA["properties"]
-    assert "system repository" in props["affected_resources"]["description"]
+    paths = props["affected_paths"]["description"]
+    assert "REQUIRED" in paths and "system repository" in paths and "[]" in paths
+    resources = props["affected_resources"]["description"]
+    assert "never file paths" in resources and "system repository" not in resources
     evidence = props["evidence"]["description"]
-    assert "system repository" in evidence and "EXISTING" in evidence
+    assert "does not make the plan" in evidence and "affected_paths" in evidence
+
+
+# ------------------------------------------------------------- in-flight honesty (P1-4)
+
+
+def _actor(slot_id, *, ok=False, failure_code="", error=""):
+    return {"slot_id": slot_id, "model": "m", "ok": ok, "failure_code": failure_code, "error": error}
+
+
+def test_progress_line_dedups_typed_reasons_and_names_the_late_result():
+    from ouroboros.tools.plan_review_runtime import plan_wave_progress_line
+
+    counts = {"parseable": 0, "configured": 6, "blocking": 0, "note": 0, "need_evidence": 0}
+    same = [_actor(f"s{i}", failure_code="subscription_window_exhausted") for i in range(3)]
+    distinct = [_actor("d1", failure_code="credential_pool_exhausted"), _actor("d2", error="transport died"),
+                _actor("d3", error="x" * 400), _actor("d4", failure_code="deadline_exhausted")]
+    line = plan_wave_progress_line("DEGRADED", counts, cycles_paid=1, cap=2,
+                                   wave={"actors": same + distinct, "custody_pending": True})
+    assert line.count("subscription_window_exhausted") == 1  # three identical reasons -> one
+    assert "credential_pool_exhausted; transport died" in line
+    assert "(+1 more in the task result)" in line and "deadline_exhausted" not in line  # first four shown
+    assert "OMISSION NOTE" in line and "\n" not in line  # bounded, one line
+    assert line.endswith("late result pending (reviewer slots still in flight, not yet collected)")
+    # Every other aggregate renders byte-identically to the plain form.
+    plain = plan_wave_progress_line("GREEN", {**counts, "parseable": 6}, cycles_paid=1, cap=2)
+    assert plain == plan_wave_progress_line("GREEN", {**counts, "parseable": 6}, cycles_paid=1, cap=2,
+                                            wave={"actors": same, "custody_pending": False})
+    assert plain == "📐 plan_task: GREEN — 0 blocking / 0 note / 0 need_evidence; cycles paid 1/2"
+
+
+def test_refused_redispatch_emits_a_separate_no_dispatch_line(harness, monkeypatch):
+    import ouroboros.review_substrate as review_substrate
+    from types import SimpleNamespace
+
+    harness.install({"s1": "", "s2": "", "s3": ""})  # every slot dies at dispatch time: paid, empty epoch
+    ctx = harness.make_ctx()
+    assert _control(_call(ctx)) == {"outcome": "DEGRADED", "closed": False}
+    assert _state(harness)["cycles_paid"] == 1
+
+    def zero_send(request, *, slots, drive_root, llm, usage_ctx=None):
+        return SimpleNamespace(actors=[{
+            "slot_id": slot.slot_id, "model": slot.model, "status": "not_dispatched", "raw_text": "",
+            "error": "agent session slot has no session task", "failure_code": "session_task_missing",
+            "usage": {}, "prompt_ref": {}, "response_ref": {}, "operation_id": f"op-{slot.slot_id}",
+            "operation_state": "not_dispatched", "late_result_pending": False,
+        } for slot in slots])
+
+    monkeypatch.setattr(review_substrate, "run_review_request", zero_send)
+    harness.progress.clear()
+    _call(ctx)  # stale empty-epoch wave re-dispatches; every row refuses pre-send at $0
+    assert _state(harness)["cycles_paid"] == 1
+    no_dispatch = [line for line in harness.progress if line.startswith("📐 plan_task: no new reviewer cycle dispatched")]
+    assert no_dispatch == ["📐 plan_task: no new reviewer cycle dispatched: session_task_missing"]
+    assert harness.progress[-1].startswith("📐 plan_task: DEGRADED") and "session_task_missing" in harness.progress[-1]
+
+
+def test_gate_projection_carries_custody_pending_before_the_aggregate():
+    from ouroboros.task_results import plan_review_gate_projection
+    from tests.test_plan_review import _force_plan_gate_state
+
+    state = _force_plan_gate_state("degraded")
+    assert plan_review_gate_projection(state, "blocking")["custody_pending"] is False
+    state["waves"][0]["custody_pending"] = True
+    decision = plan_review_gate_projection(state, "blocking")
+    assert decision["custody_pending"] is True and decision["reviewer_slots_degraded"] is True
+    assert decision["allow"] is False  # the in-flight aggregate stays DEGRADED and holds
+
+
+def test_one_free_collection_before_the_blocking_gate(harness, monkeypatch):
+    from ouroboros.task_results import plan_review_gate_projection
+    from ouroboros.tools.plan_review_collect import collect_before_gate
+    from tests.test_plan_review_reconciliation import _install_barrier_substrate
+
+    calls = []
+    _install_barrier_substrate(monkeypatch, calls)
+    ctx = harness.make_ctx()
+    _call(ctx)
+    state = _state(harness)
+    assert plan_review_gate_projection(state, "blocking")["custody_pending"] is True
+    collected = collect_before_gate(ctx, state)
+    assert [c["reconcile_only"] for c in calls] == [False, True]  # exactly one $0 collection
+    verdict = plan_review_gate_projection(collected, "blocking")
+    assert verdict["custody_pending"] is False and verdict["status"] == "closed" and verdict["allow"] is True
+    assert collect_before_gate(ctx, collected) is collected  # nothing pending: no second send
+    assert len(calls) == 2
+
+
+# ------------------------------------------------------------- verbatim principal directives (P1-6)
+
+
+def _dry_run_packet(ctx, spec=None):
+    request = pr._PlanRequest(goal="Ship the deck", plan="Outline first, then draft each slide.", spec=spec or DECK_SPEC)
+    return pr.build_plan_review_packet_for_dry_run(ctx, request)
+
+
+def test_packet_uses_full_dialogue_and_keeps_acceptance_directives(harness):
+    """Full planning dialogue replaces the old 16K display; acceptance keeps its ledger."""
+    from ouroboros.review_evidence import build_task_acceptance_evidence
+    from ouroboros.owner_mailbox import write_task_message
+    from ouroboros.utils import append_jsonl
+
+    ctx = harness.make_ctx()
+    ctx.current_chat_id = 1
+    ctx._owner_directives = [{"source": "initial_user", "content": "Build the deck", "msg_id": "t:1"}]
+    append_jsonl(harness.drive / "logs" / "chat.jsonl", {"direction": "in", "chat_id": 1,
+                 "text": "Build the deck; key sk-abcdefghijklmnopqrstuvwxyz1234"})
+    append_jsonl(harness.drive / "logs" / "chat.jsonl", {"direction": "out", "chat_id": 1,
+                 "text": "Option A is faster but less flexible. " + "detail " * 6000})
+    write_task_message(harness.drive, "Proposal from sibling: use a different format", task_id=ctx.task_id,
+                       source_task_id="parent-9", provenance="peer_via_ancestor", relayed_from_task_id="sibling-7")
+    packet = _dry_run_packet(ctx)["user_content"]
+    assert "## OWNER REQUIREMENTS AND DECISIONS" not in packet
+    assert "Option A is faster but less flexible. " + "detail " * 6000 in packet
+    assert "sk-abcdefghijklmnopqrstuvwxyz1234" not in packet
+    assert "from task sibling-7, relayed by ancestor parent-9" in packet
+    rows = build_task_acceptance_evidence(ctx, llm_trace={"tool_calls": []}, drive_root=harness.drive,
+                                          task_id=ctx.task_id)["owner_requirements_and_decisions"]
+    assert rows[0]["content"] == "Build the deck"
+    assert not (harness.drive / "task_results" / "artifacts").exists()  # dry-run stays read-only
+
+
+def test_task_objective_carries_the_contract_context_redacted(harness):
+    from ouroboros.tools.plan_review_runtime import _task_objective
+
+    ctx = harness.make_ctx()
+    assert _task_objective(ctx) == "Deliver the thing"
+    ctx.task_contract = {"objective": "Deliver the thing",
+                         "context": "Owner said: token sk-abcdefghijklmnopqrstuvwxyz1234; audience is the board"}
+    text = _task_objective(ctx)
+    assert text == "Deliver the thing\n\nContract context: Owner said: token ***REDACTED***; audience is the board"
+    assert "## TASK OBJECTIVE\n\n" + text + "\n" in _dry_run_packet(ctx)["user_content"]
+
+
+# ------------------------------------------------------------- the reviewer's question to the author (P1-7)
+
+
+def test_reviewer_question_holds_the_wave_until_a_free_disposition_and_its_answer_rides_the_next_cycle(harness):
+    """Owner batch 2, Q4=A: a reviewer returns an open question to the author as
+    `need_evidence` with the spec id in `breaks` (no locator); the wave holds until the
+    author's $0 disposition (accept = answered, reject, defer = deferred openly); the
+    answer reaches the reviewers only on the next PAID cycle, disclosed in the next step."""
+    question = json.dumps([_finding("q1", "need_evidence", breaks="claim_1", summary="Why exactly 5 slides?")])
+    sub = harness.install({"s1": question, "s2": CLEAN, "s3": CLEAN})
+    ctx = harness.make_ctx()
+    first = _call(ctx)
+    assert _control(first) == {"outcome": "REVIEW_REQUIRED", "closed": False}
+    wave = _state(harness)["waves"][-1]
+    [finding] = wave["findings"]
+    assert finding["class"] == "need_evidence" and finding["breaks"] == "claim_1" and finding["locator"] == ""
+    assert _state(harness).get("need_evidence_seen", []) == []  # a question is not a locator the host attaches
+    assert "a question addressed to you by spec id" in first and "defer = deferred openly" in first
+    answered = pr._handle_plan_task(ctx, review_disposition={
+        "review_fingerprint": wave["request_fingerprint"],
+        "items": [{"finding_id": "s1:q1", "decision": "accept", "rationale": "The board asked for five."}]})
+    assert _control(answered) == {"outcome": "REVIEW_REQUIRED", "closed": True}
+    assert len(sub.calls) == 1 and _state(harness)["cycles_paid"] == 1  # $0: no reviewer call, no cycle
+    _call(ctx, spec={**DECK_SPEC, "in_scope": ["a 6-slide deck"]})  # the next PAID cycle carries the answer
+    assert len(sub.calls) == 2
+    user2 = _user_text(sub.calls[1]["request"].messages[1]["content"])
+    assert "The board asked for five." in user2 and "s1:q1" in user2
+    assert "summaries bounded to 400 chars" in user2  # the carry-forward cut is named where it applies
+
+
+def test_escalate_is_available_wherever_planning_runs():
+    from ouroboros.tool_capabilities import (
+        ACTING_SUBAGENT_TOOL_NAMES, CORE_TOOL_NAMES, LOCAL_READONLY_SUBAGENT_TOOL_NAMES,
+    )
+
+    assert all("escalate" in names for names in
+               (CORE_TOOL_NAMES, LOCAL_READONLY_SUBAGENT_TOOL_NAMES, ACTING_SUBAGENT_TOOL_NAMES))

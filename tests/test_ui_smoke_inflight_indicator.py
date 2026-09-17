@@ -13,22 +13,34 @@ from tests.test_ui_smoke_playwright import direct_server_with_data  # noqa: F401
 
 @pytest.mark.ui_browser
 def test_ui_smoke_chat_inflight_indicator_lifecycle(direct_server_with_data):  # noqa: F811
-    """Direct and ephemeral turns display in-flight Thinking... indicator and transitions."""
+    """The header follows the /api/state census; a typing frame is only a receipt."""
     pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")
+    import json
+
     from playwright.sync_api import Error as PlaywrightError
     from playwright.sync_api import sync_playwright
 
     # NB: the server runs as a subprocess; its DirectActivityRegistry is not
-    # reachable from this process. The lifecycle below is driven client-side
-    # through the window.__ouroWs debug hook, which is exactly the surface the
-    # browser exercises for real WS frames.
+    # reachable from this process. The census the page reads is shaped here by
+    # intercepting /api/state (the server's own payload plus the activity rows),
+    # and the typing receipt is driven through the window.__ouroWs debug hook,
+    # which is exactly the surface the browser exercises for real WS frames.
     url = direct_server_with_data["url"]
+    state = {"rows": [], "reads": 0}
+
+    def _census(route):
+        state["reads"] += 1
+        payload = route.fetch().json()
+        payload["active_chat_activities"] = list(state["rows"])
+        payload["active_chat_activities_complete"] = True
+        route.fulfill(content_type="application/json", body=json.dumps(payload))
 
     try:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True)
             page = browser.new_page(viewport={"width": 1280, "height": 800})
             try:
+                page.route("**/api/state*", _census)
                 page.goto(url, wait_until="domcontentloaded", timeout=30_000)
                 status_badge = page.locator("#chat-status")
                 status_badge.wait_for(state="attached", timeout=30_000)
@@ -41,7 +53,21 @@ def test_ui_smoke_chat_inflight_indicator_lifecycle(direct_server_with_data):  #
                     timeout=10_000,
                 )
 
-                # Send typing event directly through the window.__ouroWs test hook
+                # Off the chat page the 3 s header poll is paused, so the census
+                # read that follows the receipt is the receipt's own (the 20 s
+                # projects poll is the only other reader).
+                page.click('[data-nav-page="settings"]')
+                page.wait_for_timeout(300)
+                reads_before = state["reads"]
+
+                # The census now lists the direct turn; the typing receipt (it
+                # carries the submission's client_message_id) pulls that census
+                # at once instead of waiting for the next poll.
+                state["rows"] = [{
+                    "activity_id": "act-smoke-1", "chat_id": 1, "project_id": "",
+                    "client_message_id": "msg-smoke-1", "kind": "direct_chat",
+                    "phase": "thinking", "started_at": 1.0,
+                }]
                 page.evaluate("""() => {
                     if (window.__ouroWs) {
                         window.__ouroWs.emit('typing', {
@@ -55,7 +81,7 @@ def test_ui_smoke_chat_inflight_indicator_lifecycle(direct_server_with_data):  #
                     }
                 }""")
 
-                # In-flight state
+                # In-flight state: reached through the receipt's own census read.
                 page.wait_for_function(
                     """() => {
                         const el = document.querySelector('#chat-status');
@@ -63,12 +89,16 @@ def test_ui_smoke_chat_inflight_indicator_lifecycle(direct_server_with_data):  #
                     }""",
                     timeout=5_000,
                 )
+                assert state["reads"] > reads_before, "the receipt did not pull the census"
+                page.click('[data-nav-page="chat"]')
 
                 # Dots indicator visible (main chat instance id is #typing-indicator)
                 typing_el = page.locator("#typing-indicator")
                 typing_el.wait_for(state="visible", timeout=5_000)
 
-                # Dispatch chat assistant message to clear activity
+                # A typing frame alone never lights the header: with the census
+                # empty again, another receipt settles the page at Online.
+                state["rows"] = []
                 page.evaluate("""() => {
                     if (window.__ouroWs) {
                         window.__ouroWs.emit('chat', {
@@ -77,6 +107,14 @@ def test_ui_smoke_chat_inflight_indicator_lifecycle(direct_server_with_data):  #
                             content: 'Done!',
                             task_id: 'act-smoke-1',
                             chat_id: 1
+                        });
+                        window.__ouroWs.emit('typing', {
+                            type: 'typing',
+                            chat_id: 1,
+                            activity_id: 'act-smoke-2',
+                            client_message_id: 'msg-smoke-2',
+                            phase: 'thinking',
+                            kind: 'direct_chat'
                         });
                     }
                 }""")

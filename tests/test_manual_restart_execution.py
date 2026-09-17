@@ -195,6 +195,22 @@ def test_raising_daemon_stop_is_recorded_like_panic_and_the_restart_proceeds(own
                    "purpose": owned.CUSTODY_PURPOSE, "reason": "stop raised RuntimeError"}
 
 
+def test_the_restart_notice_claims_a_stopped_task_only_when_one_was_owned(
+        owners, restart_root, monkeypatch):
+    """The owner is told what actually happened. With nothing owned the restart
+    sends the settings sentence alone; the stop sentence above is what an owned
+    live task earns. The stop sequence itself is unchanged in both branches."""
+    monkeypatch.setattr(active_activity, "get_direct_activity_registry",
+                        lambda: SimpleNamespace(snapshot=lambda: []))
+    messages = []
+    ctx = _ctx(owners.calls, messages=messages)
+
+    assert _restart(ctx, monkeypatch) == [True]
+
+    assert messages == ["♻️ Restarting.", "New settings apply to the next message."]
+    assert [c[0] for c in owners.calls] == ["checkout", "kill", "reconcile", "daemon_stop"]
+
+
 def test_stop_outcome_types_the_two_non_stops(restart_root, monkeypatch, caplog):
     """Nothing to stop is quiet; an unconfirmed remainder is disclosed by the stop itself."""
     manager = owned.OwnedClaudexorDaemon()
@@ -230,7 +246,7 @@ def test_warmup_is_one_background_ensure_for_a_provisioned_home_only(restart_roo
     descriptor.write_text("{}")
     assert owned.warm_owned_daemon() is True
     _join_warmup_thread()
-    assert ensures == [("ensure", {}), "closed"]
+    assert ensures == [("ensure", {"admission_wait_sec": 40.0}), "closed"]
 
     def unreachable(**kw):
         raise RuntimeError("fixture daemon down")

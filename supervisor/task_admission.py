@@ -614,11 +614,8 @@ def reserve_task_admission(
             if reserved == token:
                 return {"status": "already_reserved", "reason": ""}
             return {"status": "blocked", "reason": "duplicate_task_id"}
-        if tid in queue.RUNNING or any(
-            isinstance(row, dict) and str(row.get("id") or "") == tid
-            for row in queue.PENDING
-        ):
-            return {"status": "blocked", "reason": "duplicate_task_id"}
+        # A confirmed admission remains replayable while its task is still live.
+        # Only the durable token proves this is that same admission.
         try:
             from ouroboros.task_results import load_task_result
 
@@ -640,20 +637,23 @@ def reserve_task_admission(
                     "promotion_admission": dict(admission),
                 }
             return {"status": "blocked", "reason": "duplicate_task_id"}
+        if tid in queue.RUNNING or any(
+            isinstance(row, dict) and str(row.get("id") or "") == tid
+            for row in queue.PENDING
+        ):
+            return {"status": "blocked", "reason": "duplicate_task_id"}
         if require_worker_pool:
             try:
                 from supervisor import workers
 
-                disabled_reason = str(workers._WORKER_POOL_DISABLED_REASON or "")
-                pool = workers.WORKERS if worker_pool is None else worker_pool
-                worker_count = len(pool)
+                pool_state = workers._worker_pool_execution_state(worker_pool)
             except Exception:
                 return {"status": "blocked", "reason": "worker_pool_state_unavailable"}
-            if disabled_reason or worker_count <= 0:
+            if not pool_state["available"]:
                 return {
                     "status": "blocked",
                     "reason": "worker_pool_unavailable",
-                    "worker_pool_disabled_reason": disabled_reason or "no_workers",
+                    "worker_pool_disabled_reason": pool_state["disabled_reason"],
                 }
         queue.ADMISSION_RESERVATIONS[tid] = token
         return {"status": "reserved", "reason": ""}

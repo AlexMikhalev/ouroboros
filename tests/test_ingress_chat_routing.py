@@ -48,6 +48,18 @@ def test_without_a_room_the_only_address_is_the_hidden_partition(tmp_path):
             ingress_chat_id(elsewhere, tmp_path, "")
 
 
+def test_explicit_ui_source_can_address_main_without_creating_a_project(tmp_path):
+    assert ingress_chat_id(1, tmp_path, source="web") == 1
+    assert ingress_chat_id(None, tmp_path, source="web") == HIDDEN_CHAT_ID
+    assert ingress_chat_id(0, tmp_path, source="web") == HIDDEN_CHAT_ID
+    with pytest.raises(ProjectThreadConflict):
+        ingress_chat_id(7, tmp_path, source="web")
+    row = create_project(tmp_path, "ui-room", name="UI room")
+    assert ingress_chat_id(None, tmp_path, "ui-room", source="web") == row["chat_id"]
+    with pytest.raises(ProjectThreadConflict):
+        ingress_chat_id(1, tmp_path, "ui-room", source="web")
+
+
 def test_an_inactive_project_is_left_to_the_queues_own_lifecycle_fence(tmp_path):
     """One refusal per question, at the layer that owns it.
 
@@ -144,6 +156,40 @@ def test_api_task_without_a_project_stays_hidden_and_explicit_zero_is_honoured(a
         )
         assert conflict.status_code == 400, elsewhere
         assert "project thread" in conflict.text
+
+
+@pytest.mark.parametrize("project_id", ["", "publish-room"])
+def test_ui_publish_admission_preserves_source_target_and_one_address(admission, project_id):
+    from ouroboros.task_results import load_task_result
+
+    data, repo, captured = admission
+    address = {"chat_id": 1}
+    if project_id:
+        row = create_project(data, project_id, name="Publication")
+        address = {"project_id": project_id}
+    payload = {
+        "description": "Publish the selected skill.", "type": "skill_publish", "source": "web",
+        "metadata": {"skill_publish_target": {"skill": "demo", "repository": "owner/hub"}},
+        **address,
+    }
+    response = TestClient(_app(data, repo)).post("/api/tasks", json=payload)
+    assert response.status_code == 200, response.text
+    expected_chat = row["chat_id"] if project_id else 1
+    assert captured[-1]["chat_id"] == expected_chat
+    assert captured[-1]["metadata"]["source"] == "web"
+    assert captured[-1]["metadata"]["skill_publish_target"] == payload["metadata"]["skill_publish_target"]
+    stored = load_task_result(data, response.json()["task_id"])
+    assert stored["chat_id"] == expected_chat
+    assert stored["metadata"]["source"] == "web"
+
+
+def test_publish_task_type_alone_does_not_make_generic_api_work_visible(admission):
+    data, repo, captured = admission
+    response = TestClient(_app(data, repo)).post(
+        "/api/tasks", json={"description": "Publish a skill", "type": "skill_publish"},
+    )
+    assert response.status_code == 200, response.text
+    assert captured[-1]["chat_id"] == HIDDEN_CHAT_ID
 
 
 def test_api_task_with_a_malformed_chat_id_is_still_a_typed_400(admission):

@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from ouroboros.contracts.task_contract import normalize_allowed_origins, normalize_browser_origin
+from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
 from ouroboros.server_auth import is_loopback_host
 from ouroboros.server_process import SERVICE_IDENTITY_UNKNOWN, runtime_service_identity
 
@@ -95,8 +96,12 @@ def _task_allowed_origins(ctx: Any) -> list[str]:
     return normalize_allowed_origins(policy.get("allowed_origins")) if isinstance(policy, dict) else []
 
 
-def browser_url_block_reason(url: str, ctx: Any = None, *, restricted: bool) -> str:
+def browser_url_block_reason(
+    url: str, ctx: Any = None, *, restricted: bool, runtime_mode: str = ""
+) -> str:
     """One target decision for navigation, actions and requests exposed by Playwright."""
+    if not restricted and mode_has_unrestricted_agency(runtime_mode):
+        return ""  # The browser still reports malformed URLs and actual network failures.
     parsed = urlparse(str(url or ""))
     if not restricted:
         return "BROWSER_METADATA_BLOCKED: link-local/cloud metadata target" if _is_metadata_blocked_browser_url(url) else ""
@@ -137,17 +142,22 @@ def browser_url_block_reason(url: str, ctx: Any = None, *, restricted: bool) -> 
     return ""
 
 
-def browser_request_block_reason(request: Any, ctx: Any, *, restricted: bool) -> str:
+def browser_request_block_reason(
+    request: Any, ctx: Any, *, restricted: bool, runtime_mode: str = ""
+) -> str:
     """One request decision: the target decision plus owner-operation shapes at Ouroboros.
 
     The owner POST shapes apply at a proven Ouroboros endpoint and at an expected
     one whose identity is unknown; an unrelated application reusing the pathname
     on any other port keeps working."""
-    reason = browser_url_block_reason(request.url, ctx, restricted=restricted)
+    reason = browser_url_block_reason(
+        request.url, ctx, restricted=restricted, runtime_mode=runtime_mode)
     if reason or restricted:
         return reason  # Restricted target checks already refused every runtime identity.
+    if mode_has_unrestricted_agency(runtime_mode):
+        return ""
     if any(predicate(request) for predicate in (
-        _is_context_mode_owner_post, _is_safety_mode_owner_post,
+        _is_context_mode_owner_post, _is_review_enforcement_post, _is_safety_mode_owner_post,
         _is_owner_skill_attest_post, _is_owner_settings_self_elevation_post,
     )) and runtime_service_kind(request.url, ctx):
         return "BROWSER_OWNER_CONTROL_BLOCKED: this operation belongs to the owner"
@@ -229,69 +239,6 @@ def _is_metadata_blocked_browser_url(url: str) -> bool:
 
 
 
-def _blocks_context_mode_self_lowering_js(value: str) -> bool:
-    low = str(value or "").lower()
-    return "low" in low and (
-        "/api/owner/context-mode" in low
-        or ("ouroboros_context_mode" in low and ("settings.json" in low or "save_settings" in low))
-    )
-
-
-
-def _blocks_safety_mode_self_lowering_js(value: str) -> bool:
-    """Block browser JS that tries to change the owner-only LLM-safety coverage mode
-    (v6.54.3) — the click+fetch bypass of the dedicated owner endpoint. URL-decode
-    first so a percent-encoded path (``safety%2Dmode``) cannot slip the literal
-    match (review round 6; mirrors the owner-attestation guard)."""
-    import urllib.parse
-
-    low = str(value or "").lower()
-    decoded = urllib.parse.unquote(urllib.parse.unquote(low)).lower()
-    text = f"{low} {decoded}"
-    return (
-        "/api/owner/safety-mode" in text
-        or ("ouroboros_safety_mode" in text and (
-            "settings.json" in text or "save_settings" in text or "/api/settings" in text
-        ))
-    )
-
-
-
-def _blocks_mutative_toggle_js(value: str) -> bool:
-    """Block browser JS that tries to enable the owner-only mutative-subagents toggle."""
-    low = str(value or "").lower()
-    return "ouroboros_allow_mutative_subagents" in low and (
-        "settings.json" in low or "save_settings" in low or "/api/settings" in low
-    )
-
-
-
-def _blocks_post_task_evolution_js(value: str) -> bool:
-    """Block browser JS that tries to set an owner-only self-evolution control (the
-    post-task evolution toggle or the persistent evolution-objective steer)."""
-    low = str(value or "").lower()
-    return (
-        "ouroboros_post_task_evolution" in low
-        or "ouroboros_evolution_persistent_objective" in low
-    ) and (
-        "settings.json" in low or "save_settings" in low or "/api/settings" in low
-    )
-
-
-
-def _blocks_owner_skill_attest_js(value: str) -> bool:
-    """Block browser JS that tries to loopback-POST the OWNER-ONLY skill-attestation
-    endpoint (C1, v6.39) — owner-attestation skips the LLM skill review and must be
-    owner-issued, never agent self-callable from a browser fetch. URL-decode first so a
-    percent-encoded path (``%61ttest-review``) cannot slip past the literal match."""
-    import urllib.parse
-    low = str(value or "").lower()
-    decoded = urllib.parse.unquote(urllib.parse.unquote(low)).lower()
-    text = f"{low} {decoded}"
-    return "/api/owner/skills/" in text and "attest-review" in text
-
-
-
 def _is_context_mode_owner_post(request: Any) -> bool:
     try:
         parsed = urlparse(str(request.url or ""))
@@ -317,10 +264,20 @@ def _is_safety_mode_owner_post(request: Any) -> bool:
     return method == "POST" and path == "/api/owner/safety-mode"
 
 
+def _is_review_enforcement_post(request: Any) -> bool:
+    """The actual Settings field changes enforcement, independently of Access."""
+    import json
+    try:
+        return (str(request.method).upper() == "POST"
+                and urlparse(str(request.url)).path.rstrip("/") == "/api/settings"
+                and "OUROBOROS_REVIEW_ENFORCEMENT" in json.loads(request.post_data or "{}"))
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
 
 def _is_owner_skill_attest_post(request: Any) -> bool:
-    """A browser POST to the owner-only skill owner-attestation endpoint — the click/form
-    bypass of the evaluate-only JS guard (C1, v6.39)."""
+    """An actual browser POST to the owner-only skill attestation endpoint."""
     try:
         import urllib.parse
         parsed = urlparse(str(request.url or ""))
@@ -335,8 +292,7 @@ def _is_owner_skill_attest_post(request: Any) -> bool:
 
 
 def _is_owner_settings_self_elevation_post(request: Any) -> bool:
-    """A browser POST /api/settings carrying an owner-only self-modification toggle —
-    the click+Save bypass of the evaluate-only JS guards."""
+    """An actual browser POST /api/settings carrying an owner-only setting."""
     try:
         if str(request.method or "").upper() != "POST":
             return False
@@ -357,42 +313,3 @@ def _is_owner_settings_self_elevation_post(request: Any) -> bool:
         # joins the keys already guarded here rather than getting a mechanism of its own.
         or "ouroboros_subagent_harness" in body
     )
-
-
-def browser_evaluate_block_reason(url: str, value: str, ctx: Any = None) -> str:
-    """Keep owner-operation JavaScript policy at the same owner as URL policy."""
-    if not runtime_service_kind(url, ctx):
-        return ""
-    if _blocks_context_mode_self_lowering_js(value):
-        return (
-            "⚠️ CONTEXT_MODE_SELF_LOWERING_BLOCKED: browser JavaScript "
-            "looks like an attempt to lower OUROBOROS_CONTEXT_MODE. "
-            "Context mode is owner-controlled — ask the owner to use "
-            "the Low/Max toggle."
-        )
-    if _blocks_safety_mode_self_lowering_js(value):
-        return (
-            "⚠️ SAFETY_MODE_SELF_LOWERING_BLOCKED: browser JavaScript "
-            "looks like an attempt to change OUROBOROS_SAFETY_MODE. "
-            "LLM-safety coverage is owner-controlled (BIBLE P3) — the agent "
-            "must not reduce its own supervision."
-        )
-    if _blocks_mutative_toggle_js(value):
-        return (
-            "⚠️ ELEVATION_BLOCKED: browser JavaScript looks like an attempt to enable "
-            "OUROBOROS_ALLOW_MUTATIVE_SUBAGENTS. This master toggle is owner-controlled — "
-            "the agent must not self-enable mutative subagents."
-        )
-    if _blocks_post_task_evolution_js(value):
-        return (
-            "⚠️ ELEVATION_BLOCKED: browser JavaScript looks like an attempt to enable "
-            "OUROBOROS_POST_TASK_EVOLUTION. Post-task self-evolution is owner-controlled — "
-            "the agent must not self-enable it."
-        )
-    if _blocks_owner_skill_attest_js(value):
-        return (
-            "⚠️ OWNER_SKILL_ATTESTATION_SELF_CALL_BLOCKED: browser JavaScript looks like an "
-            "attempt to POST /api/owner/skills/<skill>/attest-review. Owner-attestation skips "
-            "the LLM skill review and is owner-only — the agent must not self-attest its own skill."
-        )
-    return ""

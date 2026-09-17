@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -45,55 +46,17 @@ def test_ui_publish_stale_card_reaches_selected_preflight_and_task(
     )
     direct_server_with_data["restart_server"]()
 
-    posted_tasks = []
-
-    def handle_tasks(route, request):
-        if request.method == "POST" and request.url.rstrip("/").endswith("/api/tasks"):
-            posted_tasks.append(request.post_data_json)
-            route.fulfill(
-                status=200,
-                content_type="application/json",
-                body=json.dumps(
-                    {
-                        "ok": True,
-                        "task_id": "publish-stale-task",
-                        "status": "scheduled",
-                    }
-                ),
-            )
-            return
-        route.continue_()
-
     try:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True)
             try:
                 page = browser.new_page(viewport={"width": 1280, "height": 900})
-                page.route("**/api/tasks", handle_tasks)
                 page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-                # Opening the Skills page starts TWO reads: /api/skills paints
-                # the cards, and the display-only OuroborosHub catalog repaints
-                # the WHOLE list when it settles (renderSkillsList's
-                # catalogSettled.then re-runs paint over container.innerHTML).
-                # A repaint landing between the menu-trigger click and the
-                # submit-hub click below recreates the card's <dialog> CLOSED,
-                # so the click waits its full 30s for a hidden menu item. Gate
-                # the flow on the catalog response (server-bounded at 15s) and
-                # settle one frame so the deferred repaint has applied before
-                # any interaction (same hydration-gate precedent as
-                # tests/test_ui_smoke_status_attention.py).
-                with page.expect_response(
-                    lambda response: "/api/marketplace/ouroboroshub/catalog"
-                    in response.url,
-                    timeout=30_000,
-                ) as catalog_hydration:
-                    page.click('[data-nav-page="skills"]')
-                catalog_hydration.value.finished()
+                # Installed cards are usable before the optional Hub catalog
+                # settles. Its badge-only update must not close the open menu.
+                page.click('[data-nav-page="skills"]')
                 card = page.locator(f'.skills-card[data-skill="{skill_name}"]').first
                 card.wait_for(state="visible", timeout=30_000)
-                page.evaluate(
-                    "() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
-                )
                 assert card.locator(".skills-submit-hub").get_attribute("data-submit-disabled") == "false"
 
                 # The passive catalogue no longer contains this row, but the selected
@@ -104,7 +67,7 @@ def test_ui_publish_stale_card_reaches_selected_preflight_and_task(
                     f"**/api/skills/{skill_name}/publish-preflight",
                     timeout=30_000,
                 ) as preflight_request:
-                    card.locator(".skills-submit-hub").click()
+                    page.locator(f'.skills-card-menu-dialog[open] .skills-submit-hub[data-skill="{skill_name}"]').click()
                 assert preflight_request.value.method == "POST"
 
                 dialog = page.locator(".confirm-dialog")
@@ -116,12 +79,20 @@ def test_ui_publish_stale_card_reaches_selected_preflight_and_task(
                 dialog_text = dialog.inner_text()
                 assert "Needs attention" in dialog_text
                 assert "snapshot_manifest_missing" in dialog_text
-                with page.expect_request("**/api/tasks", timeout=30_000):
+                with page.expect_response(
+                    lambda response: response.request.method == "POST"
+                    and response.url.rstrip("/").endswith("/api/tasks"),
+                    timeout=30_000,
+                ) as admission:
                     dialog.locator("[data-confirm-ok]").click()
                 page.wait_for_function("() => !document.querySelector('.confirm-dialog')", timeout=30_000)
 
-                assert len(posted_tasks) == 1
-                payload = posted_tasks[0]
+                response = admission.value
+                assert response.status == 200, response.text()
+                accepted = response.json()
+                assert accepted["ok"] is True
+                task_id = accepted["task_id"]
+                payload = response.request.post_data_json
                 assert payload["type"] == "skill_publish"
                 assert payload["metadata"]["skill_publish_target"] == {
                     "skill": skill_name,
@@ -129,9 +100,19 @@ def test_ui_publish_stale_card_reaches_selected_preflight_and_task(
                 }
                 assert "workspace_root" not in payload
                 assert "acceptance_claims" not in payload
+                # Admission, live Main projection and history must agree on the
+                # real identity. A fake HTTP success cannot prove this boundary.
+                assert page.request.get(f"{url}/api/tasks/{task_id}").status == 200
+                page.click('[data-nav-page="chat"]')
+                visible_task = page.locator(f'#page-chat .chat-live-card[data-task-id="{task_id}"]')
+                visible_task.wait_for(state="visible", timeout=30_000)
+                page.reload(wait_until="domcontentloaded")
+                visible_task.wait_for(state="visible", timeout=30_000)
             finally:
                 browser.close()
     except PlaywrightError as exc:
         if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+            if "chromium" in os.environ.get("OUROBOROS_EXPECT_BROWSER_ENGINES", "").split(","):
+                raise
             pytest.skip(str(exc))
         raise

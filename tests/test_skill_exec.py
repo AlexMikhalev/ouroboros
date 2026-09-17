@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shlex
 import pathlib
 import shutil
 import threading
@@ -335,27 +336,31 @@ def test_skill_preflight_reports_missing_pluginapi_permissions(tmp_path, monkeyp
     assert {"route", "widget", "read_settings"} <= missing
 
 
-def test_run_shell_blocks_self_authored_marker_writes(tmp_path, monkeypatch):
+@pytest.mark.serial
+def test_run_shell_writes_a_self_authored_marker_example(tmp_path, monkeypatch):
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
+    monkeypatch.setenv("OUROBOROS_SAFETY_MODE", "off")
     ctx = _make_ctx(tmp_path)
+    marker = ctx.repo_dir / "example" / ".self_authored.json"
+    marker.parent.mkdir()
     registry = ToolRegistry(repo_dir=ctx.repo_dir, drive_root=ctx.drive_root)
     registry._ctx = ctx
 
     result = registry.execute(
         "run_command",
-        {"cmd": ["sh", "-c", "printf '{}' > /tmp/x/.self_authored.json"]},
+        {"cmd": ["sh", "-c", f"printf '{{}}' > {shlex.quote(str(marker))}"]},
     )
 
-    assert "SAFETY_VIOLATION" in result
-    assert ".self_authored.json" in result
+    assert "exit_code=0" in result, result
+    assert marker.read_bytes() == b"{}"
 
 
-def test_run_shell_blocks_obfuscated_self_authored_marker_write_pre_exec(tmp_path, monkeypatch):
-    """Pre-execution proof replacing the deleted snapshot/restore pin (issue #447).
+@pytest.mark.serial
+def test_run_shell_blocks_actual_self_authored_marker_write_pre_exec(tmp_path, monkeypatch):
+    """The explicit redirect targets the actual runtime skill metadata.
 
-    A shell path that merely NAMES state/skills/self_authored.json is refused
-    BEFORE execution (SKILL_STATE_WRITE_BLOCKED) — no post-hoc restore exists
-    any more, so the block plus the absent file is the whole property.
+    This is a physical owner-state write, not a reference inside script text.
+    Its pre-execution refusal preserves the file without post-hoc rollback.
     """
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
     ctx = _make_ctx(tmp_path)
@@ -366,11 +371,12 @@ def test_run_shell_blocks_obfuscated_self_authored_marker_write_pre_exec(tmp_pat
 
     result = registry.execute(
         "run_command",
-        {"cmd": ["bash", "-c", f"printf '{{}}' > {marker}"]},
+        {"cmd": ["bash", "-c", f"printf '{{}}' > {shlex.quote(str(marker))}"]},
     )
 
-    assert "SKILL_STATE_WRITE_BLOCKED" in result
+    assert "WORKSPACE_SHELL_BLOCKED" in result and "process was not started" in result
     assert not marker.exists()
+
 
 
 def test_skill_exec_tools_have_policy_entries():
@@ -1982,6 +1988,22 @@ def test_skill_exec_bare_name_resolves_only_to_scripts_dir(tmp_path, monkeypatch
 
 def test_hard_timeout_ceiling_is_bounded():
     assert 60 <= skill_exec_mod._HARD_TIMEOUT_CEILING_SEC <= 900
+
+
+def test_login_identity_is_forwarded_without_secret_shaped_siblings(tmp_path, monkeypatch):
+    """CLIs a skill may call (gh, claude, codex, cursor-agent) find their keychain/credential
+    entries by the login name: it is forwarded like HOME, while a secret-shaped sibling that merely
+    starts the same way is not (parity with workspace_executor.service_env())."""
+    from ouroboros.tools import skill_exec as se
+
+    for key in ("USER", "LOGNAME", "USERNAME"):
+        monkeypatch.setenv(key, "synthetic-login")
+    monkeypatch.setenv("USER_API_TOKEN", "synthetic-host-only")
+    skill_state_dir_path = tmp_path / "state" / "skills" / "ok"
+    skill_state_dir_path.mkdir(parents=True, exist_ok=True)
+    env = se._scrub_env(manifest_env_keys=[], skill_state_dir_path=skill_state_dir_path, skill_name="ok")
+    assert env["USER"] == env["LOGNAME"] == env["USERNAME"] == "synthetic-login"
+    assert "USER_API_TOKEN" not in env
 
 
 def test_env_denylist_blocks_secret_forwarding(tmp_path, monkeypatch):

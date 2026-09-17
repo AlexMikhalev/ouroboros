@@ -340,6 +340,9 @@ def test_large_workspace_output_is_a_file_reference_not_a_git_patch(tmp_path):
     output, manifest = write_workspace_patch_artifacts(repo, tmp_path / "capture", task={})
     assert not manifest["errors"]
     assert manifest["patch_size"] == 0
+    assert manifest["status"] == "ready_with_changes"
+    assert not (tmp_path / "capture" / "workspace.patch").exists()
+    assert not any(row["kind"] == "workspace_patch" for row in output)
     assert len(manifest["file_outputs"]) == 2
     captured = next(row for row in output if row["kind"] == "workspace_file_outputs_manifest")
     contents = json.loads(Path(captured["path"]).read_text())

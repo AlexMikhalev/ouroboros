@@ -23,16 +23,18 @@ from typing import Any, Dict, List, Optional, Set
 from ouroboros.anthropic_native_custody import is_replayed_native_content
 from ouroboros.context_budget import CONTEXT_OVERFLOW_CODES
 from ouroboros.request_wire_recovery import prepare_wire_payload_for_send
-from ouroboros.transport_custody import is_loopback_base_url
+from ouroboros.transport_custody import ProviderNotDispatched, is_loopback_base_url
 from ouroboros.usage_accounting import (
     AttemptRequest,
     PhysicalAttemptPreconditionFailed,
     PhysicalAttemptPreparationFailed,
+    adopt_physical_attempt_capture,
     current_physical_attempt_context,
     current_physical_attempt_predicate,
     current_usage_scope,
     execute_physical_attempt,
     execute_physical_attempt_async,
+    last_physical_attempt_capture,
 )
 
 
@@ -45,6 +47,49 @@ _CACHE_TTL_SECONDS = {"5m": 300, "1h": 3600}
 
 
 PROVIDER_POLICY_REFUSAL = "provider_policy_refusal"
+
+
+class PhysicalDispatchInterrupted(PhysicalAttemptPreconditionFailed):
+    """The existing caller control/deadline refused a send before request bytes."""
+
+    code = "model_operation_interrupted"
+
+    def __init__(self, reason: str):
+        super().__init__(f"Physical dispatch interrupted: {reason}")
+        self.control_reason = reason
+
+
+class _PhysicalSendNotStarted(PhysicalDispatchInterrupted, ProviderNotDispatched):
+    """Positive no-dispatch evidence for this send alone, not the recovery ladder."""
+
+
+def require_physical_dispatch_window() -> Optional[float]:
+    from ouroboros.model_wait import current_model_wait, dispatch_deadline_remaining_sec
+
+    owner = current_model_wait()
+    reason = owner.control_reason() if owner is not None else None
+    if reason:
+        raise _PhysicalSendNotStarted(reason)
+    remaining = dispatch_deadline_remaining_sec()
+    if remaining is not None and remaining <= 0:
+        raise _PhysicalSendNotStarted("deadline")
+    return remaining
+
+
+def preserve_prior_dispatch(error: BaseException, prior: Any) -> None:
+    """Raise with paid custody instead of a ladder-wide no-dispatch assertion."""
+    if (isinstance(error, PhysicalDispatchInterrupted)
+            and getattr(prior, "state", None) in {"dispatched", "unresolved"}):
+        failure = PhysicalDispatchInterrupted(error.control_reason)
+        failure.deadline_attempt_capture = getattr(error, "physical_attempt_capture", None)
+        failure.physical_attempt_capture = prior
+        adopt_physical_attempt_capture(prior)
+        raise failure from error
+
+
+def strongest_dispatch_capture(prior: Any, current: Any) -> Any:
+    """A later closed attempt cannot erase an earlier unresolved recovery send."""
+    return prior if getattr(prior, "state", None) in {"dispatched", "unresolved"} else current or prior
 
 
 class ProviderPolicyRefusal(RuntimeError):
@@ -155,6 +200,142 @@ def _applied_payload_cache_ttl(payload: Dict[str, Any]) -> Optional[str]:
     return "default" if breakpoints else None
 
 
+def submitted_processing_mode(target: Dict[str, Any], payload: Dict[str, Any]) -> str:
+    """Read the actual native carrier, never infer execution from requested intent."""
+    provider = target.get("provider")
+    if provider in {"openai", "openrouter"}:
+        extra = payload.get("extra_body")
+        value = (extra["service_tier"] if isinstance(extra, dict) and "service_tier" in extra
+                 else payload.get("service_tier"))
+    elif provider == "anthropic":
+        value = payload.get("speed")
+    elif provider == "claudexor":
+        options = payload.get("options") or {}
+        value = options.get("processingPreference") or options.get("serviceTier")
+    else:
+        value = None
+    return value if isinstance(value, str) else ""
+
+
+def apply_processing_preference(target: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    """Project already captured advisory intent before sealing this send copy.
+
+    These are provider protocol fields, not a model eligibility table. Explicit
+    native options win; unknown transports retain their ordinary request shape.
+    A retry already carries its replacement native mode and is never re-resolved.
+    """
+    preference = target.get("processing_preference")
+    if not preference:
+        return
+    if submitted_processing_mode(target, payload):
+        target["processing_native_origin"] = "native_override"
+        return
+    provider = target.get("provider")
+    if provider in {"openai", "openrouter"}:
+        payload["service_tier"] = {
+            "standard": "default", "fast": "priority", "economy": "flex",
+        }[preference]
+    elif provider == "anthropic":
+        # Messages has no synchronous Economy speed. Its explicit ordinary
+        # projection preserves the advisory request without inventing a tier.
+        payload["speed"] = "fast" if preference == "fast" else "standard"
+    else:
+        return
+    target["processing_native_origin"] = "preference"
+
+
+def attach_processing_receipt(target: Dict[str, Any], usage: Dict[str, Any]) -> None:
+    """Project the matching terminal attempt; never reconstruct a pre-fallback mode."""
+    from ouroboros._usage_response import processing_receipt
+
+    provider = str(target.get("provider") or "")
+    model = str(target.get("usage_model") or target.get("resolved_model") or "")
+    capture = last_physical_attempt_capture()
+    matched = capture is not None and capture.provider == provider and capture.model == model
+    requested = (capture.processing_preference if matched
+                 else str(target.get("processing_preference") or ""))
+    submitted = capture.submitted_processing_mode if matched else ""
+    receipt = processing_receipt(provider, usage, requested=requested, submitted_native=submitted)
+    if receipt is not None:
+        usage["processing"] = receipt
+
+
+def processing_contract_headers(target: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, str]:
+    """The native Messages speed beta belongs to the same exact request profile."""
+    headers = dict(target.get("contract_headers") or {})
+    if target.get("provider") == "anthropic" and payload.get("speed") == "standard":
+        betas = [value.strip() for value in headers.get("anthropic-beta", "").split(",")
+                 if value.strip() != "fast-mode-2026-02-01"]
+        if betas:
+            headers["anthropic-beta"] = ",".join(betas)
+        else:
+            headers.pop("anthropic-beta", None)
+    if target.get("provider") == "anthropic" and (
+        payload.get("speed") == "fast" or (
+            "speed" not in payload and target.get("processing_preference") == "fast"
+        )
+    ):
+        betas = [value.strip() for value in headers.get("anthropic-beta", "").split(",") if value.strip()]
+        if "fast-mode-2026-02-01" not in betas:
+            betas.append("fast-mode-2026-02-01")
+        headers["anthropic-beta"] = ",".join(betas)
+    return headers
+
+
+class ProcessingNotStarted(ProviderNotDispatched):
+    """A provider-owned processing refusal proving this generation never began."""
+
+    def __init__(self, error: BaseException, *, reason: str):
+        super().__init__(str(error))
+        self.processing_reason = reason
+        for name in ("body", "code", "type", "status_code", "response"):
+            if hasattr(error, name):
+                setattr(self, name, getattr(error, name))
+
+
+def processing_refusal(target: Dict[str, Any], payload: Dict[str, Any],
+                       error: BaseException) -> BaseException:
+    """Normalize only a documented native refusal; socket/stream errors stay unknown.
+
+    Dedicated Flex resource refusal and unsupported request fields precede
+    generation. Generic quota, overload, timeout and stream failures do not.
+    """
+    if getattr(error, "stream_incomplete", False) or isinstance(error, ProviderNotDispatched):
+        return error
+    if (target.get("processing_preference") not in {"fast", "economy"}
+            or target.get("processing_native_origin") != "preference"):
+        return error
+    response = getattr(error, "response", None)
+    status = getattr(error, "status_code", None) or getattr(response, "status_code", None)
+    body = getattr(error, "body", None)
+    if body is None and response is not None and callable(getattr(response, "json", None)):
+        try:
+            body = response.json()
+        except (ValueError, TypeError):
+            return error
+    native_error = body.get("error", body) if isinstance(body, dict) else None
+    if not isinstance(native_error, dict):
+        return error
+    provider, mode = target.get("provider"), submitted_processing_mode(target, payload)
+    reason = ""
+    if (provider == "anthropic" and mode == "fast" and status == 429
+            and native_error.get("type") == "rate_limit_error"):
+        reason = "capacity"
+    elif provider in {"openai", "openrouter"} and mode in {"priority", "fast", "flex"}:
+        if mode == "flex" and status in {400, 429, 503} and native_error.get("code") in {
+            "resource_unavailable", "unsupported_service_tier",
+        }:
+            reason = "capacity"
+        elif (status == 400 and native_error.get("code") == "unsupported_parameter"
+              and native_error.get("param") == "service_tier"):
+            reason = "unsupported"
+    if reason:
+        normalized = ProcessingNotStarted(error, reason=reason)
+        normalized.body = copy.deepcopy(body)
+        return normalized
+    return error
+
+
 def _attempt_request(
     target: Dict[str, Any],
     payload: Dict[str, Any],
@@ -204,6 +385,9 @@ def _attempt_request(
         physical_context=current_physical_attempt_context(),
         route_is_loopback=is_loopback_base_url(target.get("base_url")),
         prompt_tokens_bounded_estimate=bounded_tokens,
+        processing_preference=str(target.get("processing_preference") or ""),
+        submitted_processing_mode=submitted_processing_mode(target, payload),
+        processing_basis=copy.deepcopy(target.get("processing_basis")),
     )
 
 
@@ -235,9 +419,68 @@ def _physical_candidate(payload: Dict[str, Any]) -> Dict[str, Any]:
 def _finalized_physical_candidate(
     target: Dict[str, Any], payload: Dict[str, Any], api_surface: str,
 ) -> Dict[str, Any]:
+    physical = _physical_candidate(payload)
+    if target.get("context_mode") == "nano":
+        physical = _fit_output_payload(target, physical, api_surface)
     return prepare_wire_payload_for_send(
-        target, _physical_candidate(payload), api_surface=api_surface,
+        {**target, "contract_headers": processing_contract_headers(target, physical)},
+        physical, api_surface=api_surface,
     )
+
+
+
+def _prepared_input_measurement(target: Dict[str, Any], payload: Dict[str, Any]) -> dict:
+    """Current routes offer an actual-shape estimate, never an exact template count."""
+    from ouroboros.context_fit import bounded_prompt_tokens_for_payload
+
+    measured = target.get("local_input_measurement") or {}
+    if target.get("provider") == "local" and measured.get("supported") and measured.get("input_is_exact") is True:
+        from ouroboros.local_model_server import input_fingerprint
+
+        if measured.get("native_input_sha256") == input_fingerprint(payload):
+            return {"input_tokens": measured["input_tokens"], "input_is_exact": True,
+                    "tokenizer_template_provenance": measured.get("tokenizer_template_provenance"),
+                    "route_capacity_tokens": measured.get("context_window"), "route_capacity_confirmed": True}
+    context = {key: payload[key] for key in ("system", "messages", "input", "instructions", "tools", "functions") if key in payload}
+    chars = len(_canonical_candidate_bytes(context).decode("utf-8"))
+    return {"input_tokens": bounded_prompt_tokens_for_payload(context, chars),
+            "input_is_exact": False, "tokenizer_template_provenance": None,
+            "route_capacity_tokens": target.get("context_window_tokens", getattr(current_physical_attempt_context(), "capacity_total_tokens", None)),
+            "route_capacity_confirmed": bool(target.get("context_window_confirmed", False))}
+
+
+def _fit_output_payload(target: Dict[str, Any], payload: Dict[str, Any], api_surface: str) -> Dict[str, Any]:
+    """Use the shared Nano arithmetic after native tool projection and before sealing."""
+    from dataclasses import asdict
+    from ouroboros.context_budget import OWNER_NANO_TARGET_TOKENS, NANO_MIN_HEADROOM_TOKENS
+    from ouroboros.context_fit import resolve_call_context_fit
+
+    field = next((key for key in ("max_completion_tokens", "max_tokens") if isinstance(payload.get(key), int)), None)
+    if field is None:
+        return payload  # An opaque route has no enforceable native output field here.
+    measured = _prepared_input_measurement(target, payload)
+    provider = target.get("provider")
+    # Local formatters can make additional internal generations outside this cap.
+    limit_enforced = provider == "openai" and field == "max_completion_tokens" or provider == "anthropic" and field == "max_tokens"
+
+    if provider == "local":
+        limit_enforced = measured["input_is_exact"] and (target.get("local_input_measurement") or {}).get("output_limit_enforced") is True
+    nano = target.get("context_mode") == "nano"
+    fit = resolve_call_context_fit(**measured, caller_max_tokens=payload[field],
+        total_target_tokens=OWNER_NANO_TARGET_TOKENS if nano else None,
+        minimum_free_tokens=NANO_MIN_HEADROOM_TOKENS if nano else 0, output_limit_enforced=limit_enforced,
+        reasoning_included_in_limit=True if limit_enforced else None)
+    facts = asdict(fit)
+    if provider == "local" and measured["input_is_exact"]:
+        facts["serving_process_id"] = target["local_input_measurement"].get("process_id")
+    target["call_context_fit"] = facts
+    if fit.effective_max_tokens <= 0 or measured["input_is_exact"] and fit.fit_status in {"unfit", "insufficient_headroom"}:
+        error = PhysicalAttemptPreparationFailed("Exact prepared input does not fit the selected context allowance")
+        error.call_context_fit = facts
+        raise error
+    result = {**payload, field: fit.effective_max_tokens}
+    facts["candidate_raw_sha256"] = hashlib.sha256(_canonical_candidate_bytes(result)).hexdigest()
+    return result
 
 
 def _candidate_before_dispatch(candidate: Dict[str, Any], request: AttemptRequest):
@@ -323,15 +566,38 @@ def _candidate_before_dispatch(candidate: Dict[str, Any], request: AttemptReques
 
 def _execute_candidate(request: AttemptRequest, send: Any, before_dispatch: Any) -> Any:
     """Keep existing two-argument injected executors usable."""
+    adopt_physical_attempt_capture(None)
+    require_physical_dispatch_window()
+    send, before_dispatch = _deadline_checked_send(send, before_dispatch)
     if "before_dispatch" not in inspect.signature(execute_physical_attempt).parameters:
         return execute_physical_attempt(request, send)
     return execute_physical_attempt(request, send, before_dispatch=before_dispatch)
 
 
 async def _execute_candidate_async(request: AttemptRequest, send: Any, before_dispatch: Any) -> Any:
+    adopt_physical_attempt_capture(None)
+    require_physical_dispatch_window()
+    send, before_dispatch = _deadline_checked_send(send, before_dispatch)
     if "before_dispatch" not in inspect.signature(execute_physical_attempt_async).parameters:
         return await execute_physical_attempt_async(request, send)
     return await execute_physical_attempt_async(request, send, before_dispatch=before_dispatch)
+
+
+def _deadline_checked_send(send: Any, before_dispatch: Any):
+    def prepare(reservation):
+        manifest = before_dispatch(reservation) if before_dispatch is not None else None
+        try:
+            require_physical_dispatch_window()
+        except PhysicalDispatchInterrupted as exc:
+            exc.candidate_manifest_ref = manifest
+            raise
+        return manifest
+
+    def dispatch():
+        require_physical_dispatch_window()
+        return send()
+
+    return dispatch, prepare
 
 
 class _PayloadCachePolicyMixin:

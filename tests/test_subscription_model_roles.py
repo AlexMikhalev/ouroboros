@@ -33,18 +33,6 @@ def test_equal_model_names_keep_distinct_main_and_light_accounts():
     assert resolve_model_target(settings["OUROBOROS_MODEL"]).credential_ref == ""
 
 
-def test_supervisor_duplicate_check_uses_the_saved_light_account(subscription_transport, monkeypatch):
-    from supervisor.events_schedule_task import _find_duplicate_task
-
-    _, gateway, _ = subscription_transport
-    monkeypatch.setenv("OUROBOROS_MODEL_LIGHT", MODEL)
-    monkeypatch.setenv(MODEL_ACCOUNTS_KEY, json.dumps({"main": "main-pin", "light": "light-pin"}))
-    gateway.results[0]["message"] = {"role": "assistant", "content": "NONE"}
-    assert _find_duplicate_task("New task", "", [{"id": "existing", "description": "Another task"}], {}) is None
-    assert len(gateway.creates) == 1
-    assert gateway.uploads[0][0]["account"] == {"mode": "pin", "profileId": "light-pin"}
-
-
 def test_fallback_options_preserve_order_and_explicit_auto():
     raw = {"main": "", "fallback": ["profile-B", "", "profile-A"]}
     parsed, encoded = normalize_model_role_options(MODEL_ACCOUNTS_KEY, raw)

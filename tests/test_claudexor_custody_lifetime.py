@@ -266,13 +266,16 @@ def test_every_supervisor_worker_tree_kill_is_the_shared_one():
         ("worker_pool_lifecycle", "_kill_survivors", False),
         ("worker_pool_lifecycle", "kill_workers_for_update", False),
         ("worker_pool_lifecycle", "_replace_unready_slot", False),
-        ("worker_pool_lifecycle", "respawn_worker", False),
+        ("worker_pool_lifecycle", "_spawn_worker_slot", False),
+        ("worker_owner_wait", "_retire_idle", True),
         ("task_reaper", "_kill_and_confirm_worker_dead", True),
         ("task_lifecycle", "_finish_captured_running", True),
     ):
         source = _function_source(root / "supervisor" / f"{module}.py", name)
         assert "kill_worker_tree(" in source, name
         assert ("keep_services=True" in source) is keep, name
+    respawn = _function_source(root / "supervisor" / "worker_pool_lifecycle.py", "respawn_worker")
+    assert "return _spawn_worker_slot(wid, old, ready_attempt=ready_attempt)" in respawn
 
 
 def test_retained_purpose_never_rescues_a_stale_identity(tmp_path, monkeypatch):

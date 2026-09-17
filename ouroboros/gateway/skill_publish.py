@@ -15,7 +15,8 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from ouroboros.betterleaks_runtime import resolve_betterleaks
-from ouroboros.config import get_ouroboroshub_catalog_url, get_skills_repo_path
+from ouroboros.config import get_ouroboroshub_catalog_url, get_runtime_mode, get_skills_repo_path
+from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
 from ouroboros.gateway._helpers import request_drive_root
 from ouroboros.gateway.contracts import SkillPublishPreflightResponse
 from ouroboros.skill_loader import (
@@ -185,6 +186,8 @@ def _review_projection(loaded: Any, *, stale: bool | None = None) -> Dict[str, A
         "status": normalize_skill_review_status(loaded.review.status),
         "stale": (loaded.review.is_stale_for(loaded.content_hash) if stale is None else bool(stale)),
         "profile": str(getattr(loaded.review, "review_profile", "") or ""),
+        "reviewed_content_hash": loaded.review.reviewed_content_hash or loaded.review.content_hash,
+        "author_disposition": dict(loaded.review.author_disposition),
     }
 
 
@@ -194,6 +197,8 @@ def _scanner_projection(result: _SafeScanProjection | None = None) -> Dict[str, 
         "engine": result.engine if result is not None else BETTERLEAKS_ENGINE,
         "version": result.version if result is not None else "",
         "ruleset_sha256": result.ruleset_sha256 if result is not None else "",
+        **({"reason_code": result.reason_code, "repair_hint": result.repair_hint}
+           if result is not None and result.status == "scanner_error" else {}),
     }
 
 
@@ -302,6 +307,7 @@ def build_skill_publish_preflight(
 ) -> SkillPublishPreflightOutcome:
     """Resolve, capture, scan, cache, and classify one selected skill."""
 
+    cyber = mode_has_unrestricted_agency(get_runtime_mode())
     raw_skill = str(skill_name or "").strip()
     safe_skill = _sanitize_skill_name(raw_skill)
     try:
@@ -374,7 +380,7 @@ def build_skill_publish_preflight(
         )
     loaded = skills[0]
     review = _review_projection(loaded)
-    if str(loaded.source or "").lower() not in PUBLISHABLE_SOURCES:
+    if str(loaded.source or "").lower() not in PUBLISHABLE_SOURCES and not cyber:
         return _hard_block(
             skill=safe_skill,
             repository=repository,
@@ -444,7 +450,7 @@ def build_skill_publish_preflight(
             projection=scan,
         )
 
-    if scan.status == "scanner_error":
+    if scan.status == "scanner_error" and not cyber:
         return SkillPublishPreflightOutcome(
             _response(
                 ok=True,
@@ -461,25 +467,25 @@ def build_skill_publish_preflight(
                 repair_hint=scan.repair_hint,
             )
         )
-    if scan.blocker_count:
+    if scan.blocker_count and not cyber:
         attention = (
             "secret_blocked",
             "High-confidence secret candidates need attention.",
             "Inspect the redacted locations, repair or audit them, then retry.",
         )
-    elif review_profile == "owner_attested":
+    elif review_profile == "owner_attested" and not cyber:
         attention = (
             "review_owner_attested",
             "A full skill review is required before public publication.",
             "Run the full skill review, then retry publication.",
         )
-    elif review["stale"]:
+    elif review["stale"] and not cyber:
         attention = (
             "review_stale",
             "The skill review is stale for the captured bytes.",
             "Run a fresh skill review, then retry publication.",
         )
-    elif review_status not in PUBLISHABLE_STATUSES:
+    elif review_status not in PUBLISHABLE_STATUSES and not cyber:
         reason_code = "review_blockers" if review_status == STATUS_BLOCKERS else "review_pending"
         attention = (
             reason_code,
@@ -510,7 +516,13 @@ def build_skill_publish_preflight(
             scan=scan,
         )
 
-    has_warnings = bool(review_status == STATUS_WARNINGS or scan.warning_count or scan.audited_false_positive_count)
+    has_warnings = bool(
+        review_status == STATUS_WARNINGS or scan.warning_count or scan.audited_false_positive_count
+        or cyber and (
+            scan.status == "scanner_error" or scan.blocker_count or review["stale"]
+            or review_status not in PUBLISHABLE_STATUSES or review_profile == "owner_attested"
+        )
+    )
     return SkillPublishPreflightOutcome(
         _response(
             ok=True,
@@ -522,9 +534,10 @@ def build_skill_publish_preflight(
             snapshot_hash=snapshot.content_hash,
             review=review,
             scan=scan,
-            reason_code="warnings_present" if has_warnings else "",
+            reason_code=scan.reason_code or ("warnings_present" if has_warnings else ""),
             summary=(
-                "Publication preflight completed with redacted warnings."
+                "Cyber Pro publication can proceed; review and scanner findings remain advisory."
+                if cyber and has_warnings else "Publication preflight completed with redacted warnings."
                 if has_warnings
                 else "Publication preflight is ready."
             ),

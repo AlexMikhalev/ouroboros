@@ -480,11 +480,11 @@ def _copy_untracked(repo_dir: pathlib.Path, worktree: pathlib.Path) -> None:
 # inherited — `_preflight_env` scrubs the whole PYTEST_* namespace and re-injects
 # the count resolved here, which is clamped so it can never fall below two.
 _MIN_PREFLIGHT_WORKERS = 2
-# Private test-only seam. Read from the OPERATOR environment and never forwarded
-# to the candidate (the scrub removes every OUROBOROS_* key first): the nested
-# fixture repos in tests/test_preflight_runner.py hold 1-3 probe tests, so a full
-# `-n auto` fan-out would spend minutes on worker startup for nothing. It can
-# only lower the count TO the floor, never below it.
+# Operator lever for the parallel pass's xdist worker count, floored at two and
+# sized per concurrent build lane by the rule in docs/DEVELOPMENT.md. It also
+# keeps the nested fixture repos in tests/test_preflight_runner.py (1-3 probe
+# tests each) from spending minutes on a full `-n auto` fan-out. Read from the
+# OPERATOR environment, never forwarded to the candidate: the scrub drops it.
 _PREFLIGHT_WORKERS_ENV = "OUROBOROS_PREFLIGHT_TEST_WORKERS"
 
 
@@ -753,7 +753,7 @@ def _plugin_missing_remediation(agent_python: str, rejected: str = "") -> str:
     )
 
 
-_DEFAULT_PREFLIGHT_TIMEOUT_SEC = 900
+_DEFAULT_PREFLIGHT_TIMEOUT_SEC = 1800
 
 
 def _resolve_preflight_timeout(timeout: int) -> int:
@@ -1200,6 +1200,7 @@ def run_hermetic_pytest(
     pytest_args: Optional[Sequence[str]] = None,
     max_output: int = 8000,
     phase: str = "post_commit",
+    ctx=None,
 ) -> Optional[str]:
     """Run pytest against the candidate diff in a disposable worktree.
 
@@ -1208,7 +1209,9 @@ def run_hermetic_pytest(
     ``serial`` pass — one worktree/env, ONE shared total budget. Fails fast on
     the first red lane, so the output never truncates the failing section away.
 
-    Returns ``None`` on success, otherwise a bounded human-readable error.
+    Returns ``None`` on success or when no suite applies, otherwise an error.
+    An optional caller ctx retains proof only of completed green lanes and
+    containment; matching workloads reuse it after the baseline/assembly checks.
     ``OUROBOROS_PREFLIGHT_TIMEOUT_SEC`` overrides ``timeout`` for all callers.
 
     ``phase`` selects the deleted-suite baseline (see ``_TESTS_BASELINE_REFS``):
@@ -1232,6 +1235,10 @@ def run_hermetic_pytest(
     disposable index (without updating files) and verified before tests run.
     A genuinely unmerged source index retains the live-resolution projection.
     """
+    previous_proof = getattr(ctx, "_preflight_test_proof", None)
+    if ctx is not None:
+        ctx._preflight_test_proof = None
+        ctx._preflight_tests_passed = False
     timeout = _resolve_preflight_timeout(timeout)
     # Checked BEFORE anything runs. `_diagnosis` renders inside this budget, so a
     # non-positive one produced an empty string for a real failure — which the
@@ -1317,32 +1324,13 @@ def run_hermetic_pytest(
         worktree_added = True
 
         if source_index_tree is not None:
-            source_index_error = _install_source_index_tree(worktree, source_index_tree, max_output)
-            if source_index_error is not None:
+            if (source_index_error := _install_source_index_tree(worktree, source_index_tree, max_output)) is not None:
                 return source_index_error
 
-        # ONE capture for every repository state: the tracked delta between
-        # HEAD and the live worktree, assembled identically whether the source
-        # index is clean, dirty, or mid-merge. The staged+unstaged diff pair
-        # this replaces could not represent an unmerged index at all: `git diff
-        # --cached` renders each conflicted path as a literal "* Unmerged path"
-        # stub and `git diff` as a combined `--cc` hunk — which `git apply`
-        # REJECTS when the payload holds nothing else (rc=128, the gate died
-        # before running a test) and silently DROPS when ordinary hunks
-        # accompany it (the gate then ran against a candidate MISSING the
-        # resolutions, so its verdict described a tree nobody has). The two-way
-        # HEAD form has no such rendering: staged-only files, resolutions and
-        # conflict markers all arrive as plain content.
-        #
-        # The flag tail pins away every operator config that reshapes diff
-        # output into something `git apply` cannot re-apply: external diff
-        # drivers (`--no-ext-diff`), textconv filters (`--no-textconv`), colour
-        # escapes (`--no-color`), and prefix rewrites (`--src-prefix=a/
-        # --dst-prefix=b/` — the explicit CLI prefixes win over diff.noprefix
-        # AND diff.srcPrefix/dstPrefix, which `-c diff.noprefix=false` alone
-        # would not). Captured and applied as BYTES end to end (see
-        # ``binary_stdout``) so NUL-free non-UTF-8 text content is not
-        # U+FFFD-substituted in transit.
+        # One worktree-vs-HEAD capture includes live resolutions. A staged +
+        # unstaged pair emits unmerged stubs/combined hunks that git apply can
+        # reject or silently drop. Pin content-changing diff config and retain
+        # raw bytes end to end (the byte/EOL contracts live in _run_git/_apply_diff).
         try:
             combined_proc = _run_git(
                 repo,
@@ -1354,14 +1342,8 @@ def run_hermetic_pytest(
                 raise RuntimeError(combined_proc.stderr.strip() or "git diff HEAD failed")
             _apply_diff(worktree, combined_proc.stdout or b"")
             _copy_untracked(repo, worktree)
-        # The assembly block owns EVERY way its own capture can fail, not only
-        # the RuntimeErrors it raises itself: `_run_git` can raise
-        # subprocess.TimeoutExpired (a SubprocessError subclass) and
-        # `_copy_untracked` can raise FileNotFoundError/PermissionError (OSError
-        # subclasses). Let through, those land in the OUTER handlers below and
-        # are misread as a pytest timeout, a missing pytest interpreter, or a
-        # generic preflight failure — all of which invite a retry against a
-        # candidate that was never assembled.
+        # Capture/apply timeouts and filesystem faults are assembly failures,
+        # not pytest timeouts or missing interpreters from the outer handlers.
         except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
             return _diagnosis(
                 "⚠️ PRE_PUSH_TEST_ERROR: PREFLIGHT_CANDIDATE_ASSEMBLY (hard block): "
@@ -1375,16 +1357,30 @@ def run_hermetic_pytest(
                 str(exc), max_output,
             )
         from ouroboros.platform_layer import kill_processes_referencing
+        from ouroboros.commit_admission import (
+            PreflightTestProof, capture_preflight_test_subject, log_preflight_test_proof,
+            preflight_test_workload_unchanged,
+        )
+
+        subject = capture_preflight_test_subject(
+            worktree, timeout=timeout, pytest_args=pytest_args,
+            passes=passes, agent_python=agent_python, probe_module=probe_module,
+        ) if ctx is not None else None
+        can_reuse = isinstance(previous_proof, PreflightTestProof) and previous_proof.covers(subject)
+        if can_reuse:
+            ctx._preflight_test_proof = previous_proof
+            ctx._preflight_tests_passed = True
+            log_preflight_test_proof(ctx, previous_proof, reused=True, phase=phase)
+            return None
         started = time.monotonic()
-        if node_error := (run_node_tests(worktree, temp_root, timeout, max_output) or {}).get("error"):
+        node_result = run_node_tests(worktree, temp_root, timeout, max_output)
+        if node_error := (node_result or {}).get("error"):
             return node_error
         empty_passes = 0
+        timings: list[tuple[str, float]] = []
         for spec in passes:
-            # ONE total budget across passes; the later pass gets the exact
-            # float remainder. Never clamped up to a whole second: `max(1, ...)`
-            # would hand an already-exhausted budget another second, and int()
-            # truncation would round a 0.9s remainder up to 1s — both let the
-            # gate outrun the total it advertises.
+            # Keep the exact float remainder; rounding up would exceed the
+            # shared total budget (including the preceding node lane).
             remaining = timeout - (time.monotonic() - started)
             if remaining <= 0:
                 return (
@@ -1399,6 +1395,7 @@ def run_hermetic_pytest(
                 agent_python, worktree, temp_root, spec.args, remaining
             )
             elapsed = time.monotonic() - pass_started
+            timings.append((spec.label, round(elapsed, 1)))
             # Sweep between passes so a pass-1 escapee cannot touch pass 2.
             kill_processes_referencing(str(temp_root))
             if reap_error:
@@ -1433,14 +1430,8 @@ def run_hermetic_pytest(
                 empty_passes += 1
                 continue
             if returncode == 0 and probe_module in spec.args:
-                # A GREEN parallel pass is the only place this can go unnoticed:
-                # a red one blocks anyway, and an empty one had nothing to
-                # distribute. The probe flag is the key (not `spec.parallel`) so
-                # a caller-supplied argv carrying its own `-n` — which never gets
-                # the probe — is not blocked for evidence it was never asked for.
-                # Keyed on the NONCE name that was actually threaded into the
-                # argv: testing the bare stem here would never match again, and
-                # would silently disable the very block the nonce protects.
+                # Use the actual nonce flag, not the stem or spec.parallel:
+                # custom argv gets no host probe; red/empty lanes need no count.
                 observed = _observed_worker_ids(temp_root)
                 if len(observed) < _MIN_PREFLIGHT_WORKERS:
                     return _diagnosis(
@@ -1474,6 +1465,15 @@ def run_hermetic_pytest(
                 "⚠️ PRE_PUSH_TEST_ERROR: no tests were collected in any preflight pass — "
                 "a repository with a tests/ directory must yield at least one runnable test"
             )
+        if ctx is not None:
+            ctx._preflight_tests_passed = True
+            # Missing node-lane execution cannot mint a complete proof. The
+            # normal producer returns rc=0 only after its containment check.
+            if (subject
+                    and preflight_test_workload_unchanged(subject, worktree, timeout=timeout, pytest_args=pytest_args)
+                    and (not subject.workload[4] or (node_result or {}).get("returncode") == 0)):
+                ctx._preflight_test_proof = subject
+                log_preflight_test_proof(ctx, subject, reused=False, phase=phase, passes=timings)
         return None
     except subprocess.TimeoutExpired:
         return f"⚠️ PRE_PUSH_TEST_ERROR: pytest timed out after {timeout} seconds"

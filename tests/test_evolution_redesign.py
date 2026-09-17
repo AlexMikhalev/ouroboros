@@ -514,6 +514,7 @@ body
 
 def test_skill_schedules_sync_into_core_scheduler(tmp_path):
     from ouroboros.contracts.skill_manifest import parse_skill_manifest_text
+    from ouroboros.skill_loader import LoadedSkill, SkillReviewState
     from supervisor import queue
 
     queue.init(tmp_path)
@@ -530,15 +531,15 @@ scheduled_tasks:
 ---
 body
 """)
-    skill = SimpleNamespace(
+    skill = LoadedSkill(
         name="cron-demo",
+        skill_dir=tmp_path / "skill",
         manifest=manifest,
         enabled=True,
         load_error="",
         content_hash="abc",
-        review=SimpleNamespace(status="pass", is_stale_for=lambda _hash: False),
+        review=SkillReviewState(status="clean", content_hash="abc"),
     )
-
     report = queue.sync_skill_schedules([skill])
     schedules = queue.list_scheduled_tasks()["tasks"]
 
@@ -546,6 +547,16 @@ body
     assert schedules[0]["id"] == "skill-cron-demo-refresh"
     assert schedules[0]["enabled"] is True
     assert schedules[0]["trigger"]["expr"] == "0 * * * *"
+    # A changed payload loses critic authority; a fresh review restores it.
+    skill.content_hash = "changed"
+    queue.sync_skill_schedules([skill])
+    assert queue.list_scheduled_tasks()["tasks"][0]["enabled"] is False
+    skill.review = SkillReviewState(status="clean", content_hash="changed")
+    queue.sync_skill_schedules([skill])
+    assert queue.list_scheduled_tasks()["tasks"][0]["enabled"] is True
+    skill.enabled = False
+    queue.sync_skill_schedules([skill])
+    assert queue.list_scheduled_tasks()["tasks"][0]["enabled"] is False
 
 
 def test_skill_schedule_sync_refreshes_next_run_on_cron_change(tmp_path):
@@ -616,7 +627,7 @@ def test_frontend_evolution_and_consciousness_controls_are_present():
     assert consciousness["settingsToggleId"] == "s-local-consciousness"
     assert "modelRolesHost('settings-model-roles')" in settings_ui
     assert "modelRoles.load(s," in settings
-    assert "OUROBOROS_EFFORT_CONSCIOUSNESS', 'high'" in settings
+    assert "OUROBOROS_EFFORT_CONSCIOUSNESS', ''" in settings  # empty = the Task / Chat effort
 
 
 def test_evolution_checkpoint_records_and_reads(tmp_path):
@@ -931,16 +942,18 @@ def test_memory_provenance_records_old_and_new_content(tmp_path):
     from ouroboros.tools.control import _update_identity
     from ouroboros.tools.knowledge import _knowledge_write
     from ouroboros.tools.registry import ToolContext
+    from ouroboros.knowledge import read_knowledge_note, resolve_knowledge_address
 
     ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path)
     _knowledge_write(ctx, "facts", "old", mode="overwrite")
-    _knowledge_write(ctx, "facts", "new", mode="overwrite")
+    current = read_knowledge_note(resolve_knowledge_address(tmp_path, "facts"))
+    _knowledge_write(ctx, "facts", "new", mode="overwrite", expected_revision=current.revision)
     history = [
         json.loads(line)
         for line in (tmp_path / "memory" / "knowledge_history.jsonl").read_text(encoding="utf-8").splitlines()
     ]
-    assert history[-1]["old_content"] == "old"
-    assert history[-1]["new_content"] == "new"
+    assert history[-1]["old_content"] == current.text
+    assert history[-1]["new_content"] == "---\ntype: note\n---\nnew"
 
     _update_identity(ctx, "I am v1 with enough detail to satisfy the identity update length gate.")
     _update_identity(ctx, "I am v2 with enough detail to satisfy the identity update length gate.")

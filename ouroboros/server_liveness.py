@@ -32,9 +32,8 @@ def _chat_turn_wedged(busy: bool, last_activity_ts, now: float, deadline_sec: in
 
 def _alert_chat_turn_wedge(task_id, gap: float) -> None:
     """WS3: a direct-chat turn is heartbeat-silent. New messages still get answered
-    (WS10 ephemeral decision turns), but a hung IN-PROCESS turn cannot be killed and
-    still holds the chat-agent lock, so admission cannot be freed in-process (full
-    kill-ability via out-of-process direct chat was deferred per owner). Surface it +
+    on independent native actors, but a hung IN-PROCESS turn cannot be killed
+    independently of the supervisor process. Surface it +
     recommend /restart, which is the safe full recovery."""
     from supervisor.state import append_jsonl, load_state
     try:
@@ -69,10 +68,8 @@ def _start_supervisor_liveness_watchdog(liveness: list, stop_event=None) -> None
     that loop stalls). It ALERTS the owner on two silent-wedge classes — a supervisor
     loop stall (new-message intake starvation) and a heartbeat-silent in-process
     direct-chat turn — converting a multi-hour silent wedge into an immediate signal.
-    It deliberately does NOT kill a hung thread or free the chat-agent lock: the wedged
-    turn holds that lock for its whole duration, so in-process admission-freeing is
-    unsafe (out-of-process direct chat for full kill-ability was deferred per owner);
-    WS10 ephemeral decision turns keep the chat responsive meanwhile. ``stop_event`` is
+    It deliberately does NOT kill a hung thread; independent native actors keep
+    the chat responsive meanwhile. ``stop_event`` is
     a PER-GENERATION token: when the supervisor loop that owns ``liveness`` exits (incl.
     the crash-storm death path, which never sets the global restart flag), it is set so
     this watchdog stops watching a now-stale liveness list (no false post-revival alert)."""
@@ -86,7 +83,7 @@ def _start_supervisor_liveness_watchdog(liveness: list, stop_event=None) -> None
         from supervisor.state import append_jsonl, load_state
         interval = min(15, max(1, deadline // 3))
         loop_alerted = False
-        wedged_task = None
+        wedged_tasks: set[str] = set()
         while not _restart_requested.is_set() and not (stop_event is not None and stop_event.is_set()):
             time.sleep(interval)
             # ONE clock: both halves measure an ELAPSED GAP against stamps taken on
@@ -100,8 +97,8 @@ def _start_supervisor_liveness_watchdog(liveness: list, stop_event=None) -> None
                 if not loop_alerted:
                     gap = now - liveness[0]
                     log.error(
-                        "Supervisor loop STALLED ~%.0fs — new-message intake starved (WS10 "
-                        "ephemeral chat still answers); investigate a blocking step.", gap,
+                        "Supervisor loop STALLED ~%.0fs — new-message intake starved (native "
+                        "chat still answers); investigate a blocking step.", gap,
                     )
                     try:
                         append_jsonl(DATA_DIR / "logs" / "supervisor.jsonl", {
@@ -131,17 +128,17 @@ def _start_supervisor_liveness_watchdog(liveness: list, stop_event=None) -> None
                     loop_alerted = True
             else:
                 loop_alerted = False
-            # (2) In-process direct-chat turn wedge — a heartbeat-silent busy turn.
+            # (2) Each native actor has its own liveness and alert identity.
             try:
                 from supervisor.workers import chat_turn_liveness
-                busy, turn_task, turn_ts = chat_turn_liveness()
+                turns = chat_turn_liveness()
             except Exception:
-                busy, turn_task, turn_ts = (False, None, None)
-            if _chat_turn_wedged(busy, turn_ts, now, deadline):
-                if wedged_task != turn_task:  # alert once per wedged turn
-                    _alert_chat_turn_wedge(turn_task, now - (turn_ts or now))
-                    wedged_task = turn_task
-            elif not busy:
-                wedged_task = None
+                turns = []
+            live_ids = {task_id for task_id, _ in turns}
+            wedged_tasks.intersection_update(live_ids)
+            for turn_task, turn_ts in turns:
+                if _chat_turn_wedged(True, turn_ts, now, deadline) and turn_task not in wedged_tasks:
+                    _alert_chat_turn_wedge(turn_task, now - turn_ts)
+                    wedged_tasks.add(turn_task)
 
     threading.Thread(target=_watch, name="supervisor-liveness-watchdog", daemon=True).start()

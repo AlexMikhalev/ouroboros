@@ -4,6 +4,9 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+from tests._governance_docs_shared import architecture_text, development_text
+
 
 def test_prompt_projection_keeps_panels_ahead_of_an_oversized_lens():
     from ouroboros.review_evidence import format_review_evidence_for_prompt
@@ -223,6 +226,171 @@ def test_omitted_trajectory_corpus_round_trips_through_artifact_reader(tmp_path,
     assert "tool_trajectory_source_ref" not in unavailable
     assert missing["status"] == "source_unavailable"
     assert missing["source_ref"] == {}
+
+
+def _trajectory_packet(tmp_path, calls, *, indices=None, budget=0):
+    from ouroboros.review_evidence import build_task_acceptance_evidence
+
+    return build_task_acceptance_evidence(
+        SimpleNamespace(task_contract={}, task_metadata={}, repo_dir=None),
+        drive_root=tmp_path, task_id="selected-trajectory", llm_trace={"tool_calls": calls},
+        agent_evidence={"tool_trajectory_indices": indices} if indices is not None else None,
+        budget_chars=budget,
+    )
+
+
+def test_selected_old_record_resolves_only_after_source_materialization(tmp_path):
+    from ouroboros import artifacts
+    from ouroboros.review_evidence import annotate_criteria_evidence_resolution, task_acceptance_evidence_revision
+    from ouroboros.review_evidence_refs import acceptance_evidence_ref_vocabulary, trajectory_record_ref
+    from ouroboros.review_substrate import task_acceptance_is_clean
+
+    exact, ref, issue = artifacts.persist_exact_text_source(
+        tmp_path, "selected-trajectory", source_id="old-output", text="retained evidence " * 2000)
+    assert not issue
+    calls = [{"tool": "run_command", "args": {"cmd": "argument " * 400},
+              "result": "preview", "result_partial": True, "result_source_ref": ref},
+             *[{"tool": "read_file", "result": str(i)} for i in range(120)]]
+    baseline = _trajectory_packet(tmp_path, calls)
+    old_ref = trajectory_record_ref(baseline["tool_trajectory_source_ref"], 0)
+    assert old_ref not in acceptance_evidence_ref_vocabulary(baseline)
+    packet = _trajectory_packet(tmp_path, calls, indices=[0, 0])
+    assert task_acceptance_evidence_revision(packet) == task_acceptance_evidence_revision(baseline)
+    assert packet["tool_trajectory_omitted_leading"] == 1
+    assert packet["tool_trajectory_complete"] is False
+    assert len(packet["tool_trajectory_selected"]) == 1
+    selected = packet["tool_trajectory_selected"][0]
+    assert selected["result"] == exact
+    assert json.loads(selected["args"]) == calls[0]["args"]
+    assert selected["args_complete"] and selected["result_complete"]
+    assert selected["ref"] == old_ref
+    vocabulary = acceptance_evidence_ref_vocabulary(packet)
+    assert vocabulary[old_ref] == "tool_record"
+    assert vocabulary["tool_trajectory"] == "partial"
+    actor = {"signal": "PASS", "parsed": {"outcome_tier": "solved", "criteria_used": [{
+        "criterion": "old command", "status": "supported", "evidence_refs": [old_ref]}]}}
+    annotate_criteria_evidence_resolution([actor], packet)
+    assert task_acceptance_is_clean(SimpleNamespace(aggregate_signal="PASS", degraded=False, actors=[actor]))
+    # Source identity covers the old row even while the ordinary tail hides it.
+    calls[0]["args"] = {"cmd": "different operation"}
+    assert task_acceptance_evidence_revision(_trajectory_packet(tmp_path, calls)) != task_acceptance_evidence_revision(baseline)
+
+
+def test_selection_can_complete_a_capped_row_but_budgeting_can_make_it_partial(tmp_path):
+    from ouroboros.review_evidence_refs import acceptance_evidence_ref_vocabulary
+    from ouroboros.tool_capabilities import TOOL_RESULT_LIMITS
+    calls = [{"tool": "run_command", "args": {"cmd": "a" * 4000},
+              "result": "x" * (TOOL_RESULT_LIMITS["run_command"] + 1000)}]
+    baseline = _trajectory_packet(tmp_path, calls)
+    ref = baseline["tool_trajectory"][0]["ref"]
+    assert baseline["tool_trajectory"][0]["args_complete"] is False
+    assert baseline["tool_trajectory"][0]["result_complete"] is False
+    assert acceptance_evidence_ref_vocabulary(baseline)[ref] == "partial"
+    complete = _trajectory_packet(tmp_path, calls, indices=[0])
+    assert acceptance_evidence_ref_vocabulary(complete)[ref] == "tool_record"
+    assert acceptance_evidence_ref_vocabulary(complete)["tool_trajectory"] == "partial"
+    recapped = _trajectory_packet(tmp_path, calls, indices=[0], budget=12000)
+    selected = recapped["tool_trajectory_selected"][0]
+    assert selected["result_complete"] is False
+    assert selected["args_complete"] is False
+    assert acceptance_evidence_ref_vocabulary(recapped)[ref] == "partial"
+    assert acceptance_evidence_ref_vocabulary(recapped)["tool_trajectory_selected"] == "partial"
+    assert len(json.dumps(recapped, ensure_ascii=False)) <= 12000
+    overflow = _trajectory_packet(tmp_path, calls, indices=[0], budget=9000)
+    assert overflow["__immutable_core_overflow__"]["packet_chars"] > 9000
+
+
+@pytest.mark.parametrize("failure", ["missing", "corrupt", "legacy"])
+def test_selected_result_never_reconstructed_from_preview(tmp_path, failure):
+    from ouroboros import artifacts
+    from ouroboros.review_evidence_refs import acceptance_evidence_ref_vocabulary
+    _, ref, _ = artifacts.persist_exact_text_source(
+        tmp_path, "selected-trajectory", source_id="missing-output", text="actual bytes")
+    path = artifacts.task_artifact_dir_path(tmp_path, "selected-trajectory") / ref["path"]
+    if failure == "missing":
+        path.unlink()
+    elif failure == "corrupt":
+        path.write_bytes(b"other bytes!")
+    else:
+        ref = {k: v for k, v in ref.items() if k not in {"size", "sha256"}}
+    packet = _trajectory_packet(tmp_path, [
+        {"tool": "run_command", "result": "agent preview", "result_partial": True, "result_source_ref": ref},
+        *[{"tool": "read_file", "result": "ok"} for _ in range(120)],
+    ], indices=[0])
+    row = packet["tool_trajectory_selected"][0]
+    assert row["result_complete"] is False
+    assert acceptance_evidence_ref_vocabulary(packet)[row["ref"]] == "partial"
+    assert any(r["status"] == "source_unavailable" for r in packet["__unresolved_partial_artifacts__"])
+
+
+def test_selected_corpus_must_really_read_and_verify(tmp_path, monkeypatch):
+    from ouroboros import artifacts
+    from ouroboros.review_evidence_refs import acceptance_evidence_ref_vocabulary
+    read = artifacts.read_actor_source_bytes
+
+    def missing_corpus(root, task_id, ref):
+        if "acceptance_tool_trajectory" in ref.get("path", ""):
+            raise FileNotFoundError("corpus unavailable")
+        return read(root, task_id, ref)
+
+    monkeypatch.setattr(artifacts, "read_actor_source_bytes", missing_corpus)
+    packet = _trajectory_packet(tmp_path, [{"tool": "run_command", "result": "ok"}] * 121, indices=[0])
+    assert "tool_trajectory_selected" not in packet
+    assert any(r["tool"] == "tool_trajectory_selected" and r["status"] == "source_unavailable"
+               for r in packet["__unresolved_partial_artifacts__"])
+    assert acceptance_evidence_ref_vocabulary(packet)["agent_supplied"] == "agent_supplied_section"
+
+
+def test_invalid_selected_indices_are_disclosed_without_fabricated_rows(tmp_path):
+    packet = _trajectory_packet(tmp_path, [{"tool": "run_command", "result": "ok"}],
+                                indices=[-1, True, "0", 999, {}, 0])
+    assert [row["source_index"] for row in packet["tool_trajectory_selected"]] == [0]
+    assert any(row["reason"] == "invalid_source_index" for row in packet["__unresolved_partial_artifacts__"])
+
+
+def test_selected_record_recovers_real_sanitized_arguments_from_call_source(tmp_path):
+    from ouroboros.observability import persist_call
+    from ouroboros.review_evidence_refs import acceptance_evidence_ref_vocabulary
+    from ouroboros.utils import sanitize_tool_args_for_log
+    args = {"cmd": "a" * 4000, "items": list(range(51))}
+    call = {"tool": "run_command", "tool_call_id": "old-call", "args": args, "result": "ok"}
+    trace = persist_call(tmp_path, task_id="selected-trajectory", call_id="old-call",
+                         call_type="tool", payload=call)
+    call = {**call, "args": sanitize_tool_args_for_log("run_command", args), "trace_ref": trace}
+    packet = _trajectory_packet(tmp_path, [call], indices=[0])
+    row = packet["tool_trajectory_selected"][0]
+    assert json.loads(row["args"]) == args
+    assert acceptance_evidence_ref_vocabulary(packet)[row["ref"]] == "tool_record"
+    Path(trace["redacted_projection_ref"]["path"]).unlink()
+    missing = _trajectory_packet(tmp_path, [call], indices=[0])
+    row = missing["tool_trajectory_selected"][0]
+    assert row["args_complete"] is False
+    assert acceptance_evidence_ref_vocabulary(missing)[row["ref"]] == "partial"
+
+
+def test_selection_survives_the_real_cheap_tool_to_host_packet_path(tmp_path, monkeypatch):
+    from ouroboros.loop_acceptance_review import _build_host_acceptance_evidence
+    from ouroboros.loop_tool_execution import process_tool_results
+    from ouroboros.tools.registry import ToolContext
+    from ouroboros.tools.review import _handle_task_acceptance_review
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "auto")
+    ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, task_id="selected-trajectory")
+    response = _handle_task_acceptance_review(ctx, claim="answer", goal="inspect", evidence={
+        "tool_trajectory_indices": [0], "tool_trajectory_selected": [{"result": "invented prose"}],
+    })
+    trace = {"tool_calls": [{"tool": "read_file", "result": "real old source"}]}
+    process_tool_results([{
+        "fn_name": "task_acceptance_review", "tool_call_id": "choose", "is_error": False,
+        "args_for_log": {}, "result": response,
+    }], [], trace, lambda *_a, **_kw: None)
+    packet = _build_host_acceptance_evidence(SimpleNamespace(
+        tools=SimpleNamespace(_ctx=ctx), llm_trace=trace, drive_root=tmp_path,
+        task_id=ctx.task_id, task_type="task", content="answer", subtree_statuses=[],
+        packet_budget_chars=240000,
+    ))
+    assert packet["tool_trajectory_selected"][0]["result"] == "real old source"
+    assert packet["agent_supplied"]["tool_trajectory_selected"][0]["result"] == "invented prose"
+    assert packet["__provenance__"]["agent_supplied"] == "agent_supplied"
 
 
 def test_budget_recapped_trajectory_from_producer_cannot_resolve_clean():
@@ -554,8 +722,8 @@ def test_budget_ladder_stops_shedding_after_predecessor_fits():
 
 
 def test_acceptance_docs_have_complete_sentence_boundaries():
-    development = Path("docs/DEVELOPMENT.md").read_text(encoding="utf-8")
-    architecture = Path("docs/ARCHITECTURE.md").read_text(encoding="utf-8")
+    development = development_text()
+    architecture = architecture_text()
 
     assert "silent false green. The\n  Every forced rail" not in development
     assert "never certify success; An OPEN plan wave" not in architecture

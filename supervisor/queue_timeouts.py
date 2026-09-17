@@ -190,6 +190,7 @@ def _enforce_task_timeouts_locked(
     # intent stays the one owner will and cancellation custody stays the killer;
     # a later graceful request can never extend either hard axis.
     from supervisor.owner_stop import running_owner_stop_tasks
+    from supervisor.worker_owner_wait import has_owner_wait_checkpoint
 
     owner_stop_held = running_owner_stop_tasks(
         _queue().DRIVE_ROOT, grace_sec=_queue().FINALIZATION_GRACE_SEC,
@@ -236,10 +237,13 @@ def _enforce_task_timeouts_locked(
         lease_ts = meta.get("external_wait_lease_until")
         active_llm_call = meta.get("active_llm_call")
         llm_call_in_flight = isinstance(active_llm_call, dict) and active_llm_call.get("task_attempt") == attempt
+        owner_wait = meta.get("owner_wait")
+        waiting_on_owner = (isinstance(owner_wait, dict) and owner_wait.get("state") == "waiting"
+                            and owner_wait.get("task_attempt") == attempt)
         progressing = (own_progress or subtree_progressing or _queue()._has_pending_descendant(task_id)
                        or (isinstance(lease_ts, (int, float)) and float(lease_ts) > now)
                        or llm_call_in_flight
-                       or model_waiting(meta)
+                       or model_waiting(meta) or waiting_on_owner
                        or _active_operation_progressing(meta, now))
         ceiling_reached = runtime_sec >= abs_ceiling
 
@@ -346,10 +350,15 @@ def _enforce_task_timeouts_locked(
             if not update_evolution_transaction(task_id, dispatch_status="reaping"):
                 log.warning("Evolution timeout teardown deferred: reaping state was not durable for %s", task_id)
                 continue
+        current_worker = workers.WORKERS.get(worker_id)
+        if current_worker is not None and current_worker.busy_task_id != task_id:
+            continue  # A stale queue row cannot hand a newer worker to teardown.
         _queue().RUNNING.pop(task_id, None)
         proc_handle = None
+        captured_worker = None
         if worker_id in workers.WORKERS:
             w = workers.WORKERS[worker_id]
+            captured_worker = w
             if w.busy_task_id == task_id:
                 w.busy_task_id = None
             # Mark reaping under the lock so assign_tasks and the crash detector both skip
@@ -369,6 +378,7 @@ def _enforce_task_timeouts_locked(
             and not deadline_reached
             and not ceiling_reached
             and not orchestrator
+            and not has_owner_wait_checkpoint(meta, attempt)
         )
         # A stopped evolution campaign breaks the auto-retry chain. `st` is the live state
         # loaded this tick, so this reflects the current owner decision.
@@ -386,9 +396,12 @@ def _enforce_task_timeouts_locked(
         _queue()._ensure_reaper_started()
         _queue()._reap_queue.put({
             "worker_id": worker_id,
+            "worker": captured_worker,
+            "drive_root": str(_queue().DRIVE_ROOT),
+            "meta": meta,
             "proc": proc_handle,
             "task_id": str(task_id),
-            "task": task,
+            "task": dict(task),
             "task_type": task_type,
             "terminal_reason": terminal_reason,
             "attempt": attempt,

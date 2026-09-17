@@ -5,7 +5,8 @@
 // schedules are READ-ONLY ("managed by skill") because the lifecycle resync would
 // overwrite a direct toggle (supervisor/queue.py) — control those via the skill itself.
 
-import { apiFetch } from './api_client.js';
+import { fetchJson } from './api_client.js';
+import { setInlineStatus } from './ui_helpers.js';
 import { openConfirmDialog } from './confirm_dialog.js';
 import { taskCancelPending } from './log_events.js';
 import {
@@ -19,6 +20,7 @@ import {
     taskControlBusy,
 } from './task_control_menu.js';
 import { showToast } from './toast.js';
+import { allowanceLabel } from './utils.js';
 
 function esc(value) {
     return String(value ?? '').replace(/[&<>"']/g, (c) => (
@@ -26,18 +28,7 @@ function esc(value) {
     ));
 }
 
-async function getJson(url) {
-    try {
-        const resp = await apiFetch(url, { cache: 'no-store' });
-        if (resp && typeof resp.json === 'function') {
-            if (resp.ok === false) return null;
-            return await resp.json();
-        }
-        return resp;
-    } catch {
-        return null;
-    }
-}
+const getJson = (url) => fetchJson(url, { cache: 'no-store' });
 
 // A schedule synced from a skill manifest is reconciled from skill readiness, so a
 // direct enable/disable/delete here would be temporary/misleading — show it read-only.
@@ -48,10 +39,26 @@ function isSkillManaged(s) {
 export function initActivity({ mount, ws } = {}) {
     if (!mount) return { refresh: () => {} };
     let busy = false;
+    let refreshRevision = 0;
+    mount.innerHTML = `<div class="activity-scroll">
+        <div class="activity-section" data-activity-section="queue"><h3 class="activity-h">Running &amp; queued</h3></div>
+        <div class="activity-section" data-activity-section="background"><h3 class="activity-h">Background</h3></div>
+        <div class="activity-section" data-activity-section="schedules"><h3 class="activity-h">Scheduled</h3></div>
+    </div>`;
+    const sections = ['queue', 'background', 'schedules'].map((name) => {
+        const root = mount.querySelector(`[data-activity-section="${name}"]`);
+        const status = document.createElement('div');
+        status.className = 'ui-status activity-read-status';
+        status.setAttribute('role', 'status');
+        const content = document.createElement('div');
+        content.className = 'activity-section-content';
+        root.append(status, content);
+        return { root, status, content, loaded: false };
+    });
 
     function renderQueue(queue) {
-        const running = (queue && Array.isArray(queue.running)) ? queue.running : [];
-        const pending = (queue && Array.isArray(queue.pending)) ? queue.pending : [];
+        if (!Array.isArray(queue?.running) || !Array.isArray(queue?.pending)) throw new Error('Queue unavailable');
+        const { running, pending } = queue;
         // #322: the snapshot already carries the pause truth — a member's own
         // _budget_pause row, or a root fence covering its tree.
         const fencedRoots = new Set(
@@ -83,14 +90,29 @@ export function initActivity({ mount, ws } = {}) {
         return parts.length ? parts.join('') : '<div class="activity-empty">Nothing running or queued.</div>';
     }
 
+    function formatWhen(value) {
+        if (!value) return '';
+        const parsed = new Date(value);
+        return Number.isNaN(parsed.getTime()) ? '' : parsed.toLocaleString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' });
+    }
+
     function renderBg(stateData) {
-        const enabled = Boolean(stateData && stateData.bg_consciousness_enabled);
+        if (typeof stateData?.bg_consciousness_enabled !== 'boolean') throw new Error('Background state unavailable');
+        const enabled = stateData.bg_consciousness_enabled;
         const bg = (stateData && stateData.bg_consciousness_state) || {};
-        const detail = esc(bg.detail || bg.last_idle_reason || (enabled ? 'running' : 'disabled'));
+        const detail = esc(bg.detail || (enabled ? 'enabled' : 'disabled'));
+        const facts = [
+            bg.level ? `autonomy ${esc(bg.level)}` : '',
+            enabled && bg.next_wake_at ? `next wake ${esc(formatWhen(bg.next_wake_at))}` : '',
+            bg.last_wake_at ? `last wake ${esc(formatWhen(bg.last_wake_at))}${bg.last_wake_outcome ? ` (${esc(bg.last_wake_outcome)})` : ''}` : '',
+            allowanceLabel(bg.spent_24h_usd, bg.daily_usd, bg.unknown_unmetered, bg.integrity_degraded)
+                ? `allowance ${esc(allowanceLabel(bg.spent_24h_usd, bg.daily_usd, bg.unknown_unmetered, bg.integrity_degraded))} (24 h)` : '',
+            Number.isFinite(Number(bg.max_tasks)) ? `tasks ${Number(bg.tasks_running || 0)}/${Number(bg.max_tasks)}` : '',
+        ].filter(Boolean).join(' · ');
         return `<div class="activity-row">
             <div class="activity-row-main">
                 <span class="activity-name">Background consciousness</span>
-                <span class="activity-sub">${enabled ? 'enabled' : 'disabled'}${detail ? ` · ${detail}` : ''}</span>
+                <span class="activity-sub">${enabled ? 'enabled' : 'disabled'}${detail ? ` · ${detail}` : ''}${facts ? ` · ${facts}` : ''}</span>
             </div>
             <div class="activity-row-actions">
                 <button type="button" class="btn btn-xs btn-default" data-act="bg-toggle" data-enabled="${enabled ? '1' : '0'}"${ws ? '' : ' disabled'}>${enabled ? 'Stop' : 'Start'}</button>
@@ -99,7 +121,8 @@ export function initActivity({ mount, ws } = {}) {
     }
 
     function renderSchedules(data) {
-        const tasks = (data && Array.isArray(data.tasks)) ? data.tasks : [];
+        if (!Array.isArray(data?.tasks)) throw new Error('Schedules unavailable');
+        const tasks = data.tasks;
         if (!tasks.length) return '<div class="activity-empty">No scheduled tasks.</div>';
         return tasks.map((s) => {
             const managed = isSkillManaged(s);
@@ -128,30 +151,35 @@ export function initActivity({ mount, ws } = {}) {
     }
 
     async function refresh() {
-        mount.innerHTML = '<div class="activity-loading">Loading activity…</div>';
-        const [sched, tasks, st] = await Promise.all([
-            getJson('/api/schedules'),
+        const revision = ++refreshRevision;
+        sections.forEach(({ root, status, loaded }) => {
+            root.setAttribute('aria-busy', 'true');
+            setInlineStatus(status, loaded ? 'Refreshing… Previously loaded values shown.' : 'Loading…');
+        });
+        const results = await Promise.allSettled([
             // This view renders only the queue; queue_only skips the whole
             // task-results scan server-side (v6.9x P2).
             getJson('/api/tasks?queue_only=1'),
             getJson('/api/state'),
+            getJson('/api/schedules'),
         ]);
-        mount.innerHTML = `
-            <div class="activity-scroll">
-                <div class="activity-section">
-                    <h3 class="activity-h">Running &amp; queued</h3>
-                    ${renderQueue(tasks && tasks.queue)}
-                </div>
-                <div class="activity-section">
-                    <h3 class="activity-h">Background</h3>
-                    ${renderBg(st)}
-                </div>
-                <div class="activity-section">
-                    <h3 class="activity-h">Scheduled</h3>
-                    ${renderSchedules(sched)}
-                </div>
-            </div>
-        `;
+        if (revision !== refreshRevision) return;
+        const renderers = [(data) => renderQueue(data?.queue), renderBg, renderSchedules];
+        sections.forEach((section, index) => {
+            const { root, status, content } = section;
+            root.removeAttribute('aria-busy');
+            try {
+                const result = results[index];
+                if (result.status === 'rejected') throw result.reason;
+                content.innerHTML = renderers[index](result.value);
+                section.loaded = true;
+                setInlineStatus(status, '');
+            } catch {
+                setInlineStatus(status, section.loaded
+                    ? 'Could not refresh. Previously loaded values shown; current state is unknown. Reopen Activity to try again.'
+                    : 'Could not load. Current state is unknown. Reopen Activity to try again.', 'error');
+            }
+        });
     }
 
     async function findSchedule(id) {
@@ -172,7 +200,12 @@ export function initActivity({ mount, ws } = {}) {
             // Dismissing the menu continues the run. The durable detail decides
             // whether a cancel intent is pending (then only the hard escalation
             // is offered and hurry is never shown).
-            const stored = await getJson(`/api/tasks/${encodeURIComponent(id)}`);
+            let stored = null;
+            try {
+                stored = await getJson(`/api/tasks/${encodeURIComponent(id)}`);
+            } catch (exc) {
+                if (exc?.status !== 404) showToast(`Could not refresh task state: ${exc?.message || exc}`, 'error');
+            }
             openTaskControlMenu(btn, {
                 cancelPending: taskCancelPending(stored),
                 budgetPaused: btn.dataset.budgetPaused === '1',
@@ -220,13 +253,13 @@ export function initActivity({ mount, ws } = {}) {
                     danger: true,
                 });
                 if (!confirmedDelete) return;
-                await apiFetch(`/api/schedules/${encodeURIComponent(id)}`, { method: 'DELETE' });
+                await fetchJson(`/api/schedules/${encodeURIComponent(id)}`, { method: 'DELETE' });
             } else if (act === 'schedule-toggle') {
                 // Read-modify-write the FULL record (upsert replaces by id; never drop
                 // timezone/trigger/task/source) with the flipped enabled flag.
                 const rec = await findSchedule(id);
                 if (rec) {
-                    await apiFetch('/api/schedules', {
+                    await fetchJson('/api/schedules', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ ...rec, enabled: !(rec.enabled !== false) }),
@@ -248,6 +281,7 @@ export function initActivity({ mount, ws } = {}) {
             }
         } finally {
             busy = false;
+            btn.disabled = false;
             await refresh();
         }
     });

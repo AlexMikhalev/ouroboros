@@ -1260,10 +1260,10 @@ def test_blocking_history_section_with_scope_blocked(tmp_path):
     assert "ARCHITECTURE.md" in section
 
 
-def test_review_blocked_message_prefers_fix_over_rebuttal():
+def test_review_blocked_message_keeps_evidence_based_rebuttal_on_repeat():
     """REVIEW_BLOCKED coaching (issue #447, В8=A): fix first; rebuttal is legitimate
     for factual errors, unsupported severity, or disproportionate remedies — but it
-    never overrides owner-chosen enforcement, and a repeated finding means fix."""
+    never overrides owner-chosen enforcement. Repetition is not evidence."""
     from ouroboros.tools.review import _build_critical_block_message
 
     class FakeCtx:
@@ -1280,8 +1280,8 @@ def test_review_blocked_message_prefers_fix_over_rebuttal():
     assert "disproportionate" in lowered
     # Non-override clause: rebuttal is argument, not authority.
     assert "never overrides owner-chosen enforcement" in lowered
-    # Fix-on-repeat coaching survives the replacement.
-    assert "implement the fix" in lowered
+    assert "repetition alone does not validate a finding" in lowered
+    assert "retaining a justified rebuttal" in lowered
 
 
 def test_review_blocked_5plus_hint_suggests_split():

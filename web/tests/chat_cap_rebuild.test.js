@@ -1,14 +1,6 @@
-// Bounded Main-chat memory (issue #135). The Main instance never runs
-// destroy(), so its live task cards used to accumulate for the whole session.
-// Past LIVE_CARD_CAP the instance arms the existing full history rebuild — the
-// transaction a reconnect already runs — instead of evicting cards one by one:
-// the next sync (in practice the debounced post-completion resync; here a
-// refreshHistory(), which awaits the same syncHistory) replaces every live card
-// with durable history, once. The cap is RELATIVE to the population the last
-// rebuild produced, because a history window mints cards itself (progress rows,
-// task_summary rows, lineage rows) and can exceed the cap on its own; an
-// absolute cap would rebuild on every later sync. A Load-older window is
-// rebuilt with its own quota, not cut back to the default one.
+// Issue #135: bounded live additions coexist with retained archive pages.
+// Fresh history prunes only eligible old cards, preserving reading identity and
+// cards created after the request began. No full DOM reset or quota ladder.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -96,7 +88,7 @@ class ElementStub {
     removeAttribute(name) { this.attributes.delete(name); }
     appendChild(node) { return this.insertBefore(node, null); }
     append(...nodes) { nodes.forEach((node) => this.appendChild(node)); }
-    prepend(node) { return this.insertBefore(node, this.children[0] || null); }
+    prepend(...nodes) { const before = this.children[0] || null; nodes.forEach((node) => this.insertBefore(node, before)); }
     insertAdjacentElement(_position, node) { const list = this.parentNode?.children || []; return this.parentNode?.insertBefore(node, list[list.indexOf(this) + 1] || null); }
     insertBefore(node, before) {
         if (node?.isDocumentFragment) {
@@ -109,7 +101,7 @@ class ElementStub {
         node.parentNode = this;
         node.parentElement = this;
         node.isConnected = true;
-        this.scrollHeight = this.children.length * 20;
+        this.scrollHeight = this.children.length * 80;
         return node;
     }
     removeChild(node) {
@@ -156,7 +148,15 @@ class ElementStub {
         if (selector === '.page.active' && this.classList.contains('page') && this.classList.contains('active')) return this;
         return this.parentElement?.closest?.(selector) || null;
     }
-    getBoundingClientRect() { return { top: 0, bottom: 20, left: 0, right: 100, width: 100, height: 20 }; }
+    getBoundingClientRect() {
+        const feed = this.ownerDocument?.byId.get('chat-messages');
+        if (this === feed) return { top: 0, bottom: this.clientHeight, left: 0, right: 100, width: 100, height: this.clientHeight };
+        let item = this;
+        while (item.parentNode && item.parentNode !== feed) item = item.parentNode;
+        const index = feed?.children.indexOf(item) ?? -1;
+        const top = index >= 0 ? index * 80 - feed.scrollTop : -1000;
+        return { top, bottom: top + 20, left: 0, right: 100, width: 100, height: 20 };
+    }
     getClientRects() { return [this.getBoundingClientRect()]; }
     focus() { if (this.ownerDocument) this.ownerDocument.activeElement = this; } click() {}
 }
@@ -166,6 +166,7 @@ function installDom(fetchImpl = async () => ({ ok: true, json: async () => ({ ac
         sessionStorage: globalThis.sessionStorage, fetch: globalThis.fetch,
         ResizeObserver: globalThis.ResizeObserver,
         requestAnimationFrame: globalThis.requestAnimationFrame, WebSocket: globalThis.WebSocket,
+        getSelection: globalThis.getSelection,
     };
     const document = {
         byId: new Map(), hidden: false, activeElement: null,
@@ -187,6 +188,7 @@ function installDom(fetchImpl = async () => ({ ok: true, json: async () => ({ ac
         addEventListener() {}, removeEventListener() {}, dispatchEvent() {},
         getSelection: () => null, innerHeight: 800, CSS: { escape: (value) => value },
     };
+    globalThis.getSelection = () => null;
     globalThis.sessionStorage = {
         getItem: (key) => storage.get(key) || null,
         setItem: (key, value) => storage.set(key, String(value)),
@@ -241,30 +243,36 @@ const liveTaskCards = (messages, historyRows) => {
     return taskCards(messages).filter((node) => !historical.has(node.dataset.taskId));
 };
 
-// The server reports a quota-truncated window so the Load-older control is
-// offered; `rows` is the durable history it returns for that request.
-function historyFetch(historyCalls, rows = () => []) {
+function historyPage(rows = [], { cursor = 'recent-page', next = null } = {}) {
+    return { messages: rows, has_more: next !== null, next_cursor: next, page_cursor: cursor,
+        window: { complete: next === null, truncated_by: next === null ? [] : ['quota'] } };
+}
+function historyFetch(historyCalls, response = () => historyPage()) {
     return async (url) => {
         const value = String(url);
         if (value.startsWith('/api/chat/history')) {
             historyCalls.push(value);
-            return { ok: true, json: async () => ({
-                messages: rows(value), window: { complete: false, truncated_by: ['quota'] },
-            }) };
+            return { ok: true, json: async () => response(value) };
         }
         return { ok: true, json: async () => ({ active_direct_turns: [] }) };
     };
 }
+// Cards have a 20px body and 60px gap. Park the viewport in a genuine gap when
+// a case has no reader; pins below use the same sibling/scroll geometry.
+function noReader(messages) { messages.clientHeight = 20; messages.scrollTop = 30; }
+const cardById = (messages, id) => taskCards(messages).find(node => node.dataset.taskId === id);
 
 // Durable rows that mint a card on replay: a finished task's chat summary (the
 // n_human slice carries these) and a progress row (the n_progress slice).
 const summaryRow = (id, second) => ({
     chat_id: 2, role: 'system', system_type: 'task_summary', task_id: id,
+    history_id: `chat:${second}`, history_position: { source: 'chat', offset: second },
     content: 'done', tool_calls: 2, rounds: 2, task_terminal_status: 'completed',
     outcome_axes: { execution: 'ok' }, ts: historyTs(second),
 });
 const progressRow = (id, second) => ({
     chat_id: 2, role: 'system', is_progress: true, task_id: id,
+    history_id: `progress:${second}`, history_position: { source: 'progress', offset: second },
     content: 'working', ts: historyTs(second),
 });
 const historyTs = (second) => `2026-09-01T00:${String(Math.floor(second / 60)).padStart(2, '0')}`
@@ -275,187 +283,176 @@ async function sync(instance, revision) {
     assert.equal(instance.hasPaintedHistory(), true, `sync ${revision} succeeded`);
 }
 
-test('past the cap the next sync is ONE full rebuild from durable history; syncs are routine again after it', async () => {
-    const historyCalls = [];
-    const { prior, mount } = installDom(historyFetch(historyCalls));
+test('a fresh sync bounds more than 200 live additions and later syncs remain routine', async () => {
+    const calls = [];
+    const { prior, mount } = installDom(historyFetch(calls));
     const { instance, handlers, messages } = makeInstance(mount);
     try {
-        await sync(instance, 1); // first load: the ordinary bootstrap rebuild
+        await sync(instance, 1);
         for (let i = 0; i < 201; i += 1) sealCard(handlers, `cap-t${i}`, i);
-        assert.equal(taskCards(messages).length, 201, 'the cap arms a rebuild; nothing is evicted card by card');
+        assert.equal(taskCards(messages).length, 201, 'growth arms cleanup without eager eviction');
+        noReader(messages);
         await sync(instance, 2);
-        assert.equal(historyCalls.length, 2);
-        assert.equal(taskCards(messages).length, 0,
-            'the sync was a full rebuild: durable history (empty here) replaced every live card');
-        // The rebuild consumed the flag: the next sync folds routinely.
-        sealCard(handlers, 'after-rebuild', 300);
+        assert.equal(calls.length, 2);
+        assert.equal(taskCards(messages).length, 0, 'fresh absent history releases every eligible completed addition');
+        sealCard(handlers, 'after-prune', 300);
+        const retained = cardById(messages, 'after-prune');
+        noReader(messages);
         await sync(instance, 3);
-        assert.equal(historyCalls.length, 3);
-        assert.deepEqual(taskCards(messages).map((node) => node.dataset.taskId), ['after-rebuild'],
-            'a routine sync keeps live cards');
-    } finally {
-        instance.destroy();
-        restoreDom(prior);
-    }
+        assert.equal(calls.length, 3);
+        assert.equal(cardById(messages, 'after-prune'), retained, 'below-bound sync preserves exact DOM identity');
+    } finally { instance.destroy(); restoreDom(prior); }
 });
 
-test('exactly at the cap a sync stays routine', async () => {
-    const historyCalls = [];
-    const { prior, mount } = installDom(historyFetch(historyCalls));
+test('exactly 200 live additions do not trigger cleanup', async () => {
+    const calls = [];
+    const { prior, mount } = installDom(historyFetch(calls));
     const { instance, handlers, messages } = makeInstance(mount);
     try {
         await sync(instance, 1);
-        for (let i = 0; i < 200; i += 1) sealCard(handlers, `cap-t${i}`, i);
+        for (let i = 0; i < 200; i += 1) sealCard(handlers, `at-cap-${i}`, i);
+        const before = [...taskCards(messages)];
+        noReader(messages);
         await sync(instance, 2);
-        assert.equal(historyCalls.length, 2);
-        assert.equal(taskCards(messages).length, 200, 'the bound is exceeded-by-one, not reached');
-    } finally {
-        instance.destroy();
-        restoreDom(prior);
-    }
+        assert.equal(calls.length, 2);
+        assert.deepEqual(taskCards(messages), before, 'the bound is exceeded, not merely reached');
+    } finally { instance.destroy(); restoreDom(prior); }
 });
 
-// A durable summary also renders a card. Track exact server identities separately
-// from live additions: a rebuild drops the additions and replays durable cards;
-// a routine sync preserves both. The bound counts all records, including progress.
-test('after Load older the cap is relative to the wider window and its rebuild keeps the owner quota', async () => {
-    const historyCalls = [];
-    // The default window is empty; the escalated one carries 50 durable cards.
-    const olderRows = Array.from({ length: 50 }, (_all, i) => summaryRow(`older-t${i}`, i));
-    const { prior, mount } = installDom(historyFetch(historyCalls, (url) => (
-        url.includes('n_human=400') ? olderRows : []
-    )));
-    // The stub reports every fresh element as connected, so the Load-older
-    // control is never (re)prepended; capture its button at creation instead.
+test('cleanup preserves reading, focus and selection nodes until the reader releases them', async () => {
+    const { prior, mount } = installDom(historyFetch([]));
+    const { instance, handlers, messages } = makeInstance(mount);
+    try {
+        await sync(instance, 1);
+        for (let i = 0; i < 201; i += 1) sealCard(handlers, `pinned-${i}`, i);
+        const reading = cardById(messages, 'pinned-0');
+        const focused = cardById(messages, 'pinned-80');
+        const selected = cardById(messages, 'pinned-160');
+        focused.focus();
+        globalThis.getSelection = () => ({ isCollapsed: false, rangeCount: 1,
+            getRangeAt: () => ({ intersectsNode: node => node === selected || selected.contains(node) }) });
+        messages.clientHeight = 20;
+        messages.scrollTop = messages.children.indexOf(reading) * 80;
+        await sync(instance, 2);
+        assert.equal(cardById(messages, 'pinned-0'), reading);
+        assert.equal(cardById(messages, 'pinned-80'), focused);
+        assert.equal(cardById(messages, 'pinned-160'), selected);
+        assert.equal(document.activeElement, focused);
+        assert.equal(taskCards(messages).length, 3, 'only the three explicitly protected cards survive');
+        document.activeElement = null;
+        globalThis.getSelection = () => null;
+        noReader(messages);
+        for (const listener of messages.listeners.get('scroll') || []) listener({ target: messages });
+        assert.equal(taskCards(messages).length, 0, 'unpinning releases deferred memory without another full fetch');
+    } finally { instance.destroy(); restoreDom(prior); }
+});
+
+test('live overflow cleanup preserves every retained archive card and its DOM node', async () => {
+    const calls = [];
+    const rows = Array.from({ length: 50 }, (_all, i) => summaryRow(`archive-${i}`, i));
+    const { prior, mount } = installDom(historyFetch(calls, url => new URL(url, 'http://local').searchParams.get('cursor')
+        ? historyPage(rows, { cursor: 'archive-page' })
+        : historyPage([], { next: 'opaque-older' })));
     const created = [];
-    const createElement = globalThis.document.createElement;
-    globalThis.document.createElement = (tag) => { const el = createElement(tag); created.push(el); return el; };
+    const createElement = document.createElement;
+    document.createElement = tag => { const node = createElement(tag); created.push(node); return node; };
     const { instance, handlers, messages } = makeInstance(mount);
     try {
         await sync(instance, 1);
-        const button = created.find((el) => el.className === 'chat-load-older-btn');
-        assert.ok(button && !button.hidden, 'quota truncation offers Load older');
-        button.listeners.get('click')[0]();
-        await new Promise((resolve) => setTimeout(resolve, 10));
-        assert.match(historyCalls.at(-1), /n_human=400/, 'the escalated window is in force');
-
-        // 200 live cards on top of a 50-record window: over the absolute cap,
-        // but not yet 200 PAST the population that rebuild produced.
-        for (let i = 0; i < 200; i += 1) sealCard(handlers, `wide-t${i}`, i);
+        const button = created.find(node => node.className === 'chat-load-older-btn');
+        assert.ok(button && !button.hidden);
+        await button.listeners.get('click')[0]();
+        assert.equal(new URL(calls.at(-1), 'http://local').searchParams.get('cursor'), 'opaque-older');
+        assert.ok(calls.every(url => !url.includes('n_human=')), 'navigation uses the opaque physical cursor');
+        const archived = new Map(rows.map(row => [row.task_id, cardById(messages, row.task_id)]));
+        assert.ok([...archived.values()].every(Boolean));
+        for (let i = 0; i < 201; i += 1) sealCard(handlers, `extra-${i}`, i);
+        noReader(messages);
         await sync(instance, 2);
-        assert.match(historyCalls.at(-1), /n_human=400/);
-        assert.equal(liveTaskCards(messages, olderRows).length, 200, 'the sync folded in routinely');
-        assert.ok(olderRows.every((row) => taskCards(messages).some((card) => card.dataset.taskId === row.task_id)),
-            'durable summaries are also visible');
-
-        // One more crosses the relative bound. The window is wide, so the
-        // rebuild replays the OWNER's quota instead of skipping the cap.
-        sealCard(handlers, 'wide-t200', 200);
-        await sync(instance, 3);
-        assert.match(historyCalls.at(-1), /n_human=400/, 'the rebuild kept the owner quota');
-        assert.equal(liveTaskCards(messages, olderRows).length, 0, 'the rebuild replaced every live card');
-        assert.deepEqual(new Set(taskCards(messages).map((card) => card.dataset.taskId)),
-            new Set(olderRows.map((row) => row.task_id)), 'the durable window remains visible');
-    } finally {
-        instance.destroy();
-        restoreDom(prior);
-    }
+        assert.equal(liveTaskCards(messages, rows).length, 0, 'archive ownership does not disable the live growth bound');
+        assert.equal(taskCards(messages).length, rows.length);
+        for (const [id, node] of archived) assert.equal(cardById(messages, id), node, 'archive node survives without a rebuild');
+    } finally { instance.destroy(); restoreDom(prior); }
 });
 
-test('a window that itself exceeds the cap does not rebuild on every later sync', async () => {
-    // The convergence case: 150 task_summary rows in the n_human slice plus 60
-    // progress rows in the n_progress slice already mint 210 records, so an
-    // ABSOLUTE cap is re-armed by the first live task after every rebuild — a
-    // rebuild on every post-completion sync. Against the relative bound each
-    // sync below stays routine and keeps the live cards it has folded in.
-    const historyCalls = [];
+test('a default history window above 200 cards does not cause repeated cleanup', async () => {
+    const calls = [];
     const rows = [
         ...Array.from({ length: 150 }, (_all, i) => summaryRow(`hist-s${i}`, i)),
         ...Array.from({ length: 60 }, (_all, i) => progressRow(`hist-p${i}`, 200 + i)),
     ];
-    assert.equal(rows.length, 210, 'the default window alone exceeds LIVE_CARD_CAP');
-    const { prior, mount } = installDom(historyFetch(historyCalls, () => rows));
+    const { prior, mount } = installDom(historyFetch(calls, () => historyPage(rows)));
     const { instance, handlers, messages } = makeInstance(mount);
     try {
         await sync(instance, 1);
+        const initial = cardById(messages, 'hist-s0');
         for (let revision = 2; revision <= 5; revision += 1) {
             sealCard(handlers, `live-t${revision}`, 300 + revision);
+            noReader(messages);
             await sync(instance, revision);
-            assert.equal(liveTaskCards(messages, rows).length, revision - 1,
-                `sync ${revision} folded in routinely instead of rebuilding`);
+            assert.equal(liveTaskCards(messages, rows).length, revision - 1);
+            assert.equal(cardById(messages, 'hist-s0'), initial);
         }
-    } finally {
-        instance.destroy();
-        restoreDom(prior);
-    }
+        assert.equal(calls.length, 5, 'only the requested syncs execute');
+    } finally { instance.destroy(); restoreDom(prior); }
 });
 
-test('an arm raised while a routine replay is running survives to the next sync', async () => {
-    // The window itself mints the cap-crossing cards, so the arm goes up AFTER
-    // this sync already decided it is routine. Clearing it unconditionally at the
-    // end of every successful sync would discard that request and let growth that
-    // only ever arrives through history run unbounded.
-    const historyCalls = [];
+test('an arm raised by a growing history response survives to the next fresh sync', async () => {
     let rows = [];
-    const { prior, mount } = installDom(historyFetch(historyCalls, () => rows));
+    const { prior, mount } = installDom(historyFetch([], () => historyPage(rows)));
     const { instance, handlers, messages } = makeInstance(mount);
     try {
-        await sync(instance, 1); // bootstrap rebuild over an empty window: floor 0
+        await sync(instance, 1);
         sealCard(handlers, 'live-before', 1);
-        rows = Array.from({ length: 201 }, (_all, i) => summaryRow(`grown-t${i}`, i));
+        rows = Array.from({ length: 201 }, (_all, i) => summaryRow(`grown-${i}`, i));
+        noReader(messages);
         await sync(instance, 2);
-        assert.deepEqual(liveTaskCards(messages, rows).map((node) => node.dataset.taskId), ['live-before'],
-            'the cap-crossing sync itself stayed routine');
+        assert.equal(liveTaskCards(messages, rows).length, 1, 'a response cannot consume an arm it raised');
+        const historical = cardById(messages, 'grown-0');
+        noReader(messages);
         await sync(instance, 3);
-        assert.equal(liveTaskCards(messages, rows).length, 0, 'the armed rebuild ran on the next sync');
-        assert.deepEqual(new Set(taskCards(messages).map((card) => card.dataset.taskId)),
-            new Set(rows.map((row) => row.task_id)), 'rebuild preserves the fetched durable cards');
-        sealCard(handlers, 'after-rebuild', 400);
+        assert.equal(liveTaskCards(messages, rows).length, 0);
+        assert.equal(cardById(messages, 'grown-0'), historical, 'the fresh cleanup does not rebuild fetched cards');
+        sealCard(handlers, 'after-prune', 400);
+        noReader(messages);
         await sync(instance, 4);
-        assert.deepEqual(liveTaskCards(messages, rows).map((node) => node.dataset.taskId), ['after-rebuild'],
-            'that rebuild set the new floor: later syncs are routine again');
-    } finally {
-        instance.destroy();
-        restoreDom(prior);
-    }
+        assert.equal(liveTaskCards(messages, rows).length, 1, 'the settled floor prevents a cleanup storm');
+    } finally { instance.destroy(); restoreDom(prior); }
 });
 
-test('a sync already in flight when the cap arms does not rebuild from its older window', () => {
-    // The reviewer scenario for the arm: the response was fetched before the cap
-    // crossed, so rebuilding from it would clear cards that window never saw and
-    // consume the arm with nothing left to replay them. The in-flight sync must
-    // fold routinely; the arm belongs to the NEXT sync, which fetches again.
-    const historyCalls = [];
-    let release;
-    const gate = new Promise((resolve) => { release = resolve; });
-    const { prior, mount } = installDom(async (url) => {
-        const value = String(url);
-        if (value.startsWith('/api/chat/history')) {
-            historyCalls.push(value);
-            if (historyCalls.length === 2) await gate;   // the deferred (stale) window
-            return { ok: true, json: async () => ({
-                messages: [], window: { complete: false, truncated_by: ['quota'] },
-            }) };
-        }
-        return { ok: true, json: async () => ({ active_direct_turns: [] }) };
-    });
-    const { instance, handlers, messages } = makeInstance(mount);
-    return (async () => {
+for (const alreadyArmed of [false, true]) {
+    test(`a stale in-flight sync cannot evict newer cards (started armed=${alreadyArmed})`, async () => {
+        const calls = [];
+        let release;
+        const gate = new Promise(resolve => { release = resolve; });
+        const { prior, mount } = installDom(async url => {
+            if (String(url).startsWith('/api/chat/history')) {
+                calls.push(String(url));
+                if (calls.length === 2) await gate;
+                return { ok: true, json: async () => historyPage() };
+            }
+            return { ok: true, json: async () => ({ active_direct_turns: [] }) };
+        });
+        const { instance, handlers, messages } = makeInstance(mount);
         try {
             await sync(instance, 1);
+            if (alreadyArmed) for (let i = 0; i < 201; i += 1) sealCard(handlers, `before-${i}`, i);
+            noReader(messages);
             const inFlight = instance.refreshHistory({ revision: 2 });
-            for (let i = 0; i < 201; i += 1) sealCard(handlers, `race-t${i}`, i);
+            for (let i = 0; i < 201; i += 1) sealCard(handlers, `after-${i}`, 201 + i);
+            const newest = cardById(messages, 'after-200');
+            noReader(messages);
             release();
             await inFlight;
-            assert.equal(historyCalls.length, 2);
-            assert.equal(taskCards(messages).length, 201,
-                'the older window folded in routinely and kept the newer cards');
-            await sync(instance, 3);
-            assert.equal(historyCalls.length, 3, 'the arm survived and fetched a fresh window');
-            assert.equal(taskCards(messages).length, 0, 'that fresh sync rebuilt');
-        } finally {
-            instance.destroy();
-            restoreDom(prior);
-        }
-    })();
-});
+            assert.equal(calls.length, 2);
+            assert.equal(taskCards(messages).length, 201);
+            assert.equal(cardById(messages, 'after-200'), newest);
+            if (!alreadyArmed) {
+                noReader(messages);
+                await sync(instance, 3);
+                assert.equal(calls.length, 3);
+                assert.equal(taskCards(messages).length, 0, 'the arm survives an older routine request');
+            }
+        } finally { instance.destroy(); restoreDom(prior); }
+    });
+}

@@ -21,12 +21,15 @@ def role_ui(subscription_ui):
             ui["posts"].append(("/api/settings", payload))
             ui["settings"].update(payload)
             ui["fixture"]["preview"]["reviewer_slots"] = json.loads(payload["OUROBOROS_REVIEWER_SLOTS"])
-            result = {"ok": True, "saved": True}
+            result = {"status": "saved", "saved": True, "restart_required": False}
         else:
             result = ui["settings"]
         route.fulfill(content_type="application/json", body=json.dumps(result))
 
     ui["page"].route("**/api/settings", settings_route)
+    ui["page"].route("**/api/owner/runtime-mode", lambda route: route.fulfill(
+        content_type="application/json", body=json.dumps({"ok": True, "saved": True,
+            "runtime_mode": "advanced", "restart_required": False})))
     return ui
 
 
@@ -86,8 +89,10 @@ def test_reviewer_source_roundtrip_restores_its_own_model_and_account(role_ui):
         route.select_option('subscription:opaque-source')
     page.locator('[data-advisory-row]').scroll_into_view_if_needed()
     capture(page, "reviewer-source-roundtrip-restored")
+    page.locator('[data-slot-custom-api]').fill('temporary-before-reload')
     with page.expect_response('**/api/reviewer-slots'):
         page.locator('#btn-reload-settings').click()
+        page.get_by_role('button', name='Discard and continue', exact=True).click()
     page.locator('[data-advisory-route]').select_option('api')
     assert page.locator('[data-advisory-api-model]').input_value() == ''
 
@@ -237,3 +242,65 @@ def test_models_does_not_guess_a_credential_family_when_source_mapping_is_unread
     if isinstance(saved, str):
         saved = json.loads(saved)
     assert saved["main"] == "personal"
+
+
+@pytest.mark.parametrize("consumer", ["Models", "Actor", "Triad", "Advisory"])
+def test_catalog_failure_recovery_and_empty_read_keep_real_editor_nodes_and_draft(role_ui, consumer):
+    ui = role_ui
+    configure_mixed(ui)
+    ui["settings"]["OUROBOROS_MODEL"] = "claudexor::opaque-source=gpt-test"
+    ui["settings"]["OUROBOROS_MODEL_ACCOUNTS"] = {"main": "personal"}
+    page = open_agents(ui)
+    selectors = {
+        "Models": ('[data-model-role="main"]', '[data-model-role-source]', '[data-model-role-model]', '[data-model-role-account]'),
+        "Actor": ('[data-subagent-row]', '[data-subagent-field="route"]', '[data-subagent-field="model"]', '[data-subagent-field="account"]'),
+        "Triad": ('[data-slot-id="triad_1"]', '[data-slot-route]', '[data-slot-custom-api]', '[data-slot-profile]'),
+        "Advisory": ('[data-advisory-row]', '[data-advisory-route]', '[data-advisory-api-model]', '[data-advisory-profile]'),
+    }
+    if consumer == "Models":
+        page.locator('[data-settings-tab="models"]').click()
+    row_selector, source_selector, model_selector, account_selector = selectors[consumer]
+    row = page.locator(row_selector).first
+    field = row.locator(model_selector)
+    field.fill("gpt-owner-unsaved")
+    field.evaluate("e => { window.catalogDraftNode = e; e.setSelectionRange(4, 9); }")
+    row.locator(source_selector).evaluate("e => { window.catalogSourceNode = e; }")
+    row.locator(account_selector).evaluate("e => { window.catalogAccountNode = e; }")
+    response = {"status": 503, "body": {"error": "catalog temporarily offline"}}
+    page.route("**/api/model-catalog*", lambda route: route.fulfill(
+        status=response["status"], content_type="application/json", body=json.dumps(response["body"])))
+    for status, body in [
+        (503, {"error": "catalog temporarily offline"}),
+        (200, ui["fixture"]["catalog"]),
+        (200, {"items": [], "model_sources": [], "errors": []}),
+        (503, {"error": "catalog temporarily offline"}),
+    ]:
+        response.update(status=status, body=body)
+        page.evaluate("async () => (await import('/static/modules/settings_catalog.js')).refreshModelCatalog()")
+        assert field.evaluate("e => e === window.catalogDraftNode && document.activeElement === e")
+        assert field.evaluate("e => [e.selectionStart, e.selectionEnd]") == [4, 9]
+        assert field.input_value() == "gpt-owner-unsaved"
+        assert row.locator(source_selector).evaluate("e => e === window.catalogSourceNode")
+        assert row.locator(source_selector).input_value() == "subscription:opaque-source"
+        assert row.locator(account_selector).evaluate("e => e === window.catalogAccountNode")
+        assert row.locator(account_selector).input_value() == "personal"
+        if status == 503:
+            assert "catalog temporarily offline" in page.locator("#settings-model-catalog-status").text_content()
+        else:
+            assert "catalog temporarily offline" not in page.locator("#settings-model-catalog-status").text_content()
+    assert page.locator('[data-deep-review-route]').input_value() == "subagent:native"
+    capture(page, f"catalog-recovery-draft-{consumer.lower()}")
+    with page.expect_response("**/api/settings"):
+        page.locator("#btn-save-settings").click()
+    saved = [body for path, body in ui["posts"] if path == "/api/settings"][-1]
+    if consumer == "Models":
+        assert saved["OUROBOROS_MODEL"] == "claudexor::opaque-source=gpt-owner-unsaved"
+        assert saved["OUROBOROS_MODEL_ACCOUNTS"]["main"] == "personal"
+    elif consumer == "Actor":
+        assert saved["OUROBOROS_SUBAGENTS"]["items"][0]["route"]["target_id"] == "claudexor::opaque-source=gpt-owner-unsaved"
+        assert saved["OUROBOROS_SUBAGENTS"]["items"][0]["route"]["credential_profile_id"] == "personal"
+    else:
+        slots = json.loads(saved["OUROBOROS_REVIEWER_SLOTS"])
+        route = (slots["triad"][0] if consumer == "Triad" else slots["advisory"])["route"]
+        assert route["target_id"] == "claudexor::opaque-source=gpt-owner-unsaved"
+        assert route["profile_id"] == "personal"

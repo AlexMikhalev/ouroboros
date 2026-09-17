@@ -124,8 +124,17 @@ def _save(drive_root: Any, data: Dict[str, Any]) -> None:
     atomic_write_json(path, with_schema_version(dict(data), _REGISTRY_SCHEMA_VERSION))
 
 
-def _load_bindings(drive_root: Any) -> Dict[str, Any]:
-    data = read_json_dict(_bindings_path(drive_root))
+def _load_bindings(drive_root: Any, *, strict: bool = False) -> Dict[str, Any]:
+    if strict:
+        import json
+        try:
+            data = json.loads(_bindings_path(drive_root).read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {"bindings": {}}
+        if not isinstance(data, dict) or not isinstance(data.get("bindings"), dict):
+            raise ValueError("Project bindings are unavailable")
+    else:
+        data = read_json_dict(_bindings_path(drive_root))
     if not isinstance(data, dict) or not isinstance(data.get("bindings"), dict):
         return {"bindings": {}}
     return data
@@ -309,14 +318,15 @@ def all_task_bindings(drive_root: Any) -> Dict[str, int]:
     return out
 
 
-def all_task_project_bindings(drive_root: Any) -> Dict[str, Dict[str, Any]]:
+def all_task_project_bindings(drive_root: Any, *, strict: bool = False) -> Dict[str, Dict[str, Any]]:
     """Map task_id -> {project_id, chat_id} for ALL post-hoc 'Turn into project'
     bindings. Richer than all_task_bindings (chat-id only): the UI uses project_id
     to turn a bound main-chat card into a pointer that opens the project panel
-    (F4), not merely to suppress the stray convert button (P2). Never raises."""
+    (F4), not merely to suppress the stray convert button (P2). Strict snapshot
+    readers propagate source failures so absence never impersonates completeness."""
     out: Dict[str, Dict[str, Any]] = {}
     try:
-        for tid, row in _load_bindings(drive_root).get("bindings", {}).items():
+        for tid, row in _load_bindings(drive_root, strict=strict).get("bindings", {}).items():
             if not isinstance(row, dict):
                 continue
             pid = str(row.get("project_id") or "").strip()
@@ -327,6 +337,8 @@ def all_task_project_bindings(drive_root: Any) -> Dict[str, Dict[str, Any]]:
             if pid and cid:
                 out[str(tid)] = {"project_id": pid, "chat_id": cid}
     except Exception:
+        if strict:
+            raise
         log.debug("all_task_project_bindings failed", exc_info=True)
     return out
 
@@ -349,6 +361,217 @@ def project_chat_for_task(drive_root: Any, task_id: str) -> int:
         return int(row.get("project_chat_id") or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def project_id_for_task(drive_root: Any, task_id: str, *, strict: bool = False) -> str:
+    """Project a task is DURABLY bound to, "" when it is bound to nothing.
+
+    The binding is the ONE truth about a task's project (owner decision B4=A):
+    ``task["project_id"]`` and a worker's in-memory ``ctx.project_id`` are
+    copies that a mid-run conversion never reaches. Reads the same mtime/size
+    cached view the live addressing seam already uses, so a hot-path caller
+    pays no extra parse. ``strict=True`` RAISES on an unreadable store instead
+    of reporting "unbound", for the one caller that authorizes creating a
+    project and must not do that blind.
+    """
+    tid = str(task_id or "").strip()
+    if not tid:
+        return ""
+    bindings = (
+        _load_bindings(drive_root, strict=True)["bindings"] if strict else _bindings_lens(drive_root)
+    )
+    row = bindings.get(tid)
+    return str(row.get("project_id") or "").strip() if isinstance(row, dict) else ""
+
+
+def origin_key(ref: Any) -> Optional[tuple]:
+    """Identity of an owner message BY VALUE: ``(chat_id, client_message_id)``.
+
+    ``ts``/``text_sha256`` are deliberately NOT part of the key. The binding
+    validated them once at write time (``_validated_origin``), and a later
+    reader must never re-derive identity from content (DEVELOPMENT.md
+    anti-pattern). ``None`` for a missing/malformed ref, so a caller can skip
+    the lookup entirely instead of matching on an empty key.
+    """
+    if not isinstance(ref, dict):
+        return None
+    message = str(ref.get("client_message_id") or "").strip()
+    if not message or ref.get("chat_id") in (None, ""):
+        return None
+    try:
+        return (int(ref["chat_id"]), message)
+    except (TypeError, ValueError):
+        return None
+
+
+_ORIGIN_CLAIM_LOCK = threading.RLock()
+
+
+def origin_claim_lock() -> Any:
+    """The one lock every IMPLICIT project claim holds from its origin read through
+    its durable bind: the UI conversion, the promote handler and the in-task
+    ``ensure_project_scope`` handler. All three run in the SERVER process (the
+    gateway is in-process with the supervisor, and workers reach both through
+    events), so a process-local RLock serializes them; a model call that names the
+    project stays OUTSIDE it, because it may await for seconds.
+
+    Without it two cards of the SAME owner message, clicked in two tabs (or the
+    desktop shell and the mini app) inside one naming window, both read "no project
+    for this origin" and both create one."""
+    return _ORIGIN_CLAIM_LOCK
+
+
+def _live_task_ids() -> set:
+    """Best-effort ids of tasks that are running right now: queue roots/children and
+    in-flight direct turns. Used ONLY to break a tie between several projects bound
+    to one origin (legacy state), so the common path never touches the supervisor."""
+    live: set = set()
+    try:
+        from supervisor.queue import _queue_lock
+        from supervisor.workers import PENDING, RUNNING
+
+        with _queue_lock:
+            live.update(str(tid) for tid in RUNNING)
+            live.update(
+                str(row.get("id") or "") for row in (PENDING or ()) if isinstance(row, dict)
+            )
+    except Exception:
+        log.debug("_live_task_ids: queue read failed", exc_info=True)
+    try:
+        from supervisor.active_activity import get_direct_activity_registry
+
+        live.update(str(entry.activity_id) for entry in get_direct_activity_registry().actors())
+    except Exception:
+        log.debug("_live_task_ids: direct activity read failed", exc_info=True)
+    live.discard("")
+    return live
+
+
+def live_origin_lanes() -> list:
+    """``(task_id, origin_message_ref)`` for every LIVE owner ROOT and in-flight
+    direct turn — the task ids one owner message's work can still be spread across.
+
+    Subagents are excluded: a delegated child is never bound itself, it inherits
+    its root's project by lineage. ONE scan with TWO readers that must agree — the
+    freshly created project's sibling claim (which binds them durably) and the
+    /api/state binding projection (which only closes their convert gate). While
+    each kept its own scan, a task the claim skipped could still be offered as a
+    second convertible unit for work that already has a project. Never raises: an
+    unreadable supervisor answers "no lanes", which degrades to today's
+    task-keyed behaviour rather than blocking the owner.
+    """
+    lanes: list = []
+    try:
+        from supervisor.queue import _queue_lock
+        from supervisor.workers import PENDING, RUNNING
+
+        with _queue_lock:
+            rows = [meta.get("task") for meta in list(RUNNING.values()) if isinstance(meta, dict)]
+            rows += list(PENDING or ())
+        for row in rows:
+            if not isinstance(row, dict) or str(row.get("delegation_role") or "") == "subagent":
+                continue
+            lanes.append((str(row.get("id") or ""), row.get("origin_message_ref")))
+    except Exception:
+        log.debug("live_origin_lanes: queue scan failed", exc_info=True)
+    try:
+        from supervisor.active_activity import get_direct_activity_registry
+
+        for entry in get_direct_activity_registry().actors():
+            lanes.append((
+                str(getattr(entry, "activity_id", "") or ""),
+                getattr(entry, "origin_message_ref", None),
+            ))
+    except Exception:
+        log.debug("live_origin_lanes: direct activity scan failed", exc_info=True)
+    return [(tid, ref) for tid, ref in lanes if tid]
+
+
+def project_id_for_origin(drive_root: Any, origin_ref: Any, *, strict: bool = False) -> str:
+    """Project bound to ANY task whose binding names this owner-message origin, else "".
+
+    One owner message can spawn several task ids (the direct turn that received
+    it, a root it promotes, a retry of that root), and each of them used to be a
+    separately convertible unit — which is how ONE message minted TWO Projects.
+    The origin is the identity of that work: it is captured at ingress, copied
+    by value onto every task the message spawns, and already stored in the
+    binding's ``source_ref``, so this reverse lookup needs no new field. A
+    malformed ref resolves to "" and never aliases another message.
+
+    Reads the same mtime/size-cached lens ``project_id_for_task`` uses;
+    ``strict=True`` re-reads and RAISES on an unreadable store, for the callers
+    that authorize creating a project. A binding whose project is no longer
+    ACTIVE does not count (``bind_task_to_project`` would refuse it anyway).
+    LEGACY state can name SEVERAL active projects for one origin (the measured
+    incident left exactly that): prefer the one whose task is still LIVE, else the
+    LATEST binding — where the work actually continued — and disclose the choice
+    durably. Never raises on ambiguity; a refusal would either block the owner or
+    re-mint the duplicate it is meant to end.
+    """
+    key = origin_key(origin_ref)
+    if key is None:
+        return ""
+    bindings = (
+        _load_bindings(drive_root, strict=True)["bindings"] if strict else _bindings_lens(drive_root)
+    )
+    candidates = sorted(
+        (str(row.get("bound_at") or ""), str(task_id), str(row.get("project_id") or "").strip())
+        for task_id, row in bindings.items()
+        if isinstance(row, dict)
+        and str(row.get("project_id") or "").strip()
+        and origin_key(row.get("source_ref")) == key
+    )
+    if not candidates:
+        return ""  # the common case: no binding names this message, so no registry read
+    active = {str(project.get("id") or "") for project in list_projects(drive_root)}
+    candidates = [row for row in candidates if row[2] in active]
+    if not candidates:
+        return ""
+    chosen = candidates[-1][2]
+    if len({row[2] for row in candidates}) > 1:
+        live = _live_task_ids()
+        chosen = next(
+            (row[2] for row in reversed(candidates) if row[1] in live), candidates[-1][2],
+        )
+        _emit_origin_ambiguous(drive_root, key, candidates, chosen)
+    return chosen
+
+
+_DISCLOSED_AMBIGUOUS_ORIGINS: set = set()
+
+
+def _emit_origin_ambiguous(drive_root: Any, key: tuple, candidates: list, chosen: str) -> None:
+    """Durable disclosure (P1) that one owner message names several projects, and
+    which one the adopt chose. Best-effort; never raises.
+
+    ONCE per (store, origin, choice) per process: legacy state is read on every
+    promote tool call, every promote admission and every convert click, and a fact
+    that has not changed is not news — a row per lookup would bury the disclosure in
+    its own repetitions. A restart discloses once more, and a CHANGED choice (the
+    bound task went live, or a candidate's project was deleted) is a new fact and is
+    always written."""
+    disclosure = (str(drive_root), key, chosen)
+    if disclosure in _DISCLOSED_AMBIGUOUS_ORIGINS:
+        return
+    try:
+        from ouroboros.utils import append_jsonl
+
+        # Marked only once the row is durably appended: a failed append must not
+        # silence every later disclosure of the same fact in this process.
+        written = append_jsonl(pathlib.Path(drive_root) / "logs" / "events.jsonl", {
+            "ts": utc_now_iso(),
+            "type": "project_origin_ambiguous",
+            "origin": {"chat_id": key[0], "client_message_id": key[1]},
+            "candidates": [
+                {"task_id": task_id, "project_id": project_id, "bound_at": bound_at}
+                for bound_at, task_id, project_id in candidates
+            ],
+            "chosen": chosen,
+        })
+        if written:
+            _DISCLOSED_AMBIGUOUS_ORIGINS.add(disclosure)
+    except Exception:
+        log.debug("project_origin_ambiguous row failed", exc_info=True)
 
 
 _BINDINGS_LENS_CACHE: Dict[str, tuple] = {}
@@ -607,9 +830,15 @@ def task_presentation_snapshot(drive_root: Any, task_id: str, *, task: Any = Non
         if task_name:
             break
     task_name = task_name or "Task"
+    label = f"{pname} › {task_name}" if pname else task_name
+    # One name, said once: a task whose own name IS the project name renders
+    # "Launch › Launch", which reads as two different things. Exact equality
+    # only — a prefix rule would fold "Art" into "Arthur".
+    if pname and task_name == pname:
+        label = task_name
     return {"project_id": pid, "project_name": pname, "task_id": tid,
             "project_routable": registered, "task_name": task_name,
-            "target_label": f"{pname} › {task_name}" if pname else task_name}
+            "target_label": label}
 
 
 def create_project(
@@ -1143,10 +1372,14 @@ __all__ = [
     "list_projects",
     "list_reserved_projects",
     "list_sidebar_projects",
+    "live_origin_lanes",
+    "origin_claim_lock",
+    "origin_key",
     "project_binding_for_task",
     "project_chat_for_task",
     "project_thread_note_for_task",
     "project_chat_for_task_tree",
+    "project_id_for_origin",
     "project_task_bindings",
     "task_presentation_snapshot",
     "registered_project_chat_ids",

@@ -6,15 +6,48 @@ import json
 import logging
 import os
 import pathlib
+import re
 import subprocess
+from dataclasses import dataclass
 from typing import List, Optional
 
+from ouroboros.secret_masking import redact_known_values
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
+from ouroboros.utils import truncate_within_limit
 from ouroboros.utils import truncate_review_artifact as _truncate_with_notice
 
 log = logging.getLogger(__name__)
 _GENERIC_TRANSPORT = object()
+
+
+# gh's own HTTP status shapes (see ``_gh_run``); the first match in stderr order wins.
+_GH_STATUS_RE = re.compile(
+    r"\(HTTP (\d{3})\)[ \t\r]*$"
+    r"|^(?:[a-z][a-z ]*: )*HTTP (\d{3})(?::| \(|[ \t\r]*$)",
+    re.MULTILINE,
+)
+
+
+@dataclass(frozen=True)
+class GhResult:
+    ok: bool
+    text: str
+    exit_code: int | None
+    http_status: int | None
+    # "target" is a local refusal, not a subprocess exit or exception.
+    failure: str
+
+
+def _refuse(ctx: ToolContext, text: str, code: str = "TOOL_ARG_ERROR") -> str:
+    """Publish a refusal this module AUTHORS as a typed result; text unchanged.
+
+    The registry types a string result by its first-line typed marker (the
+    warning sign plus an UPPER_SNAKE code), so prose such as ``⚠️ issue number must be positive`` was recorded ``status=ok``
+    although the producer already knew it had refused. Both codes carry
+    ``status="error"``."""
+    return _publish_tool_result(ctx, ToolResult(status="error", code=code, text=text))
+
 
 def github_token_from_env_or_settings() -> str:
     from ouroboros.config import load_settings
@@ -61,15 +94,18 @@ def github_cli_configured() -> bool:
         return False
 
 
-def _gh_cmd(args: List[str], ctx: ToolContext, timeout: int = 30, input_data: Optional[str] = None,
-            *, repo: object = _GENERIC_TRANSPORT) -> str:
+def _gh_run(args: List[str], ctx: ToolContext, timeout: int = 30, input_data: Optional[str] = None,
+            *, repo: object = _GENERIC_TRANSPORT) -> GhResult:
     # Only omitted internal API/Hub calls keep the generic transport contract.
     # Public repository tools always pass repo, including '' for Project focus.
+    # The target refusals below publish a typed argument error into the calling
+    # tool's sidecar; the publication transport omits `repo`, so it can never
+    # reach them and its own final result is never shadowed from here.
     if repo is not _GENERIC_TRANSPORT and not isinstance(repo, str):
-        return _publish_tool_result(ctx, ToolResult(
+        return GhResult(False, _publish_tool_result(ctx, ToolResult(
             status="error", code="TOOL_ARG_ERROR",
             text="⚠️ GH_TARGET_INVALID: repo must be a string; omit it to use the selected Project.",
-        ))
+        )), None, None, "target")
     try:
         cwd, env = pathlib.Path(ctx.repo_dir), _gh_env(ctx)
         cmd = ["gh", *args]
@@ -85,16 +121,20 @@ def _gh_cmd(args: List[str], ctx: ToolContext, timeout: int = 30, input_data: Op
                 note = str(metadata.get("_project_room_note") or "")
                 selected = workspace or room_dir
                 if note or (selected and not pathlib.Path(selected).is_dir()):
-                    return f"⚠️ GH_TARGET_UNAVAILABLE: {note or 'The selected Project directory is unavailable.'}"
+                    return GhResult(False,
+                        f"⚠️ GH_TARGET_UNAVAILABLE: {note or 'The selected Project directory is unavailable.'}",
+                        None, None, "target")
                 if project and not selected:
-                    return _publish_tool_result(ctx, ToolResult(
+                    return GhResult(False, _publish_tool_result(ctx, ToolResult(
                         status="error", code="TOOL_ARG_ERROR",
                         text="⚠️ GH_TARGET_REQUIRED: this Project has no repository directory; pass repo='[HOST/]OWNER/REPO'.",
-                    ))
+                    )), None, None, "target")
             binding = build_resolved_resource_binding(ctx, operation="shell", process_cwd="")
             cwd = binding.target_path
             if workspace and cwd != pathlib.Path(workspace).resolve(strict=False):
-                return "⚠️ GH_TARGET_UNAVAILABLE: the task's Project binding could not be resolved."
+                return GhResult(False,
+                    "⚠️ GH_TARGET_UNAVAILABLE: the task's Project binding could not be resolved.",
+                    None, None, "target")
             if workspace or room_dir or project:
                 env.pop("GH_REPO", None)  # Ambient defaults cannot replace the selected Project.
             if repo:
@@ -109,15 +149,39 @@ def _gh_cmd(args: List[str], ctx: ToolContext, timeout: int = 30, input_data: Op
             env=env,
         )
         if res.returncode != 0:
-            err = (res.stderr or "").strip()
-            return f"⚠️ GH_ERROR: {err.split(chr(10))[0][:200]}"
-        return res.stdout.strip()
-    except FileNotFoundError:
-        return "⚠️ GH_ERROR: `gh` CLI not found. Install GitHub CLI and ensure it is on PATH (https://cli.github.com/)"
+            # Redact the WHOLE stderr first (a cut could split a token), read gh's own
+            # status marker before any bounding, then keep a bounded head. gh writes the
+            # status in three deterministic shapes and nowhere else: ``gh: <msg> (HTTP NNN)``
+            # at the end of a line (``gh api`` with a message), ``gh: HTTP NNN`` (``gh api``
+            # without one) and ``HTTP NNN: <msg> (<url>)`` — optionally wrapped as
+            # ``failed to fork: HTTP NNN: …`` — from every other command. A marker quoted
+            # mid-sentence is prose, not a status.
+            err = redact_known_values(res.stderr or "", [github_token_from_env_or_settings()])
+            status = _GH_STATUS_RE.search(err)
+            head = " | ".join([line.strip() for line in err.splitlines() if line.strip()][:3])
+            head = truncate_within_limit(head, 600)
+            return GhResult(False, "⚠️ GH_ERROR: " + head, res.returncode,
+                            int(status.group(1) or status.group(2)) if status else None, "exit")
+        return GhResult(True, res.stdout.strip(), res.returncode, None, "")
+    except FileNotFoundError as e:
+        missing = str(getattr(e, "filename", "") or "")
+        if not missing or pathlib.Path(missing).name == "gh":
+            return GhResult(False,
+                "⚠️ GH_ERROR: `gh` CLI not found. Install GitHub CLI and ensure it is on PATH (https://cli.github.com/)",
+                None, None, "cli_missing")
+        detail = truncate_within_limit(redact_known_values(str(e), [github_token_from_env_or_settings()]), 600)
+        return GhResult(False, f"⚠️ GH_ERROR: {detail}", None, None, "exception")
     except subprocess.TimeoutExpired:
-        return f"⚠️ GH_TIMEOUT: exceeded {timeout}s."
+        return GhResult(False, f"⚠️ GH_TIMEOUT: exceeded {timeout}s.", None, None, "timeout")
     except Exception as e:
-        return f"⚠️ GH_ERROR: {e}"
+        detail = truncate_within_limit(redact_known_values(str(e), [github_token_from_env_or_settings()]), 600)
+        return GhResult(False, f"⚠️ GH_ERROR: {detail}", None, None, "exception")
+
+
+def _gh_cmd(args: List[str], ctx: ToolContext, timeout: int = 30, input_data: Optional[str] = None,
+            *, repo: object = _GENERIC_TRANSPORT) -> str:
+    return _gh_run(args, ctx, timeout=timeout, input_data=input_data, repo=repo).text
+
 
 def _list_issues(ctx: ToolContext, state: str = "open", labels: str = "", limit: int = 20, repo: str = "") -> str:
     args = [
@@ -136,7 +200,7 @@ def _list_issues(ctx: ToolContext, state: str = "open", labels: str = "", limit:
     try:
         issues = json.loads(raw)
     except json.JSONDecodeError:
-        return f"⚠️ Failed to parse issues JSON: {raw[:500]}"
+        return _refuse(ctx, f"⚠️ TOOL_ERROR: failed to parse issues JSON: {raw[:500]}", "TOOL_ERROR")
 
     if not issues:
         return f"No {state} issues found."
@@ -159,7 +223,7 @@ def _list_issues(ctx: ToolContext, state: str = "open", labels: str = "", limit:
 
 def _get_issue(ctx: ToolContext, number: int, repo: str = "") -> str:
     if number <= 0:
-        return "⚠️ issue number must be positive"
+        return _refuse(ctx, "⚠️ TOOL_ARG_ERROR: issue number must be positive")
 
     args = [
         "issue", "view", str(number),
@@ -173,7 +237,7 @@ def _get_issue(ctx: ToolContext, number: int, repo: str = "") -> str:
     try:
         issue = json.loads(raw)
     except json.JSONDecodeError:
-        return f"⚠️ Failed to parse issue JSON: {raw[:500]}"
+        return _refuse(ctx, f"⚠️ TOOL_ERROR: failed to parse issue JSON: {raw[:500]}", "TOOL_ERROR")
 
     labels_str = ", ".join(l.get("name", "") for l in issue.get("labels", []))
     author = issue.get("author", {}).get("login", "unknown")
@@ -203,10 +267,10 @@ def _get_issue(ctx: ToolContext, number: int, repo: str = "") -> str:
 
 def _comment_on_issue(ctx: ToolContext, number: int, body: str, repo: str = "") -> str:
     if number <= 0:
-        return "⚠️ issue number must be positive"
+        return _refuse(ctx, "⚠️ TOOL_ARG_ERROR: issue number must be positive")
 
     if not body or not body.strip():
-        return "⚠️ Comment body cannot be empty."
+        return _refuse(ctx, "⚠️ TOOL_ARG_ERROR: comment body cannot be empty.")
 
     args = ["issue", "comment", str(number), "--body-file", "-"]
     raw = _gh_cmd(args, ctx, input_data=body, repo=repo)
@@ -217,7 +281,7 @@ def _comment_on_issue(ctx: ToolContext, number: int, body: str, repo: str = "") 
 
 def _close_issue(ctx: ToolContext, number: int, comment: str = "", repo: str = "") -> str:
     if number <= 0:
-        return "⚠️ issue number must be positive"
+        return _refuse(ctx, "⚠️ TOOL_ARG_ERROR: issue number must be positive")
 
     if comment and comment.strip():
         result = _comment_on_issue(ctx, number, comment, repo=repo)
@@ -244,7 +308,7 @@ def _list_prs(ctx: ToolContext, state: str = "open", limit: int = 20, repo: str 
     try:
         prs = json.loads(raw)
     except json.JSONDecodeError:
-        return f"⚠️ Failed to parse PRs JSON: {raw[:500]}"
+        return _refuse(ctx, f"⚠️ TOOL_ERROR: failed to parse PRs JSON: {raw[:500]}", "TOOL_ERROR")
 
     if not prs:
         return f"No {state} pull requests found."
@@ -268,7 +332,7 @@ def _list_prs(ctx: ToolContext, state: str = "open", limit: int = 20, repo: str 
 
 def _get_pr(ctx: ToolContext, number: int, repo: str = "") -> str:
     if number <= 0:
-        return "⚠️ PR number must be positive."
+        return _refuse(ctx, "⚠️ TOOL_ARG_ERROR: PR number must be positive.")
 
     meta_args = [
         "pr", "view", str(number),
@@ -283,7 +347,7 @@ def _get_pr(ctx: ToolContext, number: int, repo: str = "") -> str:
     try:
         pr = json.loads(raw)
     except json.JSONDecodeError:
-        return f"⚠️ Failed to parse PR JSON: {raw[:500]}"
+        return _refuse(ctx, f"⚠️ TOOL_ERROR: failed to parse PR JSON: {raw[:500]}", "TOOL_ERROR")
 
     author = pr.get("author", {}).get("login", "unknown")
     head_repo = (pr.get("headRepository") or {}).get("nameWithOwner", "?")
@@ -373,9 +437,9 @@ def _get_pr(ctx: ToolContext, number: int, repo: str = "") -> str:
 
 def _comment_on_pr(ctx: ToolContext, number: int, body: str, repo: str = "") -> str:
     if number <= 0:
-        return "⚠️ PR number must be positive."
+        return _refuse(ctx, "⚠️ TOOL_ARG_ERROR: PR number must be positive.")
     if not (body or "").strip():
-        return "⚠️ Comment body cannot be empty."
+        return _refuse(ctx, "⚠️ TOOL_ARG_ERROR: comment body cannot be empty.")
 
     args = ["pr", "comment", str(number), "--body-file", "-"]
     raw = _gh_cmd(args, ctx, input_data=body, repo=repo)
@@ -386,7 +450,7 @@ def _comment_on_pr(ctx: ToolContext, number: int, body: str, repo: str = "") -> 
 
 def _create_issue(ctx: ToolContext, title: str, body: str = "", labels: str = "", repo: str = "") -> str:
     if not title or not title.strip():
-        return "⚠️ Issue title cannot be empty."
+        return _refuse(ctx, "⚠️ TOOL_ARG_ERROR: issue title cannot be empty.")
 
     args = ["issue", "create", f"--title={title}"]
     if body:

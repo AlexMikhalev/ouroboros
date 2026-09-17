@@ -60,7 +60,7 @@ def resolve_promote_source(
         folder, provenance, clone_url = cloned, "cloned", src
         note = f"cloned {src} -> {cloned}"
     else:
-        from ouroboros.project_sources import is_git_worktree_root
+        from ouroboros.workspace_admission import WorkspaceRootError, validate_workspace_root
 
         resolved, err = validate_attach_path(
             src,
@@ -69,8 +69,14 @@ def resolve_promote_source(
         )
         if err:
             return "", "", f"attach: {err}", pid, False
-        if not is_git_worktree_root(resolved):
-            return "", "", f"attach: {resolved} is not a git repository", pid, False
+        try:
+            resolved = validate_workspace_root(
+                resolved,
+                system_repo_dir=getattr(ctx, "REPO_DIR", getattr(ctx, "repo_dir", "")),
+                drive_root=drive_root,
+            )
+        except WorkspaceRootError as exc:
+            return "", "", f"attach: {exc}", pid, False
         folder, provenance, clone_url = str(resolved), "attached", ""
         note = f"attached {resolved}"
     prior_wd = str((existing or {}).get("working_dir") or "").strip()

@@ -4,6 +4,8 @@ Re-cut on the v7next tip: the reference's ``_ACCEPT_DELTA_CHILD_CAP`` and
 ``_accept_capability_deltas`` rows are superseded — upstream re-homed the
 capability-delta aggregate into ``delegate_evidence`` (the facade reads it
 back at call time), so those two names are neither moved nor pinned here.
+Module size follows the shared size-ratchet tests and manifest; this historical
+extraction must not impose a second cap or a minimum amount of retained code.
 """
 
 from __future__ import annotations
@@ -114,15 +116,3 @@ def test_review_evidence_section_owner_is_forced_into_every_review_pack():
         "ouroboros/review_evidence_sections.py",
     ):
         assert rel in review_context_atlas._REVIEW_STACK_PATHS, rel
-
-
-def test_review_evidence_extraction_size_bounds_have_meaningful_headroom():
-    counts = {
-        module.__name__: len(
-            pathlib.Path(module.__file__).read_text(encoding="utf-8").splitlines()
-        )
-        for module in (review_evidence, *_LEAVES)
-    }
-    assert all(count <= 1000 for count in counts.values())
-    assert 600 <= counts["ouroboros.review_evidence_sections"] <= 1000
-    assert 600 <= counts["ouroboros.review_evidence"] <= 1000

@@ -115,6 +115,47 @@ def test_stdio_environment_does_not_expand_native_review_resources(registry, mon
                for item in registry.capability_omissions())
 
 
+@pytest.mark.parametrize("transport", ["stdio", "streamable_http"])
+@pytest.mark.parametrize("actor", ["main", "project", "managed"])
+@pytest.mark.parametrize("web_key", ["web", "allow_web"])
+def test_web_tool_restriction_preserves_mcp_discovery_and_dispatch(
+        tmp_path, monkeypatch, transport, actor, web_key):
+    fake = _FakeTransport([{"name": "store", "description": "Store a record",
+                            "input_schema": {"type": "object", "properties": {}}}])
+    _wire_singleton(fake)
+    server = (_good_server() if transport == "streamable_http" else
+              {"id": "demo", "enabled": True, "transport": "stdio", "command": "fixture"})
+    mcp_client.reconfigure_from_settings(_settings(server))
+    assert mcp_client.get_manager().refresh_server("demo")["ok"]
+    monkeypatch.setattr("ouroboros.safety.check_safety", lambda *a, **kw: (True, ""))
+    room = tmp_path / "room"
+    room.mkdir()
+    contract = build_task_contract({"allowed_resources": {web_key: False}})
+    ctx = ToolContext(repo_dir=tmp_path / "repo", drive_root=tmp_path / "data",
+                      is_direct_chat=actor != "managed", task_contract=contract,
+                      task_metadata={"task_contract": contract,
+                                     **({"_project_room_dir": str(room)} if actor == "project" else {})})
+    registry = ToolRegistry(ctx.repo_dir, ctx.drive_root)
+    registry.set_context(ctx)
+    name = "mcp_demo__store"
+    assert name in {row["function"]["name"] for row in registry.schemas()}
+    assert registry.get_schema_by_name(name) is not None
+    assert "RESOURCE_CONSTRAINT_BLOCKED" in registry.execute("web_search", {"query": "unused"})
+    result = registry.execute_result(name, {})
+    assert result.status == "ok" and result.text.endswith("echo(demo/store)"), result.text
+    assert len(fake.call_calls) == 1
+
+    # Explicit owner disables and actual network restrictions still win.
+    contract["disabled_tools"] = [name]
+    assert registry.get_schema_by_name(name) is None
+    assert registry.execute_result(name, {}).status == "blocked"
+    contract["disabled_tools"] = []
+    contract["allowed_resources"]["network"] = False
+    assert registry.get_schema_by_name(name) is None
+    assert "network=false" in registry.execute(name, {})
+    assert len(fake.call_calls) == 1
+
+
 def test_schemas_cold_worker_loads_settings_and_refreshes_once(registry, monkeypatch):
     fake = _FakeTransport(
         [{"name": "ping", "description": "Ping", "input_schema": {"type": "object", "properties": {}}}]
@@ -319,14 +360,8 @@ def test_disabled_manager_hides_tools(registry):
     assert "mcp_svc__ping" not in names
 
 
-def test_ephemeral_decision_turn_exposes_and_executes_configured_mcp_tools(registry, monkeypatch):
-    """Issue #722 (owner-approved 2026-09-08): a Main/project chat message on an
-    install with Projects rides the ephemeral decision lane, which withheld every
-    configured MCP tool (``mcp: ephemeral_turn``) — the owner saw "cannot see the
-    tools" for a healthy server. Discovery and dispatch agree on that lane now:
-    the schema is present, get_schema_by_name answers it, and execute() reaches
-    the MCP call path (fake transport), while the network resource gate stays
-    the lane's only MCP filter — on discovery AND dispatch."""
+def test_direct_chat_exposes_and_executes_configured_mcp_tools(registry, monkeypatch):
+    """Direct-chat discovery and dispatch retain MCP configuration/resource gates."""
     fake = _FakeTransport(
         [{"name": "ping", "description": "Ping", "input_schema": {"type": "object", "properties": {}}}]
     )
@@ -336,11 +371,9 @@ def test_ephemeral_decision_turn_exposes_and_executes_configured_mcp_tools(regis
     monkeypatch.setattr("ouroboros.safety.check_safety", lambda *a, **kw: (True, ""))
     repo_dir, drive_root = registry._ctx.repo_dir, registry._ctx.drive_root
 
-    registry.set_context(ToolContext(repo_dir=repo_dir, drive_root=drive_root, is_ephemeral_turn=True))
+    registry.set_context(ToolContext(repo_dir=repo_dir, drive_root=drive_root, is_direct_chat=True))
     names = {schema["function"]["name"] for schema in registry.schemas()}
     assert "mcp_svc__ping" in names
-    omissions = {(o.get("surface"), o.get("reason")) for o in registry.capability_omissions()}
-    assert not [o for o in omissions if o[1] == "ephemeral_turn"]  # no lane-withheld surface remains
     assert registry.get_schema_by_name("mcp_svc__ping")["function"]["name"] == "mcp_svc__ping"
     assert registry.policy_hidden_reason("mcp_svc__ping") is None
     assert "echo(svc/ping)" in registry.execute("mcp_svc__ping", {})
@@ -348,7 +381,7 @@ def test_ephemeral_decision_turn_exposes_and_executes_configured_mcp_tools(regis
 
     contract = build_task_contract({"allowed_resources": {"network": False}})
     registry.set_context(ToolContext(
-        repo_dir=repo_dir, drive_root=drive_root, is_ephemeral_turn=True,
+        repo_dir=repo_dir, drive_root=drive_root, is_direct_chat=True,
         task_contract=contract, task_metadata={"task_contract": contract},
     ))
     assert registry.get_schema_by_name("mcp_svc__ping") is None
@@ -360,9 +393,9 @@ def test_ephemeral_decision_turn_exposes_and_executes_configured_mcp_tools(regis
     # (iv) configuration stays the other filter: a disabled server's tools are absent
     # from the lane's discovery and never dispatched there either.
     mcp_client.reconfigure_from_settings(_settings(_good_server(id="svc"), enabled=False))
-    registry.set_context(ToolContext(repo_dir=repo_dir, drive_root=drive_root, is_ephemeral_turn=True))
+    registry.set_context(ToolContext(repo_dir=repo_dir, drive_root=drive_root, is_direct_chat=True))
     assert "mcp_svc__ping" not in {schema["function"]["name"] for schema in registry.schemas()}
     assert registry.get_schema_by_name("mcp_svc__ping") is None
     out = registry.execute("mcp_svc__ping", {})
-    assert "EPHEMERAL_TURN_RESTRICTED" not in out and "echo(svc/ping)" not in out
+    assert "echo(svc/ping)" not in out
     assert len(fake.call_calls) == 1

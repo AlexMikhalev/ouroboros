@@ -74,7 +74,7 @@ def test_preset_images_reach_real_main_transport(subscription_transport, catalog
     assert gateway.uploads[0][0]["account"] == {"mode": "pin", "profileId": "explicit-main"}
     assert calls == [("codex", "explicit-main", "exact-model")]
     assert messages == original
-    assert len(gateway.creates) == 1 and len(gateway.operations) == 1
+    assert len(gateway.creates) == 1 and len(gateway.accepted_operations) == 1
     assert [row["state"] for row in ledger(root)] == ["reserved", "dispatched", "settled"]
 
 

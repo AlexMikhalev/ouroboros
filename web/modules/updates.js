@@ -44,6 +44,44 @@ function statusReadFailed(data) {
         && data.warnings.some((warning) => String(warning).startsWith('status_error:'));
 }
 
+const UPDATE_STAGE_LABELS = {
+    draining_writers: 'Finishing current work…',
+    stopping_workers: 'Stopping worker processes…',
+    stopping_services: 'Stopping services…',
+    preparing: 'Preparing the update…',
+    applying: 'Applying the update…',
+    checking: 'Checking the update and dependencies…',
+    rolling_back: 'Restoring the previous version…',
+    restart_requested: 'Restart requested…',
+};
+
+function progressVerdict(data, base) {
+    const progress = data.update_progress;
+    if (!progress?.operation_id) return null;
+    if (progress.active || progress.result === 'restart_requested') {
+        return {
+            ...base, state: progress.result === 'restart_requested' ? 'restarting' : 'updating',
+            tone: 'neutral',
+            headline: UPDATE_STAGE_LABELS[progress.stage] || 'Updating…',
+            hint: progress.stage_started_at ? `Stage started ${relativeAge(progress.stage_started_at)}.` : '',
+            action: { id: 'update', label: 'Updating…', disabled: true },
+        };
+    }
+    if (progress.result === 'restart_required') {
+        return { ...base, state: 'restart_required', tone: 'warn',
+            headline: 'The update landed, but the automatic restart failed.',
+            hint: progress.error || 'Restart Ouroboros to finish.',
+            action: { id: 'restart', label: 'Restart now' } };
+    }
+    if (progress.result === 'failed') {
+        return { ...base, state: progress.restart_required ? 'restart_needed' : 'update_failed', tone: 'error',
+            headline: 'The update did not complete.', hint: progress.error || 'Check the update status before trying again.',
+            action: progress.restart_required ? { id: 'restart', label: 'Restart now' }
+                : { id: 'check', label: 'Check for updates' } };
+    }
+    return null; // Assisted work and boot recovery have their existing durable owner.
+}
+
 // Verdict function: durable server state × transient client phase → one
 // presentation descriptor (deterministic given status, phase, and the clock —
 // humanizeCheckedAt reads Date.now for the "checked N ago" age). The button is always a real next action; facts
@@ -64,6 +102,17 @@ export function updateVerdict(data = {}, phase = '') {
 
     const warnings = extraWarnings(data);
     const base = { chips, warnings, checkedAgo };
+    const recovery = data.update_tx?.active && (
+        ['corrupt', 'gate_blocked', 'marker_cleanup_retry'].includes(data.update_tx.phase)
+        || (!data.update_progress?.active && data.update_progress?.result === 'failed')
+    );
+    if (recovery) phase = ''; // Durable recovery always outranks an older progress observation.
+    if (!recovery && !['restarting', 'restart_needed', 'restart_required'].includes(phase)) {
+        const pendingRequest = ['checking', 'preflighting', 'updating'].includes(phase);
+        const currentExecution = data.update_progress?.active || data.update_progress?.result === 'restart_requested';
+        const progress = !pendingRequest || currentExecution ? progressVerdict(data, base) : null;
+        if (progress) return progress;
+    }
 
     if (phase === 'loading') return { ...base, state: 'loading', tone: 'neutral', headline: 'Loading update status…', hint: '', action: null };
     if (phase === 'checking') return { ...base, state: 'checking', tone: 'neutral', headline: 'Checking the official channel…', hint: '', action: { id: 'check', label: 'Checking…', disabled: true } };
@@ -344,9 +393,20 @@ export function bindUpdateRefreshEvents({ ws, getPhase, reconcileRestart, loadSt
     };
 
     listen('open', (event = {}) => {
-        if (getPhase() !== 'restarting' || event.previouslyConnected !== true) return;
-        restartReconnected = true;
-        reconcileRestart({ afterBootNotice: false });
+        if (event.previouslyConnected !== true) return;
+        if (getPhase() === 'restarting') {
+            restartReconnected = true;
+            reconcileRestart({ afterBootNotice: false });
+        } else {
+            loadStatus({ fetchRemote: false, preservePhase: ['preflighting', 'updating'].includes(getPhase()) });
+        }
+    });
+    listen('update_progress_changed', () => {
+        if (getPhase() === 'restarting') {
+            if (restartReconnected) reconcileRestart({ afterBootNotice: false });
+        } else {
+            loadStatus({ fetchRemote: false, preservePhase: true });
+        }
     });
     listen('update_status_ready', () => {
         const phase = getPhase();
@@ -582,22 +642,42 @@ export function initUpdates({ mount, state, ws, openSettingsTab }) {
         }
     }
 
-    async function loadStatus({ fetchRemote = false } = {}) {
-        setPhase(fetchRemote ? 'checking' : 'loading');
-        try {
-            const data = await (fetchRemote ? apiClient.updateCheck() : apiClient.updateStatus());
-            latestStatus = data;
-            // A restart-required refusal (failed writer fence, failed rollback)
-            // leaves NO durable marker, so the continuation lives in this
-            // panel-lifetime flag: every refresh — tab reopen included —
-            // re-applies it until the restart actually happens. A full page
-            // reload honestly loses it (nothing durable exists server-side).
-            setPhase(restartNeeded && !data?.update_tx?.active ? 'restart_needed' : '');
-            renderOfficialTags(data.official_tags || []);
-        } catch (err) {
-            latestStatus = { managed: true, warnings: [`status_error:${err.message || err}`], check_ok: false };
-            setPhase(restartNeeded ? 'restart_needed' : '');
-        }
+    let statusRefreshPromise = null;
+    let statusRefreshNext = null;
+    function loadStatus({ fetchRemote = false, preservePhase = !fetchRemote && ['preflighting', 'updating'].includes(phase) } = {}) {
+        statusRefreshNext = {
+            fetchRemote: fetchRemote || Boolean(statusRefreshNext?.fetchRemote),
+            preservePhase: preservePhase && (statusRefreshNext?.preservePhase ?? true),
+        };
+        if (statusRefreshPromise) return statusRefreshPromise;
+        statusRefreshPromise = (async () => {
+            while (statusRefreshNext) {
+                const options = statusRefreshNext;
+                statusRefreshNext = null;
+                if (!options.preservePhase) setPhase(options.fetchRemote ? 'checking' : 'loading');
+                try {
+                    const data = await (options.fetchRemote ? apiClient.updateCheck() : apiClient.updateStatus());
+                    // The explicit check owns release discovery. A queued progress
+                    // refresh has no tags and must not erase that successful read.
+                    if (options.fetchRemote || officialTagsDiv.childElementCount === 0) {
+                        renderOfficialTags(data.official_tags || []);
+                    }
+                    if (statusRefreshNext) continue; // A newer notice owns the next read.
+                    latestStatus = data;
+                    // Keep an outstanding apply/restart await. Server progress refines
+                    // its label; a fresh page starts with no old local phase.
+                    if (!options.preservePhase || !['updating', 'restarting', 'preflighting'].includes(phase)) {
+                        setPhase(restartNeeded && !data?.update_tx?.active ? 'restart_needed' : '');
+                    } else render();
+                } catch (err) {
+                    if (statusRefreshNext) continue;
+                    latestStatus = { ...latestStatus, managed: true, warnings: [`status_error:${err.message || err}`], check_ok: false };
+                    if (!options.preservePhase) setPhase(restartNeeded ? 'restart_needed' : '');
+                    else render();
+                }
+            }
+        })().finally(() => { statusRefreshPromise = null; });
+        return statusRefreshPromise;
     }
 
     function renderRestoreRow({ label, date, message, target, restorable }) {
@@ -770,7 +850,7 @@ export function initUpdates({ mount, state, ws, openSettingsTab }) {
             // survived (writer-fence refusals leave none) keep an honest
             // restart continuation instead of restoring the ordinary action.
             if (err?.body?.restart_required) restartNeeded = true;
-            await loadStatus();
+            await loadStatus({ preservePhase: false });
         }
     }
 
@@ -810,7 +890,7 @@ export function initUpdates({ mount, state, ws, openSettingsTab }) {
             // Fail-closed: ANY replace failure (the tx-active 409 included)
             // re-reads durable state, and render() alone owns the Replace
             // gate — the catch never re-enables it over stale/unknown state.
-            await loadStatus();
+            await loadStatus({ preservePhase: false });
         } finally {
             replaceInFlight = false;
             render();

@@ -381,11 +381,32 @@ async def _load_provider(
         return provider_id, [], str(exc), stage, duration_ms
 
 
+def account_catalog_supported(operations: list[dict], path: str) -> bool:
+    """Opt in only when this exact operation declares the accounts query view."""
+    return any(
+        operation.get("method") == "GET" and operation.get("path") == path
+        and any(parameter.get("name") == "view" and parameter.get("location") == "query"
+                and "accounts" in (parameter.get("enum") or [])
+                for parameter in operation.get("parameters", []) if isinstance(parameter, dict))
+        for operation in operations if isinstance(operation, dict)
+    )
+
+
+def account_catalog_models(envelope: dict):
+    """Keep each model attached to the account and original catalog that reported it."""
+    for account in envelope.get("accounts", []):
+        catalog = account.get("catalog")
+        if isinstance(catalog, dict):
+            for model in catalog.get("models", []):
+                if isinstance(model, dict):
+                    yield account, catalog, model
+
+
 def _subscription_model_catalog(source_id: str = "", profile_id: str = "") -> dict:
     """Read raw transport catalogs from the owned engine, never CLI model inventory.
 
-    Each returned catalog names the exact account that produced it. An omitted
-    account delegates selection to Claudexor; this layer never merges accounts.
+    Account-view engines enumerate every enabled account, retaining independent
+    capabilities and failures. Older engines keep selected-account discovery.
     API-only installs do not provision a daemon while browsing model settings.
     """
     from ouroboros.claudexor_daemon import read_owned_gateway, owned_daemon_provisioned
@@ -395,19 +416,46 @@ def _subscription_model_catalog(source_id: str = "", profile_id: str = "") -> di
         return result
     try:
         with read_owned_gateway() as gateway:
-            sources = gateway.list_model_sources().get("sources", [])
+            try:
+                operations = gateway.operations()
+            except Exception:
+                operations = []  # Discovery compatibility never invents new query support.
+            account_view = account_catalog_supported(operations, "/v2/model-sources/:id/models")
+            source_view = account_catalog_supported(operations, "/v2/model-sources")
+            sources = gateway.list_model_sources(**({"view": "accounts"} if source_view else {})).get("sources", [])
+            if account_view:
+                result.update(account_catalogs=[], partial=False)
             result["model_sources"] = sources
             for source in sources:
                 identifier = str(source.get("id") or "")
                 if source_id and identifier != source_id:
                     continue
                 try:
-                    catalog = gateway.list_source_models(identifier, credential_profile_id=profile_id or None)
+                    catalog = gateway.list_source_models(identifier, credential_profile_id=profile_id or None,
+                        **({"view": "accounts"} if account_view else {}))
                 except Exception as exc:
                     result["errors"].append({"provider_id": "claudexor", "source_id": identifier,
                         "code": str(getattr(exc, "code", "catalog_unavailable")), "error": str(exc)})
+                    if account_view:
+                        result["partial"] = True
                     continue
-                for model in catalog.get("models", []):
+                if account_view:
+                    result["account_catalogs"].append(catalog)
+                    result["partial"] = result["partial"] or catalog.get("partial", False)
+                    for account in catalog.get("accounts", []):
+                        # A readable account carrying a problem (spent window, cooldown) is account state,
+                        # already on its items and account_catalogs; only a missing catalog is a read failure.
+                        if account.get("catalog") is None:
+                            problem = account.get("problem") or {}
+                            result["errors"].append({"provider_id": "claudexor", "source_id": identifier,
+                                "credential_profile_id": account.get("credentialProfileId"),
+                                "code": problem.get("code", "catalog_unavailable"),
+                                "error": problem.get("message", "This account catalog could not be read."),
+                                "availability": account.get("availability"), "problem": account.get("problem")})
+                    records = account_catalog_models(catalog)
+                else:
+                    records = ((None, catalog, model) for model in catalog.get("models", []))
+                for account, catalog, model in records:
                     model_id = str(model.get("id") or "")
                     if not model_id:
                         continue
@@ -429,6 +477,9 @@ def _subscription_model_catalog(source_id: str = "", profile_id: str = "") -> di
                         "provenance": catalog.get("provenance"),
                         "observed_at": catalog.get("observedAt"),
                     })
+                    if account is not None:
+                        entry.update(availability=account.get("availability"), problem=account.get("problem"),
+                                     processing=model.get("processing"))
                     result["items"].append(entry)
             if source_id and not any(str(source.get("id") or "") == source_id for source in sources):
                 result["errors"].append({"provider_id": "claudexor", "source_id": source_id,
@@ -479,9 +530,9 @@ async def api_model_catalog(_request: Request) -> JSONResponse:
 
     items.sort(key=lambda item: (item.get("provider", "").lower(), item.get("name", "").lower()))
     return JSONResponse({
+        **subscription,
         "items": items,
         "errors": errors,
-        "model_sources": subscription["model_sources"],
     })
 
 

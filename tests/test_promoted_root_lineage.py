@@ -2,10 +2,40 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from ouroboros.agent import OuroborosAgent
 from ouroboros.agent_task_pipeline import _store_task_result
 from ouroboros.task_results import load_task_result, resolve_task_lineage, write_task_result
 from supervisor import workers
+
+
+@pytest.mark.parametrize("title,expected", [("", "Write the report"), ("Chosen by the model", "Chosen by the model")])
+def test_promoted_name_survives_admission_receipt_and_live_event(tmp_path, monkeypatch, title, expected):
+    from supervisor.events import _handle_promote_chat_to_task
+
+    pending, named = [], []
+    monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
+    monkeypatch.setattr(workers, "PENDING", pending)
+    monkeypatch.setattr(workers, "RUNNING", {})
+    monkeypatch.setattr(workers, "_broadcast_task_named", named.append)
+    ctx = SimpleNamespace(
+        DRIVE_ROOT=tmp_path, WORKERS={0: SimpleNamespace()}, PENDING=pending, RUNNING={}, bridge=None,
+        enqueue_task=lambda task: pending.append(task) or task,
+        persist_queue_snapshot=lambda **kwargs: True,
+        load_state=lambda: {"owner_chat_id": 1}, append_jsonl=lambda *args: None,
+    )
+    outcome = _handle_promote_chat_to_task({
+        "task_id": "named-root", "routing_token": "name-admission", "chat_id": 1,
+        "objective": "Write the report\nFull unshortened working instructions", "title": title,
+        "workspace": "none",
+    }, ctx)
+    assert outcome == {"status": "scheduled", "task_id": "named-root"}
+    assert pending[0]["title"] == title
+    assert pending[0]["suggested_name"] == expected
+    assert pending[0]["description"].endswith("Full unshortened working instructions")
+    assert load_task_result(tmp_path, "named-root")["suggested_name"] == expected
+    assert named == [{"type": "task_named", "task_id": "named-root", "suggested_name": expected}]
 
 
 def test_promoted_payload_survives_running_terminal_and_retry(tmp_path, monkeypatch):

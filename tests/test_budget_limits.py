@@ -2,6 +2,7 @@
 and the cost axis (typed v6.91 ceiling states + latched v6.56.0 milestones)."""
 import os
 import queue
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -328,6 +329,77 @@ class TestCostCeilingResolution:
         assert normalize_budget_profile({"cost_hard_stop_pct": "0"})["cost_hard_stop_pct"] == 0
         assert normalize_budget_profile({"cost_hard_stop_pct": 250})["cost_hard_stop_pct"] == 100
 
+
+# --- В26=A: a wake's tree carries a GRACEFUL ceiling, never a narrowed fence ---
+
+class TestWakeRootCeiling:
+    """A Background Consciousness wake-up is the ROOT of its own tree and carries what is
+    left of its allowance as `metadata.root_cost_ceiling_usd`. `resolve_cost_ceiling` honors
+    that number for the root itself (members inherit the resolved ceiling as before), while
+    the ledger fence keeps the owner's per-task cap: one Main attempt reserves several
+    dollars up front, and a fence narrowed below that (the earlier `root_limit_usd`
+    narrowing) refused every wake of a nearly spent day before its first call — a
+    `budget_exhausted` bubble in Main at every heartbeat.
+    """
+
+    def _scope(self, tmp_path, monkeypatch, *, metadata=None, per_task_cap="50"):
+        """The scope `handle_task` actually binds for one task."""
+        from ouroboros.agent import OuroborosAgent
+        from ouroboros.usage_accounting import current_usage_scope
+
+        monkeypatch.setattr("ouroboros.subagent_runtime.apply_task_start_settings_or_disclose",
+                            lambda *_a, **_k: None)
+        monkeypatch.setattr("ouroboros.model_wait.task_model_wait_scope", lambda **_k: nullcontext())
+        monkeypatch.setenv("TOTAL_BUDGET", "1000")
+        monkeypatch.setenv("OUROBOROS_PER_TASK_COST_USD", per_task_cap)
+        host = SimpleNamespace(
+            env=SimpleNamespace(drive_root=tmp_path), _emit_live_log=lambda *_a, **_k: None,
+            _event_queue=None, _handle_task_scoped=lambda _task: current_usage_scope(),
+        )
+        task = {"id": "wake-1", "type": "task"}
+        if metadata is not None:
+            task["metadata"] = metadata
+        return OuroborosAgent.handle_task(host, task)
+
+    def test_without_metadata_the_owner_setting_is_the_cap(self, tmp_path, monkeypatch):
+        assert self._scope(tmp_path, monkeypatch).root_limit_usd == 50.0
+
+    def test_the_ceiling_rides_the_scope_and_the_fence_keeps_the_cap(self, tmp_path, monkeypatch):
+        scope = self._scope(tmp_path, monkeypatch, metadata={"root_cost_ceiling_usd": 0.66})
+        assert scope.root_limit_usd == 50.0 and scope.root_cost_ceiling_usd == 0.66
+
+    def test_metadata_never_narrows_the_fence(self, tmp_path, monkeypatch):
+        """No producer narrows the ledger fence through metadata: a fence below one
+        attempt's reservation is a refusal before the first call, not a soft landing."""
+        assert self._scope(tmp_path, monkeypatch, metadata={"root_limit_usd": 0.66}).root_limit_usd == 50.0
+        assert self._scope(tmp_path, monkeypatch, metadata={"root_limit_usd": 0.66}, per_task_cap="0").root_limit_usd is None
+
+    def test_a_thin_root_ceiling_soft_lands_the_root_immediately(self, tmp_path, monkeypatch):
+        """$0.66 left of the allowance is below the planning margin, so the wake gets its
+        one best-effort final answer — which the fence at the full cap still admits."""
+        from ouroboros.usage_accounting import usage_scope
+
+        with usage_scope(self._scope(tmp_path, monkeypatch, metadata={"root_cost_ceiling_usd": 0.66})):
+            ceiling = task_pacing.resolve_task_cost_ceiling(SimpleNamespace(), 1000.0)
+        assert ceiling.state == task_pacing.COST_CEILING_EXHAUSTED_SOFT_LAND
+        assert ceiling.root_cap_usd == 50.0 and ceiling.basis == "root_ceiling_at_or_below_planning_margin"
+
+    def test_a_root_ceiling_above_the_margin_is_the_working_ceiling(self, tmp_path, monkeypatch):
+        from ouroboros.usage_accounting import usage_scope
+
+        with usage_scope(self._scope(tmp_path, monkeypatch, metadata={"root_cost_ceiling_usd": 9.0})):
+            ceiling = task_pacing.resolve_task_cost_ceiling(SimpleNamespace(), 1000.0)
+        assert ceiling.state == task_pacing.COST_CEILING_ACTIVE
+        assert ceiling.root_cap_usd == 50.0
+        assert ceiling.ceiling_usd == 9.0 - task_pacing.COST_PLANNING_MARGIN_USD
+        assert "root_ceiling_minus_margin" in ceiling.basis
+
+    def test_a_member_still_inherits_the_resolved_ceiling(self):
+        """The root's number reaches its members as before; a member's own carrier is the
+        inherited resolution, never re-derived from a root-only ceiling."""
+        member = task_pacing.resolve_cost_ceiling(
+            1000.0, normalize_budget_profile({}), root_cap_usd=50.0, non_root_member=True, root_ceiling_usd=6.0)
+        assert member.state == task_pacing.COST_CEILING_ACTIVE and member.ceiling_usd == 6.0
 
 class TestCostCeilingStop:
     """_check_budget_limits consumes the typed pre-resolved ceiling."""

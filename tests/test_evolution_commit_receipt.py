@@ -153,6 +153,7 @@ def test_exact_receipt_remains_authority_after_post_task_autostop(tmp_path):
 def test_rescue_link_uses_shared_campaign_cas_and_preserves_commit_receipt(
     tmp_path, monkeypatch, held_lock,
 ):
+    from ouroboros import platform_layer
     from ouroboros.platform_layer import (
         acquire_exclusive_file_lock,
         release_exclusive_file_lock,
@@ -178,6 +179,21 @@ def test_rescue_link_uses_shared_campaign_cas_and_preserves_commit_receipt(
         release = release_exclusive_file_lock
     assert lock_fd is not None
     done = threading.Event()
+    acquiring = threading.Event()
+    released = threading.Event()
+    lock_owner = state if held_lock == "state" else platform_layer
+    acquire = lock_owner.acquire_exclusive_file_lock
+
+    def _acquire_after_interleave(path, **kwargs):
+        if path == lock_path:
+            acquiring.set()
+            released.wait()
+        return acquire(path, **kwargs)
+
+    # Prove contention separately, then hand off at the real acquisition seam.
+    # File I/O and thread scheduling must not consume the CAS timeout while the
+    # fixture deliberately holds the lock needed by the successful update.
+    monkeypatch.setattr(lock_owner, "acquire_exclusive_file_lock", _acquire_after_interleave)
 
     def _link() -> None:
         git_ops._link_rescue_to_evolution_transaction(
@@ -189,14 +205,18 @@ def test_rescue_link_uses_shared_campaign_cas_and_preserves_commit_receipt(
     thread = threading.Thread(target=_link, daemon=True)
     thread.start()
     try:
+        assert acquire_exclusive_file_lock(lock_path, timeout_sec=0.001) is None
+        assert acquiring.wait(2.0) is True
         assert done.wait(0.1) is False
         current = evolution_lifecycle._read_evolution_campaign()
         current["active_transaction"]["interleaved"] = held_lock
         atomic_write_json(campaign_path, current, trailing_newline=True)
     finally:
         release(lock_path, lock_fd)
+        released.set()
+        thread.join(timeout=1.0)
     assert done.wait(2.0) is True
-    thread.join(timeout=1.0)
+    assert not thread.is_alive()
 
     stored = evolution_lifecycle._read_evolution_campaign()["active_transaction"]
     assert stored["commit_sha"] == sha

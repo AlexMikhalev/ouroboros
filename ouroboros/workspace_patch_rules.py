@@ -43,7 +43,7 @@ _ANY_SEGMENT_EXCLUDE_DIRS = {
 # dumps, compiled bytecode and coverage output only; generated-output
 # directories are the project's own .gitignore decision, not a name rule here.
 _PATCH_JUNK_RE = re.compile(
-    r"appendonlydir|\.rdb$|\.aof$|\.manifest$|\.log$|\.tmp$|\.pid$|\.sock$"
+    r"appendonlydir|\.rdb$|\.aof$|\.tmp$|\.pid$|\.sock$"
     r"|\.pyc$|\.pyo$|\.DS_Store|(^|/)\.coverage$"
     r"|coverage\.xml$|(^|/)htmlcov/"
 )
@@ -114,21 +114,16 @@ def _incidental_lockfile_excludes(changed_paths: List[str]) -> set[str]:
 
 
 def _sensitive_untracked_reason(rel: str) -> str:
+    from ouroboros.config import get_runtime_mode
+    from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+
+    if mode_has_unrestricted_agency(get_runtime_mode()):
+        return ""
     name = pathlib.PurePosixPath(str(rel).replace("\\", "/")).name
     lower = name.lower()
     is_dotenv_secret = lower.startswith(".env") or lower.endswith(".env") or ".env." in lower
     if is_dotenv_secret and not lower.endswith(_SENSITIVE_EXAMPLE_SUFFIXES):
         return "dotenv secret"
-    if lower in _SENSITIVE_KEY_NAMES or lower in _SENSITIVE_FILENAMES:
-        return "credential filename"
-    parts = lower.replace(".", " ").replace("-", " ").replace("_", " ").split()
-    if (
-        any(part in {"secret", "secrets", "credential", "credentials", "token"} for part in parts)
-        or ("service" in parts and "account" in parts)
-    ) and lower.endswith((".json", ".yaml", ".yml", ".toml", ".ini", ".txt")):
-        return "credential-like filename"
-    if lower.endswith((".pem", ".key", ".p12", ".pfx")):
-        return "private key or certificate"
     return ""
 
 

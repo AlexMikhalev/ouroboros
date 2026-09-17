@@ -8,7 +8,7 @@ needed, and the full server lifespan is deliberately not started.
 from __future__ import annotations
 
 from typing import Any, Dict
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from starlette.applications import Starlette
@@ -24,6 +24,14 @@ def _isolate_manager():
     _wire_singleton(_FakeTransport([]))
     yield
     mcp_client.reset_manager_for_tests()
+
+
+@pytest.fixture
+def settings_refresh_request(monkeypatch):
+    """Record the save's refresh request without discovering unrelated remote tools."""
+    refresh = Mock()
+    monkeypatch.setattr(mcp_client, "refresh_all_background", refresh)
+    return refresh
 
 
 class _FakeTransport:
@@ -358,7 +366,7 @@ def test_refresh_endpoint_targets_single_server(tmp_path, monkeypatch):
         _stop(patches)
 
 
-def test_settings_post_rehydrates_masked_auth_token(tmp_path, monkeypatch):
+def test_settings_post_rehydrates_masked_auth_token(tmp_path, monkeypatch, settings_refresh_request):
     """End-to-end HTTP test: real token must survive a masked-token round-trip.
 
     The UI flow is:
@@ -467,17 +475,20 @@ def test_settings_post_rehydrates_masked_auth_token(tmp_path, monkeypatch):
             assert persisted["name"] == "Demo Renamed"
             assert persisted["allowed_tools"] == ["search"]
             assert saved_payload["MCP_TOOL_TIMEOUT_SEC"] == 90
+            settings_refresh_request.assert_called_once_with(reason="settings")
     finally:
         _stop(patches)
 
 
-def test_settings_post_canonicalizes_mcp_server_ids(tmp_path, monkeypatch):
+def test_settings_post_canonicalizes_mcp_server_ids(tmp_path, monkeypatch, settings_refresh_request):
     """Friendly server ids should be canonicalized before persistence.
 
     This keeps settings.json, /api/settings, /api/mcp/status, and single
     server actions from disagreeing about the id for e.g. "GitHub Server!".
     """
     import server as srv
+
+    _wire_singleton(_FakeTransport([]))  # Exercise refresh without a live example.com request.
 
     drive_root = tmp_path / "drive"
     drive_root.mkdir()
@@ -553,6 +564,7 @@ def test_settings_post_canonicalizes_mcp_server_ids(tmp_path, monkeypatch):
             persisted = (saved_payload.get("MCP_SERVERS") or [])[0]
             assert persisted["id"] == "github_server"
             assert persisted["auth_token"] == "Bearer real-token"
+            settings_refresh_request.assert_called_once_with(reason="settings")
     finally:
         _stop(patches)
 

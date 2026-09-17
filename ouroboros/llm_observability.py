@@ -21,7 +21,7 @@ def persist_observed_call(root: Any, *, payload: Any, writer: Any = None, **iden
     try:
         return (writer or persist_call)(root, payload=public_custody_projection(payload), **identity)
     except Exception:
-        logging.getLogger(__name__).debug("Failed to persist LLM observability payload", exc_info=True)
+        logging.getLogger(__name__).warning("Failed to persist LLM observability payload", exc_info=True)
         return {}
 
 
@@ -54,12 +54,13 @@ def chat_observed(
 
     root = _root(drive_root)
     call_id = new_call_id(call_type)
+    traced_kwargs = {key: value for key, value in kwargs.items() if key != "model_context_observer"}
     persist_observed_call(
         root,
         task_id=task_id or call_type,
         call_id=f"{call_id}_request",
         call_type=f"{call_type}_request",
-        payload={"kwargs": kwargs},
+        payload={"kwargs": traced_kwargs},
         manifest=_base_manifest(call_type, kwargs),
     )
     try:
@@ -71,7 +72,7 @@ def chat_observed(
             task_id=task_id or call_type,
             call_id=f"{call_id}_error",
             call_type=f"{call_type}_error",
-            payload={"error": f"{type(exc).__name__}: {exc}", "kwargs": kwargs},
+            payload={"error": f"{type(exc).__name__}: {exc}", "kwargs": traced_kwargs},
             manifest={**_base_manifest(call_type, kwargs), "status": "error", "error": safe},
         )
         raise

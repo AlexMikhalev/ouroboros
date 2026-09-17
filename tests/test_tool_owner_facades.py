@@ -3,7 +3,9 @@
 Carried from the v7 reference (ouroboros_v7_wip @ 9f691656) with one identity
 continuation to THIS tree's bytes: upstream added the ``alias_for`` field to
 ``ToolEntry`` after the reference cutoff, so the pinned descriptor contract
-carries that row here (tip bytes are the truth of the transplant).
+carries that row here (tip bytes are the truth of the transplant). The same
+continuation carries ``ToolContext.last_owner_delivery``, the drained owner
+delivery the loop stamps for the steer relay (#896).
 """
 
 from __future__ import annotations
@@ -63,6 +65,7 @@ def test_tool_descriptor_owner_facades_preserve_identity():
         ("budget_drive_root", ""),
         ("project_id", ""),
         ("task_metadata", "factory:dict"),
+        ("last_owner_delivery", None),
         ("executor_ref", "factory:dict"),
         ("pending_events", "factory:list"),
         ("current_chat_id", None),
@@ -77,15 +80,16 @@ def test_tool_descriptor_owner_facades_preserve_identity():
         ("task_model_override", None),
         ("task_use_local_override", None),
         ("active_context_mode", ""),
+        ("model_turn_state", None),
         ("browser_state", "factory:BrowserState"),
         ("event_queue", None),
         ("task_id", None),
         ("messages", None),
+        ("_execution_trace", None),
         ("task_constraint", None),
         ("task_contract", "factory:dict"),
         ("task_depth", 0),
         ("is_direct_chat", False),
-        ("is_ephemeral_turn", False),
         ("_review_advisory", "factory:list"),
         ("_review_iteration_count", 0),
         ("_review_history", "factory:list"),

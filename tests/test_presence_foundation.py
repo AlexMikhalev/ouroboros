@@ -749,11 +749,6 @@ def test_presence_state_filename_and_alias_are_owner_protected(tmp_path):
     assert is_skill_owner_state_target(state_path, data_root) is True
     assert is_skill_owner_state_alias(alias, data_root) is True
 
-    from ouroboros.tools.registry import _mentions_skill_owner_state
-
-    assert _mentions_skill_owner_state(f"data/state/skills/community-helper/{PRESENCE_PROFILE_STATE_FILENAME}")
-
-
 def test_skill_preflight_absent_presence_keeps_output_shape(tmp_path, monkeypatch):
     ctx = _preflight_ctx(tmp_path)
     skills_root = tmp_path / "skills"

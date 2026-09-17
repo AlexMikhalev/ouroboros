@@ -78,7 +78,8 @@ def test_scratchpad_consolidation_journals_exact_replaced_blocks_and_ref(tmp_pat
         tmp_path / "memory" / "knowledge",
         _ConsolidationLLM(),
     )
-    assert usage == {"prompt_tokens": 10, "completion_tokens": 5}
+    assert usage["prompt_tokens"] == 10
+    assert usage["completion_tokens"] == 5
 
     blocks = memory.load_scratchpad_blocks()
     consolidated = blocks[0]
@@ -306,7 +307,8 @@ def test_explicit_complete_row_is_not_reclassified_from_envelope_text(tmp_path):
         task_id="explicit-complete",
     )
     assert "__unresolved_partial_artifacts__" not in evidence
-    assert "result_complete" not in evidence["tool_trajectory"][0]
+    assert evidence["tool_trajectory"][0]["result_complete"] is True
+    assert evidence["tool_trajectory"][0]["result"] == result_text
 
 
 def test_budget_recap_preserves_every_legacy_actor_envelope(tmp_path):

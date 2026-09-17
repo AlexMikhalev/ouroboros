@@ -30,10 +30,16 @@ POISONED_RECORD = re.compile(r'(?:"chat_id":|\bchat_id=)\s*[^,\n]*\bor\s+None')
 # hidden partition, and `if chat_id:` guards a send the same wrong way.
 # ``owner_chat_id`` is deliberately exempt — a 0/absent OWNER chat means "no
 # owner chat is configured", never the panel, so testing it for truth is honest.
+# The third alternative is the same habit written WITHOUT a local: the id read
+# straight off a mapping inside the condition (`... and task.get("chat_id"):`),
+# which is how a cascade silently skipped a descendant homed in the partition.
+# A comparison that merely reads the value (`int(t.get("chat_id") or 0) == x`)
+# decides no route and stays out.
 _CHAT_NAME = r"(?!owner_chat_id\b)(?:[A-Za-z_]*_)?chat_id"
 TRUTHY_ROUTE = re.compile(
     rf"^\s*if (?:not {_CHAT_NAME}\b|(?:[^:\n]*\band )?{_CHAT_NAME}\s*:)"
     rf"|^\s*if not [^:\n]*\bor not {_CHAT_NAME}\b"
+    rf"|^\s*if [^:\n]*\.get\(\s*[\"']chat_id[\"']\s*\)\s*(?::|and\b)"
 )
 
 # (repo-relative path, exact stripped line) -> (occurrences, why it stays)
@@ -54,11 +60,6 @@ ALLOWED = {
         "chat_id means 'the event carried no chat' and the owner chat is the "
         "fallback address, not the hidden partition.",
     ),
-    ("supervisor/worker_promotion.py", "if chat_id:"): (
-        1,
-        "Same promote lane: the loud-fail notice needs a reader, and the hidden "
-        "partition has none.",
-    ),
     ("supervisor/worker_chat_lane.py", "if not chat_id:"): (
         1,
         "Auto-resume gate, where owner_chat_id 0 means 'no owner chat "
@@ -70,19 +71,24 @@ ALLOWED = {
         "an unhomed answer into a partition with no reader would add rows to the "
         "chat log a benchmark parses for its final answer.",
     ),
-    ("supervisor/steering.py", "if notify and chat_id:"): (
+    ("supervisor/steering.py", "if notify and not _task_issued(evt) and chat_id:"): (
         1,
-        "A steer REFUSAL is a live notice to the person who asked, and a steer "
-        "event only ever arrives from a real chat. Same rule as the scheduled "
-        "toast: a live notice needs a reader, and the hidden partition has none.",
+        "A cancel-pending steer REFUSAL is a live notice to the OWNER who asked. "
+        "The issuer fact decides who that is: a task that spoke for itself has no "
+        "owner reader (its typed refusal is its tool result and its Logs row), and "
+        "an owner turn's chat is a real chat. Same rule as the scheduled toast: a "
+        "live notice needs a reader, and the hidden partition has none.",
     ),
-    ("supervisor/steering.py", "if not client_message_id and chat_id:"): (
+    ("supervisor/steering.py", "if owner_unlabelled and chat_id:"): (
         1,
-        "Same refusal path, same rule.",
+        "The other refusal family, same rule: only an OWNER turn whose act wears no "
+        "owner message (a synthetic receipt id, so no chat row can show the typed "
+        "acknowledgement) is told in its chat; a task issuer is never told anywhere "
+        "but its own result.",
     ),
-    ("supervisor/steering.py", "if chat_id:"): (
+    ("supervisor/steering.py", "if not task_issued and chat_id:"): (
         1,
-        "Same refusal path, same rule.",
+        "The post-lock cancel-pending notice, same rule as the up-front one.",
     ),
 }
 
@@ -118,6 +124,28 @@ def test_no_new_truthiness_route_for_a_chat_id():
             f"allowlisted site count changed for {key}: expected {expected}, saw "
             f"{hits.get(key)} — re-read the reason and update it deliberately."
         )
+
+
+def test_the_lint_sees_the_mapping_read_form():
+    """The widened alternative, pinned by the two lines that motivated it.
+
+    Both defects read the id straight off a mapping inside the condition, so no
+    local named ``chat_id`` existed for the first two alternatives to see.
+    """
+    caught = (
+        '        if isinstance(task, dict) and q._is_descendant_of(task, task_id) and task.get("chat_id"):',
+        '        if project and project.get("chat_id") and project.get("lifecycle") not in {"deleting"}:',
+        '    if not task.get("chat_id"):',
+    )
+    ignored = (
+        '        if isinstance(task, dict) and task.get("chat_id") is not None:',
+        '        if project and project.get("chat_id") is not None and project.get("id"):',
+        '            if int(t.get("chat_id") or 0) == chat_id:',
+    )
+    for line in caught:
+        assert TRUTHY_ROUTE.search(line), line
+    for line in ignored:
+        assert not TRUTHY_ROUTE.search(line), line
 
 
 def test_no_record_stores_the_hidden_partition_as_absent():

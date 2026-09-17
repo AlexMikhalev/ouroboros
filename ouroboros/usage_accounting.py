@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import copy
 import hashlib
 import json
 import logging
@@ -22,7 +23,9 @@ from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Callable, Dict, Iterator, Literal, Optional, Sequence, Tuple, get_args
 
 from ouroboros.pricing import estimate_cost_optional
-from ouroboros._usage_response import _reported_token_count, usage_from_response
+from ouroboros._usage_response import (
+    _normalized_input_token_usage, _reported_token_count, processing_receipt, observed_processing_mode, usage_from_response,
+)
 from ouroboros.review_dispatch import invoke_bound_api_review_paid_stamp
 from ouroboros.transport_custody import release_pre_dispatch_attempt
 from ouroboros.usage_ledger import (  # noqa: F401 — re-exported substrate
@@ -217,10 +220,12 @@ class UsageScope:
     global_limit_usd: Optional[float] = None
     root_limit_usd: Optional[float] = None
     root_cost_ceiling_usd: Optional[float] = None
+    global_limit_source: str = ""
+    global_limit_revision: Optional[str] = None
 @dataclass(frozen=True)
 class PhysicalAttemptContext:
-    profile: Literal["owner_max", "owner_low", "task_local_low"]
-    rendered_mode: Literal["max", "low"]
+    profile: Literal["owner_max", "owner_low", "owner_nano", "task_local_low"]
+    rendered_mode: Literal["max", "low", "nano"]
     measurement_basis: Literal["fresh_route_usage", "fresh_model_usage", "cold_estimate"]
     route_fp: str
     round_id: str
@@ -264,6 +269,11 @@ class AttemptRequest:
     # the raw base64 basis because budget reservation wants the conservative
     # over-count (owner decision 3=A: the two consumers intentionally split).
     prompt_tokens_bounded_estimate: int = 0
+    global_limit_source: str = ""
+    global_limit_revision: Optional[str] = None
+    processing_preference: str = ""
+    submitted_processing_mode: str = ""
+    processing_basis: Optional[Dict[str, Any]] = None
 @dataclass(frozen=True)
 class AttemptReservation:
     attempt_id: str
@@ -271,6 +281,9 @@ class AttemptReservation:
     model: str
     provider: str
     reservation_upper_bound_usd: Optional[float]
+    processing_preference: str = ""
+    submitted_processing_mode: str = ""
+    processing_basis: Optional[Dict[str, Any]] = None
 PhysicalAttemptState = Literal["reserved", "released", "dispatched", "settled", "unresolved"]
 PHYSICAL_ATTEMPT_STATES = frozenset(get_args(PhysicalAttemptState))
 POSITIVE_PHYSICAL_ATTEMPT_STATES = frozenset({"settled", "dispatched", "unresolved"})
@@ -293,6 +306,9 @@ class PhysicalAttemptCapture:
     provider_error_type: str = ""
     provider_error: str = ""
     route_is_loopback: bool = False  # see AttemptRequest.route_is_loopback
+    processing_preference: str = ""
+    submitted_processing_mode: str = ""
+    processing_basis: Optional[Dict[str, Any]] = None
 
 
 @contextlib.contextmanager
@@ -397,6 +413,10 @@ def _release_physical_dispatch_claim(attempt_id: str) -> None:
                 state.used -= 1
 def _merge_scope(request: AttemptRequest) -> Tuple[AttemptRequest, UsageScope]:
     bound = _CURRENT_SCOPE.get() or UsageScope()
+    limit_owner = request if request.global_limit_usd is not None else bound
+    limit_source = limit_owner.global_limit_source or (
+        "attempt_request" if limit_owner is request else "usage_scope"
+    )
     scope = UsageScope(
         drive_root=request.drive_root or bound.drive_root,
         task_id=str(request.task_id or bound.task_id or ""),
@@ -410,11 +430,15 @@ def _merge_scope(request: AttemptRequest) -> Tuple[AttemptRequest, UsageScope]:
         ),
         root_limit_usd=(request.root_limit_usd if request.root_limit_usd is not None else bound.root_limit_usd),
         root_cost_ceiling_usd=bound.root_cost_ceiling_usd,
+        global_limit_source=limit_source if limit_owner.global_limit_usd is not None else "",
+        global_limit_revision=limit_owner.global_limit_revision if limit_owner.global_limit_usd is not None else None,
     )
     if not scope.root_task_id and scope.task_id:
         scope = replace(scope, root_task_id=scope.task_id)
     if request.global_limit_usd is None and scope.global_limit_usd is not None:
-        request = replace(request, global_limit_usd=scope.global_limit_usd)
+        request = replace(request, global_limit_usd=scope.global_limit_usd,
+                          global_limit_source=scope.global_limit_source,
+                          global_limit_revision=scope.global_limit_revision)
     if not request.task_id and scope.task_id:
         # The reservation below keys the task's observed cache split off this id.
         request = replace(request, task_id=scope.task_id, root_task_id=scope.root_task_id)
@@ -595,7 +619,9 @@ def _reservation_cost(request: AttemptRequest) -> Optional[float]:
     if cache_write_tokens:
         # Price the task's OWN last observed split, not a full write every round;
         # a missing, stale or other-model split keeps today's full-write reservation.
-        cached_tokens = min(prompt_tokens, last_task_cache_split(request.task_id, request.model, provider=request.provider) or 0)
+        cached_tokens = min(prompt_tokens, last_task_cache_split(
+            request.task_id, request.model, provider=request.provider,
+            processing_mode=request.submitted_processing_mode) or 0)
         cache_write_tokens = prompt_tokens - cached_tokens
     prompt_cache_ttl: Optional[str] = None
     if cache_write_tokens:
@@ -621,6 +647,8 @@ def _reservation_cost(request: AttemptRequest) -> Optional[float]:
                      "prompt_cache_ttl": prompt_cache_ttl},
         allow_live_fetch=True,
         provider=request.provider,
+        **({"processing_mode": request.submitted_processing_mode}
+           if request.submitted_processing_mode else {}),
     )
 
 
@@ -630,6 +658,13 @@ def _per_slot(value: Any, count: int) -> list:
         values = list(value)
         return values[:count] + [values[-1] if values else 0] * max(0, count - len(values))
     return [value] * count
+
+
+def _submitted_mode_for_preference(preference: Any) -> str:
+    """Project a captured preference onto the provider-neutral reservation mode."""
+    return {"standard": "default", "fast": "priority", "economy": "flex"}.get(
+        str(preference or "").strip().lower(), ""
+    )
 
 
 def review_wave_admission(
@@ -645,6 +680,7 @@ def review_wave_admission(
     global_limit_usd: float | None = None,
     categories: str | Sequence[str] = "",
     slot_ids: str | Sequence[str] = "",
+    processing_preferences: str | Sequence[str] = "",
 ) -> Dict[str, Any]:
     """Read-only all-slot admission using the normal reservation math; fail open.
     ``remaining_usd_override`` serves callers outside any task usage scope (the
@@ -722,6 +758,7 @@ def review_wave_admission(
         outputs = _per_slot(max_completion_tokens, len(models))
         seat_categories = _per_slot(categories, len(models))
         seat_slot_ids = _per_slot(slot_ids, len(models))
+        seat_processing = _per_slot(processing_preferences, len(models))
         base_scope = current_usage_scope() or UsageScope()
         total = 0.0
         for index, model in enumerate(models):
@@ -739,6 +776,8 @@ def review_wave_admission(
                         prompt_tokens_estimate=max(0, int(chars[index] or 0)) // 4,
                         max_completion_tokens=max(0, int(outputs[index] or 0)),
                         task_id=str(task_id or ""),
+                        processing_preference=str(seat_processing[index] or ""),
+                        submitted_processing_mode=_submitted_mode_for_preference(seat_processing[index]),
                     )
                 )
             result["slot_bounds"].append(None if bound is None else round(float(bound), 6))
@@ -796,6 +835,7 @@ _CANDIDATE_ROW_FIELDS = (
     "candidate_raw_sha256", "candidate_raw_size_bytes", "candidate_context_sha256",
     "candidate_context_size_bytes", "candidate_measurement_kind", "physical_context",
     "candidate_manifest_ref",
+    "processing_preference", "submitted_processing_mode", "processing_basis",
 )
 
 
@@ -807,6 +847,10 @@ def _candidate_request_fields(request: AttemptRequest) -> Dict[str, Any]:
         "candidate_context_size_bytes": request.candidate_context_size_bytes,
         "candidate_measurement_kind": request.candidate_measurement_kind,
         "physical_context": asdict(request.physical_context) if request.physical_context else None,
+        **({"processing_preference": request.processing_preference,
+            "submitted_processing_mode": request.submitted_processing_mode,
+            "processing_basis": copy.deepcopy(request.processing_basis)}
+           if request.processing_preference or request.submitted_processing_mode or request.processing_basis else {}),
     }
 def reserve_attempt(request: AttemptRequest) -> AttemptReservation:
     """Atomically check global/root limits and append a ``reserved`` record."""
@@ -888,7 +932,12 @@ def reserve_attempt(request: AttemptRequest) -> AttemptReservation:
                     "category": scope.category,
                     "source": scope.source,
                     **{key: str(getattr(scope, key, "") or "") for key in REVIEW_ATTRIBUTION_KEYS},
-                    "global_limit_usd": request.global_limit_usd,
+                    # The value checked above, including a resolver fallback, is
+                    # the applied limit. A scope snapshot is not a held share.
+                    "global_limit_usd": None if global_limit == float("inf") else global_limit,
+                    "global_limit_unbounded": global_limit == float("inf"),
+                    "global_limit_source": scope.global_limit_source or "settings_budget_resolver",
+                    "global_limit_revision": scope.global_limit_revision,
                     "root_limit_usd": scope.root_limit_usd,
                     **_candidate_request_fields(request),
                 }
@@ -907,7 +956,9 @@ def reserve_attempt(request: AttemptRequest) -> AttemptReservation:
     bucket = _ATTEMPT_COLLECTOR.get()
     if bucket is not None:
         bucket.append(attempt_id)
-    return AttemptReservation(attempt_id, root, request.model, request.provider, bound)
+    return AttemptReservation(attempt_id, root, request.model, request.provider, bound,
+                              request.processing_preference, request.submitted_processing_mode,
+                              copy.deepcopy(request.processing_basis))
 
 
 def record_unmetered_external_dispatch(
@@ -978,6 +1029,8 @@ def _append_single_settled_row(
             return attempt_id
         _append_rows_locked(root, records, [row])
     return attempt_id
+
+
 def record_subscription_session(
     session_id: str,
     *,
@@ -997,12 +1050,21 @@ def record_subscription_session(
     spend_estimated: bool = False,
     credential_profile_id: str = "",
     access_profile: str = "",
+    input_token_usage: Dict[str, Any] | None = None,
     review_skill: str = "", review_wave_id: str = "", review_slot_id: str = "",
+    attempt_execution: Optional[list[Dict[str, Any]]] = None,
 ) -> str:
     """Record one idempotent session; model observation is not session identity.
 
     A later model disclosure replays the existing row byte-for-byte, without
     repricing or rewriting it. Custody carries the newly observed actor facts.
+
+    ``input_token_usage`` is the harness's optional NORMALIZED input split
+    (total, cache read, cache write). It is validated here, the one place that
+    persists it, and it is deliberately outside the idempotent identity: an
+    engine that starts reporting it must not rewrite or duplicate a row already
+    settled without it. Unreported or unusable stays absent — the legacy
+    ``prompt_tokens``/``cached_tokens`` axes keep their own meanings.
     """
     stable_id, route_id = str(session_id or "").strip(), str(route or "").strip()
     if not stable_id or not route_id:
@@ -1012,6 +1074,7 @@ def record_subscription_session(
     ensure_legacy_imported(root)
     identity = hashlib.sha256(stable_id.encode("utf-8")).hexdigest()
     attempt_id = f"session-{identity[:24]}"
+    input_counters = _normalized_input_token_usage(input_token_usage)
     attribution = {"review_skill": review_skill, "review_wave_id": review_wave_id, "review_slot_id": review_slot_id}
     row = {
         "kind": "subscription_session",
@@ -1040,6 +1103,10 @@ def record_subscription_session(
         "credential_profile_id": str(credential_profile_id or ""),
         "access_profile": str(access_profile or ""),
         "session_id_sha256": identity,
+        # Present only when the harness reported a complete, valid object.
+        **({"input_token_usage": input_counters} if input_counters is not None else {}),
+        **({"attempt_execution": copy.deepcopy(attempt_execution)}
+           if isinstance(attempt_execution, list) else {}),
         # CPL-5 lane-level disclosure: a delegated/harness session never hands
         # the host the final wire bytes, so it carries this typed limit instead
         # of a fake model_send seal (design note §4, provider_side_transform).
@@ -1074,6 +1141,9 @@ def _transition(reservation: AttemptReservation, state: str, **fields: Any) -> D
             "source": str(current.get("source") or "llm"),
             **{key: str(current.get(key) or "") for key in REVIEW_ATTRIBUTION_KEYS},
             "global_limit_usd": current.get("global_limit_usd"),
+            **{key: current.get(key) for key in (
+                "global_limit_source", "global_limit_revision", "global_limit_unbounded",
+            ) if key in current},
             "root_limit_usd": current.get("root_limit_usd"),
             **{key: current.get(key) for key in _CANDIDATE_ROW_FIELDS if key in current},
             **fields,
@@ -1171,11 +1241,17 @@ def settle_attempt(
     cost_final: bool = False,
 ) -> None:
     normalized = dict(usage or {})
+    receipt = processing_receipt(reservation.provider, normalized,
+                                 requested=reservation.processing_preference,
+                                 submitted_native=reservation.submitted_processing_mode)
+    if receipt is not None:
+        normalized["processing"] = receipt
     prompt_tokens = _reported_token_count(normalized, "prompt_tokens", "input_tokens")
     completion_tokens = _reported_token_count(normalized, "completion_tokens", "output_tokens")
     cached_tokens = _reported_token_count(normalized, "cached_tokens")
     cache_write_tokens = _reported_token_count(normalized, "cache_write_tokens")
     cost = _number(cost_usd)
+    pricing_mode = observed_processing_mode(reservation.provider, normalized)
     has_usage = bool((prompt_tokens or 0) or (completion_tokens or 0))
     if cost is None and str(reservation.provider or "").lower() == "local":
         cost, cost_final = 0.0, True
@@ -1190,6 +1266,7 @@ def settle_attempt(
                          "prompt_cache_ttl": str(normalized.get("prompt_cache_ttl") or "")},
             allow_live_fetch=False,
             provider=reservation.provider,
+            **({"processing_mode": pricing_mode} if pricing_mode else {}),
         )
         cost_final = False
     _transition(
@@ -1202,10 +1279,13 @@ def settle_attempt(
         cached_tokens=cached_tokens,
         cache_write_tokens=cache_write_tokens,
         prompt_cache_ttl=str(normalized.get("prompt_cache_ttl") or ""),
+        **{key: copy.deepcopy(normalized[key]) for key in ("processing", "speed", "service_tier", "cost_basis", "cost_evidence")
+           if key in normalized},
     )
     stash_task_cache_split(
         (_CURRENT_SCOPE.get() or UsageScope()).task_id, reservation.model, int(cached_tokens or 0), provider=reservation.provider,
         ttl_seconds=3600.0 if str(normalized.get("prompt_cache_ttl") or "") == "1h" else 300.0,
+        processing_mode=pricing_mode,
     )
 
 
@@ -1249,23 +1329,20 @@ def _terminalize_failed_attempt(reservation: AttemptReservation, exc: BaseExcept
         _release_physical_dispatch_claim(reservation.attempt_id)
         return "released"
     provider = str(reservation.provider or "").strip().lower()
+    stream_usage = getattr(exc, "stream_usage", None)
     if provider == "openrouter" and _is_pre_routing_rejection(exc):
-        _transition(
-            reservation,
-            "settled",
-            cost_usd=0.0,
-            cost_final=True,
-            settle_reason="pre_routing_rejection",
-        )
+        _transition(reservation, "settled", cost_usd=0.0, cost_final=True, settle_reason="pre_routing_rejection")
         return "settled"
     elif provider == "openrouter" and _is_tos_rejection(exc):
-        _transition(
-            reservation,
-            "settled",
-            cost_usd=0.0,
-            cost_final=True,
-            settle_reason="tos_rejection",
-        )
+        _transition(reservation, "settled", cost_usd=0.0, cost_final=True, settle_reason="tos_rejection")
+        return "settled"
+    elif isinstance(stream_usage, dict) and stream_usage:
+        # The usage frame was read before the body was judged unusable: money is
+        # known, so settle through the success path's extractor and cost derivation
+        # from that frame alone (no assembled-body facts such as service_tier, no
+        # cache-TTL injection or token-density observation); only the answer is missing.
+        usage, cost, final = usage_from_response({"usage": stream_usage})
+        settle_attempt(reservation, dict(usage or {}), cost_usd=cost, cost_final=final)
         return "settled"
     else:
         from ouroboros.transport_custody import attempt_custody_event_fields
@@ -1333,6 +1410,9 @@ def _record_attempt_capture(
         provider_error_type=error_type,
         provider_error=error,
         route_is_loopback=bool(request.route_is_loopback),
+        processing_preference=request.processing_preference,
+        submitted_processing_mode=request.submitted_processing_mode,
+        processing_basis=copy.deepcopy(request.processing_basis),
     )
     _LAST_PHYSICAL_ATTEMPT.set(capture)
     if exc is not None:

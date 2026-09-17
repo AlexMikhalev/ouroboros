@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import pathlib
-import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from ouroboros.config import (
@@ -14,9 +13,11 @@ from ouroboros.config import (
 )
 from ouroboros.deadline_utils import owner_deadline_exhausted, transport_timeout_with_deadline
 from ouroboros.tools.registry import ToolContext, ToolEntry
+from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
 from ouroboros.model_wait import current_model_wait, model_waitable
 from ouroboros.utils import emit_cognitive_operation_event
 from ouroboros.observability import new_call_id
+from ouroboros.config import runtime_setting
 
 log = logging.getLogger(__name__)
 
@@ -64,13 +65,36 @@ def _get_llm_client():
     return LLMClient()
 
 
+class _ProviderCapExceeded(ValueError):
+    """The bytes are a valid image that still exceeds the VLM provider's payload cap —
+    a provider limit (``VLM_ERROR``, like the base64 path), not a bad argument."""
+
+
+def _refuse(ctx: Any, message: str, code: str = "TOOL_ARG_ERROR") -> str:
+    """Publish a refusal this module AUTHORS as a typed result; text unchanged.
+
+    The registry types a string result by its first-line typed marker (the
+    warning sign plus an UPPER_SNAKE code), so identifier-less prose (``⚠️ File not found: x.png``) was recorded
+    as ``status=ok`` even though the producer already knew it had failed. Both
+    codes used here carry ``status="error"``. Refusal text authored by a POLICY
+    owner (``_read_file_parity_block``, ``protected_artifacts``) is NOT routed
+    here: it already carries its own typed marker and the adapter types it
+    ``blocked``. Outside a registry invocation — the host's same-round
+    auto-attach caller in ``loop_tool_execution`` — there is no active sidecar
+    slot and no sidecar attribute on the ctx, so this publish is a no-op there.
+    """
+    return _publish_tool_result(ctx, ToolResult(status="error", code=code, text=message))
+
+
 def _analyze_screenshot(ctx: ToolContext, prompt: str = "Describe what you see in this screenshot. Note any important UI elements, text, errors, or visual issues.", model: str = "") -> str:
     """Analyze the last browser screenshot via VLM."""
     b64 = ctx.browser_state.last_screenshot_b64
     if not b64:
-        return (
+        return _refuse(
+            ctx,
             "⚠️ No screenshot available. "
-            "First call browse_page(output='screenshot') or browser_action(action='screenshot')."
+            "First call browse_page(output='screenshot') or browser_action(action='screenshot').",
+            "TOOL_ERROR",
         )
 
     try:
@@ -137,7 +161,8 @@ _VLM_MAX_IMAGE_SIDE = 1600
 
 
 @model_waitable(client_parameter="client")
-def _vision_query_with_timeout(client: Any, *, model_role: str = "vision", **kwargs: Any) -> tuple[str, dict]:
+def _vision_query_with_timeout(client: Any, *, model_role: str = "vision",
+                               processing_preference: Optional[str] = None, **kwargs: Any) -> tuple[str, dict]:
     """Wait around one image call while keeping inference in a tracked child."""
     from ouroboros.provider_models import provider_for_model
     from ouroboros.deadline_utils import dispatch_window_remaining_sec
@@ -155,7 +180,7 @@ def _vision_query_with_timeout(client: Any, *, model_role: str = "vision", **kwa
         raise TimeoutError("VLM task execution window exhausted before child dispatch")
     child_timeout = operation_timeout + NESTED_SETTLEMENT_MARGIN_SEC
     return run_vision_child(child_timeout=child_timeout, subscription=subscription,
-                            model_role=model_role, **kwargs)
+                            model_role=model_role, processing_preference=processing_preference, **kwargs)
 
 
 def _vision_execution_window() -> float:
@@ -280,7 +305,7 @@ def _downscale_image_for_vlm(raw: bytes, mime: str) -> Tuple[bytes, str]:
         log.debug("Failed to downscale VLM image payload", exc_info=True)
     if len(raw) <= _VLM_MAX_PROVIDER_BYTES:
         return raw, mime
-    raise ValueError(
+    raise _ProviderCapExceeded(
         f"⚠️ VLM_IMAGE_TOO_LARGE: image payload exceeds {int(_VLM_MAX_PROVIDER_BYTES / 1024 / 1024)}MB provider cap"
     )
 
@@ -328,7 +353,7 @@ def _vision_capable_slot_candidates(client: Any, ctx: Any = None) -> List[str]:
         out.append(str(client.default_model() or "").strip())
     except Exception:
         pass
-    out.append(str(os.environ.get("OUROBOROS_MODEL", "") or "").strip())
+    out.append(str(runtime_setting("OUROBOROS_MODEL", "") or "").strip())
     # Fallbacks is a comma chain -> add each link as its own candidate (via the shared
     # SSOT parser, which also honors the legacy singular env), not the raw comma-string
     # (which would never match a vision-capable model id).
@@ -538,15 +563,15 @@ def _load_local_image_payload(ctx: ToolContext, file_path: str) -> Tuple[Optiona
     import pathlib
     fp = pathlib.Path(file_path).expanduser().resolve()
     if not fp.exists():
-        return None, f"⚠️ File not found: {file_path}"
+        return None, _refuse(ctx, f"⚠️ File not found: {file_path}")
     allowed = _allowed_file_roots(ctx)
     if not any(_path_is_under(fp, root) for root in allowed):
-        return None, (
+        return None, _refuse(ctx, (
             f"⚠️ file_path must be inside the uploads directory, the skill-state tree "
             f"(state/skills), or a resource root this profile can read "
             f"(workspace / artifact_store / task_drive / subagent_projects / "
             f"deliverables / user files). Resolved path: {fp}. Use read_file for other paths."
-        )
+        ))
     _pp_block = _read_file_parity_block(ctx, fp)
     if _pp_block:
         return None, _pp_block
@@ -561,28 +586,32 @@ def _load_local_image_payload(ctx: ToolContext, file_path: str) -> Tuple[Optiona
     if _artifact_block:
         return None, _artifact_block
     if fp.stat().st_size > _VLM_MAX_FILE_BYTES:
-        return None, f"⚠️ File too large ({fp.stat().st_size} bytes). Max {_VLM_MAX_FILE_BYTES} bytes."
+        return None, _refuse(
+            ctx, f"⚠️ File too large ({fp.stat().st_size} bytes). Max {_VLM_MAX_FILE_BYTES} bytes."
+        )
     try:
         raw = fp.read_bytes()
     except Exception as e:
-        return None, f"⚠️ Failed to read image file: {e}"
+        return None, _refuse(ctx, f"⚠️ Failed to read image file: {e}")
     # Fail closed: only recognized image bytes may be used.
     mime = _detect_image_mime_for_vlm(raw)
     if not mime:
-        return None, (
+        return None, _refuse(ctx, (
             "⚠️ File does not appear to be a supported image (PNG/JPEG/GIF/WEBP). "
             "Only image files are accepted."
-        )
+        ))
     try:
         return _image_payload_from_bytes(raw, mime), ""
+    except _ProviderCapExceeded as e:
+        return None, _refuse(ctx, str(e), code="VLM_ERROR")
     except ValueError as e:
-        return None, str(e)
+        return None, _refuse(ctx, str(e))
 
 
 def _vlm_query(ctx: ToolContext, prompt: str, image_url: str = "", image_base64: str = "", image_mime: str = "image/png", file_path: str = "", model: str = "") -> str:
     """Analyze one image from uploads file_path, public URL, or base64."""
     if not image_url and not image_base64 and not file_path:
-        return "⚠️ Provide one of: file_path, image_url, or image_base64."
+        return _refuse(ctx, "⚠️ Provide one of: file_path, image_url, or image_base64.")
 
     images: List[Dict[str, Any]] = []
     try:
@@ -678,7 +707,7 @@ def attach_local_image_to_context(ctx: ToolContext, path: str) -> Tuple[bool, st
     never raises. Blind/local routes need no guard here — send-time routing
     captions/omits image blocks for routes that cannot see them."""
     if not path:
-        return False, "⚠️ Provide a local image file path."
+        return False, _refuse(ctx, "⚠️ Provide a local image file path.")
     payload, err = _load_local_image_payload(ctx, path)
     if err:
         return False, err

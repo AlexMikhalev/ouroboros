@@ -150,13 +150,17 @@ def test_settings_more_providers_collapse_keeps_inputs_mounted():
     assert "Joi Lab" not in ui
 
 
-def test_subagent_write_surface_badge_in_both_card_paths():
-    """The write=<surface> badge must render on BOTH the Logs path
-    (summarizeLogEvent) and the Chat live-card path (summarizeChatLiveEvent),
-    not just one — the surface field is plumbed through history/contracts."""
+def test_subagent_write_surface_stays_in_logs_not_compact_chat():
+    """Compact Chat omits internal mode/status duplicates while Logs and the
+    wire keep the original facts. Executor and model identity stay visible."""
     log_events = _read("web/modules/log_events.js")
-    # both summarize functions reference the badge
-    assert log_events.count("write=${evt.write_surface}") >= 2
+    logs = log_events[log_events.index("export function summarizeLogEvent"):log_events.index("function chatView")]
+    chat = log_events[log_events.index("export function summarizeChatLiveEvent"):log_events.index("export function duplicateLogEventKey")]
+    assert "write=${evt.write_surface}" in logs
+    assert "write=${evt.write_surface}" not in chat
+    assert "status=${status}" not in chat
+    assert "chip: executorChip(evt)" in chat
+    assert "model: evt.model" in chat
     api_types = _read("web/modules/api_types.js")
     assert "write_surface" in api_types
 
@@ -169,6 +173,13 @@ def test_skills_and_widgets_use_inner_scroll_regions():
     assert 'class="widgets-scroll scroll-fade-y"' in widgets
     assert ".skills-scroll" in css and "overflow-y: auto" in css
     assert ".widgets-scroll" in css and "overflow-y: auto" in css
+
+
+def test_sidebar_projects_list_is_a_bounded_scroll_region():
+    """The sidebar's one variable-length collection owns a bounded window with
+    its own scroll, so the navigation column cannot grow with the project count."""
+    rule = _read("web/style.css").split(".nav-projects-list {", 1)[1].split("}", 1)[0]
+    assert "max-height: var(--nav-projects-list-max-height)" in rule and "overflow-y: auto" in rule, rule
 
 
 # ---------------------------------------------------------------------------

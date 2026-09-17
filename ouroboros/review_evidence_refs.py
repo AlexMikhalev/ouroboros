@@ -76,12 +76,25 @@ _RESOLUTION_UNAVAILABLE_ROW = {
 }
 
 
+def trajectory_record_ref(source: Any, index: Any) -> str:
+    """Address the original corpus across host locator rebasing, never a tail index."""
+    digest = source.get("sha256") if isinstance(source, dict) else None
+    corpus = source.get("corpus_sha256", digest) if isinstance(source, dict) else None
+    if (type(index) is not int or index < 0 or any(
+        not isinstance(value, str) or len(value) != 64
+        or any(c not in "0123456789abcdef" for c in value)
+        for value in (digest, corpus)
+    )):
+        return ""
+    return f"tool_trajectory:{corpus}[{index}]"
+
+
 def acceptance_evidence_ref_vocabulary(evidence: Any) -> Dict[str, str]:
     """The enumerable canonical exhibit keys of ONE already-built packet (D-Q5).
 
     Maps each valid reviewer ``evidence_ref`` string to its CLOSED basis kind
     (claim_id | claim_id_unsupported | obligation_id | artifact |
-    verification_receipt | verification_receipt_not_passing | packet_section | partial |
+    verification_receipt | verification_receipt_not_passing | tool_record | packet_section | partial |
     agent_supplied_section | declared_intent_section | unattested_section — a
     closed table per ref kind, like ``IDENTITY_KINDS``). Pure derivation over the
     packet dict: no filesystem reads, no re-execution (a machine comparison must
@@ -152,16 +165,31 @@ def acceptance_evidence_ref_vocabulary(evidence: Any) -> Dict[str, str]:
             "verification_receipt" if passing else RECEIPT_NOT_PASSING,
         )
     provenance = ev.get("__provenance__") if isinstance(ev.get("__provenance__"), dict) else {}
+    for section in ("tool_trajectory", "tool_trajectory_selected"):
+        for row in ev.get(section) if isinstance(ev.get(section), list) else []:
+            if not isinstance(row, dict):
+                continue
+            ref = trajectory_record_ref(ev.get("tool_trajectory_source_ref"), row.get("source_index"))
+            if not ref or row.get("ref") != ref:
+                continue
+            basis = UNATTESTED_SECTION
+            if provenance.get(section) == "tool_result":
+                basis = ("tool_record" if row.get("args_complete") is True
+                         and row.get("result_complete") is True else PARTIAL_SECTION)
+            if vocab.get(ref) == PARTIAL_SECTION and basis == "tool_record":
+                vocab[ref] = basis
+            else:
+                vocab.setdefault(ref, basis)
     for key in ev:
         name = str(key)
         if name.startswith("__"):
             continue
         tag = str(provenance.get(name) or "")
-        if name == "tool_trajectory" and (
-            ev.get("tool_trajectory_complete") is False
-            or bool(ev.get("tool_trajectory_omitted_leading"))
+        if name in {"tool_trajectory", "tool_trajectory_selected"} and (
+            (name == "tool_trajectory" and (ev.get("tool_trajectory_complete") is False
+             or bool(ev.get("tool_trajectory_omitted_leading"))))
             or any(
-                isinstance(row, dict) and row.get("result_complete") is False
+                isinstance(row, dict) and (row.get("result_complete") is False or row.get("args_complete") is False)
                 for row in (ev.get(name) if isinstance(ev.get(name), list) else [])
             )
         ):

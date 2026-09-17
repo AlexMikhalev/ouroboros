@@ -18,6 +18,7 @@ from ouroboros.review_state import (
     infer_review_phase,
 )
 from ouroboros.tools.registry import ToolContext
+from ouroboros.tools.review_helpers import review_enforcement_blocks
 from ouroboros.utils import (
     truncate_review_artifact as _truncate_review_reason,
 )
@@ -523,6 +524,11 @@ def _record_commit_attempt(
         scope_model = _req("scope_model")
         triad_raw_results = _req("triad_raw_results", None)
         scope_raw_result = _req("scope_raw_result", None)
+        # Ordinary advisory continuation is not an author finish.  Only an
+        # explicit caller-supplied record is persisted here; the review
+        # findings and advisory override remain the evidence for an unmarked
+        # successful commit.
+        author_disposition = _req("author_disposition", None)
         block_class = _req("block_class")
         rebuttal_sha256 = _req("rebuttal_sha256")
         paid = _req("paid", False)
@@ -612,6 +618,20 @@ def _record_commit_attempt(
                     attempt=attempt_no,
                 )
 
+            from ouroboros.review_records import validate_author_disposition
+            from ouroboros.config import get_review_enforcement
+
+            author_record = getattr(existing, "author_disposition", {}) or {}
+            if author_disposition is not None:
+                subject = pre_review_fingerprint or str(getattr(existing, "pre_review_fingerprint", "") or "")
+                author_record = validate_author_disposition(author_disposition, subject_hash=subject) or {}
+                cyber = not review_enforcement_blocks("blocking")
+                if (not subject or (not cyber and not getattr(existing, "paid", False))
+                        or subject != getattr(existing, "pre_review_fingerprint", "")
+                        or (post_review_fingerprint and post_review_fingerprint != subject)
+                        or review_enforcement_blocks(get_review_enforcement())
+                        or (not cyber and author_record.get("enforcement") != "advisory")):
+                    author_record = {}
             attempt = CommitAttemptRecord(
                 ts=_utc_now(),
                 commit_message=commit_message,  # full message; durable evidence
@@ -671,6 +691,7 @@ def _record_commit_attempt(
                     if scope_raw_result is not None
                     else getattr(existing, "scope_raw_result", None) or {}
                 ),
+                author_disposition=author_record,
                 block_class=block_class or str(getattr(existing, "block_class", "") or ""),
                 rebuttal_sha256=rebuttal_sha256 or str(getattr(existing, "rebuttal_sha256", "") or ""),
                 paid=bool(paid or getattr(existing, "paid", False)),
@@ -689,6 +710,8 @@ def _record_commit_attempt(
                     getattr(existing, "review_owner_pid", 0) or 0
                 ),
             )
+            if status != "reviewing" and "late_result_pending" not in legacy_kwargs and not review_enforcement_blocks("blocking"):
+                attempt.late_result_pending = bool(getattr(existing, "late_result_pending", False)) or _attempt_has_active_review_custody(attempt)
             stamp_paid_review_owner(attempt, paid=bool(paid))
             state.record_attempt(attempt, semantic_redirects=_obligation_redirects)
 
@@ -790,6 +813,7 @@ def _check_overlapping_review_attempt(ctx: ToolContext) -> Optional[str]:
     expiration_window = _REVIEW_ATTEMPT_TTL_SEC + _REVIEW_ATTEMPT_GRACE_SEC
     ctx._review_resume_pending = False
     ctx._pending_review_attempt = None
+    ctx._review_cyber_pending = ""
 
     def _mutate(state):
         state.expire_stale_attempts(now_ts=_utc_now())
@@ -802,12 +826,22 @@ def _check_overlapping_review_attempt(ctx: ToolContext) -> Optional[str]:
         active_attempts = update_state(pathlib.Path(ctx.drive_root), _mutate)
     except Exception as e:
         log.warning("Failed to check overlapping review attempts: %s", e)
+        if not review_enforcement_blocks("blocking"):
+            ctx._review_cyber_pending = f"Review custody is unreadable: {e}. No new reviewer will be dispatched."
+            return None
         return (
             "⚠️ REVIEW_STATE_UNAVAILABLE: active paid-review custody could not "
             "be verified, so no reviewer dispatch was started. Retry after the "
             "review state store is readable."
         )
     if not active_attempts:
+        return None
+    if not review_enforcement_blocks("blocking"):
+        ctx._review_cyber_pending = (
+            "Existing review custody remains active: "
+            + ", ".join(f"{item.tool_name}#{item.attempt}" for item in active_attempts)
+            + ". No new reviewer will be dispatched; the original attempts remain collectible."
+        )
         return None
 
     task_id = str(getattr(ctx, "task_id", "") or "")
@@ -910,6 +944,20 @@ def _check_advisory_freshness(ctx: ToolContext, commit_message: str,
         ctx._last_review_block_reason = "advisory_technical_failure"
         _record_advisory_override(ctx, warning)
         ctx._review_advisory = list(getattr(ctx, "_review_advisory", []) or []) + [warning, *matching_run.items]
+
+    if not review_enforcement_blocks("blocking"):
+        from ouroboros.tools.review import _record_advisory_override
+
+        if not fresh or open_obs or open_debts:
+            warning = ("Cyber Pro: preflight status=" + str(getattr(matching_run, "status", "missing"))
+                       + ("; current" if fresh else "; stale or unavailable")
+                       + ". Ouroboros may continue; this does not create review evidence.\n"
+                       + str(getattr(matching_run, "raw_result", "") or "")
+                       + "\n" + "\n".join([*_render_obligations(), *_render_debts()]))
+            ctx._last_review_block_reason = "advisory_cyber_authority"
+            _record_advisory_override(ctx, warning)
+            ctx._review_advisory = list(getattr(ctx, "_review_advisory", []) or []) + [warning]
+        return None
 
     if (fresh or technical_failure) and not open_obs and not open_debts:
         return None

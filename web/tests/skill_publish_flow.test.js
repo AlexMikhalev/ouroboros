@@ -107,6 +107,9 @@ test('explicit confirmation creates exactly one ordinary skill_publish task from
 
     const payload = calls.create[0];
     assert.equal(payload.type, 'skill_publish');
+    assert.equal(payload.source, 'web');
+    assert.equal(payload.chat_id, 1);
+    assert.equal(Object.hasOwn(payload, 'project_id'), false);
     assert.deepEqual(payload.metadata, {
         skill_publish_target: {
             skill: 'Canonical-Case',
@@ -132,6 +135,20 @@ test('explicit confirmation creates exactly one ordinary skill_publish task from
         assert.equal(Object.hasOwn(payload, forbidden), false, `${forbidden} must stay absent`);
     }
     assert.doesNotMatch(JSON.stringify(payload), /refusal.{0,20}success/i);
+});
+
+test('an explicitly bound Project keeps publication in its existing thread', async () => {
+    const result = await runSkillPublishFlow('skill', {
+        projectId: 'release-room',
+        preflightImpl: async () => preflight(),
+        dialogImpl: async () => true,
+        createTaskImpl: async () => ({ task_id: 'project-publish' }),
+    });
+    assert.equal(result.payload.source, 'web');
+    assert.equal(result.payload.project_id, 'release-room');
+    assert.equal(Object.hasOwn(result.payload, 'chat_id'), false, 'admission resolves the registered room');
+    const explicit = buildSkillPublishTask(preflight(), { projectId: 'release-room', chatId: 1042 });
+    assert.equal(explicit.chat_id, 1042);
 });
 
 test('cancel, backdrop, Escape, and truthy glitches create zero tasks', async () => {

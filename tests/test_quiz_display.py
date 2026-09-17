@@ -44,6 +44,27 @@ class TestValidateQuizPayload:
             validate_quiz_payload("q", ["a", "b"], "", "  ")
         assert err.value.code == "QUIZ_ASSUMPTION_REQUIRED"
 
+    def test_wait_bound_is_whole_minutes_capped_by_the_task_ceiling(self, monkeypatch):
+        """The bound belongs to a REQUIRED wait and can never promise more time
+        than the absolute wall-clock ceiling already allows (beyond it the
+        ceiling ends the task first, so the bound would be a false promise)."""
+        monkeypatch.setenv("OUROBOROS_TASK_ABS_CEILING_SEC", "21600")  # 360 minutes
+        payload = validate_quiz_payload("q", ["a", "b"], "", "",
+                                        wait_for_answer=True, max_wait_minutes=30)
+        assert payload["max_wait_minutes"] == 30
+        # Absent unless asked for: an unbounded wait stays unbounded.
+        assert "max_wait_minutes" not in validate_quiz_payload(
+            "q", ["a", "b"], "", "", wait_for_answer=True)
+        for bad in (0, -5, True, 1.5, "30", 361):
+            with pytest.raises(QuizValidationError) as err:
+                validate_quiz_payload("q", ["a", "b"], "", "",
+                                      wait_for_answer=True, max_wait_minutes=bad)
+            assert err.value.code == "QUIZ_WAIT_BOUND_INVALID"
+        # A bound without waiting is a contradiction, not a silent no-op.
+        with pytest.raises(QuizValidationError) as err:
+            validate_quiz_payload("q", ["a", "b"], "", "assume", max_wait_minutes=5)
+        assert err.value.code == "QUIZ_WAIT_BOUND_INVALID"
+
     def test_empty_or_oversized_question_refused(self):
         with pytest.raises(QuizValidationError):
             validate_quiz_payload("", ["a", "b"], "", "assume")
@@ -51,7 +72,8 @@ class TestValidateQuizPayload:
             validate_quiz_payload("q" * 2001, ["a", "b"], "", "assume")
 
 
-def test_send_quiz_broadcasts_publishes_and_persists_row(monkeypatch, tmp_path):
+@pytest.mark.parametrize("wait_for_answer", [False, True])
+def test_send_quiz_broadcasts_publishes_and_persists_row(monkeypatch, tmp_path, wait_for_answer):
     bridge = _make_bridge(monkeypatch)
     frames = []
     events = []
@@ -69,8 +91,9 @@ def test_send_quiz_broadcasts_publishes_and_persists_row(monkeypatch, tmp_path):
         question="Merge now?",
         options=[{"label": "Yes"}, {"label": "No", "detail": "wait for CI"}],
         stake="release timing",
-        assumption="continuing with the merge",
+        assumption="" if wait_for_answer else "continuing with the merge",
         task_id="task-quiz",
+        wait_for_answer=wait_for_answer,
     )
 
     assert (ok, error) == (True, "ok")
@@ -88,7 +111,7 @@ def test_send_quiz_broadcasts_publishes_and_persists_row(monkeypatch, tmp_path):
         # a host subscriber (Telegram) cannot compose the answer address
         # "quiz:{task_id}:{quiz_id}" without it.
         "chat_id", "transport", "quiz_id", "task_id", "question", "options",
-        "stake", "assumption", "state", "ts",
+        "stake", "assumption", "state", "ts", "wait_for_answer",
     }
     row = json.loads((tmp_path / "logs" / "chat.jsonl").read_text().splitlines()[-1])
     assert row["type"] == "quiz"
@@ -97,6 +120,7 @@ def test_send_quiz_broadcasts_publishes_and_persists_row(monkeypatch, tmp_path):
     assert row["quiz"]["quiz_id"] == "qz-1"
     assert row["quiz"]["state"] == "open"
     assert row["quiz"]["options"][0] == {"label": "Yes"}
+    assert live["wait_for_answer"] is payload["wait_for_answer"] is row["quiz"]["wait_for_answer"] is wait_for_answer
 
 
 def test_send_quiz_refuses_invalid_payload_and_missing_ids(monkeypatch, tmp_path):
@@ -263,3 +287,19 @@ def test_history_replays_quiz_row_with_state(tmp_path):
     assert rec["quiz"]["quiz_id"] == "qz-3"
     assert rec["quiz"]["state"] == "open"
     assert rec["system_type"] == "quiz"  # typed row: replay never reads it as a bare final
+
+
+def test_at_most_one_recommended_option_for_both_callers(monkeypatch, tmp_path):
+    """Fix cycle 2, 2d: the durable record keeps ONE recommended index, so the shared
+    validator refuses a second recommendation for the tool and the bus alike, with the
+    same typed shape as its other refusals; one recommendation passes through intact."""
+    with pytest.raises(QuizValidationError) as err:
+        validate_quiz_payload("q", [{"label": "a", "recommended": True}, {"label": "b", "recommended": True}], "", "assume")
+    assert err.value.code == "QUIZ_RECOMMENDED_INVALID" and "at most one" in str(err.value)
+    one = validate_quiz_payload("q", [{"label": "a"}, {"label": "b", "recommended": True}], "", "assume")
+    assert one["options"] == [{"label": "a"}, {"label": "b", "recommended": True}]
+    bridge = _make_bridge(monkeypatch)
+    ok, error = bridge.send_quiz(
+        1, quiz_id="qz", question="q", task_id="t-1",
+        options=[{"label": "a", "recommended": True}, {"label": "b", "recommended": True}], assumption="x")
+    assert ok is False and error == "mark at most one option as recommended."

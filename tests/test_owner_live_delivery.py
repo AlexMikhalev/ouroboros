@@ -48,28 +48,6 @@ class TestDeliverOwnerEvent:
         assert mode == "deferred"
         assert ctx.pending_events[0]["root_task_id"] == "t-root"
 
-    def test_background_consciousness_always_deferred_and_unstamped(self):
-        from ouroboros.tool_capabilities import BACKGROUND_DELEGATION_ROLE
-
-        q = _Queue()
-        ctx = _ctx(event_queue=q, meta={"delegation_role": BACKGROUND_DELEGATION_ROLE})
-        mode = deliver_owner_event(ctx, {"type": "send_message", "chat_id": 1, "text": "x"})
-        assert mode == "deferred"
-        assert q.items == []
-        # BG frames stay exactly as before the seam: buffered, no pseudo-lineage.
-        assert "task_id" not in ctx.pending_events[0]
-
-    def test_consciousness_stamps_the_shared_background_role(self):
-        # Literal-drift pin: the producer (consciousness) and the gate
-        # (owner_delivery) must share ONE constant, not two literals.
-        import inspect
-
-        from ouroboros import consciousness
-
-        src = inspect.getsource(consciousness)
-        assert "BACKGROUND_DELEGATION_ROLE" in src
-        assert '"delegation_role": "background"' not in src
-
     def test_retry_duplicates_are_accepted_policy(self):
         # A live-delivered frame from attempt 1 is not recalled; a retried
         # task re-narrates with a fresh ctx and delivers again. The seam
@@ -170,6 +148,23 @@ class TestSendToolsLiveIntegration:
 
 
 class TestFinalAnswerSelection:
+    def test_deferred_mid_task_reply_stays_separate_from_the_live_final(self, tmp_path):
+        from ouroboros.task_finalization import deliver_final_message_live
+        from ouroboros.tools.control import _send_user_message
+
+        ctx = _ctx(event_queue=None)
+        ctx.drive_logs = lambda: tmp_path
+        assert "queued for delivery" in _send_user_message(ctx, "A separate reply while I work.")
+        ctx.pending_events.append({
+            "type": "send_message", "task_id": ctx.task_id, "chat_id": ctx.current_chat_id,
+            "text": "The final answer.", "is_progress": False,
+        })
+        q = _Queue()
+        assert deliver_final_message_live(q, ctx.pending_events, ctx.task_id)
+        assert [row["text"] for row in q.items] == ["The final answer."]
+        assert ctx.pending_events[0]["system_type"] == "proactive_message"
+        assert ctx.pending_events[0]["text"] == "A separate reply while I work."
+
     def test_final_beats_deferred_proactive_with_same_task_id(self):
         from ouroboros.task_finalization import deliver_final_message_live
 

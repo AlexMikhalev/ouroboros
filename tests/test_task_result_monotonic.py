@@ -72,6 +72,30 @@ def test_replica_projector_keeps_terminal_lifecycle_guard(drive):
     assert result["result"] == "cancelled"
 
 
+def test_writer_selects_current_review_before_locked_projector(drive):
+    panel = {"surface": "task_acceptance", "panel_id": "p", "panel_index": 0,
+             "task_attempt": 1, "publication_revision": 2, "superseded": True,
+             "aggregate_signal": "FAIL", "applied_source_ref": {"path": "original"}}
+    tr.write_task_result(drive, "review", tr.STATUS_COMPLETED, review_projection={"panels": [panel]})
+    stale = {**panel, "superseded": False, "aggregate_signal": "PASS",
+             "applied_source_ref": {"path": "stale"}}
+    calls = []
+
+    def project(current, fields):
+        assert (drive / "task_results" / "review.json.lock").exists()
+        assert fields["review_projection"] == current["review_projection"] == {"panels": [panel]}
+        calls.append(True)
+        return {**fields, "status": current["status"], "review_projection": {
+            "panels": [{**fields["review_projection"]["panels"][0],
+                        "applied_source_ref": {"path": "promoted"}}]}}
+
+    saved = tr.write_task_result(drive, "review", tr.STATUS_RUNNING,
+                                 review_projection={"panels": [stale]}, _field_projector=project)
+    assert calls == [True]
+    assert saved["status"] == tr.STATUS_COMPLETED
+    assert saved["review_projection"] == {"panels": [{**panel, "applied_source_ref": {"path": "promoted"}}]}
+
+
 def test_cancel_requested_blocks_running_but_allows_cancelled(drive):
     tr.write_task_result(drive, "t", tr.STATUS_CANCEL_REQUESTED)
     tr.write_task_result(drive, "t", tr.STATUS_RUNNING)
@@ -193,8 +217,22 @@ def test_read_paths_do_not_create_task_results_dir(tmp_path):
     assert (root / "task_results").is_dir()
 
 
-def test_proactive_namer_persists_name_on_already_terminal_task(tmp_path, monkeypatch):
-    """v6.40.0 #1: the proactive namer must persist ``suggested_name`` even when the task
+def test_read_with_stub_root_leaks_no_cwd_dir(tmp_path, monkeypatch):
+    """The exact pollution repro: a MagicMock-derived root (``MagicMock/mock``) reaching a
+    READ scan must not create a ``MagicMock`` tree in the cwd."""
+    import pathlib
+    from unittest.mock import MagicMock
+
+    monkeypatch.chdir(tmp_path)
+    stub_root = pathlib.Path(MagicMock()).parent  # == Path("MagicMock/mock")
+    assert tr.list_task_results(stub_root) == []
+    assert tr.load_task_result(stub_root, "x") is None
+    leaked = [p.name for p in pathlib.Path(".").iterdir() if "MagicMock" in p.name]
+    assert leaked == [], f"read scan leaked mock-named paths: {leaked}"
+
+
+def test_turn_namer_persists_name_on_already_terminal_task(tmp_path, monkeypatch):
+    """v6.40.0 #1: the turn namer must persist ``suggested_name`` even when the task
     already raced to a terminal status — it enriches under the CURRENT status instead of a
     regressing RUNNING write (which the monotonic guard would drop, losing the convert-reuse
     name)."""
@@ -205,7 +243,7 @@ def test_proactive_namer_persists_name_on_already_terminal_task(tmp_path, monkey
 
     tr.write_task_result(tmp_path, "t", tr.STATUS_COMPLETED, result="fast done")
     monkeypatch.setattr(project_naming, "llm_project_name", lambda *a, **k: "Nice Title")
-    project_naming.spawn_proactive_namer(tmp_path, "t", "build me a thing")
+    project_naming.spawn_turn_namer(tmp_path, "t", "build me a thing")
     for _ in range(100):  # join the daemon namer thread (best-effort, bounded)
         if not any(th.name == "namer-t" for th in threading.enumerate()):
             break
@@ -215,7 +253,7 @@ def test_proactive_namer_persists_name_on_already_terminal_task(tmp_path, monkey
     assert r.get("suggested_name") == "Nice Title", "suggested_name must survive on a terminal task"
 
 
-def test_proactive_namer_late_settlement_refreshes_cost_without_late_name(tmp_path, monkeypatch):
+def test_turn_namer_late_settlement_refreshes_cost_without_late_name(tmp_path, monkeypatch):
     """A provider thread outliving the cosmetic deadline still closes accounting only."""
     import threading
     import time
@@ -254,7 +292,7 @@ def test_proactive_namer_late_settlement_refreshes_cost_without_late_name(tmp_pa
     monkeypatch.setattr(project_naming, "llm_project_name", late_paid_name)
     monkeypatch.setattr(project_naming, "_naming_timeout_sec", lambda: -29.98)
     broadcasts = []
-    project_naming.spawn_proactive_namer(
+    project_naming.spawn_turn_namer(
         tmp_path, "late-root", "build a thing", broadcast=broadcasts.append,
     )
     assert entered.wait(1)
@@ -287,17 +325,3 @@ def test_proactive_namer_late_settlement_refreshes_cost_without_late_name(tmp_pa
         type("Env", (), {"drive_root": tmp_path})(),
         {"id": "late-root", "root_task_id": "late-root"},
     )
-
-
-def test_read_with_stub_root_leaks_no_cwd_dir(tmp_path, monkeypatch):
-    """The exact pollution repro: a MagicMock-derived root (``MagicMock/mock``) reaching a
-    READ scan must not create a ``MagicMock`` tree in the cwd."""
-    import pathlib
-    from unittest.mock import MagicMock
-
-    monkeypatch.chdir(tmp_path)
-    stub_root = pathlib.Path(MagicMock()).parent  # == Path("MagicMock/mock")
-    assert tr.list_task_results(stub_root) == []
-    assert tr.load_task_result(stub_root, "x") is None
-    leaked = [p.name for p in pathlib.Path(".").iterdir() if "MagicMock" in p.name]
-    assert leaked == [], f"read scan leaked mock-named paths: {leaked}"

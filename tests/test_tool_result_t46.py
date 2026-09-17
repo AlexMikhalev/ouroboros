@@ -395,6 +395,99 @@ def test_plan_handler_wrapper_preserves_native_meta_for_all_projection_paths(
     )
 
 
+@pytest.mark.parametrize(
+    ("args", "marker"),
+    (
+        (
+            {
+                "plan": "P changed",
+                "goal": "G",
+                "spec": {"in_scope": ["a"]},
+                "review_disposition": {
+                    "review_fingerprint": "f" * 64,
+                    "items": [
+                        {"finding_id": "slot_1:f1", "decision": "reject", "rationale": "one"},
+                    ],
+                },
+            },
+            "PLAN_REVIEW_DISPOSITION_MIXED_ENVELOPE",
+        ),
+        (
+            {"review_disposition": {"review_fingerprint": "", "items": []}},
+            "PLAN_REVIEW_DISPOSITION_EMPTY",
+        ),
+    ),
+)
+def test_plan_task_argument_refusals_are_typed_at_the_registry_boundary(
+    tmp_path,
+    monkeypatch,
+    args,
+    marker,
+) -> None:
+    """A refusal the producer ALREADY knows about must not be recorded as execution.
+
+    Both texts are identifier-less ``ERROR:`` prose, which the legacy adapter reads as
+    ``status=ok``; the producer publishes the typed result instead."""
+    import ouroboros.safety as safety
+    from ouroboros.tools import plan_review
+
+    registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
+    monkeypatch.setattr(safety, "check_safety", lambda *_args, **_kwargs: (True, ""))
+    monkeypatch.setattr(
+        plan_review,
+        "_run_plan_review_async",
+        lambda *_a, **_k: pytest.fail("a refused envelope must dispatch no reviewer"),
+    )
+
+    result = registry.execute_result("plan_task", args)
+
+    assert isinstance(result, ToolResult)
+    assert (result.status, result.code) == ("error", "TOOL_ARG_ERROR")
+    assert marker in result.text
+
+
+@pytest.mark.parametrize(
+    ("reason", "text", "expected"),
+    (
+        (
+            "review_budget_unavailable",
+            "⚠️ PLAN_REVIEW_SKIPPED_BUDGET: the reviewer wave was declined before dispatch.",
+            ("unavailable", "CAPABILITY_UNAVAILABLE"),
+        ),
+        ("review_failed", "ERROR: Plan review failed: synthetic", ("error", "TOOL_ERROR")),
+    ),
+)
+def test_plan_unavailable_outcomes_are_typed_by_their_reason(
+    tmp_path,
+    monkeypatch,
+    reason,
+    text,
+    expected,
+) -> None:
+    """A declined review is an availability outcome, a broken one a fault — neither is ok.
+
+    The budget-declined text carries a typed marker the legacy adapter read as a
+    warning (``status=ok``); the exception path is identifier-less ``ERROR:`` prose.
+    Both reach the registry with the status their reason means."""
+    import ouroboros.safety as safety
+    from ouroboros.tools import plan_review
+
+    registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
+    monkeypatch.setattr(safety, "check_safety", lambda *_args, **_kwargs: (True, ""))
+    monkeypatch.setattr(plan_review, "_planning_state_location", lambda _ctx: (tmp_path, "task"))
+
+    async def declined(ctx, _request):
+        return plan_review._plan_unavailable(ctx, text, reason)
+
+    monkeypatch.setattr(plan_review, "_run_plan_review_async", declined)
+
+    result = registry.execute_result("plan_task", {"plan": "P", "goal": "G", "spec": {}})
+
+    assert isinstance(result, ToolResult)
+    assert (result.status, result.code) == expected
+    assert result.text == text
+
+
 def test_native_review_and_git_producers_bypass_adapter_and_keep_legacy_loop_fields(
     tmp_path,
     monkeypatch,
