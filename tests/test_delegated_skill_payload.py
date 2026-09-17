@@ -72,6 +72,7 @@ def _payload_ctx(tmp_path: pathlib.Path, monkeypatch):
                 "credential_profile_id": "",
             },
             "effort": "low",
+            "access": "workspace_write",
         }],
     }
     monkeypatch.setenv("OUROBOROS_SUBAGENTS", json.dumps(configured))
@@ -112,11 +113,14 @@ class _StartStub:
     def agent_capabilities(self):
         return {"harnesses": [{
             "id": "some-route", "enabled": True, "status": "ok",
-            "accessProfilesSupported": ["readonly", "workspace_write"],
+            "accessProfilesSupported": ["readonly", "workspace_write", "full"],
         }]}
 
     def quota_snapshots(self):
         return []
+
+    def ensure_full_access(self, root):
+        self._seen["full_grant"] = root
 
     def find_project_id(self, root):
         return "prj-existing"
@@ -178,14 +182,16 @@ def _terminal_wait(ctx, monkeypatch, *, run_id="run-p1",
 # -- 1A: selector, authority, custody shape -------------------------------------
 
 
-def test_payload_start_provisions_standalone_snapshot_with_semantic_ref(tmp_path, monkeypatch):
+@pytest.mark.parametrize("access", ["workspace_write", "full"])
+def test_payload_start_provisions_standalone_snapshot_with_semantic_ref(tmp_path, monkeypatch, access):
     ctx = _payload_ctx(tmp_path, monkeypatch)
+    ctx._payload_subagent_snapshot["access"] = access
     skill = _seed_skill(tmp_path / "data")
     payload, seen = _start_payload_run(ctx, monkeypatch)
     assert payload["status"] == "started", payload
     request = seen["request"]
     # The mutating shape rides the exact binding, never a workspace derivation.
-    assert request["access"] == "workspace_write" and request["mode"] == "agent"
+    assert request["access"] == access and request["mode"] == "agent"
     assert request["execution"] == {"isolation": "live", "delegated": True}
     exec_root = pathlib.Path(str(request["scope"]["root"]))
     assert exec_root.resolve().is_relative_to((tmp_path / "snaps").resolve())
@@ -197,7 +203,7 @@ def test_payload_start_provisions_standalone_snapshot_with_semantic_ref(tmp_path
     # Durable custody carries the granted shape and the semantic reference.
     entry = custody.replay(tmp_path / "data")["run-p1"]
     assert entry.authority_source == "skill_payload"
-    assert entry.access == "workspace_write" and entry.isolation == "live"
+    assert entry.access == access and entry.isolation == "live"
     ref = entry.resource_ref
     assert ref["source"] == "external" and ref["skill_name"] == "alpha"
     assert ref["target_root"] == str(skill.resolve()) and ref["payload_hash"]
@@ -1413,13 +1419,13 @@ def test_host_states_the_typed_access_profile_once_and_says_it_governs():
     work order duplicated and contradicted the profile the host had already
     derived, and the run died unable to reach its own read surface. The host
     renders ONE sentence from `DelegatedRunShape.access`, names it as the
-    governing text, and still appends the assignment last as context."""
+    native-mechanism text, while explicit task constraints still bind."""
     from ouroboros.delegate_start_instructions import access_instruction
     from ouroboros.subagents import delegated_run_shape
     from ouroboros.tools.delegate import _host_instructions
 
-    precedence = ("any access wording in the assignment text below is CONTEXT, "
-                  "not authority — this line governs.")
+    precedence = ("this line governs native process access, while explicit task "
+                  "constraints and the assigned edit target still bind.")
     readonly = _host_instructions(delegated_run_shape(False))
     assert "ACCESS: you may read and run read-only commands inside this root" in readonly
     assert readonly.count(precedence) == 1  # one sentence, never a paragraph
@@ -1428,6 +1434,11 @@ def test_host_states_the_typed_access_profile_once_and_says_it_governs():
     assert "ACCESS: you may edit inside this root" in acting
     assert acting.count(precedence) == 1
     assert "read and run read-only commands" not in acting
+    full = _host_instructions(delegated_run_shape(True, "full"))
+    assert full.count(precedence) == 1
+    assert "No filesystem sandbox is requested" in full
+    assert "do not write outside this root" not in full
+    assert "source edits delivered through the assigned root" in full
 
     assignment = "ASSIGNMENT\nRead-only, no edits or commands."
     with_assignment = _host_instructions(delegated_run_shape(False), assignment)

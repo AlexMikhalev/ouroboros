@@ -26,7 +26,7 @@ home. Either way the token is an absolute path the child does not have to guess.
 
 ## 2. The actor
 
-A delegated MUTATING child: `mode: agent`, `access: workspace_write`,
+A delegated MUTATING child: `mode: agent`, captured `access: full` or `workspace_write`,
 `execution.isolation: live`. Claudexor hands the harness a real shell in the nanny's own
 worktree. The command stream is model output and the host cannot review each command before it
 runs. Not assumed hostile — assumed uncontrolled.
@@ -43,7 +43,7 @@ the user's actual target project in `scope.root`, while the child's writable fil
 rides separately as the private snapshot in `execution.workspaceRoot`. That registration
 is the USER'S identity, not a disposable snapshot: it is marked `project_persistent`
 (`delegate_registration_policy.persistent_registration` — stable execution workspace
-plus `workspace_write`), and every retire path honours the marker — settlement, the
+plus mutating access), and every retire path honours the marker — settlement, the
 orphan sweep, recovered-invocation refusals, and the pre-run refusal path. The ownership
 duty is discharged durably (`PROJECT_RETIRED` with `project_kept: true`) without
 deleting the project, and any persistent sharer makes the shared project undeletable for
@@ -66,6 +66,16 @@ nanny's worktree, running the operator's own code as the operator. The step from
 
 So the question is NOT "against which engines is this an acceptable act?" but **"what did this
 run actually get, and does everyone downstream know?"**
+
+New configured sessions default to full native access; an explicit owner row or
+invocation may lower it. Full requests no OS sandbox. The private execution
+snapshot still owns patch delivery, and explicit task constraints remain in force.
+The owned gateway grants full access only for an absent scoped trust record,
+preserving an existing denial. Older immutable snapshots without an access field
+keep workspace_write; retries keep their exact recorded request. Runtime review
+sessions and genuinely read-only tasks retain readonly/ask. Scoped HOME and
+actual-access receipts remain separate facts, and scoped trust grants persist
+without an automatic cleanup policy.
 
 ## 4. The version bands (measured 2026-08-03, not assumed)
 

@@ -23,6 +23,7 @@ from ouroboros.delegate_custody import RunCustody as _RunCustody
 # `delegate_shared` (phase B's facade split), never a local twin that could drift.
 from ouroboros.delegate_registration_policy import record_persistent as _record_persistent
 from ouroboros.delegate_shared import _fail
+from ouroboros.configured_subagents import SESSION_ACCESS_PROFILES
 from ouroboros.tools.tool_result import ToolResult
 from ouroboros.tools.registry import ToolContext, active_repo_dir_for
 from ouroboros.utils import resolve_path_allow_missing
@@ -61,7 +62,7 @@ def _mutation_authority(ctx: ToolContext, authority: "DelegatedRunShape") -> tup
     Disagreement anywhere is a typed refusal, never a best-effort guess.
     """
     root = str(active_repo_dir_for(ctx))
-    if authority.access != "workspace_write":
+    if authority.access not in SESSION_ACCESS_PROFILES:
         return {"target_root": root, "source": "readonly", "capture_mode": "none"}, None
     constraint = getattr(ctx, "task_constraint", None)
     mode = str(
@@ -286,7 +287,7 @@ def _resolve_retry_invocation(ctx: ToolContext, drive: pathlib.Path, retry_token
     # carry none; their scope.root IS the authority target (in-place regime).
     snapshot_id = str(record.get("snapshot_id") or "")
     target_root = str(record.get("target_root") or "") or scope_root
-    if authority.access == "workspace_write":
+    if authority.access in SESSION_ACCESS_PROFILES:
         binding_refusal = _retry_binding_refusal(record, retry_token)
         if binding_refusal:
             return None, binding_refusal
@@ -688,8 +689,8 @@ def payload_host_instructions(text: str, skill_name: str) -> str:
     explicit, truthful permission block is appended.
     """
     adjusted = text.replace(
-        "do not touch the host's runtime controls, skills, or memory",
-        "do not touch the host's runtime controls or memory")
+        "do not touch unrelated host runtime controls, skills, or memory",
+        "do not touch unrelated host runtime controls or memory")
     return adjusted + (
         "\nPAYLOAD ASSIGNMENT: this working tree is a PRIVATE standalone copy of "
         f"the installed skill payload '{skill_name}'. Editing its user-authored "
@@ -717,7 +718,7 @@ def claimed_start_request(
 
 def _payload_mutation_authority(
     ctx: ToolContext, drive: pathlib.Path, bucket: str, skill_name: str,
-    binding: Any,
+    binding: Any, access: str = "workspace_write",
 ) -> Tuple[Optional[Any], Optional[Dict[str, Any]], Optional[ToolResult]]:
     """The payload counterpart of ``_mutation_authority`` (R1 item 1).
 
@@ -729,6 +730,11 @@ def _payload_mutation_authority(
     from ouroboros.subagents import delegated_run_shape
     from ouroboros.tool_access import active_tool_profile, build_resolved_resource_binding
 
+    if access == "readonly":
+        return None, None, _fail(
+            "delegate_start", "payload_delegation_forbidden",
+            "The skill-payload selector requires write access; omit the selector for a readonly run.",
+            definitely_unrun=True)
     b, s = str(bucket or "").strip(), str(skill_name or "").strip()
     if binding is None:
         # Policy BEFORE lookup (Fable F4): a caller whose profile cannot hold
@@ -812,7 +818,7 @@ def _payload_mutation_authority(
             "payload_hash": "",
         },
     }
-    return delegated_run_shape(True), record, None
+    return delegated_run_shape(True, access), record, None
 
 
 def _provision_payload_snapshot(
