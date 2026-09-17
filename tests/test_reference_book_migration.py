@@ -155,7 +155,11 @@ def test_entrypoint_keeps_its_h1_line_and_carries_only_the_membership(book_id):
     rel = BOOK_ENTRYPOINTS[book_id]
     raw = (REPO / rel).read_bytes()
     lines = raw.decode("utf-8").split("\n")
-    assert lines[0] == OLD_MONOLITHS[book_id]["h1"]
+    # The architecture h1 is a release version carrier (`release_sync` rewrites
+    # its version token on every bump): the whole line stays pinned, and only
+    # that token follows VERSION instead of the split-time 7.0.0.
+    version = (REPO / "VERSION").read_text(encoding="utf-8").strip()
+    assert lines[0] == OLD_MONOLITHS[book_id]["h1"].replace("v7.0.0", f"v{version}")
     book = load_reference_book(REPO, book_id)
     # One `## Chapters` heading and nothing else: the entrypoint orients, the
     # chapters carry the book.
