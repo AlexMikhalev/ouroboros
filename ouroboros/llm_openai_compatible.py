@@ -338,9 +338,11 @@ class _OpenAICompatibleLaneMixin:
         # Unknown capabilities mean no stripping.
         if skip_capability_fetch:
             # "Skip" means skip the NETWORK fetch (no_proxy fork-safety), not
-            # ignore an already-warm capability cache: a worker forked after the
-            # one-shot /models fetch still proactively strips unsupported params
-            # instead of paying a reactive 404 + retry on every reviewer call.
+            # ignore an already-warm capability cache. The cache is per-process:
+            # a process that already ran its one-shot /models fetch keeps
+            # stripping unsupported params proactively instead of paying a
+            # reactive 404 + retry on every reviewer call, while a freshly
+            # spawned worker starts cold and strips nothing until its own fetch.
             supported = (
                 self._SUPPORTED_PARAMS_CACHE.get(resolved_model)
                 if self._SUPPORTED_PARAMS_FETCHED
