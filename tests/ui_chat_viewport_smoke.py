@@ -552,6 +552,24 @@ def run_chat_viewport_smoke(
                     "ts": "2026-08-03T10:04:00+00:00",
                 }
                 _emit_ws_frame(page, late_child_frame)
+                # Observe this mount's real height change before testing the
+                # viewport; elapsed animation frames alone do not establish it.
+                # A missing or zero-height child still fails.
+                try:
+                    page.wait_for_function("""minimum => {
+                        const parent = document.querySelector('.chat-live-card[data-task-id="vp-parent"]');
+                        const child = parent?.querySelector(':scope > .chat-subagents > [data-task-id="vp-late-child"]');
+                        return child && child.getBoundingClientRect().height > 0
+                            && parent.getBoundingClientRect().height > minimum;
+                    }""", arg=parent_before_mount + 30, timeout=10_000)
+                except PlaywrightError as exc:
+                    geometry = parent.evaluate("""(card, before) => {
+                        const child = card.querySelector('[data-task-id="vp-late-child"]');
+                        return {before, after: card.getBoundingClientRect().height,
+                            expanded: card.dataset.expanded, childHeight: child?.getBoundingClientRect().height,
+                            childParent: child?.parentElement?.dataset.subagentsFor};
+                    }""", parent_before_mount)
+                    raise AssertionError(f"Late child did not grow its parent: {geometry}") from exc
                 assert parent.evaluate("card => card.getBoundingClientRect().height") > parent_before_mount + 30
                 assert abs(card_top(page, anchor_id) - anchor_before) <= 6
                 parent.evaluate("""card => { window.__subagentNoopMutations = []; window.__subagentNoopObserver = new MutationObserver(records => window.__subagentNoopMutations.push(...records)); window.__subagentNoopObserver.observe(card, {attributes: true, attributeOldValue: true, childList: true, characterData: true, subtree: true}); }""")
