@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import pathlib
 import threading
-from datetime import datetime, timezone
 from typing import Any, Dict
 
 from ouroboros.cost_projection import (
@@ -14,6 +13,7 @@ from ouroboros.cost_projection import (
     honest_accounted_amount,
     with_cost_aliases,
 )
+from ouroboros.deadline_utils import parse_deadline_ts
 from ouroboros.task_results import (
     TASK_COST_META_FIELDS,
     STATUS_COMPLETED,
@@ -91,19 +91,6 @@ def post_task_model_waits(drive_root: Any) -> list:
     with POST_TASK_SYNTHESIS_LOCK:
         owners = [owner for (path, _task), owner in POST_TASK_SYNTHESIS_INFLIGHT.items() if path == root]
     return [owner for owner in owners if owner is not None and not owner.closed]
-
-
-def _parse_updated_at(value: Any) -> datetime | None:
-    raw = str(value or "").strip()
-    if not raw:
-        return None
-    try:
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
 
 
 def _delegated_receipt_counts(value: Any) -> tuple[int, int] | None:
@@ -219,8 +206,8 @@ def project_replica_task_result_fields(
                 ]
             overlay["subagent_envelope"] = merged_envelope
 
-    canonical_updated_at = _parse_updated_at(canonical_fields.get("updated_at"))
-    replica_updated_at = _parse_updated_at(overlay.get("updated_at"))
+    canonical_updated_at = parse_deadline_ts(canonical_fields.get("updated_at"))
+    replica_updated_at = parse_deadline_ts(overlay.get("updated_at"))
     if canonical_updated_at is not None and (
         replica_updated_at is None or canonical_updated_at > replica_updated_at
     ):
