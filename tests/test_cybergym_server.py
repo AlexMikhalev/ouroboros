@@ -465,7 +465,11 @@ def test_start_exposes_attested_base_url_and_closes(tmp_path):
     assert server.stopped is True
 
 
-def test_state_dir_places_mutable_state_outside_run_root(tmp_path):
+def test_state_dir_places_mutable_state_outside_run_root(tmp_path, monkeypatch):
+    # State placement/export is independent of the host filesystem probe.
+    monkeypatch.setattr(
+        "devtools.benchmarks.cybergym.cybergym_server._mount_fs_type", lambda _path: "ext4"
+    )
     seed, commit = _seed_repo(tmp_path)
     state = tmp_path / "nvme-state"
     wrapper = CyberGymIsolatedServer(
@@ -481,7 +485,8 @@ def test_state_dir_places_mutable_state_outside_run_root(tmp_path):
     assert wrapper.data_root == state.resolve() / "ouroboros-data"
     assert (wrapper.data_root / ".ouroboros_isolated_benchmark").is_file()
     assert wrapper.settings_path == wrapper.data_root / "settings.json"
-    assert wrapper.settings_path.stat().st_mode & 0o777 == 0o600
+    if sys.platform != "win32":  # Windows chmod does not expose POSIX owner-only mode bits.
+        assert wrapper.settings_path.stat().st_mode & 0o777 == 0o600
     # The durable run root keeps the clone but not the mutable state tree.
     assert wrapper.clone_root.is_dir()
     assert not (wrapper.run_root / "ouroboros-data").exists()
@@ -575,7 +580,11 @@ def test_mount_fs_type_longest_prefix_wins():
     assert _mount_fs_type(pathlib.Path("/elsewhere"), "garbage line\n") == ""
 
 
-def test_close_mirrors_audit_surface_to_run_root(tmp_path):
+def test_close_mirrors_audit_surface_to_run_root(tmp_path, monkeypatch):
+    # State placement/export is independent of the host filesystem probe.
+    monkeypatch.setattr(
+        "devtools.benchmarks.cybergym.cybergym_server._mount_fs_type", lambda _path: "ext4"
+    )
     seed, commit = _seed_repo(tmp_path)
     wrapper = CyberGymIsolatedServer(
         seed,
@@ -596,7 +605,8 @@ def test_close_mirrors_audit_surface_to_run_root(tmp_path):
     for name in ("state", "logs", "task_results", "memory"):
         assert (mirror / name / "marker.txt").read_text(encoding="utf-8") == name
     assert not (mirror / "observability").exists()
-    assert (mirror / "settings.json").stat().st_mode & 0o777 == 0o600
+    if sys.platform != "win32":  # Windows chmod does not expose POSIX owner-only mode bits.
+        assert (mirror / "settings.json").stat().st_mode & 0o777 == 0o600
     assert (mirror / ".ouroboros_isolated_benchmark").is_file()
     receipt = wrapper.state_export
     assert receipt["ok"] is True

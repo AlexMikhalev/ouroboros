@@ -106,7 +106,7 @@ def test_real_ledger_checkpoint_gateway_and_disk_reach_grace(canonical_terminal,
     live = response.json()
     assert live["root_phase_checkpoint"]["accounting"] == stored["root_phase_checkpoint"]["accounting"]
     assert _abandoned_cost_residue_usd(live) == pytest.approx(0.05)
-    raw = json.loads((data / "task_results/cybergym-root.json").read_text())
+    raw = json.loads((data / "task_results/cybergym-root.json").read_text(encoding="utf-8"))
     assert _abandoned_cost_residue_usd(raw) == pytest.approx(0.05)
     root = tmp_path / "executor"
     root.mkdir()

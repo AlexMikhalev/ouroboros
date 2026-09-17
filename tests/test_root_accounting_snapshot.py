@@ -78,7 +78,7 @@ def test_root_snapshot_reaches_saved_and_gateway_results_without_flattening_own_
     assert stored["non_final_rows"] == 0  # Own-task openness is not tree openness.
     assert stored["cost_final"] is False
     assert "cost_estimated" not in stored
-    saved = json.loads((root / "task_results" / "root.json").read_text())
+    saved = json.loads((root / "task_results" / "root.json").read_text(encoding="utf-8"))
     request = Request({
         "type": "http", "method": "GET", "path": "/api/tasks/root",
         "path_params": {"task_id": "root"}, "query_string": b"", "headers": [],
@@ -173,8 +173,10 @@ def test_checkpoint_refresh_updates_snapshot_but_stale_phase_patch_does_not(root
         assert projected["root_phase_checkpoint"] == after["root_phase_checkpoint"]
 
 
-def test_weighted_compaction_preserves_checkpoint_counts(root):
-    from tests.fixtures_usage_compaction import _compact
+def test_weighted_compaction_preserves_checkpoint_counts(root, monkeypatch):
+    from tests.fixtures_usage_compaction import _compact, age_fixture_clock
+
+    age_fixture_clock(monkeypatch)
 
     for _ in range(6):
         reservation = _reserve(root)

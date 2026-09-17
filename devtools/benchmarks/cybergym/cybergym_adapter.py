@@ -148,14 +148,7 @@ class BudgetProjection:
 
     def as_dict(self) -> dict[str, Any]:
         return {
-            "cap_usd": self.cap_usd,
-            "settled_usd": self.settled_usd,
-            "reserved_usd": self.reserved_usd,
-            "unresolved_upper_bound_usd": self.unresolved_upper_bound_usd,
-            "projected_usd": self.projected_usd,
-            "available_usd": self.available_usd,
-            "can_dispatch": self.can_dispatch,
-            "reason": self.reason,
+            **dataclasses.asdict(self),
             "active_task_ids": list(self.active_task_ids),
             "active_attempt_ids": list(self.active_attempt_ids),
         }
@@ -988,26 +981,17 @@ class BudgetLedger:
             )
             if before_write is not None:
                 before_write(overspend_error)
-            if overspend:
-                self._append(
-                    {
-                        "schema": LEDGER_SCHEMA,
-                        "event": "overspend",
-                        "attempt_id": attempt,
-                        "cost_usd": cost,
-                        "ts_unix": time.time(),
-                    }
-                )
-                raise overspend_error
             self._append(
                 {
                     "schema": LEDGER_SCHEMA,
-                    "event": "settle",
+                    "event": "overspend" if overspend else "settle",
                     "attempt_id": attempt,
                     "cost_usd": cost,
                     "ts_unix": time.time(),
                 }
             )
+            if overspend:
+                raise overspend_error
 
     def record_campaign_cost(self, cost_usd: float, *, label: str = "provider_probe") -> dict[str, Any]:
         """Record a known campaign-level charge before task reservations.
@@ -1439,67 +1423,17 @@ def run_campaign(
                 if callback_contract is not None
                 else (contract if isinstance(contract, Mapping) else None),
             )
-        except BudgetOverspend as exc:
-            budget_refs = dict(outcome.get("artifact_refs") or {})
-            budget_refs.setdefault("task_dir", str(task_dir))
-            budget_refs.setdefault("claims", str(ledger.path))
-            if claim is not None:
-                budget_refs.setdefault(
-                    "checkpoint",
-                    str(
-                        safe_task_path(
-                            root / "checkpoints",
-                            task.task_id,
-                            str(claim["attempt_id"]),
-                        )
-                        / "gateway_checkpoint.json"
-                    ),
-                )
-            budget_refs.setdefault("custody_pending", str(root / "custody_pending.json"))
-            row = build_task_result_row(
-                task.task_id,
-                trials=outcome.get("trials") or (),
-                final_trial=outcome.get("final_trial"),
-                final_poc_sha256=str(outcome.get("final_poc_sha256") or ""),
-                status="infra_failed",
-                lifecycle="budget_refused",
-                level=task.level,
-                masked_id=str(outcome.get("masked_id") or ""),
-                masked_id_source=str(outcome.get("masked_id_source") or ""),
-                observed_provider=str(outcome.get("observed_provider") or ""),
-                observed_model=str(outcome.get("observed_model") or ""),
-                observed_effort=(
-                    str(outcome.get("observed_effort") or "")
-                    if str(outcome.get("observed_effort") or "").strip().lower() == "high"
-                    else ""
-                ),
-                observed_effort_source=str(outcome.get("observed_effort_source") or ""),
-                prompt_tokens=outcome.get("prompt_tokens"),
-                completion_tokens=outcome.get("completion_tokens"),
-                cached_tokens=outcome.get("cached_tokens"),
-                cost_usd=outcome.get("cost_usd"),
-                cost_estimated=outcome.get("cost_estimated"),
-                cost_final=outcome.get("cost_final"),
-                cost_status=str(outcome.get("cost_status") or ""),
-                infra_reason="budget_overspend",
-                artifact_refs=budget_refs,
-                error=str(exc),
-                runtime_result=outcome.get("runtime_result"),
-                task_contract=callback_contract
-                if callback_contract is not None
-                else (contract if isinstance(contract, Mapping) else None),
-                attempt_id=str(claim["attempt_id"]) if claim else "",
-            )
-        except BudgetRefused:
-            # Claim-time refusal: no ledger event exists and the task was
-            # never dispatched, so it must NOT become an infra row.  The
-            # dispatch engine pauses admission, waits for in-flight
-            # settlements to free headroom, and either resumes or ends the
-            # campaign with BudgetCapReached (run 20260907T233516Z flushed
-            # 1145 undispatched tasks into infra rows here).
-            raise
         except Exception as exc:
-            if claim is not None:
+            overspend = isinstance(exc, BudgetOverspend)
+            if isinstance(exc, BudgetRefused) and not overspend:
+                # Claim-time refusal: no ledger event exists and the task was
+                # never dispatched, so it must NOT become an infra row.  The
+                # dispatch engine pauses admission, waits for in-flight
+                # settlements to free headroom, and either resumes or ends the
+                # campaign with BudgetCapReached (run 20260907T233516Z flushed
+                # 1145 undispatched tasks into infra rows here).
+                raise
+            if claim is not None and not overspend:
                 terminal_accounting = _terminal_gateway_accounting(
                     outcome.get("runtime_result")
                 )
@@ -1527,7 +1461,7 @@ def run_campaign(
                 final_trial=outcome.get("final_trial"),
                 final_poc_sha256=str(outcome.get("final_poc_sha256") or ""),
                 status="infra_failed",
-                lifecycle="executor_failed",
+                lifecycle="budget_refused" if overspend else "executor_failed",
                 level=task.level,
                 masked_id=str(outcome.get("masked_id") or ""),
                 masked_id_source=str(outcome.get("masked_id_source") or ""),
@@ -1546,7 +1480,7 @@ def run_campaign(
                 cost_estimated=outcome.get("cost_estimated"),
                 cost_final=outcome.get("cost_final"),
                 cost_status=str(outcome.get("cost_status") or ""),
-                infra_reason=type(exc).__name__,
+                infra_reason="budget_overspend" if overspend else type(exc).__name__,
                 artifact_refs=failure_refs,
                 error=str(exc),
                 runtime_result=outcome.get("runtime_result"),

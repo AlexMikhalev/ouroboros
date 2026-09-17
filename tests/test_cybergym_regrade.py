@@ -73,7 +73,7 @@ def test_inventory_is_append_only_and_counts_candidates(tmp_path):
     payload = write_regrade_inventory(output, [root])
 
     assert payload["counts"] == {"selected": 1, "ready": 1, "no_final_poc": 0, "hash_mismatch": 0}
-    assert json.loads(output.read_text())["candidates"][0]["task_id"] == "arvo:1"
+    assert json.loads(output.read_text(encoding="utf-8"))["candidates"][0]["task_id"] == "arvo:1"
 
 
 class _FakeRegradeExecutor:

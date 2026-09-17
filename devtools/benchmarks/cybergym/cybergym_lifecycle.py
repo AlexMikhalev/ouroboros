@@ -5,7 +5,7 @@ existing imports keep working) to keep each module inside the size ratchet.
 This layer sits above ``cybergym_docker`` (it imports a few docker helpers from
 there) and below the executor assembly; it never imports the executor, so no
 import cycle is introduced.  ``_LifecycleMixin`` collects the provider/settings
-probe, startup, gateway dispatch, submission, and cleanup-custody methods that
+probe, startup, submission, and cleanup-custody methods that
 are mixed into ``CyberGymExecutor`` and dispatched on ``self`` at runtime.
 """
 
@@ -18,7 +18,6 @@ import pathlib
 import re
 import shutil
 import time
-import urllib.parse
 import uuid
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -62,19 +61,10 @@ from devtools.benchmarks.cybergym.cybergym_sidecar import (
 from devtools.benchmarks.cybergym.cybergym_wire import (
     _HEX64,
     _PROVIDER_ID,
-    FINALIZATION_GRACE_SEC,
-    GATEWAY_TRANSPORT_RETRY_BUDGET_SEC,
     ExecutorFailure,
-    GatewayAdmissionRejected,
-    GatewayTransportError,
     HttpStatusError,
-    _cost_is_pending,
-    _CostGraceTracker,
-    _definitive_admission_rejection,
     _gateway_fair_completion,
-    _gateway_finalizing,
     _gateway_has_tool_markup,
-    _gateway_path,
     _nonnegative_number,
     _positive_int,
     _require_exact_effort,
@@ -88,19 +78,6 @@ from devtools.benchmarks.cybergym.cybergym_wire import (
 )
 from ouroboros.openrouter_attribution import OPENROUTER_APP_HEADERS
 
-_SETTLED = frozenset({"completed", "failed", "cancelled", "rejected_duplicate"})
-
-# Gateway statuses under which the task has been admitted but has not started
-# executing: no worker lane, no provider spend, no wall clock the agent can
-# pace against.  The launcher's task deadline starts when the task leaves this
-# set (full1507 postmortem: a submit-anchored deadline cancelled healthy tasks
-# after ~1 h of runtime because they had queued ~1 h behind a finalization
-# backlog).  The isolate's own ``OUROBOROS_TASK_ABS_CEILING_SEC`` bounds the
-# RUNNING phase from the same moment; ``TASK_DEADLINE_GRACE_SEC`` keeps the
-# launcher's cancel a backstop behind that server-side settle, not a race
-# against it.
-_QUEUED_GATEWAY_STATUSES = frozenset({"", "scheduled", "queued", "pending"})
-TASK_DEADLINE_GRACE_SEC = 300.0
 
 
 _MASKED_TASK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{7,255}$")
@@ -351,7 +328,7 @@ def _write_checkpoint_delivery(
 
 
 class _LifecycleMixin:
-    """Provider/settings/startup/gateway/cleanup lifecycle methods."""
+    """Provider/settings/startup/submission/cleanup lifecycle methods."""
 
     def _ensure_key(self) -> str:
         value = os.environ.get(self.config.api_key_env, "")
@@ -870,259 +847,6 @@ class _LifecycleMixin:
                 "provider_policy": dict(self.provider_observation.get("provider_policy") or {}),
             },
         }
-
-    def _terminalize_gateway_attempt(self, gateway_task_id: str) -> None:
-        """Atomically transfer a settled gateway attempt to outer-write custody."""
-        with self._registry_condition:
-            entry = self._gateway_attempts.get(gateway_task_id)
-            if isinstance(entry, Mapping):
-                workspace_name = str(entry.get("workspace_name") or "")
-                if workspace_name:
-                    self._terminal_uncommitted_workspaces[workspace_name] = {
-                        "task_id": str(entry.get("task_id") or ""),
-                        "attempt_id": str(entry.get("attempt_id") or ""),
-                    }
-            self._gateway_attempts.pop(gateway_task_id, None)
-
-    def probe_gateway_alive(self) -> bool:
-        """Liveness probe for the dispatch breaker: did the gateway answer?
-
-        Any answer (even a non-2xx status) proves the transport is back; only
-        a transport-level failure keeps the campaign paused.
-        """
-
-        try:
-            self.config.http_runner(
-                "GET",
-                _gateway_path(self.config.ouroboros_url, "/api/health"),
-                timeout=15,
-            )
-        except GatewayTransportError:
-            return False
-        except HttpStatusError:
-            return True
-        except Exception:  # noqa: BLE001 - malformed body still means "answered"
-            return True
-        return True
-
-    def _gateway_wait(
-        self,
-        body: Mapping[str, Any],
-        checkpoint: pathlib.Path,
-        *,
-        workspace_name: str = "",
-        task_id: str = "",
-        attempt_id: str = "",
-    ) -> Mapping[str, Any]:
-        requested_task_id = str(body.get("task_id") or "").strip()
-        owner_task_id = str(task_id)
-        owner_attempt_id = str(attempt_id)
-        # The gateway currently echoes the opaque caller task id.  Register it
-        # before POST so a dropped response can still be treated as an
-        # admitted-or-unknown attempt and retained for manual reattachment.
-        pending_id = requested_task_id or ("pending-" + uuid.uuid4().hex)
-        idempotency_key = "cybergym-" + hashlib.sha256(
-            (pending_id + "\0" + str(body.get("actor_id") or "cybergym")).encode()
-        ).hexdigest()
-        self._gateway_attempts[pending_id] = {
-            "gateway_task_id": requested_task_id,
-            "status": "admission_pending",
-            "checkpoint": str(checkpoint),
-            "idempotency_key": idempotency_key,
-            "workspace_name": str(workspace_name),
-            "task_id": owner_task_id,
-            "attempt_id": owner_attempt_id,
-        }
-        try:
-            created = _unwrap_http_json(
-                self.config.http_runner(
-                    "POST",
-                    _gateway_path(self.config.ouroboros_url, "/api/tasks"),
-                    body=body,
-                    headers={"Idempotency-Key": idempotency_key},
-                    timeout=60,
-                ),
-                operation="Ouroboros task admission",
-            )
-        except BaseException as exc:
-            rejected = _definitive_admission_rejection(exc)
-            status = "admission_rejected" if rejected else "admission_unknown"
-            entry = self._gateway_attempts.get(pending_id)
-            if entry is not None:
-                entry.update({"status": status, "error": type(exc).__name__})
-            if rejected:
-                # A typed 4xx response is evidence that the gateway refused the
-                # request before scheduling it.  Do not retain a phantom
-                # custody claim, but keep the redacted checkpoint for audit.
-                self._gateway_attempts.pop(pending_id, None)
-            _write_json(
-                checkpoint,
-                {
-                    "gateway_task_id": requested_task_id or pending_id,
-                    "status": status,
-                    "custody_required": not rejected,
-                    "idempotency_key": idempotency_key,
-                    "error": type(exc).__name__,
-                },
-            )
-            if rejected:
-                raise GatewayAdmissionRejected(str(exc)) from exc
-            raise
-        task_id = str(created.get("task_id") or "").strip()
-        if not task_id or not _GATEWAY_TASK_ID.fullmatch(task_id):
-            self._gateway_attempts[pending_id]["status"] = "admission_unknown_response"
-            _write_json(
-                checkpoint,
-                {
-                    "gateway_task_id": requested_task_id or pending_id,
-                    "status": "admission_unknown_response",
-                    "custody_required": True,
-                    "idempotency_key": idempotency_key,
-                },
-            )
-            raise ExecutorFailure("Ouroboros gateway returned no task id")
-        if requested_task_id and task_id != requested_task_id:
-            self._gateway_attempts[pending_id].update(
-                {"gateway_task_id": task_id, "status": "admission_id_mismatch"}
-            )
-            _write_json(
-                checkpoint,
-                {
-                    "gateway_task_id": task_id,
-                    "submitted_task_id": requested_task_id,
-                    "status": "admission_id_mismatch",
-                    "custody_required": True,
-                    "idempotency_key": idempotency_key,
-                },
-            )
-            raise ExecutorFailure("Ouroboros gateway changed the submitted task id")
-        if pending_id != task_id:
-            self._gateway_attempts.pop(pending_id, None)
-        self._gateway_attempts[task_id] = {
-            "gateway_task_id": task_id,
-            "status": "submitted",
-            "checkpoint": str(checkpoint),
-            "idempotency_key": idempotency_key,
-            "workspace_name": str(workspace_name),
-            "task_id": owner_task_id,
-            "attempt_id": owner_attempt_id,
-        }
-        _write_json(
-            checkpoint,
-            {
-                "gateway_task_id": task_id,
-                "status": "submitted",
-                "idempotency_key": idempotency_key,
-                "body": {k: v for k, v in body.items() if k != "description"},
-            },
-        )
-        # Two bounds, one active at a time: the queue-wait cap while the
-        # gateway still reports the task as not started, then the task
-        # deadline anchored at the first observed non-queued status.
-        queue_started = time.monotonic()
-        queue_wait_cap = queue_started + float(self.config.task_timeout_sec)
-        run_deadline: float | None = None
-        observed_start_at: str | None = None
-        latest: Mapping[str, Any] = created
-        cost_grace = _CostGraceTracker()
-        transport_deadline: float | None = None
-        finalization_grace_until: float | None = None
-        while True:
-            bound = run_deadline if run_deadline is not None else queue_wait_cap
-            if time.monotonic() >= bound:
-                # The worker is done and the server is finalizing artifacts:
-                # a finished, paid result is minutes away — wait for it (once,
-                # bounded) instead of cancelling it.
-                if finalization_grace_until is None and _gateway_finalizing(latest):
-                    finalization_grace_until = time.monotonic() + FINALIZATION_GRACE_SEC
-                    run_deadline = finalization_grace_until
-                    _write_json(checkpoint, {
-                        "gateway_task_id": task_id,
-                        "status": _response_status(latest),
-                        "result": dict(latest),
-                        "deadline_basis": "finalization_grace",
-                        "finalization_grace_sec": FINALIZATION_GRACE_SEC,
-                    })
-                    continue
-                break
-            try:
-                latest = _unwrap_http_json(
-                    self.config.http_runner(
-                        "GET",
-                        _gateway_path(self.config.ouroboros_url, "/api/tasks/" + urllib.parse.quote(task_id, safe="")),
-                        timeout=60,
-                    ),
-                    operation="Ouroboros task status",
-                )
-            except GatewayTransportError:
-                # A transient transport failure (an isolate event-loop stall
-                # starves the HTTP answer) must not kill a healthy paid task
-                # on the first error: ride it out within a bounded budget.
-                # Exhaustion re-raises so a dead gateway still produces the
-                # circuit-breaker row.
-                now = time.monotonic()
-                if now >= bound:
-                    # The task's own deadline passed while the gateway was
-                    # unreachable: stop polling and cancel it like a normal
-                    # deadline exit instead of writing a transport row.
-                    break
-                if transport_deadline is None:
-                    transport_deadline = min(
-                        bound, now + GATEWAY_TRANSPORT_RETRY_BUDGET_SEC
-                    )
-                if now >= transport_deadline:
-                    raise
-                self.config.sleep(max(0.5, float(self.config.poll_interval_sec)))
-                continue
-            transport_deadline = None
-            returned_id = str(latest.get("task_id") or "").strip()
-            if returned_id and returned_id != task_id:
-                raise ExecutorFailure("Ouroboros status response belongs to a different task")
-            status = _response_status(latest)
-            if run_deadline is None and status not in _QUEUED_GATEWAY_STATUSES:
-                run_deadline = (
-                    time.monotonic()
-                    + float(self.config.task_timeout_sec)
-                    + TASK_DEADLINE_GRACE_SEC
-                )
-                observed_start_at = time.strftime(
-                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
-                )
-            frame = {
-                "gateway_task_id": task_id,
-                "status": status,
-                "result": dict(latest),
-                "deadline_basis": (
-                    "finalization_grace" if finalization_grace_until is not None
-                    else "observed_start" if run_deadline is not None else "queue_wait_cap"
-                ),
-            }
-            if observed_start_at is not None:
-                frame["observed_start_at"] = observed_start_at
-            _write_json(checkpoint, frame)
-            if status in _SETTLED:
-                # Root post-task accounting can publish ``completed`` before
-                # its durable cost roll-up is final; only the bounded
-                # abandoned-residue grace (cybergym_wire) releases such a
-                # frame early, with the residue disclosed on it.
-                if status == "completed" and _cost_is_pending(latest):
-                    accepted = cost_grace.accept(
-                        latest,
-                        now=time.monotonic(),
-                        wall_now=time.time(),
-                    )
-                    if accepted is None:
-                        self.config.sleep(max(0.5, float(self.config.poll_interval_sec)))
-                        continue
-                    latest = accepted
-                    _write_json(checkpoint, {"gateway_task_id": task_id, "status": status, "result": dict(latest)})
-                self._terminalize_gateway_attempt(task_id)
-                return latest
-            self.config.sleep(max(0.5, float(self.config.poll_interval_sec)))
-        # The task may still be running after the local wait expires.  Ask the
-        # gateway to stop it and retain the original attempt until a terminal
-        # custody response is observed; never return a reusable task id here.
-        return self._cancel_gateway_task(task_id, checkpoint)
 
     def _submit_final(
         self, task: TaskSpec, task_dir: pathlib.Path, container_name: str

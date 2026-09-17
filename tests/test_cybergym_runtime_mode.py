@@ -14,11 +14,11 @@ def test_runtime_mode_reaches_applied_settings(tmp_path, mode):
     args = parse_args(["--runtime-mode", mode, "--budget-usd", "200",
                        "--per-task-cost-usd", "5", "--workers", "32"])
     template = tmp_path / "template.json"
-    template.write_text('{"OUROBOROS_RUNTIME_MODE": "advanced"}')
+    template.write_text('{"OUROBOROS_RUNTIME_MODE": "advanced"}', encoding="utf-8")
     output = tmp_path / "run"
     output.mkdir()
     path, metadata = _prepare_applied_settings(template, output, args)
-    applied = json.loads(path.read_text())
+    applied = json.loads(path.read_text(encoding="utf-8"))
     assert applied["OUROBOROS_RUNTIME_MODE"] == mode
     assert metadata["runtime_mode"] == mode
     assert metadata["effective_overrides"]["OUROBOROS_RUNTIME_MODE"] == mode

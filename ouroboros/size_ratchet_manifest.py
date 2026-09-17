@@ -99,13 +99,10 @@ BAND_BASELINE_PATHS = (
 )
 
 BAND_PATHS = {
-    "devtools/benchmarks/cybergym/cybergym_adapter.py": "Stateful campaign layer after the protocol split (ratchet heal); shrink next touch.",
-    "devtools/benchmarks/cybergym/cybergym_docker.py": "Docker runtime layer of the executor split: one container-machinery seam.",
     "devtools/benchmarks/cybergym/cybergym_executor.py": "Executor assembly after docker/lifecycle/wire splits (ratchet heal); shrink next touch.",
     "devtools/benchmarks/cybergym/cybergym_lifecycle.py": "Run/settle lifecycle layer of the executor split: one accounting seam.",
     "devtools/benchmarks/cybergym/cybergym_protocol.py": "Stateless protocol layer of the adapter split: constants, validators, provenance.",
-    "devtools/benchmarks/cybergym/cybergym_sidecar.py": "Sidecar attestation core after the observations split (ratchet heal); shrink next touch.",
-    "devtools/benchmarks/cybergym/run_cybergym.py": "CyberGym launcher is one submit-shaped entry point (drift heal); split when a second arm lands.",
+    "devtools/benchmarks/cybergym/cybergym_reconcile.py": "CyberGym recovery joins existing checkpoint, result, claim and cleanup authority without repeating an agent; one recovery owner retains that crash-window contract.",
     "devtools/benchmarks/swe_bench_pro/e1v2/run_pro.py": None,
     "devtools/benchmarks/terminal_bench/harbor_installed_agent.py": None,
     "devtools/benchmarks/terminal_bench/run_tb.py": None,
@@ -181,7 +178,8 @@ BAND_PATHS = {
     "tests/test_available_subagents_runtime.py": "Configured-session route and legacy custody regressions retained after removing compulsory source-request production tests.",
     "tests/test_build_scripts.py": None,
     "tests/test_commit_gate.py": None,
-    "tests/test_cybergym_protocol.py": "CyberGym protocol suite arrived in one piece with the benchmark (drift heal); split when the next protocol family lands.",
+    "tests/test_cybergym_dispatch.py": "CyberGym dispatch tests cover completion-order admission, transient gateway pauses and budget-refusal recovery through one existing fake campaign harness.",
+    "tests/test_cybergym_docker.py": "CyberGym workspace custody tests cover atomic gateway transfer, recovery and durable-result acknowledgement using the same attested fake container fixtures.",
     "tests/test_deep_review_slot.py": "\u04243 deep self-review suite: the deep_review row/endpoint half and the three-delivery half (retrieving executors, coverage, header, custody, availability) share one fixture set (repo/drive roots, scripted LLM, fake session executor); split at the config-vs-delivery seam once the row contract stops moving, not by size.",
     "tests/test_delegate_answer.py": "Entered the band by the #204 escalation-route pins (walk-up, schema and expiry-note source pins) on top of the phase-B interaction suite; one coherent delegated-question surface, split only when a natural seam appears",
     "tests/test_delegated_skill_payload.py": "Sol scope-review fix batch: P1 trust probes (forged index, symlinked git metadata), P2 golden-E2E review close and schema/docs pins joined the existing R1+gate-fix payload suite.",
