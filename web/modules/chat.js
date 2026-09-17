@@ -3851,7 +3851,6 @@ export function createChatInstance({
     let wsHasConnectedOnce = false;
 
     onWs('open', (msg) => {
-        void chatDecision.refreshQuestions();
         refreshHeaderControlState(true);
         syncChatStatus();
         // Reconnect truth comes from the ws CLIENT

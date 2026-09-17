@@ -1041,6 +1041,9 @@ class LocalChatBridge:
                         "chat_id": pointer["chat_id"], "is_progress": False, "markdown": False,
                         "owner_wait_state": pointer.get("owner_wait_state", ""),
                         "source_status": pointer.get("source_status", ""),
+                        **{key: pointer[key] for key in (
+                            "question", "options", "answered_index", "comment", "wait_for_answer",
+                            "wait_ended_at", "owner_wait_resume_reason") if key in pointer},
                     })
             except Exception:
                 # The question is already delivered. History/activity reads heal

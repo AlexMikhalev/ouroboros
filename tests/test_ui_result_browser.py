@@ -173,6 +173,7 @@ def test_ui_results_and_required_question_journey(wait_clone, tmp_path, monkeypa
                         result = wait_durable_result(oracle, task["id"], timeout=90)
                         assert result["owner_quiz"][wait["quiz_id"]]["answered_index"] == 1
                         pointer.get_by_text("You answered").wait_for(timeout=30000)
+                        pointer.get_by_text("Your answer: Both sources", exact=True).wait_for(timeout=30000)
                         task_card = page.locator(f'.chat-live-card[data-task-id="{task["id"]}"]')
                         task_card.locator('[data-live-meta]').filter(has_text="Last solve response:").wait_for(timeout=30000)
                         assert task_card.locator('[data-live-title]').inner_text() == "still working"

@@ -371,10 +371,12 @@ def test_question_pointer_composition_preview_navigation_and_reload(subscription
             # Source question is outside this window: exact navigation must read detail.
             rows = [{'role': 'assistant', 'text': 'Later retained project message.', 'ts': '2026-09-16T01:00:00Z'}]
         else:
+            # The row the Python producer emits: complete for display, no detail read needed.
             rows = [{'role': 'system', 'system_type': 'project_question_pointer', 'task_id': 'proof-task',
                 'quiz_id': block['quiz_id'], 'quiz_state': block['state'], 'project_id': project['id'],
                 'project_name': project['name'], 'project_chat_id': 42, 'owner_wait_state': wait['state'],
-                'ts': block['asked_at']}]
+                'question': block['question'], 'options': block['options'], 'ts': block['asked_at'],
+                **{key: block[key] for key in ('wait_for_answer', 'wait_ended_at', 'answered_index', 'comment') if key in block}}]
         route.fulfill(json={'messages': rows, 'progress': []})
     page.route('**/api/chat/history*', history)
     open_app(ui)
@@ -402,11 +404,12 @@ def test_question_pointer_composition_preview_navigation_and_reload(subscription
     print(json.dumps({'question_geometry': metrics, 'viewport': [width, height]}))
     setup_browser.capture(page, f'question-waiting-focus-{width}')
     wait['state'] = 'resumed'
-    block.update(wait_for_answer=False, wait_ended_at='2026-09-16T00:01:00Z')
+    block.pop('wait_for_answer'); block['wait_ended_at'] = '2026-09-16T00:01:00Z'
+    # The production timeout frame carries only wait_for_answer:false.
     for ws in sockets:
         ws.send(json.dumps({'type': 'quiz_state', 'task_id': 'proof-task', 'quiz_id': block['quiz_id'],
-                           'state': 'open', 'wait_for_answer': False, 'wait_ended_at': block['wait_ended_at']}))
-    pointer.get_by_text('Task continued — you can still answer', exact=True).wait_for()
+                           'state': 'open', 'wait_for_answer': False}))
+    pointer.get_by_text('Unanswered · the task continued; an answer is still accepted', exact=True).wait_for()
     comment = 'Retain the provenance and the original source.'
     block.update(state='answered', answered_index=0, comment=comment)
     for ws in sockets:
@@ -421,7 +424,7 @@ def test_question_pointer_composition_preview_navigation_and_reload(subscription
     quiz.get_by_text("Owner's answer: " + comment, exact=True).wait_for()
     assert quiz.locator('.chat-quiz-option.chosen').inner_text().startswith('Keep the primary source')
     assert quiz.locator('.chat-quiz-comment').count() == 0
-    assert quiz.get_by_text('Task continued — you can still answer.', exact=True).count() == 0
+    assert quiz.locator('.chat-quiz-wait-ended').count() == 0
     setup_browser.capture(page, f'question-exact-navigation-{width}')
     page.reload()
     pointer.get_by_text('Your answer: Keep the primary source — ' + comment, exact=True).wait_for()

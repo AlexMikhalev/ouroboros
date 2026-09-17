@@ -450,14 +450,17 @@ their own message in that chat. After settlement, status and the owner's recorde
 answer keep both forms readable. Anatomy, top to bottom:
 
 1. **Head** — neutral `Question` chip (`--type-meta`, neutral pair) and a
-   status as dot + text. The lifecycle word family is closed:
-   `Waiting for your answer` requires positive wait evidence; an open question
-   without it says `Question open — you can answer`. A resumed wait says
-   `Task continued — you can still answer`, without inferring whether an ordinary
-   chat reply arrived. `You answered` uses the ok dot.
-   `Task finished — you can still answer` keeps the neutral dot and answerability;
-   `Replaced by a newer question` uses the disabled dot. Unknown lifecycle reads
-   `Question status unavailable`, never an invented invitation. No timers, no
+   status as dot + text. The lifecycle word family is closed and leads with the
+   one word that answers "is there an unanswered question for me?":
+   `Waiting for your answer` needs positive wait evidence (the task's live wait
+   record, or the original required flag before any record exists); a resumed
+   wait — the owner typed instead, or the bound closed — reads `Unanswered · the
+   task continued; an answer is still accepted`; an open question without any
+   wait evidence reads `Unanswered · an answer is still accepted`;
+   `Unanswered · the task finished; a late answer is accepted as your message`
+   keeps the neutral dot and answerability; `You answered` uses the ok dot;
+   `Replaced by a newer question` uses the disabled dot; an unreadable source
+   reads `Status unavailable`, never an invented invitation. No timers, no
    countdowns: the asking task's end closes nothing but its own mailbox.
 2. **Question** — the one primary thing: `--type-body` semibold,
    `--text-primary`.
@@ -492,7 +495,7 @@ element in the card shares one keyboard ring (2px `--focus-accent-border`,
 2px offset). Component geometry (card min/max width) keeps local literals like
 the rest of the chat surface.
 
-Required Project questions appear in Main as one System pointer: the question is primary, its lifecycle and Project source secondary. Settled pointers show both the recorded option (including the first) and comment, or a comment-only answer. Preview cuts are visibly labelled and the complete original stays reachable. The pointer and quiz header share the same lifecycle wording above. Actions say `Answer question` for open/finished answerable cards, `View answer` after an answer, and `View previous question` after replacement. Checking details is neutral; a failed detail read keeps the source and navigation with explicit `Retry`, not a false expiry. The form remains in Project. An explicit click reveals that exact question without toggling the room closed or moving the viewport on background updates.
+Required Project questions appear in Main as one System pointer: the question is primary (`--type-body` semibold), the status and `In <Project>` line are meta ink (the owner reads them to act), the recorded answer is a second body line. Settled pointers show both the recorded option (including the first) and the comment, or a comment-only answer; the option and the comment are bounded separately, a cut is visibly labelled, and the complete original stays one click away. The pointer and the quiz header share the lifecycle wording above. Actions say `Answer question` while the card still takes one, `View answer` after an answer, and `View question` otherwise (a replaced or unreadable question still opens). The form remains in Project. An explicit click reveals that exact question without toggling the room closed or moving the viewport on background updates.
 
 System-pointer, Project-lifecycle and routing actions all use the shared `createSystemMessageActions` composition. It owns token-based space above and below the controls, wrapping and clearance for the existing button focus ring; action buttons never sit in a clipped/nowrap text line. This is a row composition, not a new card framework or a global button-margin rule.
 

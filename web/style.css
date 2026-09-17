@@ -322,8 +322,9 @@ body.resizing-panels { user-select: none; }
 .project-question-preview, .project-question-answer {
     color: var(--text-primary); font-size: var(--type-body);
 }
+/* The owner reads the status to act on it: meta ink, never the quieter secondary step. */
 .project-question-status, .project-question-source {
-    color: var(--text-secondary); font-size: var(--type-meta);
+    color: var(--text-meta); font-size: var(--type-meta);
 }
 
 
