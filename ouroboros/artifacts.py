@@ -1271,20 +1271,16 @@ def registered_task_artifact(drive_root: Any, task_id: str, name: str) -> Option
     return dict(row) if isinstance(row, dict) else None
 
 
-def _artifact_versions_dir(drive_root: pathlib.Path, task_id: str, artifact_name: str) -> pathlib.Path:
-    safe_name = pathlib.Path(artifact_name).name.replace("/", "_").replace("\\", "_")
-    if not safe_name or safe_name in {".", ".."}:
-        safe_name = "artifact"
-    return pathlib.Path(drive_root) / "task_results" / _ARTIFACT_VERSIONS_DIR / validate_task_id(task_id) / safe_name
-
-
 def _archive_previous_artifact_version(drive_root: pathlib.Path, task_id: str, dest: pathlib.Path, source: pathlib.Path) -> None:
     if not dest.is_file() or not source.is_file():
         return
     previous = stream_artifact_file(dest)
     if previous == stream_artifact_file(source):
         return
-    version_dir = _artifact_versions_dir(drive_root, task_id, dest.name)
+    safe_name = pathlib.Path(dest.name).name.replace("/", "_").replace("\\", "_")
+    if not safe_name or safe_name in {".", ".."}:
+        safe_name = "artifact"
+    version_dir = pathlib.Path(drive_root) / "task_results" / _ARTIFACT_VERSIONS_DIR / validate_task_id(task_id) / safe_name
     version_dir.mkdir(parents=True, exist_ok=True)
     suffix = dest.suffix
     stem = dest.name[: -len(suffix)] if suffix else dest.name
