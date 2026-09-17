@@ -163,19 +163,10 @@ with a newer versionCode, bridge loss/recovery, and Panic versus automatic entry
 Core HTTP health is separate from native artifact and bridge readiness; checks
 must use their existing owners and preserve incomplete outcomes.
 
-Each Available-subagents `agent_session` row may select `access=full` for its
-mutating assignments; omitted access stays `workspace_write` on every platform.
-API-model rows cannot request full. Preserve the choice in the existing canonical
-configuration fingerprint and immutable task snapshot, and consume that snapshot
-at dispatch preflight and fresh start. Omitted defaults must preserve existing
-fingerprints. Both profiles use the same snapshot, retry, capture and
-persistent-registration owners.
-Only a fresh full request can create an absent Claudexor trust grant for its stable
-project root through the existing API; an explicit false grant remains a refusal.
-Retries use their stored access and exact request, without granting or widening.
-Full means broader native process powers, not a different assignment or implicit
-patch integration. Read-only tasks retain Ask/readonly; an Android Codex sandbox
-failure must not be hidden as success or an automatic full-access retry.
+Keep delegated access with the common actor/delegation owners described in
+ARCHITECTURE "Agent Core". Android must not acquire a second access default,
+trust policy or retry implementation. Qualify the actual native route separately;
+a sandbox failure is not a successful run or permission to disguise a retry.
 
 On Android, `enter-linux` restores ordinary OOM selection for its own process and
 descendants without removing root. The existing
