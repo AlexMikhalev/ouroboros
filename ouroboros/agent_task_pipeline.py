@@ -531,6 +531,8 @@ def emit_task_results(
     )
     outcome_axes = normalize_outcome_axes({"outcome_axes": loop_outcome.get("outcome_axes")})
     execution_status = str((outcome_axes.get("execution") or {}).get("status") or "")
+    if ctx is not None and execution_status in {EXECUTION_FAILED, EXECUTION_INFRA_FAILED}:
+        ctx._presence_completion_accepted = False
     reason_code = str(loop_outcome.get("reason_code") or "")
     _root_outbox = _is_root_post_task(task)   # durable outbox (no model call): pre-marker predicate
     if getattr(ctx, "_skip_post_task_synthesis", False):   # "Stop now": paid root predicates see it
@@ -811,6 +813,11 @@ def _dispatch_root_post_task(
         or bool(str(task.get("workspace_mode") or "").strip())
         or project_task
     )
+    if (is_presence_task(task) and task.get("_is_direct_chat")
+            and not in_worker_process() and not split_drive):
+        # The native adapter receives the durable result on return. Its request
+        # must not wait for synthesis; pooled/forked workers retain their custody.
+        blocking = False
     if blocking and event_queue is not None:
         # The CANONICAL data root — what the supervisor's boot/tick outbox
         # replay reads (§8-A2): the parent/budget root for split children, the

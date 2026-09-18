@@ -116,6 +116,6 @@ def test_scheduled_presence_handoff_survives_the_no_call_rail(tmp_path):
         provider_notice=usage["terminal_provider_notice"],
     )
     assert terminal["work_ref"] == "t-child-1"
-    assert terminal["outcome"] == "deferred"
+    assert terminal["outcome"] == "message"  # failed finalization did not accept the pending deferred outcome
     assert terminal["text"].startswith("PARTIAL RESULT.")
     assert terminal["text"].count(usage["terminal_provider_notice"]) == 1

@@ -1148,6 +1148,8 @@ def maintain_memory_pressure(memory: Any, llm_client: Any, context: Any, *,
     return result()
 
 def _format_entries_for_block(entries: List[Dict[str, Any]]) -> str:
+    from ouroboros.dialogue_provenance import dialogue_author, dialogue_provenance, dialogue_text
+
     lines = []
     for e in entries:
         ts_raw = str(e.get("ts", ""))
@@ -1161,10 +1163,12 @@ def _format_entries_for_block(entries: List[Dict[str, Any]]) -> str:
             author = "Ouroboros"
         else:
             direction_prefix = ""
-            from ouroboros.dialogue_provenance import dialogue_author
-
             author = dialogue_author(e)
-        text = str(e.get("text", ""))
+        if dir_raw in ("out", "outgoing", "system") and e.get("transport"):
+            provenance = dialogue_provenance(e)
+            if provenance:
+                author = f"{author} [{provenance}]"
+        text = dialogue_text(e)
         lines.append(f"[{ts}] {direction_prefix}{author}: {text}")
     return "\n\n".join(lines)
 

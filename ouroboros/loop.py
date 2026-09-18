@@ -90,6 +90,31 @@ def _handle_text_response(
     return safe_content, accumulated_usage, llm_trace
 
 
+def _finalize_loop_candidate(content, limit_ctx, tools, emit_progress, *, after_tools=False):
+    """Consume a current Presence request or ordinary final through the same gates."""
+    ctx = tools._ctx
+    completion = getattr(ctx, "_presence_completion", None)
+    if (completion is not None and getattr(ctx, "_presence_completion_owner_revision", -1)
+            != len(getattr(ctx, "_owner_directives", []) or [])):
+        # A finish request cannot decide the response to newer owner input.
+        completion = ctx._presence_completion = None
+    if after_tools:
+        if not isinstance(completion, dict) or not (
+            completion.get("message") or completion.get("outcome") in {"silent", "tool_delivered"}
+        ):
+            return None
+        content = completion.get("message") or ""
+    result = _no_tool_final_answer(
+        content, limit_ctx, limit_ctx.llm_trace, tools, limit_ctx.incoming_messages,
+        limit_ctx.owner_msg_seen, emit_progress, **({"explicit_candidate": True} if after_tools else {}),
+    )
+    if result is None:
+        ctx._presence_completion = None
+        wait_for_acceptance_feedback(tools, limit_ctx, limit_ctx.llm_trace,
+                                     limit_ctx.tool_schemas, limit_ctx.owner_msg_seen)
+    return result
+
+
 # Bounded staleness for the two DECIDING cost surfaces (ceiling check,
 # milestone note): a round can block 900s in wait_tasks while children spend,
 # and the pacing refresh covers only deadline-less tasks — such a round pays
@@ -390,6 +415,7 @@ def run_llm_loop(
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """Run the tool loop."""
     ctx = tools._ctx
+    ctx._presence_completion, ctx._presence_completion_accepted = None, False
     ctx._delivery_candidate, ctx._delivery_candidate_revision, ctx._delivery_control_required = None, 0, False
     ctx._delivery_evidence_revision, ctx._delivery_evidence_fingerprint = 0, ""
     ctx.model_turn_state = ModelTurnState()  # one loop invocation is one active transport turn
@@ -525,6 +551,9 @@ def run_llm_loop(
                 pending_tool_calls = None
                 if budget_result is not None:
                     return budget_result
+                final_result = _finalize_loop_candidate(None, limit_ctx, tools, emit_progress, after_tools=True)
+                if final_result is not None:
+                    return final_result
                 continue
 
             if (transport_wait is not None and transport_wait.wait_cause == "provider_outcome_unknown"
@@ -639,12 +668,8 @@ def run_llm_loop(
             # Every metered response counts as nanny progress.
             _note_nanny_delegate_activity(tools._ctx, round_idx, accumulated_usage, [])
             if not tool_calls:
-                final_result = _no_tool_final_answer(
-                    content, limit_ctx, llm_trace, tools, incoming_messages,
-                    _owner_msg_seen, emit_progress,
-                )
+                final_result = _finalize_loop_candidate(content, limit_ctx, tools, emit_progress)
                 if final_result is None:
-                    wait_for_acceptance_feedback(tools, limit_ctx, llm_trace, tool_schemas, _owner_msg_seen)
                     continue
                 return final_result
 

@@ -24,7 +24,9 @@ def _finish_presence(ctx: ToolContext, outcome: str, message: str = "") -> str:
         "outcome": selected,
         "message": str(message or "").strip(),
     }
-    return f"PRESENCE_COMPLETION_RECORDED: {selected}. Finish this turn now."
+    ctx._presence_completion_accepted = False
+    ctx._presence_completion_owner_revision = len(getattr(ctx, "_owner_directives", []) or [])
+    return f"PRESENCE_COMPLETION_RECORDED: {selected}. The host will apply the normal finalization checks after this tool batch."
 
 
 def _configure_presence(ctx: ToolContext, action: str, **params: Any) -> str:
@@ -334,10 +336,12 @@ def get_tools() -> List[ToolEntry]:
                 "name": "presence_finish",
                 "description": (
                     "Finish the current external presence turn with a typed delivery outcome. "
-                    "Call exactly once after the useful work is done. Choose message to return "
+                    "Call after the useful work is done. Choose message to return "
                     "a conversational reply, silent when no reply is appropriate, tool_delivered "
                     "when an allowed tool already delivered the result, or deferred after long "
-                    "work was successfully promoted."
+                    "work was successfully promoted. With nonblank message text, or silent/tool_delivered, "
+                    "the host can finish after this tool batch without another model round. "
+                    "If finalization requests more work or a revision, complete it before finishing again."
                 ),
                 "parameters": {
                     "type": "object",
@@ -345,7 +349,7 @@ def get_tools() -> List[ToolEntry]:
                         "outcome": {"type": "string", "enum": list(PRESENCE_OUTCOMES)},
                         "message": {
                             "type": "string",
-                            "description": "Reply text for message, or an immediate acknowledgement for deferred.",
+                            "description": "Reply text for message, or an immediate acknowledgement for deferred. Nonblank text enables immediate finalization; omitting it leaves the reply to a subsequent model round.",
                         },
                     },
                     "required": ["outcome"],
