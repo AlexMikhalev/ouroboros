@@ -20,15 +20,29 @@ from typing import Iterator
 from devtools.benchmarks.common.manifests import write_json
 
 
-def key_usage(api_key: str) -> float:
+class UsageCounterError(ValueError):
+    """A rejected numeric observation, retained without making it budget truth."""
+
+    def __init__(self, observed_usage: float, previous_usage: float) -> None:
+        self.observed_usage = observed_usage
+        super().__init__(f"provider usage counter decreased or is invalid: "
+                         f"observed={observed_usage!r}, previous={previous_usage!r}")
+
+
+def validate_usage(usage: float, previous_usage: float) -> None:
+    if not math.isfinite(usage) or usage < 0 or usage < previous_usage:
+        raise UsageCounterError(usage, previous_usage)
+
+
+def key_usage(api_key: str, *, timeout: float = 15) -> float:
     request = urllib.request.Request(
-        "https://openrouter.ai/api/v1/key", headers={"Authorization": f"Bearer {api_key}"}
+        "https://openrouter.ai/api/v1/key",
+        headers={"Authorization": f"Bearer {api_key}", "Cache-Control": "no-cache"},
     )
-    with urllib.request.urlopen(request, timeout=15) as response:
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         payload = json.loads(response.read().decode("utf-8"))
     value = float(payload["data"]["usage"])
-    if not math.isfinite(value) or value < 0:
-        raise ValueError("provider returned an invalid usage counter")
+    validate_usage(value, 0.0)
     return value
 
 
@@ -73,8 +87,7 @@ class CampaignBudget:
         write_json(self.path, self.record)
 
     def observe(self, usage: float) -> None:
-        if not math.isfinite(usage) or usage < self.record["last_usage"]:
-            raise ValueError("provider usage counter decreased or is invalid; spending is unknown")
+        validate_usage(usage, self.record["last_usage"])
         self.record["last_usage"] = usage
         self.save()
 

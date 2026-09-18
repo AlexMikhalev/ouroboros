@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import io
 import os
 import pathlib
 import shutil
@@ -261,7 +262,9 @@ def supervised(tmp_path, monkeypatch):
     monkeypatch.setattr(launcher, "spawn_supervised", launch)
     monkeypatch.setattr(launcher, "stop_process_group", stop)
     monkeypatch.setattr(launcher, "remove_run_containers", cleanup)
-    monkeypatch.setattr(launcher, "key_usage", lambda _key: 100)
+    monkeypatch.setattr(launcher, "key_usage", lambda _key, **_kwargs: 100)
+    monkeypatch.setattr(launcher, "time", SimpleNamespace(
+        time=time.time, monotonic=time.monotonic, sleep=lambda _delay: None))
     monkeypatch.setattr(launcher.shutil, "disk_usage", lambda _path: SimpleNamespace(free=1024**4))
     return args, bench, env, budget, events, handlers, proc
 
@@ -273,14 +276,14 @@ def supervised(tmp_path, monkeypatch):
 def test_supervisor_stops_owned_work_on_real_boundaries(supervised, monkeypatch, trigger, expected):
     args, bench, env, budget, events, handlers, _proc = supervised
     if trigger == "meter-loss":
-        def offline(_key):
+        def offline(_key, **_kwargs):
             raise OSError("meter unavailable")
         monkeypatch.setattr(launcher, "key_usage", offline)
     elif trigger == "disk":
         args.min_free_gib = 200
         monkeypatch.setattr(launcher.shutil, "disk_usage", lambda _path: SimpleNamespace(free=199 * 1024**3))
     else:
-        monkeypatch.setattr(launcher, "key_usage", lambda _key: 1000 if trigger == "campaign" else 250)
+        monkeypatch.setattr(launcher, "key_usage", lambda _key, **_kwargs: 1000 if trigger == "campaign" else 250)
     result = launcher.supervise_run(args, ["fake-runner"], bench, env, "not-a-real-key", budget)
     assert result["stop_reason"] == expected
     assert events == ["stop-group", "cleanup-owned"]
@@ -304,7 +307,7 @@ def test_parallel_campaign_spends_past_lifetime_caps_then_stops_at_explicit_rese
     # Meter values are cumulative key usage. Continue after $1200 (the old
     # 32*$25 reserve stopped here) and $1600; stop only at the selected margin.
     usage = iter([1300, 1700, 2100 - reserve, 2100 - reserve])
-    monkeypatch.setattr(launcher, "key_usage", lambda _key: next(usage))
+    monkeypatch.setattr(launcher, "key_usage", lambda _key, **_kwargs: next(usage))
     continued_at = []
     def still_running(**kwargs):
         continued_at.append(budget.spent)
@@ -357,15 +360,20 @@ def test_cleanup_failure_keeps_campaign_custody_unsettled(supervised, monkeypatc
 
 def test_cleanup_selection_cannot_include_a_peer_run(monkeypatch):
     calls = []
+    remaining = {"containers": "own-a\nown-b\n", "networks": "own-net\n"}
     def docker(host, *argv, **_kwargs):
         assert host == "unix:///owned.sock"
         calls.append(argv)
         if argv[:2] == ("ps", "-aq"):
             assert argv[-1] == f"label={launcher.LABEL_KEY}=owned-run"
-            return subprocess.CompletedProcess(argv, 0, "own-a\nown-b\n")
+            return subprocess.CompletedProcess(argv, 0, remaining["containers"])
         if argv[:3] == ("network", "ls", "-q"):
             assert argv[-1] == f"label={launcher.LABEL_KEY}=owned-run"
-            return subprocess.CompletedProcess(argv, 0, "own-net\n")
+            return subprocess.CompletedProcess(argv, 0, remaining["networks"])
+        if argv[:2] == ("rm", "-fv"):
+            remaining["containers"] = ""
+        if argv[:2] == ("network", "rm"):
+            remaining["networks"] = ""
         return subprocess.CompletedProcess(argv, 0, "")
     monkeypatch.setattr(launcher, "_docker", docker)
     launcher.remove_run_containers("unix:///owned.sock", "owned-run")
@@ -607,8 +615,8 @@ def test_paid_runner_uses_immutable_image_and_scrubs_ambient_alternate_keys(dry_
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-selected-key")
     monkeypatch.setenv("LLM_API_KEY", "test-unrelated-llm-key")
     monkeypatch.setenv("MODEL_API_KEY", "test-unrelated-model-key")
-    monkeypatch.setattr(launcher, "key_headroom", lambda _key: {"effective": 1000})
-    monkeypatch.setattr(launcher, "key_usage", lambda _key: 100)
+    monkeypatch.setattr(launcher, "key_headroom", lambda _key, **_kwargs: {"effective": 1000})
+    monkeypatch.setattr(launcher, "key_usage", lambda _key, **_kwargs: 100)
     monkeypatch.setattr(launcher, "prepare_resource_env", lambda env, **_kwargs: dict(env))
     def supervise(args, command, bench, env, api_key, campaign):
         assert command[-1] == "one"
@@ -626,3 +634,213 @@ def test_paid_runner_uses_immutable_image_and_scrubs_ambient_alternate_keys(dry_
     assert launcher.main([*paid_argv, "--campaign-file", str(out.parent / "campaign.json")]) == 0
     assert (out / "bench" / "configs" / launcher.SECRET_NAME).read_text(encoding="utf-8") == "{}"
     assert "test-selected-key" not in (out / "run_manifest.json").read_text(encoding="utf-8")
+
+
+def test_meter_http_read_requests_uncached_data_with_remaining_timeout(monkeypatch):
+    received = []
+    def response(request, *, timeout):
+        received.append((dict(request.header_items()), timeout))
+        return io.BytesIO(b'{"data":{"usage":123.5}}')
+    monkeypatch.setattr(budgets.urllib.request, "urlopen", response)
+    assert budgets.key_usage("not-a-real-key", timeout=2.25) == 123.5
+    assert received[0][0]["Cache-control"] == "no-cache"
+    assert received[0][1] == 2.25
+
+
+def test_backward_meter_read_is_confirmed_without_stopping_the_run(supervised, monkeypatch, capsys):
+    args, bench, env, budget, events, _handlers, proc = supervised
+    observations = iter([99.0, 101.0, 102.0])
+    monkeypatch.setattr(launcher, "key_usage", lambda _key, **_kwargs: next(observations))
+    def completed(**_kwargs):
+        proc.returncode = 0
+        return 0
+    proc.wait = completed
+    result = launcher.supervise_run(args, ["fake-runner"], bench, env, "not-a-real-key", budget)
+    assert result["stop_reason"] == ""
+    assert result["meter_error"] == ""
+    assert budget.record["last_usage"] == 102.0
+    assert budget.spent == 2.0
+    diagnostics = result["meter_diagnostics"]
+    assert [(row["observed_usage"], row["accepted"]) for row in diagnostics] == [(99.0, False), (101.0, True)]
+    assert diagnostics[0]["previous_usage"] == 100
+    final = json.loads((bench.parent / "monitor.json").read_text(encoding="utf-8"))
+    assert final["finished"] is True and final["meter_diagnostics"] == diagnostics
+    assert '"observed_usage": 99.0' in capsys.readouterr().out
+    assert events == ["stop-group", "cleanup-owned"]
+
+
+@pytest.mark.parametrize("invalid", [-1.0, float("nan"), float("inf")])
+def test_confirmation_never_accepts_an_invalid_numeric_usage(supervised, monkeypatch, invalid):
+    _args, _bench, _env, budget, _events, _handlers, _proc = supervised
+    values = iter([invalid, 101.0])
+    monkeypatch.setattr(launcher, "key_usage", lambda _key, **_kwargs: next(values))
+    diagnostics = []
+    launcher.observe_campaign_usage("not-a-real-key", budget, diagnostics, phase="poll")
+    assert budget.record["last_usage"] == 101
+    assert diagnostics[0]["accepted"] is False
+    assert diagnostics[0]["previous_usage"] == 100
+    # Non-finite rejected observations remain printable JSON evidence, never NaN budget truth.
+    json.dumps(diagnostics, allow_nan=False)
+
+
+def test_persistent_bad_counter_stops_and_keeps_rejected_values_in_final_monitor(supervised, monkeypatch):
+    args, bench, env, budget, _events, _handlers, _proc = supervised
+    calls = []
+    def stale(_key, *, timeout):
+        calls.append(timeout)
+        return 99.0
+    monkeypatch.setattr(launcher, "key_usage", stale)
+    result = launcher.supervise_run(args, ["fake-runner"], bench, env, "not-a-real-key", budget)
+    assert result["stop_reason"] == "budget_meter_unavailable"
+    assert budget.record["last_usage"] == 100
+    assert len(calls) == 6  # One bounded confirmation in the loop and one final settlement read.
+    assert {row["phase"] for row in result["meter_diagnostics"]} == {"poll", "final"}
+    assert all(row["observed_usage"] == 99.0 and not row["accepted"] for row in result["meter_diagnostics"])
+    final = json.loads((bench.parent / "monitor.json").read_text(encoding="utf-8"))
+    assert final["meter_diagnostics"] == result["meter_diagnostics"]
+    assert final["meter_error"] == "UsageCounterError"
+
+
+def test_confirmation_shares_one_timeout_window_instead_of_three_full_timeouts(supervised, monkeypatch):
+    _args, _bench, _env, budget, _events, _handlers, _proc = supervised
+    clock = SimpleNamespace(now=0.0)
+    def advance(delay):
+        clock.now += delay
+    monkeypatch.setattr(launcher, "time", SimpleNamespace(
+        monotonic=lambda: clock.now, time=lambda: clock.now, sleep=advance))
+    timeouts = []
+    def unavailable(_key, *, timeout):
+        timeouts.append(timeout)
+        advance(min(7.0, timeout))
+        raise OSError("meter unavailable")
+    monkeypatch.setattr(launcher, "key_usage", unavailable)
+    original = budget.path.read_bytes()
+    diagnostics = []
+    with pytest.raises(OSError, match="meter unavailable"):
+        launcher.observe_campaign_usage("not-a-real-key", budget, diagnostics, phase="poll")
+    assert timeouts == [15.0, 5.0]
+    assert clock.now == 15.0
+    assert len(diagnostics) == 2
+    assert budget.path.read_bytes() == original
+
+
+def test_confirmed_exhausted_budget_stops_without_waiting_for_another_poll(supervised, monkeypatch):
+    args, bench, env, budget, _events, _handlers, proc = supervised
+    calls = []
+    def exhausted(_key, *, timeout):
+        calls.append(timeout)
+        return 1000.0
+    monkeypatch.setattr(launcher, "key_usage", exhausted)
+    proc.wait = lambda **_kwargs: pytest.fail("known exhausted budget must not continue work")
+    result = launcher.supervise_run(args, ["fake-runner"], bench, env, "not-a-real-key", budget)
+    assert result["stop_reason"] == "campaign_budget_reserve"
+    assert len(calls) == 2  # Poll plus final settlement, with no confirmation retry.
+    assert result["meter_diagnostics"] == []
+
+
+@pytest.mark.parametrize("kind", ["container", "network"])
+def test_cleanup_racing_404_is_success_only_after_exact_label_is_empty(monkeypatch, kind):
+    seen = []
+    removed = False
+    def docker(host, *argv, **_kwargs):
+        nonlocal removed
+        assert host == "unix:///owned.sock"
+        seen.append(argv)
+        selected = argv[:2] == ("ps", "-aq") if kind == "container" else argv[:3] == ("network", "ls", "-q")
+        if selected:
+            assert argv[-1] == f"label={launcher.LABEL_KEY}=owned-run"
+            return subprocess.CompletedProcess(argv, 0, "" if removed else "own-id\n")
+        if argv[:2] in (("rm", "-fv"), ("network", "rm")):
+            removed = True  # A competing cleanup got there first.
+            return subprocess.CompletedProcess(argv, 1, "", "No such resource")
+        return subprocess.CompletedProcess(argv, 0, "")
+    monkeypatch.setattr(launcher, "_docker", docker)
+    launcher.remove_run_containers("unix:///owned.sock", "owned-run")
+    assert removed
+    assert sum(argv[-1] == f"label={launcher.LABEL_KEY}=owned-run" for argv in seen) == 3
+
+
+@pytest.mark.parametrize("remove_exit", [0, 1])
+def test_cleanup_never_claims_surviving_containers_are_gone(monkeypatch, remove_exit):
+    def docker(_host, *argv, **_kwargs):
+        if argv[:2] == ("ps", "-aq"):
+            return subprocess.CompletedProcess(argv, 0, "still-owned\n")
+        return subprocess.CompletedProcess(argv, remove_exit, "")
+    monkeypatch.setattr(launcher, "_docker", docker)
+    with pytest.raises(RuntimeError, match="could not remove all containers"):
+        launcher.remove_run_containers("unix:///owned.sock", "owned-run")
+
+
+def test_cleanup_failed_relist_is_unknown_even_when_stdout_is_empty(monkeypatch):
+    lists = 0
+    def docker(_host, *argv, **_kwargs):
+        nonlocal lists
+        if argv[:2] == ("ps", "-aq"):
+            lists += 1
+            return subprocess.CompletedProcess(argv, 0 if lists == 1 else 1, "own-id\n" if lists == 1 else "")
+        return subprocess.CompletedProcess(argv, 1, "", "No such resource")
+    monkeypatch.setattr(launcher, "_docker", docker)
+    with pytest.raises(RuntimeError, match="cannot verify.*custody after removal"):
+        launcher.remove_run_containers("unix:///owned.sock", "owned-run")
+
+
+def test_lagging_counter_gets_time_to_catch_up_without_weakening_monotonicity(supervised, monkeypatch):
+    _args, _bench, _env, budget, _events, _handlers, _proc = supervised
+    clock = SimpleNamespace(now=0.0)
+    def advance(delay):
+        clock.now += delay
+    monkeypatch.setattr(launcher, "time", SimpleNamespace(
+        monotonic=lambda: clock.now, time=lambda: clock.now, sleep=advance))
+    reads = []
+    def provider(_key, *, timeout):
+        reads.append((clock.now, timeout))
+        # Neither the stale value nor the waiting period may lower durable spending.
+        assert budget.record["last_usage"] == 100
+        assert json.loads(budget.path.read_text(encoding="utf-8"))["last_usage"] == 100
+        return 99.0 if clock.now < 3.0 else 101.0
+    monkeypatch.setattr(launcher, "key_usage", provider)
+    diagnostics = []
+    launcher.observe_campaign_usage("not-a-real-key", budget, diagnostics, phase="poll")
+    assert reads == [(0.0, 15.0), (3.0, 12.0)]
+    assert budget.record["last_usage"] == 101
+    assert [(row["observed_usage"], row["accepted"]) for row in diagnostics] == [(99.0, False), (101.0, True)]
+    assert clock.now == 3.0
+
+
+@pytest.mark.parametrize("removal", ["stderr-with-zero", "nonzero", "exception"])
+def test_cleanup_retains_actual_removal_diagnostics_without_requiring_nonzero(monkeypatch, capsys, removal):
+    listed = 0
+    def docker(_host, *argv, **_kwargs):
+        nonlocal listed
+        if argv[:2] == ("ps", "-aq"):
+            listed += 1
+            return subprocess.CompletedProcess(argv, 0, "own-id\n" if listed == 1 else "")
+        if argv[:2] == ("rm", "-fv"):
+            if removal == "exception":
+                raise OSError("daemon connection reset")
+            return subprocess.CompletedProcess(argv, int(removal == "nonzero"), "", "No such container: own-id")
+        return subprocess.CompletedProcess(argv, 0, "")
+    monkeypatch.setattr(launcher, "_docker", docker)
+    launcher.remove_run_containers("unix:///owned.sock", "owned-run")
+    record = json.loads(capsys.readouterr().out)
+    assert record["event"] == "cowork_cleanup_remove"
+    assert record["run_label"] == "owned-run"
+    assert record["selected_ids"] == ["own-id"]
+    if removal == "exception":
+        assert record["exception"] == {"type": "OSError", "message": "daemon connection reset"}
+        assert record["returncode"] is None
+    else:
+        assert record["returncode"] == int(removal == "nonzero")
+        assert record["stderr"] == "No such container: own-id"
+        assert record["stdout"] == ""
+
+
+def test_cleanup_logs_survivor_ids_and_still_refuses_custody_release(monkeypatch, capsys):
+    def docker(_host, *argv, **_kwargs):
+        return subprocess.CompletedProcess(argv, 0, "owned-survivor\n" if argv[:2] == ("ps", "-aq") else "")
+    monkeypatch.setattr(launcher, "_docker", docker)
+    with pytest.raises(RuntimeError, match="could not remove all containers"):
+        launcher.remove_run_containers("unix:///owned.sock", "owned-run")
+    record = json.loads(capsys.readouterr().out)
+    assert record == {"event": "cowork_cleanup_remaining", "resource": "container",
+                      "run_label": "owned-run", "remaining_ids": ["owned-survivor"]}

@@ -107,8 +107,12 @@ billing delay and work actually in flight; multiplying full task budgets would
 prematurely stop a 32-task, $2000 campaign at $1200 spent. With a $100 reserve,
 the campaign stop boundary is $1900 spent instead. The supervisor stops when the
 campaign remainder reaches that allowance, when the invocation bound is reached,
-or when the meter or disk reserve becomes unavailable. These are configurable
-operator bounds. Billing can be delayed and paid calls may already be in flight;
+or when the meter or disk reserve becomes unavailable. A suspect meter read
+gets at most three observations requesting cache revalidation within one shared
+15-second window; only a finite, nonnegative, nondecreasing value may update the campaign. Rejected
+values and errors remain in the monitor and unit log, including after shutdown.
+This confirmation does not rebase spending or ignore known budget exhaustion.
+These are configurable operator bounds. Billing can be delayed and paid calls may already be in flight;
 the monitor is **not a provider-enforced hard dollar cap**.
 
 Start qualification at concurrency 1 and choose full-run concurrency after
@@ -162,7 +166,10 @@ unknown. `llm_usage` amounts are compatibility accounting evidence; the campaign
 meter is the spending check. A billing provider such as `openrouter` does not
 identify the upstream endpoint. `response_provider` observations are reported
 only when present, with incomplete coverage disclosed; successful-call endpoint
-evidence may be unavailable in the copied logs.
+evidence may be unavailable in the copied logs. Selected scrubbed logs are
+checkpointed before each task-status request and at finalization; a slow request
+can delay the next checkpoint. An interrupted run may therefore retain partial
+evidence, while raw request/response blobs remain unexported.
 
 A result report therefore needs the exact seed and image/benchmark pins, selected
 IDs, applied settings, official evaluator outputs, complete denominator,

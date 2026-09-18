@@ -84,8 +84,7 @@ def test_container_cost_mirror_keeps_canonical_amounts_and_every_openness_field(
     assert "cost_usd" not in adapter.COST_RESULT_FIELDS
 
 
-@pytest.fixture
-def agent_episode(tmp_path, monkeypatch):
+def _make_agent_episode(tmp_path, monkeypatch):
     """Run the real entrypoint lifecycle with only process/HTTP transport replaced."""
     from types import SimpleNamespace
 
@@ -144,6 +143,11 @@ def agent_episode(tmp_path, monkeypatch):
 
     state.run = run
     return state
+
+
+@pytest.fixture
+def agent_episode(tmp_path, monkeypatch):
+    return _make_agent_episode(tmp_path, monkeypatch)
 
 
 @pytest.mark.serial
@@ -279,3 +283,119 @@ def test_real_rotation_and_export_keep_early_cost_and_tool_evidence(agent_episod
     assert audit["manual_review"] == [{"source": "tools.jsonl", "line": 1,
                                       "reason": "answer_source_or_evaluator_reference"}]
     assert not (pathlib.Path(adapter.OUROBOROS_DATA) / "archive").exists()
+
+
+@pytest.mark.serial
+def test_poll_checkpoint_survives_abrupt_exit_without_terminal_export(tmp_path):
+    import os
+    import shutil
+    import subprocess
+
+    # Reuse the real-loop fixture in a child so os._exit really skips finally.
+    # All four runtime roots are explicit; no server, Docker or model is started.
+    child = r'''
+import json, os, pathlib, runpy, sys
+import pytest
+module = runpy.run_path(sys.argv[1])
+adapter = module["adapter"]
+state = module["_make_agent_episode"](pathlib.Path(sys.argv[2]), pytest.MonkeyPatch())
+secret = "fixture-secret-must-not-leave-runtime"
+adapter.load_json = lambda path: {"settings": {"OPENROUTER_API_KEY": secret}}
+names = ("events.jsonl", "tools.jsonl", "progress.jsonl")
+def record(round_number):
+    for name in names:
+        path = pathlib.Path(adapter.OUROBOROS_DATA) / "logs" / name
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"type": "llm_usage" if name == "events.jsonl" else "tool_call",
+                                     "round": round_number, "cost": 1.25, "text": secret}) + "\n")
+state.server_started = lambda: record(1)
+reads = 0
+def http(method, url, *args, **kwargs):
+    global reads
+    if method == "POST":
+        return {"task_id": "fixture-task"}
+    reads += 1
+    if reads == 1:
+        record(2)
+        return {"status": "running", "prompt_tokens": 10}
+    os._exit(73)
+adapter._http_json = http
+state.run()
+raise AssertionError("the fixture should exit before terminal export")
+'''
+    app = tmp_path / "isolated-app"
+    env = {**os.environ, "OUROBOROS_APP_ROOT": str(app),
+           "OUROBOROS_REPO_DIR": str(pathlib.Path(__file__).resolve().parents[1]),
+           "OUROBOROS_DATA_DIR": str(app / "data"),
+           "OUROBOROS_SETTINGS_PATH": str(app / "data/settings.json")}
+    peer = tmp_path / "other-task"
+    peer.mkdir()
+    (peer / "events.jsonl").write_text("unchanged\n", encoding="utf-8")
+    proc = subprocess.run([sys.executable, "-c", child, str(pathlib.Path(__file__).resolve()), str(tmp_path)],
+                          cwd=pathlib.Path(__file__).resolve().parents[1], env=env,
+                          capture_output=True, text=True, timeout=20)
+    assert proc.returncode == 73, proc.stderr
+    # Simulate removal of the private container filesystem after its hard exit.
+    shutil.rmtree(tmp_path / "data")
+    shutil.rmtree(tmp_path / "runtime")
+    dump = tmp_path / "dump"
+    assert not (dump / "ouroboros_summary.json").exists()
+    assert not (dump / "traj_log.json").exists()
+    for name in ("events.jsonl", "tools.jsonl", "progress.jsonl"):
+        text = (dump / "ouroboros" / name).read_text(encoding="utf-8")
+        assert [row["round"] for row in map(json.loads, text.splitlines())] == [1, 2]
+        assert "fixture-secret-must-not-leave-runtime" not in text
+        assert "***REDACTED***" in text
+    assert not list(dump.rglob("settings.json"))
+    assert (peer / "events.jsonl").read_text(encoding="utf-8") == "unchanged\n"
+
+
+@pytest.mark.serial
+def test_interrupted_checkpoint_publish_keeps_last_host_snapshot(tmp_path, monkeypatch):
+    data = tmp_path / "private-runtime"
+    (data / "logs").mkdir(parents=True)
+    source = data / "logs/events.jsonl"
+    source.write_text('{"round":1}\n', encoding="utf-8")
+    monkeypatch.setattr(adapter, "OUROBOROS_DATA", str(data))
+    dump = tmp_path / "host-dump"
+    adapter.collect_audit_artifacts(dump, "", [])
+    original = (dump / "ouroboros/events.jsonl").read_bytes()
+    source.write_text('{"round":1}\n{"round":2}\n', encoding="utf-8")
+    def interrupted_publish(_source, _target):
+        raise OSError("interrupted before atomic publication")
+    monkeypatch.setattr(pathlib.Path, "replace", interrupted_publish)
+    with pytest.raises(OSError, match="atomic publication"):
+        adapter.collect_audit_artifacts(dump, "", [])
+    assert (dump / "ouroboros/events.jsonl").read_bytes() == original
+
+
+@pytest.mark.serial
+def test_poll_checkpoint_write_failure_does_not_abort_task_or_final_export(agent_episode, monkeypatch, capsys):
+    secret = "checkpoint-fixture-secret"
+    monkeypatch.setattr(adapter, "load_json", lambda path: {"settings": {"OPENROUTER_API_KEY": secret}})
+    def initial_log():
+        path = pathlib.Path(adapter.OUROBOROS_DATA) / "logs/events.jsonl"
+        path.write_text(json.dumps({"type": "llm_usage", "prompt_tokens": 10, "text": secret}) + "\n",
+                        encoding="utf-8")
+    agent_episode.server_started = initial_log
+    agent_episode.results[:] = [{"status": "running"}, {"status": "completed", "final_answer": "done"}]
+    write = pathlib.Path.write_text
+    writes = []
+    def flaky_write(path, *args, **kwargs):
+        if path == agent_episode.dump / "ouroboros/.events.jsonl.tmp":
+            writes.append(path)
+            if len(writes) == 1:
+                raise OSError(f"temporary export failure involving {secret}")
+        return write(path, *args, **kwargs)
+    monkeypatch.setattr(pathlib.Path, "write_text", flaky_write)
+    summary = agent_episode.run()
+    assert summary["bench_status"] == "success"
+    assert agent_episode.calls == ["POST", "GET", "GET", "terminate", "terminate"]
+    assert len(writes) == 3  # failed checkpoint, successful next poll, final export
+    captured = capsys.readouterr()
+    assert "audit checkpoint unavailable; continuing task" in captured.err
+    assert "***REDACTED***" in captured.err
+    assert secret not in captured.err
+    exported = (agent_episode.dump / "ouroboros/events.jsonl").read_text(encoding="utf-8")
+    assert json.loads(exported)["prompt_tokens"] == 10
+    assert secret not in exported

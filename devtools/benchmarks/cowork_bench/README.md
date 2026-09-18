@@ -50,8 +50,8 @@ docker pull postgres:15
 Start with one task and concurrency 1. Choose the task IDs from the pinned
 benchmark, then expand to a representative smoke list only after the tool
 inventory and first task work. A smoke subset is not the 496-task benchmark
-score. The campaign described in the methodology permits concurrency 2 only
-after measuring the first task's resource use.
+score. Choose full-run concurrency after measuring the first task's resource
+use and confirming the campaign budget.
 
 Create the storage directory first. Every invocation needs a **new** run root,
 including dry runs and infrastructure retries. The following dry run builds the
@@ -68,8 +68,7 @@ python3 "$COWORK_SEED/devtools/benchmarks/cowork_bench/run_cowork_bench.py" \
 
 For the first paid qualification, use a new root, omit `--dry-run`, and add the
 shared campaign record and the agreed spending limits. The following $1000
-campaign is an example of the owner-approved campaign, not a universal spending
-policy:
+campaign is a qualification example, not a universal spending policy:
 
 ```bash
 COWORK_RUN="$COWORK_STORAGE/smoke-$(date +%s)"
@@ -97,12 +96,28 @@ it is not a provider-enforced spending cap.
 
 ## Monitor, recover and audit
 
+A suspect budget-meter response is confirmed with at most three reads requesting
+cache revalidation inside one 15-second read window. Each request uses only the
+remaining time. Counters must still be finite, nonnegative and no lower than the last
+accepted value. `monitor.json` and the unit log retain rejected observations,
+the previous value, errors and any successful confirmation. Persistent meter
+failure stops the run; a known exhausted budget never waits for another poll.
+
+Cleanup rechecks the exact run label after removing containers and networks.
+A competing cleanup's already-removed response succeeds only when that fresh
+query proves the label empty. Unknown state or surviving resources remains a
+failure and keeps the campaign's unsettled custody.
+
 `monitor.json` records progress, key-meter spending, disk headroom and stop
 reasons. `run_manifest.json` records the seed, benchmark, immutable image ID,
 selected IDs, recovery ancestry and applied configuration; `result_index.jsonl` retains every selected task,
 including failures and tasks not started. Task artifacts live below
 `bench/dumps/`, with sanitized runtime logs in each task's `ouroboros/` folder.
-A launcher exit code is not a task score.
+A launcher exit code is not a task score. Task polling checkpoints the selected
+scrubbed logs before its status request, so an aborted run can retain partial
+evidence. HTTP delays affect that cadence; it is not a fixed two-second promise.
+Raw request/response blobs are not exported, so these copies do not constitute
+complete wire replay.
 
 Send SIGINT or SIGTERM to the launcher to stop its runner and clean up resources
 with that run's exact Docker label. Never use broad container-name cleanup on a
