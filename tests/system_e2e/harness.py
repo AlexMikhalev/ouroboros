@@ -241,7 +241,7 @@ def classify_call(body: dict) -> str:
     if NATIVE_EPISODE_MARKER in full:
         match = _SURFACE_LINE_RE.search(full)
         surface = match.group(1) if match else ""
-        return "advisory_review" if surface == "advisory_review" else "native_episode"
+        return surface if surface in {"advisory_review", "scope_review"} else "native_episode"
     if REVIEWER_SLOT_MARKER in full:
         return "acceptance" if ACCEPTANCE_KEYS_MARKER in full else "reviewer_slot"
     if any(marker in full for marker in FINALIZATION_MARKERS):
