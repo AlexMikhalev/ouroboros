@@ -15,6 +15,7 @@ import urllib.parse
 import urllib.request
 
 import pytest
+from tests.ui_chat_viewport_smoke import _CAPTURE_TEST_SOCKET
 
 pytest_plugins = ("tests.test_ui_smoke_playwright",)
 
@@ -132,6 +133,7 @@ def test_large_attachment_returns_through_real_document_handler_and_download(
         browser = playwright.chromium.launch()
         try:
             page = browser.new_page(viewport={"width": 1440, "height": 1000}, accept_downloads=True)
+            page.add_init_script(f"({_CAPTURE_TEST_SOCKET})()")
             document_frames = []
             def websocket(socket):
                 def frame(payload):
@@ -147,6 +149,8 @@ def test_large_attachment_returns_through_real_document_handler_and_download(
             page.on("request", lambda request: requests.append((request.method, request.url)))
             page.goto(url, wait_until="domcontentloaded")
             page.locator("#chat-input").wait_for(state="visible")
+            page.wait_for_function(
+                "() => window.__testSockets?.some(socket => socket.readyState === WebSocket.OPEN)")
             page.locator("#chat-file-input").set_input_files([str(path) for path in attachments])
             assert page.locator(".attach-badge").count() == 28
             page.locator("#chat-input").fill("Return the large attached dataset as a downloadable document.")

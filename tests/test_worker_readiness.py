@@ -8,7 +8,7 @@ What is pinned, on fake process objects (no child is ever forked here):
   booted SHA in the same step; a foreign pid's row does not open it;
 * no ``worker_ready`` inside the window -> the child is torn down (process tree), the slot is
   replaced through ``respawn_worker`` and a typed ``worker_ready_timeout`` row names slot, pid,
-  wait and reason;
+  wait and reason; its own entry progress permits one extension to the birth-relative ceiling;
 * the replacement loop is bounded: at ``WORKER_READY_MAX_ATTEMPTS`` the slot is parked (kept
   ``reaping``, no further respawn) and the owner is told;
 * a child that DIED during boot is released to the crash detector, which already owns death;
@@ -222,6 +222,107 @@ def test_a_foreign_pid_row_does_not_open_the_slot(pool, seam):
 
     assert slot.reaping is True
     assert seam.killed == [5001] and seam.respawned == [(0, {"ready_attempt": 2})]
+
+
+@pytest.fixture
+def boot_clock(pool, monkeypatch):
+    """Advance only the readiness clock; no real wait or fabricated ready signal."""
+    clock = SimpleNamespace(now=1000.0, on_tick=lambda: None)
+
+    def sleep(seconds):
+        clock.now += seconds
+        clock.on_tick()
+
+    monkeypatch.setattr(pool.lifecycle, "time", SimpleNamespace(time=lambda: clock.now, sleep=sleep))
+    monkeypatch.setattr(pool.lifecycle, "WORKER_READY_WINDOW_SEC", 1.0)
+    monkeypatch.setattr(pool.lifecycle, "WORKER_READY_CEILING_SEC", 3.0)
+    return clock
+
+
+def test_own_entry_progress_allows_ready_after_the_initial_window(pool, seam, boot_clock):
+    slot = _booting_slot(pool, 0, 5001)
+    append_jsonl(seam.events, {"type": "worker_starting", "worker_id": 0, "pid": 5001})
+
+    def ready_later():
+        if boot_clock.now == 1002.0:
+            append_jsonl(seam.events, _READY_ROW)
+
+    boot_clock.on_tick = ready_later
+    seam.run({0: slot}, seam.cursor, 1, 1000.0)
+
+    assert not slot.reaping and boot_clock.now == 1002.0
+    assert seam.killed == [] and seam.respawned == []
+    extension = _rows(seam.supervisor, "worker_ready_window_extended")
+    assert len(extension) == 1 and extension[0]["worker_ids"] == [0]
+    assert extension[0]["ceiling_sec"] == 3.0
+    assert _rows(seam.supervisor, "worker_sha_verify")[0]["ok"] is True
+
+
+def test_progress_extends_once_and_never_moves_the_birth_relative_ceiling(pool, seam, boot_clock):
+    slot = _booting_slot(pool, 0, 5001)
+    row = {"type": "worker_starting", "worker_id": 0, "pid": 5001}
+    append_jsonl(seam.events, row)
+    boot_clock.on_tick = lambda: append_jsonl(seam.events, row)
+
+    seam.run({0: slot}, seam.cursor, 1, 1000.0)
+
+    assert boot_clock.now == 1003.0
+    assert seam.killed == [5001] and seam.respawned == [(0, {"ready_attempt": 2})]
+    assert len(_rows(seam.supervisor, "worker_ready_window_extended")) == 1
+    timeout = _rows(seam.supervisor, "worker_ready_timeout")[0]
+    assert timeout["window_sec"] == timeout["waited_sec"] == 3.0
+
+
+@pytest.mark.parametrize("progress", ["absent", "foreign_pid", "before_cursor", "dead_child"])
+def test_only_current_own_progress_from_a_live_child_extends(pool, seam, boot_clock, progress):
+    slot = _booting_slot(pool, 0, 5001, alive=progress != "dead_child")
+    cursor = seam.cursor
+    if progress != "absent":
+        append_jsonl(seam.events, {"type": "worker_starting", "worker_id": 0,
+                                  "pid": 9999 if progress == "foreign_pid" else 5001})
+    if progress == "before_cursor":
+        cursor = pool.lifecycle.events_log_cursor()
+
+    seam.run({0: slot}, cursor, 1, 1000.0)
+
+    assert _rows(seam.supervisor, "worker_ready_window_extended") == []
+    if progress == "dead_child":
+        assert boot_clock.now == 1000.0 and not slot.reaping
+        assert seam.killed == [] and seam.respawned == []
+        assert _rows(seam.supervisor, "worker_ready_released")[0]["reason"] == "died_during_boot"
+    else:
+        assert boot_clock.now == 1001.0 and seam.killed == [5001]
+        assert _rows(seam.supervisor, "worker_ready_timeout")[0]["window_sec"] == 1.0
+
+
+def test_one_childs_progress_does_not_extend_a_silent_peer_in_the_same_wave(pool, seam, boot_clock):
+    first, second = _booting_slot(pool, 0, 5001), _booting_slot(pool, 1, 5002)
+    append_jsonl(seam.events, {"type": "worker_starting", "worker_id": 0, "pid": 5001})
+
+    def ready_later():
+        if boot_clock.now == 1002.0:
+            append_jsonl(seam.events, _READY_ROW)
+
+    boot_clock.on_tick = ready_later
+    seam.run({0: first, 1: second}, seam.cursor, 1, 1000.0)
+
+    assert not first.reaping and second.reaping
+    assert seam.killed == [5002] and seam.respawned == [(1, {"ready_attempt": 2})]
+    timeout = _rows(seam.supervisor, "worker_ready_timeout")[0]
+    assert timeout["waited_sec"] == 1.0 and timeout["pid"] == 5002
+    assert _rows(seam.supervisor, "worker_ready_window_extended")[0]["worker_ids"] == [0]
+
+
+def test_a_late_watcher_cannot_grant_a_fresh_window_after_the_ceiling(pool, seam, boot_clock):
+    slot = _booting_slot(pool, 0, 5001)
+    append_jsonl(seam.events, {"type": "worker_starting", "worker_id": 0, "pid": 5001})
+    boot_clock.now = 1004.0
+
+    seam.run({0: slot}, seam.cursor, 1, 1000.0)
+
+    assert boot_clock.now == 1004.0 and seam.killed == [5001]
+    assert _rows(seam.supervisor, "worker_ready_window_extended") == []
+    assert _rows(seam.supervisor, "worker_ready_timeout")[0]["waited_sec"] == 4.0
 
 
 def test_sha_mismatch_on_the_ready_row_opens_the_slot_and_tells_the_owner(pool, seam, monkeypatch):

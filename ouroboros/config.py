@@ -96,7 +96,7 @@ from ouroboros.review_model_routes import (
 from ouroboros.runtime_limits import (
     WORKER_SPAWN_GRACE_SEC,  # noqa: F401
     WORKER_READY_WINDOW_SEC,  # noqa: F401
-    WORKER_READY_MAX_ATTEMPTS,  # noqa: F401
+    WORKER_READY_MAX_ATTEMPTS, WORKER_READY_CEILING_SEC,  # noqa: F401
     EXTENSION_STREAM_CHUNK_BYTES,  # noqa: F401
     EXTENSION_CHILD_CLEANUP_GRACE_SEC,  # noqa: F401
     NESTED_SETTLEMENT_MARGIN_SEC,  # noqa: F401

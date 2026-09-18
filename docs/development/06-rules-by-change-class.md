@@ -803,12 +803,14 @@ and what enforces each.
   `SETTINGS_DEFAULTS`, the clamped getter in `runtime_limits.py`, both re-exported
   through `ouroboros.config`, the one import surface; register the env key; no magic
   wait numbers at call sites (`tests/test_timeout_policy.py`).
-- Worker readiness keeps its own `WORKER_READY_WINDOW_SEC` and
+- Worker readiness keeps `WORKER_READY_WINDOW_SEC`, `WORKER_READY_CEILING_SEC` and
   `WORKER_READY_MAX_ATTEMPTS` in `runtime_limits.py`, re-exported by config
   (ARCHITECTURE §5 "Supervisor Loop"). Reuse the lifecycle-owned execution-state
   reader (workers facade) at reserve, final enqueue and snapshot; keep the separate
   repository-writer policy at public admission and the boot/update exceptions;
-  readiness, process liveness and idle deadlines stay independent; a failed write keeps
+  the child's own `worker_starting` row before extension loading permits one
+  readiness extension to 300 seconds from birth, never a sliding deadline or a
+  fresh window at observation. Readiness, process liveness and idle deadlines stay independent; a failed write keeps
   terminalization retry, never a false Done or a fresh startup budget.
 - Nested process wrappers are ordered, never tied: provider bound before its killable
   child, child before the generic ToolEntry envelope (the settlement margin from
@@ -1062,4 +1064,3 @@ Enforcement: review-only — CHECKLISTS item 2(f) scores the no-`[:N]` rule in
 commit review.
 
 ---
-
