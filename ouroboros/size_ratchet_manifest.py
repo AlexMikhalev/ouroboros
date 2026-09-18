@@ -127,7 +127,6 @@ BAND_PATHS = {
     "ouroboros/gateway/host_service.py": "The one loopback callback boundary for reviewed skills: token auth, the chat/decision/presence/WS-relay routes and, with #667, the operation read/cancel that joins existing chat, routing, turn and task records; one trust boundary, one module.",
     "ouroboros/gateways/claudexor.py": "The existing owned-engine gateway also owns typed model operations and exact-byte resource transfer; no second control client.",
     "ouroboros/launcher_bootstrap.py": "Native seed version resync keeps manifest parsing and equal-version payload diagnostics with the existing bootstrap owner; no separate loader or overwrite policy.",
-    "ouroboros/llm_claudexor.py": "Caller-owned model operations and exact late receipt recovery share the existing transport and observability lifetime.",
     "ouroboros/loop_delivery.py": "F6 upstream sync: the delivery-protocol upstream deltas (hold-control literals, trailing-object/fence-aware protocol parsers) folded into the campaign delivery leaf (upstream leaf delivery_protocol.py retired)",
     "ouroboros/loop_forced_finalization.py": "Forced-finalization rail of the v7 L-B loop split: one cohesive owner for the forced/orphan/absorption path, moved byte-preserving from loop.py (D01 lane).",
     "ouroboros/loop_tool_execution.py": "Tool-result execution and bounded evidence projection share one owner; retain this coherent suite while the adjoining transport seam stays under its cap.",
