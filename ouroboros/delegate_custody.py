@@ -711,6 +711,8 @@ def invocation_record(drive_root: Any, invocation_id: str, *,
     and isolation facts are likewise replayed rather than re-derived.
     ``rows`` reuses a caller's single event snapshot, as the other replay views do.
     """
+    from ouroboros.delegate_pending import request_body
+
     target = str(invocation_id or "").strip()
     if not target:
         return None
@@ -726,7 +728,7 @@ def invocation_record(drive_root: Any, invocation_id: str, *,
                 "surface": str(row.get("surface") or ""),
                 "slot_id": str(row.get("slot_id") or ""),
                 "operation_id": str(row.get("operation_id") or ""),
-                "request": row.get("request") if isinstance(row.get("request"), dict) else None,
+                "request": request_body(drive_root, row),
                 "route": str(row.get("route") or ""),
                 "project_id": str(row.get("project_id") or ""),
                 "project_owned": bool(row.get("project_owned")),
@@ -774,7 +776,22 @@ def record_start_requested(drive_root: Any, **payload: Any) -> bool:
     Returns whether the row LANDED; the caller must not POST when it did not —
     a run whose request row never reached disk is live, mutating and unfindable
     if the worker dies before ``record_started``.
+
+    The full replay envelope goes to raw CAS before its event reference. Use
+    ``write_blob``, never a redacted ``persist_call`` projection: request values
+    must retain the engine's canonical JSON digest on an idempotent retry.
     """
+    body = payload.get("request")
+    if isinstance(body, dict) and body:
+        from ouroboros.observability import write_blob
+
+        try:
+            ref = write_blob(pathlib.Path(drive_root), body, kind="json")
+        except Exception:
+            log.warning("delegate custody request body could not be stored", exc_info=True)
+            return False
+        payload = {key: value for key, value in payload.items() if key != "request"}
+        payload.update(request_ref=ref, prompt_chars=len(str(body.get("prompt") or "")))
     return emit(drive_root, START_REQUESTED, payload)
 
 

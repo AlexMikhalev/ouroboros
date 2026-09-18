@@ -309,17 +309,21 @@ def test_a_retry_testifies_about_the_stored_invocation_not_the_current_config(
     assert retried["root"] == str(root_a)
 
     # ... and so do the durable rows, attempt and custody alike.
+    from ouroboros.delegate_pending import request_body
+
     rows = [json.loads(line) for line
-            in (drive / "logs" / "events.jsonl").read_text().splitlines() if line.strip()]
+            in (drive / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
     attempts = [r for r in rows if r.get("type") == dc.START_REQUESTED
                 and r.get("invocation_id") == token]
     started = [r for r in rows if r.get("type") == dc.STARTED
                and r.get("run_id") == retried["run_id"]][-1]
     original = attempts[0]
+    assert request_body(drive, original) == bodies[0]
     for row in attempts[1:]:
         for fact in ("route", "project_id", "project_owned", "idempotency_key",
-                     "max_seconds", "request"):
+                     "max_seconds", "request_ref", "prompt_chars"):
             assert row[fact] == original[fact], f"retry attempt re-derived {fact}"
+        assert request_body(drive, row) == bodies[0], "retry must retain the original canonical body"
     for fact, expected in (("route", "route-a"), ("model", "model-old"),
                            ("effort", "low"), ("root", str(root_a)),
                            ("project_id", prj_a), ("project_owned", True),

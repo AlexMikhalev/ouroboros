@@ -1179,6 +1179,11 @@ def sanitize_task_for_event(
                 metadata["origin_message_text"] = truncate_for_log(nested, threshold)
                 sanitized["metadata"] = metadata
 
+        # The event needs one contract; the live task keeps both mirrors.
+        contract = sanitized.get("task_contract")
+        if isinstance(metadata, dict) and contract and metadata.get("task_contract") == contract:
+            sanitized["metadata"] = {key: value for key, value in metadata.items() if key != "task_contract"}
+
         text = task.get("text")
         if not isinstance(text, str):
             return sanitized

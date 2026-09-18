@@ -867,6 +867,35 @@ def _s14_settings(stub) -> dict:
     )
 
 
+def _keep_until_acceptance_settled(full_answer: str, *, wave_ordinal: int, answer_form: str):
+    """Keep the same answer through quorum wakes until the intended wave settles.
+
+    A final-slot notification can arrive during Main's response to the quorum
+    wake. The host then drains it in another round, reusing the paid verdict.
+    That round still belongs to this phase, not the stub's exhausted fallback.
+    """
+    keep = (_control_step("keep") if answer_form == "control"
+            else lambda _body: {"final": full_answer})
+    waits = {"rounds": 0}
+
+    def step(body: dict):
+        frames = re.findall(
+            r"Acceptance review (task_acceptance:[0-9a-f]+): (\d+) of (\d+) reviewer slot\(s\)",
+            body_text(body),
+        )
+        settled = {wave for wave, answered, total in frames if answered == total}
+        if len(settled) >= wave_ordinal:
+            return keep(body)
+        waits["rounds"] += 1
+        if waits["rounds"] > _WAIT_ROUNDS_MAX:
+            return {"final": (
+                "E2E_SCRIPT_ERROR: acceptance wave "
+                f"{wave_ordinal} did not settle after {waits['rounds']} round(s)")}
+        return _Again(keep(body))
+
+    return step
+
+
 @pytest.mark.integration
 @pytest.mark.serial
 @pytest.mark.parametrize("answer_form", ["prose", "control"])
@@ -876,14 +905,14 @@ def test_s17_acceptance_reject_rework_accept(e2e_clone, tmp_path_factory, answer
     review_script = ReviewScript({
         "acceptance": [W3A_ACCEPT_REJECT] * 3 + [W3A_ACCEPT_PASS] * 3,
     })
-    # Rework may be ordinary complete prose or an explicit replacement. After
-    # the second asynchronous panel, Main reaffirms that complete answer or
-    # explicitly keeps it. Neither path may buy a third panel.
-    followups = ([{"final": S14_ANSWER_V2}, {"final": S14_ANSWER_V2}]
-                 if answer_form == "prose" else
-                 [_control_step("replace", S14_ANSWER_V2), _control_step("keep")])
-    stub = ScriptedStubModel(
-        [{"final": S14_ANSWER_V1}, *followups],
+    # Both answer forms retain V2 through separate quorum/final-slot wakes;
+    # repeated collection must not buy a third panel or exhaust the script.
+    rework = ({"final": S14_ANSWER_V2} if answer_form == "prose"
+              else _control_step("replace", S14_ANSWER_V2))
+    stub = _HoldingStubModel(
+        [{"final": S14_ANSWER_V1}, rework,
+         _keep_until_acceptance_settled(S14_ANSWER_V2, wave_ordinal=2,
+                                       answer_form=answer_form)],
         review_script=review_script,
     )
     with stub:

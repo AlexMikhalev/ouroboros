@@ -53,8 +53,9 @@ def pending_invocations(drive_root: Any,
     The launched-never-collected class one step EARLIER than ``open_runs``: a
     worker death between the accepted POST and ``record_started`` leaves only the
     ``START_REQUESTED`` row. Facts come from the FIRST request row (the minting,
-    same rule as ``invocation_record``); a record whose canonical body never
-    landed is excluded (nothing byte-identical can be replayed). ``rows`` shares
+    same rule as ``invocation_record``). Legacy rows without a body stay excluded;
+    an unreadable request reference retains identity with ``request=None``.
+    Reconciliation cannot replay it without that body. ``rows`` shares
     one pre-read snapshot with ``replay`` (atomic payload busy claim)."""
     from ouroboros.delegate_pending import pending_invocations as replay_pending
 
@@ -233,8 +234,14 @@ def _recover_pending_invocation(drive_root: Any, gateway: Any,
                   "reason": "review_panel_owns_invocation"}
         _custody().emit(drive_root, _custody().RECONCILED, result)
         return result
+    body = record.get("request")
+    if not isinstance(body, dict) or not body:
+        result = {"invocation_id": invocation_id, "task_id": task_id,
+                  "action": "invocation_retained", "reason": "invocation_request_unrecorded"}
+        _custody().emit(drive_root, _custody().RECONCILED, result)
+        return result
     try:
-        handle = gateway.start_run(dict(record["request"]), idempotency_key=invocation_id)
+        handle = gateway.start_run(dict(body), idempotency_key=invocation_id)
     except ClaudexorUnavailable as exc:
         status = int(getattr(exc, "status_code", 0) or 0)
         if 400 <= status < 500:
@@ -259,7 +266,6 @@ def _recover_pending_invocation(drive_root: Any, gateway: Any,
                   "action": "recovery_pending"}
         _custody().emit(drive_root, _custody().RECONCILED, result)
         return result
-    body = record["request"]
     execution = body.get("execution") if isinstance(body.get("execution"), dict) else {}
     scope = body.get("scope") if isinstance(body.get("scope"), dict) else {}
     custody = _custody().RunCustody(

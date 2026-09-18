@@ -210,9 +210,9 @@ def _validated_invocation(drive: Any, retry_token: str, task_id: str,
     if not isinstance(body, dict) or not body:
         return None, _fail("delegate_start", "invocation_request_unrecorded",
                            "That invocation's durable row carries no canonical request "
-                           "body, so it cannot be replayed byte-identically. Start a "
-                           "new run with a plain "
-                           "delegate_start(subagent_id=..., prompt=...).",
+                           "body, so it cannot be replayed byte-identically. Its outcome "
+                           "remains unknown; restore the recorded request or reconcile "
+                           "the original invocation before starting a replacement.",
                            retry_of=retry_token)
     if str(body.get("prompt") or "") != text:
         return None, _fail("delegate_start", "retry_prompt_mismatch",
