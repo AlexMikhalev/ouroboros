@@ -294,13 +294,12 @@ and 23 (`delegated_transport`), both critical. The imperatives:
   re-checked) are CHECKLISTS item 18 and ARCHITECTURE §6 "Tool capability and
   execution" (`tests/test_browser_url_policy.py`,
   `tests/test_browser_isolation.py`, `tests/test_browser_redirect_chain.py`).
-- The parent is the SOLE committer of the live body: acting children return a
-  `workspace.patch`, the parent applies through `integrate_subagent_patch` and
-  its own `commit_reviewed`; `external_workspace` verifies and records without
-  re-applying; a genesis project is durable because its directory IS the
-  deliverable (disclosed residual: until it declares a `.gitignore`, small
-  text build output rides the `workspace.patch` record, bounded only by the
-  per-file source-patch boundary and git's binary verdict; there is no total
+- Acting children return `workspace.patch`; only the parent commits the live body,
+  applying via `integrate_subagent_patch` then its own `commit_reviewed`.
+  `external_workspace` verifies and records without re-applying. Edit/capture text preserves external Git authority and patch-only `self_worktree`. Capture bases prove no authorship; compare via explicit `vcs_diff`. A genesis project's directory is its durable deliverable
+  (until it declares a `.gitignore`, small
+  text build output rides `workspace.patch`, bounded by the
+  per-file source-patch boundary and Git's binary verdict; no total
   source-patch cap). The canonical/replica terminal field-custody projection
   is ONE pure reducer for copy-back and effective reads — every change adds a
   stale-replica regression at BOTH seams
@@ -364,8 +363,8 @@ The imperatives:
   never keyword matching.
 - `wait_task` and `wait_tasks` also peek the waiting actor's own mailbox (its
   execution drive, not its budget root) through the existing transport-wait
-  reader: a pending message returns control without acknowledging it or
-  stopping children — the round-top drain delivers and acknowledges it. One
+  reader: both waits disclose early return for pending mail without ACK or stopping
+  children; the round-top drain delivers and acknowledges it. One
   episode may retain only a PROVED empty mailbox (fingerprints compared before
   and after the full reader); a read failure or torn data is never proof and
   is never cached; no TTL and no ACK in peek.

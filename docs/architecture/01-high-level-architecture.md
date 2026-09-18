@@ -419,7 +419,7 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       │   ├── owner_delivery.py ← Owner event delivery: live queue XOR `pending_events` fallback with sticky deferral, preserving narrative order after the first live failure
       │   ├── deliverables_shell.py ← cp/mv/ln into deliverables with symlink checks
       │   ├── shell_audit.py   ← Post-exec custody audit for process tools
-      │   ├── process_facts.py ← Typed process-fact seam consumed by loop_tool_execution for the same call; the regex harvest stays a read fallback
+      │   ├── process_facts.py ← Per-call selected environment, secret egress masking and typed process/runtime facts consumed by loop_tool_execution; the regex harvest stays a read fallback
       │   ├── write_shape.py   ← Retained interpreter/non-interpreter syntax helpers; process permission is owned by the task/resource and Supervisor contract (§6 Safety and runtime mode)
       │   ├── extension_dispatch.py ← Extension tool dispatch (contracts preserved; discovery stays in registry.py)
       │   ├── release_sync.py  ← `sync_release_metadata` (version carriers) used by commit-admission preflight; `_preflight_check` uses `check_history_limit`; the carrier-span SSOT (`VERSION_CARRIER_SPANS`, `substitute_carrier_spans`, the `carrier_only_change` predicate) shared by the managed-update resolver and the commit-triad pack cut (§10 invariant 2)

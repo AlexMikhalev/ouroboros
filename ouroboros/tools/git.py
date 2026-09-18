@@ -1526,9 +1526,11 @@ def get_tools() -> List[ToolEntry]:
         }, _git_status, is_code_tool=True),
         ToolEntry("vcs_diff", {
             "name": "vcs_diff",
-            "description": "git diff for the selected repository (use staged=true to see staged changes after git add).",
+            "description": "Local git diff. Omit refs for unstaged/staged changes. Base compares to worktree or index; base+head compares two trees, not their merge base. No fetch.",
             "parameters": {"type": "object", "properties": {
                 "root": {"type": "string", "enum": ["active_workspace", "system_repo"], "default": "active_workspace", "description": "Omit for the active project workspace; use system_repo for Ouroboros source."},
+                "base": {"type": "string", "default": "", "description": "Optional local base ref, resolved once to an exact tree."},
+                "head": {"type": "string", "default": "", "description": "Optional local second tree; requires base and staged=false."},
                 "staged": {"type": "boolean", "default": False, "description": "If true, show staged changes (--staged)"},
                 "path": {"type": "string", "default": "", "description": "Optional path filter relative to the selected repository"},
                 "stat": {"type": "boolean", "default": False, "description": "If true, show --stat output"},

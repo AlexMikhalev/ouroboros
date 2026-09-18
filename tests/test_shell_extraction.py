@@ -109,10 +109,16 @@ def test_shell_catalog_schema_bytes_and_handler_owners_are_stable():
     ).encode()
     # run_script accepts any installed file interpreter; its temporary file
     # lives in an ignored workspace directory or the existing task drive.
+    # Workflow scope: explicit saved-setting references and lazy-output guidance.
     assert hashlib.sha256(schema_bytes).hexdigest() == (
-        "2e6ebf9e5d81bc2fb321bd9615d66af2c6cd1e58f7bcc23a1a557353049e99f8"
+        "87606208e795ede931339a7ba106fd0cf795fae314e1bc02cafaba6af8c62660"
     )
     original = json.loads(schema_bytes)
+    for schema in original:
+        schema["parameters"]["properties"].pop("env_from_settings")
+        schema["parameters"]["properties"]["outputs"]["description"] = (
+            "Generated file paths to copy/register into the task artifact store after success."
+        )
     original[1]["description"] = (
         "Run a short task-scoped temporary script with a declared interpreter. "
         "Use for multi-line diagnostics or harness helpers; generated script files live under the task drive. "

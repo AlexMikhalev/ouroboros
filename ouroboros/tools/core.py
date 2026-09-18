@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
 
-import fnmatch
 import logging
 import os
 import pathlib
@@ -860,7 +859,7 @@ from ouroboros.code_search_rg import (  # noqa: E402
     MAX_SEARCH_FILES_SCANNED as _MAX_SEARCH_FILES_SCANNED,
     _search_wall_clock_sec,
     is_search_skippable as _is_search_skippable,  # noqa: F401 — re-exported for tests/call sites
-    search_skip_reason as _search_skip_reason,
+    search_skip_reason as _search_skip_reason, matches_include,
 )
 
 
@@ -1071,7 +1070,7 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
         for fname in sorted(filenames):
             fp = pathlib.Path(dirpath) / fname
 
-            if include and not fnmatch.fnmatch(fname, include):
+            if not matches_include(fname, include):
                 continue
 
             if subagent_readonly and _local_readonly_resource_block(ctx, normalized, fp, root_path, action="SEARCH", secret_check=secret_check):
@@ -1330,6 +1329,7 @@ def get_tools() -> List[ToolEntry]:
         ToolEntry("write_file", {
             "name": "write_file",
             "description": (
+                "For canonical output use root=artifact_store (created lazily), e.g. path=report.txt. Do not assume its physical directory already exists. "
                 "Write UTF-8 file(s) to a declared resource root. "
                 "Default root=active_workspace. "
                 "OK messages show root:path. "
@@ -1444,7 +1444,7 @@ def get_tools() -> List[ToolEntry]:
                 "skill_name": {"type": "string", "description": "Required only for root=skill_payload."},
                 "regex": {"type": "boolean", "default": False, "description": "Treat query as a regular expression"},
                 "max_results": {"type": "integer", "default": 200, "description": "Maximum number of matches to return (max 200)"},
-                "include": {"type": "string", "default": "", "description": "Filter by glob pattern (e.g. '*.py')"},
+                "include": {"type": "string", "default": "", "description": "Basename glob, including brace alternatives (e.g. '*.py', '*.{js,css}'); applies on every backend"},
             }, "required": ["query"]},
         }, _code_search),
         ToolEntry("escalate", {

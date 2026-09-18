@@ -144,7 +144,7 @@ def _repo_write(ctx: ToolContext, path: str = "", content: str = "",
     # P3: the force bypass is never silent — a forced write of invalid content
     # still discloses what the guard found in the success message.
     syntax_bypass_notes: List[str] = []
-    from ouroboros.tools.edit_ops import _syntax_check
+    from ouroboros.tools.edit_ops import _syntax_check, workspace_edit_note
 
     if mode != "append":  # an append chunk is not a full file — the guard would block every chunk
         for e, binding in zip(write_list, binding_items):
@@ -242,7 +242,7 @@ def _repo_write(ctx: ToolContext, path: str = "", content: str = "",
     elif ctx.is_workspace_mode() and not system_target:
         result = (
             f"✅ Written {len(written)} file(s): {summary}\n"
-            "Files are on disk in the active workspace. Do not commit; the headless runner will emit a patch artifact."
+            "Files are on disk in the active workspace. " + workspace_edit_note(ctx)
         )
     elif not system_target:
         result = (
@@ -456,7 +456,8 @@ def _str_replace_editor(
     if capture_note:
         result += "\n" + capture_note
     elif data_skill_target is None and ctx.is_workspace_mode() and not system_target:
-        result += "\nDo not commit; the headless runner will emit a patch artifact."
+        from ouroboros.tools.edit_ops import workspace_edit_note
+        result += "\n" + workspace_edit_note(ctx)
     elif system_target:
         result += "\nRun commit_reviewed when ready.\n⚠️ Advisory pre-review is now stale — run preflight_review before commit_reviewed."
     elif data_skill_target is not None:

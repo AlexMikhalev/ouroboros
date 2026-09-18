@@ -1277,16 +1277,21 @@ class ToolRegistry:
         )
         worktree_before = self._worktree_status_snapshot() if entry.mutates_worktree else None
         settings_before = registry_guard_process._owner_settings_snapshot() if name in _PROCESS_COMMAND_TOOLS else None
-        if interpreter_resolution is None:  # node: post-gates (A-F4)
-            from ouroboros.process_interpreters import resolve_node_postgates
+        from ouroboros.tools.process_facts import process_environment_scope
 
-            args, interpreter_resolution = resolve_node_postgates(
-                self._ctx, name, args, runtime_mode=_runtime_mode,
-                effective_constraint=effective_constraint, resolved_binding=resolved_binding,
+        with process_environment_scope(self._ctx, name, args) as environment_error:
+            if environment_error is not None:
+                return environment_error
+            if interpreter_resolution is None:  # node: post-gates (A-F4)
+                from ouroboros.process_interpreters import resolve_node_postgates
+
+                args, interpreter_resolution = resolve_node_postgates(
+                    self._ctx, name, args, runtime_mode=_runtime_mode,
+                    effective_constraint=effective_constraint, resolved_binding=resolved_binding,
+                )
+            early_error, result = self._invoke_builtin_handler(
+                name, entry, args, resolved_binding, interpreter_resolution, worktree_before,
             )
-        early_error, result = self._invoke_builtin_handler(
-            name, entry, args, resolved_binding, interpreter_resolution, worktree_before,
-        )
         if name in _PROCESS_COMMAND_TOOLS:
             # Tripwires run on the TOOL_ERROR path too: two early_error returns
             # fire AFTER the process already ran (#447 B2).
