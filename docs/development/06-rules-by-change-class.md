@@ -626,7 +626,7 @@ both critical. The imperatives:
   `integrate_subagent_patch` and runs its own `commit_reviewed`. The shared
   `external_workspace` surface, including ordinary folders, verifies and records without re-applying; a
   genesis project is durable because the project directory IS the
-  deliverable. A genesis project starts without a `.gitignore`, so its small
+  deliverable. Capture and edit-result text must not invent a Git prohibition for an ordinary external workspace; a private `self_worktree` still returns a patch to its parent. The application-patch base is not task-authorship proof; name an explicit local `vcs_diff` comparison when another view is needed. A genesis project starts without a `.gitignore`, so its small
   text build output (`dist/`, `build/`) rides the `workspace.patch` record
   until the project declares one — a disclosed residual, bounded only by the
   per-file source-patch size boundary and git's binary verdict; otherwise
@@ -698,7 +698,7 @@ owner, owed terminal delivery, cascade postconditions — lives in ARCHITECTURE
 - `wait_task` and `wait_tasks` also peek the waiting actor's own mailbox through
   the existing transport-wait reader. A pending message returns control without
   acknowledging it or stopping children; the ordinary round-top drain delivers
-  and acknowledges it. Read the actor's execution drive, not its budget root.
+  and acknowledges it. Both single and batch wait explain that early return in their result without consuming the message. Read the actor's execution drive, not its budget root.
   One wait/transport episode may retain only a successfully proved empty mailbox:
   compare both mailbox/ACK fingerprints before and after the existing full reader,
   plus execution root, task, attempt and seen ids. Read/parse/stat failure or torn

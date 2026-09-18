@@ -21,6 +21,12 @@ baseline; root tasks can additionally choose `env_from_settings` through their
 host-resolved process authority. Restricted and Presence tasks receive no new
 Settings-selection authority, while their previous literal env and configured MCP
 access remain available. Skill grants do not authorize an unrelated service.
+Foreground commands, scripts and run-kind verification share this Settings-selection
+authority, but keep their existing inherited environment rather than the minimal
+service baseline. Resolve references once after admission, use the same selection
+for launch/runtime provenance, and match verification against raw output before
+masking durable receipts and diagnostics. Omission must preserve host/local/Docker
+behavior; no extra Python probe or literal-env argument is implied.
 Both service backends and MCP reuse `workspace_executor.resolve_process_env`;
 referenced Settings fields retain the same secret/ordinary classification.
 Cwd still uses the host-owned resource binding; local import scrubbing and
@@ -36,5 +42,6 @@ a later cleanup can settle it. Live child logs and logs surviving worker loss ke
 the existing private raw-log contract until successful finalization; oversized or
 uncapturable logs retain their existing explicit omission/error report. No secret
 values are added to the durable process ledger. Enforcement:
-`tests/test_process_environment.py`, `tests/test_workspace_executor_services.py`.
+`tests/test_process_environment.py`, `tests/test_workspace_executor_services.py`,
+`tests/test_workflow_process_environment.py`.
 
