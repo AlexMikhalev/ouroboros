@@ -72,6 +72,10 @@ def subscription_ui():
             payload = request.post_data_json or {}
             posts.append((path, payload))
             if path == "/api/onboarding/subagents/preview":
+                if backend.get("preview_client"):
+                    result = backend["preview_client"].post(path, json=payload)
+                    route.fulfill(status=result.status_code, content_type="application/json", body=result.text)
+                    return
                 if backend.get("preview_error") and not payload.get("skipSubscriptionPresets"):
                     route.fulfill(status=503, content_type="application/json", body=json.dumps({
                         "ok": False, "error": "Automatic assignments unavailable.", "code": "models_unavailable",
@@ -355,9 +359,16 @@ def test_cursor_only_does_not_claim_model_access_and_api_only_finishes(subscript
 
 
 @pytest.mark.parametrize('edit_after_recovery', [False, True])
-def test_failed_preview_allows_manual_main_and_visible_reviewer_recovery_before_save(subscription_ui, edit_after_recovery):
+def test_failed_preview_allows_manual_main_and_visible_reviewer_recovery_before_save(subscription_ui, onboarding, edit_after_recovery):
     ui, page = subscription_ui, subscription_ui['page']
-    ui['backend']['preview_error'] = 'The engine listed no models for codex.'
+    ui['backend'].update(preview_client=onboarding.client, client=onboarding.client)
+    onboarding.calls['snapshot_payload'] = {
+        **LIVE_SNAPSHOT,
+        'harnesses': [{**LIVE_SNAPSHOT['harnesses'][1], 'models': []}],
+        'profiles': {'harnessAccounts': [_profile_account('codex', 'personal')],
+                     'profiles': [_profile('codex', 'personal')]},
+        'model_catalog': ui['fixture']['catalog']['items'],
+    }
     page.goto(ui['url'] + '/onboarding')
     page.wait_for_selector('#next-btn:not([disabled])')
     page.wait_for_function("() => document.querySelector('#onboarding-access-note').textContent.includes('listed no models')")
@@ -380,6 +391,7 @@ def test_failed_preview_allows_manual_main_and_visible_reviewer_recovery_before_
     page.click('#skip-presets-btn')
     page.wait_for_function("() => document.querySelector('.wizard-inline-note')?.textContent.includes('Reviewers were assigned to Main')")
     assert not any(path == '/api/onboarding/complete' for path, _ in ui['posts']), 'Recovery is a preview, not a write'
+    assert not onboarding.settings_path.exists()
     for label in ['Triad review', 'Scope review', 'Advisory review', 'Deep self-review']:
         row = page.locator('.summary-kv').filter(has=page.get_by_text(label, exact=True))
         assert 'claudexor::codex=owner-main' in row.inner_text()
@@ -399,6 +411,8 @@ def test_failed_preview_allows_manual_main_and_visible_reviewer_recovery_before_
     bodies = [body for path, body in ui['posts'] if path == '/api/onboarding/complete']
     assert len(bodies) == 1 and bodies[0]['skipSubscriptionPresets'] is True
     assert bodies[0]['OUROBOROS_MODEL'] == 'claudexor::codex=owner-main'
+    assert json.loads(onboarding.saved()['OUROBOROS_REVIEWER_SLOTS']) == json.loads(bodies[0]['OUROBOROS_REVIEWER_SLOTS'])
+    assert onboarding.calls['supervisor'] == 1
     for kind, value in json.loads(bodies[0]['OUROBOROS_REVIEWER_SLOTS']).items():
         for row in value if isinstance(value, list) else [value]:
             if isinstance(row, dict):
