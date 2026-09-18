@@ -1065,5 +1065,79 @@ Enforcement: the adversarial tests the first bullet mandates, plus
 Enforcement: review-only — CHECKLISTS item 2(f) scores the no-`[:N]` rule in
 commit review.
 
----
+## Android platform development
 
+Android keeps the common source/update/review authority. Its runtime layout,
+launcher/seed distinction, native artifact receipt and lifecycle owners live in
+ARCHITECTURE "Android host (experimental)"; the user procedure is
+`docs/ANDROID_INSTALL.md`. Keep experiments described as rooted ARM64 Android,
+physically tested on Pixel 10a only. Do not turn that tested model into a runtime
+allowlist or treat the manifest's minimum SDK as a proven support matrix.
+
+Native changes use ordinary Android source, reviewed commits and the persistent
+per-install signing identity. Never copy the publisher private key, runtime
+credentials, memory or a live rootfs into release assets. Verify official bytes
+before trusting their source; distinguish a publisher-signed reference APK from
+the locally built installed APK, and record each artifact's own identity. Restore
+the original personal key after loss; do not silently generate another identity
+for an installed package. Preserve source/data/key on installer retries and use
+the existing managed Git merge to retain local evolution during official updates.
+
+Dependency changes must reach the same source-selected hook: `ensure_platform`
+serves first installation and later updates, with package, Java SDK, native AAPT,
+common Node and browser input groups in the existing SDK receipt. Include tracked
+recipes and patches; retain `platform_preparing` until completion so interruption
+and Git rollback cannot reuse a partially changed SDK as current. Verify installed
+output hashes and desired-source stability before native success. Use the existing
+verified download cache, Node manager and Playwright installer; do not start a
+second daemon. A legacy receipt is prepared once; Java SDK-only changes skip AAPT
+compilation. The common `EXTERNAL_PLATFORM_UPDATE_TIMEOUT_SEC` constant is 3600
+seconds in `runtime_limits.py`, re-exported by `config.py`, with the existing
+ProcessContainer cleanup. Start the HTTP readiness clock only after server spawn, not while native preparation runs. Propagate launcher shutdown into the hook and await its owned cleanup before exiting, including a later generation. Preparation completion is not HTTP or native-success evidence. This bound is not an environment setting or a harness deadline.
+The Ubuntu Base archive remains initial seed provenance. Same-Noble apt recipes
+can evolve, with actual installed package versions recorded; Git rollback does
+not promise package removal/downgrade or a major distribution migration.
+
+Exercise actual source → dependency preparation → build → install → readback → restart behavior before
+claiming native adoption. Cover failed native builds alongside a still-usable
+core, older immutable seed with newer source, local APK modification followed by
+an upstream source merge, bootstrap-only changes, rollback to older native source
+with a newer versionCode, bridge loss/recovery, and Panic versus automatic entry.
+Core HTTP health is separate from native artifact and bridge readiness; checks
+must use their existing owners and preserve incomplete outcomes.
+
+Keep delegated access with the common actor/delegation owners described in
+ARCHITECTURE "Agent Core". Android must not acquire a second access default,
+trust policy or retry implementation. Qualify the actual native route separately;
+a sandbox failure is not a successful run or permission to disguise a retry.
+
+On Android, `enter-linux` restores ordinary OOM selection for its own process and
+descendants without removing root. The existing
+`OUROBOROS_PREFLIGHT_TEST_WORKERS` operator lever defaults to 2 and
+`OUROBOROS_PREFLIGHT_TIMEOUT_SEC` to 3600 seconds at this entry, preserving explicit
+overrides. Other installs retain the upstream 1800-second total test budget.
+Standalone preflight/advisory ToolEntry bounds add that resolved test total to the
+existing plan-style task/transport settlement envelope and finalization grace;
+they must not expire before tests and the critic can settle. This outer bound
+creates no new cognitive deadline; inner critic/owner deadlines, test containment
+and the reviewed commit's terminal wait remain unchanged. These settings change
+test concurrency/time, not test content, review models or context. Measure memory/swap and confirm process cleanup before
+running full preflight on a phone; do not deliberately reproduce a kernel panic.
+Keep reusable large downloads in the installer's durable cache.
+
+`android-test` explicitly collects `android/tests`; ordinary `pytest tests/` does
+not cover that directory. Portable source/transport fixtures and host compilation
+are separate from physical root, boot, permissions, hardware and battery evidence.
+The same-key instrumentation under `android/tests/device` owns a temporary SDK
+bridge and an uncommitted PackageInstaller session. The emulator job runs for Android source changes and tags, and executes
+session readback on API 26/29/30/33/36 and accepts its explicit PASS only after
+abandon and bridge cleanup. It requires neither root nor a provisioned Linux
+core; it does not certify the phone bootstrap or owner consent UI.
+Android release source/APK SBOMs describe those shipped bytes; installed dependency
+pins/package inventories describe the provisioned phone. Neither invents the other.
+The trusted tag-only `android-build` job reads `ANDROID_KEYSTORE_BASE64`,
+`ANDROID_KEYSTORE_PASSWORD`, and `ANDROID_KEY_ALIAS` from repository secrets;
+the branch/PR Android jobs use a disposable key and never publish it. A PR is
+therefore source/build evidence, not a publisher-signed release claim.
+
+---
