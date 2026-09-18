@@ -212,7 +212,7 @@ def record_started_custody(
     config_fingerprint: str, work_order_fingerprint: str, work_order_coverage: str,
     work_order_source_request: Dict[str, Any], authority_fingerprint: str,
     snapshot_id: str, target_root: str, baseline_sha: str, authority_source: str,
-    resource_ref: Dict[str, Any], capture_mode: str,
+    resource_ref: Dict[str, Any], capture_mode: str, processing: Mapping[str, Any] | None = None,
 ) -> bool:
     """Write the one STARTED custody row, including the source binding."""
 
@@ -226,6 +226,8 @@ def record_started_custody(
         route_id=route.route_id,
         model=route.model,
         profile_id=route.profile_id,
+        effort=route.effort,
+        processing_preference=(processing or {}).get("requested"),
         project_id=project_id,
         project_owned=project_owned,
         project_persistent=project_persistent,

@@ -209,6 +209,50 @@ def _build_policy_state(settings: Dict[str, Any]) -> dict:
     }
 
 
+def _build_restart_state(settings: Dict[str, Any]) -> dict:
+    """Compare saved intent with component-owned inputs, never os.environ."""
+    from ouroboros.config import get_runtime_mode, normalize_runtime_mode
+    from ouroboros.local_model import get_manager, local_model_settings
+    from ouroboros.server_process import applied_restart_settings, applied_server_host_source
+
+    applied = applied_restart_settings()
+    desired = {key: settings.get(key, _SETTINGS_DEFAULTS.get(key, ""))
+               for key in _RESTART_REQUIRED_KEYS if key not in local_model_settings({})}
+    applied["OUROBOROS_RUNTIME_MODE"] = get_runtime_mode()
+    desired["OUROBOROS_RUNTIME_MODE"] = normalize_runtime_mode(settings.get("OUROBOROS_RUNTIME_MODE"))
+    pending = []
+    for key, value in desired.items():
+        if key not in applied:
+            continue
+        actual = applied[key]
+        if key == "OUROBOROS_SKILLS_REPO_PATH":
+            value = str(pathlib.Path(str(value).strip()).expanduser()) if str(value).strip() else ""
+            actual = str(pathlib.Path(str(actual).strip()).expanduser()) if str(actual).strip() else ""
+        if str(value).strip() != str(actual).strip():
+            pending.append(key)
+    unknown = sorted(set(desired) - set(applied))
+    host_key = "OUROBOROS_SERVER_HOST"
+    host_source = applied_server_host_source(DATA_DIR)
+    source_unknown = []
+    host_summary = ""
+    if host_key in pending and host_source != "settings":
+        pending.remove(host_key)
+        if host_source in {"environment", "cli"}:
+            host_summary = " Saved server host differs from the running listener; launch configuration overrides this setting."
+        else:
+            source_unknown.append(host_key)
+            host_summary = (" Saved server host differs from the running listener. This launcher did not report "
+                            "whether a launch override controls the next start; Restart may apply the saved host.")
+    local = get_manager().settings_application(settings)
+    summary = f"Restart Ouroboros to apply {len(pending)} saved setting(s)." if pending else ""
+    if unknown:
+        summary += f" Application state is not reported for {len(unknown)} runtime setting(s)."
+    summary += host_summary
+    return {"restart_required": bool(pending), "restart_keys": sorted(pending),
+            "restart_source_unknown_keys": source_unknown, "unknown_keys": unknown,
+            "local_model": local, "summary": summary.strip()}
+
+
 def _rehydrate_mcp_servers_payload(incoming: Any, current: Any) -> list:
     if not isinstance(incoming, list):
         return []
@@ -244,17 +288,6 @@ from ouroboros.settings_scales import (
     IMMEDIATE_SETTINGS as _IMMEDIATE_KEYS,
     RESTART_REQUIRED_SETTINGS as _RESTART_REQUIRED_KEYS,
 )
-
-
-def _classify_settings_changes(
-    old: Dict[str, Any],
-    new: Dict[str, Any],
-) -> list:
-    """Return changed keys requiring process restart; others hot-reload next task."""
-    return [
-        k for k in _RESTART_REQUIRED_KEYS
-        if str(new.get(k, "") or "") != str(old.get(k, "") or "")
-    ]
 
 
 def _effect_buckets(all_changed: list) -> tuple:
@@ -875,6 +908,7 @@ async def api_settings_get(request: Request) -> JSONResponse:
     # not a second policy store.
     try:
         meta["policy_state"] = _build_policy_state(settings)
+        meta["restart_state"] = _build_restart_state(settings)
     except Exception:
         # A settings read must stay available even if an optional projection
         # helper is unavailable during startup.  The persisted values remain
@@ -1242,10 +1276,8 @@ def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
             k for k in current
             if str(current.get(k, "") or "") != str(old_effective_settings.get(k, "") or "")
         ]
-        restart_keys = _classify_settings_changes(old_effective_settings, current)
         if runtime_changed:
             all_changed.append("OUROBOROS_RUNTIME_MODE")
-            restart_keys.append("OUROBOROS_RUNTIME_MODE")
 
         # Snapshot BEFORE the save lands: only a task already started at that
         # moment keeps the previous configuration. Measuring after the write
@@ -1355,9 +1387,11 @@ def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
             resp["agent_task_running"] = True
         if not all_changed:
             resp["no_changes"] = True
-        if restart_keys:
+        restart_state = _build_restart_state(settings_to_save)
+        resp["restart_state"] = restart_state
+        if restart_state["restart_required"]:
             resp["restart_required"] = True
-            resp["restart_keys"] = restart_keys
+            resp["restart_keys"] = restart_state["restart_keys"]
         if immediate_changed:
             resp["immediate_changed"] = True
         if next_task_changed:

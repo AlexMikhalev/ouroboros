@@ -89,6 +89,7 @@ def _record_startup_refusal(
     """Stash the typed unrun refusal for the caller's zero-spend terminal."""
 
     from ouroboros.subagent_runtime import current_subagent_alternatives
+    from ouroboros.utils import utc_now_iso
 
     snapshot = task.get("configured_subagent") if isinstance(task.get("configured_subagent"), dict) else {}
     alternatives = current_subagent_alternatives(
@@ -102,6 +103,7 @@ def _record_startup_refusal(
     availability = dict(task.get("subagent_availability") or {}) if isinstance(
         task.get("subagent_availability"), dict) else {}
     availability.update({
+        "observed_at": utc_now_iso(),
         "status": "unavailable",
         "reason": str(reason or "configured_session_unavailable"),
         "reset_at": str(reset_at or ""),

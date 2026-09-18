@@ -62,6 +62,7 @@ from ouroboros.subagent_runtime import (  # noqa: F401 - shared primitive re-exp
     exact_start,
 )
 from ouroboros.subagent_runtime import prepare_delegate_start_actor
+from ouroboros.subagent_history import session_request_facts
 # The staged-output + read-receipt cluster lives in its own module (size gate);
 # re-exported here because sibling code, the tests and the convergence census all
 # name it on THIS surface, and `_READ_COVERAGE` must stay the same object.
@@ -300,7 +301,7 @@ def _processing_start_request(request, actor, gateway, route):
     """Carry only captured actor intent on a route advertising the wire field."""
     preference = str(actor.get("processing_preference") or "")
     if not preference:
-        return request, {}
+        return request, {"requested": ""} if "processing_preference" in actor else {}
     try:
         catalog = gateway.agent_capabilities()
         row = next((item for item in catalog.get("harnesses", [])
@@ -347,8 +348,7 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
     owned_project_id, project_persistent = "", False
     invocation_id = snapshot_id = baseline_sha = target_root = authority_source = ""
     processing_info: Dict[str, Any] = {}
-    resource_ref: Dict[str, Any] = {}
-    directory_options: Dict[str, Any] = {}
+    resource_ref, directory_options = {}, {}
     retry_token = str(retry_of or "").strip()
     source_binding = prepare_work_order_start_binding(
         ctx, drive, retry_token, _canonical_work_order_fingerprint, text,
@@ -410,6 +410,11 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
         resolution = resolve_subagent_executor("harness", route=route, unavailable_reason=exc.code)
         return _fail("delegate_start", exc.code, str(exc), executor=resolution.executor)
 
+    history_facts = session_request_facts(
+        request_body if recovering else {"model": route.model, "credentialProfileId": route.profile_id,
+                                        "effort": route.effort, "access": authority.access},
+        selected_subagent_id=selected_subagent_id, task_id=str(getattr(ctx, "task_id", "") or ""),
+        route=route.route_id, processing=processing_info if recovering else {"requested": actor.get("processing_preference")})
     try:
         # Health checks the stored route/confinement shape on retries, never current
         # environment defaults; blockers stay typed instead of falling through to API spend.
@@ -479,6 +484,7 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
                                           seconds, instructions, execution_root,
                                           **({"directory_options": directory_options} if directory_options else {}))
             request_body, processing_info = _processing_start_request(request_body, actor, gateway, route)
+            history_facts["access"] = request_body["access"]
             key = custody.idempotency_key(getattr(ctx, "task_id", ""), route.route_id,
                                           access, authority.mode, authority.isolation,
                                           root, text, request_body["instructions"])
@@ -493,19 +499,15 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
             max_seconds=seconds, request=request_body, project_id=project_id,
             project_owned=bool(owned_project_id), project_persistent=project_persistent, route=route.route_id,
             # Recovered pending invocations retain their original lineage.
-            root_task_id=str(lineage.get("root_task_id") or ""),
-            parent_task_id=str(lineage.get("parent_task_id") or ""),
+            root_task_id=str(lineage.get("root_task_id") or ""), parent_task_id=str(lineage.get("parent_task_id") or ""),
             # Before POST, persist target/baseline and only known execution paths.
             snapshot_id=snapshot_id, execution_root=(root if snapshot_id or resource_ref.get("strategy") == "direct" else ""),
             baseline_sha=baseline_sha, target_root=target_root,
             authority_source=authority_source, resource_ref=resource_ref,
             # Recovery proves the original actor and compiled brief before adoption.
-            selected_subagent_id=selected_subagent_id,
-            config_fingerprint=config_fingerprint,
-            work_order_fingerprint=work_order_fingerprint,
-            work_order_coverage=work_order_coverage,
-            authority_fingerprint=authority_fingerprint,
-            work_order_source_request=work_order_source_request,
+            selected_subagent_id=selected_subagent_id, config_fingerprint=config_fingerprint,
+            work_order_fingerprint=work_order_fingerprint, work_order_coverage=work_order_coverage,
+            authority_fingerprint=authority_fingerprint, work_order_source_request=work_order_source_request,
             processing=processing_info,
         )
         if claim_refusal:
@@ -516,7 +518,7 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
             return _fail(
                 "delegate_start", reason, detail,
                 **facts,
-                **_retire_orphaned_registration(ctx, gateway, owned_project_id, project_persistent=project_persistent,
+                **_retire_orphaned_registration(ctx, gateway, owned_project_id, project_persistent=project_persistent, history_facts=history_facts,
                     definite_refusal=True,
                     reason=reason, invocation_id=invocation_id, snapshot_id=snapshot_id,
                 ),
@@ -532,7 +534,7 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
                 "The durable start-request row could not be written, so the run was "
                 "NOT started: a run launched without its custody trail would be "
                 "unfindable if this worker died. Fix the drive/event log and retry.",
-                **({"definitely_unrun": True} if not recovering else {}), **_retire_orphaned_registration(ctx, gateway, owned_project_id, project_persistent=project_persistent,
+                **({"definitely_unrun": True} if not recovering else {}), **_retire_orphaned_registration(ctx, gateway, owned_project_id, project_persistent=project_persistent, history_facts=history_facts,
                                                 definite_refusal=not recovering,
                                                 reason="start_request_row_unwritable",
                                                 invocation_id=invocation_id,
@@ -549,7 +551,7 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
                          f"Claudexor returned a queued handle without a run id: {handle!r}",
                          pending_invocation_id=invocation_id,
                          retry_hint=_RETRY_HINT,
-                         **_retire_orphaned_registration(ctx, gateway, owned_project_id, project_persistent=project_persistent,
+                         **_retire_orphaned_registration(ctx, gateway, owned_project_id, project_persistent=project_persistent, history_facts=history_facts,
                                                          definite_refusal=False,
                                                          reason="queued_without_run_id",
                                                          invocation_id=invocation_id))
@@ -568,7 +570,7 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
         return _fail("delegate_start", exc.code, str(exc), executor="blocked",
                      **({"definitely_unrun": True} if not requested else {}),
                      reset_at=getattr(exc, "reset_at", ""), **pending,
-                     **_retire_orphaned_registration(ctx, gateway, owned_project_id, project_persistent=project_persistent,
+                     **_retire_orphaned_registration(ctx, gateway, owned_project_id, project_persistent=project_persistent, history_facts=history_facts,
                                                      definite_refusal=definite,
                                                      reason=str(getattr(exc, "code", "")),
                                                      invocation_id=invocation_id,
@@ -579,7 +581,7 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
         # untyped exit says nothing about whether the POST reached the daemon, so a run
         # may be live against it. Named with a typed reason so the sweep's
         # pending-invocation recovery finds it, then re-raised — disclosure, not a swallow.
-        _retire_orphaned_registration(ctx, gateway, owned_project_id, project_persistent=project_persistent,
+        _retire_orphaned_registration(ctx, gateway, owned_project_id, project_persistent=project_persistent, history_facts=history_facts,
                                       definite_refusal=False,
                                       reason=f"pre_custody_exit_{type(exc).__name__}",
                                       invocation_id=invocation_id)
@@ -596,11 +598,10 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
         project_owned=bool(owned_project_id), project_persistent=project_persistent,
         selected_subagent_id=selected_subagent_id,
         config_fingerprint=config_fingerprint, work_order_fingerprint=work_order_fingerprint,
-        work_order_coverage=work_order_coverage,
-        work_order_source_request=work_order_source_request,
+        work_order_coverage=work_order_coverage, work_order_source_request=work_order_source_request,
         authority_fingerprint=authority_fingerprint, snapshot_id=snapshot_id,
         target_root=target_root, baseline_sha=baseline_sha,
-        authority_source=authority_source, resource_ref=resource_ref,
+        authority_source=authority_source, resource_ref=resource_ref, processing=processing_info,
         capture_mode=("engine_directory" if resource_ref.get("workspace_kind") == "directory" else
                       _CAPTURE_DELEGATED_SNAPSHOT if snapshot_id else ""),
     )
@@ -697,7 +698,7 @@ def _retire_orphaned_registration(ctx: ToolContext, gateway: Any, project_id: st
                                   definite_refusal: bool, reason: str,
                                   project_persistent: bool = False,
                                   invocation_id: str = "",
-                                  snapshot_id: str = "") -> Dict[str, Any]:
+                                  snapshot_id: str = "", history_facts: Optional[dict] = None) -> Dict[str, Any]:
     """Retire a registration this start created but never bound to a run.
 
     Only when the daemon gave a DEFINITE negative answer (a 4xx refusal): a transport
@@ -740,7 +741,7 @@ def _retire_orphaned_registration(ctx: ToolContext, gateway: Any, project_id: st
         _emit(ctx, custody.START_FAILED, {"run_id": "", "project_id": project_id,
                                           "project_retired": retired, "reason": reason,
                                           "invocation_id": invocation_id,
-                                          "definite": bool(definite_refusal)})
+                                          "definite": bool(definite_refusal), **(history_facts or {})})
     if not project_id:
         return {"project_retired": False}
     if project_persistent and definite_refusal:
@@ -969,7 +970,6 @@ def _delegate_wait(ctx: ToolContext, run_id: str, wait_sec: Optional[int] = None
             if breach:
                 return _halt_breached_run(ctx, gateway, entry, breach)
             if state in _TERMINAL_STATES:
-                was_settled = bool(entry.settled)
                 settlement = custody.settle_run(custody.custody_root(ctx), gateway, entry, detail)
                 payload = _delivered_terminal_payload(ctx, rid, detail, authority, entry, gateway)
                 payload["settlement"] = settlement
@@ -981,23 +981,6 @@ def _delegate_wait(ctx: ToolContext, run_id: str, wait_sec: Optional[int] = None
                     {"gateway": gateway} if entry.resource_ref.get("workspace_kind") == "directory" else {}))
                 if capture is not None:
                     payload["workspace_capture"] = capture
-                # The «last delegated run» settings receipt (Subagents section):
-                # requested vs applied model, written ONLY when THIS call performed
-                # a SUCCESSFUL settlement — a later wait re-reading an already-settled
-                # run must not re-date it (or replace a newer run as "last"), and a
-                # settlement whose durable obligations failed must not mint a receipt
-                # it would re-mint on every retry. The delegated REVIEW sessions never
-                # pass here — they have their own receipt store
-                # (reviewer_slot_last_execution.json).
-                if not was_settled and bool(settlement.get("settled")):
-                    from ouroboros.subagents import record_last_delegation
-                    record_last_delegation(
-                        route=entry.route_id, requested_model=entry.model,
-                        applied_model=str(payload.get("model") or ""), run_id=rid,
-                        selected_subagent_id=entry.selected_subagent_id,
-                        # Applied = the same final attempt as the model; requested replays off STARTED.
-                        requested_profile=entry.profile_id,
-                        applied_profile=str((payload.get("observed_attempt") or {}).get("profile_id") or ""))
                 # D7 made load-bearing: settlement is where "paid for and never read"
                 # becomes permanent, so the parent is told in WORDS here — not left to
                 # infer it from `output_delivery.consumed`. Re-settling an already

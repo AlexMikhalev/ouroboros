@@ -641,6 +641,9 @@ def _run_supervisor(settings: dict) -> None:
         restored_pending = restore_pending_from_snapshot(terminalized=interrupted_running)
         kill_workers(preserve_pending=True)
         spawn_workers(max_workers)
+        from ouroboros.server_process import record_applied_restart_settings
+        record_applied_restart_settings({"OUROBOROS_MAX_WORKERS": max_workers,
+                                        "OUROBOROS_SKILLS_REPO_PATH": settings.get("OUROBOROS_SKILLS_REPO_PATH", "")})
         persist_queue_snapshot(reason="startup")
         try:
             from ouroboros.delegate_recovery import pre_adopt_planned_handoffs
@@ -833,17 +836,13 @@ def _run_supervisor(settings: dict) -> None:
 
         except Exception as exc:
             if _supervisor_stop.is_set() or _restart_requested.is_set():
-                # The shutdown/restart tore the bus down under this tick (a
-                # Manager proxy raising BrokenPipe/EOF): not a crash, no alarm.
+                # A shutdown-torn Manager proxy is not a supervisor crash.
                 log.info("Supervisor loop exiting on shutdown: %s", exc)
                 break
             crash_count += 1
             log.error("Supervisor loop crash #%d: %s", crash_count, exc, exc_info=True)
             if crash_count >= 3:
-                # Visible death: previously the loop returned with
-                # _supervisor_ready still set and no _supervisor_error, so
-                # tasks silently stopped being assigned with a healthy-looking
-                # /api/state. Record the failure and tell the owner.
+                # Clear readiness and notify: a dead loop must not look healthy.
                 _supervisor_error = f"Supervisor loop died after 3 consecutive crashes: {exc}"
                 _supervisor_ready.clear()
                 log.critical("Supervisor exceeded max retries: %s", _supervisor_error)
@@ -1598,8 +1597,11 @@ def main() -> int:
         saved_host = str(load_settings().get("OUROBOROS_SERVER_HOST") or "").strip()
     except Exception:
         saved_host = ""
-    default_host = os.environ.get("OUROBOROS_SERVER_HOST", "").strip() or saved_host or DEFAULT_HOST
+    env_host = os.environ.get("OUROBOROS_SERVER_HOST", "").strip()
+    default_host = env_host or saved_host or DEFAULT_HOST
     args = parse_server_args(default_host, DEFAULT_PORT)
+    host_source = "cli" if args.host_explicit else (
+        ("launcher" if _LAUNCHER_MANAGED else "environment") if env_host else "settings")
     global _BIND_HOST
     _BIND_HOST = args.host
     app.app.state.bind_host = args.host  # type: ignore[attr-defined]
@@ -1656,7 +1658,8 @@ def main() -> int:
     threading.Thread(target=_check_restart, daemon=True).start()
 
     try:
-        with bound_service_socket(DATA_DIR, "main", args.host, actual_port) as listener:
+        with bound_service_socket(DATA_DIR, "main", args.host, actual_port,
+                                  server_host_source=host_source) as listener:
             actual_port = _ACTUAL_BOUND_PORT = listener.getsockname()[1]
             write_port_file(PORT_FILE, actual_port)
             log.info("Starting Ouroboros server on %s:%d", args.host, actual_port)

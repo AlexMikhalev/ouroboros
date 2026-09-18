@@ -217,7 +217,13 @@ def _delegation_capability_fact() -> Optional[Dict[str, Any]]:
                 last_fact["applied_profile"] = str(last["applied_profile"])
             if last.get("selected_subagent_id"):
                 last_fact["selected_subagent_id"] = str(last["selected_subagent_id"])
+            for key in ("outcome", "failure_code", "reset_at", "occurred_at", "observed_at"):
+                if key in last:
+                    last_fact[key] = last[key]
             delegation["subagent_last_delegation"] = last_fact
+            rows = last.get("latest_by_subagent")
+            if isinstance(rows, dict) and rows:
+                delegation["subagents_last_executions"] = list(rows.values())
         if len(delegation) == 1:
             return None
         return delegation

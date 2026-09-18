@@ -114,7 +114,7 @@ def _waited_run(tmp_path, monkeypatch, summary, requested_model="m",
     monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _Stub())
     delegate._CUSTODY.clear()
     delegate._CUSTODY["run-1"] = delegate._RunCustody(
-        task_id="t-a", route_id="r", model=requested_model,
+        run_id="run-1", task_id="t-a", route_id="r", model=requested_model,
         profile_id=requested_profile, selected_subagent_id=selected_subagent_id,
         project_id="p", project_owned=False)
     ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path)
@@ -134,7 +134,7 @@ def test_the_receipt_carries_the_requested_and_applied_account(tmp_path, monkeyp
     writes '', never the request dressed up as the applied account."""
     from ouroboros.subagents import subagent_last_delegation
 
-    monkeypatch.setattr("ouroboros.config.DATA_DIR", tmp_path / "acct-data")
+    monkeypatch.setattr("ouroboros.config.DATA_DIR", tmp_path / "acct")
     _waited_run(tmp_path / "acct", monkeypatch,
                 {"state": "succeeded", "spendUsd": 0.0, "model": "m",
                  "authRoute": {"profileId": "previous-profile"}},
@@ -155,7 +155,7 @@ def test_the_receipt_carries_the_requested_and_applied_account(tmp_path, monkeyp
     assert subagent_last_delegation() == record
 
     # A summary echo cannot replace the missing final-attempt receipt.
-    monkeypatch.setattr("ouroboros.config.DATA_DIR", tmp_path / "acct-data-2")
+    monkeypatch.setattr("ouroboros.config.DATA_DIR", tmp_path / "acct2")
     _waited_run(tmp_path / "acct2", monkeypatch,
                 {"state": "succeeded", "spendUsd": 0.0, "model": "m",
                  "authRoute": {"profileId": "previous-profile"}},
