@@ -98,28 +98,6 @@ def validate_attach_path(
     return resolved, ""
 
 
-def is_git_worktree_root(path: pathlib.Path) -> bool:
-    """Whether the directory itself is a Git worktree root, for optional Git setup.
-
-    Ordinary folder admission is independent of this capability observation.
-    """
-    bootstrap_process_path()
-    try:
-        res = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            cwd=str(path), capture_output=True, text=True, timeout=5,
-        )
-    except Exception:
-        return False
-    top = (res.stdout or "").strip() if res.returncode == 0 else ""
-    if not top:
-        return False
-    try:
-        return pathlib.Path(top).resolve(strict=False) == pathlib.Path(path).resolve(strict=False)
-    except OSError:
-        return False
-
-
 def _unstage_sensitive_paths(path: pathlib.Path, *, warnings=None) -> list[str]:
     """Unstage credential files after ``git add -A`` and keep them untracked
     via `.git/info/exclude` (local-only — the owner's folder files are never edited).

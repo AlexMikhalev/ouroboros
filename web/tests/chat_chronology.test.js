@@ -131,3 +131,30 @@ test('URL-less media history rows cannot finalize a live task card', () => {
     assert.equal(isNonTerminalMediaHistoryRow({ system_type: 'video', task_id: 'running' }), true);
     assert.equal(isNonTerminalMediaHistoryRow({ system_type: 'task_summary', task_id: 'done' }), false);
 });
+
+test('a timeline move keeps the caret of a focused text control instead of clearing document ranges', () => {
+    // Chromium mirrors a focused input's caret into the document Selection: the
+    // range save/restore around a node move collapsed a typed draft's selection.
+    const calls = [];
+    const input = {
+        tagName: 'INPUT', selectionStart: 2, selectionEnd: 8, selectionDirection: 'forward',
+        setSelectionRange(start, end, direction) { calls.push(['set', start, end, direction]); this.selectionStart = start; this.selectionEnd = end; },
+        focus() { calls.push(['focus']); },
+    };
+    const selection = {
+        rangeCount: 1,
+        getRangeAt: () => ({ startContainer: {}, startOffset: 0, endContainer: {}, endOffset: 0 }),
+        removeAllRanges() { calls.push(['removeAllRanges']); input.selectionStart = input.selectionEnd = 0; },
+        addRange() { calls.push(['addRange']); },
+    };
+    const typing = makeNode('typing');
+    const timeline = makeTimeline([makeNode('t3', 3), typing]);
+    timeline.ownerDocument = { activeElement: input, getSelection: () => selection, createRange: () => ({ setStart() {}, setEnd() {} }) };
+    const moving = makeNode('t1', 1);
+    moving.contains = () => false;
+    insertTimelineNode(timeline, moving, typing);
+    assert.deepEqual(ids(timeline), ['t1', 't3', 'typing']);
+    assert.ok(!calls.some(([name]) => name === 'removeAllRanges'), calls);
+    assert.deepEqual([input.selectionStart, input.selectionEnd], [2, 8]);
+    assert.deepEqual(calls, [['set', 2, 8, 'forward']]);
+});

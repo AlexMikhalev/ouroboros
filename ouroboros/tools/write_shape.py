@@ -539,11 +539,6 @@ def non_interpreter_write_shape(
 
 # --- Workspace write candidates: the per-segment write/mention walk over writer-target rows ---
 
-def _no_deliverables_decision(_path: Any) -> None:
-    """Deliverables policy is a TARGET policy: a mention takes no decision."""
-    return None
-
-
 def _directory_change_argv(argv: list) -> bool:
     return bool(argv) and pathlib.PurePath(
         str(argv[0])

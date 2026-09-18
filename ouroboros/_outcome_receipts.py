@@ -226,12 +226,6 @@ class ReceiptIdentity:
         return (IDENTITY_KIND_NONE, "")
 
     @property
-    def has_any(self) -> bool:
-        """Whether the receipt names a verification at all (see ``_reconciles`` for
-        what an identity-LESS receipt falls back to)."""
-        return self.key[0] != IDENTITY_KIND_NONE
-
-    @property
     def criterion_key(self) -> tuple[str, str]:
         """The typed key of the MASKED path, whose only usable identity is the
         ``criterion_id`` (``_reconciles_masked`` explains why the check text cannot

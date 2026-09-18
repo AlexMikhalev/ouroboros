@@ -24,7 +24,7 @@ export const MAX_AVAILABLE_SUBAGENTS = 10;
 export const SUBAGENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 
 const SETTING_KEYS = new Set(['enabled', 'items']);
-const ROW_KEYS = new Set(['subagent_id', 'name', 'recommended_use', 'route', 'effort', 'processing_preference']);
+const ROW_KEYS = new Set(['subagent_id', 'name', 'recommended_use', 'route', 'effort', 'processing_preference', 'access']);
 const ROUTE_KEYS = new Set(['kind', 'target_id', 'credential_profile_id']);
 
 function ownUnknownKeys(value, allowed) {
@@ -50,6 +50,7 @@ function canonicalRow(row) {
         route,
         ...(row?.effort ? { effort: String(row.effort).trim().toLowerCase() } : {}),
         ...(row?.processing_preference ? { processing_preference: String(row.processing_preference).trim().toLowerCase() } : {}),
+        ...(route.kind === ROUTE_KIND_AGENT_SESSION ? { access: row?.access ?? 'full' } : {}),
     };
 }
 
@@ -137,6 +138,12 @@ export function parseAvailableSubagentsSetting(value) {
         if (![ROUTE_KIND_API_MODEL, ROUTE_KIND_AGENT_SESSION].includes(routeKind)) {
             return { setting: null, error: `row ${index + 1} has unsupported route kind` };
         }
+        if (row.access !== undefined && !['workspace_write', 'full'].includes(row.access)) {
+            return { setting: null, error: `row ${index + 1} access must be workspace_write or full` };
+        }
+        if (row.access !== undefined && routeKind !== ROUTE_KIND_AGENT_SESSION) {
+            return { setting: null, error: `row ${index + 1} access requires an Agent session` };
+        }
         if (!routeSupportsAccount({ ...row.route, kind: routeKind })
             && String(row.route.credential_profile_id || '').trim()) {
             return { setting: null, error: `row ${index + 1} has an account pin on an API route` };
@@ -149,10 +156,7 @@ export function parseAvailableSubagentsSetting(value) {
     const setting = { enabled: input.enabled, items: canonicalItems };
     const errors = validateAvailableSubagentsSetting(setting);
     if (errors.length) return { setting: null, error: `saved value is invalid: ${errors[0]}` };
-    return {
-        setting,
-        error: '',
-    };
+    return { setting, error: '' };
 }
 
 // One row's owner-facing errors, named the way the card is ("Subagent N").
@@ -168,6 +172,11 @@ function rowErrors(row, index, ids) {
     }
     ids.add(id);
     const route = row?.route || {};
+    if (row?.access !== undefined && !['workspace_write', 'full'].includes(row.access)) {
+        errors.push('access must be Working files or Full system access.');
+    } else if (row?.access !== undefined && route.kind !== ROUTE_KIND_AGENT_SESSION) {
+        errors.push('can select access only with an Agent session.');
+    }
     if (![ROUTE_KIND_API_MODEL, ROUTE_KIND_AGENT_SESSION].includes(route.kind)) {
         errors.push('must use API model or Agent session.');
     }
@@ -217,16 +226,7 @@ export function validateAvailableSubagentsSetting(setting) {
 export function buildAvailableSubagentsSetting(setting) {
     return {
         enabled: Boolean(setting?.enabled),
-        items: (setting?.items || []).map((row) => {
-            const out = canonicalRow(row);
-            out.subagent_id = out.subagent_id.trim();
-            out.route.target_id = out.route.target_id.trim();
-            if (out.route.credential_profile_id) {
-                out.route.credential_profile_id = out.route.credential_profile_id.trim();
-            }
-            if (out.effort) out.effort = out.effort.trim();
-            return out;
-        }),
+        items: (setting?.items || []).map(canonicalRow),
     };
 }
 
@@ -244,12 +244,8 @@ export function availableSubagentsSavePayload({ loaded = false, parseError = '',
 
 /** Preview the current Settings draft without turning its generated actor rows into owner input. */
 export function availableSubagentsPreviewPayload(settingsDraft, subscriptionsConnected) {
-    const payload = {
-        ...(settingsDraft || {}),
-        subscriptionsConnected: Boolean(subscriptionsConnected),
-    };
-    delete payload.OUROBOROS_SUBAGENTS;
-    return payload;
+    const { OUROBOROS_SUBAGENTS: _roster, ...draft } = settingsDraft || {};
+    return { ...draft, subscriptionsConnected: Boolean(subscriptionsConnected) };
 }
 
 export function generatedPreviewCanReplace({
@@ -366,6 +362,14 @@ export function availableSubagentRowMarkup(row, state, index = 0) {
                 ${effortSelectHtml(`data-subagent-field="effort" aria-label="Reasoning effort for Subagent ${ordinal}"`, row.effort || '', 'route default')}
             </div>
             ${processingDetailsHtml(`data-subagent-field="processing_preference" aria-label="Processing for Subagent ${ordinal}"`, row.processing_preference, state.processingPreference)}
+            ${session ? `<div class="ui-field">
+                <label for="actor-${escapeHtml(rowKey)}-access">Access</label>
+                ${selectHtml(`id="actor-${escapeHtml(rowKey)}-access" data-subagent-field="access" aria-label="Access for Subagent ${ordinal}"`, [{ label: '', options: [
+                    { value: 'full', label: 'Full system access (default)' },
+                    { value: 'workspace_write', label: 'Working files' },
+                ] }], row.access || 'full')}
+                <div class="ui-field-help" id="actor-${escapeHtml(rowKey)}-access-help">Full system access can reach outside the working folder. The selected agent must support it. Explicit task restrictions still apply.</div>
+            </div>` : ''}
             <div id="actor-${escapeHtml(rowKey)}-meta" class="available-subagent-meta ui-field-help" data-subagent-meta${meta.tone ? ` data-tone="${escapeHtml(meta.tone)}"` : ''} title="${escapeHtml(meta.text)}"${meta.text ? '' : ' hidden'}>${escapeHtml(meta.text)}</div>
         </article>`;
 }
@@ -485,7 +489,8 @@ export function createAvailableSubagentsEditor({
             if (processingSummary) processingSummary.textContent = processingIntentLabel(row.processing_preference, state.processingPreference);
             el.toggleAttribute('data-invalid', judged);
             el.querySelectorAll('[data-subagent-field]').forEach((field) => {
-                field.setAttribute('aria-describedby', `actor-${row._uiKey || row.subagent_id}-meta`);
+                const prefix = `actor-${row._uiKey || row.subagent_id}`;
+                field.setAttribute('aria-describedby', `${prefix}-meta${field.dataset.subagentField === 'access' ? ` ${prefix}-access-help` : ''}`);
                 if (field.dataset.subagentField !== 'recommended_use') field.setAttribute('aria-invalid', String(judged));
             });
             const status = rowStatus(row, state);
@@ -538,6 +543,7 @@ export function createAvailableSubagentsEditor({
             });
             rowElement.querySelector('[data-subagent-field="route"]')?.addEventListener('change', (event) => {
                 row.route = changeRouteChoice(row.route, event.target.value);
+                if (row.route.kind !== ROUTE_KIND_AGENT_SESSION) delete row.access;
                 markDirty({ structural: true });
                 paint();
             });
@@ -559,17 +565,14 @@ export function createAvailableSubagentsEditor({
                 markDirty({ structural: true });
                 paint();
             });
-            rowElement.querySelector('[data-subagent-field="effort"]')?.addEventListener('change', (event) => {
-                const effort = String(event.target.value || '');
-                if (effort) row.effort = effort;
-                else delete row.effort;
-                markDirty();
-            });
-            rowElement.querySelector('[data-subagent-field="processing_preference"]')?.addEventListener('change', (event) => {
-                if (event.target.value) row.processing_preference = event.target.value;
-                else delete row.processing_preference;
-                markDirty();
-            });
+            for (const field of ['effort', 'processing_preference', 'access']) {
+                rowElement.querySelector(`[data-subagent-field="${field}"]`)?.addEventListener('change', (event) => {
+                    const value = String(event.target.value || '');
+                    if (value) row[field] = value;
+                    else delete row[field];
+                    markDirty();
+                });
+            }
             rowElement.querySelector('[data-subagent-duplicate]')?.addEventListener('click', () => {
                 if (state.setting.items.length >= MAX_AVAILABLE_SUBAGENTS) return;
                 const copy = canonicalRow(row);
@@ -937,14 +940,11 @@ export function availableSubagentsLoadValue(settings) {
 
 /** Whether this response carries owner or repair bytes that must be fixed in-place. */
 export function availableSubagentsHasExplicitDraft(settings) {
-    const raw = settings?.OUROBOROS_SUBAGENTS;
-    if (raw !== undefined && raw !== null && raw !== '') return true;
     const meta = settings?._meta?.available_subagents;
-    return meta != null
-        && Object.prototype.hasOwnProperty.call(meta, 'candidate')
-        && meta.candidate !== undefined
-        && meta.candidate !== null
-        && meta.candidate !== '';
+    return [settings?.OUROBOROS_SUBAGENTS,
+        meta != null && Object.prototype.hasOwnProperty.call(meta, 'candidate')
+            ? meta.candidate : undefined,
+    ].some(value => value !== undefined && value !== null && value !== '');
 }
 
 export function initSubagentsSection({
