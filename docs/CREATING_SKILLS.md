@@ -771,6 +771,11 @@ recipients and Message-ID/References, without claiming inbox arrival or reading.
 Only confirmed sent/accepted content becomes outgoing speech; failure and
 uncertainty are typed System facts. Do not report queued text as delivered.
 
+An unreadable or malformed retained chat chain makes receipt-index rebuilding
+return HTTP 503. Provider sending continues; durable receipts remain pending
+for reporting. Restore the retained history's readability before retrying the
+reports, without resending provider messages or treating missing history as empty.
+
 Keep report acknowledgement and backoff in the existing outbox. A Host failure
 must never put an already delivered provider message back into its send queue
 or hold later provider messages behind a failed report. Retrying the same
