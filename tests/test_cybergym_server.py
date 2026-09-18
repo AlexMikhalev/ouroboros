@@ -570,14 +570,14 @@ def test_mount_fs_type_longest_prefix_wins():
         "10.0.0.1:/volume /mnt/cephfs ceph rw 0 0",
         "tmpfs /tmp tmpfs rw 0 0",
     ])
-    assert _mount_fs_type(pathlib.Path("/mnt/cephfs/razzh/state"), mounts) == "ceph"
-    assert _mount_fs_type(pathlib.Path("/mnt/cephfs"), mounts) == "ceph"
-    assert _mount_fs_type(pathlib.Path("/tmp/state"), mounts) == "tmpfs"
-    assert _mount_fs_type(pathlib.Path("/var/lib/x"), mounts) == "ext4"
-    assert _mount_fs_type(pathlib.Path("/"), mounts) == "ext4"
+    assert _mount_fs_type(pathlib.PurePosixPath("/mnt/cephfs/razzh/state"), mounts) == "ceph"
+    assert _mount_fs_type(pathlib.PurePosixPath("/mnt/cephfs"), mounts) == "ceph"
+    assert _mount_fs_type(pathlib.PurePosixPath("/tmp/state"), mounts) == "tmpfs"
+    assert _mount_fs_type(pathlib.PurePosixPath("/var/lib/x"), mounts) == "ext4"
+    assert _mount_fs_type(pathlib.PurePosixPath("/"), mounts) == "ext4"
     escaped = "server:/a /mnt/with\\040space nfs4 rw 0 0\n/dev/sda1 / ext4 rw 0 0\n"
-    assert _mount_fs_type(pathlib.Path("/mnt/with space/sub"), escaped) == "nfs4"
-    assert _mount_fs_type(pathlib.Path("/elsewhere"), "garbage line\n") == ""
+    assert _mount_fs_type(pathlib.PurePosixPath("/mnt/with space/sub"), escaped) == "nfs4"
+    assert _mount_fs_type(pathlib.PurePosixPath("/elsewhere"), "garbage line\n") == ""
 
 
 def test_close_mirrors_audit_surface_to_run_root(tmp_path, monkeypatch):
