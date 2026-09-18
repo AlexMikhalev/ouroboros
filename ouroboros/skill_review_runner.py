@@ -659,7 +659,6 @@ def _call_review_with_lifecycle_guard(
         "_skill_review_content_hash": getattr(ctx, "_skill_review_content_hash", sentinel),
         "_skill_review_group_id": getattr(ctx, "_skill_review_group_id", sentinel),
         "_skill_review_round": getattr(ctx, "_skill_review_round", sentinel),
-        "_skill_review_snapshot_attempt": getattr(ctx, "_skill_review_snapshot_attempt", sentinel),
         "_skill_review_snapshot_revised": getattr(ctx, "_skill_review_snapshot_revised", sentinel),
         "_skill_review_resolved_binding": getattr(ctx, "_skill_review_resolved_binding", sentinel),
         "_skill_review_resume": getattr(ctx, "_skill_review_resume", sentinel),
@@ -672,7 +671,6 @@ def _call_review_with_lifecycle_guard(
     setattr(ctx, "_skill_review_content_hash", str(job_data.get("content_hash") or ""))
     setattr(ctx, "_skill_review_group_id", str(job_data.get("group_id") or ""))
     setattr(ctx, "_skill_review_round", int(job_data.get("review_round") or 1))
-    setattr(ctx, "_skill_review_snapshot_attempt", int(job_data.get("snapshot_attempt") or 1))
     setattr(ctx, "_skill_review_snapshot_revised", bool(job_data.get("snapshot_revised")))
     setattr(ctx, "_skill_review_resolved_binding", binding)
     try:
