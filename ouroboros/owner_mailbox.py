@@ -27,6 +27,10 @@ TASK_MESSAGE_PROVENANCES = frozenset({
     "ancestor_task", "peer_via_ancestor", "system", "descendant_task",
     PROVENANCE_INDEPENDENT_TASK,
 })
+# These messages wake the mind but do not enter its owner's directive corpus.
+CONTEXT_ONLY_TASK_PROVENANCES = frozenset({
+    "system", "descendant_task", PROVENANCE_INDEPENDENT_TASK,
+})
 KIND_FINALIZE_NOW = "finalize_now"
 # Owner "hurry" control (HQ1, 2026-08-15): a task-local typed acceleration
 # directive — NEVER owner dialogue and NEVER revoked after drain (restart

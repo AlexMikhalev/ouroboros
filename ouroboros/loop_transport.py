@@ -498,22 +498,34 @@ def _owner_signal_pending(
     owner_msg_seen: Optional[set],
     attempt: Any,
     mailbox_peek: Optional[OwnerMailboxPeek] = None,
+    *,
+    owner_authority_only: bool = False,
 ) -> bool:
-    """Non-destructive peek: is an owner message or typed control waiting?"""
+    """Peek unread input; acceptance may exclude context-only task messages.
+
+    Transport and wait callers still wake for every message. Owner admission
+    uses the same typed provenance boundary as the ordinary mailbox drain.
+    """
     if incoming_messages is not None and not incoming_messages.empty():
         return True
     if drive_root is None or not task_id:
         return False
     try:
-        from ouroboros.owner_mailbox import drain_owner_entries
+        from ouroboros.owner_mailbox import (
+            CONTEXT_ONLY_TASK_PROVENANCES, KIND_TASK_MESSAGE, drain_owner_entries,
+        )
 
-        if mailbox_peek is not None:
+        if mailbox_peek is not None and not owner_authority_only:
             return mailbox_peek.pending(pathlib.Path(drive_root), task_id, set(owner_msg_seen or ()), attempt)
         # A COPY of the seen-set: this is a peek — the round top performs the
         # real drain, delivery, and acknowledgement.
-        return bool(drain_owner_entries(
+        entries = drain_owner_entries(
             pathlib.Path(drive_root), task_id, set(owner_msg_seen or ()), attempt,
-        ))
+        )
+        return any(not (
+            owner_authority_only and entry.get("kind") == KIND_TASK_MESSAGE
+            and str(entry.get("provenance") or "ancestor_task") in CONTEXT_ONLY_TASK_PROVENANCES
+        ) for entry in entries)
     except Exception:
         log.debug("owner-signal peek failed during transport wait", exc_info=True)
         return False
