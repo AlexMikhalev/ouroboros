@@ -1,6 +1,6 @@
 # Rules by change class
 
-This chapter is the imperative body of the handbook: one section per change class, from tool registration and skill payload lanes through the live E2E stand, light mode and deliverables, retention, delegated subagents, cancellation, onboarding and settings surfaces, transport and late-result custody, LLM call rules, timeout and wait control, and the loop and acceptance state machines. Each section names the tests or gates that enforce it, or says that only review does, so a change is checked against the rules for the class it belongs to rather than against the whole book.
+This chapter gives one rule section per change class: tool registration, skill payloads, the live E2E stand, light mode and deliverables, retention, delegated subagents, cancellation, onboarding and settings, transport and late-result custody, LLM calls, timeout/wait control, and loop/acceptance state machines. Each section names its enforcing tests or gates, or marks rules as review-only; check a change against its applicable classes.
 
 `docs/CHECKLISTS.md` remains the only reviewer scorer; its `development_compliance` item points at this handbook as a whole.
 
