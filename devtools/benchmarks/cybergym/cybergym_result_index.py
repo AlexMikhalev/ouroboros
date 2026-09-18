@@ -72,8 +72,10 @@ def acquire_campaign_execution_lock(
         "a+", encoding="utf-8",
     )
     try:
-        lock = file_lock_exclusive if blocking else file_lock_exclusive_nb
-        lock(handle.fileno())
+        if blocking:
+            file_lock_exclusive(handle.fileno())
+        else:
+            file_lock_exclusive_nb(handle.fileno())
     except BlockingIOError:
         handle.close()
         return None

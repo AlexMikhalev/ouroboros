@@ -827,18 +827,21 @@ S14_ANSWER_V2 = "Final answer: the summary is complete. W3A_DONE"
 _OWNER_SOURCE_RE = re.compile(r'"owner_source_sha256": "([0-9a-f]{64})"')
 
 
-def _control_step(delivery_control: str, full_answer: str | None = None):
+def _control_step(delivery_control: str, full_answer: str):
     """A scripted answer to the host's delivery control.
 
-    Acceptance is asynchronous (owner D4=A): the panel settles in custody and its
-    verdicts wake Main with the keep/replace control re-offered, so the scripted
-    agent answers that control instead of a bare final. The exact owner source
-    selector is read from the transcript's last ``[ACCEPTANCE_SUBJECT_OBSERVATION]``
-    (the wave-2 dynamic-argument contract of ``scripted_completion``)."""
+    A pending acceptance wait offers keep/replace, but a panel that settles
+    before that wait leaves an ordinary answer round. Follow the actual prompt:
+    return the full answer unless this candidate lineage was offered control.
+    Historical control remains valid under the runtime's control reader. The
+    exact owner source selector comes from the latest subject observation."""
     def step(body: dict) -> dict:
-        found = _OWNER_SOURCE_RE.findall(body_text(body))
+        text = body_text(body)
+        if "[DELIVERY_FINALIZATION_CONTROL]" not in text:
+            return {"final": full_answer}
+        found = _OWNER_SOURCE_RE.findall(text)
         control = {"delivery_control": delivery_control}
-        if full_answer is not None:
+        if delivery_control == "replace":
             control["full_answer"] = full_answer
         if found:
             control["acceptance_subject"] = {"owner_source_sha256": found[-1]}
@@ -862,11 +865,11 @@ def test_s17_acceptance_reject_rework_accept(e2e_clone, tmp_path_factory):
     review_script = ReviewScript({
         "acceptance": [W3A_ACCEPT_REJECT] * 3 + [W3A_ACCEPT_PASS] * 3,
     })
-    # V1 is nominated; the REJECT wave wakes Main with the control re-offered and
-    # the rework answers it as a typed replace (a second paid panel); the PASS
-    # wave wakes Main again and a typed keep delivers under the accepted panel.
+    # V1 is nominated; rework submits V2 after the REJECT wave (a second paid
+    # panel), and the PASS wave delivers V2. The script follows whichever answer
+    # form the actual settlement ordering offers: ordinary text or keep/replace.
     stub = ScriptedStubModel(
-        [{"final": S14_ANSWER_V1}, _control_step("replace", S14_ANSWER_V2), _control_step("keep")],
+        [{"final": S14_ANSWER_V1}, _control_step("replace", S14_ANSWER_V2), _control_step("keep", S14_ANSWER_V2)],
         review_script=review_script,
     )
     with stub:
@@ -908,10 +911,10 @@ def test_s17_acceptance_identical_rework_is_free_replay_refusal(
     require_lane(LANE_MOCK)
     root = tmp_path_factory.mktemp("s14b")
     review_script = ReviewScript({"acceptance": [W3A_ACCEPT_REJECT] * 3})
-    # Keep collects the REJECT verdict; the following improvement round
-    # resubmits the identical answer, which must replay at $0 without a new panel.
+    # Keep (when offered) or an ordinary identical answer collects the REJECT
+    # verdict; the improvement round resubmits the same answer at $0.
     stub = ScriptedStubModel(
-        [{"final": S14_ANSWER_V1}, _control_step("keep"), {"final": S14_ANSWER_V1}],
+        [{"final": S14_ANSWER_V1}, _control_step("keep", S14_ANSWER_V1), {"final": S14_ANSWER_V1}],
         review_script=review_script,
     )
     with stub:
