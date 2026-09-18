@@ -131,12 +131,12 @@ def test_template_does_not_carry_credentials_or_local_routes():
     assert settings["LOCAL_MODEL_FILENAME"] == ""
 
 
-def test_cybergym_is_registered_and_structural_test_lists_are_synchronized():
+def test_cybergym_is_registered_and_passes_the_shared_structural_audit():
     relative = "cybergym/run_cybergym.py"
+    path = REPO / "devtools" / "benchmarks" / relative
     assert relative in launcher_audit.MIGRATED_LAUNCHERS
-    structural = (REPO / "tests" / "test_devtools_benchmarks.py").read_text(encoding="utf-8")
-    assert '"devtools/benchmarks/cybergym/run_cybergym.py"' in structural
-    assert 'bench / "cybergym" / "run_cybergym.py"' in structural
+    assert path in launcher_audit.launcher_paths()
+    assert launcher_audit.audit_launcher(path) == []
 
 
 def test_benchmark_inventory_points_to_cybergym_docs():

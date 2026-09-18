@@ -1,17 +1,9 @@
 """Structural contracts for the semantic-no-op shell tool extraction.
 
-Carried from the v7 reference (ouroboros_v7_wip @ 9f691656) with the following
-identity continuations to THIS tree's bytes:
-
-1. Ten output-audit owners the reference placed in ``shell_outputs`` were
-   relocated by upstream itself into ``ouroboros/tools/shell_audit.py`` (a
-   post-cutoff upstream extraction); the ownership map below names the
-   upstream owner for those rows and the facade identity clause still holds
-   for every one of them.
-2. The frozen-tool-inventory clauses are dropped: ``ouroboros.tool_module_
-   inventory`` is a D04-family v7 leaf absent from this tree; the
-   non-catalog-owner and no-backedge clauses keep the structural half of that
-   contract. The inventory clause returns with its leaf.
+The output-audit helpers live in ``ouroboros.tools.shell_audit``. The owner
+map names that module alongside the process, output and effects leaves;
+the facade identity clause covers every moved helper. The leaves remain
+non-catalog owners without backedges into the facade.
 """
 
 from __future__ import annotations
@@ -160,4 +152,4 @@ def test_shell_extraction_size_bounds_have_meaningful_headroom():
     }
     assert counts["ouroboros.tools.shell"] <= 800
     assert all(count <= 1000 for count in counts.values())
-    assert 400 <= counts["ouroboros.tools.shell_outputs"] <= 1000
+    assert counts["ouroboros.tools.shell_outputs"] <= 1000

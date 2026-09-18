@@ -214,7 +214,7 @@ defaults belong to their owners (ARCHITECTURE, CHECKLISTS, BIBLE,
 `config.py`) and are pointed to, not restated — the ARCHITECTURE settings and
 endpoint tables are test-checked registries of those owners, not second
 authorities. A change REPLACES the description of the node it touched; release
-history lives in git and the README history table, leftovers go to issues.
+history lives in git and the README history table.
 Residue — parenthesized version stamps, decision codenames, "used to /
 previously" narrative — is caught by the shrink-only residue check in
 `tests/test_docs_sync.py`, which enforces only the explicit, case-sensitive
@@ -222,6 +222,17 @@ matches in `DOC_RESIDUE_PATTERNS`, outside its declared skipped subsections and
 language-tagged fences (the untagged module-tree fence in ARCHITECTURE §1 IS
 scanned — an owner decision); semantically equivalent historical prose stays
 review-only under CHECKLISTS item 7.
+
+Track assets with a continuing purpose for the product, contributors, verification,
+legal requirements or evidence for public claims, beyond the work that introduced them. Plans, review packets, run receipts
+and campaign bookkeeping belong in the external work area or durable task evidence,
+not the tracked source tree; a test preserving their presence or wording does not
+give them a permanent product role. Retire temporary campaign tooling when its
+purpose ends. Keep current behavior and its rationale in their existing owners;
+future-work lists and campaign backlog stay outside the tracked product tree.
+Generated snapshots with real product, verification or publication consumers remain
+valid; optional reports use stdout or an explicit output destination. Existing
+review enforces this contract, without automatic deletion or filename matching.
 
 Both of those documents are reference BOOKS: an entrypoint carrying its H1, one
 authored introductory paragraph and an ordered `## Chapters` membership list,
@@ -243,8 +254,8 @@ tree so a breach is red rather than discovered by the next review:
   owns; moving prose between chapters is a documentation change like any other
   and REPLACES the description at its destination.
 - **One line ending.** `.gitattributes` pins `docs/**/*.md` to LF, so the
-  physical line ranges and SHA-256 digests the generated inventories and the
-  transfer table carry mean the same bytes on every platform; a CRLF checkout
+  physical line ranges and SHA-256 digests the generated inventories carry
+  mean the same bytes on every platform; a CRLF checkout
   would move every cited line.
 - **Readers ask for a view, not for a file.** `load_governance_doc` composes a
   book for a surface that owes it in full, `context_layout.book_navigation`
@@ -253,8 +264,6 @@ tree so a breach is red rather than discovered by the next review:
   Never read an entrypoint with `read_text()` and treat the result as the book
   — that is a membership list, and a substring pin over it passes while testing
   nothing (`tests/_governance_docs_shared.py` is the one reader tests use).
-  `docs/reference-books-migration.md` is the operator record of the original
-  split and is deliberately not a member of either book.
 
 ### Generality and emergence (P13)
 

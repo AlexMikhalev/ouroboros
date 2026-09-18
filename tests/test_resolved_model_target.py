@@ -1,7 +1,6 @@
 """ABI-4 ``ResolvedModelTarget`` — the typed resolved-model destination.
 
-The suite name is fixed by docs/v7next/DESIGN_RESOLVED_MODEL_TARGET.md: it pins
-frozen-ness, value identity, construction at each existing resolution seam
+Pins immutability, value identity and construction at each existing resolution seam
 (the cross-model fallback ladder, the reviewer model lists, the delegated
 route), and the consumer-sweep grep pins (no comma/at re-parsing beside a seam
 that already yields the dataclass).

@@ -4597,28 +4597,10 @@ def test_every_migrated_launcher_routes_through_both_manifest_seams():
     # this test uses that SSOT rather than keeping a second, weaker copy of the same walk.
     from devtools.benchmarks.common.launcher_audit import (
         _dotted_callee, calls_before as _calls_before,
-        denied_pre_admission_call as _denied_pre_admission_call,
+        denied_pre_admission_call as _denied_pre_admission_call, launcher_paths,
     )
 
-    bench = REPO_ROOT / "devtools" / "benchmarks"
-    migrated = [
-        bench / "programbench" / "run_programbench.py",
-        bench / "programbench" / "run_programbench_e2e.py",
-        bench / "swe_bench" / "swebench_predictions.py",
-        bench / "swe_bench_pro" / "pro_predictions.py",
-        bench / "harness_bench_fast" / "run_harness_bench_fast.py",
-        bench / "swe_bench_pro" / "e1v2" / "run_pro.py",
-        bench / "swe_bench_pro" / "e1v2" / "auto_run.py",
-        bench / "gaia" / "run_gaia.py",
-        bench / "terminal_bench" / "run_tb.py",
-        bench / "terminal_bench" / "run_harbor_smoke.py",
-        bench / "continual_learning" / "run_clb.py",
-        bench / "cybergym" / "run_cybergym.py",
-        bench / "osworld" / "run_step_agent.py",
-        bench / "osworld" / "run_cu_bridge_agent.py",
-        bench / "osworld" / "osworld_adapter_skeleton.py",
-        bench / "editbench" / "run_editbench.py",
-    ]
+    migrated = launcher_paths()
     for path in migrated:
         source = path.read_text(encoding="utf-8")
         assert "admit_benchmark_run(" in source, f"{path.name} bypasses the admission seam"
@@ -4656,15 +4638,9 @@ def test_every_migrated_launcher_routes_through_both_manifest_seams():
                 f"{path.name}: {dotted}() runs BEFORE admit_benchmark_run() in {owner}() -- a "
                 f"refusal there leaves no durable manifest (denied token: {denied})"
             )
-    # The pending set is EMPTY on this tree: CL-Bench and the three OSWorld launchers migrated
-    # in v6.76.0, GAIA and both Terminal-Bench launchers in v6.79.0. Asserted against the gate's
-    # own list so the two enumerations cannot drift apart silently.
     from devtools.benchmarks.common import launcher_audit
 
     assert launcher_audit.PENDING_LAUNCHERS == ()
-    assert sorted(path.relative_to(bench).as_posix() for path in migrated) == sorted(
-        launcher_audit.MIGRATED_LAUNCHERS
-    )
 
 
 # One synthetic per CALL FORM a write primitive can wear. The destination model is derived from

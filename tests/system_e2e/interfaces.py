@@ -1,26 +1,25 @@
-"""Suite actors beyond the loopback stub models (plan §8).
+"""Suite actors beyond the loopback stub models.
 
-``FakeClaudexorDaemon`` (landed with the Ф4 wave-3b delegated-transport lane) is a
-loopback claudexord imitation serving the EXACT client contract this tree's
-``ouroboros/gateways/claudexor.py`` speaks: the protocol-3 authenticated handshake,
+``FakeClaudexorDaemon`` is a loopback claudexord imitation serving the EXACT
+client contract this tree's ``ouroboros/gateways/claudexor.py`` speaks: the protocol-3 authenticated handshake,
 the capability/quota answers ``subagent_route_health.route_health`` reads, project
 registration with Idempotency-Key, ``POST /v2/runs`` with the engine's replay
 check (same key + byte-identical body → the ORIGINAL handle; same key + different
 digest → 409 ``idempotency_conflict``), run detail with the ``summary`` facts the
-custody settler consumes, the cancel control verb, and (wave 4) the interactive
+custody settler consumes, the cancel control verb, and the interactive
 question surface — ``pendingInteractions`` on the detail plus the
 ``POST /v2/runs/:id/interactions/:iid/answer`` verb ``delegate_answer`` speaks,
 with its typed delivered/already_resolved/rejected statuses. Behavior is scripted
 PER RUN by markers in the POSTed prompt (success / hang / typed refusal / ask)
-plus the pinned-profile refusal, and (the mutating wave) the applied facts a
+plus the pinned-profile refusal, and the applied facts a
 WRITING run produces: the edits themselves, made inside the private execution
 snapshot the start body names, and the ``attempts/<id>/attempt.yaml`` containment
 record ``gateways/claudexor.py::attempt_containment`` reads. So one daemon serves
 every delegated-transport scenario without a second boot. It records every request
 (method, path, idempotency key, body) for wire-truth assertions.
 
-``PlaywrightUIClient`` stays an interface stub until the gateway/UI-truth wave
-lands: instantiating it is a scenario bug, and it refuses loudly.
+``PlaywrightUIClient`` is an unimplemented interface stub: instantiating it is
+a scenario bug, and it refuses loudly.
 """
 
 from __future__ import annotations
@@ -34,10 +33,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional
 
 _NOT_LANDED = (
-    "{name} is an interface stub: its implementation lands with the {lane} wave of "
-    "the Ф4 integration suite (plan §8). Write the scenario against this surface, "
-    "but do not enable it before the lane lands — see tests/system_e2e/ and "
-    "docs/v7next/LEDGER_CORRECTIONS.md (F4 lane 1)."
+    "{name} is an unimplemented interface stub for {lane} scenarios. "
+    "This test harness is unavailable."
 )
 
 # Prompt markers a scenario plants to script ONE run's behavior. Chosen so they can
@@ -480,7 +477,7 @@ class FakeClaudexorDaemon:
 
 
 class PlaywrightUIClient:
-    """Real-browser client over an isolated server's web UI (gateway/UI truth)."""
+    """Unimplemented browser-client interface for isolated-server UI scenarios."""
 
     def __init__(self, *_args, **_kwargs) -> None:
         raise NotImplementedError(_NOT_LANDED.format(
