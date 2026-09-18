@@ -169,7 +169,7 @@ WIDGET_THEME_LISTENERS = """(() => {
 WIDGET_CHART = """() => {
     const canvas = document.querySelector('#page-widgets canvas[data-widget-chart-key]');
     const chart = canvas && globalThis.Chart.getChart(canvas);
-    if (!chart) return null;
+    if (!chart?.data?.datasets?.[0] || !chart.scales?.x || !chart.scales?.y) return null;
     const root = getComputedStyle(document.documentElement);
     const {x, y} = chart.scales;
     return {
