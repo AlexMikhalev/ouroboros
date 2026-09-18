@@ -160,9 +160,10 @@ _PRE_ADMISSION_LOCK_MODULE = (
     "devtools.benchmarks.cybergym.cybergym_result_index"
 )
 _PRE_ADMISSION_LOCK_NAME = "acquire_campaign_execution_lock"
+_PRE_ADMISSION_PLATFORM_LOCKS = frozenset({"file_lock_exclusive", "file_lock_exclusive_nb"})
 _PRE_ADMISSION_LOCK_REQUIRED_CALLS = frozenset({
-    "encode", "flock", "gettempdir", "open", "sha256",
-})
+    "encode", "gettempdir", "open", "sha256",
+}) | _PRE_ADMISSION_PLATFORM_LOCKS
 
 
 def _dotted_callee(node: ast.expr) -> str:
@@ -413,6 +414,9 @@ def _safe_pre_admission_lock_helper(target: ast.FunctionDef, unit: _Unit) -> boo
     call_nodes = [node for node in ast.walk(target) if isinstance(node, ast.Call)]
     calls = {_dotted_callee(node.func).split(".")[-1] for node in call_nodes}
     if not _PRE_ADMISSION_LOCK_REQUIRED_CALLS.issubset(calls):
+        return False
+    if any(unit.imports.get(name) != "ouroboros.platform_layer"
+           for name in _PRE_ADMISSION_PLATFORM_LOCKS):
         return False
     open_calls = [
         node for node in call_nodes
