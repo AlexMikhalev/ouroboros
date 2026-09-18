@@ -95,6 +95,7 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       ├── presence_admission.py ← Fresh review/enablement/profile/state admission + immutable per-turn Presence snapshot
       ├── presence_context.py  ← Presence instructions, exact event facts, declared knowledge-topic projection
       ├── presence_runner.py   ← Fresh-agent Presence turns: cross-process installation cap, per-conversation serialization, idempotency, typed result, dialogue provenance (§12)
+      ├── presence_delivery.py ← Provider receipts in canonical chat history; Host-context deduplication projection (§12)
       ├── dialogue_provenance.py ← Shared exact transport-provenance rendering for history, memory, and consolidation
       ├── extension_companion.py ← Host-supervised companion processes for transport skills (§12)
       ├── extension_reconcile_queue.py ← Durable worker→server extension reconcile markers + server pickup loop

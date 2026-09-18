@@ -26,6 +26,10 @@ from ouroboros.event_bus import get_global_event_bus
 from ouroboros.config import WS_RELAY_BURST, WS_RELAY_REFILL_PER_SEC
 from ouroboros.gateway._helpers import run_sync_to_completion
 from ouroboros.gateway.files import store_chat_upload
+from ouroboros.presence_delivery import (
+    DELIVERY_VERSION, PresenceDeliveryConflict, PresenceDeliveryRecorder,
+    delivery_reporting_version,
+)
 from ouroboros.skill_loader import (
     find_skill,
     grant_status_for_skill,
@@ -199,6 +203,7 @@ class HostServiceContext:
         self._inflight: Dict[str, int] = defaultdict(int)
         self._inflight_lock = threading.Lock()
         self._counter_lock = threading.Lock()
+        self.presence_deliveries = PresenceDeliveryRecorder(self.data_dir)
 
     def _ws_relay_burst_ended(self, key: str, dropped: int, duration_sec: float) -> None:
         """Report one aggregated WS relay refusal burst: a warning plus one
@@ -373,7 +378,8 @@ async def _api_identity(request: Request) -> JSONResponse:
                     break
     except Exception:
         log.debug("Failed to read identity for host service", exc_info=True)
-    return JSONResponse({"ok": True, "name": name, "description": description})
+    return JSONResponse({"ok": True, "name": name, "description": description,
+                         "presence_delivery_version": DELIVERY_VERSION})
 
 
 async def _api_tool_schemas(request: Request) -> JSONResponse:
@@ -636,6 +642,35 @@ def _presence_staged_files(
     return tuple(files)
 
 
+async def _api_presence_delivery(request: Request) -> JSONResponse:
+    """Record exact provider receipts without sending or starting model work."""
+    ctx: HostServiceContext = request.app.state.host_service_context
+    try:
+        skill_name, token_payload = ctx.authenticate_token_payload(
+            request.headers.get("x-skill-token", "")
+        )
+        ctx.require_permission(skill_name, token_payload, "presence")
+    except HostServiceAuthError as exc:
+        return _json_error(str(exc), 403)
+    if not ctx.rate_limiter.allow(f"{skill_name}:presence_delivery"):
+        return _json_error("rate limit exceeded", 429)
+    if not ctx._enter_inflight(skill_name):
+        return _json_error("too many in-flight presence requests", 429)
+    try:
+        payload = await request.json()
+        result = await run_sync_to_completion(ctx.presence_deliveries.record, skill_name, payload)
+        return JSONResponse(result)
+    except PresenceDeliveryConflict as exc:
+        return _json_error(str(exc), 409)
+    except (ValueError, TypeError) as exc:
+        return _json_error(str(exc), 400)
+    except Exception:
+        log.warning("Presence delivery history write failed for skill %s", skill_name, exc_info=True)
+        return _json_error("presence delivery history write failed; retry the same receipt", 503)
+    finally:
+        ctx._leave_inflight(skill_name)
+
+
 async def _api_presence_turn(request: Request) -> JSONResponse:
     """Run one non-owner event under a host-resolved reviewed profile ceiling."""
 
@@ -656,8 +691,11 @@ async def _api_presence_turn(request: Request) -> JSONResponse:
 
     try:
         payload = await request.json()
-        if not isinstance(payload, dict) or set(payload) - {"binding_id", "event", "staged_files"}:
+        if not isinstance(payload, dict) or set(payload) - {
+            "binding_id", "event", "staged_files", "delivery_reporting_version",
+        }:
             return _json_error("invalid presence payload", 400)
+        reporting_version = delivery_reporting_version(payload.get("delivery_reporting_version", 0))
         event_payload = payload.get("event")
         expected = {
             "source_event_id", "provider", "account_id", "conversation_id", "thread_id",
@@ -710,6 +748,7 @@ async def _api_presence_turn(request: Request) -> JSONResponse:
             ),
             message=dict(event_payload["message"]) if isinstance(event_payload["message"], dict) else {},
             text=str(event_payload["text"] or ""),
+            delivery_reporting_version=reporting_version,
         )
         if not event.source_event_id or not event.conversation_key or not event.actor:
             return _json_error("presence event is missing identity facts", 400)
@@ -726,6 +765,7 @@ async def _api_presence_turn(request: Request) -> JSONResponse:
             "text": result.text,
             "turn_ref": result.task_id,
             "work_ref": result.work_ref,
+            "delivery_reporting_version": getattr(result, "delivery_reporting_version", 0),
         })
     except json.JSONDecodeError:
         return _json_error("invalid json", 400)
@@ -771,7 +811,8 @@ async def _api_presence_work(request: Request) -> JSONResponse:
             return _json_error("presence work reference not found", 404)
         status = str(stored.get("status") or "")
         if status not in {"completed", "failed", "cancelled"}:
-            return JSONResponse({"ok": True, "status": "pending", "work_ref": work_ref}, status_code=202)
+            return JSONResponse({"ok": True, "status": "pending", "work_ref": work_ref,
+                                 "delivery_reporting_version": presence.get("delivery_reporting_version", 0)}, status_code=202)
         outcome = str(metadata.get("presence_outcome") or "message")
         if outcome not in {"message", "silent", "tool_delivered", "deferred"}:
             outcome = "message"
@@ -785,6 +826,7 @@ async def _api_presence_work(request: Request) -> JSONResponse:
                 else ""
             ),
             "work_ref": work_ref,
+            "delivery_reporting_version": presence.get("delivery_reporting_version", 0),
         })
     except Exception as exc:
         code = str(getattr(exc, "code", ""))
@@ -1245,6 +1287,7 @@ def create_host_service_app(
             Route("/chat/cancel", _api_chat_cancel, methods=["POST"]),
             Route("/chat/decision", _api_chat_decision, methods=["POST"]),
             Route("/presence/turn", _api_presence_turn, methods=["POST"]),
+            Route("/presence/delivery", _api_presence_delivery, methods=["POST"]),
             Route("/presence/work/{work_ref}", _api_presence_work, methods=["GET"]),
             Route("/ui/ws-message", _api_ws_message, methods=["POST"]),
             WebSocketRoute("/events", _ws_events),

@@ -502,6 +502,11 @@ def test_revise_plan_render_names_only_available_paid_cycles_and_exits(enforceme
         assert "OUROBOROS_REVIEW_MAX_CYCLES" not in text
     if enforcement == "advisory":
         assert "Advisory enforcement: you may proceed" in text
+    evidence_text = _next_step({"aggregate": "REVIEW_REQUIRED", "closed": False},
+                               enforcement=enforcement, cap=cap, cycles_paid=2)
+    assert "ONE $0 call" in evidence_text and "no reviewer call, no cycle" in evidence_text
+    assert ("reaches reviewers on the next paid cycle" in evidence_text) is (cap != 2)
+    assert ("no further paid cycle" in evidence_text) is (cap == 2)
 
 
 def test_loop_reminder_does_not_repromise_a_spent_panel(monkeypatch):

@@ -91,6 +91,43 @@ def test_git_network_bounded_rejects_missing_cwd(tmp_path):
     assert "cwd" in err
 
 
+@pytest.mark.serial
+def test_checkout_reset_fetch_uses_configured_bound_and_keeps_local_head(tmp_path, monkeypatch):
+    """The real reset/wrapper chain keeps its local reset after a timed-out fetch."""
+    repo = _seed_repo(tmp_path / "repo")
+    _git(repo, "remote", "add", "origin", str(tmp_path / "upstream"))
+    original_head = _git(repo, "rev-parse", "HEAD")
+    (repo / "seed.txt").write_text("dirty\n", encoding="utf-8")
+    monkeypatch.setattr(git_ops, "REPO_DIR", repo)
+    monkeypatch.setattr(git_ops, "DRIVE_ROOT", tmp_path / "data")
+    monkeypatch.setenv("OUROBOROS_MANAGED_UPDATE_FETCH_TIMEOUT_SEC", "117")
+    monkeypatch.setattr(git_ops, "_read_managed_repo_meta", lambda: {})
+    monkeypatch.setattr(git_ops, "_read_update_intent", lambda: {})
+    monkeypatch.setattr(git_ops, "load_state", lambda: {})
+    state, captured, events = {}, {}, []
+    monkeypatch.setattr(git_ops, "save_state", state.update)
+    monkeypatch.setattr(git_ops, "append_jsonl", lambda _path, row: events.append(row))
+
+    def fake_process(cmd, *, timeout, cwd, env, text):
+        captured.update(cmd=cmd, timeout=timeout, cwd=cwd, env=env)
+        return git_ops.FETCH_TIMEOUT_RC, "", "timed out"
+
+    monkeypatch.setattr(git_ops, "_run_git_process_bounded", fake_process)
+
+    assert git_ops.checkout_and_reset("main", reason="restart", unsynced_policy="ignore") == (True, "ok")
+    assert captured["cmd"] == [
+        "git", "-c", "http.lowSpeedLimit=1024", "-c", "http.lowSpeedTime=30", "fetch", "origin",
+    ]
+    assert captured["timeout"] == 117
+    assert captured["cwd"] == repo
+    assert captured["env"]["GIT_TERMINAL_PROMPT"] == "0"
+    assert state == {"current_branch": "main", "current_sha": original_head}
+    assert (repo / "seed.txt").read_text(encoding="utf-8") == "seed\n"
+    assert events[0]["type"] == "reset_fetch_failed"
+    assert events[0]["error"] == "git fetch origin failed: git fetch origin exceeded 117s and was terminated"
+    assert events[0]["continuing_local_reset"] is True
+
+
 @_posix_shim
 def test_git_network_bounded_timeout_kills_tree_and_repo_stays_operable(tmp_path, monkeypatch):
     """A hung network git is killed together with its children (kill + reap)

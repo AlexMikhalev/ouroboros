@@ -156,31 +156,25 @@ ISSUER_TASK = "task"
 def _routing_issuer(ctx: ToolContext) -> Dict[str, Any]:
     """WHO speaks through this routing act -- minted by value where the host knows.
 
-    An OWNER TURN is a direct chat turn (the host stamps ``client_message_id``
-    on its metadata at ingress; ``is_direct_chat`` names the lane) or a task
-    relaying the owner message THIS ROUND drained (``ctx.last_owner_delivery``,
-    stamped at the loop's mailbox drain and cleared by the next drain, so the
-    relay window is one round).  Everything else is a TASK speaking
-    for itself -- a pooled, Swarm, project or headless root -- and its words are
-    its own.  The 14.09 incident decided this five times from proxies (a routing
+    An OWNER TURN has direct owner ingress or a host-stamped ``client_message_id``.
+    Every other context speaks as a TASK, including a pooled root relaying an
+    owner message it just drained. ``last_owner_delivery`` keys the receipt,
+    never the issuer. The 14.09 incident decided this five times from proxies (a routing
     contract a Swarm root never has, an empty client id read as "agent-issued",
     a room veto keyed on the chat): the host now states it once, and the model
     has no argument to claim otherwise.
 
     A consciousness wake-up runs on the direct lane too, but nobody typed it: its
     ``is_direct_chat`` fact does NOT make it an owner turn (PLAN 5.2a) — it
-    speaks as a task. The two other triggers stay, so a consciousness turn that
-    relays a REAL owner message it drained keeps the owner's provenance.
+    speaks as a task. An actual owner-ingress stamp still identifies an owner turn.
     """
     metadata = getattr(ctx, "task_metadata", None)
     metadata = metadata if isinstance(metadata, dict) else {}
-    delivery = getattr(ctx, "last_owner_delivery", None)
     from ouroboros.consciousness_authority import is_consciousness_origin
 
     if (
         (bool(getattr(ctx, "is_direct_chat", False)) and not is_consciousness_origin(metadata))
         or str(metadata.get("client_message_id") or "").strip()
-        or (isinstance(delivery, dict) and delivery)
     ):
         return {"kind": ISSUER_OWNER_TURN}
     task_id = str(getattr(ctx, "task_id", "") or "").strip()
@@ -906,21 +900,23 @@ def _send_task_message(
 
     The event rides the same supervisor rail as an owner steer (the target is
     revalidated live under the queue lock, the receipt is token-bound), keyed
-    under the act's own synthetic receipt id: a task belongs to no owner message.
-    No origin-bytes substitution -- the task is not relaying anybody -- no
-    attachments (tasks cannot attach files to peer messages), no client surface.
+    under the drained owner message's id when this round relays one, otherwise
+    under a synthetic receipt id. Receipt identity never changes authorship.
+    No origin-bytes substitution, attachments or owner client surface.
     The result says WRITTEN: the target reads it at its next checkpoint.
     """
     from ouroboros.project_dialogue import AGENT_RECEIPT_ID_PREFIX
 
     routing_token = uuid.uuid4().hex
+    delivery = getattr(ctx, "last_owner_delivery", None)
+    owner_message_id = str(delivery.get("client_message_id") or "").strip() if isinstance(delivery, dict) else ""
     evt: Dict[str, Any] = {
         "type": "steer_task",
         "routing_token": routing_token,
         "target_task_id": target,
         "message": msg,
         "chat_id": current_chat_id,
-        "client_message_id": f"{AGENT_RECEIPT_ID_PREFIX}{routing_token}",
+        "client_message_id": owner_message_id or f"{AGENT_RECEIPT_ID_PREFIX}{routing_token}",
         "issuer": dict(issuer),
         "ts": utc_now_iso(),
     }
