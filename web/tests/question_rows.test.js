@@ -213,3 +213,42 @@ test('only the line is a control: a waiting card lets clicks through and keeps f
         assert.deepEqual([stopped, fx.opened.length], [1, 1]);
     } finally { fx.restore(); }
 });
+
+
+test('a fresh single-wait census folds older cards, not optional or foreign questions', () => {
+    const fx = fixture({ isMain: true });
+    try {
+        const older = fx.decision.buildQuestionPointer(WAITING);
+        const newer = fx.decision.buildQuestionPointer({ ...WAITING, quiz_id: 'q2' });
+        const optional = fx.decision.buildQuestionPointer({ ...ROW, quiz_id: 'opt', quiz_state: 'open', assumption: 'local' });
+        const foreign = fx.decision.buildQuestionPointer({ ...WAITING, task_id: 'other' });
+        fx.decision.appendActivityQuestion({ ...WAITING, quiz_id: 'q2' }, 0);
+        assert.deepEqual([mode(older), mode(newer)], ['card', 'card'], 'a pre-arrival request cannot close a newer card');
+        fx.decision.appendActivityQuestion({ ...WAITING, quiz_id: 'q2', owner_wait_state: undefined });
+        assert.equal(mode(older), 'card', 'absence of positive wait evidence proves nothing');
+        fx.decision.appendActivityQuestion({ ...WAITING, quiz_id: 'q2' });
+        assert.deepEqual([mode(older), mode(newer), mode(optional), mode(foreign)], ['row', 'card', 'row', 'card']);
+        assert.match(text(older, 'status-text'), /task continued/);
+        assert.equal(text(optional, 'status-text'), 'Unanswered · continuing with:');
+        assert.equal(older.dataset.state, 'open', 'ending a wait does not settle the question');
+        assert.equal(older.querySelector('.project-question-go').getAttribute('aria-hidden'), 'true');
+        fx.decision.buildQuestionPointer(WAITING);
+        assert.equal(mode(older), 'row', 'stale history cannot restore the closed wait');
+        older.click();
+        assert.equal(fx.opened[0].quiz_id, 'qz-1', 'the unanswered question remains reachable');
+    } finally { fx.restore(); }
+});
+
+test('an evicted required ask with resumed facts stays a row and an optional ask is never resumed', async () => {
+    const fx = fixture({ fetchDetail: async () => ({ task_id: 't-1', project_id: 'p1',
+        owner_quiz: { opt: { quiz_id: 'opt', state: 'open', question: 'Format?', options: ['A', 'B'], assumption: 'A' } },
+        owner_wait: { quiz_id: 'new', state: 'waiting' } }) });
+    try {
+        const pointer = fx.decision.buildQuestionPointer({ ...WAITING, owner_wait_state: 'resumed' });
+        assert.equal(mode(pointer), 'row');
+        const detail = await fx.decision.readQuestion('t-1', 'opt', 'p1');
+        assert.equal(detail.owner_wait_state, undefined);
+        const card = fx.decision.buildQuizCard(detail);
+        assert.equal(card.querySelector('.chat-quiz-status-text').textContent, 'Unanswered · an answer is still accepted');
+    } finally { fx.restore(); }
+});

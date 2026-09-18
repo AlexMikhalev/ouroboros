@@ -361,7 +361,7 @@ def test_question_rows_burst_answer_from_main_navigation_and_reload(subscription
             'options': ['Keep the primary source', 'Use the replication'], 'wait_for_answer': True,
             'option_details': ['Preserve the full original measurements.', 'Compare the independent run.'],
             'comment': 'Retain the provenance and the original source.', 'asked_at': '2026-09-16T00:00:00Z'},
-        'second': {'state': 'answered', 'question': 'Second of three: publish the interim table as well?', 'answered_index': 1,
+        'second': {'state': 'open', 'question': 'Second of three: publish the interim table as well?',
             'options': ['Publish it now', 'Hold it until the replication lands'], 'wait_for_answer': True,
             'asked_at': '2026-09-16T00:01:00Z'},
         'passed': {'state': 'open', 'question': 'Which figure format keeps the appendix small?', 'options': ['PNG', 'WebP'],
@@ -377,10 +377,12 @@ def test_question_rows_burst_answer_from_main_navigation_and_reload(subscription
     }
     wait = {'quiz_id': 'waiting', 'state': 'waiting'}
     decisions = []
+    activities = []
+    history_reads = []
     page.route_web_socket('**/ws', lambda ws: ws.send(json.dumps({'type': 'heartbeat'})))
     page.route('**/api/projects', lambda r: r.fulfill(json={'projects': [project]}))
     page.route('**/api/state', lambda r: r.fulfill(json={'supervisor_ready': True,
-        'active_chat_activities': [], 'projects': [project], 'project_chat_ids': [42]}))
+        'active_chat_activities': activities, 'projects': [project], 'project_chat_ids': [42]}))
     page.route('**/api/tasks/proof-task', lambda r: r.fulfill(json={'task_id': 'proof-task', 'project_id': project['id'],
         'owner_quiz': {qid: {'quiz_id': qid, **block} for qid, block in blocks.items()}, 'owner_wait': wait}))
 
@@ -393,6 +395,7 @@ def test_question_rows_burst_answer_from_main_navigation_and_reload(subscription
     page.route('**/api/decisions', decide)
 
     def history(route):
+        history_reads.append(route.request.url)
         chat_id = parse_qs(urlparse(route.request.url).query).get('chat_id', ['1'])[0]
         if chat_id == '42':
             # Source questions are outside this window: exact navigation must read detail.
@@ -402,7 +405,8 @@ def test_question_rows_burst_answer_from_main_navigation_and_reload(subscription
             rows = [{'role': 'system', 'system_type': 'project_question_pointer', 'task_id': 'proof-task',
                 'quiz_id': qid, 'quiz_state': block['state'], 'project_id': project['id'],
                 'project_name': project['name'], 'project_chat_id': 42, 'ts': block['asked_at'],
-                **({'owner_wait_state': wait['state']} if qid == wait['quiz_id'] else {}),
+                **({'owner_wait_state': wait['state']} if qid == wait['quiz_id'] else
+                   {'owner_wait_state': 'resumed'} if activities and block.get('wait_for_answer') else {}),
                 **{key: block[key] for key in ('question', 'options', 'assumption', 'recommended_index',
                                                'wait_for_answer', 'answered_index', 'comment') if key in block}}
                 for qid, block in blocks.items()]
@@ -411,7 +415,18 @@ def test_question_rows_burst_answer_from_main_navigation_and_reload(subscription
     open_app(ui)
     rows = page.locator('#chat-messages .chat-bubble.project-question')
     rows.nth(4).wait_for()
+    assert rows.evaluate_all("els => els.map(el => el.dataset.questionMode)") == ['row', 'card', 'row', 'row', 'card']
+    # Both asks arrived before the single wait was published. Its next ordinary
+    # census names only the last quiz: the older card must fold without history.
+    read_count = len(history_reads)
+    activities.append({'activity_id': 'proof-task', 'chat_id': 42, 'project_id': project['id'],
+        'kind': 'direct_chat', 'phase': 'working', 'required_question': {
+            'task_id': 'proof-task', 'quiz_id': 'waiting', 'quiz_state': 'open',
+            'project_id': project['id'], 'project_chat_id': 42, 'owner_wait_state': 'waiting'}})
+    page.wait_for_function("() => document.querySelectorAll('#chat-messages .chat-bubble.project-question')[1]?.dataset.questionMode === 'row'", timeout=15000)
+    assert len(history_reads) == read_count, 'census freshness must not require history refetch'
     assert rows.evaluate_all("els => els.map(el => el.dataset.questionMode)") == ['row', 'row', 'row', 'row', 'card']
+    assert 'task continued' in rows.nth(1).inner_text()
     comment = blocks['exact-question']['comment']
     first = rows.nth(0).locator('.project-question-pointer')
     first.get_by_text('You answered:', exact=True).wait_for()

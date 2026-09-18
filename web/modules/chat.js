@@ -597,7 +597,7 @@ export function createChatInstance({
             hydrateDirectActivities(activities, snapshotRequestedAt,
                 data.active_chat_activities_complete === true && data.supervisor_ready === true);
             for (const activity of activities) {
-                if (activity.required_question) chatDecision.appendQuestionPointer(activity.required_question);
+                if (activity.required_question) chatDecision.appendActivityQuestion(activity.required_question, snapshotRequestedAt);
                 if (Number(activity.chat_id ?? 1) === chatId) modelWaits.observe(activity.activity_id, activity);
             }
         }
@@ -1729,7 +1729,7 @@ export function createChatInstance({
         // activity headline.
         const title = record.suggestedName || (record.isSubagent ? childTitle(record)
             : !blockHasWork(record) ? ''
-                : (record.finished ? record.lastHumanHeadline || 'Task activity' : activeHeadline));
+                : (record.lastHumanHeadline || (record.finished ? 'Task activity' : activeHeadline)));
         if (record.titleEl.textContent !== title) record.titleEl.textContent = title;
         // The collapsed line is a compact projection; the full activity stays in the
         // expanded timeline. Every card, a child's included, takes activity only from

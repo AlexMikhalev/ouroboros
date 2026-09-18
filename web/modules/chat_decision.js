@@ -130,7 +130,7 @@ export function createChatDecision({
     // of the row — history, the live delivery and the activity census carry the question, the
     // option labels, the assumption, the recommendation, the recorded answer and the wait
     // facts (project_dialogue.project_question_pointer) — so an unchanged row writes nothing.
-    // Freshness is the ordinary history reconciliation and the quiz_state frame, never a poll.
+    // Freshness reuses history, quiz_state and the existing activity census; no new poller.
     const openQuestion = (row) => window.dispatchEvent(new CustomEvent('ouro:open-project', { detail: {
         project: { id: row.project_id, name: row.project_name, chat_id: row.project_chat_id },
         task_id: row.task_id, quiz_id: row.quiz_id,
@@ -177,6 +177,7 @@ export function createChatDecision({
             card.append(status, ...(model.detail ? [part('answer', model.detail)] : []),
                 part('preview', model.question || 'Open the original question for its text.'),
                 part('source', model.project), part('go', '↗'), ...(time ? [time] : []));
+            card.querySelector('.project-question-go').setAttribute('aria-hidden', 'true');
             if (focused) card.focus?.({ preventScroll: true });
             return;
         }
@@ -225,7 +226,7 @@ export function createChatDecision({
         bubble.classList.remove('assistant');
         bubble.classList.add('project-question');
         bubble.querySelector('.sender')?.remove();
-        const view = { row: { ...msg }, card, bubble, time: bubble.querySelector('.msg-time') };
+        const view = { row: { ...msg }, card, bubble, observedAt: Date.now(), time: bubble.querySelector('.msg-time') };
         // The whole line is one control whose text stays selectable. The waiting card is not
         // one: its buttons own their clicks and the rest of it lets every event through.
         bindContentButton(card, () => openQuestion(view.row), () => bubble.dataset.questionMode === 'row');
@@ -239,6 +240,24 @@ export function createChatDecision({
         return onDomWrite(() => {
             const bubble = buildQuestionPointer(msg);
             return bubble ? insertMessageNode(bubble) !== false : false;
+        });
+    }
+
+    function appendActivityQuestion(msg, requestedAt = Infinity) {
+        // The census positively names the task's single wait. Mere absence proves
+        // nothing. A read begun before a card arrived cannot end that newer wait.
+        if (!isMain || !msg?.task_id || !msg.quiz_id
+            || !['waiting', 'resumed'].includes(msg.owner_wait_state)) return false;
+        return onDomWrite(() => {
+            let changed = false;
+            for (const view of pointerViews.values()) {
+                if (view.row.task_id !== msg.task_id || view.row.quiz_id === msg.quiz_id
+                    || view.row.project_id !== msg.project_id || view.observedAt > requestedAt
+                    || !questionRow(view.row).waiting) continue;
+                changed = updatePointer(view, { task_id: msg.task_id, quiz_id: view.row.quiz_id,
+                    state: 'open', owner_wait_state: 'resumed' }, true) || changed;
+            }
+            return appendQuestionPointer(msg) || changed;
         });
     }
 
@@ -829,7 +848,7 @@ export function createChatDecision({
         return setCardState(card, String(frame.state || ''), index) || changed || waitChanged;
     }
 
-    return { buildQuizCard, buildQuestionPointer, appendQuestionPointer, readQuestion, revealQuestion, setCardState, applyQuizStateFrame, renderRoutingDecision,
+    return { buildQuizCard, buildQuestionPointer, appendQuestionPointer, appendActivityQuestion, readQuestion, revealQuestion, setCardState, applyQuizStateFrame, renderRoutingDecision,
         releaseViews(root) {
             for (const [key, card] of quizViews) if (root.contains(card)) quizViews.delete(key);
             for (const [key, view] of pointerViews) if (root.contains(view.card)) pointerViews.delete(key);

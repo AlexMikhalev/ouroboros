@@ -79,7 +79,7 @@ export function countPropertyWrites(target, key) {
     return () => writes;
 }
 
-export function fixture({ fetchImpl, renderMarkdown, enhanceMarkdown, onDomWrite, fetchDetail } = {}) {
+export function fixture({ fetchImpl, renderMarkdown, enhanceMarkdown, onDomWrite, fetchDetail, isMain = false } = {}) {
     const prior = { document: globalThis.document, crypto: globalThis.crypto, window: globalThis.window };
     globalThis.document = { createElement: (tag) => new NodeStub(tag) };
     const opened = [];
@@ -104,6 +104,7 @@ export function fixture({ fetchImpl, renderMarkdown, enhanceMarkdown, onDomWrite
         showToast: (text, tone) => toasts.push({ text, tone }),
         onDomWrite,
         fetchDetail,
+        isMain,
     });
     return { decision, toasts, calls, opened, restore: () => {
         globalThis.document = prior.document;

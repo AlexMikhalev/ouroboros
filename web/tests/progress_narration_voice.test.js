@@ -166,3 +166,20 @@ test('replay reads the voice exactly as live did', async () => {
         assert.equal(h.activity(), 'Still working through it');
     } finally { h.close(); }
 });
+
+test('finalizing outcome overlay keeps narration as title while publishing phase and model', () => {
+    const f = fixture();
+    try {
+        f.census(direct());
+        f.emit({ content: '💬 still working', narration: true });
+        f.emit({ content: '💬 still working', narration: true, task_phase: 'finalizing',
+            outcome_final: false, outcome_axes: { execution: { status: 'ok' } },
+            model_execution: { source: 'usable_solve_response', used_model: 'actual-solver' } });
+        assert.equal(f.title(), 'still working');
+        assert.equal(f.card().querySelector('[data-live-phase]').textContent, 'Finalizing…');
+        assert.match(f.card().querySelector('[data-live-meta]').innerHTML, /Last solve response: actual-solver/);
+        f.emit({ is_progress: false, role: 'system', system_type: 'task_summary', content: 'Done.',
+            outcome_final: true, outcome_phase: 'done', outcome_axes: { execution: { status: 'ok' } } });
+        assert.equal(f.title(), 'still working');
+    } finally { f.close(); }
+});

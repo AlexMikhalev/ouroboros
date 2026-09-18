@@ -889,7 +889,7 @@ def _collect_chat_rows(
                         from ouroboros.project_dialogue import owner_wait_projection
 
                         quiz.update(owner_wait_projection(_qid, _quiz_source(_qtid)["wait"],
-                                                          _live if isinstance(_live, dict) else None))
+                                                          _live if isinstance(_live, dict) else quiz))
                 rec.update(msg_type="quiz", quiz=quiz)
             if "task_terminal_status" in entry:
                 rec["task_terminal_status"] = str(entry.get("task_terminal_status") or "")

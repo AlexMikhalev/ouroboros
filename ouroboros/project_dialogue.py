@@ -53,7 +53,7 @@ def _row_chat_id(row: Dict[str, Any]) -> int:
         return 0
 
 
-# The closed lifecycle vocabulary of a required Project question, shared with
+# The closed lifecycle vocabulary of a Project question, shared with
 # web/modules/question_presentation.js: one leading word answers "is there an
 # unanswered question for me?", the rest is context. Both sides are pinned on the
 # rows this module actually emits by web/tests/fixtures/question_presentation_parity.json.
@@ -119,7 +119,7 @@ def project_question_pointer(row: Dict[str, Any], block: Any, project: Any,
         return None
     state = str(block.get("state") or "")
     known = block.get("quiz_id") == quiz_id and state in _QUIZ_LIFECYCLE
-    facts = owner_wait_projection(quiz_id, owner_wait, block)
+    facts = owner_wait_projection(quiz_id, owner_wait, block or quiz)
     # The block drops its required flag when its bound closes; the durable row keeps it.
     still_required = bool(block.get("wait_for_answer")) if block else bool(quiz.get("wait_for_answer"))
     name = str(project.get("name") or "Project")
