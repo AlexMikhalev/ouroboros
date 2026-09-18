@@ -132,10 +132,37 @@ def review_executions_from_actor_usage(actors: Any) -> List[Dict[str, str]]:
     return normalize_review_executions(executions)
 
 
+def review_actor_progress_text(surface: str, phase: str, slot: Any, actor: Any = None) -> str:
+    """Describe one frozen request and its own receipt, never global last-run state."""
+    route = getattr(slot, "route", "")
+    requested = [
+        f"model={getattr(slot, 'model', '') or 'not specified'}",
+        f"route={getattr(route, 'value', route) or 'not specified'}",
+    ]
+    for key, label in (("session_target", "target"), ("session_profile", "profile"), ("effort", "effort")):
+        if value := getattr(slot, key, ""):
+            requested.append(f"{label}={value}")
+    text = f"Review {surface} [{getattr(slot, 'slot_id', '')}]: {phase}; requested " + ", ".join(requested)
+    if actor is not None:
+        usage = getattr(actor, "usage", {}) or {}
+        executions = review_executions_from_actor_usage([{"usage": usage}])
+        observed = [
+            f"{row['kind']}" + (f":{row['harness_id']}" if row.get("harness_id") else "")
+            + f", model={row.get('model') or 'not reported'}"
+            for row in executions
+        ]
+        text += "; observed execution: " + ("; ".join(observed) if observed else "not reported")
+        if usage.get("applied_profile"):
+            text += f", profile={usage['applied_profile']}"
+        text += f"; state={getattr(actor, 'operation_state', '') or getattr(actor, 'status', '')}"
+    return str(redact_projection(text).value)
+
+
 __all__ = [
     "MAX_PROJECTED_ACTOR_FINDINGS",
     "PROJECTED_FINDING_TEXT_CHARS",
     "normalize_review_executions",
     "projected_finding_row",
     "review_executions_from_actor_usage",
+    "review_actor_progress_text",
 ]

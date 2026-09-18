@@ -524,10 +524,11 @@ def emit_task_results(
     actor_fact, usage, llm_trace = actor_first_terminal_projection(ctx, task, usage, llm_trace, task.get("budget_drive_root") or getattr(env, "drive_root", None))
     loop_outcome = _derive_host_bound_loop_outcome(env, task, text, usage, llm_trace)
     receipt_root = pathlib.Path(str(getattr(env, "drive_root", None) or "."))
+    verification_receipts = task_verification_receipts(ctx, receipt_root, task)
     # Apply FR3 once so events and the durable result share the same flagged outcome.
     apply_receipt_absent_flag(
         loop_outcome, llm_trace, receipt_root, str(task.get("id") or ""),
-        expected_output=str(task.get("expected_output") or ""), receipts=task_verification_receipts(ctx, receipt_root, task),
+        expected_output=str(task.get("expected_output") or ""), receipts=verification_receipts,
     )
     outcome_axes = normalize_outcome_axes({"outcome_axes": loop_outcome.get("outcome_axes")})
     execution_status = str((outcome_axes.get("execution") or {}).get("status") or "")
@@ -619,6 +620,11 @@ def emit_task_results(
         )
     except Exception:
         log.debug("Failed to collect review evidence", exc_info=True)
+
+    from ouroboros.post_task_synthesis import capture_task_inputs
+    review_evidence["task_inputs"] = capture_task_inputs(
+        ctx, task, task.get("budget_drive_root") or receipt_root, verification_receipts,
+    )
 
     # GR2-5 (§8-A2, ONE outbox for EVERY root) + GR3-5 (ordering closes the
     # persist→register crash window): the final answer enters the durable

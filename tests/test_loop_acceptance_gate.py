@@ -87,7 +87,7 @@ def test_set_acceptance_decision_collapses_unknown_status_fail_closed():
 
     # Canonical status + typed reason passes through untouched.
     _set_acceptance_decision(trace, {"status": "accepted", "reason": "clean_pass"})
-    assert trace["acceptance_decision"] == {"status": "accepted", "reason": "clean_pass"}
+    assert trace["acceptance_decision"] == {"status": "accepted", "reason": "clean_pass", "enforcement": loop_mod.get_review_enforcement()}
     assert ACCEPTANCE_DECISION_STATUSES == (
         "accepted", "revision_requested", "finalized_unaccepted",
     )
@@ -116,7 +116,7 @@ def test_every_host_acceptance_writer_emits_a_canonical_status_and_typed_reason(
     ]
     # The final writers cover an invalid forced-delivery subject and Cyber
     # author-finality; neither manufactures a reviewer PASS.
-    assert len(starts) == 22, f"writer inventory changed: {len(starts)} call sites"
+    assert len(starts) == 20, f"writer inventory changed: {len(starts)} call sites"
     allowed_status = {
         "ACCEPTANCE_ACCEPTED", "ACCEPTANCE_REVISION_REQUESTED",
         "ACCEPTANCE_FINALIZED_UNACCEPTED",
@@ -584,10 +584,10 @@ def test_task_acceptance_required_feeds_back_capsule(monkeypatch, tmp_path):
         tools=tools2, content="revised again", task_id="t-blocked-alt", task_type="task",
         llm_trace=trace3, drive_root=None, messages=messages3, emit_progress=lambda _m, *, incident=None: None,
     )
-    assert result3 is False                                       # capsule already spent -> finalize
-    assert len(messages3) == 2                                    # no second capsule injected
+    assert result3 is True  # each new outcome may reach its author, including the last paid cycle
+    assert "review_feedback" in messages3[-1]
     assert trace3["review_runs"][0]["aggregate_signal"] == "FAIL"  # final-deliverable verdict recorded
-    assert ctx2._task_acceptance_reviewed is True                # now terminal
+    assert ctx2._task_acceptance_reviewed is False
 
 def test_required_review_blocked_commit_does_not_surface_prior_head(monkeypatch, tmp_path):
     """T1 (v6.35.0): a REVIEW_BLOCKED/GIT_ERROR commit attempt is is_error=False but

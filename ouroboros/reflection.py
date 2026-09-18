@@ -155,6 +155,7 @@ Rules for candidates:
 
 {trace_summary}
 
+{task_inputs}
 ## Tool usage profile
 
 {tool_usage}
@@ -380,6 +381,21 @@ def _validate_memory_actions(raw: Any, task_id: str) -> List[Dict[str, Any]]:
         out.append(action)
     return out
 
+def task_inputs_prompt_section(review_evidence: Any) -> str:
+    """Render the same frozen task facts for summary and reflection, in full."""
+    inputs = review_evidence.get("task_inputs") if isinstance(review_evidence, dict) else None
+    if not isinstance(inputs, dict):
+        return "## Owner decisions and verification receipts\nTask-local input was not retained; absence is not evidence of missing approval or verification.\n\n"
+    return (
+        "## Owner decisions and verification receipts\n"
+        "These are recorded task inputs, separate from the critic's verdict. Preserve source attribution: "
+        "relayed peer proposals are not owner instructions. Interpret the owner's exact question and answer together. "
+        "A recorded returncode of 0 is positive evidence, not a missing value. Use the shared verification "
+        "summary for reconciliation; a later unrelated pass does not resolve another check's failure. "
+        "An empty or unavailable section does not prove that no approval or check existed.\n"
+        + json.dumps(inputs, ensure_ascii=False, indent=2) + "\n\n"
+    )
+
 def generate_reflection(
     task: Dict[str, Any],
     llm_trace: Dict[str, Any],
@@ -425,6 +441,7 @@ def generate_reflection(
     prompt = prompt_template.format(
         goal=str(task.get("text") or "(no goal text)"),
         trace_summary=_truncate_with_notice(trace_summary, 2000),
+        task_inputs=task_inputs_prompt_section(review_evidence),
         tool_usage=_tool_usage_profile(llm_trace),
         error_details=error_details,
         review_evidence=review_evidence_text,

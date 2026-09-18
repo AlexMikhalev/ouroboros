@@ -51,6 +51,7 @@ from ouroboros.tools.commit_gate import (
     _current_review_tool_name,
     _invalidate_advisory,  # noqa: F401
     _record_commit_attempt,
+    record_bound_commit_success, prepare_author_commit_request,
     check_identical_verdict_refusal,
     check_review_cycles_ceiling,
     classify_review_block,  # noqa: F401
@@ -1159,10 +1160,14 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str,
                        skip_advisory_review: bool = False,
                        skip_advisory_pre_review: bool = False,
                        goal: str = "",
-                       scope: str = "") -> str:
+                       scope: str = "", review_reference: Optional[dict] = None,
+                       author_disposition: Optional[dict] = None) -> str:
     """Stage, review, and commit files with unified pre-commit review."""
     skip_advisory_pre_review = bool(skip_advisory_review or skip_advisory_pre_review)
     _reset_commit_review_state(ctx)
+    error = prepare_author_commit_request(ctx, review_reference, author_disposition, review_rebuttal)
+    if error:
+        return error
     _commit_start = time.time()
     if not commit_message.strip():
         return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR", text=("⚠️ ERROR: commit_message must be non-empty.")))
@@ -1203,7 +1208,7 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str,
             phase="preflight",
         )
         return overlap_err
-    preflight_pending = _reconcile_advisory_before_preparation(
+    preflight_pending = "" if ctx._author_commit_source is not None else _reconcile_advisory_before_preparation(
         ctx, commit_message, goal=goal, scope=scope, paths=paths, review_rebuttal=review_rebuttal,
         skip_advisory_review=skip_advisory_pre_review,
     )
@@ -1414,17 +1419,7 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str,
                 )
             except Exception:
                 log.warning("mutation baseline advance failed after commit", exc_info=True)
-        _record_commit_attempt(ctx, commit_message, "succeeded",
-                               duration_sec=time.time() - _commit_start,
-                               phase="commit",
-                               pre_review_fingerprint=pre_fingerprint.get("fingerprint", ""),
-                               post_review_fingerprint=post_fingerprint.get("fingerprint", ""),
-                               fingerprint_status="matched",
-                               triad_models=getattr(ctx, "_last_triad_models", []),
-                               scope_model=getattr(ctx, "_last_scope_model", ""),
-                               triad_raw_results=getattr(ctx, "_last_triad_raw_results", []),
-                               scope_raw_result=getattr(ctx, "_last_scope_raw_result", {}),
-                               degraded_reasons=list(getattr(ctx, "_review_degraded_reasons", []) or []))
+        record_bound_commit_success(ctx, commit_message, _commit_start, pre_fingerprint, post_fingerprint)
         ctx._scope_review_history = {}  # Clear on success — next commit starts fresh
     finally:
         _release_git_lock(lock)
@@ -1482,39 +1477,22 @@ def get_tools() -> List[ToolEntry]:
         "Choose the audited advisory-only skip for this call. "
         f"{ADVISORY_REVIEW_CHOICE_GUIDANCE}"
     )
+    commit_properties = {
+        "commit_message": {"type": "string"},
+        "paths": {"type": "array", "items": {"type": "string"}, "description": "Optional subset of task-attributed paths. Omitted computes candidates; empty never stages the whole tree."},
+        "skip_tests": {"type": "boolean", "default": False, "description": "Skip pre-commit tests."},
+        "review_rebuttal": {"type": "string", "default": "", "description": "A NEW content-hashed counter-argument buys one paid re-review within capacity; repeating it is free-refused."},
+        "skip_advisory_review": {"type": "boolean", "default": False, "description": skip_advisory_description},
+        "goal": {"type": "string", "default": ""}, "scope": {"type": "string", "default": ""},
+        "review_reference": {"type": "object", "description": "Exact reference returned by this task's prior commit review, for free informed Advisory continuation."},
+        "author_disposition": {"type": "object", "additionalProperties": False,
+            "properties": {"disposition": {"type": "string", "enum": ["accepted", "rejected", "partial", "deferred"]}, "rationale": {"type": "string"}},
+            "required": ["disposition", "rationale"], "description": "Explicitly accept the current attributed candidate after reading the referenced outcome. Never overrides Blocking."},
+    }
     return [
-        ToolEntry("commit_reviewed", {
-            "name": "commit_reviewed",
-            "description": reviewed_commit_description,
-            "parameters": {"type": "object", "properties": {
-                "commit_message": {"type": "string"},
-                "paths": {"type": "array", "items": {"type": "string"}, "description": "Optional subset of task-attributed clean-at-baseline paths. Omitted computes the full attributed candidate set; an empty set never stages the whole tree."},
-                "skip_tests": {"type": "boolean", "default": False, "description": "Skip pre-commit tests."},
-                "review_rebuttal": {"type": "string", "default": "",
-                    "description": "If the previous commit was blocked by reviewers and you disagree, include a counter-argument. The rebuttal is identified by CONTENT: a rebuttal new to the current identical-diff streak buys exactly ONE paid re-review of the unchanged diff; resubmitting the same rebuttal (or none) is refused for free, quoting the recorded verdict."},
-                "skip_advisory_review": {"type": "boolean", "default": False,
-                    "description": skip_advisory_description},
-                "goal": {"type": "string", "default": "",
-                    "description": "High-level goal of this change. Used by scope reviewer to judge completeness."},
-                "scope": {"type": "string", "default": "",
-                    "description": "Declared scope boundary. Issues outside scope are advisory-only for scope reviewer."},
-            }, "required": ["commit_message"]},
-        }, _repo_commit_push, is_code_tool=True),
-        ToolEntry("vcs_commit_reviewed", {
-            "name": "vcs_commit_reviewed",
-            "description": reviewed_commit_description,
-            "parameters": {"type": "object", "properties": {
-                "commit_message": {"type": "string"},
-                "paths": {"type": "array", "items": {"type": "string"}, "description": "Optional subset of task-attributed clean-at-baseline paths. Omitted computes candidates; empty never means git add -A."},
-                "skip_tests": {"type": "boolean", "default": False, "description": "Skip pre-commit tests."},
-                "review_rebuttal": {"type": "string", "default": "",
-                    "description": "Content-hashed counter-argument to a prior review block: a NEW rebuttal buys exactly one paid re-review of an unchanged diff; a repeated one is refused free."},
-                "skip_advisory_review": {"type": "boolean", "default": False,
-                    "description": skip_advisory_description},
-                "goal": {"type": "string", "default": ""},
-                "scope": {"type": "string", "default": ""},
-            }, "required": ["commit_message"]},
-        }, _repo_commit_push, is_code_tool=True),
+        *[ToolEntry(name, {"name": name, "description": reviewed_commit_description,
+            "parameters": {"type": "object", "properties": commit_properties, "required": ["commit_message"]}},
+            _repo_commit_push, is_code_tool=True) for name in ("commit_reviewed", "vcs_commit_reviewed")],
         ToolEntry("vcs_status", {
             "name": "vcs_status",
             "description": "git status --porcelain for the selected repository.",

@@ -526,6 +526,16 @@ def _accept_effective_claims(
         raise
     except Exception:
         return [], "", {}
+    from ouroboros.config import get_review_enforcement
+    from ouroboros.contracts.task_contract import normalize_acceptance_claims
+    from ouroboros.tools.plan_review_artifacts import current_author_plan
+    from ouroboros.tools.review_helpers import review_enforcement_blocks
+
+    authored = current_author_plan(root, task_id, state)
+    if authored and not review_enforcement_blocks(get_review_enforcement()):
+        author = authored["author_disposition"]
+        if author.get("action", "finish") == "finish" and author.get("enforcement") == "advisory":
+            return normalize_acceptance_claims(authored["spec"].get("acceptance_claims")), "author_plan", {}
     frozen, frozen_source = effective_acceptance_claims(contract, wave)
     if frozen:
         return frozen, frozen_source, {}

@@ -215,7 +215,8 @@ _DISPOSITION_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
     "description": (
-        "Disposition mode only (send ONLY this field): answer the findings of the wave "
+        "Answer the findings of the wave (ordinary dispositions use only this field); "
+        "explicit author_action with author_disposition may also select a full current goal/plan/spec without a new reviewer. The wave is "
         "named by review_fingerprint. While that wave is still open with reviewer slots in "
         "flight, this call first COLLECTS what has settled at $0 without waiting (items may be "
         "[]); to wait longer, re-submit the same envelope. note/need_evidence findings close at $0; a blocking "
@@ -226,6 +227,8 @@ _DISPOSITION_SCHEMA = {
     "properties": {
         "review_fingerprint": {"type": "string"},
         "author_disposition": plan_spec.AUTHOR_DISPOSITION_SCHEMA,
+        "author_action": {"type": "string", "enum": ["finish", "stop"],
+                          "description": "Explicit current-plan choice. stop permits unfinished finalization only; finish never overrides Blocking review."},
         "items": {
             "type": "array",
             "items": {
@@ -260,7 +263,10 @@ def get_tools():
                     "envelope replays the recorded result for free (a locator a reviewer asked for "
                     "with need_evidence is attached by the host next time and makes the envelope "
                     "new; a different reviewer_effort re-dispatches a paid panel). Under blocking enforcement an "
-                    "open review holds finalization; under advisory you may proceed with the "
+                    "open review holds implementation. An explicit review_disposition.author_action=stop "
+                    "permits unfinished finalization only. Advisory author_action=finish may select a corrected "
+                    "goal+plan+spec in the same call without another panel, citing the earlier review_fingerprint "
+                    "and author_disposition rationale. Under advisory you may proceed with the "
                     "review open and the host discloses it. Declare evidence reviewers need; "
                     "affected_paths is required — the files the work will change ([] when none) — "
                     "and is what gives a self-modification the constitutional pack."
@@ -274,7 +280,7 @@ def get_tools():
                         "reviewer_effort": _REVIEWER_EFFORT_SCHEMA,
                         "review_disposition": _DISPOSITION_SCHEMA,
                     },
-                    # Two exclusive modes: goal+plan+spec (+ optional reviewer_effort) or review_disposition alone.
+                    # Review, disposition-only, or explicit author selection with a current envelope.
                     "required": [],
                 },
             },
@@ -325,6 +331,9 @@ def _handle_plan_task(ctx: ToolContext, **params) -> str:
     # The registry refuses unknown params; a vacuous envelope field carries no plan.
     envelope_fields = [k for k in ("goal", "plan", "spec", "reviewer_effort") if not _vacuous(k, params.get(k))]
     if raw_disposition is not None and not _vacuous_disposition(raw_disposition):
+        if isinstance(raw_disposition, dict) and (raw_disposition.get("author_action") or
+                (envelope_fields and raw_disposition.get("author_disposition"))):
+            return _apply_author_subject(ctx, raw_disposition, params if envelope_fields else None)
         if envelope_fields:
             return _typed_refusal(
                 ctx, "TOOL_ARG_ERROR",
@@ -939,6 +948,66 @@ def _cycles_exhausted(
         ctx, {"aggregate_signal": "REVISE_PLAN", "closed": False}, text)
 
 # ---------------------------------------------------------------------- disposition
+
+def _apply_author_subject(ctx: ToolContext, disposition: dict, envelope: Optional[dict]) -> str:
+    """Save the author's current plan without rewriting the referenced critic wave."""
+    from ouroboros.artifacts import store_actor_source_bytes
+    from ouroboros.observability import redact_projection
+    from ouroboros.review_custody import review_retry_cancelled
+
+    try:
+        if set(disposition) - {"review_fingerprint", "items", "author_disposition", "author_action"}:
+            raise ValueError("unknown disposition fields")
+        action = disposition.get("author_action") or "finish"
+        if action not in {"finish", "stop"} or review_retry_cancelled(ctx):
+            raise ValueError("invalid action or task cancelled")
+        root, task_id = _planning_state_location(ctx)
+        state = load_plan_review_state(root, task_id)
+        critic_fp = str(disposition.get("review_fingerprint") or "")
+        attempt = state.get("current_attempt") or {}
+        wave = plan_review_wave(state, critic_fp)
+        unavailable = (attempt.get("fingerprint") == critic_fp and attempt.get("status") in {"unavailable", "cycles_exhausted", "rail_degraded"})
+        if not wave and not unavailable:
+            raise ValueError("no recorded review or unavailable outcome matches review_fingerprint")
+        if wave:
+            wave = _authority_wave(root, task_id, wave)
+        if disposition.get("items"):
+            raise ValueError("submit per-finding dispositions separately before selecting the current author plan")
+        if envelope:
+            request = _PlanRequest(goal=str(envelope.get("goal") or ""), plan=str(envelope.get("plan") or ""),
+                                   spec=envelope.get("spec"), reviewer_effort=str(envelope.get("reviewer_effort") or ""))
+            prepared = _prepare_plan_inputs(ctx, request, root, persist=True)
+            if prepared.get("error"):
+                return _typed_refusal(ctx, str(prepared.get("code") or "TOOL_ARG_ERROR"), prepared["error"])
+            fingerprint, spec, prose = prepared["fingerprint"], prepared["spec"], request.plan
+        elif wave and attempt.get("fingerprint") == critic_fp:
+            fingerprint, spec, prose = critic_fp, wave["spec"], str(wave.get("plan_prose") or "")
+        else:
+            raise ValueError("include goal, plan and spec to retain the exact current author plan")
+        enforcement = get_review_enforcement()
+        author = build_author_disposition_from_mapping(disposition.get("author_disposition"),
+            subject_hash=fingerprint, reviewer_signal=str((wave or {}).get("aggregate") or "unavailable"), enforcement=enforcement)
+        author["action"] = action
+        source = redact_projection({"kind": "plan_author_subject", "fingerprint": fingerprint,
+            "goal": spec["goal"], "plan_prose": prose, "spec": spec}).value
+        ref = store_actor_source_bytes(root, task_id, category="context_checkpoints",
+            source_id=f"plan-author-{fingerprint}", data=json.dumps(source, ensure_ascii=False, sort_keys=True).encode("utf-8"), extension="json")
+        cap = review_max_cycles()
+        exhausted = cap is not None and int(state.get("cycles_paid") or 0) >= cap
+        state = _record_plan_review_attempt_with_reference(ctx, root, task_id, fingerprint=fingerprint,
+            status="cycles_exhausted" if exhausted else "open", reason="author_stop" if action == "stop" else "author_current_plan",
+            author_subject={"source_ref": ref, "review_fingerprint": critic_fp, "author_disposition": author})
+    except (OSError, TimeoutError, ValueError) as exc:
+        return _typed_refusal(ctx, "TOOL_ARG_ERROR", f"ERROR: PLAN_AUTHOR_SUBJECT_INVALID: {exc}")
+    allowed = action == "finish" and not review_enforcement_blocks(enforcement)
+    text = (f"Current author plan saved: {fingerprint}. Critic subject: {critic_fp}. "
+            "No reviewer called and no cycle consumed; original findings and custody remain unchanged. "
+            + ("Advisory author finish permits proceeding with this plan." if allowed else
+               "No implementation approval granted. You may preserve the plan and finish with work blocked/unfinished.")
+            + "\n" + json.dumps({"author_disposition": author, "source_ref": ref}, ensure_ascii=False))
+    return _publish_plan_review_projection(ctx, {"aggregate_signal": str((wave or {}).get("aggregate") or "DEGRADED"),
+        "closed": False, "author_action": action, "author_disposition": author}, text)
+
 
 def _apply_disposition(ctx: ToolContext, disposition: dict) -> str:
     def _bad(text: str) -> str:  # every refusal below is an argument-shape refusal

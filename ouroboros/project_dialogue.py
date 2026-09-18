@@ -723,6 +723,8 @@ TASK_CAUSE_PHRASES = {
     # so clean_pass and clean_pass_obligations_closed carry no sentence; an
     # accepted decision with a sentence here still states its cause.
     "previous_revision_accepted": "The reviewers approved the earlier version of this answer; it changed before they finished.",
+    "author_stop": "Main stopped with unfinished work; no review approval was granted.",
+    "review_outcome_received": "The review could not start; Main received the recorded reason.",
     "author_finish": "The answer was delivered on Main's own judgement; the reviewers had not signed it off.",
     "review_degraded": "No reviewer verdict was established for this answer.",
     "infra_failure": "A review infrastructure failure prevented a settled verdict.",
@@ -784,8 +786,9 @@ def outcome_phase(result: Dict[str, Any], event: Dict[str, Any]) -> str:
     lifecycle = axis.get("lifecycle") or status
     if lifecycle in {"cancelled", "cancel_requested"}:
         return "cancelled"
+    author_finished = axis.get("objective") == "pass" and (axes.get("objective") or {}).get("source") == "author_acceptance"
     if (lifecycle == "failed" or axis.get("execution") in {"failed", "infra_failed"}
-            or axis.get("objective") == "fail" or axis.get("review") == "fail"
+            or axis.get("objective") == "fail" or (axis.get("review") == "fail" and not author_finished)
             or {axis.get("artifacts"), str(record.get("artifact_status") or "").lower()} & {"failed", "missing"}):
         return "error"
     if str(record.get("reason_code") or "") == REASON_OWNER_REQUESTED_FINALIZATION:
@@ -793,7 +796,7 @@ def outcome_phase(result: Dict[str, Any], event: Dict[str, Any]) -> str:
     if (lifecycle == "rejected_duplicate" or bool((axes.get("objective") or {}).get("warning"))
             or axis.get("execution") in {"degraded", "best_effort"}
             or axis.get("objective") in {"degraded", "best_effort"}
-            or axis.get("review") == "degraded"):
+            or (axis.get("review") == "degraded" and not author_finished)):
         return "warn"
     return "done"
 

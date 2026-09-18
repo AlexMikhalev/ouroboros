@@ -235,7 +235,7 @@ def test_success_scans_every_outbound_artifact_before_first_mutation(monkeypatch
     committed = {row["path"]: base64.b64decode(row["contents"]) for row in captured["additions"]}
     assert committed["skills/demo/SKILL.md"] == b"RAW_SKILL_BODY"
     assert captured["pr_body"].count("## Author Checklist") == 1
-    assert captured["pr_body"].count("## Known advisory findings") == 1
+    assert captured["pr_body"].count("## Recorded reviewer findings") == 1
     assert captured["pr_body"].count("## Secret scan attestation") == 1
 
 
@@ -498,7 +498,7 @@ def test_unterminated_component_fence_cannot_capture_host_sections(
     assert result["ok"] is True
     for heading in (
         "## Author Checklist",
-        "## Known advisory findings",
+        "## Recorded reviewer findings",
         "## Secret scan attestation",
     ):
         prefix = captured["pr_body"].split(heading, 1)[0]

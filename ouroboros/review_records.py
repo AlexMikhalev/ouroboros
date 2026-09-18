@@ -87,6 +87,18 @@ def validate_author_disposition(
         )
     except (TypeError, ValueError):
         return None
+    if "action" in record:
+        if record["action"] not in {"finish", "stop"}:
+            return None
+        normalized["action"] = record["action"]
+    if "review_reference" in record:
+        import json
+        try:
+            if not isinstance(record["review_reference"], dict):
+                return None
+            normalized["review_reference"] = json.loads(json.dumps(record["review_reference"], allow_nan=False))
+        except (TypeError, ValueError):
+            return None
     expected = str(subject_hash or "").strip()
     if expected and normalized["subject_hash"] != expected and not allow_stale:
         return None

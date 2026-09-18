@@ -105,6 +105,10 @@ def get_tools():
                             "default": "",
                             "description": "Rationale required for an explicit Advisory author finish. Rationale without agent_disposition records a partial stance only and does not end review.",
                         },
+                        "author_action": {
+                            "type": "string", "enum": ["finish", "stop"],
+                            "description": "Finish the current result under its review policy, or stop honestly with unfinished work. Stop never authorizes a blocked action; include rationale. Omission preserves explicit Advisory finish.",
+                        },
                         "obligation_dispositions": {
                             "type": "array",
                             "default": [],
@@ -139,6 +143,7 @@ def _handle_task_acceptance_review(
     rationale: str = "",
     obligation_dispositions: Optional[list] = None,
     acceptance_subject: Optional[dict] = None,
+    author_action: str = "",
 ) -> str:
     from ouroboros.config import get_task_review_mode
     from ouroboros.review_evidence import (
@@ -214,6 +219,8 @@ def _handle_task_acceptance_review(
     if disposition not in {"accepted", "rejected", "partial", "deferred"}:
         disposition = ""
     agent_rationale = " ".join(str(rationale or "").split()).strip()
+    if author_action and (author_action not in {"finish", "stop"} or not agent_rationale):
+        return "ERROR: TOOL_ARG_ERROR: author_action requires finish|stop and a rationale."
     # v6.54.4 obligations layer: normalized per-obligation dispositions ride the
     # same agent_decision envelope (the existing v6.54.0 mechanism, extended to
     # obligation granularity). The host loop applies them to the per-task
@@ -232,10 +239,11 @@ def _handle_task_acceptance_review(
             "reason": " ".join(str(entry.get("reason") or "").split())[:500],
         })
     agent_decision = {}
-    if disposition or agent_rationale or normalized_ob:
+    if disposition or agent_rationale or normalized_ob or author_action:
         agent_decision = {
             "disposition": disposition or "partial",
-            "explicit_finish": bool(disposition),
+            "explicit_finish": bool(disposition or author_action),
+            "author_action": author_action or "finish",
             "rationale": agent_rationale[:1000],
             "source": "agent_task_acceptance_review_tool",
         }
@@ -1373,9 +1381,10 @@ def _dispatch_unified_review(ctx: ToolContext, commit_message: str, prepared: di
         ctx._review_history = []
 
     if errored_note or advisory_warns or getattr(ctx, "_last_review_advisory_findings", None):
-        ctx._review_advisory = list(getattr(ctx, "_last_review_advisory_findings", []) or [])
+        for warning in getattr(ctx, "_last_review_advisory_findings", []) or []:
+            _append_review_warning(ctx, warning)
         if errored_note:
-            ctx._review_advisory.append(errored_note.strip())
+            _append_review_warning(ctx, errored_note.strip())
     return None
 
 

@@ -563,7 +563,7 @@ function planWaveDetail(wave) {
     const author = wave.author_disposition;
     if (author && typeof author === 'object' && text(author.disposition)) {
         lines.push(
-            `Author finish: ${text(author.disposition)}${text(author.reviewer_signal) ? ` · reviewer signal=${text(author.reviewer_signal)}` : ''}`
+            `Author ${author.action === 'stop' ? 'stop' : 'finish'}: ${text(author.disposition)}${text(author.reviewer_signal) ? ` · reviewer signal=${text(author.reviewer_signal)}` : ''}`
             + `${text(author.rationale) ? ` · ${text(author.rationale)}` : ''}`
             + `${text(author.subject_hash) ? ` · subject_hash=${text(author.subject_hash)}` : ''}`
             + `${text(author.source) ? ` · source=${text(author.source)}` : ''}`,
@@ -778,10 +778,11 @@ export function formatReviewProjection(projection) {
     return lines.join('\n');
 }
 
-function authorDispositionText(author, label = 'Author finish') {
+function authorDispositionText(author, label = '') {
     if (!author || typeof author !== 'object' || !text(author.disposition)) return '';
+    const actionLabel = label || `Author ${author.action === 'stop' ? 'stop' : 'finish'}`;
     return [
-        `${label}: ${text(author.disposition)}`,
+        `${actionLabel}: ${text(author.disposition)}`,
         text(author.reviewer_signal) ? `reviewer signal=${text(author.reviewer_signal)}` : '',
         text(author.rationale),
         text(author.subject_hash) ? `subject_hash=${text(author.subject_hash)}` : '',

@@ -154,9 +154,14 @@ def announce_acceptance_settlement(usage_ctx: Any, request: Any, wave: Dict[str,
             attach_late_acceptance_settlement(usage_ctx, request, wave, result=row)
             return
         from ouroboros.owner_mailbox import write_task_message
-
+        trace = _settlement_trace(usage_ctx, str(getattr(request, "retry_key", "") or ""))
+        source = next(({"task_id": task_id, "run_index": index,
+                        "binding_hash": str(run.get("binding_hash") or "")}
+                       for index, run in enumerate((trace or {}).get("review_runs") or [])
+                       if run.get("authority") == "host_root"
+                       and (run.get("request") or {}).get("retry_key") == request.retry_key), None)
         write_task_message(pathlib.Path(usage_ctx.drive_root), acceptance_settlement_message(request, wave),
-                           task_id, source_task_id=task_id, provenance="system")
+                           task_id, source_task_id=task_id, provenance="system", review_feedback=source)
     except Exception:
         log.warning("Acceptance settlement delivery failed for %s", task_id, exc_info=True)
 
@@ -359,3 +364,31 @@ def attach_late_acceptance_settlement(usage_ctx: Any, request: Any, wave: Dict[s
         # stays one row across live delivery, outbox replay and history.
         "progress_meta": {"card_row": "reviews", "card_row_id": f"acceptance-late:{retry_key}"},
     }, event_queue=getattr(usage_ctx, "event_queue", None)))
+
+
+def expose_acceptance_feedback(trace: Dict[str, Any], messages: list, task_id: str) -> None:
+    """Mark exact host feedback carried by a Main request that returned a response.
+
+    Queuing or appending a message alone never validates an author response.
+    """
+    if not isinstance(trace, dict):
+        return
+    runs = trace.get("review_runs") or []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        for source in message.get("review_feedback") or []:
+            if not isinstance(source, dict) or source.get("task_id") != task_id:
+                continue
+            outcome = trace.get("acceptance_review_outcome") or {}
+            if source.get("outcome_binding_hash") and source["outcome_binding_hash"] == outcome.get("binding_hash"):
+                outcome["feedback_delivered"] = True
+                continue
+            index = source.get("run_index")
+            if type(index) is not int or not 0 <= index < len(runs):
+                continue
+            run = runs[index]
+            if (isinstance(run, dict) and run.get("authority") == "host_root"
+                    and str(run.get("binding_hash") or "") == source.get("binding_hash", "")):
+                run["feedback_delivered"] = True
+
