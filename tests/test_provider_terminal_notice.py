@@ -102,15 +102,14 @@ def test_actual_presence_render_and_cached_read_keep_failure_notice_over_pending
     first = run_presence_turn(**args)
     cached = run_presence_turn(**args)
     assert cached == first and len(created) == 1
-    assert first.outcome == "message"
+    assert first.outcome == "deferred"  # failure does not abandon already admitted work
     stored = load_task_result(data, first.task_id)
     assert stored["result"] == RAW
     assert "no terminal provider outcome" in stored["terminal_provider_notice"]
     assert first.text.startswith(RAW + "\n\n[Host status]")
     assert first.text.count("[Host status]") == 1
     assert stored["metadata"]["presence_result_text"] == first.text
-    if outcome == "deferred":
-        assert first.work_ref == "next-task"
+    assert first.work_ref == "next-task"
 
 
 @pytest.mark.parametrize("reason", [REASON_OWNER_REQUESTED_FINALIZATION, "deadline", "budget ceiling reached"])

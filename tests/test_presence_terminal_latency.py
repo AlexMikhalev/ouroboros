@@ -15,8 +15,19 @@ from tests.test_presence_completion import _call
 from tests.test_presence_runner import _admission, _event
 
 
+@pytest.fixture
+def agent_bootstrap(tmp_path, monkeypatch):
+    # These tests exercise task completion, not installation boot. A cold worker
+    # otherwise scans host processes/Git and profiles the machine inside the
+    # synthesis barrier's timeout, depending on earlier tests' boot-log state.
+    monkeypatch.setattr(agent_module.OuroborosAgent, "_log_worker_boot_once", lambda *_a: None)
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    (memory_dir / "WORLD.md").write_text("# Test environment\n", encoding="utf-8")
+
+
 @pytest.mark.parametrize("outcome", ["message", "silent", "tool_delivered"])
-def test_native_agent_returns_durable_result_before_synthesis_and_retry_reuses_it(tmp_path, monkeypatch, outcome):
+def test_native_agent_returns_durable_result_before_synthesis_and_retry_reuses_it(tmp_path, monkeypatch, outcome, agent_bootstrap):
     monkeypatch.delenv("OUROBOROS_IN_WORKER", raising=False)
     monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
     monkeypatch.setattr(agent_module, "validate_task_authority_sources", lambda *_a: None)
@@ -110,7 +121,7 @@ def test_only_native_unsplit_presence_changes_post_task_wait(tmp_path, monkeypat
     assert calls == [expected]
 
 
-def test_pending_finish_cannot_hide_a_failed_empty_agent_result(tmp_path, monkeypatch):
+def test_pending_finish_cannot_hide_a_failed_empty_agent_result(tmp_path, monkeypatch, agent_bootstrap):
     monkeypatch.setattr(agent_module, "validate_task_authority_sources", lambda *_a: None)
     monkeypatch.setattr(agent_module.OuroborosAgent, "_start_task_heartbeat_loop", lambda *_a: None)
     agent = agent_module.OuroborosAgent(agent_module.Env(repo_dir=tmp_path, drive_root=tmp_path))

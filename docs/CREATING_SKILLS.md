@@ -740,6 +740,9 @@ model round. If a check requests more work, continue and finish again. An omitte
 message/deferred body retains the later model-answer path. Native inline turns
 return their persisted result before optional post-task cognition; transport
 outbox custody still owns actual delivery.
+If a parent fails after work was scheduled, its handoff remains deferred with
+the current failure text, so the adapter retains the late result's custody;
+this does not turn the failed parent into successful execution.
 
 `GET /identity` advertises `presence_delivery_version: 1` on supporting hosts.
 Only then request `delivery_reporting_version: 1` alongside `binding_id` and

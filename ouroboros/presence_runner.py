@@ -59,7 +59,8 @@ class PresenceTurnResult:
     delivery_reporting_version: int = 0
 
 
-def build_presence_result_event(task: dict[str, Any], text: str, ctx: Any, *, provider_notice: str = "") -> dict[str, Any]:
+def build_presence_result_event(task: dict[str, Any], text: str, ctx: Any, *, provider_notice: str = "",
+                                retain_scheduled_handoff: bool = False) -> dict[str, Any]:
     """Freeze typed delivery metadata before the ordinary durable result write."""
 
     completion = getattr(ctx, "_presence_completion", None)
@@ -78,6 +79,10 @@ def build_presence_result_event(task: dict[str, Any], text: str, ctx: Any, *, pr
     )
     if outcome == "deferred" and not work_ref:
         outcome = "message"
+    if retain_scheduled_handoff and work_ref:
+        # A failed/forced parent still owes an already admitted child's result.
+        # Transports poll only deferred outcomes; the current body remains true.
+        outcome = "deferred"
     result_text = str(text or "")
     if outcome in {"message", "deferred"} and provider_notice:
         from ouroboros.task_finalization import provider_terminal_body
