@@ -599,6 +599,29 @@ test('preview replaces only a clean generated baseline', () => {
     assert.equal(editor.setting.items[0].subagent_id, 'codex_builder');
 });
 
+test('dated API failures stay informational and bind to the exact execution choices', () => {
+    const row = apiRow({ processing_preference: 'standard' });
+    const state = { snapshot: { subagent_last_delegation: { latest_by_subagent: {
+        api_scout: { selected_subagent_id: 'api_scout', route: 'api_model',
+            requested_model: row.route.target_id, applied_model: '', outcome: 'failed',
+            failure_code: 'quota_exhausted', ts: '2026-09-18T12:00:00Z', occurred_at: '2026-09-18T12:00:00Z',
+            identity: { ...row.route, credential_profile_id: '', effort: 'high', processing_preference: 'standard' } },
+    } } } };
+    const meta = rowMeta(row, state, []);
+    assert.equal(meta.tone, '');
+    assert.match(meta.text, /Last run: API model.*failed \(quota_exhausted\).*2026-09-18/);
+    assert.equal(rowMeta({ ...row, recommended_use: 'Changed description' }, state, []).text, meta.text);
+    for (const changed of [
+        { ...row, effort: 'low' },
+        { ...row, processing_preference: 'flex' },
+        { ...row, route: { ...row.route, target_id: 'another-model' } },
+        { ...row, route: { ...row.route, credential_profile_id: 'another-account' } },
+    ]) assert.match(rowMeta(changed, state, []).text, /Earlier settings:/);
+    const oldStatus = rowStatus(row, state);
+    delete state.snapshot.subagent_last_delegation;
+    assert.deepEqual(rowStatus(row, state), oldStatus, 'history never changes live admission/status');
+});
+
 test('a typed preview refusal stays typed and cannot become an empty fictional draft', () => {
     const editor = createAvailableSubagentsEditor({ doc: null, win: null });
     editor.setPreviewFailure({

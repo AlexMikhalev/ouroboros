@@ -325,7 +325,7 @@ def test_a_pre_commit_failure_is_still_reported_as_unsaved(monkeypatch, isolated
     from ouroboros.gateway import settings as settings_mod
 
     app = _settings_app(monkeypatch, isolated_settings)
-    monkeypatch.setattr(settings_mod, "_classify_settings_changes",
+    monkeypatch.setattr(settings_mod, "_merge_settings_payload",
                         lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("before the write")))
     resp = TestClient(app).post("/api/settings", json={"TOTAL_BUDGET": "25"})
 

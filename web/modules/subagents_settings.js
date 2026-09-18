@@ -366,7 +366,7 @@ export function availableSubagentRowMarkup(row, state, index = 0) {
                 ${effortSelectHtml(`data-subagent-field="effort" aria-label="Reasoning effort for Subagent ${ordinal}"`, row.effort || '', 'route default')}
             </div>
             ${processingDetailsHtml(`data-subagent-field="processing_preference" aria-label="Processing for Subagent ${ordinal}"`, row.processing_preference, state.processingPreference)}
-            <div id="actor-${escapeHtml(rowKey)}-meta" class="available-subagent-meta ui-field-help" data-subagent-meta${meta.tone ? ` data-tone="${escapeHtml(meta.tone)}"` : ''} title="${escapeHtml(meta.text)}"${meta.text ? '' : ' hidden'}>${escapeHtml(meta.text)}</div>
+            <div id="actor-${escapeHtml(rowKey)}-meta" class="available-subagent-meta ui-field-help" data-subagent-meta${meta.history ? ' data-run-history' : ''}${meta.tone ? ` data-tone="${escapeHtml(meta.tone)}"` : ''} title="${escapeHtml(meta.text)}"${meta.text ? '' : ' hidden'}>${escapeHtml(meta.text)}</div>
         </article>`;
 }
 
@@ -498,6 +498,7 @@ export function createAvailableSubagentsEditor({
             const metaEl = el.querySelector('[data-subagent-meta]');
             if (!metaEl) return;
             Object.assign(metaEl, { hidden: !meta.text, textContent: meta.text, title: meta.text });
+            metaEl.toggleAttribute('data-run-history', Boolean(meta.history));
             if (meta.tone) metaEl.dataset.tone = meta.tone;
             else delete metaEl.dataset.tone;
         });
@@ -507,7 +508,6 @@ export function createAvailableSubagentsEditor({
         if (state.saveAttempted) onJudged(!shown.length);
     }
 
-    // Judge existing rows on Save/Finish; later new rows remain fresh.
     function noteSaveAttempt() {
         state.saveAttempted = true;
         state.setting.items.forEach((row) => { row._uiAttempted = true; });

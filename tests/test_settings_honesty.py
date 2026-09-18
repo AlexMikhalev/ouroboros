@@ -29,6 +29,11 @@ def isolated_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "DATA_DIR", data_dir, raising=True)
     monkeypatch.setattr(cfg, "SETTINGS_PATH", settings_path, raising=True)
     cfg.reset_runtime_mode_baseline_for_tests()
+    from ouroboros import server_process
+    monkeypatch.setattr(server_process, "_applied_restart_settings", {
+        key: cfg.SETTINGS_DEFAULTS[key] for key in (
+            "OUROBOROS_MAX_WORKERS", "OUROBOROS_SERVER_HOST", "OUROBOROS_HOST_SERVICE_PORT",
+            "OUROBOROS_SKILLS_REPO_PATH")})
     yield settings_path
     cfg.reset_runtime_mode_baseline_for_tests()
 

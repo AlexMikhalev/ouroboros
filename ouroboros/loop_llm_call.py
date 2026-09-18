@@ -288,6 +288,7 @@ def _record_and_emit_empty_response(
         "_last_llm_error": _short_error_text(log_msg), "execution_status": status,
         "reason_code": reason, "_last_llm_error_kind": kind,
     })
+    accumulated_usage.get("_last_llm_call_meta", {}).update(failure_code=kind)
     return event_type, is_provider_glitch, permanent_body_error
 
 
@@ -827,7 +828,7 @@ def _remember_llm_call(
     reported_model: Any = None,
     use_local: Optional[bool] = None,
 ) -> Dict[str, Any]:
-    call_meta = {
+    call_meta = {"ts": utc_now_iso(),
         "llm_call_id": llm_call_id,
         "execution_id": execution_id,
         "round_id": round_id,
@@ -943,10 +944,8 @@ def _record_llm_call_error(
             "route": dict(getattr(error, "route", {}) or {}), "outcome": "unknown",
             "request_ref": ctx.request_ref.get("manifest_ref") if ctx.request_ref else None,
         }
-        # The caller chooses this existing repeat rail. Ordinary managed tasks
-        # set it to zero: their transport episode requires upstream recovery
-        # before a marked NEW attempt. Other callers retain their bounded rail;
-        # grant before logging, and uncount a grant refused before dispatch.
+        # Ordinary managed tasks require upstream recovery before a new attempt;
+        # other callers retain their bounded repeat rail.
         if (
             is_retryable_transport_death(error)
             and repeats < ctx.transport_death_retries and ctx.attempt < ctx.transient_budget - 1
@@ -973,10 +972,7 @@ def _record_llm_call_error(
         "llm_call_id": ctx.llm_call_id, "round": ctx.round_idx, "attempt": ctx.attempt + 1,
         "model": ctx.model,
     }
-    # ONE error row (#355): a successful append's registered sink owns live
-    # delivery. Without that path, send the SAME evidence through the queue,
-    # preserving its identity for live/backfill dedupe. No llm_round_error
-    # sibling here; Background Consciousness keeps its own separate producer.
+    # The append sink owns delivery; queue fallback preserves the same identity.
     error_event = {
         "ts": utc_now_iso(), "type": "llm_api_error", **identity, "error": display_error,
         "error_kind": classification.kind, "retry_same_request": will_retry,
@@ -988,11 +984,15 @@ def _record_llm_call_error(
     }
     if not append_jsonl(ctx.drive_logs / "events.jsonl", error_event) or not has_log_sink():
         emit_log_event(ctx.event_queue, error_event, log_label="LLM call error")
+    ctx.accumulated_usage.setdefault("llm_call_refs", []).append({
+        **{key: error_event[key] for key in ("ts", "llm_call_id", "model")},
+        "failure_code": classification.kind, "reset_at": classification.reset_at,
+    })
     ctx.accumulated_usage.update(_last_llm_error=_short_error_text(display_error),
                                  _last_llm_error_kind=classification.kind, _last_llm_retry_same_request=will_retry)
     if classification.retry_after_sec is not None:
-        ctx.accumulated_usage["_last_llm_retry_after_sec"] = classification.retry_after_sec
-        ctx.accumulated_usage["_last_llm_reset_at"] = classification.reset_at
+        ctx.accumulated_usage.update(_last_llm_retry_after_sec=classification.retry_after_sec,
+                                     _last_llm_reset_at=classification.reset_at)
     else:
         ctx.accumulated_usage.pop("_last_llm_retry_after_sec", None)
         ctx.accumulated_usage.pop("_last_llm_reset_at", None)

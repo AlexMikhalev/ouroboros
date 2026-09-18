@@ -38,6 +38,26 @@ _supervisor_stop = threading.Event()
 # re-exec needs to decide whether the runtime-mode ratchet pin rides along.
 _owner_restart_requested = threading.Event()
 
+# Confirmed inputs of the components this process started. Settings saves may
+# replace os.environ, so it is not an applied-state baseline. Never persisted.
+_applied_restart_settings: dict = {}
+_applied_settings_lock = threading.Lock()
+
+
+def record_applied_restart_settings(values: dict) -> None:
+    """Publish only known startup inputs, after their component starts."""
+    from ouroboros.settings_scales import RESTART_REQUIRED_SETTINGS
+
+    with _applied_settings_lock:
+        _applied_restart_settings.update({key: value for key, value in values.items()
+                                         if key in RESTART_REQUIRED_SETTINGS})
+
+
+def applied_restart_settings() -> dict:
+    """Return process facts without deriving them from mutable saved intent."""
+    with _applied_settings_lock:
+        return dict(_applied_restart_settings)
+
 
 def _request_restart_exit(owner: bool = False) -> None:
     """Signal server shutdown with restart exit code.
