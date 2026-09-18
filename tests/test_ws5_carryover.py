@@ -13,8 +13,8 @@ def test_context_mode_is_owner_only_not_generic_settings():
 
     current = {"OUROBOROS_CONTEXT_MODE": "max"}
     merged = _merge_settings_payload(current, {"OUROBOROS_CONTEXT_MODE": "low"})
-    # The generic /api/settings merge must NOT narrow the horizon — and since v6.80.0
-    # the same setting decides whether the blocking scope review applies at all.
+    # The generic /api/settings merge must NOT narrow the horizon: the setting is
+    # the owner's own working window and only the owner endpoint authors it.
     assert merged["OUROBOROS_CONTEXT_MODE"] == "max"
 
 
@@ -104,85 +104,18 @@ def test_running_tasks_clip_marker_is_explicit():
     assert "chars omitted]" in clipped  # explicit omission marker, not a silent cut
 
 
-def test_settings_save_probes_review_slots_with_the_needs_ack_contract(monkeypatch, tmp_path):
-    """RS1: a PINNED scope reviewer must have a REACHABLE path to Capability Evidence.
-
-    The Max gate only ever probed the MAIN route, so a pin could never become "known"
-    and silently ran in the conservative sub-floor window. The save-time probe reuses
-    the EXISTING needs_ack:{route, route_fp, evidence} contract, which Settings RENDERS
-    through the same confirm -> owner-capability-ack flow; it is advisory and never
-    rewrites the pin. Only the scope surface is probed (its >=1M evidence is the only
-    one that gates anything) and only on a scope-slot change."""
-    import pathlib
-    from types import SimpleNamespace
-
-    import ouroboros.config as cfg
-    from ouroboros.gateway import settings as smod
-
-    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(cfg, "get_scope_review_models", lambda: ["anthropic/claude-opus-4.8"])
-    monkeypatch.setattr(cfg, "get_review_models", lambda: ["openai/gpt-5.6-sol"])
-    seen = []
-
-    def fake_probe(drive_root, **kwargs):
-        seen.append(kwargs["model"])
-        return SimpleNamespace(
-            window_tokens=200_000, status="confirmed", route_fp="fp",
-            to_json=lambda: {"window_tokens": 200_000, "status": "confirmed"},
-        )
-
-    monkeypatch.setattr("ouroboros.capability_evidence.probe", fake_probe)
-
-    notices = smod._review_capability_notices({})
-
-    assert "anthropic/claude-opus-4.8" in seen, "the scope slot's own route must be probed"
-    assert len(notices) == 1
-    notice = notices[0]
-    assert notice["surface"] == "scope_review"
-    assert set(notice["needs_ack"]) >= {"provider", "model", "base_url", "route_fp", "evidence"}
-    assert notice["window_tokens"] == 200_000
-    assert notice["verified"] is True
-    assert "openai/gpt-5.6-sol" not in seen, (
-        "the triad surface never yields a notice, so probing it was network work on "
-        "every settings save whose result was discarded"
-    )
-
-    # The response key must have a CONSUMER: unrendered, the owner sees no prompt and
-    # every commit keeps blocking with SCOPE_REVIEW_SUB_FLOOR telling them to owner-ack
-    # a route the UI never offered.
-    repo = pathlib.Path(__file__).resolve().parent.parent
-    settings_js = (repo / "web" / "modules" / "settings.js").read_text(encoding="utf-8")
-    for needle in (
-        "data.review_capability_notices",
-        "ackReviewCapabilityNotices",
-        "apiClient.ownerCapabilityAck(",
-    ):
-        assert needle in settings_js, needle
-    gateway_src = (repo / "ouroboros" / "gateway" / "settings.py").read_text(encoding="utf-8")
-    # The gate grew the 6.1 slots SSOT key (a slot change IS a route change) and
-    # wrapped; the pinned semantics is unchanged — probe only on ROUTE-affecting
-    # keys, never on every save.
-    assert (
-        'k.startswith("OUROBOROS_SCOPE_REVIEW_MODEL") or k == "OUROBOROS_REVIEWER_SLOTS"\n'
-        '            or k in _REVIEW_ROUTE_BASE_URL_KEYS'
-        in gateway_src
-    ), "the probe must be gated on a ROUTE-affecting change, not run on every save"
-
 
 def test_capability_evidence_is_route_aware_not_model_aware(monkeypatch, tmp_path):
-    """A base-URL change is a NEW ROUTE and must reprobe + renotify.
+    """A base-URL change is a NEW ROUTE and must reprobe.
 
-    Capability is a property of provider+base_url+model, and evidence is stored under
-    that route fingerprint. The lazy scope probe memoised by MODEL NAME and the
-    save-time notice fired only on `OUROBOROS_SCOPE_REVIEW_MODEL*`, so hot-changing
-    `OPENAI_BASE_URL` (or the openai-compatible / cloudru / gigachat equivalents) with an
-    unchanged model produced a route with no evidence, no second probe and no notice —
-    the next scope review fell silently to the conservative sub-floor and the advertised
-    owner-ack path was unreachable."""
+    Capability is a property of provider+base_url+model, and evidence is stored
+    under that route fingerprint. A lazy probe memoised by MODEL NAME serves a
+    hot `OPENAI_BASE_URL` change (or the openai-compatible / cloudru / gigachat
+    equivalents) from the previous route's record, so the scope reviewer is sized
+    from a window that belongs to a different endpoint."""
 
     import ouroboros.config as cfg
     from ouroboros import capability_evidence as ce
-    from ouroboros.gateway import settings as smod
     from ouroboros.tools import scope_review as sr
 
     model = "openai::gpt-5.5-pinned"
@@ -212,79 +145,78 @@ def test_capability_evidence_is_route_aware_not_model_aware(monkeypatch, tmp_pat
         "https://route-a.example/v1", "https://route-b.example/v1",
     ], "a base-URL change is a new route fingerprint and must be probed"
 
-    # ...and the save-time owner-facing notice describes the INCOMING candidate route,
-    # taken from the submitted settings rather than from process env.
-    monkeypatch.setattr(cfg, "get_scope_review_models", lambda: ["anthropic/claude-fable-5"])
-    # ABI-10: the incoming candidate route arrives via the structured key.
-    import json as _json
-    notices = smod._review_capability_notices({
-        "OUROBOROS_REVIEWER_SLOTS": _json.dumps({
-            "triad": [{"slot_id": "t1", "route": {"kind": "api_chat", "target_id": model}}],
-            "scope": [{"slot_id": "s1", "route": {"kind": "api_chat", "target_id": model}}],
-        }),
-        "OPENAI_BASE_URL": "https://route-b.example/v1",
-    })
-    assert len(notices) == 1
-    assert notices[0]["needs_ack"]["model"] == model
-    assert notices[0]["needs_ack"]["base_url"] == "https://route-b.example/v1"
 
+def test_no_scope_row_shape_is_asked_to_confirm_a_context_window(monkeypatch, tmp_path):
+    """Owner decision 2026-09-17: window size is not a condition of scope authority.
 
-def test_scope_capability_notice_is_offered_on_a_route_whose_record_expired(
-    monkeypatch, tmp_path,
-):
-    """The `require_fresh=True` on the save-time notice is REACHABLE, and it is what
-    puts the owner-ack in front of the owner.
-
-    Route fingerprints are content-addressed, so re-selecting a slot the install has
-    used before finds that route's PRIOR record — which may have expired meanwhile.
-    With the provider unreachable `probe` keeps that record (module invariant) and
-    marks it stale, and a stale 1M record is exactly the shape that reads as `confirmed
-    1M` yet cannot authorize the commit-time gate. Without the freshness argument the
-    save reports the slot as fine and the next commit blocks with SCOPE_REVIEW_SUB_FLOOR
-    pointing at an ack the UI never offered."""
-    import datetime
+    Saving a scope row used to probe that row's route and, whenever the reading was
+    below the packet floor or the retrieving floor, return a `needs_ack` notice that
+    Settings turned into "confirm this reviewer's context window" — the only path by
+    which the row could sign a blocking verdict. Scope review now reads the
+    repository itself, and authority rests on the declared required-source manifest
+    and the reads recorded against it, so no scope row of any shape is asked about a
+    window and the save performs no capability probe for one.
+    """
     import json
-    import pathlib
 
-    import ouroboros.config as cfg
+    import pytest
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+
     from ouroboros import capability_evidence as ce
+    from ouroboros import config as cfg
     from ouroboros.gateway import settings as smod
 
-    model = "openai/gpt-5.6-terra"
-    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(cfg, "get_scope_review_models", lambda: [model])
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    settings_path = data_dir / "settings.json"
+    settings_path.write_text(json.dumps({"OUROBOROS_MODEL": "openai::gpt-main"}), encoding="utf-8")
+    monkeypatch.setattr(cfg, "DATA_DIR", data_dir)
+    monkeypatch.setattr(cfg, "SETTINGS_PATH", settings_path)
+    monkeypatch.setattr(smod, "apply_runtime_provider_defaults", lambda s: (s, False, []))
+    monkeypatch.setattr(smod, "_start_supervisor_if_needed_for_request", lambda *_a, **_k: False)
+    monkeypatch.setattr(smod, "_apply_settings_to_env", lambda *_a, **_k: None)
+    monkeypatch.setattr(smod, "_apply_settings_save_side_effects", lambda *_a, **_k: None)
+    # The unknown-model-id warning is a catalog lookup, not a window probe; it is
+    # the other consumer of the candidate rows and is out of this test's claim.
+    monkeypatch.setattr(smod, "_unrecognised_review_models", lambda _models: [])
+    monkeypatch.setattr(ce, "probe", lambda *_a, **_kw: pytest.fail(
+        "a settings save probed a reviewer's context window"))
 
-    route = smod._review_slot_route({}, model)
-    fp = ce.route_fingerprint(provider=route["provider"], base_url=route["base_url"], model=model)
-    expired = (
-        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=5)
-    ).isoformat()
-    store = tmp_path / "state" / "capability_evidence.json"
-    store.parent.mkdir(parents=True, exist_ok=True)
-    store.write_text(json.dumps({"probes": {fp: {
-        "window_tokens": 1_000_000, "status": "confirmed", "source": "provider_metadata",
-        "route_fp": fp, "model": model, "provider": route["provider"], "ts": expired,
-    }}}), encoding="utf-8")
+    roster = {"enabled": True, "items": [{
+        "subagent_id": "api-critic", "name": "API critic",
+        "recommended_use": "Bounded inspection episode.",
+        "route": {"kind": "api_model", "target_id": "openai::gpt-critic"}, "effort": "medium",
+    }]}
+    slots = {
+        "triad": [{"slot_id": "t1", "route": {"kind": "api_chat", "target_id": "openai::gpt-triad"}}],
+        "scope": [
+            {"slot_id": "s1", "route": {"kind": "api_chat", "target_id": "openai::gpt-bare"}},
+            {"slot_id": "s2", "subagent_id": "api-critic"},
+            {"slot_id": "s3", "route": {"kind": "agent_session", "target_id": "codex=gpt-5.6-sol"}},
+        ],
+    }
+    app = Starlette(routes=[Route("/api/settings", smod.api_settings_post, methods=["POST"])])
+    app.state.drive_root = data_dir
+    app.state.repo_dir = data_dir
+    response = TestClient(app).post("/api/settings", json={
+        "OUROBOROS_SUBAGENTS": json.dumps(roster),
+        "OUROBOROS_REVIEWER_SLOTS": json.dumps(slots),
+        "OPENAI_BASE_URL": "https://route-b.example/v1",
+    })
 
-    # The provider cannot re-confirm it right now.
-    monkeypatch.setattr(ce, "_provider_metadata_window", lambda *a, **k: 0)
-    monkeypatch.setattr(ce, "_metadata_fetch_transport_failed", lambda *a, **k: True)
-
-    notices = smod._review_capability_notices({"OUROBOROS_SCOPE_REVIEW_MODELS": model})
-    assert len(notices) == 1, "an expired, unverifiable record must still offer the ack"
-    assert notices[0]["needs_ack"]["model"] == model
-    assert notices[0]["needs_ack"]["evidence"]["stale"] is True
-    assert notices[0]["window_tokens"] == 1_000_000, (
-        "the number clears the floor — freshness, not size, is what withholds authority"
-    )
-
-    # And the owner-facing prompt says WHY a 1M reading is being questioned, instead of
-    # asking them to confirm 1000000 tokens because the route reports 1000000 tokens.
-    settings_js = (
-        pathlib.Path(__file__).resolve().parent.parent / "web" / "modules" / "settings.js"
-    ).read_text(encoding="utf-8")
-    assert "evidence?.stale" in settings_js
-    assert "EXPIRED reading the provider could not re-confirm" in settings_js
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert "review_capability_notices" not in body, body
+    assert "needs_ack" not in response.text
+    stored = json.loads(settings_path.read_text(encoding="utf-8"))["OUROBOROS_REVIEWER_SLOTS"]
+    assert [row.get("slot_id") for row in json.loads(stored)["scope"]] == ["s1", "s2", "s3"]
+    assert not hasattr(smod, "_review_capability_notices")
+    # The generic ack endpoint stays: the main model's own window evidence is
+    # recorded through it (tests/test_owner_settings_write_seam.py
+    # ::test_the_capability_ack_is_not_a_settings_writer drives it end to end).
+    assert callable(smod.api_acknowledge_capability)
 
 
 def test_unrecognised_review_model_ids_are_reported_loudly(monkeypatch):
@@ -308,37 +240,3 @@ def test_unrecognised_review_model_ids_are_reported_loudly(monkeypatch):
     # Without an authoritative catalog nothing may be CLAIMED unknown.
     monkeypatch.setattr(LLMClient, "_CAPABILITIES_FETCH_OK", False, raising=False)
     assert smod._unrecognised_review_models(["-5"]) == []
-
-
-def test_scope_capability_notice_fires_on_stale_evidence(monkeypatch, tmp_path):
-    """The save-time notice and the review-time authority check are twins: both ask
-    "can this slot supply a BLOCKING scope verdict". The notice used to accept an
-    expired 1M record, so the owner was told the slot was fine and then blocked at
-    commit time by the check that reads the same evidence with the freshness applied."""
-    from types import SimpleNamespace
-
-    import ouroboros.config as cfg
-    from ouroboros.gateway import settings as smod
-    from ouroboros.reviewer_window import ReviewerWindow
-
-    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(cfg, "get_scope_review_models", lambda: ["anthropic/claude-fable-5"])
-
-    evidence = {"stale": False}
-
-    def fake_probe(drive_root, **kwargs):
-        return SimpleNamespace(
-            window_tokens=1_000_000, status="confirmed", route_fp="fp",
-            stale=evidence["stale"], ts="",
-            to_json=lambda: {"window_tokens": 1_000_000, "status": "confirmed"},
-        )
-
-    monkeypatch.setattr("ouroboros.capability_evidence.probe", fake_probe)
-
-    assert smod._review_capability_notices({}) == [], "current 1M evidence needs no ack"
-
-    evidence["stale"] = True
-    notices = smod._review_capability_notices({})
-    assert len(notices) == 1 and notices[0]["surface"] == "scope_review"
-    # ...and the review-time twin agrees, which is the point of the shared predicate.
-    assert ReviewerWindow(1_000_000, "confirmed", stale=True).blocking_authority_allowed is False

@@ -267,8 +267,8 @@ def test_scope_reservation_and_send_use_prepared_profile_not_original_slot(setup
 
     monkeypatch.setattr(LLMClient, "claudexor_model_catalog", staticmethod(catalog))
     original = ReviewSlot("scope-one", MODEL, session_profile="account-a")
-    prepared = {"scope_model_id": MODEL, "prompt": "Review", "stable_prefix_len": 0,
-                "context_manifest": {}, "session_task": "", "repo_dir": root,
+    prepared = {"scope_model_id": MODEL, "prompt": "", "stable_prefix_len": 0,
+                "context_manifest": {}, "session_task": "Review the staged change", "repo_dir": root,
                 "slot_id": "scope-one", "route": ReviewRouteKind.API_CHAT, "slot_effort": "high",
                 "session_target": "", "session_profile": "account-b", "delegated": False,
                 "subagent_id": "", "use_local": False,
@@ -290,7 +290,9 @@ def test_scope_reservation_and_send_use_prepared_profile_not_original_slot(setup
     monkeypatch.setattr(scope, "_call_scope_llm", observe_call)
     actual = scope.run_scope_review(ToolContext(repo_dir=root, drive_root=root, task_id="task-one"), "Review", prepared=prepared,
                                     session_profile="ignored-original")
-    assert actual.status == "sub_floor"  # The actual 200K account cannot acquire a 1M verdict.
+    # Window size no longer decides authority: the row answers on the account it
+    # was PREPARED with, and that account's profile is what gets pinned.
+    assert actual.status == "responded"
     assert gateway.uploads[0][0]["account"] == {"mode": "pin", "profileId": "account-b"}
     assert catalog_profiles and set(catalog_profiles) == {"account-b"}
     assert actual.tokens_in == 20 and ledger(root)[-1]["state"] == "settled"

@@ -152,8 +152,8 @@ def _promote_to_stable(ctx: ToolContext, reason: str) -> str:
 
 
 def _request_deep_self_review(ctx: ToolContext, reason: str) -> str:
-    # Availability follows the configured deep-review ROW (packed api model,
-    # native inspection episode, or delegated session), not the model key alone.
+    # Availability follows the configured deep-review ROW (a native inspection
+    # episode or a delegated session), not the model key alone.
     from ouroboros.deep_self_review import deep_review_route, deep_review_unavailable_text
     from ouroboros.consciousness_authority import consciousness_origin_metadata
     unavailable, identity = deep_review_route()

@@ -198,12 +198,10 @@ class ReviewerSlotConfig:
     source: str  # "structured" | "default" (ABI 7.0: the legacy read is gone)
     # The optional deep self-review row on the shared vocabulary (no
     # ``enabled``: a deep review is owner-triggered, never a standing gate).
-    # None = not configured; ``deep_review_slot`` then synthesizes the packed
-    # api row from the deep-review model key. An api row WITHOUT a subagent
-    # reference is the packed 1M-context review (the historical delivery); a
-    # configured-subagent api row is a native inspection episode and an
-    # agent_session row a delegated session — the same three deliveries as
-    # every other surface, chosen by the same ``retrieves`` predicate.
+    # None = not configured; ``deep_review_slot`` then synthesizes the api
+    # row from the deep-review model key. Every deep-review api row (bare or
+    # subagent-bound) runs the native inspection episode and an agent_session
+    # row a delegated session: the surface declares retrieval for all its rows.
     deep_review: Optional[ConfiguredReviewerSlot] = None
 
 
@@ -694,11 +692,11 @@ def advisory_slot_config() -> AdvisorySlotConfig:
 
 def deep_review_slot(config: Optional[ReviewerSlotConfig] = None) -> ConfiguredReviewerSlot:
     """THE deep self-review row: the configured ``deep_review`` row, or the
-    packed api row synthesized from the legacy model key.
+    api row synthesized from the legacy model key.
 
     ``OUROBOROS_MODEL_DEEP_SELF_REVIEW`` stays the invisible migration source
-    and fallback: an install that never saved a row keeps today's exact
-    delivery (one packed 1M-context review on that model), and the row's own
+    and fallback: an install that never saved a row keeps its model (a native
+    inspection episode on that model), and the row's own
     effort — resolved by ``row_effort(row, "deep_self_review")`` — outranks the
     surface key ``OUROBOROS_EFFORT_DEEP_SELF_REVIEW`` only when set (R6). A
     malformed structured value raises the same typed ValueError as every other
@@ -710,7 +708,7 @@ def deep_review_slot(config: Optional[ReviewerSlotConfig] = None) -> ConfiguredR
 
 
 def synthesized_deep_review_slot() -> ConfiguredReviewerSlot:
-    """The packed api row the legacy model key stands for — the ONE synthesis
+    """The api row the legacy model key stands for — the ONE synthesis
     rule, shared by ``deep_review_slot`` and the settings endpoint (which shows
     it beside a malformed structured value as the legacy-derived REPAIR
     PLACEHOLDER — no row is effective there until the setting is repaired;

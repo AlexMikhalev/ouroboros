@@ -1,15 +1,27 @@
 # Core Governance Artifacts
 
-The **core governance artifacts** — `BIBLE.md`, `docs/ARCHITECTURE.md`, `docs/DEVELOPMENT.md` — are the constitutional, architectural and procedural ground truth. This chapter owns their availability in every reasoning flow: the delivery registry, plan review's structural tiering, exact planning premises, earned compaction and disclosed, model-only truncation. A reviewer without the architecture map lacks full context; a required artifact that cannot fit is a typed refusal with its disclosure, an optional one a named omission — never a quietly shrunk pack.
+The **core governance artifacts** — `BIBLE.md`, `docs/ARCHITECTURE.md`, `docs/DEVELOPMENT.md` — are the constitutional, architectural and procedural ground truth. This chapter owns their delivery registry, structural plan tiering, exact premises, earned compaction and disclosed model-only truncation. Availability may be full inline text or complete on-demand sources with visible navigation; a missing source never becomes a claim of full context.
 
 ### Invariant: Full availability in reasoning flows
 
 Any flow that requires architectural, constitutional, or procedural reasoning
 MUST include these artifacts as **first-class context sections** — not as
-optional or opportunistic inclusions via touched-file packs.
+optional or opportunistic inclusions via touched-file packs. Each registry row
+names its inline and on-demand delivery; neither permits silent truncation.
 
-Plan review is the one flow whose governance pack is tiered, by ONE structural
-fact — whether a declared `affected_paths` target resolves under the Ouroboros
+Commit triad, scope, advisory and deep self-review share
+`ouroboros/tools/governance_context.py`. Tier 1 always delivers BIBLE.md, the
+applicable CHECKLISTS section and CHECKLISTS_ARCHIVE standing disclosures in
+full. Tier 2 selects the review-protocol chapter, DEVELOPMENT chapters naming
+touched files, and DESIGN for `web/` changes within
+`runtime_limits.REVIEW_GOVERNANCE_INLINE_SHARE` of the usable window; overflow
+stays named in navigation. Tier 3 delivers the ARCHITECTURE book navigation,
+never the whole map; tool-free triad packet rows also receive relevant
+sections within that same share. This keeps shared rules consistent without
+letting reference books crowd out the change. A pointer gives a packet row
+no tools or evidence it did not receive.
+
+Plan review tiers its intention pack by ONE structural fact — whether a declared `affected_paths` target resolves under the Ouroboros
 system repository, never prose or a plan-kind taxonomy, which keeps
 classification un-gameable. Tiering is not omission: the subject is an
 INTENTION before any work exists, and nothing is silently omitted (P1). Only a
@@ -31,15 +43,27 @@ The context-delivery registry:
 | Flow | BIBLE.md | ARCHITECTURE.md | DEVELOPMENT.md |
 |------|----------|-----------------|----------------|
 | Main task context (`context.py`) | full tier-0 | full composition in Max, a subagent child excepted (issue #1026); book navigation in Low/Nano and for every subagent child | book navigation in Low/Nano and for a subagent child; in Max full when the active binding targets the system repo (evolution/self-body work, `workspace="none"`, a project-room turn with no external binding), else a visible on-demand pointer (external workspace, API/CLI/scheduled surface) |
-| Triad review (`tools/review.py`) | ✅ via preamble | ✅ via `load_governance_doc` | ✅ via `load_governance_doc` |
-| ↳ Cold-start density rung | — | — | Shared with scope review and the packed deep self-review: a packet that would be refused or degraded for size while its route has no fresh exact-model density witness gets one bounded exact-model probe, then one re-size/rebuild; a budget-refused probe is a typed disclosure and the refusal stands (`capability_evidence.cold_start_density_probe`; ARCHITECTURE §6 "Review stack") |
-| ↳ Anti-thrashing | — | — | Open obligations from `review_state` (`load_state(drive_root)` + `make_repo_key(repo_dir)`) injected unconditionally into `_build_review_history_section`; scope the same, best-effort when `drive_root` is available (`scope_review_pack._build_scope_prompt`) |
+| Triad review (`tools/review.py`) | full via API preamble or retrieving task | Tier 3: book navigation; packet rows also receive sections naming touched files within the inline share | Tier 2: review protocol and chapters naming touched files within the share; the rest remains navigable |
+| ↳ Cold-start density rung | — | — | Triad packets only: an oversized packet without fresh exact-model density evidence gets one bounded probe of its own 80,000-char slice and one rebuild; a budget refusal stays disclosed (`review_admission.density_probe_before_size_refusal`). Retrieving surfaces have no packet-fit rung. |
+| ↳ Anti-thrashing | — | — | Open obligations from `review_state` (`load_state(drive_root)` + `make_repo_key(repo_dir)`) enter `_build_review_history_section`; the scope brief does the same when `drive_root` is available (`scope_review_session.build_scope_session_task`). |
 | Background consciousness wake-up (`consciousness.py` → `handle_wake_direct`) | = Main task context | = Main task context | = Main task context |
-| Advisory pre-review (`tools/claude_advisory_review.py`) | both delivery classes retrieve via MANDATORY FULL READ pointers — `api_chat` in a bounded NATIVE inspection episode (host-observed), `agent_session` with its own tools (unobserved); retrieval disclosed | same two delivery classes | same two delivery classes |
-| Scope review (`tools/scope_review.py`) | full canonical doc + Atlas accounting; under a cold density cap a size terminal or degradation rung takes the density rung (`density_probe` ladder step) | full canonical doc + Atlas accounting | full canonical doc + Atlas accounting |
+| Advisory pre-review (`tools/claude_advisory_review.py`) | full, shared tier 1 on both retrieving deliveries | Tier 3: book navigation and on-demand reading | Tier 2 within this row’s transcript-bound share; touched files arrive as a size/disposition manifest with the span-only carrier cut disclosed, while changed lines are in the diff |
+| Scope review (`tools/scope_review.py`) | full, shared tier 1 beside the Intent / Scope checklist, in every context mode | Tier 3: physical chapter navigation and on-demand reading | Tier 2 within the usable-window share; the brief carries the complete staged change inline or as an exact paged source |
 | Skill review (`skill_review.py`) | full inline (`api_chat`) / mandatory full source-root read (`agent_session`) | same two classes | same two classes |
 | Plan review (`tools/plan_review.py`) | full for a SELF-MODIFICATION plan; otherwise a runtime heading-derived navigation map, never a copy | full for a self-modification plan (`api_chat` inline, `agent_session` mandatory full read); otherwise book navigation + a resolvable pointer | not resident: a named on-demand pointer; a reviewer needing it returns `need_evidence` with an exact `::lines=A-B` range |
-| Deep self-review (`deep_self_review.py`) | three deliveries on the `deep_review` row — packed api row: full doc + Atlas accounting, typed `deep_self_review_pack_unfit` refusal, no fallback; native episode / agent session: MANDATORY full read at the repository root, coverage host-observed / `unobserved`; memory inlined byte-exact on every delivery (ARCHITECTURE §6 "Deep self-review") | packed: full composition (Max) / book navigation (Low), + Atlas accounting; retrieving rows: book navigation, chapters read on demand | packed: full composed book + Atlas accounting; retrieving rows: book navigation (CHECKLISTS.md keeps its single-doc `generate_doc_nav_map`) |
+| Deep self-review (`deep_self_review.py`) | full inline through shared tier 1 on native and session deliveries, without a duplicate-read demand; the seven-file memory whitelist stays byte-exact inline with per-entry dispositions | Tier 3: book navigation and chapters on demand | Tier 2 within this row’s transcript-bound share; deep keeps its own report criteria and CHECKLISTS navigation (ARCHITECTURE §6 "Deep self-review") |
+
+Scope's change-relative source manifest (`tools/scope_required_sources.py`)
+names touched protected runtime, frozen contracts and prompts, their declared
+families and cross-language twins. It is a minimum, not a sufficiency claim;
+reviewers may read any part of the body. Native delivered-range receipts are
+host-observed; session journals yield weaker harness-observed facts or
+unobserved extents. Complete, incomplete, declared-empty and unobserved
+coverage, including unavailable sources, stays diagnostic on every route: it
+changes neither findings,
+quorum nor commit permission and trigger no automatic paid repeat. The author
+judges whether a concrete gap warrants more reading. The window sizes delivery,
+never its authority.
 
 Skill review keeps the full stable governance/host prefix cache-friendly on API
 rows; a retrieving session reads those canonical files from its
@@ -120,7 +144,8 @@ recompaction never loses the original provenance union. Enforcement:
 
 If a core governance artifact cannot fit in the available context budget:
 
-- Where the flow REQUIRES it, that is a FAILURE to assemble, not a smaller pack
+- Where the flow requires inline delivery, inability to fit is an assembly
+  FAILURE, not a smaller pack
   (BIBLE P3): a typed entry names the artifact and reason, the review does not
   proceed on the remainder, and disclosure accompanies the refusal, never
   replaces it; adjust the budget/flow or refactor. Elsewhere an omission or cut is
@@ -148,11 +173,10 @@ If a core governance artifact cannot fit in the available context budget:
   (`_outcome_receipts.receipt_identity_projection`); bounding a set is allowed,
   hiding that you bounded it is the P1 violation.
 
-Disclosed source-read gap: some existing `load_governance_doc` callers continue
-with an explicit omission marker (triad and skill review) or a placeholder
-(scope review) when a book cannot be loaded. Source unreadability is therefore
-not uniformly refused; the required-artifact cannot-fit refusal above does not
-certify those loader paths.
+Disclosed source-read gap: governance loaders may continue with a named omission
+when a book cannot be loaded. This is not full context; loader gaps and failures
+to fit required inline material are separate facts. Retrieving source coverage
+remains diagnostic, not another assembly or commit gate.
 
 Enforcement: `tests/test_tool_capabilities.py` (the `UNTRUNCATED_TOOL_RESULTS`
 roster) and the truncation-floor coverage in
@@ -200,4 +224,3 @@ engineering standards MUST:
    advisory) backstops the review.
 
 ---
-

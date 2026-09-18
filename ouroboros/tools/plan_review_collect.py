@@ -225,11 +225,11 @@ def in_flight_hold(state: Dict[str, Any], *, fingerprint: str, cap: Any) -> str:
 
 
 def collect_before_gate(ctx: Any, state: Dict[str, Any]) -> Dict[str, Any]:
-    """ONE free collection before a blocking finalization verdict (owner batch 3,
-    6e=A): when the current wave still has custody pending, collect what has
+    """ONE free collection before finalization in every enforcement mode, hurry
+    included: when the current wave has custody pending, collect what has
     settled at $0 (window 0, never a wait) and return the reloaded state; any
-    other state is returned untouched. The call site is the finalization gate
-    (``owner_hurry.force_plan_decision``), which then projects the verdict."""
+    other state is returned untouched. ``owner_hurry.force_plan_decision`` then
+    projects the verdict. Older waves keep their historical-supplement path."""
     from ouroboros.task_results import current_plan_review_wave, load_plan_review_state
     from ouroboros.tools.plan_review import _planning_state_location
 

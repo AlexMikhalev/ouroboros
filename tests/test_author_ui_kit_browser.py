@@ -195,6 +195,9 @@ def test_author_kit_authenticated_mount_and_lifetime(author_kit_server, tmp_path
                 assert frame.locator('[role="status"]').inner_text() == "Enter a title."
                 assert frame.locator('[role="status"]').get_attribute("data-tone") == "danger"
                 frame.get_by_label("Title", exact=True).fill("Personal")
+                # select_option assigns the value without focusing the control.
+                # Exercise the native focus/blur cycle as part of choosing a view.
+                frame.get_by_label("View", exact=True).focus()
                 frame.get_by_label("View", exact=True).select_option("Grid")
                 frame.get_by_label("Enabled", exact=True).uncheck()
                 frame.get_by_role("button", name="Preview", exact=True).click()
@@ -216,6 +219,7 @@ def test_author_kit_authenticated_mount_and_lifetime(author_kit_server, tmp_path
             for style_page, name in zip(style_pages, ("spa", "wizard")):
                 style_page.goto(server["url"] + "/style-" + name)
                 style_page.locator('[name="title"]').wait_for()
+                style_page.get_by_label("View", exact=True).focus()
                 style_page.get_by_label("View", exact=True).select_option("Grid")
                 style_page.get_by_label("Enabled", exact=True).uncheck()
                 style_page.evaluate("document.activeElement.blur()")

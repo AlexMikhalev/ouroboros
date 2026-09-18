@@ -127,7 +127,6 @@ REASON_PROVIDER_FAILURE = "provider_failure"
 REASON_TASK_EXCEPTION = "task_exception"
 REASON_DEEP_SELF_REVIEW_UNAVAILABLE = "deep_self_review_unavailable"
 REASON_DEEP_SELF_REVIEW_ERROR = "deep_self_review_error"
-REASON_DEEP_SELF_REVIEW_PACK_UNFIT = "deep_self_review_pack_unfit"
 REASON_TOOL_FAILURE = "tool_failure"
 REASON_DELIVERY_CONTROL_DEGRADED = "delivery_control_degraded"
 REASON_CHILD_RESULTS_DEFERRED = "child_results_deferred"
@@ -871,6 +870,12 @@ def normalize_outcome_axes(result: Dict[str, Any]) -> Dict[str, Any]:
     for key, value in axes.items():
         if key not in normalized:
             normalized[key] = value
+    # Delivery/deferred-work states are not acceptance. Keep the warning when
+    # normalization restores their objective to not_evaluated.
+    if normalized["objective"].get("status") == OBJECTIVE_NOT_EVALUATED and (
+        normalized["execution"].get("unresolved_tool_errors") or normalized["execution"].get("cosmetic_tool_errors")
+    ):
+        _merge_objective_warning(normalized["objective"], WARN_RESIDUAL_TOOL_ERRORS_WITHOUT_REVIEW)
     return normalized
 
 
@@ -941,7 +946,6 @@ _INFRA_TEXT_PREFIXES = (
     ("❌ Deep self-review unavailable:", "runtime", REASON_DEEP_SELF_REVIEW_UNAVAILABLE),
     ("⚠️ Deep self-review error:", "runtime", REASON_DEEP_SELF_REVIEW_ERROR),
     ("❌ Deep self-review failed:", "runtime", REASON_DEEP_SELF_REVIEW_ERROR),
-    ("❌ Deep self-review pack unfit:", "runtime", REASON_DEEP_SELF_REVIEW_PACK_UNFIT),
 )
 
 

@@ -546,6 +546,10 @@ def test_density_retention_preserves_fresh_high_witness_without_refreshing_its_t
     )
 
     _DENSITY_MEMO.clear()
+    # The retention window itself is a pinned number: a measured witness stays
+    # usable for 90 days, so a shortened TTL cannot silently send review sizing
+    # back to the cold floor.
+    assert _TOKEN_DENSITY_TTL_SEC == 90 * 24 * 3600.0
     now = datetime.datetime.now(datetime.timezone.utc)
     old_high_ts = (now - datetime.timedelta(seconds=_TOKEN_DENSITY_TTL_SEC - 60)).isoformat()
     ce._save(tmp_path, {"token_density": {"m/one": {"pairs": [{
@@ -896,9 +900,9 @@ def test_a_failed_probe_is_retried_once_its_throttle_expires_and_not_before(tmp_
     record's day. Nothing measured either number: both could move to any value with a
     green suite, and each direction breaks something this branch has already had to fix
     once. Too LONG and one transport blip reads as a dead route for the whole window —
-    every resolution past it takes the no-fetch answer, `blocking_authority_allowed`
-    goes False, and scope blocks every commit until it expires, which is v6.87.45's
-    wedge arriving through the record instead of through a process-lifetime memo. Too
+    every resolution past it takes the no-fetch answer and every review surface sizes
+    against an unknown route until it expires, which is v6.87.45's wedge arriving
+    through the record instead of through a process-lifetime memo. Too
     SHORT and the throttle stops existing: a provider that is genuinely down is re-asked
     on every resolution, on the hot path of every review.
 

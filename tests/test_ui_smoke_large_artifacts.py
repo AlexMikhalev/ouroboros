@@ -99,12 +99,29 @@ def test_large_attachment_returns_through_real_document_handler_and_download(
                         "name": "send_file", "arguments": json.dumps({"file_path": str(staged[0]), "caption": "Complete large dataset"}),
                     },
                 }]}
+        finish = "tool_calls" if message.get("tool_calls") else "stop"
         payload = {"id": "mock-large-file", "object": "chat.completion",
-                   "choices": [{"message": message, "finish_reason": "tool_calls" if message.get("tool_calls") else "stop"}],
+                   "model": request.get("model") or "mock-model",
+                   "choices": [{"index": 0, "message": message, "finish_reason": finish}],
                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
-        data = json.dumps(payload).encode()
+        content_type = "application/json"
+        if request.get("stream"):
+            # The main loop streams every completion: answer in SSE frames with
+            # the terminal framing the assembler requires.
+            content_type = "text/event-stream"
+            delta = dict(message)
+            if delta.get("tool_calls"):
+                delta["tool_calls"] = [dict(call, index=index)
+                                       for index, call in enumerate(delta["tool_calls"])]
+            common = {"id": payload["id"], "model": payload["model"], "object": "chat.completion.chunk"}
+            frames = [{**common, "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]},
+                      {**common, "choices": [], "usage": payload["usage"]}]
+            data = ("".join("data: " + json.dumps(frame) + "\n\n" for frame in frames)
+                    + "data: [DONE]\n\n").encode()
+        else:
+            data = json.dumps(payload).encode()
         handler.send_response(200)
-        handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Type", content_type)
         handler.send_header("Content-Length", str(len(data)))
         handler.end_headers()
         handler.wfile.write(data)

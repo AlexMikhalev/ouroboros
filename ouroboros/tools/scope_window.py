@@ -1,9 +1,12 @@
-"""Scope-reviewer WINDOW authority: evidence-typed resolution + honest wording (RS5).
+"""Scope-reviewer WINDOW sizing: evidence-typed resolution + honest wording (RS5).
 
-Extracted from ``tools/scope_review.py`` for the module-size gate at synthesis —
-the p1 atlas, p5x session-delivery and p7a window-evidence unions each fit alone
-and overflowed together. ``scope_review`` re-imports every name under its old
-private alias, so its tests and callers keep exactly one patch point.
+Window size is not a condition of authority (owner decision 2026-09-17, BIBLE
+P3): a scope verdict rests on the reviewer's independence, the declared
+required-source manifest and its recorded coverage. What this module answers is
+the one remaining sizing question — how large an output reserve the row's
+request may ask for — plus the provenance wording every diagnostic quotes.
+``scope_review`` re-imports these names under their private aliases, so its
+tests and callers keep exactly one patch point.
 """
 
 from __future__ import annotations
@@ -11,15 +14,15 @@ from __future__ import annotations
 from ouroboros.config import review_model_uses_local
 from ouroboros.provider_models import provider_for_model
 from ouroboros.reviewer_window import (
+    REVIEWER_FULL_WINDOW,
     ReviewerWindow,
     resolve_reviewer_window as _resolve_reviewer_window,
 )
 
-# The constitutional scope window (BIBLE P3) and the conservative sub-floor
-# sizing fallback for routes with no Capability Evidence. `scope_review` imports
-# these back rather than defining a second copy.
-SCOPE_MODEL_CONTEXT_WINDOW = 1_000_000
-SCOPE_FAILCLOSED_WINDOW = 200_000
+# The conservative sizing fallback for a route with no Capability Evidence:
+# SIZING only, never an authority floor. `scope_review` imports it back rather
+# than defining a second copy.
+SCOPE_SIZING_FALLBACK_WINDOW = 200_000
 SCOPE_MODEL_DEFAULT = "openai/gpt-5.6-terra"
 
 # Window provenance vocabulary shared with the diagnostics wording (RS5).
@@ -33,21 +36,20 @@ WINDOW_SENTINEL = "designated_default_sentinel"
 # rate-limited by the TTL on the evidence record, keyed by the full ROUTE fingerprint
 # rather than the model name: capability is a property of provider+base_url+model, and
 # a hot base-URL change must get its own probe rather than silently reusing the old
-# verdict. EVERY scope route gets that probe, the shipped default included: the probe is
-# now the only path to blocking authority, so exempting the default (as the sentinel-era
-# code did) left the one route that gates commits structurally unable to source its
-# window — and rate-limiting it per PROCESS instead of per TTL left an install that
-# outlived the TTL unable to RE-source it (v6.87.45).
+# verdict. EVERY scope route gets that probe, the shipped default included, so the
+# sizing number is a measurement wherever one is reachable; rate-limiting it per
+# PROCESS instead of per TTL left an install that outlived the TTL unable to
+# RE-source it (v6.87.45).
 
 
 def is_designated_default_reviewer(model: str) -> bool:
     """True iff ``model`` is the shipped default reviewer (``openai/gpt-5.6-terra``),
     across provider spellings (``openai::gpt-5.6-terra``, ``openrouter::openai/...``).
 
-    SIZING only. This answers "how big a pack may I assemble for an unevidenced
-    route", never "may this reviewer block a commit": authority is computed from
-    Capability Evidence (``ReviewerWindow.blocking_authority_allowed``) and a model
-    acquires none of it from its name."""
+    SIZING only. This answers "how large a reserve may I ask of an unevidenced
+    route", never "may this reviewer block a commit": authority rests on the
+    required-source manifest and its recorded coverage, and no window number —
+    nor a model name — grants or removes it."""
     def _normalized(m: str) -> str:
         text = str(m or "").strip()
         if text.startswith("openrouter::"):
@@ -63,21 +65,19 @@ def is_designated_default_reviewer(model: str) -> bool:
 def scope_window(model: str, *, session: bool = False, model_role: str = "",
                  credential_profile_id: str | None = None, model_route: dict | None = None,
                  use_local: bool | None = None) -> ReviewerWindow:
-    """The scope reviewer's window AND its blocking authority, as ONE typed result.
+    """The scope reviewer's window as ONE typed, provenance-carrying result.
 
     Replaces the deleted static per-model window table: a confirmed/asserted probe
     (provider metadata or owner-ack) for the reviewer's REAL active route gives the
-    real window, and only such SOURCED, non-stale, >=1M evidence carries blocking
-    authority (BIBLE P3 — "a reviewer whose window cannot be established by sourced
-    Capability Evidence is treated as too small rather than assumed adequate").
+    real window.
 
     With NO evidence the result still carries a SIZING number so the review is
-    dispatched rather than declined before it starts — the 1M figure for the shipped
-    designated reviewer, a conservative sub-floor for anything else, matching what
-    each can plausibly hold. Neither carries a KNOWN status, so neither can authorise:
-    the sentinel sizes a prompt, it does not sign a verdict. That split is why this
-    returns the whole record instead of a bare int — a number alone cannot say where
-    it came from, and the caller that needs to know then guesses.
+    dispatched rather than declined before it starts — the full-window figure for the
+    shipped designated reviewer, a conservative fallback for anything else, matching
+    what each can plausibly hold. Neither carries a KNOWN status, and the record says
+    so: that is why this returns the whole record instead of a bare int — a number
+    alone cannot say where it came from, and the caller that needs to know then
+    guesses.
 
     Every route gets one lazy metadata-only fetch per evidence-TTL period (never
     generative, never a paid call), concurrent resolutions of the same route
@@ -107,8 +107,8 @@ def scope_window(model: str, *, session: bool = False, model_role: str = "",
         return ReviewerWindow(model=model)
     return ReviewerWindow(
         window_tokens=(
-            SCOPE_MODEL_CONTEXT_WINDOW if is_designated_default_reviewer(model)
-            else SCOPE_FAILCLOSED_WINDOW
+            REVIEWER_FULL_WINDOW if is_designated_default_reviewer(model)
+            else SCOPE_SIZING_FALLBACK_WINDOW
         ),
         model=model,
     )
@@ -122,7 +122,7 @@ def scope_window_provenance(window: ReviewerWindow) -> str:
         return WINDOW_ASSERTED
     if window.status == "confirmed":
         return WINDOW_CONFIRMED
-    if int(window.window_tokens) >= SCOPE_MODEL_CONTEXT_WINDOW:
+    if int(window.window_tokens) >= REVIEWER_FULL_WINDOW:
         return WINDOW_SENTINEL
     return WINDOW_UNKNOWN
 

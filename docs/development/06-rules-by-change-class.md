@@ -18,6 +18,7 @@ Enforcement: CHECKLISTS items 2(g) and 10 (`tool_registration`) in commit review
 - Keep installed payloads as ordinary directories; a delegated Git copy is an optional existing capability. Check the known revision before an operation and, after opaque process work, record the observed revision without asserting exclusive authorship. No long shell lock or automatic rollback belongs here.
 - Use the existing payload binding/policy owners for all path forms: a valid selected normal/repair `TaskConstraint` supplies omitted skill-name/bucket selectors, while explicit selectors must still match that physical payload. Markerless native-directory payloads remain logical external, and collision, native mutation, child-profile, launcher seed and provenance/review/grant/dependency controls keep their existing guards.
 - Review, grants, dependency readiness, desired enablement and actual execution are independent facts. Resume an unchanged reviewed snapshot through its existing free replay; a dependency or load failure never rewrites the review verdict; preserve an explicit owner disable and the original automatic request.
+- Base skill-review convergence and retry coaching on the lifecycle's group `review_round`, retaining `snapshot_attempt` for display. Changing only the coaching ordinal must preserve the prompt-builder and aggregation vocabulary's free-replay fingerprint; ceiling refusals name the exits the existing author-finish predicate permits. The rendering and rebuttal tests exercise revised snapshots across rounds, while `tests/test_review_cycles_gates.py` pins the replay fingerprint and enforcement-specific exit text.
 - UI, existing CLI commands and task tools call the shared operation owners. Actor identity is host-derived: owner-only actions require a real member chat/quiz/mailbox source naming the exact skill, revision and requested items; the model interprets intent, no synthetic reference creates permission, and ordinary Repair implies neither grant-all, attestation nor deletion.
 - Test the real installed script/tool/HTTP/widget/companion after review and prerequisites, repeat after corrections, and inspect a widget screenshot. Execution receipts name the actual dispatched revision; they are not PASS.
 
@@ -58,7 +59,7 @@ Enforcement: `tests/test_protected_artifacts_policy.py` and `tests/test_acceptan
 
 ### Devtools isolation
 
-`devtools/` is tracked operator code outside runtime package discovery and the runtime import graph (ARCHITECTURE §1 "Devtools boundary"): runtime modules, `server.py`, web modules and build scripts must not import it. Touched devtool files receive normal triad/scope review; unrelated files may remain manifest-only in broad Atlas packs so operator code does not drown core review. Generated outputs live in an explicit external root, never in `repo/` or live `data/`; domain-specific architecture and methodology live beside the devtool, not in core governance docs. No automated import guard — review-only (triad/scope review of touched devtool files).
+`devtools/` is tracked operator code outside runtime package discovery and the runtime import graph (ARCHITECTURE §1 "Devtools boundary"): runtime modules, `server.py`, web modules and build scripts must not import it. Touched devtool files receive normal triad/scope review; unrelated files reach the scope reviewer as index rows it may open on demand, so operator code does not drown core review. Generated outputs live in an explicit external root, never in `repo/` or live `data/`; domain-specific architecture and methodology live beside the devtool, not in core governance docs. No automated import guard — review-only (triad/scope review of touched devtool files).
 
 ### Live E2E stand (`devtools/e2e_live/`)
 
@@ -453,6 +454,9 @@ are review-only. The imperatives:
 - Models, actors and reviewers share source/model/account controls: preserve
   exact pins on ordinary save/reload and on catalog failure; a source's
   credential harness comes from its metadata, never an assumed equal name.
+  Delivery follows the row's surface and reference, not its model or account:
+  every scope and deep-review row retrieves, a referenced API reviewer keeps
+  native inspection, and model/account edits never silently turn it into a packet.
 - One capability, one section: the task-actor story lives in Agents →
   Available subagents (`web/modules/subagents_settings.js`), editing one
   canonical `OUROBOROS_SUBAGENTS` object (list-level Enabled, at most ten
@@ -661,8 +665,11 @@ and what enforces each.
   correct that attempt; ordinary terminal rows stay immutable, and full/incremental
   validation must agree. Reconcile through existing custody maintenance only after
   physical ownership ends, preserve review owners, and read exact recorded model
-  operations without creating new work. Refresh existing cost projections without
-  fabricating completion (ARCHITECTURE §6 "Budget tracking"; storage rules and tests:
+  operations without creating new work. Retry existing cost projections independently
+  of another ledger transition, including after compaction, using one indexed
+  maintenance-drive view rather than filtering it for each owner. A different
+  recorded budget root keeps its own accounting path; never fabricate completion
+  (ARCHITECTURE §6 "Budget tracking"; storage rules and tests:
   `docs/USAGE_COMPACTION.md`, `tests/test_usage_abandoned_ledger.py`).
 - Hold the usage-ledger cross-process lock only for budget check, validated append and
   fsync — never over network I/O; a caller that owns a finalization reserve passes it
@@ -831,8 +838,8 @@ and what enforces each.
   custody and announce the wave through the task mailbox (`plan_review_collect`;
   `acceptance_settlement.announce_acceptance_settlement`, at the wave's own quorum and
   at completion, each reviewer's own verdict, never an instruction to collect).
-  `owner_hurry.force_plan_decision` collects once at zero wait before its blocking
-  verdict and projects the returned state; task acceptance collects through the host
+  `owner_hurry.force_plan_decision` collects once at zero wait before finalization in every enforcement mode, hurry
+  included, and projects the returned state; task acceptance collects through the host
   reconcile `review_dispatch.reconcile_pending_acceptance_runs` (recorded request and
   roster replayed, nothing sent), never a model-callable verb; context health reads
   only the canonical wave, as a recorded snapshot. Neither path dispatches a second
@@ -906,7 +913,8 @@ and what enforces each.
 - Keep delivered result, unresolved tool-call evidence and host acceptance separate.
   Error count alone does not degrade execution or establish objective acceptance;
   retain `execution.unresolved_tool_errors` and the cosmetic bucket, and expose the
-  existing no-review warning for either when the objective is `not_evaluated`. Test
+  existing no-review warning for either when the canonical objective is
+  `not_evaluated`, including after delivery/child-state normalization. Test
   every verdict and the no-review case while preserving stronger typed terminal causes
   (ARCHITECTURE §6 "Task lifecycle"; `tests/test_outcome_tool_error_axes.py`).
 - Every direct child result needs an exact-hash disposition through the existing
@@ -1081,4 +1089,3 @@ Enforcement: review-only — CHECKLISTS item 2(f) scores the no-`[:N]` rule in
 commit review.
 
 ---
-

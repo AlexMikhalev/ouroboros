@@ -13,7 +13,7 @@ fingerprint (provider + base_url + model + headers/beta + relevant options):
                   direct, whose 1M is an undiscoverable per-request beta header)
     failed      — a probe was attempted and errored (transient; retried later)
 
-``unknown`` (unprobeable | failed | no record) => FAIL-CLOSED for any >=1M gate.
+``unknown`` (unprobeable | failed | no record) keeps sizing evidence unknown.
 
 Probes are opportunistic and cached (24h for confirmed, 10 min for failed). Gate
 readers pass ``allow_fetch=False`` so the hot path never blocks on a network
@@ -833,8 +833,8 @@ def cold_start_density_probe(
     source: str,
     model_role: str = "", model_account_override: Optional[str] = None,
 ) -> str:
-    """The cold-start rung shared by the packed deep self-review and the commit
-    gate (scope ladder and triad fit). Returns a typed outcome:
+    """The cold-start density rung for the commit triad packet.
+    Returns a typed outcome:
 
     ``"warm"`` — a fresh exact-model witness already governs: nothing is sent;
     ``"no_sample"`` — nothing to measure on; ``"failed"`` / ``"no_usage"`` /
@@ -1251,7 +1251,7 @@ def probe(
 
     if not allow_fetch:
         # Hot path: never block on the network. Return the (possibly stale) cache
-        # marked stale, else unprobeable — both read as unknown for >=1M gates.
+        # marked stale, else unprobeable — both retain unknown sizing evidence.
         if cached:
             return _cached_evidence(cached, fp, model, provider, stale=True,
                                     detail="stale (no fetch on hot path)")
@@ -1328,7 +1328,7 @@ def probe(
                                 detail="provider unreachable during probe")
     else:
         ev = CapabilityEvidence(0, STATUS_UNPROBEABLE, SOURCE_NONE, fp, model, provider, ts=utc_now_iso(),
-                                detail="no provider metadata; owner-ack required for a >=1M gate")
+                                detail="no provider window metadata; sizing evidence is unknown")
     _store_evidence(drive_root, "probes", fp, ev.to_json())
     return ev
 

@@ -1,27 +1,22 @@
 """Deep self-review of the whole Ouroboros system against BIBLE.md.
 
 The review runs on the configured ``deep_review`` reviewer row
-(``reviewer_slot_config.deep_review_slot``) and, like every other review
-surface, has THREE deliveries chosen by the row's ``retrieves`` predicate:
+(``reviewer_slot_config.deep_review_slot``). Every row DELIVERS BY RETRIEVAL —
+the reviewer reads the repository itself — in one of two shapes:
 
-* a direct ``api_chat`` row is the historical PACKED review — one 1M-context
-  call carrying the Generated Deep Self-Review Atlas plus the full memory
-  whitelist, assembled fail-closed (a required artifact that does not fit is
-  a refusal, never a smaller pack);
-* a configured-subagent api row is a NATIVE inspection episode — the reviewer
-  reads the repository through the host's read-only tools (the runtime root
-  is its readable data plane) while the memory whitelist reaches it inline
-  byte-exact; every repository read is host-observed and the mandatory
-  BIBLE.md read is checked against the receipts afterwards;
+* an ``api_chat`` row (a bare route or a configured-subagent reference) is a
+  NATIVE inspection episode — the reviewer reads the repository through the
+  host's read-only tools (the runtime root is its readable data plane) while
+  BIBLE.md, the standing disclosures and memory whitelist reach it inline;
+  repository reads and inline delivery remain distinct coverage evidence;
 * an ``agent_session`` row is a delegated read-only session — the same task,
   reads not host-observed (disclosed as ``unobserved``).
 
-The retrieving deliveries ride the shared executor seam
-(``review_execution._review_route_executor``) exactly like the advisory: the
-product is free markdown (``triad_review`` shape ``report``), a bound landing
-before the final answer delivers the collected draft marked INCOMPLETE, and
-the host prepends a provenance header naming the delivery, model, rounds,
-receipts, coverage and completeness so consecutive reports stay comparable.
+Both deliveries ride the executor seam exactly like the advisory: the product
+is free markdown (``triad_review`` shape ``report``), a bound landing before
+the final answer delivers the collected draft marked INCOMPLETE, and the host
+prepends a provenance header naming the delivery, model, rounds, receipts,
+coverage and completeness so consecutive reports stay comparable.
 """
 
 from __future__ import annotations
@@ -35,26 +30,13 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
-# Pack filtering is shared with scope review.
-from ouroboros.tools.review_context_atlas import (  # noqa: E402
-    ReviewContextAtlasRequest,
-    atlas_assembly_failed,
-    atlas_assembly_failure_reason,
-    compile_review_context_atlas,
-)
 from ouroboros.tools.review_helpers import (  # noqa: E402
     _MAX_FULL_REPO_FILE_BYTES,
-    REVIEW_PROMPT_TOKEN_BUDGET,
-    calibrated_input_token_limit,
-    density_probe_sample,
     load_governance_doc,
 )
 from ouroboros.shell_parse import is_absolute_path_text  # noqa: E402
-from ouroboros.utils import atomic_write_json, estimate_tokens, utc_now_iso  # noqa: E402
-from ouroboros.config import get_context_mode  # noqa: E402
+from ouroboros.utils import utc_now_iso  # noqa: E402
 from ouroboros.provider_models import provider_for_model, provider_has_credentials  # noqa: E402
-from ouroboros.context_layout import book_navigation  # noqa: E402
-from ouroboros.reference_books import BOOK_ENTRYPOINTS, compose_book, load_reference_book  # noqa: E402
 from ouroboros.reviewer_slot_config import (  # noqa: E402
     ROUTE_KIND_API,
     ROUTE_KIND_SESSION,
@@ -63,23 +45,12 @@ from ouroboros.reviewer_slot_config import (  # noqa: E402
     row_effort,
 )
 from ouroboros.usage_accounting import BudgetExceeded  # noqa: E402
-from ouroboros.outcomes import REASON_DEEP_SELF_REVIEW_PACK_UNFIT  # noqa: E402
 from ouroboros.triad_review import REVIEW_REPORT_CONTRACT  # noqa: E402
 from ouroboros.config import runtime_setting
 
-# Output reservation inside the reviewer's 1M window (same class of fix as
-# scope_review._SCOPE_INPUT_TOKEN_LIMIT): 920K input + 100K output exceeds 1M
-# and yields a deterministic provider 400, so the assembled INPUT prompt is
-# gated on min(SSOT budget, window − output − tokenizer margin).
+# The report's own output reserve: what the row's model may spend answering,
+# on the request and on the slot (one number for both deliveries).
 _DEEP_MAX_OUTPUT_TOKENS = 100_000
-_DEEP_MODEL_CONTEXT_WINDOW = 1_000_000
-_DEEP_OUTPUT_MARGIN_TOKENS = 155_000
-# The cold-start density probe (R60/R61) is the shared rung
-# ``capability_evidence.cold_start_density_probe``; the commit gate runs the same one.
-_DEEP_INPUT_TOKEN_LIMIT = min(
-    REVIEW_PROMPT_TOKEN_BUDGET,
-    _DEEP_MODEL_CONTEXT_WINDOW - _DEEP_MAX_OUTPUT_TOKENS - _DEEP_OUTPUT_MARGIN_TOKENS,
-)
 
 _MEMORY_WHITELIST = [
     "memory/identity.md",
@@ -91,23 +62,8 @@ _MEMORY_WHITELIST = [
     "memory/knowledge/improvement-backlog.md",
 ]
 
-# The omission section is appended to the pack AFTER the atlas has filled its
-# budget, so it must be (a) bounded and (b) reserved inside atlas_fixed_tokens.
-# An unbounded per-file listing here is exactly what historically overflowed the
-# assembled prompt past the final gate by a few hundred tokens (the atlas filled
-# to its ceiling, then the uncounted omission listing was appended on top).
-_OMISSION_SECTION_RESERVE_TOKENS = 2_000
-_OMISSION_SAMPLE_MAX_ENTRIES = 40
-
-# Bonus scale for graph-centrality ranking (D2). Bounded well below the atlas's
-# force/anchor/canonical tiers (10000/9000/8000) so protected and governance
-# surfaces always outrank a merely well-connected module; meaningfully above the
-# generic path-prefix bonuses (~200) so hub modules win among peers.
-_CENTRALITY_MAX_BONUS = 600.0
-_CENTRALITY_PER_IMPORTER = 30.0
-
-# The role half of the reviewer prompt is shared by every delivery; only the
-# "how to work" half differs (a pack to read vs tools to read with).
+# The role half of the reviewer prompt, shared by both deliveries; the "how to
+# work" half below tells the reviewer which tools it reads the repository with.
 _ROLE_PROMPT = """\
 You are conducting a deep self-review of the Ouroboros project — a self-creating AI agent.
 
@@ -119,29 +75,17 @@ BIBLE.md violations (P0–P12), contradictions between code and docs,
 security gaps, dead code, missing error handling, architectural issues,
 known error patterns from patterns.md that remain unfixed, and ideas how to improve Ouroboros to work better and better comply with the Bible."""
 
-# The PACKED system prompt — byte-identical to the pre-row deep review (pinned
-# by a golden digest test): the packed delivery's wire payload is unchanged.
-_SYSTEM_PROMPT = _ROLE_PROMPT + """
-
-How to work: Use the generated atlas coverage manifest systematically. Raw code is
-included for selected functional/protected surfaces; every tracked file is still
-accounted for by hash, size, classification, and omission/manifest disposition.
-Cross-reference interactions between modules. Prioritize: CRITICAL > IMPORTANT > ADVISORY.
-
-Output: Structured report with prioritized findings, each citing the
-specific file, line/section, the problem, and the proposed fix."""
-
-# The RETRIEVING task: the reviewer reads the repository itself. BIBLE.md is a
-# mandatory full read (host-checked on the native delivery), the memory files
-# ride inline byte-exact, the three big docs are navigation maps read on demand.
+# The repository is inspected with tools; tier-1 governance and memory arrive
+# inline. No second tool read is needed for those exact delivered documents.
 _RETRIEVING_METHOD = """
 
-How to work: you are reading the repository yourself with read-only tools. Read
-`BIBLE.md` IN FULL first (about {bible_chars:,} chars — in bounded chunks): every
-finding is checked against it, and a report that did not read it is not a deep
-self-review. The memory files below are inlined byte-exact; `docs/ARCHITECTURE.md`,
-`docs/DEVELOPMENT.md` are book entrypoints; their overviews identify the actual
-physical chapter sources. `docs/CHECKLISTS.md` has its own navigation map. Read
+How to work: inspect the repository yourself with read-only tools. `BIBLE.md`
+({bible_chars:,} chars) and the standing disclosures are delivered IN FULL below:
+use them as your reference without a redundant tool read. Every finding is checked
+against the constitution. The governance sections that follow are the rules delivered to you in
+full; the governance navigation names every other document, `docs/ARCHITECTURE.md`
+and `docs/DEVELOPMENT.md` included, as book entrypoints whose overviews identify the
+actual physical chapter sources. The memory files below are inlined byte-exact. Read
 the needed sources on demand, using lines local to the physical file you open,
 never treating composed-book line numbers as an entrypoint address. Then inspect the code (search_code, query_code,
 read_file), cross-reference interactions between modules and follow call chains out
@@ -166,27 +110,10 @@ _MANDATORY_READS = ("BIBLE.md",)
 # The inspection roots that resolve to the REPOSITORY (both name the review's
 # session root); a read under the data plane never satisfies a repository read.
 _REPO_ROOTS = frozenset({"", "active_workspace", "system_repo"})
-_NAV_MAP_DOCS = ("docs/ARCHITECTURE.md", "docs/DEVELOPMENT.md", "docs/CHECKLISTS.md")
-
-
-def _dulwich_tracked_paths(repo_dir: pathlib.Path) -> tuple[list[str], list[str]]:
-    """Return git-tracked paths through dulwich for macOS fork safety."""
-    try:
-        import dulwich.repo as _dulwich_repo  # local import — avoid top-level cost if unused
-        _repo = _dulwich_repo.Repo(str(repo_dir))
-        tracked = sorted(p.decode("utf-8", errors="replace") for p in _repo.open_index())
-        if not tracked:
-            raise RuntimeError("dulwich index is empty — cannot build review pack")
-        return tracked, []
-    except ImportError:
-        return [], ["FATAL: dulwich not installed. Run: pip install dulwich"]
-    except Exception as exc:
-        return [], [f"FATAL: {exc}"]
 
 
 def _append_memory_whitelist(
     parts: list[str],
-    skipped: list[str],
     *,
     drive_root: pathlib.Path,
 ) -> Dict[str, Any]:
@@ -194,258 +121,28 @@ def _append_memory_whitelist(
     every delivery carries: ``{"inlined": n, "total": 7, "dispositions": {rel:
     inlined | missing | empty | oversized | read_error}}`` — one disposition per
     whitelisted path (task text, usage fact, provenance header), never a silent
-    skip; every non-inlined entry also joins ``skipped`` for the omission section."""
+    skip."""
     dispositions: Dict[str, str] = {}
     for rel_mem in _MEMORY_WHITELIST:
         full_path = drive_root / rel_mem
         try:
             if not full_path.is_file():
                 dispositions[rel_mem] = "missing"
-                skipped.append(f"drive/{rel_mem} (missing: not present under the data root)")
                 continue
-            size = full_path.stat().st_size
-            if size > _MAX_FULL_REPO_FILE_BYTES:
+            if full_path.stat().st_size > _MAX_FULL_REPO_FILE_BYTES:
                 dispositions[rel_mem] = "oversized"
-                skipped.append(f"drive/{rel_mem} (oversized: >{_MAX_FULL_REPO_FILE_BYTES // 1024}KB)")
                 continue
             content = full_path.read_text(encoding="utf-8", errors="replace")
             if not content.strip():
                 dispositions[rel_mem] = "empty"
-                skipped.append(f"drive/{rel_mem} (empty: no content)")
                 continue
             parts.append(f"## FILE: drive/{rel_mem}\n{content}\n")
             dispositions[rel_mem] = "inlined"
-        except Exception as exc:
+        except Exception:
             dispositions[rel_mem] = "read_error"
-            skipped.append(f"drive/{rel_mem} (read error: {exc})")
+            log.debug("memory whitelist entry unreadable: %s", rel_mem, exc_info=True)
     return {"inlined": sum(1 for d in dispositions.values() if d == "inlined"),
             "total": len(_MEMORY_WHITELIST), "dispositions": dispositions}
-
-
-def _append_omission_section(parts: list[str], skipped: list[str]) -> None:
-    """Append a BOUNDED omission summary: counts per reason + a capped sample.
-
-    Full per-file coverage (hash, size, disposition, reason for every tracked
-    path) already lives in the atlas coverage manifest persisted to
-    ``state/deep_self_review_context.json`` — this in-prompt section is a
-    summary with an explicit pointer, not the coverage SSOT. Its size is
-    reserved via ``_OMISSION_SECTION_RESERVE_TOKENS`` in ``atlas_fixed_tokens``
-    and enforced here, so the assembled prompt provably fits the gate the
-    atlas budgeted for. The cap is an explicit, visible summarization with an
-    omission note — not silent truncation.
-    """
-    if not skipped:
-        return
-    counts: dict[str, int] = {}
-    for entry in skipped:
-        tag = entry.split("(", 1)[1].split(":", 1)[0].strip() if "(" in entry else "other"
-        counts[tag] = counts.get(tag, 0) + 1
-    header = [
-        "## OMITTED FILES (not included in review pack)",
-        "Reasons: sensitive=secrets/keys, vendored/minified=third-party bundled asset, "
-        "binary/media=images/fonts/compiled blobs, excluded_dir=non-agent-logic directory, "
-        "excluded_test=wider tests excluded, oversized=>1MB, read_error=unreadable, "
-        "missing=whitelisted memory file absent, empty=whitelisted memory file blank. "
-        "(A required atlas file that does not fit never reaches this list: it fails "
-        "the pack instead of shrinking it.)",
-        "Full per-file coverage for every tracked path is in the atlas coverage "
-        "manifest (persisted to state/deep_self_review_context.json).",
-        "",
-        "Omitted counts by reason: "
-        + ", ".join(f"{tag}={count}" for tag, count in sorted(counts.items())),
-        "",
-    ]
-    sample = skipped[:_OMISSION_SAMPLE_MAX_ENTRIES]
-    lines = header + [f"Sample ({len(sample)} of {len(skipped)} entries):"]
-    lines.extend(f"  - {entry}" for entry in sample)
-    if len(skipped) > len(sample):
-        lines.append(
-            f"  - … {len(skipped) - len(sample)} more entries omitted here "
-            "(complete list in the coverage manifest)"
-        )
-    section = "\n".join(lines) + "\n"
-    # Defensive hard bound: pathological entry lengths must never exceed the
-    # reserve the atlas budgeted for. Trim sample rows (never the header) with a
-    # visible note until the section fits.
-    while estimate_tokens(section) > _OMISSION_SECTION_RESERVE_TOKENS and sample:
-        sample = sample[: max(0, len(sample) - 5)]
-        lines = header + [f"Sample ({len(sample)} of {len(skipped)} entries):"]
-        lines.extend(f"  - {entry}" for entry in sample)
-        lines.append(
-            f"  - … {len(skipped) - len(sample)} more entries omitted here to fit "
-            "the reserved omission budget (complete list in the coverage manifest)"
-        )
-        section = "\n".join(lines) + "\n"
-    parts.append(section)
-
-
-def _compute_graph_centrality(
-    repo_dir: pathlib.Path,
-    drive_root: pathlib.Path,
-) -> Dict[str, float]:
-    """Per-path centrality bonus from the code-intelligence import graph.
-
-    Reverse-import in-degree over ``resolved_import_paths``: a module imported
-    by many others is structurally load-bearing and the most useful raw code to
-    inline in a bounded full-repo pack. Returns a bounded score bonus per
-    rel_path; empty dict on any failure (ranking then falls back to the atlas's
-    existing path/size heuristics — selection still works, just less informed).
-    Deep-review-only: scope/plan review never pass centrality to the atlas.
-    """
-    try:
-        from ouroboros.code_intelligence import build_code_inventory
-
-        inventory = build_code_inventory(repo_dir, drive_root=drive_root, persist=True)
-        in_degree: Dict[str, int] = {}
-        for file in inventory.files:
-            for target in file.resolved_import_paths or ():
-                if target and target != file.path:
-                    in_degree[target] = in_degree.get(target, 0) + 1
-        return {
-            path: min(_CENTRALITY_MAX_BONUS, count * _CENTRALITY_PER_IMPORTER)
-            for path, count in in_degree.items()
-            if count > 0
-        }
-    except Exception:
-        # Keep the documented "empty dict on ANY failure" contract: inventory
-        # shape drift must degrade to heuristic ranking, not kill the review.
-        log.debug("Graph centrality unavailable; using heuristic ranking", exc_info=True)
-        return {}
-
-
-def build_review_pack(
-    repo_dir: pathlib.Path,
-    drive_root: pathlib.Path,
-    fixed_prompt_tokens: int = 0,
-    hard_budget_reduction: int = 0,
-    input_token_limit: int = 0,
-) -> Tuple[str, Dict[str, Any]]:
-    """Build bounded repo atlas + full memory whitelist pack.
-
-    ``hard_budget_reduction`` lowers the budgets handed to the atlas — used by
-    the final-shrink retry in ``run_deep_self_review`` when estimator drift
-    between the atlas's per-section accounting and the final concatenation
-    pushes the assembled prompt over the input gate. ``input_token_limit``
-    overrides the default GPT-family cap with the model-family-calibrated cap
-    resolved by the caller (Claude-family reviewers need a smaller estimated
-    budget for the same 1M window — see review_helpers).
-    """
-    tracked, fatal = _dulwich_tracked_paths(repo_dir)
-    if fatal:
-        return "", {"file_count": 0, "total_chars": 0, "skipped": fatal}
-
-    skipped: list[str] = []
-    memory_parts: list[str] = []
-    memory = _append_memory_whitelist(memory_parts, skipped, drive_root=drive_root)
-    memory_text = "\n".join(memory_parts)
-
-    # The atlas still owns repository selection. Composed books have one
-    # physical closure, included once here and excluded from duplicate atlas
-    # content. Legacy Max monoliths retain their original atlas delivery.
-    nav_parts: list[str] = []
-    book_parts: list[str] = []
-    book_views: list[dict] = []
-    already_included: set[str] = set()
-    low = get_context_mode() == "low"
-    for book_id, entrypoint in BOOK_ENTRYPOINTS.items():
-        if entrypoint not in tracked:
-            continue
-        try:
-            book = load_reference_book(repo_dir, book_id)
-        except (OSError, ValueError) as exc:
-            return "", {"file_count": 0, "total_chars": 0, "skipped": [f"FATAL: {entrypoint} book unavailable: {exc}"]}
-        if book.legacy and not (low and book_id == "architecture"):
-            continue
-        sources = (book.entrypoint, *book.chapters)
-        partial = low and book_id == "architecture"
-        already_included.update(s.source_path for s in sources)
-        book_views.append({"book_id": book_id, "delivery": "overview" if partial else "full",
-                           "sources": [{"path": s.source_path, "sha256": s.sha256, "size": len(s.raw)} for s in sources]})
-        if partial:
-            # The chapter-addressed view (introductions + per-chapter section
-            # index and line ranges), the same one the context layout serves.
-            navigation = f"## {entrypoint} (navigation map)\n\n" + book_navigation(book)
-            nav_parts.append(navigation
-                + "\n\nNote for this deep self-review call: this surface has no tool loop, "
-                "so the navigation map is an index of omitted sections, not an actionable "
-                "read_file instruction. Flag any needed full Architecture chapter explicitly.")
-        else:
-            book_parts.append(f"## Reference book: {entrypoint}\n\n" + compose_book(book))
-
-    # Reserve the (bounded) omission section inside the atlas's fixed budget —
-    # it is appended to the pack after the atlas fills, so an unreserved section
-    # arithmetically guarantees overflow whenever the atlas reaches its ceiling.
-    atlas_fixed_tokens = (
-        int(fixed_prompt_tokens)
-        + estimate_tokens(memory_text)
-        + estimate_tokens("\n".join(book_parts))
-        + estimate_tokens("\n".join(nav_parts))
-        + _OMISSION_SECTION_RESERVE_TOKENS
-    )
-    effective_limit = int(input_token_limit) or _DEEP_INPUT_TOKEN_LIMIT
-    hard_budget = max(10_000, effective_limit - max(0, int(hard_budget_reduction)))
-    centrality = _compute_graph_centrality(repo_dir, drive_root)
-
-    def _compile(compact: bool):
-        return compile_review_context_atlas(
-            ReviewContextAtlasRequest(
-                repo_dir=repo_dir,
-                tracked_paths=tuple(tracked),
-                already_included=frozenset(already_included),
-                fixed_prompt_tokens=atlas_fixed_tokens,
-                target_total_tokens=min(850_000, hard_budget),
-                hard_total_tokens=hard_budget,
-                include_tests=False,
-                title="Generated Deep Self-Review Atlas",
-                compact_manifest=compact,
-                centrality_scores=centrality,
-            )
-        )
-
-    # Compact coverage is the atlas default (the durable manifest keeps full
-    # per-file coverage either way), so there is no fuller form to fall back
-    # from and no compact retry rung anymore.
-    atlas = _compile(True)
-    if atlas_assembly_failed(atlas):
-        # No pack: a review that could not assemble a required artifact does not
-        # run on the remainder (BIBLE P3). The manifest carries the disclosure.
-        return "", {
-            "file_count": 0,
-            "total_chars": 0,
-            "skipped": [
-                "FATAL: "
-                + atlas_assembly_failure_reason(atlas)
-                + " (even with the compact manifest)"
-            ],
-            "context_manifest": atlas.manifest,
-        }
-    skipped.extend(
-        f"{record.rel_path} ({record.disposition}: {record.reason})"
-        for record in atlas.omitted
-        if record.disposition not in {"already_included", "manifest_only"}
-    )
-    if book_views:
-        atlas.manifest["reference_book_views"] = book_views
-        for row in atlas.manifest.get("coverage", []):
-            view = next((v for v in book_views if any(s["path"] == row.get("path") for s in v["sources"])), None)
-            if view:
-                row["reason"] = ("physical book source included in full composition" if view["delivery"] == "full"
-                                 else "book overview only; full chapter text omitted from this one-packet delivery")
-    parts = [*book_parts, atlas.text]
-    parts.extend(nav_parts)
-    parts.extend(memory_parts)
-    file_count = len(atlas.selected) + memory["inlined"] + sum(len(v["sources"]) for v in book_views if v["delivery"] == "full")
-    _append_omission_section(parts, skipped)
-
-    pack_text = "\n".join(parts)
-    stats = {
-        "file_count": file_count,
-        "total_chars": len(pack_text),
-        "skipped": skipped,
-        "context_manifest": atlas.manifest,
-        "memory": memory,
-    }
-    return pack_text, stats
 
 
 # ---------------------------------------------------------------------------
@@ -453,84 +150,36 @@ def build_review_pack(
 # ---------------------------------------------------------------------------
 
 
-def _resolve_packed_window(model: str, row: Optional[ConfiguredReviewerSlot] = None, *,
-                           model_route: Optional[dict] = None) -> Any:
-    """ONE `ReviewerWindow` for the packed model from the shared resolver — the
-    caller validates the floor on THIS object and sizes with THIS object."""
-    from ouroboros import reviewer_window as _rw
-    from ouroboros.config import review_model_uses_local
+def _api_route_model(row: ConfiguredReviewerSlot) -> Tuple[str, Optional[str]]:
+    """The api row's ``(unavailable_reason, sendable_model)``.
 
-    return _rw.resolve_reviewer_window(model, use_local=row.use_local if row and row.use_local is not None else review_model_uses_local(model),
-                                      model_role=f"reviewer:{row.slot_id}" if row else "deep_review",
-                                      credential_profile_id=row.profile_id if row else None,
-                                      **({"model_route": model_route} if model_route else {}))
-
-
-def _packed_window_reason(window: Any, model: str) -> str:
-    """The ≥1M floor of the PACKED delivery on an already-resolved window: a
-    route whose Capability Evidence puts its window BELOW the full window
-    cannot hold the pack that IS this delivery's guarantee, so it is refused
-    typed (a native or session deep_review row serves a sub-1M route). An
-    UNKNOWN window (no evidence) keeps the documented full-window assumption
-    every packet surface shares (`reviewer_window`: guessing small is a
-    certain loss of review on every cold-evidence install) and is disclosed in
-    the report header; '' = the floor holds or is assumed."""
-    from ouroboros import reviewer_window as _rw
-
-    if 0 < int(window.window_tokens) < _rw.REVIEWER_FULL_WINDOW:
-        return (
-            f"the packed deep review needs a ≥{_rw.REVIEWER_FULL_WINDOW:,}-token window and {model} is "
-            f"{window.status or 'evidenced'} at {int(window.window_tokens):,} tokens — pick a native or "
-            "session deep_review row for a sub-1M route"
-        )
-    return ""
-
-
-def _packed_route(configured: str, row: Optional[ConfiguredReviewerSlot] = None) -> Tuple[str, Optional[str]]:
-    """The packed delivery's ``(unavailable_reason, sendable_model)``.
-
-    Provider/credential knowledge comes from the provider registry SSOT; two
-    deliberate deep-review-specific rules live here: ``openai::`` is only
-    trusted when ``OPENAI_BASE_URL`` is unset (a redirected endpoint cannot be
-    assumed to honor the 1M-context contract the packed review depends on),
-    and the payable model must not be EVIDENCED below the ≥1M floor
-    (`_packed_window_reason`).
+    Credential knowledge is the provider registry's SSOT. The ONE deep-review
+    rule that lives here is the direct-OpenAI resolution: an install whose only
+    OpenAI access is the direct API (no OpenRouter key, ``OPENAI_BASE_URL``
+    unset) runs a stored OpenRouter spelling ``openai/<slug>`` on the direct
+    ``openai::<slug>`` route, so a row saved on an OpenRouter install keeps
+    working here. A ``-pro`` suffix is an OpenRouter ROUTING slug (reasoning
+    mode), not an OpenAI model id — ``gpt-5.6-sol-pro`` 404s on api.openai.com
+    (live-probed 2026-07-29) — so those land on the direct route's own
+    deep-review default, while an explicit pin of a REAL model keeps the
+    mechanical rewrite (a pinned ``openai/gpt-5.5`` runs on ``gpt-5.5``). The
+    resolved spelling is what the review is actually sent on; the row's own
+    effort, credential pin and local-route flag are untouched.
     """
-    reason, model = ("", configured) if row and row.use_local is True else _packed_credentials(configured)
-    if reason:
-        return reason, None
-    reason = _packed_window_reason(_resolve_packed_window(str(model), row), str(model))
-    return (reason, None) if reason else ("", model)
+    from ouroboros.provider_models import model_has_credentials
 
-
-def _packed_credentials(configured: str) -> Tuple[str, Optional[str]]:
-    """The packed row's payable spelling, or the typed credentials reason."""
-    provider = provider_for_model(configured)
-    if provider == "openai":
-        if provider_has_credentials("openai") and not runtime_setting("OPENAI_BASE_URL"):
-            return "", configured
-        return f"no direct OpenAI credentials for {configured} (or OPENAI_BASE_URL redirects the route)", None
-    if configured.startswith("openai/"):
-        # OpenRouter route with a direct-OpenAI rewrite fallback.
-        if provider_has_credentials("openrouter"):
-            return "", configured
-        if provider_has_credentials("openai") and not runtime_setting("OPENAI_BASE_URL"):
-            slug = configured.split("/", 1)[1]
-            if slug.endswith("-pro"):
-                # A `-pro` suffix is an OpenRouter ROUTING slug (reasoning
-                # mode), not an OpenAI model id — `gpt-5.6-sol-pro` 404s on
-                # api.openai.com (live-probed 2026-07-29). Only for these does
-                # the direct route's own default take over; an owner's explicit
-                # pin of a REAL model keeps the mechanical rewrite below, so a
-                # pinned openai/gpt-5.5 still runs deep review on gpt-5.5.
-                from ouroboros.provider_models import OPENAI_DIRECT_DEFAULTS
-
-                return "", OPENAI_DIRECT_DEFAULTS["deep_self_review"]
-            return "", "openai::" + slug
-        return f"no OpenRouter or direct OpenAI credentials for {configured}", None
-    if provider_has_credentials(provider):
+    configured = str(row.target_id)
+    if row.use_local is True or model_has_credentials(configured):
         return "", configured
-    return f"no {provider} credentials for {configured}", None
+    if configured.startswith("openai/"):
+        if provider_has_credentials("openai") and not runtime_setting("OPENAI_BASE_URL"):
+            from ouroboros.provider_models import OPENAI_DIRECT_DEFAULTS
+
+            slug = configured.split("/", 1)[1]
+            return "", (OPENAI_DIRECT_DEFAULTS["deep_self_review"] if slug.endswith("-pro")
+                        else "openai::" + slug)
+        return f"no OpenRouter or direct OpenAI credentials for {configured}", None
+    return f"no {provider_for_model(configured)} credentials for {configured}", None
 
 
 def _session_route_reason(row: ConfiguredReviewerSlot) -> str:
@@ -560,12 +209,12 @@ def _session_route_reason(row: ConfiguredReviewerSlot) -> str:
 def deep_review_route(row: Optional[ConfiguredReviewerSlot] = None) -> Tuple[str, Optional[str]]:
     """``(unavailable_reason, identity)`` for the deep-review row.
 
-    '' means available; ``identity`` is then the model the review runs on (the
-    packed row's payable spelling, a native row's routed model, a session row's
-    ``harness[=model]`` target). Availability is ROUTE-AWARE: the ≥1M /
-    ``OPENAI_BASE_URL`` rule binds only the packed row; a native row needs the
-    routed model's credentials; a session row needs a healthy delegated route.
-    A malformed reviewer-slot setting is the typed reason, never a fallback.
+    '' means available; ``identity`` is then what the review runs on — the api
+    row's sendable model (``_api_route_model``, the direct-OpenAI resolution
+    included) or the session row's ``harness[=model]`` target. Availability is
+    ROUTE-AWARE: an api row needs its routed model's credentials, a session row
+    a healthy delegated route. A malformed reviewer-slot setting is the typed
+    reason, never a fallback.
     """
     try:
         row = row or deep_review_slot()
@@ -575,16 +224,10 @@ def deep_review_route(row: Optional[ConfiguredReviewerSlot] = None) -> Tuple[str
         return f"deep_review row has an unknown route kind {row.kind!r}", None
     if not str(row.target_id or "").strip():
         return "deep_review row has no target (empty model id / session target)", None
-    if not row.retrieves:
-        return _packed_route(row.target_id, row)
     if row.is_session:
         reason = _session_route_reason(row)
         return reason, (None if reason else (row.session_target or row.target_id))
-    from ouroboros.provider_models import model_has_credentials
-
-    if row.use_local is True or model_has_credentials(row.target_id):
-        return "", row.target_id
-    return f"no provider credentials for {row.target_id}", None
+    return _api_route_model(row)
 
 
 def deep_review_unavailable_text(reason: str) -> str:
@@ -597,7 +240,7 @@ def deep_review_unavailable_text(reason: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# The three deliveries.
+# The two retrieving deliveries.
 # ---------------------------------------------------------------------------
 
 
@@ -695,7 +338,9 @@ def _native_read_coverage(usage: Dict[str, Any], repo_dir: pathlib.Path) -> Dict
             total, covered = source.get("complete_chars"), source.get("covered_chars")
             known = (type(total) is int and type(covered) is int and 0 <= covered <= total
                      and isinstance(source.get("source_revision"), str) and len(source["source_revision"]) == 64)
-            state = ("read" if source.get("status") == "complete" and known else
+            state = ("delivered_inline" if source.get("status") == "complete" and known
+                     and source.get("coverage_basis") == "delivered_inline" else
+                     "read" if source.get("status") == "complete" and known else
                      "partial" if source.get("status") == "incomplete" and known and covered else
                      "missing" if source.get("status") == "incomplete" and known else "unobserved")
             out[address] = {**source, "state": state, "covered_chars": covered if known else 0,
@@ -762,27 +407,14 @@ def _header_value(value: Any) -> str:
     return text
 
 
-def _delivery_incomplete(delivery: str, usage: Dict[str, Any], message: Optional[Dict[str, Any]] = None) -> str:
-    """Completeness from the facts each delivery carries: the native episode's
-    typed `native_incomplete`; the packed call's provider stop marker — the
-    OpenAI-compatible normalizer's `usage["response_finish_reason"] == "length"`
-    or the message's own `finish_reason` (fail-safe for a non-normalized
-    message shape — no shipped normalizer authors it), and the direct-Anthropic lane's
-    `message["stop_reason"] == "max_tokens"` (the shipped direct default route
-    sets no usage finish reason at all) — meaning the report hit the output
-    reserve; a session's completeness is not host-observable."""
+def _delivery_incomplete(delivery: str, usage: Dict[str, Any]) -> str:
+    """An interrupted report remains incomplete; measured reading coverage is
+    a separate diagnostic and cannot make a finished report unfinished."""
     if delivery == "native_tool_rounds":
         reported = str(usage.get("native_incomplete") or "")
-        coverage = usage.get("native_read_coverage") or {}
-        if not reported and coverage.get("sources") and coverage.get("status") != "complete":
-            reported = "required_source_coverage_incomplete"
+        if reported == "required_source_coverage_incomplete":
+            reported = ""
         return reported or "none"
-    if delivery == "api_packet":
-        msg = message if isinstance(message, dict) else {}
-        cut = (str(usage.get("response_finish_reason") or "") == "length"
-               or str(msg.get("finish_reason") or "") == "length"
-               or str(msg.get("stop_reason") or "") == "max_tokens")
-        return "output_reserve" if cut else "none"
     return "unobserved"
 
 
@@ -816,8 +448,6 @@ def _provenance_header(delivery: str, model: str, usage: Dict[str, Any], memory:
             "landing": f"{usage.get('native_landing_notified', False)}/{usage.get('native_landing_sent', False)}",
             "coverage_basis": usage.get("deep_review_coverage_basis", "legacy_lines"),
         })
-    elif delivery == "api_packet":
-        facts["attestation"] = "packed"
     else:
         facts["attestation"] = "unobserved"
     facts.update(extra or {})
@@ -853,42 +483,60 @@ def _failed(text: str, *, reason_code: str, usage: Optional[Dict[str, Any]] = No
 
 
 def _retrieving_task(repo_dir: pathlib.Path, drive_root: pathlib.Path, *,
+                     usable_window_tokens: int = 0,
+                     required_sources: Optional[list] = None,
                      required_sources_ref: Optional[dict] = None) -> Tuple[str, Dict[str, Any]]:
-    """The route-owned task text for a retrieving row: role + method, the
-    memory whitelist inline (byte-exact, as the packed pack carries it), and
-    the governance navigation maps. BIBLE.md is a mandatory READ, never
-    inlined — on the native delivery the host checks the receipts for it."""
-    from ouroboros.tools.scope_review_session import governance_nav_maps
+    """The route-owned task text for a deep-review row: role + method, the
+    governance tiers this surface receives, and the memory whitelist inline
+    byte-exact.
+
+    The tiers come from the ONE SSOT every review surface asks
+    (``governance_context``): the standing disclosures and the review protocol
+    arrive in full, the reference books arrive as navigation this reviewer
+    reads with its own tools, and every document that is not inlined is named
+    in the navigation. ``usable_window_tokens`` is the window the inline share
+    is taken against (0 asks for navigation for tiers 2 and 3 only). Tier 1 is
+    always inline. Exact matching required sources record that delivery, so
+    the reviewer need not reread a document it already received in full."""
+    from ouroboros.tools.governance_context import governance_context
+    from ouroboros.tools.scope_required_sources import source_text_identity, with_inline_sources
 
     bible = load_governance_doc(repo_dir, "BIBLE.md", on_missing="silent")
     if not bible.strip():
         raise RuntimeError("BIBLE.md is missing at the repository root — a deep self-review has no constitution to check against")
     memory_parts: list[str] = []
-    skipped: list[str] = []
-    memory = _append_memory_whitelist(memory_parts, skipped, drive_root=drive_root)
-    navigation = []
-    for book_id, entrypoint in BOOK_ENTRYPOINTS.items():
-        if not (repo_dir / entrypoint).is_file():
-            navigation.append(f"[Missing reference book: {entrypoint}]")
-            continue
-        book = load_reference_book(repo_dir, book_id)
-        navigation.append(f"## {entrypoint} (navigation map)\n\n" + book_navigation(book))
-    navigation.append(governance_nav_maps(repo_dir, tuple(p for p in _NAV_MAP_DOCS if p not in BOOK_ENTRYPOINTS.values())))
+    memory = _append_memory_whitelist(memory_parts, drive_root=drive_root)
+    governance = governance_context(
+        repo_dir, surface="deep_self_review", touched_paths=(),
+        usable_window_tokens=usable_window_tokens, delivery="retrieving",
+        checklist_section_text="")
+    sources = required_sources if required_sources is not None else [
+        {"root": "system_repo", "path": path,
+         **source_text_identity(governance.inline_whole_documents[path].encode("utf-8"))}
+        for path in _MANDATORY_READS]
+    sources = with_inline_sources(sources, governance.inline_whole_documents)
     parts = [
         _ROLE_PROMPT + _RETRIEVING_METHOD.format(bible_chars=len(bible)),
-        *navigation,
+        governance.stable_inline,
+        governance.selected_inline,
+        governance.navigation,
         "## Memory (runtime data root, inlined byte-exact)",
         *memory_parts,
-        # EVERY whitelisted entry gets its disposition here — the omission
-        # section of this delivery — so an absent or blank memory file is a
-        # stated fact the reviewer (and the header) can rely on, never a gap.
+        # EVERY whitelisted entry gets its disposition here — this delivery's
+        # omission disclosure — so an absent or blank memory file is a stated
+        # fact the reviewer (and the header) can rely on, never a gap.
         f"Memory dispositions ({memory['total']} whitelisted): "
         + "; ".join(f"{rel} {d}" for rel, d in memory["dispositions"].items()),
     ]
     if required_sources_ref:
-        parts.append("Read the complete required source manifest through its exact source handle and cover every listed source across your working views: "
+        parts.append("Read the complete required source manifest through its exact source handle and inspect its sources across your working views. Documents already delivered in full above need no second tool read: "
                      + json.dumps(required_sources_ref, ensure_ascii=False))
-    return "\n\n".join(parts), {"memory": memory, "bible_chars": len(bible)}
+    # The delivered tiers need no second record here: the whole task text —
+    # its inline governance and the navigation that names every document it
+    # did not inline — is persisted with the request in prompt custody.
+    return "\n\n".join(part for part in parts if str(part or "").strip()), {
+        "memory": memory, "bible_chars": len(bible), "required_sources": sources,
+        "governance_manifest": governance.manifest}
 
 
 def _review_usage_scope(current: Any) -> Any:
@@ -914,25 +562,40 @@ def _run_retrieving_review(
     *,
     task_id: str,
     deadline_at: str,
+    model: str = "",
     required_sources: Optional[list] = None,
     required_sources_ref: Optional[dict] = None,
 ) -> Tuple[str, Dict[str, Any]]:
-    """A retrieving row (native episode or delegated session) through the
-    shared executor seam, exactly like the advisory: hand-built request, slot
-    and assignment; the product is the report text."""
+    """The row's delivery (native episode or delegated session), exactly like
+    the advisory: hand-built request, slot and assignment; the product is the
+    report text. ``model`` is the sendable spelling ``deep_review_route``
+    resolved for the row (its own target when the caller names none)."""
     from dataclasses import asdict
 
     from ouroboros.config import get_finalization_grace_sec, get_task_abs_ceiling_sec
     from ouroboros.deadline_utils import review_operation_timeout_sec
     from ouroboros.observability import persist_call
     from ouroboros.review_execution import ReviewAssignment, _review_route_executor
+    from ouroboros.review_native_episode import review_native_transcript_bound
     from ouroboros.review_substrate import ReviewRequest
     from ouroboros.usage_accounting import UsageScope, current_usage_scope, usage_scope
 
-    task_text, task_facts = _retrieving_task(repo_dir, drive_root, required_sources_ref=required_sources_ref)
+    sendable = str(model or row.target_id)
+    # The governance tiers take their inline share against the window this row
+    # is sent in: the transcript bound derived from the row's window, its
+    # output reserve and the owner ceiling (chars), on the
+    # `utils.estimate_tokens` scale the tiering budgets with (4 chars a token).
+    # A session row's harness model carries no evidenced window, so it resolves
+    # the owner ceiling — the one bound that holds for every route.
+    task_text, task_facts = _retrieving_task(
+        repo_dir, drive_root, required_sources=required_sources, required_sources_ref=required_sources_ref,
+        usable_window_tokens=review_native_transcript_bound(
+            sendable, output_reserve=_DEEP_MAX_OUTPUT_TOKENS, use_local=row.use_local,
+            model_role=f"reviewer:{row.slot_id}",
+            credential_profile_id=row.profile_id or None) // 4)
     policy = {"output_contract": _REPORT_CONTRACT, "native_data_root": str(drive_root)}
-    if required_sources is not None:
-        policy.update(native_required_sources=required_sources, native_required_sources_ref=required_sources_ref or {})
+    policy.update(native_required_sources=task_facts["required_sources"],
+                  native_required_sources_ref=required_sources_ref or {})
     request = ReviewRequest(
         surface="deep_self_review",
         goal="Deep self-review of the whole Ouroboros system against BIBLE.md.",
@@ -956,17 +619,26 @@ def _run_retrieving_review(
         route="agent_session" if row.is_session else "api_chat",
         deadline_at=deadline_at, reserve_sec=get_finalization_grace_sec(),
     )
-    slot = _review_slot(row, row.target_id, window)
+    slot = _review_slot(row, sendable, window)
     assignment = ReviewAssignment(
         request=request, slot=slot, call_id=f"deep_self_review:{task_id or 'manual'}",
         call_type="deep_self_review", custody_root=pathlib.Path(drive_root),
     )
-    executor = _review_route_executor(assignment, llm=llm)
+    if row.is_session:
+        executor = _review_route_executor(assignment, llm=llm)
+    else:
+        # An api deep_review row IS the bounded inspection episode, whether or
+        # not a configured subagent binds it — the same direct binding the
+        # advisory api row uses (`claude_advisory_review`), so a bare route
+        # never falls back to a one-shot chat with nothing to read.
+        from ouroboros.review_native_episode import NativeToolRoundReviewExecutor
+
+        executor = NativeToolRoundReviewExecutor(assignment, llm=llm)
     executor._logical_deadline_monotonic = time.monotonic() + window
     delivery = "agent_session" if row.is_session else "native_tool_rounds"
     emit_progress(
-        f"Deep self-review via {delivery} on {row.target_id}: {_memory_line(task_facts['memory'])}, "
-        f"BIBLE.md ({task_facts['bible_chars']:,} chars) as a mandatory read; window {window:.0f}s..."
+        f"Deep self-review via {delivery} on {sendable}: {_memory_line(task_facts['memory'])}, "
+        f"BIBLE.md ({task_facts['bible_chars']:,} chars) delivered inline; window {window:.0f}s..."
     )
     try:
         persist_call(
@@ -1003,13 +675,14 @@ def _run_retrieving_review(
     # itself persists route/model/status/capability_delta and the typed failure
     # facts only — memory is disclosed durably by the header and this usage.
     usage["deep_review_memory"] = memory
+    usage["deep_review_governance_manifest"] = task_facts["governance_manifest"]
     # The executor's own list is never mutated (shallow copy): the coverage
     # deltas below are appended to THIS record's copy.
     usage["capability_delta"] = list(usage.get("capability_delta") or [])
     text = str(attempt.raw_text or "")
     if not text.strip():
-        # An empty product is an ERROR row in «Выполняется как», exactly like
-        # the packed path — never recorded as a responded review.
+        # An empty product is an ERROR row in «Выполняется как» — never
+        # recorded as a responded review.
         _record_execution(slot, usage, status="error", error="empty response")
         return _failed("⚠️ Model returned an empty response for the deep self-review.",
                        reason_code="deep_self_review_error", usage=usage)
@@ -1019,7 +692,7 @@ def _run_retrieving_review(
         coverage = {rel: (f"partial({c['fraction']:.2f})" if c["state"] == "partial" else c["state"])
                     for rel, c in detail.items()}
         for rel, c in detail.items():
-            if c["state"] != "read":
+            if c["state"] not in {"read", "delivered_inline"}:
                 covered, total, unit = (c["covered_chars"], c["complete_chars"], "characters") if c["evidence_basis"] == "source_ranges" else (c["covered_lines"], c["total_lines"], "lines")
                 missing = f"no delivered range matching the required source revision of {rel}" if c["evidence_basis"] == "source_ranges" else f"no executed repository-root read_file receipt for {rel}"
                 unobserved = f"the exact required source extent of {rel} is unobserved" if c["evidence_basis"] == "source_ranges" else f"the {rel} read extent is unobserved (receipts capped or extent not recorded)"
@@ -1033,7 +706,8 @@ def _run_retrieving_review(
                     "reason": f"deep_review_mandatory_read_{c['state']}",
                 })
     else:
-        coverage = {rel: "unobserved" for rel in _MANDATORY_READS}
+        coverage = {source["path"]: ("delivered_inline" if source.get("coverage_basis") == "delivered_inline"
+                                    else "unobserved") for source in task_facts["required_sources"]}
     _record_execution(slot, usage, status="responded")
     try:
         from ouroboros.anthropic_native_custody import public_custody_projection
@@ -1049,9 +723,9 @@ def _run_retrieving_review(
     if not usage.get("capability_delta"):
         usage.pop("capability_delta", None)  # an empty list is not a disclosure
     if not usage.get("resolved_model"):
-        usage["resolved_model"] = row.target_id
+        usage["resolved_model"] = sendable
     incomplete = _delivery_incomplete(delivery, usage)
-    model = str(usage.get("resolved_model") or row.target_id)
+    model = str(usage.get("resolved_model") or sendable)
     # Every external value on the HUMAN line is bounded and sanitized too.
     shown_model, shown_reason = _header_value(model), _header_value(incomplete)
     shown_target = _header_value(row.session_target or row.target_id)
@@ -1062,7 +736,8 @@ def _run_retrieving_review(
         for rel, c in detail.items():
             covered, total, unit = (c["covered_chars"], c["complete_chars"], "characters") if c["evidence_basis"] == "source_ranges" else (c["covered_lines"], c["total_lines"], "lines")
             reads.append(f"{rel} " + (f"{c['fraction']:.0%} read ({covered}/{total} {unit})" if c["state"] == "partial"
-                         else {"read": "read in full", "missing": "NOT read"}.get(c["state"], "read extent unobserved")))
+                         else {"read": "read in full", "delivered_inline": "delivered inline in full",
+                               "missing": "NOT read"}.get(c["state"], "read extent unobserved")))
         reads = "; ".join(reads)
         human = (
             f"Deep self-review: native inspection episode on {shown_model} — {int(usage.get('native_rounds') or 0)} rounds, "
@@ -1073,296 +748,10 @@ def _run_retrieving_review(
         human = (
             f"Deep self-review: agent session {shown_target}"
             + (f" (model {shown_model})" if model and model != (row.session_target or row.target_id) else "")
-            + f" — reads not host-observed (coverage unobserved); {_memory_line(task_facts['memory'])}; {completeness}"
+            + f" — tool reads not host-observed; BIBLE.md delivered inline in full; {_memory_line(task_facts['memory'])}; {completeness}"
         )
     emit_progress(f"Deep self-review complete ({len(text):,} chars; {delivery}, incomplete={incomplete}).")
     return _provenance_header(delivery, model, usage, task_facts["memory"], coverage, human, incomplete=incomplete) + text, usage
-
-
-def _pack_unfit_failure(
-    drive_root: pathlib.Path, model: str, stats: Dict[str, Any], input_limit: int, deep_window: int,
-) -> Tuple[str, Dict[str, Any]]:
-    """The typed refusal for a required set that does not fit this model's
-    calibrated cap even warm. Its text is the agent's cue to ask the owner to
-    switch the ``deep_review`` row — the host never switches deliveries itself."""
-    from ouroboros.capability_evidence import resolve_review_token_density
-
-    density, source = resolve_review_token_density(drive_root, model)
-    return _failed(
-        "❌ Deep self-review pack unfit: the one-packet review does not fit this repository on "
-        f"{model} — {stats['skipped'][0]}. Calibrated input cap ~{input_limit:,} tokens "
-        f"({deep_window:,}-token window, token density {density:.2f} {source}). "
-        "No automatic fallback runs: ask the owner to switch the `deep_review` reviewer row "
-        "(Settings → Review lanes) to a retrieving delivery — a configured subagent (native tool "
-        "rounds) or an agent session — or to a model with a larger context window.",
-        reason_code=REASON_DEEP_SELF_REVIEW_PACK_UNFIT,
-    )
-
-
-def _run_packed_review(
-    repo_dir: pathlib.Path,
-    drive_root: pathlib.Path,
-    llm: Any,
-    emit_progress: Callable[[str], None],
-    row: ConfiguredReviewerSlot,
-    model: str,
-) -> Tuple[str, Dict[str, Any]]:
-    """The packed delivery: one 1M-context call carrying the Atlas + memory,
-    byte-identical to the pre-row deep review. ``model`` is the payable
-    spelling ``deep_review_route`` resolved for the row.
-
-    no_proxy=True avoids macOS fork-safety SIGSEGV by using a one-shot httpx
-    client with trust_env=False in llm.py; regular task calls are unaffected.
-    """
-    # ONE window fact for this run (Capability Evidence): the floor is judged
-    # on THIS object and the pack is sized with THIS object — a second
-    # resolution could disagree with the one that was validated. A confirmed
-    # sub-1M route is refused typed here too (the availability check ran
-    # earlier, but evidence can land between the reads); the pack is never
-    # silently shrunk; an unknown window keeps the documented full-window
-    # assumption and is disclosed in the header.
-    from ouroboros import reviewer_window as _rw
-
-    window_fact = _resolve_packed_window(model, row)
-    from ouroboros.config import review_model_uses_local
-    sub_floor = _packed_window_reason(window_fact, model)
-    if sub_floor:
-        return _failed(deep_review_unavailable_text(sub_floor), reason_code="deep_self_review_unavailable")
-    deep_window = window_fact.sizing_window()
-    deep_output_reserve, deep_margin = _rw.window_scaled_reserves(
-        deep_window,
-        output_reserve=_DEEP_MAX_OUTPUT_TOKENS,
-        tokenizer_margin=_DEEP_OUTPUT_MARGIN_TOKENS,
-    )
-    input_limit = max(0, calibrated_input_token_limit(
-        model,
-        context_window=deep_window,
-        output_reserve=deep_output_reserve,
-        tokenizer_margin=deep_margin,
-        drive_root=drive_root,
-    ))
-
-    emit_progress("Building generated review atlas and memory pack...")
-    pack_text, stats = build_review_pack(
-        repo_dir,
-        drive_root,
-        fixed_prompt_tokens=estimate_tokens(_SYSTEM_PROMPT),
-        input_token_limit=input_limit,
-    )
-    if not pack_text and stats.get("skipped") and stats.get("context_manifest"):
-        # The required set did not fit under the calibrated cap. Cold store →
-        # one probe (the shared rung; a slice of the real pack, a few output
-        # tokens, through chat_observed), one rebuild under the recalibrated
-        # cap; still unfit → the typed refusal that asks the owner to switch
-        # the row (never a fallback). BudgetExceeded propagates to the agent's
-        # budget rail exactly like the review send itself.
-        from ouroboros.capability_evidence import cold_start_density_probe
-
-        outcome = cold_start_density_probe(
-            drive_root, llm, emit_progress, model,
-            density_probe_sample(repo_dir, stats["context_manifest"]),
-            task_id="deep_self_review", call_type="deep_self_review_density_probe",
-            source="deep_review_cold_start_probe",
-            model_role=f"reviewer:{row.slot_id}", model_account_override=row.profile_id,
-        )
-        from ouroboros.review_records import apply_review_model_override
-        from ouroboros.model_wait import current_model_wait
-        waiter = current_model_wait()
-        updated = apply_review_model_override(row, waiter.overrides) if waiter else row
-        changed = updated != row
-        if changed:
-            row, model = updated, updated.target_id
-            window_fact = _resolve_packed_window(model, row)
-            sub_floor = _packed_window_reason(window_fact, model)
-            if sub_floor:
-                return _failed(deep_review_unavailable_text(sub_floor), reason_code="deep_self_review_unavailable")
-            deep_window = window_fact.sizing_window()
-            deep_output_reserve, deep_margin = _rw.window_scaled_reserves(
-                deep_window, output_reserve=_DEEP_MAX_OUTPUT_TOKENS, tokenizer_margin=_DEEP_OUTPUT_MARGIN_TOKENS)
-        if outcome == "measured" or changed:
-            input_limit = max(0, calibrated_input_token_limit(
-                model,
-                context_window=deep_window,
-                output_reserve=deep_output_reserve,
-                tokenizer_margin=deep_margin,
-                drive_root=drive_root,
-            ))
-            emit_progress(f"Rebuilding the pack under the recalibrated input cap (~{input_limit:,} tokens)...")
-            pack_text, stats = build_review_pack(
-                repo_dir,
-                drive_root,
-                fixed_prompt_tokens=estimate_tokens(_SYSTEM_PROMPT),
-                input_token_limit=input_limit,
-            )
-        if not pack_text and stats.get("skipped") and stats.get("context_manifest"):
-            return _pack_unfit_failure(drive_root, model, stats, input_limit, deep_window)
-    if not pack_text and stats.get("skipped"):
-        return _failed(f"❌ Failed to build review pack: {stats['skipped'][0]}", reason_code="deep_self_review_error")
-
-    emit_progress(
-        f"Review pack built: {stats['file_count']} files, "
-        f"{stats['total_chars']:,} chars"
-        + (f", {len(stats['skipped'])} skipped" if stats["skipped"] else "")
-    )
-
-    # Gate full system+pack like scope review: reserve output headroom
-    # inside the 1M window (min(SSOT, window − output − margin)) so a large
-    # pack cannot trigger the deterministic input+output>window provider 400.
-    estimated_tokens = estimate_tokens(_SYSTEM_PROMPT + pack_text)
-    if estimated_tokens > input_limit:
-        # Deterministic final shrink (instead of the historical fatal error):
-        # rebuild once with the atlas budget reduced by the measured overage
-        # plus margin, so residual estimator drift between per-section
-        # accounting and this final concatenation cannot kill the review.
-        overage = estimated_tokens - input_limit
-        emit_progress(
-            f"Pack overshot the input limit by ~{overage:,} tokens; "
-            "rebuilding with a tighter atlas budget..."
-        )
-        pack_text, stats = build_review_pack(
-            repo_dir,
-            drive_root,
-            fixed_prompt_tokens=estimate_tokens(_SYSTEM_PROMPT),
-            hard_budget_reduction=overage + 8_000,
-            input_token_limit=input_limit,
-        )
-        if not pack_text and stats.get("skipped"):
-            return _failed(f"❌ Failed to build review pack: {stats['skipped'][0]}", reason_code="deep_self_review_error")
-        estimated_tokens = estimate_tokens(_SYSTEM_PROMPT + pack_text)
-    full_prompt_chars = len(_SYSTEM_PROMPT) + len(pack_text)
-    if estimated_tokens > input_limit:
-        return _failed(
-            f"❌ Review pack too large: ~{estimated_tokens:,} tokens "
-            f"({full_prompt_chars:,} chars of system+pack, {stats['file_count']} files). "
-            f"Maximum is ~{input_limit:,} tokens "
-            f"({deep_window:,}-token window minus {deep_output_reserve:,} output reserve, "
-            f"calibrated for {model}). "
-            "Reduce codebase size or split review.",
-            reason_code="deep_self_review_error",
-        )
-
-    if stats.get("context_manifest"):
-        try:
-            atomic_write_json(
-                drive_root / "state" / "deep_self_review_context.json",
-                {
-                    "ts": utc_now_iso(),
-                    "model": model,
-                    "context_manifest": stats["context_manifest"],
-                },
-                trailing_newline=True,
-            )
-        except Exception:
-            log.warning("Failed to persist deep self-review context manifest", exc_info=True)
-
-    emit_progress(f"Sending to {model} (~{estimated_tokens:,} tokens). This may take several minutes...")
-
-    messages = [
-        {"role": "system", "content": _SYSTEM_PROMPT},
-        {"role": "user", "content": pack_text},
-    ]
-
-    # no_proxy prevents macOS fork-safety SIGSEGV in bundled child process.
-    from contextlib import nullcontext
-    from ouroboros.llm_observability import chat_observed
-    from ouroboros.model_wait import current_model_wait
-    from ouroboros.review_records import apply_review_model_override
-
-    def reprepare(values: dict) -> dict:
-        """Keep the complete packet, but revalidate its new route before a send."""
-        nonlocal row, model, window_fact, deep_window
-        updated = apply_review_model_override(row, {f"reviewer:{row.slot_id}": values})
-        observed = values.pop("_model_observed_route", None)
-        fact = _resolve_packed_window(values["model"], updated, **({"model_route": observed} if observed else {}))
-        reason = _packed_window_reason(fact, values["model"])
-        if reason:
-            raise ValueError(deep_review_unavailable_text(reason))
-        window = fact.sizing_window()
-        output, margin = _rw.window_scaled_reserves(
-            window, output_reserve=_DEEP_MAX_OUTPUT_TOKENS, tokenizer_margin=_DEEP_OUTPUT_MARGIN_TOKENS)
-        limit = max(0, calibrated_input_token_limit(values["model"], context_window=window,
-            output_reserve=output, tokenizer_margin=margin, drive_root=drive_root))
-        if estimated_tokens > limit:
-            raise ValueError(f"Deep self-review pack exceeds the changed route input cap: "
-                             f"~{estimated_tokens:,} tokens > ~{limit:,} for {values['model']}. "
-                             "Choose a wider model or a retrieving deep_review row; the full packet is unchanged.")
-        row, model, window_fact, deep_window = updated, values["model"], fact, window
-        return values
-
-    waiter = current_model_wait()
-    binding = waiter.register_reprepare(f"reviewer:{row.slot_id}", reprepare) if waiter else nullcontext()
-    with binding:
-        response, usage = chat_observed(
-            llm,
-            drive_root=drive_root,
-            task_id="deep_self_review",
-            call_type="deep_self_review",
-            model_role=f"reviewer:{row.slot_id}",
-            model_account_override=row.profile_id,
-            use_local=row.use_local if row.use_local is not None else review_model_uses_local(model),
-            messages=messages,
-            model=model,
-            tools=None,
-            reasoning_effort=row_effort(row, "deep_self_review"),
-            max_tokens=_DEEP_MAX_OUTPUT_TOKENS,
-            temperature=None,
-            no_proxy=True,
-        )
-    usage = dict(usage or {})
-    # Auto can select a different account than preparation observed. Its paid
-    # response remains in custody and is delivered even if its window is unfit.
-    host_route = usage.get("model_role_route") or {}
-    observed = (usage.get("claudexor") or {}).get("route") or {}
-    actual_model = str(host_route.get("model") or usage.get("resolved_model") or model)
-    if observed.get("source") and observed.get("model"):
-        actual_model = f"claudexor::{observed['source']}={observed['model']}"
-    actual_row = apply_review_model_override(row, {f"reviewer:{row.slot_id}": {
-        "model": actual_model,
-        "model_account_override": observed.get("credentialProfileId", host_route.get("credential_profile_id", row.profile_id)),
-        "use_local": host_route.get("use_local", row.use_local if row.use_local is not None else review_model_uses_local(actual_model)),
-    }})
-    prior_local = row.use_local if row.use_local is not None else review_model_uses_local(model)
-    if ((actual_model, actual_row.profile_id, actual_row.use_local) != (model, row.profile_id, prior_local)
-            or (observed and observed != window_fact.model_route)):
-        window_fact = _resolve_packed_window(actual_model, actual_row, **({"model_route": observed} if observed else {}))
-        deep_window = window_fact.sizing_window()
-    row, model = actual_row, actual_model
-    sub_floor = _packed_window_reason(window_fact, model)
-    memory = stats.get("memory") or {"inlined": 0, "total": len(_MEMORY_WHITELIST), "dispositions": {}}
-    # FIRST: the usage of both «Выполняется как» records below (error or
-    # responded) and the returned usage carry the memory fact; the durable D22
-    # projection itself does not (route/model/status/capability_delta and typed
-    # failure facts only).
-    usage["deep_review_memory"] = memory
-    slot = _review_slot(row, model, None)
-    text = response.get("content") or "" if isinstance(response, dict) else ""
-    if not text:
-        _record_execution(slot, usage, status="error", error="empty response")
-        return _failed("⚠️ Model returned an empty response for the deep self-review.",
-                       reason_code="deep_self_review_error", usage=usage)
-    usage["resolved_model"] = model
-    _record_execution(slot, usage, status="error" if sub_floor else "responded", error=sub_floor)
-    # Completeness from the response the packed path holds: the provider's
-    # stop marker (OpenAI-compatible finish_reason OR direct-Anthropic
-    # stop_reason), not only the normalizer's usage projection.
-    incomplete = "deep_self_review_unavailable" if sub_floor else _delivery_incomplete(
-        "api_packet", usage, response if isinstance(response, dict) else None)
-    emit_progress(f"Deep self-review complete ({len(text):,} chars; incomplete={incomplete}).")
-    window_label = (f"{deep_window}" if int(window_fact.window_tokens) > 0
-                    else f"assumed_{deep_window}" if deep_window else "unknown")
-    header = _provenance_header(
-        "api_packet", model, usage, memory, {"pack": f"{stats['file_count']}_files"},
-        f"Deep self-review: one packed API review on {_header_value(model)} — {stats['file_count']} files; "
-        f"{_memory_line(memory)}; " + (f"window {deep_window:,}" if deep_window else "window unknown")
-        + (" (unknown, full window assumed)" if deep_window and int(window_fact.window_tokens) <= 0 else "")
-        + "; " + ("complete" if incomplete == "none" else
-                   f"INCOMPLETE ({_header_value(sub_floor)})" if sub_floor else
-                   f"INCOMPLETE ({incomplete}: the report hit the output reserve)"),
-        incomplete=incomplete, extra={"window": window_label},
-    )
-    if sub_floor:
-        return _failed(header + text, reason_code="deep_self_review_unavailable", usage=usage)
-    return header + text, usage
 
 
 def run_deep_self_review(
@@ -1382,17 +771,17 @@ def run_deep_self_review(
     Returns ``(text, usage)``. A delivered report carries the host provenance
     header; every ordinary review failure returns its text with typed usage
     (``execution_status="infra_failed"`` + ``reason_code``) so the caller can
-    keep the previous report instead of overwriting it with an error; on a
-    retrieving row a failure after the task was assembled also carries the
-    memory fact (``deep_review_memory``) and the executor's failure custody —
+    keep the previous report instead of overwriting it with an error; a failure
+    after the task was assembled also carries the memory fact
+    (``deep_review_memory``) and the executor's failure custody —
     the same usage its «Выполняется как» error row was recorded from. The ONE
     exception that propagates is ``BudgetExceeded`` — the paid ledger's
     refusal is budget vocabulary for the agent's budget-pause rail, not a
     review error.
     ``slot`` overrides the configured row (tests, callers that already resolved it).
-    ``required_sources`` and its exact source handle come from the caller's
-    existing immutable review assembler; this consumer never infers the
-    complete required surface from a working-tree scan.
+    ``required_sources`` and its exact source handle may come from the caller's
+    immutable review assembler. Without one, coverage names only the
+    constitution actually delivered inline, never an inferred whole-tree scope.
     """
     try:
         try:
@@ -1406,12 +795,14 @@ def run_deep_self_review(
         reason, model = deep_review_route(row)
         if reason:
             return _failed(deep_review_unavailable_text(reason), reason_code="deep_self_review_unavailable")
-        if row.retrieves:
-            return _run_retrieving_review(
-                repo_dir, drive_root, llm, emit_progress, row, task_id=task_id, deadline_at=deadline_at,
-                required_sources=required_sources, required_sources_ref=required_sources_ref,
-            )
-        return _run_packed_review(repo_dir, drive_root, llm, emit_progress, row, str(model or ""))
+        # ONE delivery class: the row retrieves. An api row runs the bounded
+        # native inspection episode on the route the availability check
+        # resolved (the session keeps its own target as its identity).
+        return _run_retrieving_review(
+            repo_dir, drive_root, llm, emit_progress, row, task_id=task_id, deadline_at=deadline_at,
+            model=row.target_id if row.is_session else str(model or row.target_id),
+            required_sources=required_sources, required_sources_ref=required_sources_ref,
+        )
     except BudgetExceeded:
         # The paid ledger's refusal is BUDGET vocabulary, not a review error:
         # it propagates so the agent's own `except BudgetExceeded` rail (the

@@ -40,14 +40,14 @@ def test_public_contributor_flow_is_agent_first_and_route_neutral():
     assert "separate agent context" in guide
     assert "Reviewing in the authoring conversation does not count" in guide
     assert "Mark the review `NOT_RUN`" in guide
-    # The script lane is honest about its budget shape instead of failing
-    # contributors by surprise (#395).
-    assert "maintainer / large-window tooling" in guide
+    # The script lane states what a scope reviewer is owed (a change-relative
+    # required-source floor) instead of a window requirement (#395).
+    assert "maintainer tooling" in guide
     assert "SCOPE_REVIEW_BLOCKED" in guide
-    # The honest budget-shape paragraph names the full required pack and the
-    # session route's own window requirement (sol round-1).
-    assert "prompts, contracts, canonical docs" in guide
-    assert "confirmed 200K+ window" in guide
+    assert "change-relative" in guide
+    assert "does not depend on a very large reviewer window" in guide
+    assert "Reading coverage is diagnostic" in guide
+    assert "never remove a responding reviewer from quorum" in guide
     assert "SHAPE, not truth" in guide
     assert "--contributor" in guide
     assert "--base-ref upstream/ouroboros" in guide

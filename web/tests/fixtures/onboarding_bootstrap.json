@@ -228,7 +228,7 @@
       },
       "deepseek": {
         "label": "DeepSeek",
-        "modelCopy": "DeepSeek-only setup detected. These defaults use deepseek-v4-pro for main work and deepseek-v4-flash for the light lane. Blocking deep/scope review in Max context mode additionally needs the owner 1M-window acknowledgement in Settings.",
+        "modelCopy": "DeepSeek-only setup detected. These defaults use deepseek-v4-pro for main work and deepseek-v4-flash for the light lane.",
         "providerCopy": "DeepSeek is present, so the next step prefills DeepSeek's own model ids."
       },
       "direct-multi": {
