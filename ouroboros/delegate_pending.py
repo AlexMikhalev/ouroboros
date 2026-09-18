@@ -73,8 +73,9 @@ def pending_invocations(
             continue
         # Resolve only survivors, not every historical start on each sweep.
         body = request_body(drive_root, record)
-        record.pop("request_ref")
-        if body:
+        ref = record.pop("request_ref")
+        # An unreadable stored body does not discharge the pending start.
+        if body or ref is not None:
             record["request"] = body
             pending.append(record)
     return pending

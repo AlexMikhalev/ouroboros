@@ -162,10 +162,127 @@ def test_unreadable_ref_keeps_request_unknown_and_retry_refuses(tmp_path, damage
         row["request_ref"]["size"] = "invalid"
         custody.event_log_path(tmp_path).write_text(json.dumps(row) + "\n", encoding="utf-8")
     assert custody.invocation_record(tmp_path, "lost")["request"] is None
-    assert custody.pending_invocations(tmp_path) == []
+    pending = custody.pending_invocations(tmp_path)
+    assert [row["invocation_id"] for row in pending] == ["lost"]
+    assert pending[0]["request"] is None and "request_ref" not in pending[0]
     record, refusal = _validated_invocation(tmp_path, "lost", "task", "exact original")
     assert record is None
     assert json.loads(refusal.text)["reason"] == "invocation_request_unrecorded"
+
+
+@pytest.mark.parametrize("inline_request", [None, {}, [], "invalid"])
+def test_malformed_legacy_inline_without_a_reference_keeps_existing_behavior(tmp_path, inline_request):
+    assert custody.emit(tmp_path, custody.START_REQUESTED, {
+        "invocation_id": "legacy-empty", "task_id": "owner", "request": inline_request})
+    assert custody.pending_invocations(tmp_path) == []
+
+
+@pytest.mark.parametrize("damage", [None, "missing", "corrupt"])
+def test_lost_ack_keeps_the_original_start_claim_when_its_body_is_unreadable(tmp_path, monkeypatch, damage):
+    from ouroboros.delegate_recovery import unsettled_start_ids
+    from ouroboros.delegate_terminal import _audit_task_custody
+    from ouroboros.gateways import claudexor as gateway
+    from ouroboros.tools import delegate
+
+    keys = []
+
+    class LostAcknowledgment(_LiveRunStub):
+        def start_run(self, body, *, idempotency_key=""):
+            keys.append(idempotency_key)
+            if len(keys) == 1:
+                raise gateway.ClaudexorUnavailable("daemon_unreachable", "fixture accepted start then lost reply")
+            return {"runId": "original-run"}
+
+    stub = LostAcknowledgment()
+    monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "some-route=weak-model:low")
+    monkeypatch.setattr(gateway, "ClaudexorGateway", lambda *args, **kwargs: stub)
+    ctx = _nanny_ctx(tmp_path, task_id="owner")
+    first = json.loads(delegate._delegate_start(ctx, "Inspect fixture files.").text)
+    token = first["pending_invocation_id"]
+    assert keys == [token]
+    blob = Path(_start_rows(tmp_path)[0]["request_ref"]["path"])
+    if damage == "missing":
+        blob.unlink()
+    elif damage == "corrupt":
+        blob.write_bytes(b"fixture corrupt gzip")
+    assert unsettled_start_ids(tmp_path, "owner")["pending_invocation_ids"] == [token]
+    audit = {"task_id": "owner", "audit_status": "ok", "unreconciled": []}
+    _audit_task_custody(tmp_path, "owner", audit, emit_evidence=False)
+    assert audit["pending_invocation_ids"] == [token]
+    assert audit["unreconciled"] == [f"invocation:{token}"]
+    fresh = json.loads(delegate._delegate_start(ctx, "Inspect fixture files.").text)
+    assert fresh["reason"] == "replacement_requires_settlement" and keys == [token]
+    retry = json.loads(delegate._delegate_start(ctx, "Inspect fixture files.", retry_of=token).text)
+    if damage:
+        assert retry["reason"] == "invocation_request_unrecorded" and keys == [token]
+        assert "Start a new run" not in retry["detail"]
+    else:
+        assert retry["status"] == "started" and keys == [token, token]
+
+
+@pytest.mark.parametrize("damage", ["missing", "corrupt"])
+def test_missing_pending_body_keeps_snapshot_and_orphan_recovery_without_a_post(tmp_path, damage):
+    from types import SimpleNamespace
+    from ouroboros.delegate_custody_reconcile import _recover_pending_invocation
+
+    assert custody.record_start_requested(
+        tmp_path, invocation_id="pending", task_id="owner", snapshot_id="snapshot",
+        request={"prompt": "Preserve this pending invocation"})
+    blob = Path(_start_rows(tmp_path)[0]["request_ref"]["path"])
+    if damage == "missing":
+        blob.unlink()
+    else:
+        blob.write_bytes(b"fixture corrupt gzip")
+    pending = custody.pending_invocations(tmp_path)
+    assert len(pending) == 1 and pending[0]["request"] is None
+    assert custody.open_snapshot_ids(tmp_path) == {"snapshot"}
+    gateway = SimpleNamespace(start_run=lambda *args, **kwargs: pytest.fail("unknown body must not POST"))
+    result = _recover_pending_invocation(tmp_path, gateway, pending[0])
+    assert result["action"] == "invocation_retained"
+    assert result["reason"] == "invocation_request_unrecorded"
+    assert custody.invocation_record(tmp_path, "pending")["state"] == "pending"
+    assert custody.open_snapshot_ids(tmp_path) == {"snapshot"}
+    review_result = _recover_pending_invocation(tmp_path, gateway, {**pending[0], "source": "review_substrate"})
+    assert review_result["reason"] == "review_panel_owns_invocation"
+    assert custody.emit(tmp_path, custody.START_FAILED, {"invocation_id": "pending", "definite": True})
+    assert custody.pending_invocations(tmp_path) == [] and custody.open_snapshot_ids(tmp_path) == set()
+
+
+@pytest.mark.parametrize("prior", ["absent", "refused", "intact", "missing", "corrupt"])
+def test_skill_review_retries_distinguish_known_pending_from_absent_or_refused(tmp_path, fake_route, prior):
+    from ouroboros.gateways.claudexor import ClaudexorUnavailable
+    from ouroboros.review_execution import ReviewRouteUnavailable
+    from tests._review_session_route_shared import _run_session_directly
+
+    state = {"pending_invocation_id": "absent-token"} if prior == "absent" else {}
+    if prior != "absent":
+        fake_route.start_error = ClaudexorUnavailable(
+            "fixture_refused" if prior == "refused" else "daemon_unreachable",
+            "fixture initial transport outcome", status_code=400 if prior == "refused" else 0)
+        with pytest.raises(ClaudexorUnavailable):
+            _run_session_directly(tmp_path, surface="skill_review", slot_id="skill-slot", retry_state=state)
+        row = _start_rows(tmp_path)[0]
+        token = row["invocation_id"]
+        state["pending_invocation_id"] = token
+        if prior == "missing":
+            Path(row["request_ref"]["path"]).unlink()
+        elif prior == "corrupt":
+            Path(row["request_ref"]["path"]).write_bytes(b"fixture corrupt gzip")
+    else:
+        token = state["pending_invocation_id"]
+    if prior in {"missing", "corrupt"}:
+        with pytest.raises(ReviewRouteUnavailable) as caught:
+            _run_session_directly(tmp_path, surface="skill_review", slot_id="skill-slot", retry_state=state)
+        assert caught.value.code == "review_recovery_request_missing"
+        assert state["pending_invocation_id"] == token
+        assert [key for gateway in fake_route.instances for key in gateway.start_keys] == [token]
+    else:
+        _run_session_directly(tmp_path, surface="skill_review", slot_id="skill-slot", retry_state=state)
+        keys = [key for gateway in fake_route.instances for key in gateway.start_keys]
+        if prior == "intact":
+            assert keys == [token, token]
+        else:
+            assert keys[-1] != token and len(keys) == (1 if prior == "absent" else 2)
 
 
 def test_pending_scan_only_reads_blobs_for_surviving_invocations(tmp_path, monkeypatch):

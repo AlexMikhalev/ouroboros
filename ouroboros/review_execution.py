@@ -778,10 +778,10 @@ def run_delegated_review_session(
         run_id, started_custody = owned_started_review_custody(
             custody, custody_drive, record, task_id)
         run_request, invocation_id = record.get("request"), retry_token
-    elif (record is not None and record["state"] == "pending"
-          and isinstance(record.get("request"), dict) and record["request"]):
-        run_request, invocation_id = record["request"], retry_token
-    recovering = bool(run_id) or run_request is not None
+    elif record is not None and record["state"] == "pending":
+        run_request, invocation_id = record.get("request"), retry_token
+    # Known pending custody survives body loss; recovery reports the missing request.
+    recovering = bool(run_id or invocation_id)
     if retry_token and not recovering and surface != "skill_review":
         raise ReviewRouteUnavailable(
             "delegated retry token has no durable invocation; refusing a second paid run",
