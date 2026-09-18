@@ -500,8 +500,8 @@ def capture_commit_review_evidence(ctx: Any) -> dict:
             row["image_attachment"] = call["image_attachment"]
             if call["image_attachment"].get("status") != "attached":
                 gaps.append({"tool_call_id": call.get("tool_call_id"), "status": "image_unavailable"})
-        for gap in (args_gap, result_gap):
-            if gap:
+        for complete, gap in ((args_complete, args_gap), (result_complete, result_gap)):
+            if not complete and gap:
                 gaps.append(gap)
         try:
             payload = _commit_source_payload(ctx, trace_ref.get("redacted_projection_ref") or {})

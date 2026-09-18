@@ -17,7 +17,7 @@ from hashlib import sha256
 
 from ouroboros.config import apply_settings_to_env, load_settings, save_settings
 from ouroboros.tools.registry import ToolContext
-from ouroboros.utils import append_jsonl, run_cmd, utc_now_iso
+from ouroboros.utils import append_jsonl, run_cmd, utc_now_iso, write_text
 
 log = logging.getLogger(__name__)
 
@@ -288,7 +288,7 @@ def _update_identity(ctx: ToolContext, content: str) -> str:
             pass
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
+    write_text(path, content)
 
     append_jsonl(mem.identity_journal_path(), {
         "ts": utc_now_iso(),

@@ -575,9 +575,11 @@ both critical. The imperatives:
   Redacted review evidence never substitutes for the original requirement text.
   Access is stated ONCE, by the host, from the typed run shape: `_host_instructions`
   renders `delegate_start_instructions.access_instruction(shape.access)` as one
-  sentence that names the profile and says it governs. Assignment prose about
-  access is CONTEXT, never authority, and is never parsed: a parent's prose ban
-  that contradicted the derived profile once cost a run and a review cycle.
+  sentence that names the native process profile and says it governs that
+  mechanism; explicit task constraints and the assigned edit target still bind.
+  Per-call access may only lower the captured profile, never mint task authority.
+  Do not parse assignment prose to choose a profile or repeat competing native
+  access instructions; preserve owner constraints in the complete work order.
   `subagents.route_health`
   is the ONE route reader for every consumer; quota readers project one
   `ClaudexorGateway.quota_state()` envelope
@@ -1403,6 +1405,11 @@ by "Provider Independence" above. Call-site imperatives:
   cleanup, not just the copy result; one operation-scoped memo may reuse
   verified work but must not cache failure as success or survive as a second
   store.
+- Mirror a split root's actual execution start and child-drive binding into its
+  canonical result through the existing terminal-preserving writer.
+  Recover a legacy missing binding only from positive known-child start evidence
+  plus the existing fresh-queue/later-worker orphan proof, never while pending or
+  actively cancelled and never as permission to resume execution.
 - Pooled terminal file preparation belongs to
   `headless.prepare_terminal_task_files` at the worker's own task_done
   boundary, after blocking post-task work and before releasing the slot;

@@ -883,6 +883,21 @@ def materialize_repo_diff_evidence(
     }
 
 
+def _matching_projection(drive_root: Any, call: Dict[str, Any]) -> Dict[str, Any]:
+    """Read the call's redacted observability projection, verified to be the same call."""
+    from ouroboros.observability import read_blob_ref
+
+    trace = call.get("trace_ref") if isinstance(call.get("trace_ref"), dict) else {}
+    payload = read_blob_ref(pathlib.Path(drive_root), trace.get("redacted_projection_ref") or {})
+    # An absent tool_call_id cannot identify a call, so it never matches. The
+    # argument gap publishes this text; the result fallback swallows it.
+    if (not isinstance(payload, dict) or not call.get("tool_call_id")
+            or payload.get("tool_call_id") != call["tool_call_id"]
+            or payload.get("tool") != call.get("tool")):
+        raise ValueError("argument source does not match the tool call")
+    return payload
+
+
 def materialize_tool_args_source(drive_root: Any, call: Dict[str, Any]) -> tuple[Any, bool, Dict[str, Any]]:
     """Recover logging-sanitizer omissions from the existing redacted call blob."""
     args = call.get("args")
@@ -896,12 +911,8 @@ def materialize_tool_args_source(drive_root: Any, call: Dict[str, Any]) -> tuple
     trace = call.get("trace_ref") if isinstance(call.get("trace_ref"), dict) else {}
     ref = trace.get("redacted_projection_ref") or {}
     try:
-        from ouroboros.observability import read_blob_ref
-        payload = read_blob_ref(pathlib.Path(drive_root), ref)
-        if (not isinstance(payload, dict) or "args" not in payload
-                or not call.get("tool_call_id")
-                or payload.get("tool_call_id") != call["tool_call_id"]
-                or payload.get("tool") != call.get("tool")):
+        payload = _matching_projection(drive_root, call)
+        if "args" not in payload:
             raise ValueError("argument source does not match the tool call")
         return payload["args"], True, {}
     except (OSError, TypeError, ValueError) as exc:
@@ -913,8 +924,7 @@ def materialize_tool_args_source(drive_root: Any, call: Dict[str, Any]) -> tuple
 def materialize_tool_result_source(
     drive_root: Union[pathlib.Path, str], task_id: str, call: Dict[str, Any],
 ) -> tuple[Any, bool, Dict[str, Any]]:
-    """Return the exact result behind a partial task trace, or a typed gap."""
-
+    """Materialize a result under existing redaction; metadata carries its source or gap."""
     result = call.get("result")
     legacy_match = (
         _LEGACY_TOOL_RESULT_TRUNCATION_RE.search(result)
@@ -928,23 +938,29 @@ def materialize_tool_result_source(
     if not call.get("result_partial") and not legacy_partial:
         return result, True, {}
     ref = call.get("result_source_ref") if isinstance(call.get("result_source_ref"), dict) else {}
+    gap = {
+        "tool_call_id": str(call.get("tool_call_id") or ""), "tool": str(call.get("tool") or ""),
+        "status": "source_unavailable", "source_ref": ref,
+    }
     if legacy_partial:
-        return result, False, {
-            "tool_call_id": str(call.get("tool_call_id") or ""),
-            "tool": str(call.get("tool") or ""), "status": "source_unavailable",
-            "reason": "legacy_actor_truncation_without_source_ref", "source_ref": {},
-        }
+        gap.update(reason="legacy_actor_truncation_without_source_ref", source_ref={})
+    else:
+        try:
+            return read_actor_source_bytes(drive_root, task_id, ref).decode("utf-8"), True, {}
+        except (OSError, UnicodeError, TypeError, ValueError) as exc:
+            gap.update(reason=f"{type(exc).__name__}: {exc}",
+                       declared_status=str(call.get("result_source_status") or ""))
     try:
-        return read_actor_source_bytes(drive_root, task_id, ref).decode("utf-8"), True, {}
-    except (OSError, UnicodeError, TypeError, ValueError) as exc:
-        return result, False, {
-            "tool_call_id": str(call.get("tool_call_id") or ""),
-            "tool": str(call.get("tool") or ""),
-            "status": "source_unavailable",
-            "declared_status": str(call.get("result_source_status") or ""),
-            "reason": f"{type(exc).__name__}: {exc}",
-            "source_ref": ref,
-        }
+        payload = _matching_projection(drive_root, call)
+        if isinstance(payload.get("result"), str):
+            text = payload["result"]
+            _, recovered_ref, issue = persist_exact_text_source(
+                drive_root, task_id, source_id=call["tool_call_id"], text=text,
+            )
+            return text, True, {"source_ref": {} if issue else recovered_ref}
+    except Exception:
+        pass  # A missing or corrupt projection preserves the primary-source failure.
+    return result, False, gap
 
 
 def store_chat_media_bytes(
@@ -1255,20 +1271,16 @@ def registered_task_artifact(drive_root: Any, task_id: str, name: str) -> Option
     return dict(row) if isinstance(row, dict) else None
 
 
-def _artifact_versions_dir(drive_root: pathlib.Path, task_id: str, artifact_name: str) -> pathlib.Path:
-    safe_name = pathlib.Path(artifact_name).name.replace("/", "_").replace("\\", "_")
-    if not safe_name or safe_name in {".", ".."}:
-        safe_name = "artifact"
-    return pathlib.Path(drive_root) / "task_results" / _ARTIFACT_VERSIONS_DIR / validate_task_id(task_id) / safe_name
-
-
 def _archive_previous_artifact_version(drive_root: pathlib.Path, task_id: str, dest: pathlib.Path, source: pathlib.Path) -> None:
     if not dest.is_file() or not source.is_file():
         return
     previous = stream_artifact_file(dest)
     if previous == stream_artifact_file(source):
         return
-    version_dir = _artifact_versions_dir(drive_root, task_id, dest.name)
+    safe_name = pathlib.Path(dest.name).name.replace("/", "_").replace("\\", "_")
+    if not safe_name or safe_name in {".", ".."}:
+        safe_name = "artifact"
+    version_dir = pathlib.Path(drive_root) / "task_results" / _ARTIFACT_VERSIONS_DIR / validate_task_id(task_id) / safe_name
     version_dir.mkdir(parents=True, exist_ok=True)
     suffix = dest.suffix
     stem = dest.name[: -len(suffix)] if suffix else dest.name
