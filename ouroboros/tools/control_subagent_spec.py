@@ -26,6 +26,7 @@ def schedule_subagent_properties() -> Dict[str, Any]:
     Returns a FRESH mapping per call, exactly as the inline literal did, so a caller that mutates
     a returned schema cannot corrupt every later `get_tools()`."""
     from ouroboros.tool_access import SUBAGENT_CAPABILITIES
+    from ouroboros.configured_subagents import SESSION_ACCESS_LOWERING
 
     return {
         "subagent_id": {
@@ -35,6 +36,10 @@ def schedule_subagent_properties() -> Dict[str, Any]:
                 "snapshotted into the child, so later Settings edits do not retarget it."
             ),
         },
+        "access": {"type": "string", "enum": list(SESSION_ACCESS_LOWERING), "description":
+            "Optional native-access reduction for an Agent session: readonly or workspace_write. "
+            "Omit to inherit the owner's row (new mutating sessions default to full). "
+            "This does not change write_surface or grant task authority; readonly tasks stay readonly."},
         "objective": {"type": "string", "description": "Focused child objective. Be specific about scope. State the OUTCOME you need, not a step-by-step script: on a delegated (harness) dispatch the child forwards the work to its own delegated run, and a script-shaped objective reads as orders to execute natively."},
         "expected_output": {"type": "string", "description": "Concrete handoff expected from the child."},
         "role": {"type": "string", "description": "Optional freeform role label for lineage/UI, e.g. architecture-reviewer."},

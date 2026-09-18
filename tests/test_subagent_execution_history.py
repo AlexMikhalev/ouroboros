@@ -61,7 +61,7 @@ def test_api_failure_fallback_and_retry_reach_next_task_context(tmp_path, monkey
 
 def test_recovery_settlement_and_refused_start_share_history(tmp_path, monkeypatch):
     monkeypatch.setattr("ouroboros.config.DATA_DIR", tmp_path)
-    request = {"model": "fixture", "effort": "high", "credentialProfileId": "account-a"}
+    request = {"model": "fixture", "effort": "high", "credentialProfileId": "account-a", "access": "full"}
     custody.record_start_requested(tmp_path, invocation_id="invoke", selected_subagent_id="worker",
                                   route="codex", request=request, task_id="task-history")
     custody.emit(tmp_path, custody.START_FAILED, {"invocation_id": "invoke", "definite": False,
@@ -72,6 +72,7 @@ def test_recovery_settlement_and_refused_start_share_history(tmp_path, monkeypat
                                                 "reason": "quota_exhausted"})
     row = subagent_last_delegation(tmp_path)
     assert row["outcome"] == "not_started" and row["requested_profile"] == "account-a"
+    assert row["identity"]["access"] == "full"
     assert row["observed_at"] == uncertain["observed_at"]
     entry = custody.RunCustody(run_id="run-new", task_id="task-history", route_id="codex", model="fixture",
                                selected_subagent_id="worker", profile_id="account-a")
@@ -111,6 +112,7 @@ def test_pre_invocation_session_refusal_is_dated_at_its_existing_producer(tmp_pa
     from ouroboros.subagent_bootstrap import _record_startup_refusal
     monkeypatch.setattr("ouroboros.subagent_runtime.current_subagent_alternatives", lambda *_: [])
     task = _task("agent_session", "codex=fixture")
+    task["configured_subagent"]["access"] = "workspace_write"
     ctx = SimpleNamespace()
     _record_startup_refusal(ctx, task, reason="route_disabled")
     _store_task_result(SimpleNamespace(drive_root=tmp_path), task, "Could not start", {}, {"tool_calls": []})
@@ -118,3 +120,4 @@ def test_pre_invocation_session_refusal_is_dated_at_its_existing_producer(tmp_pa
     assert row["outcome"] == "not_started" and row["failure_code"] == "route_disabled"
     assert row["occurred_at"] == task["subagent_availability"]["observed_at"]
     assert row["task_id"] == task["id"]
+    assert row["identity"]["access"] == "workspace_write"

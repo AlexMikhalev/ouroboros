@@ -35,7 +35,9 @@ def execution_identity(snapshot: Mapping[str, Any]) -> dict[str, str]:
             "target_id": str(route.get("target_id") or ""),
             "credential_profile_id": str(route.get("credential_profile_id") or ""),
             "effort": str(snapshot.get("effort") or ""),
-            "processing_preference": str(snapshot.get("processing_preference") or "")}
+            "processing_preference": str(snapshot.get("processing_preference") or ""),
+            **({"access": str(snapshot.get("access", "workspace_write"))}
+               if route.get("kind") == "agent_session" else {})}
 
 
 def record_last_delegation(*, route: str, requested_model: str, applied_model: str,
@@ -155,6 +157,7 @@ def record_session_execution(drive_root, custody, detail: Mapping[str, Any], obs
     identity = {"kind": "agent_session",
                 "target_id": custody.route_id + ("=" + custody.model if custody.model else ""),
                 "credential_profile_id": custody.profile_id,
+                "access": str(request.get("access") or custody.access or ""),
                 "effort": str(request.get("effort") or ""),
                 "processing_preference": str((invocation.get("processing") or {}).get("requested") or "")}
     record_last_delegation(
@@ -186,5 +189,6 @@ def record_session_start_failure(drive_root, event: Mapping[str, Any]) -> None:
         occurred_at=str(event.get("ts") or ""), outcome="not_started" if event.get("definite") else "unknown",
         failure_code=str(event.get("reason") or ""), identity={
             "kind": "agent_session", "target_id": route + ("=" + model if model else ""),
+            "access": str(request.get("access") or ""),
             "credential_profile_id": pin, "effort": str(request.get("effort") or ""),
             "processing_preference": str((invocation.get("processing") or {}).get("requested") or "")})

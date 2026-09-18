@@ -626,18 +626,6 @@ def _find_operation(argv: list[str]) -> str:
     return "static_introspection"
 
 
-def _find_has_explicit_start_path(argv: list[str]) -> bool:
-    for token in (str(item or "") for item in argv[1:]):
-        if not token:
-            continue
-        if token == "--":
-            continue
-        if token in _FIND_EXPRESSION_MARKERS or token.startswith("-"):
-            return False
-        return True
-    return False
-
-
 def _git_work_dir(ctx: Any, argv: list[str], initial_work_dir: pathlib.Path) -> pathlib.Path:
     work_dir = pathlib.Path(initial_work_dir)
     idx = 1

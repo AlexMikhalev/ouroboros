@@ -245,6 +245,7 @@ export function rowMeta(row, state, errors) {
     const sameRoute = identity && identity.kind === row.route.kind
         && identity.target_id === row.route.target_id
         && identity.credential_profile_id === String(routePin(row.route) || '')
+        && (!session || identity.access === String(row.access || 'full'))
         && identity.effort === String(row.effort || '')
         && identity.processing_preference === String(row.processing_preference || state.processingPreference || '');
     const historyLabel = identity ? (sameRoute ? 'Last run' : 'Earlier settings') : 'Last actual run';

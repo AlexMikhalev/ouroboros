@@ -140,13 +140,19 @@ def test_pending_survives_reconnect_draft_and_restart_request(settings_server, e
             actor = {"subagent_id": "fixture-helper", "recommended_use": "Fixture helper",
                      "route": {"kind": "api_model", "target_id": "openai-compatible::mock-model"},
                      "effort": "high", "processing_preference": "standard"}
+            session_actor = {"subagent_id": "fixture-session", "recommended_use": "Fixture session",
+                "route": {"kind": "agent_session", "target_id": "codex=fixture-model"},
+                "access": "full", "effort": "high", "processing_preference": "standard"}
             from ouroboros.subagent_history import record_last_delegation, execution_identity
             record_last_delegation(route="api_model", requested_model=actor["route"]["target_id"],
                 applied_model="", run_id="browser-failure", selected_subagent_id="fixture-helper",
                 drive_root=settings_server['data_dir'], occurred_at="2026-09-18T12:00:00Z",
                 outcome="failed", failure_code="quota_exhausted", identity=execution_identity(actor))
+            record_last_delegation(route="codex", requested_model="fixture-model", applied_model="fixture-model",
+                run_id="browser-session", selected_subagent_id="fixture-session", drive_root=settings_server['data_dir'],
+                occurred_at="2026-09-18T12:00:01Z", outcome="succeeded", identity=execution_identity(session_actor))
             response = page.request.post(settings_server['url'] + '/api/settings', data={
-                "OUROBOROS_SUBAGENTS": json.dumps({"enabled": True, "items": [actor]})})
+                "OUROBOROS_SUBAGENTS": json.dumps({"enabled": True, "items": [actor, session_actor]})})
             assert response.ok, response.text()
             open_settings()
             page.locator('[data-settings-tab="agents"]').click()
@@ -157,6 +163,16 @@ def test_pending_survives_reconnect_draft_and_restart_request(settings_server, e
             assert meta.evaluate("node => node.scrollWidth <= node.clientWidth")
             meta.scroll_into_view_if_needed()
             page.screenshot(path=str(evidence / f'subagent-history-{engine}.png'))
+            session_card = page.locator('[data-subagent-row]').nth(1)
+            expect(session_card.locator('[data-subagent-field="access"]')).to_have_value('full')
+            expect(session_card.locator('[data-subagent-meta]')).to_contain_text('Last run:')
+            session_card.screenshot(path=str(evidence / f'subagent-access-history-{engine}.png'))
+            session_card.locator('[data-subagent-field="access"]').select_option('workspace_write')
+            expect(session_card.locator('[data-subagent-meta]')).to_contain_text('Earlier settings:')
+            save()
+            open_settings()
+            page.locator('[data-settings-tab="agents"]').click()
+            expect(page.locator('[data-subagent-field="access"]')).to_have_value('workspace_write')
             assert errors == []
         except Exception:
             evidence = pathlib.Path(os.environ.get('OUROBOROS_UI_EVIDENCE_DIR', str(settings_server['data_dir'].parent)))
