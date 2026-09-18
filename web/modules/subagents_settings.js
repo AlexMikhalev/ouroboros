@@ -834,8 +834,7 @@ export function createAvailableSubagentsEditor({
             const parsed = parseAvailableSubagentsSetting(response?.available_subagents);
             if (!parsed.setting) return { applied: false, error: parsed.error };
             load(parsed.setting, { source: 'configured_by_owner', diagnostics: response?.diagnostics || [] });
-            markDirty({ structural: true });
-            paint();
+            markDirty({ structural: true }); paint();
             return { applied: true, error: '' };
         },
         setPreviewFailure,
