@@ -330,10 +330,11 @@ def _run_authored_context_view(messages, ctx, pending, selected_names):
                if selected_names is not None else list(current_tools))
     fit_candidate = ctx.fit_candidate
     if fit_candidate is None:
-        tool_ctx._pending_compaction = None
-        tool_ctx._pending_tool_schema_names = None
-        ctx.emit_progress("Context view kept unchanged: prospective physical fit is unavailable.")
-        return messages
+        # Main's applied route/mode already live on its tool context, including
+        # after a wait or fallback; do not carry a second routing snapshot here.
+        fit_candidate = lambda candidate, selected: _loop()._measure_main_context_view(
+            getattr(tool_ctx, "context_fit_plan", None), candidate, selected,
+            mode, getattr(tool_ctx, "active_effort", "medium"), str(ctx.round_idx))
     if pending is None:
         # Schema-only enablement uses the same candidate fit/publication. It
         # does not fabricate an authored note or rewrite existing history.

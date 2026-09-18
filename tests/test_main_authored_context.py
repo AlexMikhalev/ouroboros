@@ -285,6 +285,7 @@ def test_successful_fallback_owns_the_next_authored_view(main_loop, monkeypatch)
            {"content": "done"}])
     assert [row["model"] for row in f.inputs] == ["openai/test-model", "openai/test-model", "openai/alternate", "openai/alternate"]
     assert f.ctx._context_view_receipt["status"] == "applied"
+    assert f.ctx._context_view_receipt["fit"]["route_fp"] == "fallback-route"
     assert "The fallback retained the source." in str(f.inputs[-1]["messages"])
     checkpoint = json.loads(read_actor_source_bytes(f.ctx.drive_root, "authored-main", f.ctx._context_view_receipt["checkpoint_ref"]))
     assert checkpoint["messages"] == f.inputs[2]["messages"]
