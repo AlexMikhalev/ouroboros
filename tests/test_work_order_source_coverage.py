@@ -102,7 +102,7 @@ def test_actor_first_coordination_appendix_preserves_complete_text():
 
     authority = SimpleNamespace(delegated=False, access="readonly")
     context = " \n" + "яё𐍈🚀\n" * 55_000 + "DECISIVE_TAIL\n "
-    instructions = delegate._build_start_instructions(authority, coordination_context=context)
+    instructions = delegate._host_instructions(authority, coordination_context=context)
     assert instructions.endswith(context)
     assert "git commit" in instructions
     assert "OMISSION NOTE" not in instructions

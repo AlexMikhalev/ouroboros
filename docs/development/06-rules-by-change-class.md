@@ -575,9 +575,11 @@ both critical. The imperatives:
   Redacted review evidence never substitutes for the original requirement text.
   Access is stated ONCE, by the host, from the typed run shape: `_host_instructions`
   renders `delegate_start_instructions.access_instruction(shape.access)` as one
-  sentence that names the profile and says it governs. Assignment prose about
-  access is CONTEXT, never authority, and is never parsed: a parent's prose ban
-  that contradicted the derived profile once cost a run and a review cycle.
+  sentence that names the native process profile and says it governs that
+  mechanism; explicit task constraints and the assigned edit target still bind.
+  Per-call access may only lower the captured profile, never mint task authority.
+  Do not parse assignment prose to choose a profile or repeat competing native
+  access instructions; preserve owner constraints in the complete work order.
   `subagents.route_health`
   is the ONE route reader for every consumer; quota readers project one
   `ClaudexorGateway.quota_state()` envelope
