@@ -434,6 +434,8 @@ def observe_campaign_usage(api_key: str, campaign: CampaignBudget,
         value = None
         try:
             value = key_usage(api_key, timeout=remaining)
+            if time.monotonic() > deadline:
+                raise TimeoutError("usage confirmation arrived after its shared deadline")
             validate_usage(value, previous)
         except Exception as exc:  # Provider/transport/parse failures share the bounded confirmation.
             last_error = exc

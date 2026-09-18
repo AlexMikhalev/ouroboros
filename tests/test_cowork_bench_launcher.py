@@ -642,7 +642,7 @@ def test_meter_http_read_requests_uncached_data_with_remaining_timeout(monkeypat
         received.append((dict(request.header_items()), timeout))
         return io.BytesIO(b'{"data":{"usage":123.5}}')
     monkeypatch.setattr(budgets.urllib.request, "urlopen", response)
-    assert budgets.key_usage("not-a-real-key", timeout=2.25) == 123.5
+    assert budgets._read_usage_http("not-a-real-key", budgets._KEY_USAGE_URL, timeout=2.25) == 123.5
     assert received[0][0]["Cache-control"] == "no-cache"
     assert received[0][1] == 2.25
 
@@ -844,3 +844,21 @@ def test_cleanup_logs_survivor_ids_and_still_refuses_custody_release(monkeypatch
     record = json.loads(capsys.readouterr().out)
     assert record == {"event": "cowork_cleanup_remaining", "resource": "container",
                       "run_label": "owned-run", "remaining_ids": ["owned-survivor"]}
+
+
+def test_late_valid_confirmation_is_not_accepted_even_if_reader_returns_it(supervised, monkeypatch):
+    _args, _bench, _env, budget, _events, _handlers, _proc = supervised
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(launcher, "time", SimpleNamespace(
+        monotonic=lambda: clock.now, time=lambda: clock.now,
+        sleep=lambda seconds: setattr(clock, "now", clock.now + seconds)))
+    def late(_key, *, timeout):
+        clock.now += timeout + 1
+        return 101.0
+    monkeypatch.setattr(launcher, "key_usage", late)
+    diagnostics = []
+    with pytest.raises(TimeoutError, match="shared deadline"):
+        launcher.observe_campaign_usage("not-a-real-key", budget, diagnostics, phase="poll")
+    assert budget.record["last_usage"] == 100
+    assert diagnostics[0]["observed_usage"] == 101
+    assert diagnostics[0]["accepted"] is False
