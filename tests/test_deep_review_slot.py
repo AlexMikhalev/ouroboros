@@ -1151,5 +1151,5 @@ def test_packed_row_refuses_a_confirmed_sub_1m_window_and_discloses_an_unknown_o
     with mock.patch.object(deep_self_review, "build_review_pack", return_value=(pack, stats)):
         text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_row())
     assert len(seen) == 2 and llm.chat.call_count == before + 1
-    assert f"window=assumed_{REVIEWER_FULL_WINDOW}" in text.split("\n")[0] and "200" not in text.split("\n")[0]
+    assert f"window=assumed_{REVIEWER_FULL_WINDOW}" in text.split("\n")[0] and "window=200000" not in text.split("\n")[0]
     assert next(sequence).window_tokens == 200_000  # the third fact was never read

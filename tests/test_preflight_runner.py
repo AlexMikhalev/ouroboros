@@ -2949,6 +2949,82 @@ def test_a_green_pass_cannot_leak_a_child_into_the_next_pass(tmp_path, two_pass_
 
 
 @requires_preflight_plugins
+@pytest.mark.skipif(os.name == "nt", reason="POSIX detached-process cleanup")
+def test_hermetic_pytest_reaps_owned_children_and_preserves_unrelated_process(
+    tmp_path, two_pass_env, monkeypatch,
+):
+    """The two-pass gate must clean its own children without claiming the host.
+
+    The pytest-lane counterpart of test_preflight_node.py's
+    `test_relative_root_reaps_owned_children_and_preserves_unrelated_process`:
+    a process the gate never started, whose argv merely NAMES a path under the
+    disposable temp root, must survive both the between-pass boundary and the
+    teardown `finally`. The temp root is pinned here only so the stranger can
+    name it before the run starts. A command-line search is intercepted even on
+    regression, so this test can never signal arbitrary host processes; real
+    container discovery still runs and still has to reap the probe's orphan."""
+    from ouroboros.preflight_runner import run_hermetic_pytest
+
+    temp_root = (tmp_path / "preflight-root").resolve()
+    temp_root.mkdir()
+    monkeypatch.setattr(tempfile, "mkdtemp", lambda *a, **k: str(temp_root))
+    marker = tmp_path / "owned.pid"
+    repo = _make_repo(tmp_path, {
+        "tests/test_leaks_a_child.py": f"""
+            import pathlib
+            import subprocess
+            import sys
+
+
+            def test_spawns_a_child_and_passes():
+                child = subprocess.Popen(
+                    [sys.executable, "-c", "import time; time.sleep(180)"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                pathlib.Path(r'{marker}').write_text(str(child.pid), encoding="utf-8")
+        """,
+    })
+    stranger = subprocess.Popen(
+        [sys.executable, "-c", "import time; print('ready', flush=True); time.sleep(120)",
+         str(temp_root / "repo" / "unrelated.host.service")],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        start_new_session=True,
+    )
+    original_run = subprocess.run
+    broad_queries = []
+
+    def record_process_search(argv, *args, **kwargs):
+        if list(argv[:2]) == ["pgrep", "-f"]:
+            broad_queries.append(argv)
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        return original_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", record_process_search)
+    try:
+        assert stranger.stdout.readline().strip() == "ready"
+        assert run_hermetic_pytest(repo, timeout=180) is None
+        assert not broad_queries, "preflight rediscovered process ownership from command-line text"
+        assert stranger.poll() is None, "an unrelated process was killed because its argv named a path"
+        assert marker.exists(), "the owned probe never spawned its child"
+        owned = int(marker.read_text(encoding="utf-8").strip())
+        deadline = time.monotonic() + 10
+        while pid_is_alive(owned) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not pid_is_alive(owned), "an owned orphan survived the gate"
+    finally:
+        if marker.exists():
+            leaked = int(marker.read_text(encoding="utf-8").strip())
+            if pid_is_alive(leaked):
+                force_kill_pid(leaked)
+        stranger.terminate()
+        stranger.wait(timeout=10)
+        stranger.stdout.close()
+
+
+@requires_preflight_plugins
 def test_worker_crash_is_hard_block(tmp_path, two_pass_env):
     """A dead xdist worker is a HARD BLOCK with mark-it-serial remediation, never
     an ordinary failure and never a retryable flake. Fail-fast: no pass 2."""

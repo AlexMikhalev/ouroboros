@@ -51,7 +51,8 @@ Evidence:
       every section relevant to this change in full.
 - [ ] I updated tests and documentation where behavior or architecture changed.
 - [ ] I did not include secrets, local settings, runtime state, logs, caches, or
-      generated build/review artifacts in the commit.
+      generated build/review artifacts in the commit; tracked material follows
+      DEVELOPMENT.md "Documentation contract" (including plans and optional reports).
 - [ ] I did **not** bump `VERSION` or release-only version carriers; maintainers
       assign the collision-free release version during final integration.
 

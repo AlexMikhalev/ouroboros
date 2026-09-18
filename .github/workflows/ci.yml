@@ -1076,11 +1076,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-      - name: v7next adoption release bar
-        # The campaign ledger's release gate (every transplanted delta done or an
-        # explicit post-release row with its authority) runs on the tag path itself,
-        # not only inside the pytest wrapper (batch №13 item 4).
-        run: python scripts/v7next_adoption.py --release
       - name: Validate tag matches VERSION
         id: release_meta
         run: |

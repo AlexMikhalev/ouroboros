@@ -495,7 +495,7 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
 
 
 def _perform_owner_restart(ctx: Any, reply=None) -> tuple[bool, str]:
-    """One owner restart operation, shared by the live bus and startup controls."""
+    """Run the owner restart operation with an optional transport notice."""
     ok, restart_msg = _safe_restart_serialized(
         ctx.safe_restart,
         reason="owner_restart",
@@ -522,6 +522,8 @@ def _perform_owner_restart(ctx: Any, reply=None) -> tuple[bool, str]:
     stopped_task_ids = _stop_owned_work(ctx)
     try:
         if reply is not None:
+            # Say only what happened: with nothing owned the stop sentence
+            # named a task that was never running.
             reply(
                 "Stopping active task. New settings apply to the next message."
                 if stopped_task_ids else "New settings apply to the next message.",

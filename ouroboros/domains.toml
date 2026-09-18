@@ -1,6 +1,5 @@
-# Production domain manifest — module -> domain, 1:1, for every runtime module
-# (plan §7.1, CPL-1). The Ф0 report-only stage lived at scripts/v7next_domains.toml;
-# this file is its production successor and the SSOT the domain gates read.
+# Production domain manifest — module -> domain, 1:1, for every runtime module.
+# This is the SSOT the domain gates read.
 #
 # Structure:
 #   - [domains] / [modules] / [classification] are HUMAN sections: the domain
@@ -618,19 +617,10 @@ D20 = "Presence"
 "supervisor/telemetry_events.py" = "D08"
 
 [classification]
-# The 80 new-upstream module placements this campaign derived rode here as
-# `proposed` (owner review pending) until owner batch №9 №10=A (2026-09-01)
-# accepted them as the 7.0 base; nine of them (the Presence family) had been
-# approved earlier under 4.2=A. The assignment itself lives in [modules] and
-# is unchanged by the acceptance — what is gone is the review marker, so
-# docs/DOMAIN_MAP.md no longer stars any row. A future placement that is
-# genuinely undecided goes back on this list rather than into [modules]
-# silently.
+# Module placements needing owner review are listed here and starred in
+# docs/DOMAIN_MAP.md. Accepted assignments remain in [modules]; an undecided
+# placement belongs on this list rather than being silently accepted.
 proposed = []
-
-# The Ф0 [split_pending]/[split_pending_leaves] sections are retired: every row
-# was resolved during F2 (dispositions recorded in docs/v7next/LEDGER_CORRECTIONS.md,
-# owner decisions 2026-08-31).
 
 # --- BEGIN GENERATED (python scripts/check_domains.py --write) ---
 # Factual dependency data of the live tree, pinned as baseline data.

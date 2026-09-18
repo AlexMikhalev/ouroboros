@@ -196,8 +196,8 @@ from ouroboros.settings_integrity import (  # noqa: E402, F401 — public config
 RESTART_EXIT_CODE = 42
 PANIC_EXIT_CODE = 99
 AGENT_SERVER_PORT = 8765
-# --- Usage-ledger compaction policy (CPL4-C6, owner sanction 1A) -------------
-# docs/v7next/DESIGN_USAGE_COMPACTION.md. Constants, not env knobs. Compact the
+# --- Usage-ledger compaction policy -----------------------------------------
+# docs/USAGE_COMPACTION.md. Constants, not env knobs. Compact the
 # monetary ledger once its byte size reaches ~0.2s-per-cold-replay scale, well
 # under the measured 20MB degradation point (USAGE_LEDGER_WARN_BYTES in
 # context_budget.py), which stays as the broken-compaction regression tripwire.
