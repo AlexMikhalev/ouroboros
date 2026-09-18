@@ -893,10 +893,13 @@ jobs:
           echo "ANDROID_AVD_HOME=$AVD_HOME" >> "$GITHUB_ENV"
           echo "ANDROID_USER_HOME=$USER_HOME" >> "$GITHUB_ENV"
           export ANDROID_AVD_HOME="$AVD_HOME" ANDROID_USER_HOME="$USER_HOME"
+          IMAGE="system-images;android-${{ matrix.api-level }};default;x86_64"
+          # API 26's default image has no loadable WebView; use Chromium's Oreo test image.
+          if [ "${{ matrix.api-level }}" = "26" ]; then IMAGE="system-images;android-26;google_apis;x86"; fi
           sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" \
-            "emulator" "system-images;android-${{ matrix.api-level }};default;x86_64"
+            "emulator" "$IMAGE"
           echo "no" | avdmanager create avd --force --name "obo-api-${{ matrix.api-level }}" \
-            --package "system-images;android-${{ matrix.api-level }};default;x86_64" \
+            --package "$IMAGE" \
             --device "pixel_2"
           "$ANDROID_HOME/emulator/emulator" -list-avds
       - name: Build disposable test APK
@@ -959,10 +962,25 @@ jobs:
           SCREENSHOTS="$RUNNER_TEMP/android-smoke/screenshots"
           mkdir -p "$SCREENSHOTS"
           capture_native_ui() {
-            adb shell uiautomator dump /data/local/tmp/obo-native-ui.xml
-            adb pull /data/local/tmp/obo-native-ui.xml "$SCREENSHOTS/$1.xml"
-            adb exec-out screencap -p > "$SCREENSHOTS/$1.png"
+            local capture_status=1
+            # A newly displayed window can briefly have no accessibility root.
+            for attempt in $(seq 1 5); do
+              rm -f "$SCREENSHOTS/$1.xml"
+              if timeout 10s adb shell rm -f /data/local/tmp/obo-native-ui.xml \
+                && timeout 10s adb shell uiautomator dump /data/local/tmp/obo-native-ui.xml \
+                && timeout 10s adb pull /data/local/tmp/obo-native-ui.xml "$SCREENSHOTS/$1.xml" \
+                && test -s "$SCREENSHOTS/$1.xml"; then
+                capture_status=0
+                break
+              else
+                capture_status=$?
+              fi
+              sleep 1
+            done
+            # Keep the actual screen even when every XML capture failed.
+            timeout 10s adb exec-out screencap -p > "$SCREENSHOTS/$1.png"
             test -s "$SCREENSHOTS/$1.png"
+            return "$capture_status"
           }
           capture_native_ui 01-access-setup
           grep -Fq 'text="Ouroboros access to your phone"' "$SCREENSHOTS/01-access-setup.xml"

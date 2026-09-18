@@ -317,3 +317,102 @@ def test_attestation_command_failure_excludes_android_but_stops_desktop(tmp_path
         assert output.read_text(encoding="utf-8").strip() == "android_result=" + outcome
         observed = calls.read_text(encoding="utf-8").splitlines()
         assert {release_asset_name(key, version) for key in DESKTOP_DOWNLOAD_IDS} <= set(observed)
+
+
+@pytest.mark.parametrize("api", [26, 29, 30, 33, 36])
+@pytest.mark.skipif(os.name == "nt", reason="Exercises the Ubuntu emulator setup's Bash step")
+def test_emulator_image_selection_uses_google_apis_only_for_oreo(tmp_path, api):
+    import shutil
+    import subprocess
+    import yaml
+
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("the workflow's Bash runner is unavailable")
+    jobs = yaml.safe_load((REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8"))["jobs"]
+    script = next(step["run"] for step in jobs["android-emulator-smoke"]["steps"]
+                  if step.get("name") == "Install emulator API and compiler")
+    script = script.replace("${{ matrix.api-level }}", str(api))
+    sdk = tmp_path / "sdk"
+    (sdk / "emulator").mkdir(parents=True)
+    executable = sdk / "emulator/emulator"
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+    setup = ('sdkmanager() { printf "%s\\n" "$@" > "$RUNNER_TEMP/sdk-args"; }\n'
+             'avdmanager() { cat >/dev/null; printf "%s\\n" "$@" > "$RUNNER_TEMP/avd-args"; }\n')
+    result = subprocess.run([bash, "-c", setup + script], capture_output=True, text=True,
+                            env={**os.environ, "RUNNER_TEMP": str(tmp_path), "ANDROID_HOME": str(sdk),
+                                 "GITHUB_ENV": str(tmp_path / "job-env")})
+    assert result.returncode == 0, result.stderr
+    expected = "system-images;android-26;google_apis;x86" if api == 26 else f"system-images;android-{api};default;x86_64"
+    for name in ("sdk-args", "avd-args"):
+        args = (tmp_path / name).read_text(encoding="utf-8").splitlines()
+        assert [arg for arg in args if arg.startswith("system-images;")] == [expected]
+
+
+@pytest.mark.parametrize(("case", "expected_exit", "attempts"), [
+    ("recover", 0, 3), ("dump_error", 7, 5), ("stale", 9, 5), ("crash_dialog", 1, 1),
+])
+@pytest.mark.skipif(os.name == "nt", reason="Exercises the Ubuntu capture and EXIT trap in Bash")
+def test_emulator_capture_retries_fresh_xml_and_preserves_failure_evidence(tmp_path, case, expected_exit, attempts):
+    import shutil
+    import subprocess
+    import yaml
+
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("the workflow's Bash runner is unavailable")
+    jobs = yaml.safe_load((REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8"))["jobs"]
+    script = next(step["run"] for step in jobs["android-emulator-smoke"]["steps"]
+                  if step.get("name") == "Boot emulator and smoke install/start")
+    capture = "capture_native_ui() {" + script.split("capture_native_ui() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+    trap = next(line for line in script.splitlines() if line.startswith("trap "))
+    assertion = next(line for line in script.splitlines() if line.startswith("grep -Fq 'text="))
+    smoke = tmp_path / "android-smoke"
+    screenshots = smoke / "screenshots"
+    screenshots.mkdir(parents=True)
+    old_xml = '<hierarchy><node text="Ouroboros access to your phone"/></hierarchy>'
+    (tmp_path / "remote.xml").write_text(old_xml, encoding="utf-8")
+    (screenshots / "01-access-setup.xml").write_text(old_xml, encoding="utf-8")
+    (tmp_path / "count").write_text("0", encoding="utf-8")
+    (smoke / "emulator.log").write_text("emulator evidence\n", encoding="utf-8")
+    # Command doubles exercise the real workflow shell, without starting adb or a device.
+    commands = r'''
+set -euo pipefail
+timeout() { shift; "$@"; }
+sleep() { :; }
+kill() { :; }
+adb() {
+  case "$1 $2" in
+    "shell rm") rm -f "$REMOTE_XML" ;;
+    "shell uiautomator")
+      count=$(( $(cat "$COUNT") + 1 )); printf '%s' "$count" > "$COUNT"
+      case "$CASE" in
+        recover) if [ "$count" -lt 3 ]; then return 0; fi ;;
+        dump_error) return 7 ;;
+        stale) return 0 ;;
+        crash_dialog) printf '<hierarchy><node text="Ouroboros has stopped"/></hierarchy>' > "$REMOTE_XML"; return 0 ;;
+      esac
+      printf '<hierarchy><node text="Ouroboros access to your phone"/></hierarchy>' > "$REMOTE_XML"
+      ;;
+    "pull /data/local/tmp/obo-native-ui.xml")
+      if [ ! -s "$REMOTE_XML" ]; then return 9; fi
+      cp "$REMOTE_XML" "$3" ;;
+    "exec-out screencap") printf 'screenshot command executed' ;;
+    "logcat -d") printf 'full logcat evidence' ;;
+    *) return 88 ;;
+  esac
+}
+'''
+    env = {**os.environ, "CASE": case, "COUNT": str(tmp_path / "count"),
+           "REMOTE_XML": str(tmp_path / "remote.xml"), "RUNNER_TEMP": str(tmp_path),
+           "SCREENSHOTS": str(screenshots), "LOG": str(smoke / "emulator.log"), "emulator_pid": "fixture"}
+    result = subprocess.run([bash, "-c", commands + trap + "\n" + capture
+                             + "capture_native_ui 01-access-setup\n" + assertion],
+                            env=env, capture_output=True, text=True)
+    assert result.returncode == expected_exit, result.stderr
+    assert int((tmp_path / "count").read_text(encoding="utf-8")) == attempts
+    assert (screenshots / "01-access-setup.png").read_bytes() == b"screenshot command executed"
+    assert (smoke / "logcat.txt").read_text(encoding="utf-8") == "full logcat evidence"
+    if case in {"stale", "dump_error"}:
+        assert not (screenshots / "01-access-setup.xml").exists()
