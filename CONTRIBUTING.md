@@ -107,11 +107,25 @@ base-to-head range, never uncommitted edits.
 ## 4. Verify the Change
 
 Use [`README.md` → Run from Source](README.md#run-from-source) for setup. Run
-focused tests while developing, then the default local suite when practical:
+focused tests while developing — you choose the narrowest targets that exercise
+the change — then the full local battery when practical:
 
 ```bash
-make test
+python scripts/run_tests.py            # or: make test
 ```
+
+That is the one fast recipe (node lane, then every default-lane test in a single
+xdist run); a bare `pytest tests/` runs the same tests in one process and takes
+many times longer. Like CI's default lanes it leaves out the opt-in marker
+lanes (`size_ratchet`, `browser`, `ui_browser`, `portable_detail`,
+`skill_smoke`, `integration`); a change that touches repository size or a
+reference-book chapter also runs `python -m pytest tests/ -m size_ratchet`. `python scripts/run_tests.py tests/test_x.py` forwards a
+focused run. Inside Ouroboros a reviewed commit (`commit_reviewed` /
+`vcs_commit_reviewed`) runs the complete battery in its hermetic gate unless
+`skip_tests` is set, so running it by hand first is optional rather than a
+second requirement; for a pull request, CI is that gate. If the full battery could
+not finish on your machine or within your budget, say so — `NOT_RUN` with the
+reason — and deliver the focused evidence; never report it as green.
 
 Record exact commands, outcomes, and producer exit codes. If a check could not
 run, record `NOT_RUN` and the reason instead of claiming it passed.

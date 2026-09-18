@@ -13,6 +13,7 @@ import sys
 import tempfile
 import threading
 import time
+import zlib
 
 import pytest
 pytest.register_assert_rewrite("tests.ui_media_delivery_smoke")
@@ -305,6 +306,35 @@ def pytest_collection_modifyitems(config, items):  # noqa: ARG001
     for item in items:
         if pathlib.Path(str(item.fspath)).name in _SERIAL_TEST_FILES:
             item.add_marker(pytest.mark.serial)
+    _pin_lane_groups(items, config.getoption("--serial-shards"))
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--serial-shards", type=int, default=0,
+        help="With `--dist loadgroup`: pin the serial tests to this many file-sharded xdist groups "
+             "so ONE run covers both lanes (scripts/run_tests.py). 0 leaves scheduling untouched.",
+    )
+
+
+def _pin_lane_groups(items, shards: int) -> None:
+    """One-run lane scheduling for `scripts/run_tests.py`; inert (shards == 0) for CI and the gate.
+
+    Under `--dist loadgroup` a serial FILE never splits across workers and never runs beside
+    another file of its own shard, so the shard count bounds how many serial files run at once.
+    Every other test keeps the scope `--dist loadscope` gives the two-pass recipe (file, or class
+    when there is one). Serial tests sort first so their long groups are handed out before the queue drains.
+    It runs inside the tryfirst hook because xdist reads `xdist_group` in the same hook.
+    """
+    if shards <= 0:
+        return
+    for item in items:
+        path = item.nodeid.split("::", 1)[0]
+        serial = item.get_closest_marker("serial") is not None
+        # Serial: by FILE (the isolation unit). Others: the scope `--dist loadscope` uses (class when present).
+        group = f"serial{zlib.crc32(path.encode('utf-8')) % shards}" if serial else item.nodeid.rsplit("::", 1)[0]
+        item.add_marker(pytest.mark.xdist_group(group))
+    items.sort(key=lambda item: item.get_closest_marker("serial") is None)
 
 
 def pytest_sessionstart(session):  # noqa: ARG001
