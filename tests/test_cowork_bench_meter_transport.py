@@ -49,7 +49,19 @@ def meter_endpoint(header_delay, body_delay, usage):
 
 
 @pytest.fixture
-def meter_worker(monkeypatch):
+def meter_worker(monkeypatch, tmp_path):
+    roots = {
+        "OUROBOROS_APP_ROOT": tmp_path,
+        "OUROBOROS_REPO_DIR": tmp_path / "repo",
+        "OUROBOROS_DATA_DIR": tmp_path / "data",
+        "OUROBOROS_SETTINGS_PATH": tmp_path / "data" / "settings.json",
+    }
+    # Exercise CI's absent outer environment after safe module imports. The
+    # fixture supplies the isolated roots whose worker inheritance we assert.
+    for name in roots:
+        monkeypatch.delenv(name, raising=False)
+    for name, path in roots.items():
+        monkeypatch.setenv(name, str(path))
     key = "synthetic-meter-key-never-in-argv"
     monkeypatch.setenv("TEST_METER_SECRET", key)
     monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
@@ -59,7 +71,7 @@ def meter_worker(monkeypatch):
         assert key not in " ".join(command)
         assert key not in kwargs["env"].values()
         assert command[1:3] == ["-I", "-S"]  # No editable finder or live imports.
-        for name in ("OUROBOROS_APP_ROOT", "OUROBOROS_REPO_DIR", "OUROBOROS_DATA_DIR", "OUROBOROS_SETTINGS_PATH"):
+        for name in roots:
             assert kwargs["env"][name] == os.environ[name]
         worker = real_popen(command, **kwargs)
         workers.append(worker)
