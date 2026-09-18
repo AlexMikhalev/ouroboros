@@ -969,7 +969,6 @@ def _delegate_wait(ctx: ToolContext, run_id: str, wait_sec: Optional[int] = None
             if breach:
                 return _halt_breached_run(ctx, gateway, entry, breach)
             if state in _TERMINAL_STATES:
-                was_settled = bool(entry.settled)
                 settlement = custody.settle_run(custody.custody_root(ctx), gateway, entry, detail)
                 payload = _delivered_terminal_payload(ctx, rid, detail, authority, entry, gateway)
                 payload["settlement"] = settlement
@@ -981,23 +980,6 @@ def _delegate_wait(ctx: ToolContext, run_id: str, wait_sec: Optional[int] = None
                     {"gateway": gateway} if entry.resource_ref.get("workspace_kind") == "directory" else {}))
                 if capture is not None:
                     payload["workspace_capture"] = capture
-                # The «last delegated run» settings receipt (Subagents section):
-                # requested vs applied model, written ONLY when THIS call performed
-                # a SUCCESSFUL settlement — a later wait re-reading an already-settled
-                # run must not re-date it (or replace a newer run as "last"), and a
-                # settlement whose durable obligations failed must not mint a receipt
-                # it would re-mint on every retry. The delegated REVIEW sessions never
-                # pass here — they have their own receipt store
-                # (reviewer_slot_last_execution.json).
-                if not was_settled and bool(settlement.get("settled")):
-                    from ouroboros.subagents import record_last_delegation
-                    record_last_delegation(
-                        route=entry.route_id, requested_model=entry.model,
-                        applied_model=str(payload.get("model") or ""), run_id=rid,
-                        selected_subagent_id=entry.selected_subagent_id,
-                        # Applied = the same final attempt as the model; requested replays off STARTED.
-                        requested_profile=entry.profile_id,
-                        applied_profile=str((payload.get("observed_attempt") or {}).get("profile_id") or ""))
                 # D7 made load-bearing: settlement is where "paid for and never read"
                 # becomes permanent, so the parent is told in WORDS here — not left to
                 # infer it from `output_delivery.consumed`. Re-settling an already

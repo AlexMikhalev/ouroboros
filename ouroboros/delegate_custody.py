@@ -229,12 +229,19 @@ def emit(drive_root: Any, kind: str, payload: Dict[str, Any]) -> bool:
     answer.
     """
     try:
-        written = bool(append_jsonl(event_log_path(drive_root), {"ts": utc_now_iso(), "type": kind, **payload}))
+        event = {"ts": utc_now_iso(), "type": kind, **payload}
+        written = bool(append_jsonl(event_log_path(drive_root), event))
     except Exception:
         log.warning("delegate custody row could not be written (%s)", kind, exc_info=True)
         return False
     if not written:
         log.warning("delegate custody row was rejected by the event log (%s)", kind)
+    elif kind == START_FAILED:
+        from ouroboros.subagent_history import record_session_start_failure
+        try:
+            record_session_start_failure(drive_root, event)
+        except Exception:
+            log.debug("Start history unavailable", exc_info=True)
     return written
 
 def daemon_says_absent(exc: Any) -> bool:
@@ -1018,6 +1025,11 @@ def settle_run(drive_root: Any, gateway: Any, custody: RunCustody, detail: Dict[
             if custody.settled:
                 _retire_project_locked(drive_root, gateway, custody)
     if custody.settled:
+        from ouroboros.subagent_history import record_session_execution
+        try:
+            record_session_execution(drive_root, custody, detail, observed)
+        except Exception:
+            log.debug("Session history unavailable", exc_info=True)
         resolve_containment_fault(drive_root, custody, "settled_terminal")
     # CONSUMPTION BEFORE SETTLEMENT is a fact, not a gate; asking before staging
     # now would answer "no omission" for every first settlement (the render-

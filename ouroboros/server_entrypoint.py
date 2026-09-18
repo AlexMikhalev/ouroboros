@@ -73,7 +73,7 @@ def bound_service_socket(drive_root: pathlib.Path, service: str, host: str, port
     The existing port selector chooses the port. Uvicorn accepts this socket on
     Linux, macOS and Windows; no second probe/rebind race or process authority.
     """
-    from ouroboros.server_process import clear_service_binding, record_service_binding
+    from ouroboros.server_process import clear_service_binding, record_service_binding, record_applied_restart_settings
 
     family = socket.AF_INET6 if ":" in host else socket.AF_INET
     sock = socket.socket(family, socket.SOCK_STREAM)
@@ -82,6 +82,11 @@ def bound_service_socket(drive_root: pathlib.Path, service: str, host: str, port
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind((host, port))
         address = sock.getsockname()
+        if service in {"main", "host_service"}:
+            record_applied_restart_settings({
+                "OUROBOROS_SERVER_HOST" if service == "main" else "OUROBOROS_HOST_SERVICE_PORT":
+                    host if service == "main" else address[1],
+            })
         try:
             binding = record_service_binding(drive_root, service, address[0], address[1], pid=os.getpid())
         except Exception:

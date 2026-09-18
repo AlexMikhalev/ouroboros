@@ -277,68 +277,9 @@ def get_subagent_harness() -> DelegationRoute | None:
 # only — nothing routes off it, and absence is shown as absence.
 # ---------------------------------------------------------------------------
 
-LAST_DELEGATION_FILENAME = "subagent_last_delegation.json"
-
-
-def _last_delegation_path():
-    import pathlib
-
-    from ouroboros.config import DATA_DIR
-
-    return pathlib.Path(DATA_DIR) / "state" / LAST_DELEGATION_FILENAME
-
-
-def record_last_delegation(*, route: str, requested_model: str,
-                           applied_model: str, run_id: str,
-                           selected_subagent_id: str = "",
-                           requested_profile: str = "",
-                           applied_profile: str = "") -> None:
-    """Record the last delegated run's route + requested/applied model + account.
-
-    Best-effort and atomic, in the CANONICAL data plane beside the saved
-    settings (the reviewer-slot projection's own rule): this is UI state, not
-    per-task forensics — those live in the custody event log and the ledger.
-    ``applied_model`` and ``applied_profile`` come from the same final attempt
-    in the engine's telemetry, '' when that attempt disclosed no such fact.
-    Neither the requested model nor a prior attempt supplies missing evidence;
-    ``requested_profile`` is the pin the request carried ('' = rotation) — the
-    two stay separate so a requested-vs-ran mismatch is disclosable, never
-    rewritten.
-    """
-    import json
-
-    from ouroboros.utils import utc_now_iso, write_text_atomic
-
-    try:
-        path = _last_delegation_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # Idempotent per run: a re-read of an ALREADY-terminal run must not
-        # re-stamp `ts`, or the "N ago" line would call an old run fresh.
-        if subagent_last_delegation().get("run_id") == str(run_id or ""):
-            return
-        write_text_atomic(path, json.dumps({
-            "ts": utc_now_iso(),
-            "route": str(route or ""),
-            "requested_model": str(requested_model or ""),
-            "applied_model": str(applied_model or ""),
-            "requested_profile": str(requested_profile or ""),
-            "applied_profile": str(applied_profile or ""),
-            "selected_subagent_id": str(selected_subagent_id or ""),
-            "run_id": str(run_id or ""),
-        }, ensure_ascii=False, indent=1))
-    except Exception:
-        log.debug("subagent last-delegation projection write failed", exc_info=True)
-
-
-def subagent_last_delegation() -> Dict[str, Any]:
-    """Read the projection ({} on any read problem — disclosure only)."""
-    import json
-
-    try:
-        data = json.loads(_last_delegation_path().read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
+from ouroboros.subagent_history import (  # noqa: F401
+    LAST_DELEGATION_FILENAME, record_last_delegation, subagent_last_delegation,
+)
 
 
 @dataclass(frozen=True)

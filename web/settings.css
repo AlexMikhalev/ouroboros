@@ -576,6 +576,11 @@
     text-overflow: ellipsis;
 }
 
+.available-subagent-meta[data-run-history] {
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
 .available-subagent-actions .btn-default {
     min-height: 34px;
     padding: 0 11px;

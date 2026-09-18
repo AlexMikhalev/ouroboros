@@ -955,7 +955,10 @@ def _advisory_pre_sdk_gate(
     state = load_state(drive_root)
 
     # Readiness gate first: reject clean worktree before fresh-run shortcut.
-    readiness_warnings = check_worktree_readiness(repo_dir, paths=paths)
+    readiness_information: List[str] = []
+    readiness_warnings = check_worktree_readiness(repo_dir, paths=paths, information=readiness_information)
+    if readiness_information:
+        ctx.emit_progress_fn("Size headroom (information):\n" + "\n".join(readiness_information))
     if readiness_warnings and any("no uncommitted changes" in w.lower() for w in readiness_warnings):
         ctx.emit_progress_fn(f"⚠️ Advisory readiness gate: {'; '.join(readiness_warnings)}")
         return readiness_warnings, "", _json_response({

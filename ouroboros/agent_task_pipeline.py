@@ -1074,6 +1074,8 @@ def _store_task_result(env: Any, task: Dict[str, Any], text: str,
             **({"swarm_efficiency": swarm_efficiency} if swarm_efficiency else {}),
             ts=utc_now_iso(),
         )
+        from ouroboros.subagent_history import record_task_execution
+        record_task_execution(task, usage, drive_root=task.get("budget_drive_root") or env.drive_root)
     except Exception as e:
         log.warning("Failed to store task result: %s", e)
 

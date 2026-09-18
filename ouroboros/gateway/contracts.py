@@ -824,6 +824,7 @@ class SettingsMeta(SettingsNetworkMeta, total=False):
     setup_contract: Dict[str, Any]
     available_subagents: AvailableSubagentsSettingsMeta
     policy_state: SettingsPolicyState
+    restart_state: Dict[str, Any]
 
 
 class SettingsSaveResponse(TypedDict, total=False):
@@ -831,6 +832,7 @@ class SettingsSaveResponse(TypedDict, total=False):
     no_changes: bool
     restart_required: bool
     restart_keys: list[str]
+    restart_state: Dict[str, Any]
     immediate_changed: bool
     next_task_changed: bool
     warnings: list[str]
@@ -1002,6 +1004,7 @@ class LocalModelStatusResponse(TypedDict, total=False):
     port: int
     message: str
     error: str
+    settings_application: Dict[str, Any]
 
 
 class McpStatusResponse(TypedDict, total=False):

@@ -20,6 +20,19 @@ log = logging.getLogger(__name__)
 
 _LOCAL_MODEL_DEFAULT_PORT = 8766
 
+
+def local_model_settings(values: dict) -> dict:
+    """Effective launch values, shared by execution and saved/applied comparison."""
+    context = int(values.get("LOCAL_MODEL_CONTEXT_LENGTH", 16384))
+    return {
+        "LOCAL_MODEL_SOURCE": str(values.get("LOCAL_MODEL_SOURCE") or "").strip(),
+        "LOCAL_MODEL_FILENAME": str(values.get("LOCAL_MODEL_FILENAME") or "").strip(),
+        "LOCAL_MODEL_PORT": int(values.get("LOCAL_MODEL_PORT", _LOCAL_MODEL_DEFAULT_PORT)),
+        "LOCAL_MODEL_N_GPU_LAYERS": int(values.get("LOCAL_MODEL_N_GPU_LAYERS", 0)),
+        "LOCAL_MODEL_CONTEXT_LENGTH": context if context > 0 else 16384,
+        "LOCAL_MODEL_CHAT_FORMAT": str(values.get("LOCAL_MODEL_CHAT_FORMAT") or "").strip(),
+    }
+
 def _get_install_command() -> list:
     """Return the llama-cpp-python pip install command."""
     from ouroboros.platform_layer import pip_install_target_args
@@ -82,6 +95,8 @@ class LocalModelManager:
         self._serving_context_length: int = 0
         self._measurement_route: bool = False
         self._model_name: str = ""
+        self._launch_settings: dict = {}
+        self._applied_settings: dict = {}
         self._download_progress: float = 0.0
         self._stderr_buf: bytes = b""
         # Runtime (llama-cpp-python) install state
@@ -118,6 +133,25 @@ class LocalModelManager:
             "runtime_status": self._runtime_status,
             "runtime_install_log": self._runtime_install_log[-500:] if self._runtime_install_log else "",
         }
+
+    def settings_application(self, settings: dict) -> dict:
+        """A ready owned process applies its captured inputs; other states do not."""
+        desired = local_model_settings(settings)
+        with self._lock:
+            status = self.get_status()
+            applied = dict(self._applied_settings) if status == "ready" else {}
+        pending = sorted(key for key in desired if key in applied and desired[key] != applied[key])
+        unknown = sorted(set(desired) - set(applied)) if status == "ready" else []
+        if pending:
+            action = "Stop, then Start" if desired["LOCAL_MODEL_SOURCE"] else "Stop"
+            summary = f"Saved local model settings differ from the running model. Use {action} to apply them."
+        elif status != "ready" and desired["LOCAL_MODEL_SOURCE"]:
+            summary = "Local model settings are not applied to a ready model. Use the local model controls to start it."
+        elif unknown:
+            summary = "Some running local model settings were not reported."
+        else:
+            summary = ""
+        return {"status": status, "pending_keys": pending, "unknown_keys": unknown, "summary": summary}
 
     def check_runtime(self) -> bool:
         """Check llama-cpp-python importability and update runtime status."""
@@ -400,6 +434,8 @@ class LocalModelManager:
         n_gpu_layers: int = -1,
         n_ctx: int = 0,
         chat_format: str = "",
+        source: str | None = None,
+        filename: str | None = None,
     ) -> None:
         """Start the server; rechecks runtime as a safety net before Popen."""
         with self._lock:
@@ -410,6 +446,15 @@ class LocalModelManager:
             self._port = port
             self._status = "loading"
             self._error = None
+            launch = local_model_settings({"LOCAL_MODEL_SOURCE": source, "LOCAL_MODEL_FILENAME": filename,
+                "LOCAL_MODEL_PORT": port, "LOCAL_MODEL_N_GPU_LAYERS": n_gpu_layers,
+                "LOCAL_MODEL_CONTEXT_LENGTH": n_ctx, "LOCAL_MODEL_CHAT_FORMAT": chat_format})
+            self._launch_settings = {key: value for key, value in launch.items()
+                                    if not ((key == "LOCAL_MODEL_SOURCE" and source is None)
+                                            or (key == "LOCAL_MODEL_FILENAME" and filename is None))}
+            self._applied_settings = {}
+            self._port = port = launch["LOCAL_MODEL_PORT"]
+            n_gpu_layers, chat_format = launch["LOCAL_MODEL_N_GPU_LAYERS"], launch["LOCAL_MODEL_CHAT_FORMAT"]
 
             python = sys.executable
             cmd = [
@@ -420,7 +465,7 @@ class LocalModelManager:
             ]
             if chat_format:
                 cmd.extend(["--chat_format", chat_format])
-            effective_ctx = n_ctx if n_ctx > 0 else 16384
+            effective_ctx = launch["LOCAL_MODEL_CONTEXT_LENGTH"]
             self._context_length = effective_ctx
 
             self._serving_context_length = effective_ctx
@@ -510,6 +555,8 @@ class LocalModelManager:
         proc = self._proc
         start = time.time()
         while time.time() - start < timeout:
+            if self._proc is not proc:
+                return
             if self._proc is None or self._proc.poll() is not None:
                 self._status = "error"
                 rc = self._proc.returncode if self._proc else "?"
@@ -542,6 +589,7 @@ class LocalModelManager:
                             self._service_binding = None
                             log.warning("Local model service binding unavailable; health remains ready", exc_info=True)
                         self._status = "ready"
+                        self._applied_settings = dict(self._launch_settings)
                         self._context_length = health.get("context_length", 0)
                         self._model_name = health.get("model_name", "")
                     log.info(
@@ -553,6 +601,8 @@ class LocalModelManager:
                 pass
             time.sleep(2.0)
 
+        if self._proc is not proc:
+            return
         self._status = "error"
         self._error = f"Server failed to become healthy within {timeout}s"
         log.error(self._error)
@@ -569,6 +619,7 @@ class LocalModelManager:
             self._proc = None
             self._install_proc = None
             self._status = "offline"
+            self._applied_settings = {}
             self._error = None
             self._context_length = 0
 

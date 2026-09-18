@@ -157,6 +157,7 @@
  * @property {Object=} setup_contract
  * @property {AvailableSubagentsSettingsMeta=} available_subagents
  * @property {SettingsPolicyState=} policy_state
+ * @property {Object=} restart_state Component-owned pending restart/application facts.
  */
 
 /**
@@ -1171,6 +1172,17 @@
  * @property {string=} applied_profile
  * @property {string=} run_id
  * @property {string=} ts
+ * @property {string=} occurred_at
+ * @property {string=} observed_at
+ * @property {string=} outcome
+ * @property {string=} failure_code
+ * @property {string=} reset_at
+ * @property {Object=} identity
+ * @property {Object<string, SubagentLastDelegation>=} latest_by_subagent
+ * @property {string=} task_id
+ * @property {string=} invocation_id
+ * @property {string=} attempt_id
+ * @property {Object=} fallback
  */
 
 /**
