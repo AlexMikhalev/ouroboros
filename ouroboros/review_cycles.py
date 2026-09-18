@@ -14,9 +14,9 @@ identical material is never re-reviewed for pay:
 
 * plan review — paid reviewer-panel cycles per task (the engine consumes the
   getter; this module only exposes it);
-* task acceptance — paid panel runs per task, ``passes = cycles - 1``
-  (``acceptance_max_improvement_passes_from_cycles``), so the default 2 equals
-  the historical default of 1 improvement pass; unlimited → None;
+* task acceptance — paid panel runs per task. The last paid result still
+  permits an author response; only an explicit task-local improvement-pass
+  limit bounds author work, independently of this paid ceiling;
 * commit gate — paid triad+scope cycles per ROOT task (the whole task tree
   shares one ceiling; a manual session is its own task; a follow-up task is a
   fresh root). The paid fact is recorded on the attempt row AT DISPATCH and
@@ -30,8 +30,8 @@ identical material is never re-reviewed for pay:
   the recorded verdict); a rebuttal is content-hashed and a hash new to the
   streak buys exactly ONE paid re-review (a rebuttal is "spent" only when it
   bought a dispatched, verdict-answered wave). Exhaustion under blocking is a
-  free typed refusal; under advisory the commit proceeds with a loud typed
-  disclosure and no further paid dispatch;
+  free typed refusal; under advisory the outcome returns with a typed
+  disclosure for explicit author continuation, without another paid dispatch;
 * skill review — paid reviewer-panel dispatches per ceiling key (the root task
   for task-driven review groups — shared across every skill that task reviews,
   follow-ups start fresh — or, for the manual lane, the CURRENT content
@@ -152,21 +152,14 @@ def review_max_cycles_source() -> str:
     return "owner_setting" if runtime_setting(REVIEW_MAX_CYCLES_KEY, "") else "shipped_default"
 
 
-def acceptance_max_improvement_passes_from_cycles() -> Optional[int]:
-    """Pure formula: task-acceptance improvement passes = shared cycles - 1
-    (2 cycles → 1 pass); ``None`` when the shared cap is unlimited."""
-    cycles = review_max_cycles()
-    return None if cycles is None else max(0, cycles - 1)
-
-
 def get_acceptance_max_improvement_passes() -> Optional[int]:
-    """Acceptance improvement-pass cap = the shared review-cycle cap minus one.
+    """The paid review ceiling never limits ordinary author response work.
 
     The deprecated ``OUROBOROS_ACCEPTANCE_MAX_IMPROVEMENT_PASSES`` no longer binds at runtime:
     a customized value is MIGRATED into the shared knob when settings load (``config``), the
     same rename-alias shape the retention keys use. Disclosed residual: a legacy value supplied
     only through the environment (never saved) is not migrated and no longer binds."""
-    return acceptance_max_improvement_passes_from_cycles()
+    return None
 
 def emit_review_cycles_exhausted(
     event_queue: Any, drive_root: Any, *, surface: str, task_id: str,

@@ -282,7 +282,7 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     # acceptance admission floor, clamped to >=200 s by task_pacing.
     "OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC": 200,
     # Shared paid-review-cycle cap (SSOT + per-gate meaning: ouroboros/review_cycles.py):
-    # STRING "N"|"unlimited": plan review, acceptance (passes = cycles - 1), commit gate and skill review (paid cycles per root task / manual snapshot); identical material is never re-reviewed for pay on any gate.
+    # STRING "N"|"unlimited": paid plan/acceptance/commit/skill waves; final feedback still permits author response. Explicit task-local author limits and free identical-material replay remain separate.
     "OUROBOROS_REVIEW_MAX_CYCLES": "2",
     "OUROBOROS_ACCEPTANCE_RESERVE_PCT": 5,
     # Prompt-cache TTL, one honest GLOBAL override (owner decision 2026-08-08, batch #2 Q2=A): applied to
@@ -446,8 +446,8 @@ def retired_setting_keys_notice(dropped: tuple[str, ...], *, reviewer_slots: tup
         elif state == "invalid":
             panel = (
                 "NO reviewer panel: that setting is malformed, so reviews are refused "
-                "(commit review blocks; under Advisory enforcement it warns and commits "
-                "unreviewed) until it is repaired on the Settings page — %s" % parse_error)
+                "(Blocking prevents committing; Advisory returns the failure for an explicit "
+                "author decision) until it is repaired on the Settings page — %s" % parse_error)
         else:
             panel = "the SHIPPED default reviewer panel until that setting is authored (Settings page)"
         clauses.append(

@@ -1020,7 +1020,7 @@ test('author finish is shown beside raw reviewer signal without becoming PASS', 
     assert.match(html, /REVIEW_REQUIRED/);
 });
 
-test('task acceptance falls back to the explicit durable author decision', () => {
+for (const action of ['finish', 'stop']) test(`task acceptance shows the explicit author ${action}`, () => {
     const detail = {
         task_id: 'root',
         review_projection: { panels: [{
@@ -1030,6 +1030,7 @@ test('task acceptance falls back to the explicit durable author decision', () =>
             status: 'finalized_unaccepted',
             reason: 'author_finish',
             author_disposition: {
+                action,
                 disposition: 'partial',
                 rationale: 'Fixed the defect; deferred the remaining note.',
                 subject_hash: 'binding-123',
@@ -1045,7 +1046,7 @@ test('task acceptance falls back to the explicit durable author decision', () =>
         expandedGroups: new Set([group.id]),
         expandedAttempts: new Set([attemptKey]),
     });
-    assert.match(html, /Author finish: partial/);
+    assert.match(html, new RegExp(`Author ${action}: partial`));
     assert.match(html, /subject_hash=binding-123/);
     assert.match(html, /reviewer signal=REVIEW_REQUIRED/);
     assert.match(html, /REVIEW_REQUIRED/);

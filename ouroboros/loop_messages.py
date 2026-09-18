@@ -139,22 +139,22 @@ def _append_or_merge_user_content(
         if isinstance(content, list):
             new_blocks = list(content)
             if isinstance(prior, list):
-                messages[-1] = {"role": "user", "content": list(prior) + new_blocks}
+                messages[-1] = {**messages[-1], "content": list(prior) + new_blocks}
                 return
             prior_text = prior if isinstance(prior, str) else str(prior or "")
             prefix_block = [{"type": "text", "text": prior_text.rstrip() + "\n\n---\n\n"}] if prior_text else []
-            messages[-1] = {"role": "user", "content": prefix_block + new_blocks}
+            messages[-1] = {**messages[-1], "content": prefix_block + new_blocks}
             return
         text = str(content or "")
         if isinstance(prior, list):
             messages[-1] = {
-                "role": "user",
+                **messages[-1],
                 "content": list(prior) + [{"type": "text", "text": "\n\n---\n\n" + text}],
             }
             return
         prior_text = prior if isinstance(prior, str) else str(prior or "")
         messages[-1] = {
-            "role": "user",
+            **messages[-1],
             "content": (prior_text.rstrip() + "\n\n---\n\n" + text) if prior_text else text,
         }
         return

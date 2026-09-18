@@ -69,7 +69,7 @@ class TestBypassPathTestsRun:
 
         def _fake_parallel(*a, **kw):
             called["parallel"] += 1
-            return None, {}, "", []
+            return None, None, "", []
 
         monkeypatch.setattr(git_mod, "_run_review_preflight_tests", _fake_preflight)
         monkeypatch.setattr(git_mod, "_run_parallel_review", _fake_parallel)
@@ -100,7 +100,7 @@ class TestBypassPathTestsRun:
 
         def _fake_parallel(*a, **kw):
             called["parallel"] += 1
-            return None, {}, "", []
+            return None, None, "", []
 
         monkeypatch.setattr(git_mod, "_run_review_preflight_tests", _fake_preflight)
         monkeypatch.setattr(git_mod, "_run_parallel_review", _fake_parallel)
@@ -138,7 +138,7 @@ class TestBypassPathTestsRun:
 
         def _fake_parallel(*a, **kw):
             called["parallel"] += 1
-            return None, {}, "", []
+            return None, None, "", []
 
         # _aggregate_review_verdict returns (blocked, msg, reason, findings, scope_advisory)
         def _fake_aggregate(*a, **kw):
@@ -233,7 +233,7 @@ class TestBypassPathTestsRun:
 
         def _fake_parallel(*a, **kw):
             called["parallel"] += 1
-            return None, {}, "", []
+            return None, None, "", []
 
         def _fake_aggregate(*a, **kw):
             return False, "", "", [], []
@@ -286,7 +286,7 @@ class TestBypassPathTestsRun:
 
         def _fake_parallel(*a, **kw):
             called["parallel"] += 1
-            return None, {}, "", []
+            return None, None, "", []
 
         monkeypatch.setattr(git_mod, "_run_review_preflight_tests", _fake_preflight)
         monkeypatch.setattr(git_mod, "_run_parallel_review", _fake_parallel)
@@ -329,7 +329,7 @@ class TestRouteSlotAwareBypassGate:
 
         def _fake_parallel(*a, **kw):
             called["parallel"] += 1
-            return None, {}, "", []
+            return None, None, "", []
 
         def _fake_aggregate(*a, **kw):
             return False, "", "", [], []
@@ -459,7 +459,7 @@ class TestRouteSlotAwareBypassGate:
 
         def _fake_parallel(*a, **kw):
             called["parallel"] += 1
-            return None, {}, "", []
+            return None, None, "", []
 
         # The REAL _run_review_preflight_tests stays in place: its env gate
         # must return before ever reaching the hermetic runner.

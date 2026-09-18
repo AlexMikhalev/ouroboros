@@ -24,6 +24,7 @@ from ouroboros.skill_loader import (
     reduce_skill_content_hash,
 )
 from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+from ouroboros.skill_publish_eligibility import publication_author_acceptance
 
 MAX_PUBLIC_PAYLOAD_BYTES = 5 * 1024 * 1024
 
@@ -250,13 +251,13 @@ def capture_skill_publish_candidate(loaded: LoadedSkill) -> SkillPublishSnapshot
 
 
 def capture_skill_publish_snapshot(loaded: LoadedSkill) -> SkillPublishSnapshot:
-    """Capture exact bytes; ordinary publication also requires critic freshness."""
+    """Capture exact bytes and bind their critic or Advisory author authority."""
 
     snapshot = capture_skill_publish_candidate(loaded)
     stored_review_hash = str(loaded.review.reviewed_content_hash or loaded.review.content_hash or "")
     if (
         not stored_review_hash or snapshot.content_hash != stored_review_hash
-    ) and not mode_has_unrestricted_agency(get_runtime_mode()):
+    ) and not mode_has_unrestricted_agency(get_runtime_mode()) and not publication_author_acceptance(loaded.review, snapshot.content_hash):
         raise SkillPublishSnapshotError("snapshot_review_stale")
     return snapshot
 

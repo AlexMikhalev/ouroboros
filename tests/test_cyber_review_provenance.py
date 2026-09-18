@@ -228,6 +228,10 @@ def test_real_task_panel_then_revised_author_finish_preserves_custody(actual_acc
     h.run("Initial answer")
     assert h.state["calls"] == 1 and len(h.physical.calls) == 1
     first = copy.deepcopy(h.trace["review_runs"][-1])
+    if not unknown:
+        import inspect
+        from ouroboros.acceptance_settlement import expose_acceptance_feedback
+        expose_acceptance_feedback(h.trace, inspect.getclosurevars(h.run).nonlocals["messages"], "task")
     h.annotate()
     # A terminal unknown response receives no critic feedback to answer. An
     # unchanged subject must retain its original no-resend custody; explicitly
@@ -239,7 +243,7 @@ def test_real_task_panel_then_revised_author_finish_preserves_custody(actual_acc
     assert decision["status"] == "finalized_unaccepted"
     if unknown:
         assert not first.get("feedback_delivered")
-        assert decision["reason"] == "review_degraded"
+        assert decision["reason"] == "identical_acceptance_refused"
         assert not decision.get("author_disposition")
         actor = first["actors"][0]
         assert actor["operation_state"] == "custody_lost" and actor["late_result_pending"]
@@ -256,7 +260,7 @@ def test_new_subject_after_unknown_review_keeps_the_original_operation(actual_ac
     h.annotate()
     # This fixture uses a fixed task id. Distinct source text keeps process-local
     # unknown-operation custody independent from the preceding parametrized case.
-    assert h.run("Original result for explicit new-subject test") is False
+    assert h.run("Original result for explicit new-subject test") is True  # one unavailable-outcome handback
     first = copy.deepcopy(h.trace["review_runs"][-1])
     h.annotate()
     h.run("A materially revised complete result")
@@ -287,3 +291,41 @@ def test_legacy_settled_review_replays_its_proven_subject_without_key_error(actu
     assert h.trace["review_runs"][-1]["actors"] == old_actors
     assert h.trace["acceptance_decision"]["reason"] != "infra_failure"
     assert "KeyError" not in json.dumps(h.trace.get("acceptance_decision") or {})
+
+
+@pytest.mark.parametrize("runtime,enforcement", [("pro", "advisory"), ("cyber_pro", "advisory"), ("cyber_pro", "blocking")])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_task_author_record_preserves_configured_and_effective_authority(actual_acceptance, monkeypatch, runtime, enforcement, explicit):
+    import inspect
+    from ouroboros import config
+    from ouroboros.acceptance_settlement import expose_acceptance_feedback
+    from ouroboros.outcomes import _objective_axis
+    from ouroboros.project_dialogue import outcome_phase
+
+    h = actual_acceptance
+    # Obtain a real independent outcome in ordinary Advisory first.
+    h.run("Initial answer")
+    original = copy.deepcopy(h.trace["review_runs"][-1])
+    expose_acceptance_feedback(h.trace, inspect.getclosurevars(h.run).nonlocals["messages"], "task")
+    if explicit or runtime == "pro":
+        h.annotate()
+    config.reset_runtime_mode_baseline_for_tests()
+    config.initialize_runtime_mode_baseline(runtime)
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", enforcement)
+    try:
+        h.run("Verified revised answer")
+        decision = h.trace["acceptance_decision"]
+        assert decision["enforcement"] == enforcement
+        assert decision["author_disposition"]["enforcement"] == "advisory"
+        assert decision["reason"] == "author_finish"
+        assert h.trace["review_runs"][0]["actors"] == original["actors"]
+        review = {"status": "fail", "acceptance_decision": decision}
+        objective = _objective_axis(review)
+        row = {"status": "completed", "outcome_axes": {
+            "objective": objective, "review": review, "execution": {"status": "ok"}}}
+        assert objective["status"] == "pass"
+        assert outcome_phase(row, {}) == "done"
+        row["outcome_axes"]["execution"]["status"] = "failed"
+        assert outcome_phase(row, {}) == "error"
+    finally:
+        config.reset_runtime_mode_baseline_for_tests()

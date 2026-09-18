@@ -487,6 +487,10 @@ def _dispatch_round_model(
     binding = (waiter.register_reprepare(role, lambda kwargs: _reprepare_waiting_main(ctx, kwargs))
                if waiter is not None else contextlib.nullcontext())
     previous_call = ctx.accumulated_usage.get("_last_llm_call_meta")
+    from ouroboros.acceptance_settlement import expose_acceptance_feedback
+
+    observe_feedback = lambda sent: expose_acceptance_feedback(
+        getattr(ctx.tools._ctx, "_execution_trace", {}), sent, str(ctx.task_id))
     with binding:
         result = _loop().call_llm_with_retry(
             ctx.llm, ctx.messages, ctx.active_model, ctx.tool_schemas,
@@ -507,6 +511,7 @@ def _dispatch_round_model(
             # The loop's own active-turn slot: a reprepared send keeps this exact
             # owner because the slot survives kwargs deep-copying by identity.
             model_turn_state=getattr(ctx.tools._ctx, "model_turn_state", None),
+            model_context_observer=observe_feedback,
         )
     observed = ctx.accumulated_usage.get("_model_route")
     if (plan is not None and isinstance(observed, dict)

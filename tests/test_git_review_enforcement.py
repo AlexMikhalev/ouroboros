@@ -178,7 +178,7 @@ class TestReviewEnforcementModes:
         result = review._run_unified_review(ctx, "test commit", repo_dir=ctx.repo_dir)
         assert result is None
         assert any(
-            isinstance(w, str) and "critical review findings did not block commit" in w.lower()
+            isinstance(w, str) and "critical findings require an explicit author decision" in w.lower()
             for w in ctx._review_advisory
         )
         assert any(
@@ -189,6 +189,24 @@ class TestReviewEnforcementModes:
         # Anti-thrashing state survives an advisory pass-through of critical
         # findings: repeats on the next attempt must still be recognized.
         assert ctx._review_iteration_count == 1
+
+    def test_mixed_critical_minor_and_prior_warnings_survive(self, review_ctx, monkeypatch):
+        review, ctx = review_ctx
+        self._mock_staged(monkeypatch, review, changed_files="x.py")
+        monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
+        ctx._review_advisory = ["prior deterministic/preflight warning"]
+        response = json.loads(self._fake_result(
+            '[{"item":"contract","verdict":"FAIL","severity":"critical","reason":"material original finding"}]',
+            '[{"item":"style","verdict":"FAIL","severity":"advisory","reason":"minor original finding"}]'))
+        response["results"].append({"model": "failed-critic", "error": "Transport unavailable"})
+        monkeypatch.setattr(review, "_handle_multi_model_review", lambda *a, **kw: json.dumps(response))
+        assert review._run_unified_review(ctx, "candidate", repo_dir=ctx.repo_dir) is None
+        saved = json.dumps(ctx._review_advisory)
+        assert "prior deterministic/preflight warning" in saved
+        assert saved.count("material original finding") == 1
+        assert saved.count("minor original finding") == 1
+        assert saved.count("prior deterministic/preflight warning") == 1
+        assert saved.count("Note: 1 of 3 review models") == 1
 
     @pytest.mark.parametrize("failure", ["nonzero_rc", "non_utf8_rc"])
     def test_uncapturable_staged_diff_blocks_instead_of_reviewing_a_placeholder(

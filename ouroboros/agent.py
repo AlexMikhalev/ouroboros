@@ -472,6 +472,9 @@ class OuroborosAgent:
             try:
                 from ouroboros.mutation_attribution import capture_mutation_baseline
 
+                predecessor = (task.get("predecessor_authority") or {}).get("source")
+                if not isinstance(predecessor, dict):
+                    predecessor = None
                 capture_mutation_baseline(
                     pathlib.Path(
                         str(task.get("budget_drive_root") or "")
@@ -482,6 +485,7 @@ class OuroborosAgent:
                     [{"surface_type": "system_repo", "host_root": str(self.env.repo_dir)}],
                     owner_kind="task_root",
                     owner_id=str(task.get("root_task_id") or task.get("id") or ""),
+                    predecessor_source=predecessor,
                 )
             except Exception:
                 log.warning("mutation baseline capture failed for %s", task.get("id"), exc_info=True)

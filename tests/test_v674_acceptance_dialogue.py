@@ -393,7 +393,7 @@ def test_capsule_leads_with_verdict_blocker_rails_and_three_moves():
     result = _fail_result_with([_finding()])
     capsule = build_improvement_capsule(
         result,
-        rails_line="money: $1.00 spent; time: 10 min left; review passes: 1 done",
+        rails_line="money: $1.00 spent; time: 10 min left; author passes: 1 done",
         open_obligations=[{"id": "ob-1"}, {"id": "ob-2"}],
     )
     # The note the model READS says the assessment in words: a ledger token in
@@ -483,7 +483,7 @@ def _apply_harness(monkeypatch, result, *, obligations=None, tmp_path=None):
     return another, trace, tool_ctx, fences
 
 
-def test_dialogue_terminal_finalizes_honestly_with_both_positions(monkeypatch, tmp_path):
+def test_critic_terminal_assessment_still_reaches_author(monkeypatch, tmp_path):
     findings = [_finding()]
     actors = [
         _actor("s1", "FAIL", {"verdict": "FAIL", "outcome_tier": "best_effort",
@@ -497,17 +497,13 @@ def test_dialogue_terminal_finalizes_honestly_with_both_positions(monkeypatch, t
         request={"policy": {"min_successful_slots": 2}},
     )
     another, trace, tool_ctx, fences = _apply_harness(monkeypatch, result, tmp_path=tmp_path)
-    assert another is False  # NOT re-driven: the reviewers ended the dialogue
+    assert another is True
     decision = trace["acceptance_decision"]
-    # v6.78.0: one canonical terminal status; the with/without-obligations
-    # distinction lives on the `open_obligations` list asserted below.
-    assert decision["status"] == "finalized_unaccepted"  # never a clean accept
-    assert decision["reason"] == "dialogue_terminal"
-    assert decision["dialogue_status"] == DIALOGUE_STABLE_DISAGREEMENT
-    assert decision["dialogue_votes"][DIALOGUE_STABLE_DISAGREEMENT] == ["s1", "s2"]
-    assert decision["open_obligations"]  # the obligations stay recorded, not wiped
-    assert tool_ctx._task_acceptance_reviewed is True
-    assert fences == ["terminal"]
+    assert decision["status"] == "revision_requested"
+    assert decision["reason"] == "improvement_capsule"
+    assert trace["acceptance_obligations"]
+    assert not getattr(tool_ctx, "_task_acceptance_reviewed", False)
+    assert fences == ["revision"]
     # both positions persisted: reviewer votes on the run record
     host_runs = [r for r in trace["review_runs"] if r.get("authority") == "host_root"]
     assert host_runs and host_runs[-1]["dialogue"]["status"] == DIALOGUE_STABLE_DISAGREEMENT
@@ -729,7 +725,7 @@ def test_rails_final_pass_freeze_directive_workspace():
     # rides EVERY workspace rails line (commit triad r1, sol: a deadline/cost
     # rail can end the loop between capsules), and never a non-workspace one.
     line = _rails(5, cap=6, workspace=True)
-    assert "review passes: 5/6" in line
+    assert "author passes: 5/6" in line
     assert "FINAL improvement pass, no further passes will run" in line
     assert "working tree as it stands" in line and "VERIFIED state" in line
     # Non-workspace: factual finality only, no tree directive.
@@ -742,15 +738,15 @@ def test_rails_freeze_directive_absent_off_final_and_edge_caps(monkeypatch):
     # Non-final pass: no FINAL marker, but the workspace tree directive is
     # always present for workspace deliveries.
     mid = _rails(3, cap=6, workspace=True)
-    assert "FINAL" not in mid and "review passes: 3/6" in mid
+    assert "FINAL" not in mid and "author passes: 3/6" in mid
     assert "working tree as it stands" in mid
     assert "working tree" not in _rails(3, cap=6, workspace=False)
     # cap == 0 never feeds a capsule back — no misleading FINAL rail.
     zero = _rails(0, cap=0, workspace=True)
-    assert "review passes: 0/0" in zero and "FINAL" not in zero
+    assert "author passes: 0/0" in zero and "FINAL" not in zero
     # Passes already exhausted (supersede-reset re-review): not a launch.
     spent = _rails(6, cap=6, workspace=True)
-    assert "review passes: 6/6" in spent and "FINAL" not in spent
+    assert "author passes: 6/6" in spent and "FINAL" not in spent
     # No local cap (required+blocking with the shared review-cycle cap set to
     # unlimited — D10/D20: otherwise the shared cap binds) — no count-axis clause.
     monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "unlimited")

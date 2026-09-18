@@ -33,7 +33,7 @@ The accepted campaign configuration is:
 | Provider routing | OpenRouter default routing; no provider pin |
 | Reasoning | High effort |
 | Agent loop | Single agent, no scheduled subagents or external coding delegation |
-| Acceptance | Required, blocking, three same-model reviewer slots; two review cycles allow one rework |
+| Acceptance | Required, blocking, three same-model reviewer slots; at most two paid review panels, each followed by author reaction within ordinary task limits; Blocking still requires fresh approval to accept corrected work |
 | Round bound | 100 Ouroboros rounds; not a promise of identical tool-call counts to other engines |
 | Workspace and memory | External task workspace, empty task memory |
 | Runtime / safety | `pro`; LLM safety pass `off` in the disposable benchmark environment |
