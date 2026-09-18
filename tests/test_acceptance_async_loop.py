@@ -904,9 +904,7 @@ def test_cyber_final_response_never_waits_for_or_obeys_critic_veto(full_loop, mo
                 f.release.set()  # Settle after this request's ingress drain.
             with f.condition:
                 assert f.condition.wait_for(lambda: f.settled_count == 1, timeout=10)
-            assert f.model_step in {2, 3}
-            if f.model_step == 3:
-                assert "- acceptance-one: FAIL" in str(messages)
+            assert f.model_step == 2
             return keep(f), 0.0
         assert f.model_step == 1
         return {"content": ANSWER}, 0.0
@@ -926,7 +924,10 @@ def test_cyber_final_response_never_waits_for_or_obeys_critic_veto(full_loop, mo
         assert trace["review_runs"][-1]["actors"][0]["parsed"]["verdict"] == "FAIL"
         assert len(f.review_sends) == 1
         if failure == "late_fail":
-            assert f.model_step == 3
+            # A late critic wake is not new owner input and cannot demand
+            # another author round after Main has chosen to finish.
+            assert f.model_step == 2
+            assert not any("owner follow-up arrived" in text for text in f.progress)
     else:
         assert trace["review_runs"][-1]["aggregate_signal"] == "DEGRADED"
         assert not f.review_sends

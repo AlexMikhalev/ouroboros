@@ -275,6 +275,7 @@ def capture_acceptance_observation(
             if not _owner_signal_pending(
                 incoming_messages, getattr(ctx, "drive_root", None), str(getattr(ctx, "task_id", "") or ""),
                 getattr(ctx, "_loop_mailbox_seen_ids", None), getattr(ctx, "task_attempt", None) or 1,
+                owner_authority_only=True,
             ):
                 observation = _acceptance_observation_state(ctx)
                 observation["tool_count"] = len(llm_trace.get("tool_calls") or [])
@@ -297,6 +298,7 @@ def acknowledge_acceptance_observation(ctx: Any, source_sha256: str) -> bool:
             getattr(ctx, "_acceptance_observation_incoming", None), getattr(ctx, "drive_root", None),
             str(getattr(ctx, "task_id", "") or ""), getattr(ctx, "_loop_mailbox_seen_ids", None),
             getattr(ctx, "task_attempt", None) or 1,
+            owner_authority_only=True,
         ):
             return False
         current = _acceptance_observation_state(ctx)

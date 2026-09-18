@@ -175,6 +175,7 @@ def _end_task_acceptance_fence(
                     getattr(ctx, "_acceptance_observation_incoming", None), getattr(ctx, "drive_root", None),
                     str(getattr(ctx, "task_id", "") or ""), getattr(ctx, "_loop_mailbox_seen_ids", None),
                     getattr(ctx, "task_attempt", None) or 1,
+                    owner_authority_only=True,
                 )
             )) or (
             expected_owner_generation is not None

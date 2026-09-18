@@ -942,7 +942,8 @@ and what enforces each.
   optional. Prose resets pending-review choice to wait, never infers finish.
   Effect, owner-revision and
   child-action controls stay strict; owner-source acknowledgement and forced
-  finalization retain their rules. Empty or recognizable malformed controls retain
+  finalization retain their rules. Context-only mail wakes waits but does not block
+  owner-source acknowledgement or imply an owner revision. Empty or recognizable malformed controls retain
   the answer (`tests/test_acceptance_optional_control.py`). Running-panel delivery
   buys no second panel and causes no capacity refusal
   (`acceptance_settlement._deliver_under_running_panel`). Default: wait; blocking: wait
