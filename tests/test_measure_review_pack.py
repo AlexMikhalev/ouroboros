@@ -1,14 +1,13 @@
 """devtools/measure_review_pack.py — offline by construction, honest headroom, one checkout.
 
-Pins the review findings against the F3-A measurer: reviewer windows come
-from the Capability Evidence CACHE only (no metadata fetch, no persisted record),
-the o200k BPE is never downloaded, the diff headroom is derived from the exact
-zero-diff serialized message (constitutional head + stable prefix + dynamic
-scaffolding + user turn) in ``estimate_tokens`` units, ``--repo`` selects
-EVERY governance corpus, the BIBLE included, and the scope number is the REAL
-assembler's full input (P4: the touched section is a labelled sub-number of it,
-a staged deletion is split as the assembler splits it, and the assembler's
-window/cap seams never reach the metadata fetch).
+Pins the measurer's own contract: reviewer windows come from the Capability
+Evidence CACHE only (no metadata fetch, no persisted record), the o200k BPE is
+never downloaded, the diff headroom is derived from the exact zero-diff
+serialized message (constitutional head + stable prefix + governance tail and
+dynamic scaffolding + user turn) in ``estimate_tokens`` units, ``--repo``
+selects the governance corpus of THAT checkout through the tiered
+``governance_context`` the packet actually carries, and one arm may never
+measure a different change from another.
 """
 
 from __future__ import annotations
@@ -164,8 +163,9 @@ def test_headroom_is_derived_from_the_zero_diff_message(synthetic_repo, isolated
     # _assemble_prompt with an empty pack and diff), the fixed user turn.
     head = (mm._CONSTITUTIONAL_PREAMBLE + "### BIBLE.md (Full Text)\n\n" + SYNTHETIC_BIBLE
             + "\n\n---\n\n## REVIEW INSTRUCTIONS\n\n")
-    stable = mrp._governance_prefix(synthetic_repo)["stable_prefix"]
-    dynamic = review._REVIEW_PROMPT_TEMPLATE_DYNAMIC.format(
+    prefix = mrp._governance_prefix(synthetic_repo, ["app.py"], fit["api_pack_models"])
+    stable, tail = prefix["stable_prefix"], prefix["governance_tail"]
+    dynamic = (f"{tail}\n\n" if tail else "") + review._REVIEW_PROMPT_TEMPLATE_DYNAMIC.format(
         goal_section=build_goal_section("", "", ""), scope_section="", current_files_section="",
         rebuttal_section="", review_history_section="", diff_text="", changed_files="app.py",
         task_evidence_section="")
@@ -263,14 +263,14 @@ def test_a_checkout_whose_index_is_not_its_working_tree_is_refused(synthetic_rep
     monkeypatch.setattr(mrp, "_o200k", _no_bpe)
 
     clean = mrp.measure(synthetic_repo)
-    assert clean["advisory_touched"]["paths"] == ["app.py"] == clean["staged_paths"]
+    assert clean["advisory_touched_manifest"]["paths"] == ["app.py"] == clean["staged_paths"]
 
     # An unstaged edit of the staged file: the advisory arm would read text the index arms never see.
     (synthetic_repo / "app.py").write_text("BUTTON_COLOUR = 'green'\n", encoding="utf-8")
     with pytest.raises(mrp.MeasuredCheckoutDirty, match=r"MM app\.py"):
         mrp.measure(synthetic_repo)
     _git(synthetic_repo, "add", "app.py")
-    assert mrp.measure(synthetic_repo)["advisory_touched"]["paths"] == ["app.py"]
+    assert mrp.measure(synthetic_repo)["advisory_touched_manifest"]["paths"] == ["app.py"]
 
     # An untracked file: the porcelain-resolved arm would pack a path the index does not name.
     (synthetic_repo / "scratch.txt").write_text("stray\n", encoding="utf-8")
@@ -281,129 +281,54 @@ def test_a_checkout_whose_index_is_not_its_working_tree_is_refused(synthetic_rep
 
 
 def test_repo_selects_every_governance_corpus(synthetic_repo, isolated_roots, monkeypatch):
+    """The packet's governance corpus comes from the measured checkout and from the
+    TIERED `governance_context`, not from three composed books: the checklist
+    section and the constitutional head are inlined, while DEVELOPMENT, DESIGN and
+    ARCHITECTURE arrive as navigation whose disposition the manifest records."""
     monkeypatch.setattr(mrp, "_quorum_limit", lambda models: (10_000, {}))
     monkeypatch.setattr(mrp, "_o200k", _no_bpe)
 
     head = mrp._constitutional_head(synthetic_repo)
     assert SYNTHETIC_BIBLE in head
     assert (mrp.REPO_ROOT / "BIBLE.md").read_text(encoding="utf-8") not in head
-    prefix = mrp._governance_prefix(synthetic_repo)
+    prefix = mrp._governance_prefix(synthetic_repo, ["app.py"], ["openai/packet"])
     # Section cut at the next "\n## " (its own trailing newline kept) + "\n\n" +
     # the stripped archive — the runtime's `_load_checklist_section` join.
     assert prefix["checklist_section"] == "## Repo Commit Checklist\n\n- synthetic item 7f3a\n\n\narchive row 7f3a"
     assert "not inlined" not in prefix["stable_prefix"]
+    assert prefix["checklist_section"] in prefix["stable_prefix"]
+    # The three documents the packet used to compose in full are NOT inlined…
     for rel in ("DEVELOPMENT.md", "DESIGN.md", "ARCHITECTURE.md"):
-        assert f"# {rel} synthetic 7f3a" in prefix["stable_prefix"]
+        body = f"# {rel} synthetic 7f3a"
+        assert body not in prefix["stable_prefix"], rel
+        assert body not in prefix["governance_tail"], rel
+    # …and none of them is silently dropped: each is named with its tier and
+    # disposition in the governance manifest (BIBLE P1).
+    rows = {str(row["path"]): row for row in prefix["manifest"]}
+    assert rows["docs/CHECKLISTS.md"]["tier"] == 1 and rows["docs/CHECKLISTS.md"]["disposition"] == "inline"
+    assert rows["BIBLE.md"]["reason"] == "carried by this surface's own delivery"
+    assert rows["docs/CHECKLISTS_ARCHIVE.md"]["tier"] == 1
+    assert rows["docs/DEVELOPMENT.md"]["disposition"] == "navigation"
+    assert rows["docs/DESIGN.md"]["disposition"] == "navigation"
+    assert rows["docs/ARCHITECTURE.md"]["tier"] == 3
+    assert "Governance navigation (index of sources not inlined)" in prefix["governance_tail"]
+    assert 'read_file(root="system_repo"' not in prefix["governance_tail"]
 
     report = mrp.measure(synthetic_repo)
-    parts = report["governance_prefix"]["parts"]
+    parts = report["governance_context"]["parts"]
     assert parts["constitutional_head_preamble_plus_BIBLE"]["chars"] == len(head)
     assert parts["checklist_section_plus_archive"]["chars"] == len(prefix["checklist_section"])
     assert report["zero_diff_message"]["parts"]["constitutional_head_preamble_plus_BIBLE"]["chars"] == len(head)
+    # A panel with no api row assembles no packet, so it asks for no governance.
+    empty = mrp._governance_prefix(synthetic_repo, ["app.py"], [])
+    assert empty["governance_tail"] == "" and empty["manifest"] == []
 
 
-def _forbid_every_fetch(monkeypatch):
-    """Every network seam under ``probe``, the persisting writer, and the FETCHING
-    window resolver the runtime's ``scope_window`` reaches: none may be touched."""
-    import ouroboros.capability_evidence as ce
-    import ouroboros.reviewer_window as rw
-    import ouroboros.tools.scope_window as sw
-
-    def boom(*_args, **_kwargs):
-        raise AssertionError("the measurer must never fetch provider metadata, probe, or persist evidence")
-
-    for seam in ("_provider_metadata_window", "_local_health_window", "_generative_probe_window", "_store_evidence"):
-        monkeypatch.setattr(ce, seam, boom)
-    monkeypatch.setattr(rw, "resolve_reviewer_window", boom)
-    monkeypatch.setattr(sw, "_resolve_reviewer_window", boom)
-
-
-def test_scope_full_is_the_real_assembler_split_at_its_stable_prefix(synthetic_repo, isolated_roots, monkeypatch):
-    """The scope figure is the prompt ``_build_scope_prompt`` assembles for this
-    index — checklist + canonical docs (stable prefix), intent scaffolding,
-    touched snapshots, staged diff and the generated atlas — at the assembler's
-    own stable-prefix boundary, with the ladder facts of the context manifest;
-    the touched section is a labelled sub-number of it. The assembler's cap
-    comes from ``_scope_input_limit`` on the cache-only window (the runtime's
-    ``scope_window`` fetch is never reached) and nothing is persisted."""
-    from ouroboros.tools import scope_review as sr
-    from ouroboros.tools import scope_review_pack as sp
-    from ouroboros.utils import estimate_tokens
-
-    _forbid_every_fetch(monkeypatch)
-    monkeypatch.setattr(mrp, "_quorum_limit", lambda models: (10_000, {}))
-    monkeypatch.setattr(mrp, "_o200k", _no_bpe)
-
-    def cap_guard(**_kw):
-        raise AssertionError("runtime cap helper reached")
-
-    def window_guard(*_a, **_k):
-        raise AssertionError("scope_window reached")
-
-    host_checklist = sr.load_checklist_section
-    monkeypatch.setattr(sr, "_effective_scope_input_limit", cap_guard)
-    monkeypatch.setattr(sr, "_scope_window", window_guard)
-
-    report = mrp.measure(synthetic_repo)
-    scope = report["scope_full"]
-    model = sp._sr()._get_scope_model()
-    assert scope["model"] == model and scope["window"] == 1_000_000
-    assert "window unknown (cache-only)" in scope["window_evidence"]
-    assert scope["input_limit_chars_div_4"] == mrp._scope_input_limit(model, 1_000_000)
-    assert 0 < scope["input_limit_chars_div_4"] < 1_000_000 and scope["limit_note"] == mrp.SCOPE_LIMIT_NOTE
-    assert scope["assembled"] is True and "refusal" not in scope
-    total, stable, tail = scope["total"], scope["stable_prefix"], scope["dynamic_tail"]
-    assert total["chars"] == stable["chars"] + tail["chars"] > 0
-    assert scope["headroom_chars_div_4"] == scope["input_limit_chars_div_4"] - total["chars_div_4"]
-    assert total["chars_div_4"] == estimate_tokens("x" * total["chars"])
-    # The measured checkout's corpus in the prefix, the change and the atlas in the tail.
-    assert stable["chars"] > len(SYNTHETIC_BIBLE) + len("synthetic scope item 9c1e")
-    atlas = scope["atlas"]
-    assert atlas["status"] in {"ok", "under_target", "budget_constrained"}
-    assert atlas["unassembled_required"] == [] and atlas["tracked_count"] >= atlas["selected_count"] >= 0
-    assert atlas["ladder_steps"] and atlas["ladder_steps"][-1]["step"] == "compact_atlas"
-    assert atlas["ladder_steps"][-1]["tokens_after"] == total["chars_div_4"]
-    touched = scope["scope_touched"]
-    assert touched["deleted_paths"] == [] and touched["carrier_span_only"] == []
-    assert 0 < touched["after"]["chars"] <= touched["before"]["chars"] < tail["chars"]
-    assert "scope_touched" not in report  # a sub-number of scope_full, never a peer of it
-    # Write-free: no evidence store, no inventory, nothing under the data root.
-    assert not (isolated_roots / "state").exists()
-    # The seams are bound for the build only and restored to what the measurer found.
-    assert sr._effective_scope_input_limit is cap_guard and sr._scope_window is window_guard
-    assert sr.load_checklist_section is host_checklist
-
-    # An operator-named window re-derives the cap by the same formula, disclosed as such.
-    monkeypatch.setattr(mrp, "_cached_window", lambda model: (_ for _ in ()).throw(AssertionError("cache read")))
-    named = mrp.measure(synthetic_repo, scope_window=300_000)["scope_full"]
-    assert (named["window"], named["window_evidence"]) == (300_000, "--scope-window (operator-named)")
-    assert named["input_limit_chars_div_4"] == mrp._scope_input_limit(model, 300_000) < scope["input_limit_chars_div_4"]
-
-
-def test_scope_input_limit_is_the_runtime_formula_on_an_explicit_window(isolated_roots):
-    """Same arithmetic as ``_effective_scope_input_limit`` (window-scaled reserves,
-    density-calibrated cap under REVIEW_PROMPT_TOKEN_BUDGET) — only the window
-    is supplied instead of resolved through ``scope_window``."""
-    from ouroboros.tools import scope_review_budget as sb
-
-    model = "openai/gpt-5.6-terra"
-    for window in (200_000, 1_000_000, 2_000_000):
-        reserve, margin = sb._window_scaled_reserves(window)
-        expected = sb._calibrated_input_token_limit(
-            model, context_window=window, output_reserve=reserve, tokenizer_margin=margin,
-            budget_cap=sb._SCOPE_BUDGET_TOKEN_LIMIT)
-        assert mrp._scope_input_limit(model, window) == expected
-    assert mrp._scope_input_limit(model, 2_000_000) == sb._SCOPE_BUDGET_TOKEN_LIMIT  # the ceiling binds
-
-
-def test_a_staged_deletion_is_split_and_inlined_like_the_assembler(synthetic_repo, isolated_roots, monkeypatch):
-    """``--name-only`` listed a deleted path as a CURRENT one: the scope arm then
-    packed a path that resolves to nothing and never counted the deleted-file
-    HEAD content the real pack inlines. The entries are now ``--name-status``
-    parsed by the assembler's own parser, and the ``D`` entries ride the
-    deleted-paths channel of the touched section."""
-    from ouroboros.tools import scope_review_pack as sp
-
+def test_a_staged_deletion_is_parsed_like_the_host_parses_name_status(
+        synthetic_repo, isolated_roots, monkeypatch):
+    """``--name-only`` listed a deleted path as a CURRENT one, so an arm could pack
+    a path that resolves to nothing. The entries come from the host's own
+    ``parse_git_name_status`` instead, and a ``D`` entry stays a deletion."""
     monkeypatch.setattr(mrp, "_quorum_limit", lambda models: (10_000, {}))
     monkeypatch.setattr(mrp, "_o200k", _no_bpe)
     old = synthetic_repo / "old.py"
@@ -417,30 +342,46 @@ def test_a_staged_deletion_is_split_and_inlined_like_the_assembler(synthetic_rep
     assert sorted(mrp._staged_entries(synthetic_repo)) == [("D", "old.py", "old.py"), ("M", "app.py", "app.py")]
     report = mrp.measure(synthetic_repo)
     assert sorted(report["staged_paths"]) == ["app.py", "old.py"]  # the triad's --name-only list, unchanged
-    touched = report["scope_full"]["scope_touched"]
-    assert touched["deleted_paths"] == ["old.py"]
-    # The deleted-file section (HEAD content) is counted: strictly more than the
-    # current-only rendering the old arm produced for the same index.
-    current_only = sp._render_touched_section(synthetic_repo, ["app.py"], [], [], [])[0]
-    assert touched["before"]["chars"] > len(current_only)
-    with_deleted = sp._render_touched_section(synthetic_repo, ["app.py"], ["old.py"], [], [])[0]
-    assert touched["before"]["chars"] == len(with_deleted) and "4b7d" in with_deleted
-    assert report["scope_full"]["assembled"] is True
+    # The deleted path has no body to pack — a zero-char pack fragment, not a
+    # missing row — and the advisory manifest says so instead of dropping it.
+    assert report["touched_pack"]["per_file"]["old.py"]["chars"] == 0
+    assert report["touched_pack"]["per_file"]["app.py"]["chars"] > 0
+    from ouroboros.tools.preflight_review_prompt import _advisory_touched_manifest
+
+    assert "old.py — no file in the tree — deleted" in _advisory_touched_manifest(
+        synthetic_repo, ["app.py", "old.py"], mrp._porcelain(synthetic_repo))
 
 
-def test_main_prints_the_full_scope_input_with_the_touched_fragment_as_a_sub_number(
+def test_main_prints_the_triad_packet_parts_and_the_advisory_manifest(
         synthetic_repo, isolated_roots, monkeypatch, capsys):
     monkeypatch.setattr(mrp, "_quorum_limit", lambda models: (10_000, {}))
     monkeypatch.setattr(mrp, "_o200k", _no_bpe)
-    assert mrp.main(["--repo", str(synthetic_repo), "--scope-window", "300000"]) == 0
+    assert mrp.main(["--repo", str(synthetic_repo)]) == 0
     out = capsys.readouterr().out
-    assert "scope full input (real assembler;" in out and "window 300,000 — --scope-window (operator-named)" in out
-    for label in ("stable_prefix", "dynamic_tail", "total", "headroom under the cap:", "atlas: status",
-                  "ladder: compact_atlas", "scope touched section (sub-number of the input above) before",
-                  "scope touched section (sub-number of the input above) after", "deleted: []"):
+    for label in ("touched pack before", "advisory touched manifest (bodies not inlined):",
+                  "governance context (one checkout:", "checklist_section_plus_archive",
+                  "navigation_maps", "change-relative governance tail",
+                  "docs/ARCHITECTURE.md", "zero-diff message ("):
         assert label in out, label
+    assert "scope full input" not in out
     assert mrp.main(["--repo", str(synthetic_repo), "--json"]) == 0
     report = json.loads(capsys.readouterr().out)
-    assert set(report["scope_full"]) >= {"model", "window", "window_evidence", "input_limit_chars_div_4", "limit_note",
-                                        "assembled", "atlas", "total", "stable_prefix", "dynamic_tail",
-                                        "headroom_chars_div_4", "scope_touched"}
+    assert set(report) >= {"repo", "staged_paths", "tokenizer", "touched_pack",
+                           "advisory_touched_manifest", "governance_context",
+                           "zero_diff_message", "fit"}
+    assert "scope_full" not in report
+
+
+def test_advisory_measurement_keeps_a_changed_architecture_entrypoint(synthetic_repo, isolated_roots, monkeypatch):
+    from ouroboros.tools.preflight_review_prompt import _advisory_touched_manifest
+
+    path = synthetic_repo / "docs/ARCHITECTURE.md"
+    path.write_text("# ARCHITECTURE.md\n\nChanged entrypoint.\n", encoding="utf-8")
+    _git(synthetic_repo, "add", "docs/ARCHITECTURE.md")
+    monkeypatch.setattr(mrp, "_o200k", _no_bpe)
+    report = mrp.measure(synthetic_repo)
+    measured = report["advisory_touched_manifest"]
+    assert "docs/ARCHITECTURE.md" in measured["paths"]
+    porcelain = subprocess.check_output(["git", "status", "--porcelain"], cwd=synthetic_repo, text=True)
+    actual = _advisory_touched_manifest(synthetic_repo, report["staged_paths"], porcelain)
+    assert measured["chars"] == len(actual)

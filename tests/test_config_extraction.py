@@ -54,6 +54,8 @@ _ADDED_OWNERS = {
     "get_consciousness_max_tasks": runtime_limits,
     "get_bg_wakeup_min_sec": runtime_limits,
     "get_bg_wakeup_max_sec": runtime_limits,
+    # Governance tiers: the share of a reviewer's usable window tier-2 documents may take inline.
+    "REVIEW_GOVERNANCE_INLINE_SHARE": runtime_limits,
 }
 
 _MOVED_OWNERS = {

@@ -127,7 +127,6 @@ REASON_PROVIDER_FAILURE = "provider_failure"
 REASON_TASK_EXCEPTION = "task_exception"
 REASON_DEEP_SELF_REVIEW_UNAVAILABLE = "deep_self_review_unavailable"
 REASON_DEEP_SELF_REVIEW_ERROR = "deep_self_review_error"
-REASON_DEEP_SELF_REVIEW_PACK_UNFIT = "deep_self_review_pack_unfit"
 REASON_TOOL_FAILURE = "tool_failure"
 REASON_DELIVERY_CONTROL_DEGRADED = "delivery_control_degraded"
 REASON_CHILD_RESULTS_DEFERRED = "child_results_deferred"
@@ -941,7 +940,6 @@ _INFRA_TEXT_PREFIXES = (
     ("❌ Deep self-review unavailable:", "runtime", REASON_DEEP_SELF_REVIEW_UNAVAILABLE),
     ("⚠️ Deep self-review error:", "runtime", REASON_DEEP_SELF_REVIEW_ERROR),
     ("❌ Deep self-review failed:", "runtime", REASON_DEEP_SELF_REVIEW_ERROR),
-    ("❌ Deep self-review pack unfit:", "runtime", REASON_DEEP_SELF_REVIEW_PACK_UNFIT),
 )
 
 

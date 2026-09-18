@@ -9,17 +9,15 @@ the real number — no static per-model table (v6.33.0).
 An UNKNOWN route keeps the full-window assumption, matching the policy
 ``context_fit`` already applies to the main lane: unknown routes try Max and are
 never SILENTLY assumed to be 200K (BIBLE P1). Guessing small is not the safe
-direction here — the governance packs these surfaces assemble (BIBLE +
-DEVELOPMENT + ARCHITECTURE + CHECKLISTS) run ~169K tokens, so a sub-floor guess
-declines the whole review before dispatch on every cold-evidence install, which
-is a certain loss of review rather than a possible one. Callers that must fail
-CLOSED on absent evidence — scope review, whose blocking authority depends on a
-confirmed >=1M reviewer — take the whole :class:`ReviewerWindow` from
-:func:`resolve_reviewer_window`, applying their own sub-floor to
-:meth:`~ReviewerWindow.sizing_window` while AUTHORITY stays a computed property of
-the evidence itself. Sizing and authority are separate questions about one route:
-answering the first optimistically is a fit heuristic, answering the second
-optimistically forges a governance verdict.
+direction here, because the guess DECLINES work rather than risking it: a
+reviewer sized below the prompt it would have received is dropped before
+dispatch, so every cold-evidence install would lose the whole review to an
+assumption instead of learning the real number from the first send. The window
+is a sizing fact only — it neither grants nor removes a reviewer's authority
+(BIBLE P3 "Review evidence and reading diagnostics"). A caller with its own
+fail-closed sizing policy takes the whole :class:`ReviewerWindow` from
+:func:`resolve_reviewer_window` and applies its floor to
+:meth:`~ReviewerWindow.sizing_window`.
 
 Deliberately outside ``ouroboros.tools``: the triad, scope, plan, and deep
 self-review surfaces plus the top-level ``deep_self_review`` module all consume
@@ -53,9 +51,10 @@ SESSION_ROUTE_PROVIDER = "agent_session"
 # (confirmed 24h / failed 10 min) and returns the cache without touching the network
 # inside it. A process-lifetime ``_LAZY_WINDOW_PROBED`` memo used to answer it here
 # too, and because the memo never expired while the evidence did, a healthy install
-# that stayed up past the 24h TTL read its own scope reviewer as EXPIRED forever:
-# every later resolution took the no-fetch path, ``blocking_authority_allowed`` went
-# False, and every commit blocked for the rest of the process's life (v6.87.45).
+# that stayed up past the 24h TTL read its own reviewers as EXPIRED forever: every
+# later resolution took the no-fetch path, so the whole process sized every review
+# against an unknown route until it restarted (v6.87.45). The TTL owns the rate
+# limit; the locks only share one fetch.
 _LAZY_PROBE_REGISTRY_LOCK = threading.Lock()
 _LAZY_ROUTE_LOCKS: dict = {}
 
@@ -84,23 +83,25 @@ def reviewer_window_binding(slot: object) -> dict:
 
 @dataclass(frozen=True)
 class ReviewerWindow:
-    """ONE typed answer for a reviewer slot: its window AND its blocking authority.
+    """ONE typed answer for a reviewer slot: its window and that number's provenance.
 
-    The previous ``(window, status)`` tuple dropped ``stale`` and the observation time
-    on the floor, so a consumer could not tell a live provider reading from a
-    five-day-old record kept across an outage — and authorised a BLOCKING scope
-    verdict on the latter. Every field the decision needs travels together with the
-    number, or the decision is being made on a rumour.
+    A bare ``(window, status)`` tuple dropped ``stale`` and the observation time on
+    the floor, so a consumer could not tell a live provider reading from a five-day-old
+    record kept across an outage. Every field a sizing decision needs — and every
+    field its disclosure needs — travels together with the number, or the decision is
+    being made on a rumour.
 
     Field names deliberately MIRROR ``capability_evidence.CapabilityEvidence`` so the
-    >=1M predicate that module already owns is REUSED here rather than restated."""
+    freshness and threshold predicates that module already owns are REUSED here
+    rather than restated."""
 
     window_tokens: int = 0        # evidence window; 0 == no evidence for this route
     status: str = ""              # confirmed | asserted | unprobeable | failed | ""
     stale: bool = False           # past TTL and not re-verifiable (expired / outage)
     observed_at: str = ""         # ISO timestamp of the observation, "" when unknown
     model: str = ""
-    # Sizing intent is separate from the sourced window that authorizes a gate.
+    # An owner-asserted sizing number is separate from the sourced window, so a
+    # disclosure can say which one a send was sized against.
     asserted_window_tokens: int = 0
     model_route: dict = field(default_factory=dict)
 
@@ -108,22 +109,12 @@ class ReviewerWindow:
     def sizing_source(self) -> str:
         return "user_setting" if self.asserted_window_tokens else self.status
 
-    @property
-    def blocking_authority_allowed(self) -> bool:
-        """May this reviewer supply a BLOCKING verdict (BIBLE P3 >=1M floor)?
-
-        A COMPUTED property of the evidence — never of which model name was
-        configured. A designated default acquires no authority from its name: it
-        acquires it by being probed, exactly like every other route."""
-        from ouroboros.capability_evidence import confirms_at_least
-
-        return confirms_at_least(self, REVIEWER_FULL_WINDOW, require_fresh=True)
-
     def sizing_window(self, unknown_window: int = REVIEWER_FULL_WINDOW) -> int:
         """Window to SIZE a prompt against — a fit estimate, never an authority.
 
         A stale number is still the best available estimate of a route's real size,
-        so sizing keeps using it; only :attr:`blocking_authority_allowed` is denied."""
+        so sizing keeps using it and discloses its provenance
+        (:attr:`sizing_source`, :attr:`stale`, :attr:`observed_at`)."""
         if self.asserted_window_tokens > 0:
             return int(self.asserted_window_tokens)
         from ouroboros.provider_models import provider_for_model
@@ -142,11 +133,11 @@ def reviewer_route(model_id: str, *, session: bool = False) -> tuple:
     Claudexor ``harness[=model]`` spec and not a provider model id at all.
     ``provider_for_model`` cannot resolve such a spec — it answers ``openrouter``
     for anything unrecognised — so a session row fingerprinted through the api
-    path would be filed under a provider it never travels, and the owner-ack the
-    scope gate reads back would be recorded against that same falsehood. The
-    harness IS the provider here, exactly as the reviewer-slot SSOT spells it,
-    which is what makes the ack reachable and the record honest. The caller
-    passes the ROW's configured kind; nothing sniffs the string."""
+    path would be filed under a provider it never travels, and every capability
+    record kept for that route would sit under the same falsehood. The harness IS
+    the provider here, exactly as the reviewer-slot SSOT spells it, which is what
+    keeps the record honest. The caller passes the ROW's configured kind; nothing
+    sniffs the string."""
     from ouroboros.config import runtime_settings
     from ouroboros.provider_models import provider_for_model
 
@@ -182,8 +173,8 @@ def resolve_reviewer_window(
     """The reviewer's :class:`ReviewerWindow` from Capability Evidence.
 
     Never fabricates a window: a route with no evidence comes back with
-    ``window_tokens=0`` and no authority, and the CALLER applies its own
-    fail-closed SIZING policy. The probe is metadata-only — never generative, never
+    ``window_tokens=0`` and the CALLER applies its own fail-closed SIZING
+    policy. The probe is metadata-only — never generative, never
     a paid call — so an env-only pin can become known through a path it would
     otherwise never reach, and it stays re-confirmable for as long as the process
     lives: ``probe`` serves the cache untouched inside its TTL and only reaches the
@@ -278,7 +269,7 @@ def reviewer_context_window(
     which is why the main lane's unknown-route policy is the same). A caller that
     must fail closed passes its own sub-floor explicitly. ``use_local=None``
     derives the effective route exactly as :func:`resolve_reviewer_window` does.
-    SIZING only — a caller that also decides authority takes
+    The NUMBER only — a caller that also discloses its provenance takes
     :func:`resolve_reviewer_window` whole."""
     return resolve_reviewer_window(
         model_id, use_local=use_local, model_role=model_role,
