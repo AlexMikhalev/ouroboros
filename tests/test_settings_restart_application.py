@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from starlette.requests import Request
@@ -58,11 +59,11 @@ def test_socket_owners_publish_only_successfully_bound_inputs(tmp_path, monkeypa
     with bound_service_socket(tmp_path, "host_service", "127.0.0.1", 0) as sock:
         port = sock.getsockname()[1]
         assert server_process.applied_restart_settings()["OUROBOROS_HOST_SERVICE_PORT"] == port
-        # Linux permits another SO_REUSEADDR bind until the server is listening.
-        sock.listen()
-        with pytest.raises(OSError):
-            with bound_service_socket(tmp_path, "main", "127.0.0.1", port):
-                pass
+        # Exercise failed-bind publication without OS-specific port reuse rules.
+        with patch("socket.socket.bind", side_effect=OSError("fixture bind refused")):
+            with pytest.raises(OSError, match="fixture bind refused"):
+                with bound_service_socket(tmp_path, "main", "127.0.0.1", port):
+                    pass
         assert "OUROBOROS_SERVER_HOST" not in server_process.applied_restart_settings()
 
 
@@ -104,13 +105,20 @@ def healthy_model_process(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
     script = tmp_path / "model_server.py"
     script.write_text(
-        'import http.server,json,sys\n'
+        'import http.server,json,socket,socketserver,sys\n'
+        'def no_reverse_dns(*args):\n'
+        ' raise AssertionError("loopback fixture must not resolve hostnames")\n'
+        'socket.getfqdn=no_reverse_dns\n'
+        'class LoopbackHTTPServer(http.server.HTTPServer):\n'
+        ' def server_bind(self):\n'
+        '  socketserver.TCPServer.server_bind(self)\n'
+        '  self.server_name,self.server_port=self.server_address[:2]\n'
         'class Handler(http.server.BaseHTTPRequestHandler):\n'
         ' def do_GET(self):\n'
         '  body=json.dumps({"data":[{"id":"fixture","context_window":9999}]}).encode()\n'
         '  self.send_response(200);self.send_header("Content-Length",str(len(body)));self.end_headers();self.wfile.write(body)\n'
         ' def log_message(self,*args):pass\n'
-        'http.server.HTTPServer(("127.0.0.1",int(sys.argv[1])),Handler).serve_forever()\n', encoding="utf-8")
+        'LoopbackHTTPServer(("127.0.0.1",int(sys.argv[1])),Handler).serve_forever()\n', encoding="utf-8")
     original_popen, original_run = subprocess.Popen, subprocess.run
     commands = []
 
