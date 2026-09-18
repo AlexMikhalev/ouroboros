@@ -857,6 +857,34 @@ def _s14_settings(stub) -> dict:
     )
 
 
+def _keep_until_acceptance_settled(full_answer: str, *, wave_ordinal: int):
+    """Keep the same answer through quorum wakes until the intended wave settles.
+
+    A final-slot notification can arrive during Main's response to the quorum
+    wake. The host then drains it in another round, reusing the paid verdict.
+    That round still belongs to this phase, not the stub's exhausted fallback.
+    """
+    keep = _control_step("keep", full_answer)
+    waits = {"rounds": 0}
+
+    def step(body: dict):
+        frames = re.findall(
+            r"Acceptance review (task_acceptance:[0-9a-f]+): (\d+) of (\d+) reviewer slot\(s\)",
+            body_text(body),
+        )
+        settled = {wave for wave, answered, total in frames if answered == total}
+        if len(settled) >= wave_ordinal:
+            return keep(body)
+        waits["rounds"] += 1
+        if waits["rounds"] > _WAIT_ROUNDS_MAX:
+            return {"final": (
+                "E2E_SCRIPT_ERROR: acceptance wave "
+                f"{wave_ordinal} did not settle after {waits['rounds']} round(s)")}
+        return _Again(keep(body))
+
+    return step
+
+
 @pytest.mark.integration
 @pytest.mark.serial
 def test_s17_acceptance_reject_rework_accept(e2e_clone, tmp_path_factory):
@@ -866,10 +894,11 @@ def test_s17_acceptance_reject_rework_accept(e2e_clone, tmp_path_factory):
         "acceptance": [W3A_ACCEPT_REJECT] * 3 + [W3A_ACCEPT_PASS] * 3,
     })
     # V1 is nominated; rework submits V2 after the REJECT wave (a second paid
-    # panel), and the PASS wave delivers V2. The script follows whichever answer
-    # form the actual settlement ordering offers: ordinary text or keep/replace.
-    stub = ScriptedStubModel(
-        [{"final": S14_ANSWER_V1}, _control_step("replace", S14_ANSWER_V2), _control_step("keep", S14_ANSWER_V2)],
+    # panel), and the PASS wave delivers V2. Quorum and final-slot wakes may
+    # need separate Main turns, which keep the same V2 until both waves settled.
+    stub = _HoldingStubModel(
+        [{"final": S14_ANSWER_V1}, _control_step("replace", S14_ANSWER_V2),
+         _keep_until_acceptance_settled(S14_ANSWER_V2, wave_ordinal=2)],
         review_script=review_script,
     )
     with stub:
