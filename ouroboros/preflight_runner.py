@@ -614,6 +614,8 @@ def _preflight_env(temp_root: pathlib.Path, repo_worktree: pathlib.Path) -> dict
     env["OUROBOROS_SETTINGS_PATH"] = str(data_dir / "settings.json")
     env["OUROBOROS_REPO_DIR"] = str(repo_worktree)
     env["PYTHONPYCACHEPREFIX"] = str((temp_root / "pycache").resolve(strict=False))
+    # Keep pytest's numbered-directory cleanup out of other runs' temp trees.
+    env["PYTEST_DEBUG_TEMPROOT"] = str(temp_root)
     # PREPENDED, so `-p ouroboros_preflight_probe` resolves to the gate's own
     # worker-count plugin and not to anything the candidate tree or the
     # operator's PYTHONPATH happens to shadow it with.
