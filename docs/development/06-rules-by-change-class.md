@@ -44,7 +44,7 @@ Enforcement: `tests/test_skill_install_resources.py`, `tests/test_skill_runtime_
 ### Task contract resource policy
 
 - Outside Cyber Pro, `resource_policy.protected_artifacts` is a typed affordance policy: execute-only black-box references may run, while byte reads, copy/hash/static introspection, tracing and debugging of the declared paths are blocked (the guards: ARCHITECTURE §6 "Safety and runtime mode").
-- Acceptance claims (`id`, `claim`, `surface`, `support`, `priority`) are bounded advice, not gates or taxonomies. `success_criteria` is an input-only alias. `effective_acceptance_claims` binds frozen ingress over closed plan waves; after ingress, the evidence owner may select a valid current Advisory author plan as `author_plan`. An OPEN critic wave binds nothing: expose `none_open_plan_wave` and non-binding `plan_claims_exhibit` (ARCHITECTURE §11.1, §6 "Task acceptance"). Children receive only explicitly passed `schedule_subagent` claims. Resolve reviewer `evidence_refs` by exact host-packet membership, not fuzzy matching, file reads or re-execution; only clean bit/disclosure changes, never actor parsing, quorum or verdict.
+- Acceptance claims (`id`, `claim`, `surface`, `support`, `priority`) are bounded advice, never gates/taxonomies. `success_criteria` aliases input only. `effective_acceptance_claims` binds frozen ingress over closed plan waves; after ingress, the evidence owner may select a valid current Advisory `author_plan`. OPEN critic waves bind nothing: expose `none_open_plan_wave` and non-binding `plan_claims_exhibit` (ARCHITECTURE §11.1, §6 "Task acceptance"). Children receive only explicitly passed `schedule_subagent` claims. Bind reviewer `evidence_refs` by exact host-packet membership, never fuzzy matching, file reads or re-execution; change only clean bit/disclosure, never actor parsing, quorum or verdict.
 
 Enforcement: `tests/test_protected_artifacts_policy.py` and `tests/test_acceptance_claims_wiring.py`.
 
@@ -1042,12 +1042,12 @@ and what enforces each.
   author completion separately, never rewriting criticism or hiding independent failed
   effects, unaccepted review or unfinished stops (DEVELOPMENT §11; ARCHITECTURE §3).
   No task scope review or commit-gate reuse.
-- Preserve reviewer DIALOGUE evidence: typed `disposition_kind`/`obligation_id` identifies
-  obligations; unknown re-raise ids become `new` with disclosure. Reopen rows without
-  erasing arguments. A critic's terminal vote cannot deny author reaction or choose its stop. Blocking may save corrections and stop, but advancement needs fresh
-  reviewer authority. Advisory may explicitly finish revised work after exposed feedback
-  or disclosed unavailability, without another panel. Keep critic/author hashes separate;
-  bind intent to delivery evidence and consume it on owner/evidence supersession.
+- Keep reviewer DIALOGUE evidence: typed `disposition_kind`/`obligation_id` identifies
+  obligations; disclose unknown re-raise ids as `new`. Reopen rows with
+  arguments intact. A terminal critic vote cannot deny author reaction or choose its stop. Blocking may save corrections and stop; advancement needs fresh
+  reviewer authority. Advisory may explicitly finish revisions after exposed feedback
+  or disclosed unavailability without another panel. Keep critic/author hashes separate;
+  bind intent to delivery evidence; consume it on owner/evidence supersession.
   Queueing is not exposure; predeclared finish cannot authorize unseen feedback;
   `author_action=stop` grants neither completion nor permission. No semantic counters or
   keyword gates (P5). ARCHITECTURE §6 owns material-only continue, invalid-vote abstention
