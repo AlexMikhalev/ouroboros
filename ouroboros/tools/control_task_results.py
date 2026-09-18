@@ -296,6 +296,8 @@ def _get_task_result(
             f"[SUBTASK_OUTCOME]\n{outcome_summary}\n[/SUBTASK_OUTCOME]\n\n"
             f"{result or 'No details available.'}"
         )
+    if isinstance(data.get("cancel_origin"), dict):
+        output += f"\n\n[CANCELLED_BY] {json.dumps(data['cancel_origin'], ensure_ascii=False)}"
     if trace and not unchanged:
         output += f"\n\n[SUBTASK_TRACE]\n{trace}\n[/SUBTASK_TRACE]"
     from ouroboros.task_finalization import provider_terminal_body, terminal_host_notice_text

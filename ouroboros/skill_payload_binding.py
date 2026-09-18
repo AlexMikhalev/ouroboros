@@ -177,6 +177,11 @@ def resolve_skill_payload_base(
     from ouroboros.contracts.skill_payload_policy import resolve_constrained_payload_path
 
     constraint = normalize_task_constraint(getattr(ctx, "task_constraint", None))
+    if constraint and constraint.has_selected_skill:
+        # The task's selected payload supplies omitted selectors, not a new target.
+        parts = constraint.payload_root.split("/")
+        skill_name = str(skill_name or "").strip() or constraint.skill_name
+        location = str(location or "").strip() or (parts[1] if len(parts) == 3 else "")
     requested = str(location or "").strip().lower()
     canonical_name = _sanitize_skill_name(skill_name)
     if not str(skill_name or "").strip() or canonical_name == "_unnamed":

@@ -478,6 +478,13 @@ function custodyDebtReason(record) {
     ];
 }
 
+// Transport is recorded fact, never proof that an HTTP caller was the owner.
+const CANCEL_SOURCE_PHRASES = {
+    http_single: 'Stopped from the app (Stop now)',
+    http_cascade: 'Stopped from the app (Stop now)',
+    http_graceful: 'Stopped from the app (Wrap up)',
+};
+
 export function taskReasonDetail(evt) {
     // An owner-requested stop is a success and carries its own marker instead.
     if (taskStoppedWithSummary(evt)) return '';
@@ -496,6 +503,16 @@ export function taskReasonDetail(evt) {
         // it has a sentence); the stored reviewer rationale stays in the card
         // body, the task result and Logs.
         return taskReasonPhrase(decisionCause);
+    }
+    const origin = record.cancel_origin;
+    if (severity === 'cancelled' && origin && typeof origin === 'object' && !Array.isArray(origin)) {
+        const source = String(origin.source || '');
+        const actor = origin.request_origin?.kind === 'agent_task' ? origin.request_origin.task_id : '';
+        return [
+            Object.hasOwn(CANCEL_SOURCE_PHRASES, source) ? CANCEL_SOURCE_PHRASES[source] : source,
+            origin.scope === 'cascade' ? 'this task and its sub-tasks' : '',
+            `initiator: ${String(actor || origin.requested_by || '') || 'not recorded'}`,
+        ].filter(Boolean).join(' · ');
     }
     if (!evt?.reason_code || evt.reason_code === 'final_message') return '';
     // A healed debt is never restored: naming it again would state a debt the
@@ -1170,7 +1187,10 @@ function summarizeChatLiveEventView(evt) {
         const resultText = describeText(evt.result || '', 320, { markdown: true });
         const traceText = describeText(evt.trace_summary || '', 320);
         const errorText = describeText(evt.error || '', 220);
-        const reasonDetail = evt.reason_code ? taskReasonPhrase(evt.reason_code) : '';
+        const cancelDetail = evt.cancel_origin && (rawEvent === 'cancelled'
+            || (rawEvent === 'completed' && taskOutcomeSeverity(evt) === 'cancelled'))
+            ? taskReasonDetail({ status: 'cancelled', cancel_origin: evt.cancel_origin }) : '';
+        const reasonDetail = cancelDetail || (evt.reason_code ? taskReasonPhrase(evt.reason_code) : '');
         const detailParts = [
             progressText.full,
             resultText.full ? `[RESULT]\n${resultText.full}` : '',
@@ -1220,9 +1240,9 @@ function summarizeChatLiveEventView(evt) {
         return chatView({
             phase,
             headline: subagentHeadline(sid, role, label, evt.model),
-            body: activity.preview || '',
+            body: cancelDetail || activity.preview || '',
             fullBody: detailParts.join('\n\n'),
-            activityPreview: activity.preview || '',
+            activityPreview: cancelDetail || activity.preview || '',
             visible: true,
             promote: promoted,
             human: promoted,

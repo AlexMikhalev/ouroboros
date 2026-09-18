@@ -29,14 +29,33 @@ validated aggregate plus every row that is still live.
 
 | rows | disposition | why |
 |---|---|---|
-| `kind="attempt"`, final state `settled` / `unresolved` / `released`, and **no review attribution** (`review_skill`/`review_wave_id`/`review_slot_id` all empty) | folded (their whole seq chain) | terminal, id never re-asserted by any writer (`attempt_id` is a one-shot uuid4 minted at reserve time); aggregation-complete under §5 |
-| `kind="attempt"`, final state `reserved` / `dispatched` (in-flight) | **retained verbatim** | INVARIANT: in-flight/unsettled rows are never folded — their terminal transition still has to join them by `attempt_id` in the live replay |
-| `usage_baseline` / `usage_baseline_group` from a previous compaction | re-folded (header replaced, groups merged by key, exact-decimal sums added) | baselines must not accumulate per epoch |
+| `kind="attempt"`, final state `settled` / `released`, no abandonment marker, and **no review attribution** (`review_skill`/`review_wave_id`/`review_slot_id` all empty) | folded (their whole seq chain) after the fold horizon | ordinary terminal rows are immutable; aggregation-complete under §5 |
+| `kind="attempt"`, final state `reserved` / `dispatched` / `unresolved`, or an administrative `settled` row with `settle_reason="abandoned"` | **retained verbatim** | their next valid transition or late receipt still has to join the exact `attempt_id` in the live replay |
+| `usage_baseline` / `usage_baseline_group` from a previous compaction | re-folded (header replaced, groups merged by key, exact-decimal sums added) | baselines must not accumulate per epoch; historical unknown-cost groups remain valid aggregates, never recreated individual attempts |
 | `kind="subscription_session"`, `"external_unmetered"` | **retained** | their `attempt_id` is deterministically re-derived from a stable external id and re-asserted on replay: `_append_single_settled_row` dedups and conflict-checks against the LIVE replay. Folding them would turn an idempotent replay into a silent double charge. Disclosed residual: these rows keep growing (slowly — one row per delegated run / external dispatch). |
 | `kind="legacy_*"` | **retained** | same idempotency argument: `ensure_legacy_imported` dedups candidate rows against live `attempt_id`s if the completion watermark is ever lost mid-history. Bounded one-time set. |
 | attempts with review attribution | **retained** | `skill_review_usage` projects historical waves per-attempt (`attempt_ids`, `attempts` lists) for durable review receipts; folding would erase that projection. Disclosed residual (skill-review waves only; ordinary task/review traffic carries no `review_*` attribution). |
 | unknown future kinds | **retained** | fail-safe default: fold only what this design proves aggregation-complete |
 | quarantine file | untouched | quarantined bytes are already out of the replay; `integrity_degraded` stays path-derived and unaffected |
+
+An administrative abandonment uses the existing `settled` state with
+`settle_reason="abandoned"`, `cost_usd=None` and `cost_final=false`. The reservation
+bound remains accounted without becoming confirmed spend; closing ownership does
+not make an unknown price final. `usage_ledger.is_abandoned_settlement` is the shared
+structural predicate, and validation rejects an abandonment marker that claims a
+known price or final cost.
+
+An unresolved attempt can become this administrative settlement or accept one real
+settlement tagged `late_receipt`; an abandoned settlement can accept that same late
+receipt. Either may instead become `released` only on the existing positive
+`before_dispatch_failed:` proof that generation never started. After the real
+settlement or release the row is immutable again. Identical actual-receipt retries
+are no-op at the accounting writer; conflicting receipts cannot append. The full
+validator and incremental `LedgerResumeState.late_receipt_ids` preserve the same
+eligibility, so a warm read grants no extra transition and loses no owed receipt.
+Compaction preserves the whole eligible chain, not just its last row. Existing
+baseline groups keep their recorded sums and weights; the archive is not migrated
+to invent individually correctable attempts.
 
 ## 4. Baseline block shape
 
@@ -157,9 +176,9 @@ Validator additions (`_validate_records`): baseline rows are legal only as
 the leading block of a full-file validation (a baseline row in an appended
 tail, or after any non-baseline row, is corrupt); exactly one header, first;
 group rows must carry the header's `baseline_id` and a positive
-`folded_attempt_count`; group state ∈ {settled, unresolved, released}; the
-existing per-attempt transition and numeric checks apply unchanged (monetary
-strings parse through `_number`).
+`folded_attempt_count`; group state ∈ {settled, unresolved, released}, including
+historical unresolved groups. Per-attempt transitions follow the late-receipt
+contract in §3; numeric checks accept monetary strings through `_number`.
 
 **The stamp's own provenance is validated, not trusted.** The header is the
 only ledger row that points at bytes outside its file, so the substrate — the
@@ -669,8 +688,11 @@ tests/fixtures_usage_compaction.py)
    that runs beside it. A sum needing more than the ambient 28 digits
    (10²⁸ + 1) keeps its last digit — pinned by an oracle summing in its own,
    wider context.
-2. **Unsettled never fold**: reserved/dispatched chains survive verbatim
-   (modulo seq) and settle correctly after compaction.
+2. **Correctable attempts never fold**: reserved/dispatched/unresolved and
+   administratively abandoned chains survive verbatim (modulo seq). The exact
+   attempt accepts its valid terminal transition after compaction, while an actual
+   late settlement/release becomes foldable under the ordinary rules. Historical
+   baseline groups remain aggregates (`tests/test_usage_abandoned_ledger.py`).
 3. **Crash-safety**: a failure injected at the ledger rename ITSELF leaves a
    byte-identical, valid, further-usable ledger, with the archive segment
    already on disk holding the exact source bytes; the archive directory

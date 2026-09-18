@@ -16,13 +16,13 @@ Enforcement: CHECKLISTS items 2(g) and 10 (`tool_registration`) in commit review
 
 - Start Repair as ordinary managed development carrying the selected skill, source request and admitted revision (admission and revision checks: ARCHITECTURE §13; §6 "Skills and extensions"). The UI's Repair-and-run request is a real owner message whose origin follows the ordinary task path; resolve that source when the model enables the repaired skill, never a client `allow_enable` flag. Preserve a later direct owner disable — a load-error revert is not one. Read existing `skill_repair` records as selectors, never as a reduced profile, and keep the normal file, shell, browser and delegation tools under the existing readonly/acting-child ceilings.
 - Keep installed payloads as ordinary directories; a delegated Git copy is an optional existing capability. Check the known revision before an operation and, after opaque process work, record the observed revision without asserting exclusive authorship. No long shell lock or automatic rollback belongs here.
-- Use the existing payload binding/policy owners for all path forms: markerless native-directory payloads remain logical external, and launcher seeds and provenance/review/grant/dependency control state keep their existing guards.
+- Use the existing payload binding/policy owners for all path forms: a valid selected normal/repair `TaskConstraint` supplies omitted skill-name/bucket selectors, while explicit selectors must still match that physical payload. Markerless native-directory payloads remain logical external, and collision, native mutation, child-profile, launcher seed and provenance/review/grant/dependency controls keep their existing guards.
 - Review, grants, dependency readiness, desired enablement and actual execution are independent facts. Resume an unchanged reviewed snapshot through its existing free replay; a dependency or load failure never rewrites the review verdict; preserve an explicit owner disable and the original automatic request.
 - Base skill-review convergence and retry coaching on the lifecycle's group `review_round`, retaining `snapshot_attempt` for display. Changing only the coaching ordinal must preserve the prompt-builder and aggregation vocabulary's free-replay fingerprint; ceiling refusals name the exits the existing author-finish predicate permits. The rendering and rebuttal tests exercise revised snapshots across rounds, while `tests/test_review_cycles_gates.py` pins the replay fingerprint and enforcement-specific exit text.
 - UI, existing CLI commands and task tools call the shared operation owners. Actor identity is host-derived: owner-only actions require a real member chat/quiz/mailbox source naming the exact skill, revision and requested items; the model interprets intent, no synthetic reference creates permission, and ordinary Repair implies neither grant-all, attestation nor deletion.
 - Test the real installed script/tool/HTTP/widget/companion after review and prerequisites, repeat after corrections, and inspect a widget screenshot. Execution receipts name the actual dispatched revision; they are not PASS.
 
-Enforcement: `tests/test_skill_development_revision.py`, `tests/test_skill_lifecycle_actions.py`, `tests/test_skill_development_execution.py` and the UI lane `tests/test_ui_smoke_skill_lifecycle.py`.
+Enforcement: `tests/test_skill_payload_binding.py`, `tests/test_skill_development_revision.py`, `tests/test_skill_lifecycle_actions.py`, `tests/test_skill_development_execution.py` and the UI lane `tests/test_ui_smoke_skill_lifecycle.py`.
 
 ### Extension dispatch and isolated dependencies
 
@@ -354,7 +354,8 @@ and 23 (`delegated_transport`), both critical. The imperatives:
 Mechanism — durable intents, the claim/generation fence, the one settle owner,
 owed terminal delivery, cascade postconditions, stop policy and hurry — lives
 in ARCHITECTURE §5 "Supervisor Loop". Enforcement:
-`tests/test_cancel_intents_phase_a.py` and `tests/test_cancel_cascade_v664.py`.
+`tests/test_cancel_intents_phase_a.py`, `tests/test_cancel_cascade_v664.py` and
+`tests/test_cancel_origin.py`.
 The imperatives:
 
 - Effective task status belongs in `ouroboros/task_status.py`; never duplicate
@@ -379,7 +380,10 @@ The imperatives:
   delegated execution), not an atomic snapshot; a later target mismatch is
   disclosed. Caller reason and request origin are distinct — an HTTP client is
   not proof of personal owner intent — and cancellation authority and
-  completion-wins stay independent of these observations.
+  completion-wins stay independent of these observations. Preserve the recorded
+  `cancel_origin` through terminal publication, history, root/child card metadata and
+  conditional result-tool reads after the active intent is removed; missing actors
+  stay unknown, and exposure must not change `requested_by` parent-decision semantics.
 - Cancel INTENT is never a status value: every cancel ingress writes a durable
   intent through `ouroboros/cancel_intents.request_cancel`, fails closed when
   that write fails, checks live physical ownership (a settled RESULT does not
@@ -655,6 +659,18 @@ and what enforces each.
   `usage_accounting.execute_physical_attempt[_async]` (`tests/test_usage_accounting.py`);
   custody classifiers read the explicit `__cause__` chain, never `__context__`, and an
   ambiguous timeout stays unresolved (`tests/test_transport_custody.py`).
+- Administrative abandonment never turns a reservation bound into an actual price:
+  use the existing unknown-price settlement and retain correction-eligible attempt
+  chains across compaction. One real late receipt or positive never-started proof may
+  correct that attempt; ordinary terminal rows stay immutable, and full/incremental
+  validation must agree. Reconcile through existing custody maintenance only after
+  physical ownership ends, preserve review owners, and read exact recorded model
+  operations without creating new work. Retry existing cost projections independently
+  of another ledger transition, including after compaction, using one indexed
+  maintenance-drive view rather than filtering it for each owner. A different
+  recorded budget root keeps its own accounting path; never fabricate completion
+  (ARCHITECTURE §6 "Budget tracking"; storage rules and tests:
+  `docs/USAGE_COMPACTION.md`, `tests/test_usage_abandoned_ledger.py`).
 - Hold the usage-ledger cross-process lock only for budget check, validated append and
   fsync — never over network I/O; a caller that owns a finalization reserve passes it
   explicitly so admission and the transport bound cannot disagree.
@@ -896,6 +912,13 @@ and what enforces each.
   and acceptance identity (existing terminal record/outbox/System projection, visible on
   replay and single-body/headless transports); an unchanged answer never regains a
   verdict superseded by real owner or evidence changes.
+- Keep delivered result, unresolved tool-call evidence and host acceptance separate.
+  Error count alone does not degrade execution or establish objective acceptance;
+  retain `execution.unresolved_tool_errors` and the cosmetic bucket, and expose the
+  existing no-review warning for either when the canonical objective is
+  `not_evaluated`, including after delivery/child-state normalization. Test
+  every verdict and the no-review case while preserving stronger typed terminal causes
+  (ARCHITECTURE §6 "Task lifecycle"; `tests/test_outcome_tool_error_axes.py`).
 - Every direct child result needs an exact-hash disposition through the existing
   `tree_note(kind="decision")` payload (`type=child_result_disposition`; the batch form
   validates entries by index). The typed task-tree row is the sole authority;

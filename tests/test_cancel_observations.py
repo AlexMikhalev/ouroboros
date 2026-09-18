@@ -114,6 +114,8 @@ def test_agent_cancel_of_a_foreign_task_records_origin_without_a_parent_decision
     fields = _intent_outcome_fields(intent)
     assert "parent_decision" not in fields
     assert fields["cancel_observation"] == intent["observation"]
+    assert fields["cancel_origin"]["request_origin"] == {"kind": "agent_task", "task_id": "parent"}
+    assert "requested_by" not in fields["cancel_origin"]
 
 
 def test_completed_child_keeps_its_result(tmp_path):
@@ -155,5 +157,9 @@ def test_http_observation_records_transport_without_inventing_owner_identity(tmp
     # nothing, and the parent's forced-finalization would treat that child
     # result as already dispositioned (D#7).
     from supervisor.cancel_publication import _intent_outcome_fields
-    assert "parent_decision" not in _intent_outcome_fields(intent)
+    fields = _intent_outcome_fields(intent)
+    assert "parent_decision" not in fields
+    assert "requested_by" not in fields["cancel_origin"]
+    assert fields["cancel_origin"]["request_origin"] == intent["observation"]["request_origin"]
+    assert fields["cancel_origin"]["source"] == intent["source"]
     assert intent["source"] == ("http_cascade" if cascade else "http_single")
