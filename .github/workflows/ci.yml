@@ -967,7 +967,7 @@ jobs:
             for attempt in $(seq 1 5); do
               rm -f "$SCREENSHOTS/$1.xml"
               if timeout 10s adb shell rm -f /data/local/tmp/obo-native-ui.xml \
-                && timeout 10s adb shell uiautomator dump /data/local/tmp/obo-native-ui.xml \
+                && timeout 20s adb shell uiautomator dump /data/local/tmp/obo-native-ui.xml \
                 && timeout 10s adb pull /data/local/tmp/obo-native-ui.xml "$SCREENSHOTS/$1.xml" \
                 && test -s "$SCREENSHOTS/$1.xml"; then
                 capture_status=0
