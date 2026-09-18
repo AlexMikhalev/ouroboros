@@ -637,7 +637,7 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
     try:
         configured_subagent, legacy_selection = select_subagent_snapshot(
             effective_runtime_subagent_settings(runtime_settings(settings_reader=_ctl().load_settings)),
-            subagent_id=str(params.get("subagent_id") or ""),
+            subagent_id=str(params.get("subagent_id") or ""), access=params.get("access"),
             legacy_model_lane=params.get("model_lane"),
             legacy_executor=params.get("executor"),
             legacy_model_lane_supplied="model_lane" in params,

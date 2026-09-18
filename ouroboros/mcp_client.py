@@ -106,9 +106,6 @@ class MCPServerConfig:
     def has_auth(self) -> bool:
         return bool(self.auth_token.strip())
 
-    def sanitized_id(self) -> str:
-        return self.id
-
 
 @dataclass
 class MCPTool:

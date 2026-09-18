@@ -336,27 +336,6 @@ class Memory:
 
         return new_block
 
-    def regenerate_scratchpad_md(self) -> None:
-        bp = self.scratchpad_blocks_path()
-        bp.parent.mkdir(parents=True, exist_ok=True)
-        fd = None
-        try:
-            fd = os.open(str(bp) + ".lock", os.O_RDWR | os.O_CREAT, 0o644)
-            _lock_ex(fd)
-            try:
-                blocks = self._read_scratchpad_blocks_unlocked(bp)
-            except Exception:
-                log.debug("Failed to load scratchpad blocks for regeneration", exc_info=True)
-                blocks = []
-            self._write_scratchpad_markdown(blocks)
-        finally:
-            if fd is not None:
-                try:
-                    _unlock(fd)
-                    os.close(fd)
-                except OSError:
-                    pass
-
     def mutate_scratchpad_blocks(self, mutator: Any) -> List[Dict[str, Any]]:
         """Mutate block source and regenerate its markdown under one sidecar lock."""
         from ouroboros.utils import atomic_write_json

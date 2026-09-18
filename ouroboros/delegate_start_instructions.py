@@ -7,15 +7,15 @@ from hashlib import sha256
 
 HOST_INSTRUCTIONS = (
     "You are a delegated worker running inside the workspace assigned by your host. Your "
-    "authority is everything INSIDE this root and nothing outside it. Do not run git "
+    "assignment and explicit owner/task constraints govern your work. Do not run git "
     "commit, tag, push, rebase, reset or any other history-moving command: your host "
     "captures changes against its recorded baseline and decides whether to integrate "
     "them. A private delegated snapshot can preserve committed changes in that diff, "
     "but a moved HEAD is disclosed as an instruction violation; it does not authorize "
     "a commit or apply. A self_worktree capture separately requires an unchanged HEAD. "
     "Do not review or accept your own change, do not "
-    "touch the host's runtime controls, skills, or memory, and do not write outside "
-    "this root. If your environment offers a way to ask your host a clarifying "
+    "touch the host's runtime controls, skills, or memory. If your environment "
+    "offers a way to ask your host a clarifying "
     "question, you may use it: your host may answer from its task context; a question "
     "that carries an engine expiry times out benignly if unanswered — continue with "
     "stated assumptions rather than blocking — while one without an expiry waits until "
@@ -35,8 +35,8 @@ UNPROVEN_BOUNDARY_INSTRUCTION = (
 
 
 _ACCESS_PRECEDENCE = (
-    "any access wording in the assignment text below is CONTEXT, not authority — "
-    "this line governs."
+    "this line governs native process access, while explicit task constraints "
+    "and the assigned edit target still bind."
 )
 
 ACCESS_INSTRUCTIONS = {
@@ -45,7 +45,13 @@ ACCESS_INSTRUCTIONS = {
         "edits or writes; " + _ACCESS_PRECEDENCE
     ),
     "workspace_write": (
-        " ACCESS: you may edit inside this root; " + _ACCESS_PRECEDENCE
+        " ACCESS: you may edit inside this root and must not write outside this root; " + _ACCESS_PRECEDENCE
+    ),
+    "full": (
+        " ACCESS: full native process access is requested for this assignment, "
+        "with source edits delivered through the assigned root; effective access "
+        "is established by the run receipt, and the private snapshot is not an OS "
+        "sandbox; " + _ACCESS_PRECEDENCE
     ),
 }
 

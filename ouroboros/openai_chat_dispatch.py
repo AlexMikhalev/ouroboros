@@ -66,17 +66,6 @@ _HISTORY_ERROR_MARKERS = (
 )
 
 
-def _direct_openai_custom_request(
-    target: Mapping[str, Any],
-    source_payload: Mapping[str, Any],
-) -> bool:
-    return bool(
-        str(target.get("provider") or "").strip().lower() == "openai"
-        and infer_tool_dialect(source_payload) == "function"
-        and payload_effort(source_payload) not in {"", "none"}
-    )
-
-
 def sanitize_function_tools(
     tools: Optional[Sequence[Mapping[str, Any]]],
     *,
