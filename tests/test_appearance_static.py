@@ -107,3 +107,16 @@ def test_the_onboarding_wizard_is_no_longer_pinned_to_the_viewport():
     template = _read("web/onboarding_template.html")
     assert "data-theme-control" in template
     assert "data-theme-toggle" not in template
+
+
+def test_status_text_uses_foreground_roles_not_raw_hues():
+    # Raw hues remain valid for fills/borders, never small status text.
+    for rel in ('web/style.css', 'web/settings.css'):
+        assert not re.search(r'(?:^|[;{])\s*color:\s*var\(--(?:amber|red|green|blue)\)',
+                             _read(rel), re.M), rel
+
+
+def test_chat_palette_redraw_is_local_viewport_work():
+    chat = _read('web/modules/chat.js')
+    mount = chat.split('function enhanceMountedMarkdown(root)', 1)[1].split('const {', 1)[0]
+    assert 'onThemeDomWrite: withStableViewport' in mount

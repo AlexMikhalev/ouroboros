@@ -1,7 +1,7 @@
 /* Shared values and portable controls. Pages own layout; opt-in author pages
    use these same bytes without inheriting an application-wide reset. */
 :root {
-    color-scheme: dark;
+    --native-color-scheme: dark;
     --neutral-rgb: 255, 255, 255;
     --shell-rgb: 13, 11, 15;
     --composer-rgb: 26, 21, 32;
@@ -174,7 +174,7 @@
 }
 
 :root[data-theme="light"] {
-    color-scheme: light;
+    --native-color-scheme: light;
     --neutral-rgb: 32, 35, 43;
     --shell-rgb: 255, 255, 255;
     --composer-rgb: 244, 245, 248;
@@ -215,7 +215,7 @@
     --diagram-tertiary: #f5f6f8;
 }
 
-.ouro-ui { font-family: var(--font-sans); }
+.ouro-ui { font-family: var(--font-sans); color-scheme: var(--native-color-scheme); }
 .muted { color: var(--text-meta); }
 /* Appearance tri-state (Light / Dark / System), rendered by theme.js. It lives in
    ui.css, not settings.css, because standalone onboarding loads ui.css only and

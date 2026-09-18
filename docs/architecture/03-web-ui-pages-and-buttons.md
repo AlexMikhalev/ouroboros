@@ -25,7 +25,8 @@ change; Dark → System on a dark OS does not churn mounted views.
 `theme_palette.js` translates `--chart-*` tokens into mounted Chart options and
 updates in place without replacing data or caller-authored option groups.
 `chat_markdown.js` parks Mermaid source before awaiting the library and carries
-it into rendered clones; per-root epochs discard stale async SVGs. Chat and
+it into rendered clones; per-root epochs discard stale async SVGs. Theme redraws
+use Chat's local stable-viewport writer, never mark incoming activity. Chat and
 widget disposers release theme subscriptions; Evolution returns a disposer to
 `app.js`'s non-persisted pagehide cleanup. Shared select arrows are whole-image
 `--select-arrow` tokens, since variables cannot interpolate inside a data URI.

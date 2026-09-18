@@ -328,3 +328,25 @@ test('a theme switch during the initial library download still mounts the diagra
         dispose();
     } finally { dom.restore(); }
 });
+
+test('local theme redraws do not reuse the incoming-content writer', async () => {
+    const dom = installDom();
+    installMermaid();
+    const { enhanceChatMarkdown } = await import(`../modules/chat_markdown.js?local=${Date.now()}`);
+    try {
+        let remoteWrites = 0; let localWrites = 0;
+        const root = mountRoot(dom, mermaidFence('graph TD; A-->B'));
+        const dispose = enhanceChatMarkdown(root, {
+            onDomWrite: (write) => { remoteWrites += 1; return write(); },
+            onThemeDomWrite: (write) => { localWrites += 1; return write(); },
+        });
+        await flush();
+        const initialWrites = remoteWrites;
+        assert.ok(initialWrites > 0);
+        dom.setTheme('light'); dom.announce(); await flush();
+        assert.equal(remoteWrites, initialWrites);
+        assert.ok(localWrites > 0);
+        assert.equal(root.childNodes[0].dataset.paintedWith, 'light');
+        dispose();
+    } finally { dom.restore(); }
+});

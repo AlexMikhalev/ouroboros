@@ -280,7 +280,7 @@ body.resizing-panels { user-select: none; }
 }
 
 .task-control-item.danger {
-    color: rgba(248, 113, 113, 0.95);
+    color: var(--status-error-fg);
 }
 
 .task-control-item:disabled {
@@ -976,7 +976,7 @@ body.resizing-panels { user-select: none; }
     height: 18px;
     border-radius: 9px;
     background: rgba(245, 158, 11, 0.15);
-    color: var(--amber);
+    color: var(--status-warn-fg);
     font-size: 11px;
     font-family: 'JetBrains Mono', monospace;
 }
@@ -1188,7 +1188,7 @@ body.resizing-panels { user-select: none; }
 .chat-budget-text {
     font-size: var(--type-meta);
     font-weight: 600;
-    color: var(--amber);
+    color: var(--status-warn-fg);
     white-space: nowrap;
     letter-spacing: 0.02em;
 }
@@ -1217,9 +1217,9 @@ body.resizing-panels { user-select: none; }
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
 }
-.status-badge.online { color: var(--green); }
-.status-badge.starting { color: var(--amber); }
-.status-badge.error { color: var(--red); }
+.status-badge.online { color: var(--status-ok-fg); }
+.status-badge.starting { color: var(--status-warn-fg); }
+.status-badge.error { color: var(--status-error-fg); }
 .status-badge.offline { color: var(--text-muted); }
 .status-badge.thinking {
     color: var(--accent);
@@ -3237,7 +3237,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 }
 .chat-context-mode[data-context-mode="low"] .chat-seg[data-mode="low"] {
     background: rgba(245, 158, 11, 0.16);
-    color: var(--amber);
+    color: var(--status-warn-fg);
 }
 .chat-context-mode[data-context-mode="nano"] .chat-seg[data-mode="nano"] {
     background: var(--project-18);
@@ -3579,10 +3579,10 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     word-break: break-word;
 }
 
-.log-type.tools { color: var(--blue); }
+.log-type.tools { color: var(--status-info-fg); }
 .log-type.llm { color: var(--accent); }
-.log-type.errors { color: var(--red); }
-.log-type.tasks { color: var(--amber); }
+.log-type.errors { color: var(--status-error-fg); }
+.log-type.tasks { color: var(--status-warn-fg); }
 .log-type.system { color: var(--text-muted); }
 .log-type.consciousness { color: #d68cff; }
 
@@ -3648,7 +3648,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     display: none;
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.7);
+    background: rgba(var(--shell-rgb), 0.95);
     z-index: 1000;
     align-items: center;
     justify-content: center;
@@ -3974,7 +3974,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 
 .activity-sub {
     font-size: 12px;
-    color: rgba(148, 163, 184, 0.85);
+    color: var(--text-meta);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -3989,14 +3989,14 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 
 .activity-tag {
     font-size: 11px;
-    color: rgba(148, 163, 184, 0.8);
+    color: var(--text-meta);
     font-style: italic;
 }
 
 .activity-empty,
 .activity-loading {
     font-size: 13px;
-    color: rgba(148, 163, 184, 0.75);
+    color: var(--text-secondary);
     padding: 8px 2px;
 }
 
@@ -4048,7 +4048,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 }
 
 .evo-empty-error {
-    color: var(--red);
+    color: var(--status-error-fg);
 }
 
 /* Skills page. */
@@ -4569,7 +4569,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 }
 
 .skills-load-error {
-    color: var(--red);
+    color: var(--status-error-fg);
     font-size: 12px;
     margin-bottom: 8px;
 }
@@ -4999,10 +4999,10 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     gap: 8px;
 }
 
-.marketplace-block-list h4 { color: var(--red); }
-.marketplace-block-list ul { margin: 4px 0 0 0; padding-left: 18px; color: var(--red); font-size: 12px; }
-.marketplace-warn-list h4 { color: var(--amber); }
-.marketplace-warn-list ul { margin: 4px 0 0 0; padding-left: 18px; color: var(--amber); font-size: 12px; }
+.marketplace-block-list h4 { color: var(--status-error-fg); }
+.marketplace-block-list ul { margin: 4px 0 0 0; padding-left: 18px; color: var(--status-error-fg); font-size: 12px; }
+.marketplace-warn-list h4 { color: var(--status-warn-fg); }
+.marketplace-warn-list ul { margin: 4px 0 0 0; padding-left: 18px; color: var(--status-warn-fg); font-size: 12px; }
 
 /* Installed-card provenance and adapter warnings. */
 .skills-card-provenance {

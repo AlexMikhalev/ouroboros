@@ -319,9 +319,8 @@ export function initEvolution({ ws, state, mount }) {
                     y: {
                         type: 'linear',
                         position: 'left',
-                        // The axis and tick colours match this axis's series on
-                        // purpose (blue = lines of code); only the meaningless
-                        // grid follows the palette.
+                        // Repaint assigns readable themed blue to this series
+                        // axis, and neutral themed ink to the other axes.
                         title: { display: true, text: 'Lines of Code', color: '#60a5fa', font: { size: 11 } },
                         ticks: { color: '#60a5fa', font: { size: 10 } },
                         grid: { color: chartChrome().grid },
@@ -341,16 +340,15 @@ export function initEvolution({ ws, state, mount }) {
 
     function repaintChart() {
         if (!evoChart) return;
-        // Keep the series-coded blue axis; all neutral chart chrome follows
-        // the palette. Never rebuild an instance just to change its ink.
+        // Keep the series-coded blue axis in a readable foreground shade.
+        // Never rebuild an instance just to change its ink.
         const { text, grid } = chartChrome();
+        const blue = getComputedStyle(document.documentElement).getPropertyValue('--status-info-fg').trim() || text;
         for (const [id, scale] of Object.entries(evoChart.scales || {})) {
             const options = scale.options;
             if (options.grid) options.grid.color = grid;
-            if (id !== 'y') {
-                if (options.ticks) options.ticks.color = text;
-                if (options.title) options.title.color = text;
-            }
+            if (options.ticks) options.ticks.color = id === 'y' ? blue : text;
+            if (options.title) options.title.color = id === 'y' ? blue : text;
         }
         applyChartTheme(evoChart, { scales: {} });
     }

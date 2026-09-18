@@ -580,7 +580,7 @@ function cleanupState(root, state) {
 }
 
 /** Enhance mounted markdown and return a disposer for resources acquired here. */
-export function enhanceChatMarkdown(rootEl, { onDomWrite = writeDirectly } = {}) {
+export function enhanceChatMarkdown(rootEl, { onDomWrite = writeDirectly, onThemeDomWrite = onDomWrite } = {}) {
     if (!rootEl) return () => {};
     destroyChatMarkdown(rootEl);
     const state = {
@@ -621,10 +621,10 @@ export function enhanceChatMarkdown(rootEl, { onDomWrite = writeDirectly } = {})
         for (const chart of state.charts) applyChartTheme(chart, CHART_THEMED.get(chart) || {});
         state.epoch += 1;
         // The reset collapses each SVG back to a line of text, so it goes through
-        // the caller's DOM writer like every other height change here.
+        // the caller's local DOM writer, preserving scroll without new activity.
         let pending = 0;
-        onDomWrite(() => { pending = resetMermaidNodes(rootEl); return pending > 0; });
-        if (pending) void renderMermaidNodes(rootEl, state, onDomWrite);
+        onThemeDomWrite(() => { pending = resetMermaidNodes(rootEl); return pending > 0; });
+        if (pending) void renderMermaidNodes(rootEl, state, onThemeDomWrite);
     });
     const start = () => {
         if (state.destroyed || rootEl.isConnected === false) return;

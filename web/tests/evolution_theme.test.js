@@ -42,7 +42,7 @@ test('Evolution repaints mounted neutral chrome and releases its subscriptions',
         window.dispatchEvent(new Event('ouro:theme-changed'));
         assert.equal(chart.options.plugins.legend.labels.color, text);
         assert.equal(chart.scales.x.options.ticks.color, text);
-        assert.equal(chart.scales.y.options.ticks.color, '#60a5fa');
+        assert.equal(chart.scales.y.options.ticks.color, '#999999');
         assert.equal(chart.data, data);
         dispose(); dispose();
         assert.equal(chart.destroyed, true);

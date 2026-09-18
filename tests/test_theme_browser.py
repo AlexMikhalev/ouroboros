@@ -264,3 +264,16 @@ def test_widget_chart_repaints_in_place_and_releases_its_theme_listener(subscrip
     assert_themed(remounted)
     assert page.evaluate('widgetThemeListeners()') == 1
     assert not [path for path, _ in ui['posts'] if path == '/api/settings']
+
+
+def test_author_kit_native_scheme_is_opt_in(subscription_ui):
+    """Loading the shared kit must not recolour unrelated native page controls."""
+    ui = subscription_ui; page = ui['page']
+    css = page.request.get(ui['url'] + '/static/ui.css').text()
+    page.set_content('<html><head><style>' + css + '</style></head><body>'
+                     '<input id="outside"><div class="ouro-ui"><input id="inside"></div>'
+                     '</body></html>')
+    for theme in ('dark', 'light'):
+        page.evaluate('(theme) => document.documentElement.dataset.theme = theme', theme)
+        assert page.locator('#outside').evaluate('(e) => getComputedStyle(e).colorScheme') == 'normal'
+        assert page.locator('#inside').evaluate('(e) => getComputedStyle(e).colorScheme') == theme

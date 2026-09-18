@@ -377,7 +377,7 @@
 }
 
 .settings-unsaved-indicator {
-    color: var(--amber);
+    color: var(--status-warn-fg);
     font-weight: 600;
     min-width: 126px;
     opacity: 0;
@@ -765,7 +765,7 @@
 }
 
 .local-toggle[data-warning="1"] {
-    color: var(--amber);
+    color: var(--status-warn-fg);
 }
 
 .settings-test-result {
