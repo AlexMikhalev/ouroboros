@@ -1131,7 +1131,7 @@ export function clearTransientRoutingAnnotations(messagesDiv = globalThis.docume
     return changed;
 }
 
-export function renderRoutingAnnotation(bubble, annotation) {
+export function renderRoutingAnnotation(bubble, annotation, chatId = 1) {
     if (!bubble) return false;
     const text = routingAnnotationText(annotation);
     let note = bubble.querySelector('.msg-routing-annotation');
@@ -1164,6 +1164,7 @@ export function renderRoutingAnnotation(bubble, annotation) {
     if (note.dataset.annotationStatus !== status) note.dataset.annotationStatus = status;
     if (bubble.dataset.chatAnnotationStatus !== status) bubble.dataset.chatAnnotationStatus = status;
     const destination = annotation.project_id && Number(annotation.project_chat_id) > 0
+        && Number(annotation.project_chat_id) !== Number(chatId)
         && ['scheduled', 'delivered'].includes(status);
     if (destination) {
         const button = createSystemMessageAction({

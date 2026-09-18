@@ -309,7 +309,7 @@ export function createChatInstance({
         showToast,
         fetchDetail: fetchTaskDetailStrict,
         onDomWrite: withStableViewport,
-        isMain,
+        isMain, chatId,
         insertMessageNode,
     });
 

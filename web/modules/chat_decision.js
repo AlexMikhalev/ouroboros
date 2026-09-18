@@ -37,6 +37,7 @@ export function createChatDecision({
     fetchDetail = null,
     onDomWrite = (mutate) => mutate(),
     isMain = false,
+    chatId = 1,
     insertMessageNode = null,
 }) {
     const observations = new Map();
@@ -722,7 +723,7 @@ export function createChatDecision({
             if (!actionable) {
                 const card = bubble.querySelector('.chat-routing-card');
                 card?.remove();
-                return renderRoutingAnnotation(bubble, annotation) || Boolean(card);
+                return renderRoutingAnnotation(bubble, annotation, chatId) || Boolean(card);
             }
             const annotationChanged = bubble.querySelector('.msg-routing-annotation')
                 ? renderRoutingAnnotation(bubble, null) : false;

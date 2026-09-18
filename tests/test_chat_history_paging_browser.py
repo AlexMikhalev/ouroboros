@@ -308,6 +308,7 @@ def _feature_history(root):
     from ouroboros.projects_registry import create_project
 
     project = create_project(root, "history-details", name="History detail room")
+    destination = create_project(root, "history-destination", name="Routing destination room")
     cid = project["chat_id"]
     quiz = {"quiz_id": "saved-choice", "question": "How should the retained history read?",
             "options": [{"label": "First", "detail": "Keep the first form"},
@@ -330,13 +331,17 @@ def _feature_history(root):
     ]
     _write(root / "archive" / "chat_20260901T000000.jsonl", old)
     # Both source budgets reach these oldest companions in the same final page.
-    _write(root / "logs" / "chat.jsonl", [*[_human(index, cid) for index in range(5, 1655)],
+    _write(root / "logs" / "chat.jsonl", [
+        _human(5, cid, text="Routed to another project", client_message_id="routed-other"),
+        *[_human(index, cid) for index in range(6, 1655)],
         _human(1656, cid, direction="system", type="quiz_answer", task_id="quiz-owner", text="",
                quiz={**quiz, "state": "answered", "comment": comment}),
         *[_human(1700 + index, cid, text=f"Following dialogue {index}", ts="2026-09-12T10:00:01Z")
           for index in range(20)]])
     append_chat_annotation(root, "routed-archive", action="route_to_project", status="delivered",
                            target="far-parent", target_label="History detail room", project_id=project["id"], project_chat_id=cid)
+    append_chat_annotation(root, "routed-other", action="route_to_project", status="delivered",
+                           target_label=destination["name"], project_id=destination["id"], project_chat_id=destination["chat_id"])
     child = {"task_id": "linked-child", "delegation_role": "subagent", "subagent_task_id": "linked-child",
              "parent_task_id": "far-parent", "root_task_id": "far-parent", "subagent_role": "Archive reader"}
     _write(root / "archive" / "progress_20260901T000000.jsonl", [
@@ -360,7 +365,7 @@ def _feature_history(root):
     for task_id in ["far-parent", "linked-child", "focus-root", "history-media", "quiz-owner", *[f"history-task-{n}" for n in range(5)]]:
         _result(root, task_id, chat_id=cid, project_id=project["id"],
                 **({"review_projection": review, "suggested_name": "Selectable history title"} if task_id == "focus-root" else {}))
-    return project, comment
+    return project, destination, comment
 
 
 @pytest.mark.parametrize("browser_engine", ["chromium", "webkit"])
@@ -368,7 +373,7 @@ def test_history_details_selection_replay_and_project_reopen(direct_server_with_
     from playwright.sync_api import sync_playwright
 
     root, url = direct_server_with_data["data_dir"], direct_server_with_data["url"]
-    project, comment = _feature_history(root)
+    project, destination, comment = _feature_history(root)
     with sync_playwright() as pw:
         browser = getattr(pw, browser_engine).launch(headless=True)
         try:
@@ -484,16 +489,27 @@ def test_history_details_selection_replay_and_project_reopen(direct_server_with_
                     assert image.count() > 0
                     assert page.locator(feed).get_by_text("history-note.txt", exact=True).count() > 0
                     anchor = page.locator(f'{feed} [data-client-message-id="routed-archive"]')
+                    assert anchor.locator('.msg-routing-annotation').text_content() == "Routed to project · History detail room"
+                    assert anchor.locator('.msg-routing-actions').count() == 0
+                    other = page.locator(f'{feed} [data-client-message-id="routed-other"]')
                     # The routing receipt's button lives in the shared action row between the note and the
                     # timestamp (never inside the nowrap note line): DESIGN "Quiz card", ARCHITECTURE 03.
-                    assert anchor.locator('.msg-routing-actions').get_by_role("button", name="Open Project").count() == 1
-                    assert anchor.locator('.msg-routing-annotation').get_by_role("button").count() == 0
-                    assert anchor.evaluate("""node => {
+                    assert other.locator('.msg-routing-actions').get_by_role("button", name="Open Project").count() == 1
+                    assert other.locator('.msg-routing-annotation').get_by_role("button").count() == 0
+                    assert other.evaluate("""node => {
                         const note = node.querySelector('.msg-routing-annotation'), row = node.querySelector('.msg-routing-actions'),
                             time = node.querySelector('.msg-time');
                         const follows = (a, b) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
                         return Boolean(note && row && time) && follows(note, row) && follows(row, time);
                     }""")
+                    # Live receipt updates use the same room address as retained history.
+                    for routed_project in (project, destination):
+                        _emit_ws_frame(page, {"type": "message_annotation", "annotation_type": "routing_ack",
+                            "chat_id": project["chat_id"], "client_message_id": "routed-other",
+                            "action": "route_to_project", "status": "delivered", "target_label": routed_project["name"],
+                            "project_id": routed_project["id"], "project_chat_id": str(routed_project["chat_id"])})
+                        assert other.locator('.msg-routing-annotation').text_content() == f"Routed to project · {routed_project['name']}"
+                        assert other.locator('.msg-routing-actions').count() == int(routed_project is destination)
                     anchor.scroll_into_view_if_needed()
                     identity = anchor.get_attribute("data-history-id")
                     before_top = anchor.evaluate("node => node.getBoundingClientRect().top - node.closest('.chat-messages').getBoundingClientRect().top")
@@ -506,6 +522,16 @@ def test_history_details_selection_replay_and_project_reopen(direct_server_with_
                     after_top = restored.evaluate("node => node.getBoundingClientRect().top - node.closest('.chat-messages').getBoundingClientRect().top")
                     assert abs(after_top - before_top) <= 8, (before_top, after_top)
                     assert page.locator(f'{reopened} [data-quiz-id="saved-choice"] .chat-quiz-answer').text_content() == f"Owner's answer: {comment}"
+                    assert restored.locator('.msg-routing-annotation').text_content() == "Routed to project · History detail room"
+                    assert restored.locator('.msg-routing-actions').count() == 0
+                    other = page.locator(f'{reopened} [data-client-message-id="routed-other"]')
+                    other.scroll_into_view_if_needed()
+                    _screenshot(page, tmp_path, f"routing-other-project-{browser_engine}-{width}")
+                    other.get_by_role("button", name="Open Project").click()
+                    destination_feed = f'#pchat-{destination["id"]}-messages'
+                    page.locator(destination_feed).wait_for(state="visible", timeout=30_000)
+                    _idle(page, destination_feed)
+                    _screenshot(page, tmp_path, f"routing-destination-opened-{browser_engine}-{width}")
                 finally:
                     context.close()
         finally:
