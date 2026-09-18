@@ -1041,20 +1041,20 @@ def _no_tool_final_answer(
     incoming_messages: queue.Queue,
     owner_msg_seen: set,
     emit_progress: Callable[[str], None],
-    *, review_only: bool = False,
+    *, review_only: bool = False, explicit_candidate: bool = False,
 ) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
     """Run the no-tool finalization gates; ``None`` requests another model round."""
     messages = limit_ctx.messages
-    control_state, controlled_content = _loop()._resolve_delivery_control(
+    control_state, controlled_content = ("fresh", content) if explicit_candidate else _loop()._resolve_delivery_control(
         content, tools, limit_ctx, llm_trace,
     )
     if control_state == "retry":
         return None
     content = controlled_content
     _loop()._project_child_result_dispositions(limit_ctx, llm_trace)
-    if control_state == "fresh" and str(content or "").strip():
+    if control_state == "fresh" and (explicit_candidate or str(content or "").strip()):
         candidate = _loop()._replace_delivery_candidate(
-            tools, limit_ctx, llm_trace, str(content), control="candidate",
+            tools, limit_ctx, llm_trace, str(content or ""), control="candidate",
         )
         content = candidate.full_text
     else:
@@ -1309,6 +1309,12 @@ def _no_tool_final_answer(
                     admission_agent._accepting_owner_messages = True
             _loop()._arm_delivery_control(tools, limit_ctx, llm_trace, control="owner_revision_required")
             return None
+    if isinstance(getattr(tools._ctx, "_presence_completion", None), dict):
+        # Only this successful common exit accepts the requested outcome. Holds,
+        # owner controls and budget exits must not inherit an earlier silent/send.
+        tools._ctx._presence_completion_accepted = True
+        limit_ctx.accumulated_usage["presence_completion_outcome"] = tools._ctx._presence_completion["outcome"]
+        limit_ctx.accumulated_usage["terminal_origin"] = _loop().TERMINAL_ORIGIN_MODEL_FINAL
     return _loop()._handle_text_response(
         str(content or ""),
         llm_trace,

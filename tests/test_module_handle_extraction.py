@@ -319,7 +319,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_undispositioned_children",
     })),
     "ouroboros/loop_delivery.py": ("ouroboros/loop.py", "_loop", frozenset({
-        "DeliveryCandidate", "_LoopExitContext",
+        "DeliveryCandidate", "TERMINAL_ORIGIN_MODEL_FINAL", "_LoopExitContext",
         "_append_or_merge_user_message", "_arm_delivery_control", "_begin_task_acceptance_fence",
         "_child_disposition_state", "_current_delivery_candidate",
         "_compute_subagent_handoff", "_delivery_evidence_state",

@@ -27,8 +27,8 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D17 | Projects, workspaces & task results | 21 | 0 |
 | D18 | Launcher, packaging, platform & shared substrate | 14 | 0 |
 | D19 | Frozen contracts (ABI) | 10 | 0 |
-| D20 | Presence | 9 | 0 |
-| **total** | | **551** | **0** |
+| D20 | Presence | 10 | 0 |
+| **total** | | **552** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -65,7 +65,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
 
 ## Hidden coupling (classified out of the strict graph)
 
-- lazy-only cross-domain pairs: **102**
+- lazy-only cross-domain pairs: **103**
   - D01->D08
   - D01->D10
   - D01->D11
@@ -166,6 +166,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
   - D19->D20
   - D20->D01
   - D20->D07
+  - D20->D08
   - D20->D11
   - D20->D12
 - dynamic-import cross-domain pairs: **0**
@@ -784,6 +785,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/presence_bindings.py`
 - `ouroboros/presence_capabilities.py`
 - `ouroboros/presence_context.py`
+- `ouroboros/presence_delivery.py`
 - `ouroboros/presence_profile.py`
 - `ouroboros/presence_runner.py`
 - `ouroboros/presence_runtime.py`
