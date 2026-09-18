@@ -130,12 +130,17 @@ def test_merge_never_rewrites_a_sent_observation_row(eligible):
 
 
 def test_merge_still_merges_into_an_ordinary_user_row():
-    messages = [{"role": "user", "content": "first"}]
+    from types import SimpleNamespace
+    from ouroboros.transcript_prefix import observe_send
 
-    _append_or_merge_user_content(messages, "second")
+    slot = SimpleNamespace()
+    messages = [{"role": "system", "content": "system"}]
+    observe_send(slot, messages, round_idx=1)
+    messages.append({"role": "user", "content": "first"})
+    _append_or_merge_user_content(messages, "second", slot=slot)
 
-    assert len(messages) == 1
-    assert messages[0]["content"] == "first\n\n---\n\nsecond"
+    assert len(messages) == 2
+    assert messages[1]["content"] == "first\n\n---\n\nsecond"
 
 
 def test_every_round_extends_the_previous_request_as_a_prefix(eligible):
