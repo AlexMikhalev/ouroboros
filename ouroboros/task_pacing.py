@@ -35,12 +35,7 @@ from ouroboros.config import (
 )
 from ouroboros.contracts.task_contract import answer_protocol_active, normalize_budget_profile
 from ouroboros.deadline_utils import parse_deadline_ts, utc_now
-from ouroboros.review_cycles import (
-    REASON_REVIEW_CYCLES_EXHAUSTED,
-    emit_review_cycles_exhausted,
-    get_acceptance_max_improvement_passes,
-    review_max_cycles,
-)
+from ouroboros.review_cycles import get_acceptance_max_improvement_passes
 
 
 # The host never predicts how long a review takes (owner R52, 2026-09-03). A
@@ -48,8 +43,8 @@ from ouroboros.review_cycles import (
 # and the time rail is this ONE number, the minimum spendable window (remaining
 # time above the finalization reserve) an acceptance panel needs in order to
 # START. `OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC` configures it and never lowers it
-# below this floor; an improvement pass needs the same floor scaled by
-# `_window_scale` (×2 under the adaptive policy, ×1 otherwise). Once launched a
+# below this floor. Author work uses the ordinary task reserve, not another
+# review-sized window. Once launched a
 # review is an ordinary operation, clamped to the owner deadline and the task
 # ceiling with the per-send money fence, and a deadline-cut review is a typed
 # degraded outcome. Panel durations are recorded as telemetry
@@ -147,11 +142,6 @@ def resolve_budget_profile(ctx: Any) -> Dict[str, Any]:
 def _acceptance_floor_sec() -> float:
     """The time rail: the configured floor, never below 200 s."""
     return max(_ACCEPTANCE_REVIEW_RESERVE_FLOOR_SEC, float(get_acceptance_review_est_sec()))
-
-
-def _window_scale(profile: Any) -> float:
-    """The improvement window is 2× the floor under the adaptive policy."""
-    return 2.0 if isinstance(profile, dict) and profile.get("improvement_policy") == "adaptive" else 1.0
 
 
 def acceptance_timing_events_path(ctx: Any) -> pathlib.Path:
@@ -270,12 +260,9 @@ def effective_max_improvement_passes(
     """The COUNT axis for improvement passes.
 
     An explicit task-local cap always binds (owner "Hurry up" overlays 0).
-    Without one, the shared review-cycle cap binds under EVERY policy —
-    Required+Blocking included (owner decisions D10/D20): passes = cycles - 1
-    from ``OUROBOROS_REVIEW_MAX_CYCLES`` (``review_cycles.py``), ``None`` only
-    when that setting is ``unlimited``. Deadline and global lifecycle rails
-    apply on top. (The ``until_deadline`` alias that lifted the count axis
-    outside Required+Blocking was removed in the 7.0 ABI window, Q10=A.)"""
+    Without one there is no separate author-response count: paid reviewer
+    admission owns N. Deadline and global lifecycle rails still apply.
+    """
     cap = profile.get("max_improvement_passes")
     # An explicit task-local cap is authoritative under every policy.
     if cap is not None:
@@ -300,32 +287,18 @@ def improvement_pass_allowed(
 ) -> Tuple[bool, str]:
     """Gate 2: one more improvement/obligation pass?
 
-    The count cap (task-local or the shared review-cycle cap) and the
-    deadline/reserve rail are independent; ``adaptive`` demands a comfortable
-    window — twice the floor (``_window_scale``) — before spending another
-    pass. The host predicts no duration (owner R52): the floor is the rail.
-    Under Required+Blocking the SHARED cap (no task-local cap) exhausting is the
-    typed ``review_cycles_exhausted`` reason (owner D10/D27) and — when ``ctx``
-    is supplied — the typed escalation event; a task-local cap (owner hurry,
-    budget_profile) keeps the generic ``improvement_passes_exhausted``."""
+    Only the explicit task-local count and ordinary finalization reserve bind
+    author work. The reviewer-sized time floor belongs to new critic admission.
+    """
     cap = effective_max_improvement_passes(
         profile,
         required_blocking=required_blocking,
     )
     if cap is not None and passes_done >= cap:
-        if required_blocking and profile.get("max_improvement_passes") is None:
-            if ctx is not None:
-                emit_review_cycles_exhausted(
-                    getattr(ctx, "event_queue", None),
-                    getattr(ctx, "budget_drive_root", "") or getattr(ctx, "drive_root", ""),
-                    surface="task_acceptance", task_id=str(getattr(ctx, "task_id", "") or ""),
-                    cycles_paid=passes_done + 1, cap=cap + 1, enforcement="blocking",
-                )
-            return False, REASON_REVIEW_CYCLES_EXHAUSTED
         return False, "improvement_passes_exhausted"
     if not snapshot.has_deadline:
         return True, ""
-    if snapshot.spendable_sec > _acceptance_floor_sec() * _window_scale(profile):
+    if snapshot.spendable_sec > 0:
         return True, ""
     return False, "improvement_window_inside_reserve"
 
@@ -1112,15 +1085,12 @@ def _acceptance_rails_line_inner(
             required_blocking=required_blocking,
         )
         if cap is None:
-            # None comes only from the unlimited shared cap now (the
-            # until_deadline alias path was removed in 7.0, Q10=A).
-            why = "review cycles unlimited; " if review_max_cycles() is None else ""
             parts.append(
-                f"review passes: {int(passes_done)} done, no local count cap "
-                f"({why}deadline/budget rails bind)"
+                f"author response passes: {int(passes_done)} done, no local count cap "
+                "(deadline/budget rails bind)"
             )
         else:
-            passes_part = f"review passes: {int(passes_done)}/{int(cap)}"
+            passes_part = f"author passes: {int(passes_done)}/{int(cap)}"
             # v6.74.4 freeze directive (count axis): the pass launched at
             # cap-1 is the last one improvement_pass_allowed will admit, so
             # say so. cap==0 never feeds a capsule back; skip the clause, and
@@ -1128,6 +1098,9 @@ def _acceptance_rails_line_inner(
             if 0 <= int(passes_done) < int(cap) and int(passes_done) + 1 >= int(cap):
                 passes_part += " — FINAL improvement pass, no further passes will run"
             parts.append(passes_part)
+        paid_cap = effective_task_acceptance_review_cycles(budget_profile)
+        parts.append(f"paid reviewer cycles: {'unlimited' if paid_cap is None else paid_cap} maximum; "
+                     "receiving feedback does not buy another panel")
     except (TypeError, ValueError):
         pass
     try:

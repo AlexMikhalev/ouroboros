@@ -16,11 +16,8 @@ from ouroboros.usage_accounting import _claim_physical_dispatch
 from ouroboros.utils import append_jsonl
 
 
-def test_required_blocking_binds_shared_cycle_cap_but_explicit_cap_always_wins(monkeypatch):
-    # Owner decisions D10/D20 (2026-08-15): the shared OUROBOROS_REVIEW_MAX_CYCLES
-    # binds Required+Blocking too (passes = cycles - 1); ``unlimited`` restores
-    # the former unbounded local count. The pre-D10 pin ("999 passes allowed")
-    # asserted the replaced behavior and was removed.
+def test_author_response_keeps_only_explicit_local_cap(monkeypatch):
+    # The paid ceiling does not suppress an author response, including Blocking.
     monkeypatch.delenv("OUROBOROS_REVIEW_MAX_CYCLES", raising=False)
     monkeypatch.delenv("OUROBOROS_ACCEPTANCE_MAX_IMPROVEMENT_PASSES", raising=False)
     snapshot = task_pacing.BudgetSnapshot(has_deadline=False)
@@ -30,7 +27,7 @@ def test_required_blocking_binds_shared_cycle_cap_but_explicit_cap_always_wins(m
     ) == (True, "")
     assert task_pacing.improvement_pass_allowed(
         snapshot, 1, uncapped, required_blocking=True,
-    ) == (False, "review_cycles_exhausted")  # the SHARED cap under blocking: typed (D27)
+    ) == (True, "")
     monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "unlimited")
     assert task_pacing.improvement_pass_allowed(
         snapshot, 999, uncapped, required_blocking=True,

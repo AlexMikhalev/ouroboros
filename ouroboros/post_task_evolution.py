@@ -156,11 +156,18 @@ def _closed_objectives_digest(drive_root: pathlib.Path) -> Optional[str]:
     so it cannot rot when prose formatting changes. An objective is closed when its latest cycle
     outcome is absorbed (already shipped), abandoned/no_op (attempted and dropped), or the
     objective/review axis recorded outcome_tier == "blocked_with_evidence" (hard-blocked).
+    A typed review-cap/unavailable stop is only this attempt's limit, not a
+    permanently closed objective. Its retained task source remains discoverable;
+    this readout neither schedules a retry nor resets campaign counters.
     Deduped by the SSOT fingerprint so the same base objective appears once. "" when nothing.
     """
     import json as _json
 
     from ouroboros.evolution_fingerprint import canonical_objective_fingerprint
+    from ouroboros.outcomes import (
+        ACCEPTANCE_FINALIZED_UNACCEPTED, REASON_REVIEW_CYCLES_EXHAUSTED,
+        REASON_REVIEW_QUORUM_UNREACHABLE,
+    )
 
     path = pathlib.Path(drive_root) / "state" / "evolution_checkpoints.jsonl"
     if not path.exists():
@@ -193,6 +200,13 @@ def _closed_objectives_digest(drive_root: pathlib.Path) -> Optional[str]:
             tx = row.get("transaction") if isinstance(row.get("transaction"), dict) else {}
             merged.setdefault("cycle_outcome", str(tx.get("cycle_outcome") or ""))
         axes = row.get("outcome_axes") if isinstance(row.get("outcome_axes"), dict) else {}
+        objective = axes.get("objective") if isinstance(axes.get("objective"), dict) else {}
+        review = axes.get("review") if isinstance(axes.get("review"), dict) else {}
+        decision = review.get("acceptance_decision") if isinstance(review.get("acceptance_decision"), dict) else {}
+        if (objective.get("reason") in {REASON_REVIEW_CYCLES_EXHAUSTED, REASON_REVIEW_QUORUM_UNREACHABLE}
+                or (decision.get("status") == ACCEPTANCE_FINALIZED_UNACCEPTED
+                    and decision.get("reason") in {REASON_REVIEW_CYCLES_EXHAUSTED, "review_degraded"})):
+            merged["waiting_for_review"] = True
         for axis in ("objective", "review"):
             axis_obj = axes.get(axis) if isinstance(axes.get(axis), dict) else {}
             if str(axis_obj.get("outcome_tier") or "") == "blocked_with_evidence":
@@ -202,7 +216,9 @@ def _closed_objectives_digest(drive_root: pathlib.Path) -> Optional[str]:
     for task_id in reversed(order):  # newest first
         info = by_task.get(task_id) or {}
         blocked = bool(info.get("blocked"))
-        if str(info.get("cycle_outcome") or "") not in {"absorbed", "abandoned", "no_op"} and not blocked:
+        outcome = str(info.get("cycle_outcome") or "")
+        waiting = info.get("waiting_for_review") and outcome not in {"absorbed", "abandoned"}
+        if not waiting and outcome not in {"absorbed", "abandoned", "no_op"} and not blocked:
             continue
         objective = str(info.get("objective") or "").strip().replace("\n", " ")
         if not objective:
@@ -211,6 +227,11 @@ def _closed_objectives_digest(drive_root: pathlib.Path) -> Optional[str]:
         if not fp or fp in seen:
             continue
         seen.add(fp)
+        if waiting:
+            # The current independently initiated attempt supersedes an older
+            # dropped attempt of this objective; its history is still in the
+            # solve-capability digest, without a permanent "do not reconsider".
+            continue
         tag = "BLOCKED" if blocked else (str(info.get("cycle_outcome") or "DROPPED").upper())
         out.append(f"- [{tag}] {objective}")
     return "\n".join(out)

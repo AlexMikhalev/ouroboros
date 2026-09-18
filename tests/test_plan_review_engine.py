@@ -787,63 +787,29 @@ def _fail_result():
     )
 
 
-def test_required_blocking_acceptance_at_cap_terminalizes_blocked_with_typed_event(tmp_path, monkeypatch):
+@pytest.mark.parametrize("enforcement", ["blocking", "advisory"])
+def test_last_paid_acceptance_result_returns_to_author(tmp_path, monkeypatch, enforcement):
     import ouroboros.loop as loop_mod
-    from ouroboros.outcomes import derive_loop_outcome
-
-    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "2")  # 1 improvement pass
-    monkeypatch.delenv("OUROBOROS_ACCEPTANCE_MAX_IMPROVEMENT_PASSES", raising=False)
-    monkeypatch.setattr(loop_mod, "get_review_enforcement", lambda: "blocking")
-    events: queue.Queue = queue.Queue()
-    ctx = _acceptance_ctx(tmp_path, passes_done=1, events=events)
-    another_round = loop_mod._apply_task_acceptance_result(ctx, _fail_result(), record_run=True)
-    assert another_round is False
-    decision = ctx.llm_trace["acceptance_decision"]
-    assert decision["status"] == "finalized_unaccepted"
-    assert decision["reason"] == "review_cycles_exhausted"
-    outcome = derive_loop_outcome("done", {}, ctx.llm_trace)
-    assert outcome["outcome_axes"]["objective"]["status"] == "fail"
-    assert outcome["outcome_axes"]["objective"]["outcome_tier"] == "blocked_with_evidence"
-    assert outcome["outcome_axes"]["objective"]["reason"] == "review_cycles_exhausted"
-    # reviewer findings preserved on the review axis; the typed event fired
-    assert outcome["outcome_axes"]["review"]["status"] == "fail" and outcome["outcome_axes"]["review"]["run_count"] == 1
-    rows = []
-    while not events.empty():
-        rows.append(events.get_nowait())
-    typed = [r for r in rows if r.get("data", {}).get("type") == "review_cycles_exhausted"]
-    assert typed and typed[0]["data"]["surface"] == "task_acceptance"
-
-
-def test_advisory_acceptance_at_cap_keeps_finalized_unaccepted_semantics(tmp_path, monkeypatch):
-    import ouroboros.loop as loop_mod
-    from ouroboros.outcomes import derive_loop_outcome
 
     monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "2")
-    monkeypatch.delenv("OUROBOROS_ACCEPTANCE_MAX_IMPROVEMENT_PASSES", raising=False)
-    monkeypatch.setattr(loop_mod, "get_review_enforcement", lambda: "advisory")
+    monkeypatch.setattr(loop_mod, "get_review_enforcement", lambda: enforcement)
     ctx = _acceptance_ctx(tmp_path, passes_done=1)
-    assert loop_mod._apply_task_acceptance_result(ctx, _fail_result(), record_run=True) is False
-    decision = ctx.llm_trace["acceptance_decision"]
-    assert decision["status"] == "finalized_unaccepted" and decision["reason"] == "capsule_spent"
-    outcome = derive_loop_outcome("done", {}, ctx.llm_trace)
-    assert outcome["outcome_axes"]["objective"]["outcome_tier"] == "best_effort"
-    assert outcome["outcome_axes"]["objective"].get("reason") != "review_cycles_exhausted"
+    assert loop_mod._apply_task_acceptance_result(ctx, _fail_result(), record_run=True) is True
+    assert ctx.llm_trace["acceptance_decision"]["status"] == "revision_requested"
+    assert ctx.llm_trace["review_runs"][-1]["aggregate_signal"] == "FAIL"
+    assert ctx.messages[-1]["review_feedback"]
 
 
-def test_task_pacing_typed_reason_only_for_the_shared_cap_under_blocking(monkeypatch):
+def test_explicit_author_limit_still_binds(monkeypatch):
     from ouroboros import task_pacing
     from ouroboros.contracts.task_contract import normalize_budget_profile
 
     monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "2")
-    monkeypatch.delenv("OUROBOROS_ACCEPTANCE_MAX_IMPROVEMENT_PASSES", raising=False)
     snap = task_pacing.BudgetSnapshot(has_deadline=False)
     shared = normalize_budget_profile({})
-    assert task_pacing.improvement_pass_allowed(snap, 1, shared, required_blocking=True) == (
-        False, "review_cycles_exhausted")
-    assert task_pacing.improvement_pass_allowed(snap, 1, shared) == (False, "improvement_passes_exhausted")
-    explicit = normalize_budget_profile({"max_improvement_passes": 0})  # owner hurry / budget_profile
-    assert task_pacing.improvement_pass_allowed(snap, 0, explicit, required_blocking=True) == (
-        False, "improvement_passes_exhausted")
+    assert task_pacing.improvement_pass_allowed(snap, 1, shared, required_blocking=True) == (True, "")
+    explicit = normalize_budget_profile({"max_improvement_passes": 0})
+    assert task_pacing.improvement_pass_allowed(snap, 0, explicit, required_blocking=True) == (False, "improvement_passes_exhausted")
 
 
 # ------------------------------------------------------------- settings retirement

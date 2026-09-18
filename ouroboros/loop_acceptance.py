@@ -74,11 +74,11 @@ def _task_acceptance_eligible(
             or bool(contract.get("acceptance_claims"))
         ):
             return True, f"{prefix}_contract"
-        if mode == "auto" and any(
+        if any(
             isinstance(call, dict) and call.get("tool") == "task_acceptance_review"
             for call in (llm_trace.get("tool_calls") or [])
         ):
-            return True, "auto_agent_request"
+            return True, f"{prefix}_agent_request"
         return False, "skipped_conversation"
     return False, "skipped_unknown_mode"
 
@@ -596,9 +596,9 @@ ACCEPTANCE_DECISION_REASONS = (
     "fence_reopen_failed",
     "infra_failure",
     "author_finish",
-    # The pacing/wallet reason two branches below already STAMP (`pass_reason ==
-    # REASON_REVIEW_CYCLES_EXHAUSTED`); it was missing from the closed set, so a
-    # spent shared cap shipped a reason no reader could validate.
+    "author_stop",
+    "review_outcome_received",
+    # An explicit author stop can retain the wallet's exhausted-cycle reason.
     REASON_REVIEW_CYCLES_EXHAUSTED,
     # A-material (2026-08-30): the resubmit carried no changed candidate and no new
     # obligation disposition, so the recorded verdict was replayed for free.
@@ -626,18 +626,19 @@ def _set_acceptance_decision(llm_trace: Dict[str, Any], decision: Dict[str, Any]
     owner/evidence supersession consumes its controlling finish intent."""
     previous = llm_trace.get("acceptance_decision") if isinstance(llm_trace.get("acceptance_decision"), dict) else {}
     merged = dict(decision)
+    merged.setdefault("enforcement", _loop().get_review_enforcement())
     status = str(merged.get("status") or "")
     reason = str(merged.get("reason") or "")
     if status not in ACCEPTANCE_DECISION_STATUSES:
         merged["status"] = ACCEPTANCE_FINALIZED_UNACCEPTED
         reason = reason or status or ACCEPTANCE_REASON_UNSPECIFIED
     merged["reason"] = reason
-    for key in ("agent_disposition", "agent_rationale", "author_disposition"):
+    for key in ("agent_disposition", "agent_rationale", "author_disposition", "author_action"):
         if previous.get(key) and not merged.get(key):
             merged[key] = previous.get(key)
-    if reason not in {"owner_followup", "evidence_refresh", "author_finish"} and not (
+    if reason not in {"owner_followup", "evidence_refresh", "author_finish", "author_stop"} and not (
         reason == "delivery_binding_superseded" and previous.get("reason") == "author_finish"
-    ) and previous.get("agent_finish_intent"):
+    ) and not merged.get("author_disposition") and previous.get("agent_finish_intent"):
         merged["agent_finish_intent"] = previous["agent_finish_intent"]
     llm_trace["acceptance_decision"] = merged
     # A full applied-review source includes the host's actual decision, not
@@ -658,15 +659,21 @@ def merge_agent_acceptance_stance(trace: Dict[str, Any], decision: dict, ctx: An
     merged.setdefault("source", "agent_task_acceptance_review_tool")
     merged["agent_disposition"] = str(decision.get("disposition") or "")
     merged["agent_rationale"] = truncate_review_artifact(str(decision.get("rationale") or ""), limit=500)
+    action = str(decision.get("author_action") or "finish")
+    merged["author_action"] = action
     merged.pop("agent_finish_intent", None)
     feedback = next((run for run in reversed(trace.get("review_runs") or [])
                      if isinstance(run, dict) and run.get("authority") == "host_root"
                      and run.get("feedback_delivered")), None)
-    if ctx is not None and feedback and decision.get("explicit_finish") is True and merged["agent_rationale"].strip():
+    outcome = trace.get("acceptance_review_outcome") or {}
+    if not feedback and outcome.get("feedback_delivered"):
+        feedback = outcome
+    if ctx is not None and (feedback or action == "stop") and decision.get("explicit_finish") is True and merged["agent_rationale"].strip():
         from ouroboros.loop_delivery import delivery_evidence_fingerprint
 
         merged["agent_finish_intent"] = {
-            "review_binding_hash": str(feedback.get("binding_hash") or ""),
+            "review_binding_hash": str((feedback or {}).get("binding_hash") or ""),
+            "author_action": action,
             "tool_count": len(trace.get("tool_calls") or []),
             "owner_directives": len(getattr(ctx, "_owner_directives", []) or []),
             "evidence_fingerprint": delivery_evidence_fingerprint(ctx, trace),
@@ -674,10 +681,11 @@ def merge_agent_acceptance_stance(trace: Dict[str, Any], decision: dict, ctx: An
     trace["acceptance_decision"] = merged
 
 
+
 def _collect_acceptance_obligations(llm_trace: Dict[str, Any], result: Any) -> None:
     """Typed PER-TASK obligations from critical contributing findings (v6.54.4).
 
-    Required+blocking path only. Each critical finding WITH a concrete
+    Blocking path after review eligibility. Each critical finding WITH a concrete
     recommendation becomes one open obligation in llm_trace (never the durable
     commit review_state — a separate SSOT). Clean finalization asks for an
     agent disposition per obligation (v6.54.0); time/pass gates and the

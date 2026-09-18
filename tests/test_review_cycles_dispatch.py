@@ -308,6 +308,7 @@ def _overflow_wave(dispatch):
 
 
 def test_all_assembly_refused_attempt_stays_unpaid(tmp_path, monkeypatch):
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "blocking")
     """F2(a): BOTH packs refusing at assembly ($0 spent) must not consume a
     ceiling cycle — with the default cap this used to exhaust a root for free."""
     from ouroboros.tools.commit_gate import count_paid_review_cycles
@@ -325,6 +326,7 @@ def test_all_assembly_refused_attempt_stays_unpaid(tmp_path, monkeypatch):
 
 
 def test_one_side_dispatched_attempt_counts_as_paid(tmp_path, monkeypatch):
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "blocking")
     """F2(b): parallel dispatch means one side can spend while the other
     overflows at assembly — any side dispatching makes the cycle paid."""
     from ouroboros.tools.commit_gate import count_paid_review_cycles
@@ -355,9 +357,8 @@ def test_one_side_dispatched_attempt_counts_as_paid(tmp_path, monkeypatch):
 def test_advisory_replay_reasons_drive_the_stage_cycle_to_a_disclosed_pass(
     tmp_path, monkeypatch, seed, expected_reason, expected_note_part,
 ):
-    """fable P3-3 (end to end): under advisory each free-replay reason lets the
-    REAL stage cycle pass without any dispatch, with its own honest progress
-    note, and the disclosure lands in the commit result formatting."""
+    """Advisory free replay returns the recorded outcome before an author choice;
+    its precise reason and no-new-dispatch disclosure remain durable."""
     from ouroboros.review_state import CommitAttemptRecord, make_repo_key, update_state, _utc_now
 
     monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
@@ -385,7 +386,8 @@ def test_advisory_replay_reasons_drive_the_stage_cycle_to_a_disclosed_pass(
         )))
 
     outcome = git_mod._run_reviewed_stage_cycle(ctx, "msg", 0.0)
-    assert outcome["status"] == "passed"
+    assert outcome["status"] == "reviewed"
+    assert outcome["review_reference"]["pre_review_fingerprint"] in {"fp-r", "fp-m"}
     notes = [n for n in progress if "Max Review Cycles" in n]
     assert notes and expected_note_part in notes[0]
     # The loud disclosure reached the advisory channel AND the commit result.
@@ -438,7 +440,8 @@ def test_managed_advisory_ceiling_replay_survives_stale_subject_trees(
 
     outcome = git_mod._run_reviewed_stage_cycle(ctx, "resolve", 0.0)
 
-    assert outcome["status"] == "passed", outcome
+    assert outcome["status"] == "reviewed"
+    assert outcome["review_reference"]["pre_review_fingerprint"] in {"fp-r", "fp-m"}, outcome
     assert any("paid-cycle ceiling exhausted" in n for n in progress)
 
 

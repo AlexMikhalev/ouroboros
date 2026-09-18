@@ -107,9 +107,9 @@ def test_git_catalog_schema_bytes_and_handler_owners_are_stable():
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode()
-    # Workflow scope: explicit local base/head comparisons on vcs_diff.
+    # Informed Advisory commit aliases plus explicit local vcs_diff base/head.
     assert hashlib.sha256(schema_bytes).hexdigest() == (
-        "73f2e452b574e31135f4992750afcd08ecf3b329216df8203b07b7e5e7e32ef0"
+        "93c0f6fced87cf33dc7a46395367f8315cb1ba7760d738489960dffd0084949a"
     )
     assert {
         entry.name: (entry.handler.__module__, entry.handler.__name__)

@@ -105,6 +105,10 @@ def get_tools():
                             "default": "",
                             "description": "Rationale required for an explicit Advisory author finish. Rationale without agent_disposition records a partial stance only and does not end review.",
                         },
+                        "author_action": {
+                            "type": "string", "enum": ["finish", "stop"],
+                            "description": "Finish the current result under its review policy, or stop honestly with unfinished work. Stop never authorizes a blocked action; include rationale. Omission preserves explicit Advisory finish.",
+                        },
                         "obligation_dispositions": {
                             "type": "array",
                             "default": [],
@@ -139,6 +143,7 @@ def _handle_task_acceptance_review(
     rationale: str = "",
     obligation_dispositions: Optional[list] = None,
     acceptance_subject: Optional[dict] = None,
+    author_action: str = "",
 ) -> str:
     from ouroboros.config import get_task_review_mode
     from ouroboros.review_evidence import (
@@ -214,6 +219,10 @@ def _handle_task_acceptance_review(
     if disposition not in {"accepted", "rejected", "partial", "deferred"}:
         disposition = ""
     agent_rationale = " ".join(str(rationale or "").split()).strip()
+    if author_action and (author_action not in {"finish", "stop"} or not agent_rationale):
+        from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
+        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR",
+            text="ERROR: TOOL_ARG_ERROR: author_action requires finish|stop and a rationale."))
     # v6.54.4 obligations layer: normalized per-obligation dispositions ride the
     # same agent_decision envelope (the existing v6.54.0 mechanism, extended to
     # obligation granularity). The host loop applies them to the per-task
@@ -232,10 +241,11 @@ def _handle_task_acceptance_review(
             "reason": " ".join(str(entry.get("reason") or "").split())[:500],
         })
     agent_decision = {}
-    if disposition or agent_rationale or normalized_ob:
+    if disposition or agent_rationale or normalized_ob or author_action:
         agent_decision = {
             "disposition": disposition or "partial",
-            "explicit_finish": bool(disposition),
+            "explicit_finish": bool(disposition or author_action),
+            "author_action": author_action or "finish",
             "rationale": agent_rationale[:1000],
             "source": "agent_task_acceptance_review_tool",
         }
@@ -1323,7 +1333,7 @@ def _dispatch_unified_review(ctx: ToolContext, commit_message: str, prepared: di
         )
         return _handle_review_block_or_warning(
             ctx, blocking_review, blocked_msg,
-            "Review enforcement=Advisory: review infrastructure failure did not block commit. ",
+            "Review enforcement=Advisory: review infrastructure failed; an explicit author decision is required. ",
         )
 
     if "error" in result:
@@ -1337,7 +1347,7 @@ def _dispatch_unified_review(ctx: ToolContext, commit_message: str, prepared: di
         )
         return _handle_review_block_or_warning(
             ctx, blocking_review, blocked_msg,
-            "Review enforcement=Advisory: review service error did not block commit. ",
+            "Review enforcement=Advisory: review service failed; an explicit author decision is required. ",
         )
 
     model_results = result.get("results", [])
@@ -1349,7 +1359,7 @@ def _dispatch_unified_review(ctx: ToolContext, commit_message: str, prepared: di
                        "model — commit cannot proceed without a successful review.")
         return _handle_review_block_or_warning(
             ctx, blocking_review, blocked_msg,
-            "Review enforcement=Advisory: review returned no model results; commit proceeding anyway. ")
+            "Review enforcement=Advisory: no model results were received; an explicit author decision is required. ")
 
     critical_fails, advisory_warns, errored_models, _triad_raw = _collect_review_findings(ctx, model_results)
     models_total = len(model_results)
@@ -1371,7 +1381,7 @@ def _dispatch_unified_review(ctx: ToolContext, commit_message: str, prepared: di
                        f"{', '.join(pending_models)}. Retry the same commit to reconcile them without a blind paid resend.")
         pending_block = _handle_review_block_or_warning(
             ctx, blocking_review, blocked_msg,
-            "Review enforcement=Advisory: pending review work did not block commit. ",
+            "Review enforcement=Advisory: review is pending; collect its outcome before choosing an author continuation. ",
         )
         if pending_block is not None:
             return pending_block
@@ -1391,7 +1401,7 @@ def _dispatch_unified_review(ctx: ToolContext, commit_message: str, prepared: di
         )
         return _handle_review_block_or_warning(
             ctx, blocking_review, blocked_msg,
-            "Review enforcement=Advisory: review quorum failure did not block commit. ",
+            "Review enforcement=Advisory: review quorum was not met; an explicit author decision is required. ",
         )
 
     if models_total < 2:
@@ -1430,14 +1440,10 @@ def _dispatch_unified_review(ctx: ToolContext, commit_message: str, prepared: di
             ctx,
             ("Cyber Pro: critical review findings do not prohibit action."
              if not review_enforcement_blocks("blocking") else
-             "Review enforcement=Advisory: critical review findings did not block commit."),
+             "Review enforcement=Advisory: critical findings require an explicit author decision before committing."),
         )
         for finding in getattr(ctx, "_last_review_critical_findings", []) or []:
             _append_review_warning(ctx, finding)
-        for warning in getattr(ctx, "_last_review_advisory_findings", []) or []:
-            _append_review_warning(ctx, warning)
-        if errored_note:
-            _append_review_warning(ctx, errored_note)
 
     if not critical_fails:
         # All clear: reset iteration state. With critical findings present
@@ -1447,9 +1453,10 @@ def _dispatch_unified_review(ctx: ToolContext, commit_message: str, prepared: di
         ctx._review_history = []
 
     if errored_note or advisory_warns or getattr(ctx, "_last_review_advisory_findings", None):
-        ctx._review_advisory = list(getattr(ctx, "_last_review_advisory_findings", []) or [])
+        for warning in getattr(ctx, "_last_review_advisory_findings", []) or []:
+            _append_review_warning(ctx, warning)
         if errored_note:
-            ctx._review_advisory.append(errored_note.strip())
+            _append_review_warning(ctx, errored_note.strip())
     return None
 
 

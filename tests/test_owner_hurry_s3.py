@@ -473,7 +473,7 @@ def test_required_blocking_unbounded_loop_collapses_to_zero_under_hurry(tmp_path
     rails = tp_mod.acceptance_rails_line(
         snapshot, effective, 0, None, required_blocking=True,
     )
-    assert "review passes: 0/0" in rails
+    assert "author passes: 0/0" in rails
     assert "no local count cap" not in rails
     # An unlatched ctx passes the profile through UNCHANGED (identity).
     unlatched = _acceptance_ctx(tmp_path, latched=False)

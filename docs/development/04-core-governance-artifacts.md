@@ -77,17 +77,19 @@ Ouroboros repo for an external plan. Exact user-managed installed-skill payload
 paths are the one data-plane exception, for CLASSIFICATION only: never a
 self-modification, never attachable evidence (`denied_path`).
 
-SPEC shape, finding classes, verdicts and closure rules: ARCHITECTURE §6 "Plan construction
-and review"; findings are inputs the main agent may accept, reject, or defer.
-Outstanding `need_evidence` closes with no second LLM call, through a separate
-`plan_task` call carrying only `review_disposition`
-(`{review_fingerprint, items: [{finding_id, decision, rationale}]}`, one item per
-required finding, exactly once);
-duplicate, contradictory, unknown, stale or incomplete dispositions fail closed,
-and a mixed or vacuous call is a typed argument error before any attempt is
-recorded (a default-empty optional field is ignored, not meaning:
-`plan_review._vacuous`). Never replay the plan envelope with the
-disposition.
+Specs, findings and closure: ARCHITECTURE §6 "Plan construction and review".
+Accept, reject or defer findings. Disposition-only
+`plan_task(review_disposition={review_fingerprint, items:[{finding_id, decision, rationale}]})`
+closes `need_evidence` at $0, one item per required finding.
+Duplicate, conflicting, unknown, stale, incomplete, mixed or vacuous calls
+return typed argument errors before recording. `plan_review._vacuous` ignores
+default-empty optional fields. Do not replay the plan for dispositions.
+
+Only explicit `review_disposition.author_action`, author disposition and critic
+fingerprint select corrected goal/plan/spec. Exact `current_attempt.author_subject`
+is separate from the critic. Advisory finish buys no panel; Blocking stop saves
+without implementation approval. `closed_plan_review_wave` means critic-closed;
+acceptance reads Advisory author claims as `author_plan`.
 
 Force-plan is an LLM-first pre-implementation obligation on the admitted managed
 root, not a mechanical permission check. `plan_review_state` owns durable review

@@ -71,6 +71,40 @@ def task_tool_metrics(llm_trace: dict) -> dict:
     return metrics
 
 
+def capture_task_inputs(ctx: Any, task: dict, drive_root: Any, receipts: list) -> dict:
+    """Freeze the existing owner corpus and check receipts before actor cleanup."""
+    from ouroboros._outcome_receipts import verification_receipt_ledger_row
+    from ouroboros.observability import redact_projection
+    from ouroboros.review_evidence_sections import (
+        _accept_owner_directives, _accept_verification_summary,
+    )
+
+    task_id = str(task.get("id") or task.get("task_id") or "")
+    result: dict = {
+        "version": 1, "task_id": task_id,
+        "source_ref": {"kind": "task_result", "task_id": task_id, "reader": "get_task_result"},
+        "unavailable_sections": [],
+    }
+    try:
+        result["owner_requirements_and_decisions"] = _accept_owner_directives(ctx, drive_root, task_id)
+    except Exception:
+        result["unavailable_sections"].append("owner_requirements_and_decisions")
+        log.warning("Task owner input unavailable for synthesis: %s", task_id, exc_info=True)
+    try:
+        result["verification_summary"] = _accept_verification_summary(receipts)
+        result["verification_receipts"] = [
+            {"ts": row.get("ts"), **verification_receipt_ledger_row(row)}
+            for row in receipts if isinstance(row, dict)
+        ]
+    except Exception:
+        result["unavailable_sections"].append("verification_receipts")
+        log.warning("Task verification input unavailable for synthesis: %s", task_id, exc_info=True)
+    # Copy once into the normal durable completion package. Prompt workers must
+    # neither retain mutable actor objects nor re-read a later task's messages.
+    return json.loads(json.dumps(redact_projection(result).value, ensure_ascii=False, default=str))
+
+
+
 def build_trace_summary(llm_trace: dict) -> str:
     """Return a compact human-readable summary of tool calls and agent notes."""
     if llm_trace.get("loop_evidence_unavailable"):
@@ -127,9 +161,9 @@ def build_trace_summary(llm_trace: dict) -> str:
                     args_str = _truncate_with_notice(args_str, 200).replace("\n", " ")
             facts = []
             status = str(tc.get("status") or "").strip()
-            if status and status != "ok":
+            if status:
                 facts.append(f"status={status}")
-            if tc.get("exit_code") not in (None, 0):
+            if tc.get("exit_code") is not None:
                 facts.append(f"exit_code={tc.get('exit_code')}")
             if tc.get("signal"):
                 facts.append(f"signal={tc.get('signal')}")
@@ -402,12 +436,15 @@ def _run_task_summary(env, llm, task, usage, llm_trace, drive_logs, review_evide
             review_section = format_review_evidence_for_prompt(review_evidence or {}, max_chars=8000, acceptance_panels=review_projection.get("panels"))
         except Exception:
             review_section = "(review evidence unavailable)"
+        from ouroboros.reflection import task_inputs_prompt_section
+
         prompt = _TASK_SUMMARY_PROMPT.format(
             task_id=task_id, goal=goal or "(no goal text)",
             task_type=task.get("type", "user"), rounds="unknown" if rounds is None else rounds,
             cost_text=cost_text,
             usage_snapshot=_synthesis_usage_snapshot_text(usage),
             sealed_final=sealed_final_prompt_section(sealed_final),
+            task_inputs=task_inputs_prompt_section(review_evidence),
             trace_summary=trace,
             review_evidence=review_section,
         )
@@ -607,13 +644,15 @@ If the task was non-trivial, end with a short meta-reflection section:
 - What friction, errors, or weak assumptions slowed the work?
 - What should Ouroboros change in its own process or prompts to avoid repeating that class of mistake?
 Keep the meta-reflection concrete and operational, not narrative.
-End with: "Details: progress.jsonl + tools.jsonl for task_id={task_id}"
+End with a task-scoped trace pointer: task_id={task_id}, task-events reader
+(CLI: ouroboros tasks watch {task_id} --jsonl). Do not guess flat log-file paths;
+the existing task reader merges this task's retained local, project and archived events.
 ## Task
 Goal: {goal}
 Type: {task_type}
 Rounds: {rounds}, Cost: {cost_text}
 
-{usage_snapshot}{sealed_final}## Execution trace
+{usage_snapshot}{sealed_final}{task_inputs}## Execution trace
 {trace_summary}
 
 ## Structured review evidence

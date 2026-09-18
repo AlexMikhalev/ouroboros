@@ -67,6 +67,7 @@ def _passive_submit_hub(
     """Project passive visibility/admission without running the scanner."""
     from ouroboros.skill_publish_eligibility import (
         PUBLISHABLE_SOURCES,
+        publication_author_acceptance,
         submit_hub_eligibility,
     )
 
@@ -94,6 +95,7 @@ def _passive_submit_hub(
             else bool(review_stale)
         ),
         github_token_configured=bool(github_token_configured),
+        author_accepted=bool(publication_author_acceptance(loaded.review, loaded.content_hash)),
     )
 
 

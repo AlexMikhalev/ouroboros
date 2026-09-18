@@ -1,10 +1,4 @@
-"""
-LLM call, retry, pricing, and usage-event logic for the main loop.
-
-Handles model pricing estimation, cost tracking, per-call retry with backoff,
-and real-time usage event emission.
-Extracted from loop.py to keep the main loop orchestrator focused.
-"""
+"""Main-loop provider calls: request observation, retries, pricing and usage events."""
 
 from __future__ import annotations
 
@@ -635,7 +629,6 @@ def _exception_provider_values(exc: Exception) -> List[str]:
 
 
 def _exception_provider_code(exc: Exception, safe_error: str) -> str:
-    del safe_error
     values = _exception_provider_values(exc)
     for value in values:
         if value.lower() in _STRUCTURED_CONTEXT_OVERFLOW_CODES:
@@ -1198,13 +1191,17 @@ def _send_main_candidate(
     deadline_ts: Optional[float],
     physical_context: Optional[PhysicalAttemptContext],
     candidate_predicate: Optional[Callable[[Any], Any]],
+    model_context_observer: Any = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     binding = (
         contextlib.nullcontext() if physical_context is None and candidate_predicate is None
         else bind_physical_attempt_context(physical_context, candidate_predicate=candidate_predicate)
     )
     with model_concurrency.model_call_slot(model, use_local, deadline_ts), binding:
-        return llm.chat(**kwargs)
+        result = llm.chat(**kwargs)
+        if callable(model_context_observer):
+            model_context_observer(kwargs["messages"])
+        return result
 
 
 def _take_custom_receipts(
@@ -1427,7 +1424,7 @@ def call_llm_with_retry(
             _emit_main_llm_call_state(event_queue, call_identity, "started")
             msg, usage = _send_main_candidate(
                 llm, kwargs, model=model, use_local=use_local, deadline_ts=deadline_ts,
-                physical_context=physical_context, candidate_predicate=candidate_predicate if attempt == 0 else None,
+                physical_context=physical_context, candidate_predicate=candidate_predicate if attempt == 0 else None, model_context_observer=model_context_observer,
             )
             host_route = usage.get("model_role_route") or {}
             model, use_local = host_route.get("model", model), host_route.get("use_local", use_local)

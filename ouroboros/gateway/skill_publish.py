@@ -26,6 +26,7 @@ from ouroboros.skill_loader import (
 from ouroboros.skill_publish_eligibility import (
     PUBLISHABLE_SOURCES,
     PUBLISHABLE_STATUSES,
+    publication_author_acceptance,
 )
 from ouroboros.skill_publish_result import (
     SkillPublishDestinationError,
@@ -181,13 +182,14 @@ class SkillPublishPreflightOutcome:
     status_code: int = 200
 
 
-def _review_projection(loaded: Any, *, stale: bool | None = None) -> Dict[str, Any]:
+def _review_projection(loaded: Any, *, stale: bool | None = None, current_hash: str = "") -> Dict[str, Any]:
     return {
         "status": normalize_skill_review_status(loaded.review.status),
         "stale": (loaded.review.is_stale_for(loaded.content_hash) if stale is None else bool(stale)),
         "profile": str(getattr(loaded.review, "review_profile", "") or ""),
         "reviewed_content_hash": loaded.review.reviewed_content_hash or loaded.review.content_hash,
         "author_disposition": dict(loaded.review.author_disposition),
+        "author_accepted": bool(publication_author_acceptance(loaded.review, current_hash or loaded.content_hash)),
     }
 
 
@@ -406,6 +408,7 @@ def build_skill_publish_preflight(
     review = _review_projection(
         loaded,
         stale=loaded.review.is_stale_for(snapshot.content_hash),
+        current_hash=snapshot.content_hash,
     )
     review_status = str(review["status"] or STATUS_PENDING)
     review_profile = str(review["profile"] or "")
@@ -473,19 +476,19 @@ def build_skill_publish_preflight(
             "High-confidence secret candidates need attention.",
             "Inspect the redacted locations, repair or audit them, then retry.",
         )
-    elif review_profile == "owner_attested" and not cyber:
+    elif review_profile == "owner_attested" and not cyber and not review["author_accepted"]:
         attention = (
             "review_owner_attested",
             "A full skill review is required before public publication.",
             "Run the full skill review, then retry publication.",
         )
-    elif review["stale"] and not cyber:
+    elif review["stale"] and not cyber and not review["author_accepted"]:
         attention = (
             "review_stale",
             "The skill review is stale for the captured bytes.",
             "Run a fresh skill review, then retry publication.",
         )
-    elif review_status not in PUBLISHABLE_STATUSES and not cyber:
+    elif review_status not in PUBLISHABLE_STATUSES and not cyber and not review["author_accepted"]:
         reason_code = "review_blockers" if review_status == STATUS_BLOCKERS else "review_pending"
         attention = (
             reason_code,
@@ -517,7 +520,7 @@ def build_skill_publish_preflight(
         )
 
     has_warnings = bool(
-        review_status == STATUS_WARNINGS or scan.warning_count or scan.audited_false_positive_count
+        review["author_accepted"] or review_status == STATUS_WARNINGS or scan.warning_count or scan.audited_false_positive_count
         or cyber and (
             scan.status == "scanner_error" or scan.blocker_count or review["stale"]
             or review_status not in PUBLISHABLE_STATUSES or review_profile == "owner_attested"
@@ -536,7 +539,8 @@ def build_skill_publish_preflight(
             scan=scan,
             reason_code=scan.reason_code or ("warnings_present" if has_warnings else ""),
             summary=(
-                "Cyber Pro publication can proceed; review and scanner findings remain advisory."
+                "Publication can proceed with author-accepted bytes; original reviewer evidence remains disclosed."
+                if review["author_accepted"] else "Cyber Pro publication can proceed; review and scanner findings remain advisory."
                 if cyber and has_warnings else "Publication preflight completed with redacted warnings."
                 if has_warnings
                 else "Publication preflight is ready."

@@ -397,3 +397,39 @@ def publish_acceptance_checkpoint(
         _emit_review_reference(ctx, task_id, state, surface="task_acceptance", state_root=Path(root), chat_id=chat_id)
     except (OSError, ValueError, TimeoutError):
         logging.getLogger(__name__).warning("Applied acceptance projection unavailable", exc_info=True)
+
+
+def acceptance_decision_projection(acceptance_decision: Dict[str, Any], subject_hash: str = "") -> Dict[str, Any]:
+    out = {
+        "status": str(acceptance_decision.get("status") or ""),
+        # v6.78.0: the typed reason carries the distinction the collapsed status no
+        # longer spells out (no-quorum vs FAIL-without-capsule vs obligations open
+        # vs capsule spent vs deadline skip). Historical records have no reason.
+        "reason": str(acceptance_decision.get("reason") or ""),
+        "source": str(acceptance_decision.get("source") or ""),
+        "rationale": str(acceptance_decision.get("rationale") or "")[:500],
+        "agent_disposition": str(acceptance_decision.get("agent_disposition") or ""),
+        "agent_rationale": str(acceptance_decision.get("agent_rationale") or "")[:500],
+    }
+    if acceptance_decision.get("enforcement"):
+        out["enforcement"] = str(acceptance_decision["enforcement"])
+    if acceptance_decision.get("author_action"):
+        out["author_action"] = acceptance_decision["author_action"]
+    if isinstance(acceptance_decision.get("review_capacity"), dict):
+        out["review_capacity"] = dict(acceptance_decision["review_capacity"])
+    if acceptance_decision.get("reason") in {"author_finish", "author_stop"} or acceptance_decision.get("author_action") == "stop":
+        from ouroboros.review_records import validate_author_disposition
+
+        record = validate_author_disposition(acceptance_decision.get("author_disposition"), subject_hash=subject_hash)
+        if isinstance(record, dict):
+            out["author_disposition"] = dict(record)
+        else:
+            out["author_disposition"] = str(record or "")
+        out["author_rationale"] = str(acceptance_decision.get("author_rationale") or "")[:500]
+        out["reviewer_signal"] = str(acceptance_decision.get("reviewer_signal") or "")
+    # v6.54.4: dissent + obligations transparency (blocking review policy).
+    if acceptance_decision.get("dissent_noted"):
+        out["dissent_noted"] = True
+    if acceptance_decision.get("open_obligations"):
+        out["open_obligations"] = [str(x) for x in acceptance_decision.get("open_obligations") or []][:10]
+    return out

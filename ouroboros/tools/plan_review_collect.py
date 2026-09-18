@@ -24,21 +24,17 @@ log = logging.getLogger(__name__)
 
 
 def announce_released_settlement(
-    usage_ctx: Any, *, request: Any, task_id: str, slot: Any, actor: Any,
+    usage_ctx: Any, *, request: Any, task_id: str, actor: Any,
     settled_wave: Dict[str, str], roster_size: int = 0,
 ) -> None:
-    """One progress line per settled released slot (derived from the terminal
-    ``cognitive_operation`` fact the worker just emitted) and, when the LAST
-    released slot of a plan-review wave settles, ONE system frame in the task's
-    mailbox. ``settled_wave`` is ``{slot_id: status}`` for the whole released set
-    when this settlement completed it, otherwise empty; ``roster_size`` is the
-    wave's total slot count, so the frame says "N of M reviewer slot(s) settled".
-    The frame carries counts only, never an aggregate: the collector is the sole
-    wave writer and reducer, so the verdict is computed there, not here."""
+    """Attach late evidence and announce whole-wave settlement through its mailbox.
+
+    The cognitive-operation owner emits per-slot progress. This frame carries
+    counts only; the collector remains the sole aggregate writer.
+    """
     if str(getattr(request, "surface", "") or "") != "plan_review":
         return
     fingerprint = str((getattr(request, "reconciliation_identity", {}) or {}).get("subject_hash") or "")
-    slot_id = str(getattr(slot, "slot_id", "") or "")
     if usage_ctx is not None and getattr(usage_ctx, "drive_root", None):
         try:
             from ouroboros.tools.plan_review import _planning_state_location
@@ -49,13 +45,6 @@ def announce_released_settlement(
             )
         except Exception:
             log.warning("plan review historical settlement could not be attached", exc_info=True)
-    try:
-        emit = getattr(usage_ctx, "emit_progress_fn", None)
-        if callable(emit):
-            emit(f"📐 plan_task: reviewer slot {slot_id} settled ({actor.status}) for wave "
-                 f"{fingerprint[:8] or '?'}" + ("; every released slot has settled" if settled_wave else ""))
-    except Exception:
-        log.debug("released-slot progress line failed", exc_info=True)
     if not settled_wave or usage_ctx is None or not getattr(usage_ctx, "drive_root", None):
         return
     ok = sum(1 for status in settled_wave.values() if status in {"ok", "empty"})

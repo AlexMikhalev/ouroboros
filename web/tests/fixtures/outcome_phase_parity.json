@@ -443,6 +443,126 @@
       "phase": "done",
       "headline": "Done",
       "acceptance_clause": "The reviewers approved the earlier version of this answer; it changed before they finished."
+    },
+    {
+      "name": "current informed Advisory author finish preserves raw critic fail",
+      "record": {
+        "status": "completed",
+        "outcome_axes": {
+          "execution": {
+            "status": "ok"
+          },
+          "objective": {
+            "status": "pass",
+            "source": "author_acceptance",
+            "reason": "author_finish"
+          },
+          "review": {
+            "status": "fail",
+            "acceptance_decision": {
+              "status": "finalized_unaccepted",
+              "reason": "author_finish",
+              "author_disposition": {
+                "disposition": "partial",
+                "rationale": "Corrected and verified the current answer.",
+                "subject_hash": "current",
+                "enforcement": "advisory",
+                "reviewer_signal": "FAIL",
+                "source": "author",
+                "recorded_at": "2026-09-18T00:00:00Z",
+                "action": "finish"
+              }
+            }
+          }
+        }
+      },
+      "phase": "done",
+      "headline": "Done",
+      "acceptance_clause": "The answer was delivered on Main's own judgement; the reviewers had not signed it off."
+    },
+    {
+      "name": "current informed Advisory author finish preserves raw critic degraded",
+      "record": {
+        "status": "completed",
+        "outcome_axes": {
+          "execution": {
+            "status": "ok"
+          },
+          "objective": {
+            "status": "pass",
+            "source": "author_acceptance",
+            "reason": "author_finish"
+          },
+          "review": {
+            "status": "degraded",
+            "acceptance_decision": {
+              "status": "finalized_unaccepted",
+              "reason": "author_finish",
+              "author_disposition": {
+                "disposition": "partial",
+                "rationale": "Corrected and verified the current answer.",
+                "subject_hash": "current",
+                "enforcement": "advisory",
+                "reviewer_signal": "FAIL",
+                "source": "author",
+                "recorded_at": "2026-09-18T00:00:00Z",
+                "action": "finish"
+              }
+            }
+          }
+        }
+      },
+      "phase": "done",
+      "headline": "Done",
+      "acceptance_clause": "The answer was delivered on Main's own judgement; the reviewers had not signed it off."
+    },
+    {
+      "name": "Blocking saved plan cap remains unfinished through host normalization",
+      "record": {
+        "status": "completed",
+        "reason_code": "final_message",
+        "outcome_axes": {
+          "execution": {
+            "status": "ok"
+          },
+          "objective": {
+            "status": "fail",
+            "source": "plan_review_cycles_exhausted",
+            "reason": "review_cycles_exhausted",
+            "outcome_tier": "blocked_with_evidence"
+          },
+          "review": {
+            "status": "skipped"
+          }
+        }
+      },
+      "phase": "error",
+      "headline": "Failed",
+      "acceptance_clause": ""
+    },
+    {
+      "name": "Blocking saved plan author stop remains unfinished through host normalization",
+      "record": {
+        "status": "completed",
+        "reason_code": "final_message",
+        "outcome_axes": {
+          "execution": {
+            "status": "ok"
+          },
+          "objective": {
+            "status": "fail",
+            "source": "plan_review_author_stop",
+            "reason": "author_stop",
+            "outcome_tier": "blocked_with_evidence"
+          },
+          "review": {
+            "status": "skipped"
+          }
+        }
+      },
+      "phase": "error",
+      "headline": "Failed",
+      "acceptance_clause": ""
     }
   ]
 }

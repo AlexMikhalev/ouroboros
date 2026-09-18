@@ -415,6 +415,8 @@ export function taskStoppedWithSummary(evt) {
 // web/tests/fixtures/outcome_phase_parity.json pins both.
 const TASK_CAUSE_PHRASES = {
     previous_revision_accepted: "The reviewers approved the earlier version of this answer; it changed before they finished.",
+    author_stop: "Main stopped with unfinished work; no review approval was granted.",
+    review_outcome_received: "Main received the review outcome or recorded limitation.",
     author_finish: "The answer was delivered on Main's own judgement; the reviewers had not signed it off.",
     review_degraded: "No reviewer verdict was established for this answer.",
     infra_failure: "A review infrastructure failure prevented a settled verdict.",
@@ -566,13 +568,14 @@ export function taskOutcomeSeverity(evt) {
     const execution = String(record.outcome_axes?.execution?.status || '').toLowerCase();
     const objective = String(record.outcome_axes?.objective?.status || '').toLowerCase();
     const review = String(record.outcome_axes?.review?.status || record.review_status?.status || '').toLowerCase();
+    const authorFinished = objective === 'pass' && record.outcome_axes?.objective?.source === 'author_acceptance';
     const artifacts = String(record.outcome_axes?.artifacts?.status || record.artifact_bundle?.status || record.artifact_status || '').toLowerCase();
     const artifactStatus = String(record.artifact_bundle?.status || record.artifact_status || '').toLowerCase();
     if (
         lifecycle === 'failed'
         || ['failed', 'infra_failed'].includes(execution)
         || objective === 'fail'
-        || review === 'fail'
+        || (review === 'fail' && !authorFinished)
         || ['failed', 'missing'].includes(artifacts)
         || artifactStatus === 'failed'
     ) {
@@ -587,7 +590,7 @@ export function taskOutcomeSeverity(evt) {
         lifecycle === 'rejected_duplicate'
         || ['degraded', 'best_effort'].includes(execution)
         || ['degraded', 'best_effort'].includes(objective)
-        || review === 'degraded'
+        || (review === 'degraded' && !authorFinished)
         || Boolean(record.outcome_axes?.objective?.warning)
     ) {
         return 'warn';
