@@ -47,7 +47,7 @@ Linux `/tmp`; they were not user documents or running processes.
 
 ## Stop before copying
 
-Finish active work, then use **Panic / Остановить агента**. Wait for the core,
+Finish active work, then use **Panic / Stop agent**. Wait for the core,
 launcher and owned Claudexor work to stop; investigate any unconfirmed stop.
 Force-stopping the APK alone does not stop Linux. Panic leaves background work
 stopped until you explicitly resume it.

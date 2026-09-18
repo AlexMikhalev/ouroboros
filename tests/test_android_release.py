@@ -153,6 +153,8 @@ def test_android_ci_is_fork_safe_and_experimental_for_publication():
 
 
 def test_android_ci_has_representative_emulator_matrix_without_calling_it_device_qualification():
+    import yaml
+
     workflow = (REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     smoke = workflow.split("  android-emulator-smoke:", 1)[1].split("  # The publisher key", 1)[0]
     assert "api-level: [26, 29, 30, 33, 36]" in smoke
@@ -162,6 +164,39 @@ def test_android_ci_has_representative_emulator_matrix_without_calling_it_device
     assert "adb install -r" in smoke
     assert "dumpsys package ai.ouroboros.android" in smoke
     assert "SELinux" not in smoke
+    steps = yaml.safe_load(workflow)["jobs"]["android-emulator-smoke"]["steps"]
+    setup = next(step for step in steps if step.get("uses", "").startswith("android-actions/setup-android@"))
+    assert setup["with"]["packages"].split() == ["platform-tools"]
+
+
+@pytest.mark.parametrize("job_name", ["android-test", "android-build"])
+@pytest.mark.skipif(os.name == "nt", reason="Exercises the Ubuntu workflow's POSIX Bash step")
+def test_android_sdk_cache_uses_the_exported_runner_path(tmp_path, job_name):
+    import shutil
+    import subprocess
+    import yaml
+
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("the workflow's Bash runner is unavailable")
+    jobs = yaml.safe_load((REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8"))["jobs"]
+    steps = jobs[job_name]["steps"]
+    cache_index = next(i for i, step in enumerate(steps) if step.get("uses", "").startswith("actions/cache@"))
+    exporter = next(step["run"] for step in steps[:cache_index]
+                    if "ANDROID_HOME=" in step.get("run", "") and "GITHUB_ENV" in step["run"])
+    sdk = tmp_path / "SDK from runner"
+    for relative in ("platforms/android-36", "build-tools/36.0.0"):
+        (sdk / relative).mkdir(parents=True)
+    env_file = tmp_path / "job-env"
+    result = subprocess.run([bash, "-c", exporter], capture_output=True, text=True,
+                            env={**os.environ, "ANDROID_HOME": str(sdk), "GITHUB_ENV": str(env_file)})
+    assert result.returncode == 0, result.stderr
+    exported = dict(line.split("=", 1) for line in env_file.read_text(encoding="utf-8").splitlines())
+    assert exported["ANDROID_HOME"] == str(sdk)
+    paths = steps[cache_index]["with"]["path"].splitlines()
+    assert {path.replace("${{ env.ANDROID_HOME }}", exported["ANDROID_HOME"]) for path in paths} == {
+        str(sdk / "platforms/android-36"), str(sdk / "build-tools/36.0.0"),
+    }
 
 
 def test_android_smoke_requirements_do_not_claim_a_device_was_tested():
