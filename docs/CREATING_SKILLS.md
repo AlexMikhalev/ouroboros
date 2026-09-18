@@ -696,7 +696,7 @@ A transport extension declares `permissions: [presence]`, obtains its ordinary
 content-hash-bound skill token, and sends:
 
 - `POST /presence/turn` with exactly `binding_id`, `event`, and optional
-  `staged_files`. The event carries the provider/account/conversation/thread,
+  `staged_files` and negotiated `delivery_reporting_version`. The event carries the provider/account/conversation/thread,
   stable source-event and conversation ids, structured actor/conversation/message
   facts, and text. Files must already be under that transport skill's state root.
 - `GET /presence/work/{work_ref}?binding_id=...` to poll only late work created
@@ -722,6 +722,69 @@ binding-and-conversation-correlated `work_ref`. Owner chat or Background
 Consciousness may initiate an existing binding, but the resulting cycle must use
 an explicitly selected transport tool and finish `tool_delivered` to claim that
 an external message was sent.
+
+#### Reporting actual Presence delivery
+
+Use the current event's exact conversation/thread for a reply; the binding's
+origin is an admission filter and its destination is the separate default for
+initiated contact. Selected transport tools may still address other intended
+conversations. The host projection names these roles under `communication`.
+A useful first or intermediate reply is an explicit transport-tool call while
+work continues. Assistant narration beside calls is only Working activity;
+`queued` does not establish delivery, and an early acknowledgement does not
+replace the substantive final result.
+
+After the current tool batch, `presence_finish` with nonblank reply text or a
+silent/tool-delivered outcome enters normal completion checks without an extra
+model round. If a check requests more work, continue and finish again. An omitted
+message/deferred body retains the later model-answer path. Native inline turns
+return their persisted result before optional post-task cognition; transport
+outbox custody still owns actual delivery.
+If a parent fails after work was scheduled, its handoff remains deferred with
+the current failure text, so the adapter retains the late result's custody;
+this does not turn the failed parent into successful execution.
+
+`GET /identity` advertises `presence_delivery_version: 1` on supporting hosts.
+Only then request `delivery_reporting_version: 1` alongside `binding_id` and
+`event` on `/presence/turn`. Persist the response's echoed mode with the Host
+reference and automatic outbox rows, including deferred `/presence/work` results.
+A cached legacy turn may echo zero even if a newer request asked for one.
+Missing capability or mode means the legacy protocol; sending still works,
+but its automatic history row records authored text without delivery proof.
+Migrated automatic outbox rows retain mode zero and are not imported again.
+
+With reporting enabled, persist the physical provider receipt before reporting
+it through `POST /presence/delivery` under the same skill token and `presence`
+permission. The JSON fields are `schema_version: 1`, the existing outbox
+`delivery_id`, string `part_id`, `state` (`delivered`, `accepted`, `failed`, or
+`uncertain`), `provider`, `account_id`, actual `conversation_id` and `thread_id`,
+exact `text`, `format`, provider facts in `message`, and
+`origin: {kind: "tool" | "automatic", task_id?, source_event_id?}`. The producer
+sets kind explicitly. A tool handler may use its supported first `ctx` argument
+to retain compact task provenance; never serialize the full context or secrets.
+The Host establishes source identity, and a task reference grants no authority.
+
+Report physical parts separately. Preserve resolved DM IDs, actual chunk or
+fallback text, captions and provider message IDs in the receipt snapshot.
+For email, `accepted` means SMTP acceptance; include actual accepted/refused
+recipients and Message-ID/References, without claiming inbox arrival or reading.
+Only confirmed sent/accepted content becomes outgoing speech; failure and
+uncertainty are typed System facts. Do not report queued text as delivered.
+
+An unreadable or malformed retained chat chain makes receipt-index rebuilding
+return HTTP 503. Provider sending continues; durable receipts remain pending
+for reporting. Restore the retained history's readability before retrying the
+reports, without resending provider messages or treating missing history as empty.
+
+Keep report acknowledgement and backoff in the existing outbox. A Host failure
+must never put an already delivered provider message back into its send queue
+or hold later provider messages behind a failed report. Retrying the same
+immutable report returns `duplicate: true`; changed facts for the same identity
+return HTTP409. Successful response shape is
+`{ok: true, recorded: true, duplicate: false}`. The existing shared autobiography
+is the only canonical history; no separate memory or reporting scheduler is
+needed. Expose unsupported reporting or pending report failures through ordinary
+transport status and receipts.
 
 ## Notifying the owner when work completes
 

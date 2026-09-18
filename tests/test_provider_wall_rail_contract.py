@@ -114,8 +114,9 @@ def test_scheduled_presence_handoff_survives_the_no_call_rail(tmp_path):
     terminal = build_presence_result_event(
         {"id": "presence-turn"}, text, tools_ctx,
         provider_notice=usage["terminal_provider_notice"],
+        retain_scheduled_handoff=True,
     )
     assert terminal["work_ref"] == "t-child-1"
-    assert terminal["outcome"] == "deferred"
+    assert terminal["outcome"] == "deferred"  # admitted work retains its polling custody after the parent failure
     assert terminal["text"].startswith("PARTIAL RESULT.")
     assert terminal["text"].count(usage["terminal_provider_notice"]) == 1
