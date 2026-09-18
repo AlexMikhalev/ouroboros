@@ -317,7 +317,7 @@ def test_infra_failure_is_returned_to_author_without_claiming_acceptance(tmp_pat
     assert _record_acceptance_infra_failure(ctx, RuntimeError("boom")) is True
     decision = ctx.llm_trace["acceptance_decision"]
     assert decision["status"] == ACCEPTANCE_REVISION_REQUESTED
-    assert decision["reason"] == "improvement_capsule"
+    assert decision["reason"] == "review_outcome_received"
     assert "boom" in ctx.messages[-1]["content"]
     run = ctx.llm_trace["review_runs"][-1]
     assert run["aggregate_signal"] == "DEGRADED"

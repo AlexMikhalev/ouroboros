@@ -114,9 +114,9 @@ def test_every_host_acceptance_writer_emits_a_canonical_status_and_typed_reason(
         i for i, line in enumerate(src)
         if "_set_acceptance_decision(" in line and not line.lstrip().startswith("def ")
     ]
-    # The final writers cover an invalid forced-delivery subject and Cyber
-    # author-finality; neither manufactures a reviewer PASS.
-    assert len(starts) == 20, f"writer inventory changed: {len(starts)} call sites"
+    # Include the separate infrastructure-outcome handback; it requests an
+    # author response without manufacturing a critic capsule or reviewer PASS.
+    assert len(starts) == 21, f"writer inventory changed: {len(starts)} call sites"
     allowed_status = {
         "ACCEPTANCE_ACCEPTED", "ACCEPTANCE_REVISION_REQUESTED",
         "ACCEPTANCE_FINALIZED_UNACCEPTED",
