@@ -514,6 +514,17 @@ def prepare_scope_review(
     except (RuntimeError, StagedDiffUnavailable, OSError, ValueError) as exc:
         from ouroboros.llm_claudexor import propagate_model_error
         propagate_model_error(exc)
+        # Row-local preparation evidence, before any reviewer is dispatched.
+        try:
+            sr.append_jsonl(ctx.drive_logs() / "events.jsonl", {
+                "ts": sr.utc_now_iso(), "type": "scope_review_preparation_failed",
+                "task_id": getattr(ctx, "task_id", "") or "", "slot_id": slot_id,
+                "model": scope_model_id, "status": "error",
+                "failure_phase": "context", "failure_code": "context_unavailable",
+                "reason": str(exc),
+            })
+        except Exception:
+            pass
         return None, sr.ScopeReviewResult(
             blocked=True,
             block_message=(
