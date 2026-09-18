@@ -717,7 +717,7 @@ instead, and let the status text carry the claim.
 
 ## 7. Onboarding density
 
-Accounts is the common connection surface for subscriptions and API keys.
+Accounts is the common connection surface for subscriptions and API keys. Open sign-in link hands off to the current desktop, browser or Telegram host while retaining the wizard; Copy is separate. An unavailable host opener reports a retryable failure, and a supported copy fallback says that it copied rather than claiming an open.
 Models and Agents edit assignments; adding a connection updates available
 choices without replacing an owner's assignments. A model role uses one compact
 Source / Model / Account row. The account is a property of that role: Auto
@@ -768,10 +768,24 @@ not previously selected starts without another source's pin.
 The wizard has five steps: Accounts, Models, Review, Budget, Summary. Agent
 connection is inside Accounts; Codex is the recommended connection for starting
 without an API key. Other existing agent connections describe their actual agent
-capability. Review & start computes the skipped model and reviewer steps before
-showing Summary. Summary names the assignments the one atomic Finish saves,
-including deep self-review. Reviewers remain editable with the same controls as
-Settings. A subscription-only Budget step leads with quota/reset facts and keeps
+capability. Connected reports sign-in, independently of the model-source and
+suggestion reads. Accounts names pending, failed or partial reads and offers a
+contextual Retry that preserves the current fields. A known model source allows
+Continue and manual model entry even when its inventory or automatic suggestions
+cannot be read; an unknown source explains why Continue is unavailable. New
+subscription-only installs clear only untouched shipped API suggestions without
+access, requiring Main while Light can inherit it and Fallback can stay empty.
+Stored or edited values remain intact.
+
+Review & start computes the skipped model and reviewer steps before showing
+Summary. After a failed automatic setup, an explicit recovery action prepares
+all reviewers on the selected Main model, including its account and processing
+choice. This is disclosed as one model for every review, not model diversity.
+The resulting Summary is shown before a separate Start saves it; subsequent
+manual edits remain authoritative. Completion without the automatic preset
+leaves later configuration to Settings. Summary names exactly the assignments
+the one atomic Finish saves, including deep self-review. Reviewers remain
+editable with the same controls as Settings. A subscription-only Budget step leads with quota/reset facts and keeps
 optional API spending fields collapsed. "No API key" never claims unlimited free
 work or that paid provider credits were enabled.
 

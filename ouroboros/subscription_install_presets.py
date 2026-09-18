@@ -679,6 +679,42 @@ def preview_api_reviewer_slots(settings: Mapping[str, Any]) -> str:
     }, ensure_ascii=False)
 
 
+def preview_main_reviewer_slots(settings: Mapping[str, Any]) -> str:
+    """Prepare the owner's explicit recovery choice without another discovery.
+
+    A failed subscription preset may be replaced by the selected Main route.
+    Keep panel shape, effort and enablement, but replace every reviewer target,
+    including referenced actors, without changing those actors themselves.
+    The wizard shows this proposal before the one completion write.
+    """
+    from ouroboros.model_slots import MODEL_ACCOUNTS_KEY, model_role_option, resolve_processing_preference
+    from ouroboros.provider_models import provider_for_model
+
+    main, _light = _effective_api_models(settings)
+    if not main:
+        raise ValueError("Choose a Main model with access in this setup before using it for reviews.")
+    profile = str(model_role_option(MODEL_ACCOUNTS_KEY, "main", settings=dict(settings)))
+    if profile and provider_for_model(main) != "claudexor":
+        raise ValueError("A Main account pin requires a managed model source.")
+    processing = resolve_processing_preference("main", settings=dict(settings))
+    payload = json.loads(preview_api_reviewer_slots(settings))
+    payload["advisory"] = payload.get("advisory") or {"enabled": True}
+    payload["deep_review"] = payload.get("deep_review") or {}
+    for row in [*payload["triad"], *payload["scope"], payload["advisory"], payload["deep_review"]]:
+        row.pop("subagent_id", None)
+        row["route"] = {"kind": "api_chat", "target_id": main}
+        if profile:
+            row["route"]["profile_id"] = profile
+        row.pop("processing_preference", None)
+        if processing:
+            row["processing_preference"] = processing
+    raw = json.dumps(payload, ensure_ascii=False)
+    refusal = _validate_against_parser(raw)
+    if refusal:
+        raise ValueError(refusal.message)
+    return raw
+
+
 def compile_install_preset(
     discoveries: Sequence[HarnessDiscovery],
     *,

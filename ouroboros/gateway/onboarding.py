@@ -79,6 +79,7 @@ from ouroboros.subscription_install_presets import (
     SubscriptionInstallPreset,
     compile_install_preset,
     preview_api_reviewer_slots,
+    preview_main_reviewer_slots,
 )
 
 log = logging.getLogger(__name__)
@@ -726,10 +727,18 @@ async def api_onboarding_subagents_preview(request: Request) -> JSONResponse:
             diagnostics=[{"code": failure.code, "message": failure.detail}],
         )
     assert preset is not None
+    try:
+        reviewer_slots = (
+            preview_main_reviewer_slots(current)
+            if subscriptions_connected and skip_presets
+            else preset.reviewer_slots or preview_api_reviewer_slots(current)
+        )
+    except ValueError as exc:
+        return unsaved_error(str(exc), 400, code="invalid_onboarding_settings")
     return JSONResponse({
         "ok": True,
         "model_settings": dict(preset.model_settings),
-        "reviewer_slots": preset.reviewer_slots or preview_api_reviewer_slots(current),
+        "reviewer_slots": reviewer_slots,
         "available_subagents": configured_subagents_dict(
             normalize_configured_subagents(preset.available_subagents)[0]
         ),

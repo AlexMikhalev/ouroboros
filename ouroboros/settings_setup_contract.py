@@ -415,10 +415,13 @@ def build_initial_setup_state(settings: dict, host_mode: str = "desktop") -> dic
     return state
 
 
-def build_setup_bootstrap(settings: dict, host_mode: str = "desktop") -> dict:
+def build_setup_bootstrap(settings: dict, host_mode: str = "desktop", *, fresh_install: bool = False) -> dict:
     normalized_host = "web" if host_mode == "web" else "desktop"
     return {
         "hostMode": normalized_host,
+        # Display provenance only; completion re-proves install eligibility.
+        # Unknown/legacy callers preserve existing model choices conservatively.
+        "freshInstall": fresh_install,
         "supportsLocalRuntimeControls": normalized_host == "web",
         "stepOrder": list(_STEP_ORDER),
         "modelDefaults": {key: dict(value) for key, value in _MODEL_DEFAULTS.items()},

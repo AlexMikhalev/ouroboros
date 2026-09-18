@@ -421,7 +421,9 @@ proofs — lives in ARCHITECTURE §2; the Settings pages, agent accounts and the
 shared chooser contract in ARCHITECTURE §3 "Settings and onboarding" and
 "Navigation and shared UI contracts". Enforcement is the tests named inline plus
 `tests/test_owner_settings_write_seam.py`, `tests/test_settings_env_on_disk.py` and
-`web/tests/harness_setup_login_capabilities.test.js`; the copy and wizard-shape rules
+`web/tests/harness_setup_login_capabilities.test.js`,
+`tests/test_launcher_external_links.py`, `web/tests/harness_signin_links.test.js`,
+`tests/test_onboarding_model_sources.py` and `tests/test_subscription_setup_browser.py`; the copy and wizard-shape rules
 are review-only. The imperatives:
 
 - Current tasks read the existing task-entry settings view; a next-task save
@@ -435,8 +437,11 @@ are review-only. The imperatives:
   honest write receipts. Permission is not a review verdict.
 - One five-step wizard serves subscriptions, API keys and mixed installs;
   Quick Review & start runs the same proposal compiler for skipped steps, and
-  Finish atomically commits the visible draft. Only declared raw-model sources
-  can supply Main — an Agent-only connection cannot invent one. Subscription
+  Finish atomically commits the visible draft. Optional proposal failure must
+  not gate independent source discovery or manual navigation; Retry preserves
+  drafts. An explicit Main-based reviewer recovery is displayed before a separate
+  Save, never silently substituted during completion. Only declared raw-model
+  sources can supply Main — an Agent-only connection cannot invent one. Subscription
   copy says "without an API key", never guaranteed free, and connecting an
   account neither enables nor changes provider credits/spend settings.
 - Settings validates the complete draft before any Save request — never omit

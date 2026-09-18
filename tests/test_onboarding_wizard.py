@@ -370,6 +370,17 @@ def test_onboarding_bootstrap_cannot_break_out_of_its_inline_script():
     assert "\\u003c/script>\\u003cb>" in html
 
 
+def test_bootstrap_freshness_is_explicit_display_provenance():
+    from ouroboros.settings_defaults import SETTINGS_DEFAULTS
+
+    settings = {"OUROBOROS_MODEL": SETTINGS_DEFAULTS["OUROBOROS_MODEL"]}
+    assert build_setup_bootstrap(settings)["freshInstall"] is False
+    fresh = build_setup_bootstrap({}, fresh_install=True)
+    assert fresh["freshInstall"] is True
+    assert fresh["initialState"]["mainModel"] == settings["OUROBOROS_MODEL"]
+    assert '"freshInstall": true' in build_onboarding_html({}, fresh_install=True)
+
+
 def test_onboarding_wizard_module_keeps_its_multistep_contract():
     source = (REPO / "web/modules/onboarding_wizard.js").read_text(encoding="utf-8")
     draft_source = (REPO / "web/modules/onboarding_agents_step.js").read_text(encoding="utf-8")

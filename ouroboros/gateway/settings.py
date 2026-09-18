@@ -952,10 +952,12 @@ async def api_onboarding(request: Request) -> Response:
     (b) made a page load the author of provider defaults the owner never saw.
     The save paths (POST /api/settings, POST /api/onboarding/complete, the
     desktop wizard bridge) keep the same normalization and persist it."""
+    from ouroboros.config import SETTINGS_PATH
+
     settings, _changed, _keys = apply_runtime_provider_defaults(load_settings())
     if has_startup_ready_provider(settings):
         return Response(status_code=204)
-    return HTMLResponse(build_onboarding_html(settings, host_mode="web"))
+    return HTMLResponse(build_onboarding_html(settings, host_mode="web", fresh_install=not SETTINGS_PATH.exists()))
 
 
 def _apply_settings_save_side_effects(
