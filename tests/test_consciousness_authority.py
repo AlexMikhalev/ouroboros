@@ -351,6 +351,9 @@ def _promote_root(tmp_path, monkeypatch):
     monkeypatch.setattr(queue_mod, "ACCEPTANCE_FENCES", {})
     monkeypatch.setattr(mb, "get_bridge", lambda: types.SimpleNamespace(broadcast=lambda payload: None))
     monkeypatch.setattr(workers, "_announce_created_project", lambda *a, **kw: None)
+    # Origin admission is under test, not the asynchronous Git/toolchain scan.
+    monkeypatch.setattr("ouroboros.workspace_admission.bounded_workspace_preflight",
+                        lambda root: {"schema_version": 1, "workspace_root": str(root)})
     (tmp_path / "logs").mkdir(parents=True, exist_ok=True)
     return tmp_path
 

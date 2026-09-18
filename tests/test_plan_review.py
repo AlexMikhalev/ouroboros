@@ -368,19 +368,78 @@ def test_malformed_reviewer_slots_block_plan_review_before_any_dispatch(tmp_path
     assert load_plan_review_state(tmp_path, "plan-slot-config")["current_attempt"]["status"] == "unavailable"
 
 
-def test_corrupt_parent_task_result_fails_closed_without_overwrite(tmp_path):
+@pytest.mark.parametrize("payload", ["{broken", "[]", "null"])
+def test_corrupt_parent_task_result_fails_closed_without_overwrite(tmp_path, payload):
     from ouroboros.task_results import load_plan_review_state, record_plan_review_wave
 
     result_path = tmp_path / "task_results" / "parent-corrupt.json"
     result_path.parent.mkdir(parents=True, exist_ok=True)
-    result_path.write_text("{broken", encoding="utf-8")
+    result_path.write_text(payload, encoding="utf-8")
 
     with pytest.raises(ValueError, match="PLAN_REVIEW_STATE_INVALID"):
         load_plan_review_state(tmp_path, "parent-corrupt")
     with pytest.raises(ValueError, match="PLAN_REVIEW_STATE_INVALID"):
         record_plan_review_wave(tmp_path, "parent-corrupt", _wave("f" * 64))
 
-    assert result_path.read_text(encoding="utf-8") == "{broken"
+    assert result_path.read_text(encoding="utf-8") == payload
+
+
+def test_plan_state_read_waits_for_writer_without_rewriting_snapshot(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    from ouroboros import platform_layer, task_results as tr, utils
+    from ouroboros.tools import plan_review_artifacts
+
+    tr._update_plan_review_state(tmp_path, "plan", lambda state: state)
+    path = tr.task_result_path(tmp_path, "plan", create=False)
+    writing, release, reader_waiting = (threading.Event() for _ in range(3))
+    acquire = platform_layer.acquire_exclusive_file_lock
+    write = utils.atomic_write_json
+    resolve = plan_review_artifacts.authority_state
+    snapshots = []
+
+    def observed_acquire(*args, **kwargs):
+        if threading.current_thread().name.startswith("plan-reader"):
+            reader_waiting.set()
+        return acquire(*args, **kwargs)
+
+    def observed_write(target, value, **kwargs):
+        write(target, value, **kwargs)
+        snapshots.append((path.read_bytes(), path.stat().st_mtime_ns))
+
+    def resolve_after_unlock(*args):
+        assert not path.with_name(path.name + ".lock").exists()
+        return resolve(*args)
+
+    def held_update(state):
+        writing.set()
+        assert release.wait(5), "test did not release the state writer"
+        return {**state, "cycles_paid": 1}
+
+    monkeypatch.setattr(platform_layer, "acquire_exclusive_file_lock", observed_acquire)
+    monkeypatch.setattr(utils, "atomic_write_json", observed_write)
+    monkeypatch.setattr(plan_review_artifacts, "authority_state", resolve_after_unlock)
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="plan-writer") as writers, \
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="plan-reader") as readers:
+        writer = writers.submit(tr._update_plan_review_state, tmp_path, "plan", held_update)
+        try:
+            assert writing.wait(3)
+            reader = readers.submit(tr.load_plan_review_state, tmp_path, "plan")
+            assert reader_waiting.wait(2), "state reader bypassed the active writer's lock"
+            assert not reader.done()
+        finally:
+            release.set()
+        writer.result(timeout=3)
+        assert reader.result(timeout=3)["cycles_paid"] == 1
+    assert snapshots == [(path.read_bytes(), path.stat().st_mtime_ns)]
+
+
+def test_missing_plan_state_read_does_not_create_a_store(tmp_path):
+    from ouroboros.task_results import load_plan_review_state
+
+    state = load_plan_review_state(tmp_path, "absent")
+    assert state["waves"] == [] and state["cycles_paid"] == 0
+    assert not (tmp_path / "task_results").exists()
 
 
 def _deadline_ctx(tmp_path, *, seconds_left: int):

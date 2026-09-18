@@ -273,9 +273,7 @@ def test_interactive_turns_wait_redial_free_and_terminalize_at_the_idle_bound(tm
 
 def test_deadline_bounds_wait_with_one_last_free_redial_then_no_resend(tmp_path, monkeypatch):
     fake_call, calls = _transport_failing_call(fail_times=99)
-    sleeps = []
-    monkeypatch.setattr(loop_transport, "interruptible_wait_sleep",
-                        lambda sec, _wake: (sleeps.append(sec), False)[1])
+    clock = _FakeClock(monkeypatch)
     monkeypatch.setattr(loop_mod, "call_llm_with_retry", fake_call)
 
     def _chain_must_not_run(**_kwargs):
@@ -297,7 +295,7 @@ def test_deadline_bounds_wait_with_one_last_free_redial_then_no_resend(tmp_path,
     # before the admission window closes, then the deterministic no-resend
     # terminal — never a forced-final provider call, never deadline_local.
     assert calls["n"] >= 2
-    assert calls["n"] == len(sleeps) + 1  # every dispatch after the first followed a wait
+    assert calls["n"] == len(clock.sleeps) + 1  # every dispatch after the first followed a wait
     assert usage.get("execution_status") == "infra_failed"
     assert usage.get("reason_code") == "provider_unavailable"
     assert trace.get("forced_finalization", {}).get("source") == "transport_unavailable_no_resend"
