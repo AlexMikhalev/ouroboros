@@ -216,3 +216,29 @@ def test_cyber_explicit_nomination_keeps_its_existing_no_wait_power(full_loop, m
     assert trace["acceptance_decision"]["reason"] == "author_finish"
     assert trace["acceptance_decision"]["author_disposition"]["source"] == "author_final_response"
     assert trace["review_decision"]["review_pending"] is True
+
+
+@pytest.mark.parametrize("early", ["settled", "queued_wake"])
+@pytest.mark.parametrize("reply", ["keep", "replace", "prose", "malformed"])
+def test_feedback_ready_before_parking_preserves_answer_protocol(tmp_path, monkeypatch, early, reply):
+    _loop, tools, ctx, trace = _forced_test_context(tmp_path)
+    candidate = loop._replace_delivery_candidate(tools, ctx, trace, ANSWER, control="candidate")
+    tools._ctx._task_acceptance_pending = "paid-binding"
+    monkeypatch.setattr("ouroboros.acceptance_settlement.awaited_panel_has_settled", lambda *_: early == "settled")
+    monkeypatch.setattr("ouroboros.loop_transport._owner_signal_pending", lambda *_: early == "queued_wake")
+    monkeypatch.setattr("ouroboros.owner_wait.wait_after_tools", lambda *_a, **_k: pytest.fail("settled feedback must not park"))
+    wait_for_acceptance_feedback(tools, ctx, trace, [], set())
+    assert candidate.control_episode_seen
+    assert "complete revised user-facing answer as ordinary prose" in str(ctx.messages)
+    revised = ANSWER + " The total budget is $12."
+    raw = {"keep": json.dumps({"delivery_control": "keep"}),
+           "replace": json.dumps({"delivery_control": "replace", "full_answer": revised}),
+           "prose": revised, "malformed": '{"delivery_control":"replace","full_answer":'}[reply]
+    status, text = loop._resolve_delivery_control(raw, tools, ctx, trace)
+    if reply == "malformed":
+        assert (status, text) == ("retry", "") and candidate.full_text == ANSWER
+    else:
+        assert status == ("fresh" if reply == "prose" else "resolved")
+        assert text == (ANSWER if reply == "keep" else revised)
+        assert tools._ctx._acceptance_pending_review_choice == "wait"
+    assert tools._ctx._task_acceptance_pending == "paid-binding"

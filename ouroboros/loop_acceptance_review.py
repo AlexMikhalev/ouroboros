@@ -159,6 +159,10 @@ def wait_for_acceptance_feedback(tools: Any, limit_ctx: Any, trace: dict,
     binding = getattr(ctx, "_task_acceptance_pending", "")
     if not binding:
         return
+    # Ready feedback skips parking, not the answer protocol: it may arrive
+    # before the first wait, when the retained candidate has never been armed.
+    _loop()._arm_delivery_control(tools, limit_ctx, trace,
+                                  control="acceptance_feedback", skip_if_unchanged=True)
     from ouroboros.acceptance_settlement import awaited_panel_has_settled
 
     if awaited_panel_has_settled(ctx, trace):
@@ -169,10 +173,6 @@ def wait_for_acceptance_feedback(tools: Any, limit_ctx: Any, trace: dict,
     if _owner_signal_pending(limit_ctx.incoming_messages, ctx.drive_root, ctx.task_id,
                              seen, getattr(ctx, "task_attempt", None) or 1):
         return
-    # Re-offered on EVERY wake: a replacement candidate inherits
-    # ``control_episode_seen``, which hid the one free route back to the verdicts.
-    _loop()._arm_delivery_control(tools, limit_ctx, trace,
-                                  control="acceptance_feedback", skip_if_unchanged=True)
     from ouroboros.owner_wait import wait_after_tools
 
     wait_after_tools(ctx, limit_ctx.messages, trace, limit_ctx.accumulated_usage,

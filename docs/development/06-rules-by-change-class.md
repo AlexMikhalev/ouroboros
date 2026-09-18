@@ -922,6 +922,8 @@ and what enforces each.
   for the author and reach Main whatever its draft: the settlement wake carries them,
   and the acceptance continuation contract is re-offered when its bytes change
   (identical bytes are not repeated; a spent malformed-control repair stays spent).
+  Ready feedback skips parking, never preparation of the retained answer's control:
+  a settled panel or queued wake must still preserve typed-answer provenance.
   A complete revised answer may be ordinary prose; typed keep/replace/finish remain
   optional. Prose resets the pending-review choice to wait and never infers finish.
   Existing effect, owner-revision and child-action controls remain strict; owner-source
