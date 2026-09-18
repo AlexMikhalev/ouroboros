@@ -221,3 +221,31 @@ def test_pending_recovery_reuses_held_original_request_without_history_scan(tmp_
     assert row["requested_profile"] == "original-account"
     assert row["identity"]["effort"] == "" and row["identity"]["processing_preference"] == "economy"
     assert row["applied_profile"] == ""
+
+
+@pytest.mark.parametrize("capture_available", [True, False])
+def test_received_empty_response_keeps_served_identity(tmp_path, monkeypatch, capture_available):
+    from devtools.benchmarks.cybergym.cybergym_wire import _served_telemetry
+    from ouroboros import loop_llm_call
+    from tests.test_loop_compaction import _ctx
+    from tests.test_task_model_execution import dispatch, Model
+
+    if not capture_available:
+        monkeypatch.setattr(loop_llm_call, "persist_observed_call", lambda *a, **k: {})
+    ctx = _ctx(tmp_path)
+    dispatch(ctx, "stable")
+    ctx.round_idx += 1
+    assert dispatch(ctx, "stable", message={"role": "assistant", "content": "", "tool_calls": []})[0] is None
+    loop_llm_call.call_llm_with_retry(
+        Model({"role": "assistant", "content": "wrap up"}, {}), ctx.messages,
+        "stable", [], "high", 1, ctx.drive_logs, ctx.task_id, 3, None,
+        ctx.accumulated_usage, attempt_cap=1)
+    raw = ctx.accumulated_usage["llm_call_refs"]
+    assert len(raw) == 3 and raw[1]["failure_code"] == "provider_incomplete_response"
+    refs = collect_trace_refs(ctx.accumulated_usage, {})
+    assert [row["llm_call_id"] for row in refs["llm_call_refs"]] == [row["llm_call_id"] for row in raw]
+    assert bool(refs["llm_call_refs"][1]["response_ref"]) is capture_available
+    telemetry = _served_telemetry({"trace_refs": refs})
+    assert telemetry["authoritative_identity"] and telemetry["trace_call_count"] == 3
+    assert telemetry["provider_distribution"] == {"openrouter": 3}
+    assert raw[1]["failure_code"] == "provider_incomplete_response"

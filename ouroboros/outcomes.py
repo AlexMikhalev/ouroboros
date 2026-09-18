@@ -1288,8 +1288,8 @@ def derive_loop_outcome(final_text: str, usage: Dict[str, Any], llm_trace: Dict[
 
 
 def collect_trace_refs(usage: Dict[str, Any], llm_trace: Dict[str, Any]) -> Dict[str, Any]:
-    # Served-call references require a response. Failed attempts remain in usage
-    # for configured history and in their raw error events, not served telemetry.
+    # Keep received responses, including incomplete ones with unavailable capture.
+    # Sparse pre-response failures stay in usage/history and raw error events.
     refs: Dict[str, Any] = {}
     execution_id = str(usage.get("execution_id") or "").strip()
     if execution_id:
@@ -1301,7 +1301,7 @@ def collect_trace_refs(usage: Dict[str, Any], llm_trace: Dict[str, Any]) -> Dict
             "reported_model", "use_local", "usable_solve_response",
         )}
         for item in usage.get("llm_call_refs") or []
-        if isinstance(item, dict) and not item.get("failure_code")
+        if isinstance(item, dict) and (not item.get("failure_code") or "response_ref" in item)
     ]
     if llm_refs:
         refs["llm_call_refs"] = llm_refs
