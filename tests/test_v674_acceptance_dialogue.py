@@ -393,7 +393,7 @@ def test_capsule_leads_with_verdict_blocker_rails_and_three_moves():
     result = _fail_result_with([_finding()])
     capsule = build_improvement_capsule(
         result,
-        rails_line="money: $1.00 spent; time: 10 min left; review passes: 1 done",
+        rails_line="money: $1.00 spent; time: 10 min left; author passes: 1 done",
         open_obligations=[{"id": "ob-1"}, {"id": "ob-2"}],
     )
     # The note the model READS says the assessment in words: a ledger token in
@@ -725,7 +725,7 @@ def test_rails_final_pass_freeze_directive_workspace():
     # rides EVERY workspace rails line (commit triad r1, sol: a deadline/cost
     # rail can end the loop between capsules), and never a non-workspace one.
     line = _rails(5, cap=6, workspace=True)
-    assert "review passes: 5/6" in line
+    assert "author passes: 5/6" in line
     assert "FINAL improvement pass, no further passes will run" in line
     assert "working tree as it stands" in line and "VERIFIED state" in line
     # Non-workspace: factual finality only, no tree directive.
@@ -738,15 +738,15 @@ def test_rails_freeze_directive_absent_off_final_and_edge_caps(monkeypatch):
     # Non-final pass: no FINAL marker, but the workspace tree directive is
     # always present for workspace deliveries.
     mid = _rails(3, cap=6, workspace=True)
-    assert "FINAL" not in mid and "review passes: 3/6" in mid
+    assert "FINAL" not in mid and "author passes: 3/6" in mid
     assert "working tree as it stands" in mid
     assert "working tree" not in _rails(3, cap=6, workspace=False)
     # cap == 0 never feeds a capsule back — no misleading FINAL rail.
     zero = _rails(0, cap=0, workspace=True)
-    assert "review passes: 0/0" in zero and "FINAL" not in zero
+    assert "author passes: 0/0" in zero and "FINAL" not in zero
     # Passes already exhausted (supersede-reset re-review): not a launch.
     spent = _rails(6, cap=6, workspace=True)
-    assert "review passes: 6/6" in spent and "FINAL" not in spent
+    assert "author passes: 6/6" in spent and "FINAL" not in spent
     # No local cap (required+blocking with the shared review-cycle cap set to
     # unlimited — D10/D20: otherwise the shared cap binds) — no count-axis clause.
     monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "unlimited")

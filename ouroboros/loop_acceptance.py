@@ -597,9 +597,7 @@ ACCEPTANCE_DECISION_REASONS = (
     "author_finish",
     "author_stop",
     "review_outcome_received",
-    # The pacing/wallet reason two branches below already STAMP (`pass_reason ==
-    # REASON_REVIEW_CYCLES_EXHAUSTED`); it was missing from the closed set, so a
-    # spent shared cap shipped a reason no reader could validate.
+    # An explicit author stop can retain the wallet's exhausted-cycle reason.
     REASON_REVIEW_CYCLES_EXHAUSTED,
     # A-material (2026-08-30): the resubmit carried no changed candidate and no new
     # obligation disposition, so the recorded verdict was replayed for free.
@@ -682,13 +680,11 @@ def merge_agent_acceptance_stance(trace: Dict[str, Any], decision: dict, ctx: An
     trace["acceptance_decision"] = merged
 
 
-from ouroboros.acceptance_settlement import expose_acceptance_feedback  # noqa: E402,F401 - existing import surface
-
 
 def _collect_acceptance_obligations(llm_trace: Dict[str, Any], result: Any) -> None:
     """Typed PER-TASK obligations from critical contributing findings (v6.54.4).
 
-    Required+blocking path only. Each critical finding WITH a concrete
+    Blocking path after review eligibility. Each critical finding WITH a concrete
     recommendation becomes one open obligation in llm_trace (never the durable
     commit review_state — a separate SSOT). Clean finalization asks for an
     agent disposition per obligation (v6.54.0); time/pass gates and the

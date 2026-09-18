@@ -7,7 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 from ouroboros import loop, review_substrate, task_pacing
-from ouroboros.loop_acceptance import expose_acceptance_feedback, merge_agent_acceptance_stance
+from ouroboros.acceptance_settlement import expose_acceptance_feedback
+from ouroboros.loop_acceptance import merge_agent_acceptance_stance
 from ouroboros.loop_acceptance_review import _apply_task_acceptance_result
 from ouroboros.review_records import ReviewRunResult
 from ouroboros.task_results import effective_task_acceptance_review_cycles

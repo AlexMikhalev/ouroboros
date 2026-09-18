@@ -1333,7 +1333,7 @@ def _dispatch_unified_review(ctx: ToolContext, commit_message: str, prepared: di
         )
         return _handle_review_block_or_warning(
             ctx, blocking_review, blocked_msg,
-            "Review enforcement=Advisory: review infrastructure failure did not block commit. ",
+            "Review enforcement=Advisory: review infrastructure failed; an explicit author decision is required. ",
         )
 
     if "error" in result:
@@ -1347,7 +1347,7 @@ def _dispatch_unified_review(ctx: ToolContext, commit_message: str, prepared: di
         )
         return _handle_review_block_or_warning(
             ctx, blocking_review, blocked_msg,
-            "Review enforcement=Advisory: review service error did not block commit. ",
+            "Review enforcement=Advisory: review service failed; an explicit author decision is required. ",
         )
 
     model_results = result.get("results", [])
@@ -1359,7 +1359,7 @@ def _dispatch_unified_review(ctx: ToolContext, commit_message: str, prepared: di
                        "model — commit cannot proceed without a successful review.")
         return _handle_review_block_or_warning(
             ctx, blocking_review, blocked_msg,
-            "Review enforcement=Advisory: review returned no model results; commit proceeding anyway. ")
+            "Review enforcement=Advisory: no model results were received; an explicit author decision is required. ")
 
     critical_fails, advisory_warns, errored_models, _triad_raw = _collect_review_findings(ctx, model_results)
     models_total = len(model_results)
@@ -1381,7 +1381,7 @@ def _dispatch_unified_review(ctx: ToolContext, commit_message: str, prepared: di
                        f"{', '.join(pending_models)}. Retry the same commit to reconcile them without a blind paid resend.")
         pending_block = _handle_review_block_or_warning(
             ctx, blocking_review, blocked_msg,
-            "Review enforcement=Advisory: pending review work did not block commit. ",
+            "Review enforcement=Advisory: review is pending; collect its outcome before choosing an author continuation. ",
         )
         if pending_block is not None:
             return pending_block
@@ -1401,7 +1401,7 @@ def _dispatch_unified_review(ctx: ToolContext, commit_message: str, prepared: di
         )
         return _handle_review_block_or_warning(
             ctx, blocking_review, blocked_msg,
-            "Review enforcement=Advisory: review quorum failure did not block commit. ",
+            "Review enforcement=Advisory: review quorum was not met; an explicit author decision is required. ",
         )
 
     if models_total < 2:
@@ -1440,14 +1440,10 @@ def _dispatch_unified_review(ctx: ToolContext, commit_message: str, prepared: di
             ctx,
             ("Cyber Pro: critical review findings do not prohibit action."
              if not review_enforcement_blocks("blocking") else
-             "Review enforcement=Advisory: critical review findings did not block commit."),
+             "Review enforcement=Advisory: critical findings require an explicit author decision before committing."),
         )
         for finding in getattr(ctx, "_last_review_critical_findings", []) or []:
             _append_review_warning(ctx, finding)
-        for warning in getattr(ctx, "_last_review_advisory_findings", []) or []:
-            _append_review_warning(ctx, warning)
-        if errored_note:
-            _append_review_warning(ctx, errored_note)
 
     if not critical_fails:
         # All clear: reset iteration state. With critical findings present

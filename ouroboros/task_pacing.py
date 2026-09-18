@@ -1090,7 +1090,7 @@ def _acceptance_rails_line_inner(
                 "(deadline/budget rails bind)"
             )
         else:
-            passes_part = f"review passes: {int(passes_done)}/{int(cap)}"
+            passes_part = f"author passes: {int(passes_done)}/{int(cap)}"
             # v6.74.4 freeze directive (count axis): the pass launched at
             # cap-1 is the last one improvement_pass_allowed will admit, so
             # say so. cap==0 never feeds a capsule back; skip the clause, and

@@ -446,8 +446,8 @@ def retired_setting_keys_notice(dropped: tuple[str, ...], *, reviewer_slots: tup
         elif state == "invalid":
             panel = (
                 "NO reviewer panel: that setting is malformed, so reviews are refused "
-                "(commit review blocks; under Advisory enforcement it warns and commits "
-                "unreviewed) until it is repaired on the Settings page — %s" % parse_error)
+                "(Blocking prevents committing; Advisory returns the failure for an explicit "
+                "author decision) until it is repaired on the Settings page — %s" % parse_error)
         else:
             panel = "the SHIPPED default reviewer panel until that setting is authored (Settings page)"
         clauses.append(

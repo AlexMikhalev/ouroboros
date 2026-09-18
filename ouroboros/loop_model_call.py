@@ -487,7 +487,7 @@ def _dispatch_round_model(
     binding = (waiter.register_reprepare(role, lambda kwargs: _reprepare_waiting_main(ctx, kwargs))
                if waiter is not None else contextlib.nullcontext())
     previous_call = ctx.accumulated_usage.get("_last_llm_call_meta")
-    from ouroboros.loop_acceptance import expose_acceptance_feedback
+    from ouroboros.acceptance_settlement import expose_acceptance_feedback
 
     observe_feedback = lambda sent: expose_acceptance_feedback(
         getattr(ctx.tools._ctx, "_execution_trace", {}), sent, str(ctx.task_id))

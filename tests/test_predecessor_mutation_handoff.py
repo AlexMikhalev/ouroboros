@@ -134,15 +134,16 @@ def test_real_startup_passes_validated_predecessor_to_baseline(tmp_path):
 
     root, data = _previous(tmp_path)
     task = {"id": "successor", "root_task_id": "successor", "budget_drive_root": str(data),
-            "predecessor_task_id": "previous", "predecessor_authority_source": _source()}
+            "predecessor_authority_source": _source()}
     assert not validate_task_authority_sources(data, task)
     write_task_result(data, "successor", "running")
     agent = SimpleNamespace(env=SimpleNamespace(repo_dir=root, drive_root=data, budget_drive_root=str(data)))
     OuroborosAgent._capture_mutation_baseline(agent, task, {})
     assert attributed_git_candidates(data, "successor", root)["candidates"] == ["clean.txt", "new.txt"]
     # Merely carrying old context is not an explicit selection by this task.
-    unselected = {**task, "id": "unselected", "root_task_id": "unselected"}
-    unselected.pop("predecessor_task_id")
+    unselected = {"id": "unselected", "root_task_id": "unselected", "budget_drive_root": str(data),
+                  "metadata": {"project_last_task_result": {"task_id": "previous"}}}
     write_task_result(data, "unselected", "running")
+    assert not validate_task_authority_sources(data, unselected)
     OuroborosAgent._capture_mutation_baseline(agent, unselected, {})
     assert attributed_git_candidates(data, "unselected", root)["candidates"] == []

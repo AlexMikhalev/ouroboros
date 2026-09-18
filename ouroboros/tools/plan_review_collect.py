@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 
 
 def announce_released_settlement(
-    usage_ctx: Any, *, request: Any, task_id: str, slot: Any, actor: Any,
+    usage_ctx: Any, *, request: Any, task_id: str, actor: Any,
     settled_wave: Dict[str, str], roster_size: int = 0,
 ) -> None:
     """Attach late evidence and announce whole-wave settlement through its mailbox.

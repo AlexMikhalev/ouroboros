@@ -161,7 +161,7 @@ def test_post_review_finish_handles_revised_answer_without_another_panel(monkeyp
     )
     assert run("initial answer") is True
     critic_hash = trace["review_runs"][-1]["binding_hash"]
-    from ouroboros.loop_acceptance import expose_acceptance_feedback
+    from ouroboros.acceptance_settlement import expose_acceptance_feedback
     expose_acceptance_feedback(trace, messages, "author-root")
     trace["tool_calls"].append({"tool": "task_acceptance_review", "args": {}})
     merge_agent_acceptance_stance(trace, {"disposition": "partial", "explicit_finish": change != "ordinary_evidence", "rationale": "I fixed the material issue."}, tools_ctx)

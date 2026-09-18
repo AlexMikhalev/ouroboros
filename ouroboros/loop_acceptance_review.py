@@ -711,7 +711,8 @@ def _finish_advisory_author(ctx: _TaskAcceptanceContext) -> bool:
     author = build_author_disposition(
         disposition=disposition, rationale=str(stance.get("agent_rationale") or ""),
         subject_hash=ctx.review_binding["binding_hash"],
-        reviewer_signal=str((feedback or {}).get("aggregate_signal") or ""), enforcement=_loop().get_review_enforcement(),
+        reviewer_signal=str((feedback or {}).get("aggregate_signal") or ""),
+        enforcement="blocking" if review_enforcement_blocks(_loop().get_review_enforcement()) else "advisory",
     )
     author["action"] = action
     from ouroboros.task_results import project_task_acceptance_review_capacity
@@ -907,7 +908,7 @@ def _apply_task_acceptance_result(
     if capsule and open_obligations:
         _loop()._set_acceptance_decision(ctx.llm_trace, {
             "status": ACCEPTANCE_FINALIZED_UNACCEPTED,
-            "reason": pass_reason if pass_reason == REASON_REVIEW_CYCLES_EXHAUSTED else "open_obligations",
+            "reason": "open_obligations",
             "source": "task_acceptance_review",
             "rationale": (
                 f"Improvement gates exhausted ({pass_reason or 'passes spent'}) with "
@@ -931,7 +932,6 @@ def _apply_task_acceptance_result(
         _loop()._set_acceptance_decision(ctx.llm_trace, {
             "status": ACCEPTANCE_FINALIZED_UNACCEPTED,
             "reason": (
-                pass_reason if pass_reason == REASON_REVIEW_CYCLES_EXHAUSTED else
                 "improvement_window_closed"
                 if (not ctx.passes_done and pass_reason)
                 else "capsule_spent"

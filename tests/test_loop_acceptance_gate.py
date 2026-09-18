@@ -108,7 +108,8 @@ def test_every_host_acceptance_writer_emits_a_canonical_status_and_typed_reason(
     # cannot escape the guard by living in (or moving to) a leaf.
     loop_file = pathlib.Path(loop_mod.__file__)
     src = []
-    for path in [loop_file, *sorted(loop_file.parent.glob("loop_*.py"))]:
+    for path in [loop_file, *sorted(loop_file.parent.glob("loop_*.py")),
+                 loop_file.parent / "acceptance_settlement.py"]:
         src.extend(path.read_text(encoding="utf-8").splitlines())
     starts = [
         i for i, line in enumerate(src)
@@ -116,7 +117,7 @@ def test_every_host_acceptance_writer_emits_a_canonical_status_and_typed_reason(
     ]
     # Include the separate infrastructure-outcome handback; it requests an
     # author response without manufacturing a critic capsule or reviewer PASS.
-    assert len(starts) == 21, f"writer inventory changed: {len(starts)} call sites"
+    assert len(starts) == 22, f"writer inventory changed: {len(starts)} call sites"
     allowed_status = {
         "ACCEPTANCE_ACCEPTED", "ACCEPTANCE_REVISION_REQUESTED",
         "ACCEPTANCE_FINALIZED_UNACCEPTED",
@@ -148,7 +149,7 @@ def test_every_host_acceptance_writer_emits_a_canonical_status_and_typed_reason(
             seen_expression_reasons += 1
             assert reason_names[name] in ACCEPTANCE_DECISION_REASONS, name
     # The widened regex really does catch expression-valued reasons: the two
-    # `pass_reason if ... == REASON_REVIEW_CYCLES_EXHAUSTED` branches and the
+    # explicit author-stop REASON_REVIEW_CYCLES_EXHAUSTED branches and the
     # A-material `REASON_IDENTICAL_ACCEPTANCE_REFUSED` writer.
     assert seen_expression_reasons >= 3, seen_expression_reasons
 

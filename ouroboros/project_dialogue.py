@@ -722,7 +722,7 @@ TASK_CAUSE_PHRASES = {
     # accepted decision with a sentence here still states its cause.
     "previous_revision_accepted": "The reviewers approved the earlier version of this answer; it changed before they finished.",
     "author_stop": "Main stopped with unfinished work; no review approval was granted.",
-    "review_outcome_received": "The review could not start; Main received the recorded reason.",
+    "review_outcome_received": "Main received the review outcome or recorded limitation.",
     "author_finish": "The answer was delivered on Main's own judgement; the reviewers had not signed it off.",
     "review_degraded": "No reviewer verdict was established for this answer.",
     "infra_failure": "A review infrastructure failure prevented a settled verdict.",

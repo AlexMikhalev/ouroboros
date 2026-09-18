@@ -473,8 +473,7 @@ class OuroborosAgent:
                 from ouroboros.mutation_attribution import capture_mutation_baseline
 
                 predecessor = (task.get("predecessor_authority") or {}).get("source")
-                if (not isinstance(predecessor, dict)
-                        or predecessor.get("task_id") != task.get("predecessor_task_id")):
+                if not isinstance(predecessor, dict):
                     predecessor = None
                 capture_mutation_baseline(
                     pathlib.Path(

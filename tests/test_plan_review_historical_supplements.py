@@ -94,7 +94,7 @@ def test_a_b_late_a_preserves_authority_and_complete_source(tmp_path):
     before = state(tmp_path)
     actor, text = complete(tmp_path, a, req, slots[0])
     ctx = SimpleNamespace(drive_root=tmp_path, task_id=TASK, emit_progress_fn=lambda text: None)
-    collect.announce_released_settlement(ctx, request=req, task_id=TASK, slot=slots[0],
+    collect.announce_released_settlement(ctx, request=req, task_id=TASK,
                                         actor=actor, settled_wave={})
     after = state(tmp_path)
     old = tr.plan_review_wave(after, A)

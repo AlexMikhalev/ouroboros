@@ -1,5 +1,6 @@
 """Real two-task Git continuation: saved Blocking correction earns fresh authority."""
 from types import SimpleNamespace
+import json
 import subprocess
 import sys
 
@@ -14,7 +15,49 @@ from ouroboros.tools import git
 from ouroboros.tools.registry import ToolContext
 from ouroboros.tools.scope_review import ScopeReviewResult
 from tests.test_mutation_attribution import _git, _repo
-from tests.test_predecessor_mutation_handoff import _source
+
+
+def _promote_retained_correction(root, data, monkeypatch):
+    from ouroboros.server_routing_context import _task_result_ground_truth
+    from ouroboros.tools import control_routing
+    from supervisor import queue, workers
+    from supervisor.events import _handle_promote_chat_to_task
+
+    pending, running, pool = [], {}, {0: SimpleNamespace()}
+    for module in (queue, workers):
+        monkeypatch.setattr(module, "DRIVE_ROOT", data)
+        monkeypatch.setattr(module, "PENDING", pending)
+        monkeypatch.setattr(module, "RUNNING", running)
+    monkeypatch.setattr(workers, "WORKERS", pool)
+    monkeypatch.setattr(workers, "_WORKER_POOL_DISABLED_REASON", "")
+    monkeypatch.setattr(queue, "QUEUE_SNAPSHOT_PATH", data / "state/queue_snapshot.json")
+    for name in ("ADMISSION_RESERVATIONS", "ACCEPTANCE_FENCES", "BUDGET_ROOT_FENCES"):
+        monkeypatch.setattr(queue, name, {})
+    monkeypatch.setattr(queue, "QUEUE_SEQ_COUNTER_REF", {"value": 0})
+    supervisor = SimpleNamespace(
+        DRIVE_ROOT=data, WORKERS=pool, PENDING=pending, RUNNING=running, bridge=None,
+        enqueue_task=queue.enqueue_task, persist_queue_snapshot=queue.persist_queue_snapshot,
+        load_state=lambda: {"owner_chat_id": 1}, append_jsonl=lambda *_a, **_kw: None,
+    )
+
+    def deliver(_ctx, event):
+        assert event["predecessor_task_id"] == "first"
+        return "test_event_bus", _handle_promote_chat_to_task(event, supervisor)
+
+    monkeypatch.setattr(control_routing, "_emit_and_wait_for_routing", deliver)
+    router = ToolContext(repo_dir=root, drive_root=data, task_id="decision",
+        current_chat_id=1, task_metadata={"main_routing_manifest": {
+            "final_results": [_task_result_ground_truth(load_task_result(data, "first"))]}})
+    response = control_routing._promote_chat_to_task(
+        router, "Finish the retained correction", predecessor_task_id="first", workspace="none")
+    assert "durably scheduled" in response, response
+    assert len(pending) == 1 and "predecessor_task_id" not in pending[0]
+    snapshot = json.loads(queue.QUEUE_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+    assert snapshot["pending"][0]["task"]["predecessor_authority_source"] == pending[0]["predecessor_authority_source"]
+    pending.clear()
+    assert queue.restore_pending_from_snapshot() == 1
+    assert "predecessor_task_id" not in pending[0]
+    return pending[0]
 
 
 def test_second_task_reviews_and_commits_only_explicitly_selected_correction(tmp_path, monkeypatch):
@@ -89,14 +132,15 @@ def test_second_task_reviews_and_commits_only_explicitly_selected_correction(tmp
 
     # Independent admission explicitly selects the retained predecessor. It does
     # not copy its paid wallet or critic authority, and does not reset first.
-    task = {"id": "second", "root_task_id": "second", "budget_drive_root": str(data),
-            "predecessor_task_id": "first", "predecessor_authority_source": _source("first")}
-    assert not validate_task_authority_sources(data, task)
-    write_task_result(data, "second", "running")
+    task = _promote_retained_correction(root, data, monkeypatch)
+    second_id = task["id"]
+    assert second_id != "first" and task["root_task_id"] == second_id
     agent = SimpleNamespace(env=SimpleNamespace(repo_dir=root, drive_root=data, budget_drive_root=str(data)))
+    assert not validate_task_authority_sources(agent.env, task)
+    write_task_result(data, second_id, "running")
     OuroborosAgent._capture_mutation_baseline(agent, task, {})
-    second = context("second")
-    candidates = attributed_git_candidates(data, "second", root)
+    second = context(second_id)
+    candidates = attributed_git_candidates(data, second_id, root)
     assert candidates["candidates"] == ["clean.txt", "new.txt"]
     assert candidates["excluded_preexisting_dirty"] == ["dirty.txt"]
     completed = git._repo_commit_push(second, "Commit retained correction after fresh review", skip_advisory_review=True)
@@ -106,11 +150,11 @@ def test_second_task_reviews_and_commits_only_explicitly_selected_correction(tmp
     assert _git(root, "show", "HEAD:dirty.txt") == "base"
     assert (root / "dirty.txt").read_text(encoding="utf-8") == "unrelated owner WIP\n"
     assert _git(root, "diff", "--name-only") == "dirty.txt"
-    assert [row["task"] for row in reviews] == ["first", "second"]
+    assert [row["task"] for row in reviews] == ["first", second_id]
     assert reviews[0]["fingerprint"] != reviews[1]["fingerprint"]
     attempts = load_state(data).attempts
     assert {task_id: sum(row.paid for row in attempts if row.root_task_id == task_id)
-            for task_id in ("first", "second")} == {"first": 1, "second": 1}
+            for task_id in ("first", second_id)} == {"first": 1, second_id: 1}
     assert attempts[-1].status == "succeeded" and not attempts[-1].author_disposition
     assert load_task_result(data, "first") == first_result
     assert len(publications) == 1 and all(row["exit"] == 0 for row in checks)

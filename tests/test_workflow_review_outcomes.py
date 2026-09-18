@@ -51,6 +51,10 @@ def test_commit_finish_requires_received_outcome(candidate, monkeypatch, basis):
     if basis == "explicit_prior":
         reference = json.loads(prior.split('\n', 1)[1])['review_reference']
     row = load_state(ctx.drive_root).attempts[-1]
+    from ouroboros.tools.claude_advisory_review import _handle_review_status
+    projected = json.loads(_handle_review_status(ctx))
+    assert ("author_disposition" in projected["next_step"]) is (basis == "custody_lost")
+    assert ("review_reference" in projected) is (basis == "custody_lost")
     assert row.status == 'reviewing' and row.late_result_pending
     assert not row.critical_findings
     second = git._repo_commit_push(ctx, 'Fix amount', review_reference=reference,

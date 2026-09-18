@@ -1035,7 +1035,7 @@ def _settle_review_attempt(
     if entry.released_early:  # plan review's event route: progress line + the settled-wave frame
         from ouroboros.tools.plan_review_collect import announce_released_settlement
 
-        announce_released_settlement(usage_ctx, request=request, task_id=task_id, slot=slot, actor=actor,
+        announce_released_settlement(usage_ctx, request=request, task_id=task_id, actor=actor,
                                      settled_wave=dict(released_wave.get("slots") or {}), roster_size=int(released_wave.get("total") or 0))
         if getattr(request, "surface", "") == "task_acceptance" and (released_wave or quorum_wave):
             from ouroboros.acceptance_settlement import announce_acceptance_settlement
