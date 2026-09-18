@@ -1,6 +1,7 @@
 /** Rich, sanitized markdown rendering for assistant and system chat messages. */
 
 import { safeExternalUrl } from './utils.js';
+import { applyChartTheme, onThemeChange } from './theme_palette.js';
 
 const CHART_TYPES = new Set([
     'bar', 'line', 'pie', 'doughnut', 'polarArea', 'radar', 'scatter', 'bubble',
@@ -10,6 +11,8 @@ const MAX_CHART_POINTS = 500;
 const MAX_RICH_BLOCK_SOURCE_LENGTH = 32768;
 const MERMAID_SCRIPT_ID = 'chat-mermaid-library';
 const ROOT_STATE = new WeakMap();
+const CHART_AUTHORED = new WeakMap();
+const CHART_THEMED = new WeakMap();
 const writeDirectly = (mutate) => mutate();
 
 let markdownParser = null;
@@ -150,7 +153,7 @@ export function parseChartConfig(source) {
     const userOptions = parsed.options && typeof parsed.options === 'object' && !Array.isArray(parsed.options)
         ? parsed.options
         : {};
-    return {
+    const config = {
         type: parsed.type,
         data: {
             datasets,
@@ -162,6 +165,11 @@ export function parseChartConfig(source) {
             maintainAspectRatio: false,
         },
     };
+    // What the message author actually wrote, kept beside the config rather than
+    // inside it: a repaint has to know which colours are the author's to leave
+    // alone, and Chart.js resolves its own defaults over everything else.
+    CHART_AUTHORED.set(config, userOptions);
+    return config;
 }
 
 function codeLanguage(code) {
@@ -355,7 +363,8 @@ function hardenMermaidLinks(node) {
 }
 
 function initializeMermaid(api) {
-    if (mermaidInitialized) return;
+    const theme = typeof document !== 'undefined' ? document.documentElement.dataset.theme || 'dark' : 'dark';
+    if (mermaidInitialized === theme) return;
     const rootStyle = typeof getComputedStyle === 'function' && typeof document !== 'undefined'
         ? getComputedStyle(document.documentElement)
         : null;
@@ -375,7 +384,7 @@ function initializeMermaid(api) {
             tertiaryColor: diagramToken('--diagram-tertiary', '#19171d'),
         },
     });
-    mermaidInitialized = true;
+    mermaidInitialized = theme;
 }
 
 function degradeMermaid(node, source, message) {
@@ -388,16 +397,41 @@ function degradeMermaid(node, source, message) {
     node.replaceWith(block);
 }
 
-async function renderMermaidNodes(root, state, onDomWrite) {
+/* Mermaid replaces a diagram's text with its SVG, so after the first mount the
+   node no longer knows what it draws. The source is parked on the node (and
+   survives the clone, which is what actually lands in the document) purely so a
+   palette switch can redraw the same diagram instead of losing it. */
+function mermaidSourceOf(node) {
+    const stored = node.dataset?.mermaidSource;
+    return typeof stored === 'string' ? stored : (node.textContent || '');
+}
+
+/** Put rendered diagrams back to their source so a re-render repaints them. */
+function resetMermaidNodes(root) {
+    const nodes = Array.from(root.querySelectorAll?.('.md-mermaid[data-mermaid-source]') || []);
+    if (root.matches?.('.md-mermaid[data-mermaid-source]')) nodes.unshift(root);
+    for (const node of nodes) {
+        node.textContent = node.dataset.mermaidSource;
+        // Mermaid refuses to re-run a node it has already claimed.
+        node.removeAttribute('data-processed');
+    }
+    return nodes.length;
+}
+
+async function renderMermaidNodes(root, state, onDomWrite, epoch = state.epoch) {
+    const stale = () => state.destroyed || state.epoch !== epoch || root.isConnected === false;
     const foundNodes = Array.from(root.querySelectorAll?.('.md-mermaid') || []);
     if (root.matches?.('.md-mermaid')) foundNodes.unshift(root);
     const nodes = [];
     const oversized = [];
     for (const node of foundNodes) {
-        const source = node.textContent || '';
+        const source = mermaidSourceOf(node);
         if (source.length > MAX_RICH_BLOCK_SOURCE_LENGTH) {
             oversized.push({ node, source });
         } else {
+            // Park before awaiting the library: a theme event during its first
+            // load must discover this fence and schedule a replacement pass.
+            node.dataset.mermaidSource = source;
             nodes.push(node);
         }
     }
@@ -415,24 +449,25 @@ async function renderMermaidNodes(root, state, onDomWrite) {
     try {
         api = await loadMermaid();
     } catch {
-        if (state.destroyed || root.isConnected === false) return;
+        if (stale()) return;
         onDomWrite(() => {
             let changed = false;
             nodes.forEach((node) => {
                 if (node.isConnected === false) return;
-                degradeMermaid(node, node.textContent || '', 'Diagram library failed to load.');
+                degradeMermaid(node, mermaidSourceOf(node), 'Diagram library failed to load.');
                 changed = true;
             });
             return changed;
         });
         return;
     }
-    if (state.destroyed || root.isConnected === false) return;
+    if (stale()) return;
     initializeMermaid(api);
     for (const node of nodes) {
-        if (state.destroyed || root.isConnected === false) return;
+        if (stale()) return;
         if (node.isConnected === false) continue;
-        const source = node.textContent || '';
+        const source = mermaidSourceOf(node);
+        node.dataset.mermaidSource = source;
         const rendered = node.cloneNode(true);
         const stage = document.createElement('div');
         stage.className = 'md-mermaid-stage';
@@ -454,7 +489,9 @@ async function renderMermaidNodes(root, state, onDomWrite) {
             await api.run({ nodes: [rendered], suppressErrors: true });
             hardenMermaidLinks(rendered);
             stage.remove();
-            if (state.destroyed || root.isConnected === false || node.isConnected === false) return;
+            // A theme switch during this await already reset the node and started
+            // a fresh pass; this SVG is in the old palette and must be dropped.
+            if (stale() || node.isConnected === false) return;
             onDomWrite(() => {
                 if (node.isConnected === false) return false;
                 node.replaceWith(rendered);
@@ -462,7 +499,7 @@ async function renderMermaidNodes(root, state, onDomWrite) {
             });
         } catch {
             stage.remove();
-            if (!state.destroyed && root.isConnected !== false && node.isConnected !== false) {
+            if (!stale() && node.isConnected !== false) {
                 onDomWrite(() => {
                     if (node.isConnected === false) return false;
                     degradeMermaid(node, source, 'Diagram could not be rendered.');
@@ -482,11 +519,14 @@ function renderChartNodes(root, state, onDomWrite) {
             if (source.length > MAX_RICH_BLOCK_SOURCE_LENGTH) throw new Error('chart source is too long');
             if (typeof globalThis.Chart !== 'function') throw new Error('chart library is unavailable');
             const config = parseChartConfig(source);
+            const authored = CHART_AUTHORED.get(config) || {};
             const canvas = document.createElement('canvas');
             onDomWrite(() => {
                 node.replaceChildren(canvas);
                 const chart = new globalThis.Chart(canvas, config);
                 state.charts.add(chart);
+                CHART_THEMED.set(chart, authored);
+                applyChartTheme(chart, authored);
                 node.dataset.processed = 'true';
                 return true;
             });
@@ -524,6 +564,8 @@ async function copyCode(code) {
 function cleanupState(root, state) {
     if (!state || state.destroyed) return;
     state.destroyed = true;
+    state.unsubscribeTheme?.();
+    state.unsubscribeTheme = null;
     root.removeEventListener('click', state.clickHandler);
     for (const chart of state.charts) {
         try { chart.destroy(); } catch {}
@@ -543,6 +585,9 @@ export function enhanceChatMarkdown(rootEl, { onDomWrite = writeDirectly } = {})
     destroyChatMarkdown(rootEl);
     const state = {
         charts: new Set(), timers: new Set(), clickHandler: null, frame: null, destroyed: false,
+        // Bumped by every repaint so a diagram render still awaiting mermaid from
+        // the previous palette discards its result instead of racing this one in.
+        epoch: 0, unsubscribeTheme: null,
     };
     state.clickHandler = async (event) => {
         const button = event.target?.closest?.('[data-code-copy]');
@@ -568,6 +613,19 @@ export function enhanceChatMarkdown(rootEl, { onDomWrite = writeDirectly } = {})
     ROOT_STATE.set(rootEl, state);
     rootEl.setAttribute('data-chat-markdown-enhanced', 'true');
     rootEl.addEventListener('click', state.clickHandler);
+    // The palette moved under an already-mounted message. Charts keep their
+    // instances (and therefore their data); diagrams redraw from the source they
+    // parked at mount. Nothing re-reads the markdown or rebuilds the bubble.
+    state.unsubscribeTheme = onThemeChange(() => {
+        if (state.destroyed || rootEl.isConnected === false) return;
+        for (const chart of state.charts) applyChartTheme(chart, CHART_THEMED.get(chart) || {});
+        state.epoch += 1;
+        // The reset collapses each SVG back to a line of text, so it goes through
+        // the caller's DOM writer like every other height change here.
+        let pending = 0;
+        onDomWrite(() => { pending = resetMermaidNodes(rootEl); return pending > 0; });
+        if (pending) void renderMermaidNodes(rootEl, state, onDomWrite);
+    });
     const start = () => {
         if (state.destroyed || rootEl.isConnected === false) return;
         onDomWrite(() => {

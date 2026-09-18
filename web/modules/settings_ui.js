@@ -15,6 +15,7 @@ const SETTINGS_TABS = [
     { value: 'models', label: 'Models' },
     { value: 'agents', label: 'Agents' },
     { value: 'behavior', label: 'Behavior' },
+    { value: 'appearance', label: 'Appearance' },
     { value: 'advanced', label: 'Advanced' },
     { value: 'about', label: 'About' },
 ];
@@ -720,6 +721,24 @@ export function renderSettingsPage() {
                                 <input id="s-clawhub-registry-url" placeholder="https://clawhub.ai/api/v1" class="ui-control" name="s-clawhub-registry-url" type="text" aria-describedby="s-clawhub-registry-url-help">
                                 <div class="settings-inline-note ui-field-help" id="s-clawhub-registry-url-help">Override only for self-hosted mirrors. Hostname must be <code>clawhub.ai</code> or localhost.</div>
                             </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="settings-panel" data-settings-panel="appearance">
+                    <div class="form-section">
+                        <h3>Theme</h3>
+                        <div class="settings-section-copy">
+                            <code>System</code> follows this device's OS appearance and is the default for a new client.
+                            <code>Light</code> and <code>Dark</code> pin the palette regardless of the OS.
+                            <br><strong>Per device, not per account:</strong> the choice is stored by this client alone
+                            (the desktop window and each browser keep their own), never sent to the server and never
+                            shared with other devices. Clearing this client's site data returns it to System.
+                        </div>
+                        <div class="settings-effort-card">
+                            <label class="theme-choice-label" id="s-appearance-theme-label">Theme</label>
+                            <div data-theme-control aria-labelledby="s-appearance-theme-label"></div>
+                            <div class="settings-inline-note theme-status" data-theme-status role="status" aria-live="polite"></div>
                         </div>
                     </div>
                 </section>

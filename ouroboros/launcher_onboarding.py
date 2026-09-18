@@ -123,7 +123,9 @@ def present_first_run_onboarding(
         height=780,
         min_size=(840, 640),
     )
-    webview.start()
+    # Share persistent local UI storage with the same-origin main window.
+    # This includes cookies and website data, not only the appearance choice.
+    webview.start(private_mode=False)
     return outcome
 
 

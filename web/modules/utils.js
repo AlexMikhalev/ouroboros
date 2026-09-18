@@ -556,15 +556,18 @@ export function initMatrixRain() {
     function syncMotion() {
         if (timer !== null) clearInterval(timer);
         timer = null;
+        if (document.documentElement.dataset.theme === 'light') return;
         if (motion.matches) draw();
         else timer = setInterval(draw, 66);
     }
     motion.addEventListener('change', syncMotion);
+    window.addEventListener('ouro:theme-changed', syncMotion);
     syncMotion();
     return () => {
         if (timer !== null) clearInterval(timer);
         timer = null;
         motion.removeEventListener('change', syncMotion);
+        window.removeEventListener('ouro:theme-changed', syncMotion);
         window.removeEventListener('resize', resize);
         canvas.remove();
     };

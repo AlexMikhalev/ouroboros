@@ -8,6 +8,39 @@ The desktop shell exposes a small `MainApi` JS bridge (`window.pywebview.api`, `
 
 ### Navigation and shared UI contracts
 
+Appearance is client-local, not a runtime setting. `web/theme.js` runs before
+CSS in both first-party documents. `ouroboros.theme` stores `light`, `dark` or
+`system` (missing/invalid means System); `data-theme-choice` preserves the choice
+and `data-theme` holds the palette resolved through `prefers-color-scheme`.
+Explicit saved Light/Dark remains pinned. Without an OS signal System uses Dark.
+Same-origin storage events re-read the key; unavailable storage is reported.
+
+`theme.js` renders `[data-theme-control]` as one roving-tabindex radiogroup with
+Light / Dark / System, arrow and Home/End navigation. Settings → Appearance and
+the standalone onboarding document each mount this shared control; late-injected
+Settings calls `window.ouroTheme.mount()`. It owns no `s-` input, so Settings'
+collector never posts it. `ouro:theme-changed` announces only a resolved palette
+change; Dark → System on a dark OS does not churn mounted views.
+
+`theme_palette.js` translates `--chart-*` tokens into mounted Chart options and
+updates in place without replacing data or caller-authored option groups.
+`chat_markdown.js` parks Mermaid source before awaiting the library and carries
+it into rendered clones; per-root epochs discard stale async SVGs. Chat and
+widget disposers release theme subscriptions; Evolution returns a disposer to
+`app.js`'s non-persisted pagehide cleanup. Shared select arrows are whole-image
+`--select-arrow` tokens, since variables cannot interpolate inside a data URI.
+
+Independent iframe documents do not inherit the host's tokens or stored choice.
+The optional author UI kit supplies styles/primitives, not a hot-theme protocol;
+there is no forced remount. Desktop `webview.start(private_mode=False)` requests
+persistent website storage in `launcher.py` and `launcher_onboarding.py`, including
+cookies, not just appearance. Existing packaged launchers must be rebuilt and
+installed to change that flag. Profile identity, origin and platform storage
+still govern retention: source tests do not certify a cold-launch result. When
+migrating from a private session, explicitly select the owner's Light in the new
+persistent client before testing full quit/relaunch; no private-to-persistent
+migration is promised. Browser reload and server restart are separate checks.
+
 Primary navigation exposes Chat (Main), a collapsible Projects group, Files, Skills, Widgets, Dashboard and Settings; About is a Settings sub-tab. `syncNavigationState()` is the single presentation state machine for active page, active Project, Projects expansion, mobile drawer and panel backdrop, so independent toggles cannot leave multiple rows active or a hidden surface looking selected. Sidebar and Project panel widths are owner-local UI preferences, not runtime settings. The application has exactly one client-side route: a `#<page>` fragment for the injected page ids, honoured once on load and validated against the existing `#page-<name>` section (an unknown fragment is ignored rather than painting a blank surface), and never written back on navigation — the desktop shell and the Linux browser fallback have no address bar, and the Telegram mini app always loads at `/` — so a browser gains a shareable `/#widgets` link while no other surface changes. Projects are panels, not routes, and the sidebar is the document's one `<nav>` landmark.
 
 Each active or deleting Project has a sidebar row with pointer- and keyboard-operable open/rename/delete; the backend owns the 80-character name limit and lifecycle truth. Unread Projects sort ahead of read, then by durable activity; a deleting Project becomes non-openable and stays visibly transitional until the server publishes authoritative registry state. On narrow screens navigation is an explicit drawer and the Project chat a full-width overlay; no gesture-only navigation layer competes with message scroll, text selection or the software keyboard.
@@ -190,7 +223,7 @@ The synchronous lock-owning apply executor publishes process-local stage observa
 
 ### Settings and onboarding
 
-Settings has Accounts, Secrets, Models, Agents, Behavior, Advanced and About tabs — a sequence from connections to runtime detail. Accounts: managed subscriptions and their shared service banner, API providers, custom compatible endpoints, local runtime entry points, and the optional non-loopback network gate. Secrets: known provider/integration secrets, skill-requested keys and owner-defined custom keys, without returning stored values. Models: compact source/model/account role rows, ordered fallbacks, context assertions and effort lanes. Agents: task actors and review lanes, with delegation permissions, per-root and depth limits and subagent path roots; their accounts are managed in Accounts. Behavior: context, safety-supervisor coverage, task acceptance, self-evolution, prompt-cache posture. Advanced: process, timeout, local-model, integration, source-control and cleanup controls (worker count is process capacity, so it lives here). About reports application/runtime identity. Keys, defaults and per-key semantics are the §7 Default settings table, not this chapter. Models, Available subagents and Review lanes share ONE grouped source select owned by `web/modules/route_editor_primitives.js` (`routeChoiceGroups`, `configuredApiProviders`): the owner picks a source and the editor composes the stored id, so the provider prefixes (`provider::model`, `claudexor::source=model`, `harness=model`) are serialization only, never owner input.
+Settings has Accounts, Secrets, Models, Agents, Behavior, Appearance, Advanced and About tabs — a sequence from connections to runtime detail. Accounts: managed subscriptions and their shared service banner, API providers, custom compatible endpoints, local runtime entry points, and the optional non-loopback network gate. Secrets: known provider/integration secrets, skill-requested keys and owner-defined custom keys, without returning stored values. Models: compact source/model/account role rows, ordered fallbacks, context assertions and effort lanes. Agents: task actors and review lanes, with delegation permissions, per-root and depth limits and subagent path roots; their accounts are managed in Accounts. Behavior: context, safety-supervisor coverage, task acceptance, self-evolution, prompt-cache posture. Appearance: the client-local theme choice described above, never a runtime-settings value. Advanced: process, timeout, local-model, integration, source-control and cleanup controls (worker count is process capacity, so it lives here). About reports application/runtime identity. Keys, defaults and per-key semantics are the §7 Default settings table, not this chapter. Models, Available subagents and Review lanes share ONE grouped source select owned by `web/modules/route_editor_primitives.js` (`routeChoiceGroups`, `configuredApiProviders`): the owner picks a source and the editor composes the stored id, so the provider prefixes (`provider::model`, `claudexor::source=model`, `harness=model`) are serialization only, never owner input.
 
 The Settings client validates the whole current draft before Save; a local error keeps every value available for correction and sends no partial save (`settings_controls.js` keeps custom-key collection pure and dirty reads passive). Ordinary refresh and failed writes preserve current edits, leaving or explicitly reloading a dirty draft asks first, the write response distinguishes saved, unsaved and unknown outcomes, and there is no durable cross-page draft store or secret persistence.
 
