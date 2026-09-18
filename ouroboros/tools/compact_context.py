@@ -13,11 +13,12 @@ log = logging.getLogger(__name__)
 
 
 def record_context_view(ctx, messages, tool_schemas) -> None:
-    """Capture the actually sent canonical view; prospective pricing never calls this.
+    """Capture a usable turn's canonical source; prospective pricing never calls this.
 
     Nothing is added to the prompt or cache identity. Inspect pins this one
     observation for a later authored request, so its own tool pair and newer
     owner messages cannot make that request stale by construction.
+    Physical vision/provider projections remain in the existing request artifacts.
     """
     from ouroboros.context_compaction import context_reclaim_transcript_sha256
 
@@ -28,7 +29,7 @@ def record_context_view(ctx, messages, tool_schemas) -> None:
     }
 
 
-def _compact_context(ctx, keep_last_n: int = 6, *, inspect: bool = False,
+def _compact_context(ctx, keep_last_n: int | None = None, *, inspect: bool = False,
                      expected_view_revision: str = "", working_note: str | None = None,
                      keep_unit_ids: List[str] | None = None, restore_unit_refs: List[dict] | None = None,
                      schema_names: List[str] | None = None, **kwargs) -> str:
@@ -71,6 +72,9 @@ def _compact_context(ctx, keep_last_n: int = 6, *, inspect: bool = False,
                     or not all(isinstance(ref, dict) for ref in restore_unit_refs))):
             return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR",
                 text="Invalid context view request: use a prose working_note, arrays of exact unit/schema names and checkpoint reference objects."))
+        if keep_unit_ids is None and keep_last_n is not None:
+            count = max(2, min(keep_last_n, 20))
+            keep_unit_ids = [unit.unit_id for unit in _atomic_units(observed["messages"])[-count:]]
         ctx._pending_compaction = {
             "observed": observed, "working_note": working_note,
             "expected_view_revision": observed["revision"],
@@ -80,7 +84,7 @@ def _compact_context(ctx, keep_last_n: int = 6, *, inspect: bool = False,
         }
         return "Working view requested. The next complete tool boundary preserves exact sources and checks the full candidate before applying it; the resulting receipt reports actual changes."
 
-    keep_last_n = max(2, min(keep_last_n, 20))
+    keep_last_n = max(2, min(6 if keep_last_n is None else keep_last_n, 20))
 
     ctx._pending_compaction = keep_last_n
 
@@ -101,7 +105,9 @@ def get_tools() -> List[ToolEntry]:
                 "name": "compact_context",
                 "description": (
                     "Request complete-input context reclaim for old completed tool units. "
-                    "Keeps recent N units raw. A selected older assistant tool call and all of its "
+                    "Supply your working_note to author the replacement, or omit it for helper summarization. "
+                    "Select exact keep_unit_ids or explicitly keep_last_n recent units raw; "
+                    "an authored note without either keeps all raw units. A selected older assistant tool call and all of its "
                     "contiguous matching results stay atomic; Ouroboros checkpoints their exact "
                     "actor-visible bytes before replacing them with summaries whose metadata points "
                     "to the checkpoint/CAS evidence. Active context becomes summarized; raw evidence "
@@ -113,7 +119,7 @@ def get_tools() -> List[ToolEntry]:
                         "inspect": {"type": "boolean", "description": "Return and pin the last observed view revision, complete unit IDs, source references and current schema names without changing context."},
                         "expected_view_revision": {"type": "string", "description": "Optional view_revision from inspect, checked exactly. Omitted binds the actual model-send view that produced this call; inspect is not required to replace all completed units."},
                         "working_note": {"type": "string", "description": "One coherent account of current understanding, corrections and unresolved work. Supplying it selects your authored view; omission keeps legacy helper compaction."},
-                        "keep_unit_ids": {"type": "array", "items": {"type": "string"}, "description": "Exact inspected complete units to retain raw; omitted keeps all, empty keeps none. Owner/system messages and newer tail are preserved."},
+                        "keep_unit_ids": {"type": "array", "items": {"type": "string"}, "description": "Exact inspected complete units to retain raw; takes precedence over keep_last_n, empty keeps none. If both selectors are omitted, an authored note keeps all. Owner/system messages and newer tail are preserved."},
                         "restore_unit_refs": {"type": "array", "items": {"type": "object", "properties": {
                             "checkpoint_ref": {"type": "object"}, "unit_id": {"type": "string"}, "raw_sha256": {"type": "string"}},
                             "required": ["checkpoint_ref", "unit_id", "raw_sha256"]},
@@ -121,8 +127,7 @@ def get_tools() -> List[ToolEntry]:
                         "schema_names": {"type": "array", "items": {"type": "string"}, "description": "Nano only: desired canonical schemas. This selects residency, never execution permissions. Low/Max retain their full permitted envelope."},
                         "keep_last_n": {
                             "type": "integer",
-                            "description": "Number of recent completed atomic tool units to keep raw (default 6, range 2-20). Lower = more reclaim.",
-                            "default": 6,
+                            "description": "Number of recent completed atomic tool units to keep raw (range 2-20). With working_note, used only when explicitly supplied and keep_unit_ids is omitted. Without working_note, defaults to 6 for helper summarization.",
                         },
                     },
                     "required": [],

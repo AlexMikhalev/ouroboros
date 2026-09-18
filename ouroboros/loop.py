@@ -571,7 +571,11 @@ def run_llm_loop(
                     _CompactionRoundContext(
                         tools=tools, drive_root=drive_root, drive_logs=drive_logs,
                         task_id=task_id, round_idx=round_idx,
-                        event_queue=event_queue, emit_progress=emit_progress))
+                        event_queue=event_queue, emit_progress=emit_progress,
+                        tool_schemas=tool_schemas,
+                        fit_candidate=lambda candidate, schemas: _measure_main_context_view(
+                            context_fit_plan, candidate, schemas, active_context_mode,
+                            active_effort, str(round_idx))))
                 tools._ctx.messages = messages
                 limit_ctx.messages = messages  # WA2: provider-death finalize must salvage the COMPACTED transcript
                 if _compaction_usage:
@@ -659,6 +663,11 @@ def run_llm_loop(
                 return text, accumulated_usage, llm_trace
 
             _record_transcript_prefix(tools._ctx, messages, round_idx, accumulated_usage, event_queue, task_id, drive_logs)
+            from ouroboros.tools.compact_context import record_context_view
+
+            # The canonical source of this usable turn, after any route adoption;
+            # vision/provider projections remain in their existing send artifacts.
+            record_context_view(tools._ctx, messages, tool_schemas)
             from ouroboros.openai_chat_dispatch import CUSTOM_RECEIPTS_USAGE_KEY
 
             tool_calls = msg.get("tool_calls") or []
@@ -816,6 +825,7 @@ from ouroboros.loop_model_call import (  # noqa: E402, F401 -- intentional publi
     _main_context_profile,
     _remember_main_fit,
     _measure_round_main_fit,
+    _measure_main_context_view,
     _physical_context_for_fit,
     _dispatch_round_model,
     _run_main_reclaim,

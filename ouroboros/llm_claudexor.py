@@ -757,31 +757,37 @@ class _ModelInvocation:
             gateway.close()
 
 
-def _reset_native(payload: dict, error: ClaudexorModelNotDispatched, invocation: _ModelInvocation) -> dict | None:
-    capture = getattr(error, "physical_attempt_capture", None)
-    if error.code != "invalid_continuation" or getattr(capture, "state", None) != "released":
-        return None
-    route = error.route
+def reset_native_messages(messages: list, route: dict, *, source: str, model: str) -> tuple[list, list]:
+    """Apply an already-authorized account reset without replacing source content."""
     changed = []
-    prepared = copy.deepcopy(payload)
-    for message in prepared["messages"]:
+    prepared = copy.deepcopy(messages)
+    for message in prepared:
         native = message.get("nativeContinuation")
         if not isinstance(native, dict):
             continue
         old = native.get("route") or {}
-        if (route.get("source") == old.get("source") == payload["source"]
-                and route.get("model") in (None, payload["model"])
+        if (route.get("source") == old.get("source") == source
+                and route.get("model") in (None, model)
                 and any(route.get(key) and old.get(key) and route[key] != old[key]
                         for key in ("credentialProfileId", "accountFingerprint"))):
             changed.append({"old_route": old, "new_route": route})
             message.pop("nativeContinuation")
+    return prepared, changed
+
+
+def _reset_native(payload: dict, error: ClaudexorModelNotDispatched, invocation: _ModelInvocation) -> dict | None:
+    capture = getattr(error, "physical_attempt_capture", None)
+    if error.code != "invalid_continuation" or getattr(capture, "state", None) != "released":
+        return None
+    messages, changed = reset_native_messages(
+        payload["messages"], error.route, source=payload["source"], model=payload["model"])
     if not changed:
         return None
     append_jsonl(invocation.root / "logs" / "events.jsonl", {
         "ts": utc_now_iso(), "type": "native_continuation_reset", "task_id": invocation.task_id,
         "model_role": invocation.role, "operation_id": invocation.operation_id, "routes": changed,
     })
-    return prepared
+    return {**payload, "messages": messages}
 
 
 def _accounted_request(invocation: _ModelInvocation):
@@ -801,9 +807,9 @@ def _native_retry_preparation(target: dict, payload: dict, parameters: dict,
                               error: ClaudexorModelNotDispatched):
     """Rebind the already-authorized un-sent repair before preparing its next attempt.
 
-    The engine's new account receipt replaces provisional discovery. Passing
-    the sanitized send copy is essential: rebuilding from the old transcript
-    would reintroduce the incompatible native envelope just removed above.
+    The engine's new account receipt replaces provisional discovery. Pass the
+    sanitized send copy to ordinary callers; Main re-applies this attested
+    account reset to its canonical source before rebuilding its vision view.
     """
     values = {**parameters, "messages": payload["messages"], "tools": payload["tools"],
               "model": target["usage_model"], "use_local": False}
@@ -813,6 +819,10 @@ def _native_retry_preparation(target: dict, payload: dict, parameters: dict,
             raise ModelWaitInterrupted("model_wait_reprepare_required", role=parameters.get("model_role", ""), cause=error)
         return values  # Bare helpers have no captured Main fit to replace.
     values["_model_observed_route"] = {**error.route, "source": target["source"], "model": target["resolved_model"]}
+    if error.code == "invalid_continuation" and getattr(getattr(error, "physical_attempt_capture", None), "state", None) == "released":
+        # A processing-only repair may also report another account. Only the
+        # typed no-start native reset authorizes Main to scrub its source copy.
+        values["_model_observed_route"]["_native_reset"] = True
     return waiter.reprepare(parameters.get("model_role", ""), values)
 
 

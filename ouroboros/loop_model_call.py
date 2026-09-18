@@ -13,7 +13,7 @@ import pathlib
 import queue
 import time
 
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from ouroboros import task_pacing
 from ouroboros.context_budget import ContextReclaimRequest
@@ -459,6 +459,29 @@ def _physical_context_for_fit(disposition: Any) -> PhysicalAttemptContext:
     )
 
 
+def _measure_main_context_view(plan, messages, schemas, mode, effort, round_id) -> dict:
+    """Measure an authored candidate without changing Main's dispatch policy.
+
+    Predictions inform the next ordinary reclaim/send; neither capacity nor
+    economy estimates veto a useful authored view. No route probe or model runs.
+    """
+    from ouroboros.context_fit import estimate_context_prompt_tokens, measure_main_fit
+    from ouroboros.loop_llm_call import MAIN_LOOP_MAX_TOKENS
+
+    if plan is None:
+        return {"accepted": True, "strict_bound_proven": False,
+                "estimated_input_tokens": estimate_context_prompt_tokens(messages, schemas, reasoning_effort=effort),
+                "response_reserve_tokens": MAIN_LOOP_MAX_TOKENS, "capacity_total_tokens": None,
+                "measurement_basis": "cold_estimate", "reason": "main_route_capacity_unknown"}
+    disposition = measure_main_fit(
+        plan, messages, schemas, profile=_main_context_profile(plan, mode),
+        rendered_mode=mode, round_id=round_id, reasoning_effort=effort,
+    )
+    return {"accepted": True, "strict_bound_proven": False,
+            "predicted_capacity_miss": disposition.predicted_capacity_miss,
+            **asdict(disposition.measurement)}
+
+
 def _fit_key(fit: Any) -> Tuple[str, str]:
     return (fit.measurement.route_fp, fit.measurement.round_id)
 
@@ -543,7 +566,15 @@ def _reprepare_waiting_main(ctx: _RoundModelCallContext, kwargs: dict):
     model, use_local = kwargs["model"], kwargs.get("use_local", False)
     role = kwargs["model_role"]
     observed = kwargs.pop("_model_observed_route", None)
-    prepared = LLMClient.sanitize_reasoning_on_model_switch(kwargs["messages"], ctx.active_model, model)
+    native_reset = bool(observed and observed.pop("_native_reset", False))
+    # Waiting kwargs can contain a caption/off projection. Keep the canonical
+    # images, then build the newly selected route's physical view below.
+    prepared = LLMClient.sanitize_reasoning_on_model_switch(ctx.messages, ctx.active_model, model)
+    if native_reset:
+        from ouroboros.llm_claudexor import reset_native_messages
+
+        prepared, _ = reset_native_messages(
+            prepared, observed, source=observed.get("source"), model=observed.get("model"))
     ctx.messages[:] = prepared
     ctx.context_fit_plan, ctx.active_context_mode = _loop()._rebind_context_fit_plan(
         ctx.context_fit_plan, ctx.tools, ctx.messages, model=model, use_local=use_local,
@@ -559,7 +590,20 @@ def _reprepare_waiting_main(ctx: _RoundModelCallContext, kwargs: dict):
             with bind_physical_attempt_context(None):
                 _loop()._run_main_reclaim(ctx, disposition)
         disposition = _measure_after_reclaim(ctx)
-    kwargs["messages"] = ctx.messages
+    from ouroboros.loop_llm_call import _prepare_main_messages
+
+    # Any vision work belongs to this actual reprepare, outside both the Main
+    # fit probe and the failed attempt's physical precondition/measurement.
+    with bind_physical_attempt_context(None):
+        kwargs["messages"] = _prepare_main_messages(
+            ctx.messages, model=model, model_role=role,
+            model_account_override=kwargs.get("model_account_override"),
+            llm=ctx.llm, accumulated_usage=ctx.accumulated_usage,
+            drive_root=ctx.drive_root or ctx.drive_logs.parent, task_id=ctx.task_id,
+            event_queue=ctx.event_queue, use_local=use_local,
+            task_attempt=ctx.accumulated_usage.get("_task_attempt"),
+            deadline_ts=_loop()._task_deadline_epoch(ctx.tools),
+        )
     from ouroboros.llm_claudexor import cache_key_for_model
     from ouroboros.provider_models import provider_for_model
     kwargs["cache_affinity"] = "" if use_local else cache_key_for_model(model)
