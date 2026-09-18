@@ -13,7 +13,8 @@ def progress(task, text, **extra):
 
 
 @pytest.mark.parametrize('width', [390, 1440])
-def test_observed_executor_role_activity_and_project_pointer_live_replay(subscription_ui, width):
+@pytest.mark.parametrize('linux_metrics', [False, True], ids=['native-font', 'linux-metrics'])
+def test_observed_executor_role_activity_and_project_pointer_live_replay(subscription_ui, width, linux_metrics):
     ui = subscription_ui
     page = ui['page']
     page.set_viewport_size({'width':width,'height':800})
@@ -64,6 +65,13 @@ def test_observed_executor_role_activity_and_project_pointer_live_replay(subscri
     assert activity.evaluate('e=>getComputedStyle(e).webkitLineClamp') == '1'
     pointer=page.locator('#executor-proof .project-work-pointer')
     assert 'UI coherence' in pointer.inner_text()
+    if linux_metrics:
+        # DejaVu Sans renders these two labels at 137px / 81px. Exercise that
+        # real Linux geometry on every host without bundling another font.
+        page.add_style_tag(content='''
+            #executor-proof .project-work-coverage { min-width: 137px; }
+            #executor-proof .chat-panel-statusbar .status-badge { min-width: 81px; }
+        ''')
     # One-line pointer: the label ellipsizes instead of wrapping the status bar open.
     label=pointer.locator('.project-work-pointer-label')
     assert label.evaluate('e=>[getComputedStyle(e).whiteSpace,getComputedStyle(e).textOverflow]')==['nowrap','ellipsis']
@@ -85,6 +93,6 @@ def test_observed_executor_role_activity_and_project_pointer_live_replay(subscri
     page.evaluate('''frame=>{for(const fn of executorProof.handlers.get('chat')||[])fn({...frame,chat_id:101})}''',terminal)
     page.wait_for_function("document.querySelector('#executor-proof [data-task-id=child]').textContent.includes('Observed: Cursor Grok 4.6')")
     assert 'Coordinator: gpt-6-astra' in card.inner_text()
-    capture(page,f'executor-card-{width}')
+    capture(page,f'executor-card-{width}-{"linux-metrics" if linux_metrics else "native-font"}')
     page.evaluate('executorProof.instance.destroy()')
     assert page.locator('#executor-proof .project-work-pointer').count()==0

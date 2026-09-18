@@ -20,6 +20,9 @@ def catalog(ui):
 
 def select_model_field(ui, consumer):
     roles.configure_mixed(ui)
+    # The catalog above is unprefixed, so every consumer is put on the same
+    # OpenRouter API lane the suggestions belong to.
+    lane = roles.api_lane(ui)
     if consumer in ['Scope', 'Deep']:
         slots = ui['fixture']['preview']['reviewer_slots']
         if consumer == 'Scope': slots['scope'] = [{'slot_id': 'scope_1', 'route': {'kind': 'api_chat', 'target_id': 'owner/model'}}]
@@ -33,15 +36,16 @@ def select_model_field(ui, consumer):
         page.locator('[data-settings-tab="models"]').click()
         if consumer == 'Fallback': page.locator('[data-model-add]').click()
         group = page.locator('[data-model-role="main"]') if consumer == 'Models' else page.locator('[data-model-role-group="fallback"] .model-role-row').first
-        group.locator('[data-model-role-source]').select_option('openrouter')
+        group.locator('[data-model-role-source]').select_option(lane)
         return page, group.locator('[data-model-role-model]')
     if consumer == "Actor":
         row = page.locator('[data-subagent-row]').nth(1)
+        row.locator('[data-subagent-field="route"]').select_option(lane)
         return page, row.locator('[data-subagent-field="model"]')
     if consumer == 'Scope': return page, page.locator('[data-slot-id="scope_1"] [data-slot-custom-api]')
     if consumer == 'Deep': return page, page.locator('[data-deep-review-api-model]')
     row = page.locator('[data-slot-id="triad_1"]') if consumer == "Triad" else page.locator('[data-advisory-row]')
-    row.locator('[data-slot-route], [data-advisory-route]').select_option('api')
+    row.locator('[data-slot-route], [data-advisory-route]').select_option(lane)
     return page, row.locator('[data-slot-custom-api], [data-advisory-api-model]')
 
 

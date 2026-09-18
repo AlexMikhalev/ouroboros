@@ -211,6 +211,8 @@ def test_initial_settings_document_survives_early_edit_while_enrichment_waits(su
     ui, pending = subscription_ui, {"reviewers": [], "status": [], "catalog": []}
     page = ui["page"]
     ui["settings"]["OUROBOROS_MODEL"] = "claudexor::opaque-source=gpt-test"
+    # An API lane is offered per provider whose credential is stored.
+    ui["settings"]["OPENROUTER_API_KEY"] = "***set***"
     ui["fixture"]["catalog"]["model_sources"] = [
         {"id": "opaque-source", "label": "Managed models", "credentialHarness": "codex"},
     ]
@@ -225,7 +227,7 @@ def test_initial_settings_document_survives_early_edit_while_enrichment_waits(su
     assert pending["status"], "the status read must still be pending"
     assert page.locator('#btn-save-settings').is_enabled(), "the known document can be saved before enrichment"
     source = main.locator('[data-model-role-source]')
-    source.select_option("openrouter")
+    source.select_option("api:openrouter")
     model = main.locator('[data-model-role-model]')
     model.fill("owner-kept-model")
     model.evaluate("element => { window.__earlyModel = element; element.setSelectionRange(4, 4); }")
@@ -245,7 +247,7 @@ def test_initial_settings_document_survives_early_edit_while_enrichment_waits(su
     page.wait_for_function("""() => document.querySelector('[data-model-role="main"] [data-model-role-source]')
         .querySelector('option[value="subscription:opaque-source"]')""")
     expect(model).to_have_value("owner-kept-model")
-    assert source.input_value() == "openrouter"
+    assert source.input_value() == "api:openrouter"
     assert model.evaluate("element => element === window.__earlyModel && element.selectionStart === 4")
     expect(page.locator('#settings-unsaved-indicator')).to_have_class(re.compile('is-visible'))
     expect(page.locator('#btn-save-settings')).to_be_enabled()
