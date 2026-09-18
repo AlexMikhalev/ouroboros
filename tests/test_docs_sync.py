@@ -419,8 +419,10 @@ def test_continuity_projection_contract_is_mirrored_across_governance_docs():
 
 def test_architecture_names_all_window_surfaces_and_settlement_order():
     architecture = _read("docs/ARCHITECTURE.md")
-    assert "keeps the full-window assumption on every surface" in architecture
-    assert "there is no window floor for a blocking verdict on any surface" in architecture
+    assert "full-window sizing default for an unknown API window" in architecture
+    assert "raw subscription routes keep no numeric unknown-window assumption" in architecture
+    assert "designated-default or conservative fallback" in architecture
+    assert "no model-window table or window-authority floor" in architecture
     assert "SETTLED is published before registration retirement" in architecture
 
 

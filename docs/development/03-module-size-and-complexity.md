@@ -180,9 +180,11 @@ Every new or changed continuity surface is reviewed as one narrow chain:
   an explicit gap, never silently treated as complete.
 
 **Control-plane distrust is metadata, not a data-plane operation.** Paid model
-output is evidence until a typed validity predicate fails. Distrust of profile,
-route, parser or window may lower authority to DEGRADED/SKIPPED/NOT_RUN, but it
-must not blank, rewrite or relabel the artifact or its original cause.
+output is evidence until a typed validity predicate fails. Actual profile,
+route or subject mismatches, invalid output contracts and delivery failures may
+affect review authority; window sizing and reading diagnostics alone may not
+(BIBLE P3). Neither case blanks, rewrites or relabels the artifact or its
+original cause.
 
 Enforcement: CHECKLISTS item 25 `source_completeness` (critical when
 applicable) scores the chain in commit review; the presentation-adapter
@@ -312,4 +314,3 @@ geometry/refresh contracts are pinned in `tests/test_widgets_ui_static.py` and
 `tests/test_extension_surfaces.py`.
 
 ---
-
