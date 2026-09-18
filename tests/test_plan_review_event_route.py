@@ -273,7 +273,8 @@ def test_fresh_dispatch_returns_at_the_barrier_and_the_resubmitted_envelope_coll
     state = _state(harness)
     assert state["cycles_paid"] == 1 and state["waves"][-1]["paid"] is True
     assert executor.execute_calls == 3
-    assert any("[s1]: finished;" in line and "state=settled" in line for line in harness.progress)
+    # The final mailbox frame can precede another slot's progress callback.
+    assert _wait_until(lambda: any("[s1]: finished;" in line and "state=settled" in line for line in harness.progress))
 
 
 def test_barrier_wave_replaces_a_stale_paid_predecessor_and_pays_only_at_collection(tmp_path):

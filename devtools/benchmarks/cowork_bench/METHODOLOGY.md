@@ -41,6 +41,13 @@ The accepted campaign configuration is:
 | Post-task evolution | Disabled |
 | Qualification timeout | 3600 seconds per agent phase; final full-run timeout chosen after smoke |
 
+Acceptance semantics in the table describe this source revision. The Kimi K3
+and Qwen3.8-27B campaigns pinned to Ouroboros seed
+`484d241cfdb6d3f731f2307672625927746075aa` retain that seed's earlier rule:
+two review cycles allow one rework. Interpret each run using its recorded
+`run_manifest.json` source SHA and immutable image, not a later revision of
+this document. Updating the document does not change existing runs or results.
+
 The pinned upstream runner keeps its agent container alive with `sleep 7200`.
 That inherited two-hour lifetime can end a long task regardless of a larger
 `--task-timeout`; retain it in the deferred full-run timeout decision. Qualification
