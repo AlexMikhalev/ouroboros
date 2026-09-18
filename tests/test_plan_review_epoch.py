@@ -482,6 +482,33 @@ def test_closed_and_pending_plan_states_do_not_advertise_new_review_at_cap():
     assert "custody reconciliation" in pending and "fresh panel" not in pending
 
 
+@pytest.mark.parametrize("enforcement", ["blocking", "advisory"])
+@pytest.mark.parametrize("cap", [None, 2, 3])
+def test_revise_plan_render_names_only_available_paid_cycles_and_exits(enforcement, cap):
+    from ouroboros.tools.plan_render import _next_step
+
+    text = _next_step({"aggregate": "REVISE_PLAN", "closed": False},
+                      enforcement=enforcement, cap=cap, cycles_paid=2)
+    assert "A disposition never closes REVISE_PLAN" in text
+    if cap == 2:
+        assert "rides into the next paid delta cycle" not in text
+        assert "no further paid delta cycle" in text
+        if enforcement == "blocking":
+            assert "owner unstick (Swarm/hurry)" in text
+            assert "once the owner raises OUROBOROS_REVIEW_MAX_CYCLES" in text
+            assert "outcome_tier=blocked_with_evidence" in text
+    else:
+        assert "rides into the next paid delta cycle" in text
+        assert "OUROBOROS_REVIEW_MAX_CYCLES" not in text
+    if enforcement == "advisory":
+        assert "Advisory enforcement: you may proceed" in text
+    evidence_text = _next_step({"aggregate": "REVIEW_REQUIRED", "closed": False},
+                               enforcement=enforcement, cap=cap, cycles_paid=2)
+    assert "ONE $0 call" in evidence_text and "no reviewer call, no cycle" in evidence_text
+    assert ("reaches reviewers on the next paid cycle" in evidence_text) is (cap != 2)
+    assert ("no further paid cycle" in evidence_text) is (cap == 2)
+
+
 def test_loop_reminder_does_not_repromise_a_spent_panel(monkeypatch):
     from ouroboros.owner_hurry import plan_review_reminder
 

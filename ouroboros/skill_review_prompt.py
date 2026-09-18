@@ -5,8 +5,8 @@ Review Checklist items every actor must answer, the checklist section name and
 the governance artifacts loaded beside it with an explicit omission marker,
 the assembled prompt with its stable cacheable prefix, the optional fail-open
 advisory pre-review whose evidence is folded into that prompt, and the
-per-attempt assembly that binds history and accepted rebuttals to one
-snapshot attempt.
+per-round assembly that binds history and accepted rebuttals to the current
+review round of the group.
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ import pathlib
 from typing import Any, Dict, List
 
 from ouroboros.reference_books import BOOK_ENTRYPOINTS, compose_book, load_reference_book
-from ouroboros.skill_review_history import count_attempts as _count_attempts_for_content
 from ouroboros.skill_review_status import CRITICAL_ITEMS
 from ouroboros.tools.review_helpers import (
     build_rebuttal_section,
@@ -365,12 +364,11 @@ def _build_review_prompt_for_attempt(
         ctx, skill_name=skill.name, file_pack=file_pack,
     )
     accepted_rebuttals = _load_accepted_rebuttals(drive_root, skill.name)
-    group_id = str(getattr(ctx, "_skill_review_group_id", "") or "")
+    # Coaching follows the series across payload edits, not identical-byte attempts.
+    # Keep _build_review_prompt unchanged: its source binds the free-replay contract.
     attempt_idx = int(
-        getattr(ctx, "_skill_review_snapshot_attempt", 0)
-        or (_count_attempts_for_content(
-            drive_root, skill.name, content_hash, group_id=group_id,
-        ) + 1)
+        getattr(ctx, "_skill_review_round", 0)
+        or (int(history[-1].get("review_round") or 0) + 1 if history else 1)
     )
     review_history_section = (
         _render_accepted_rebuttals_section(accepted_rebuttals)

@@ -195,11 +195,13 @@ def _next_step(wave: dict, *, enforcement: str, cap: Optional[int], cycles_paid:
     elif aggregate == "REVIEW_REQUIRED":
         blocking = [f for f in wave.get("findings") or [] if f.get("class") == "blocking"]
         text = author_note + (
-            "Notes are optional. Open need_evidence requests (a locator the host attaches next cycle, or "
+            "Notes are optional. Open need_evidence requests (an evidence locator or "
             "a question addressed to you by spec id) close with ONE $0 call: "
             f"plan_task(review_disposition={{review_fingerprint: '{fp}', items: [...]}}) — accept = "
-            "answered (your rationale is the answer; it reaches reviewers on the next paid cycle), "
-            "reject, or defer = deferred openly; no reviewer call, no cycle. A revised envelope "
+            "answered (your rationale is the answer; "
+            + ("the cap leaves no further paid cycle to deliver it to reviewers), " if at_cap else
+               "it reaches reviewers on the next paid cycle), ")
+            + "reject, or defer = deferred openly; no reviewer call, no cycle. A revised envelope "
             "supersedes this wave and its open requests can no longer be dispositioned. "
         )
         if blocking:
@@ -214,15 +216,18 @@ def _next_step(wave: dict, *, enforcement: str, cap: Optional[int], cycles_paid:
         text = author_note + (
             "Blocking findings: accept ⇒ change the spec and re-call plan_task (new fingerprint, "
             f"{'the cap is reached — no further paid cycle' if at_cap else 'next paid cycle ' + str(cycles_paid + 1) + ('' if cap is None else f' of {cap}')}); "
-            "reject ⇒ record reject + rationale via review_disposition naming this fingerprint — it "
-            "rides into the next paid delta cycle where reviewers mark it resolved or still-open. "
-            "A disposition never closes REVISE_PLAN. "
+            "reject ⇒ record reject + rationale via review_disposition naming this fingerprint — "
+            + ("it is recorded as evidence; the cap leaves no further paid delta cycle to judge it. "
+               if at_cap else
+               "it rides into the next paid delta cycle where reviewers mark it resolved or still-open. ")
+            + "A disposition never closes REVISE_PLAN. "
         )
     if enforcement == "blocking":
         text += (
             "Blocking enforcement: the review must close before the work starts"
-            + (" — the cycle cap is reached: exits are owner unstick (Swarm/hurry) or finalizing "
-               "with outcome_tier=blocked_with_evidence." if at_cap else ".")
+            + (" — the cycle cap is reached: exits are owner unstick (Swarm/hurry), a revised spec "
+               "once the owner raises OUROBOROS_REVIEW_MAX_CYCLES, or finalizing with "
+               "outcome_tier=blocked_with_evidence." if at_cap else ".")
         )
         if wave.get("quorum_unreachable") and not bool(wave.get("closed")):
             # B2b facts, never imperatives: the honest exits that exist alongside
