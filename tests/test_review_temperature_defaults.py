@@ -163,7 +163,9 @@ def test_actual_review_authors_reach_strict_raw_dispatch(setup, monkeypatch, sur
         _model, payload, _extra = asyncio.run(triad())
         assert "error" not in payload
     elif surface == "scope":
-        _text, _usage, error = scope_review._call_scope_llm("Review", MODEL, ctx, slot_id="critic", session_profile="account-a")
+        _text, _usage, error = scope_review._call_scope_llm(
+            "", MODEL, ctx, slot_id="critic", session_profile="account-a",
+            session_task="Review the staged change", session_root=str(root))
         assert not error
     else:
         row = reviewer_slot_config.ConfiguredReviewerSlot("critic", "api_chat", MODEL, profile_id="account-a",

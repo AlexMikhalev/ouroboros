@@ -1246,11 +1246,12 @@ def test_advisory_enforcement_not_self_overridable_scope(crit_item, tmp_path, mo
             raw.append({"item": item_id, "verdict": "PASS", "severity": "advisory",
                         "reason": f"Checked {item_id} against the staged fixture."})
     monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
-    monkeypatch.setattr(scope, "_build_scope_prompt", lambda *a, **k: ("p", None))
-    # Isolate advisory finding enforcement from the independent blocking_1m
-    # authority floor: this synthetic route is explicitly 1M-capable.
+    # Isolate advisory finding enforcement from the row's output sizing: this
+    # synthetic route is explicitly full-window.
+    from ouroboros.reviewer_window import ReviewerWindow
+
     monkeypatch.setattr(scope, "_scope_window",
-                        lambda _model, **_k: scope.ReviewerWindow(1_000_000, "confirmed"))
+                        lambda _model, **_k: ReviewerWindow(1_000_000, "confirmed"))
     monkeypatch.setattr(scope, "_call_scope_llm",
                         lambda *a, **k: (_json.dumps(raw), {"prompt_tokens": 1, "completion_tokens": 1}, None))
     result = scope.run_scope_review(_Ctx(), "test commit", scope_model="test")

@@ -232,6 +232,7 @@ def compose_book(book: ReferenceBook) -> str:
 def overview_book(
     book: ReferenceBook,
     chapter_navigation: Callable[[MarkdownSource], str] | None = None,
+    *, instructions: bool = True,
 ) -> BookView:
     """The compact view: authored introductions plus physical source addresses.
 
@@ -244,7 +245,7 @@ def overview_book(
         'Full chapter text is available through `read_file(root="system_repo", path=...)`; '
         'use the physical Source path listed below, with `start_line` and `max_lines` '
         'for a selected range. This overview contains introductions, not complete chapters.'
-    )
+    ) if instructions else "This overview contains introductions, not complete chapters."
     if book.legacy:
         source = book.entrypoint
         rows = [f"# {book.book_id.title()} (source navigation)",

@@ -1050,55 +1050,6 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         }
     }
 
-    // A pinned scope reviewer's route has no other reachable path to Capability
-    // Evidence: the settings save probes it and returns the SAME needs_ack contract the
-    // Max gate uses, so reuse that flow verbatim. Without rendering it the owner only
-    // ever sees commits blocked by SCOPE_REVIEW_SUB_FLOOR telling them to owner-ack a
-    // route the UI never offered. Declining leaves the slot fail-closed, as before.
-    async function ackReviewCapabilityNotices(notices) {
-        const pending = (Array.isArray(notices) ? notices : [])
-            .filter((notice) => notice?.needs_ack?.model);
-        let acked = 0;
-        for (const notice of pending) {
-            const ack = notice.needs_ack;
-            const seen = Number(notice.window_tokens || 0);
-            // Each delivery is judged by ITS OWN floor: the api row by the
-            // constitutional 1M, a RETRIEVING row by the 200K session floor. Asking
-            // about 1M for a retrieving row would demand a confirmation its own gate
-            // never wanted, so the floor rides with the notice.
-            const floor = Number(notice.floor_tokens || 0) || 1000000;
-            const floorText = floor.toLocaleString('en-US');
-            // A STALE record can report a full 1M and still not authorize, so say WHY
-            // the ack is being asked for — otherwise the prompt reads "this route
-            // reports 1000000 tokens, please confirm 1000000 tokens".
-            const reading = !(seen > 0)
-                ? 'no window metadata'
-                : (notice?.needs_ack?.evidence?.stale
-                    ? `${seen} tokens from an EXPIRED reading the provider could not re-confirm`
-                    : `${seen} tokens`);
-            const confirmed = await openConfirmDialog({
-                title: 'Confirm scope-reviewer context window',
-                body: `Scope review is fail-closed unless its reviewer's ${floorText}-token context `
-                    + `window is currently known, and this route reports ${reading}.\n\n`
-                    + `Confirm that this reviewer supports a ${floorText}-token context window?\n`
-                    + `provider: ${ack.provider || '(default)'}\nmodel: ${ack.model}\n`
-                    + `base_url: ${ack.base_url || '(default)'}\n\n`
-                    + (ack.options ? `account: ${ack.options.credential_profile_id}\nidentity: ${ack.options.account_fingerprint}\n\n` : '')
-                    + 'This applies only to the exact route shown above. Cancelling leaves scope '
-                    + 'review blocking commits on this route.',
-                confirmLabel: 'Confirm window',
-            });
-            if (!confirmed) continue;
-            await apiClient.ownerCapabilityAck({
-                provider: ack.provider, model: ack.model, base_url: ack.base_url,
-                options: ack.options, route_fp: ack.route_fp,
-                window_tokens: floor, note: 'owner-confirmed scope reviewer window',
-            });
-            acked += 1;
-        }
-        return acked;
-    }
-
     async function saveContextModeViaOwnerEndpointIfNeeded(next) {
         const current = currentSettings?.OUROBOROS_CONTEXT_MODE || 'max';
         if (next === current) return null;
@@ -1354,13 +1305,6 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
                 safetyModeError = failure.text;
                 saveOutcomeUnknown ||= failure.unknown;
             }
-            let reviewAcks = 0;
-            let reviewAckError = '';
-            try {
-                reviewAcks = await ackReviewCapabilityNotices(data.review_capability_notices);
-            } catch (error) {
-                reviewAckError = error.message || String(error);
-            }
             const ownerError = runtimeModeError || autoGrantError || contextModeError || safetyModeError;
             const draftKept = ownerError || sentRevision !== draftRevision || !(await loadSettings());
             syncAutoGrantBridgeState();
@@ -1417,13 +1361,6 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
             }
             if (autoGrantError) {
                 statusMsg = `${statusMsg} ${autoGrantError}`;
-                statusType = 'warn';
-            }
-            if (reviewAcks > 0) {
-                statusMsg = `${statusMsg} Confirmed the required context window for ${reviewAcks} scope-review route(s).`;
-            }
-            if (reviewAckError) {
-                statusMsg = `${statusMsg} The scope-reviewer window confirmation was not saved: ${reviewAckError}`;
                 statusType = 'warn';
             }
             if (draftKept) {

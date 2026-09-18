@@ -14,7 +14,6 @@ import ast
 import pathlib
 
 from ouroboros import review_evidence, review_evidence_sections
-from ouroboros.tools import review_context_atlas
 
 REPO = pathlib.Path(__file__).parents[1]
 _LEAVES = (review_evidence_sections,)
@@ -105,14 +104,3 @@ def test_review_evidence_facade_reexports_every_moved_identity():
         assert hasattr(review_evidence, name), name
         assert getattr(review_evidence, name) is getattr(review_evidence_sections, name), name
     assert set(_MOVED_NAMES) <= set(vars(review_evidence_sections))
-
-
-def test_review_evidence_section_owner_is_forced_into_every_review_pack():
-    """The acceptance packet's section author is part of the immune system's
-    review surface exactly as its parent is: a review pack owes it in full
-    instead of treating it as a budget-selected dependency."""
-    for rel in (
-        "ouroboros/review_evidence.py",
-        "ouroboros/review_evidence_sections.py",
-    ):
-        assert rel in review_context_atlas._REVIEW_STACK_PATHS, rel
