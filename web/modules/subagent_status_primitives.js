@@ -248,7 +248,10 @@ export function rowMeta(row, state, errors) {
         && (!session || identity.access === String(row.access || 'full'))
         && identity.effort === String(row.effort || '')
         && identity.processing_preference === String(row.processing_preference || state.processingPreference || '');
-    const historyLabel = identity ? (sameRoute ? 'Last run' : 'Earlier settings') : 'Last actual run';
+    const identityComplete = identity && ['kind', 'target_id', 'credential_profile_id', 'effort',
+        'processing_preference', ...(session ? ['access'] : [])].every((key) => typeof identity[key] === 'string');
+    const historyLabel = identityComplete ? (sameRoute ? 'Last run' : 'Earlier settings')
+        : identity ? 'Last actual run (settings not fully reported)' : 'Last actual run';
     // The exact stored spelling is disclosed here, where it informs, and never
     // in a placeholder, where it would instruct (docs/DESIGN.md §7). A session
     // target already reads as harness plus model in its own controls.

@@ -25,7 +25,7 @@ def applied(monkeypatch):
     server_process.record_applied_restart_settings({key: saved[key] for key in (
         "OUROBOROS_MAX_WORKERS", "OUROBOROS_SERVER_HOST", "OUROBOROS_HOST_SERVICE_PORT",
         "OUROBOROS_SKILLS_REPO_PATH",
-    )})
+    )}, server_host_source="settings")
     return saved, manager
 
 

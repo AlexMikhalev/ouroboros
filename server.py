@@ -1610,8 +1610,11 @@ def main() -> int:
         saved_host = str(load_settings().get("OUROBOROS_SERVER_HOST") or "").strip()
     except Exception:
         saved_host = ""
-    default_host = os.environ.get("OUROBOROS_SERVER_HOST", "").strip() or saved_host or DEFAULT_HOST
+    env_host = os.environ.get("OUROBOROS_SERVER_HOST", "").strip()
+    default_host = env_host or saved_host or DEFAULT_HOST
     args = parse_server_args(default_host, DEFAULT_PORT)
+    host_source = "cli" if args.host_explicit else (
+        ("launcher" if _LAUNCHER_MANAGED else "environment") if env_host else "settings")
     global _BIND_HOST
     _BIND_HOST = args.host
     app.app.state.bind_host = args.host  # type: ignore[attr-defined]
@@ -1668,7 +1671,8 @@ def main() -> int:
     threading.Thread(target=_check_restart, daemon=True).start()
 
     try:
-        with bound_service_socket(DATA_DIR, "main", args.host, actual_port) as listener:
+        with bound_service_socket(DATA_DIR, "main", args.host, actual_port,
+                                  server_host_source=host_source) as listener:
             actual_port = _ACTUAL_BOUND_PORT = listener.getsockname()[1]
             write_port_file(PORT_FILE, actual_port)
             log.info("Starting Ouroboros server on %s:%d", args.host, actual_port)

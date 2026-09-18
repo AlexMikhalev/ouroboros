@@ -7,7 +7,7 @@ from ouroboros import delegate_custody as custody
 from ouroboros.context_runtime_facts import _delegation_capability_fact
 from ouroboros.agent_task_pipeline import _store_task_result
 from ouroboros.loop_llm_call import call_llm_with_retry
-from ouroboros.subagent_history import record_task_execution, record_last_delegation, subagent_last_delegation
+from ouroboros.subagent_history import record_task_execution, record_last_delegation, subagent_last_delegation, session_request_facts
 from ouroboros.subagent_runtime import resolve_configured_actor_dispatch
 
 
@@ -64,12 +64,14 @@ def test_recovery_settlement_and_refused_start_share_history(tmp_path, monkeypat
     request = {"model": "fixture", "effort": "high", "credentialProfileId": "account-a", "access": "full"}
     custody.record_start_requested(tmp_path, invocation_id="invoke", selected_subagent_id="worker",
                                   route="codex", request=request, task_id="task-history")
+    facts = session_request_facts(request, selected_subagent_id="worker", task_id="task-history",
+                                  route="codex", processing={"requested": "standard"})
     custody.emit(tmp_path, custody.START_FAILED, {"invocation_id": "invoke", "definite": False,
-                                                "reason": "transport_unavailable"})
+                                                "reason": "transport_unavailable", **facts})
     uncertain = subagent_last_delegation(tmp_path)
     assert uncertain["outcome"] == "unknown"
     custody.emit(tmp_path, custody.START_FAILED, {"invocation_id": "invoke", "definite": True,
-                                                "reason": "quota_exhausted"})
+                                                "reason": "quota_exhausted", **facts})
     row = subagent_last_delegation(tmp_path)
     assert row["outcome"] == "not_started" and row["requested_profile"] == "account-a"
     assert row["identity"]["access"] == "full"

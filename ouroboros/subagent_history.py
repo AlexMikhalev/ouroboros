@@ -46,7 +46,8 @@ def record_last_delegation(*, route: str, requested_model: str, applied_model: s
                            drive_root=None, occurred_at: str = "", outcome: str = "unknown",
                            failure_code: str = "", reset_at: str = "",
                            identity: Mapping[str, Any] | None = None, task_id: str = "",
-                           invocation_id: str = "", attempt_id: str = "", fallback=None) -> None:
+                           invocation_id: str = "", attempt_id: str = "", fallback=None,
+                           observed_route: Mapping[str, Any] | None = None) -> None:
     """Keep the latest fact per actor plus the old top-level receipt interface.
 
     Occurrence and observation differ when recovery collects an old run. Replays
@@ -83,6 +84,8 @@ def record_last_delegation(*, route: str, requested_model: str, applied_model: s
                 row["identity"] = dict(identity)
             if fallback:
                 row["fallback"] = dict(fallback)
+            if observed_route:
+                row["observed_route"] = dict(observed_route)
             for key, value in (("failure_code", failure_code), ("reset_at", reset_at),
                                ("task_id", task_id), ("invocation_id", invocation_id), ("attempt_id", attempt_id)):
                 if value:
@@ -118,8 +121,13 @@ def record_task_execution(task: Mapping[str, Any], usage: Mapping[str, Any], *, 
     target = identity["target_id"]
     model = target[:-8].strip() if target.endswith(" (local)") else target
     calls = usage.get("llm_call_refs") or []
+
+    def selected(row):
+        return (row.get("model") == model and row.get("requested_profile")
+                in (None, identity["credential_profile_id"]))
+
     call = next((row for row in reversed(calls) if isinstance(row, dict)
-                 and row.get("model") == model
+                 and selected(row)
                  and (row.get("failure_code") or row.get("usable_solve_response"))), {})
     if call:
         failure = str(call.get("failure_code") or "")
@@ -131,12 +139,15 @@ def record_task_execution(task: Mapping[str, Any], usage: Mapping[str, Any], *, 
     else:
         return  # No observation is not success or failure.
     other = next((row for row in reversed(calls) if isinstance(row, dict)
-                  and row.get("usable_solve_response") and row.get("model") != model), {}) if failure else {}
+                  and row.get("usable_solve_response") and not selected(row)), {}) if failure else {}
     fallback = {key: other[key] for key in ("model", "llm_call_id", "ts") if key in other}
+    if other:
+        fallback.update(_api_observed_facts(other))
     record_last_delegation(
         route="api_model", requested_model=target,
-        applied_model=str(call.get("reported_model") or call.get("model") or "") if not failure else "",
         run_id=str(call.get("llm_call_id") or task.get("id") or ""),
+        requested_profile=identity["credential_profile_id"],
+        **_api_observed_facts(call, failed=bool(failure)),
         selected_subagent_id=str(snapshot.get("selected_subagent_id") or ""),
         drive_root=drive_root, occurred_at=when, outcome=outcome,
         failure_code=failure, reset_at=str(call.get("reset_at") or availability.get("reset_at") or ""),
@@ -144,22 +155,38 @@ def record_task_execution(task: Mapping[str, Any], usage: Mapping[str, Any], *, 
         attempt_id=str(call.get("llm_call_id") or ""), fallback=fallback)
 
 
+def _api_observed_facts(call: Mapping[str, Any], *, failed: bool = False) -> dict:
+    route = call.get("observed_route") or {}
+    # Provider usage.resolved_model is a host target, not a served-model report.
+    return {"applied_model": str(route.get("model") or "") if not failed else "",
+            "applied_profile": str(route.get("credentialProfileId") or ""),
+            "observed_route": dict(route)}
+
+
+def session_request_facts(request: Mapping[str, Any], *, selected_subagent_id: str,
+                          task_id: str, route: str, processing: Mapping[str, Any]) -> dict:
+    """Compact original intent for existing custody rows, without copying the work order."""
+    return {"selected_subagent_id": selected_subagent_id, "task_id": task_id, "route": route,
+            "model": str(request.get("model") or ""), "profile_id": str(request.get("credentialProfileId") or ""),
+            "access": str(request.get("access") or ""),
+            **({"effort": request["effort"]} if isinstance(request.get("effort"), str) else {}),
+            **({"processing_preference": processing["requested"]}
+               if isinstance(processing.get("requested"), str) else {})}
+
+
 def record_session_execution(drive_root, custody, detail: Mapping[str, Any], observed: Mapping[str, Any]) -> None:
     """Common foreground/recovery settlement projection; reviewers keep their own history."""
     if custody.review_owned:
         return
-    from ouroboros.delegate_custody import invocation_record, summary_of
-
-    invocation = invocation_record(drive_root, custody.invocation_id) or {}
-    request = invocation.get("request") or {}
+    from ouroboros.delegate_custody import summary_of
     summary = summary_of(detail)
     failure = summary.get("failure") if isinstance(summary.get("failure"), dict) else {}
     identity = {"kind": "agent_session",
                 "target_id": custody.route_id + ("=" + custody.model if custody.model else ""),
                 "credential_profile_id": custody.profile_id,
-                "access": str(request.get("access") or custody.access or ""),
-                "effort": str(request.get("effort") or ""),
-                "processing_preference": str((invocation.get("processing") or {}).get("requested") or "")}
+                "access": custody.access,
+                **{key: getattr(custody, key) for key in ("effort", "processing_preference")
+                   if getattr(custody, key) is not None}}
     record_last_delegation(
         route=custody.route_id, requested_model=custody.model,
         applied_model=str(observed.get("model") or ""), run_id=custody.run_id,
@@ -173,22 +200,17 @@ def record_session_execution(drive_root, custody, detail: Mapping[str, Any], obs
 
 
 def record_session_start_failure(drive_root, event: Mapping[str, Any]) -> None:
-    from ouroboros.delegate_custody import invocation_record
-
-    invocation = invocation_record(drive_root, str(event.get("invocation_id") or "")) or {}
-    actor = str(invocation.get("selected_subagent_id") or "")
+    actor = str(event.get("selected_subagent_id") or "")
     if not actor:
         return
-    request = invocation.get("request") or {}
-    route, model = str(invocation.get("route") or ""), str(request.get("model") or "")
-    pin = str(request.get("credentialProfileId") or "")
+    route, model = str(event.get("route") or ""), str(event.get("model") or "")
+    pin = str(event.get("profile_id") or "")
     record_last_delegation(
         route=route, requested_model=model, applied_model="", run_id=str(event.get("invocation_id") or ""),
         selected_subagent_id=actor, requested_profile=pin, drive_root=drive_root,
-        task_id=str(invocation.get("task_id") or ""), invocation_id=str(event.get("invocation_id") or ""),
+        task_id=str(event.get("task_id") or ""), invocation_id=str(event.get("invocation_id") or ""),
         occurred_at=str(event.get("ts") or ""), outcome="not_started" if event.get("definite") else "unknown",
         failure_code=str(event.get("reason") or ""), identity={
             "kind": "agent_session", "target_id": route + ("=" + model if model else ""),
-            "access": str(request.get("access") or ""),
-            "credential_profile_id": pin, "effort": str(request.get("effort") or ""),
-            "processing_preference": str((invocation.get("processing") or {}).get("requested") or "")})
+            "access": str(event.get("access") or ""), "credential_profile_id": pin,
+            **{key: event[key] for key in ("effort", "processing_preference") if key in event}})

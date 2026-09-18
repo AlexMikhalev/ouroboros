@@ -121,6 +121,8 @@ class RunCustody:
     model: str = ""
     # Requested pin (`credentialProfileId`); '' = automatic; applied half = final-attempt telemetry.
     profile_id: str = ""
+    effort: Optional[str] = None
+    processing_preference: Optional[str] = None
     project_id: str = ""
     project_owned: bool = False
     # #362: a stable user-target registration outlives any single run.
@@ -369,6 +371,7 @@ def _iter_rows(path: pathlib.Path, tail_bytes: Optional[int] = None) -> Iterator
 
 
 from ouroboros.delegate_registration_policy import (
+    STARTED_OPTION_FIELDS as _STARTED_OPTION_FIELDS,
     STARTED_FIRST_WINS_FACTS as _STARTED_FIRST_WINS_FACTS,
     STARTED_PROGRESS_FLAGS as _STARTED_PROGRESS_FLAGS,
     STARTED_STR_FIELDS as _STARTED_STR_FIELDS,
@@ -403,6 +406,9 @@ def _merge_started_into(entry: RunCustody, previous: RunCustody) -> None:
         prior = getattr(previous, attr)
         if prior:
             setattr(entry, attr, prior)
+    for attr in _STARTED_OPTION_FIELDS:
+        if getattr(previous, attr) is not None:
+            setattr(entry, attr, getattr(previous, attr))
     if previous.work_order_source_request:
         entry.work_order_source_request = dict(previous.work_order_source_request)
     for start, end in previous.verified_source_ranges:
@@ -432,6 +438,7 @@ def _apply(state: Dict[str, RunCustody], row: Dict[str, Any]) -> None:
                 dict(source_request) if isinstance(source_request, dict) else {}
             ),
             **{attr: str(row.get(key) or "") for attr, key in _STARTED_STR_FIELDS},
+            **{key: row[key] for key in _STARTED_OPTION_FIELDS if isinstance(row.get(key), str)},
         )
         entry.category = entry.category or "subagent"
         entry.source = entry.source or "delegated_subagent"
@@ -801,6 +808,9 @@ def record_started(drive_root: Any, custody: RunCustody,
     for attr in ("access", "mode", "isolation"):
         if shape and attr in shape:
             setattr(custody, attr, str(shape.get(attr) or ""))
+    for attr in _STARTED_OPTION_FIELDS:
+        if shape and isinstance(shape.get(attr), str):
+            setattr(custody, attr, shape[attr])
     if shape and "delegated" in shape:
         custody.delegated = shape.get("delegated") is True
     previous = _CUSTODY.get(custody.run_id)
@@ -816,6 +826,7 @@ def record_started(drive_root: Any, custody: RunCustody,
         "work_order_source_request": custody.work_order_source_request or {},
         **{key: getattr(custody, attr) for attr, key in _STARTED_STR_FIELDS},
         **(shape or {}),
+        **{key: getattr(custody, key) for key in _STARTED_OPTION_FIELDS if getattr(custody, key) is not None},
     })
 
 

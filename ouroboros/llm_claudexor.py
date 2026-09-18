@@ -677,6 +677,7 @@ class _ModelInvocation:
         usage.update(provider="claudexor", resolved_model=self.target["usage_model"], cost=cost, cost_final=final,
                      cost_estimated=cost is not None and not final,
                      claudexor={"operation_id": self.operation_id, "model_role": self.role,
+                                "requested_profile": str((self.payload.get("account") or {}).get("profileId") or ""),
                                 "route": copy.deepcopy(route), "cost_evidence": copy.deepcopy(result.get("cost")),
                                 "outcome": result.get("outcome"), "problem": copy.deepcopy(result.get("problem")),
                                 "requested_options": requested_options, "applied_options": applied_options,

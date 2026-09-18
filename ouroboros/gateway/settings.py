@@ -213,7 +213,7 @@ def _build_restart_state(settings: Dict[str, Any]) -> dict:
     """Compare saved intent with component-owned inputs, never os.environ."""
     from ouroboros.config import get_runtime_mode, normalize_runtime_mode
     from ouroboros.local_model import get_manager, local_model_settings
-    from ouroboros.server_process import applied_restart_settings
+    from ouroboros.server_process import applied_restart_settings, applied_server_host_source
 
     applied = applied_restart_settings()
     desired = {key: settings.get(key, _SETTINGS_DEFAULTS.get(key, ""))
@@ -231,12 +231,26 @@ def _build_restart_state(settings: Dict[str, Any]) -> dict:
         if str(value).strip() != str(actual).strip():
             pending.append(key)
     unknown = sorted(set(desired) - set(applied))
+    host_key = "OUROBOROS_SERVER_HOST"
+    host_source = applied_server_host_source(DATA_DIR)
+    source_unknown = []
+    host_summary = ""
+    if host_key in pending and host_source != "settings":
+        pending.remove(host_key)
+        if host_source in {"environment", "cli"}:
+            host_summary = " Saved server host differs from the running listener; launch configuration overrides this setting."
+        else:
+            source_unknown.append(host_key)
+            host_summary = (" Saved server host differs from the running listener. This launcher did not report "
+                            "whether a launch override controls the next start; Restart may apply the saved host.")
     local = get_manager().settings_application(settings)
     summary = f"Restart Ouroboros to apply {len(pending)} saved setting(s)." if pending else ""
     if unknown:
         summary += f" Application state is not reported for {len(unknown)} runtime setting(s)."
+    summary += host_summary
     return {"restart_required": bool(pending), "restart_keys": sorted(pending),
-            "unknown_keys": unknown, "local_model": local, "summary": summary.strip()}
+            "restart_source_unknown_keys": source_unknown, "unknown_keys": unknown,
+            "local_model": local, "summary": summary.strip()}
 
 
 def _rehydrate_mcp_servers_payload(incoming: Any, current: Any) -> list:

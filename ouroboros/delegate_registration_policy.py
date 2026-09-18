@@ -96,6 +96,8 @@ STARTED_STR_FIELDS: Tuple[Tuple[str, str], ...] = tuple(
         "work_order_coverage", "authority_fingerprint",
     )
 )
+# None means an old row omitted the choice; '' is a captured default choice.
+STARTED_OPTION_FIELDS = ("effort", "processing_preference")
 # Progress carried forward from a previous row: an idempotent re-start writes a
 # SECOND started row; replacing wholesale would forget a settlement and put a
 # finished run back into the orphan sweep (which would cancel it).

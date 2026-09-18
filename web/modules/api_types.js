@@ -157,7 +157,7 @@
  * @property {Object=} setup_contract
  * @property {AvailableSubagentsSettingsMeta=} available_subagents
  * @property {SettingsPolicyState=} policy_state
- * @property {Object=} restart_state Component-owned pending restart/application facts.
+ * @property {{restart_required:boolean,restart_keys:string[],restart_source_unknown_keys:string[],unknown_keys:string[],local_model:Object,summary:string}=} restart_state Component application and source uncertainty.
  */
 
 /**
@@ -1170,6 +1170,7 @@
  * @property {string=} applied_model
  * @property {string=} requested_profile
  * @property {string=} applied_profile
+ * @property {Object=} observed_route Actual API attempt route; never the task's mutable last route.
  * @property {string=} run_id
  * @property {string=} ts
  * @property {string=} occurred_at

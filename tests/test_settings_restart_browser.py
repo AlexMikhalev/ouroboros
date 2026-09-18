@@ -96,6 +96,11 @@ def test_pending_survives_reconnect_draft_and_restart_request(settings_server, e
                 expect(page.locator('#settings-status')).to_contain_text('saved', timeout=30_000)
 
             open_settings()
+            # Worker application is published only after its real pool starts.
+            page.wait_for_function("""async () => {
+                const data = await (await fetch('/api/settings')).json();
+                return !data._meta.restart_state.unknown_keys.includes('OUROBOROS_MAX_WORKERS');
+            }""", timeout=30_000)
             fill_value('#s-workers', 2)
             save()
             expect(page.locator('#btn-restart-now')).to_be_visible()
@@ -111,6 +116,45 @@ def test_pending_survives_reconnect_draft_and_restart_request(settings_server, e
             expect(page.locator('#s-workers')).to_have_value('3')
             expect(page.locator('#btn-restart-now')).to_be_visible()
             fill_value('#s-workers', 1)
+            save()
+            expect(page.locator('#btn-restart-now')).to_be_hidden()
+
+            # The real direct-server fixture has an explicit loopback env host.
+            fill_value('#s-server-host', '0.0.0.0')
+            save()
+            expect(page.locator('#settings-restart-status')).to_contain_text('launch configuration overrides')
+            expect(page.locator('#settings-status')).to_have_text('Settings saved')
+            expect(page.locator('#btn-restart-now')).to_be_hidden()
+            evidence = pathlib.Path(os.environ.get('OUROBOROS_UI_EVIDENCE_DIR', str(settings_server['data_dir'].parent)))
+            evidence.mkdir(parents=True, exist_ok=True)
+            page.locator('#settings-restart-status').scroll_into_view_if_needed()
+            page.screenshot(path=str(evidence / f'settings-host-override-{engine}.png'))
+
+            # Exercise the same consumer with an old launcher's missing source;
+            # producer/PID-record matching is covered by test_settings_host_source.
+            def old_launcher_metadata(route):
+                response = route.fetch()
+                data = response.json()
+                state = data['_meta']['restart_state']
+                state['restart_source_unknown_keys'] = ['OUROBOROS_SERVER_HOST']
+                state['summary'] = ('Saved server host differs from the running listener. This launcher did not report '
+                                    'whether a launch override controls the next start; Restart may apply the saved host.')
+                route.fulfill(response=response, json=data)
+
+            page.route('**/api/settings', old_launcher_metadata)
+            open_settings()
+            expect(page.locator('#settings-restart-status')).to_contain_text('Restart may apply')
+            expect(page.locator('#btn-restart-now')).to_be_visible()
+            fill_value('#s-workers', 3)
+            page.evaluate("window.__testSockets[0].close()")
+            page.wait_for_function("window.__testSockets.some(socket => socket.readyState === WebSocket.OPEN)")
+            expect(page.locator('#s-workers')).to_have_value('3')
+            expect(page.locator('#btn-restart-now')).to_be_visible()
+            page.locator('#settings-restart-status').scroll_into_view_if_needed()
+            page.screenshot(path=str(evidence / f'settings-host-source-unknown-{engine}.png'))
+            page.unroute('**/api/settings', old_launcher_metadata)
+            fill_value('#s-workers', 1)
+            fill_value('#s-server-host', '127.0.0.1')
             save()
             expect(page.locator('#btn-restart-now')).to_be_hidden()
 

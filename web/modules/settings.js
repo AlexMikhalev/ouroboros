@@ -511,11 +511,12 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     function syncRestartState(value) {
         if (!value || typeof value.restart_required !== 'boolean') return;
         restartState = value;
-        byId('btn-restart-now').hidden = !value.restart_required;
+        const restartAvailable = value.restart_required || value.restart_source_unknown_keys?.length > 0;
+        byId('btn-restart-now').hidden = !restartAvailable;
         const text = [value.summary, value.local_model?.summary].filter(Boolean).join(' ');
         const target = byId('settings-restart-status');
         target.hidden = !text;
-        setInlineStatus(target, text, value.restart_required || value.local_model?.pending_keys?.length ? 'warn' : 'muted');
+        setInlineStatus(target, text, restartAvailable || value.local_model?.pending_keys?.length ? 'warn' : 'muted');
     }
 
     async function refreshRestartState() {
@@ -1335,7 +1336,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
             } else if (data.restart_required) {
                 statusMsg = 'Settings saved. Some changes require a restart to take effect';
                 statusType = 'warn';
-            } else if (data.restart_state?.local_model?.summary) {
+            } else if (data.restart_state?.summary || data.restart_state?.local_model?.summary) {
                 statusMsg = 'Settings saved';
             } else if (data.immediate_changed && data.next_task_changed) {
                 statusMsg = 'Settings saved. Some changes took effect immediately; others apply on the next task';
