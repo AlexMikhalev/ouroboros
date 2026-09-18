@@ -37,14 +37,14 @@ def _bootstrap_script_json(bootstrap: dict) -> str:
     return json.dumps(bootstrap, ensure_ascii=True).replace("<", "\\u003c")
 
 
-def build_onboarding_html(settings: dict, host_mode: str = "desktop") -> str:
+def build_onboarding_html(settings: dict, host_mode: str = "desktop", *, fresh_install: bool = False) -> str:
     """Render the onboarding page for a live gateway.
 
     ``host_mode`` still selects the setup contract's host profile; every server
     route passes ``"web"`` now that the wizard always runs against a live API.
     """
     normalized_host_mode = "web" if host_mode == "web" else "desktop"
-    bootstrap = build_setup_bootstrap(settings, normalized_host_mode)
+    bootstrap = build_setup_bootstrap(settings, normalized_host_mode, fresh_install=fresh_install)
     return _read_asset(_TEMPLATE_PATH).replace(
         "__ONBOARDING_BOOTSTRAP__", _bootstrap_script_json(bootstrap)
     )

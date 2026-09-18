@@ -420,13 +420,12 @@ The imperatives:
 
 ### Onboarding and Settings surfaces
 
-Mechanism — the wizard steps, the completion transaction and the install-time
-proofs — lives in ARCHITECTURE §2; the Settings pages, agent accounts and the
-shared chooser contract in ARCHITECTURE §3 "Settings and onboarding" and
-"Navigation and shared UI contracts". Enforcement is the tests named inline plus
-`tests/test_owner_settings_write_seam.py`, `tests/test_settings_env_on_disk.py` and
-`web/tests/harness_setup_login_capabilities.test.js`; the copy and wizard-shape rules
-are review-only. The imperatives:
+ARCHITECTURE §2 owns wizard steps, completion and install-time proofs; §3 owns
+Settings, accounts and shared controls. Tests: `test_owner_settings_write_seam.py`,
+`test_settings_env_on_disk.py`, `test_launcher_external_links.py`,
+`test_onboarding_model_sources.py`, `test_subscription_setup_browser.py`, plus
+`web/tests/harness_setup_login_capabilities.test.js` and
+`web/tests/harness_signin_links.test.js`. Copy and wizard shape are review-only.
 
 - Current tasks read the existing task-entry settings view; a next-task save
   never changes an overlapping direct actor's Supervisor, Review, model or
@@ -437,12 +436,12 @@ are review-only. The imperatives:
   configuration through the existing settings writer, under effective Access;
   retain task snapshots, restart-bound access, install-time provenance and
   honest write receipts. Permission is not a review verdict.
-- One five-step wizard serves subscriptions, API keys and mixed installs;
-  Quick Review & start runs the same proposal compiler for skipped steps, and
-  Finish atomically commits the visible draft. Only declared raw-model sources
-  can supply Main — an Agent-only connection cannot invent one. Subscription
-  copy says "without an API key", never guaranteed free, and connecting an
-  account neither enables nor changes provider credits/spend settings.
+- One five-step wizard serves subscriptions, API keys and mixed installs.
+  Review & start uses the shared compiler; Finish atomically saves the visible
+  draft. Proposal failures cannot gate source discovery or manual navigation;
+  Retry preserves edits. Show explicit Main-reviewer recovery before Save.
+  Only declared raw-model sources supply Main, never agent-only connections.
+  "Without an API key" never means free or changes provider spending settings.
 - Settings validates the complete draft before any Save request — never omit
   an invalid custom-key row and save the remainder; a failed save/refresh
   preserves edits, leaving or reloading a dirty draft asks first, and

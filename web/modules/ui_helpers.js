@@ -398,8 +398,16 @@ export async function openExternalViaHostBridge(url, {
         await copyShellLinkWithToast(target, win, doc, toast);
         return { ok: false, native: true, degraded: 'copy-link' };
     }
-    const telegram = win.Telegram?.WebApp;
-    const telegramHost = doc.documentElement?.dataset?.ouroborosHost === 'telegram' || telegram;
+    let telegram = win.Telegram?.WebApp;
+    let telegramHost = doc.documentElement?.dataset?.ouroborosHost === 'telegram' || Boolean(telegram);
+    // The same-origin onboarding frame inherits its host's opener, just like
+    // its pywebview bridge. A foreign parent grants no access here.
+    try {
+        if (!telegram && win.parent && win.parent !== win) {
+            telegram = win.parent.Telegram?.WebApp;
+            telegramHost ||= Boolean(telegram) || win.parent.document?.documentElement?.dataset?.ouroborosHost === 'telegram';
+        }
+    } catch { /* cross-origin parent is not our host */ }
     if (telegramHost && /^https?:/i.test(target)) {
         if (typeof telegram?.openLink !== 'function') throw new Error('Telegram link opener is not ready; try the link again');
         telegram.openLink(target);

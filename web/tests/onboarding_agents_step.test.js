@@ -913,6 +913,78 @@ test('the skip choice refreshes a failed subscription preview before completion'
     store.dispose();
 });
 
+test('preview status exposes the typed cause and explicit recovery replacement lasts one request', async () => {
+    const dom = fakeDom();
+    const calls = [];
+    const notices = [];
+    let fail = true;
+    const response = { source: 'api_default', diagnostics: [], available_subagents: { enabled: true, items: [] },
+        reviewer_slots: { scope: [{ route: { kind: 'api_chat', target_id: 'claudexor::codex=owner-main' } }] } };
+    const step = createAgentsStep({
+        doc: dom.doc,
+        previewPayload: () => ({ OUROBOROS_MODEL: 'claudexor::codex=owner-main' }),
+        previewTransport: async () => {
+            if (fail) throw Object.assign(new Error('Generic failure; see detail below.'), {
+                body: { code: 'models_unavailable', detail: 'The selected account returned no models.', can_skip: true },
+            });
+            return response;
+        },
+        onPreviewStatus: () => notices.push({ pending: step.previewPending, error: step.previewError }),
+        onSetupPreview: (_, options) => calls.push(options),
+    });
+    assert.equal(await step.refreshSubagentsPreview(), false);
+    assert.deepEqual(step.previewFailure, { code: 'models_unavailable', canSkip: true,
+        detail: 'The selected account returned no models.' });
+    assert.deepEqual(notices.at(-1), { pending: false, error: 'The selected account returned no models.' });
+    fail = false;
+    assert.equal(await step.setSkipPresets(true, { replaceReviewers: true }), true);
+    assert.equal(await step.refreshSubagentsPreview({ force: true }), true);
+    assert.deepEqual(calls, [{ replaceReviewers: true }, { replaceReviewers: false }]);
+    step.detach();
+});
+
+test('explicit reviewer recovery sends the visible clean roster and adopts the returned owner draft', async () => {
+    const dom = fakeDom(), requests = [];
+    const actor = { subagent_id: 'original', recommended_use: 'Inspect the task.',
+        route: { kind: 'api_model', target_id: 'claudexor::codex=original' }, effort: 'high' };
+    const recoveryActor = { ...actor, subagent_id: 'main-reviewer',
+        route: { kind: 'api_model', target_id: 'claudexor::codex=main' } };
+    const generated = { enabled: true, items: [actor] };
+    const recovered = { enabled: true, items: [actor, recoveryActor] };
+    const step = createAgentsStep({ doc: dom.doc,
+        previewTransport: async (payload) => {
+            requests.push(payload);
+            return { source: 'onboarding_default', available_subagents:
+                requests.length === 2 || requests.length === 4 ? recovered : generated };
+        } });
+    assert.equal(await step.refreshSubagentsPreview(), true);
+    assert.equal(await step.setSkipPresets(true, { replaceReviewers: true }), true);
+    assert.deepEqual(requests[1].OUROBOROS_SUBAGENTS, generated, 'clean visible actors are part of explicit recovery');
+    assert.deepEqual(step.availableSubagents, recovered);
+    assert.equal(await step.refreshSubagentsPreview({ force: true }), true);
+    assert.deepEqual(step.availableSubagents, recovered, 'ordinary generation cannot remove the owner recovery actor');
+    assert.equal(await step.setSkipPresets(true, { replaceReviewers: true }), true);
+    assert.deepEqual(requests[3].OUROBOROS_SUBAGENTS, recovered, 'reprepare includes the already authored roster');
+    step.detach();
+});
+
+test('a late preview settlement cannot notify or apply after the wizard detaches', async () => {
+    const dom = fakeDom();
+    let resolvePreview;
+    let notifications = 0;
+    let applied = 0;
+    const step = createAgentsStep({ doc: dom.doc,
+        previewTransport: () => new Promise((resolve) => { resolvePreview = resolve; }),
+        onPreviewStatus: () => { notifications += 1; }, onSetupPreview: () => { applied += 1; } });
+    const pending = step.refreshSubagentsPreview();
+    assert.equal(notifications, 1);
+    step.detach();
+    resolvePreview({ available_subagents: { enabled: true, items: [] } });
+    assert.equal(await pending, false);
+    assert.equal(notifications, 1);
+    assert.equal(applied, 0);
+});
+
 test('the wizard roster offers the providers whose keys the owner has typed so far', async () => {
     // docs/DESIGN.md §7: a source is CHOSEN. The wizard's keys are typed on the
     // Accounts step, so the provider list is derived from the CURRENT draft on

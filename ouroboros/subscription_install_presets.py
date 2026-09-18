@@ -679,6 +679,77 @@ def preview_api_reviewer_slots(settings: Mapping[str, Any]) -> str:
     }, ensure_ascii=False)
 
 
+def preview_main_reviewer_slots(settings: Mapping[str, Any]) -> Tuple[str, str]:
+    """Rebind a visible review draft to Main, preserving effort and inspection.
+
+    Original task actors stay unchanged. Retrieving triad rows share one Main
+    API actor; their effective efforts remain independent row overrides. Other
+    review surfaces already retrieve by their surface contract. The returned
+    reviewer and actor drafts are shown together before the completion write.
+    """
+    from ouroboros.configured_subagents import normalize_configured_subagents
+    from ouroboros.model_slots import MODEL_ACCOUNTS_KEY, model_role_option, resolve_processing_preference
+    from ouroboros.provider_models import provider_for_model
+    from ouroboros.reviewer_slot_config import parse_reviewer_slots, roster_env_override
+    from ouroboros.route_spec import compound_session_effort
+
+    main, _light = _effective_api_models(settings)
+    if not main:
+        raise ValueError("Choose a Main model with access in this setup before using it for reviews.")
+    profile = str(model_role_option(MODEL_ACCOUNTS_KEY, "main", settings=dict(settings)))
+    if profile and provider_for_model(main) != "claudexor":
+        raise ValueError("A Main account pin requires a managed model source.")
+    processing = resolve_processing_preference("main", settings=dict(settings))
+    roster, roster_raw = normalize_configured_subagents(settings[SUBAGENTS_SETTING])
+    raw = preview_api_reviewer_slots(settings)
+    with roster_env_override(roster_raw, environ=dict(settings)):
+        resolved = parse_reviewer_slots(raw)
+    payload = json.loads(raw)
+    payload["advisory"] = payload.get("advisory") or {"enabled": True}
+    payload["deep_review"] = payload.get("deep_review") or {}
+    actor_id = ""
+    if any(row.retrieves for row in resolved.triad):
+        # Empty actor effort leaves each reviewer's captured effort authoritative.
+        destination = RouteSpec(ROUTE_KIND_API_MODEL, main, profile)
+        actor_id = next((row.subagent_id for row in roster.items
+                         if row.route == destination and not row.effort
+                         and row.processing_preference == processing), "")
+        if not actor_id:
+            used = {row.subagent_id for row in roster.items}
+            actor_id, suffix = "main-reviewer", 2
+            while actor_id in used:
+                actor_id, suffix = f"main-reviewer-{suffix}", suffix + 1
+            roster = make_configured_subagents([*roster.items, ConfiguredSubagent(
+                subagent_id=actor_id, recommended_use=_REVIEW_SEAT_RECOMMENDATION,
+                route=destination, processing_preference=processing,
+            )], enabled=roster.enabled)
+    pairs = [*((row, slot, slot.retrieves) for row, slot in zip(payload["triad"], resolved.triad)),
+             *((row, slot, False) for row, slot in zip(payload["scope"], resolved.scope)),
+             (payload["advisory"], resolved.advisory, False),
+             (payload["deep_review"], resolved.deep_review, False)]
+    for row, original, retrieving in pairs:
+        effort = original.effort if original else ""
+        if original and not effort and original.kind == "agent_session":
+            effort = compound_session_effort(RouteSpec(ROUTE_KIND_AGENT_SESSION, original.target_id))
+        row.pop("subagent_id", None)
+        row.pop("route", None)
+        row.pop("processing_preference", None)
+        row["effort"] = effort
+        if retrieving:
+            row["subagent_id"] = actor_id
+        else:
+            row["route"] = {"kind": "api_chat", "target_id": main}
+            if profile:
+                row["route"]["profile_id"] = profile
+            if processing:
+                row["processing_preference"] = processing
+    raw, roster_raw = json.dumps(payload, ensure_ascii=False), serialize_configured_subagents(roster)
+    refusal = _validate_against_parser(raw, roster_raw)
+    if refusal:
+        raise ValueError(refusal.message)
+    return raw, roster_raw
+
+
 def compile_install_preset(
     discoveries: Sequence[HarnessDiscovery],
     *,

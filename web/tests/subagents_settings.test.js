@@ -600,6 +600,25 @@ test('preview replaces only a clean generated baseline', () => {
     assert.equal(editor.setting.items[0].subagent_id, 'codex_builder');
 });
 
+test('explicit owner preview becomes an unsaved draft and survives later generated previews', () => {
+    const changes = [], dirty = [];
+    const editor = createAvailableSubagentsEditor({ doc: null, win: null,
+        onChange: (value) => changes.push(value), onDirtyChange: (value) => dirty.push(value) });
+    const original = setting([apiRow()]);
+    editor.load(original, { source: 'onboarding_default' });
+    const recovered = setting([apiRow(), apiRow({ subagent_id: 'main-reviewer',
+        route: { kind: 'api_model', target_id: 'claudexor::codex=main' } })]);
+    assert.equal(editor.applyOwnerPreview({ available_subagents: recovered }).applied, true);
+    assert.equal(editor.dirty, true);
+    assert.equal(dirty.at(-1), true);
+    assert.deepEqual(changes.at(-1), recovered);
+    assert.equal(editor.applyGeneratedPreview({ available_subagents: original }).applied, false);
+    assert.deepEqual(editor.setting, recovered);
+    assert.equal(editor.applyOwnerPreview({ available_subagents: 'broken' }).applied, false);
+    assert.deepEqual(editor.setting, recovered, 'invalid replacement does not erase the authored draft');
+    editor.destroy();
+});
+
 test('dated API failures stay informational and bind to the exact execution choices', () => {
     const row = apiRow({ processing_preference: 'standard' });
     const state = { snapshot: { subagent_last_delegation: { latest_by_subagent: {

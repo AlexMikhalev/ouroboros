@@ -370,6 +370,17 @@ def test_onboarding_bootstrap_cannot_break_out_of_its_inline_script():
     assert "\\u003c/script>\\u003cb>" in html
 
 
+def test_bootstrap_freshness_is_explicit_display_provenance():
+    from ouroboros.settings_defaults import SETTINGS_DEFAULTS
+
+    settings = {"OUROBOROS_MODEL": SETTINGS_DEFAULTS["OUROBOROS_MODEL"]}
+    assert build_setup_bootstrap(settings)["freshInstall"] is False
+    fresh = build_setup_bootstrap({}, fresh_install=True)
+    assert fresh["freshInstall"] is True
+    assert fresh["initialState"]["mainModel"] == settings["OUROBOROS_MODEL"]
+    assert '"freshInstall": true' in build_onboarding_html({}, fresh_install=True)
+
+
 def test_onboarding_wizard_module_keeps_its_multistep_contract():
     source = (REPO / "web/modules/onboarding_wizard.js").read_text(encoding="utf-8")
     draft_source = (REPO / "web/modules/onboarding_agents_step.js").read_text(encoding="utf-8")
@@ -512,12 +523,12 @@ def test_wizard_declares_the_subscription_intent_the_endpoint_expects():
     assert f"{SUBSCRIPTIONS_CONNECTED_FIELD}: state.agentsConnected.length > 0" in source
     assert f"{SKIP_SUBSCRIPTION_PRESETS_FIELD}: state.skipSubscriptionPresets" in source
     assert 'id="skip-presets-btn"' in source
-    assert "Finish without subscription presets" in source
-    assert "saveWizard({ skipPresets: true })" in source
+    assert "Use Main for reviewers" in source
+    recovery = source.split("async function prepareMainReviewers", 1)[1].split("async function saveWizard", 1)[0]
+    assert "await agentsStep?.setSkipPresets(true, { replaceReviewers: true })" in recovery
+    assert "render()" in recovery and "completeOnboardingAtomically" not in recovery
     save = source.split("async function saveWizard", 1)[1]
-    assert save.index("await agentsStep?.setSkipPresets(true)") < save.index(
-        "const providersError = validateProvidersStep()"
-    )
+    assert "setSkipPresets(true)" not in save
 
 
 def test_a_browser_owner_is_told_when_the_saved_runtime_mode_needs_a_restart():

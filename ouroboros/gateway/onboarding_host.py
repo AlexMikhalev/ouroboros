@@ -27,9 +27,11 @@ from ouroboros.server_runtime import apply_runtime_provider_defaults
 
 
 async def onboarding_page(_request: Request) -> HTMLResponse:
+    from ouroboros.config import SETTINGS_PATH
+
     settings, _changed, _keys = apply_runtime_provider_defaults(load_settings())
     return HTMLResponse(
-        build_onboarding_html(settings, host_mode="web"),
+        build_onboarding_html(settings, host_mode="web", fresh_install=not SETTINGS_PATH.exists()),
         headers={"Cache-Control": "no-store"},
     )
 

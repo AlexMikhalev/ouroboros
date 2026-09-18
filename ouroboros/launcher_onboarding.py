@@ -8,6 +8,7 @@ starts first and this module only opens a window onto its ``/onboarding`` page.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 from ouroboros.config import (
     apply_settings_to_env as _apply_settings_to_env,
@@ -40,7 +41,10 @@ def prepare_first_run_settings() -> tuple[dict, bool]:
     return settings, not has_startup_ready_provider(settings)
 
 
-def present_first_run_onboarding(settings: dict, port: int, *, headless: bool = False) -> dict:
+def present_first_run_onboarding(
+    settings: dict, port: int, *, open_external_url: Callable[[str], dict],
+    headless: bool = False,
+) -> dict:
     """Show first-run onboarding served by the ALREADY-RUNNING managed gateway.
 
     D-8: one wizard on every host. The setup window loads the same live
@@ -81,7 +85,7 @@ def present_first_run_onboarding(settings: dict, port: int, *, headless: bool = 
     import webview
 
     class OnboardingHostApi:
-        """Window-lifecycle bridge for the desktop setup window.
+        """Window lifecycle and external-link bridge for desktop setup.
 
         NOT a settings authority, and no longer even capable of being one. The
         page completes through ``POST /api/onboarding/complete`` exactly as a
@@ -89,8 +93,12 @@ def present_first_run_onboarding(settings: dict, port: int, *, headless: bool = 
         ``light`` safety coverage on its OWN server-side freshness proof — the
         one reason a desktop-only save path ever existed. A bridge method that
         can write ``settings.json`` while nothing calls it is not dead code but
-        a live authority nobody audits, so it is gone: window lifecycle only.
+        a live authority nobody audits, so it is gone. External links use the
+        same launcher-owned handoff as the main window, without settings writes.
         """
+
+        def open_external_url(self, url: str) -> dict:
+            return open_external_url(url)
 
         def onboarding_finished(self, result: dict | None = None) -> str:
             payload = result if isinstance(result, dict) else {}

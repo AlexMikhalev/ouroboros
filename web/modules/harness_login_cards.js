@@ -44,7 +44,8 @@ import {
     claudexorStatus,
     familyLabel,
 } from './claudexor_status_store.js';
-import { copyTextWithToast } from './ui_helpers.js';
+import { copyTextWithToast, openExternalViaHostBridge } from './ui_helpers.js';
+import { showToast } from './toast.js';
 import { escapeHtmlAttr as escapeHtml, safeExternalHrefAttr } from './utils.js';
 
 const JOB_POLL_MS = 3000;
@@ -833,6 +834,17 @@ export function createLoginCardController({
     }
 
     function wireLoginCard(hostEl, active) {
+        hostEl.querySelector('[data-open-signin]')?.addEventListener('click', (event) => {
+            // Keep modifier clicks native; handle Enter/touch before shell interception.
+            if (event.defaultPrevented || (event.button != null && event.button !== 0)
+                || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+            event.preventDefault();
+            const disclosure = deviceCodeDisclosure(active.envelope || {});
+            const doc = getDoc();
+            void openExternalViaHostBridge(disclosure?.url || '', {
+                win: doc?.defaultView || window, doc,
+            }).catch((error) => showToast(`Could not open sign-in link: ${error?.message || error}`, 'error'));
+        });
         hostEl.querySelector('[data-login-retry]')?.addEventListener('click', () => {
             // NO preemptive stopJobPolling() here: if the C7 guard inside
             // start refuses (cancel unproven, job still live), the old poll

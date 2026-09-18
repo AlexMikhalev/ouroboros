@@ -612,3 +612,17 @@ test('Telegram host uses the ready SDK and never queues an unavailable click', a
     await openExternalViaHostBridge('mailto:owner@example.com', { win, doc });
     assert.deepEqual(calls.at(-1), ['browser', 'mailto:owner@example.com', '_blank', 'noopener']);
 });
+
+test('the same-origin onboarding frame uses its parent Telegram opener', async () => {
+    const calls = [];
+    const parent = { document: { documentElement: { dataset: { ouroborosHost: 'telegram' } } } };
+    const win = { parent, open() { calls.push('browser'); } };
+    await assert.rejects(openExternalViaHostBridge('https://example.com', { win, doc: {} }), /not ready/);
+    parent.Telegram = { WebApp: { openLink(url) { calls.push(url); } } };
+    const opened = openExternalViaHostBridge('https://example.com', { win, doc: {} });
+    assert.deepEqual(calls, ['https://example.com/'], 'the inherited handoff keeps the live gesture');
+    assert.equal((await opened).host, 'telegram');
+    Object.defineProperty(win, 'parent', { get() { throw new Error('cross-origin'); } });
+    assert.equal((await openExternalViaHostBridge('https://example.com', { win, doc: {} })).host, 'browser');
+    assert.deepEqual(calls, ['https://example.com/', 'browser']);
+});
