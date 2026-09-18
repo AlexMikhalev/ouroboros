@@ -915,18 +915,20 @@ jobs:
         run: |
           set -euo pipefail
           export ANDROID_AVD_HOME="$RUNNER_TEMP/android-avd" ANDROID_USER_HOME="$RUNNER_TEMP/android-user-home"
+          export ANDROID_SERIAL=emulator-5554
           AVD="obo-api-${{ matrix.api-level }}"
           LOG="$RUNNER_TEMP/android-smoke/emulator.log"
           "$ANDROID_HOME/emulator/emulator" -avd "$AVD" -no-window -no-audio -no-boot-anim \
+            -port 5554 \
             -no-snapshot -gpu swiftshader_indirect -accel off >"$LOG" 2>&1 &
           emulator_pid=$!
           trap 'cat "$LOG"; kill "$emulator_pid" 2>/dev/null || true' EXIT
           for attempt in $(seq 1 180); do
             kill -0 "$emulator_pid" 2>/dev/null || { wait "$emulator_pid"; exit 1; }
-            [ "$(timeout 5s adb -e get-state 2>/dev/null)" = "device" ] && break
+            [ "$(timeout 5s adb get-state 2>/dev/null)" = "device" ] && break
             sleep 2
           done
-          test "$(timeout 5s adb -e get-state)" = "device"
+          test "$(timeout 5s adb get-state)" = "device"
           for attempt in $(seq 1 120); do
             kill -0 "$emulator_pid" 2>/dev/null || { wait "$emulator_pid"; exit 1; }
             [ "$(timeout 5s adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ] && break
@@ -935,8 +937,37 @@ jobs:
           test "$(adb shell getprop sys.boot_completed | tr -d "\r")" = "1"
           adb install -r "$RUNNER_TEMP/android-smoke/build/Ouroboros.apk"
           adb install -r "$RUNNER_TEMP/android-smoke/device/app.apk"
+          adb shell input keyevent KEYCODE_WAKEUP
+          adb shell wm dismiss-keyguard
           adb shell am start -n ai.ouroboros.android/.MainActivity
           sleep 2
+          # Real native UI on a fresh emulator; no provisioned core or fake backend.
+          # PNGs require visual review. XML text presence does not prove no clipping.
+          SCREENSHOTS="$RUNNER_TEMP/android-smoke/screenshots"
+          mkdir -p "$SCREENSHOTS"
+          capture_native_ui() {
+            adb shell uiautomator dump /sdcard/obo-native-ui.xml
+            adb pull /sdcard/obo-native-ui.xml "$SCREENSHOTS/$1.xml"
+            adb exec-out screencap -p > "$SCREENSHOTS/$1.png"
+            test -s "$SCREENSHOTS/$1.png"
+          }
+          capture_native_ui 01-access-setup
+          grep -Fq 'text="Ouroboros access to your phone"' "$SCREENSHOTS/01-access-setup.xml"
+          adb shell input keyevent KEYCODE_BACK
+          capture_native_ui 02-native-main
+          python - "$SCREENSHOTS/02-native-main.xml" <<'PY'
+          import subprocess, sys, xml.etree.ElementTree as ET
+          menu = next(node for node in ET.parse(sys.argv[1]).iter("node")
+                      if node.get("package") == "ai.ouroboros.android"
+                      and node.get("content-desc") == "Application menu")
+          x1, y1, x2, y2 = map(int, menu.attrib["bounds"].replace("][", ",").strip("[]").split(","))
+          subprocess.run(["adb", "shell", "input", "tap", str((x1+x2)//2), str((y1+y2)//2)], check=True)
+          PY
+          capture_native_ui 03-application-menu
+          for label in 'Start core' 'Refresh view' 'Core status' 'Stop agent' \
+            'Android permissions' 'Set as Android assistant'; do
+            grep -Fq "text=\"$label\"" "$SCREENSHOTS/03-application-menu.xml"
+          done
           adb shell pm path ai.ouroboros.android
           adb shell dumpsys package ai.ouroboros.android | grep -E 'versionName|versionCode'
           adb shell am force-stop ai.ouroboros.android
@@ -950,6 +981,17 @@ jobs:
           grep -q 'OBO_DEVICE_SDK_SMOKE=PASS' "$RUNNER_TEMP/android-smoke/instrument.txt" \
             || grep -q 'OBO_DEVICE_SDK_SMOKE=PASS' "$RUNNER_TEMP/android-smoke/device-log.txt"
           test "$instrument_status" -eq 0
+      - name: Upload native Android UI evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: android-native-ui-api-${{ matrix.api-level }}
+          path: |
+            ${{ runner.temp }}/android-smoke/screenshots/
+            ${{ runner.temp }}/android-smoke/emulator.log
+            ${{ runner.temp }}/android-smoke/instrument.txt
+            ${{ runner.temp }}/android-smoke/device-log.txt
+          if-no-files-found: warn
 
   # The publisher key is used only on the trusted tag path. Root/boot/device
   # acceptance is separate from these exact-byte artifact checks.
