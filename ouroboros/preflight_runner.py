@@ -756,7 +756,7 @@ def _plugin_missing_remediation(agent_python: str, rejected: str = "") -> str:
 _DEFAULT_PREFLIGHT_TIMEOUT_SEC = 1800
 
 
-def _resolve_preflight_timeout(timeout: int) -> int:
+def _resolve_preflight_timeout(timeout: int = _DEFAULT_PREFLIGHT_TIMEOUT_SEC) -> int:
     """Env override (`OUROBOROS_PREFLIGHT_TIMEOUT_SEC`) takes precedence so the
     timeout is one SSOT across callers without editing each call site."""
     raw = os.environ.get("OUROBOROS_PREFLIGHT_TIMEOUT_SEC")

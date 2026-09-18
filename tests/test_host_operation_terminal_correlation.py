@@ -123,13 +123,14 @@ def test_completed_result_uses_existing_live_cancellation_owner(tmp_path, monkey
 
 def test_restart_acknowledgement_does_not_claim_the_operation_finished(tmp_path, monkeypatch):
     import server
+    from ouroboros import server_restart
 
     bridge = message_bus.LocalChatBridge()
     live_state = {"owner_id": 1, "owner_external_id": 42, "owner_external_chat_id": 42}
     monkeypatch.setattr(message_bus, "DATA_DIR", tmp_path)
     monkeypatch.setattr(message_bus, "_BRIDGE", bridge)
     monkeypatch.setattr(message_bus, "load_state", lambda: live_state)
-    monkeypatch.setattr(server, "_safe_restart_serialized", lambda *a, **k: (False, "controlled refusal"))
+    monkeypatch.setattr(server_restart, "_safe_restart_serialized", lambda *a, **k: (False, "controlled refusal"))
     ctx = SimpleNamespace(load_state=lambda: dict(live_state), update_state=lambda fn: fn(live_state),
                           send_with_budget=message_bus.send_with_budget, safe_restart=object())
     client = _client(tmp_path, bridge)

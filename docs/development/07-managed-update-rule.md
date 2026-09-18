@@ -12,3 +12,5 @@ This chapter owns what a managed update may do to the live tree: how one exact o
 - Manual Restore reuses the same writer fence and pins the previous HEAD on a local recovery branch before reset. Promotion resolves the development SHA once and uses that exact SHA for both the local QA ref and any remote push.
 
 Enforcement: `tests/test_update_merge_policy.py` (what the merge policy refuses), `tests/test_update_dirty_stash.py` (the dirty-tree path), `tests/test_update_hardening.py` and `tests/test_update_tx_corrupt_quarantine.py` (transaction integrity and quarantine).
+
+External native hosts add no source updater: the source-selected launcher hook installs/verifies the artifact before a core generation, and managed post-boot readback precedes finalization. Failure uses existing rollback; worker self-restart keeps incomplete native adoption even when core SHA matches.
