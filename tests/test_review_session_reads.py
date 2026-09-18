@@ -202,13 +202,14 @@ def test_successful_result_can_precede_its_call_in_the_journal(tmp_path):
 
 
 def test_absolute_quoted_and_relative_paths_normalize_to_one_opened_path(tmp_path):
-    repo_root = tmp_path / "repo"
+    repo_root = tmp_path / "repo with spaces"
     (repo_root / "ouroboros").mkdir(parents=True)
+    absolute_path = (repo_root / "ouroboros/safety.py").as_posix()
     receipts = _parse(
         tmp_path,
-        _command_event(f"cat '{repo_root}/ouroboros/safety.py'", wrapped=False),
+        _command_event(f"cat '{absolute_path}'", wrapped=False),
         _command_event("cat ./ouroboros/safety.py"),
-        _command_event(f"sed -n '1,4p' {repo_root}/ouroboros/safety.py"),
+        _command_event(f"sed -n '1,4p' '{absolute_path}'"),
         scope_root=repo_root)
     # The first two are the same whole-file extent and fold into ONE receipt.
     assert [r["opened_path"] for r in receipts] == ["ouroboros/safety.py"] * 2
@@ -216,7 +217,8 @@ def test_absolute_quoted_and_relative_paths_normalize_to_one_opened_path(tmp_pat
 
 
 def test_a_read_outside_the_scope_root_is_not_a_session_root_read(tmp_path):
-    receipts = _parse(tmp_path, _command_event("cat /etc/hosts", wrapped=False))
+    outside_path = (tmp_path / "outside.txt").as_posix()
+    receipts = _parse(tmp_path, _command_event(f"cat '{outside_path}'", wrapped=False))
     assert [r["opened_root"] for r in receipts] == ["outside_session_root"]
 
 

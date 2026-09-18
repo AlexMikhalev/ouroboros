@@ -6,6 +6,7 @@ mixed fanout keeps one route per row, and a retrieving review's independent
 findings no longer change severity based on its working-window size.
 """
 
+import hashlib
 import json
 import subprocess
 from types import SimpleNamespace
@@ -917,8 +918,9 @@ def test_a_staged_diff_above_the_first_send_is_paged_as_one_exact_source(tmp_pat
 
 @pytest.mark.parametrize("delegated", [False, True], ids=["native", "session"])
 @pytest.mark.parametrize("managed", [False, True], ids=["ordinary", "managed"])
+@pytest.mark.parametrize("git_autocrlf", ["false", "true"], ids=["raw_blob", "lf_blob"])
 def test_renamed_prompt_preimage_is_readable_and_covered_without_a_paged_diff(
-    tmp_path, monkeypatch, delegated, managed,
+    tmp_path, monkeypatch, delegated, managed, git_autocrlf,
 ):
     """Rename detection can omit the body; the exact old prompt stays readable
     and has its own diagnostic row on both transports."""
@@ -928,12 +930,17 @@ def test_renamed_prompt_preimage_is_readable_and_covered_without_a_paged_diff(
     from ouroboros.tools.registry import ToolContext
 
     repo = _staged_subject(tmp_path)
+    _git(repo, "config", "core.autocrlf", git_autocrlf)
     old = repo / "prompts/SYSTEM.md"
     raw = "Original α prompt.\r\nSecond line.\r\n".encode("utf-8")
     old.write_bytes(raw)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "prompt baseline")
     baseline = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=repo, text=True).strip()
+    # The preimage contract names Git's blob, which can differ from the CRLF
+    # worktree file. Exercise both forms on every host instead of inheriting Git's default.
+    blob = subprocess.check_output(["git", "show", f"{baseline}:prompts/SYSTEM.md"], cwd=repo)
+    assert blob == (raw.replace(b"\r\n", b"\n") if git_autocrlf == "true" else raw)
     (repo / "docs").mkdir()
     old.rename(repo / "docs/renamed.md")
     _git(repo, "add", "-A")
@@ -965,7 +972,8 @@ def test_renamed_prompt_preimage_is_readable_and_covered_without_a_paged_diff(
     assert row["preimage"] == f"{baseline if managed else 'HEAD'}:prompts/SYSTEM.md"
     assert row["candidate_tree"] == prepared["required_sources_ref"]["staged_tree_sha"]
     source = manifest["preimage_sources"][0]
-    assert read_actor_source_bytes(drive, BRIEF_TASK_ID, source) == raw
+    assert read_actor_source_bytes(drive, BRIEF_TASK_ID, source) == blob
+    assert row["source_revision"] == hashlib.sha256(blob).hexdigest()
     assert row["path"] in prepared["session_task"] and "preimage of prompts/SYSTEM.md" in prepared["session_task"]
     if delegated:
         from ouroboros.review_session_reads import (
@@ -994,7 +1002,7 @@ def test_renamed_prompt_preimage_is_readable_and_covered_without_a_paged_diff(
                                     "opened_root": row["root"], "opened_path": row["path"], **receipt}]
         coverage = executor._read_coverage()
     assert coverage["status"] == "complete"
-    assert coverage["sources"][0]["covered_chars"] == len(raw.decode().replace("\r\n", "\n"))
+    assert coverage["sources"][0]["covered_chars"] == len(blob.decode("utf-8").replace("\r\n", "\n"))
 
 
 @pytest.mark.parametrize("available_store", [False, True], ids=["no_store", "missing_blob"])

@@ -44,29 +44,29 @@ ARCH_CHAPTERS = {
 def repo(tmp_path: pathlib.Path) -> pathlib.Path:
     (tmp_path / "docs" / "development").mkdir(parents=True)
     (tmp_path / "docs" / "architecture").mkdir(parents=True)
-    (tmp_path / "BIBLE.md").write_text("# Constitution\n\nP1 Continuity.\n", encoding="utf-8")
+    (tmp_path / "BIBLE.md").write_text("# Constitution\n\nP1 Continuity.\n", encoding="utf-8", newline="\n")
     (tmp_path / "docs" / "CHECKLISTS_ARCHIVE.md").write_text(
-        "# Archive\n\nA standing disclosure.\n", encoding="utf-8")
+        "# Archive\n\nA standing disclosure.\n", encoding="utf-8", newline="\n")
     (tmp_path / "docs" / "DESIGN.md").write_text(
-        "# Design\n\nThe design system for web/ work.\n", encoding="utf-8")
+        "# Design\n\nThe design system for web/ work.\n", encoding="utf-8", newline="\n")
 
     for name, (title, body) in DEV_CHAPTERS.items():
         (tmp_path / "docs" / "development" / name).write_text(
             f"# {title}\n\nAn authored introduction.\n\n## {title} rules\n\n{body}\n",
-            encoding="utf-8")
+            encoding="utf-8", newline="\n")
     (tmp_path / "docs" / "DEVELOPMENT.md").write_text(
         "# Development\n\nThe handbook entrypoint.\n\n## Chapters\n\n"
         + "\n".join(f"- [{name}](development/{name})" for name in DEV_CHAPTERS)
-        + "\n", encoding="utf-8")
+        + "\n", encoding="utf-8", newline="\n")
 
     for name, sections in ARCH_CHAPTERS.items():
         body = "\n\n".join(f"## {heading}\n\n{text}" for heading, text in sections)
         (tmp_path / "docs" / "architecture" / name).write_text(
-            f"# {name}\n\nAn authored introduction.\n\n{body}\n", encoding="utf-8")
+            f"# {name}\n\nAn authored introduction.\n\n{body}\n", encoding="utf-8", newline="\n")
     (tmp_path / "docs" / "ARCHITECTURE.md").write_text(
         "# Architecture\n\nThe map entrypoint.\n\n## Chapters\n\n"
         + "\n".join(f"- [{name}](architecture/{name})" for name in ARCH_CHAPTERS)
-        + "\n", encoding="utf-8")
+        + "\n", encoding="utf-8", newline="\n")
     return tmp_path
 
 
@@ -304,13 +304,18 @@ def test_the_navigation_tells_the_reviewer_how_to_read_what_it_did_not_receive(r
 
 
 def test_inline_whole_documents_carry_only_whole_documents(repo):
+    # Reference-book sources retain exact line endings, including on hosts
+    # where a plain read_text would silently translate CRLF back to LF.
+    chapter = repo / REVIEW_PROTOCOL_CHAPTER
+    chapter.write_bytes(chapter.read_bytes().replace(b"\n", b"\r\n"))
     context = _context(repo, touched_paths=["web/modules/chat.js"])
 
     assert all("#" not in path for path in context.inline_whole_documents)
-    assert context.inline_whole_documents["docs/DESIGN.md"] == (repo / "docs" / "DESIGN.md").read_text(encoding="utf-8")
+    assert context.inline_whole_documents[REVIEW_PROTOCOL_CHAPTER] == chapter.read_bytes().decode("utf-8")
+    assert context.inline_whole_documents["docs/DESIGN.md"] == (repo / "docs" / "DESIGN.md").read_bytes().decode("utf-8")
     # A duplicate-suppressing caller compares bytes, so the map must be exact.
     for path, text in context.inline_whole_documents.items():
-        assert (repo / path).read_text(encoding="utf-8") == text
+        assert (repo / path).read_bytes().decode("utf-8") == text
 
 
 def test_the_result_is_deterministic_for_one_tree_and_one_change(repo):

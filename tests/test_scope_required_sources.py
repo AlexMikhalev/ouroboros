@@ -236,17 +236,18 @@ def test_the_brief_states_the_manifest_is_a_minimum(tmp_path):
     assert "no source is owed in full" in render_required_sources([])
 
 
-def test_the_touched_manifest_carries_dispositions_and_candidate_sizes(tmp_path):
+@pytest.mark.parametrize("raw,extent", [(b"a = 1\n", "6 bytes"), (b"a = 1\r\n", "7 bytes")])
+def test_the_touched_manifest_carries_dispositions_and_candidate_sizes(tmp_path, raw, extent):
     repo = _repo(tmp_path)
-    _write(repo, "keep.py", "a = 1\n")
+    (repo / "keep.py").write_bytes(raw)
     rows = touched_manifest(repo, [("M", "keep.py"), ("D", "gone.py"), ("M", "keep.py")])
     assert rows == [
         {"path": "gone.py", "disposition": "deleted", "extent": "not in the candidate tree"},
-        {"path": "keep.py", "disposition": "modified", "extent": "6 bytes"},
+        {"path": "keep.py", "disposition": "modified", "extent": extent},
     ]
     rendered = render_touched_manifest(rows)
     assert "complete change evidence is the staged diff" in rendered
-    assert "- keep.py (modified, 6 bytes)" in rendered
+    assert f"- keep.py (modified, {extent})" in rendered
     assert render_touched_manifest([]) == ""
 
 

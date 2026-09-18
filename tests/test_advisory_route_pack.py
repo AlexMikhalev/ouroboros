@@ -787,7 +787,7 @@ def test_advisory_manifest_cuts_span_only_carriers_on_the_live_tree_pair(tmp_pat
     (repo / "pyproject.toml").write_text(  # UNSTAGED, and outside its span
         '[project]\nname = "ouroboros"\nversion = "1.0.1"\ndependencies = ["httpx"]\n',
         encoding="utf-8")
-    (repo / "app.py").write_text("x = 2\n", encoding="utf-8")
+    (repo / "app.py").write_bytes(b"x = 2\n")
     porcelain = _git(repo, "status", "--porcelain")
 
     prompt = advisory._build_advisory_prompt(
