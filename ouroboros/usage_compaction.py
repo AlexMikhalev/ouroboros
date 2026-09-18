@@ -54,15 +54,16 @@ from ouroboros.usage_ledger import (
     _read_records_locked,
     _validate_records,
     _write_bytes_atomic_fsync,
+    is_abandoned_settlement,
     valid_archive_rel,
 )
 from ouroboros.utils import append_jsonl, utc_now_iso
 
 log = logging.getLogger(__name__)
 
-# States a folded attempt chain may terminate in. In-flight (reserved/
-# dispatched) finals keep their WHOLE chain in the live file.
-_FOLDABLE_FINAL_STATES = frozenset({"settled", "unresolved", "released"})
+# Unresolved and administratively abandoned attempts still accept a late
+# receipt, so their WHOLE chain stays live just like reserved/dispatched work.
+_FOLDABLE_FINAL_STATES = frozenset({"settled", "released"})
 _BASELINE_KINDS = frozenset({"usage_baseline", "usage_baseline_group"})
 # The fold's clock: an attempt whose final row is younger than
 # ``USAGE_LEDGER_FOLD_MIN_AGE_SEC`` stays unfolded so its ``ts`` remains the true
@@ -614,8 +615,9 @@ def _attempt_is_recent(row: Dict[str, Any], now_ts: float) -> bool:
 
 def _foldable_attempt_ids(records: list, *, now_ts: Optional[float] = None) -> set:
     """Attempt ids whose whole chain folds: terminal, plain ``attempt`` kind,
-    no review attribution, older than the fold horizon (``now_ts`` defaults to
-    ``_fold_clock()``) — plus prior baseline group/header rows (re-folded)."""
+    no pending late receipt or review attribution, older than the fold horizon
+    (``now_ts`` defaults to ``_fold_clock()``) — plus prior baseline rows. Old
+    unresolved groups remain aggregates; they cannot recreate individual ids."""
     finals = _final_rows(records)
     clock = _fold_clock() if now_ts is None else float(now_ts)
     foldable: set = set()
@@ -627,6 +629,8 @@ def _foldable_attempt_ids(records: list, *, now_ts: Optional[float] = None) -> s
         if kind != "attempt":
             continue
         if str(row.get("state") or "") not in _FOLDABLE_FINAL_STATES:
+            continue
+        if is_abandoned_settlement(row):
             continue
         if _attempt_is_recent(row, clock):
             continue  # the allowance window still needs this row's own ts

@@ -682,31 +682,19 @@ def review_wave_admission(
     slot_ids: str | Sequence[str] = "",
     processing_preferences: str | Sequence[str] = "",
 ) -> Dict[str, Any]:
-    """Read-only all-slot admission using the normal reservation math; fail open.
-    ``remaining_usd_override`` serves callers outside any task usage scope (the
-    managed-update admission gate): compared against instead of the projection.
-    Otherwise the wave is admitted against EVERY fence ``reserve_attempt``
-    enforces: the global ``TOTAL_BUDGET`` remainder (``global_limit_usd``,
-    resolved like the ledger's own global fence — None reads the setting, a
-    non-positive setting leaves the axis unbounded) and the root remainder;
-    ``remaining_usd`` is the tighter one and ``binding_axis`` names it.
+    """Read-only whole-wave admission through each slot's reservation math.
 
-    ``prompt_chars``/``max_completion_tokens``/``categories``/``slot_ids``
-    accept one value for every slot or one value PER slot (aligned with
-    ``models``): a mixed wave (the commit gate's scope pack beside its triad
-    pack) is priced seat by seat exactly as ``reserve_attempt`` will price each
-    send. The observed cache split a reservation reads is keyed by the SENDING
-    scope (task, provider, model, category and review slot): each seat is
-    priced under its own category/slot, so a warm split of the caller's own
-    transcript never stands in for a reviewer seat's cold prefix — an empty
-    category keeps the caller's scope (a wave the caller sends itself). The
-    result also discloses the projection's ``accounted_usd``, the open holds of
-    in-flight attempts (``reserved_usd``: reserved plus dispatched upper
-    bounds) and the per-slot bounds so a refusal can name what holds the money.
-    ``root_limit_usd`` is the caller's CURRENT bound fence — the one
-    ``reserve_attempt`` will enforce — and governs when given; the ledger's
-    projection (the minimum of the historical row limits) serves only a caller
-    that binds no fence of its own."""
+    Standalone callers may supply remaining_usd_override. Otherwise the tighter
+    global/root remainder binds, including every in-flight hold; unknown prices
+    stay unknown. An explicit root_limit_usd is the caller's current fence,
+    otherwise the ledger's historical minimum governs. Global None resolves
+    settings; a non-positive configured limit is unbounded.
+
+    Input sizes, outputs, categories, slots and processing can be scalar or
+    aligned per-slot values. Price each seat under its own sending scope, so the
+    caller's warm cache split cannot stand in for a reviewer's cold prefix.
+    Returned per-slot bounds and both remainders disclose the binding cause.
+    """
     result: Dict[str, Any] = {
         "fits": True,
         "estimated_wave_usd": None,
@@ -1117,11 +1105,37 @@ def record_subscription_session(
         "category", "source", *REVIEW_ATTRIBUTION_KEYS, "subscription_route", "session_id_sha256",
     ))
 def _transition(reservation: AttemptReservation, state: str, **fields: Any) -> Dict[str, Any]:
+    from ouroboros.usage_ledger import is_abandoned_settlement
+
     with _locked(reservation.drive_root):
         records = _read_records_locked_cached(reservation.drive_root)
         current = _final_rows(records).get(reservation.attempt_id)
+        expected_seq = fields.pop("_expected_seq", None)
+        abandon_reason = fields.pop("_abandon_reason", "")
         if current is None:
+            if abandon_reason:
+                return {"state": "unknown"}
             raise UsageAccountingError(f"unknown usage attempt {reservation.attempt_id}")
+        if expected_seq is not None and current.get("seq") != expected_seq:
+            return current
+        abandoned = is_abandoned_settlement(current)
+        if abandon_reason:
+            if current["state"] == "released" or (current["state"] == "settled" and not abandoned):
+                return current  # A real receipt that won the race remains authoritative.
+            if current["state"] == "reserved":
+                state, fields = "released", {"reason": abandon_reason}
+            elif abandoned and fields.get("settle_reason") == "abandoned":
+                return current
+            else:
+                fields["reason"] = abandon_reason
+        if state == "unresolved" and abandoned:
+            return current
+        if state == "settled" and current["state"] == "settled" and not abandoned:
+            if all(current.get(key) == value for key, value in fields.items()):
+                return current
+            raise UsageAccountingError(f"conflicting usage settlement: {reservation.attempt_id}")
+        if state == "settled" and (abandoned or current["state"] == "unresolved") and fields.get("settle_reason") != "abandoned":
+            fields["settle_reason"] = "late_receipt"
         allow_release = bool(fields.pop("_allow_dispatched_release", False))
         if state == "released" and current.get("state") == "dispatched" and not allow_release:
             raise UsageAccountingError("dispatched attempts require a typed pre-dispatch release")
@@ -1131,21 +1145,15 @@ def _transition(reservation: AttemptReservation, state: str, **fields: Any) -> D
             "state": state,
             "model": reservation.model,
             "provider": reservation.provider,
-            "reservation_upper_bound_usd": reservation.reservation_upper_bound_usd,
-            "pricing_known": current.get("pricing_known"),
-            "reservation_basis": current.get("reservation_basis"),
-            "task_id": str(current.get("task_id") or ""),
-            "root_task_id": str(current.get("root_task_id") or ""),
-            "parent_task_id": str(current.get("parent_task_id") or ""),
+            "reservation_upper_bound_usd": current.get("reservation_upper_bound_usd"),
+            **{key: current.get(key) for key in ("pricing_known", "reservation_basis", "global_limit_usd", "root_limit_usd")},
+            **{key: str(current.get(key) or "") for key in ("task_id", "root_task_id", "parent_task_id", *REVIEW_ATTRIBUTION_KEYS)},
             "category": str(current.get("category") or "task"),
             "source": str(current.get("source") or "llm"),
-            **{key: str(current.get(key) or "") for key in REVIEW_ATTRIBUTION_KEYS},
-            "global_limit_usd": current.get("global_limit_usd"),
             **{key: current.get(key) for key in (
                 "global_limit_source", "global_limit_revision", "global_limit_unbounded",
+                *_CANDIDATE_ROW_FIELDS,
             ) if key in current},
-            "root_limit_usd": current.get("root_limit_usd"),
-            **{key: current.get(key) for key in _CANDIDATE_ROW_FIELDS if key in current},
             **fields,
         }
         appended = _append_rows_locked(reservation.drive_root, records, [row])
@@ -1206,31 +1214,21 @@ def terminalize_abandoned_attempt(
     *,
     reason: str,
     usage: Optional[Dict[str, Any]] = None,
+    expected_seq: Optional[int] = None,
 ) -> str:
-    """Close a dead owner attempt from measured usage, else unresolved/released."""
-    with _locked(reservation.drive_root):
-        current = _final_rows(_read_records_locked_cached(reservation.drive_root)).get(
-            reservation.attempt_id
-        )
-    if current is None:
-        return "unknown"
-    state = str(current.get("state") or "")
-    if state in _TERMINAL:
-        return state
-    if state == "reserved":
-        release_attempt(reservation, reason)
-        return "released"
+    """Close a proven abandoned send without claiming its bound was an actual price.
+
+    The current-state decision and append share one lock. A late real receipt
+    may replace this administrative settlement; unknown price stays non-final.
+    """
     normalized = dict(usage or {})
-    measured = int(
-        _number(normalized.get("prompt_tokens") or normalized.get("input_tokens")) or 0
-    ) + int(
-        _number(normalized.get("completion_tokens") or normalized.get("output_tokens")) or 0
-    )
-    if measured > 0:
-        settle_attempt(reservation, normalized, cost_usd=None, cost_final=False)
-        return "settled"
-    mark_unresolved(reservation, reason)
-    return "unresolved"
+    measured = any(_reported_token_count(normalized, *keys) for keys in (
+        ("prompt_tokens", "input_tokens"), ("completion_tokens", "output_tokens")))
+    fields = _settlement_fields(reservation, normalized, None, False) if measured else {
+        "cost_usd": None, "cost_final": False, "settle_reason": "abandoned"}
+    row = _transition(reservation, "settled", _abandon_reason=str(reason or "owner_task_terminal"),
+                      _expected_seq=expected_seq, **fields)
+    return str(row["state"])
 
 
 def settle_attempt(
@@ -1240,6 +1238,18 @@ def settle_attempt(
     cost_usd: Optional[float] = None,
     cost_final: bool = False,
 ) -> None:
+    fields = _settlement_fields(reservation, usage, cost_usd, cost_final)
+    _transition(reservation, "settled", **fields)
+    stash_task_cache_split(
+        (_CURRENT_SCOPE.get() or UsageScope()).task_id, reservation.model,
+        int(fields.get("cached_tokens") or 0), provider=reservation.provider,
+        ttl_seconds=3600.0 if fields["prompt_cache_ttl"] == "1h" else 300.0,
+        processing_mode=observed_processing_mode(reservation.provider, fields),
+    )
+
+
+def _settlement_fields(reservation, usage, cost_usd, cost_final) -> Dict[str, Any]:
+    """Normalize reported usage before the monetary transaction; no live pricing I/O."""
     normalized = dict(usage or {})
     receipt = processing_receipt(reservation.provider, normalized,
                                  requested=reservation.processing_preference,
@@ -1269,9 +1279,7 @@ def settle_attempt(
             **({"processing_mode": pricing_mode} if pricing_mode else {}),
         )
         cost_final = False
-    _transition(
-        reservation,
-        "settled",
+    return dict(
         cost_usd=cost,
         cost_final=bool(cost_final and cost is not None),
         prompt_tokens=prompt_tokens,
@@ -1281,11 +1289,6 @@ def settle_attempt(
         prompt_cache_ttl=str(normalized.get("prompt_cache_ttl") or ""),
         **{key: copy.deepcopy(normalized[key]) for key in ("processing", "speed", "service_tier", "cost_basis", "cost_evidence")
            if key in normalized},
-    )
-    stash_task_cache_split(
-        (_CURRENT_SCOPE.get() or UsageScope()).task_id, reservation.model, int(cached_tokens or 0), provider=reservation.provider,
-        ttl_seconds=3600.0 if str(normalized.get("prompt_cache_ttl") or "") == "1h" else 300.0,
-        processing_mode=pricing_mode,
     )
 
 

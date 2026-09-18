@@ -170,6 +170,16 @@ def _intent_outcome_fields(intent: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(intent, dict):
         return {}
     fields = {"cancel_observation": dict(intent["observation"])} if isinstance(intent.get("observation"), dict) else {}
+    # Preserve the recorded cause after the active intent is removed. Actor
+    # evidence is independent of requested_by, which also drives parent decisions.
+    origin = {key: str(intent[key]) for key in (
+        "source", "requested_by", "scope", "reason", "requested_at", "request_id",
+    ) if intent.get(key)}
+    request_origin = (fields.get("cancel_observation") or {}).get("request_origin")
+    if isinstance(request_origin, dict):
+        origin["request_origin"] = dict(request_origin)
+    if origin:
+        fields["cancel_origin"] = origin
     if not intent.get("requested_by"):
         return fields
     fields["parent_decision"] = "cancelled"

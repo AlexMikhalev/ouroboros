@@ -1297,7 +1297,7 @@ body.resizing-panels { user-select: none; }
     overflow-x: hidden;
     padding: 20px;
     padding-top: var(--chat-header-reserve, 56px);
-    padding-bottom: var(--chat-input-reserve, 108px);
+    padding-bottom: 0;
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -1314,6 +1314,14 @@ body.resizing-panels { user-select: none; }
 #chat-messages > *,
 .chat-messages > * {
     flex-shrink: 0;
+}
+
+/* An actual flex item keeps the overlay reserve inside scrollable overflow in
+   WKWebView, including short histories. The column gap supplies the final 8px. */
+#chat-messages::after,
+.chat-messages::after {
+    content: '';
+    flex: 0 0 calc(var(--chat-input-reserve, 108px) - 8px);
 }
 
 /* Quiet transcript navigation, centered above the complete two-row composer. */
@@ -5594,8 +5602,13 @@ textarea.chat-input {
     #chat-messages,
 .chat-messages {
         padding-top: var(--chat-header-reserve, 80px);
-        padding-bottom: calc(var(--chat-input-reserve, 108px) + env(safe-area-inset-bottom, 0px));
+        padding-bottom: 0;
         overflow-x: hidden;
+    }
+
+    #chat-messages::after,
+    .chat-messages::after {
+        flex-basis: calc(var(--chat-input-reserve, 108px) + env(safe-area-inset-bottom, 0px) - 8px);
     }
 
     /* Keyboard-open layout: only #chat-messages scrolls within visual viewport. */
@@ -5652,6 +5665,12 @@ textarea.chat-input {
         overflow-y: auto;
         overscroll-behavior: contain;
         -webkit-overflow-scrolling: touch;
+    }
+
+    /* The composer is in flow: remove the item, including its column gap. */
+    body.keyboard-open #page-chat.active #chat-messages::after,
+    body.keyboard-open .chat-instance-panel .chat-messages::after {
+        content: none;
     }
 
     body.keyboard-open #page-chat.active #chat-input-area,
@@ -6139,7 +6158,13 @@ textarea.chat-input {
     /* No absolute overlay HEADER here: drop the main chat's phantom 56px
        top reserve; the composer reserve matches the shared dock contract. */
     padding: 8px 14px;
-    padding-bottom: var(--chat-input-reserve, 108px);
+    padding-bottom: 0;
+}
+
+/* The Project composer already includes its safe-area inset in the measured
+   reserve; preserve the panel's own reserve on narrow screens as well. */
+.chat-instance-panel .chat-messages::after {
+    flex-basis: calc(var(--chat-input-reserve, 108px) - 8px);
 }
 
 /* Shared dock contract (v6.71.0): the panel composer docks exactly like the

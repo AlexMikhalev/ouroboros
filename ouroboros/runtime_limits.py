@@ -24,6 +24,9 @@ CLAUDEXOR_MODEL_POLL_INTERVAL_SEC = 0.25
 CLAUDEXOR_OPERATOR_STOP_TIMEOUT_SEC = 35.0
 # Physical exit observation after a clean operator-stop receipt, not a task deadline.
 CLAUDEXOR_STOP_EXIT_WAIT_SEC = 5.0
+# Phone-native source compilation exceeds ten minutes; one contained platform
+# preparation may run for an hour, independently of ordinary tool/harness calls.
+EXTERNAL_PLATFORM_UPDATE_TIMEOUT_SEC = 3600.0
 
 
 EXTENSION_STREAM_CHUNK_BYTES = 64 * 1024
@@ -51,13 +54,15 @@ WS_RELAY_REFILL_PER_SEC = 1.0
 # detector counts dead workers (up to ~60s to init: spawn + pip); workers.py binds it as `_SPAWN_GRACE_SEC`, the extension import-staging sweep reads it too.
 WORKER_SPAWN_GRACE_SEC = 90.0
 # Readiness window for ONE spawned/respawned slot: unassignable until the child's own `worker_ready` row lands; alive
-# but silent past this = torn down and replaced. Sized to the spawn grace (the pool's existing init budget): a warm
-# forkserver child boots in ~3-4s (G13 mock lane: 3.5-4.9s startup, 2.5-3.2s respawn), a cold 4-vCPU CI runner well under 60s (its 21-scenario mock lane runs in ~80s), and the E2E
-# scenarios wait 240s per task, so a wedged child is a fast, named failure. A contract distinct from process liveness
+# but silent past this = torn down and replaced. A child's own entry progress permits one longer window for
+# expensive extension loading; an empty mock install does not establish production startup latency.
+# Readiness is a contract distinct from process liveness
 # (`proc.is_alive`, worker_health.py) and from the task idle rail (queue_timeouts.py): a deadlocked child is alive.
 WORKER_READY_WINDOW_SEC = 90.0
 # Consecutive readiness failures of one slot before it is parked and reported (three strikes, like the crash-storm fence).
 WORKER_READY_MAX_ATTEMPTS = 3
+# One extension for a child that wrote its own entry progress, measured from birth, never from the last poll.
+WORKER_READY_CEILING_SEC = 300.0
 
 
 def _clamped_number_setting(key: str, *, low, high=float("inf"), cast=float):

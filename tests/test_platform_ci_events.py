@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,12 +15,13 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
 
 
-def _value(expression, *, event, ref, base="", schedule=""):
+def _value(expression, *, event, ref, base="", schedule="", cancelled=False):
     """Evaluate the workflow's small expression vocabulary against real event shapes."""
     expression = expression.strip()
     if expression.startswith("$" + "{{"):
         expression = expression[3:-2]
     expression = " ".join(expression.split()).replace("&&", " and ").replace("||", " or ")
+    expression = re.sub(r"!(?!=)", "not ", expression)
     github = SimpleNamespace(
         event_name=event, ref=ref, base_ref=base,
         event=SimpleNamespace(
@@ -30,6 +32,7 @@ def _value(expression, *, event, ref, base="", schedule=""):
     return eval(expression, {"__builtins__": {}}, {
         "github": github, "fromJSON": json.loads,
         "startsWith": lambda value, prefix: value.startswith(prefix),
+        "always": lambda: True, "cancelled": lambda: cancelled,
     })
 
 
@@ -87,3 +90,14 @@ def test_scheduled_main_runs_do_not_enter_the_ordinary_matrix(cron):
 def test_desktop_pr_coverage_does_not_admit_provider_or_release_jobs(name):
     job = WORKFLOW["jobs"][name]
     assert not _value(job["if"], event="pull_request", ref="refs/pull/42/merge", base="ouroboros")
+
+
+@pytest.mark.parametrize(("event", "cancelled", "expected"), [
+    ("pull_request", False, True), ("pull_request", True, False),
+    ("schedule", False, False), ("schedule", True, False),
+])
+def test_status_checks_and_inequality_keep_independent_meanings(event, cancelled, expected):
+    assert _value(
+        "${{ always() && !cancelled() && github.event_name != 'schedule' }}",
+        event=event, ref="refs/heads/candidate", cancelled=cancelled,
+    ) is expected

@@ -492,6 +492,8 @@ def _annotate_terminal_task_truth(
                     terminal_truth["model_execution"] = dict(result["model_execution"])
                 if result.get("reason_code"):
                     terminal_truth["reason_code"] = str(result.get("reason_code") or "")
+                if isinstance(result.get("cancel_origin"), dict):
+                    terminal_truth["cancel_origin"] = dict(result["cancel_origin"])
                 review_projection = result.get("review_projection")
                 if isinstance(review_projection, dict):
                     terminal_truth["review_projection"] = dict(review_projection)

@@ -174,17 +174,23 @@ def test_checkpoint_refresh_updates_snapshot_but_stale_phase_patch_does_not(root
 
 
 def test_weighted_compaction_preserves_checkpoint_counts(root, monkeypatch):
-    from tests.fixtures_usage_compaction import _compact, age_fixture_clock
+    from tests.fixtures_usage_compaction import _compact, _ledger_rows, age_fixture_clock
 
     age_fixture_clock(monkeypatch)
 
+    unresolved_ids = set()
     for _ in range(6):
         reservation = _reserve(root)
+        unresolved_ids.add(reservation.attempt_id)
         ua.mark_dispatched(reservation)
         ua.mark_unresolved(reservation, "provider_outcome_unknown")
+    _settle(root, 0.5)  # Only the measured settlement may fold; late receipts keep their identities.
     before = _checkpoint(root)["root_phase_checkpoint"]["accounting"]
     assert before["attempt_counts"] == {"unresolved": 6}
     assert _compact(root) is not None
+    rows = _ledger_rows(root)
+    for attempt_id in unresolved_ids:
+        assert [row["state"] for row in rows if row["attempt_id"] == attempt_id] == ["reserved", "dispatched", "unresolved"]
     after = _checkpoint(root, "refresh")["root_phase_checkpoint"]["accounting"]
     assert after == before
 

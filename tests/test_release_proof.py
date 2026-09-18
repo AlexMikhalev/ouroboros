@@ -110,13 +110,20 @@ def test_assemble_binds_every_asset_smoke_and_sbom(tmp_path: Path):
         run_url="https://github.com/razzant/ouroboros/actions/runs/1",
         previous_tag="v6.87.4",
         generated_at="2026-08-02T00:00:00+00:00",
+        android_build_result="success",
+        android_attestation_result="success",
+        github_output=tmp_path / "github-output",
         notes_output=notes,
     )
     release_proof.command_assemble(args)
 
     evidence = json.loads((release_dir / "release-evidence.json").read_text())
     assert evidence["source"]["commit"] == "a" * 40
-    assert len(evidence["artifacts"]) == 7
+    assert len(evidence["artifacts"]) == 9
+    assert evidence["experimentalAndroid"]["status"] == "verified"
+    upload = json.loads(args.github_output.read_text(encoding="utf-8").split("=", 1)[1]).splitlines()
+    assert len(upload) == 29
+    assert {Path(path).name for path in upload} >= {row["name"] for row in evidence["artifacts"]}
     assert {row["proofId"] for row in evidence["artifacts"]} == set(
         release_proof.PROOF_IDS
     )
@@ -165,6 +172,9 @@ def test_prerelease_notes_link_to_the_exact_prerelease_assets(tmp_path: Path):
         run_url="https://github.com/razzant/ouroboros/actions/runs/1",
         previous_tag="v6.87.4",
         generated_at="2026-08-02T00:00:00+00:00",
+        android_build_result="success",
+        android_attestation_result="success",
+        github_output=None,
         notes_output=notes,
     )
 
@@ -191,10 +201,67 @@ def test_assemble_rejects_smoke_digest_drift(tmp_path: Path):
         run_url="https://example.test/run",
         previous_tag=None,
         generated_at="2026-08-02T00:00:00+00:00",
+        android_build_result="success",
+        android_attestation_result="success",
+        github_output=None,
         notes_output=tmp_path / "notes.md",
     )
     with pytest.raises(ValueError, match="not bound"):
         release_proof.command_assemble(args)
+
+
+@pytest.mark.parametrize("failure", ["failure", "cancelled", "skipped", "missing", "partial", "digest", "smoke", "sbom", "attestation"])
+def test_unavailable_android_pair_keeps_verified_desktop_release(tmp_path, failure):
+    release_dir, version_file, readme = _fixture_release(tmp_path)
+    build_result = failure if failure in {"failure", "cancelled", "skipped"} else "success"
+    attestation_result = "failure" if failure == "attestation" else "success"
+    apk = release_dir / release_proof.release_asset_name("android-apk", "6.87.5")
+    if failure == "missing":
+        for proof_id in release_proof.ANDROID_DOWNLOAD_IDS:
+            for path in (release_dir / release_proof.release_asset_name(proof_id, "6.87.5"),
+                         release_dir / f"release-smoke-{proof_id}.json", release_dir / f"sbom-{proof_id}.cdx.json"):
+                path.unlink()
+    elif failure == "partial":
+        apk.unlink()
+    elif failure == "digest":
+        apk.write_bytes(b"different APK bytes")
+    elif failure == "smoke":
+        path = release_dir / "release-smoke-android-apk.json"
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+        receipt["checks"] = []
+        path.write_text(json.dumps(receipt), encoding="utf-8")
+    elif failure == "sbom":
+        (release_dir / "sbom-android-apk.cdx.json").write_text("{}", encoding="utf-8")
+    output, notes = tmp_path / "github-output", tmp_path / "notes.md"
+    args = argparse.Namespace(directory=release_dir, version_file=version_file, readme=readme,
+        repository="razzant/ouroboros", tag="v6.87.5", commit="a" * 40,
+        run_url="https://example.test/failed-run", previous_tag=None, generated_at=None,
+        notes_output=notes, android_build_result=build_result,
+        android_attestation_result=attestation_result, github_output=output)
+    release_proof.command_assemble(args)
+    evidence = json.loads((release_dir / "release-evidence.json").read_text(encoding="utf-8"))
+    assert {row["proofId"] for row in evidence["artifacts"]} == set(release_proof.DESKTOP_DOWNLOAD_IDS)
+    assert evidence["experimentalAndroid"]["status"] == "unavailable"
+    assert evidence["experimentalAndroid"]["buildResult"] == build_result
+    assert evidence["experimentalAndroid"]["reason"]
+    assert next(row for row in evidence["workflow"]["gates"] if row["name"] == "android-build")["status"] == build_result
+    assert len((release_dir / "SHA256SUMS").read_text(encoding="utf-8").splitlines()) == 21
+    upload = json.loads(output.read_text(encoding="utf-8").split("=", 1)[1]).splitlines()
+    assert len(upload) == 23
+    assert not any("android" in Path(path).name for path in upload)
+    text = notes.read_text(encoding="utf-8")
+    assert "Android artifacts are unavailable" in text and args.run_url in text
+    assert "-android.apk]" not in text and "-android-arm64.tar.gz]" not in text
+    assert "Ouroboros-6.87.5.dmg" in text
+    remote = tmp_path / "remote.json"
+    rows = [{"name": Path(path).name, "size": Path(path).stat().st_size,
+             "digest": "sha256:" + _digest(Path(path))} for path in upload]
+    remote.write_text(json.dumps({"assets": rows}), encoding="utf-8")
+    release_proof.command_verify_uploaded(argparse.Namespace(directory=release_dir, metadata=remote))
+    rows.append({"name": apk.name, "size": 1, "digest": "sha256:unverified"})
+    remote.write_text(json.dumps({"assets": rows}), encoding="utf-8")
+    with pytest.raises(ValueError, match="uploaded asset set"):
+        release_proof.command_verify_uploaded(argparse.Namespace(directory=release_dir, metadata=remote))
 
 
 @pytest.mark.parametrize(
@@ -224,6 +291,9 @@ def test_assemble_rejects_unbound_or_incomplete_smoke_receipt(
         run_url="https://example.test/run",
         previous_tag=None,
         generated_at="2026-08-02T00:00:00+00:00",
+        android_build_result="success",
+        android_attestation_result="success",
+        github_output=None,
         notes_output=tmp_path / "notes.md",
     )
     with pytest.raises(ValueError, match=message):
@@ -242,6 +312,9 @@ def test_assemble_rejects_tag_version_mismatch(tmp_path: Path):
         run_url="https://example.test/run",
         previous_tag=None,
         generated_at=None,
+        android_build_result="success",
+        android_attestation_result="success",
+        github_output=None,
         notes_output=tmp_path / "notes.md",
     )
     with pytest.raises(ValueError, match="tag/version mismatch"):
@@ -249,33 +322,23 @@ def test_assemble_rejects_tag_version_mismatch(tmp_path: Path):
 
 
 def test_verify_uploaded_requires_exact_names_sizes_and_digests(tmp_path: Path):
-    release_dir = tmp_path / "release"
-    release_dir.mkdir()
-    asset = release_dir / "Ouroboros-1.0.0.dmg"
-    asset.write_bytes(b"artifact")
+    release_dir, version_file, readme = _fixture_release(tmp_path)
+    release_proof.command_assemble(argparse.Namespace(
+        directory=release_dir, version_file=version_file, readme=readme,
+        repository="razzant/ouroboros", tag="v6.87.5", commit="a" * 40,
+        run_url="https://example.test/run", previous_tag=None, generated_at=None,
+        notes_output=tmp_path / "notes.md", android_build_result="success",
+        android_attestation_result="success", github_output=None))
     metadata = tmp_path / "remote.json"
-    metadata.write_text(
-        json.dumps(
-            {
-                "assets": [
-                    {
-                        "name": asset.name,
-                        "size": asset.stat().st_size,
-                        "digest": f"sha256:{_digest(asset)}",
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    release_proof.command_verify_uploaded(
-        argparse.Namespace(directory=release_dir, metadata=metadata)
-    )
-    asset.write_bytes(b"ARTIFACT")
+    metadata.write_text(json.dumps({"assets": [
+        {"name": path.name, "size": path.stat().st_size, "digest": "sha256:" + _digest(path)}
+        for path in release_dir.iterdir()
+    ]}), encoding="utf-8")
+    release_proof.command_verify_uploaded(argparse.Namespace(directory=release_dir, metadata=metadata))
+    asset = release_dir / release_proof.release_asset_name("macos-arm64", "6.87.5")
+    asset.write_bytes(asset.read_bytes().upper())
     with pytest.raises(ValueError, match="digest mismatch"):
-        release_proof.command_verify_uploaded(
-            argparse.Namespace(directory=release_dir, metadata=metadata)
-        )
+        release_proof.command_verify_uploaded(argparse.Namespace(directory=release_dir, metadata=metadata))
 
 
 def test_linux_package_smoke_pins_third_party_vendor_images_by_digest():
@@ -302,10 +365,15 @@ def test_linux_packages_declare_and_resolve_the_git_runtime_dependency():
     assert "rpm --install" not in smoke
 
 
-def test_every_future_release_receipt_requires_real_embedded_betterleaks():
+def test_release_receipts_match_the_runtime_the_artifact_distributes():
     assert set(release_proof.REQUIRED_SMOKE_CHECKS) == set(release_proof.PROOF_IDS)
     for proof_id, checks in release_proof.REQUIRED_SMOKE_CHECKS.items():
-        assert "embedded_betterleaks_runtime" in checks, proof_id
+        if proof_id in {"android-arm64", "android-apk"}:
+            # Android installs dependencies from upstream; no embedded scanner
+            # or physical-device smoke is claimed for the source/setup archive.
+            assert "embedded_betterleaks_runtime" not in checks, proof_id
+        else:
+            assert "embedded_betterleaks_runtime" in checks, proof_id
 
 
 def test_future_final_artifact_lanes_smoke_betterleaks_from_the_artifact():
@@ -447,8 +515,9 @@ def test_release_workflow_orders_smoke_sbom_attestation_and_draft_verification()
         "- name: Record Linux package smoke and reuse payload SBOM",
         "- name: Attest Linux package provenance",
         "- name: Upload build artifact",
-        "- name: Assemble release proof capsule and notes",
         "- name: Verify artifact attestations",
+        # Proof acceptance consumes the actual optional-Android verification outcome.
+        "- name: Assemble release proof capsule and notes",
         "- name: Require an unpublished release slot",
         "- name: Verify remote release tag before draft",
         "- name: Create draft GitHub Release",
@@ -471,7 +540,8 @@ def test_release_workflow_orders_smoke_sbom_attestation_and_draft_verification()
     assert "steps.smoke_appimage.outputs.sbom_path" in workflow
     assert "release-smoke-linux-appimage-x86_64.json" in workflow
     assert "sbom-linux-appimage-x86_64.cdx.json" in workflow
-    assert "Ouroboros-*-linux-x86_64.AppImage" in workflow
+    assert 'ids = list(registry["DESKTOP_DOWNLOAD_IDS"])' in workflow
+    assert 'registry["release_asset_name"](proof_id, version)' in workflow
     assert "--check appimage_extract_and_run" in workflow
     assert "--check appimage_metadata" in workflow
     assert "--check product_version" in workflow
@@ -501,9 +571,7 @@ def test_release_workflow_orders_smoke_sbom_attestation_and_draft_verification()
     assert "--check runtime_dependency" in workflow
     assert "--check systemd_user_unit" in workflow
     assert "--check desktop_launcher_start" in workflow
-    assert "release-artifacts/ouroboros_*_amd64.deb" in workflow
-    assert "release-artifacts/ouroboros-*-1.x86_64.rpm" in workflow
-    assert "release-artifacts/ouroboros-*-1.red80.x86_64.rpm" in workflow
+    assert "files: ${{ fromJSON(steps.release_proof.outputs.files_json) }}" in workflow
     assert "sbom-path: dist/sbom-linux-deb-amd64.cdx.json" in workflow
     assert "sbom-path: dist/sbom-linux-rpm-x86_64.cdx.json" in workflow
     assert "sbom-path: dist/sbom-linux-rpm-red80-x86_64.cdx.json" in workflow
@@ -541,3 +609,11 @@ def test_release_workflow_orders_smoke_sbom_attestation_and_draft_verification()
     assert "BUILD_CERTIFICATE_BASE64:" not in job_env
     assert "P12_PASSWORD:" not in job_env
     assert "KEYCHAIN_PASSWORD:" not in job_env
+
+
+def test_optional_android_does_not_waive_missing_desktop_asset(tmp_path):
+    release_dir, _version, _readme = _fixture_release(tmp_path)
+    (release_dir / release_proof.release_asset_name("macos-arm64", "6.87.5")).unlink()
+    with pytest.raises(ValueError, match="required"):
+        release_proof._proof_files(release_dir, "6.87.5", commit="a" * 40, tag="v6.87.5",
+                                  android_build_result="failure", android_attestation_result="not_run")
