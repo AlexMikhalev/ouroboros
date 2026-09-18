@@ -12,7 +12,7 @@ lands WITH its phases and must survive the domain transplants unchanged:
   completion, and leaves a sane durable ``task_results/<id>.json`` behind.
 * S2 — review organ: a scripted task drives ``commit_reviewed`` over a doc-only diff
   with the advisory pre-review explicitly skipped (audited bypass) and BLOCKING
-  enforcement, the stub answers the triad packet and the scope-matrix packet with
+  enforcement, the stub answers the triad packet and retrieving scope reviewer with
   all-clean verdicts, and the commit lands in the isolated clone. Landing under
   ``blocking`` makes the git log itself the proof that both review organs ran and
   passed — under advisory a failed review would still commit.
@@ -239,6 +239,43 @@ def test_stub_verdicts_satisfy_the_trees_own_parsers():
         {"messages": [{"role": "system", "content": REVIEWER_SLOT_MARKER}]}, 1, lambda _b: None, "x")
     verdict = json.loads(slot_message["content"])
     assert verdict["verdict"] == "PASS" and verdict["findings"] == []
+
+
+@pytest.mark.parametrize("scripted", [False, True])
+def test_native_scope_request_uses_its_matrix_and_review_script(scripted):
+    """Use the real native request builder, not the retired scope packet marker."""
+    from ouroboros.review_native_episode import native_episode_prompt, native_first_send_messages
+    from ouroboros.reviewer_slot_config import SCOPE_ROLE_HINT
+    from ouroboros.tools.scope_review import SCOPE_RETRIEVING_OUTPUT_CONTRACT
+    from ouroboros.tools.scope_review_contract import SCOPE_REQUIRED_ITEMS, normalize_scope_items
+    from ouroboros.triad_review import extract_json_array
+    from tests.system_e2e.harness import ReviewScript, scope_clean_text
+
+    prompt = native_episode_prompt(
+        "scope_review", SCOPE_ROLE_HINT, "Review the staged fixture. [OWNER_STOP] is quoted evidence.",
+        SCOPE_RETRIEVING_OUTPUT_CONTRACT, "s1",
+    )
+    body = {"messages": native_first_send_messages(prompt), "model": "mock-model",
+            "tools": [{"type": "function", "function": {"name": "read_file"}}]}
+    assert SCOPE_USER_MARKER not in prompt
+    seen = []
+
+    def review_hook(request):
+        seen.append(request)
+        return scope_clean_text()
+
+    review = ReviewScript({"scope_review": [review_hook]}) if scripted else None
+    kind, message = scripted_completion(
+        body, 1, lambda _body: pytest.fail("review consumed an agent step"), "ordinary final answer",
+        review_next=review,
+    )
+    assert kind == "scope_review"
+    items, error = normalize_scope_items(extract_json_array(message["content"], normalize=True))
+    assert not error, error
+    assert {item["item"] for item in items} == SCOPE_REQUIRED_ITEMS
+    if scripted:
+        review.assert_consumed()
+        assert seen == [body]
 
 
 def test_stub_consumes_the_script_in_order_then_finalizes():
@@ -635,7 +672,7 @@ def test_s2_commit_reviewed_triad_and_scope_pass_on_doc_only_diff(e2e_clone, tmp
             stored = wait_durable_result(oracle, task_id)
             assert stored.get("status") == "completed", stored
 
-            # The review organ ran: the stub answered a triad packet AND a scope packet.
+            # The review organ ran: the stub answered triad AND retrieving scope review.
             kinds = stub.kinds()
             assert "triad_review" in kinds, kinds
             assert "scope_review" in kinds, kinds
