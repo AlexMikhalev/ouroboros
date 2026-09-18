@@ -37,7 +37,6 @@ from ouroboros.tool_access import (
     build_resolved_resource_binding,
     canonical_data_root,
     shell_cwd_block_message,
-    _TOP_LEVEL_PRINCIPAL_PROFILES,
 )
 from ouroboros.utils import append_jsonl, utc_now_iso
 from ouroboros.workspace_executor import executor_ref_from_ctx
@@ -375,17 +374,9 @@ def _start_service(
     try:
         refs = validate_process_env(env_from_settings)
         if refs:
-            # Presence authority is relevant only to selecting new Settings
-            # references; literal env keeps its existing process capability.
-            from ouroboros.presence_authority import presence_ceiling_from_context
+            from ouroboros.tools.process_facts import settings_environment_allowed
 
-            from ouroboros.config import get_runtime_mode
-            from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
-
-            cyber_actor = (active_tool_profile(ctx) == "acting_subagent"
-                           and mode_has_unrestricted_agency(get_runtime_mode()))
-            if (not cyber_actor and active_tool_profile(ctx) not in (_TOP_LEVEL_PRINCIPAL_PROFILES | {"operator_control"})
-                    or presence_ceiling_from_context(ctx) is not None):
+            if not settings_environment_allowed(ctx):
                 return _publish_tool_result(ctx, ToolResult(
                     status="blocked", code="ACCESS_BLOCKED",
                     text="⚠️ SERVICE_ENV_REFERENCE_BLOCKED: this task cannot select settings-backed service environment. A root task can start the service; existing literal environment and configured MCP access remain available.",

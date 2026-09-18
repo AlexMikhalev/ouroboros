@@ -162,6 +162,16 @@ def _runtime_mode() -> str:
         return "advanced"
 
 
+def workspace_edit_note(ctx: ToolContext) -> str:
+    """Explain capture without inventing broader Git authority."""
+    from ouroboros.contracts.task_constraint import normalize_task_constraint
+
+    constraint = normalize_task_constraint(getattr(ctx, "task_constraint", None))
+    if constraint is not None and constraint.surface == "self_worktree":
+        return "Do not commit this self-worktree; return the captured patch for parent integration."
+    return "The headless runner captures a workspace patch; it is not proof of Git commit or publication."
+
+
 def _finish_mutation(
     ctx: ToolContext,
     changed_paths: List[str],
@@ -192,7 +202,7 @@ def _finish_mutation(
             return capture_note
         footer = "Files are on disk but NOT committed."
         if ctx.is_workspace_mode():
-            footer += " Do not commit; the headless runner will emit a patch artifact."
+            footer += " " + workspace_edit_note(ctx)
         return footer
     footer = (
         "Files are on disk but NOT committed. Run commit_reviewed when ready.\n"

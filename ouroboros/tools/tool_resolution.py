@@ -585,9 +585,11 @@ def _format_tool_arg_error(entry: "ToolEntry", *, rejected: tuple[str, ...] = ()
     # signature-bind refusal cannot name one, and a PRIVATE dispatch carrier is
     # never echoed back.
     named = f"unsupported argument(s): {', '.join(rejected)}. " if rejected else ""
+    hint = (" Use cwd=system_repo or cwd=system_repo/subdir, not root."
+            if "root" in rejected and entry.name in {"run_command", "run_script", "start_service"} else "")
     return (
         f"⚠️ TOOL_ARG_ERROR ({entry.name}): invalid arguments for {entry.name}. "
-        f"{named}Accepted parameters: {accepted}."
+        f"{named}Accepted parameters: {accepted}.{hint}"
     )
 
 

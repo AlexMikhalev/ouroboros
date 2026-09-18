@@ -124,6 +124,7 @@ _CONTROL_DIR_BACKUP_MAX_BYTES = 5 * 1024 * 1024
 # Historical private spellings stay as aliases for call sites and tests.
 from ouroboros.tools.process_facts import (  # noqa: E402
     active_resolved_runtime as _active_resolved_runtime,
+    process_environment_tool, record_runtime_selection, selected_process_environment,
     publish_process_facts as _publish_process_facts,  # noqa: F401 — historical private spelling for call sites and tests
 )
 from ouroboros.tools.shell_process import (  # noqa: E402
@@ -266,6 +267,7 @@ def _literal_argv_notes(cmd: List[str]) -> str:
     return "".join(notes)
 
 
+@process_environment_tool
 def _run_shell(
     ctx: ToolContext,
     cmd,
@@ -403,16 +405,19 @@ def _run_shell(
     bootstrap_process_path()
     # Emergency bundled-node PATH prepend; None on every healthy path (env stays byte-identical).
     node_resolution = active_node_resolution(ctx)
+    from ouroboros.workspace_executor import overlay_env
+    selected_env = selected_process_environment()
+    run_env = apply_env_path_prepend(overlay_env(_shell_env_for_cwd(ctx, pathlib.Path(work_dir)), selected_env), node_resolution)
+    record_runtime_selection(ctx, cmd, work_dir, run_env)
     # Two clocks (D2-1): EPOCH feeds the st_mtime audit; MONOTONIC feeds durations.
     _command_start_epoch = time.time()
     _command_start_ts = time.monotonic()
     try:
         if _executor_can_run_cwd(ctx, pathlib.Path(work_dir)):
             res = executor_execute(ctx, cmd, pathlib.Path(work_dir), timeout_sec,
-                                   env_overlay=interpreter_path_overlay(node_resolution))
+                                   env_overlay=interpreter_path_overlay(node_resolution),
+                                   **({"target_env": selected_env} if selected_env else {}))
         else:
-            run_env = apply_env_path_prepend(
-                _shell_env_for_cwd(ctx, pathlib.Path(work_dir)), node_resolution)
             res = _tracked_subprocess_run(
                 cmd, cwd=str(work_dir),
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -541,6 +546,7 @@ def _run_shell(
         return f"⚠️ SHELL_ERROR: {e}. root={binding.root}, cwd={work_dir}"
 
 
+@process_environment_tool
 def _run_script(
     ctx: ToolContext,
     script: str,
@@ -616,6 +622,7 @@ def _run_script(
         result = _run_shell(
             ctx, argv, cwd=cwd, outputs=outputs, scratch=scratch,
             _resolved_binding=binding, timeout_sec=timeout_sec, timeout=timeout,
+            env_from_settings=kwargs.get("env_from_settings"),
         )
     finally:
         try:
@@ -682,13 +689,14 @@ def get_tools() -> List[ToolEntry]:
                     ),
                 },
 	                "cwd": {"type": "string", "default": "", "description": "Omit for active_workspace; use system_repo[/subdir] for Ouroboros or skill_payload[/subdir] with bucket+skill_name for a skill. Existing task_drive, artifact_store, user_files and authorized absolute cwd forms remain available; use cwd instead of the rejected cd builtin."},
+	                "env_from_settings": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Explicit environment variable → saved setting key mapping. Uses existing Settings-selection authority; secret values are masked in diagnostics."},
 	                "bucket": {"type": "string", "enum": ["external", "clawhub", "ouroboroshub", "user_repo"], "description": "Physical skill location for cwd=skill_payload[/subdir]."},
 	                "skill_name": {"type": "string", "description": "Exact skill identity for cwd=skill_payload[/subdir]."},
 	                "outputs": {
 	                    "type": "array",
 	                    "items": {"type": "string"},
 	                    "default": [],
-	                    "description": "Generated file paths to copy/register into the task artifact store after success.",
+	                    "description": "Generated paths copied/registered after success, e.g. outputs=['report.txt']. The managed artifact directory is created lazily; do not move files into an assumed physical store.",
 	                },
 	                "scratch": {
 	                    "type": "array",
@@ -725,13 +733,14 @@ def get_tools() -> List[ToolEntry]:
 	                "interpreter": {"type": "string", "default": "python3", "description": "Installed executable name or path that accepts a script filename, such as python3, node, perl, zsh or lua. Receives the temporary script path followed by args. Use run_command for compiler or launcher subcommands."},
 	                "args": {"type": "array", "items": {"type": "string"}, "default": []},
 	                "cwd": {"type": "string", "default": "", "description": "Omit for active_workspace; use system_repo[/subdir] for Ouroboros or skill_payload[/subdir] with bucket+skill_name for a skill."},
+	                "env_from_settings": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Explicit environment variable → saved setting key mapping. Uses existing Settings-selection authority; secret values are masked in diagnostics."},
 	                "bucket": {"type": "string", "enum": ["external", "clawhub", "ouroboroshub", "user_repo"], "description": "Physical skill location for cwd=skill_payload[/subdir]."},
 	                "skill_name": {"type": "string", "description": "Exact skill identity for cwd=skill_payload[/subdir]."},
 	                "outputs": {
 	                    "type": "array",
 	                    "items": {"type": "string"},
 	                    "default": [],
-	                    "description": "Generated file paths to copy/register into the task artifact store after success.",
+	                    "description": "Generated paths copied/registered after success, e.g. outputs=['report.txt']. The managed artifact directory is created lazily; do not move files into an assumed physical store.",
 	                },
 	                "scratch": {
 	                    "type": "array",

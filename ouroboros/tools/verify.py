@@ -37,6 +37,7 @@ from ouroboros.tool_access import (
     canonical_data_root,
 )
 from ouroboros.tools.registry import ToolContext, ToolEntry, active_repo_dir_for
+from ouroboros.tools.process_facts import process_environment_tool, redact_process_data, record_runtime_selection, selected_process_environment
 from ouroboros.utils import utc_now_iso
 
 # Durable receipt evidence is bounded but the truncation is DISCLOSED (BIBLE P1, never
@@ -54,7 +55,7 @@ _RECEIPT_OUTPUT_CAP = 20000
 # call's result_meta, not to the receipt's stored shape), so the receipt keeps
 # exactly the three keys it has always carried, copied from the one publication
 # instead of derived a second time.
-_RECEIPT_PROCESS_KEYS = ("duration_ms", "signal", "resolved_runtime")
+_RECEIPT_PROCESS_KEYS = ("duration_ms", "signal", "resolved_runtime", "runtime_provenance")
 _TOOL_OUTPUT_CAP = 4000
 # The `no_visible_machine_contract` receipt carries the agent's OWN stated proxy and
 # residual risk — decision-shaping cognitive evidence a reviewer reads, so it goes
@@ -63,7 +64,9 @@ _RECEIPT_DECLARED_SUMMARY_CAP = 1000
 
 
 def _bounded(text: Any, cap: int) -> str:
-    t = str(text or "").strip()
+    # Raw output remains available to expected-match evaluation. Only this
+    # diagnostic copy is masked, before a bound could expose a secret fragment.
+    t = redact_process_data(str(text or "")).strip()
     if len(t) <= cap:
         return t
     return t[:cap] + f"\n…[truncated {len(t) - cap} of {len(t)} chars]"
@@ -324,7 +327,7 @@ def _compare_files_bytes_equal(
             rc = int(rc_raw)
         except (TypeError, ValueError):
             return False, f"bytes_equal: executor cmp returned no exit status for {a_raw} vs {b_raw}"
-        out = ((res.stdout or "") + ("\n" + res.stderr if res.stderr else "")).strip()
+        out = redact_process_data((res.stdout or "") + ("\n" + res.stderr if res.stderr else "")).strip()
         if rc == 0:
             return True, f"bytes_equal: {a_raw} == {b_raw} (executor cmp)"
         if rc > 1:
@@ -569,6 +572,7 @@ def _record_delegation_zero_run(
     )
 
 
+@process_environment_tool
 def _verify_and_record(
     ctx: ToolContext,
     contract_kind: str = "",
@@ -731,6 +735,10 @@ def _verify_and_record(
         # untouched, and the agent-visible result text below is unchanged.
         _check_started_ts = time.monotonic()
         _resolved_runtime = _active_resolved_runtime(ctx)
+        from ouroboros.workspace_executor import overlay_env
+        selected_env = selected_process_environment()
+        run_env = apply_env_path_prepend(overlay_env(_shell_env_for_cwd(ctx, pathlib.Path(work_dir)), selected_env), node_resolution)
+        record_runtime_selection(ctx, exec_argv, work_dir, run_env)
         try:
             if use_executor:
                 # Route the check through the host-owned executor backend (e.g. docker_exec
@@ -740,11 +748,9 @@ def _verify_and_record(
                 res = executor_execute(
                     ctx, exec_argv, pathlib.Path(work_dir), timeout,
                     env_overlay=interpreter_path_overlay(node_resolution),
+                    **({"target_env": selected_env} if selected_env else {}),
                 )
             else:
-                run_env = apply_env_path_prepend(
-                    _shell_env_for_cwd(ctx, pathlib.Path(work_dir)), node_resolution,
-                )
                 res = _tracked_subprocess_run(
                     exec_argv, cwd=str(work_dir),
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout,
@@ -762,7 +768,7 @@ def _verify_and_record(
             # stamp: a timeout red must be reconcilable by the later green of that argv.
             receipt.update({"status": "fail", "returncode": None, "matched": False, "check": shlex.join(argv), "check_rendering": CHECK_RENDERING_SHLEX_JOIN, "summary": f"check timed out after {timeout}s"})
             receipt.update({k: v for k, v in _facts.items() if k in _RECEIPT_PROCESS_KEYS})
-            if not append_verification_receipt(drive_root, task_id, receipt):
+            if not append_verification_receipt(drive_root, task_id, redact_process_data(receipt)):
                 return _receipt_custody_failure(
                     kind, f"check timed out after {timeout}s",
                 )
@@ -824,7 +830,7 @@ def _verify_and_record(
         if _masked:
             receipt["check_exit_masking"] = True
             receipt["check_exit_masking_reasons"] = _mask_reasons
-        if not append_verification_receipt(drive_root, task_id, receipt):
+        if not append_verification_receipt(drive_root, task_id, redact_process_data(receipt)):
             return _receipt_custody_failure(
                 kind, f"verdict={'PASS' if passed else 'FAIL'}, exit={rc}",
             ) + f"\n\n{_bounded(out, _TOOL_OUTPUT_CAP)}"
@@ -840,7 +846,7 @@ def _verify_and_record(
         paths = [str(p) for p in (artifact_paths or []) if str(p or "").strip()]
         obs_status, detail = _observe_artifacts(ctx, paths)
         receipt.update({"status": obs_status, "paths": paths[:20], "summary": detail})
-        if not append_verification_receipt(drive_root, task_id, receipt):
+        if not append_verification_receipt(drive_root, task_id, redact_process_data(receipt)):
             return _receipt_custody_failure(kind, f"{obs_status}: {detail}")
         # refused_out_of_scope is a POLICY block, not a verification failure — surface it
         # honestly (not a red FAIL) so a deliverable outside the observable roots doesn't
@@ -860,7 +866,7 @@ def _verify_and_record(
     # best proxy + residual risk is recorded as a receipt and judged by a reviewer.
     # The agent's own text, not a render of an argv that ran — its own rendering stamp.
     receipt.update({"status": "declared", "check": str(check or ""), "check_rendering": CHECK_RENDERING_DECLARED_TEXT, "summary": _bounded(expected_s or str(check or ""), _RECEIPT_DECLARED_SUMMARY_CAP)})
-    if not append_verification_receipt(drive_root, task_id, receipt):
+    if not append_verification_receipt(drive_root, task_id, redact_process_data(receipt)):
         return _receipt_custody_failure(kind, receipt["summary"])
     return (
         "verify_and_record [no_visible_machine_contract] DECLARED: no host-checkable contract; "
@@ -898,6 +904,7 @@ def get_tools() -> List[ToolEntry]:
                 "expected": {"type": "string", "default": "", "description": "Optional expected substring/metric in the check output (explicit_command/explicit_metric)."},
                 "expected_match": {"type": "string", "enum": list(_EXPECTED_MATCH_KINDS), "default": "substring", "description": "How `expected` is matched: substring (default) · exact (whole stripped output equals expected) · exact_line (expected equals one stripped output line) · json_equals (output and expected parse to equal JSON, key-order tolerant) · bytes_equal (after the check runs, artifact_paths=[a, b] are compared BYTE-FOR-BYTE — golden files, migration parity; the receipt records a bounded hexdump of the first divergence). Use a stricter mode when the task gives a worked example / exact output."},
                 "artifact_paths": {"type": "array", "items": {"type": "string"}, "description": "Deliverable paths. For artifact_observation the host confirms they exist (existence/size only, never content) — observable roots are the active workspace plus every resource root the ACTIVE profile can already read (for orchestrating parents that includes subagent_projects and deliverables, so a parent CAN confirm a child's deliverable in the projects tree; child/readonly profiles lack those roots); a path outside these is a non-fatal refused_out_of_scope, not a failure. For run-kind checks (visible_verifier/explicit_command/explicit_metric) the host ALSO probes (after the check) whether each declared path that is RELATIVE to the check's working directory (cwd) still exists and records an advisory artifact_lifecycle flag — catching a check that built then deleted its own deliverable."},
+                "env_from_settings": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Run-kind only: explicit environment variable → saved setting key mapping, with existing Settings-selection authority and secret masking."},
                 "cwd": {
                     "type": "string",
                     "default": "",
