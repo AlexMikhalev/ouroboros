@@ -225,6 +225,16 @@ def skill_review_gate(
 
     author = validate_author_disposition(author_disposition)
     author_current = bool(current_hash and author and author["subject_hash"] == current_hash)
+    reference = author.get("review_reference") if author else None
+    reference = reference if isinstance(reference, dict) else {}
+    preflight = reference.get("preflight") if isinstance(reference.get("preflight"), dict) else {}
+    current_preflight = bool(author_current and preflight.get("content_hash") == current_hash)
+    preflight_pass = current_preflight and preflight.get("status") == "pass"
+    author_preflight_failed = current_preflight and preflight.get("status") == "failed"
+    terminal_basis = (reference.get("surface") == "skill" and reference.get("basis") in {"unavailable", "partial_feedback"}
+                         and reference.get("job_id") and reference.get("content_hash") and reference.get("finished_at")
+                         and reference.get("status") in {"completed", "succeeded", "failed", "interrupted", "cancelled", "timeout"}
+                         and reference.get("review_status") in {"pending", "failed", "interrupted", "cancelled", "timeout"})
     raw_status = normalize_skill_review_status(status)
     if enforcement is None:
         try:
@@ -241,14 +251,20 @@ def skill_review_gate(
         reason = "cyber_authority"
         summary = ("Cyber Pro permits acting on this payload by Ouroboros's judgment; "
                    "review status, staleness and failures remain independent evidence, not a PASS.")
+    elif author_preflight_failed:
+        executable = False
+        reason = "review_pending"
+        summary = "Current deterministic preflight failed; author acceptance does not make this payload executable."
+    elif (author_current and author.get("action", "finish") == "finish"
+          and author["enforcement"] == "advisory" and enforcement == "advisory"
+          and (raw_status != STATUS_PENDING or (terminal_basis and preflight_pass))):
+        executable = True
+        reason = "author_accepted_advisory"
+        summary = "The author accepted the current payload under Advisory; original critic evidence and unavailable-review facts remain unchanged."
     elif raw_status == STATUS_PENDING:
         executable = False
         reason = "review_pending"
         summary = "Review is pending or did not produce an executable verdict."
-    elif author_current and author["enforcement"] == "advisory" and enforcement == "advisory":
-        executable = True
-        reason = "author_accepted_advisory"
-        summary = "The author accepted the current payload under Advisory; the original reviewer verdict and hash are unchanged."
     elif stale:
         executable = False
         reason = "review_stale"
@@ -284,7 +300,7 @@ def skill_review_gate(
         "review_enforcement": enforcement,
         "summary": summary,
         **({
-            "preflight_failed": (not stale) and preflight_failed(findings),
+            "preflight_failed": author_preflight_failed or ((not preflight_pass) and (not stale) and preflight_failed(findings)),
             "preflight_failed_stale": bool(stale) and preflight_failed(findings),
         } if findings is not None else {}),
     }

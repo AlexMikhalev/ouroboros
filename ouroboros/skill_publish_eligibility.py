@@ -20,8 +20,21 @@ from ouroboros.skill_review_status import STATUS_CLEAN, STATUS_WARNINGS, normali
 # Sources whose payload may be submitted to the hub (native without a marker is
 # handled by skill_loader reclassification, not here).
 PUBLISHABLE_SOURCES = ("external", "self_authored", "user_repo", "ouroboroshub", "clawhub")
-# Ordinary-mode publication requires clean or advisory-only review warnings.
+# Critic-authorized publication statuses; current Advisory author authority is separate.
 PUBLISHABLE_STATUSES = frozenset({STATUS_CLEAN, STATUS_WARNINGS})
+
+
+def publication_author_acceptance(review: Any, current_hash: str) -> Dict[str, Any]:
+    """Reuse current Advisory execution authority without rewriting critic facts."""
+    if review.gate_for(current_hash)["blocking_reason"] != "author_accepted_advisory":
+        return {}
+    author = dict(review.author_disposition)
+    reference = author.get("review_reference") or {}
+    # An owner attestation alone is not independent feedback. A later recorded
+    # unavailable panel may support an explicit Advisory choice, like any skill.
+    if review.review_profile == "owner_attested" and reference.get("basis") not in {"unavailable", "partial_feedback"}:
+        return {}
+    return author
 
 
 def submit_hub_eligibility(
@@ -31,12 +44,13 @@ def submit_hub_eligibility(
     review_profile: str = "",
     review_stale: bool = False,
     github_token_configured: bool = False,
+    author_accepted: bool = False,
 ) -> Dict[str, Any]:
     """Return passive publication visibility and task-admission facts.
 
     ``disabled`` is only the compatibility projection of
     ``not task_start_allowed``.  Repairable review states keep the ordinary task
-    available; ordinary publication requires a fresh publishable review, while
+    available; ordinary publication requires fresh critic or current Advisory author authority;
     Cyber Pro retains review and scanner evidence as advice.
     """
     src = str(source or "native").lower()
@@ -64,6 +78,8 @@ def submit_hub_eligibility(
         }
     if cyber:
         reason = "Open Publish to inspect current bytes; review and scanner findings are advisory in Cyber Pro"
+    elif author_accepted:
+        reason = "Open Publish to scan the author-accepted bytes; original reviewer findings remain disclosed"
     elif str(review_profile or "") == "owner_attested":
         # Owner-attested skills SKIPPED the LLM review; a public submission needs the
         # full tri-model review, so the hub refuses them.

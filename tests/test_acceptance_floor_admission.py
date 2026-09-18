@@ -182,21 +182,10 @@ def test_projecting_an_exhausted_cap_emits_no_review_cycles_exhausted_event(monk
     assert ctx.pending_events == [] and ctx.event_queue.empty()
     assert _rows(events, REASON_REVIEW_CYCLES_EXHAUSTED) == []  # the poll never reaches the gate
 
-    # Control: the SAME inputs at the real gate do emit — same derived counter
-    # (2 paid cycles → 1 completed improvement pass) and same enforcement.
-    assert task_pacing.improvement_pass_allowed(
-        snapshot, 1, profile, required_blocking=True, ctx=ctx) == (
-        False, REASON_REVIEW_CYCLES_EXHAUSTED)
-    assert len(_rows(events, REASON_REVIEW_CYCLES_EXHAUSTED)) == 1
-    # Counter-control (owner D10/D20, 7.0 ABI): the SHARED cap binds under every
-    # policy, so the very same numbers stay refused WITHOUT the enforcement —
-    # what the enforcement changes is the typed reason and the escalation
-    # event, not whether the count axis bites; no second row is written.
-    assert task_pacing.improvement_pass_allowed(snapshot, 1, profile, ctx=None) == (
-        False, "improvement_passes_exhausted")
-    assert task_pacing.improvement_pass_allowed(snapshot, 1, profile, ctx=ctx) == (
-        False, "improvement_passes_exhausted")
-    assert len(_rows(events, REASON_REVIEW_CYCLES_EXHAUSTED)) == 1
+    # The paid wallet stays spent, but ordinary author work remains available.
+    assert task_pacing.improvement_pass_allowed(snapshot, 1, profile, required_blocking=True, ctx=ctx) == (True, "")
+    assert _rows(events, REASON_REVIEW_CYCLES_EXHAUSTED) == []
+    assert project_task_acceptance_review_capacity(ctx, task_id="root-floor-band")["claimed_cycles"] == 2
 
 
 # NOTE (7.0 ABI, Q10=A): upstream's `until_deadline` count-axis test was dropped here —
@@ -278,25 +267,13 @@ def test_the_launch_gate_turns_over_exactly_at_the_configured_floor(monkeypatch)
         task_pacing.BudgetSnapshot(has_deadline=False)) == (True, "")
 
 
-@pytest.mark.parametrize("policy,scale", [("adaptive", 2.0), ("fixed", 1.0), ("until_deadline", 1.0)])
-def test_the_improvement_window_turns_over_exactly_at_the_floor_times_its_scale(
-        monkeypatch, policy, scale):
-    """Gate 2's time rail: `spendable > floor × _window_scale(profile)`, ×2
-    under the adaptive policy and ×1 otherwise. The count axis is deliberately
-    open here (an explicit cap of 2 with zero passes done), so the only thing
-    that can refuse is the window."""
+@pytest.mark.parametrize("policy", ["adaptive", "fixed"])
+def test_author_work_stops_at_ordinary_reserve(monkeypatch, policy):
     from ouroboros import task_pacing
 
-    monkeypatch.delenv("OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC", raising=False)
     profile = {"improvement_policy": policy, "max_improvement_passes": 2}
-    floor = task_pacing._acceptance_floor_sec()
-    assert task_pacing._window_scale(profile) == scale
-    edge = floor * scale
-    assert task_pacing.improvement_pass_allowed(_snapshot(edge - 1), 0, profile, ctx=None) == (
-        False, "improvement_window_inside_reserve")
-    assert task_pacing.improvement_pass_allowed(_snapshot(edge), 0, profile, ctx=None) == (
-        False, "improvement_window_inside_reserve")
-    assert task_pacing.improvement_pass_allowed(_snapshot(edge + 1), 0, profile, ctx=None) == (True, "")
+    assert task_pacing.improvement_pass_allowed(_snapshot(0), 0, profile) == (False, "improvement_window_inside_reserve")
+    assert task_pacing.improvement_pass_allowed(_snapshot(1), 0, profile) == (True, "")
 
 
 # The BEFORE half of this table was recorded by running the same probe against
@@ -309,32 +286,16 @@ def test_the_improvement_window_turns_over_exactly_at_the_floor_times_its_scale(
 # in seconds against the shipped 200 s floor: floor−1, floor, floor+1,
 # 2×floor−1, 2×floor, 2×floor+1.
 _ADMISSION_MATRIX = [
-    # (history, policy, spendable seconds, launch admits, improvement admits)
-    ("empty", "adaptive", 199.0, False, False), ("empty", "adaptive", 200.0, False, False),
-    ("empty", "adaptive", 201.0, True, False), ("empty", "adaptive", 399.0, True, False),
-    ("empty", "adaptive", 400.0, True, False), ("empty", "adaptive", 401.0, True, True),
-    ("empty", "fixed", 199.0, False, False), ("empty", "fixed", 200.0, False, False),
-    ("empty", "fixed", 201.0, True, True), ("empty", "fixed", 399.0, True, True),
-    ("empty", "fixed", 400.0, True, True), ("empty", "fixed", 401.0, True, True),
-    ("huge", "adaptive", 199.0, False, False), ("huge", "adaptive", 200.0, False, False),
-    ("huge", "adaptive", 201.0, True, False), ("huge", "adaptive", 399.0, True, False),
-    ("huge", "adaptive", 400.0, True, False), ("huge", "adaptive", 401.0, True, True),
-    ("huge", "fixed", 199.0, False, False), ("huge", "fixed", 200.0, False, False),
-    ("huge", "fixed", 201.0, True, True), ("huge", "fixed", 399.0, True, True),
-    ("huge", "fixed", 400.0, True, True), ("huge", "fixed", 401.0, True, True),
+    (history, policy, spendable, spendable > 200, spendable > 0)
+    for history in ("empty", "huge") for policy in ("adaptive", "fixed")
+    for spendable in (0, 1, 199, 200, 201, 399, 400, 401)
 ]
 
 
 @pytest.mark.parametrize("history,policy,spendable,launch_ok,improve_ok", _ADMISSION_MATRIX)
-def test_the_admission_matrix_is_local_predicate_equivalence_with_the_base_tree(
+def test_critic_floor_and_author_reserve_are_independent(
         monkeypatch, tmp_path, history, policy, spendable, launch_ok, improve_ok):
-    """Local predicate equivalence with the base tree, cell by cell: the two
-    gate predicates answer here exactly as they answered at f62512b6, at
-    spendable = floor−1, floor, floor+1, 2×floor−1, 2×floor and 2×floor+1,
-    under the adaptive and the non-adaptive policy, with an empty history and
-    with a recorded panel long enough to have dominated the old estimate. The
-    scope is these two predicates on these inputs — not the panel around
-    them."""
+    """Paid launch uses its floor; author work uses ordinary remaining time."""
     from ouroboros import task_pacing
 
     monkeypatch.delenv("OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC", raising=False)

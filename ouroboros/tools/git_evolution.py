@@ -322,7 +322,9 @@ def _record_evolution_commit_receipt(
     """Record the exact reviewed SHA or leave it as an inspectable local orphan."""
     from supervisor.evolution_lifecycle import record_evolution_commit
 
-    receipt = record_evolution_commit(**claim, commit_sha=commit_sha)
+    receipt = record_evolution_commit(**claim, commit_sha=commit_sha,
+        triad_scope_status=str(getattr(ctx, "_commit_review_status", "unknown")),
+        author_disposition=getattr(ctx, "_author_commit_record", None))
     if receipt.get("ok"):
         return ""
     containment = _git()._preserve_evolution_orphan(

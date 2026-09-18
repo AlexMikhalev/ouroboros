@@ -272,7 +272,7 @@ class AdvisoryReviewState:
         if not attempt.ts:
             attempt.ts = attempt.started_ts
         attempt.updated_ts = now
-        if attempt.status in ("blocked", "failed", "succeeded") and not attempt.finished_ts:
+        if attempt.status in ("blocked", "failed", "succeeded", "reviewed") and not attempt.finished_ts:
             attempt.finished_ts = now
 
         merged = self._upsert_attempt(attempt)

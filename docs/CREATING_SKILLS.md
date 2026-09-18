@@ -36,8 +36,9 @@ and official-hub payloads are freshly rechecked against the live catalog before
 attestation is persisted. Only the tri-model LLM phase is skipped; the verdict
 is marked `owner-attested` (distinct from an LLM-clean badge) and does not
 confer publication readiness. Choosing Publish may still start the ordinary
-managed publication task, but Ouroboros must complete a fresh full skill review
-before any outbound GitHub effect. Native, ClawHub, and unverified
+managed publication task, but attestation alone authorizes no outbound GitHub
+effect. Publication needs fresh critic authority or a later actual independent-review
+outcome acknowledged through qualified Advisory author finish (see Publishing). Native, ClawHub, and unverified
 OuroborosHub payloads are never attestable. The agent cannot self-attest (the
 marker is owner-state).
 
@@ -183,7 +184,10 @@ flowchart LR
     triad -- PASS --> deps
     deps --> enable[owner toggles enabled=true]
     enable --> execute[skill_exec / dispatch]
-    review -- FAIL/PREFLIGHT --> repair[Repair → re-review]
+    review -- feedback --> reaction[Author reaction]
+    reaction -- next permitted panel --> review
+    reaction -- Advisory finish + current preflight --> deps
+    review -- PREFLIGHT failure --> repair[Repair]
     repair --> review
 ```
 
@@ -193,13 +197,13 @@ flowchart LR
 - **Review** runs three reviewer models in parallel against the
   Skill Review Checklist (see [`docs/CHECKLISTS.md`](CHECKLISTS.md)).
   The review pack hashes every runtime-reachable file in the skill
-  directory; any later edit invalidates the executable verdict. `.self_authored.json`
+  directory; any later edit stales that critic verdict. `.self_authored.json`
   is provenance only; self-authored skills use the same tri-model review,
   grant, enable, and extension reload flow as other executable skills.
 - **Isolated deps** (pip / npm / uv / node) install into
   `data/skills/<bucket>/<name>/.ouroboros_env/`. Status is recorded
   in `data/state/skills/<name>/deps.json`.
-- **Enable** flips `enabled.json` after a fresh executable review + grants + deps. The
+- **Enable** flips `enabled.json` after current executable-review authority + grants + deps. The
   Skills UI surfaces a toggle; agents can also call `toggle_skill`.
   A self-authored skill's first enablement can follow
   `OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS`; otherwise enabling requires the owner
@@ -610,13 +614,14 @@ follow the setting below; an explicitly authorized task toggle remains separate.
 
 `OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS` is enabled by default as of v6.10.0; the
 owner may disable it in Settings → Behavior → Skills (desktop asks for native
-confirmation and web uses the owner endpoint). When enabled, a fresh executable
-review grants only the manifest-declared keys and host permissions for the
+confirmation and web uses the owner endpoint). When enabled, current executable
+review authority grants only the manifest-declared keys and host permissions for the
 current content hash. Under
 blocking enforcement, blocker reviews are not executable and do not auto-grant;
 under advisory enforcement, blocker findings may auto-grant only because that
-mode makes the review executable. Editing the skill still invalidates those
-grants.
+mode makes the review executable. Qualified current Advisory author acceptance
+uses the same gate even when the original critic state stays pending. Editing the
+skill still invalidates those grants.
 
 Official OuroborosHub skills have one extra review profile. If the installed
 payload, live catalog file list, and `.ouroboroshub.json` hashes all match
@@ -1410,6 +1415,11 @@ the authoritative SSOT — read it there once and consult it whenever you author
 or repair a skill instead of reading a paraphrase here. Review verdicts are
 `clean`, `warnings`, `blockers`, or `pending`; execution is decided by
 `review_gate.executable_review`.
+Advisory explicit author finish can accept unchanged or corrected bytes after
+feedback, or a returned terminal partial/unavailable review reference, with current
+deterministic preflight. It buys no second critic and retains the original hash,
+status and findings; pending work without feedback is not unavailable. Blocking
+requires fresh reviewer approval. See ARCHITECTURE §13 for the shared runtime gate.
 
 ## Reference skills
 
@@ -1445,8 +1455,9 @@ The preflight returns one of five states:
 
 - `ready` — the current snapshot is locally publication-ready; the managed task
   repeats the authoritative checks before any public effect.
-- `warnings` — only non-blocking redacted findings remain, and continuing
-  requires explicit confirmation.
+- `warnings` — redacted scanner warnings or qualified Advisory author acceptance
+  remain disclosed; original critic findings retain their actual severity.
+  Continuing requires explicit confirmation.
 - `needs_attention` — the content, version, or full review still needs work, but
   the ordinary managed publication task may start so Ouroboros can repair and
   re-review it.
@@ -1470,7 +1481,8 @@ Only literal Betterleaks `high` confidence blocks an outbound publication call.
 `medium`, `low`, missing, and unknown confidence remain redacted warnings. For
 an intentional provider-shaped fixture, Ouroboros may add Betterleaks's
 exact-line `betterleaks:allow` annotation. That byte edit makes the hash-bound
-skill review stale, so a fresh full `skill_review` is mandatory before retrying.
+critic review stale, so the current bytes need fresh critic authority or qualified
+Advisory author finish before retrying; scanner approval alone supplies neither.
 The audit pass records the suppressed exact line as an audited false positive.
 Remove or rotate a real credential instead of allowing it.
 

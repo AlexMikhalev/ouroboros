@@ -123,14 +123,9 @@ def test_settings_file_roundtrip_projects_unlimited_into_env(monkeypatch, tmp_pa
 # Acceptance formula + deprecated alias precedence
 
 
-def test_acceptance_formula_passes_equals_cycles_minus_one(monkeypatch):
-    assert rc.acceptance_max_improvement_passes_from_cycles() == 1  # default 2 cycles
-    monkeypatch.setenv(KEY, "1")
-    assert rc.acceptance_max_improvement_passes_from_cycles() == 0
-    monkeypatch.setenv(KEY, "5")
-    assert rc.acceptance_max_improvement_passes_from_cycles() == 4
-    monkeypatch.setenv(KEY, "unlimited")
-    assert rc.acceptance_max_improvement_passes_from_cycles() is None
+@pytest.mark.parametrize("cycles", ["1", "2", "5", "unlimited"])
+def test_paid_cap_does_not_limit_author_responses(monkeypatch, cycles):
+    monkeypatch.setenv(KEY, cycles)
     assert rc.get_acceptance_max_improvement_passes() is None
 
 
@@ -145,9 +140,9 @@ def test_getter_moved_out_of_config():
 
 def test_required_blocking_binds_shared_cap_unless_unlimited(monkeypatch):
     uncapped = normalize_budget_profile({})
-    assert task_pacing.effective_max_improvement_passes(uncapped, required_blocking=True) == 1
+    assert task_pacing.effective_max_improvement_passes(uncapped, required_blocking=True) is None
     monkeypatch.setenv(KEY, "3")
-    assert task_pacing.effective_max_improvement_passes(uncapped, required_blocking=True) == 2
+    assert task_pacing.effective_max_improvement_passes(uncapped, required_blocking=True) is None
     monkeypatch.setenv(KEY, "unlimited")
     assert task_pacing.effective_max_improvement_passes(uncapped, required_blocking=True) is None
     # Explicit task-local caps still win under every policy (owner "Hurry up" = 0).
@@ -295,18 +290,16 @@ def test_corrupt_claimant_cancel_latch_cannot_spend_root_wallet(tmp_path):
     assert claimant_path.read_text(encoding="utf-8") == "{"
 
 
-def test_improvement_pass_gate_and_rails_follow_shared_cap(monkeypatch):
+def test_author_rails_separate_paid_cap_from_local_passes(monkeypatch):
     snapshot = task_pacing.BudgetSnapshot(has_deadline=False)
     profile = normalize_budget_profile({})
-    assert task_pacing.improvement_pass_allowed(snapshot, 0, profile, required_blocking=True) == (True, "")
-    assert task_pacing.improvement_pass_allowed(snapshot, 1, profile, required_blocking=True) == (
-        False, "review_cycles_exhausted")  # the shared cap under blocking is the typed D27 reason
-    line = task_pacing._acceptance_rails_line_inner(snapshot, profile, 0, None, required_blocking=True)
-    assert "review passes: 0/1" in line and "FINAL improvement pass" in line
+    for count in (0, 1, 50):
+        assert task_pacing.improvement_pass_allowed(snapshot, count, profile, required_blocking=True) == (True, "")
+    line = task_pacing._acceptance_rails_line_inner(snapshot, profile, 1, None, required_blocking=True)
+    assert "no local count cap" in line and "paid reviewer cycles: 2 maximum" in line
     monkeypatch.setenv(KEY, "unlimited")
-    assert task_pacing.improvement_pass_allowed(snapshot, 50, profile, required_blocking=True) == (True, "")
     line = task_pacing._acceptance_rails_line_inner(snapshot, profile, 50, None, required_blocking=True)
-    assert "no local count cap" in line and "review cycles unlimited" in line
+    assert "no local count cap" in line and "paid reviewer cycles: unlimited maximum" in line
 
 
 # ---------------------------------------------------------------------------
@@ -513,7 +506,7 @@ def test_legacy_acceptance_key_migrates_into_the_shared_knob(tmp_path, monkeypat
     # the saved file itself is untouched by load (migration happens in the LOADED dict)
     cfg.apply_settings_to_env(loaded)
     assert review_max_cycles() == 4
-    assert get_acceptance_max_improvement_passes() == 3
+    assert get_acceptance_max_improvement_passes() is None
     # An owner-authored shared value always wins: no "customized?" guessing left.
     settings.write_text(json.dumps({
         "OUROBOROS_ACCEPTANCE_MAX_IMPROVEMENT_PASSES": 3,
@@ -521,7 +514,7 @@ def test_legacy_acceptance_key_migrates_into_the_shared_knob(tmp_path, monkeypat
     }), encoding="utf-8")
     loaded = cfg.load_settings()
     cfg.apply_settings_to_env(loaded)
-    assert review_max_cycles() == 2 and get_acceptance_max_improvement_passes() == 1
+    assert review_max_cycles() == 2 and get_acceptance_max_improvement_passes() is None
 
 
 def test_exhausted_event_is_durable_even_with_a_live_queue(tmp_path):

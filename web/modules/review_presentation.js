@@ -404,10 +404,9 @@ function planAttempt(wave, index, isCurrent) {
     if (!id) return null;
     const verdict = text(wave.aggregate || 'UNKNOWN');
     const superseded = Boolean(wave.superseded) || !isCurrent;
-    // A persisted wave is a completed reviewer call even when the plan gate
-    // intentionally remains open (`closed=false`). Liveness belongs only to a
-    // current attempt for which no matching wave has landed yet.
-    const state = superseded ? 'superseded' : 'terminal';
+    // Gate closure and physical reviewer custody are independent. A partial
+    // wave can remain in flight after the author selects a different plan.
+    const state = wave.custody_pending === true ? 'running' : superseded ? 'superseded' : 'terminal';
     return {
         id,
         surface: 'plan',
@@ -563,7 +562,7 @@ function planWaveDetail(wave) {
     const author = wave.author_disposition;
     if (author && typeof author === 'object' && text(author.disposition)) {
         lines.push(
-            `Author finish: ${text(author.disposition)}${text(author.reviewer_signal) ? ` · reviewer signal=${text(author.reviewer_signal)}` : ''}`
+            `Author ${author.action === 'stop' ? 'stop' : 'finish'}: ${text(author.disposition)}${text(author.reviewer_signal) ? ` · reviewer signal=${text(author.reviewer_signal)}` : ''}`
             + `${text(author.rationale) ? ` · ${text(author.rationale)}` : ''}`
             + `${text(author.subject_hash) ? ` · subject_hash=${text(author.subject_hash)}` : ''}`
             + `${text(author.source) ? ` · source=${text(author.source)}` : ''}`,
@@ -638,19 +637,27 @@ export function planReviewGroupFromTaskDetail(detail, ownerTaskId = '') {
     const recordedWaves = Array.isArray(stateRecord.waves) ? stateRecord.waves : [];
     if (!recordedWaves.length && !text(current.status)) return null;
     const currentFingerprint = text(current.fingerprint);
+    const authorSubject = current.author_subject;
+    const author = authorDispositionText(authorSubject?.author_disposition);
+    const reviewFingerprint = author ? text(authorSubject.review_fingerprint) : currentFingerprint;
+    const authorDecisionText = author ? [author,
+        `Critic plan: ${reviewFingerprint}`,
+        authorSubject.source_ref?.path ? `Current plan source: ${text(authorSubject.source_ref.root)}:${text(authorSubject.source_ref.path)}` : '',
+        authorSubject.source_ref?.sha256 ? `Source sha256=${text(authorSubject.source_ref.sha256)}` : '',
+    ].filter(Boolean).join('\n') : '';
     const typedCurrentStatus = text(current.status).toLowerCase();
     // C-09: a compact row proves history, not reusable authority. While the
     // same envelope is being reviewed again, replace that stale projection
     // with current_attempt; the eventual full wave reuses the same identity.
     const waves = recordedWaves.filter((wave) => !(
-        wave?.compact
+        wave?.compact && !author
         && currentFingerprint
         && typedCurrentStatus
         && text(wave.request_fingerprint) === currentFingerprint
         && (typedCurrentStatus === 'open' || wave.closed === true)
     ));
-    const currentWaveIndex = currentFingerprint
-        ? waves.findIndex((wave) => text(wave?.request_fingerprint) === currentFingerprint)
+    const currentWaveIndex = reviewFingerprint
+        ? waves.findIndex((wave) => text(wave?.request_fingerprint) === reviewFingerprint)
         : (waves.length ? waves.length - 1 : -1);
     const attempts = waves
         .map((wave, index) => planAttempt(
@@ -668,7 +675,7 @@ export function planReviewGroupFromTaskDetail(detail, ownerTaskId = '') {
     const currentStatus = typedCurrentStatus || (currentAttempt ? 'closed' : 'open');
     let state = 'terminal';
     let activeCount = 0;
-    if (!currentAttempt) {
+    if (!currentAttempt && !author) {
         const unmatchedAttempt = currentPlanAttempt(current, attempts.length);
         if (unmatchedAttempt) {
             attempts.push(unmatchedAttempt);
@@ -679,7 +686,7 @@ export function planReviewGroupFromTaskDetail(detail, ownerTaskId = '') {
             state = normalizedState(currentStatus);
         }
     }
-    let currentVerdict = text(currentAttempt?.verdict || currentStatus);
+    let currentVerdict = text(currentAttempt?.verdict || (author ? 'unavailable' : currentStatus));
     // The typed Plan gate releases an open wave when the task-wide deadline
     // rail degrades. Preserve the wave as semantic review evidence, but mirror
     // the backend precedence in the group header. A closed wave remains final.
@@ -690,6 +697,11 @@ export function planReviewGroupFromTaskDetail(detail, ownerTaskId = '') {
         state = normalizedState(terminalControl);
         activeCount = 0;
         currentVerdict = terminalControl;
+    }
+    const activeAttempts = attempts.filter((attempt) => ['queued', 'running'].includes(attempt.state));
+    if (activeAttempts.length) {
+        state = activeAttempts.some((attempt) => attempt.state === 'running') ? 'running' : 'queued';
+        activeCount = activeAttempts.length;
     }
     return {
         id: `plan:${owner}`,
@@ -703,6 +715,7 @@ export function planReviewGroupFromTaskDetail(detail, ownerTaskId = '') {
         tone: statusTone(state, currentVerdict),
         verdict: currentVerdict,
         summary: text(current.reason || currentAttempt?.summary),
+        authorDecisionText,
         activeCount,
         attemptCount: attempts.length + (finiteCount(stateRecord.waves_omitted) || 0),
         countIsAuthoritative: finiteCount(stateRecord.waves_omitted) === 0,
@@ -778,10 +791,11 @@ export function formatReviewProjection(projection) {
     return lines.join('\n');
 }
 
-function authorDispositionText(author, label = 'Author finish') {
+function authorDispositionText(author, label = '') {
     if (!author || typeof author !== 'object' || !text(author.disposition)) return '';
+    const actionLabel = label || `Author ${author.action === 'stop' ? 'stop' : 'finish'}`;
     return [
-        `${label}: ${text(author.disposition)}`,
+        `${actionLabel}: ${text(author.disposition)}`,
         text(author.reviewer_signal) ? `reviewer signal=${text(author.reviewer_signal)}` : '',
         text(author.rationale),
         text(author.subject_hash) ? `subject_hash=${text(author.subject_hash)}` : '',
@@ -1351,7 +1365,7 @@ export function renderReviewsSection(groupsInput, disclosure = {}) {
                 </button>
                 <div class="chat-review-attempts"${groupExpanded ? '' : ' hidden'}>
                     <div class="chat-review-group-cost">Cost unavailable</div>
-                    ${group.authorDecisionText ? `<div class="chat-review-attempt-detail" data-review-author-decision><span>Task author decision</span><br><span>${escapeHtmlText(group.authorDecisionText)}</span></div>` : ''}
+                    ${group.authorDecisionText ? `<div class="chat-review-attempt-detail" data-review-author-decision><span>${group.surface === 'plan' ? 'Plan' : 'Task'} author decision</span><br><span>${escapeHtmlText(group.authorDecisionText)}</span></div>` : ''}
                     ${initiator}${attempts}
                 </div>
             </div>`;

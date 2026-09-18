@@ -615,6 +615,7 @@ def test_review_cycle_publishes_only_structural_critical_finding_rejection(
     from ouroboros.tools import git as git_facade
     from ouroboros.tools import git_review_cycle as git_tools
 
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "blocking")
     sentinel = object()
     ctx = SimpleNamespace(
         repo_dir=tmp_path,

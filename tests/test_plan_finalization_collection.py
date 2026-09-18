@@ -116,7 +116,7 @@ def test_two_clean_siblings_do_not_close_a_still_running_panel(harness, panel, m
     assert _wait_until(lambda: _sent(panel) == 3)
     panel["s1"].release.set()
     panel["s2"].release.set()
-    assert _wait_until(lambda: sum("settled (ok)" in line for line in harness.progress) == 2)
+    assert _wait_until(lambda: sum(": finished;" in line and "state=settled" in line for line in harness.progress) == 2)
     if mode == "hurry":
         ctx._owner_hurry_latch = {"reason": "owner_hurry"}
     enforcement = "advisory" if mode == "advisory" else "blocking"

@@ -483,7 +483,7 @@ def _apply_harness(monkeypatch, result, *, obligations=None, tmp_path=None):
     return another, trace, tool_ctx, fences
 
 
-def test_dialogue_terminal_finalizes_honestly_with_both_positions(monkeypatch, tmp_path):
+def test_critic_terminal_assessment_still_reaches_author(monkeypatch, tmp_path):
     findings = [_finding()]
     actors = [
         _actor("s1", "FAIL", {"verdict": "FAIL", "outcome_tier": "best_effort",
@@ -497,17 +497,13 @@ def test_dialogue_terminal_finalizes_honestly_with_both_positions(monkeypatch, t
         request={"policy": {"min_successful_slots": 2}},
     )
     another, trace, tool_ctx, fences = _apply_harness(monkeypatch, result, tmp_path=tmp_path)
-    assert another is False  # NOT re-driven: the reviewers ended the dialogue
+    assert another is True
     decision = trace["acceptance_decision"]
-    # v6.78.0: one canonical terminal status; the with/without-obligations
-    # distinction lives on the `open_obligations` list asserted below.
-    assert decision["status"] == "finalized_unaccepted"  # never a clean accept
-    assert decision["reason"] == "dialogue_terminal"
-    assert decision["dialogue_status"] == DIALOGUE_STABLE_DISAGREEMENT
-    assert decision["dialogue_votes"][DIALOGUE_STABLE_DISAGREEMENT] == ["s1", "s2"]
-    assert decision["open_obligations"]  # the obligations stay recorded, not wiped
-    assert tool_ctx._task_acceptance_reviewed is True
-    assert fences == ["terminal"]
+    assert decision["status"] == "revision_requested"
+    assert decision["reason"] == "improvement_capsule"
+    assert trace["acceptance_obligations"]
+    assert not getattr(tool_ctx, "_task_acceptance_reviewed", False)
+    assert fences == ["revision"]
     # both positions persisted: reviewer votes on the run record
     host_runs = [r for r in trace["review_runs"] if r.get("authority") == "host_root"]
     assert host_runs and host_runs[-1]["dialogue"]["status"] == DIALOGUE_STABLE_DISAGREEMENT

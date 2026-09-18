@@ -64,4 +64,6 @@ def test_prose_after_the_settled_verdict_wake_gets_its_repair_round_not_a_second
     assert [wait.get("reason") for wait in f.waits] == ["review"], f.waits
     assert f.model_step == 4, f.progress
     host = [r for r in trace["review_runs"] if r.get("authority") == "host_root"]
-    assert [r.get("aggregate_signal") for r in host] == ["FAIL", "DEGRADED"], host
+    assert [r.get("aggregate_signal") for r in host] == ["FAIL"], host
+    assert trace["acceptance_decision"]["reason"] == "review_cycles_exhausted"
+    assert trace["review_decision"]["dispatch_refusal"]["reason"] == "review_cycles_exhausted"

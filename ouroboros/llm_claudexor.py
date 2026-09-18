@@ -335,7 +335,7 @@ def _request(target: dict, messages: list, tools: list | None, parameters: dict)
     # Claudexor payloads and tool schemas are opaque here and are never walked.
     prepared = scrub_native_custody(_MessageShapingMixin._normalize_system_message_placement(messages))
     for message in prepared:
-        for name in ("_context_capsule", "acceptance_observation", "_acceptance_observation",
+        for name in ("_context_capsule", "acceptance_observation", "_acceptance_observation", "review_feedback",
                      "reasoning", "reasoning_details", "reasoning_content", "response_id", "stop_reason"):
             message.pop(name, None)
         # A direct provider's refusal is assistant content, not routing metadata.

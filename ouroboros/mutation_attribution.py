@@ -3,7 +3,9 @@
 This module answers one pure evidence question: which paths were clean when
 the host captured a task's baseline and changed during the task's observed
 window?  The window is observational — nothing here claims or enforces
-exclusive ownership of a surface.  The evidence lives in the existing task
+exclusive ownership of a surface. An explicitly selected predecessor can pass
+its exact retained candidates to a new root; the original dirty baseline stays
+recorded, and this transfer supplies no reviewer approval. The evidence lives in the existing task
 result; no second ledger is introduced, and honest ambiguity (a pre-existing
 dirty path that changed, a stale baseline) is reported as blockers for the
 reviewing LLM panels to weigh, never as an automatic verdict.
@@ -24,8 +26,8 @@ from ouroboros.utils import safe_relpath, utc_now_iso
 MUTATION_EVIDENCE_VERSION = 1
 _GIT_SURFACE_TYPES = frozenset({"system_repo", "external_workspace"})
 # Full-content hashing is bounded: a dirty artifact bigger than this records a
-# size-only fingerprint (audit evidence stays bounded; candidate math never
-# depends on fingerprint content, only on the dirty path NAME set).
+# size-only fingerprint. Such an observation cannot establish exact predecessor
+# content and therefore never authorizes a transfer by matching size alone.
 _FINGERPRINT_MAX_BYTES = 32 * 1024 * 1024
 # A trashed worktree (build generations, browser caches) can list tens of
 # thousands of dirty paths; storing/fingerprinting them would stall task start
@@ -236,6 +238,7 @@ def capture_mutation_baseline(
     *,
     owner_kind: str = "task_root",
     owner_id: str = "",
+    predecessor_source: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Capture and strictly confirm surface baselines for one task.
 
@@ -291,6 +294,10 @@ def capture_mutation_baseline(
                     })
             continue
         candidate = _capture_surface(surface)
+        if predecessor_source and isinstance(candidate.get("git"), dict):
+            candidate["git"]["predecessor_adoption"] = _predecessor_git_changes(
+                results_drive_root, task_id, candidate, predecessor_source,
+            )
         captured.append(candidate)
         existing_by_key[key] = candidate
         added.append({"surface_type": key[0], "canonical_root": key[1]})
@@ -332,6 +339,60 @@ def capture_mutation_baseline(
     return dict(confirmed)
 
 
+def _predecessor_git_changes(
+    results_drive_root: Any, task_id: str, surface: Mapping[str, Any], source: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Bind a host-selected predecessor's exact terminal work at task start."""
+    from ouroboros.task_status import FINAL_STATUSES, load_effective_task_result
+
+    previous_id = str(source.get("task_id") or "")
+    adoption: dict[str, Any] = {"task_id": previous_id, "source": dict(source), "paths": []}
+    if not previous_id or previous_id == task_id:
+        return adoption
+    previous = load_effective_task_result(results_drive_root, previous_id, materialize_artifacts=False) or {}
+    if previous.get("status") not in FINAL_STATUSES:
+        return adoption
+    evidence = previous.get("mutation_evidence") or {}
+    baseline = evidence.get("baseline") or {}
+    terminal = evidence.get("terminal_candidate_snapshot") or {}
+    if (evidence.get("effect_state") != "quiescent"
+            or not baseline.get("baseline_hash")
+            or terminal.get("baseline_hash") != baseline.get("baseline_hash")):
+        return adoption
+    root = _canonical_root(surface["canonical_root"])
+    matching = [row for row in terminal.get("surfaces") or [] if isinstance(row, dict)
+                and row.get("canonical_root") == str(root)
+                and row.get("surface_type") == surface.get("surface_type")]
+    if len(matching) != 1 or matching[0].get("blockers"):
+        return adoption
+    retained = matching[0]
+    fingerprints = retained.get("candidate_fingerprints") or {}
+    git = surface["git"]
+    # Unrelated landed changes need not forbid continuation, but a changed base
+    # for a retained path cannot be mistaken for that path's original patch.
+    previous_head = str(retained.get("base_commit") or "")
+    if not previous_head:
+        return adoption
+    try:
+        changed_base = set(_git_committed_paths(root, previous_head, str(git.get("base_commit") or "")))
+    except Exception:
+        return adoption
+    for path in git.get("dirty_paths") or []:
+        fingerprint = fingerprints.get(path)
+        if (path not in changed_base and path in (retained.get("candidates") or [])
+                and isinstance(fingerprint, dict)
+                and (fingerprint.get("sha256") or fingerprint.get("kind") in {"missing", "symlink"})
+                and fingerprint == (git.get("dirty_fingerprints") or {}).get(path)):
+            adoption["paths"].append(path)
+    return adoption
+
+
+def _foreign_dirty_paths(git: Mapping[str, Any]) -> set[str]:
+    """Keep the observed dirty set intact while recognizing explicit custody."""
+    adoption = git.get("predecessor_adoption") or {}
+    return set(git.get("dirty_paths") or []) - set(adoption.get("paths") or [])
+
+
 def mutation_evidence_projection(evidence: Mapping[str, Any] | None) -> dict[str, Any]:
     """Return bounded host evidence suitable for acceptance and outcome gates."""
     if not isinstance(evidence, Mapping) or not evidence:
@@ -350,6 +411,7 @@ def mutation_evidence_projection(evidence: Mapping[str, Any] | None) -> dict[str
     surface_counts: dict[str, int] = {}
     known_path_count = 0
     preexisting_dirty_count = 0
+    adopted_path_count = 0
     for row in surfaces[:64]:
         if not isinstance(row, Mapping):
             blockers.append("baseline_surface_malformed")
@@ -360,6 +422,7 @@ def mutation_evidence_projection(evidence: Mapping[str, Any] | None) -> dict[str
         git = row.get("git")
         if isinstance(git, Mapping):
             preexisting_dirty_count += len(git.get("dirty_paths") or [])
+            adopted_path_count += len((git.get("predecessor_adoption") or {}).get("paths") or [])
     if len(surfaces) > 64:
         blockers.append("baseline_surface_limit_exceeded")
 
@@ -416,6 +479,7 @@ def mutation_evidence_projection(evidence: Mapping[str, Any] | None) -> dict[str
         "surface_counts": dict(sorted(surface_counts.items())),
         "known_path_count": known_path_count,
         "preexisting_dirty_count": preexisting_dirty_count,
+        **({"adopted_predecessor_path_count": adopted_path_count} if adopted_path_count else {}),
         "terminal_snapshot_present": isinstance(terminal, Mapping),
         "terminal_candidate_count": terminal_candidate_count,
         "terminal_excluded_count": terminal_excluded_count,
@@ -497,7 +561,7 @@ def attributed_git_candidates(
         changed = []
     if current_head != str(git.get("base_commit") or ""):
         blockers.append("baseline_stale")
-    dirty = {str(path) for path in git.get("dirty_paths") or []}
+    dirty = _foreign_dirty_paths(git)
     fingerprints = git.get("dirty_fingerprints") or {}
     excluded = sorted(path for path in changed if path in dirty)
     candidates = sorted(path for path in changed if path not in dirty)
@@ -520,6 +584,7 @@ def attributed_git_candidates(
         "base_commit": str(git.get("base_commit") or ""),
         "base_tree": str(git.get("base_tree") or ""),
         "canonical_root": str(root),
+        **({"predecessor_adoption": dict(git["predecessor_adoption"])} if git.get("predecessor_adoption") else {}),
     }
 
 
@@ -615,7 +680,7 @@ def record_terminal_mutation_candidates(
                 current_head = ""
                 changed = []
                 blockers.append("candidate_scan_failed")
-            dirty = {str(path) for path in git.get("dirty_paths") or []}
+            dirty = _foreign_dirty_paths(git)
             fingerprints = git.get("dirty_fingerprints") or {}
             excluded = sorted(path for path in changed if path in dirty)
             if any(
@@ -631,8 +696,16 @@ def record_terminal_mutation_candidates(
                 for flag_row in evidence.get("flags") or []
                 if isinstance(flag_row, dict) and str(flag_row.get("flag") or "")
             )
+            candidates = sorted(path for path in changed if path not in dirty)
+            candidate_fingerprints = {}
+            try:
+                candidate_fingerprints = {path: _path_fingerprint(root / path) for path in candidates}
+            except OSError:
+                blockers.append("candidate_fingerprint_unavailable")
             row.update({
-                "candidates": sorted(path for path in changed if path not in dirty),
+                "candidates": candidates,
+                "candidate_fingerprints": candidate_fingerprints,
+                "base_commit": current_head,
                 "excluded_preexisting_dirty": excluded,
                 "blockers": sorted(dict.fromkeys(blockers)),
                 "head_advanced": bool(
@@ -775,6 +848,10 @@ def advance_mutation_baseline(
             "dirty_fingerprints": {
                 path: _path_fingerprint(root / path) for path in still_dirty
             },
+            **({"predecessor_adoption": {
+                **row["git"]["predecessor_adoption"],
+                "paths": sorted(set(row["git"]["predecessor_adoption"].get("paths") or []) & set(still_dirty)),
+            }} if row["git"].get("predecessor_adoption") else {}),
         }
         surfaces[idx] = new_row
         replaced = True

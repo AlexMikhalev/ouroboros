@@ -182,6 +182,8 @@ def _drain_incoming_messages(
                     entry, task_id, event_queue,
                     lambda text: _loop()._append_or_merge_user_message(messages, text, slot=owner_ctx),
                 )
+                if provenance == "system" and isinstance(entry.get("review_feedback"), dict) and messages:
+                    messages[-1].setdefault("review_feedback", []).append(dict(entry["review_feedback"]))
                 acknowledge_transcript_entry(drive_root, task_id, entry)
                 continue
             if kind == KIND_QUIZ_ANSWER:

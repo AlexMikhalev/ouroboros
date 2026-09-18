@@ -168,6 +168,7 @@ REASON_IDENTICAL_ACCEPTANCE_REFUSED = "identical_acceptance_refused"
 _ACCEPTANCE_BLOCKED_TERMINAL_REASONS = frozenset({
     REASON_REVIEW_CYCLES_EXHAUSTED,
     REASON_IDENTICAL_ACCEPTANCE_REFUSED,
+    "author_stop",
 })
 
 # CLOSED mapping: forced-finalization rail (the loop's typed reason_code) -> typed
@@ -607,32 +608,7 @@ def _aggregate_outcome_tier(tiers: List[str]) -> str:
     return OUTCOME_TIER_SOLVED if tiers else ""
 
 
-def _acceptance_decision_projection(acceptance_decision: Dict[str, Any]) -> Dict[str, Any]:
-    out = {
-        "status": str(acceptance_decision.get("status") or ""),
-        # v6.78.0: the typed reason carries the distinction the collapsed status no
-        # longer spells out (no-quorum vs FAIL-without-capsule vs obligations open
-        # vs capsule spent vs deadline skip). Historical records have no reason.
-        "reason": str(acceptance_decision.get("reason") or ""),
-        "source": str(acceptance_decision.get("source") or ""),
-        "rationale": str(acceptance_decision.get("rationale") or "")[:500],
-        "agent_disposition": str(acceptance_decision.get("agent_disposition") or ""),
-        "agent_rationale": str(acceptance_decision.get("agent_rationale") or "")[:500],
-    }
-    if acceptance_decision.get("reason") == "author_finish":
-        record = acceptance_decision.get("author_disposition")
-        if isinstance(record, dict):
-            out["author_disposition"] = dict(record)
-        else:
-            out["author_disposition"] = str(record or "")
-        out["author_rationale"] = str(acceptance_decision.get("author_rationale") or "")[:500]
-        out["reviewer_signal"] = str(acceptance_decision.get("reviewer_signal") or "")
-    # v6.54.4: dissent + obligations transparency (blocking review policy).
-    if acceptance_decision.get("dissent_noted"):
-        out["dissent_noted"] = True
-    if acceptance_decision.get("open_obligations"):
-        out["open_obligations"] = [str(x) for x in acceptance_decision.get("open_obligations") or []][:10]
-    return out
+from ouroboros.review_projection import acceptance_decision_projection as _acceptance_decision_projection  # noqa: E402,F401
 
 
 def _trace_mapping(llm_trace: Dict[str, Any], key: str) -> Dict[str, Any]:
@@ -662,7 +638,7 @@ def _review_axis(llm_trace: Dict[str, Any]) -> Dict[str, Any]:
             axis["superseded_run_count"] = len(selection.all_runs)
             axis["superseded_aggregate_signals"] = selection.superseded_aggregate_signals
         if acceptance_decision:
-            axis["acceptance_decision"] = _acceptance_decision_projection(acceptance_decision)
+            axis["acceptance_decision"] = _acceptance_decision_projection(acceptance_decision, str(review_decision.get("binding_hash") or ""))
         _obligations = [o for o in (llm_trace.get("acceptance_obligations") or []) if isinstance(o, dict)]
         if _obligations:
             axis["acceptance_obligations"] = _obligations[:20]
@@ -692,7 +668,7 @@ def _review_axis(llm_trace: Dict[str, Any]) -> Dict[str, Any]:
     if impacts & {"degrades_completion", "requires_revision"}:
         axis["enforcement_impact"] = "degrades_completion"
     if acceptance_decision:
-        axis["acceptance_decision"] = _acceptance_decision_projection(acceptance_decision)
+        axis["acceptance_decision"] = _acceptance_decision_projection(acceptance_decision, str(review_decision.get("binding_hash") or ""))
     _obligations = [o for o in (llm_trace.get("acceptance_obligations") or []) if isinstance(o, dict)]
     if _obligations:
         axis["acceptance_obligations"] = _obligations[:20]
@@ -704,9 +680,17 @@ def _objective_axis(review: Dict[str, Any]) -> Dict[str, Any]:
     tier = str(review.get("outcome_tier") or "")
     decision = review.get("acceptance_decision") if isinstance(review.get("acceptance_decision"), dict) else {}
     _decision_reason = str(decision.get("reason") or "")
+    from ouroboros.review_records import validate_author_disposition
+
+    author = validate_author_disposition(decision.get("author_disposition"))
+    if (_decision_reason == "author_finish" and author and author.get("enforcement") == "advisory"
+            and author.get("action", "finish") == "finish"):
+        return {"status": OBJECTIVE_PASS, "source": "author_acceptance", "review_status": status,
+                "outcome_tier": OUTCOME_TIER_SOLVED, "reason": "author_finish"}
     if (
         str(decision.get("status") or "") == ACCEPTANCE_FINALIZED_UNACCEPTED
-        and _decision_reason in _ACCEPTANCE_BLOCKED_TERMINAL_REASONS
+        and (_decision_reason in _ACCEPTANCE_BLOCKED_TERMINAL_REASONS
+             or (decision.get("enforcement") == "blocking" and _decision_reason in {"review_degraded", "infra_failure"}))
     ):
         # D27: Required+Blocking acceptance whose shared cap is spent terminalizes
         # BLOCKED, whatever tier the last (failed) review proposed. A-material
@@ -859,7 +843,12 @@ def normalize_outcome_axes(result: Dict[str, Any]) -> Dict[str, Any]:
     objective = normalized.get("objective") if isinstance(normalized.get("objective"), dict) else {}
     objective_status = str(objective.get("status") or OBJECTIVE_NOT_EVALUATED)
     objective_source = str(objective.get("source") or "none")
-    if objective_status != OBJECTIVE_NOT_EVALUATED and objective_source != "task_acceptance_review":
+    author_current = (objective_source == "author_acceptance"
+                      and _objective_axis(normalized["review"]).get("source") == "author_acceptance")
+    plan_blocked = (objective_status == OBJECTIVE_FAIL and objective_source in {
+        "plan_review_cycles_exhausted", "plan_review_quorum_unreachable", "plan_review_author_stop"}
+        and objective.get("reason") in {REASON_REVIEW_CYCLES_EXHAUSTED, REASON_REVIEW_QUORUM_UNREACHABLE, "author_stop"})
+    if objective_status != OBJECTIVE_NOT_EVALUATED and objective_source != "task_acceptance_review" and not (author_current or plan_blocked):
         normalized["objective"] = {
             **objective,
             "status": OBJECTIVE_NOT_EVALUATED,
@@ -1156,10 +1145,10 @@ def derive_loop_outcome(final_text: str, usage: Dict[str, Any], llm_trace: Dict[
     objective = _objective_axis(review)
     plan_gate = _trace_mapping(llm_trace, "force_plan_decision")
     _plan_gate_status = str(plan_gate.get("status") or "")
-    if str(plan_gate.get("enforcement") or "") == "blocking" and (
+    if _plan_gate_status == "author_stopped" or (str(plan_gate.get("enforcement") or "") == "blocking" and (
         _plan_gate_status == "cycles_exhausted"
         or (_plan_gate_status == "open" and plan_gate.get("quorum_unreachable"))
-    ):
+    )):
         # D27: a blocking plan review whose cycle cap is spent never closed — the
         # task terminalizes BLOCKED, never best_effort. B2b extends the same honest
         # terminal to a structurally unreachable reviewer quorum (the agent CHOSE to
@@ -1167,10 +1156,10 @@ def derive_loop_outcome(final_text: str, usage: Dict[str, Any], llm_trace: Dict[
         _quorum_case = _plan_gate_status != "cycles_exhausted"
         objective.update({
             "status": OBJECTIVE_FAIL,
-            "source": ("plan_review_quorum_unreachable" if _quorum_case
+            "source": ("plan_review_author_stop" if _plan_gate_status == "author_stopped" else "plan_review_quorum_unreachable" if _quorum_case
                        else "plan_review_cycles_exhausted"),
             "outcome_tier": OUTCOME_TIER_BLOCKED,
-            "reason": (REASON_REVIEW_QUORUM_UNREACHABLE if _quorum_case
+            "reason": (str(plan_gate.get("review_capacity_reason") or "author_stop") if _plan_gate_status == "author_stopped" else REASON_REVIEW_QUORUM_UNREACHABLE if _quorum_case
                        else REASON_REVIEW_CYCLES_EXHAUSTED),
         })
     if deferred_child_count and objective.get("status") != OBJECTIVE_FAIL:

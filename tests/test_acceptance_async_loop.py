@@ -137,7 +137,20 @@ def full_loop(tmp_path, monkeypatch):
         drive_logs=ctx.drive_root / "logs", emit_progress=lambda text, **kw: fixture.progress.append(text),
         incoming_messages=incoming, task_id=task_id, drive_root=ctx.drive_root, event_queue=events,
     )
-    fixture.run = lambda: loop.run_llm_loop(**fixture.run_args)
+    def run():
+        # The scripted Main replaces the transport, including its actual-context
+        # observer. Observe only the request whose response is being returned.
+        model = loop.call_llm_with_retry
+        def observed(*args, **kwargs):
+            result = model(*args, **kwargs)
+            observer = kwargs.get("model_context_observer")
+            if result[0] is not None and callable(observer):
+                observer(args[1])
+            return result
+        with monkeypatch.context() as patcher:
+            patcher.setattr(loop, "call_llm_with_retry", observed)
+            return loop.run_llm_loop(**fixture.run_args)
+    fixture.run = run
     yield fixture
     fixture.release.set()
     if fixture.entered.is_set():
@@ -324,14 +337,14 @@ def test_reauthored_answer_on_a_one_cycle_install_is_refused_after_its_panel_was
     # One paid dispatch only: the cap refused the re-authored subject.
     assert len(f.review_sends) == 1
     host = [r for r in trace["review_runs"] if r.get("authority") == "host_root"]
-    assert len(host) == 2
+    assert len(host) == 1
     # The paid panel was read at $0 before the refusal, not left as pending stubs.
     assert not acceptance_run_pending(host[0]), host[0]["actors"]
     assert host[0]["actors"][0]["parsed"]["verdict"] == "PASS"
-    assert any("review_cycles_exhausted" in str(reason) for reason in host[1].get("degraded_reasons") or [])
+    assert trace["review_decision"]["dispatch_refusal"]["reason"] == "review_cycles_exhausted"
     decision = trace.get("acceptance_decision") or {}
-    assert decision.get("reason") == "review_degraded"
-    assert "rationale" not in decision
+    assert decision.get("reason") == "review_cycles_exhausted"
+    assert "no new panel" in decision["rationale"]
     from ouroboros.task_results import project_task_acceptance_review_capacity
     assert project_task_acceptance_review_capacity(f.ctx, task_id=f.ctx.task_id)["claimed_cycles"] == 1
 
@@ -398,10 +411,10 @@ def test_a_rewritten_answer_delivers_under_the_running_panel_instead_of_buying_o
 
 def test_a_rejected_earlier_revision_is_not_a_verdict_on_the_rewrite(full_loop, monkeypatch):
     """Fork 1: a FAIL on the earlier revision must not paint the rewritten,
-    unreviewed answer red. The settled negative verdict hands the delivery to the
-    ordinary path: at cap 1 that is the typed capacity refusal, so the row says no
-    verdict was established for THIS answer, and the task ends with warnings."""
-    from ouroboros.project_dialogue import _completion_verdict, outcome_phase
+    unreviewed answer a critic verdict. At cap 1, the task instead ends blocked
+    by the typed capacity refusal. The real earlier FAIL is retained and no
+    actorless replacement panel is invented for the corrected answer."""
+    from ouroboros.project_dialogue import outcome_phase
 
     f = full_loop
     f.reviewer_verdict = "FAIL"
@@ -425,12 +438,12 @@ def test_a_rejected_earlier_revision_is_not_a_verdict_on_the_rewrite(full_loop, 
     result, _usage, trace = f.run()
     assert result == reauthored and len(f.review_sends) == 1
     host = [r for r in trace["review_runs"] if r.get("authority") == "host_root"]
-    assert [r.get("aggregate_signal") for r in host] == ["FAIL", "DEGRADED"], host
-    assert host[0]["superseded_by_revision"] and not host[1].get("superseded_by_revision")
-    assert trace["acceptance_decision"]["reason"] == "review_degraded"
+    assert [r.get("aggregate_signal") for r in host] == ["FAIL"], host
+    assert host[0]["superseded_by_revision"]
+    assert trace["acceptance_decision"]["reason"] == "review_cycles_exhausted"
     record = _terminal_record(trace)
-    assert outcome_phase(record, {}) == "warn", record["outcome_axes"]
-    assert _completion_verdict(record, {}) == "No reviewer verdict was established for this answer."
+    assert outcome_phase(record, {}) == "error", record["outcome_axes"]
+    assert record["outcome_axes"]["objective"]["reason"] == "review_cycles_exhausted"
 
 
 def _advisory(monkeypatch):
@@ -574,6 +587,9 @@ def test_an_older_fail_never_outvotes_the_pass_that_accepted_the_task(full_loop,
             f.reviewer_verdict = "PASS"
             return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": second}, "second-review")]}, 0.0
         if f.model_step == 3:
+            # This scenario rewrites under B's settled PASS, not while B runs.
+            with f.condition:
+                assert f.condition.wait_for(lambda: f.settled_count >= 2, timeout=10)
             observation = f.ctx._acceptance_observation
             return {"content": json.dumps({"delivery_control": "replace", "full_answer": third,
                                            "acceptance_subject": {"owner_source_sha256": observation["owner_source_sha256"]}})}, 0.0

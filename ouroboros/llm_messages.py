@@ -36,7 +36,7 @@ class _MessageShapingMixin:
     ) -> List[Dict[str, Any]]:
         cleaned = scrub_native_custody(messages)
         for msg in cleaned:
-            for key in ("acceptance_observation", "_acceptance_observation"):
+            for key in ("acceptance_observation", "_acceptance_observation", "review_feedback"):
                 msg.pop(key, None)
             msg.pop("nativeContinuation", None)
             content = msg.get("content")
