@@ -84,13 +84,13 @@ def gate(tmp_path, monkeypatch):
     monkeypatch.setattr(parallel_review, "scope_reviewer_slots", lambda *_a, **_k: [
         SimpleNamespace(model=SCOPE_MODEL, slot_id="scope_slot_1", route=ReviewRouteKind.API_CHAT,
                         effort="", session_target="", session_profile="", subagent_id="",
-                        retrieves=False),
+                        retrieves=True),
     ])
     monkeypatch.setattr(review_admission, "prepare_scope_review", lambda *_a, **_k: ({
-        "prompt": "SCOPE PACK " * 50, "session_task": "", "repo_dir": tmp_path,
+        "session_task": "SCOPE BRIEF " * 50, "repo_dir": tmp_path,
         "scope_model_id": SCOPE_MODEL, "delegated": False, "slot_id": "scope_slot_1",
         "route": ReviewRouteKind.API_CHAT, "slot_effort": "", "session_target": "",
-        "session_profile": "", "subagent_id": "", "context_manifest": {}, "stable_prefix_len": 0,
+        "session_profile": "", "subagent_id": "", "context_manifest": {},
     }, None))
     row_plan = {
         "models": list(TRIAD_MODELS), "routes": [ReviewRouteKind.API_CHAT] * 2,
@@ -439,45 +439,10 @@ def test_native_episode_seats_are_paid_and_priced_by_their_first_send(gate, tmp_
     assert [s["max_completion_tokens"] for s in seats] == [100_000, _review_output_budget(), _review_output_budget()]
 
 
-def test_scope_seat_is_measured_as_the_cached_block_pair_it_sends(gate, monkeypatch):
-    """Fable minor: the scope send wraps the prompt in cached blocks at the
-    recorded stable boundary; the admission measures THAT pair, not a plain
-    system string, and the triad's user turn is one literal for both."""
-    import ouroboros.review_substrate as rs
-    from ouroboros.tools.review_admission import commit_gate_paid_seats
+def test_the_triad_user_turn_is_one_literal_for_send_and_admission(monkeypatch):
+    """The triad packet's user turn is a single literal, shared by the send and
+    by the admission that measures it."""
     from ouroboros.tools.review_multi_model import TRIAD_USER_TURN
-
-    prefix, dynamic = "STABLE GOVERNANCE " * 20, "DYNAMIC DIFF " * 5
-    prompt = prefix + dynamic
-    sent = {}
-
-    class _StubLLM:
-        def chat(self, **kwargs):
-            sent["messages"] = kwargs["messages"]
-            return {"content": _scope_matrix()}, {"prompt_tokens": 4, "completion_tokens": 2}
-
-    original = rs.ReviewCoordinator.__init__
-    monkeypatch.setattr(rs.ReviewCoordinator, "__init__",
-                        lambda self, *, llm=None, drive_root=None, usage_ctx=None:
-                        original(self, llm=_StubLLM(), drive_root=drive_root, usage_ctx=usage_ctx))
-    ctx = SimpleNamespace(task_id=ROOT, event_queue=None, pending_events=[], drive_root=str(gate))
-    token = scope_mod._SCOPE_STABLE_PREFIX_LEN.set(len(prefix))
-    try:
-        _raw, _usage, err = scope_mod._call_scope_llm(prompt, scope_model=SCOPE_MODEL, ctx=ctx)
-    finally:
-        scope_mod._SCOPE_STABLE_PREFIX_LEN.reset(token)
-    assert err == ""
-    expected = scope_mod.scope_api_messages(prompt, len(prefix))
-    assert sent["messages"] == expected
-    assert isinstance(expected[0]["content"], list) and expected[0]["content"][0].get("cache_control")
-
-    slot = SimpleNamespace(model=SCOPE_MODEL, slot_id="scope_slot_1", route=ReviewRouteKind.API_CHAT, subagent_id="")
-    seats = commit_gate_paid_seats(None, True, [{"slot": slot, "final": None, "prepared": {
-        "prompt": prompt, "session_task": "", "scope_model_id": SCOPE_MODEL, "stable_prefix_len": len(prefix)}}])
-    measured = json.dumps({"messages": sent["messages"]}, ensure_ascii=False, default=str)
-    plain = json.dumps({"messages": [{"role": "system", "content": prompt},
-                                     {"role": "user", "content": scope_mod.SCOPE_USER_TURN}]}, ensure_ascii=False)
-    assert seats[0]["prompt_chars"] == len(measured) != len(plain)
 
     captured = {}
 

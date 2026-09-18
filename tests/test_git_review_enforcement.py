@@ -652,7 +652,13 @@ def test_triad_pack_exclusions_reach_the_pack_and_the_prompt(review_ctx, monkeyp
     """The call site computes the two disclosed exclusion classes from the
     touched paths and the SAME prefix texts it inlines, hands them to the
     touched pack through the advisory seam's ``exclude_paths`` shape, and
-    appends the disclosure note AFTER the builder's OMISSION NOTE."""
+    appends the disclosure note AFTER the builder's OMISSION NOTE.
+
+    Since the governance tiers landed, the prefix texts are exactly what the
+    packet inlined IN FULL (`governance_context.inline_whole_documents`): a book
+    delivered as navigation is not a duplicate of anything, so a touched chapter
+    keeps its full text in the pack. Here the change touches nothing governance
+    activates, so there is nothing to deduplicate."""
     review, ctx = review_ctx
     captured = _mock_triad_gates(review, monkeypatch)
     seen = {}
@@ -672,16 +678,53 @@ def test_triad_pack_exclusions_reach_the_pack_and_the_prompt(review_ctx, monkeyp
     review._run_unified_review(ctx, "release: 1.0.1", repo_dir=ctx.repo_dir)
 
     assert seen["paths"] == ["uv.lock", "VERSION"]
-    assert seen["prefix_texts"] == {
-        "docs/DEVELOPMENT.md": "docs/DEVELOPMENT.md PREFIX TEXT",
-        "docs/DESIGN.md": "docs/DESIGN.md PREFIX TEXT",
-        "docs/ARCHITECTURE.md": "docs/ARCHITECTURE.md PREFIX TEXT",
-    }
+    assert seen["prefix_texts"] == {}
     assert seen["exclude_paths"] == {"uv.lock"}
     prompt = captured["prompt"]
     omission = prompt.index("⚠️ OMISSION NOTE: 1 file(s) omitted from direct context: uv.lock")
     assert prompt.index("PACK-EXCLUSION-NOTE-SENTINEL") > omission
     assert prompt.index("## Staged diff") > prompt.index("PACK-EXCLUSION-NOTE-SENTINEL")
+
+
+def test_the_prepared_packet_carries_the_governance_disclosure_record(review_ctx, monkeypatch):
+    """What the packet inlined and what it delivered as navigation is recorded
+    on the prepared packet, so the durable prompt record and the packet rows'
+    actor records can disclose it (BIBLE P1)."""
+    review, ctx = review_ctx
+    _mock_triad_gates(review, monkeypatch, changed=("web/modules/chat.js",))
+
+    prepared, early, exited = review._prepare_unified_review(ctx, "ui: chat")
+
+    assert not exited and early is None
+    manifest = prepared["governance_manifest"]
+    assert manifest and all(
+        set(row) == {"path", "tier", "disposition", "chars", "reason"} for row in manifest)
+    assert {row["tier"] for row in manifest} <= {1, 2, 3}
+    assert prepared["governance_packet_slots"] == list(prepared["row_plan"]["slot_ids"])
+    assert ctx._last_triad_governance_manifest == manifest
+
+
+def test_a_document_the_packet_inlines_is_the_duplicate_the_pack_withholds(review_ctx, monkeypatch):
+    """The dedup seam receives the exact text of each document the packet
+    inlined in full, so a touched DESIGN.md on a `web/` change is withheld from
+    the touched pack instead of travelling twice."""
+    review, ctx = review_ctx
+    _mock_triad_gates(review, monkeypatch, changed=("web/modules/chat.js", "docs/DESIGN.md"))
+    design = "# Design\n\nThe design system.\n"
+    (ctx.repo_dir / "docs").mkdir(parents=True, exist_ok=True)
+    (ctx.repo_dir / "docs" / "DESIGN.md").write_text(design, encoding="utf-8")
+    seen = {}
+
+    def _exclusions(repo_dir, paths, *, prefix_texts):
+        seen["prefix_texts"] = dict(prefix_texts)
+        return set(), ""
+
+    monkeypatch.setattr(review, "triad_pack_exclusions", _exclusions)
+    monkeypatch.setattr(review, "build_touched_file_pack", lambda *a, **k: ("(pack)", []))
+
+    review._run_unified_review(ctx, "ui: chat", repo_dir=ctx.repo_dir)
+
+    assert seen["prefix_texts"] == {"docs/DESIGN.md": design}
 
 
 def test_a_managed_subject_keeps_every_full_text(review_ctx, monkeypatch):

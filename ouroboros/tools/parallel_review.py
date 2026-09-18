@@ -21,15 +21,11 @@ from ouroboros.tools.scope_review import (
 log = logging.getLogger(__name__)
 
 
-def _route_value(route) -> str:
-    return str(getattr(route, "value", route) or "")
-
-
 def _reserved_actor_row(slot, operation_id: str) -> dict:
     return {
         "slot_id": str(slot.slot_id or ""),
         "model_id": str(slot.model or ""),
-        "route": _route_value(slot.route),
+        "route": str(getattr(slot.route, "value", slot.route) or ""),
         "effort": str(getattr(slot, "effort", "") or ""),
         "status": "in_flight",
         "operation_id": str(operation_id or ""),
@@ -147,6 +143,13 @@ def _scope_history_entry(scope_result) -> dict:
         summary = f"({status})"
     else:
         summary = " | ".join(parts) if parts else "(no findings)"
+    coverage = (getattr(scope_result, "context_manifest", {}) or {}).get("scope_coverage_diagnostics", [])
+    if coverage:
+        summary += " | Read coverage (diagnostic): " + "; ".join(
+            f"{row['slot_id']}: {row['coverage']}"
+            + (f" ({', '.join(row['uncovered_sources'])})" if row["uncovered_sources"] else "")
+            for row in coverage
+        )
     return {
         "blocked": scope_result.blocked,
         "status": status,
@@ -182,11 +185,17 @@ def _scope_not_dispatched_result(slot, reason: str = ""):
             "item": "scope_row_not_dispatched",
             "reason": reason or (
                 "assembly-before-dispatch admission (Q25=A): the commit gate was "
-                "already deterministically blocked at packet assembly, so this "
+                "already deterministically blocked at brief assembly, so this "
                 "row was not dispatched ($0 spent)."
             ),
         }],
     )
+
+
+def _scope_enforcement() -> str:
+    from ouroboros.config import get_review_enforcement
+
+    return get_review_enforcement()
 
 
 def _reservation_ids_now() -> frozenset:
@@ -256,25 +265,19 @@ def _await_scope_reservation(ctx, scope_future, seats, started_monotonic: float,
 def _prepare_scope_rows(ctx, commit_message, *, goal, scope, review_rebuttal,
                         history_snapshot, scope_history):
     """Phase 1 of the Q25-A admission: assemble EVERY configured scope row's
-    packet without dispatching any reviewer. Returns aligned row dicts
+    brief without dispatching any reviewer. Returns aligned row dicts
     ``{slot, prepared, final}`` (exactly one of prepared/final per row).
 
-    Q28-A oversized outcome: packet limits gate only the api subset — when the
-    panel's agent-session rows alone satisfy the quorum, a fit-blocked api row
-    YIELDS its seat (typed, loud, preserved as an advisory finding) instead of
-    blocking the whole panel; a panel that cannot reach quorum without its api
-    rows keeps the deterministic block (a typed zero-spend terminal upstream).
+    Every scope row retrieves, so no row receives an assembled packet and no
+    packet limit can refuse a seat here; what each row is OWED in full travels
+    with its brief as the required-source manifest.
 
     Identity of every scope row comes from the one SSOT that owns it, so the
     actor record and the substrate call agree on which row spoke. No
     except/fallback here BY DESIGN: any failure to read the configured scope
     rows must surface (the caller converts it into the same blocked result the
     dispatch path always produced)."""
-    from ouroboros.config import adaptive_quorum
-    from ouroboros.tools.review_admission import (
-        SCOPE_FIT_BLOCK_STATUSES,
-        prepare_scope_review,
-    )
+    from ouroboros.tools.review_admission import prepare_scope_review
 
     scope_slots = list(scope_reviewer_slots())
     ctx._last_scope_model = ",".join(slot.model for slot in scope_slots)
@@ -294,53 +297,6 @@ def _prepare_scope_rows(ctx, commit_message, *, goal, scope, review_rebuttal,
             subagent_id=getattr(slot, "subagent_id", ""),
         )
         rows.append({"slot": slot, "prepared": prepared, "final": final})
-    # Only a LIVE retrieving row (prepared, still to be dispatched) can supply
-    # the verdict the yield leans on: one that already terminated at assembly
-    # (final is not None) is a dead seat and must not count. RETRIEVES class:
-    # session rows and configured-subagent api rows both retrieve (Q28-A).
-    session_rows = sum(
-        1 for row in rows
-        if row["final"] is None
-        and bool(getattr(
-            row["slot"], "retrieves",
-            str(getattr(row["slot"].route, "value", row["slot"].route) or "")
-            == "agent_session",
-        ))
-    )
-    if session_rows >= adaptive_quorum(len(rows)):
-        for row in rows:
-            final = row["final"]
-            if (
-                final is not None and final.blocked
-                and str(getattr(final, "status", "")) in SCOPE_FIT_BLOCK_STATUSES
-            ):
-                slot = row["slot"]
-                note = (
-                    f"scope api row {slot.slot_id or slot.model} could not receive its "
-                    f"packet ({final.status}); the panel's {session_rows} live "
-                    "agent-session row(s) satisfy the quorum and proceed (Q28-A)"
-                )
-                log.warning("%s", note)
-                # The row's PRE-YIELD advisories asserted a blocking terminal
-                # ("no authoritative verdict" / remedies): once the seat
-                # yields, those assertions are no longer true — supersede them
-                # in place instead of leaving them beside the yield note.
-                superseded = []
-                for finding in (final.advisory_findings or []):
-                    finding = dict(finding)
-                    finding["reason"] = (
-                        "[superseded by the Q28-A session-quorum yield — this "
-                        "api row's seat yielded; the refusal below no longer "
-                        f"blocks] {finding.get('reason', '')}"
-                    )
-                    superseded.append(finding)
-                final.advisory_findings = superseded + [{
-                    "verdict": "FAIL", "severity": "advisory",
-                    "item": "scope_api_row_oversize_yielded",
-                    "reason": f"⚠️ {note}. Original refusal: {final.block_message}",
-                }]
-                final.blocked = False
-                final.block_message = ""
     return rows
 
 
@@ -400,23 +356,20 @@ def _run_scope(ctx, commit_message, scope_rows, dispatch, *, goal, scope,
         ]
         # Reviewer-slot SSOT applies to scope too (Bible P3): a single configured
         # scope reviewer is honored but recorded as loud durable degraded-trust,
-        # and a configured>=2-but-<quorum-responded scope run must never silently
-        # pass on "any responded". Only an authoritative `responded` actor counts
-        # toward quorum; a context-floor row is not an authoritative responder and
-        # is left out of the count because its OWN authority function already
-        # blocked (it is not counted out in order to let it pass).
+        # and a configured>=2-but-<quorum scope run must never silently pass on
+        # "any responded". Read coverage is diagnostic evidence: it never
+        # changes a returned verdict's status, findings, or quorum eligibility.
         from ouroboros.config import adaptive_quorum
+        from ouroboros.tools.scope_required_sources import uncovered_sources
         _scope_statuses = [str(getattr(r, "status", "") or "") for r in results]
-        # `responded` is the ONLY authoritative status. A retrieving (session) row
-        # whose window is not sourced-proven arrives as `session_advisory`: its
-        # window evidence — not its retrieval — is what is missing, so it must not be counted as
-        # the authoritative verdict that satisfies the blocking scope quorum — it is
-        # advisory evidence, and the shortfall it leaves is disclosed below. Such a
-        # row also arrives BLOCKED (its own authority function decides that, exactly
-        # as the api row's `sub_floor` twin does), so counting it out of the quorum
-        # here can no longer let the gate fail open.
         _responded = sum(1 for s in _scope_statuses if s == "responded")
-        _session_advisory = sum(1 for s in _scope_statuses if s == "session_advisory")
+        _coverage_diagnostics = [
+            {"slot_id": str(slot.slot_id or slot.model),
+             "coverage": str(getattr(result, "coverage", "") or "unobserved"),
+             "uncovered_sources": uncovered_sources(
+                 (getattr(result, "context_manifest", {}) or {}).get("native_read_coverage"))}
+            for result, slot in zip(results, scope_slots)
+        ]
         _required = adaptive_quorum(len(scope_models))
         _single_scope_reviewer = len(scope_models) == 1
         # An all-not_dispatched panel is NOT a quorum failure: the gate was
@@ -427,11 +380,6 @@ def _run_scope(ctx, commit_message, scope_rows, dispatch, *, goal, scope,
             s == "not_dispatched" for s in _scope_statuses
         )
         _scope_degraded: list = []
-        if _session_advisory:
-            _scope_degraded.append(
-                f"scope_session_advisory_only: {_session_advisory} retrieving row(s) "
-                "carried no authoritative verdict (window not sourced-proven)"
-            )
         if _single_scope_reviewer:
             _scope_degraded.append("single_reviewer_no_diversity")
         elif _all_not_dispatched:
@@ -439,10 +387,12 @@ def _run_scope(ctx, commit_message, scope_rows, dispatch, *, goal, scope,
                 f"scope_not_dispatched_budget_admission: no scope row was dispatched ($0 spent): {withheld_reason}"
                 if withheld_reason else
                 "scope_not_dispatched_assembly_block: no scope row was dispatched "
-                "(the commit gate was already deterministically blocked at packet "
+                "(the commit gate was already deterministically blocked at brief "
                 "assembly; $0 spent)"
             )
-        elif _responded < _required and not any(getattr(r, "blocked", False) for r in results):
+        elif _responded < _required and not any(
+            getattr(r, "blocked", False) for r in results
+        ):
             _scope_degraded.append(
                 f"scope_quorum_not_met: responded={_responded} < required={_required}"
             )
@@ -450,7 +400,9 @@ def _run_scope(ctx, commit_message, scope_rows, dispatch, *, goal, scope,
             "scope_responded_count": _responded,
             "scope_required_quorum": _required,
             "single_reviewer_no_diversity": _single_scope_reviewer,
-            "scope_session_advisory_only_count": _session_advisory,
+            "scope_coverage_incomplete_count": sum(
+                row["coverage"] == "incomplete" for row in _coverage_diagnostics),
+            "scope_coverage_diagnostics": _coverage_diagnostics,
             "scope_degraded_reasons": _scope_degraded,
         }
         if len(results) == 1:
@@ -478,22 +430,17 @@ def _run_scope(ctx, commit_message, scope_rows, dispatch, *, goal, scope,
         )
         # Bible P3 negative control: configured>=2 but a PARTIAL authoritative
         # quorum (0 < responded < required) is a loud quorum FAILURE — block vs
-        # advisory FOLLOWS owner enforcement (never hardcode a block). A
-        # zero-responded run is NOT decided here: each delivery's own authority
-        # function already returns a BLOCKING result when its window cannot
-        # authorise (api `sub_floor`, retrieving `session_advisory`). Measured, the
-        # ONLY non-blocking scope status is `skipped_low_context_mode`: a
-        # budget_exceeded PACK arrives here as a BLOCKING `sub_floor` row, and no
-        # ScopeReviewResult carries status "budget_exceeded" at all. Widening this
-        # condition to `_responded < _required` would make this aggregate a SECOND
-        # owner of that decision and would turn the owner-declared low-context skip
-        # into a block — so the fix for a fail-open row belongs in the row, not here.
+        # advisory FOLLOWS owner enforcement. A zero-responded run is NOT decided
+        # here: each delivery's own authority function already returns a BLOCKING
+        # result when it cannot authorise. Widening this condition to
+        # `_responded < _required` would make this aggregate a SECOND owner of
+        # that decision — so the fix for a fail-open row belongs in the row.
         partial_quorum_shortfall = (
-            not _single_scope_reviewer and 0 < _responded < _required and not blocked
+            not _single_scope_reviewer and 0 < _responded < _required
+            and not blocked
         )
         if partial_quorum_shortfall:
-            from ouroboros.config import get_review_enforcement
-            if review_enforcement_blocks(get_review_enforcement()):
+            if review_enforcement_blocks(_scope_enforcement()):
                 blocked = True
                 block_messages.append(_qmsg)
         # Surface any non-blocking shortfall LOUDLY (advisory, never a silent
@@ -522,7 +469,7 @@ def _run_scope(ctx, commit_message, scope_rows, dispatch, *, goal, scope,
             # Quorum-aware: only an authoritative quorum yields "responded".
             # A partial quorum (some — but <required — responded) is a loud
             # "degraded_quorum"; zero responded preserves the joined raw
-            # statuses so downstream budget_exceeded/skipped detection holds.
+            # statuses so downstream typed-failure detection holds.
             status=(
                 "blocked" if blocked
                 else "responded" if _responded >= _required
@@ -594,8 +541,8 @@ def run_parallel_review(
 ):
     """Run the commit gate's triad and scope reviews against the staged diff.
 
-    Q25-A ordering: BOTH gate packets (the triad api pack and every scope row's
-    pack) are assembled and fit-checked BEFORE any reviewer is dispatched, so a
+    Q25-A ordering: the triad api pack is assembled and fit-checked and every
+    scope row's brief is built BEFORE any reviewer is dispatched, so a
     deterministic assembly failure on either side spends $0 on the other. The
     paid dispatches still run concurrently, and every verdict is computed by
     the same code as before — only the ordering moved."""
@@ -641,7 +588,7 @@ def run_parallel_review(
     # Snapshot advisory state before assembly and dispatch mutate it.
     _advisory_snapshot_before = list(getattr(ctx, '_review_advisory', []))
 
-    # ---- Phase 1 (Q25=A): assemble every packet; dispatch NOTHING yet. ----
+    # ---- Phase 1 (Q25=A): prepare every reviewer; dispatch NOTHING yet. ----
     triad_prepared, triad_early, triad_exited = None, None, True
     try:
         triad_prepared, triad_early, triad_exited = _prepare_unified_review(
@@ -774,7 +721,7 @@ def run_parallel_review(
                     scope_result.blocked = True
                     scope_result.block_message = "⚠️ SCOPE_REVIEW_BLOCKED: " + wave_refusal
         else:
-            # ---- Phase 2: submit the assembled packets to the executor pool. ----
+            # ---- Phase 2: submit the prepared reviewers to the executor pool. ----
             try:
                 if not bool(getattr(ctx, "_review_reconcile_only", False)):
                     _reserve_parallel_review_roster(ctx, triad_prepared, scope_rows)
@@ -966,7 +913,7 @@ def aggregate_review_verdict(review_err, scope_result, triad_block_reason, triad
     if scope_result is not None and not scope_rows:
         scope_rows = [build_scope_actor_record(scope_result)]
     failed_scope = [row for row in scope_rows if row.get("status") not in {
-        "responded", "skipped_low_context_mode", "not_dispatched",
+        "responded", "not_dispatched",
     }]
     technical_scope = bool(failed_scope) and all(review_failure_is_technical(row) for row in failed_scope)
     cyber = not review_enforcement_blocks("blocking")

@@ -283,6 +283,7 @@ def test_m0_missing_session_fallback_texts_are_honest(tmp_path, monkeypatch):
     the triad and the scope session builders."""
     from ouroboros.tools.review_helpers import REPO_ROOT
     from ouroboros.tools.scope_review_session import (
+        ScopeBriefInputs,
         ScopeIntentContext,
         build_scope_session_task,
     )
@@ -300,11 +301,12 @@ def test_m0_missing_session_fallback_texts_are_honest(tmp_path, monkeypatch):
     assert subject.fallback_full_diff is True
 
     triad_task = build_triad_session_task(subject=subject, **_SESSION_SECTIONS)
-    scope_task, _m = build_scope_session_task(
-        repo, "land the update", ScopeIntentContext(goal="g", scope="s"),
+    scope_task, _m = build_scope_session_task(repo, ScopeBriefInputs(
+        commit_message="land the update",
+        intent=ScopeIntentContext(goal="g", scope="s"),
         governance_repo_dir=pathlib.Path(REPO_ROOT),
         managed_subject=subject,
-    )
+    ))
     for task in (triad_task, scope_task):
         assert "M0 BASELINE UNAVAILABLE" in task
         assert "retrieve the FULL staged candidate diff yourself" in task
@@ -363,6 +365,7 @@ def test_triad_session_task_inlines_managed_delta(tmp_path, monkeypatch):
 def test_scope_session_task_inlines_managed_delta(tmp_path, monkeypatch):
     from ouroboros.tools.review_helpers import REPO_ROOT
     from ouroboros.tools.scope_review_session import (
+        ScopeBriefInputs,
         ScopeIntentContext,
         build_scope_session_task,
     )
@@ -370,21 +373,32 @@ def test_scope_session_task_inlines_managed_delta(tmp_path, monkeypatch):
     repo, ctx, _tx = _managed_resolution_repo(tmp_path, monkeypatch)
     subject = managed_review_subject(ctx, repo)
 
-    task, _manifest = build_scope_session_task(
-        repo, "land the update", ScopeIntentContext(goal="g", scope="s"),
+    task, manifest = build_scope_session_task(repo, ScopeBriefInputs(
+        commit_message="land the update",
+        intent=ScopeIntentContext(goal="g", scope="s"),
         governance_repo_dir=pathlib.Path(REPO_ROOT),
         managed_subject=subject,
-    )
+    ))
 
     assert "AUTHORITATIVE review subject" in task
     assert "resolved by the agent" in task
     assert "conflict.txt" in task
-    plain_task, _m = build_scope_session_task(
-        repo, "land the update", ScopeIntentContext(goal="g", scope="s"),
+    assert manifest["diff_delivery"] == "inline"
+    # The subject is the resolution delta: the already-released official change
+    # is NOT re-rendered, and the brief never points at `git diff --cached`.
+    assert "released official change" not in task
+    assert "do NOT substitute your own `git diff --cached`" in task
+
+    # An ordinary commit's subject is the staged diff itself, official delta
+    # included — and it carries none of the managed subject's authority wording.
+    plain_task, plain_manifest = build_scope_session_task(repo, ScopeBriefInputs(
+        commit_message="land the update",
+        intent=ScopeIntentContext(goal="g", scope="s"),
         governance_repo_dir=pathlib.Path(REPO_ROOT),
-    )
-    assert "resolved by the agent" not in plain_task
-    assert "retrieve the staged change" in plain_task
+    ))
+    assert "AUTHORITATIVE review subject" not in plain_task
+    assert "released official change" in plain_task
+    assert plain_manifest["diff_delivery"] == "inline"
 
 
 # ---------------------------------------------------------------------------
@@ -629,7 +643,11 @@ def test_fit_error_without_session_quorum_is_typed_zero_spend_with_guidance(
     assert ctx._last_review_block_reason == "fixed_overflow"
 
 
-def test_scope_fit_blocked_api_row_yields_to_session_quorum(tmp_path, monkeypatch):
+def test_no_scope_row_yields_its_seat_to_a_retrieving_quorum(tmp_path, monkeypatch):
+    """Every scope row retrieves, so no row can be refused for a packet it never
+    receives and there is nothing for a quorum to absorb: a terminal produced at
+    assembly is preserved as the row's own outcome, whatever its neighbours are.
+    """
     from ouroboros.review_execution import ReviewRouteKind
     from ouroboros.tools import parallel_review as pr
     from ouroboros.tools import review_admission as admission
@@ -640,47 +658,29 @@ def test_scope_fit_blocked_api_row_yields_to_session_quorum(tmp_path, monkeypatc
     api_slot = _fake_slot("scope_api", route=ReviewRouteKind.API_CHAT)
     s1 = _fake_slot("scope_s1", route=ReviewRouteKind.AGENT_SESSION)
     s2 = _fake_slot("scope_s2", route=ReviewRouteKind.AGENT_SESSION)
-    fit_blocked = ScopeReviewResult(
-        blocked=True, status="sub_floor",
-        block_message="⚠️ SCOPE_REVIEW_BLOCKED: pack did not assemble",
+    terminal = ScopeReviewResult(
+        blocked=True, status="error", failure_phase="context",
+        block_message="⚠️ SCOPE_REVIEW_BLOCKED: Failed to build review context",
         model_id=api_slot.model,
-        advisory_findings=[{
-            "verdict": "FAIL", "severity": "advisory",
-            "item": "scope_review_skipped",
-            "reason": "the blocking scope gate has no authoritative verdict; split the commit",
-        }],
     )
 
     def fake_prepare(_ctx, _msg, **kwargs):
         if kwargs["slot_id"] == "scope_api":
-            return None, fit_blocked
-        return {"packet": kwargs["slot_id"], "delegated": True}, None
+            return None, terminal
+        return {"brief": kwargs["slot_id"], "delegated": True}, None
 
     monkeypatch.setattr(admission, "prepare_scope_review", fake_prepare)
-    monkeypatch.setattr(
-        pr, "scope_reviewer_slots", lambda: [api_slot, s1, s2]
-    )
+    monkeypatch.setattr(pr, "scope_reviewer_slots", lambda: [api_slot, s1, s2])
 
     rows = pr._prepare_scope_rows(
         ctx, "msg", goal="", scope="", review_rebuttal="",
         history_snapshot=[], scope_history=[],
     )
 
-    yielded = rows[0]["final"]
-    assert yielded.blocked is False and yielded.block_message == ""
-    assert any(
-        f.get("item") == "scope_api_row_oversize_yielded"
-        and "pack did not assemble" in f.get("reason", "")
-        for f in yielded.advisory_findings
-    )
-    # m10: the PRE-YIELD advisory asserted a blocking terminal — after the
-    # yield it must be explicitly superseded, not left standing beside it.
-    pre_yield = [
-        f for f in yielded.advisory_findings if f.get("item") == "scope_review_skipped"
-    ]
-    assert pre_yield and pre_yield[0]["reason"].startswith(
-        "[superseded by the Q28-A session-quorum yield"
-    )
+    kept = rows[0]["final"]
+    assert kept.blocked is True and kept.block_message
+    assert not any(f.get("item") == "scope_api_row_oversize_yielded"
+                   for f in (kept.advisory_findings or []))
     assert rows[1]["prepared"] and rows[2]["prepared"]
 
 
@@ -1175,13 +1175,12 @@ def test_authorized_resolver_with_broken_tx_gets_loud_fallback(tmp_path, monkeyp
 def test_managed_binary_deletion_is_rendered_with_m0_evidence(tmp_path, monkeypatch):
     """R4: the official target added an extensionless binary absent from HEAD;
     the resolver DELETES it. The deletion row must render against M0/parent
-    evidence, and the scope classifier must call the path binary."""
+    evidence, and the binary probe must call the path binary."""
     from ouroboros.tools.review_binary_context import (
         render_staged_binary_metadata,
         staged_path_is_binary,
     )
     from ouroboros.tools.review_helpers import build_touched_file_pack
-    from ouroboros.tools.scope_review import _classify_deleted_for_inline
 
     repo, ctx, tx = _managed_resolution_repo(tmp_path, monkeypatch, official_binary=True)
     result = _git(repo, "rm", "-qf", "payload")  # the resolver deletes the official binary
@@ -1208,12 +1207,9 @@ def test_managed_binary_deletion_is_rendered_with_m0_evidence(tmp_path, monkeypa
     )
     assert "payload" not in omitted
     assert "mechanical merge M0 blob" in pack
-    # Scope classifier: binary for the managed subject; the non-managed call
-    # stays byte-identical (HEAD-only, blind to this topology — documented).
-    assert _classify_deleted_for_inline(
-        "payload", repo, m0_tree=m0_tree, staged_tree=staged_tree
-    ) == "binary content"
-    assert _classify_deleted_for_inline("payload", repo) is None
+    # The non-managed probe stays byte-identical (HEAD-only, blind to this
+    # topology — documented).
+    assert not staged_path_is_binary(repo, "payload")
 
 
 def test_withheld_triad_seats_get_typed_records_on_assembly_block(tmp_path, monkeypatch):

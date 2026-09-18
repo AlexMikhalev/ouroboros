@@ -193,11 +193,6 @@ class TestPreflightGatesBeforeSDK:
             adv, "_get_changed_file_list",
             lambda repo_dir, paths=None: "M  broken.py",
         )
-        monkeypatch.setattr(
-            adv, "build_advisory_changed_context",
-            lambda repo_dir, changed_files_text, paths=None, exclude_paths=None:
-                (["broken.py"], "(touched pack)", []),
-        )
 
         sdk_called = {"n": 0}
 
@@ -246,11 +241,6 @@ class TestPreflightGatesBeforeSDK:
         monkeypatch.setattr(
             adv, "_get_changed_file_list",
             lambda repo_dir, paths=None: "M  good.py",
-        )
-        monkeypatch.setattr(
-            adv, "build_advisory_changed_context",
-            lambda repo_dir, changed_files_text, paths=None, exclude_paths=None:
-                (["good.py"], "(touched pack)", []),
         )
         monkeypatch.setattr(
             adv, "_build_advisory_prompt",

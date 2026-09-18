@@ -185,7 +185,7 @@ def test_rebuttal_reaches_real_prompt_builder(candidate, monkeypatch):
     from ouroboros.tools.preflight_review_prompt import _build_advisory_prompt
 
     rebuttal = "New evidence: both callers preserve a zero chat identifier."
-    prompt = _build_advisory_prompt(candidate.repo_dir, "candidate", prompt_context={"review_rebuttal": rebuttal}, governance_by_retrieval=True)
+    prompt = _build_advisory_prompt(candidate.repo_dir, "candidate", prompt_context={"review_rebuttal": rebuttal})
     assert rebuttal in prompt
     assert "Developer's rebuttal" in prompt
     assert "offset/limit" not in prompt

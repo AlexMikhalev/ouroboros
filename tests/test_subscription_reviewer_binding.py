@@ -74,21 +74,19 @@ def test_plan_fit_excludes_only_the_small_account_of_same_model(accounts):
 
 
 def test_scope_sizing_uses_frozen_role_pin_and_not_main(accounts):
-    from ouroboros.tools.scope_review_budget import _effective_scope_input_limit
+    """Each scope row's window — and therefore its output reserve — resolves
+    under the row's OWN frozen role pin and credential profile."""
+    from ouroboros.tools.scope_review import _window_scaled_reserves
     from ouroboros.tools.scope_window import scope_window
 
     first = scope_window(MODEL, model_role="reviewer:scope-a", credential_profile_id="account-a")
     second = scope_window(MODEL, model_role="reviewer:scope-b", credential_profile_id="account-b")
     assert (first.window_tokens, second.window_tokens) == (200_000, 800_000)
-    assert not first.blocking_authority_allowed and not second.blocking_authority_allowed
-    a = _effective_scope_input_limit(scope_model=MODEL, window_binding={"model_role": "reviewer:scope-a", "credential_profile_id": "account-a"})
-    b = _effective_scope_input_limit(scope_model=MODEL, window_binding={"model_role": "reviewer:scope-b", "credential_profile_id": "account-b"})
-    assert a == 125_000 and b == 600_000
+    assert _window_scaled_reserves(first.window_tokens)[0] == 50_000
+    assert _window_scaled_reserves(second.window_tokens)[0] == 100_000
 
 
-def test_triad_fit_and_packed_deep_review_use_the_already_frozen_rows(tmp_path, accounts, monkeypatch):
-    from ouroboros import deep_self_review
-    from ouroboros.reviewer_slot_config import ConfiguredReviewerSlot
+def test_triad_fit_uses_the_already_frozen_rows(tmp_path, accounts, monkeypatch):
     from ouroboros.tools import review
     from ouroboros.tools.review_admission import fit_triad_prompt
 
@@ -100,12 +98,7 @@ def test_triad_fit_and_packed_deep_review_use_the_already_frozen_rows(tmp_path, 
                                                "files", "diff", "file.py", tmp_path, slots=slots)
     assert prompt == "tiny prompt" and not refused
     assert captured[0]["review-a"] < captured[0]["review-b"]
-    frozen = ConfiguredReviewerSlot(slot_id="deep-frozen", kind="api_chat", target_id=MODEL, profile_id="account-a")
-    accounts["auto"] = "account-b"
-    monkeypatch.setattr(deep_self_review, "_packed_credentials", lambda model: ("", model))
-    reason, model = deep_self_review.deep_review_route(frozen)
-    assert model is None and "200,000" in reason
-    assert accounts["calls"][-1][1] == "account-a"
+    assert {account for _source, account in accounts["calls"]} == {"account-a", "account-b"}
 
 
 def test_bound_cap_map_with_missing_slot_is_never_an_unlimited_dispatch():
@@ -132,19 +125,19 @@ def test_ack_is_reachable_after_fresh_binding_without_an_extra_fetch_and_stays_o
     assert len(accounts["calls"]) == calls + 2
 
 
-def test_explicit_scope_ack_passes_exact_options_through_existing_gateway(tmp_path, accounts, monkeypatch):
+def test_explicit_capability_ack_passes_exact_options_through_existing_gateway(tmp_path, accounts, monkeypatch):
+    """The ack endpoint binds one exact route and one exact account.
+
+    It is the write path for owner window evidence on any route the host sizes
+    against — the main model's own working window included — so an ack minted for
+    account A must stay unusable for the same model on account B.
+    """
     from ouroboros.gateway import settings as gateway
 
-    settings = {"OUROBOROS_REVIEWER_SLOTS": json.dumps({
-        "triad": [{"slot_id": "triad-one", "route": {"kind": "api_chat", "target_id": "test/model"}}],
-        "scope": [{"slot_id": slot.slot_id, "route": {"kind": "api_chat", "target_id": MODEL,
-                  "profile_id": slot.session_profile}} for slot in _slots()],
-    })}
-    notices = gateway._review_capability_notices(settings)
-    assert len(notices) == 2
-    assert {notice["needs_ack"]["options"]["credential_profile_id"] for notice in notices} == {"account-a", "account-b"}
-    notice = notices[0]["needs_ack"]
-    payload = {key: deepcopy(notice[key]) for key in ("provider", "model", "base_url", "options", "route_fp")}
+    route = {"provider": "claudexor", "model": MODEL, "base_url": "", "options": _options("account-a")}
+    payload = {key: deepcopy(value) for key, value in route.items()}
+    payload["route_fp"] = ce.route_fingerprint(provider=route["provider"], base_url=route["base_url"],
+                                               model=route["model"], options=route["options"])
     payload["window_tokens"] = 1_200_000
 
     async def read_body():
@@ -155,10 +148,14 @@ def test_explicit_scope_ack_passes_exact_options_through_existing_gateway(tmp_pa
     response = asyncio.run(gateway.api_acknowledge_capability(request))
     assert response.status_code == 200
     ack = json.loads(response.body)["ack"]
-    assert ack["route_fp"] == notice["route_fp"]
+    assert ack["route_fp"] == payload["route_fp"]
     assert ack["binding_evidence"]["credential_profile_id"] == "account-a"
-    assert resolve_reviewer_window(MODEL, model_role="reviewer:review-a", credential_profile_id="account-a").blocking_authority_allowed
-    assert not resolve_reviewer_window(MODEL, model_role="reviewer:review-b", credential_profile_id="account-b").blocking_authority_allowed
+    acked = ce.probe(tmp_path, provider="claudexor", model=MODEL,
+                     options={"source_id": "test-source", "credential_profile_id": "account-a"})
+    assert acked.source == "owner_ack" and ce.confirms_at_least(acked, 1_200_000)
+    other = ce.probe(tmp_path, provider="claudexor", model=MODEL,
+                     options={"source_id": "test-source", "credential_profile_id": "account-b"})
+    assert other.source != "owner_ack" and not ce.confirms_at_least(other, 1_200_000)
 
 
 @pytest.mark.parametrize("change", [{}, {"account_fingerprint": "old-identity"}, {"source_id": "other-source"}])
@@ -173,7 +170,7 @@ def test_manual_sizing_stays_separate_from_explicit_scope_ack(tmp_path, accounts
     monkeypatch.setenv("OUROBOROS_MODEL_CONTEXT_WINDOWS", json.dumps({"deep_review": 1_200_000}))
     window = resolve_reviewer_window(MODEL, model_role="deep_review", credential_profile_id="account-a")
     assert window.sizing_window() == 1_200_000 and window.window_tokens == 200_000
-    assert not window.blocking_authority_allowed and ce.list_owner_acks(tmp_path) == []
+    assert window.sizing_source == "user_setting" and ce.list_owner_acks(tmp_path) == []
 
 
 @pytest.mark.parametrize("code", ["subscription_window_exhausted", "auth_required", "model_outcome_unknown"])

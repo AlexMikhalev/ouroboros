@@ -6,7 +6,9 @@ mixed fanout keeps one route per row, and a retrieving review's independent
 findings no longer change severity based on its working-window size.
 """
 
+import hashlib
 import json
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -17,6 +19,7 @@ from ouroboros.review_execution import (
 from ouroboros.review_substrate import (
     scope_reviewer_slots,
 )
+from ouroboros.reviewer_window import ReviewerWindow
 
 from tests._review_session_route_shared import _owned_gateway_uses_each_test_transport as __owned_gateway_uses_each_test_transport
 from tests._review_session_route_shared import fake_route as __fake_route
@@ -94,10 +97,8 @@ def test_mixed_scope_fanout_sends_each_row_over_its_own_route(tmp_path, monkeypa
         }])
 
     monkeypatch.setattr("ouroboros.review_substrate.run_review_request", _capture)
-    monkeypatch.setattr(scope_mod, "_build_scope_prompt",
-                        lambda *_a, **_k: ("assembled api pack", None))
     monkeypatch.setattr(scope_mod, "_scope_window",
-                        lambda *_a, **_k: scope_mod.ReviewerWindow(
+                        lambda *_a, **_k: ReviewerWindow(
                             window_tokens=1_000_000, status="confirmed"))
 
     for slot in scope_reviewer_slots():
@@ -106,31 +107,26 @@ def test_mixed_scope_fanout_sends_each_row_over_its_own_route(tmp_path, monkeypa
             scope_model=slot.model, slot_id=slot.slot_id, route=slot.route,
         )
 
-    # Row 1 is the session (task, no api pack); row 2 is api (pack, no task).
+    # Row 1 is the delegated session, row 2 the native inspection episode: both
+    # retrieve, so both carry the brief and neither receives an assembled pack.
     assert dispatched == [
         ("scope_slot_1", "m/session", "agent_session", True, False),
-        ("scope_slot_2", "m/api", "api_chat", False, True),
+        ("scope_slot_2", "m/api", "api_chat", True, False),
     ], dispatched
 
 def test_scope_session_delivery_never_builds_the_pack(tmp_path, fake_route, monkeypatch):
-    """5.2 on scope: a delegated scope row goes out as a compact session task —
-    checklist, contract and intent context intact (5.3), retrieval pointers and
-    nav maps (5.7) instead of the assembled diff/touched/atlas pack — and the
-    coverage manifest is forensics, not a gate (5.6): host_file_read_attestation rides
-    as a non-blocking fact on a run that PASSES.
-
-    The row is given SOURCED window evidence so it clears the session authority
-    floor: coverage is then the only thing that could possibly gate it — and does
-    not. (Authority itself is covered by the session-floor tests below.)"""
+    """5.2 on scope: a delegated scope row goes out as the brief — checklist,
+    contract and intent context intact (5.3), the repository index and
+    governance navigation instead of an assembled repository pack — and the
+    coverage manifest is the pre-run disclosure record, not a gate (5.6): the
+    expected read provenance rides as a non-blocking fact on a run that
+    PASSES. This tree is not a git repository, so the host cannot capture the
+    staged diff and the brief discloses that the reviewer retrieves it."""
     import ouroboros.tools.scope_review as scope_mod
     from ouroboros.review_execution import ReviewRouteKind
 
-    def _pack_must_not_build(*_a, **_k):  # pragma: no cover - the point is silence
-        raise AssertionError("the api pack builder ran for a session slot")
-
-    monkeypatch.setattr(scope_mod, "_build_scope_prompt", _pack_must_not_build)
     monkeypatch.setattr(scope_mod, "_scope_window",
-                        lambda *_a, **_k: scope_mod.ReviewerWindow(
+                        lambda *_a, **_k: ReviewerWindow(
                             window_tokens=1_000_000, status="confirmed"))
     fake_route.detail = _terminal_detail(
         json.dumps({"findings": _scope_matrix_rows()}), conformance="passed",
@@ -149,7 +145,11 @@ def test_scope_session_delivery_never_builds_the_pack(tmp_path, fake_route, monk
     # route kind's own name, and the manifest used to answer with it.
     assert manifest["delivery"] == "agentic_retrieval"
     assert manifest["coverage"] == "agent_retrieval"
-    assert manifest["host_file_read_attestation"] == "unobserved"  # forensic, non-blocking
+    # Pre-run truth about provenance, not an attestation nobody performed: a
+    # delegated session's reads are recovered from its harness journal.
+    assert manifest["read_provenance_expected"] == "harness_observed"
+    assert manifest["diff_delivery"] == "retrieved_by_reviewer"
+    assert "staged_diff_capture_failed" in manifest["diff_reason"]
     assert "coverage_incomplete" not in manifest  # retired framing (BIBLE P3 amendment)
 
     # D-12 also asked that readers stay compatible with the old spelling. There
@@ -166,9 +166,8 @@ def test_scope_session_delivery_never_builds_the_pack(tmp_path, fake_route, monk
     prompt = start["prompt"]
     assert "Intent / Scope Review Checklist" in prompt
     assert "intent_alignment" in prompt and "implicit_contracts" in prompt
-    assert "session delivery" in prompt          # retrieval pointers, not packs
-    assert "git diff --cached" in prompt
-    assert "navigation map" in prompt            # 5.7: atlas as a map
+    assert "git diff --cached" in prompt         # the disclosed retrieval pointer
+    assert "Governance navigation (read on demand)" in prompt   # the map, never whole
     assert "There is no all-clear shortcut in this mode" in prompt  # matrix contract
 
 
@@ -182,11 +181,11 @@ def _run_session_scope(tmp_path, fake_route, monkeypatch, *, window, provenance,
     # sizing falls back); the designated-default sentinel is a NUMBER with no
     # status — a routing grant, never a measurement.
     if provenance in ("confirmed", "asserted"):
-        _resolved = scope_mod.ReviewerWindow(window_tokens=int(window), status=provenance)
+        _resolved = ReviewerWindow(window_tokens=int(window), status=provenance)
     elif provenance == "designated_default_sentinel":
-        _resolved = scope_mod.ReviewerWindow(window_tokens=int(window), status="")
+        _resolved = ReviewerWindow(window_tokens=int(window), status="")
     else:
-        _resolved = scope_mod.ReviewerWindow(window_tokens=0, status="")
+        _resolved = ReviewerWindow(window_tokens=0, status="")
     monkeypatch.setattr(scope_mod, "_scope_window", lambda *_a, **_k: _resolved)
     fake_route.detail = _terminal_detail(
         json.dumps({"findings": rows if rows is not None else _scope_matrix_rows()}),
@@ -221,18 +220,12 @@ def _scope_matrix_with_critical():
 def test_session_scope_preserves_findings_when_window_evidence_is_small_or_unknown(
     tmp_path, fake_route, monkeypatch, window, provenance
 ):
-    """A retrieving scope row's FINDINGS certify nothing without SOURCED window
-    evidence >= the session floor — and the row BLOCKS, as its api twin does.
-
-    The previous shape skipped `_apply_scope_authority` for `agent_session`
-    entirely — a session verdict gated commits with NO window test at all, while
-    its own manifest recorded host_file_read_attestation/host_enforced=False.
-
-    Two facts live in one result and are easy to conflate: the findings are
-    demoted to ADVISORY (an unestablished window cannot certify a verdict), and
-    the commit is BLOCKED (the panel is short an authoritative verdict). Returning
-    `blocked=False` here is what made the P3 gate fail open — the api row's
-    `sub_floor` twin blocked on the identical panel shape.
+    """A retrieving scope row keeps its findings and its authority whatever its
+    window evidence says: a small, unsourced or sentinel window neither demotes a
+    critical finding nor removes the row's seat (BIBLE P3 — authority rests on
+    the required-source manifest and its recorded coverage). The commit blocks
+    here because the row reported a CRITICAL under blocking enforcement, which is
+    the only reason a scope row ever blocks.
     """
     from ouroboros import config as cfg
     monkeypatch.setattr(cfg, "get_review_enforcement", lambda: "blocking")
@@ -253,8 +246,8 @@ def test_session_scope_preserves_findings_when_window_evidence_is_small_or_unkno
 def test_session_scope_with_sourced_window_evidence_keeps_blocking_authority(
     tmp_path, fake_route, monkeypatch
 ):
-    """Sourced evidence at or above the session floor IS authority: the row's
-    criticals gate the commit and it counts as an authoritative responder."""
+    """Sourced window evidence changes nothing either: the row's criticals gate
+    the commit and it counts as an authoritative responder."""
     from ouroboros import config as cfg
 
     monkeypatch.setattr(cfg, "get_review_enforcement", lambda: "blocking")
@@ -270,45 +263,49 @@ def test_session_scope_with_sourced_window_evidence_keeps_blocking_authority(
         assert "scope_review_session_window_unproven" not in items, window
 
 
-def test_api_scope_row_keeps_the_1m_floor_and_still_blocks_sub_floor(
+def test_api_scope_row_window_size_never_removes_its_authority(
     tmp_path, fake_route, monkeypatch
 ):
-    """The api (push) delivery is untouched: its authority rests on the assembled
-    pack fitting, so a sub-1M reviewer is still the loud `sub_floor` block."""
+    """A bare api scope row is a retrieving reviewer, so its window sizes its
+    working view and nothing else: a 200K route answers authoritatively and its
+    criticals gate the commit (BIBLE P3 — window is not a condition of
+    authority; the required-source manifest is)."""
     import ouroboros.tools.scope_review as scope_mod
+    from ouroboros import config as cfg
 
+    monkeypatch.setattr(cfg, "get_review_enforcement", lambda: "blocking")
     monkeypatch.setattr(scope_mod, "_scope_window",
-                        lambda *_a, **_k: scope_mod.ReviewerWindow(
+                        lambda *_a, **_k: ReviewerWindow(
                             window_tokens=200_000, status="confirmed"))
-    monkeypatch.setattr(scope_mod, "_build_scope_prompt",
-                        lambda *_a, **_k: ("assembled api pack", None))
     monkeypatch.setattr(
         scope_mod, "_call_scope_llm",
         lambda *_a, **_k: (json.dumps(_scope_matrix_with_critical()), {}, ""),
     )
     result = scope_mod.run_scope_review(
-        _scope_ctx(tmp_path), "api row, sub-floor window",
+        _scope_ctx(tmp_path), "api row, small window",
         scope_model="api/small-window", slot_id="scope_slot_1",
     )
-    assert result.status == "sub_floor", result.status
-    assert result.blocked is True
-    assert "does not establish the required >=1M floor" in result.block_message
+    assert result.status == "responded", result.status
+    assert result.blocked is True and result.critical_findings
+    assert "does not establish the required >=1M floor" not in result.block_message
 
 
-def test_scope_quorum_refuses_a_session_advisory_row_as_authoritative(tmp_path, monkeypatch):
-    """The scope quorum must not count a non-host-attested session row as the
-    authoritative verdict, and must disclose the shortfall it leaves."""
+def test_scope_quorum_keeps_an_answered_row_with_incomplete_read_coverage(tmp_path, monkeypatch):
+    """The same answer and findings count while its read coverage remains visible."""
     from ouroboros.tools import parallel_review, review
     from ouroboros.tools.scope_review import ScopeReviewResult
 
     rows = {
-        "api/big": ScopeReviewResult(blocked=False, status="responded", model_id="api/big"),
-        "session/row": ScopeReviewResult(
-            blocked=False, status="session_advisory", model_id="session/row",
+        "api/big": ScopeReviewResult(blocked=False, status="responded", model_id="api/big",
+                                     coverage="complete"),
+        "api/partial": ScopeReviewResult(
+            blocked=False, status="responded", model_id="api/partial", coverage="incomplete",
+            context_manifest={"native_read_coverage": {"status": "incomplete", "sources": [
+                {"path": "prompts/SYSTEM.md", "status": "incomplete"},
+            ]}},
             advisory_findings=[{
-                "verdict": "FAIL", "severity": "advisory",
-                "item": "scope_review_session_window_unproven",
-                "reason": "SCOPE_SESSION_ADVISORY_ONLY: window not sourced-proven",
+                "verdict": "FAIL", "severity": "advisory", "item": "architecture_fit",
+                "reason": "a real observation the row still contributes",
             }],
         ),
     }
@@ -316,28 +313,37 @@ def test_scope_quorum_refuses_a_session_advisory_row_as_authoritative(tmp_path, 
                         lambda _ctx, _msg, **kwargs: rows[kwargs["scope_model"]])
     monkeypatch.setattr(parallel_review, "scope_reviewer_slots", lambda *_a, **_k: [
         SimpleNamespace(model="api/big", slot_id="scope_slot_1", route=None,
-                        effort="", session_target="", session_profile=""),
-        SimpleNamespace(model="session/row", slot_id="scope_slot_2", route=None,
-                        effort="", session_target="", session_profile=""),
+                        effort="", session_target="", session_profile="", retrieves=True),
+        SimpleNamespace(model="api/partial", slot_id="scope_slot_2", route=None,
+                        effort="", session_target="", session_profile="", retrieves=True),
     ])
     monkeypatch.setattr(parallel_review, "run_cmd", lambda *_a, **_k: "staged diff")
     monkeypatch.setattr(review, "_prepare_unified_review", lambda *_a, **_k: (None, None, True))
     from ouroboros.tools import review_admission
     monkeypatch.setattr(review_admission, "prepare_scope_review",
-                        lambda *_a, **_k: ({"packet": 1}, None))
+                        lambda *_a, **_k: ({"brief": 1}, None))
 
     ctx = SimpleNamespace(
         repo_dir=tmp_path, drive_root=tmp_path, task_id="scope-quorum",
         pending_events=[], _review_history=[], _review_advisory=[], _scope_review_history={},
     )
-    parallel_review.run_parallel_review(ctx, "quorum commit")
+    args = parallel_review.run_parallel_review(ctx, "quorum commit")
+    blocked, message, _reason, _findings, advisory = parallel_review.aggregate_review_verdict(
+        *args, ctx, "quorum commit", 0.0, tmp_path)
+    assert blocked is False and message is None
+    assert [row["item"] for row in advisory] == ["architecture_fit"]
 
     manifest = (ctx._last_scope_raw_result or {}).get("context_manifest") or {}
-    # Two configured rows, adaptive quorum 2 — but only ONE authoritative verdict.
-    assert manifest["scope_responded_count"] == 1, manifest
-    assert manifest["scope_session_advisory_only_count"] == 1, manifest
-    assert any("scope_session_advisory_only" in str(r)
-               for r in manifest["scope_degraded_reasons"]), manifest
+    # Both configured rows answered; read coverage does not withdraw a verdict.
+    assert manifest["scope_responded_count"] == 2, manifest
+    assert manifest["scope_coverage_incomplete_count"] == 1, manifest
+    assert manifest["scope_degraded_reasons"] == [], manifest
+    assert manifest["scope_coverage_diagnostics"][1]["uncovered_sources"] == ["prompts/SYSTEM.md"]
+    rowed = {row["slot_id"]: row for row in ctx._last_scope_raw_results}
+    assert rowed["scope_slot_2"]["status"] == "responded"
+    assert rowed["scope_slot_2"]["failure_phase"] == ""
+    # The reviewer keeps its findings, with no host-authored FAIL for read telemetry.
+    assert rowed["scope_slot_2"]["advisory_findings"][0]["item"] == "architecture_fit"
 
 
 def test_triad_mixed_panel_builds_the_pack_once_for_api_rows_only(tmp_path, fake_route, monkeypatch):
@@ -442,8 +448,8 @@ def _all_session_scope_panel(tmp_path, monkeypatch, *, window, provenance):
 
     Only the two genuinely external things are faked: the reviewer's window
     evidence and the model call. Everything the gate actually decides with —
-    `run_scope_review`, `_apply_scope_authority`, `session_scope_authority`,
-    `run_parallel_review`'s quorum, `aggregate_review_verdict` — runs for real.
+    `run_scope_review`, `run_parallel_review`'s quorum, `aggregate_review_verdict`
+    — runs for real.
     """
     from ouroboros import config as cfg
     from ouroboros.review_execution import ReviewRouteKind
@@ -452,9 +458,9 @@ def _all_session_scope_panel(tmp_path, monkeypatch, *, window, provenance):
     import ouroboros.tools.scope_review as scope_mod
 
     if provenance:
-        resolved = scope_mod.ReviewerWindow(window_tokens=int(window), status=provenance)
+        resolved = ReviewerWindow(window_tokens=int(window), status=provenance)
     else:
-        resolved = scope_mod.ReviewerWindow(window_tokens=0, status="")
+        resolved = ReviewerWindow(window_tokens=0, status="")
     monkeypatch.setattr(cfg, "get_review_enforcement", lambda: "blocking")
     monkeypatch.setattr(scope_mod, "_scope_window", lambda *_a, **_k: resolved)
     monkeypatch.setattr(
@@ -485,15 +491,12 @@ def _all_session_scope_panel(tmp_path, monkeypatch, *, window, provenance):
 
 
 def test_all_retrieving_scope_panel_uses_findings_without_window_authority_gate(tmp_path, monkeypatch):
-    """A scope panel of retrieving rows with no sourced window evidence yields ZERO
-    authoritative verdicts — and must BLOCK, exactly as the api panel does.
+    """A scope panel of retrieving rows with no window evidence at all answers
+    authoritatively: authority rests on the required-source manifest and the
+    recorded coverage, so an unknown window neither arms nor disarms the gate.
 
-    This is the fail-open the adversarial panel measured on a6a3c1f: the same panel
-    shape gave `api_chat status=sub_floor -> BLOCKED=True` and
-    `agent_session status=session_advisory -> BLOCKED=False`. Nothing downstream
-    could recover it — `partial_quorum_shortfall` only fires above zero responders,
-    so a zero-authoritative run walked straight through the blocking scope gate of
-    BIBLE P3 while looking armed.
+    The asymmetry this replaced was the fail-open measured on a6a3c1f, where the
+    same panel shape gave a BLOCKING api row and a non-blocking retrieving one.
     """
     blocked, message, reason, manifest = _all_session_scope_panel(
         tmp_path, monkeypatch, window=0, provenance="",
@@ -501,82 +504,34 @@ def test_all_retrieving_scope_panel_uses_findings_without_window_authority_gate(
 
     assert blocked is False
     assert manifest["scope_responded_count"] == 2, manifest
-    assert manifest.get("scope_session_advisory_only_count", 0) == 0
+    assert manifest["scope_coverage_incomplete_count"] == 0, manifest
 
 
 def test_retrieving_and_api_panels_agree_on_an_unestablished_window(tmp_path, monkeypatch):
-    """The asymmetry itself is the defect: an unestablished window blocks on BOTH
-    deliveries, and SOURCED evidence at the row's own floor authorises on both."""
+    """The asymmetry itself was the defect, and it is gone in both directions:
+    both scope deliveries retrieve, so an unestablished or small window neither
+    grants nor removes authority on either of them."""
     import ouroboros.tools.scope_review as scope_mod
 
-    # Retrieving row, SOURCED at the session floor -> authoritative, no block.
     blocked, _msg, _reason, manifest = _all_session_scope_panel(
         tmp_path, monkeypatch, window=200_000, provenance="confirmed",
     )
-    assert blocked is False, "sourced >=200K evidence must restore an authoritative verdict"
+    assert blocked is False
     assert manifest["scope_responded_count"] == 2, manifest
 
-    # api row, window below its own floor -> blocks (the twin, unchanged).
-    monkeypatch.setattr(scope_mod, "_build_scope_prompt",
-                        lambda *_a, **_k: ("assembled api pack", None))
+    # The api row's twin: same small window, same authoritative outcome.
     monkeypatch.setattr(scope_mod, "_scope_window",
-                        lambda *_a, **_k: scope_mod.ReviewerWindow(
+                        lambda *_a, **_k: ReviewerWindow(
                             window_tokens=200_000, status="confirmed"))
     monkeypatch.setattr(
         scope_mod, "_call_scope_llm",
         lambda *_a, **_k: (json.dumps(_scope_matrix_rows()), {}, ""),
     )
     api_result = scope_mod.run_scope_review(
-        _scope_ctx(tmp_path), "api row, sub-floor window", scope_model="api/small",
+        _scope_ctx(tmp_path), "api row, small window", scope_model="api/small",
         slot_id="scope_slot_1",
     )
-    assert api_result.blocked is True and api_result.status == "sub_floor"
-
-
-def test_a_retrieving_row_can_actually_reach_sourced_evidence(tmp_path, monkeypatch):
-    """The >=200K floor must be REACHABLE, not decorative.
-
-    Retrieving rows were excluded from Capability-Evidence probing and their opaque
-    `harness[=model]` target does not resolve through `provider_for_model`, so no
-    product path could ever take such a row to `confirmed`/`asserted`: advisory-only
-    was the mode's ONLY possible outcome. The settings save now offers the row its
-    ack against its own floor, and acking that exact route restores authority.
-    """
-    from ouroboros import capability_evidence as ce
-    from ouroboros.gateway import settings as smod
-    from ouroboros.reviewer_window import SESSION_ROUTE_PROVIDER
-    from ouroboros.tools.scope_review_session import SESSION_WINDOW_FLOOR, session_scope_authority
-    from ouroboros.tools.scope_window import scope_window
-
-    monkeypatch.setattr(ce, "DATA_DIR", tmp_path, raising=False)
-    monkeypatch.setattr("ouroboros.config.DATA_DIR", tmp_path)
-    monkeypatch.setattr(smod, "_candidate_scope_models", lambda _s: [])
-    slots = json.dumps({
-        "triad": [{"slot_id": "t1", "route": {"kind": "api_chat", "target_id": "api/m"}}],
-        "scope": [{"slot_id": "s1", "route": {"kind": "agent_session",
-                                              "target_id": "codex=gpt-5.6-sol"}}],
-    })
-
-    notices = smod._review_capability_notices({"OUROBOROS_REVIEWER_SLOTS": slots})
-    assert len(notices) == 1, notices
-    notice = notices[0]
-    assert notice["surface"] == "scope_review_session"
-    assert notice["floor_tokens"] == SESSION_WINDOW_FLOOR
-    ack_route = notice["needs_ack"]
-    assert ack_route["provider"] == SESSION_ROUTE_PROVIDER, ack_route
-    assert ack_route["model"] == "codex=gpt-5.6-sol"
-
-    # Before the ack the row cannot authorise...
-    before = scope_window("codex=gpt-5.6-sol", session=True)
-    assert session_scope_authority([], [], scope_model="fixture", window=before.window_tokens,
-        provenance=before.status, phrase="unknown", result_kwargs={}) == ([], [], None)
-
-    # ...and the ack the UI records against that exact route is what restores it.
-    ce.record_owner_ack(tmp_path, provider=ack_route["provider"], model=ack_route["model"],
-                        base_url=ack_route["base_url"], window_tokens=SESSION_WINDOW_FLOOR)
-    after = scope_window("codex=gpt-5.6-sol", session=True)
-    assert session_scope_authority([], [], scope_model="fixture", window=after.window_tokens,
-        provenance=after.status, phrase="asserted", result_kwargs={}) == ([], [], None)
+    assert api_result.blocked is False and api_result.status == "responded"
 
 
 def test_session_schema_floor_matches_each_surfaces_clean_contract():
@@ -732,19 +687,408 @@ def test_skill_review_legacy_session_dispatch_keeps_shared_profile_pin(
 
 
 def test_scope_book_navigation_uses_physical_chapter_sources(tmp_path):
-    from ouroboros.tools.scope_review_session import governance_nav_maps
+    """The brief's governance navigation indexes the map by the PHYSICAL chapter
+    a section lives in, carries the read instruction, and inlines no chapter
+    body. A book whose membership cannot be assembled keeps its name in the
+    navigation and states the reason in the governance manifest (BIBLE P1)."""
+    from ouroboros.tools.governance_context import governance_context
     from tests.test_reference_books import sources
 
     for path, raw in sources().items():
         target = tmp_path / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(raw)
-    text = governance_nav_maps(tmp_path, ("docs/ARCHITECTURE.md",))
+    text = governance_context(
+        tmp_path, surface="scope", touched_paths=(), delivery="retrieving",
+        checklist_section_text="(scope checklist)").navigation
     assert "docs/architecture/runtime.md" in text
-    assert "Processes carry the work" in text
-    assert "The full startup mechanism" not in text
+    assert "Processes carry the work" in text          # the heading is indexed
+    assert "The full startup mechanism" not in text    # the body is not
     assert 'root="system_repo"' in text
     (tmp_path / "docs/architecture/runtime.md").unlink()
-    missing = governance_nav_maps(tmp_path, ("docs/ARCHITECTURE.md",))
-    assert "Required coverage is incomplete" in missing
-    assert "no `##`" not in missing
+    broken = governance_context(
+        tmp_path, surface="scope", touched_paths=(), delivery="retrieving",
+        checklist_section_text="(scope checklist)")
+    assert "ARCHITECTURE.md" in broken.navigation
+    row = next(r for r in broken.manifest if r["path"] == "docs/ARCHITECTURE.md")
+    assert row["disposition"] == "navigation"
+    assert "runtime.md" in row["reason"]
+
+
+# ---------------------------------------------------------------------------
+# The brief a scope reviewer receives: intent and manifests, the repository
+# index, the governance tiers, and the staged diff inline or paged (D2v2).
+# ---------------------------------------------------------------------------
+
+
+def _git(repo, *args):
+    subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True)
+
+
+DIFF_MARKER = "UNIQUE_DIFF_BODY_MARKER"
+BRIEF_TASK_ID = "scope-brief-task"
+
+
+def _staged_subject(tmp_path, *, payload_chars=0):
+    """A real repository with a staged change of a chosen size."""
+    repo = tmp_path / "subject"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "t")
+    _git(repo, "config", "commit.gpgsign", "false")
+    (repo / ".gitignore").write_text(".review-drive/\n", encoding="utf-8")
+    (repo / "alpha.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    (repo / "beta.py").write_text("import alpha\n\n\ndef beta():\n    return alpha.alpha()\n",
+                                  encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "base")
+    (repo / "alpha.py").write_text(
+        f"def alpha():\n    return 2  # {DIFF_MARKER}\n", encoding="utf-8")
+    # A touched prompt is owed in full, so the required-source manifest is real.
+    (repo / "prompts").mkdir(exist_ok=True)
+    (repo / "prompts" / "SYSTEM.md").write_text("You are the runtime prompt.\n", encoding="utf-8")
+    payload = "".join(f"PAYLOAD_LINE_{index:08d}\n" for index in range(payload_chars // 21))
+    (repo / "gamma.py").write_text(f"gamma = 1\n{payload}", encoding="utf-8")
+    _git(repo, "add", "-A")
+    return repo
+
+
+def _brief_inputs(repo, drive, **overrides):
+    from ouroboros.tools.scope_required_sources import (
+        required_sources_ref, scope_required_sources, staged_touched_paths,
+        staged_tree_identity, touched_manifest,
+    )
+    from ouroboros.tools.scope_review_session import ScopeBriefInputs, ScopeIntentContext
+
+    touched = staged_touched_paths(repo)
+    tree = staged_tree_identity(repo)
+    rows = scope_required_sources(repo, touched, staged_tree_sha=tree)
+    fields = dict(
+        commit_message="fix: the scope brief carries what the reviewer needs",
+        intent=ScopeIntentContext(goal="Deliver the brief", scope="Only the scope surface"),
+        touched_paths=tuple(path for _status, path in touched),
+        touched_manifest=touched_manifest(repo, touched),
+        required_sources=rows,
+        required_sources_ref=required_sources_ref(rows, staged_tree_sha=tree),
+        scope_model="api/scope-model",
+        slot_id="scope_slot_1",
+        task_id=BRIEF_TASK_ID,
+        source_root=str(drive),
+    )
+    fields.update(overrides)
+    return ScopeBriefInputs(**fields)
+
+
+def test_the_brief_carries_the_index_the_governance_tiers_and_both_manifests(tmp_path):
+    """One brief, four deliveries of context: the repository index (no bodies),
+    the governance tiers with tier 1 ahead of every change-relative section, the
+    navigation with its exact read instruction, and the two manifests. Each of
+    them is recorded in the pre-run disclosure manifest as well as rendered."""
+    from ouroboros.tools.review_helpers import REPO_ROOT
+    from ouroboros.tools.scope_review_session import build_scope_session_task
+
+    repo = _staged_subject(tmp_path)
+    drive = tmp_path / "data"
+    drive.mkdir()
+    task, manifest = build_scope_session_task(
+        repo, _brief_inputs(repo, drive, governance_repo_dir=REPO_ROOT))
+
+    # The index: every tracked path's class, the touched paths' facts and their
+    # importers — and no file body (beta.py imports alpha.py, so it is listed).
+    assert "## Repository index" in task
+    assert "indexed\talpha.py" in task and "beta.py" in task
+    assert manifest["repository_index"]["strategy"] == "repository_index"
+    # alpha.py, gamma.py, prompts/SYSTEM.md
+    assert manifest["repository_index"]["touched_count"] == 3
+    assert manifest["repository_index"]["importer_count"] == 1  # beta.py
+    assert manifest["repository_index"]["index_chars"] > 0
+
+    # Tier 1 is inline and STABLE-FIRST: nothing change-relative precedes it.
+    assert "## BIBLE.md" in task and "Philosophy version" in task
+    assert "## docs/CHECKLISTS_ARCHIVE.md" in task
+    head = task.index("## BIBLE.md")
+    for change_relative in ("## Intended transformation", "## Staged diff",
+                            "## Repository index", "TOUCHED PATHS", "REQUIRED SOURCES"):
+        assert head < task.index(change_relative), change_relative
+    tiers = {row["path"]: row for row in manifest["governance_manifest"]}
+    assert tiers["BIBLE.md"]["tier"] == 1 and tiers["BIBLE.md"]["disposition"] == "inline"
+    assert tiers["docs/ARCHITECTURE.md"]["disposition"] == "navigation"
+
+    # The navigation names what is not inlined and says exactly how to read it.
+    assert "Governance navigation (read on demand)" in task
+    assert 'read_file(root="system_repo", path=..., start_line=A, max_lines=N)' in task
+
+    # Both manifests: what changed, and what the reviewer is owed in full.
+    assert "TOUCHED PATHS" in task and "alpha.py (modified" in task
+    assert "REQUIRED SOURCES" in task and "list is a MINIMUM" in task
+    assert "prompts/SYSTEM.md (added" in task          # a touched prompt is owed in full
+    assert manifest["native_required_sources_ref"]["policy"] == "v2"
+    assert manifest["native_required_sources_ref"]["required_source_count"] == 1
+    assert manifest["brief_chars"] == len(task)
+
+
+def test_a_staged_diff_that_fits_the_first_send_is_inlined(tmp_path):
+    """The reviewer reads the change itself, not a pointer to it, whenever the
+    whole first send lands under the row's own bound."""
+    from ouroboros.tools.scope_review_session import build_scope_session_task
+
+    repo = _staged_subject(tmp_path)
+    drive = tmp_path / "data"
+    drive.mkdir()
+    task, manifest = build_scope_session_task(repo, _brief_inputs(repo, drive))
+
+    assert manifest["diff_delivery"] == "inline"
+    assert DIFF_MARKER in task
+    assert "--- a/alpha.py" in task and "+++ b/alpha.py" in task
+    assert manifest["first_send_chars"] < manifest["first_send_ceiling"]
+    assert manifest["diff_chars"] > 0
+    assert "diff_source" not in manifest
+
+
+@pytest.mark.parametrize("delegated", [False, True], ids=["native", "session"])
+def test_a_staged_diff_above_the_first_send_is_paged_as_one_exact_source(tmp_path, delegated):
+    """A diff too large for the first send is not refused and not truncated: it
+    is stored ONCE, byte-exactly, at an address the row's own reader reaches —
+    the task artifact store for a native episode, the review's git-ignored
+    project view for a delegated session — and the brief carries the address,
+    the size and the digest instead of the body."""
+    from ouroboros.artifacts import read_actor_source_bytes
+    from ouroboros.review_execution import ReviewRouteKind
+    from ouroboros.tools.review_admission import prepare_scope_review
+    from ouroboros.tools.review_binary_context import capture_staged_diff
+    from ouroboros.tools.scope_required_sources import required_sources_ref, source_text_identity
+    from ouroboros.tools.registry import ToolContext
+
+    repo = _staged_subject(tmp_path, payload_chars=900_000)
+    drive = tmp_path / "data"
+    drive.mkdir()
+    expected = capture_staged_diff(repo)
+    assert len(expected) > 900_000
+
+    ctx = ToolContext(repo_dir=repo, drive_root=drive, task_id=BRIEF_TASK_ID)
+    prepared, final = prepare_scope_review(
+        ctx, "review a paged subject", scope_model="fixture/model", slot_id="scope_slot_1",
+        route=ReviewRouteKind.AGENT_SESSION if delegated else ReviewRouteKind.API_CHAT)
+    assert final is None
+    task, manifest = prepared["session_task"], prepared["context_manifest"]
+
+    assert manifest["diff_delivery"] == "paged", manifest.get("diff_paging_reason")
+    assert manifest["first_send_chars"] < manifest["first_send_ceiling"]
+    assert manifest["diff_chars"] == len(expected)
+    # The body is NOT in the brief; its address, size and digest are.
+    assert DIFF_MARKER not in task
+    assert "PAYLOAD_LINE_00000001" not in task
+    source = manifest["diff_source"]
+    rows = prepared["required_sources"]
+    diff_row = next(row for row in rows if row["disposition"] == "review_subject")
+    assert diff_row == source["required_row"]
+    assert all(diff_row[key] == value for key, value in source_text_identity(expected.encode()).items())
+    assert diff_row["candidate_tree"] == prepared["required_sources_ref"]["staged_tree_sha"]
+    assert prepared["native_data_root"] == str(drive)
+    assert manifest["native_required_sources"] == rows
+    assert prepared["required_sources_ref"] == manifest["native_required_sources_ref"] == required_sources_ref(
+        rows, staged_tree_sha=diff_row["candidate_tree"])
+    assert prepared["required_sources_ref"]["required_source_count"] == 2
+    assert source["sha256"] in task and f"{len(expected):,} chars" in task
+    assert "in ranges" in task
+    # And the stored source round-trips byte-exactly.
+    assert read_actor_source_bytes(drive, BRIEF_TASK_ID, source).decode("utf-8") == expected
+    if delegated:
+        from ouroboros.review_session_reads import fold_session_coverage, session_source_reader
+
+        relative = source["session_relative_path"]
+        assert relative in task
+        assert (repo / relative).read_text(encoding="utf-8") == expected
+        assert diff_row["root"] == "session_root" and diff_row["path"] == relative
+        coverage = fold_session_coverage([], rows, resolve_file=session_source_reader(str(repo)))
+    else:
+        from ouroboros.review_native_episode import NativeToolRoundReviewExecutor
+
+        assert source["path"] in task
+        assert 'read_file(root="artifact_store"' in task
+        assert diff_row["root"] == "artifact_store" and diff_row["path"] == source["path"]
+        coverage = NativeToolRoundReviewExecutor._read_coverage(SimpleNamespace(
+            assignment=SimpleNamespace(request=SimpleNamespace(policy={"native_required_sources": rows})),
+            _inspection_ctx=ctx, _tool_receipts=[]))
+    assert coverage["status"] == "incomplete"
+    assert next(row for row in coverage["sources"] if row["path"] == diff_row["path"])["missing_ranges"] == [
+        [0, len(expected)]]
+
+
+@pytest.mark.parametrize("delegated", [False, True], ids=["native", "session"])
+@pytest.mark.parametrize("managed", [False, True], ids=["ordinary", "managed"])
+@pytest.mark.parametrize("git_autocrlf", ["false", "true"], ids=["raw_blob", "lf_blob"])
+def test_renamed_prompt_preimage_is_readable_and_covered_without_a_paged_diff(
+    tmp_path, monkeypatch, delegated, managed, git_autocrlf,
+):
+    """Rename detection can omit the body; the exact old prompt stays readable
+    and has its own diagnostic row on both transports."""
+    from ouroboros.artifacts import read_actor_source_bytes
+    from ouroboros.review_execution import ReviewRouteKind
+    from ouroboros.tools.review_admission import prepare_scope_review
+    from ouroboros.tools.registry import ToolContext
+
+    repo = _staged_subject(tmp_path)
+    _git(repo, "config", "core.autocrlf", git_autocrlf)
+    old = repo / "prompts/SYSTEM.md"
+    raw = "Original α prompt.\r\nSecond line.\r\n".encode("utf-8")
+    old.write_bytes(raw)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "prompt baseline")
+    baseline = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=repo, text=True).strip()
+    # The preimage contract names Git's blob, which can differ from the CRLF
+    # worktree file. Exercise both forms on every host instead of inheriting Git's default.
+    blob = subprocess.check_output(["git", "show", f"{baseline}:prompts/SYSTEM.md"], cwd=repo)
+    assert blob == (raw.replace(b"\r\n", b"\n") if git_autocrlf == "true" else raw)
+    (repo / "docs").mkdir()
+    old.rename(repo / "docs/renamed.md")
+    _git(repo, "add", "-A")
+    if managed:
+        from ouroboros.tools.review_subject import ManagedReviewSubject
+        from ouroboros.tools.scope_required_sources import staged_tree_identity
+
+        tree = staged_tree_identity(repo)
+        subject = ManagedReviewSubject(
+            repo_dir=str(repo), m0_tree=baseline, staged_tree=tree, m0_missing_reason="",
+            pre_update_sha=baseline, target_sha=baseline, conflict_paths=(),
+            diff=subprocess.check_output(["git", "diff", baseline, tree], cwd=repo, text=True),
+            name_status=(("R100", "docs/renamed.md"),), full_candidate_paths=1,
+            resolution_paths=1, fallback_full_diff=False)
+        monkeypatch.setattr("ouroboros.tools.review_subject.managed_review_subject", lambda *_: subject)
+    drive = tmp_path / "data"
+    drive.mkdir()
+    ctx = ToolContext(repo_dir=repo, drive_root=drive, task_id=BRIEF_TASK_ID)
+    prepared, final = prepare_scope_review(
+        ctx, "rename a prompt", scope_model="fixture/model", slot_id="scope_slot_1",
+        route=ReviewRouteKind.AGENT_SESSION if delegated else ReviewRouteKind.API_CHAT)
+    assert final is None
+    manifest = prepared["context_manifest"]
+    assert manifest["diff_delivery"] == "inline"
+    assert prepared["native_data_root"] == str(drive)
+    assert len(prepared["required_sources"]) == 1
+    row = prepared["required_sources"][0]
+    assert row["disposition"] == "deleted_preimage" and row["preimage_of"] == "prompts/SYSTEM.md"
+    assert row["preimage"] == f"{baseline if managed else 'HEAD'}:prompts/SYSTEM.md"
+    assert row["candidate_tree"] == prepared["required_sources_ref"]["staged_tree_sha"]
+    source = manifest["preimage_sources"][0]
+    assert read_actor_source_bytes(drive, BRIEF_TASK_ID, source) == blob
+    assert row["source_revision"] == hashlib.sha256(blob).hexdigest()
+    assert row["path"] in prepared["session_task"] and "preimage of prompts/SYSTEM.md" in prepared["session_task"]
+    if delegated:
+        from ouroboros.review_session_reads import (
+            fold_session_coverage, parse_session_read_receipts, session_source_reader,
+        )
+
+        journal = tmp_path / "events.jsonl"
+        tool = {"name": "shell", "kind": "command", "use_id": "read-preimage",
+                "target": f"cat {row['path']}"}
+        journal.write_text("\n".join(json.dumps(event) for event in (
+            {"type": "tool_call", "tool": tool},
+            {"type": "tool_result", "tool": {**tool, "status": "ok", "exit_code": 0}},
+        )), encoding="utf-8")
+        receipts = parse_session_read_receipts([journal], scope_root=str(repo))
+        coverage = fold_session_coverage(receipts, [row], resolve_file=session_source_reader(str(repo)))
+    else:
+        from ouroboros.review_native_episode import NativeToolRoundReviewExecutor
+        from ouroboros.tools.core_file_tools import _read_file
+
+        executor = object.__new__(NativeToolRoundReviewExecutor)
+        executor.assignment = SimpleNamespace(request=SimpleNamespace(policy={"native_required_sources": [row]}))
+        executor._inspection_ctx = ctx
+        body = _read_file(ctx, row["path"], root=row["root"])
+        receipt = executor._read_extent(body, len(body))
+        executor._tool_receipts = [{"tool": "read_file", "outcome": "executed", "delivered": True,
+                                    "opened_root": row["root"], "opened_path": row["path"], **receipt}]
+        coverage = executor._read_coverage()
+    assert coverage["status"] == "complete"
+    assert coverage["sources"][0]["covered_chars"] == len(blob.decode("utf-8").replace("\r\n", "\n"))
+
+
+@pytest.mark.parametrize("available_store", [False, True], ids=["no_store", "missing_blob"])
+def test_unavailable_required_preimage_stays_a_diagnostic_row(tmp_path, available_store):
+    from ouroboros.review_session_reads import fold_session_coverage, session_source_reader
+    from ouroboros.tools.scope_review_session import build_scope_session_task
+    from ouroboros.tools.scope_required_sources import required_sources_ref
+
+    repo = _staged_subject(tmp_path)
+    drive = tmp_path / "data"
+    drive.mkdir()
+    # The first case has a real source and no store; the second has a store
+    # but names a missing baseline source. Neither claims a delivered preimage.
+    row = {"root": "active_workspace", "path": "prompts/REMOVED.md", "disposition": "deleted",
+           "coverage_basis": "preimage_unavailable",
+           "preimage": "HEAD:absent.md" if available_store else "HEAD:alpha.py"}
+    task, manifest = build_scope_session_task(repo, _brief_inputs(
+        repo, drive, required_sources=[row], required_sources_ref=required_sources_ref([row]),
+        source_root=str(drive) if available_store else ""))
+    rows = manifest["native_required_sources"]
+    assert len(rows) == 1 and rows[0]["coverage_basis"] == "preimage_unavailable"
+    assert "preimage not delivered" in rows[0]["reason"] and "preimage not delivered" in task
+    assert manifest["native_required_sources_ref"] == required_sources_ref(rows)
+    assert not manifest["preimage_sources"]
+    coverage = fold_session_coverage([], rows, resolve_file=session_source_reader(str(repo)))
+    assert coverage["status"] == "unobserved" and coverage["required_source_count"] == 1
+    assert coverage["sources"][0]["status"] == "unobserved"
+
+
+@pytest.mark.parametrize("matching_governance", [False, True], ids=["different_text", "exact_text"])
+def test_inline_governance_satisfies_only_the_exact_candidate_source(tmp_path, matching_governance):
+    from ouroboros.tools.scope_review_session import build_scope_session_task
+
+    repo = _staged_subject(tmp_path)
+    (repo / "BIBLE.md").write_text("Candidate constitution.\n", encoding="utf-8")
+    _git(repo, "add", "BIBLE.md")
+    governance = repo
+    if not matching_governance:
+        governance = tmp_path / "other-governance"
+        governance.mkdir()
+        (governance / "BIBLE.md").write_text("Different constitution.\n", encoding="utf-8")
+    drive = tmp_path / "data"
+    drive.mkdir()
+    task, manifest = build_scope_session_task(
+        repo, _brief_inputs(repo, drive, governance_repo_dir=governance))
+    row = next(row for row in manifest["native_required_sources"] if row["path"] == "BIBLE.md")
+    assert row["coverage_basis"] == ("delivered_inline" if matching_governance else "candidate_blob")
+    if matching_governance:
+        assert "Candidate constitution." in task
+        assert "delivered inline in full, no second read needed" in task
+
+
+def test_the_brief_of_a_three_file_change_on_the_real_tree_is_measured(tmp_path):
+    """The brief's size on the REAL repository, without the staged diff, with
+    its composition printed. The number is the whole reason the packet is gone:
+    the retired scope packet's fixed part alone was 1.21 MB.
+
+    The ceiling is measured, not aspirational — it is the sum of the owner's own
+    decisions: tier-1 BIBLE plus the standing disclosures inline (~65k chars),
+    the repository index over ~2,400 tracked paths (~49k), the DEVELOPMENT
+    chapters this change activates (~31k) and the book navigation (~28k).
+    """
+    from ouroboros.tools.review_helpers import REPO_ROOT
+    from ouroboros.tools.scope_review_session import ScopeBriefInputs, build_scope_session_task
+    from ouroboros.tools.scope_required_sources import (
+        required_sources_ref, scope_required_sources, touched_manifest,
+    )
+
+    touched = [("M", "ouroboros/tools/scope_review_session.py"),
+               ("M", "ouroboros/tools/review_admission.py"),
+               ("M", "ouroboros/tools/scope_review.py")]
+    rows = scope_required_sources(REPO_ROOT, touched)
+    task, manifest = build_scope_session_task(REPO_ROOT, ScopeBriefInputs(
+        commit_message="scope review by retrieval",
+        touched_paths=tuple(path for _status, path in touched),
+        touched_manifest=touched_manifest(REPO_ROOT, touched),
+        required_sources=rows,
+        required_sources_ref=required_sources_ref(rows),
+        scope_model="api/scope-model", slot_id="scope_slot_1",
+    ))
+    sections = manifest["brief_sections"]
+    without_diff = len(task) - sections["diff_slot"]
+    print(f"\nscope brief on the real tree: {len(task):,} chars "
+          f"({without_diff:,} without the diff slot)")
+    for name, chars in sorted(sections.items(), key=lambda item: -item[1]):
+        print(f"  {name:32s} {chars:>9,}")
+    assert without_diff < 200_000, without_diff
+    assert sections["repository_index"] > 20_000          # the index really ran
+    assert sections["governance_stable_inline"] > 40_000  # BIBLE really inline

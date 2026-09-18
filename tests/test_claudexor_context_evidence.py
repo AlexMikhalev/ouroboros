@@ -209,7 +209,6 @@ def test_manual_reviewer_sizing_does_not_change_scope_authority(tmp_path, monkey
     assert window.window_tokens == 872_000
     assert window.sizing_window() == 1_200_000
     assert window.sizing_source == "user_setting"
-    assert not window.blocking_authority_allowed
     assert window.model_route["credentialProfileId"] == "account-a"
     assert ce.list_owner_acks(tmp_path) == []
 
@@ -243,7 +242,6 @@ def test_unknown_subscription_reviewer_keeps_existing_input_budget(tmp_path, mon
     window = resolve_reviewer_window(MODEL, use_local=False)
     assert window.window_tokens == 0
     assert window.sizing_window() == 0
-    assert not window.blocking_authority_allowed
     assert window_scaled_reserves(0, output_reserve=65_536, tokenizer_margin=50_000) == (65_536, 50_000)
     assert calibrated_input_token_limit(MODEL, context_window=0, output_reserve=65_536,
                                          tokenizer_margin=50_000, budget_cap=456_789) == 456_789
@@ -269,7 +267,6 @@ def test_unknown_subscription_scope_stays_unknown_without_authority(tmp_path, mo
     catalog["value"]["models"] = []
     window = scope_window(MODEL)
     assert window.window_tokens == 0
-    assert not window.blocking_authority_allowed
     assert window_provenance_phrase(window.window_tokens, scope_window_provenance(window)) == "unknown window"
 
 
