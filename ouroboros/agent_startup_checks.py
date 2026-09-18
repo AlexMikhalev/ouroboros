@@ -847,7 +847,9 @@ def hot_store_growth_notes(env: Any) -> list:
             "WARNING: HOT STORE GROWTH — the events chain (logs/events.jsonl + "
             f"archive/events_*.jsonl) totals {events_chain_size / 1_000_000:.1f} MB "
             f"(threshold {EVENTS_ARCHIVE_SCAN_WARN_BYTES // 1_000_000} MB). Custody "
-            "replay scans this chain on ownership questions. Investigate chain "
+            "replay scans this chain on ownership questions. Legacy segments retain "
+            "inline delegated request bodies; new start rows reference the observability "
+            "store, without shrinking existing history. Investigate chain "
             "indexing/compaction; archives are durable history and are never deleted."
         )
     from ouroboros.context_budget import RETAINED_EXECUTION_DRIVES_WARN_COUNT

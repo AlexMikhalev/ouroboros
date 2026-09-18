@@ -407,6 +407,9 @@ class TestHotStoreGrowthInvariant:
         assert "HOT STORE GROWTH" in result
         assert "events chain" in result
         assert "never deleted" in result
+        assert "Legacy segments retain inline delegated request bodies" in result
+        assert "without shrinking existing history" in result
+        assert segment.stat().st_size == EVENTS_ARCHIVE_SCAN_WARN_BYTES + 1
 
     def test_isolated_benchmark_sentinel_suppresses_warnings(self, tmp_path):
         from supervisor.state import ISOLATED_BENCHMARK_SENTINEL
