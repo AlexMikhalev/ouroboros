@@ -29,6 +29,8 @@ def test_wait_yields_mailbox_without_acknowledging_or_stopping_child(tmp_path, f
     if batch:
         decoded = json.loads(result)
         assert decoded["early_return"]["reason"] == "owner_mailbox_pending"
+        assert "deliver and acknowledge" in decoded["early_return_note"]
+        assert "does not stop the child" in decoded["early_return_note"]
         assert decoded["all_terminal"] is False
         assert decoded["tasks"]["child"]["status"] == "running"
     else:

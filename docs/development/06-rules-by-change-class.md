@@ -297,7 +297,7 @@ and 23 (`delegated_transport`), both critical. The imperatives:
 - The parent is the SOLE committer of the live body: acting children return a
   `workspace.patch`, the parent applies through `integrate_subagent_patch` and
   its own `commit_reviewed`; `external_workspace` verifies and records without
-  re-applying; a genesis project is durable because its directory IS the
+  re-applying. Edit/capture text preserves external Git authority and patch-only `self_worktree`. Capture bases prove no authorship; compare via explicit `vcs_diff`. A genesis project is durable because its directory IS the
   deliverable (disclosed residual: until it declares a `.gitignore`, small
   text build output rides the `workspace.patch` record, bounded only by the
   per-file source-patch boundary and git's binary verdict; there is no total
@@ -365,7 +365,7 @@ The imperatives:
 - `wait_task` and `wait_tasks` also peek the waiting actor's own mailbox (its
   execution drive, not its budget root) through the existing transport-wait
   reader: a pending message returns control without acknowledging it or
-  stopping children — the round-top drain delivers and acknowledges it. One
+  stopping children — the round-top drain delivers and acknowledges it. Both waits disclose this early return. One
   episode may retain only a PROVED empty mailbox (fingerprints compared before
   and after the full reader); a read failure or torn data is never proof and
   is never cached; no TTL and no ACK in peek.

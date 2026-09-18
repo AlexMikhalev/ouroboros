@@ -45,6 +45,28 @@ def _search_wall_clock_sec() -> float:
     return get_search_code_wall_sec()
 
 
+def matches_include(name: str, pattern: str) -> bool:
+    """Shared basename fnmatch syntax plus comma brace alternatives.
+
+    Unbalanced braces and braces without commas remain literal. Resource
+    policy is independent and still runs before any content read.
+    """
+    if not pattern:
+        return True
+    opening = pattern.find("{")
+    while opening >= 0:
+        closing = pattern.find("}", opening + 1)
+        if closing < 0:
+            break
+        nested = pattern.rfind("{", opening, closing)
+        choices = pattern[nested + 1:closing].split(",")
+        if len(choices) > 1:
+            return any(matches_include(name, pattern[:nested] + choice + pattern[closing + 1:])
+                       for choice in choices)
+        opening = pattern.find("{", closing + 1)
+    return fnmatch.fnmatch(name, pattern)
+
+
 def search_skip_reason(path: pathlib.Path) -> str:
     """Typed reason a path is not searchable, or ``""`` (D3, capinv-447).
 
@@ -109,6 +131,7 @@ class RgSearchResult(NamedTuple):
     truncated: bool
     file_capped: bool
     deadline_hit: bool = False
+    files_selected: int | None = None
 
 
 def _rg_binary() -> str:
@@ -140,8 +163,6 @@ def search_with_rg(
     base_cmd = [rg, "--json", "--line-number", "--color", "never"]
     if not regex:
         base_cmd.append("--fixed-strings")
-    if include:
-        base_cmd.extend(["--glob", include])
 
     # Build an EXPLICIT, gated file list and hand it to rg. Pre-filtering each
     # path through ``path_allowed`` (the protected/secret/skippable gate) BEFORE
@@ -156,7 +177,8 @@ def search_with_rg(
     capped = False
     deadline_hit = False
     if isinstance(search_targets, list):
-        targets = [p for p in search_targets if path_allowed is None or path_allowed(p)]
+        targets = [p for p in search_targets if matches_include(p.name, include)
+                   and (path_allowed is None or path_allowed(p))]
     elif search_targets.is_dir():
         try:
             from ouroboros.code_intelligence import SKIP_DIRS
@@ -169,7 +191,7 @@ def search_with_rg(
                 break
             dirnames[:] = [n for n in sorted(dirnames) if n not in SKIP_DIRS]
             for fname in sorted(filenames):
-                if include and not fnmatch.fnmatch(fname, include):
+                if not matches_include(fname, include):
                     continue
                 path = pathlib.Path(dirpath) / fname
                 if path_allowed is not None and not path_allowed(path):
@@ -181,9 +203,10 @@ def search_with_rg(
             if capped:
                 break
     else:
-        targets = [search_targets] if path_allowed is None or path_allowed(search_targets) else []
+        targets = ([search_targets] if matches_include(search_targets.name, include)
+                   and (path_allowed is None or path_allowed(search_targets)) else [])
     if not targets:
-        return RgSearchResult([], False, capped, deadline_hit)
+        return RgSearchResult([], False, capped, deadline_hit, 0)
 
     # Pack targets into batches bounded by total argv LENGTH (not a fixed count),
     # so N long paths cannot overflow the OS command-line limit. Always keep at
@@ -243,7 +266,7 @@ def search_with_rg(
             break
     # Return result-cap, file-scan-cap, and deadline SEPARATELY so the caller can tell
     # an honest "no matches" from "scan/time stopped before the whole tree was seen".
-    return RgSearchResult(matches, result_truncated, capped, deadline_hit)
+    return RgSearchResult(matches, result_truncated, capped, deadline_hit, len(targets))
 
 
 def format_dropped_files_note(dropped: dict[str, int] | None) -> str:
@@ -286,13 +309,16 @@ def format_search_result(
         if deadline_hit else ""
     )
     dropped_note = format_dropped_files_note(dropped)
+    selection_note = (f" {result.files_selected} file(s) selected by the include mask and resource filters."
+                      if result.files_selected is not None else "")
     rendered = [f"{root_name}:{m.path.relative_to(root_path).as_posix()}:{m.line}: {m.text}" for m in matches]
     if not rendered:
         # Surface the file-scan cap, the deadline, AND the filter receipt here: a
         # capped/timed-out/filtered huge-root search with zero matches must never
         # look like a clean "no matches" (the misleading case).
-        return f"No matches found for {'regex' if regex else 'literal'} `{query}` in {display_path} (ripgrep).{cap_note}{deadline_note}{dropped_note}"
+        return f"No matches found for {'regex' if regex else 'literal'} `{query}` in {display_path} (ripgrep).{selection_note}{cap_note}{deadline_note}{dropped_note}"
     header = f"Found {len(rendered)} match{'es' if len(rendered) != 1 else ''} in {display_path} (ripgrep)"
+    header += selection_note
     if truncated:
         header += f" — truncated at {max_results} results"
     if file_capped:

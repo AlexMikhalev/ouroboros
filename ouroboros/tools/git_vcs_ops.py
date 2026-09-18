@@ -115,10 +115,23 @@ def _git_diff(
     max_chars: int = 0,
     root: str = "system_repo",
     _resolved_binding: Optional[ResolvedResourceBinding] = None,
+    **kwargs,
 ) -> str:
     try:
         binding = _git()._vcs_binding(ctx, _resolved_binding, root=root, path=path or ".")
         repo_dir = binding.base_path
+        base, head = str(kwargs.get("base") or ""), str(kwargs.get("head") or "")
+        if head and (not base or staged):
+            from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
+            return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR",
+                text="⚠️ TOOL_ARG_ERROR (vcs_diff): head requires base and cannot be combined with staged=true."))
+        comparison = {}
+        revisions = []
+        for name, ref in (("base", base), ("head", head)):
+            if ref:
+                tree = _git().run_cmd(["git", "rev-parse", "--verify", "--end-of-options", f"{ref}^{{tree}}"], cwd=repo_dir).strip()
+                revisions.append(tree)
+                comparison.update({f"{name}_ref": ref, f"{name}_tree": tree})
         cmd = ["git", "diff"]
         if staged:
             cmd.append("--staged")
@@ -126,6 +139,7 @@ def _git_diff(
             cmd.append("--name-only")
         elif stat:
             cmd.append("--stat")
+        cmd.extend(revisions)
         if relative := _git()._binding_relative_path(binding, path):
             cmd.extend(["--", _git().safe_relpath(relative)])
         from ouroboros.protected_artifacts import shell_block_reason as protected_artifact_shell_block_reason
@@ -135,7 +149,14 @@ def _git_diff(
         )
         if protected_block:
             return _git()._vcs_result(protected_block, binding)
-        return _git()._vcs_result(_git()._limit_git_output(_git().run_cmd(cmd, cwd=repo_dir), max_chars), binding)
+        text = _git()._vcs_result(_git()._limit_git_output(_git().run_cmd(cmd, cwd=repo_dir), max_chars), binding)
+        if comparison:
+            import json
+            from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
+            comparison["kind"] = "tree_to_tree" if head else "tree_to_index" if staged else "tree_to_worktree"
+            text += "\nComparison: " + json.dumps(comparison, ensure_ascii=False, sort_keys=True)
+            return _publish_tool_result(ctx, ToolResult(status="ok", code="OK", text=text, meta={"comparison": comparison}))
+        return text
     except Exception as e:
         return _publish_git_error(
             ctx,
