@@ -247,8 +247,10 @@ def _wizard_step_until(page, predicate_js: str, forward: bool, limit: int = 8) -
             return
         if forward and page.evaluate("() => Boolean(document.getElementById('next-btn')?.disabled)"):
             for selector, value in placeholders.items():
-                if page.locator(selector).count() and not page.input_value(selector):
-                    page.fill(selector, value)
+                # Account discovery can hold Continue while optional API fields stay collapsed.
+                field = page.locator(selector)
+                if field.is_visible() and not field.input_value():
+                    field.fill(value)
         button = "#next-btn" if forward else "#back-btn"
         try:
             # A step may hold its button while it settles (a probe, a preview).
