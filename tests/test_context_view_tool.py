@@ -41,7 +41,12 @@ def test_inspect_then_new_model_turn_and_owner_tail_preserves_pinned_source(tmp_
     assert candidate[0] == messages[0]
     assert tail[0] in candidate
     assert any(m.get("tool_call_id") == "compact" for m in candidate)
-    assert candidate[-1]["content"].startswith("[Context view receipt]")
+    receipts = [m for m in candidate if isinstance(m.get("content"), str)
+                and m["content"].startswith("[Context view receipt]")]
+    assert len(receipts) == 1 and receipts[0]["role"] == "user"
+    assert "[INDEPENDENT_ROOTS]" not in receipts[0]["content"]
+    assert candidate.index(receipts[0]) > next(
+        i for i, m in enumerate(candidate) if m.get("tool_call_id") == "compact")
     assert ctx._pending_compaction is None
 
 

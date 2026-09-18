@@ -411,7 +411,7 @@ def test_s14_plan_review_revise_then_accept_cycle_with_honest_chronicle(
             # The immutable per-wave artifacts carry the exact reviewer wave
             # bytes. The asynchronous route snapshots each cycle TWICE and both
             # snapshots are evidence: the OPEN barrier wave recorded at dispatch
-            # (custody pending, unpaid, no verdict yet) and the wave the $0
+            # (custody pending, possibly already dispatched) and the wave the $0
             # collection closed. The verdict chronicle is the collected pair:
             # one REVISE_PLAN wave, one GREEN wave. The task artifact store
             # lives under the SERVER data root (task_results/artifacts/), not
@@ -434,7 +434,13 @@ def test_s14_plan_review_revise_then_accept_cycle_with_honest_chronicle(
             assert collected == sorted(
                 (p for p in payloads if not p.get("custody_pending")), key=by_cycle)
             assert [p.get("aggregate") for p in barrier] == ["DEGRADED"] * 2, barrier
-            assert [p.get("paid") for p in barrier] == [False] * 2, barrier
+            for pending in barrier:
+                states = [actor.get("operation_state") for actor in pending["actors"]]
+                assert len(states) == 3
+                assert set(states) <= {"pending_dispatch", "in_flight", "settled"}, states
+                # One dispatched sibling makes this a paid wave even while
+                # another sibling is still waiting at the dispatch barrier.
+                assert pending["paid"] is any(state != "pending_dispatch" for state in states)
             assert [p.get("cycle_index") for p in collected] == [1, 2], collected
             assert [p.get("paid") for p in collected] == [True] * 2, collected
             aggregates = [str(p.get("aggregate") or "") for p in collected]

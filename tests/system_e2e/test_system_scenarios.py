@@ -61,6 +61,7 @@ from tests.system_e2e.harness import (
     LANE_MOCK,
     MARKER_SOURCES,
     MOCK_SLUG,
+    NATIVE_EPISODE_MARKER,
     PROXY_ENV_KEYS,
     REPO_ROOT,
     REVIEWER_SLOT_MARKER,
@@ -206,13 +207,21 @@ def test_stub_classification_review_branch_beats_finalization():
     assert classify_call(triad_body) == "triad_review"
     assert classify_call(slot_body) == "reviewer_slot"
     assert classify_call(acceptance_body) == "acceptance"
+    for surface, expected in (("scope_review", "scope_review"),
+                              ("advisory_review", "advisory_review"),
+                              ("other_review", "native_episode")):
+        native_body = {"messages": [{"role": "user", "content": (
+            NATIVE_EPISODE_MARKER + f"\nSurface: {surface}\n[FINALIZE_NOW] quoted")}]}
+        assert classify_call(native_body) == expected
     assert classify_call({"messages": [{"role": "user", "content": "[FINALIZE_NOW] wrap up"}]}) == "finalization"
     assert classify_call({"messages": [{"role": "user", "content": "hi"}],
                           "response_format": {"type": "json_object"}}) == "safety"
     assert classify_call(_agent_body()) == "agent"
 
 
-def test_stub_verdicts_satisfy_the_trees_own_parsers():
+@pytest.mark.parametrize("scope_prompt", [SCOPE_USER_MARKER,
+    NATIVE_EPISODE_MARKER + "\nSurface: scope_review"])
+def test_stub_verdicts_satisfy_the_trees_own_parsers(scope_prompt):
     """The canned all-clean answers must parse under the REAL review contracts of this
     tree — a stub that emits an unparseable verdict turns every review into a
     parse_failure and the S2 smoke into a lie."""
@@ -224,7 +233,8 @@ def test_stub_verdicts_satisfy_the_trees_own_parsers():
     from ouroboros.triad_review import empty_array_is_verified_clean
 
     _kind, scope_message = scripted_completion(
-        {"messages": [{"role": "user", "content": SCOPE_USER_MARKER}]}, 1, lambda _b: None, "x")
+        {"messages": [{"role": "user", "content": scope_prompt}]}, 1, lambda _b: None, "x")
+    assert _kind == "scope_review"
     items, errors = normalize_scope_items(json.loads(scope_message["content"]))
     assert not errors, f"stub scope verdict rejected by normalize_scope_items: {errors}"
     assert {item["item"] for item in items} == set(SCOPE_REQUIRED_ITEMS)

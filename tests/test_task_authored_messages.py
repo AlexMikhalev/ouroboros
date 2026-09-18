@@ -358,14 +358,16 @@ def test_the_roster_note_is_appended_on_change_and_never_rewrites_a_sent_row(tmp
 
     assert maybe_append_roster_note(ctx, messages, tmp_path) is True
     assert maybe_append_roster_note(ctx, messages, tmp_path) is False, "unchanged roster: no note"
-    # Nothing was sent yet, so the note MERGES into the unsent task row.
-    assert len(messages) == 2
+    # No send witness proves the task tail is unsent, so append the note.
+    assert len(messages) == 3
+    assert messages[1] == {"role": "user", "content": "task"}
     note = str(messages[-1]["content"])
-    assert "\n\n---\n\n[System task message]\n[INDEPENDENT_ROOTS]" in note
+    assert note.startswith("[System task message]\n[INDEPENDENT_ROOTS]")
     assert "- r-1 · Deploy docs · project=docs · running" in note
     assert "objective" not in note.lower()
     # A root that is the reader itself and a subagent row never appear.
     observe_send(ctx, messages, round_idx=1)
+    sent_bytes = json.dumps(messages, ensure_ascii=False).encode("utf-8")
     _snapshot(tmp_path, [
         {"id": "r-1", "task": {"id": "r-1", "title": "Deploy docs", "chat_id": 0, "project_id": "docs"}},
         {"id": "me", "task": {"id": "me", "title": "Myself", "chat_id": 1}},
@@ -374,12 +376,13 @@ def test_the_roster_note_is_appended_on_change_and_never_rewrites_a_sent_row(tmp
     ])
     assert maybe_append_roster_note(ctx, messages, tmp_path) is True
     # The sent row is byte-frozen: the changed roster is a NEW tail row.
-    assert len(messages) == 3
+    assert len(messages) == 4
     second = str(messages[-1]["content"])
     assert second.startswith("[System task message]\n[INDEPENDENT_ROOTS]")
     assert "- r-2 · Audit · chat=7 · running" in second
     assert "- me ·" not in second and "kid" not in second
-    assert note == str(messages[1]["content"])
+    assert note == str(messages[2]["content"])
+    assert json.dumps(messages[:-1], ensure_ascii=False).encode("utf-8") == sent_bytes
 
 
 def test_the_roster_note_skips_direct_turns_and_subagents_and_discloses_gaps(tmp_path):
@@ -634,4 +637,3 @@ def test_a_transfer_admitted_after_the_wait_returned_still_releases_the_worker(t
     assert ctx.task_metadata["force_plan"] is False
     assert ctx.task_metadata["force_plan_transferred_to"] == "new-root"
     assert force_plan_decision(ctx, {}, enforcement="blocking")["status"] == "not_required"
-
