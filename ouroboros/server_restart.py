@@ -2,9 +2,9 @@
 
 The live-task census the restart drain consults, the teardown arguments that
 finalize interrupted tasks with an honest reason, the managed-update guard on
-preserving queued work, the checkout/update serialization gate, the owned-work
-stop of the owner's manual Restart, the planned restart's engine-pin daemon stop,
-and the event bus shutdown live here. The restart transaction itself stays in
+preserving queued work, the checkout/update serialization gate, the owner's manual
+Restart operation, the planned restart's engine-pin daemon stop,
+and the event bus shutdown live here. The planned restart transaction itself stays in
 ``server.py``: its planned-handoff transaction id joins the deferred drain record
 to the performer that raises the exit signal.
 """
@@ -15,9 +15,52 @@ import pathlib
 import time
 from typing import Any
 
-from ouroboros.server_process import DATA_DIR, _owner_restart_requested, _restart_requested, log
+from ouroboros.server_process import (
+    DATA_DIR, _owner_restart_requested, _request_restart_exit, _restart_requested, log,
+)
 
 _RESTARTABLE_UPDATE_PHASES = frozenset({"pending_boot_smoke", "applying_replace"})
+
+
+def _perform_owner_restart(ctx: Any, reply=None) -> tuple[bool, str]:
+    """Run the owner restart operation with an optional transport notice."""
+    ok, restart_msg = _safe_restart_serialized(
+        ctx.safe_restart,
+        reason="owner_restart",
+        unsynced_policy="rescue_and_reset",
+    )
+    if not ok:
+        return False, restart_msg
+    state_dir = DATA_DIR / "state"
+    owner_restart_flag = state_dir / "owner_restart_no_resume.flag"
+    stable_skip_flag = state_dir / "panic_stop.flag"
+    try:
+        state_dir.mkdir(parents=True, exist_ok=True)
+        owner_restart_flag.write_text("owner_restart", encoding="utf-8")
+        # Pair owner flag with panic_stop for stable-build auto-resume compatibility.
+        stable_skip_flag.write_text("owner_restart_no_resume", encoding="utf-8")
+    except Exception:
+        owner_restart_flag.unlink(missing_ok=True)
+        stable_skip_flag.unlink(missing_ok=True)
+        log.warning("Failed to write owner restart no-resume flag", exc_info=True)
+        return False, "could not write restart state."
+    # Everything reversible is behind us (checkout landed, no-resume
+    # intent durable): from here the restart always follows, and every
+    # unconfirmed stop is a critical diagnostic, never a deferral.
+    stopped_task_ids = _stop_owned_work(ctx)
+    try:
+        if reply is not None:
+            # Say only what happened: with nothing owned the stop sentence
+            # named a task that was never running.
+            reply(
+                "Stopping active task. New settings apply to the next message."
+                if stopped_task_ids else "New settings apply to the next message.",
+                "",
+            )
+    except Exception:
+        log.warning("Failed to send owner restart stop notice; continuing restart", exc_info=True)
+    _request_restart_exit(owner=True)
+    return True, ""
 
 
 def _owned_live_task_ids(ctx: Any) -> list:

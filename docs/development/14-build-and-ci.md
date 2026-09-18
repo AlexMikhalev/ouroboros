@@ -78,7 +78,7 @@ Prerelease artifacts may intentionally be unsigned and must report that state; s
 
 ### Release proof capsule
 
-The artifact pipeline — per-platform archive smokes, native Linux packages, the AppImage custody chain, SBOM and attestation binding, and the seven-asset release job — lives in ARCHITECTURE §8 and `.github/workflows/ci.yml`. The honesty invariants a change must preserve:
+The artifact pipeline — per-platform archive smokes, native Linux packages, the AppImage custody chain, SBOM and attestation binding, and the seven-required-desktop plus optional-Android release job — lives in ARCHITECTURE §8 and `.github/workflows/ci.yml`. The honesty invariants a change must preserve:
 
 - Publication is draft-first with a per-tag concurrency group; the remote
   annotated tag is revalidated against the event SHA immediately before

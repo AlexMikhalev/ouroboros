@@ -215,9 +215,14 @@ def test_e2e_cancel_of_inflight_run_command_child_never_reads_as_tool_failure(
     tree.pid = tree._proc.pid
     _LiveProc._SPAWNED.append(tree._proc)
     deadline = time.time() + 10
-    while not pid_file.exists() and time.time() < deadline:
+    child_pid_text = ""
+    while time.time() < deadline:
+        # Opening the fixture file precedes publishing its PID bytes.
+        child_pid_text = pid_file.read_text(encoding="utf-8") if pid_file.exists() else ""
+        if child_pid_text:
+            break
         time.sleep(0.05)
-    child_pid = int(pid_file.read_text())
+    child_pid = int(child_pid_text)
 
     worker = types.SimpleNamespace(wid=0, proc=tree, busy_task_id=task_id, reaping=False)
     qenv.workers.WORKERS[0] = worker

@@ -272,10 +272,9 @@ def room_membership(chat_id: int, project_chat_ids: set, source_refs: list,
         row = entry if isinstance(entry, dict) else {}
         if is_a2a_chat_id(entry_chat):
             return False
-        # An admission notice ("<title> · Not started: …") is addressed to the
-        # chat the OWNER wrote in; its task id is bound to the destination
-        # project it never started in, so binding lineage must not move it.
-        bound = 0 if row.get("type") in ADMISSION_NOTICE_TYPES else bound_room_chat(bindings, row)
+        # A routing refusal belongs to the issuing chat, even when the target
+        # is bound to another Project. Its lineage must not move the notice.
+        bound = 0 if row.get("type") in ORIGIN_ADDRESSED_NOTICE_TYPES else bound_room_chat(bindings, row)
         lifecycle = row.get("type") in {"project_started", "project_completion_summary"}
         if chat_id in project_chat_ids:
             return not lifecycle and (bound == chat_id or entry_chat == chat_id
@@ -635,10 +634,9 @@ ROUTING_REFUSAL_CAUSES: Dict[str, str] = {
     "target_not_found": "that project does not exist",
 }
 
-# The typed System rows a host-initiated admission refusal sends (Q2=A): plain
-# system bubbles addressed to the chat the OWNER wrote in, never moved by the
-# refused task's project binding (room_membership) and never a terminal fact.
-ADMISSION_NOTICE_TYPES = frozenset({"task_not_started", "task_start_unconfirmed"})
+# Host routing refusals stay in the issuing chat regardless of the target's
+# Project binding (room_membership); they are never terminal task facts.
+ORIGIN_ADDRESSED_NOTICE_TYPES = frozenset({"task_not_started", "task_start_unconfirmed", "steer_not_delivered"})
 
 # Statuses of an act that LANDED (or is still in flight): no cause sentence.
 _LANDED_ROUTING_STATUSES = frozenset({"scheduled", "delivered", "pending", "dispatch_pending", "accepted"})

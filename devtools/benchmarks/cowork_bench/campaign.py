@@ -11,24 +11,79 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import subprocess
+import sys
 import pathlib
 import time
 import urllib.request
 from contextlib import contextmanager
 from typing import Iterator
 
-from devtools.benchmarks.common.manifests import write_json
+_KEY_USAGE_URL = "https://openrouter.ai/api/v1/key"
 
 
-def key_usage(api_key: str) -> float:
+class UsageCounterError(ValueError):
+    """A rejected numeric observation, retained without making it budget truth."""
+
+    def __init__(self, observed_usage: float, previous_usage: float) -> None:
+        self.observed_usage = observed_usage
+        super().__init__(f"provider usage counter decreased or is invalid: "
+                         f"observed={observed_usage!r}, previous={previous_usage!r}")
+
+
+def validate_usage(usage: float, previous_usage: float) -> None:
+    if not math.isfinite(usage) or usage < 0 or usage < previous_usage:
+        raise UsageCounterError(usage, previous_usage)
+
+
+def _read_usage_http(api_key: str, url: str, *, timeout: float) -> float:
+    """The single HTTP reader; production runs it only in the disposable worker."""
     request = urllib.request.Request(
-        "https://openrouter.ai/api/v1/key", headers={"Authorization": f"Bearer {api_key}"}
+        url, headers={"Authorization": f"Bearer {api_key}", "Cache-Control": "no-cache"},
     )
-    with urllib.request.urlopen(request, timeout=15) as response:
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         payload = json.loads(response.read().decode("utf-8"))
-    value = float(payload["data"]["usage"])
-    if not math.isfinite(value) or value < 0:
-        raise ValueError("provider returned an invalid usage counter")
+    return float(payload["data"]["usage"])
+
+
+def _meter_worker() -> int:
+    payload = json.load(sys.stdin)
+    try:
+        usage = _read_usage_http(payload["api_key"], payload["url"], timeout=payload["timeout"])
+    except Exception as exc:
+        # The key travels only through stdin, never the command or diagnostic text.
+        message = str(exc).replace(payload["api_key"], "[redacted]")
+        print(json.dumps({"error_type": type(exc).__name__, "error": message}))
+        return 1
+    print(json.dumps({"usage": usage}))
+    return 0
+
+
+def key_usage(api_key: str, *, timeout: float = 15) -> float:
+    """Bound the whole HTTP read, including headers/body/DNS and worker startup."""
+    deadline = time.monotonic() + timeout
+    command = [sys.executable, "-I", "-S", str(pathlib.Path(__file__).resolve()), "--read-usage"]
+    # Preserve the parent's isolated roots, but keep this credential on stdin only.
+    env = {name: value for name, value in os.environ.items() if value != api_key}
+    payload = json.dumps({"api_key": api_key, "url": _KEY_USAGE_URL, "timeout": timeout})
+    with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, text=True, env=env) as worker:
+        try:
+            stdout, stderr = worker.communicate(payload, timeout=max(0.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            worker.kill()
+            worker.communicate()  # Reap before returning; there is no orphan HTTP read.
+            raise TimeoutError("meter HTTP read exceeded its wall-clock deadline") from None
+        if time.monotonic() > deadline:
+            raise TimeoutError("meter HTTP response arrived after its deadline")
+        result = json.loads(stdout) if stdout else {}
+        if worker.returncode:
+            error = result.get("error") or stderr or "no worker diagnostic"
+            raise RuntimeError(f"meter HTTP read failed ({result.get('error_type', worker.returncode)}): "
+                               + str(error).replace(api_key, "[redacted]"))
+    value = float(result["usage"])
+    validate_usage(value, 0.0)
     return value
 
 
@@ -68,13 +123,14 @@ class CampaignBudget:
         return self.record["ceiling_usd"] - self.spent
 
     def save(self) -> None:
+        from devtools.benchmarks.common.manifests import write_json
+
         self.record.update({"spent_usd": self.spent, "remaining_usd": self.remaining,
                             "observed_at": time.time()})
         write_json(self.path, self.record)
 
     def observe(self, usage: float) -> None:
-        if not math.isfinite(usage) or usage < self.record["last_usage"]:
-            raise ValueError("provider usage counter decreased or is invalid; spending is unknown")
+        validate_usage(usage, self.record["last_usage"])
         self.record["last_usage"] = usage
         self.save()
 
@@ -103,3 +159,9 @@ def campaign_lock(path: pathlib.Path) -> Iterator[None]:
         yield
     finally:
         release_exclusive_file_lock(lock_path, fd)
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] != ["--read-usage"]:
+        raise SystemExit("campaign.py is an internal meter worker")
+    raise SystemExit(_meter_worker())

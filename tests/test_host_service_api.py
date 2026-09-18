@@ -266,6 +266,7 @@ def test_presence_turn_resolves_binding_and_returns_typed_result(tmp_path: pathl
         "text": "Hello back",
         "turn_ref": "turn-1",
         "work_ref": "",
+        "delivery_reporting_version": 0,
     }
     assert captured["admission"].transport_skill == "telegram-bot"
     assert captured["event"].actor["platform_actor_id"] == "user-7"
@@ -646,6 +647,7 @@ def test_presence_work_returns_only_correlated_terminal_result(tmp_path: pathlib
         "outcome": "message",
         "text": "late answer",
         "work_ref": work_ref,
+        "delivery_reporting_version": 0,
     }
 
     atomic_write_json(

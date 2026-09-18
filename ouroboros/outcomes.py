@@ -1100,7 +1100,7 @@ def derive_loop_outcome(final_text: str, usage: Dict[str, Any], llm_trace: Dict[
         execution_status = EXECUTION_FAILED
         reason_code = usage_reason or REASON_EMPTY_FINAL_TEXT
         failure = {"kind": "agent", "reason_code": reason_code}
-    elif not text.strip():
+    elif not text.strip() and usage.get("presence_completion_outcome") not in {"silent", "tool_delivered"}:
         execution_status = EXECUTION_FAILED
         reason_code = REASON_EMPTY_FINAL_TEXT
         failure = {"kind": "agent", "reason_code": reason_code}

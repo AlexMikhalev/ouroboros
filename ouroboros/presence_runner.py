@@ -47,6 +47,7 @@ class PresenceTurnEvent:
     conversation: Mapping[str, Any]
     message: Mapping[str, Any]
     text: str
+    delivery_reporting_version: int = 0
 
 
 @dataclass(frozen=True)
@@ -55,13 +56,17 @@ class PresenceTurnResult:
     text: str
     task_id: str
     work_ref: str = ""
+    delivery_reporting_version: int = 0
 
 
-def build_presence_result_event(task: dict[str, Any], text: str, ctx: Any, *, provider_notice: str = "") -> dict[str, Any]:
+def build_presence_result_event(task: dict[str, Any], text: str, ctx: Any, *, provider_notice: str = "",
+                                retain_scheduled_handoff: bool = False) -> dict[str, Any]:
     """Freeze typed delivery metadata before the ordinary durable result write."""
 
     completion = getattr(ctx, "_presence_completion", None)
-    completion = completion if isinstance(completion, dict) else {}
+    completion = completion if (
+        isinstance(completion, dict) and getattr(ctx, "_presence_completion_accepted", False)
+    ) else {}
     outcome = str(completion.get("outcome") or "message").strip()
     if outcome not in {"message", "silent", "tool_delivered", "deferred"}:
         outcome = "message"
@@ -74,7 +79,11 @@ def build_presence_result_event(task: dict[str, Any], text: str, ctx: Any, *, pr
     )
     if outcome == "deferred" and not work_ref:
         outcome = "message"
-    result_text = str(completion.get("message") or text or "")
+    if retain_scheduled_handoff and work_ref:
+        # A failed/forced parent still owes an already admitted child's result.
+        # Transports poll only deferred outcomes; the current body remains true.
+        outcome = "deferred"
+    result_text = str(text or "")
     if outcome in {"message", "deferred"} and provider_notice:
         from ouroboros.task_finalization import provider_terminal_body
 
@@ -223,6 +232,7 @@ def _cached_result(drive_root: Path, task_id: str) -> PresenceTurnResult | None:
         ),
         task_id=task_id,
         work_ref=str(metadata.get("presence_work_ref") or ""),
+        delivery_reporting_version=int((metadata.get("presence") or {}).get("delivery_reporting_version") == 1),
     )
 
 
@@ -263,6 +273,7 @@ def _log_dialogue(
                 "actor": dict(event.actor),
                 "conversation": dict(event.conversation),
                 "message": dict(event.message),
+                **({"delivery": {"state": "authored"}} if direction == "out" else {}),
             },
             "presence_provenance": presence_provenance_from_task(task),
             "task_id": task_id,
@@ -292,6 +303,7 @@ def _build_task(
         "profile_fingerprint": admission.profile_fingerprint,
         "instructions": admission.instructions,
         "context_topics": list(admission.context_topics),
+        "delivery_reporting_version": event.delivery_reporting_version,
         "event": {
             "source_event_id": event.source_event_id,
             "provider": event.provider,
@@ -440,8 +452,9 @@ def run_presence_turn(
             text=str(row.get("text") or ""),
             task_id=task_id,
             work_ref=str(row.get("work_ref") or ""),
+            delivery_reporting_version=event.delivery_reporting_version,
         )
-        if result.outcome in {"message", "deferred"} and result.text:
+        if result.outcome in {"message", "deferred"} and result.text and not result.delivery_reporting_version:
             _log_dialogue(
                 Path(drive_root),
                 direction="out",

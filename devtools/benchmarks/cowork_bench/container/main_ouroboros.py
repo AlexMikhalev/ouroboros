@@ -24,6 +24,7 @@ import pathlib
 import shutil
 import signal
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -385,7 +386,9 @@ def collect_audit_artifacts(task_root: pathlib.Path, task_id: str, secrets: list
     """Copy the scrubbed Ouroboros logs next to the benchmark artefacts.
 
     The data root itself stays outside ``dumps/`` because it holds ``settings.json`` with the
-    provider credential; only value-scrubbed text leaves the container.
+    provider credential; only value-scrubbed text leaves the container. Polling
+    checkpoints publish each file atomically, so an abrupt container removal
+    leaves the previous snapshot intact even if final export never runs.
     """
     target = task_root / "ouroboros"
     target.mkdir(parents=True, exist_ok=True)
@@ -397,7 +400,9 @@ def collect_audit_artifacts(task_root: pathlib.Path, task_id: str, secrets: list
             text = source.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        (target / source.name).write_text(scrub(text, secrets), encoding="utf-8")
+        staged = target / f".{source.name}.tmp"
+        staged.write_text(scrub(text, secrets), encoding="utf-8")
+        staged.replace(target / source.name)
 
 
 def write_bench_logs(task_config, status: str, started: datetime, summary: Mapping[str, Any], final_answer: str) -> None:
@@ -575,6 +580,14 @@ def run_agent_phase(task_dir: str, max_steps: int) -> str:
                 break
             if now >= outer_deadline:
                 raise WallClockInterrupt()
+            # dumps/ is host-bound; preserve available usage/tool evidence before
+            # a host stop can remove this container without running our finally.
+            try:
+                collect_audit_artifacts(task_root, task_id, secrets)
+            except OSError as exc:
+                detail = scrub(f"{type(exc).__name__}: {exc}", secrets)
+                print(f"[{ENGINE}] audit checkpoint unavailable; continuing task: {detail}",
+                      file=sys.stderr, flush=True)
             try:
                 result = _http_json("GET", f"{base_url}/api/tasks/{urllib.parse.quote(task_id)}",
                                     timeout=min(30, outer_deadline - now))

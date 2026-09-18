@@ -14,6 +14,7 @@ def test_presence_handoff_writer_feeds_terminal_consumer_and_preserves_first_rec
     ctx = SimpleNamespace(
         task_metadata={"presence": {"binding_id": "presence-binding"}},
         _presence_completion={"outcome": "deferred"},
+        _presence_completion_accepted=True,
     )
     event = {"task_id": "managed-presence-work", "routing_token": "first-token"}
     response = "The actual admission response."

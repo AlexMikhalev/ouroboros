@@ -531,6 +531,12 @@ def emit_task_results(
     )
     outcome_axes = normalize_outcome_axes({"outcome_axes": loop_outcome.get("outcome_axes")})
     execution_status = str((outcome_axes.get("execution") or {}).get("status") or "")
+    failed_or_forced = (
+        execution_status in {EXECUTION_FAILED, EXECUTION_INFRA_FAILED, EXECUTION_BEST_EFFORT}
+        or str(usage.get("execution_status") or usage.get("result_status") or "") in {EXECUTION_FAILED, EXECUTION_INFRA_FAILED}
+    )
+    if ctx is not None and failed_or_forced:
+        ctx._presence_completion_accepted = False
     reason_code = str(loop_outcome.get("reason_code") or "")
     _root_outbox = _is_root_post_task(task)   # durable outbox (no model call): pre-marker predicate
     if getattr(ctx, "_skip_post_task_synthesis", False):   # "Stop now": paid root predicates see it
@@ -553,7 +559,10 @@ def emit_task_results(
         # on a nearby progress row that may age out independently.
         send_event["progress_meta"] = dict(_message_meta)
     send_event = prepare_terminal_send_event(env.drive_root, task, text, usage, send_event, presence=_presence)
-    pending_events.append(build_presence_result_event(task, text, ctx, provider_notice=terminal_notice_text(usage)) if _presence else send_event)
+    pending_events.append(build_presence_result_event(
+        task, text, ctx, provider_notice=terminal_notice_text(usage),
+        retain_scheduled_handoff=failed_or_forced,
+    ) if _presence else send_event)
     duration_sec = round(time.time() - start_time, 3)
     try:
         from supervisor.state import reconstruct_task_cost
@@ -811,6 +820,11 @@ def _dispatch_root_post_task(
         or bool(str(task.get("workspace_mode") or "").strip())
         or project_task
     )
+    if (is_presence_task(task) and task.get("_is_direct_chat")
+            and not in_worker_process() and not split_drive):
+        # The native adapter receives the durable result on return. Its request
+        # must not wait for synthesis; pooled/forked workers retain their custody.
+        blocking = False
     if blocking and event_queue is not None:
         # The CANONICAL data root — what the supervisor's boot/tick outbox
         # replay reads (§8-A2): the parent/budget root for split children, the

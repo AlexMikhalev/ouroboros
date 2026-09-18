@@ -377,7 +377,9 @@ def test_owner_restart_copy_is_explicit_about_stopped_task(tmp_path, monkeypatch
     from types import SimpleNamespace
     import server
 
-    source = _read("server.py")
+    from ouroboros import server_restart
+
+    source = _read("ouroboros/server_restart.py")
     assert "Stopping active task. New settings apply to the next message." in source
     assert "owner_restart_no_resume.flag" in source
     assert "owner_restart_no_resume" in source
@@ -386,7 +388,7 @@ def test_owner_restart_copy_is_explicit_about_stopped_task(tmp_path, monkeypatch
     assert "stable_skip_flag.unlink(missing_ok=True)" in source
     # Checkout gate first (a refusal leaves the server intact), then the durable
     # no-resume intent, then the owned-work stop, then the owner's stop notice.
-    owner_restart = source.split('elif lowered.startswith("/restart"):', 1)[1].split(
+    owner_restart = _read("server.py").split('elif lowered.startswith("/restart"):', 1)[1].split(
         'elif lowered == "/review"', 1
     )[0]
     assert "_perform_owner_restart(ctx, reply)" in owner_restart
@@ -412,10 +414,10 @@ def test_owner_restart_copy_is_explicit_about_stopped_task(tmp_path, monkeypatch
         assert text == "Stopping active task. New settings apply to the next message."
         calls.append("notice")
 
-    monkeypatch.setattr(server, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(server, "_safe_restart_serialized", checked)
-    monkeypatch.setattr(server, "_stop_owned_work", stopped)
-    monkeypatch.setattr(server, "_request_restart_exit", lambda owner: calls.append(("exit", owner)))
+    monkeypatch.setattr(server_restart, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(server_restart, "_safe_restart_serialized", checked)
+    monkeypatch.setattr(server_restart, "_stop_owned_work", stopped)
+    monkeypatch.setattr(server_restart, "_request_restart_exit", lambda owner: calls.append(("exit", owner)))
     assert server._perform_owner_restart(ctx, notice) == (True, "")
     assert calls == ["checked", "stopped", "notice", ("exit", True)]
     stop = _read("ouroboros/server_restart.py").split("def _stop_owned_work", 1)[1]
@@ -511,7 +513,7 @@ def test_owner_restart_proceeds_when_worker_shutdown_fails(tmp_path, monkeypatch
     monkeypatch.setattr(server_restart, "DATA_DIR", tmp_path)
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     monkeypatch.setattr(message_bus, "log_chat", lambda *args, **kwargs: None)
-    monkeypatch.setattr(server, "_request_restart_exit", lambda owner=False: exits.append(owner))
+    monkeypatch.setattr(server_restart, "_request_restart_exit", lambda owner=False: exits.append(owner))
 
     server._process_bridge_updates(Bridge(), 0, Ctx())
 
@@ -610,8 +612,10 @@ def test_only_an_owner_restart_asks_for_the_runtime_mode_to_be_re_read(tmp_path,
 
     monkeypatch.setattr(server, "DATA_DIR", tmp_path)
     monkeypatch.setattr(message_bus, "log_chat", lambda *args, **kwargs: None)
+    from ouroboros import server_restart
+    monkeypatch.setattr(server_restart, "DATA_DIR", tmp_path)
     # The owned-work stop has its own suite; this pin is about the owner flag alone.
-    monkeypatch.setattr(server, "_stop_owned_work", lambda ctx: None)
+    monkeypatch.setattr(server_restart, "_stop_owned_work", lambda ctx: None)
 
     server._owner_restart_requested.clear()
     server._restart_requested.clear()

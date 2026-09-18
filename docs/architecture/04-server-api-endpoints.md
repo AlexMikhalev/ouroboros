@@ -132,6 +132,7 @@ Every `/api/files/*` operation resolves its requested path and refuses the opera
 | POST | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/chat/cancel` | `gateway.host_service._api_chat_cancel` (the existing cancellation owner on work that message started; a typed outcome, never a cancellation that did not happen) |
 | POST | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/chat/decision` | `gateway.host_service._api_chat_decision` (the `task_decision.answer_decision` ingress relayed for a transport skill) |
 | POST | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/presence/turn` | `gateway.host_service._api_presence_turn` |
+| POST | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/presence/delivery` | `gateway.host_service._api_presence_delivery` |
 | GET | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/presence/work/{work_ref}` | `gateway.host_service._api_presence_work` |
 | POST | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/ui/ws-message` | `gateway.host_service._api_ws_message` |
 | WS | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/events` | `gateway.host_service._ws_events` |

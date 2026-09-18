@@ -21,6 +21,8 @@ _RELEASE_SYNC = runpy.run_path(
     Path(__file__).resolve().parents[1] / "ouroboros" / "tools" / "release_sync.py"
 )
 RELEASE_ASSET_TEMPLATES = _RELEASE_SYNC["RELEASE_ASSET_TEMPLATES"]
+DESKTOP_DOWNLOAD_IDS = _RELEASE_SYNC["DESKTOP_DOWNLOAD_IDS"]
+ANDROID_DOWNLOAD_IDS = _RELEASE_SYNC["ANDROID_DOWNLOAD_IDS"]
 release_asset_download_url = _RELEASE_SYNC["release_asset_download_url"]
 release_asset_name = _RELEASE_SYNC["release_asset_name"]
 
@@ -29,7 +31,7 @@ release_asset_name = _RELEASE_SYNC["release_asset_name"]
 # looks at these suffixes. The AppImage and native Linux packages are produced
 # after the tarball is located and are discovered separately.
 ARCHIVE_SUFFIXES = (".dmg", ".tar.gz", ".zip")
-RELEASE_ASSET_SUFFIXES = ARCHIVE_SUFFIXES + (".AppImage", ".deb", ".rpm")
+RELEASE_ASSET_SUFFIXES = ARCHIVE_SUFFIXES + (".AppImage", ".deb", ".rpm", ".apk")
 PROOF_IDS = {
     proof_id: partial(release_asset_name, proof_id)
     for proof_id in RELEASE_ASSET_TEMPLATES
@@ -42,6 +44,8 @@ DOWNLOAD_LABELS = {
     "linux-rpm-red80-x86_64": "RED OS 8 x86_64 (.rpm)",
     "linux-appimage-x86_64": "Other Linux x86_64 (AppImage)",
     "linux-x86_64": "Linux x86_64 archive (.tar.gz)",
+    "android-arm64": "Experimental Android ARM64 USB setup (.tar.gz)",
+    "android-apk": "Android publisher-signed reference APK (see setup guide)",
 }
 RELEASE_GATES = (
     "full-test",
@@ -51,6 +55,7 @@ RELEASE_GATES = (
     "docker-portable-test",
     "skill-smoke",
     "packaged-artifact-smoke",
+    "android-build",
 )
 COMMON_SMOKE_CHECKS = frozenset(
     {
@@ -97,6 +102,10 @@ REQUIRED_SMOKE_CHECKS = {
     "linux-rpm-x86_64": PACKAGE_SMOKE_CHECKS,
     "linux-rpm-red80-x86_64": PACKAGE_SMOKE_CHECKS,
     "windows-x64": COMMON_SMOKE_CHECKS,
+    "android-arm64": frozenset({
+        "embedded_repo_bundle", "android_source_manifest", "usb_installer_help",
+    }),
+    "android-apk": frozenset({"apk_signature", "apk_package_version"}),
 }
 
 
@@ -201,66 +210,94 @@ def _proof_files(
     *,
     commit: str,
     tag: str,
-) -> list[dict]:
+    android_build_result: str,
+    android_attestation_result: str,
+) -> tuple[list[dict], dict]:
     archives = {
         path.name: path for path in _release_assets(directory, RELEASE_ASSET_SUFFIXES)
     }
     expected = {proof_id: factory(version) for proof_id, factory in PROOF_IDS.items()}
-    if set(archives) != set(expected.values()):
+    required = {expected[proof_id] for proof_id in DESKTOP_DOWNLOAD_IDS}
+    android_suffixes = tuple(RELEASE_ASSET_TEMPLATES[key].split("{version}", 1)[1]
+                             for key in ANDROID_DOWNLOAD_IDS)
+    android_names = {name for name in archives if name.endswith(android_suffixes)}
+    if not required <= archives.keys() or set(archives) - required - android_names:
         raise ValueError(
             "release asset set does not match the expected platform assets: "
-            f"expected {sorted(expected.values())}, found {sorted(archives)}"
+            f"required {sorted(required)}, found {sorted(archives)}"
         )
 
+    android = {"status": "unavailable", "buildResult": android_build_result,
+               "attestationResult": android_attestation_result, "reason": ""}
+    selected = list(DESKTOP_DOWNLOAD_IDS)
+    if android_build_result != "success":
+        android["reason"] = f"Android build result: {android_build_result}"
+    elif android_names != {expected[key] for key in ANDROID_DOWNLOAD_IDS}:
+        android["reason"] = "Android source archive and reference APK are not a complete matching pair"
+    elif android_attestation_result != "success":
+        android["reason"] = f"Android artifact attestation result: {android_attestation_result}"
+    else:
+        selected.extend(ANDROID_DOWNLOAD_IDS)
     records: list[dict] = []
-    for proof_id, artifact_name in expected.items():
-        artifact = archives[artifact_name]
-        digest = sha256_file(artifact)
-        smoke_path = directory / f"release-smoke-{proof_id}.json"
-        sbom_path = directory / f"sbom-{proof_id}.cdx.json"
-        if not smoke_path.is_file() or not sbom_path.is_file():
-            raise ValueError(f"missing smoke receipt or SBOM for {proof_id}")
-        smoke = _load_json(smoke_path)
-        sbom = _load_json(sbom_path)
-        if smoke.get("status") != "passed":
-            raise ValueError(f"smoke receipt is not passed: {smoke_path}")
-        expected_identity = {
-            "schemaVersion": 1,
-            "kind": "packaged_artifact_smoke",
-            "proofId": proof_id,
-            "sourceCommit": commit,
-            "releaseTag": tag,
-        }
-        if any(smoke.get(key) != value for key, value in expected_identity.items()):
-            raise ValueError(f"smoke receipt identity does not match {proof_id}")
-        if smoke.get("artifact") != artifact.name or smoke.get("sha256") != digest:
-            raise ValueError(f"smoke receipt is not bound to {artifact.name}")
-        checks = smoke.get("checks")
-        if not isinstance(checks, list) or not all(isinstance(item, str) for item in checks):
-            raise ValueError(f"smoke receipt checks are invalid: {smoke_path}")
-        missing_checks = REQUIRED_SMOKE_CHECKS[proof_id] - set(checks)
-        if missing_checks:
-            raise ValueError(
-                f"smoke receipt is missing required checks for {proof_id}: "
-                f"{sorted(missing_checks)}"
-            )
-        if (
-            sbom.get("bomFormat") != "CycloneDX"
-            or not isinstance(sbom.get("specVersion"), str)
-            or not isinstance(sbom.get("serialNumber"), str)
-        ):
-            raise ValueError(f"SBOM is not CycloneDX JSON: {sbom_path}")
-        records.append(
-            {
+    for proof_id in selected:
+        artifact_name = expected[proof_id]
+        try:
+            artifact = archives[artifact_name]
+            digest = sha256_file(artifact)
+            smoke_path = directory / f"release-smoke-{proof_id}.json"
+            sbom_path = directory / f"sbom-{proof_id}.cdx.json"
+            if not smoke_path.is_file() or not sbom_path.is_file():
+                raise ValueError(f"missing smoke receipt or SBOM for {proof_id}")
+            smoke = _load_json(smoke_path)
+            sbom = _load_json(sbom_path)
+            if smoke.get("status") != "passed":
+                raise ValueError(f"smoke receipt is not passed: {smoke_path}")
+            expected_identity = {
+                "schemaVersion": 1,
+                "kind": "packaged_artifact_smoke",
                 "proofId": proof_id,
-                "name": artifact.name,
-                "size": artifact.stat().st_size,
-                "sha256": digest,
-                "smokeReceipt": smoke_path.name,
-                "sbom": sbom_path.name,
+                "sourceCommit": commit,
+                "releaseTag": tag,
             }
-        )
-    return records
+            if any(smoke.get(key) != value for key, value in expected_identity.items()):
+                raise ValueError(f"smoke receipt identity does not match {proof_id}")
+            if smoke.get("artifact") != artifact.name or smoke.get("sha256") != digest:
+                raise ValueError(f"smoke receipt is not bound to {artifact.name}")
+            checks = smoke.get("checks")
+            if not isinstance(checks, list) or not all(isinstance(item, str) for item in checks):
+                raise ValueError(f"smoke receipt checks are invalid: {smoke_path}")
+            missing_checks = REQUIRED_SMOKE_CHECKS[proof_id] - set(checks)
+            if missing_checks:
+                raise ValueError(
+                    f"smoke receipt is missing required checks for {proof_id}: "
+                    f"{sorted(missing_checks)}"
+                )
+            if (
+                sbom.get("bomFormat") != "CycloneDX"
+                or not isinstance(sbom.get("specVersion"), str)
+                or not isinstance(sbom.get("serialNumber"), str)
+            ):
+                raise ValueError(f"SBOM is not CycloneDX JSON: {sbom_path}")
+            records.append(
+                {
+                    "proofId": proof_id,
+                    "name": artifact.name,
+                    "size": artifact.stat().st_size,
+                    "sha256": digest,
+                    "smokeReceipt": smoke_path.name,
+                    "sbom": sbom_path.name,
+                }
+            )
+        except (OSError, ValueError) as exc:
+            if proof_id not in ANDROID_DOWNLOAD_IDS:
+                raise
+            # Android is one optional pair: never retain just its successful half.
+            records = [row for row in records if row["proofId"] not in ANDROID_DOWNLOAD_IDS]
+            android["reason"] = str(exc)
+            break
+    if sum(row["proofId"] in ANDROID_DOWNLOAD_IDS for row in records) == len(ANDROID_DOWNLOAD_IDS):
+        android["status"] = "verified"
+    return records, android
 
 
 def _checksum_targets(directory: Path, records: Iterable[dict]) -> list[Path]:
@@ -282,6 +319,8 @@ def _release_notes(
     tag: str,
     previous_tag: str | None,
     records: Iterable[dict],
+    android: dict,
+    run_url: str,
 ) -> str:
     short_commit = commit[:12]
     verify_base = (
@@ -294,7 +333,8 @@ def _release_notes(
         "",
         "## Download",
         "",
-        "Choose your platform below. You do not need to clone the repository or install Python or uv.",
+        "Choose your platform below. Desktop installers do not require Python or uv. "
+        "Experimental Android uses the USB setup guide on an already Magisk-rooted ARM64 device.",
         "",
     ]
     records_by_id = {
@@ -304,6 +344,8 @@ def _release_notes(
     for proof_id, label in DOWNLOAD_LABELS.items():
         record = records_by_id.get(proof_id)
         if not record:
+            if proof_id in ANDROID_DOWNLOAD_IDS:
+                continue
             raise ValueError(f"release notes missing verified asset: {proof_id}")
         name = str(record.get("name") or "")
         expected_name = release_asset_name(proof_id, version)
@@ -317,7 +359,19 @@ def _release_notes(
             repository=repository,
         )
         lines.append(f"- **{label}:** [{name}]({url})")
+    if android["status"] != "verified":
+        lines.extend([
+            "",
+            "Experimental Android artifacts are unavailable for this release: "
+            f"{android['reason']}. [CI run]({run_url}). "
+            "The independently verified desktop installers remain available above.",
+        ])
     lines.extend([
+        "",
+        f"[Android setup guide](https://github.com/{repository}/blob/{tag}/docs/ANDROID_INSTALL.md): "
+        "the installer builds the installed host with a persistent personal signing key. "
+        "Installing the reference APK alone does not provision the Linux runtime. "
+        "CI artifact checks do not certify root, boot, hardware, or phone runtime behavior.",
         "",
         "Files named `SHA256SUMS`, `release-evidence.json`, `release-smoke-*.json`, "
         "and `sbom-*.cdx.json` are verification evidence, not additional installers.",
@@ -355,11 +409,13 @@ def command_assemble(args: argparse.Namespace) -> None:
     release_date, description = _read_release_description(args.readme, version)
     if not re.fullmatch(r"[0-9a-f]{40}", args.commit):
         raise ValueError("commit must be a full lowercase Git SHA")
-    records = _proof_files(
+    records, android = _proof_files(
         args.directory,
         version,
         commit=args.commit,
         tag=args.tag,
+        android_build_result=args.android_build_result,
+        android_attestation_result=args.android_attestation_result,
     )
     checksum_targets = _checksum_targets(args.directory, records)
     checksums = "".join(
@@ -381,8 +437,10 @@ def command_assemble(args: argparse.Namespace) -> None:
         },
         "workflow": {
             "runUrl": args.run_url,
-            "gates": [{"name": name, "status": "passed"} for name in RELEASE_GATES],
+            "gates": [{"name": name, "status": args.android_build_result
+                       if name == "android-build" else "passed"} for name in RELEASE_GATES],
         },
+        "experimentalAndroid": android,
         "generatedAt": generated_at,
         "artifacts": records,
         "verification": {
@@ -412,9 +470,17 @@ def command_assemble(args: argparse.Namespace) -> None:
             tag=args.tag,
             previous_tag=args.previous_tag,
             records=records,
+            android=android,
+            run_url=args.run_url,
         ),
         encoding="utf-8",
     )
+    if args.github_output:
+        files = [*_checksum_targets(args.directory, records),
+                 args.directory / "SHA256SUMS", args.directory / "release-evidence.json"]
+        _append_github_output(args.github_output, {
+            "files_json": json.dumps("\n".join(path.as_posix() for path in files)),
+        })
 
 
 def command_verify_uploaded(args: argparse.Namespace) -> None:
@@ -427,11 +493,12 @@ def command_verify_uploaded(args: argparse.Namespace) -> None:
         for row in remote_rows
         if isinstance(row, dict) and isinstance(row.get("name"), str)
     }
-    local_names = {
-        path.name
-        for path in args.directory.iterdir()
-        if path.is_file() and path.name != args.metadata.name
-    }
+    evidence = _load_json(args.directory / "release-evidence.json")
+    records = evidence.get("artifacts")
+    if not isinstance(records, list):
+        raise ValueError("release evidence has no proof-accepted artifact list")
+    local_names = {path.name for path in _checksum_targets(args.directory, records)}
+    local_names.update({"SHA256SUMS", "release-evidence.json"})
     if set(remote) != local_names:
         raise ValueError(
             "uploaded asset set differs from the local allowlist: "
@@ -475,6 +542,9 @@ def build_parser() -> argparse.ArgumentParser:
     assemble.add_argument("--previous-tag")
     assemble.add_argument("--generated-at")
     assemble.add_argument("--notes-output", type=Path, required=True)
+    assemble.add_argument("--android-build-result", choices=("success", "failure", "cancelled", "skipped", "not_run"), default="not_run")
+    assemble.add_argument("--android-attestation-result", choices=("success", "failure", "not_run"), default="not_run")
+    assemble.add_argument("--github-output", type=Path)
     assemble.set_defaults(func=command_assemble)
 
     verify = commands.add_parser(
