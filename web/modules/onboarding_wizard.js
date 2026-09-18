@@ -92,6 +92,7 @@ import { accountRowFacts } from './harness_accounts.js';
         skipSubscriptionPresets: false,
         preparingRecovery: false,
         recoveryPrepared: false,
+        recoveryMain: '',
         presetFailure: null,
         // Set when completion answered 503 `settings_save_timeout`: the save is
         // still running in the server, so the wizard offers "Check status"
@@ -675,9 +676,10 @@ import { accountRowFacts } from './harness_accounts.js';
 
     function shouldOfferPresetSkip() {
         // Explicit recovery from failed assignments; healthy presets keep their normal path.
-        return !state.recoveryPrepared && (state.skipSubscriptionPresets || Boolean(state.presetFailure)
+        return (!state.recoveryPrepared || state.recoveryMain !== mainBinding()) && (state.skipSubscriptionPresets || Boolean(state.presetFailure)
             || (state.agentsConnected.length > 0 && Boolean(agentsStep?.previewError)));
     }
+    function mainBinding() { return JSON.stringify([state.mainModel, state.modelAccounts.main || '', state.modelProcessingPreferences?.main || state.processingPreference || '']); }
 
         function providerKeyField({ id, label, placeholder, value, note, inputType }) {
             const type = inputType || 'password';
@@ -994,7 +996,7 @@ import { accountRowFacts } from './harness_accounts.js';
                 </div>
             </div>
             <div class="summary-card">${summaryRowsHtml()}</div>
-            ${state.recoveryPrepared ? '<div class="wizard-inline-note">Automatic subscription presets were skipped. Reviewers were assigned to Main. Check the assignments above, then Start Ouroboros to save this draft. Later changes in Settings are manual.</div>' : ''}
+            ${state.recoveryPrepared ? `<div class="wizard-inline-note">Automatic subscription presets were skipped. ${state.recoveryMain === mainBinding() ? 'Reviewers were assigned to Main.' : 'Main changed; reviewers keep the assignments shown above. Use Main for reviewers again if you want to update them.'} Check the assignments, then Start Ouroboros to save this draft. Later changes in Settings are manual.</div>` : ''}
         `;
     }
 
@@ -1490,6 +1492,7 @@ import { accountRowFacts } from './harness_accounts.js';
         if (disposed) return;
         state.preparingRecovery = false;
         state.recoveryPrepared = Boolean(ready);
+        if (ready) state.recoveryMain = mainBinding();
         state.error = ready ? '' : agentsStep?.previewError || 'Reviewer assignments could not be prepared. Retry before saving.';
         render(); // Show the recovered assignments; only the next explicit Start saves.
     }

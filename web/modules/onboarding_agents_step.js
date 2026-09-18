@@ -577,10 +577,10 @@ export function createAgentsStep({
         baseline: 'generated',
     });
 
-    function previewRequest() {
+    function previewRequest({ includeVisibleRoster = false } = {}) {
         return {
             ...(previewPayload() || {}),
-            ...(subagents.dirty ? { OUROBOROS_SUBAGENTS: subagents.setting } : {}),
+            ...(subagents.dirty || (includeVisibleRoster && subagents.loaded) ? { OUROBOROS_SUBAGENTS: subagents.setting } : {}),
             ...subscriptionDeclaration({
                 connected: state.connected,
                 skipPresets: state.skipPresets,
@@ -594,7 +594,7 @@ export function createAgentsStep({
 
     async function refreshSubagentsPreview({ force = false, replaceReviewers = false } = {}) {
         if (state.disposed) return false;
-        const payload = previewRequest();
+        const payload = previewRequest({ includeVisibleRoster: replaceReviewers });
         const signature = JSON.stringify(payload);
         if (!force && signature === state.previewAppliedSignature && subagents.loaded) return true;
         state.previewPending = true;
@@ -604,7 +604,8 @@ export function createAgentsStep({
         try {
             const response = await previewTransport(payload);
             if (state.disposed || generation !== state.previewGeneration) return false;
-            const result = subagents.dirty ? { applied: true } : subagents.applyGeneratedPreview(response);
+            const result = replaceReviewers ? subagents.applyOwnerPreview(response)
+                : subagents.dirty ? { applied: true } : subagents.applyGeneratedPreview(response);
             if (!result.applied) {
                 state.previewFailure = { detail: result.error || 'Available subagents preview was not applied.' };
                 return false;

@@ -943,6 +943,31 @@ test('preview status exposes the typed cause and explicit recovery replacement l
     step.detach();
 });
 
+test('explicit reviewer recovery sends the visible clean roster and adopts the returned owner draft', async () => {
+    const dom = fakeDom(), requests = [];
+    const actor = { subagent_id: 'original', recommended_use: 'Inspect the task.',
+        route: { kind: 'api_model', target_id: 'claudexor::codex=original' }, effort: 'high' };
+    const recoveryActor = { ...actor, subagent_id: 'main-reviewer',
+        route: { kind: 'api_model', target_id: 'claudexor::codex=main' } };
+    const generated = { enabled: true, items: [actor] };
+    const recovered = { enabled: true, items: [actor, recoveryActor] };
+    const step = createAgentsStep({ doc: dom.doc,
+        previewTransport: async (payload) => {
+            requests.push(payload);
+            return { source: 'onboarding_default', available_subagents:
+                requests.length === 2 || requests.length === 4 ? recovered : generated };
+        } });
+    assert.equal(await step.refreshSubagentsPreview(), true);
+    assert.equal(await step.setSkipPresets(true, { replaceReviewers: true }), true);
+    assert.deepEqual(requests[1].OUROBOROS_SUBAGENTS, generated, 'clean visible actors are part of explicit recovery');
+    assert.deepEqual(step.availableSubagents, recovered);
+    assert.equal(await step.refreshSubagentsPreview({ force: true }), true);
+    assert.deepEqual(step.availableSubagents, recovered, 'ordinary generation cannot remove the owner recovery actor');
+    assert.equal(await step.setSkipPresets(true, { replaceReviewers: true }), true);
+    assert.deepEqual(requests[3].OUROBOROS_SUBAGENTS, recovered, 'reprepare includes the already authored roster');
+    step.detach();
+});
+
 test('a late preview settlement cannot notify or apply after the wizard detaches', async () => {
     const dom = fakeDom();
     let resolvePreview;

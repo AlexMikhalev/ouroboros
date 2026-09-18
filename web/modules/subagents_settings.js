@@ -455,10 +455,8 @@ export function createAvailableSubagentsEditor({
 
     function validationErrors() {
         if (!state.loaded) {
-            // An unrelated Settings save may omit a field the response did not
-            // load at all. Once the response carries saved bytes or an explicit
-            // migration/repair candidate, though, its parse error is actionable
-            // and must block rather than masquerade as an accepted repair.
+            // Only an omitted response field may stay out of an unrelated save;
+            // malformed saved bytes or an explicit repair candidate must report errors.
             if (state.unloadedOmissionAllowed) return [];
             return [state.parseError
                 || 'Available subagents draft is still loading. Retry the preview before finishing.'];
@@ -771,9 +769,7 @@ export function createAvailableSubagentsEditor({
                 subscriptionsConnected: state.accountsKnown && connected.length > 0,
             });
             if (generation !== state.previewGeneration) return false;
-            // This is still the unsaved migration/default candidate.  Preserve
-            // that provenance so a later clean account-status change may
-            // refresh it again; onboarding editors keep the endpoint source.
+            // Retain migration provenance for later clean refreshes; onboarding keeps the endpoint source.
             const result = applyGeneratedPreview({ ...response, source: state.source });
             if (!result.applied) state.previewSignature = '';
             return result.applied;
@@ -834,6 +830,14 @@ export function createAvailableSubagentsEditor({
         reloadStatus,
         refreshGeneratedPreview: maybeRefreshGeneratedPreview,
         applyGeneratedPreview,
+        applyOwnerPreview(response) {
+            const parsed = parseAvailableSubagentsSetting(response?.available_subagents);
+            if (!parsed.setting) return { applied: false, error: parsed.error };
+            load(parsed.setting, { source: 'configured_by_owner', diagnostics: response?.diagnostics || [] });
+            markDirty({ structural: true });
+            paint();
+            return { applied: true, error: '' };
+        },
         setPreviewFailure,
         validate: validationErrors,
         noteSaveAttempt,
