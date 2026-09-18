@@ -18,6 +18,7 @@ Enforcement: CHECKLISTS items 2(g) and 10 (`tool_registration`) in commit review
 - Keep installed payloads as ordinary directories; a delegated Git copy is an optional existing capability. Check the known revision before an operation and, after opaque process work, record the observed revision without asserting exclusive authorship. No long shell lock or automatic rollback belongs here.
 - Use the existing payload binding/policy owners for all path forms: markerless native-directory payloads remain logical external, and launcher seeds and provenance/review/grant/dependency control state keep their existing guards.
 - Review, grants, dependency readiness, desired enablement and actual execution are independent facts. Resume an unchanged reviewed snapshot through its existing free replay; a dependency or load failure never rewrites the review verdict; preserve an explicit owner disable and the original automatic request.
+- Base skill-review convergence and retry coaching on the lifecycle's group `review_round`, retaining `snapshot_attempt` for display. Changing only the coaching ordinal must preserve the prompt-builder and aggregation vocabulary's free-replay fingerprint; ceiling refusals name the exits the existing author-finish predicate permits. The rendering and rebuttal tests exercise revised snapshots across rounds, while `tests/test_review_cycles_gates.py` pins the replay fingerprint and enforcement-specific exit text.
 - UI, existing CLI commands and task tools call the shared operation owners. Actor identity is host-derived: owner-only actions require a real member chat/quiz/mailbox source naming the exact skill, revision and requested items; the model interprets intent, no synthetic reference creates permission, and ordinary Repair implies neither grant-all, attestation nor deletion.
 - Test the real installed script/tool/HTTP/widget/companion after review and prerequisites, repeat after corrections, and inspect a widget screenshot. Execution receipts name the actual dispatched revision; they are not PASS.
 
@@ -821,8 +822,8 @@ and what enforces each.
   custody and announce the wave through the task mailbox (`plan_review_collect`;
   `acceptance_settlement.announce_acceptance_settlement`, at the wave's own quorum and
   at completion, each reviewer's own verdict, never an instruction to collect).
-  `owner_hurry.force_plan_decision` collects once at zero wait before its blocking
-  verdict and projects the returned state; task acceptance collects through the host
+  `owner_hurry.force_plan_decision` collects once at zero wait before finalization in every enforcement mode, hurry
+  included, and projects the returned state; task acceptance collects through the host
   reconcile `review_dispatch.reconcile_pending_acceptance_runs` (recorded request and
   roster replayed, nothing sent), never a model-callable verb; context health reads
   only the canonical wave, as a recorded snapshot. Neither path dispatches a second

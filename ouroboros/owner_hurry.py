@@ -467,9 +467,9 @@ def force_plan_decision(
     blocking enforcement whoever opened it). While the hurry latch is armed, the
     projection is computed under a TASK-LOCAL advisory enforcement (§19.7.2 item
     9): ``reviewed``/``open``/``unavailable`` states may proceed locally while
-    ``absent``/``pending`` remain hold — durable review state, reviewer calls, and
-    the configured global enforcement are untouched, and the attribution rides the
-    decision for the task detail.
+    ``absent``/``pending`` remain hold. Free collection may update the recorded
+    wave feedback; paid dispatch and configured global enforcement are unchanged,
+    and the attribution rides the decision for the task detail.
 
     ``enforcement`` is supplied by the loop wrapper from ITS module namespace so
     the existing ``loop.get_review_enforcement`` test/monkeypatch seam holds.
@@ -501,7 +501,9 @@ def force_plan_decision(
         enforcement = get_review_enforcement()
     hurry_armed = latched(ctx) is not None
     effective = "advisory" if hurry_armed else enforcement
-    if str(effective or "").lower() == "blocking" and isinstance(state, dict):
+    # Already-paid feedback belongs in every verdict, including advisory/hurry.
+    # Collection reads the current wave at zero wait and never starts a panel.
+    if isinstance(state, dict):
         from ouroboros.tools.plan_review_collect import collect_before_gate
 
         state = collect_before_gate(ctx, state)
@@ -522,8 +524,7 @@ def force_plan_decision(
         # say a result is still owed instead of implying the panel is over.
         decision["review_late_result_pending"] = True
     if hurry_armed and str(enforcement or "").lower() == "blocking":
-        # Attribution only (task detail); the durable state and the configured
-        # global enforcement are byte-identical before/after.
+        # Attribution only (task detail); this changes no global enforcement.
         decision["owner_hurry_local_advisory"] = True
         decision["configured_enforcement"] = "blocking"
     return decision
