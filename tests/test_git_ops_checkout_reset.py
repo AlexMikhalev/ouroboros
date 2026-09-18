@@ -67,7 +67,11 @@ def test_checkout_and_reset_removes_stale_index_lock(monkeypatch, tmp_path):
     assert saved_state["current_branch"] == "ouroboros"
     assert saved_state["current_sha"] == "abc123"
 
-def test_checkout_and_reset_continues_when_fetch_fails(monkeypatch, tmp_path):
+@pytest.mark.parametrize("fetch_rc,fetch_error", [
+    (1, "network down"),
+    (git_ops.FETCH_TIMEOUT_RC, "git fetch origin exceeded 117s and was terminated"),
+])
+def test_checkout_and_reset_continues_when_fetch_fails(monkeypatch, tmp_path, fetch_rc, fetch_error):
     git_dir = tmp_path / ".git"
     git_dir.mkdir()
 
@@ -81,12 +85,11 @@ def test_checkout_and_reset_continues_when_fetch_fails(monkeypatch, tmp_path):
     events = []
     monkeypatch.setattr(git_ops, "append_jsonl", lambda path, payload: events.append(payload))
 
-    def fake_git_capture(cmd):
-        if cmd == ["git", "fetch", "origin"]:
-            return 1, "", "network down"
-        raise AssertionError(cmd)
+    def fake_bounded(args):
+        assert args == ["fetch", "origin"]
+        return fetch_rc, "", fetch_error
 
-    monkeypatch.setattr(git_ops, "git_capture", fake_git_capture)
+    monkeypatch.setattr(git_ops, "_git_network_bounded", fake_bounded)
 
     def fake_run(cmd, cwd=None, capture_output=False, text=False, check=False, env=None):
         if cmd[:3] == ["git", "rev-parse", "--verify"]:
@@ -109,6 +112,8 @@ def test_checkout_and_reset_continues_when_fetch_fails(monkeypatch, tmp_path):
     assert saved_state["current_sha"] == "def456"
     assert events
     assert events[0]["type"] == "reset_fetch_failed"
+    assert events[0]["error"] == f"git fetch origin failed: {fetch_error}"
+    assert events[0]["remote"] == "origin"
     assert events[0]["continuing_local_reset"] is True
 
 def test_checkout_and_reset_blocks_when_rescue_snapshot_fails(monkeypatch, tmp_path):

@@ -225,7 +225,7 @@ adds one System row naming the verdict and which revision it covered; that row
 lands inside the finished card (its Reviews group carries the note, the timeline
 keeps the row) without changing the card's chip, title or meta, and a standalone
 row appears only when the task has no card record in the page. The untyped
-terminal host notice and the admission notices stay ordinary rows by design. Local diagnostic failures remain inspectable
+terminal host notice and the origin-addressed routing notices stay ordinary rows by design. Local diagnostic failures remain inspectable
 in details and Logs, but do not relabel the whole still-working task. A failed child keeps a compact factual
 `Failed` marker inside its parent while the root continues under its own
 authoritative status. Internal reason codes belong in details and diagnostics,
@@ -595,11 +595,11 @@ error row inside the block, and the tool result carries the typed reason (with
 the cause and repair in `detail` where the producer holds one) so the model
 narrates — no host bubble interrupts a narrating
 turn. When the host itself issued the act (a Swarm message, a skill-card repair,
-a picker click) no turn narrates, so the refusal lands as ONE typed System row —
-`task_not_started`, or `task_start_unconfirmed` when admission could not be
-confirmed — in the chat the owner wrote in, keyed to the never-started task,
-beside the receipt; the Project start row is announced only once the task is
-really queued. A refusal receipt with neither options nor a cause sentence
+a picker click), or a refused owner steer carries no owner-message receipt,
+the host states the refusal as ONE typed System row: `task_not_started`,
+`task_start_unconfirmed` for unconfirmed admission, or `steer_not_delivered`
+for steering. It stays in the issuing chat, keyed to the named target. The
+Project start row is announced only once the task is really queued. A refusal receipt with neither options nor a cause sentence
 reads «Not routed», never «Choose a target». No client list of tool
 names decides presence (`docs/development/02-naming-and-boundaries.md`, "an
 open default behind a closed exception list"), and no client reading of a

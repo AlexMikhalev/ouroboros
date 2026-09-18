@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import queue
 import types
+
+import pytest
 
 from ouroboros.projects_registry import create_project
 from ouroboros.tools.control import _list_projects, _route_to_project, get_tools
@@ -195,16 +198,25 @@ def test_route_rejects_dirty_project_id(tmp_path):
     assert events[0]["reason"] == "invalid_project_id"
 
 
-def test_a_task_issuer_gets_a_typed_refusal_and_no_owner_picker(tmp_path):
+@pytest.mark.parametrize("drained_owner", [False, True])
+def test_a_task_issuer_gets_a_typed_refusal_and_no_owner_picker(tmp_path, drained_owner):
     """7=A: a pooled or Swarm root routing to a missing, malformed or unnamed project gets
     ROUTE_REJECTED in its own result; no manual-target event is emitted, so no picker or ack
     can reach an owner surface under an empty message id (the 14.09 incident's class)."""
+    from ouroboros.loop_round_limits import _drain_incoming_messages
+    from ouroboros.owner_mailbox import write_owner_message
+
     events = []
     for target, failure in (("ghost", "target_not_found"), ("Bad Name!", "invalid_project_id"), ("", "target_unspecified")):
         ctx = _ctx(tmp_path, events, task_id="root-1", task_metadata={
             "root_task_id": "root-1",
             "routing_contract": {"manual_options": [{"task_id": "task-1", "title": "Fix it"}]},
         })
+        if drained_owner:
+            write_owner_message(tmp_path, "Continue the work", task_id="root-1",
+                                msg_id=f"followup-{failure}", client_message_id="owner-followup")
+            _drain_incoming_messages([], queue.Queue(), tmp_path, "root-1", None, set(), owner_ctx=ctx)
+            assert ctx.last_owner_delivery["client_message_id"] == "owner-followup"
         out = _route_to_project(ctx, target, "continue the work there", predecessor_task_id="")
         assert out.startswith(f"⚠️ ROUTE_REJECTED ({failure})"), out
         assert "list_projects" in out
