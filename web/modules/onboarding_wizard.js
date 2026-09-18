@@ -1492,8 +1492,16 @@ import { accountRowFacts } from './harness_accounts.js';
         if (disposed) return;
         state.preparingRecovery = false;
         state.recoveryPrepared = Boolean(ready);
-        if (ready) state.recoveryMain = mainBinding();
         state.error = ready ? '' : agentsStep?.previewError || 'Reviewer assignments could not be prepared. Retry before saving.';
+        if (ready) {
+            state.recoveryMain = mainBinding();
+        } else {
+            // A failed recovery must not latch the wizard out of its ordinary
+            // path: the desktop setup window has no reload, so the owner keeps
+            // the normal Finish and the still-offered Use Main retry.
+            state.skipSubscriptionPresets = false;
+            void agentsStep?.setSkipPresets(false);
+        }
         render(); // Show the recovered assignments; only the next explicit Start saves.
     }
 

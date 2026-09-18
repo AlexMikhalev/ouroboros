@@ -76,6 +76,11 @@ def subscription_ui():
                     result = backend["preview_client"].post(path, json=payload)
                     route.fulfill(status=result.status_code, content_type="application/json", body=result.text)
                     return
+                if backend.get("recovery_error") and payload.get("skipSubscriptionPresets"):
+                    route.fulfill(status=400, content_type="application/json", body=json.dumps({
+                        "ok": False, "error": "Reviewer recovery unavailable.", "detail": backend["recovery_error"], "saved": False,
+                    }))
+                    return
                 if backend.get("preview_error") and not payload.get("skipSubscriptionPresets"):
                     route.fulfill(status=503, content_type="application/json", body=json.dumps({
                         "ok": False, "error": "Automatic assignments unavailable.", "code": "models_unavailable",
@@ -429,6 +434,39 @@ def test_failed_preview_allows_manual_main_and_visible_reviewer_recovery_before_
                 expected = 'owner-deep' if edit_after_recovery is True and kind == 'deep_review' else 'owner-main'
                 assert row['route']['target_id'] == f'claudexor::codex={expected}'
                 assert row['route']['profile_id'] == 'personal'
+
+
+def test_failed_main_reviewer_recovery_does_not_latch_finish(subscription_ui):
+    # A refused recovery preview must leave the wizard on its ordinary path:
+    # the packaged setup window has no reload, so the owner needs both the
+    # normal Finish and a working Use Main retry after the backend refuses once.
+    ui, page = subscription_ui, subscription_ui['page']
+    ui['backend'].update(preview_error='Agent model discovery unavailable.',
+                         recovery_error='A Main account pin requires a managed model source.')
+    page.goto(ui['url'] + '/onboarding')
+    page.wait_for_selector('#next-btn:not([disabled])')
+    page.click('#next-btn')
+    main = page.locator('[data-model-role="main"]')
+    main.locator('[data-model-role-source]').select_option('subscription:codex')
+    main.locator('[data-model-role-model]').fill('owner-main')
+    for _ in range(3):
+        page.click('#next-btn')
+    page.wait_for_selector('#skip-presets-btn:not([hidden])')
+    page.click('#skip-presets-btn')
+    page.wait_for_function("() => document.querySelector('.wizard-error').textContent.includes('managed model source')")
+    page.wait_for_selector('#skip-presets-btn:not([hidden])')
+    page.click('#next-btn')
+    page.wait_for_function("() => document.querySelector('.wizard-error').textContent")
+    assert 'Use Main for reviewers to prepare' not in page.locator('.wizard-error').inner_text()
+    assert not any(path == '/api/onboarding/complete' for path, _ in ui['posts'])
+    ui['backend'].pop('recovery_error')
+    page.click('#skip-presets-btn')
+    page.wait_for_function("() => document.querySelector('.wizard-inline-note')?.textContent.includes('Reviewers were assigned to Main')")
+    page.click('#next-btn')
+    page.wait_for_url(ui['url'] + '/')
+    bodies = [body for path, body in ui['posts'] if path == '/api/onboarding/complete']
+    assert len(bodies) == 1 and bodies[0]['skipSubscriptionPresets'] is True
+    assert bodies[0]['OUROBOROS_MODEL'] == 'claudexor::codex=owner-main'
 
 
 @pytest.mark.parametrize('http_status', [200, 500])
