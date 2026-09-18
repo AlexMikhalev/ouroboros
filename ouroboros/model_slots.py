@@ -267,6 +267,7 @@ def apply_model_role_override(settings: dict, *, role: str, model: str,
             row["subagent_id"] = actor_id
         else:
             actor["route"] = {"kind": "api_model", "target_id": routed_model, "credential_profile_id": pin}
+        actor.pop("access", None)  # Native/API rows have no session access profile.
         result["OUROBOROS_SUBAGENTS"] = normalize_configured_subagents(roster)[1]
     if slots is not None:
         result["OUROBOROS_REVIEWER_SLOTS"] = json.dumps(slots, ensure_ascii=False)

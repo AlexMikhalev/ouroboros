@@ -254,9 +254,13 @@ and 23 (`delegated_transport`), both critical. The imperatives:
   keep their cause, original input and execution custody (recovery is the
   model's choice). Full specs stay in the task source handles, with references
   only in the bounded review-state index; redacted review evidence never
-  substitutes for the original requirement text. The host states access ONCE
-  from the typed run shape (`delegate_start_instructions.access_instruction`);
-  assignment prose about access is context, never authority, never parsed.
+  substitutes for the original requirement text. The host states native process
+  access ONCE from the typed run shape (`delegate_start_instructions.access_instruction`);
+  it governs that mechanism, while explicit task constraints and the assigned
+  edit target still bind. Per-call access may only lower the captured profile,
+  never mint task authority. Do not parse assignment prose to choose a profile
+  or repeat competing native access instructions; preserve owner constraints
+  in the complete work order.
 - `subagents.route_health` is the ONE route reader for every consumer, and
   quota readers project one `ClaudexorGateway.quota_state()` envelope
   (`tests/test_available_subagents_runtime.py`): a fully-used ratio without a

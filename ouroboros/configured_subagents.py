@@ -20,6 +20,8 @@ from ouroboros.route_spec import (
 SUBAGENTS_SETTING = "OUROBOROS_SUBAGENTS"
 SUBAGENTS_RECEIPT_KEY = "OUROBOROS_SUBAGENT_PRESET_RECEIPT"
 MAX_CONFIGURED_SUBAGENTS = 10
+SESSION_ACCESS_PROFILES = ("workspace_write", "full")
+SESSION_ACCESS_LOWERING = ("readonly", "workspace_write")
 # Removal marker, not a runtime gate: the singleton/Heavy reader is intentionally
 # one compatibility window rather than a permanent second configuration system.
 LEGACY_SUBAGENT_COMPATIBILITY = "remove_after_next_minor_release"
@@ -32,7 +34,7 @@ SOURCE_INVALID = "invalid"
 
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _TOP_KEYS = frozenset({"enabled", "items"})
-_ROW_KEYS = frozenset({"subagent_id", "name", "recommended_use", "route", "effort", "processing_preference"})
+_ROW_KEYS = frozenset({"subagent_id", "name", "recommended_use", "route", "effort", "processing_preference", "access"})
 _ROUTE_ALIASES = {
     ROUTE_KIND_API_MODEL: ROUTE_KIND_API_MODEL,
     ROUTE_KIND_AGENT_SESSION: ROUTE_KIND_AGENT_SESSION,
@@ -70,6 +72,7 @@ class ConfiguredSubagent:
     route: RouteSpec = None  # type: ignore[assignment]
     effort: str = ""
     processing_preference: str = ""
+    access: str = "full"
 
 
 @dataclass(frozen=True)
@@ -190,6 +193,11 @@ def parse_configured_subagents(raw: Any) -> ConfiguredSubagents:
             reject_api_pin=True,
         )
         _validate_session_target(route, where)
+        access = row.get("access", "full") if route.is_session else ""
+        if route.is_session and (not isinstance(access, str) or access not in SESSION_ACCESS_PROFILES):
+            raise ValueError(f"{SUBAGENTS_SETTING}: {where}.access must be workspace_write or full")
+        if "access" in row and not route.is_session:
+            raise ValueError(f"{SUBAGENTS_SETTING}: {where}.access is meaningful only for agent_session")
         effort = _effort(row.get("effort"), where)
         validate_compound_session_effort(
             route, effort, setting=SUBAGENTS_SETTING, where=where,
@@ -201,6 +209,7 @@ def parse_configured_subagents(raw: Any) -> ConfiguredSubagents:
                 route=route,
                 effort=effort,
                 processing_preference=normalize_processing_preference(row.get("processing_preference")),
+                access=access,
             )
         )
     return ConfiguredSubagents(enabled=payload["enabled"], items=tuple(items))
@@ -222,6 +231,9 @@ def configured_subagents_dict(config: ConfiguredSubagents) -> dict[str, Any]:
             payload["effort"] = row.effort
         if row.processing_preference:
             payload["processing_preference"] = row.processing_preference
+        # A saved lower choice must not become the full default on its next read.
+        if row.route.is_session:
+            payload["access"] = row.access
         items.append(payload)
     return {"enabled": config.enabled, "items": items}
 
@@ -525,6 +537,7 @@ def _append_candidate_rows(
                 recommended_use=candidate.recommended_use,
                 route=candidate.route,
                 effort=candidate.effort,
+                access=candidate.access,
             )
         )
         seen.add(identity)
@@ -561,6 +574,8 @@ __all__ = [
     "MAX_CONFIGURED_SUBAGENTS",
     "PRIMARY_RECOMMENDATION",
     "SCOUT_RECOMMENDATION",
+    "SESSION_ACCESS_PROFILES",
+    "SESSION_ACCESS_LOWERING",
     "SOURCE_CONFIGURED",
     "SOURCE_INVALID",
     "SOURCE_LEGACY_MIGRATED",

@@ -48,6 +48,7 @@ function apiRow(overrides = {}) {
 function sessionRow(overrides = {}) {
     return {
         subagent_id: 'codex_builder',
+        access: 'full',
         recommended_use: 'Implementation in a real workspace.',
         route: {
             kind: ROUTE_KIND_AGENT_SESSION,
@@ -845,6 +846,97 @@ test('the head dot takes the worse of the two status axes', () => {
     assert.match(availableSubagentRowMarkup(sessionRow(), { ...live, baseline: 'generated' }, 0),
         /data-tone="neutral"[^>]*>Generated · Available</);
     assert.match(availableSubagentRowMarkup(apiRow(), live, 0), /data-tone="neutral"[^>]*>Saved · Checked at start</);
+});
+
+test('actor access defaults to full and round-trips an explicit lower choice', () => {
+    const defaults = setting([apiRow(), sessionRow()]);
+    const explicit = setting([apiRow(), sessionRow({ access: 'workspace_write' })]);
+    assert.deepEqual(parseAvailableSubagentsSetting(explicit).setting, explicit);
+    assert.notEqual(subagentSettingsFingerprint(explicit), subagentSettingsFingerprint(defaults));
+    const full = setting([sessionRow({ access: 'full' })]);
+    const parsed = parseAvailableSubagentsSetting(JSON.stringify(full));
+    assert.equal(parsed.error, '');
+    assert.deepEqual(buildAvailableSubagentsSetting(parsed.setting), full);
+    assert.equal(subagentSettingsFingerprint(full), subagentSettingsFingerprint(setting([sessionRow()])));
+    for (const access of [null, '', 'FULL', ' full ', false, 'readonly', 'inherit_native']) {
+        assert.equal(parseAvailableSubagentsSetting(setting([sessionRow({ access })])).setting, null);
+    }
+    assert.equal(parseAvailableSubagentsSetting(setting([apiRow({ access: 'full' })])).setting, null);
+    assert.match(validateAvailableSubagentsSetting(setting([apiRow({ access: 'full' })]))[0], /Agent session/);
+    assert.equal(parseAvailableSubagentsSetting(setting([sessionRow({ route: {
+        ...sessionRow().route, access: 'full',
+    } })])).setting, null, 'access belongs to the actor, never RouteSpec');
+});
+
+test('session access uses a named native select with a readable capability explanation', () => {
+    const html = availableSubagentRowMarkup(sessionRow({ access: 'full' }), QUIET_STATE);
+    assert.match(html, /<select class="ui-control"[^>]*data-subagent-field="access"/);
+    assert.match(html, /value="full" selected>Full system access/);
+    assert.match(html, /Full system access \(default\)/);
+    assert.match(html, /Full system access can reach outside the working folder/);
+    assert.match(html, /The selected agent must support it/);
+    assert.doesNotMatch(availableSubagentRowMarkup(apiRow(), QUIET_STATE), /data-subagent-field="access"/);
+});
+
+// A small event surface for the real editor binder. Only the controls this
+// test operates are parsed; rendered geometry/chooser behavior is browser QA.
+function accessEditorDom() {
+    const field = (name) => ({
+        dataset: { subagentField: name }, attributes: {}, listeners: {},
+        addEventListener(type, handler) { this.listeners[type] = handler; },
+        setAttribute(name, value) { this.attributes[name] = value; },
+        emit(type, value) { this.listeners[type]({ target: { value } }); },
+    });
+    let rows = [];
+    const container = {
+        scrollTop: 0,
+        set innerHTML(html) {
+            rows = [...html.matchAll(/<article[^>]*data-subagent-row="([^"]+)"[^>]*>([\s\S]*?)<\/article>/g)].map((match) => {
+                const fields = new Map([...match[2].matchAll(/data-subagent-field="([^"]+)"/g)]
+                    .map((entry) => [entry[1], field(entry[1])]));
+                const duplicate = field('duplicate');
+                return {
+                    dataset: { subagentRow: match[1] }, toggleAttribute() {},
+                    querySelector(selector) {
+                        if (selector === '[data-subagent-duplicate]') return duplicate;
+                        return fields.get(selector.match(/data-subagent-field="([^"]+)"/)?.[1]) || null;
+                    },
+                    querySelectorAll: (selector) => selector === '[data-subagent-field]' ? [...fields.values()] : [],
+                };
+            });
+        },
+        querySelector(selector) {
+            const key = selector.match(/data-subagent-row="([^"]+)"/)?.[1];
+            return rows.find((row) => row.dataset.subagentRow === key) || null;
+        },
+        querySelectorAll: (selector) => selector === '[data-subagent-row]' ? rows : [],
+    };
+    return { doc: { getElementById: () => container }, row: (index = 0) => rows[index] };
+}
+
+test('access edit saves and clones the lower choice, resets for API and restores full', () => {
+    const dom = accessEditorDom();
+    const changes = [];
+    const editor = createAvailableSubagentsEditor({ doc: dom.doc, win: null, onChange: (value) => changes.push(value) });
+    editor.load(setting([sessionRow()]));
+    const control = (name, index = 0) => dom.row(index).querySelector(`[data-subagent-field="${name}"]`);
+    control('access').emit('change', 'workspace_write');
+    assert.equal(editor.dirty, true);
+    assert.equal(editor.collect().OUROBOROS_SUBAGENTS.items[0].access, 'workspace_write');
+    assert.equal(changes.at(-1).items[0].route.access, undefined);
+    assert.match(control('access').attributes['aria-describedby'], /-access-help/);
+    dom.row().querySelector('[data-subagent-duplicate]').emit('click');
+    assert.equal(editor.setting.items.length, 2);
+    assert.equal(editor.setting.items[1].access, 'workspace_write');
+    assert.notEqual(editor.setting.items[0].subagent_id, editor.setting.items[1].subagent_id);
+    control('route', 1).emit('change', 'api');
+    assert.equal(editor.setting.items[1].access, undefined);
+    assert.equal(control('access', 1), null);
+    control('model', 1).emit('input', 'openai/gpt-5.6-luna');
+    assert.deepEqual(editor.validate(), []);
+    control('access').emit('change', 'full');
+    assert.equal(editor.collect().OUROBOROS_SUBAGENTS.items[0].access, 'full');
+    editor.destroy();
 });
 
 // ---------------------------------------------------------------------------
