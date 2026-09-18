@@ -1087,9 +1087,11 @@ def load_plan_review_state(results_drive_root: Any, task_id: str) -> Dict[str, A
     path = task_result_path(results_drive_root, task_id, create=False)
     if not path.is_file():
         return _empty_plan_review_state()
-    result = read_json_dict(path)
-    if result is None:
-        raise ValueError("PLAN_REVIEW_STATE_INVALID: parent task result JSON is malformed")
+    # Share the writer's lock: Windows may deny reads during atomic replacement.
+    try:
+        result = update_json_locked(path, lambda _: None, strict_existing_dict=True)
+    except ValueError as exc:
+        raise ValueError("PLAN_REVIEW_STATE_INVALID: parent task result JSON is malformed") from exc
     from ouroboros.tools.plan_review_artifacts import authority_state
 
     return authority_state(
