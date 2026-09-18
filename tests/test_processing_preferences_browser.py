@@ -80,7 +80,7 @@ def test_onboarding_processing_draft_returns_and_reaches_finish(subscription_ui)
     main.locator('summary').click()
     main.locator('[data-model-role-processing]').select_option('standard')
     page.locator('#next-btn').click()
-    page.wait_for_selector('#reviewer-slots-section')
+    page.wait_for_selector('[data-collapse="reviewers"]')
     page.locator('#back-btn').click()
     page.wait_for_selector('[data-global-processing]')
     assert page.locator('[data-global-processing]').input_value() == 'fast'
