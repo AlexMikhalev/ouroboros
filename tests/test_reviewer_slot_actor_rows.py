@@ -298,6 +298,8 @@ def test_settings_save_validates_actor_refs_against_the_incoming_roster(roster_e
 
     monkeypatch.setattr(gws, "load_settings", _fake_load)
     monkeypatch.setattr(gws, "_owner_write_settings", _fake_write)
+    # This tests atomic roster validation, not the public model-catalog warning lookup.
+    monkeypatch.setattr(gws, "_unrecognised_review_models", lambda models: [])
     # A successful save exports settings into os.environ; keep this test
     # hermetic (the exported reviewer slots would leak into later tests).
     monkeypatch.setattr(gws, "_apply_settings_to_env", lambda *a, **k: None)

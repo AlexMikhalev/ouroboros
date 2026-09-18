@@ -523,12 +523,12 @@ def test_wizard_declares_the_subscription_intent_the_endpoint_expects():
     assert f"{SUBSCRIPTIONS_CONNECTED_FIELD}: state.agentsConnected.length > 0" in source
     assert f"{SKIP_SUBSCRIPTION_PRESETS_FIELD}: state.skipSubscriptionPresets" in source
     assert 'id="skip-presets-btn"' in source
-    assert "Finish without subscription presets" in source
-    assert "saveWizard({ skipPresets: true })" in source
+    assert "Use Main for reviewers" in source
+    recovery = source.split("async function prepareMainReviewers", 1)[1].split("async function saveWizard", 1)[0]
+    assert "await agentsStep?.setSkipPresets(true, { replaceReviewers: true })" in recovery
+    assert "render()" in recovery and "completeOnboardingAtomically" not in recovery
     save = source.split("async function saveWizard", 1)[1]
-    assert save.index("await agentsStep?.setSkipPresets(true)") < save.index(
-        "const providersError = validateProvidersStep()"
-    )
+    assert "setSkipPresets(true)" not in save
 
 
 def test_a_browser_owner_is_told_when_the_saved_runtime_mode_needs_a_restart():

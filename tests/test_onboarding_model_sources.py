@@ -143,6 +143,11 @@ def test_main_review_recovery_replaces_references_without_changing_actor_draft()
 
     settings = {
         "OUROBOROS_MODEL": "claudexor::source=main-model",
+        "OUROBOROS_SUBAGENTS": {"enabled": True, "items": [{
+            "subagent_id": "original-actor", "recommended_use": "Original task actor",
+            "route": {"kind": "api_model", "target_id": "claudexor::source=old", "credential_profile_id": ""},
+            "effort": "xhigh",
+        }]},
         "OUROBOROS_REVIEWER_SLOTS": json.dumps({
             "triad": [{"slot_id": "my-review", "subagent_id": "original-actor", "effort": "high"}],
             "scope": [{"slot_id": "my-scope", "subagent_id": "original-actor"}],
@@ -150,14 +155,20 @@ def test_main_review_recovery_replaces_references_without_changing_actor_draft()
         }),
     }
     before = dict(settings)
-    slots = json.loads(preview_main_reviewer_slots(settings))
+    raw, roster = preview_main_reviewer_slots(settings)
+    slots = json.loads(raw)
     assert settings == before
+    from ouroboros.reviewer_slot_config import parse_reviewer_slots, roster_env_override
+    with roster_env_override(roster, environ=settings):
+        resolved = parse_reviewer_slots(raw)
+    assert resolved.triad[0].retrieves
+    assert resolved.scope[0].effort == "xhigh"
+    assert json.loads(roster)["items"][0] == settings["OUROBOROS_SUBAGENTS"]["items"][0]
     assert slots["triad"][0]["slot_id"] == "my-review"
     assert slots["triad"][0]["effort"] == "high"
     assert slots["advisory"]["enabled"] is False
-    for row in [*slots["triad"], *slots["scope"], slots["advisory"], slots["deep_review"]]:
-        assert "subagent_id" not in row
-        assert row["route"] == {"kind": "api_chat", "target_id": settings["OUROBOROS_MODEL"]}
+    for row in [*resolved.triad, *resolved.scope, resolved.advisory, resolved.deep_review]:
+        assert row.target_id == settings["OUROBOROS_MODEL"]
 
 
 @pytest.mark.serial
@@ -176,13 +187,74 @@ def test_main_review_recovery_materializes_optional_inherited_reviewers():
     from ouroboros.subscription_install_presets import preview_main_reviewer_slots
 
     model = "claudexor::codex=chosen-main"
-    slots = json.loads(preview_main_reviewer_slots({
+    raw, _roster = preview_main_reviewer_slots({
         "OUROBOROS_MODEL": model,
+        "OUROBOROS_SUBAGENTS": {"enabled": True, "items": []},
         "OUROBOROS_REVIEWER_SLOTS": json.dumps({
             "triad": [{"slot_id": "review", "route": {"kind": "api_chat", "target_id": "old"}}],
             "scope": [{"slot_id": "scope", "route": {"kind": "api_chat", "target_id": "old"}}],
             "advisory": None, "deep_review": None,
         }),
-    }))
+    })
+    slots = json.loads(raw)
     assert slots["advisory"]["enabled"] is True
     assert slots["advisory"]["route"]["target_id"] == slots["deep_review"]["route"]["target_id"] == model
+
+
+@pytest.mark.serial
+def test_recovery_endpoint_preserves_visible_panel_and_inherited_inspection(onboarding):
+    from ouroboros.reviewer_slot_config import parse_reviewer_slots, roster_env_override
+    from ouroboros.subscription_install_presets import compile_install_preset
+    from tests.test_subscription_install_presets import _discoveries
+
+    preset = compile_install_preset(_discoveries("claude", "codex", "cursor", "agy"), settings={
+        "OPENAI_API_KEY": "fixture-no-network", "OUROBOROS_MODEL": "openai::main",
+        "OUROBOROS_MODEL_LIGHT": "openai::scout",
+    })
+    assert preset.ok
+    roster = json.loads(preset.available_subagents)
+    panel = json.loads(preset.reviewer_slots)
+    panel["triad"][0]["effort"] = "xhigh"
+    panel["advisory"]["enabled"] = False
+    settings = {
+        "subscriptionsConnected": True, "skipSubscriptionPresets": True,
+        "OUROBOROS_MODEL": "claudexor::codex=main",
+        "OUROBOROS_MODEL_ACCOUNTS": {"main": "account"},
+        "OUROBOROS_MODEL_PROCESSING_PREFERENCES": {"main": "standard"},
+        "OUROBOROS_SUBAGENTS": roster, "OUROBOROS_REVIEWER_SLOTS": json.dumps(panel),
+    }
+    with roster_env_override(json.dumps(roster), environ=settings):
+        original = parse_reviewer_slots(json.dumps(panel))
+    response = onboarding.client.post("/api/onboarding/subagents/preview", json=settings)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["available_subagents"]["items"][:len(roster["items"])] == roster["items"]
+    assert len(result["available_subagents"]["items"]) == len(roster["items"]) + 1 <= 10
+    with roster_env_override(json.dumps(result["available_subagents"]), environ=settings):
+        resolved = parse_reviewer_slots(result["reviewer_slots"])
+    before = [*original.triad, *original.scope, original.advisory, original.deep_review]
+    after = [*resolved.triad, *resolved.scope, resolved.advisory, resolved.deep_review]
+    assert [(r.slot_id, r.effort) for r in after] == [(r.slot_id, r.effort) for r in before]
+    assert resolved.advisory.enabled is False
+    assert all(r.retrieves for r in resolved.triad)
+    assert all(r.target_id == settings["OUROBOROS_MODEL"] and r.profile_id == "account"
+               and r.processing_preference == "standard" for r in after)
+    assert not onboarding.settings_path.exists() and onboarding.calls["snapshot"] == 0
+
+
+@pytest.mark.serial
+def test_recovery_endpoint_keeps_authored_counts_ids_effort_and_disabled_advisory(onboarding):
+    panel = {"triad": [{"slot_id": "own-triad", "effort": "xhigh",
+                        "route": {"kind": "api_chat", "target_id": "claudexor::codex=old"}}],
+             "scope": [{"slot_id": "own-scope", "effort": "high",
+                        "route": {"kind": "api_chat", "target_id": "claudexor::codex=old"}}],
+             "advisory": {"enabled": False, "effort": "high"}}
+    response = onboarding.client.post("/api/onboarding/subagents/preview", json={
+        "subscriptionsConnected": True, "skipSubscriptionPresets": True,
+        "OUROBOROS_MODEL": "claudexor::codex=main", "OUROBOROS_REVIEWER_SLOTS": json.dumps(panel),
+    })
+    assert response.status_code == 200, response.text
+    result = json.loads(response.json()["reviewer_slots"])
+    assert [(r["slot_id"], r["effort"]) for r in result["triad"]] == [("own-triad", "xhigh")]
+    assert [(r["slot_id"], r["effort"]) for r in result["scope"]] == [("own-scope", "high")]
+    assert result["advisory"]["enabled"] is False and result["advisory"]["effort"] == "high"

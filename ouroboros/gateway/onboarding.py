@@ -1,12 +1,8 @@
 """Atomic onboarding completion — ONE owner-scoped save (D-8).
 
-Web onboarding used to finish with TWO writes: ``POST /api/settings`` with the
-wizard payload, then ``POST /api/owner/runtime-mode``. A failure between them
-left an install whose providers were saved and whose runtime mode was not, and
-there was no seam where an install-time decision (the agent subscription
-preset, the fresh-install ``light`` safety default) could be part of the same
-transaction. ``POST /api/onboarding/complete`` replaces both with one ordered
-transaction:
+``POST /api/onboarding/complete`` is the single ordered settings transaction.
+Separate provider/runtime-mode saves could leave half-configured installs and
+could not atomically include subscription presets or the fresh safety default.
 
 1. re-prove FRESH-INSTALL status server-side — a browser boolean is a request,
    never an authority;
@@ -727,12 +723,17 @@ async def api_onboarding_subagents_preview(request: Request) -> JSONResponse:
             diagnostics=[{"code": failure.code, "message": failure.detail}],
         )
     assert preset is not None
+    available_subagents = preset.available_subagents
     try:
-        reviewer_slots = (
-            preview_main_reviewer_slots(current)
-            if subscriptions_connected and skip_presets
-            else preset.reviewer_slots or preview_api_reviewer_slots(current)
-        )
+        if subscriptions_connected and skip_presets:
+            recovery = {**current, SUBAGENTS_SETTING: available_subagents}
+            if "OUROBOROS_REVIEWER_SLOTS" in body:
+                if not isinstance(body["OUROBOROS_REVIEWER_SLOTS"], str):
+                    raise ValueError("Reviewer slots must use their serialized JSON contract.")
+                recovery["OUROBOROS_REVIEWER_SLOTS"] = body["OUROBOROS_REVIEWER_SLOTS"]
+            reviewer_slots, available_subagents = preview_main_reviewer_slots(recovery)
+        else:
+            reviewer_slots = preset.reviewer_slots or preview_api_reviewer_slots(current)
     except ValueError as exc:
         return unsaved_error(str(exc), 400, code="invalid_onboarding_settings")
     return JSONResponse({
@@ -740,7 +741,7 @@ async def api_onboarding_subagents_preview(request: Request) -> JSONResponse:
         "model_settings": dict(preset.model_settings),
         "reviewer_slots": reviewer_slots,
         "available_subagents": configured_subagents_dict(
-            normalize_configured_subagents(preset.available_subagents)[0]
+            normalize_configured_subagents(available_subagents)[0]
         ),
         "source": preset.source,
         "diagnostics": list(preset.diagnostics),

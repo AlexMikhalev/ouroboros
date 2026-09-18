@@ -358,7 +358,7 @@ def test_cursor_only_does_not_claim_model_access_and_api_only_finishes(subscript
     assert not body['subscriptionsConnected']
 
 
-@pytest.mark.parametrize('edit_after_recovery', [False, True])
+@pytest.mark.parametrize('edit_after_recovery', [False, True, 'main'])
 def test_failed_preview_allows_manual_main_and_visible_reviewer_recovery_before_save(subscription_ui, onboarding, edit_after_recovery):
     ui, page = subscription_ui, subscription_ui['page']
     ui['backend'].update(preview_client=onboarding.client, client=onboarding.client)
@@ -396,7 +396,17 @@ def test_failed_preview_allows_manual_main_and_visible_reviewer_recovery_before_
         row = page.locator('.summary-kv').filter(has=page.get_by_text(label, exact=True))
         assert 'claudexor::codex=owner-main' in row.inner_text()
     capture(page, 'manual-main-reviewer-recovery')
-    if edit_after_recovery:
+    if edit_after_recovery == 'main':
+        for _ in range(3):
+            page.click('#back-btn')
+        page.locator('[data-model-role="main"] [data-model-role-model]').fill('new-main')
+        for _ in range(3):
+            page.click('#next-btn')
+        page.wait_for_selector('#skip-presets-btn:not([hidden])')
+        assert page.locator('#next-btn').is_enabled()
+        assert 'Main changed; reviewers keep the assignments shown above' in page.locator('.wizard-inline-note').inner_text()
+        assert 'owner-main' in page.locator('.summary-kv').filter(has=page.get_by_text('Triad review', exact=True)).inner_text()
+    elif edit_after_recovery:
         page.click('#back-btn')
         page.click('#back-btn')
         page.locator('[data-collapse="reviewers"] > summary').click()
@@ -410,13 +420,13 @@ def test_failed_preview_allows_manual_main_and_visible_reviewer_recovery_before_
     page.wait_for_url(ui['url'] + '/')
     bodies = [body for path, body in ui['posts'] if path == '/api/onboarding/complete']
     assert len(bodies) == 1 and bodies[0]['skipSubscriptionPresets'] is True
-    assert bodies[0]['OUROBOROS_MODEL'] == 'claudexor::codex=owner-main'
+    assert bodies[0]['OUROBOROS_MODEL'] == ('claudexor::codex=new-main' if edit_after_recovery == 'main' else 'claudexor::codex=owner-main')
     assert json.loads(onboarding.saved()['OUROBOROS_REVIEWER_SLOTS']) == json.loads(bodies[0]['OUROBOROS_REVIEWER_SLOTS'])
     assert onboarding.calls['supervisor'] == 1
     for kind, value in json.loads(bodies[0]['OUROBOROS_REVIEWER_SLOTS']).items():
         for row in value if isinstance(value, list) else [value]:
             if isinstance(row, dict):
-                expected = 'owner-deep' if edit_after_recovery and kind == 'deep_review' else 'owner-main'
+                expected = 'owner-deep' if edit_after_recovery is True and kind == 'deep_review' else 'owner-main'
                 assert row['route']['target_id'] == f'claudexor::codex={expected}'
                 assert row['route']['profile_id'] == 'personal'
 
