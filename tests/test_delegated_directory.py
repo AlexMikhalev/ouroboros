@@ -77,16 +77,24 @@ def context(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("strategy", ["direct", "copy"])
-def test_start_uses_normal_writing_mode_without_git_or_fake_snapshot(tmp_path, monkeypatch, strategy):
+@pytest.mark.parametrize("access", ["workspace_write", "full"])
+def test_start_uses_normal_writing_mode_without_git_or_fake_snapshot(tmp_path, monkeypatch, strategy, access):
     from ouroboros.gateways import claudexor
+    import tests._delegated_transport_shared as shared
     ctx, target = context(tmp_path, monkeypatch)
     engine = DirectoryEngine(target, strategy)
+    engine.profiles = ("readonly", "workspace_write", "full")
+    snapshot = shared._transport_snapshot
+    monkeypatch.setattr(shared, "_transport_snapshot", lambda route: {**snapshot(route), "access": access})
+    grants = []
+    monkeypatch.setattr(engine, "ensure_full_access", lambda root: grants.append(root), raising=False)
     monkeypatch.setattr(claudexor, "ClaudexorGateway", lambda *a, **k: engine)
     result = json.loads(delegate._delegate_start(ctx, "edit documents", directory_strategy=strategy, scope_paths=["."]).text)
     assert result["status"] == "started", result
     request, key = engine.posts[0]
     assert request["scope"]["root"] == str(target)
-    assert request["mode"] == "agent" and request["access"] == "workspace_write"
+    assert request["mode"] == "agent" and request["access"] == access
+    assert grants == ([str(target)] if access == "full" else [])
     assert request["execution"]["workspaceKind"] == "directory"
     assert request["execution"]["isolation"] == ("live" if strategy == "direct" else "envelope")
     assert request["execution"]["scopePaths"] == ["."]

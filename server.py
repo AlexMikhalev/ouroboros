@@ -387,43 +387,10 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
             _execute_panic_stop(ctx.consciousness, ctx.kill_workers)
         elif lowered.startswith("/restart"):
             reply("♻️ Restarting.", "")
-            ok, restart_msg = _safe_restart_serialized(
-                ctx.safe_restart,
-                reason="owner_restart",
-                unsynced_policy="rescue_and_reset",
-            )
+            ok, restart_msg = _perform_owner_restart(ctx, reply)
             if not ok:
                 reply(f"⚠️ Restart cancelled: {restart_msg}", "failed")
                 continue
-            state_dir = DATA_DIR / "state"
-            owner_restart_flag = state_dir / "owner_restart_no_resume.flag"
-            stable_skip_flag = state_dir / "panic_stop.flag"
-            try:
-                state_dir.mkdir(parents=True, exist_ok=True)
-                owner_restart_flag.write_text("owner_restart", encoding="utf-8")
-                # Pair owner flag with panic_stop for stable-build auto-resume compatibility.
-                stable_skip_flag.write_text("owner_restart_no_resume", encoding="utf-8")
-            except Exception:
-                owner_restart_flag.unlink(missing_ok=True)
-                stable_skip_flag.unlink(missing_ok=True)
-                log.warning("Failed to write owner restart no-resume flag", exc_info=True)
-                reply("⚠️ Restart cancelled: could not write restart state.", "failed")
-                continue
-            # Everything reversible is behind us (checkout landed, no-resume
-            # intent durable): from here the restart always follows, and every
-            # unconfirmed stop is a critical diagnostic, never a deferral.
-            stopped_task_ids = _stop_owned_work(ctx)
-            try:
-                # Say only what happened: with nothing owned the stop sentence
-                # named a task that was never running.
-                reply(
-                    "Stopping active task. New settings apply to the next message."
-                    if stopped_task_ids else "New settings apply to the next message.",
-                    "",
-                )
-            except Exception:
-                log.warning("Failed to send owner restart stop notice; continuing restart", exc_info=True)
-            _request_restart_exit(owner=True)
         elif lowered == "/review" or lowered.startswith("/review "):
             # Target the requesting chat so the ack and results return to the
             # external transport owner, not the default web owner_chat_id.
@@ -525,6 +492,47 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
                 },
             )
     return offset
+
+
+def _perform_owner_restart(ctx: Any, reply=None) -> tuple[bool, str]:
+    """Run the owner restart operation with an optional transport notice."""
+    ok, restart_msg = _safe_restart_serialized(
+        ctx.safe_restart,
+        reason="owner_restart",
+        unsynced_policy="rescue_and_reset",
+    )
+    if not ok:
+        return False, restart_msg
+    state_dir = DATA_DIR / "state"
+    owner_restart_flag = state_dir / "owner_restart_no_resume.flag"
+    stable_skip_flag = state_dir / "panic_stop.flag"
+    try:
+        state_dir.mkdir(parents=True, exist_ok=True)
+        owner_restart_flag.write_text("owner_restart", encoding="utf-8")
+        # Pair owner flag with panic_stop for stable-build auto-resume compatibility.
+        stable_skip_flag.write_text("owner_restart_no_resume", encoding="utf-8")
+    except Exception:
+        owner_restart_flag.unlink(missing_ok=True)
+        stable_skip_flag.unlink(missing_ok=True)
+        log.warning("Failed to write owner restart no-resume flag", exc_info=True)
+        return False, "could not write restart state."
+    # Everything reversible is behind us (checkout landed, no-resume
+    # intent durable): from here the restart always follows, and every
+    # unconfirmed stop is a critical diagnostic, never a deferral.
+    stopped_task_ids = _stop_owned_work(ctx)
+    try:
+        if reply is not None:
+            # Say only what happened: with nothing owned the stop sentence
+            # named a task that was never running.
+            reply(
+                "Stopping active task. New settings apply to the next message."
+                if stopped_task_ids else "New settings apply to the next message.",
+                "",
+            )
+    except Exception:
+        log.warning("Failed to send owner restart stop notice; continuing restart", exc_info=True)
+    _request_restart_exit(owner=True)
+    return True, ""
 
 
 def _runtime_branch_defaults() -> tuple[str, str]:

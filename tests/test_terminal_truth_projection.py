@@ -701,7 +701,11 @@ def test_terminal_checkpoint_uses_current_lifecycle_status_before_regression_gua
     assert "error" not in outcome
     stored = load_task_result(data, task_id)
     assert stored["status"] == STATUS_COMPLETED
-    assert stored["root_phase_checkpoint"] == {
+    phase = dict(stored["root_phase_checkpoint"])
+    accounting = phase.pop("accounting")
+    assert accounting["root_task_id"] == task_id
+    assert accounting["accounted_upper_bound_usd"] == 99.0
+    assert phase == {
         "phase": "task_acceptance",
         "status": "pass",
         "pass_index": 1,
@@ -794,7 +798,11 @@ def test_startup_recovery_merges_child_acceptance_after_stale_scan(
     assert "error" not in outcome
     assert outcome["count"] == 1
     stored = load_task_result(data, task_id)
-    assert stored["root_phase_checkpoint"] == {
+    phase = dict(stored["root_phase_checkpoint"])
+    accounting = phase.pop("accounting")
+    assert accounting["root_task_id"] == task_id
+    assert accounting["accounted_upper_bound_usd"] == 99.0
+    assert phase == {
         "phase": "task_acceptance",
         "status": "pass",
         "pass_index": 1,

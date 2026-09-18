@@ -28,8 +28,8 @@ does not make the actual token path inaccessible.
 ## 2. The actor
 
 A delegated mutating child uses the shape from
-`subagents.delegated_run_shape`: `mode: agent`, `access: workspace_write`,
-`execution.isolation: live`, with the delegated marker. For Git and skill
+`subagents.delegated_run_shape`: `mode: agent`, captured `access: full` or
+`workspace_write`, `execution.isolation: live`, with the delegated marker. For Git and skill
 payload work, `tools/delegate.py` provisions a private execution snapshot
 before dispatch. `live` means that Claudexor works in that supplied execution
 root; it does not mean direct edits to the authoritative target. The host
@@ -83,6 +83,16 @@ daemon token adds control-plane authority, but withholding the whole lane
 because a host has no boundary mechanism would also remove useful delegated
 execution. The contract therefore checks required request support and reports
 what each attempt actually received.
+
+New configured sessions default to full native access; an explicit owner row or
+invocation may lower it. Full requests no OS sandbox. The private execution
+snapshot still owns patch delivery, and explicit task constraints remain in force.
+The owned gateway grants full access only for an absent scoped trust record,
+preserving an existing denial. Older immutable snapshots without an access field
+keep workspace_write; retries keep their exact recorded request. Runtime review
+sessions and genuinely read-only tasks retain readonly/ask. Scoped HOME and
+actual-access receipts remain separate facts, and scoped trust grants persist
+without an automatic cleanup policy.
 
 ## 4. Compatibility floors and applied evidence
 

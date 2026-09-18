@@ -57,6 +57,30 @@ def test_project_room_writes_the_canonical_identity(tmp_path):
     assert json.loads(journal.strip().splitlines()[-1])["new_content"] == _IDENTITY
 
 
+def test_identity_is_written_byte_exact_with_no_temp_sibling_left(tmp_path):
+    # identity.md is overwritten through the shared atomic helper: a temp
+    # sibling receives exactly content.encode("utf-8") and is os.replace-d into
+    # place. The file therefore carries the model's own bytes — CRLF endings and
+    # multi-byte characters untouched — and a finished write leaves nothing
+    # beside it, so a crash can never publish a half-written identity.
+    data = tmp_path / "data"
+    data.mkdir()
+    content = (
+        "Я Уроборос 🌀\r\n"
+        "Одно непрерывное «я» в каждой комнате, где я говорю,\r\n"
+        "and I revise this file when experience genuinely changes it.\r\n"
+    )
+
+    result = control_runtime._update_identity(_ctx(data), content)
+
+    assert result.startswith("OK: identity updated")
+    memory_dir = data / "memory"
+    assert (memory_dir / "identity.md").read_bytes() == content.encode("utf-8")
+    # The atomic temp sibling is ".identity.md.tmp.<pid>.<tid>.<uuid>", so any
+    # hidden entry left in the directory is a leaked write.
+    assert [entry.name for entry in memory_dir.iterdir() if entry.name.startswith(".")] == []
+
+
 def test_main_chat_writes_the_same_files(tmp_path):
     # The room changes nothing: an unscoped turn lands in exactly one place.
     data = tmp_path / "data"
