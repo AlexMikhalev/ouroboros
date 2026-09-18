@@ -645,7 +645,6 @@ def _set_applied_host_acceptance_impact(
     run_record["enforcement_impact"] = _clean_enforcement_impact(result)
 
 
-
 def _finish_cyber_acceptance(ctx: _TaskAcceptanceContext, result: Any) -> bool:
     """Main's final response is its decision; criticism retains its own facts."""
     from ouroboros.loop_delivery import delivery_subject_hash
@@ -788,8 +787,7 @@ def _apply_task_acceptance_result(
         rails_line=ctx.rails_line,
         open_obligations=open_obligations,
     )
-    # Persist contributing actors' dialogue judgment using the panel's quorum.
-    # Inconclusive votes grant no authority; the non-dialogue terminals decide.
+    # Critic dialogue judgment remains evidence; the author owns its stop choice.
     dialogue = aggregate_dialogue_status(
         result, quorum=_acceptance_dialogue_quorum(result),
     )
@@ -872,11 +870,7 @@ def _apply_task_acceptance_result(
                     "binding_hash": str(run.get("binding_hash") or ""),
                 }]})
                 break
-        # The aggregate word is not an explanation: printing DEGRADED alone read
-        # as "no settled verdict" while a capsule was in fact fed back for one more
-        # bounded pass. Name the pass being started and the recorded causes; a
-        # wave that recorded none says THAT, so the verdict is a label beside a
-        # stated absence rather than standing in for the reason.
+        # Name the author pass and actual causes; the verdict alone explains neither.
         causes = _slot_cause_clause(result)
         verdict = str(result.aggregate_signal or "").strip()
         ctx.emit_progress(
@@ -957,18 +951,21 @@ def _apply_task_acceptance_result(
     return False
 
 
-def _offer_acceptance_refusal(ctx: _TaskAcceptanceContext, reason: str) -> bool:
+def _offer_acceptance_refusal(ctx: _TaskAcceptanceContext, reason: str, *, host_failure: bool = False) -> bool:
     """Let Main react once to unavailable review while ordinary author time remains."""
     previous = ctx.llm_trace.get("acceptance_review_outcome") or {}
     prior_feedback = any(run.get("feedback_delivered") for run in ctx.llm_trace.get("review_runs") or []
                          if isinstance(run, dict) and run.get("authority") == "host_root")
     snapshot = task_pacing.build_budget_snapshot(ctx.tools._ctx, profile=ctx.budget_profile)
-    if prior_feedback or previous.get("feedback_delivered") or not task_pacing.improvement_pass_allowed(snapshot, ctx.passes_done, ctx.budget_profile)[0]:
-        return False
     binding = str(ctx.review_binding.get("binding_hash") or "")
+    repeated = previous.get("binding_hash") == binding and previous.get("reason") == reason
+    if ((not host_failure and prior_feedback) or (previous.get("feedback_delivered") and (not host_failure or repeated))
+            or not task_pacing.improvement_pass_allowed(snapshot, ctx.passes_done, ctx.budget_profile)[0]):
+        return False
     ctx.llm_trace["acceptance_review_outcome"] = {"binding_hash": binding, "reason": reason}
     ctx.messages.append({"role": "user", "content": (
-        f"Acceptance review could not start: {reason}. No new reviewer was called. "
+        (f"Acceptance host processing failed: {reason}. Original reviewer evidence is retained; no replacement review was called. " if host_failure else
+         f"Acceptance review could not start: {reason}. No new reviewer was called. ") +
         "You may preserve corrections or stop; Blocking grants no advancement without fresh review. "
         "Advisory may finish explicitly with a rationale."), "review_feedback": [{
             "task_id": ctx.task_id, "outcome_binding_hash": binding}]})
@@ -998,14 +995,20 @@ def _record_acceptance_infra_failure(ctx: _TaskAcceptanceContext, exc: Exception
         **(ctx.review_binding or {}),
         "enforcement_impact": "degrades_completion",
     }
-    _remember_host_acceptance_run(ctx, run_record)
+    if not any(isinstance(run, dict) and all(run.get(key) == run_record.get(key)
+            for key in ("authority", "binding_hash", "degraded_reasons", "parsed_findings"))
+            for run in ctx.llm_trace.get("review_runs") or []):
+        _remember_host_acceptance_run(ctx, run_record)
     if not review_enforcement_blocks("blocking"):
         from types import SimpleNamespace
         return _finish_cyber_acceptance(ctx, SimpleNamespace(**run_record))
-    from types import SimpleNamespace
-
     ctx.emit_progress("Task acceptance review could not establish a verdict; returning the failure to its author.")
-    return _apply_task_acceptance_result(ctx, SimpleNamespace(**run_record), record_run=False)
+    if _offer_acceptance_refusal(ctx, f"{type(exc).__name__}: {safe_error}", host_failure=True):
+        return True
+    _end_acceptance_terminal(ctx, "infra_failure")
+    _loop()._set_acceptance_decision(ctx.llm_trace, {"status": ACCEPTANCE_FINALIZED_UNACCEPTED,
+        "reason": "review_degraded", "source": "task_acceptance_review", "degraded_reasons": run_record["degraded_reasons"]})
+    return False
 
 
 def _disposition_reason_sha256(reason: Any) -> str:
@@ -1381,9 +1384,7 @@ def _run_task_acceptance_review_once(
         emit_progress("Task acceptance review waiting for recursive subtree quiescence.")
         return True
     llm_trace["review_decision"].update(admission_fence_available=fence_ok, subtree_quiescent=quiescent)
-    # §19.7.2 item 7: ONE effective profile (remaining improvement passes ->
-    # 0 under an armed hurry latch) feeds EVERY acceptance-pacing read below
-    # — the improvement_pass_allowed call and the rails display alike.
+    # One effective profile carries explicit author caps/Hurry to gates and display.
     budget_profile = effective_budget_profile(
         tools._ctx, task_pacing.resolve_budget_profile(tools._ctx),
     )
@@ -1469,8 +1470,7 @@ def _run_task_acceptance_review_once(
             emit_progress(
                 "Task acceptance review: reusing the authoritative result for the unchanged binding."
             )
-            # Re-run the normal semantic application (gates, outcome axis,
-            # obligations, fence) without appending or paying for another panel.
+            # Free replay re-applies the recorded outcome without another panel.
             reused_result = SimpleNamespace(**prior_run)
             # The original forensic binding remains the authority of the paid
             # operation even when Main consumed a harmless new source message.

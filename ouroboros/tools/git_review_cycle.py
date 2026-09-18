@@ -351,7 +351,6 @@ def _finalize_blocked_review(
         return f"{combined_msg}\n\n---\n{warning}"
     return combined_msg
 
-
 _DOC_ONLY_EXTENSIONS = (".md", ".txt", ".rst")
 
 
@@ -551,6 +550,7 @@ def _reset_commit_review_state(ctx):
     ctx._last_scope_model = ""
     ctx._last_triad_raw_results = []
     ctx._last_review_critical_findings = []
+    ctx._last_review_block_reason = ""
     ctx._last_review_advisory_findings = []
     ctx._last_scope_raw_result = {}
     ctx._review_degraded_reasons = []
@@ -771,7 +771,6 @@ def _run_reviewed_stage_cycle(
         phase="review",
         pre_review_fingerprint=pre_fingerprint.get("fingerprint", ""),
         fingerprint_status="pending",
-        # Only physical dispatch stamps paid; free author/replay rows remain unpaid.
         rebuttal_sha256=str(getattr(ctx, "_current_review_rebuttal_sha256", "") or ""),
         review_contract_fingerprint=str(
             getattr(ctx, "_current_review_contract_fingerprint", "") or ""
@@ -848,12 +847,13 @@ def _run_reviewed_stage_cycle(
         blocked, combined_msg, block_reason = True, "⚠️ REVIEW_STOPPED: owner cancellation or deadline prevents this commit.", "owner_stopped"
     from ouroboros.config import get_review_enforcement
     material = (blocked or combined_findings or getattr(ctx, "_last_review_critical_findings", [])
-                or (scope_result is not None and scope_result.critical_findings)
+                or getattr(ctx, "_last_review_advisory_findings", []) or scope_advisory
+                or getattr(ctx, "_last_review_block_reason", "") or triad_block_reason
                 or getattr(ctx, "_review_degraded_reasons", []) or advisory_replay is not None)
     if (author_source is None and get_review_enforcement() == "advisory" and review_enforcement_blocks("blocking")
             and material and block_reason != "owner_stopped"):
         return _return_commit_feedback(ctx, commit_message, commit_start, pre_fingerprint, post_fingerprint,
-                                       reason=block_reason or "author_decision_required", findings=combined_findings or [
+                                       reason=block_reason or triad_block_reason or getattr(ctx, "_last_review_block_reason", "") or "author_decision_required", findings=combined_findings or [
                 *getattr(ctx, "_last_review_critical_findings", []),
                 *(scope_result.critical_findings if scope_result is not None else [])])
     if blocked:

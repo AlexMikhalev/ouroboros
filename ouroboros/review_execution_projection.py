@@ -146,12 +146,15 @@ def review_actor_progress_text(surface: str, phase: str, slot: Any, actor: Any =
     if actor is not None:
         usage = getattr(actor, "usage", {}) or {}
         executions = review_executions_from_actor_usage([{"usage": usage}])
-        observed = [
-            f"{row['kind']}" + (f":{row['harness_id']}" if row.get("harness_id") else "")
-            + f", model={row.get('model') or 'not reported'}"
-            for row in executions
-        ]
-        text += "; observed execution: " + ("; ".join(observed) if observed else "not reported")
+        if not executions:
+            text += "; observed execution: not reported"
+        for row in executions:
+            if row['kind'] == 'harness':
+                text += ("; observed execution: harness" + (f":{row['harness_id']}" if row.get('harness_id') else "")
+                         + f", model={row.get('model') or 'not reported'}")
+            else:
+                text += (f"; {row['kind']} execution: sent model={row.get('model') or 'not reported'}"
+                         ", provider-observed model=not reported")
         if usage.get("applied_profile"):
             text += f", profile={usage['applied_profile']}"
         text += f"; state={getattr(actor, 'operation_state', '') or getattr(actor, 'status', '')}"

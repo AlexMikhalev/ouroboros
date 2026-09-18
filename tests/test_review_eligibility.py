@@ -269,12 +269,16 @@ def host_acceptance(monkeypatch, tmp_path):
     monkeypatch.setattr(substrate, "run_review_request", review)
 
     def run(trace):
-        assert _run_task_acceptance_review_once(
+        again = _run_task_acceptance_review_once(
             tools=SimpleNamespace(_ctx=ctx), content="The cited research result.",
             task_id="root", task_type="task", llm_trace=trace, drive_root=tmp_path,
             messages=[{"role": "system", "content": ""}, {"role": "user", "content": "Study the sources."}],
             emit_progress=lambda _msg, *, incident=None: None,
-        ) is False
+        )
+        assert again is bool(requests)
+        if requests:
+            assert trace["acceptance_decision"]["status"] == "revision_requested"
+            assert trace["review_runs"][-1]["aggregate_signal"] == "DEGRADED"
 
     return ctx, run, requests
 
@@ -302,7 +306,7 @@ def test_auto_host_dispatch_is_transport_independent(
     assert len(trace.get("review_runs", [])) == expected
     if expected:
         assert trace["review_runs"][0]["authority"] == "host_root"
-        assert trace["acceptance_decision"]["reason"] == "review_degraded"
+        assert trace["acceptance_decision"]["reason"] == "improvement_capsule"
     else:
         assert trace["review_decision"]["eligibility"] == "not_eligible"
         assert "acceptance_decision" not in trace
@@ -333,15 +337,15 @@ def test_agent_requested_readonly_review_reaches_host_dispatch(
     assert len(requests) == 1
     assert requests[0].evidence["agent_supplied"]["acceptance_request"]["claim"] == args["claim"]
     assert trace["review_runs"][0]["authority"] == "host_root"
-    assert trace["acceptance_decision"]["status"] == "finalized_unaccepted"
-    assert trace["acceptance_decision"]["reason"] == "review_degraded"
+    assert trace["acceptance_decision"]["status"] == "revision_requested"
+    assert trace["acceptance_decision"]["reason"] == "improvement_capsule"
 
 
 @pytest.mark.parametrize("mode,direct,child,expected", [
     ("off", False, False, 0),
     ("auto", False, True, 0),
     ("required", False, True, 0),
-    ("required", True, False, 0),
+    ("required", True, False, 1),
     ("required", False, False, 1),
 ], ids=["off", "auto-child", "required-child", "required-direct", "required-queued"])
 def test_agent_request_preserves_existing_mode_and_lineage_boundaries(

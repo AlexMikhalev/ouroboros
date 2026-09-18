@@ -91,3 +91,20 @@ def test_advisory_author_can_select_current_plan_after_no_dispatch_outcome(harne
     after = load_plan_review_state(h.drive, ctx.task_id)
     assert after["cycles_paid"] == 0 and not after["waves"]
     assert current_author_plan(h.drive, ctx.task_id, after)["spec"]["acceptance_claims"][0]["claim"] == "current claim"
+
+
+def test_full_plan_needs_explicit_action_even_with_a_prior_wave(harness, monkeypatch):  # noqa: F811
+    h = harness
+    h.state["enforcement"] = "advisory"
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
+    ctx = h.make_ctx()
+    transport = h.install({slot: json.dumps([_finding("budget", "blocking", breaks="claim_1")])
+                           for slot in ("s1", "s2", "s3")})
+    _call(ctx)
+    before = load_plan_review_state(h.drive, ctx.task_id)
+    result = _call(ctx, plan="Changed plan without a finish action.", review_disposition={
+        "review_fingerprint": before["waves"][-1]["request_fingerprint"], "items": [],
+        "author_disposition": {"disposition": "partial", "rationale": "This is a stance, not a finish choice."}})
+    assert "PLAN_REVIEW_DISPOSITION_MIXED_ENVELOPE" in result
+    assert load_plan_review_state(h.drive, ctx.task_id) == before
+    assert len(transport.calls) == 1

@@ -756,8 +756,8 @@ def _render_pr_body(
         f"- blockers={attempt.blocker_count}; warnings={attempt.warning_count}; "
         f"audited={attempt.audited_false_positive_count}.\n"
     )
-    if attempt.advice:
-        attestation += f"- Scanner status: {attempt.advice.get('scanner_status', 'not_run')}.\n"
+    if attempt.advice.get("scanner_status"):
+        attestation += f"- Scanner status: {attempt.advice['scanner_status']}.\n"
         if attempt.advice.get("scanner_errors"):
             attestation += f"- Scanner errors (advisory): {attempt.advice['scanner_errors']}\n"
     return body_without_attestation.rstrip() + "\n\n" + attestation

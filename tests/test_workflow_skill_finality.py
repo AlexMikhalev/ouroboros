@@ -198,6 +198,8 @@ def test_actual_publish_transaction_binds_author_bytes_and_preserves_provenance(
     assert result["review_status"] == loaded.review.status
     assert loaded.review.findings == findings
     body = captured["pr_body"]
+    assert any(event[0] == "scan" for event in events)
+    assert "Scanner status: not_run" not in body
     assert loaded.content_hash in body and "Author rationale:" in body
     assert "Fresh clean review verified" not in body and "immutable reviewed snapshot" not in body
     if basis == "critic":

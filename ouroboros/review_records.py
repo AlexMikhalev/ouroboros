@@ -117,6 +117,32 @@ def build_author_disposition_from_mapping(
     )
 
 
+def review_outcome_received(actors: Any, *, findings: Any = (), terminal: bool = False) -> bool:
+    """Separate received feedback/unavailability from wholly live review custody.
+
+    Surface owners supply their recorded terminal fact. A local custody_lost
+    outcome leaves remote uncertainty intact; it is not a locally running actor.
+    Nested scope receipts retain each slot's state instead of its aggregate label.
+    """
+    rows = [row for row in actors or [] if isinstance(row, dict)]
+    pending = False
+    while rows:
+        row = rows.pop()
+        children = row.get("raw_results")
+        if isinstance(children, list) and children:
+            rows.extend(item for item in children if isinstance(item, dict))
+            continue
+        live = row.get("operation_state") in {"in_flight", "pending_dispatch"}
+        pending = pending or live
+        if live:
+            continue  # A host pending placeholder is not a received critic payload.
+        if (row.get("ok") is True or row.get("status") in {"responded", "ok", "empty", "parse_failure"}
+                or row.get("operation_state") == "custody_lost" or row.get("error") or row.get("failure_code")):
+            return True
+    return not pending and (terminal or any(isinstance(item, dict) and
+        (item.get("item") or item.get("summary")) for item in findings or []))
+
+
 def apply_review_model_override(slot: Any, overrides: Dict[str, dict], *, slot_id: str = "") -> Any:
     """Project an explicit owner model choice onto one frozen reviewer row.
 

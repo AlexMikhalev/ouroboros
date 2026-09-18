@@ -331,8 +331,7 @@ def _handle_plan_task(ctx: ToolContext, **params) -> str:
     # The registry refuses unknown params; a vacuous envelope field carries no plan.
     envelope_fields = [k for k in ("goal", "plan", "spec", "reviewer_effort") if not _vacuous(k, params.get(k))]
     if raw_disposition is not None and not _vacuous_disposition(raw_disposition):
-        if isinstance(raw_disposition, dict) and (raw_disposition.get("author_action") or
-                (envelope_fields and raw_disposition.get("author_disposition"))):
+        if isinstance(raw_disposition, dict) and raw_disposition.get("author_action"):
             return _apply_author_subject(ctx, raw_disposition, params if envelope_fields else None)
         if envelope_fields:
             return _typed_refusal(
@@ -973,6 +972,12 @@ def _apply_author_subject(ctx: ToolContext, disposition: dict, envelope: Optiona
             wave = _authority_wave(root, task_id, wave)
         if disposition.get("items"):
             raise ValueError("submit per-finding dispositions separately before selecting the current author plan")
+        from ouroboros.review_records import review_outcome_received
+
+        if action == "finish" and review_enforcement_blocks("blocking") and not unavailable:
+            if not review_outcome_received(wave.get("actors"), findings=wave.get("findings"),
+                    terminal=not wave.get("custody_pending")):
+                raise ValueError("author finish needs received feedback or a terminal unavailable outcome; reviewers are still running")
         if envelope:
             request = _PlanRequest(goal=str(envelope.get("goal") or ""), plan=str(envelope.get("plan") or ""),
                                    spec=envelope.get("spec"), reviewer_effort=str(envelope.get("reviewer_effort") or ""))

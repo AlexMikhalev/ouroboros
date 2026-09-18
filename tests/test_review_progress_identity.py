@@ -50,6 +50,27 @@ def test_refusal_is_not_reported_as_observed_execution():
     assert "state=not_dispatched" in message
 
 
+def test_api_sent_model_is_not_promoted_to_provider_observation():
+    from ouroboros.llm import LLMClient
+
+    response = {"id": "response", "model": "provider-reported-model",
+        "choices": [{"message": {"content": "[]"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "cost": 0}}
+    client = object.__new__(LLMClient)
+    _, usage = client._normalize_remote_response(response,
+        {"provider": "openai", "usage_model": "openai::sent-route", "resolved_model": "sent-route"},
+        skip_cost_fetch=True)
+    slot = ReviewSlot("api-slot", "requested-route")
+    actor = SimpleNamespace(usage=usage, operation_state="settled", status="ok")
+    message = review_actor_progress_text("plan_review", "finished", slot, actor)
+    assert "requested model=requested-route" in message
+    assert "api execution: sent model=openai::sent-route" in message
+    assert "provider-observed model=not reported" in message
+    assert "observed execution: api" not in message
+    usage["delivery"] = "native_tool_rounds"
+    assert "native execution: sent model=openai::sent-route" in review_actor_progress_text("plan_review", "finished", slot, actor)
+
+
 def test_progress_failure_cannot_drop_started_custody_event():
     observed_queue_sizes = []
 

@@ -83,9 +83,8 @@ def _attempt_accepts_reviewing_update(existing: Any) -> bool:
 # free typed refusal plus ``emit_review_cycles_exhausted``. Both refusals
 # honor the recorded review-contract fingerprint (roster+routes+enforcement+
 # prompt contract): a changed contract lapses the streak. Under ADVISORY
-# enforcement neither refusal hard-blocks a commit — the prior verdict is
-# reused, loudly disclosed, and the commit proceeds without buying another
-# review.
+# enforcement returns the prior outcome for an informed author choice;
+# explicit continuation buys no reviewer and does not manufacture approval.
 IDENTICAL_DIFF_BLOCK_REASON = "identical_diff_refused"
 _LEGACY_CAP_BLOCK_REASON = "attempt_cap_reached"  # pre-Q16 refusal rows
 _REFUSAL_BLOCK_REASONS = frozenset({
@@ -499,6 +498,14 @@ def resolve_commit_review_reference(ctx: ToolContext, reference: Any, *, state: 
             or not source.pre_review_fingerprint or source.pre_review_fingerprint != reference.get("pre_review_fingerprint")
             or source.raw_stripped):
         raise ValueError("the returned review outcome is missing or no longer has its exact evidence")
+    from ouroboros.review_records import review_outcome_received
+
+    if review_enforcement_blocks("blocking") and not review_outcome_received(
+        [*source.triad_raw_results, source.scope_raw_result],
+        findings=[*source.critical_findings, *source.advisory_findings],
+        terminal=source.phase == "review_only" and source.status == "reviewed",
+    ):
+        raise ValueError("author continuation needs received feedback or a terminal unavailable outcome; reviewers are still running")
     return source
 
 
@@ -845,9 +852,10 @@ def _check_overlapping_review_attempt(ctx: ToolContext) -> Optional[str]:
         )
     source = getattr(ctx, "_author_commit_source", None)
     if source is not None:
+        # Free author work gets a new invocation; same-task critics keep their custody.
         active_attempts = [item for item in active_attempts if
-            (item.repo_key, item.tool_name, item.task_id, item.attempt) !=
-            (source.repo_key, source.tool_name, source.task_id, source.attempt)]
+            (item.repo_key, item.tool_name, item.task_id) !=
+            (source.repo_key, source.tool_name, source.task_id)]
     if not active_attempts:
         return None
     if not review_enforcement_blocks("blocking"):
@@ -1137,14 +1145,20 @@ def _return_commit_feedback(ctx: ToolContext, message: str, started: float, befo
             advisory_findings=getattr(ctx, "_review_advisory", []),
             triad_raw_results=getattr(ctx, "_last_triad_raw_results", []), scope_raw_result=getattr(ctx, "_last_scope_raw_result", {}),
             degraded_reasons=getattr(ctx, "_review_degraded_reasons", []))
-    row = load_state(pathlib.Path(ctx.drive_root)).latest_attempt_for(repo_key=make_repo_key(pathlib.Path(ctx.repo_dir)),
+    state = load_state(pathlib.Path(ctx.drive_root))
+    row = state.latest_attempt_for(repo_key=make_repo_key(pathlib.Path(ctx.repo_dir)),
         task_id=str(getattr(ctx, "task_id", "") or ""), tool_name="commit_reviewed", attempt=ctx._current_review_attempt_number)
     reference = {"surface": "commit", **{key: getattr(row, key) for key in ("repo_key", "task_id", "tool_name", "attempt", "pre_review_fingerprint")}}
+    choice = ("Inspect the outcome, then revise/request review, stop, or explicitly continue in Advisory using the same "
+              "commit tool with review_reference and author_disposition {disposition: accepted|rejected|partial|deferred, "
+              "rationale: ...}. Author continuation buys no reviewer cycle. ")
+    try:
+        resolve_commit_review_reference(ctx, reference, state=state)
+    except ValueError:
+        choice = "Reviewers are still running without feedback. Collect the existing wave or stop; informed author continuation is not available yet. "
     if not pending:
         git_mod.run_cmd(["git", "reset", "HEAD"], cwd=ctx.repo_dir)
-    text = ("Review outcome returned before commit. Inspect the findings, then either revise/request review, stop, "
-            "or explicitly continue in Advisory using the same commit tool with review_reference and author_disposition "
-            "{disposition: accepted|rejected|partial|deferred, rationale: ...}. That author continuation buys no reviewer cycle. "
+    text = ("Review outcome returned before commit. " + choice +
             "Current files are preserved; no commit, tag or push occurred.\n" + json.dumps({"review_reference": reference,
             "review_outcome": asdict(row)}, ensure_ascii=False, default=str))
     return {"status": "reviewed", "message": text, "review_reference": reference,
@@ -1164,8 +1178,8 @@ def disclose_commit_review_replay(ctx: ToolContext, replay: dict) -> None:
     else:
         progress_note = (
             "Max Review Cycles: paid-cycle ceiling exhausted — no review outcome "
-            "exists for this diff; the commit proceeds without a fresh triad+scope "
-            "review under advisory enforcement."
+            "exists for this diff; inspect the returned outcome before explicitly "
+            "choosing Advisory author continuation."
         )
     disclosure = (
         "Review enforcement=Advisory: no new triad+scope review was bought for "

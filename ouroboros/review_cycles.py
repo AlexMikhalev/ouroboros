@@ -30,8 +30,8 @@ identical material is never re-reviewed for pay:
   the recorded verdict); a rebuttal is content-hashed and a hash new to the
   streak buys exactly ONE paid re-review (a rebuttal is "spent" only when it
   bought a dispatched, verdict-answered wave). Exhaustion under blocking is a
-  free typed refusal; under advisory the commit proceeds with a loud typed
-  disclosure and no further paid dispatch;
+  free typed refusal; under advisory the outcome returns with a typed
+  disclosure for explicit author continuation, without another paid dispatch;
 * skill review — paid reviewer-panel dispatches per ceiling key (the root task
   for task-driven review groups — shared across every skill that task reviews,
   follow-ups start fresh — or, for the manual lane, the CURRENT content

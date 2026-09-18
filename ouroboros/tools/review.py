@@ -220,7 +220,9 @@ def _handle_task_acceptance_review(
         disposition = ""
     agent_rationale = " ".join(str(rationale or "").split()).strip()
     if author_action and (author_action not in {"finish", "stop"} or not agent_rationale):
-        return "ERROR: TOOL_ARG_ERROR: author_action requires finish|stop and a rationale."
+        from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
+        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR",
+            text="ERROR: TOOL_ARG_ERROR: author_action requires finish|stop and a rationale."))
     # v6.54.4 obligations layer: normalized per-obligation dispositions ride the
     # same agent_decision envelope (the existing v6.54.0 mechanism, extended to
     # obligation granularity). The host loop applies them to the per-task

@@ -249,8 +249,8 @@ def test_host_application_publishes_full_decision_before_finalization(tmp_path, 
         tools=SimpleNamespace(_ctx=ctx), content="The requested file is ready.", task_id="applied", task_type="task",
         llm_trace=trace, drive_root=tmp_path, messages=[], emit_progress=lambda *_a, **_k: None,
     )
-    assert again is False
-    assert trace["acceptance_decision"]["status"] == ("finalized_unaccepted" if apply_failure else "accepted")
+    assert again is apply_failure
+    assert trace["acceptance_decision"]["status"] == ("revision_requested" if apply_failure else "accepted")
     # Publishing again must preserve both the returned panel and its separate
     # host application failure row, despite their shared binding-derived id.
     review_projection.publish_acceptance_checkpoint(ctx, trace)

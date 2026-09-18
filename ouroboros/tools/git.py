@@ -1490,9 +1490,10 @@ def get_tools() -> List[ToolEntry]:
             "required": ["disposition", "rationale"], "description": "Explicitly accept the current attributed candidate after reading the referenced outcome. Never overrides Blocking."},
     }
     return [
-        *[ToolEntry(name, {"name": name, "description": reviewed_commit_description,
-            "parameters": {"type": "object", "properties": commit_properties, "required": ["commit_message"]}},
-            _repo_commit_push, is_code_tool=True) for name in ("commit_reviewed", "vcs_commit_reviewed")],
+        ToolEntry("commit_reviewed", {"name": "commit_reviewed", "description": reviewed_commit_description,
+            "parameters": {"type": "object", "properties": commit_properties, "required": ["commit_message"]}}, _repo_commit_push, is_code_tool=True),
+        ToolEntry("vcs_commit_reviewed", {"name": "vcs_commit_reviewed", "description": reviewed_commit_description,
+            "parameters": {"type": "object", "properties": commit_properties, "required": ["commit_message"]}}, _repo_commit_push, is_code_tool=True),
         ToolEntry("vcs_status", {
             "name": "vcs_status",
             "description": "git status --porcelain for the selected repository.",
