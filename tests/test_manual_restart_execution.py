@@ -89,8 +89,8 @@ def _restart(ctx, monkeypatch, *, gate=_gate):
     import server
 
     exits = []
-    monkeypatch.setattr(server, "_safe_restart_serialized", gate)
-    monkeypatch.setattr(server, "_request_restart_exit", lambda owner=False: exits.append(owner))
+    monkeypatch.setattr(server_restart, "_safe_restart_serialized", gate)
+    monkeypatch.setattr(server_restart, "_request_restart_exit", lambda owner=False: exits.append(owner))
     server._process_bridge_updates(_bridge(), 0, ctx)
     return exits
 

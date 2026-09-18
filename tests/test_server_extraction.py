@@ -68,6 +68,7 @@ _MOVED_OWNERS = {
     "_startup_worktree_prune": server_maintenance,
     "_live_running_task_ids": server_restart,
     "_managed_update_pending_kwargs": server_restart,
+    "_perform_owner_restart": server_restart,
     "_safe_restart_serialized": server_restart,
     "_shutdown_supervisor_event_bus": server_restart,
     "_shutdown_task_cleanup_args": server_restart,
