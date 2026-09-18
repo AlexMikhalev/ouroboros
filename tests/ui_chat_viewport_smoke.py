@@ -125,6 +125,14 @@ def run_chat_viewport_smoke(
     def hold_first_route(routes):
         return lambda route: routes.append(route) if not routes else route.fallback()
 
+    def incomplete_activity_census(route):
+        # These WS-only tasks do not exist on the fixture server. Its empty
+        # roster cannot disprove them; reconciliation cases opt in below.
+        response = route.fetch()
+        payload = response.json()
+        payload["active_chat_activities_complete"] = False
+        route.fulfill(response=response, json=payload)
+
     def visible_card_anchor(page):
         return page.evaluate(
             """() => {
@@ -152,6 +160,7 @@ def run_chat_viewport_smoke(
             page = browser.new_page(viewport={"width": 1280, "height": 760})
             try:
                 page.add_init_script(f"({_CAPTURE_TEST_SOCKET})()")
+                page.route("**/api/state", incomplete_activity_census)
                 page.goto(url, wait_until="domcontentloaded", timeout=30_000)
                 page.add_style_tag(
                     content="#chat-messages, #chat-messages * { overflow-anchor: none !important; }"
@@ -552,6 +561,24 @@ def run_chat_viewport_smoke(
                     "ts": "2026-08-03T10:04:00+00:00",
                 }
                 _emit_ws_frame(page, late_child_frame)
+                # Observe this mount's real height change before testing the
+                # viewport; elapsed animation frames alone do not establish it.
+                # A missing or zero-height child still fails.
+                try:
+                    page.wait_for_function("""minimum => {
+                        const parent = document.querySelector('.chat-live-card[data-task-id="vp-parent"]');
+                        const child = parent?.querySelector(':scope > .chat-subagents > [data-task-id="vp-late-child"]');
+                        return child && child.getBoundingClientRect().height > 0
+                            && parent.getBoundingClientRect().height > minimum;
+                    }""", arg=parent_before_mount + 30, timeout=10_000)
+                except PlaywrightError as exc:
+                    geometry = parent.evaluate("""(card, before) => {
+                        const child = card.querySelector('[data-task-id="vp-late-child"]');
+                        return {before, after: card.getBoundingClientRect().height,
+                            expanded: card.dataset.expanded, childHeight: child?.getBoundingClientRect().height,
+                            childParent: child?.parentElement?.dataset.subagentsFor};
+                    }""", parent_before_mount)
+                    raise AssertionError(f"Late child did not grow its parent: {geometry}") from exc
                 assert parent.evaluate("card => card.getBoundingClientRect().height") > parent_before_mount + 30
                 assert abs(card_top(page, anchor_id) - anchor_before) <= 6
                 parent.evaluate("""card => { window.__subagentNoopMutations = []; window.__subagentNoopObserver = new MutationObserver(records => window.__subagentNoopMutations.push(...records)); window.__subagentNoopObserver.observe(card, {attributes: true, attributeOldValue: true, childList: true, characterData: true, subtree: true}); }""")
@@ -717,6 +744,7 @@ def run_chat_viewport_smoke(
                 page.evaluate(_SETTLE_TWO_FRAMES)
                 assert_noop_read(page, noop_top)
                 page.unroute("**/api/state")
+                page.route("**/api/state", incomplete_activity_census)
 
                 # A production-shaped review reference hydrates asynchronously;
                 # both the fetch result and its review DOM reconcile stay anchored.

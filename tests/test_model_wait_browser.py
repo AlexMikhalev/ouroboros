@@ -13,12 +13,15 @@ capture = setup_browser.capture
 
 pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
 TASK = "analysis-task"
+# The wait picker offers an API lane per provider whose credential is stored.
+API_LANE = "api:openai"
 
 
 @pytest.fixture
 def waiting_ui(subscription_ui):
     ui = subscription_ui
     page = ui["page"]
+    ui["settings"]["OPENAI_API_KEY"] = "***set***"
     rows = {
         key: {"wait_id": key, "revision": 1, "task_attempt": 1, "role": role,
               "model": "claudexor::codex=gpt-test", "source": "codex",
@@ -162,7 +165,7 @@ def test_multiple_waits_toggle_and_exact_role_switch_wait_for_application(waitin
     page.wait_for_selector('[data-wait-id="light-wait"] [data-wait-change]:not([disabled])')
     assert not light.locator('[data-wait-auto]').is_checked()
     light.locator('[data-wait-change]').click()
-    light.locator('[data-model-role-source]').select_option('openai')
+    light.locator('[data-model-role-source]').select_option(API_LANE)
     light.locator('[data-model-role-model]').fill('owner-model')
     assert not light.locator('[data-wait-persist]').is_checked()
     light.locator('[data-wait-apply]').click()
@@ -320,7 +323,7 @@ def test_wait_reconnect_preserves_unsubmitted_form_without_context_or_animation(
     field = row.locator('[data-model-role-model]')
     field.wait_for()
     assert row.locator('.model-role-details').count() == 0
-    row.locator('[data-model-role-source]').select_option('openai')
+    row.locator('[data-model-role-source]').select_option(API_LANE)
     assert row.locator('.model-role-details').count() == 0
     field.fill('unfinished-owner-model')
     row.locator('[data-wait-persist]').check()
