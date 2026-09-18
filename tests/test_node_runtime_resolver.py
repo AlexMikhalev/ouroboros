@@ -882,7 +882,7 @@ def test_relative_path_which_result_is_a_noop(tmp_path, monkeypatch, quiet_boots
     the resolver must run as written — never substitute bundled node."""
     bundled = _healthy_stub(tmp_path / "bundle" / "node-standalone" / "bin" / "node")
     monkeypatch.setattr(resolver, "resolve_bundled_node", lambda: str(bundled))
-    monkeypatch.setattr(resolver.shutil, "which", lambda tok: "bin/node")
+    monkeypatch.setattr(resolver.shutil, "which", lambda tok, path=None: "bin/node")
     ctx = _context(tmp_path)
     args = {"cmd": ["node", "app.js"]}
     resolved, trace = resolve_process_node(ctx, "run_command", args, runtime_mode="advanced")
