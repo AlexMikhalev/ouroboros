@@ -2619,7 +2619,17 @@ def test_timeout_message_survives_an_empty_or_missing_excerpt():
 def test_hermetic_pytest_applies_candidate_diff_and_scrubs_live_env(tmp_path, monkeypatch, two_pass_env):
     """BOTH passes must see the candidate diff and the scrubbed env — a probe in
     only one lane would leave the other lane's wiring unproven."""
+    import getpass
+
     from ouroboros.preflight_runner import run_hermetic_pytest
+
+    # Model another run's stale pytest tree without touching the host temp area.
+    ambient = tmp_path / "ambient"
+    unrelated = ambient / f"pytest-of-{getpass.getuser()}" / "garbage-unrelated" / "keep.txt"
+    unrelated.parent.mkdir(parents=True)
+    unrelated.write_text("another run", encoding="utf-8")
+    for key in ("TMPDIR", "TEMP", "TMP", "PYTEST_DEBUG_TEMPROOT"):
+        monkeypatch.setenv(key, str(ambient))
 
     # 20-space indent: `_make_repo` dedents the 16-space template around it, so
     # these land one level in, inside the probe function body.
@@ -2634,6 +2644,7 @@ def test_hermetic_pytest_applies_candidate_diff_and_scrubs_live_env(tmp_path, mo
             'assert "ouroboros-preflight-" in os.environ["OUROBOROS_DATA_DIR"]',
             'assert os.environ["OUROBOROS_SETTINGS_PATH"].startswith(os.environ["OUROBOROS_DATA_DIR"])',
             'assert "ouroboros-preflight-" in os.environ["OUROBOROS_REPO_DIR"]',
+            'assert pathlib.Path(os.environ["OUROBOROS_DATA_DIR"]).parent in tmp_path.parents',
         ]
     )
     repo = _make_repo(
@@ -2642,15 +2653,17 @@ def test_hermetic_pytest_applies_candidate_diff_and_scrubs_live_env(tmp_path, mo
             "value.py": "FLAG = False\n",
             "tests/test_parallel_lane.py": f"""
                 import os
+                import pathlib
                 import extra_value
                 import value
 
 
-                def test_candidate_diff_and_env_are_hermetic():
+                def test_candidate_diff_and_env_are_hermetic(tmp_path):
 {assertions}
             """,
             "tests/test_serial_lane.py": f"""
                 import os
+                import pathlib
 
                 import pytest
 
@@ -2659,7 +2672,7 @@ def test_hermetic_pytest_applies_candidate_diff_and_scrubs_live_env(tmp_path, mo
 
 
                 @pytest.mark.serial
-                def test_candidate_diff_and_env_are_hermetic_in_serial_pass():
+                def test_candidate_diff_and_env_are_hermetic_in_serial_pass(tmp_path):
 {assertions}
             """,
         },
@@ -2674,6 +2687,7 @@ def test_hermetic_pytest_applies_candidate_diff_and_scrubs_live_env(tmp_path, mo
     monkeypatch.setenv("OUROBOROS_FAKE_API_KEY", "must-not-reach-tests")
     result = run_hermetic_pytest(repo, timeout=120)
 
+    assert unrelated.read_text(encoding="utf-8") == "another run"
     assert result is None, result
 
 
