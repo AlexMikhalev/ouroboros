@@ -1,6 +1,7 @@
 """Recovered first-review and exact-author evidence regressions from the preserved Ouroboros candidate."""
 import copy
 import json
+import threading
 from types import SimpleNamespace
 import pytest
 from tests.test_loop_acceptance_gate import _seed_acceptance_root
@@ -28,13 +29,27 @@ def test_plan_first_dispatch_then_author_repeat_keeps_exact_raw_wave(harness, mo
     from ouroboros.tools import plan_review_runtime
 
     transport = AccountedFakeLLM(h.drive, reply=raw)
+    release = threading.Event()
+    chat = transport.chat
+
+    def held_chat(**kwargs):
+        assert release.wait(20), "test did not release the physical reviewer calls"
+        return chat(**kwargs)
+
+    monkeypatch.setattr(transport, "chat", held_chat)
     monkeypatch.setattr(plan_review_runtime, "LLMClient", lambda: transport)
     ctx = h.make_ctx()
-    barrier = _control(_call(ctx))
-    assert barrier == {"outcome": "DEGRADED", "closed": False}
-    open_wave = _state(h)["waves"][-1]
-    assert open_wave["custody_pending"] is True and open_wave["paid"] is False
-    assert {actor["operation_state"] for actor in open_wave["actors"]} == {"pending_dispatch"}
+    try:
+        barrier = _control(_call(ctx))
+        assert barrier == {"outcome": "DEGRADED", "closed": False}
+        open_wave = _state(h)["waves"][-1]
+        # Pin the pre-dispatch phase: a fast real send may otherwise settle a
+        # slot before the barrier snapshot and correctly make the wave paid.
+        assert open_wave["custody_pending"] is True and open_wave["paid"] is False
+        assert {actor["operation_state"] for actor in open_wave["actors"]} == {"pending_dispatch"}
+        assert not transport.calls
+    finally:
+        release.set()
     assert _wait_until(lambda: len(_mailbox_entries(h.drive, ctx.task_id)) == 1)
     dispatched = len(transport.calls)
     first = _control(_call(ctx))  # the identical envelope collects the settled wave

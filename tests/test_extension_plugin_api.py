@@ -230,7 +230,10 @@ def test_unload_does_not_deadlock_with_inflight_get_settings(tmp_path):
     unload_thread.start()
     time.sleep(0.1)
     release_reader.set()
-    unload_thread.join(timeout=1.0)
+    # The assertion is "no deadlock", so the deadline only has to be shorter
+    # than a hang; one second is a wall-clock guess that a loaded Windows CI
+    # runner (xdist workers sharing two cores) misses without any deadlock.
+    unload_thread.join(timeout=15.0)
 
     assert unload_done.is_set()
     assert extension_loader.snapshot()["extensions"] == []

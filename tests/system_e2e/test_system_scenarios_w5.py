@@ -131,6 +131,7 @@ _BUILDER_ROW = {
     "subagent_id": "cx-builder",
     "recommended_use": "Delegated builder for the system_e2e mutation scenarios.",
     "route": {"kind": "agent_session", "target_id": "fake-harness=mock-model"},
+    "access": "workspace_write",
     "effort": "low",
 }
 S24_MARKER = "S24_PARENT_FINAL_e2e_w5"
