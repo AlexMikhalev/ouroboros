@@ -44,7 +44,7 @@ Enforcement: `tests/test_skill_install_resources.py`, `tests/test_skill_runtime_
 ### Task contract resource policy
 
 - Outside Cyber Pro, `resource_policy.protected_artifacts` is a typed affordance policy: execute-only black-box references may run, while byte reads, copy/hash/static introspection, tracing and debugging of the declared paths are blocked (the guards: ARCHITECTURE §6 "Safety and runtime mode").
-- Observable Acceptance Claims are bounded advisory criteria (`id`, `claim`, `surface`, `support`, `priority`), never a hard gate or surface taxonomy. `success_criteria` is an input alias, not storage. `effective_acceptance_claims` retains frozen ingress-over-closed-wave binding; the acceptance evidence owner may select a valid current Advisory author plan after ingress, labelled `author_plan`. An OPEN critic wave alone binds nothing: disclose `none_open_plan_wave` and its non-binding `plan_claims_exhibit` (ARCHITECTURE §11.1, §6 "Task acceptance"). Children receive only claims explicitly passed to `schedule_subagent`. Resolve reviewer `evidence_refs` by exact host-packet membership, never fuzzy matching, filesystem reads or re-execution; change only the clean bit/disclosure, never actor parsing, quorum or verdict.
+- Acceptance claims (`id`, `claim`, `surface`, `support`, `priority`) are bounded advice, not gates or taxonomies. `success_criteria` is an input-only alias. `effective_acceptance_claims` binds frozen ingress over closed plan waves; after ingress, the evidence owner may select a valid current Advisory author plan as `author_plan`. An OPEN critic wave binds nothing: expose `none_open_plan_wave` and non-binding `plan_claims_exhibit` (ARCHITECTURE §11.1, §6 "Task acceptance"). Children receive only explicitly passed `schedule_subagent` claims. Resolve reviewer `evidence_refs` by exact host-packet membership, not fuzzy matching, file reads or re-execution; only clean bit/disclosure changes, never actor parsing, quorum or verdict.
 
 Enforcement: `tests/test_protected_artifacts_policy.py` and `tests/test_acceptance_claims_wiring.py`.
 
@@ -957,13 +957,13 @@ and what enforces each.
   never old verdict authority. Source acknowledgement infers no semantic change from
   generation. File/diff requests impose no commit-or-revert rule; self-modification
   keeps reviewed commits (BIBLE P0/P3).
-- Summary/reflection receive frozen `review_evidence.task_inputs` and
-  `completion_observations` before cleanup (ARCHITECTURE §6 "Post-task reflection"):
-  intact owner questions/answers, peer provenance and canonical split-root verification
-  receipts. Zero exit is positive, missing is unknown; unrelated passes erase no failure.
-  Packets carry content, not pointers; recovery reuses the snapshot.
-  Delivery uses `OWNER_DELIVERY_TOOL_NAMES`, never global skill state. Summary uses
-  `chat_observed` custody and the task-scoped archive-aware trace reader.
+- Before cleanup, freeze `review_evidence.task_inputs` and `completion_observations`
+  for summary/reflection (ARCHITECTURE §6 "Post-task reflection"): whole owner Q/A,
+  peer provenance and canonical split-root verification receipts. Zero exit is positive;
+  absent is unknown; unrelated passes erase no failure. Send content, not pointers;
+  recover the same snapshot. Count delivery via `OWNER_DELIVERY_TOOL_NAMES`, never
+  global skill state. Summary uses `chat_observed` custody and the task-scoped,
+  archive-aware trace reader.
 - Promoted tasks carry their host-minted root id and role on the queue payload.
   RUNNING writes preserve the actual `_task_started_ts` as `started_at` and an existing
   `queued_at`; terminal `ts` stays its own field; missing historical start facts stay
