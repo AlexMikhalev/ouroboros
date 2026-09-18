@@ -185,31 +185,33 @@ def test_read_not_carried_by_another_physical_send_does_not_count_as_delivered(t
     assert usage["native_read_coverage"]["status"] == "incomplete"
 
 
-@pytest.mark.parametrize("window,provenance", [(81920, "confirmed"), (0, ""), (1000000, "asserted")])
-def test_retrieving_scope_preserves_independent_findings_without_a_window_floor(window, provenance):
-    from ouroboros.tools.scope_review_session import session_scope_authority
-    critical = [{"severity": "critical", "reason": "An actual consumer contract breaks."}]
-    advisory = [{"severity": "advisory", "reason": "A useful observation."}]
-    result = session_scope_authority(critical, advisory, scope_model="fixture", window=window,
-                                     provenance=provenance, phrase="fixture", result_kwargs={})
-    assert result == (critical, advisory, None) and result[0] is critical
-    assert critical[0]["severity"] == "critical"
-
-
-def test_scope_required_manifest_does_not_fabricate_vendor_read_attestation(tmp_path, monkeypatch):
+def test_scope_brief_states_the_read_provenance_each_delivery_produces(tmp_path):
+    """The brief's pre-run manifest states WHICH provenance this row's receipts
+    will carry — host-executed for a native episode, parsed from the harness
+    journal for a delegated session — instead of the blanket `unobserved` that
+    described neither. It is never a claim that a source WAS read: that is the
+    post-run coverage fact. (Window size still never rewrites a finding; that
+    invariant is pinned in tests/test_review_session_scope_wiring.py.)"""
     from ouroboros.tools import scope_review_session as session
+    from ouroboros.tools.scope_required_sources import required_sources_ref
     path = tmp_path / "source.py"
-    path.write_text("def actual_behavior(): return 1\n")
+    path.write_text("def actual_behavior(): return 1\n", encoding="utf-8")
     required = [_source(path)]
-    ref = {"kind": "task_source", "root": "artifact_store", "path": "manifest.json", "sha256": "c" * 64}
-    monkeypatch.setattr(session, "governance_nav_maps", lambda *a: "governance navigation map")
-    task, manifest = session.build_scope_session_task(
-        tmp_path, "Review the change", session.ScopeIntentContext(goal="Check the actual behavior"),
-        required_sources=required, required_sources_ref=ref)
+    ref = required_sources_ref(required)
+    task, manifest = session.build_scope_session_task(tmp_path, session.ScopeBriefInputs(
+        commit_message="Review the change",
+        intent=session.ScopeIntentContext(goal="Check the actual behavior"),
+        required_sources=required, required_sources_ref=ref))
     assert manifest["native_required_sources"] == required
     assert manifest["native_required_sources_ref"] == ref
-    assert manifest["host_file_read_attestation"] == "unobserved"
-    assert ref["path"] in task and "independent from your working window" in task
+    assert manifest["read_provenance_expected"] == "host_observed"
+    assert "host_file_read_attestation" not in manifest
+    assert ref["sha256"] in task and "independent from your working window" in task
+
+    _task, delegated = session.build_scope_session_task(tmp_path, session.ScopeBriefInputs(
+        commit_message="Review the change", delegated=True,
+        required_sources=required, required_sources_ref=ref))
+    assert delegated["read_provenance_expected"] == "harness_observed"
 
 
 def test_native_legacy_compaction_argument_requests_an_authored_note_explicitly(tmp_path):
@@ -221,3 +223,58 @@ def test_native_legacy_compaction_argument_requests_an_authored_note_explicitly(
     text = next(m["content"] for m in llm.calls[1]["messages"] if m.get("role") == "tool")
     assert "your own working_note" in text
     assert getattr(executor._inspection_ctx, "_pending_compaction", None) is None
+
+
+def test_a_declared_empty_manifest_is_complete_coverage_of_nothing(tmp_path):
+    """The four coverage states must be distinguishable. A surface that declared
+    an EMPTY manifest (this change owes the reviewer no source in full) is
+    covered, not unobserved: nothing was required and nothing is missing."""
+    repo, data = tmp_path / "repo", tmp_path / "data"
+    repo.mkdir()
+    executor = _native(repo, data, _ScriptedLLM([{"content": "[]"}]), [])
+    result = executor.execute()
+    coverage = result.usage["native_read_coverage"]
+    assert coverage["status"] == "complete" and coverage["reason"] == "declared_empty"
+    assert coverage["required_source_count"] == 0
+    assert "native_incomplete" not in result.usage
+
+
+def test_no_declared_manifest_at_all_stays_unobserved(tmp_path):
+    """An absent manifest key is a provenance limit on what may be CLAIMED about
+    coverage, not a finding that the review was incomplete (BIBLE P3)."""
+    import dataclasses
+
+    from tests.test_native_tool_round_executor import _assignment
+
+    repo, data = tmp_path / "repo", tmp_path / "data"
+    repo.mkdir()
+    llm = _ScriptedLLM([{"content": "[]"}])
+    assignment = dataclasses.replace(_assignment(repo, llm), custody_root=data)
+    assignment.request.policy.pop("native_required_sources", None)
+    result = native.NativeToolRoundReviewExecutor(assignment, llm=llm).execute()
+    coverage = result.usage["native_read_coverage"]
+    assert coverage["status"] == "unobserved"
+    assert coverage["reason"] == "required_source_manifest_missing"
+    assert "native_incomplete" not in result.usage
+
+
+@pytest.mark.parametrize("inline", [False, True])
+def test_source_delivered_inline_needs_no_second_read(tmp_path, inline):
+    repo, data = tmp_path / "repo", tmp_path / "data"
+    repo.mkdir()
+    path = repo / "owed.txt"
+    path.write_text("required body\n", encoding="utf-8")
+    row = {**_source(path), "coverage_basis": "delivered_inline" if inline else "candidate_blob"}
+    llm = _ScriptedLLM([{"content": "[]"}])
+    executor = _native(repo, data, llm, [row])
+    if inline:
+        executor.assignment.request.session_task += "\n" + path.read_text(encoding="utf-8")
+    result = executor.execute()
+    coverage = result.usage["native_read_coverage"]
+    assert coverage["status"] == ("complete" if inline else "incomplete")
+    assert coverage["sources"][0]["missing_ranges"] == ([] if inline else [[0, 14]])
+    assert coverage["sources"][0]["covered_chars"] == (14 if inline else 0)
+    assert ("native_incomplete" in result.usage) is not inline
+    assert result.raw_text == "[]" and len(llm.calls) == 1
+    assert result.usage["host_file_read_attestation"] == "host_observed"
+    assert result.usage["native_tool_receipts"] == []

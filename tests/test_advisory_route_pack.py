@@ -178,54 +178,45 @@ def test_api_window_skip_is_the_existing_typed_skip_status(tmp_path, monkeypatch
 
 
 # ---------------------------------------------------------------------------
-# 2. agent_session prompt: pointers instead of governance bodies
+# 2. the brief's governance tiers: the activated rules in full, the map by
+#    navigation (governance_context — one SSOT for every review surface)
 # ---------------------------------------------------------------------------
 
 
-def test_agent_session_prompt_uses_pointers_not_bodies(tmp_path):
+def test_the_brief_tiers_the_governance_corpus_instead_of_inlining_it(tmp_path):
+    """One delivery form, because both routes retrieve: the constitution rides
+    the brief in full (tier 1) while the reference books and the documents this
+    change does not activate are NAMED for reading, with the exact read
+    instruction and their disposition in the manifest."""
     repo = tmp_path / "repo"
     repo.mkdir(exist_ok=True)
     _write_governance_docs(repo)
+    facts: dict = {}
     prompt = advisory._build_advisory_prompt(
         repo, "commit msg",
-        prompt_context={"diff": "DIFF-SENTINEL", "changed_files": "file-a"},
-        governance_by_retrieval=True,
+        prompt_context={"diff": "DIFF-SENTINEL", "changed_files": "file-a",
+                        "governance_facts": facts},
     )
-    for marker in _DOC_MARKERS:
-        assert marker not in prompt
-    # Resolvable absolute pointers + the mandatory-read instruction.
-    assert "MANDATORY FULL READ" in prompt
-    for rel in ("BIBLE.md", "docs/CHECKLISTS.md", "docs/DEVELOPMENT.md",
-                "docs/DESIGN.md", "docs/ARCHITECTURE.md"):
-        assert str((repo / rel).resolve()) in prompt
-    assert "'## Repo Commit Checklist' section" in prompt
+    assert "BIBLE-BODY-MARKER-7Q" in prompt          # tier 1, in full
+    for marker in ("DEVELOPMENT-BODY-MARKER-7Q", "DESIGN-BODY-MARKER-7Q",
+                   "ARCHITECTURE-BODY-MARKER-7Q"):
+        assert marker not in prompt                  # named, never inlined here
+    assert "Governance navigation (read on demand)" in prompt
+    assert 'read_file(root="system_repo"' in prompt
+    assert "## Governance delivery (manifest)" in prompt
+    rows = {row["path"]: row["disposition"] for row in facts["governance_manifest"]}
+    assert rows["BIBLE.md"] == "inline"
+    assert rows["docs/DESIGN.md"] == rows["docs/ARCHITECTURE.md"] == "navigation"
     # The non-governance sections are unchanged.
     assert "DIFF-SENTINEL" in prompt
     assert "commit msg" in prompt
     assert "file-a" in prompt
 
 
-def test_api_prompt_keeps_inlining_governance_bodies(tmp_path):
-    """The api-route governance contract is unchanged: full bodies inline."""
-    repo = tmp_path / "repo"
-    repo.mkdir(exist_ok=True)
-    _write_governance_docs(repo)
-    prompt = advisory._build_advisory_prompt(
-        repo, "commit msg",
-        prompt_context={"diff": "DIFF-SENTINEL", "changed_files": "file-a"},
-    )
-    # The checklist section loads from the host repo's canonical CHECKLISTS.md
-    # (load_checklist_section), so only the four repo-dir docs are asserted.
-    assert "BIBLE-BODY-MARKER-7Q" in prompt
-    assert "DEVELOPMENT-BODY-MARKER-7Q" in prompt
-    assert "DESIGN-BODY-MARKER-7Q" in prompt
-    assert "ARCHITECTURE-BODY-MARKER-7Q" in prompt
-    assert "MANDATORY FULL READ" not in prompt
-
-
-def test_delegated_route_dispatches_the_pointer_pack(tmp_path, monkeypatch):
+def test_delegated_route_dispatches_the_tiered_brief(tmp_path, monkeypatch):
     """_run_claude_advisory on the agent_session route hands the delegated
-    session the compact pointer pack, never the inlined governance bodies."""
+    session the same tiered brief: no reference-book bodies, and the session
+    reads what the navigation names with its own tools."""
     # ABI-10: the delegated advisory is configured through the structured slots.
     monkeypatch.setenv("OUROBOROS_REVIEWER_SLOTS", json.dumps({
         "triad": [{"slot_id": "t1", "route": {"kind": "api_chat", "target_id": "openai/x"}}],
@@ -252,10 +243,11 @@ def test_delegated_route_dispatches_the_pointer_pack(tmp_path, monkeypatch):
     assert [i["item"] for i in items] == ["correctness"]
     assert model == "fake-session-model"
     prompt = captured["prompt"]
-    for marker in _DOC_MARKERS:
+    for marker in ("DEVELOPMENT-BODY-MARKER-7Q", "DESIGN-BODY-MARKER-7Q",
+                   "ARCHITECTURE-BODY-MARKER-7Q"):
         assert marker not in prompt
-    assert "MANDATORY FULL READ" in prompt
-    assert str((ctx.repo_dir / "BIBLE.md").resolve()) in prompt
+    assert "BIBLE-BODY-MARKER-7Q" in prompt
+    assert "Governance navigation (read on demand)" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -514,7 +506,8 @@ def test_native_advisory_episode_bound_is_derived_from_the_advisory_models_windo
 
 
 # ---------------------------------------------------------------------------
-# 6. the MANDATORY READ budget: measured corpus, lifted bound, typed shortfall
+# 6. the MANDATORY READ budget: the measured touched bodies, the bound the
+#    episode applies, the typed multiwindow code
 # ---------------------------------------------------------------------------
 
 
@@ -535,45 +528,27 @@ def _sent_task(chat):
     return [m for m in chat.messages[0] if m.get("role") == "user"][0]["content"]
 
 
-def test_mandatory_read_corpus_is_measured_from_the_pointed_files(tmp_path):
-    """The corpus is the wire size (JSON-serialized, as a read_file result rides
-    a send) of exactly what the five pointers name: four full documents plus
-    the surface's CHECKLISTS.md section; a missing document or section counts 0."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _write_governance_docs(repo)
-    checklists = (repo / "docs" / "CHECKLISTS.md").read_text(encoding="utf-8")
-    section = checklists[checklists.find("## Repo Commit Checklist"):]
-    docs = [(repo / rel).read_text(encoding="utf-8")
-            for rel in ("BIBLE.md", "docs/DEVELOPMENT.md", "docs/DESIGN.md", "docs/ARCHITECTURE.md")]
-    expected = sum(len(json.dumps(t, ensure_ascii=False)) for t in docs + [section])
-    assert advisory._mandatory_read_corpus_chars(repo) == expected > sum(len(t) for t in docs)
-    # The skill surface reads the Skill Review Checklist section, absent here.
-    assert advisory._mandatory_read_corpus_chars(repo, "skill") == expected - len(json.dumps(section))
-    (repo / "docs" / "DESIGN.md").unlink()
-    assert advisory._mandatory_read_corpus_chars(repo) == expected - len(json.dumps(docs[2]))
-
-
-def test_native_prompt_names_the_corpus_and_the_lifted_bound_when_the_reading_fits(tmp_path, monkeypatch):
-    """Fits branch: the episode's bound is lifted past the owner ceiling to
-    hold the declared reading; the prompt's MANDATORY READ budget names the
-    corpus and THAT bound (the number the episode applies); the facts carry the
-    declaration and no shortfall code."""
+def test_native_prompt_names_the_touched_reading_and_the_bound_the_episode_applies(tmp_path, monkeypatch):
+    """The declared reading is the touched bodies the manifest names (the
+    governance corpus is delivered, not read), and the prompt's MANDATORY READ
+    budget names it beside THAT episode's bound — the number the episode
+    applies — while the facts carry the declaration."""
     import ouroboros.llm as llm_mod
     from ouroboros.review_native_episode import native_landing_at
 
-    monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", "50000")
+    monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", "200000")
     _fake_window(monkeypatch, 1_000_000)
     chat = _CapturingChat()
     monkeypatch.setattr(llm_mod, "LLMClient", lambda *a, **k: chat)
     ctx = _ctx(tmp_path)
     _write_governance_docs(ctx.repo_dir)
+    (ctx.repo_dir / "touched.py").write_text("x = 1\n" * 20_000, encoding="utf-8")
     prompt = advisory._build_advisory_prompt(
-        ctx.repo_dir, "commit msg",
-        prompt_context={"diff": "DIFF-SENTINEL", "changed_files": "file-a"},
-        governance_by_retrieval=True,
+        ctx.repo_dir, "commit msg", resolved_paths=["touched.py"],
+        prompt_context={"diff": "DIFF-SENTINEL", "changed_files": "M touched.py"},
     )
-    corpus = advisory._mandatory_read_corpus_chars(ctx.repo_dir)
+    corpus = advisory._mandatory_read_corpus_chars(ctx.repo_dir, ["touched.py"])
+    assert corpus == (ctx.repo_dir / "touched.py").stat().st_size
     slot = SimpleNamespace(effort="low", subagent_id="")
     result, _model = advisory._run_advisory_native(
         prompt, ctx.repo_dir, ctx, slot, "openai/adv", mandatory_read_corpus_chars=corpus)
@@ -582,28 +557,28 @@ def test_native_prompt_names_the_corpus_and_the_lifted_bound_when_the_reading_fi
     need = len(prompt) + corpus
     assert usage["native_mandatory_read_chars"] == need
     bound = usage["native_transcript_bound"]
-    assert bound == 50_000
+    assert bound == 200_000
     assert usage["native_mandatory_read_disclosure"] == "native_multiple_windows_required"
     task = _sent_task(chat)
     assert prompt in task and "## MANDATORY READ budget" in task
-    assert f"name {corpus:,} chars" in task and f"needs {need:,} transcript chars" in task
+    assert f"hold {corpus:,} chars" in task and f"needs {need:,} transcript chars" in task
     assert f"bound is {bound:,} chars" in task and f"landing notice at {native_landing_at(bound):,} chars" in task
     assert "native_multiple_windows_required" in task
     assert "native_mandatory_read_exceeds_bound" not in task
     # Undeclared (the corpus argument left at 0): the prompt and the facts are untouched.
     chat.messages.clear()
     result, _model = advisory._run_advisory_native(prompt, ctx.repo_dir, ctx, slot, "openai/adv")
-    assert "native_mandatory_read_chars" not in result.usage and result.usage["native_transcript_bound"] == 50_000
+    assert "native_mandatory_read_chars" not in result.usage and result.usage["native_transcript_bound"] == 200_000
     assert "MANDATORY READ budget" not in _sent_task(chat)
 
 
 def test_native_prompt_and_facts_carry_the_typed_code_when_the_reading_does_not_fit(tmp_path, monkeypatch, api_env):
     """Does-not-fit branch, end to end through _run_claude_advisory: a 200K
-    window carries ≈446K chars and the pointed corpus alone is over 500K, so
-    the bound stays at the window's capacity and BOTH the prompt's MANDATORY
-    READ budget and the advisory meta's usage carry
-    native_mandatory_read_exceeds_bound with the corpus and the bound — never
-    a silent full-read contradiction."""
+    window carries ≈446K chars and the touched body alone is over 500K, so the
+    bound stays at the window's capacity and BOTH the prompt's MANDATORY READ
+    budget and the advisory meta's usage carry the typed multiwindow code with
+    the measured reading and the bound — never a silent full-read
+    contradiction. The governance manifest rides the same meta."""
     import ouroboros.llm as llm_mod
     from ouroboros.review_native_episode import native_mandatory_read_bound
 
@@ -612,13 +587,20 @@ def test_native_prompt_and_facts_carry_the_typed_code_when_the_reading_does_not_
     monkeypatch.setattr(llm_mod, "LLMClient", lambda *a, **k: chat)
     ctx = _ctx(tmp_path)
     _write_governance_docs(ctx.repo_dir)
-    (ctx.repo_dir / "docs" / "ARCHITECTURE.md").write_text(
-        "# ARCH\n" + ("architecture line\n" * 30_000), encoding="utf-8")
-    corpus = advisory._mandatory_read_corpus_chars(ctx.repo_dir)
+    _git(ctx.repo_dir, "init", "-q")
+    _git(ctx.repo_dir, "config", "user.email", "t@t")
+    _git(ctx.repo_dir, "config", "user.name", "t")
+    # The defect's shape: a one-line change inside a module whose BODY dwarfs
+    # the diff, so only the required reading is large.
+    body = "const line = 1;\n" * 40_000
+    (ctx.repo_dir / "big.js").write_text(body, encoding="utf-8")
+    _git(ctx.repo_dir, "add", "-A")
+    _git(ctx.repo_dir, "commit", "-qm", "base")
+    (ctx.repo_dir / "big.js").write_text(body + "const tail = 2;\n", encoding="utf-8")
+    _git(ctx.repo_dir, "add", "-A")
+    corpus = advisory._mandatory_read_corpus_chars(ctx.repo_dir, ["big.js"])
     assert corpus > 500_000
-    items, raw, _model, _chars = advisory._run_claude_advisory(
-        ctx.repo_dir, "msg", ctx, options={"include_repo_diff": False},
-    )
+    items, raw, _model, _chars = advisory._run_claude_advisory(ctx.repo_dir, "msg", ctx)
     assert not raw.startswith("⚠️ ADVISORY"), raw
     assert [i["item"] for i in items] == ["correctness"]
     meta = dict(getattr(ctx, "_last_claude_advisory_meta", {}) or {})
@@ -628,8 +610,17 @@ def test_native_prompt_and_facts_carry_the_typed_code_when_the_reading_does_not_
     assert 400_000 <= bound <= 460_000 < native_mandatory_read_bound(usage["native_mandatory_read_chars"])
     task = _sent_task(chat)
     assert "MANDATORY_READ_DISCLOSURE: native_multiple_windows_required" in task
-    assert f"name {corpus:,} chars" in task and f"bound is {bound:,} chars" in task
-    assert "MANDATORY FULL READ" in task and "mark every checklist item you could not ground" in task
+    assert f"hold {corpus:,} chars" in task and f"bound is {bound:,} chars" in task
+    # No body is inlined: the reading stays the reviewer's own.
+    assert "const line = 1;\nconst line = 1;" not in task
+    # The disclosure is a reading ORDER across the episode's successive working
+    # views, never "this cannot be honoured": the episode continues past one view.
+    assert "cannot be honoured" not in task
+    assert "CONTINUES across successive working views" in task
+    assert "Mark as unverified only what you did not actually read" in task
+    # The durable prompt facts disclose what governance the brief delivered.
+    tiers = {row["path"]: row["disposition"] for row in meta["governance_manifest"]}
+    assert tiers["BIBLE.md"] == "inline" and tiers["docs/ARCHITECTURE.md"] == "navigation"
 
 
 def test_local_advisory_model_previews_the_bound_on_its_own_local_window(tmp_path, monkeypatch):
@@ -668,14 +659,14 @@ def test_local_advisory_model_previews_the_bound_on_its_own_local_window(tmp_pat
     monkeypatch.setattr(llm_mod, "LLMClient", lambda *a, **k: chat)
     ctx = _ctx(tmp_path)
     _write_governance_docs(ctx.repo_dir)
-    (ctx.repo_dir / "docs" / "ARCHITECTURE.md").write_text(
-        "# ARCH\n" + ("architecture line\n" * 30_000), encoding="utf-8")
+    (ctx.repo_dir / "big.js").write_text("const line = 1;\n" * 40_000, encoding="utf-8")
     prompt = advisory._build_advisory_prompt(
-        ctx.repo_dir, "commit msg",
-        prompt_context={"diff": "DIFF-SENTINEL", "changed_files": "file-a"},
-        governance_by_retrieval=True,
+        ctx.repo_dir, "commit msg", resolved_paths=["big.js"],
+        prompt_context={"diff": "DIFF-SENTINEL", "changed_files": "M big.js",
+                        # The share is sized on the SAME lane the episode sends on.
+                        "reviewer_model": model, "reviewer_use_local": True},
     )
-    corpus = advisory._mandatory_read_corpus_chars(ctx.repo_dir)
+    corpus = advisory._mandatory_read_corpus_chars(ctx.repo_dir, ["big.js"])
     assert corpus > 500_000
     slot = SimpleNamespace(effort="low", subagent_id="")
     result, _model = advisory._run_advisory_native(
@@ -770,12 +761,25 @@ def _carrier_repo(tmp_path):
     return repo
 
 
-def test_advisory_pack_cuts_span_only_carriers_on_the_live_tree_pair(tmp_path):
+def _manifest_rows(manifest: str) -> dict:
+    """The manifest's ``- <path> — <size> — <disposition>`` rows as a mapping.
+
+    The PACK EXCLUSION NOTE's own reason lines are indented, so they never
+    parse as rows."""
+    rows = {}
+    for line in manifest.splitlines():
+        if line.startswith("- ") and line.count(" — ") == 2:
+            path, size, disposition = line[2:].split(" — ")
+            rows[path] = (size, disposition)
+    return rows
+
+
+def test_advisory_manifest_cuts_span_only_carriers_on_the_live_tree_pair(tmp_path):
     """The advisory reviews the LIVE tree, so its pair is HEAD vs the working
-    tree the pack reads — staged or not. A span-only carrier is withheld once
-    (the builder's marker, the omitted list, the shared PACK EXCLUSION NOTE); a
-    carrier edited outside its span keeps its text; the governance pointers
-    (the prefix) are untouched and the note precedes the diff."""
+    tree the manifest measures — staged or not. A span-only carrier's row reads
+    carrier-cut and the shared PACK EXCLUSION NOTE states why; every other
+    touched path is an ordinary row. No body is inlined on either side, the
+    governance pointers are untouched, and the note precedes the diff."""
     repo = _carrier_repo(tmp_path)
     (repo / "VERSION").write_text("1.0.1\n", encoding="utf-8")
     (repo / "uv.lock").write_text(_UV_LOCK.format(v="1.0.1"), encoding="utf-8")
@@ -783,33 +787,41 @@ def test_advisory_pack_cuts_span_only_carriers_on_the_live_tree_pair(tmp_path):
     (repo / "pyproject.toml").write_text(  # UNSTAGED, and outside its span
         '[project]\nname = "ouroboros"\nversion = "1.0.1"\ndependencies = ["httpx"]\n',
         encoding="utf-8")
-    (repo / "app.py").write_text("x = 2\n", encoding="utf-8")
+    (repo / "app.py").write_bytes(b"x = 2\n")
     porcelain = _git(repo, "status", "--porcelain")
 
-    resolved, pack, omitted = advisory.build_advisory_changed_context(
-        repo, changed_files_text=porcelain)
-
-    assert set(resolved) == {"VERSION", "uv.lock", "pyproject.toml", "app.py"}
-    assert set(omitted) == {"VERSION", "uv.lock"}
-    assert "editable" not in pack and "x = 2" in pack and "httpx" in pack
-    assert pack.count("### uv.lock") == 1 and pack.count("PACK EXCLUSION NOTE") == 1
-    assert "VERSION_CARRIER_SPANS" in pack and "version_carrier_desyncs" in pack
-    assert "byte-identical" not in pack  # no prefix-dedup class on the pointer route
     prompt = advisory._build_advisory_prompt(
         repo, "release: 1.0.1",
-        prompt_context={"diff": "DIFF-SENTINEL", "changed_files": porcelain,
-                        "touched_pack": pack, "omitted_paths": omitted},
-        governance_by_retrieval=True,
+        prompt_context={"diff": "DIFF-SENTINEL", "changed_files": porcelain},
     )
-    assert "MANDATORY FULL READ" in prompt
+    manifest = prompt[prompt.index("## Touched files"):prompt.index("## Staged diff")]
+    rows = _manifest_rows(manifest)
+
+    assert set(rows) == {"VERSION", "uv.lock", "pyproject.toml", "app.py"}
+    assert rows["VERSION"][1] == rows["uv.lock"][1] == "carrier-cut"
+    assert rows["app.py"] == ("6 bytes", "modified")
+    assert rows["pyproject.toml"][1] == "modified"
+    # No file bodies anywhere: neither a cut carrier's nor an ordinary path's.
+    assert "editable" not in prompt and "x = 2" not in prompt and "httpx" not in prompt
+    assert manifest.count("PACK EXCLUSION NOTE") == 1
+    assert "VERSION_CARRIER_SPANS" in manifest and "version_carrier_desyncs" in manifest
+    assert "byte-identical" not in manifest  # no prefix-dedup class on a retrieving brief
+    assert "Governance navigation (read on demand)" in prompt
     assert prompt.index("PACK EXCLUSION NOTE") < prompt.index("## Staged diff")
-    assert "omission notes for 2 path(s): VERSION, uv.lock" in prompt
+    # A cut carrier is excluded from the declared reading too: the manifest row
+    # tells the reviewer not to read it, so the budget must not require it.
+    touched = ["VERSION", "uv.lock", "pyproject.toml", "app.py"]
+    assert advisory._mandatory_read_corpus_chars(repo, touched) == sum(
+        (repo / rel).stat().st_size for rel in ("pyproject.toml", "app.py"))
 
 
-def test_advisory_pack_keeps_a_carrier_whose_worktree_edit_leaves_its_span(tmp_path):
+def test_advisory_manifest_keeps_a_carrier_whose_worktree_edit_leaves_its_span(tmp_path):
     """The live-tree pair is the truth: a carrier staged span-only but then
-    edited outside its span in the working tree keeps its full text; without
-    VERSION in the change the release-bump mechanism is not engaged at all."""
+    edited outside its span in the working tree is an ordinary modified row;
+    without VERSION in the change the release-bump mechanism is not engaged at
+    all and nothing is cut."""
+    from ouroboros.tools import preflight_review_prompt as prompt_mod
+
     repo = _carrier_repo(tmp_path)
     (repo / "VERSION").write_text("1.0.1\n", encoding="utf-8")
     (repo / "uv.lock").write_text(_UV_LOCK.format(v="1.0.1"), encoding="utf-8")
@@ -817,12 +829,15 @@ def test_advisory_pack_keeps_a_carrier_whose_worktree_edit_leaves_its_span(tmp_p
     (repo / "uv.lock").write_text(
         _UV_LOCK.format(v="1.0.1").replace("0.27.0", "0.28.0"), encoding="utf-8")
 
-    _, pack, omitted = advisory.build_advisory_changed_context(
-        repo, changed_files_text=_git(repo, "status", "--porcelain"))
-    assert omitted == ["VERSION"] and "0.28.0" in pack
+    manifest = prompt_mod._advisory_touched_manifest(
+        repo, None, _git(repo, "status", "--porcelain"))
+    rows = _manifest_rows(manifest)
+    assert rows["VERSION"][1] == "carrier-cut" and rows["uv.lock"][1] == "modified"
+    assert "0.28.0" not in manifest
 
     _git(repo, "reset", "-q", "HEAD", "VERSION")
     (repo / "VERSION").write_text("1.0.0\n", encoding="utf-8")
-    _, pack, omitted = advisory.build_advisory_changed_context(
-        repo, changed_files_text=_git(repo, "status", "--porcelain"))
-    assert omitted == [] and "PACK EXCLUSION NOTE" not in pack and "0.28.0" in pack
+    manifest = prompt_mod._advisory_touched_manifest(
+        repo, None, _git(repo, "status", "--porcelain"))
+    assert "carrier-cut" not in manifest and "PACK EXCLUSION NOTE" not in manifest
+    assert _manifest_rows(manifest)["uv.lock"][1] == "modified"

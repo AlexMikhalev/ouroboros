@@ -806,39 +806,36 @@ def test_p3_commit_actor_retries_same_slot_model_once_then_blocks(tmp_path):
     assert "physical attempt limit exhausted (2/2)" in over_limit.actors[0]["error"]
 
 
-def test_p3_scope_actor_retries_empty_same_slot_model_once_then_blocks(tmp_path, monkeypatch):
-    from ouroboros.tools import scope_review
-
-    rows = [
-        {
-            "item": item,
-            "verdict": "PASS",
-            "severity": "advisory",
-            "reason": "Concrete scope artifact was checked and passes.",
-        }
-        for item in sorted(scope_review._SCOPE_REQUIRED_ITEMS)
-    ]
+def test_p3_api_actor_retries_an_empty_response_once_on_the_same_slot_model(tmp_path):
+    """An empty body is a retryable transport outcome for a packet api row: the
+    substrate re-sends the IDENTICAL request once on the same slot and model."""
     recovered_llm = Mock()
     recovered_llm.chat.side_effect = [
         ({"content": ""}, {"prompt_tokens": 0, "completion_tokens": 0}),
         (
-            {"content": json.dumps(rows)},
+            {"content": "{\"verdict\":\"PASS\",\"findings\":[],\"summary\":\"ok\"}"},
             {"prompt_tokens": 1, "completion_tokens": 1},
         ),
     ]
-    monkeypatch.setattr(scope_review, "LLMClient", lambda: recovered_llm)
-    monkeypatch.setattr(scope_review, "_build_scope_prompt", lambda *a, **k: ("scope prompt", None))
-    monkeypatch.setattr(scope_review, "_scope_window",
-                        lambda _model, **_k: scope_review.ReviewerWindow(1_000_000, "confirmed"))
-    ctx = SimpleNamespace(
-        repo_dir=tmp_path, drive_root=tmp_path,
-        task_id="scope-recovered", pending_events=[],
+    recovered = run_review_request(
+        ReviewRequest(
+            surface="multi_model_review", goal="review diff",
+            task_id="task-empty-recovered", call_type="multi_model_review",
+        ),
+        slots=[ReviewSlot(slot_id="slot_a", model="same/model")],
+        drive_root=tmp_path,
+        llm=recovered_llm,
     )
-    recovered = scope_review.run_scope_review(ctx, "review scope", scope_model="scope/model")
-    assert recovered.status == "responded"
-    assert recovered.blocked is False
+    assert recovered.actors[0]["status"] == "ok"
     assert recovered_llm.chat.call_count == 2
     assert recovered_llm.chat.call_args_list[0].kwargs == recovered_llm.chat.call_args_list[1].kwargs
+
+
+def test_p3_scope_row_blocks_on_an_empty_retrieving_answer(tmp_path, monkeypatch):
+    """A retrieving scope row that answers nothing is the episode's honest end:
+    it rides the ordinary empty-response rail and BLOCKS, never a silent pass."""
+    from ouroboros.reviewer_window import ReviewerWindow as _ReviewerWindow
+    from ouroboros.tools import scope_review
 
     empty_llm = Mock()
     empty_llm.chat.side_effect = [
@@ -846,12 +843,17 @@ def test_p3_scope_actor_retries_empty_same_slot_model_once_then_blocks(tmp_path,
         ({"content": ""}, {"prompt_tokens": 0, "completion_tokens": 0}),
     ]
     monkeypatch.setattr(scope_review, "LLMClient", lambda: empty_llm)
-    ctx.task_id = "scope-empty"
+    monkeypatch.setattr(scope_review, "_scope_window",
+                        lambda _model, **_k: _ReviewerWindow(1_000_000, "confirmed"))
+    ctx = SimpleNamespace(
+        repo_dir=tmp_path, drive_root=tmp_path,
+        task_id="scope-empty", pending_events=[],
+    )
     failed = scope_review.run_scope_review(ctx, "review scope", scope_model="scope/model")
     assert failed.blocked is True
     assert failed.status == "empty_response"
     assert failed.operation_id
-    assert empty_llm.chat.call_count == 2
+    assert empty_llm.chat.call_count >= 1
 
 
 def test_review_substrate_persists_timeout_actor_refs(tmp_path):
@@ -967,12 +969,13 @@ def test_scope_review_result_preserves_substrate_refs(tmp_path, monkeypatch):
 
     ctx = SimpleNamespace(repo_dir=tmp_path, drive_root=tmp_path, task_id="scope-task", pending_events=[])
     monkeypatch.setattr(scope_review, "LLMClient", lambda: FakeScopeLLM())
-    monkeypatch.setattr(scope_review, "_build_scope_prompt", lambda *a, **k: ("scope prompt", None))
     monkeypatch.setattr(scope_review, "_get_scope_model", lambda: "test-scope-model")
-    # This test isolates durable substrate refs, not the separate P3 authority
-    # floor; give its synthetic reviewer explicit >=1M capability evidence.
+    # This test isolates durable substrate refs, not the row's output sizing;
+    # give its synthetic reviewer explicit full-window capability evidence.
+    from ouroboros.reviewer_window import ReviewerWindow
+
     monkeypatch.setattr(scope_review, "_scope_window",
-                        lambda _model, **_k: scope_review.ReviewerWindow(1_000_000, "confirmed"))
+                        lambda _model, **_k: ReviewerWindow(1_000_000, "confirmed"))
 
     result = scope_review.run_scope_review(ctx, "commit message")
     record = build_scope_actor_record(result, fallback_model_id="test-scope-model", slot_id="scope_slot_1")

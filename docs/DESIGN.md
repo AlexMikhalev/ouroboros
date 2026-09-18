@@ -747,7 +747,8 @@ and unrelated saves; direct API-key models do not offer a subscription-account
 pin. Catalog entries are suggestions, not account-specific entitlement or
 context evidence. Changing a model or account never changes the delivery kind:
 a configured subagent reference remains a reference to its native inspection
-episode, while an inline packed-review model remains inline. Catalog refreshes
+episode, a scope or deep self-review row keeps reading the repository itself
+whatever model it names, and an inline packet row stays inline. Catalog refreshes
 preserve the edited value, focus, selection and scroll position. Returning to a
 reviewer's previous source restores that source's model/account draft; a source
 not previously selected starts without another source's pin.

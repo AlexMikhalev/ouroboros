@@ -155,16 +155,28 @@ class ReviewSlot:
     declared_effort: str = ""
     # Captured preference; empty explicitly preserves the legacy request shape.
     processing_preference: str = ""
+    # A surface that decides delivery for its OWN rows states it here. The scope
+    # gate does: every scope row is a retrieving reviewer, so a bare api row runs
+    # the bounded native inspection episode on its own route without a fabricated
+    # actor id. ``None`` leaves the actor-binding rule below in force.
+    native_retrieval_override: Optional[bool] = None
 
     @property
     def native_retrieval(self) -> bool:
         # An api-route actor row: bounded native tool rounds, never the packet.
-        return bool(str(self.subagent_id or "").strip()) and str(getattr(self.route, "value", self.route) or "") == ReviewRouteKind.API_CHAT.value
+        if str(getattr(self.route, "value", self.route) or "") != ReviewRouteKind.API_CHAT.value:
+            return False
+        if self.native_retrieval_override is not None:
+            return bool(self.native_retrieval_override)
+        return bool(str(self.subagent_id or "").strip())
 
     @property
     def retrieves(self) -> bool:
         # DELIVERY class for admission/fit/authority; transport tests the route.
-        return delivery_retrieves(self.route, self.subagent_id)
+        # For a slot OBJECT this property is the truth: the surface-declared
+        # override belongs to the row, and ``delivery_retrieves`` stays the
+        # shared predicate for callers that hold only a route and an actor id.
+        return self.native_retrieval or delivery_retrieves(self.route, self.subagent_id)
 
 
 @dataclass

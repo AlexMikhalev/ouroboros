@@ -216,6 +216,7 @@ def test_one_managed_fixture_feeds_all_review_consumers_and_binds(tmp_path, monk
         managed_review_subject,
     )
     from ouroboros.tools.scope_review_session import (
+        ScopeBriefInputs,
         ScopeIntentContext,
         build_scope_session_task,
     )
@@ -243,10 +244,11 @@ def test_one_managed_fixture_feeds_all_review_consumers_and_binds(tmp_path, monk
 
     # Both SESSION deliveries inline the same artifact.
     triad_task = build_triad_session_task(subject=subject, **tmrs._SESSION_SECTIONS)
-    scope_task, _manifest = build_scope_session_task(
-        repo, "land the update", ScopeIntentContext(goal="g", scope="s"),
+    scope_task, _manifest = build_scope_session_task(repo, ScopeBriefInputs(
+        commit_message="land the update",
+        intent=ScopeIntentContext(goal="g", scope="s"),
         governance_repo_dir=pathlib.Path(REPO_ROOT), managed_subject=subject,
-    )
+    ))
     for task_text in (triad_task, scope_task):
         assert "AUTHORITATIVE review subject" in task_text
         assert "resolved by the agent" in task_text
