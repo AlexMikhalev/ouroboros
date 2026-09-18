@@ -67,14 +67,14 @@ def _stamp_owner_delivery(
 ) -> None:
     """Record the latest owner message this turn actually DRAINED (latest wins).
 
-    The steer relay and the routing issuer read this typed fact to tell "acting
-    on the owner message this round delivered" from "speaking for myself".
+    The steer relay reads this fact to attach its acknowledgement to the owner
+    message delivered this round. Receipt identity does not grant owner authority:
+    a task's relay remains task-authored, including during this drain window.
     Only owner DIALOGUE stamps it: typed controls (task messages, quiz answers,
     hurry, finalize-now, revocations) are not the owner's steering text, and a
     message merely WRITTEN to a mailbox has not been delivered at all. The fact
     lives for one drain: ``_drain_incoming_messages`` clears it before reading
-    the mailbox, so a task that relayed one owner message is a task again on its
-    next round rather than an owner turn for the rest of its life.
+    the mailbox, so a later relay cannot borrow an earlier round's receipt identity.
     """
     if owner_ctx is None:
         return
