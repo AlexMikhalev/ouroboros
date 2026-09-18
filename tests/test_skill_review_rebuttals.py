@@ -196,6 +196,55 @@ def test_count_attempts_for_content_filters_by_hash(tmp_path):
     assert _count_attempts_for_content(drive_root, "demo", "hash-missing") == 0
 
 
+def test_reviewer_convergence_rule_rides_the_series_round(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from ouroboros import skill_review_prompt as prompts
+
+    captured = {}
+    monkeypatch.setattr(prompts, "_run_skill_advisory_pre_review", lambda *a, **k: {})
+    monkeypatch.setattr(
+        prompts, "_build_review_prompt",
+        lambda **kwargs: (captured.update(kwargs) or "prompt", 0),
+    )
+    ctx = SimpleNamespace(_skill_review_round=3, _skill_review_snapshot_attempt=1)
+    skill = SimpleNamespace(name="demo", skill_dir=tmp_path)
+    for review_round in (2, 3):
+        ctx._skill_review_round = review_round
+        history = [{"review_round": n, "snapshot_attempt": 1, "content_hash": f"hash-{n}"}
+                   for n in range(1, review_round)]
+        prompts._build_review_prompt_for_attempt(
+            ctx, tmp_path, skill, manifest_dump="{}", content_hash="new-hash",
+            file_pack="payload", history=history, review_rebuttal="",
+        )
+        section = captured["review_history_section"]
+        assert ("CONVERGENCE RULE" in section) == (review_round >= 3)
+        assert "snapshot attempt 1" in section
+
+
+def test_series_round_falls_back_to_history_without_the_lifecycle_guard(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from ouroboros import skill_review_prompt as prompts
+
+    captured = {}
+    monkeypatch.setattr(prompts, "_run_skill_advisory_pre_review", lambda *a, **k: {})
+    monkeypatch.setattr(
+        prompts, "_build_review_prompt",
+        lambda **kwargs: (captured.update(kwargs) or "prompt", 0),
+    )
+    # The bounded history window may start long after round one.
+    for prior_round in (0, 1, 2, 8):
+        history = ([{"review_round": prior_round, "snapshot_attempt": 1,
+                     "content_hash": "old-hash"}] if prior_round else [])
+        prompts._build_review_prompt_for_attempt(
+            SimpleNamespace(), tmp_path, SimpleNamespace(name="demo", skill_dir=tmp_path),
+            manifest_dump="{}", content_hash="new-hash", file_pack="payload",
+            history=history, review_rebuttal="",
+        )
+        assert ("CONVERGENCE RULE" in captured["review_history_section"]) == (prior_round >= 2)
+
+
 def test_count_trailing_warnings_rounds_counts_streak_with_legacy_aliases():
     from ouroboros.skill_review_status import count_trailing_warnings_rounds
 

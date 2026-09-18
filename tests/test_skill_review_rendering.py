@@ -53,7 +53,7 @@ def test_skill_review_history_section_renders_concrete_fail_reasons():
     assert "model=openai/gpt-5.5" in section
     assert "**IMPORTANT RULES FOR THIS REVIEW:**" in section
     assert "Do NOT rephrase prior findings under a different checklist `item` name" in section
-    # Convergence rule fires from the 3rd content-hash attempt onward.
+    # Convergence rule fires from the 3rd review round of the group onward.
     assert "Convergence:" in section or "convergence" in section.lower()
 
 
@@ -155,6 +155,40 @@ def test_render_skill_review_block_emits_circuit_breaker_at_attempt_three():
     assert "Self-verification required" in markdown
     assert "Circuit-breaker hint (attempt 3+)" in markdown
     assert "split the skill pack" in markdown
+
+
+def test_self_verification_rides_the_series_round_not_the_snapshot():
+    from ouroboros.skill_review import render_skill_review_block
+
+    payload = {
+        "skill": "demo", "status": "blockers", "review_round": 3,
+        "snapshot_attempt": 1, "content_hash": "beefcafe1234",
+        "findings": [{"item": "bug_hunting", "verdict": "FAIL", "severity": "critical",
+                      "reason": "missing error handling", "model": "reviewer"}],
+    }
+    markdown = render_skill_review_block(payload, attempt_idx=1)
+    assert "Self-verification required before next skill_review" in markdown
+    assert "Circuit-breaker hint (attempt 3+)" in markdown
+    assert "Skill review round 3 — snapshot beefcafe1234 (attempt 1)" in markdown
+    assert "missing error handling" in markdown
+    # The record's ordinal wins even when the caller's legacy fallback is larger.
+    payload["review_round"] = 1
+    assert "Self-verification required" not in render_skill_review_block(payload, attempt_idx=3)
+
+
+def test_history_detail_shape_shows_the_coaching_of_its_round():
+    from ouroboros.skill_review import render_skill_review_block
+
+    payload = {
+        "skill": "demo", "status": "blockers", "review_round": 2,
+        "snapshot_attempt": 1, "content_hash": "abc123def456",
+        "findings": [{"item": "bug_hunting", "verdict": "FAIL", "severity": "critical",
+                      "reason": "missing error handling", "model": "reviewer"}],
+    }
+    markdown = render_skill_review_block(payload, attempt_idx=1)
+    assert "Skill review round 2 — snapshot abc123def456 (attempt 1)" in markdown
+    assert "Self-verification required before next skill_review" in markdown
+    assert "Circuit-breaker hint" not in markdown
 
 
 def test_render_skill_review_block_handles_payload_dict_form():

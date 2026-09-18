@@ -11,6 +11,8 @@ import tempfile
 from collections.abc import Iterator, Mapping
 from typing import Any, TextIO
 
+from ouroboros.platform_layer import file_lock_exclusive, file_lock_exclusive_nb
+
 from devtools.benchmarks.common.result_index import append_result_index, read_result_index
 from devtools.benchmarks.cybergym.cybergym_protocol import (
     CyberGymError,
@@ -70,18 +72,14 @@ def acquire_campaign_execution_lock(
         "a+", encoding="utf-8",
     )
     try:
-        import fcntl
-
-        operation = fcntl.LOCK_EX
-        if not blocking:
-            operation |= fcntl.LOCK_NB
-        try:
-            fcntl.flock(handle.fileno(), operation)
-        except BlockingIOError:
-            handle.close()
-            return None
-    except ImportError:
-        pass
+        lock = file_lock_exclusive if blocking else file_lock_exclusive_nb
+        lock(handle.fileno())
+    except BlockingIOError:
+        handle.close()
+        return None
+    except BaseException:
+        handle.close()
+        raise
     return handle
 
 
