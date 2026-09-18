@@ -4,6 +4,7 @@ A spawned or respawned slot is installed unassignable (``reaping=True``) and ope
 only when the child's own ``worker_ready`` row is observed, which is also where the
 SHA it booted is verified; a child alive but silent past the readiness window is
 torn down and replaced through the same respawn path, a bounded number of times.
+Its own entry-progress row permits one extension, still bounded from its birth.
 The pids workers ran under are recorded durably so an orphan surviving a restart
 can be reaped; a replaced worker's queue is closed under the lock before the new
 one takes its slot.
@@ -24,7 +25,7 @@ import sys
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
-from ouroboros.config import WORKER_READY_MAX_ATTEMPTS, WORKER_READY_WINDOW_SEC
+from ouroboros.config import WORKER_READY_CEILING_SEC, WORKER_READY_MAX_ATTEMPTS, WORKER_READY_WINDOW_SEC
 from ouroboros.review_owner_custody import reconcile_confirmed_dead_review_owners
 from supervisor.state import append_jsonl
 from ouroboros.outcomes import EXECUTION_INFRA_FAILED, terminal_outcome_axes
@@ -237,7 +238,9 @@ def _verify_worker_sha_after_spawn(
     it here. A slot opens only when the child's own ``worker_ready`` row
     (supervisor/worker_process.py) names its pid, and that row's ``git_sha`` is
     verified against ``current_sha`` in the same step. A child that is alive
-    but silent past ``WORKER_READY_WINDOW_SEC`` is torn down and replaced
+    but silent past ``WORKER_READY_WINDOW_SEC`` is torn down and replaced;
+    its own ``worker_starting`` row permits one extension to
+    ``WORKER_READY_CEILING_SEC`` from birth. Replacement still runs
     through ``respawn_worker`` — at most ``WORKER_READY_MAX_ATTEMPTS``
     consecutive times for one slot, then the slot is parked and reported. A
     child that DIED during boot is released to the crash detector, which
@@ -284,6 +287,8 @@ def _watch_booting_slots(
     if not expected_sha:
         _supervisor_row({"type": "worker_sha_verify_skipped", "reason": "missing_current_sha"})
     deadline = started + max(float(WORKER_READY_WINDOW_SEC), 1.0)
+    ceiling = started + max(float(WORKER_READY_CEILING_SEC), float(WORKER_READY_WINDOW_SEC), 1.0)
+    extended = False
     while pending:
         ready_rows: Dict[int, Dict[str, Any]] = {}
         for row in _worker_events_since(events_cursor, "worker_ready"):
@@ -302,11 +307,32 @@ def _watch_booting_slots(
                     exitcode=getattr(slot.proc, "exitcode", None),
                 )
                 pending.pop(wid)
-        if not pending or time.time() >= deadline:
+        if not pending:
             break
+        if time.time() >= deadline:
+            if extended or time.time() >= ceiling:
+                break
+            # The cursor belongs to this spawn attempt; foreign or older progress
+            # cannot buy capacity for a silent slot in the same wave.
+            starting_pids = {str(row.get("pid") or "")
+                             for row in _worker_events_since(events_cursor, "worker_starting")}
+            for wid, slot in list(pending.items()):
+                if str(_slot_pid(slot)) not in starting_pids:
+                    _replace_unready_slot(wid, slot, owner_chat_id, started, attempt)
+                    pending.pop(wid)
+            if not pending:
+                break
+            extended = True
+            deadline = ceiling
+            _supervisor_row({
+                "type": "worker_ready_window_extended", "attempt": attempt,
+                "worker_ids": sorted(pending), "window_sec": float(WORKER_READY_WINDOW_SEC),
+                "ceiling_sec": float(WORKER_READY_CEILING_SEC),
+            })
         time.sleep(0.25)
     for wid, slot in list(pending.items()):
-        _replace_unready_slot(wid, slot, owner_chat_id, started, attempt)
+        _replace_unready_slot(wid, slot, owner_chat_id, started, attempt,
+                              window_sec=float(WORKER_READY_CEILING_SEC if extended else WORKER_READY_WINDOW_SEC))
         pending.pop(wid)
 
 
@@ -386,7 +412,8 @@ def kill_worker_tree(pid: int, *, keep_services: bool = False) -> None:
 
 
 @_serialized_worker_lifecycle
-def _replace_unready_slot(wid: int, slot: Any, owner_chat_id: int, started: float, attempt: int) -> None:
+def _replace_unready_slot(wid: int, slot: Any, owner_chat_id: int, started: float, attempt: int,
+                         window_sec: float = 0.0) -> None:
     """No worker_ready inside the window: tear the child down and replace the slot, bounded.
 
     One lifecycle transaction (lifecycle -> queue lock order, like every pool
@@ -407,7 +434,7 @@ def _replace_unready_slot(wid: int, slot: Any, owner_chat_id: int, started: floa
         "worker_id": wid,
         "pid": pid,
         "waited_sec": round(time.time() - started, 2),
-        "window_sec": float(WORKER_READY_WINDOW_SEC),
+        "window_sec": float(window_sec or WORKER_READY_WINDOW_SEC),
         "attempt": attempt,
         "max_attempts": int(WORKER_READY_MAX_ATTEMPTS),
         "action": action,
@@ -437,7 +464,7 @@ def _replace_unready_slot(wid: int, slot: Any, owner_chat_id: int, started: floa
         _pool().send_with_budget(
             owner_chat_id,
             f"⚠️ Worker slot {wid} never confirmed ready in {attempt} attempts "
-            f"({WORKER_READY_WINDOW_SEC:.0f}s window each); the slot is parked. Use /restart.",
+            f"(waited {time.time() - started:.0f}s on the last attempt); the slot is parked. Use /restart.",
         )
     _pool().disable_exhausted_worker_pool()
 

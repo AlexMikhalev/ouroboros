@@ -492,6 +492,7 @@ def queue_snapshot(data_root) -> dict:
 
 _READINESS_ROW_TYPES = (
     "worker_sha_verify", "worker_ready_timeout", "worker_ready_released",
+    "worker_ready_window_extended",
     "worker_dead_detected", "worker_crash",
 )
 

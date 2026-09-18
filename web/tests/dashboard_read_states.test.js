@@ -134,7 +134,7 @@ const message = (node) => node.querySelector('.ui-status').textContent;
 
 function emptyActivity(routes) {
     routes.set(queueUrl, response({ queue: { running: [], pending: [] } }));
-    routes.set(backgroundUrl, response({ bg_consciousness_enabled: false }));
+    routes.set(backgroundUrl, response({ bg_consciousness_enabled: false, active_chat_activities: [], active_chat_activities_complete: true }));
     routes.set(schedulesUrl, response({ tasks: [] }));
 }
 
@@ -196,6 +196,65 @@ test('Activity invalid success payload is unavailable and stale requests cannot 
     await activity.refresh();
     assert.match(message(section(mount, 'queue')), /Could not refresh/);
     assert.match(section(mount, 'queue').textContent, /Current work/);
+});
+
+test('Activity unites live direct turns with queue identities and preserves queue controls', async (t) => {
+    const { mount, routes, ws, calls } = setup(t);
+    emptyActivity(routes);
+    const now = Date.now;
+    Date.now = () => 100000;
+    t.after(() => { Date.now = now; });
+    routes.set(backgroundUrl, response({ bg_consciousness_enabled: true,
+        active_chat_activities_complete: false, active_chat_activities: [
+            { activity_id: 'direct-1', kind: 'direct_chat', phase: 'thinking', started_at: 88 },
+            { activity_id: 'queued-1', kind: 'direct_chat', phase: 'thinking', started_at: 80 },
+            { activity_id: 'paused-1', kind: 'managed_task', phase: 'running', started_at: 80 },
+        ] }));
+    routes.set(queueUrl, response({ queue: {
+        running: [{ id: 'queued-1', type: 'task', runtime_sec: 9, task: { title: 'Queue title' } }],
+        pending: [{ task: { id: 'paused-1', title: 'Paused work', _budget_pause: true } }],
+    } }));
+    await initActivity({ mount, ws }).refresh();
+    const queue = section(mount, 'queue');
+    const rows = queue.querySelectorAll('.activity-row');
+    assert.equal(rows.length, 3, 'partial positive census adds exactly the missing direct identity');
+    assert.match(rows[0].textContent, /Queue title[\s\S]*running · task · 9s/);
+    assert.match(rows[1].textContent, /Paused work[\s\S]*paused \(budget\)/);
+    assert.equal(rows[1].querySelector('button').dataset.budgetPaused, '1');
+    assert.match(rows[2].textContent, /Direct turn[\s\S]*thinking · 12s/);
+    assert.equal(rows[2].querySelector('button').dataset.id, 'direct-1');
+    assert.equal(rows[2].querySelector('button').dataset.act, 'task-control');
+    assert.doesNotMatch(queue.textContent, /Nothing running/);
+    assert.deepEqual(calls, [queueUrl, backgroundUrl, schedulesUrl], 'reuse the existing state read');
+});
+
+test('Activity complete empty census differs from unknown and failed state preserves queue facts', async (t) => {
+    const { mount, routes, ws } = setup(t);
+    emptyActivity(routes);
+    const activity = initActivity({ mount, ws });
+    const queue = section(mount, 'queue');
+    await activity.refresh();
+    assert.match(queue.textContent, /Nothing running or queued/);
+    routes.set(backgroundUrl, response({ bg_consciousness_enabled: false,
+        active_chat_activities: [], active_chat_activities_complete: false }));
+    await activity.refresh();
+    assert.match(queue.textContent, /Queue empty; live turns unknown/);
+    routes.set(backgroundUrl, response({}, 503));
+    await activity.refresh();
+    assert.match(queue.textContent, /Queue empty; live turns unknown/);
+    assert.equal(message(queue), '');
+    routes.set(queueUrl, response({ queue: { running: [{ id: 'running-1', task: { title: 'Still working' } }], pending: [] } }));
+    await activity.refresh();
+    assert.match(queue.textContent, /Still working/);
+    assert.equal(message(queue), '');
+    routes.set(backgroundUrl, response({ bg_consciousness_enabled: false,
+        active_chat_activities: [{ activity_id: 'direct-2', kind: 'direct_chat', phase: 'thinking' }],
+        active_chat_activities_complete: true }));
+    routes.set(queueUrl, response({}, 503));
+    await activity.refresh();
+    assert.match(message(queue), /Could not refresh.*unknown/);
+    assert.match(queue.textContent, /Still working/);
+    assert.doesNotMatch(queue.textContent, /Nothing running/);
 });
 
 test('Logs reports partial history without losing live rows or deduplication, then clears the gap on reconnect', async (t) => {

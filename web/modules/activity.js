@@ -56,7 +56,7 @@ export function initActivity({ mount, ws } = {}) {
         return { root, status, content, loaded: false };
     });
 
-    function renderQueue(queue) {
+    function renderQueue(queue, census) {
         if (!Array.isArray(queue?.running) || !Array.isArray(queue?.pending)) throw new Error('Queue unavailable');
         const { running, pending } = queue;
         // #322: the snapshot already carries the pause truth — a member's own
@@ -86,8 +86,30 @@ export function initActivity({ mount, ws } = {}) {
                 </div>
             </div>`;
         };
-        const parts = [...running.map((q) => row(q, 'running')), ...pending.map((q) => row(q, 'pending'))];
-        return parts.length ? parts.join('') : '<div class="activity-empty">Nothing running or queued.</div>';
+        // Queue facts keep their runtime/budget controls. The census adds only
+        // missing identities; queued direct turns can appear in both sources.
+        const known = new Set([...running, ...pending].map((q) => String(q.id || q.task?.id || '')));
+        const live = (Array.isArray(census?.active_chat_activities) ? census.active_chat_activities : [])
+            .filter((a) => a && !known.has(String(a.activity_id || '')));
+        const names = { direct_chat: 'Direct turn', managed_task: 'Managed task' };
+        const liveRow = (a) => {
+            const started = Number(a.started_at) || 0;
+            const elapsed = started > 0 ? ` · ${Math.max(0, Math.round(Date.now() / 1000 - started))}s` : '';
+            return `<div class="activity-row">
+                <div class="activity-row-main">
+                    <span class="activity-name">${esc(names[a.kind] || 'Live turn')}</span>
+                    <span class="activity-sub">${esc(a.phase || '')}${elapsed}</span>
+                </div>
+                <div class="activity-row-actions">
+                    <button type="button" class="btn btn-xs btn-danger" data-act="task-control" data-id="${esc(a.activity_id || '')}">${esc(TASK_CONTROL_TRIGGER_LABEL)}</button>
+                </div>
+            </div>`;
+        };
+        const parts = [...running.map((q) => row(q, 'running')), ...pending.map((q) => row(q, 'pending')), ...live.map(liveRow)];
+        if (parts.length) return parts.join('');
+        return census?.active_chat_activities_complete === true
+            ? '<div class="activity-empty">Nothing running or queued.</div>'
+            : '<div class="activity-empty">Queue empty; live turns unknown.</div>';
     }
 
     function formatWhen(value) {
@@ -164,7 +186,8 @@ export function initActivity({ mount, ws } = {}) {
             getJson('/api/schedules'),
         ]);
         if (revision !== refreshRevision) return;
-        const renderers = [(data) => renderQueue(data?.queue), renderBg, renderSchedules];
+        const census = results[1].status === 'fulfilled' ? results[1].value : null;
+        const renderers = [(data) => renderQueue(data?.queue, census), renderBg, renderSchedules];
         sections.forEach((section, index) => {
             const { root, status, content } = section;
             root.removeAttribute('aria-busy');

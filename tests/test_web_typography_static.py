@@ -512,3 +512,24 @@ def test_webkit_scrollbar_recipe_covers_both_axes() -> None:
         "the horizontal bar must be as thin as the vertical one: "
         f"width {declarations['width']} vs height {declarations['height']}"
     )
+
+
+def test_chat_transcript_reserves_composer_space_as_one_flex_spacer():
+    """End space is a flex item; keyboard flow removes it and its extra gap."""
+    css = _decommented(_read("web/style.css"))
+    rules = [(selector.strip(), body) for selector, body in RULE.findall(css)]
+    assert not re.search(r"padding-bottom:\s*(?:calc\()?var\(--chat-input-reserve", css)
+    spacers = [(selector, body) for selector, body in rules if "chat-messages::after" in selector]
+    bases = [body for _, body in spacers if "flex:" in body]
+    assert len(bases) == 1
+    assert "content: '';" in bases[0]
+    assert "flex: 0 0 calc(var(--chat-input-reserve, 108px) - 8px);" in bases[0]
+    mobile = [body for _, body in spacers if "env(safe-area-inset-bottom" in body]
+    assert len(mobile) == 1
+    assert "- 8px" in mobile[0]
+    panel = [body for selector, body in spacers if selector == ".chat-instance-panel .chat-messages::after"]
+    assert len(panel) == 1
+    assert "flex-basis: calc(var(--chat-input-reserve, 108px) - 8px);" in panel[0]
+    keyboard = [body for selector, body in spacers if "body.keyboard-open" in selector]
+    assert len(keyboard) == 1
+    assert "content: none;" in keyboard[0]
