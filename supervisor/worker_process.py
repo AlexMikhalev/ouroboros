@@ -115,6 +115,17 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
     # Before ANY import that resolves the update-tx marker through git_ops (see
     # _bind_worker_repo_root): a spawned child would otherwise gate on the hardcoded default repo.
     _bind_worker_repo_root(repo_dir, drive_root)
+    # Entry progress precedes extension loading and agent construction. If logging
+    # fails, the parent retains the ordinary readiness window rather than losing the child.
+    try:
+        from ouroboros.utils import append_jsonl, utc_now_iso
+
+        append_jsonl(pathlib.Path(drive_root) / "logs" / "events.jsonl", {
+            "ts": utc_now_iso(), "type": "worker_starting",
+            "worker_id": wid, "pid": _os.getpid(), "phase": "entry",
+        })
+    except Exception:
+        log.debug("Worker entry progress unavailable", exc_info=True)
     # Adopt the server's custody session id. Under the 'spawn' start method this
     # process re-imported process_custody and minted a fresh _SESSION_ID; without
     # adopting the server's id, every service/process this worker records looks
@@ -191,7 +202,6 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
         if pytest_default_real_data_dir:
             extensions_owned = False
             try:
-                from ouroboros.utils import append_jsonl, utc_now_iso
                 append_jsonl(_drive / "logs" / "supervisor.jsonl", {
                     "ts": utc_now_iso(),
                     "type": "worker_extension_reload_skipped",
