@@ -882,15 +882,10 @@ def chat_claudexor(target: dict, messages: list, tools: list | None, **parameter
 
 
 def recover_model_attempt(drive_root, row: dict, *, gateway_factory=None):
-    """Read an abandoned caller's existing operation; never create or cancel one.
-
-    A retained terminal receipt needs no network. Older receipts without dispatch
-    facts re-read their exact operation. Missing identity or live/unknown custody
-    defers; terminal work with unavailable price keeps that price unknown.
-    """
+    """Read retained receipts offline; without dispatch facts, read their exact operation.
+    Missing/live/unknown custody defers, unknown price stays unknown; never create or cancel."""
     from ouroboros.observability import call_manifest_path, read_call_payload
     from ouroboros.utils import read_json_dict
-
     task_id, attempt_id = str(row.get("task_id") or ""), str(row.get("attempt_id") or "")
     call_id = f"{attempt_id}_model_response"
     manifest, payload = {}, {}
