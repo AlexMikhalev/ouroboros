@@ -127,6 +127,7 @@ BAND_PATHS = {
     "ouroboros/gateway/settings.py": "Shrank INTO the band from 1532 lines: the scope-slot window-floor owner capability-ack path was removed with the scope packet (scope-review-retrieval sprint); shrink-only residue, no new content.",
     "ouroboros/gateways/claudexor.py": "The existing owned-engine gateway also owns typed model operations and exact-byte resource transfer; no second control client.",
     "ouroboros/launcher_bootstrap.py": "Native seed version resync keeps manifest parsing and equal-version payload diagnostics with the existing bootstrap owner; no separate loader or overwrite policy.",
+    "ouroboros/llm_claudexor.py": "The raw-model transport keeps private continuation reset beside dispatch and custody; Main reprepare reuses that same content-preserving reset instead of duplicating account-bound envelope rules.",
     "ouroboros/loop_delivery.py": "F6 upstream sync: the delivery-protocol upstream deltas (hold-control literals, trailing-object/fence-aware protocol parsers) folded into the campaign delivery leaf (upstream leaf delivery_protocol.py retired)",
     "ouroboros/loop_forced_finalization.py": "Forced-finalization rail of the v7 L-B loop split: one cohesive owner for the forced/orphan/absorption path, moved byte-preserving from loop.py (D01 lane).",
     "ouroboros/loop_tool_execution.py": "Tool-result execution and bounded evidence projection share one owner; retain this coherent suite while the adjoining transport seam stays under its cap.",
