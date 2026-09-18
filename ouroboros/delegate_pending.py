@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pathlib
 from typing import Any, Dict, List, Optional
 
 
@@ -28,6 +29,7 @@ def pending_invocations(
                 "slot_id": str(row.get("slot_id") or ""),
                 "operation_id": str(row.get("operation_id") or ""),
                 "request": row.get("request") if isinstance(row.get("request"), dict) else None,
+                "request_ref": row.get("request_ref"),
                 "route": str(row.get("route") or ""),
                 "project_id": str(row.get("project_id") or ""),
                 "project_owned": bool(row.get("project_owned")),
@@ -65,11 +67,39 @@ def pending_invocations(
             and state.get(invocation_id) != "started"
         ):
             state[invocation_id] = "failed_definite"
-    return [
-        record for invocation_id, record in found.items()
-        if state.get(invocation_id, "pending") == "pending"
-        and isinstance(record["request"], dict) and record["request"]
-    ]
+    pending = []
+    for invocation_id, record in found.items():
+        if state.get(invocation_id, "pending") != "pending":
+            continue
+        # Resolve only survivors, not every historical start on each sweep.
+        body = request_body(drive_root, record)
+        ref = record.pop("request_ref")
+        # An unreadable stored body does not discharge the pending start.
+        if body or ref is not None:
+            record["request"] = body
+            pending.append(record)
+    return pending
 
 
-__all__ = ["pending_invocations"]
+def request_body(drive_root: Any, row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Resolve the canonical replay envelope, legacy inline first, then raw CAS.
+
+    Unreadable references leave the request unknown for the caller's existing
+    refusal paths; never rebuild a paid invocation from current settings.
+    """
+    inline = row.get("request")
+    if isinstance(inline, dict) and inline:
+        return inline
+    ref = row.get("request_ref")
+    if not isinstance(ref, dict) or not ref:
+        return None
+    from ouroboros.observability import read_blob_ref
+
+    try:
+        body = read_blob_ref(pathlib.Path(drive_root), ref, expected_kind="json")
+    except Exception:
+        return None
+    return body if isinstance(body, dict) and body else None
+
+
+__all__ = ["pending_invocations", "request_body"]
