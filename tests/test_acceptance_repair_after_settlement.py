@@ -1,4 +1,4 @@
-"""The control-repair round after a settled acceptance panel runs; it never parks again."""
+"""An acceptance continuation runs after settlement without another park."""
 from __future__ import annotations
 
 import copy
@@ -14,14 +14,12 @@ full_loop = _full_loop  # noqa: F811 - pytest fixture re-export
 
 
 @pytest.mark.parametrize("owner_followup", [False, True], ids=["same_owner", "owner_followup"])
-def test_prose_after_the_settled_verdict_wake_gets_its_repair_round_not_a_second_park(
+def test_prose_after_settlement_needs_control_only_for_unacknowledged_owner_input(
     full_loop, monkeypatch, owner_followup,
 ):
-    """The wake after a settled panel re-offers the keep/replace control; a prose
-    answer there is a malformed control, so the loop queues its ONE repair round.
-    That round must run: the panel has already settled, so parking again would
-    wait for a settlement that never comes (the keyless E2E lane hung this way
-    until the task deadline). One park while the panel ran, then the repair."""
+    """Complete prose continues directly under N2. A changed owner source still
+    needs its exact acknowledgement, whose repair round must run after settlement.
+    Neither path may park again on the panel whose one wake was already consumed."""
     f = full_loop
     f.reviewer_verdict = "FAIL"
     monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "1")
@@ -49,7 +47,7 @@ def test_prose_after_the_settled_verdict_wake_gets_its_repair_round_not_a_second
             assert f.settled.is_set() and "FAIL" in str(messages)
             if owner_followup:
                 assert followup in str(messages)
-            return {"content": reauthored}, 0.0  # prose where the control object was due
+            return {"content": reauthored}, 0.0
         if f.model_step == 4:
             assert "[DELIVERY_CONTROL_REPAIR]" in str(messages[-1].get("content"))
             observation = f.ctx._acceptance_observation
@@ -62,6 +60,7 @@ def test_prose_after_the_settled_verdict_wake_gets_its_repair_round_not_a_second
     result, _usage, trace = f.run()
     assert result == reauthored and len(f.review_sends) == 1
     assert [wait.get("reason") for wait in f.waits] == ["review"], f.waits
-    assert f.model_step == 4, f.progress
+    assert f.model_step == (4 if owner_followup else 3), f.progress
+    assert any("[DELIVERY_CONTROL_REPAIR]" in str(messages) for messages in f.model_inputs) is owner_followup
     host = [r for r in trace["review_runs"] if r.get("authority") == "host_root"]
     assert [r.get("aggregate_signal") for r in host] == ["FAIL", "DEGRADED"], host

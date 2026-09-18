@@ -425,7 +425,14 @@ def test_s14_plan_review_revise_then_accept_cycle_with_honest_chronicle(
                 return int(payload.get("cycle_index") or 0)
 
             barrier = sorted((p for p in payloads if p.get("custody_pending")), key=by_cycle)
-            collected = sorted((p for p in payloads if not p.get("custody_pending")), key=by_cycle)
+            from ouroboros.tools.plan_review_artifacts import read_wave
+
+            collected = [read_wave(oracle.data_root, task_id, wave["wave_artifact"])
+                         for wave in waves]
+            # The durable index names the exact verdict snapshots; the reader
+            # verifies their bytes/hash instead of trusting a directory count.
+            assert collected == sorted(
+                (p for p in payloads if not p.get("custody_pending")), key=by_cycle)
             assert [p.get("aggregate") for p in barrier] == ["DEGRADED"] * 2, barrier
             assert [p.get("paid") for p in barrier] == [False] * 2, barrier
             assert [p.get("cycle_index") for p in collected] == [1, 2], collected
@@ -856,17 +863,21 @@ def _s14_settings(stub) -> dict:
 
 @pytest.mark.integration
 @pytest.mark.serial
-def test_s17_acceptance_reject_rework_accept(e2e_clone, tmp_path_factory):
+@pytest.mark.parametrize("answer_form", ["prose", "control"])
+def test_s17_acceptance_reject_rework_accept(e2e_clone, tmp_path_factory, answer_form):
     require_lane(LANE_MOCK)
     root = tmp_path_factory.mktemp("s14")
     review_script = ReviewScript({
         "acceptance": [W3A_ACCEPT_REJECT] * 3 + [W3A_ACCEPT_PASS] * 3,
     })
-    # V1 is nominated; the REJECT wave wakes Main with the control re-offered and
-    # the rework answers it as a typed replace (a second paid panel); the PASS
-    # wave wakes Main again and a typed keep delivers under the accepted panel.
+    # Rework may be ordinary complete prose or an explicit replacement. After
+    # the second asynchronous panel, Main reaffirms that complete answer or
+    # explicitly keeps it. Neither path may buy a third panel.
+    followups = ([{"final": S14_ANSWER_V2}, {"final": S14_ANSWER_V2}]
+                 if answer_form == "prose" else
+                 [_control_step("replace", S14_ANSWER_V2), _control_step("keep")])
     stub = ScriptedStubModel(
-        [{"final": S14_ANSWER_V1}, _control_step("replace", S14_ANSWER_V2), _control_step("keep")],
+        [{"final": S14_ANSWER_V1}, *followups],
         review_script=review_script,
     )
     with stub:
@@ -903,15 +914,17 @@ def test_s17_acceptance_reject_rework_accept(e2e_clone, tmp_path_factory):
 
 @pytest.mark.integration
 @pytest.mark.serial
+@pytest.mark.parametrize("answer_form", ["prose", "control"])
 def test_s17_acceptance_identical_rework_is_free_replay_refusal(
-        e2e_clone, tmp_path_factory):
+        e2e_clone, tmp_path_factory, answer_form):
     require_lane(LANE_MOCK)
     root = tmp_path_factory.mktemp("s14b")
     review_script = ReviewScript({"acceptance": [W3A_ACCEPT_REJECT] * 3})
-    # Keep collects the REJECT verdict; the following improvement round
-    # resubmits the identical answer, which must replay at $0 without a new panel.
+    # Both ordinary prose and explicit keep collect the rejected answer's
+    # verdict; unchanged material must replay at $0 without a new panel.
+    followup = ({"final": S14_ANSWER_V1} if answer_form == "prose" else _control_step("keep"))
     stub = ScriptedStubModel(
-        [{"final": S14_ANSWER_V1}, _control_step("keep"), {"final": S14_ANSWER_V1}],
+        [{"final": S14_ANSWER_V1}, followup, {"final": S14_ANSWER_V1}],
         review_script=review_script,
     )
     with stub:

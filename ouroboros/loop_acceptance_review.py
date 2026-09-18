@@ -154,7 +154,7 @@ def prepare_acceptance_observation(ctx: Any, trace: dict, incoming: Any, message
 
 def wait_for_acceptance_feedback(tools: Any, limit_ctx: Any, trace: dict,
                                  tool_schemas: list, seen: set) -> None:
-    """Park a pending final answer with the same keep/replace contract as nomination."""
+    """Park a pending answer with optional controls and a complete prose continuation."""
     ctx = tools._ctx
     binding = getattr(ctx, "_task_acceptance_pending", "")
     if not binding:
@@ -171,7 +171,8 @@ def wait_for_acceptance_feedback(tools: Any, limit_ctx: Any, trace: dict,
         return
     # Re-offered on EVERY wake: a replacement candidate inherits
     # ``control_episode_seen``, which hid the one free route back to the verdicts.
-    _loop()._arm_delivery_control(tools, limit_ctx, trace, skip_if_unchanged=True)
+    _loop()._arm_delivery_control(tools, limit_ctx, trace,
+                                  control="acceptance_feedback", skip_if_unchanged=True)
     from ouroboros.owner_wait import wait_after_tools
 
     wait_after_tools(ctx, limit_ctx.messages, trace, limit_ctx.accumulated_usage,
@@ -209,7 +210,7 @@ def advance_explicit_acceptance(tools: Any, limit_ctx: Any, trace: dict,
         # Explicit submission retained a complete answer without delivering it.
         # Teach the existing keep/replace reader that this is a control episode;
         # otherwise the subject-observation's requested keep JSON becomes prose.
-        _loop()._arm_delivery_control(tools, limit_ctx, trace)
+        _loop()._arm_delivery_control(tools, limit_ctx, trace, control="acceptance_feedback")
 
 
 def _acceptance_dialogue_quorum(result: Any) -> int:

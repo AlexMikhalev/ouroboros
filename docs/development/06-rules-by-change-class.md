@@ -697,9 +697,14 @@ and what enforces each.
   the sends of ONE execution the transcript is append-only — compaction is the one
   sanctioned rewrite; any other break discards OpenAI-family caches and is recorded as
   `prompt_prefix_break` (ARCHITECTURE §6 "Task lifecycle") — so the per-round acceptance
-  observation is an append-only row `_append_or_merge_user_content` never merges into
-  (`tests/test_transcript_prefix.py` on the real `run_llm_loop`). Review gate: CHECKLISTS
-  item 22 (`cache_friendliness`).
+  observation is an append-only row `_append_or_merge_user_content` never merges into.
+  Other user content may merge only when `unsent_in_previous_send` proves the tail
+  absent from the last observed send; callers without a slot or observation append.
+  This observation follows a usable ordinary response, not every physical send;
+  image eviction is unchanged. Pin plain/multipart content and real local/GigaChat
+  request builders (`tests/test_transcript_prefix.py` on the real `run_llm_loop`,
+  `tests/test_transcript_provider_shapes.py`). Review gate: CHECKLISTS item 22
+  (`cache_friendliness`).
 - Provider fallback is disabled only for a SEALED reasoning artifact
   (`ouroboros/reasoning_artifacts.py::transcript_has_sealed_reasoning`) — only a sealed
   artifact is bound to the endpoint that minted it; readable reasoning stays
@@ -912,8 +917,13 @@ and what enforces each.
   the same root still recorded as running, at $0 over its recorded request and roster
   — else a subject re-authored mid-flight discards bought verdicts. Verdicts are advice
   for the author and reach Main whatever its draft: the settlement wake carries them,
-  and the keep contract is re-offered on every wake whose contract bytes changed
-  (identical bytes are not repeated; a spent malformed-control repair stays spent). A
+  and the acceptance continuation contract is re-offered when its bytes change
+  (identical bytes are not repeated; a spent malformed-control repair stays spent).
+  A complete revised answer may be ordinary prose; typed keep/replace/finish remain
+  optional. Prose resets the pending-review choice to wait and never infers finish.
+  Existing effect, owner-revision and child-action controls remain strict; owner-source
+  acknowledgement and forced finalization retain their rules. Empty or recognizable
+  malformed controls preserve the retained answer (`tests/test_acceptance_optional_control.py`). A
   delivery under a running panel is never a second panel and never a capacity refusal
   (`acceptance_settlement._deliver_under_running_panel`): waiting is the default and,
   under blocking enforcement, the only option (Cyber Pro never waits); under advisory
