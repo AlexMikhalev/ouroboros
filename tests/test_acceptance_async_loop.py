@@ -587,6 +587,9 @@ def test_an_older_fail_never_outvotes_the_pass_that_accepted_the_task(full_loop,
             f.reviewer_verdict = "PASS"
             return {"content": "", "tool_calls": [call("task_acceptance_review", {"claim": second}, "second-review")]}, 0.0
         if f.model_step == 3:
+            # This scenario rewrites under B's settled PASS, not while B runs.
+            with f.condition:
+                assert f.condition.wait_for(lambda: f.settled_count >= 2, timeout=10)
             observation = f.ctx._acceptance_observation
             return {"content": json.dumps({"delivery_control": "replace", "full_answer": third,
                                            "acceptance_subject": {"owner_source_sha256": observation["owner_source_sha256"]}})}, 0.0
