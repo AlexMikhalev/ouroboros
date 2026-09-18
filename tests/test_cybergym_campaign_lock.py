@@ -1,7 +1,9 @@
-"""Live-side campaign execution lock coverage."""
+"""Campaign execution locking and its pre-admission structural boundary."""
 
 from __future__ import annotations
 
+import ast
+import inspect
 import os
 import threading
 
@@ -138,3 +140,34 @@ def test_launcher_lock_loser_writes_no_admission_manifest(tmp_path):
         ]) == 2
 
     assert not root.exists()
+
+
+def test_canonical_platform_campaign_lock_is_admitted_by_structural_gate():
+    from devtools.benchmarks.common import launcher_audit as audit
+    from devtools.benchmarks.cybergym import run_cybergym
+
+    unit = audit._Unit(ast.parse(inspect.getsource(run_cybergym)), "launcher")
+    assert audit._approved_pre_admission_lock("acquire_campaign_execution_lock", unit)
+    # The original imported-helper identity rule still rejects a shadowed name.
+    shadowed = inspect.getsource(run_cybergym) + "\nacquire_campaign_execution_lock = other_lock\n"
+    assert not audit._approved_pre_admission_lock(
+        "acquire_campaign_execution_lock", audit._Unit(ast.parse(shadowed), "launcher"))
+
+
+@pytest.mark.parametrize("before,after", [
+    ("from ouroboros.platform_layer import", "from ouroboros.utils import"),
+    ("lock = file_lock_exclusive if blocking else file_lock_exclusive_nb",
+     "lock = file_lock_exclusive_nb if blocking else file_lock_exclusive"),
+    ("lock(handle.fileno())", "file_lock_exclusive = other_lock; lock(handle.fileno())"),
+    ("lock(handle.fileno())", "pathlib.Path('dataset').open(); lock(handle.fileno())"),
+    ("lock(handle.fileno())", "pathlib.Path('dataset').read_text(); lock(handle.fileno())"),
+    ("pathlib.Path(tempfile.gettempdir())", "pathlib.Path(run_root)"),
+])
+def test_campaign_lock_exemption_rejects_wrong_binding_choice_or_io(before, after):
+    from devtools.benchmarks.common import launcher_audit as audit
+
+    source = inspect.getsource(cybergym_result_index)
+    assert before in source
+    unit = audit._Unit(ast.parse(source.replace(before, after, 1)), audit._PRE_ADMISSION_LOCK_MODULE)
+    assert not audit._safe_pre_admission_lock_helper(
+        unit.functions["acquire_campaign_execution_lock"], unit)
