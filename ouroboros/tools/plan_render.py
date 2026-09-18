@@ -195,11 +195,13 @@ def _next_step(wave: dict, *, enforcement: str, cap: Optional[int], cycles_paid:
     elif aggregate == "REVIEW_REQUIRED":
         blocking = [f for f in wave.get("findings") or [] if f.get("class") == "blocking"]
         text = author_note + (
-            "Notes are optional. Open need_evidence requests (a locator the host attaches next cycle, or "
+            "Notes are optional. Open need_evidence requests (an evidence locator or "
             "a question addressed to you by spec id) close with ONE $0 call: "
             f"plan_task(review_disposition={{review_fingerprint: '{fp}', items: [...]}}) — accept = "
-            "answered (your rationale is the answer; it reaches reviewers on the next paid cycle), "
-            "reject, or defer = deferred openly; no reviewer call, no cycle. A revised envelope "
+            "answered (your rationale is the answer; "
+            + ("the cap leaves no further paid cycle to deliver it to reviewers), " if at_cap else
+               "it reaches reviewers on the next paid cycle), ")
+            + "reject, or defer = deferred openly; no reviewer call, no cycle. A revised envelope "
             "supersedes this wave and its open requests can no longer be dispositioned. "
         )
         if blocking:
