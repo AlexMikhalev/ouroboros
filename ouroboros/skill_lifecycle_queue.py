@@ -280,21 +280,6 @@ def _release_dedupe(job: LifecycleJob) -> None:
             _dedupe_jobs.pop(job.dedupe_key, None)
 
 
-@contextlib.contextmanager
-def skill_lifecycle_file_lock(drive_root: pathlib.Path):
-    from ouroboros.platform_layer import file_lock_exclusive, file_unlock
-
-    lock_dir = pathlib.Path(drive_root) / "state"
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    lock_path = lock_dir / "skill_lifecycle.lock"
-    with lock_path.open("a+") as fh:
-        file_lock_exclusive(fh.fileno())
-        try:
-            yield
-        finally:
-            file_unlock(fh.fileno())
-
-
 @contextlib.asynccontextmanager
 async def async_skill_lifecycle_file_lock(drive_root: pathlib.Path):
     from ouroboros.platform_layer import file_lock_exclusive_nb, file_unlock

@@ -595,15 +595,6 @@ def _executor_backend_candidate_path(ctx: Any, candidate: str) -> pathlib.Path |
         return None
 
 
-def _workspace_write_block_runtime_result(path_text: Any = "", spelled: Any = "") -> ToolResult:
-    """Typed carrier of the Guard-B runtime-path denial (same bytes in text)."""
-    return ToolResult(
-        status="blocked",
-        code="WORKSPACE_BLOCKED",
-        text=_workspace_write_block_runtime_message(path_text, spelled),
-    )
-
-
 def _workspace_write_block_outside_root_result(
     path_text: Any = "", work_dir: Any = "", spelled: Any = "",
 ) -> ToolResult:

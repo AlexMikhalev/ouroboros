@@ -171,19 +171,6 @@ def atlas_assembly_failure_reason(pack: Any) -> str:
     return required_cause
 
 
-def atlas_assembly_remedy(manifest: Mapping[str, Any] | None, overflow_remedy: str) -> str:
-    """The remedy matching the manifest's cause set — ONE pick for every consumer.
-
-    ``overflow_remedy`` is the caller's surface-specific overflow wording; the
-    missing-artifact and mixed remedies are shared, because each single-cause
-    remedy states something false for the other cause of the mixed failure.
-    """
-    missing = bool(atlas_unassembled_required(manifest))
-    if missing and atlas_hard_budget_overflowed(manifest):
-        return ATLAS_MIXED_ASSEMBLY_REMEDY
-    return ATLAS_MISSING_ARTIFACT_REMEDY if missing else overflow_remedy
-
-
 @dataclass(frozen=True)
 class ReviewContextAtlasRequest:
     repo_dir: pathlib.Path

@@ -11,7 +11,6 @@ import hashlib
 import html
 import string
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Mapping
 
 import yaml
@@ -225,7 +224,3 @@ def _parse_markdown_source(raw: bytes, source_path: str) -> MarkdownSource:
         tuple(span(n) for n in nodes if n.type == "list_item"), tuple(links),
         tuple(span(n) for n in nodes if n.type == "code_fence_content"),
     )
-
-
-def read_markdown_source(path: Path) -> MarkdownSource:
-    return parse_markdown_source(Path(path).read_bytes(), str(path))

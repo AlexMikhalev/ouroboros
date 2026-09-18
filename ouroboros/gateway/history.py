@@ -172,18 +172,6 @@ def _project_history_context(
     return project_chat_ids, source_refs, annotations, bindings_by_task
 
 
-def _matches_project_source(entry: Dict[str, Any], source_refs: list[dict]) -> bool:
-    if not source_refs:
-        return False
-    try:
-        from ouroboros.project_dialogue import entry_matches_source_ref
-
-        return entry_matches_source_ref(entry, source_refs)
-    except Exception:
-        log.debug("Project source-ref classification failed", exc_info=True)
-        return False
-
-
 def _user_annotation(
     role: str,
     client_message_id: str,
