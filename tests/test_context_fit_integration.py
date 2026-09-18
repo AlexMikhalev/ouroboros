@@ -160,7 +160,6 @@ def test_target_miss_is_non_terminal_fit_evidence(monkeypatch, tmp_path):
 def test_bare_env_low_keeps_p3_owner_max_but_gets_main_target(monkeypatch, tmp_path):
     from ouroboros import capability_evidence, config, loop
     from ouroboros.context_fit import measure_main_fit
-    from ouroboros.tools import scope_review
 
     monkeypatch.setenv("OUROBOROS_CONTEXT_MODE", "low")
     monkeypatch.delenv("OUROBOROS_CONTEXT_MODE_AUTO_LOW", raising=False)
@@ -173,7 +172,6 @@ def test_bare_env_low_keeps_p3_owner_max_but_gets_main_target(monkeypatch, tmp_p
 
     assert config.get_context_mode() == "low"
     assert config.get_owner_context_mode() == "max"
-    assert scope_review._scope_review_skipped_in_low_context() is False
     assert loop._main_context_profile(plan, "low") == "owner_low"
     fit = measure_main_fit(
         plan,
@@ -188,7 +186,6 @@ def test_bare_env_low_keeps_p3_owner_max_but_gets_main_target(monkeypatch, tmp_p
 
     monkeypatch.setenv("OUROBOROS_CONTEXT_MODE_AUTO_LOW", "false")
     assert config.get_owner_context_mode() == "low"
-    assert scope_review._scope_review_skipped_in_low_context() is True
 
 
 def test_round_fit_reads_density_from_canonical_store_not_child_drive(tmp_path, monkeypatch):

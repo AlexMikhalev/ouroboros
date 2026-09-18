@@ -62,12 +62,12 @@ def test_scope_context_failure_is_distinct_from_invalid_subject(candidate, monke
     from ouroboros.tools import scope_review
     from ouroboros.tools.review_admission import prepare_scope_review
 
-    monkeypatch.setattr(scope_review, "_scope_review_skipped_in_low_context", lambda: False)
     monkeypatch.setattr(scope_review, "review_repo_dirs_for", lambda ctx: (ctx.repo_dir, ctx.repo_dir))
     monkeypatch.setattr("ouroboros.tools.review_subject.managed_review_subject", lambda *a: None)
-    # Point the canonical checklist reader at the absent fixture source.
+    # Point the brief's canonical checklist reader at the absent fixture source.
+    from ouroboros.tools import scope_review_session
     from ouroboros.tools.review_helpers import load_checklist_section
-    monkeypatch.setattr(scope_review, "load_checklist_section", lambda name: load_checklist_section(name, candidate.repo_dir / "docs" / "CHECKLISTS.md"))
+    monkeypatch.setattr(scope_review_session, "load_checklist_section", lambda name: load_checklist_section(name, candidate.repo_dir / "docs" / "CHECKLISTS.md"))
     prepared, failure = prepare_scope_review(candidate, "candidate", scope_model="test/model")
     assert prepared is None and failure.failure_phase == "context"
     assert failure.status == "error"

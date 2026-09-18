@@ -180,7 +180,7 @@ export function buildReviewerSlotsSetting(state) {
         advisory: advisoryOut,
     };
     // The deep self-review singleton is OPTIONAL server-side (absent = the
-    // packed row synthesized from OUROBOROS_MODEL_DEEP_SELF_REVIEW). An
+    // row synthesized from OUROBOROS_MODEL_DEEP_SELF_REVIEW). An
     // UNTOUCHED synthesized or empty placeholder (`materialized: false`) is
     // OMITTED: the runtime then synthesizes the identical row, and an
     // unrelated save never writes the key's value into the setting behind the
@@ -209,11 +209,12 @@ export function deepReviewMetaNotes(row) {
     return notes;
 }
 
+const DEEP_NATIVE_NOTE = 'Native inspection episode — reads the repository with host read-only tools (reads host-observed); the memory whitelist reaches it inline byte-exact';
+
 export function deepReviewDeliveryNote(row, { roster = [], rosterKnown = true, harnesses = {}, catalogKnown = true, routeStatus = true } = {}) {
-    // The deep-review row's ONE difference from the advisory, said where the
-    // owner picks: an API MODEL here is the packed review (one large-context
-    // call carrying the Atlas + memory), not an inspection episode; only a
-    // configured subagent on an API model runs the native episode.
+    // Delivery is the same class the advisory row picks from: an API MODEL —
+    // a bare route or a configured subagent — runs the bounded native
+    // inspection episode; an agent reads with its own tools in a session.
     if (row?.subagent_id) {
         const ref = (roster || []).find((item) => String(item.subagent_id || '') === String(row.subagent_id || ''));
         if (!ref) {
@@ -223,12 +224,12 @@ export function deepReviewDeliveryNote(row, { roster = [], rosterKnown = true, h
         }
         return ref.route?.kind === ROUTE_KIND_SESSION
             ? 'Agent session — reads the repository with its own tools (reads not host-observed); the memory whitelist reaches it inline byte-exact'
-            : 'Native inspection episode — reads the repository with host read-only tools (reads host-observed); the memory whitelist reaches it inline byte-exact';
+            : DEEP_NATIVE_NOTE;
     }
     if (row?.route?.kind === ROUTE_KIND_SESSION) {
         return `${capabilityBadge(row, harnesses, { catalogKnown, routeStatus })} — reads not host-observed`;
     }
-    return 'One packed review — the repository Atlas plus the full memory whitelist in a single large-context call (the advisory’s API model runs an inspection episode instead)';
+    return DEEP_NATIVE_NOTE;
 }
 
 // ---------------------------------------------------------------------------
@@ -729,9 +730,11 @@ export function renderReviewerSlotsSection() {
                     <h4 class="reviewer-slots-heading">Scope slots <span class="muted" id="reviewer-scope-limit" title="The scope pool's real width"></span></h4>
                     <button type="button" class="btn btn-default" id="btn-add-scope-slot">Add scope slot</button>
                 </div>
-                <div class="settings-inline-note">An agent row reads the repository with its own read-only tools instead of
-                    being handed one assembled pack. Its verdict is authoritative once that agent's context window is
-                    confirmed at 200K or more; Ouroboros does not attest which files the agent opened.</div>
+                <div class="settings-inline-note">Every scope row reads the repository itself instead of being handed one
+                    assembled pack. An API model runs a bounded inspection episode with host read-only tools, and
+                    Ouroboros records which sources it read. An agent reads with its own tools; those reads are
+                    recovered from the harness run journal when it records them, and disclosed as unobserved when it
+                    does not. Read coverage is diagnostic and does not invalidate the review.</div>
                 <div id="reviewer-scope-rows" class="reviewer-slot-rows"></div>
             </div>
             <div class="reviewer-slots-group">
@@ -748,11 +751,11 @@ export function renderReviewerSlotsSection() {
                 <details class="settings-subsection">
                 <summary>How whole-system review works</summary>
                 <div class="settings-inline-note settings-subsection-body">
-                    Who runs <code>/review</code>, the whole-system review against BIBLE.md. An API model here
-                    receives ONE packed review — the repository Atlas plus the full memory whitelist in a single
-                    large-context call (unlike the advisory, whose API model runs an inspection episode). A
-                    configured subagent on an API model reads the repository itself in a native
-                    inspection episode with host-observed reads; an agent on your subscription reads it in its
+                    Who runs <code>/review</code>, the whole-system review against BIBLE.md. Delivery is the same
+                    as the advisory's: an API model here — a model you name or a configured subagent — reads the
+                    repository itself in a bounded native
+                    inspection episode with host-observed reads, core rules supplied inline and reference books available on demand; an
+                    agent on your subscription reads it in its
                     own session (reads not host-observed). Either way the memory whitelist reaches the reviewer
                     inline byte-exact — memory is never receipt-checked. The row's effort outranks the Behavior-tab deep
                     self-review effort; every report starts with a provenance header naming the delivery.

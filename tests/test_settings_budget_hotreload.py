@@ -332,7 +332,6 @@ def test_context_mode_env_and_disk_owner_semantics(monkeypatch, tmp_path):
     import os
 
     import ouroboros.config as cfg
-    from ouroboros.tools import scope_review as sr
 
     settings_path = tmp_path / "settings.json"
     monkeypatch.setattr(cfg, "SETTINGS_PATH", settings_path)
@@ -348,7 +347,6 @@ def test_context_mode_env_and_disk_owner_semantics(monkeypatch, tmp_path):
     cfg.apply_settings_to_env(cfg.load_settings())
     assert cfg.get_context_mode() == "low"
     assert cfg.get_owner_context_mode() == "max"
-    assert sr._scope_review_skipped_in_low_context() is False
 
     # Explicit forwarded false: benchmark/operator owner Low.
     clear_pair()
@@ -357,7 +355,6 @@ def test_context_mode_env_and_disk_owner_semantics(monkeypatch, tmp_path):
     cfg.apply_settings_to_env(cfg.load_settings())
     assert cfg.get_context_mode() == "low"
     assert cfg.get_owner_context_mode() == "low"
-    assert sr._scope_review_skipped_in_low_context() is True
 
     # Explicit persisted Low + false remains owner Low after projection.
     settings_path.write_text(json.dumps({

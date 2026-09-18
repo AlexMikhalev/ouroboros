@@ -73,3 +73,22 @@ def test_execution_receipt_checks_actor_delivery(configured, actor):
     if not actor:
         assert mismatches == ["dispatch_subagent_id_mismatch:triad:t:critic->absent"]
     assert receipt["subagent_id"] == (actor or None)
+
+
+@pytest.mark.parametrize("kind, actor, refuses", [
+    ("agent_session", "", False), ("api_chat", "critic", False), ("api_chat", "", True),
+])
+def test_bare_scope_does_not_create_a_packet_size_refusal(configured, monkeypatch, kind, actor, refuses):
+    from ouroboros.review_substrate import scope_reviewer_slots
+
+    triad = ({"slot_id": "t", "subagent_id": actor} if actor else
+             {"slot_id": "t", "route": {"kind": kind, "target_id":
+                 "codex=test" if kind == "agent_session" else "openrouter::openai/test"}})
+    monkeypatch.setenv("OUROBOROS_REVIEWER_SLOTS", json.dumps({
+        "triad": [triad], "scope": [{"slot_id": "s", "route": {
+            "kind": "api_chat", "target_id": "openrouter::openai/test"}}],
+    }))
+    frozen = runner._freeze_contributor_slots(runner._resolved_review_config())
+    assert scope_reviewer_slots()[0].retrieves
+    assert runner._diff_size_refusal(SimpleNamespace(contributor=True), frozen, 500001, 500000) is refuses
+    assert runner._diff_size_refusal(SimpleNamespace(contributor=False), frozen, 500001, 500000)

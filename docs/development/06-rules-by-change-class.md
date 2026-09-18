@@ -58,7 +58,7 @@ Enforcement: `tests/test_protected_artifacts_policy.py` and `tests/test_acceptan
 
 ### Devtools isolation
 
-`devtools/` is tracked operator code outside runtime package discovery and the runtime import graph (ARCHITECTURE §1 "Devtools boundary"): runtime modules, `server.py`, web modules and build scripts must not import it. Touched devtool files receive normal triad/scope review; unrelated files may remain manifest-only in broad Atlas packs so operator code does not drown core review. Generated outputs live in an explicit external root, never in `repo/` or live `data/`; domain-specific architecture and methodology live beside the devtool, not in core governance docs. No automated import guard — review-only (triad/scope review of touched devtool files).
+`devtools/` is tracked operator code outside runtime package discovery and the runtime import graph (ARCHITECTURE §1 "Devtools boundary"): runtime modules, `server.py`, web modules and build scripts must not import it. Touched devtool files receive normal triad/scope review; unrelated files reach the scope reviewer as index rows it may open on demand, so operator code does not drown core review. Generated outputs live in an explicit external root, never in `repo/` or live `data/`; domain-specific architecture and methodology live beside the devtool, not in core governance docs. No automated import guard — review-only (triad/scope review of touched devtool files).
 
 ### Live E2E stand (`devtools/e2e_live/`)
 
@@ -449,6 +449,9 @@ are review-only. The imperatives:
 - Models, actors and reviewers share source/model/account controls: preserve
   exact pins on ordinary save/reload and on catalog failure; a source's
   credential harness comes from its metadata, never an assumed equal name.
+  Delivery follows the row's surface and reference, not its model or account:
+  every scope and deep-review row retrieves, a referenced API reviewer keeps
+  native inspection, and model/account edits never silently turn it into a packet.
 - One capability, one section: the task-actor story lives in Agents →
   Available subagents (`web/modules/subagents_settings.js`), editing one
   canonical `OUROBOROS_SUBAGENTS` object (list-level Enabled, at most ten

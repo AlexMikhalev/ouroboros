@@ -174,15 +174,6 @@ def test_review_state_keeps_the_durable_store():
     assert defined.isdisjoint(_MOVED_OWNERS)
 
 
-def test_review_state_leaves_are_review_stack_members():
-    from ouroboros.tools.review_context_atlas import _REVIEW_STACK_PATHS, _is_force_include
-
-    for module in _LEAVES:
-        rel = pathlib.Path(module.__file__).relative_to(REPO).as_posix()
-        assert rel in _REVIEW_STACK_PATHS, rel
-        assert _is_force_include(rel), rel
-
-
 def test_review_state_extraction_size_bounds_have_meaningful_headroom():
     counts = {
         module.__name__: len(
