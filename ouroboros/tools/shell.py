@@ -43,6 +43,7 @@ from ouroboros.tools import shell_audit as _shell_audit
 from ouroboros.tools.deliverables_shell import lexical_user_files_block_reason  # noqa: F401
 from ouroboros.tools.shell_audit import (
     _UNDECLARED_OUTPUTS_MARKER,
+    _disclose_output_audit_failure,
     _masked_green_disclosure,
     _mentioned_user_file_outputs_without_declaration,
     _presence_allows_user_output,  # noqa: F401
@@ -412,6 +413,7 @@ def _run_shell(
     # Two clocks (D2-1): EPOCH feeds the st_mtime audit; MONOTONIC feeds durations.
     _command_start_epoch = time.time()
     _command_start_ts = time.monotonic()
+    res = None
     try:
         if _executor_can_run_cwd(ctx, pathlib.Path(work_dir)):
             res = executor_execute(ctx, cmd, pathlib.Path(work_dir), timeout_sec,
@@ -449,14 +451,16 @@ def _run_shell(
                 mutation_root=repo_root,
                 source_tool="run_command",
             )
-        undeclared_user_outputs = _mentioned_user_file_outputs_without_declaration(
-            ctx,
-            cmd,
-            outputs,
-            scratch_abs=scratch_abs,
-            command_start_ts=_command_start_epoch,
-            cwd=work_dir,
-        )
+        audit_error = ""
+        try:
+            undeclared_user_outputs = _mentioned_user_file_outputs_without_declaration(
+                ctx, cmd, outputs, scratch_abs=scratch_abs,
+                command_start_ts=_command_start_epoch, cwd=work_dir,
+            )
+        except Exception as exc:
+            # The child already finished. This observational failure must not
+            # reach the spawn-error handler and overwrite its measured facts.
+            undeclared_user_outputs, audit_error = [], type(exc).__name__
         if undeclared_user_outputs:
             # Declaration NUDGE, not a failure — see _UNDECLARED_OUTPUTS_MARKER.
             text = (
@@ -514,12 +518,14 @@ def _run_shell(
                 + f"{_format_process_output(res.stdout or '', res.stderr or '')}"
                 + artifact_note
             )
-            return _masked_green_disclosure(ctx, _publish_process_result(ctx, "ARTIFACT_OUTPUT_ERROR", text, exit_code=0, shell_regex_auto_corrected=regex_autocorrected), cmd)
+            result = _masked_green_disclosure(ctx, _publish_process_result(ctx, "ARTIFACT_OUTPUT_ERROR", text, exit_code=0, shell_regex_auto_corrected=regex_autocorrected), cmd)
+            return _disclose_output_audit_failure(ctx, result, audit_error)
         executor_note = ""
         if getattr(res, "backend_trace", None):
             executor_note = "\n\nEXECUTOR_TRACE:\n" + json.dumps(res.backend_trace, ensure_ascii=False, indent=2)
         text = autocorrect_note + f"{_describe_returncode(0, cwd=work_dir, binding=binding)}\n{_format_process_output(res.stdout or '', res.stderr or '')}{artifact_note}{audit_note}{scratch_note}{executor_note}"
-        return _masked_green_disclosure(ctx, _publish_process_result(ctx, "SHELL_REGEX_AUTO_CORRECTED" if regex_autocorrected else "OK", text, exit_code=0, artifact_registered=bool(artifact_registered and not artifact_failed), shell_regex_auto_corrected=regex_autocorrected), cmd)
+        result = _masked_green_disclosure(ctx, _publish_process_result(ctx, "SHELL_REGEX_AUTO_CORRECTED" if regex_autocorrected else "OK", text, exit_code=0, artifact_registered=bool(artifact_registered and not artifact_failed), shell_regex_auto_corrected=regex_autocorrected), cmd)
+        return _disclose_output_audit_failure(ctx, result, audit_error)
     except subprocess.TimeoutExpired:
         _publish_unfinished_process_facts(ctx, _command_start_ts, timed_out=True)
         # Timeout-created scratch still needs its exclusion fingerprint.
@@ -533,9 +539,10 @@ def _run_shell(
             f"(up to the per-call ceiling) — and preserve a best-effort deliverable before the task deadline."
         )
     except Exception as e:
-        _publish_unfinished_process_facts(ctx, _command_start_ts, spawn_error=e)
+        if res is None:
+            _publish_unfinished_process_facts(ctx, _command_start_ts, spawn_error=e)
         _record_scratch_fingerprints(ctx, scratch_abs)
-        if isinstance(e, FileNotFoundError) and len(cmd) == 1:
+        if res is None and isinstance(e, FileNotFoundError) and len(cmd) == 1:
             return (
                 "⚠️ SHELL_ARG_ERROR: the sole cmd element was treated as ONE executable name, "
                 "and that executable was not found. Pass the program and each argument as "
@@ -645,14 +652,14 @@ def _run_script(
     # a script that writes an undeclared deliverable and then FAILS (raise/SystemExit/
     # timeout) still leaves that file on disk, so a `⚠️` result does NOT mean "no
     # deliverable to declare" — surface both the error and the output-guard note.
-    undeclared_user_outputs = _mentioned_user_file_outputs_without_declaration(
-        ctx,
-        [interp, "-c", body],
-        outputs,
-        scratch_abs=_scratch_abs_body,
-        command_start_ts=_body_start_epoch,
-        cwd=resolved_workdir,
-    )
+    audit_error = ""
+    try:
+        undeclared_user_outputs = _mentioned_user_file_outputs_without_declaration(
+            ctx, [interp, "-c", body], outputs, scratch_abs=_scratch_abs_body,
+            command_start_ts=_body_start_epoch, cwd=resolved_workdir,
+        )
+    except Exception as exc:
+        undeclared_user_outputs, audit_error = [], type(exc).__name__
     audit_note = ""
     if undeclared_user_outputs:
         # Same declaration NUDGE class as run_command's — see _UNDECLARED_OUTPUTS_MARKER.
@@ -661,7 +668,8 @@ def _run_script(
             + ", ".join(undeclared_user_outputs)
             + ". Re-run with outputs=[...] or write the canonical deliverable via root=artifact_store."
         )
-    return _wrap_run_script_process_result(ctx, result, audit_note, script_path)
+    result = _wrap_run_script_process_result(ctx, result, audit_note, script_path)
+    return _disclose_output_audit_failure(ctx, result, audit_error)
 
 
 def get_tools() -> List[ToolEntry]:

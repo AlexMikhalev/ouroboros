@@ -439,8 +439,13 @@ def _integrate_delegated_patch(
                                                   paths=paths, orphan=bool(orphan_of))
         except Exception as exc:
             return f"⚠️ INTEGRATE_DELEGATED_APPLY_UNCONFIRMED: {type(exc).__name__}: {exc}. Retain this run; no replacement was started."
-    if paths is not None:
-        return "⚠️ TOOL_ARG_ERROR (integrate_delegated_patch): paths selects engine directory results only."
+    # Directory selections have their own semantics. On whole-capture paths,
+    # an explicitly empty list asks for no filter, exactly as omission does.
+    empty_paths = type(paths) is list and not paths
+    if paths is not None and not empty_paths:
+        return ("⚠️ TOOL_ARG_ERROR (integrate_delegated_patch): nonempty paths selects engine "
+                "directory results only. Omit paths or use [] for the complete Git/skill capture.")
+    selection_note = "\npaths=[] selects the complete captured result, as when paths is omitted." if empty_paths else ""
     if entry.patch_apply_pending and acknowledge_ambiguous:
         _resolve_acknowledged_intent(drive, entry)
     snapshot_key = entry.snapshot_id or entry.run_id
@@ -465,8 +470,8 @@ def _integrate_delegated_patch(
 
         return integrate_payload_patch(
             ctx, drive=drive, entry=entry, rid=rid, decision=decision,
-            reason=reason, cap_dir=cap_dir, manifest=manifest, patch_path=patch_path) + (f"\n{orphan_note.rstrip()}" if orphan_note else "")
-    return _integrate_git_capture(ctx, entry, decision, reason, manifest, cap_dir, orphan_of)
+            reason=reason, cap_dir=cap_dir, manifest=manifest, patch_path=patch_path) + (f"\n{orphan_note.rstrip()}" if orphan_note else "") + selection_note
+    return _integrate_git_capture(ctx, entry, decision, reason, manifest, cap_dir, orphan_of) + selection_note
 
 
 def _integrate_git_capture(ctx, entry, decision, reason, manifest, cap_dir, orphan_of):
