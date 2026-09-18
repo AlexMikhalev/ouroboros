@@ -904,8 +904,12 @@ def test_a_collection_while_a_released_slot_runs_keeps_the_settled_roster(tmp_pa
         assert all(entered[slot.slot_id].wait(10) for slot in slots)
         release["s1"].set()
         release["s2"].set()
-        while len(progress) < 2 and time.time() < deadline:
+        def first_two_settled():
+            return all(any(f"[{slot_id}]: finished;" in line and "state=settled" in line
+                           for line in progress) for slot_id in ("s1", "s2"))
+        while not first_two_settled() and time.time() < deadline:
             time.sleep(0.01)
+        assert first_two_settled(), progress
         assert _mailbox_entries(tmp_path, request.task_id) == []  # s3 is still running
         request.reconcile_only, request.drain_deadline = True, time.monotonic()
         collected = custody.run_custodied_review_slots(**kwargs)

@@ -134,7 +134,11 @@ Run roots are append-only outside `repo/` and live `data/`; the focused contract
   registered as artifacts, adopted only with a declaration-time sha through the
   SSOT `artifacts.record_task_scratch`, and excluded from the workspace patch
   via `.scratch_manifest.json`; the guard verifies candidates post-exec by
-  stat, so a path mention is not a write. Never overload one for the other.
+  stat, so a path mention is not a write. Invalid prose-like paths yield no finding;
+  a failed whole audit is a separate diagnostic, never a replacement for completed
+  process output, exit/signal/timeout or runtime facts. Preserve genuine undeclared
+  findings and declared-output registration failures. Never overload one channel
+  for the other.
 - cwd: an omitted cwd selects `active_workspace`; a light direct task that
   needs writable scratch selects `task_drive` explicitly; a long-running
   service in light uses an explicit external/task/artifact cwd, and its
@@ -631,7 +635,10 @@ and what enforces each.
   a successful, positive never-dispatched release; unknown or dispatched claims stay
   charged.
 - Resource refusals wait inside the live call, before helper catch-all blocks, on the
-  existing task owner, mailbox, clocks and settings writer — no parked rounds,
+  existing task owner, mailbox, clocks and settings writer. Reprepare from canonical
+  messages, not the prior caption/off send copy; retain original images and apply
+  the selected route's image policy anew while preserving typed native reset and
+  its live turn slot. No parked rounds,
   compensation processes or replay of completed tools/reviews (ARCHITECTURE §6 "Quota
   and auth waits"). Typed errors cross the tracked image child intact; the shared
   waiting card keeps its revision fences and accepted/applied/saved distinction, and a
@@ -688,37 +695,32 @@ and what enforces each.
 - Runtime notices after the first user/assistant/tool turn are `[SYSTEM NOTICE]` user
   notices, not new `role=system` messages; `LLMClient` demotes non-leading system
   messages at the provider boundary.
-- **Cache-friendliness invariant.** Byte-stable governance and task contracts precede
-  mutable evidence; never put timestamps, hashes, counters or task identity in a stable
-  cached prefix — they fragment provider caches while conveying no stable policy.
-  Builders declare bare breakpoints (`review_substrate.assert_cache_breakpoint_cap`
-  keeps the review builders at four or fewer; `tests/test_review_prompt_caching.py`);
-  only `LLMClient._normalize_payload_cache_ttl` finalizes the wire payload; no provider
-  hops, body rerouting or generic cache/retry framework. A wrap-up call keeps schemas,
-  the server-web flag and `tool_choice` identical to the working round and instructs in
-  text (a tool-less variant rebuilds the whole prefix; a `tool_choice` change rebuilds
-  the messages tier). `context_fit.seal_task_transcript` owns the single message-side
-  breakpoint — the task message until the rolling tool-result seal qualifies, migrated
-  in the same call — preserved on the direct-Anthropic lane by
-  `_anthropic_blocks_from_content` and on OpenRouter by `supports_message_cache_control`,
-  pinned by `tests/test_review_prompt_caching.py` (ARCHITECTURE §6 "Context fitting,
-  retry, and compaction"). The subscription transport carries one install-scoped cache
-  affinity (`llm_claudexor.cache_key_for_model`: one Codex `prompt_cache_key`, hence one
-  `session_id`, per data root and model, shared by every task, child and consciousness
-  cycle — Codex reuses a prefix across conversations only under the same session;
-  ARCHITECTURE §6 "Caller-owned subscription model calls"); API-compatible lanes keep
-  prefix-derived session identity. A consciousness wake-up shares an owner turn's
-  byte-identical schema array and system prefix, so what the level or wake reason
-  changes lives only in the wake's user message and the dynamic tail; its model slot
-  (the owner's `consciousness` role, when set) decides which cache it lands in. Between
-  sends of one execution, only compaction may rewrite the transcript; other breaks
-  discard OpenAI-family caches (`prompt_prefix_break`; ARCHITECTURE §6 "Task lifecycle"). `_append_or_merge_user_content` never merges into acceptance
-  observations. Other content merges only if `unsent_in_previous_send` proves the
-  tail absent from the last observed send; without a slot or observation, append.
-  Observation follows a usable ordinary response, not every physical send; image
-  eviction is unchanged. Pin plain/multipart content and real local/GigaChat builders
-  (`tests/test_transcript_prefix.py` on `run_llm_loop`,
-  `tests/test_transcript_provider_shapes.py`); CHECKLISTS item 22 (`cache_friendliness`).
+- **Cache-friendliness invariant.** Keep stable governance/task contracts before
+  mutable evidence; timestamps, hashes, counters and task IDs never belong in a
+  cached prefix. Builders place bare breakpoints (four at most in review,
+  `review_substrate.assert_cache_breakpoint_cap`); only
+  `LLMClient._normalize_payload_cache_ttl` finalizes them. Preserve existing
+  provider hints and recovery; do not add a generic cache/retry framework.
+  Wrap-up calls keep schemas, server-web flag and `tool_choice` unchanged and
+  instruct in text, because removing tools or changing tool choice rebuilds
+  cached input. Preserve `context_fit.seal_task_transcript`'s single message
+  marker as it moves between task and tool result; direct Anthropic and
+  OpenRouter keep their supported wire markers. OpenRouter's derived identity
+  excludes cache/host metadata, preserving real task/model differences and
+  explicit affinity. Claudexor's `cache_key_for_model` is shared per install/model
+  across tasks, children and wakes: Codex reuses cross-conversation prefixes
+  only under the same session. Other API routes retain their prefix identity.
+  A wake shares an owner turn's schemas/governance; autonomy and wake reason
+  stay in its user message/tail, and its configured consciousness model selects
+  the cache. Within one execution, only compaction intentionally rewrites sent
+  history (`prompt_prefix_break`). Never merge acceptance observations; merge
+  another tail only when `unsent_in_previous_send` proves it was unsent,
+  otherwise append. Observe usable ordinary responses, not every physical
+  send; image eviction is unchanged. Mechanisms: ARCHITECTURE §6 "Context fitting,
+  retry, and compaction" / "Task lifecycle" / "Caller-owned subscription model
+  calls". Enforce with `tests/test_review_prompt_caching.py`,
+  `tests/test_transcript_prefix.py` (real Main loop, plain/multipart) and
+  `tests/test_transcript_provider_shapes.py` (local/GigaChat); CHECKLISTS item 22.
 - Provider fallback is disabled only for a SEALED reasoning artifact
   (`ouroboros/reasoning_artifacts.py::transcript_has_sealed_reasoning`) — only a sealed
   artifact is bound to the endpoint that minted it; readable reasoning stays

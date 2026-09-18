@@ -19,6 +19,24 @@ from ouroboros.llm_attempt import _VALID_CACHE_TTLS
 from ouroboros.provider_models import normalize_model_identity
 
 
+def reset_native_messages(messages: list, route: dict, *, source: str, model: str) -> tuple[list, list]:
+    """Apply an already-authorized account reset without replacing source content."""
+    changed = []
+    prepared = copy.deepcopy(messages)
+    for message in prepared:
+        native = message.get("nativeContinuation")
+        if not isinstance(native, dict):
+            continue
+        old = native.get("route") or {}
+        if (route.get("source") == old.get("source") == source
+                and route.get("model") in (None, model)
+                and any(route.get(key) and old.get(key) and route[key] != old[key]
+                        for key in ("credentialProfileId", "accountFingerprint"))):
+            changed.append({"old_route": old, "new_route": route})
+            message.pop("nativeContinuation")
+    return prepared, changed
+
+
 
 
 class _MessageShapingMixin:
