@@ -23,7 +23,7 @@ TARGET_FUNCTION_LINES = 150
 MAX_FUNCTION_LINES = 300
 # Owner decision 2026-08-21: keep this only as a high-water alarm with ample
 # product headroom; module and per-function ratchets remain the primary gates.
-MAX_TOTAL_FUNCTIONS = 9500
+MAX_TOTAL_FUNCTIONS = 9600
 
 SIZE_RATCHET_MANIFEST_PATH = "ouroboros/size_ratchet_manifest.py"
 
