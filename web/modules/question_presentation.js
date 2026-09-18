@@ -1,4 +1,4 @@
-// Read-only presentation of one owner question, shared by the Main pointer and the
+// Read-only presentation of one owner question, shared by the Main row and the
 // quiz card header. Task liveness and answerability are separate facts: a status
 // leads with one word that answers "is there an unanswered question for me?" and
 // keeps the lifecycle context after it. The Python pointer fallback
@@ -37,9 +37,7 @@ export function questionPresentation(row = {}) {
     const { waiting, resumed } = waitFacts(row);
     const key = !QUIZ_LIFECYCLE.includes(state) ? 'unknown' : state !== 'open' ? state
         : waiting ? 'waiting' : resumed ? 'resumed' : 'open';
-    const action = state === 'answered' ? 'View answer'
-        : ANSWERABLE_QUIZ_STATES.includes(state) ? 'Answer question' : 'View question';
-    return { status: STATUS[key], action };
+    return { status: STATUS[key] };
 }
 
 // A cut that saves fewer characters than its own marker is pure damage: such text stays whole.

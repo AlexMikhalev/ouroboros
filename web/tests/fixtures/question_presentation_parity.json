@@ -10,8 +10,7 @@
    "quiz_state": "open",
    "wait_for_answer": true
   },
-  "status": "Waiting for your answer",
-  "action": "Answer question"
+  "status": "Waiting for your answer"
  },
  {
   "case": "live wait record",
@@ -27,8 +26,7 @@
    "owner_wait_state": "waiting",
    "wait_for_answer": true
   },
-  "status": "Waiting for your answer",
-  "action": "Answer question"
+  "status": "Waiting for your answer"
  },
  {
   "case": "resumed by ordinary owner input",
@@ -44,8 +42,7 @@
    "owner_wait_state": "resumed",
    "wait_for_answer": true
   },
-  "status": "Unanswered · the task continued; an answer is still accepted",
-  "action": "Answer question"
+  "status": "Unanswered · the task continued; an answer is still accepted"
  },
  {
   "case": "resumed on its own bound",
@@ -63,8 +60,7 @@
    "owner_wait_resume_reason": "timeout",
    "wait_ended_at": "2026-09-16T00:01:00Z"
   },
-  "status": "Unanswered · the task continued; an answer is still accepted",
-  "action": "Answer question"
+  "status": "Unanswered · the task continued; an answer is still accepted"
  },
  {
   "case": "the task moved on to a newer wait",
@@ -81,8 +77,7 @@
    "owner_wait_state": "resumed",
    "wait_for_answer": true
   },
-  "status": "Unanswered · the task continued; an answer is still accepted",
-  "action": "Answer question"
+  "status": "Unanswered · the task continued; an answer is still accepted"
  },
  {
   "case": "open without any wait evidence",
@@ -93,8 +88,7 @@
   "row": {
    "quiz_state": "open"
   },
-  "status": "Unanswered · an answer is still accepted",
-  "action": "Answer question"
+  "status": "Unanswered · an answer is still accepted"
  },
  {
   "case": "answered while the record still says waiting",
@@ -112,8 +106,7 @@
    "answered_index": 0,
    "comment": "Keep it."
   },
-  "status": "You answered",
-  "action": "View answer"
+  "status": "You answered"
  },
  {
   "case": "task finished, card still answerable",
@@ -124,8 +117,7 @@
   "row": {
    "quiz_state": "expired_terminal"
   },
-  "status": "Unanswered · the task finished; a late answer is accepted as your message",
-  "action": "Answer question"
+  "status": "Unanswered · the task finished; a late answer is accepted as your message"
  },
  {
   "case": "replaced",
@@ -136,8 +128,7 @@
   "row": {
    "quiz_state": "superseded"
   },
-  "status": "Replaced by a newer question",
-  "action": "View question"
+  "status": "Replaced by a newer question"
  },
  {
   "case": "source unavailable",
@@ -148,7 +139,6 @@
    "source_status": "unavailable",
    "wait_for_answer": true
   },
-  "status": "Status unavailable",
-  "action": "View question"
+  "status": "Status unavailable"
  }
 ]

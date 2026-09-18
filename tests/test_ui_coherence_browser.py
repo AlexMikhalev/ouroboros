@@ -366,6 +366,9 @@ def test_question_rows_burst_answer_from_main_navigation_and_reload(subscription
             'asked_at': '2026-09-16T00:01:00Z'},
         'passed': {'state': 'open', 'question': 'Which figure format keeps the appendix small?', 'options': ['PNG', 'WebP'],
             'assumption': 'WebP at quality 82', 'recommended_index': 1, 'asked_at': '2026-09-16T00:02:00Z'},
+        # The longest status sentence, a long Project name and a dated time on one line.
+        'finished': {'state': 'expired_terminal', 'question': 'Should the archive keep the raw instrument logs?',
+            'options': ['Keep them', 'Drop them'], 'wait_for_answer': True, 'asked_at': '2026-09-16T00:02:30Z'},
         'waiting': {'state': 'open', 'wait_for_answer': True, 'recommended_index': 0, 'asked_at': '2026-09-16T00:03:00Z',
             'question': 'Third of three. The **licence** of the external dataset forbids redistribution, so the archive '
                         'can either ship without it and link to the source, or wait for written permission, which the '
@@ -407,15 +410,17 @@ def test_question_rows_burst_answer_from_main_navigation_and_reload(subscription
     page.route('**/api/chat/history*', history)
     open_app(ui)
     rows = page.locator('#chat-messages .chat-bubble.project-question')
-    rows.nth(3).wait_for()
-    assert rows.evaluate_all("els => els.map(el => el.dataset.questionMode)") == ['row', 'row', 'row', 'card']
+    rows.nth(4).wait_for()
+    assert rows.evaluate_all("els => els.map(el => el.dataset.questionMode)") == ['row', 'row', 'row', 'row', 'card']
     comment = blocks['exact-question']['comment']
     first = rows.nth(0).locator('.project-question-pointer')
     first.get_by_text('You answered:', exact=True).wait_for()
     first.get_by_text('Keep the primary source — ' + comment, exact=True).wait_for()
     rows.nth(2).get_by_text('Unanswered · continuing with:', exact=True).wait_for()
     rows.nth(2).get_by_text('WebP at quality 82', exact=True).wait_for()
-    card = rows.nth(3)
+    finished = rows.nth(3).locator('.project-question-status-text')
+    assert finished.inner_text() == 'Unanswered · the task finished; a late answer is accepted as your message'
+    card = rows.nth(4)
     card.get_by_text('Waiting for your answer', exact=True).wait_for()
     assert 'usually grant within a week' in card.locator('.chat-quiz-question').inner_text(), 'the waiting card shows the whole question'
     assert card.locator('.chat-quiz-question strong').inner_text() == 'licence'
@@ -432,7 +437,9 @@ def test_question_rows_burst_answer_from_main_navigation_and_reload(subscription
             page: document.documentElement.scrollWidth-innerWidth,
             right: Math.max(...rows.map(el=>box(el).right)), viewport: innerWidth,
             sourceCut: source.scrollWidth>source.clientWidth, arrow: box(go).width>0 && box(go).right<=innerWidth,
-            previewOneLine: rows.slice(0,3).every(el=>box(el.querySelector('.project-question-preview')).height<28),
+            previewOneLine: lines.every(el=>box(el.querySelector('.project-question-preview')).height<28),
+            previewWidth: Math.min(...lines.map(el=>Math.round(box(el.querySelector('.project-question-preview')).width))),
+            statusCut: (()=>{const el=rows[3].querySelector('.project-question-status-text'); return el.scrollWidth>el.clientWidth;})(),
             statusSizes: [...new Set(rows.map(el=>getComputedStyle(el.querySelector('.project-question-status, .chat-live-project-status')).fontSize))]};
     }""")
     print(json.dumps({'question_rows_geometry': geometry, 'viewport': [width, height]}))
@@ -441,7 +448,11 @@ def test_question_rows_burst_answer_from_main_navigation_and_reload(subscription
     assert geometry['previewOneLine'] and geometry['arrow'] and geometry['sourceCut'], geometry
     assert geometry['statusSizes'] == ['12px'], geometry
     # One line on a wide column; status and answer over question, project and time on a phone.
+    # The longest status yields with an ellipsis instead of pushing the time onto another line,
+    # and the question keeps a readable share of a phone line beside a dated time.
     assert geometry['heights'][1] <= (48 if width >= 980 else 90), geometry
+    assert geometry['heights'][3] <= (48 if width >= 980 else 90) and geometry['statusCut'], geometry
+    assert geometry['previewWidth'] >= 70, geometry
     assert geometry['burst'] <= (150 if width >= 980 else 300), geometry
     # The line is one keyboard control with a visible ring.
     first.focus()
@@ -453,9 +464,9 @@ def test_question_rows_burst_answer_from_main_navigation_and_reload(subscription
     assert first.evaluate("el=>getComputedStyle(el).outlineStyle") != 'none'
     # One touch answers the waiting question from Main: one request, and the card folds into a line.
     card.locator('.chat-quiz-option').nth(1).click()
-    page.locator('#chat-messages .chat-bubble.project-question[data-question-mode="row"]').nth(3).wait_for()
-    rows.nth(3).locator('.project-question-answer').get_by_text('Wait for written permission', exact=True).wait_for()
-    assert rows.nth(3).locator('.chat-quiz-option').count() == 0
+    page.locator('#chat-messages .chat-bubble.project-question[data-question-mode="row"]').nth(4).wait_for()
+    rows.nth(4).locator('.project-question-answer').get_by_text('Wait for written permission', exact=True).wait_for()
+    assert rows.nth(4).locator('.chat-quiz-option').count() == 0
     assert [(sent['decision_id'], sent['option_index'], 'comment' in sent) for sent in decisions] == [
         ('quiz:proof-task:waiting', 1, False)]
     setup_browser.capture(page, f'question-rows-answered-{width}')
@@ -468,8 +479,8 @@ def test_question_rows_burst_answer_from_main_navigation_and_reload(subscription
     assert quiz.locator('.chat-quiz-comment').count() == 0
     setup_browser.capture(page, f'question-exact-navigation-{width}')
     page.reload()
-    rows.nth(3).get_by_text('Wait for written permission', exact=True).wait_for()
-    assert rows.evaluate_all("els => els.map(el => el.dataset.questionMode)") == ['row', 'row', 'row', 'row']
+    rows.nth(4).get_by_text('Wait for written permission', exact=True).wait_for()
+    assert rows.evaluate_all("els => els.map(el => el.dataset.questionMode)") == ['row', 'row', 'row', 'row', 'row']
     first.click()
     quiz.get_by_text("Owner's answer: " + comment, exact=True).wait_for()
     setup_browser.capture(page, f'question-reloaded-{width}')

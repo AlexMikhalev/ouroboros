@@ -44,9 +44,9 @@ export class NodeStub {
         parent.children.splice(parent.children.indexOf(this), 0, node);
     }
     addEventListener(type, handler) { this.listeners.set(type, handler); }
-    click() {
+    click(event = {}) {
         const handler = this.listeners.get('click');
-        if (handler) handler({ target: this, detail: 0, stopPropagation() {}, preventDefault() {} });
+        if (handler) handler({ target: this, detail: 0, stopPropagation() {}, preventDefault() {}, ...event });
     }
     setAttribute(name, value) { (this.attributes ||= {})[name] = String(value); }
     getAttribute(name) { return this.attributes?.[name] ?? null; }
@@ -79,7 +79,7 @@ export function countPropertyWrites(target, key) {
     return () => writes;
 }
 
-export function fixture({ fetchImpl, renderMarkdown, onDomWrite, fetchDetail } = {}) {
+export function fixture({ fetchImpl, renderMarkdown, enhanceMarkdown, onDomWrite, fetchDetail } = {}) {
     const prior = { document: globalThis.document, crypto: globalThis.crypto, window: globalThis.window };
     globalThis.document = { createElement: (tag) => new NodeStub(tag) };
     const opened = [];
@@ -100,7 +100,7 @@ export function fixture({ fetchImpl, renderMarkdown, onDomWrite, fetchDetail } =
         },
         frameNode: (_msg, node) => node,
         renderMarkdown,
-        enhanceMarkdown: renderMarkdown ? () => {} : null,
+        enhanceMarkdown: enhanceMarkdown || (renderMarkdown ? () => {} : null),
         showToast: (text, tone) => toasts.push({ text, tone }),
         onDomWrite,
         fetchDetail,

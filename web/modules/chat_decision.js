@@ -157,7 +157,13 @@ export function createChatDecision({
             const node = document.createElement(tag); node.className = `project-question-${name}`; node.textContent = text; return node;
         };
         // Settling removes the option button the owner just pressed: focus follows to the row.
+        // A repaint that stays a card (a renamed Project, labels that arrived late) keeps the
+        // focus on the same option.
         const focused = card.contains?.(document.activeElement);
+        const focusedOption = focused ? [...card.querySelectorAll('.chat-quiz-option')].indexOf(document.activeElement) : -1;
+        // The rendered question may own charts and timers: release them before the node goes.
+        view.disposeMarkdown?.();
+        view.disposeMarkdown = null;
         [...card.children].forEach((node) => node.remove());
         bubble.dataset.questionMode = model.waiting ? 'card' : 'row';
         card.dataset.state = model.state;
@@ -177,16 +183,17 @@ export function createChatDecision({
         card.removeAttribute('role');
         card.removeAttribute('tabindex');
         const question = part('question chat-quiz-question', '', 'div');
-        if (renderMarkdown) question.innerHTML = renderMarkdown(view.row.question || '');
-        else question.textContent = view.row.question || '';
+        const text = view.row.question || 'Open the original question for its text.';
+        if (renderMarkdown) question.innerHTML = renderMarkdown(text);
+        else question.textContent = text;
         const options = part('options chat-quiz-options', '', 'div');
         model.options.forEach((label, index) => {
             const button = document.createElement('button');
             button.type = 'button';
             button.className = 'chat-quiz-option';
-            const text = part('option-label chat-quiz-option-label', label);
-            if (model.recommended === index) appendRecommendedBadge(text);
-            button.append(text);
+            const name = part('option-label chat-quiz-option-label', label);
+            if (model.recommended === index) appendRecommendedBadge(name);
+            button.append(name);
             // Main takes a ready option only; own words, option details and the stake stay in Project.
             button.addEventListener('click', () => submitAnswer(card,
                 { taskId: view.row.task_id, quizId: view.row.quiz_id, options: model.options }, index, '',
@@ -201,7 +208,8 @@ export function createChatDecision({
         body.append(question, options, foot);
         card.append(renderProjectChip({ name: model.project, status: questionPresentation(view.row).status,
             onClick: () => openQuestion(view.row) }), body);
-        if (enhanceMarkdown && renderMarkdown) enhanceMarkdown(question);
+        if (enhanceMarkdown && renderMarkdown) view.disposeMarkdown = enhanceMarkdown(question);
+        if (focusedOption >= 0) card.querySelectorAll('.chat-quiz-option')[focusedOption]?.focus?.({ preventScroll: true });
     }
 
     function buildQuestionPointer(msg) {
@@ -218,9 +226,9 @@ export function createChatDecision({
         bubble.classList.add('project-question');
         bubble.querySelector('.sender')?.remove();
         const view = { row: { ...msg }, card, bubble, time: bubble.querySelector('.msg-time') };
-        // The whole line is one control whose text stays selectable; inside the waiting card
-        // the nested buttons own their clicks, and the rest of the card does nothing.
-        bindContentButton(card, () => { if (bubble.dataset.questionMode === 'row') openQuestion(view.row); });
+        // The whole line is one control whose text stays selectable. The waiting card is not
+        // one: its buttons own their clicks and the rest of it lets every event through.
+        bindContentButton(card, () => openQuestion(view.row), () => bubble.dataset.questionMode === 'row');
         pointerViews.set(key, view);
         updatePointer(view, msg);
         return bubble;

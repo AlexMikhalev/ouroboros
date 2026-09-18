@@ -178,3 +178,38 @@ test('a lost race settles into the winner\'s record, and a failed attempt leaves
         assert.equal(pointer.querySelector('.chat-quiz-answer'), null, 'the Project card\'s record line never lands in a Main row');
     } finally { fx.restore(); }
 });
+
+test('a folding card releases what its rendered question owned, and an empty question still reads', async () => {
+    const released = [];
+    const fx = fixture({ renderMarkdown: (text) => `<p>${text}</p>`,
+        enhanceMarkdown: (node) => () => released.push(node) });
+    try {
+        const pointer = fx.decision.buildQuestionPointer(WAITING);
+        const rendered = pointer.querySelector('.chat-quiz-question');
+        assert.equal(rendered.innerHTML, '<p>Merge now?</p>');
+        options(pointer)[0].click();
+        await turn();
+        assert.deepEqual([mode(pointer), released], ['row', [rendered]], 'charts and timers of the removed question are released');
+        const blank = fx.decision.buildQuestionPointer({ ...WAITING, quiz_id: 'blank', question: '' });
+        assert.equal(blank.querySelector('.chat-quiz-question').innerHTML, '<p>Open the original question for its text.</p>');
+    } finally { fx.restore(); }
+});
+
+test('only the line is a control: a waiting card lets clicks through and keeps focus across a repaint', () => {
+    const fx = fixture();
+    try {
+        let stopped = 0;
+        const event = { stopPropagation: () => { stopped += 1; } };
+        const waiting = fx.decision.buildQuestionPointer(WAITING);
+        waiting.click(event);
+        assert.deepEqual([stopped, fx.opened.length], [0, 0], 'document-level handlers still see a click on the card');
+        // A renamed Project repaints the card; the option the owner was on keeps the focus.
+        options(waiting)[1].focus();
+        fx.decision.buildQuestionPointer({ ...WAITING, project_name: 'Storage v2' });
+        assert.equal(waiting.querySelector('.chat-live-project-name').textContent, 'Storage v2');
+        assert.equal(globalThis.document.activeElement, options(waiting)[1]);
+        const settled = fx.decision.buildQuestionPointer({ ...ROW, quiz_id: 'line', answered_index: 0 });
+        settled.click(event);
+        assert.deepEqual([stopped, fx.opened.length], [1, 1]);
+    } finally { fx.restore(); }
+});

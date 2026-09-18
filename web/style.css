@@ -310,6 +310,7 @@ body.resizing-panels { user-select: none; }
     overflow-wrap: anywhere;
 }
 
+/* === design-system:migrated-begin (chat: Project question row) === */
 /* One Main row per Project question, in the project chip's own language (docs/DESIGN.md
    "Project question row"): a line in every settled or passed state, a card with the option
    buttons only while the task waits. Consecutive rows sit closer by adjacency alone. */
@@ -346,7 +347,7 @@ body.resizing-panels { user-select: none; }
 /* The owner reads the status to act on it: meta ink, never the quieter secondary step. A long
    status sentence yields to the line; the Project card keeps it whole. */
 .project-question-status {
-    display: inline-flex; align-items: center; gap: var(--space-2); min-width: 0;
+    display: inline-flex; align-items: center; gap: var(--space-2); min-width: 0; max-width: 42ch;
     color: var(--text-meta); font-size: var(--type-meta); white-space: nowrap;
 }
 .project-question-status-text { overflow: hidden; text-overflow: ellipsis; }
@@ -379,9 +380,10 @@ body.resizing-panels { user-select: none; }
     [data-question-mode="row"] > .project-question-pointer > .project-question-source,
     [data-question-mode="row"] > .project-question-pointer > .project-question-go,
     [data-question-mode="row"] > .project-question-pointer > .msg-time { order: 3; }
-    /* The question takes what the Project and a dated time leave, so the second line never wraps. */
-    .project-question-preview { flex: 1 1 0; min-width: 4ch; font-size: var(--type-meta); }
-    .project-question-source { flex: 0 1 auto; max-width: 34%; }
+    /* The question keeps a readable share beside the Project and a dated time. */
+    .project-question-status { max-width: 100%; }
+    .project-question-preview { flex: 1 1 0; min-width: 12ch; font-size: var(--type-meta); }
+    .project-question-source { flex: 0 1 auto; max-width: 26%; }
 }
 /* The waiting card: the same chip, opened. Its head states the wait as dot + text. */
 .project-question-pointer .chat-live-project-status {
@@ -395,6 +397,7 @@ body.resizing-panels { user-select: none; }
 .project-question-body .chat-quiz-question { font-weight: 400; }
 .project-question-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
 .project-question-foot .system-message-actions { padding-block: 0; }
+/* === design-system:migrated-end === */
 
 
 /* A block that exists only for open attention (a model wait, a pending or
