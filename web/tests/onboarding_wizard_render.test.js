@@ -83,13 +83,15 @@ function inertDocument() {
 // while `body` drives it; the exact prior descriptors are restored afterwards.
 async function withWizard(bootstrap, query, body, { fetch, location } = {}) {
     const doc = inertDocument();
+    const listeners = new Map();
     const win = new Proxy({
         document: doc,
         location: location || { origin: 'http://127.0.0.1:8765', href: 'http://127.0.0.1:8765/onboarding', search: '', hash: '', pathname: '/onboarding' },
         navigator: { userAgent: 'node', platform: 'node', clipboard: { writeText: async () => {} } },
         localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
         __OURO_ONBOARDING_BOOTSTRAP__: bootstrap,
-        addEventListener() {}, removeEventListener() {},
+        addEventListener(type, listener) { listeners.set(listener, type); },
+        removeEventListener(type, listener) { listeners.delete(listener); },
         setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0, clearInterval() {},
         requestAnimationFrame: (fn) => setTimeout(fn, 0), getComputedStyle: () => ({}),
         matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
@@ -99,6 +101,7 @@ async function withWizard(bootstrap, query, body, { fetch, location } = {}) {
         get(obj, prop) { return prop in obj ? obj[prop] : undefined; },
         set(obj, prop, value) { obj[prop] = value; return true; },
     });
+    doc.defaultView = win;
     // Node 22+ exposes some Web IDL globals (`navigator`) as getter-only
     // properties: a plain assignment throws before the wizard is imported.
     // Install every stand-in through defineProperty and restore the exact
@@ -125,6 +128,9 @@ async function withWizard(bootstrap, query, body, { fetch, location } = {}) {
         await import(`../modules/onboarding_wizard.js?${query}`);
         await body({ doc, win });
     } finally {
+        for (const [listener, type] of listeners) {
+            if (type === 'pagehide') listener({ persisted: false });
+        }
         for (const [name, descriptor] of Object.entries(installed)) {
             if (descriptor) Object.defineProperty(globalThis, name, descriptor);
             else delete globalThis[name];

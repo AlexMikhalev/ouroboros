@@ -26,8 +26,9 @@ def subscription_ui():
     if os.environ.get("OUROBOROS_RUN_UI_SMOKE") != "1":
         pytest.skip("Set OUROBOROS_RUN_UI_SMOKE=1 to run the browser flow")
     playwright = pytest.importorskip("playwright.sync_api")
-    bootstrap = json.loads((WEB / "tests/fixtures/onboarding_bootstrap.json").read_text())
-    fixture = json.loads((WEB / "tests/fixtures/subscription_setup.json").read_text())
+    bootstrap = json.loads((WEB / "tests/fixtures/onboarding_bootstrap.json").read_text(encoding="utf-8"))
+    bootstrap["freshInstall"] = True
+    fixture = json.loads((WEB / "tests/fixtures/subscription_setup.json").read_text(encoding="utf-8"))
     fixture['status']['quota'] = [{
         'subject': {'harness': 'codex', 'subject_id': 'personal'}, 'freshness': 'fresh',
         'constraints': [{'id': 'window', 'used_ratio': 0.38,
@@ -52,7 +53,7 @@ def subscription_ui():
 
         def do_GET(self):
             if self.path == "/onboarding":
-                body = (WEB / "onboarding_template.html").read_text().replace(
+                body = (WEB / "onboarding_template.html").read_text(encoding="utf-8").replace(
                     "__ONBOARDING_BOOTSTRAP__", json.dumps(bootstrap))
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html")
@@ -71,6 +72,12 @@ def subscription_ui():
             payload = request.post_data_json or {}
             posts.append((path, payload))
             if path == "/api/onboarding/subagents/preview":
+                if backend.get("preview_error") and not payload.get("skipSubscriptionPresets"):
+                    route.fulfill(status=503, content_type="application/json", body=json.dumps({
+                        "ok": False, "error": "Automatic assignments unavailable.", "code": "models_unavailable",
+                        "detail": backend["preview_error"], "can_skip": True, "saved": False,
+                    }))
+                    return
                 body = copy.deepcopy(fixture["preview"])
                 if not payload.get('subscriptionsConnected'):
                     body['model_settings'] = {key: payload.get(key, '') for key in body['model_settings']}
@@ -80,6 +87,20 @@ def subscription_ui():
                         'scope': [{'slot_id': 'scope_1', 'route': {'kind': 'api_chat', 'target_id': payload.get('OUROBOROS_MODEL')}}],
                         'advisory': {'enabled': True, 'route': {'kind': 'api_chat', 'target_id': payload.get('OUROBOROS_MODEL')}},
                     }
+                if payload.get("skipSubscriptionPresets"):
+                    body["model_settings"] = {key: payload.get(key, '') for key in body["model_settings"]}
+                    body["available_subagents"] = payload.get("OUROBOROS_SUBAGENTS") or {"enabled": True, "items": []}
+                    slots = json.loads(payload["OUROBOROS_REVIEWER_SLOTS"]) if payload.get("OUROBOROS_REVIEWER_SLOTS") else body["reviewer_slots"]
+                    for value in slots.values():
+                        for row in value if isinstance(value, list) else [value]:
+                            if not isinstance(row, dict):
+                                continue
+                            row.pop("subagent_id", None)
+                            row["route"] = {"kind": "api_chat", "target_id": payload["OUROBOROS_MODEL"]}
+                            pin = payload.get("OUROBOROS_MODEL_ACCOUNTS", {}).get("main")
+                            if pin:
+                                row["route"]["profile_id"] = pin
+                    body["reviewer_slots"] = slots
                 body["reviewer_slots"] = json.dumps(body["reviewer_slots"])
             elif path == "/api/onboarding/complete":
                 assert isinstance(payload["OUROBOROS_REVIEWER_SLOTS"], str)
@@ -98,7 +119,10 @@ def subscription_ui():
         elif path == "/api/reviewer-slots":
             body = fixture["preview"]["reviewer_slots"]
         elif path == "/api/model-catalog":
-            body = copy.deepcopy(fixture["catalog"])
+            body = copy.deepcopy(backend.get("catalog_response", fixture["catalog"]))
+            if backend.get("catalog_status"):
+                route.fulfill(status=backend["catalog_status"], content_type="application/json", body=json.dumps(body))
+                return
             profile = parse_qs(urlparse(request.url).query).get("credential_profile_id", [""])[0]
             if profile == "work":
                 body["items"][0].update(credential_profile_id="work", max_context_window=500000)
@@ -132,7 +156,7 @@ def subscription_ui():
                 page.on("pageerror", lambda error: page_errors.append(str(error)))
                 yield {"page": page, "url": f"http://127.0.0.1:{server.server_port}",
                        "posts": posts, "reads": reads, "fixture": fixture,
-                       "settings": settings, "errors": page_errors, "backend": backend}
+                       "settings": settings, "errors": page_errors, "backend": backend, "bootstrap": bootstrap}
                 assert not page_errors
             finally:
                 browser.close()
@@ -328,3 +352,121 @@ def test_cursor_only_does_not_claim_model_access_and_api_only_finishes(subscript
     assert body['OPENAI_API_KEY'] == 'fixture-api-credential'
     assert body['OUROBOROS_MODEL'].startswith('openai::')
     assert not body['subscriptionsConnected']
+
+
+@pytest.mark.parametrize('edit_after_recovery', [False, True])
+def test_failed_preview_allows_manual_main_and_visible_reviewer_recovery_before_save(subscription_ui, edit_after_recovery):
+    ui, page = subscription_ui, subscription_ui['page']
+    ui['backend']['preview_error'] = 'The engine listed no models for codex.'
+    page.goto(ui['url'] + '/onboarding')
+    page.wait_for_selector('#next-btn:not([disabled])')
+    page.wait_for_function("() => document.querySelector('#onboarding-access-note').textContent.includes('listed no models')")
+    assert not any(path == '/api/onboarding/complete' for path, _ in ui['posts'])
+    page.set_viewport_size({'width': 390, 'height': 844})
+    assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+    capture(page, 'accounts-preview-failure-narrow')
+    page.set_viewport_size({'width': 1360, 'height': 900})
+    page.click('#next-btn')
+    main = page.locator('[data-model-role="main"]')
+    assert main.locator('[data-model-role-model]').input_value() == ''
+    assert page.locator('#next-btn').is_disabled()
+    main.locator('[data-model-role-source]').select_option('subscription:codex')
+    main.locator('[data-model-role-model]').fill('owner-main')
+    main.locator('[data-model-role-account]').select_option('personal')
+    for _ in range(3):
+        page.click('#next-btn')
+    page.wait_for_selector('.summary-card')
+    page.wait_for_selector('#skip-presets-btn:not([hidden])')
+    page.click('#skip-presets-btn')
+    page.wait_for_function("() => document.querySelector('.wizard-inline-note')?.textContent.includes('Reviewers were assigned to Main')")
+    assert not any(path == '/api/onboarding/complete' for path, _ in ui['posts']), 'Recovery is a preview, not a write'
+    for label in ['Triad review', 'Scope review', 'Advisory review', 'Deep self-review']:
+        row = page.locator('.summary-kv').filter(has=page.get_by_text(label, exact=True))
+        assert 'claudexor::codex=owner-main' in row.inner_text()
+    capture(page, 'manual-main-reviewer-recovery')
+    if edit_after_recovery:
+        page.click('#back-btn')
+        page.click('#back-btn')
+        page.locator('[data-collapse="reviewers"] > summary').click()
+        page.locator('[data-deep-review-api-model]').fill('owner-deep')
+        page.click('#next-btn')
+        page.click('#next-btn')
+        page.wait_for_function("() => !document.querySelector('.wizard-error').textContent")
+        deep = page.locator('.summary-kv').filter(has=page.get_by_text('Deep self-review', exact=True))
+        assert 'owner-deep' in deep.inner_text()
+    page.click('#next-btn')
+    page.wait_for_url(ui['url'] + '/')
+    bodies = [body for path, body in ui['posts'] if path == '/api/onboarding/complete']
+    assert len(bodies) == 1 and bodies[0]['skipSubscriptionPresets'] is True
+    assert bodies[0]['OUROBOROS_MODEL'] == 'claudexor::codex=owner-main'
+    for kind, value in json.loads(bodies[0]['OUROBOROS_REVIEWER_SLOTS']).items():
+        for row in value if isinstance(value, list) else [value]:
+            if isinstance(row, dict):
+                expected = 'owner-deep' if edit_after_recovery and kind == 'deep_review' else 'owner-main'
+                assert row['route']['target_id'] == f'claudexor::codex={expected}'
+                assert row['route']['profile_id'] == 'personal'
+
+
+@pytest.mark.parametrize('http_status', [200, 500])
+def test_accounts_catalog_failure_is_visible_and_retry_keeps_the_draft(subscription_ui, http_status):
+    ui, page = subscription_ui, subscription_ui['page']
+    ui['backend'].update(preview_error='Agent model discovery unavailable.', catalog_status=http_status,
+                         catalog_response={'error': 'Raw model service unavailable.'})
+    page.goto(ui['url'] + '/onboarding')
+    page.wait_for_function("() => document.querySelector('#onboarding-access-note').textContent.includes('Raw model service unavailable')")
+    assert page.locator('#next-btn').is_disabled()
+    page.locator('[data-collapse="api-access"] > summary').click()
+    page.locator('#openai-key').fill('owner-draft-credential')
+    ui['backend'].pop('catalog_status')
+    ui['backend'].pop('catalog_response')
+    page.click('#onboarding-access-retry')
+    page.wait_for_selector('#quick-start-btn:not([hidden])')
+    assert page.locator('#openai-key').input_value() == 'owner-draft-credential'
+    assert page.locator('[data-collapse="api-access"]').evaluate('(el) => el.open')
+    assert not any(path == '/api/onboarding/complete' for path, _ in ui['posts'])
+
+
+@pytest.mark.parametrize('fresh_install', [False, True])
+def test_declared_source_with_failed_inventory_preserves_stored_or_owner_authored_defaults(subscription_ui, fresh_install):
+    ui, page = subscription_ui, subscription_ui['page']
+    ui['bootstrap']['freshInstall'] = fresh_install
+    initial = ui['bootstrap']['initialState']['mainModel']
+    ui['backend'].update(preview_error='Agent inventory unavailable.', catalog_response={
+        'items': [], 'model_sources': ui['fixture']['catalog']['model_sources'],
+        'read_state': 'partial', 'errors': [{'error': 'Account model inventory unavailable.'}],
+    })
+    page.goto(ui['url'] + '/onboarding')
+    page.wait_for_selector('#next-btn:not([disabled])')
+    page.click('#next-btn')
+    main = page.locator('[data-model-role="main"]')
+    if fresh_install:
+        assert main.locator('[data-model-role-model]').input_value() == ''
+        main.locator('[data-model-role-model]').fill(initial)
+        page.click('#back-btn')
+        page.click('#onboarding-access-retry')
+        page.wait_for_selector('#onboarding-access-retry:not([disabled])')
+        page.click('#next-btn')
+    assert main.locator('[data-model-role-model]').input_value() == initial
+    assert page.locator('#next-btn').is_disabled()
+    assert 'Main uses OpenRouter' in page.locator('.wizard-error').inner_text()
+    main.locator('[data-model-role-source]').select_option('subscription:codex')
+    main.locator('[data-model-role-model]').fill('typed-without-inventory')
+    assert page.locator('#next-btn').is_enabled()
+
+
+def test_late_catalog_does_not_restore_access_after_the_account_disconnects(subscription_ui):
+    ui, page = subscription_ui, subscription_ui['page']
+    ui['backend']['preview_error'] = 'Agent inventory unavailable.'
+    held = []
+    page.route('**/api/model-catalog', lambda route: held.append(route))
+    page.goto(ui['url'] + '/onboarding')
+    page.wait_for_function("() => document.querySelector('#onboarding-access-note').textContent.includes('Checking model sources')")
+    assert held
+    ui['fixture']['status']['profiles']['profiles'] = []
+    page.evaluate("async () => (await import('/static/modules/claudexor_status_store.js')).claudexorStatus.refresh()")
+    page.wait_for_function("() => !document.querySelector('[data-agent-family=codex]').textContent.includes('Connected')")
+    for route in held:
+        route.fulfill(content_type='application/json', body=json.dumps(ui['fixture']['catalog']))
+    page.unroute('**/api/model-catalog')
+    assert page.locator('#next-btn').is_disabled()
+    assert page.locator('#quick-start-btn').is_hidden()

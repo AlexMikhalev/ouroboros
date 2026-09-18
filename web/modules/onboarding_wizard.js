@@ -15,7 +15,9 @@ import { availableSubagentsEditorHost } from './subagents_settings.js';
 import { adoptSubagentRoster, applyReviewerSlotsDraft, collectReviewerSlots,
     destroyReviewerSlots, initReviewerSlots, renderReviewerSlotsSection, setReviewerProcessingPreference,
     setReviewerSourceContext } from './reviewer_slots.js';
-import { PROCESSING_PREFERENCE_KEY, MODEL_PROCESSING_PREFERENCES_KEY, processingIntentLabel } from './route_editor_primitives.js';
+import { PROCESSING_PREFERENCE_KEY, MODEL_PROCESSING_PREFERENCES_KEY, processingIntentLabel,
+    configuredApiProviders, apiProviderLabel } from './route_editor_primitives.js';
+import { MODEL_CATALOG_TIMEOUT_MS, mergeModelCatalog, catalogReadState, summarizeReadErrors } from './settings_catalog.js';
 import { accountRows } from './claudexor_status_store.js';
 import { accountRowFacts } from './harness_accounts.js';
 
@@ -88,6 +90,8 @@ import { accountRowFacts } from './harness_accounts.js';
         agentsConnected: [],
         availableSubagents: null,
         skipSubscriptionPresets: false,
+        preparingRecovery: false,
+        recoveryPrepared: false,
         presetFailure: null,
         // Set when completion answered 503 `settings_save_timeout`: the save is
         // still running in the server, so the wizard offers "Check status"
@@ -101,6 +105,9 @@ import { accountRowFacts } from './harness_accounts.js';
     let localStatusPollStarted = false;
     let agentsStep = null;
     let modelSources = [];
+    let modelCatalog = {};
+    let catalogRequest = null;
+    let disposed = false;
     let catalogGeneration = 0;
     const stepScrollPositions = new Map();
     const modelRoles = createModelRolesEditor({ hostId: 'onboarding-model-roles', onChange: (settings) => {
@@ -135,13 +142,54 @@ import { accountRowFacts } from './harness_accounts.js';
         return modelSources.some((source) => state.agentsConnected.includes(source.credentialHarness));
     }
 
-    function applySetupPreview(response) {
+    function clearFreshSubscriptionDefaults() {
+        if (bootstrap.freshInstall !== true || state.modelsDirty || !hasModelSubscription() || hasApiAccess() || hasLocalModel()) return;
+        const defaults = MODEL_DEFAULTS.openrouter || {};
+        for (const [key, name] of [['mainModel', 'main'], ['lightModel', 'light'], ['fallbackModel', 'fallback']]) {
+            if (state[key] === defaults[name]) state[key] = '';
+        }
+    }
+
+    function refreshModelSources() {
+        const connected = state.agentsConnected.join(',');
+        if (catalogRequest?.connected === connected) return catalogRequest.promise;
+        catalogRequest?.controller.abort();
+        const generation = ++catalogGeneration;
+        if (!connected) { catalogRequest = null; return Promise.resolve(); }
+        const controller = new AbortController();
+        const request = { connected, controller };
+        catalogRequest = request;
+        const timer = setTimeout(() => controller.abort(), MODEL_CATALOG_TIMEOUT_MS);
+        request.promise = fetchJson('/api/model-catalog', { cache: 'no-store', signal: controller.signal })
+            .then((catalog) => {
+                if (!catalog || typeof catalog !== 'object') throw new Error('Model catalog response is unreadable.');
+                if (generation !== catalogGeneration) return;
+                modelCatalog = mergeModelCatalog(modelCatalog, catalog);
+            }).catch((error) => {
+                if (generation !== catalogGeneration) return;
+                modelCatalog = mergeModelCatalog(modelCatalog, { read_state: 'transport',
+                    errors: [{ error: error.name === 'AbortError' ? 'Model catalog request timed out.' : error.message }] });
+            }).finally(() => {
+                clearTimeout(timer);
+                if (generation !== catalogGeneration) return;
+                catalogRequest = null;
+                modelSources = (modelCatalog.model_sources || []).filter((source) => state.agentsConnected.includes(source.credentialHarness));
+                clearFreshSubscriptionDefaults();
+                modelRoles.adoptCatalog({ ...modelCatalog, model_sources: modelSources });
+                refreshSummary();
+            });
+        syncCurrentStepActionState();
+        return request.promise;
+    }
+
+    function applySetupPreview(response, { replaceReviewers = false } = {}) {
+        if (!state.skipSubscriptionPresets) state.presetFailure = null;
         if (!state.modelsDirty && response.model_settings) {
             const previous = JSON.stringify(draftSettings());
             adoptModelSettings(response.model_settings);
             if (JSON.stringify(draftSettings()) !== previous) loadModelRoles();
         }
-        if (!state.reviewerDraftDirty && response.reviewer_slots) {
+        if (response.reviewer_slots && (replaceReviewers || (!state.reviewerDraftDirty && !state.skipSubscriptionPresets))) {
             state.reviewerSlots = typeof response.reviewer_slots === 'string'
                 ? JSON.parse(response.reviewer_slots) : response.reviewer_slots;
             if (state.currentStep === 'review_mode') {
@@ -150,15 +198,7 @@ import { accountRowFacts } from './harness_accounts.js';
             }
         }
         modelRoles.adoptCatalog(response);
-        if (state.agentsConnected.length) {
-            const generation = ++catalogGeneration;
-            void fetchJson('/api/model-catalog', { cache: 'no-store' }).then((catalog) => {
-                if (generation !== catalogGeneration) return;
-                modelSources = catalog.model_sources || [];
-                modelRoles.adoptCatalog(catalog);
-                refreshSummary();
-            }).catch(() => {}); // An unread catalog never invents a model source.
-        }
+        if (state.agentsConnected.length) void refreshModelSources();
         refreshSummary();
     }
 
@@ -259,7 +299,7 @@ import { accountRowFacts } from './harness_accounts.js';
         }
 
     function nextButtonShouldBeDisabled() {
-        if (state.saving) return true;
+        if (state.saving || state.preparingRecovery) return true;
         if (state.currentStep === 'summary') return false;
         return Boolean(validateCurrentStep());
     }
@@ -270,7 +310,30 @@ import { accountRowFacts } from './harness_accounts.js';
         const quick = document.getElementById('quick-start-btn');
         if (quick) quick.hidden = !hasModelSubscription();
         const error = root.querySelector('.wizard-error');
-        if (error) error.textContent = state.error;
+        if (error) error.textContent = state.error || (['accounts', 'models'].includes(state.currentStep) ? validateCurrentStep() : '');
+        const note = document.getElementById('onboarding-access-note');
+        if (note) {
+            const read = catalogReadState(modelCatalog);
+            const messages = [catalogRequest ? 'Checking model sources…' : '',
+                !catalogRequest && read !== 'ok' && state.agentsConnected.length
+                    ? `Model discovery is ${read === 'not_read' ? 'not available yet' : read}. ${summarizeReadErrors(modelCatalog.errors)} Your choices are kept.` : '',
+                agentsStep?.previewError ? `Automatic assignments could not be prepared: ${agentsStep.previewError} Retry, or Continue to choose models yourself.` : ''];
+            note.textContent = messages.filter(Boolean).join(' ');
+            note.hidden = !note.textContent;
+        }
+        const retry = document.getElementById('onboarding-access-retry');
+        if (retry) {
+            retry.hidden = !state.agentsConnected.length && !agentsStep?.previewError;
+            retry.disabled = Boolean(catalogRequest || agentsStep?.previewPending);
+        }
+        const recover = document.getElementById('skip-presets-btn');
+        if (recover) {
+            recover.hidden = !shouldOfferPresetSkip();
+            recover.disabled = state.saving || state.preparingRecovery;
+            recover.textContent = state.preparingRecovery ? 'Preparing reviewer assignments…' : 'Use Main for reviewers';
+        }
+        const back = document.getElementById('back-btn');
+        if (back) back.disabled = state.saving || state.preparingRecovery || STEP_ORDER.indexOf(state.currentStep) === 0;
     }
 
     function markStepEdited() {
@@ -328,6 +391,7 @@ import { accountRowFacts } from './harness_accounts.js';
 
     function applyModelDefaults(force) {
         if (state.modelsDirty && !force) return;
+        if (!force && bootstrap.freshInstall !== true && MODEL_SLOTS.some((slot) => trim(INITIAL_STATE[slot.stateKey]))) return;
         if (hasModelSubscription()) return;
         const defaults = MODEL_DEFAULTS[activeProviderProfile()] || MODEL_DEFAULTS.openrouter || {};
         state.mainModel = defaults.main || '';
@@ -350,7 +414,9 @@ import { accountRowFacts } from './harness_accounts.js';
             if (shortKey) return `${shortKey[0].label.replace(' API Key', '')} API key looks too short.`;
             const hasRemote = keyValues.some(([field, value]) => value && !['OPENAI_COMPATIBLE_API_KEY', 'MINIMAX_REGION'].includes(field.settingKey));
             if (!hasRemote && !localSource && !hasModelSubscription()) {
-                return 'Connect Codex, enter an API key, or choose a local model before continuing.';
+                return state.agentsConnected.length
+                    ? 'A Main model source has not been confirmed. Retry discovery, add an API key, or choose a local model.'
+                    : 'Connect Codex, enter an API key, or choose a local model before continuing.';
             }
             if (trim(state.minimaxRegion) && !['global_en', 'cn_zh'].includes(trim(state.minimaxRegion).toLowerCase())) {
                 return 'MiniMax Region must be global_en or cn_zh.';
@@ -375,6 +441,13 @@ import { accountRowFacts } from './harness_accounts.js';
         // already carry a default. Don't force the owner to fill every slot.
         if (!trim(state.mainModel)) {
             return 'Confirm the Main model before starting Ouroboros.';
+        }
+        const { source } = parseModelSource(state.mainModel);
+        const supported = source.startsWith('subscription:')
+            ? modelSources.some((entry) => entry.id === source.slice(13) && state.agentsConnected.includes(entry.credentialHarness))
+            : configuredApiProviders(draftSettings(), PROVIDER_PROFILES).some((entry) => entry.id === source);
+        if (!supported && !(hasLocalModel() && state.localRoutingMode === 'all')) {
+            return `Main uses ${source.startsWith('subscription:') ? source.slice(13) : apiProviderLabel(source, PROVIDER_PROFILES)}, which has no configured access in this setup.`;
         }
         return state.currentStep === 'models' ? modelRoles.validate() : '';
     }
@@ -601,10 +674,9 @@ import { accountRowFacts } from './harness_accounts.js';
     }
 
     function shouldOfferPresetSkip() {
-        // The endpoint's own escape hatch, surfaced exactly when it can change
-        // the outcome: something is connected to move onto, or a completion
-        // attempt already refused the preset and said the skip is available.
-        return state.agentsConnected.length > 0 || Boolean(state.presetFailure);
+        // Explicit recovery from failed assignments; healthy presets keep their normal path.
+        return !state.recoveryPrepared && (state.skipSubscriptionPresets || Boolean(state.presetFailure)
+            || (state.agentsConnected.length > 0 && Boolean(agentsStep?.previewError)));
     }
 
         function providerKeyField({ id, label, placeholder, value, note, inputType }) {
@@ -725,12 +797,15 @@ import { accountRowFacts } from './harness_accounts.js';
                 isVisible: () => ['accounts', 'agents', 'models', 'budget'].includes(state.currentStep),
                 onChange: (connected) => {
                     state.agentsConnected = connected;
+                    void refreshModelSources();
                     syncCurrentStepActionState();
                 },
-                previewPayload: draftSettings,
+                previewPayload: () => ({ ...draftSettings(), ...(state.reviewerSlots
+                    ? { OUROBOROS_REVIEWER_SLOTS: JSON.stringify(state.reviewerSlots) } : {}) }),
                 providerProfiles: PROVIDER_PROFILES,
                 onSubagentsChange: (setting) => { state.availableSubagents = setting; adoptSubagentRoster({ OUROBOROS_SUBAGENTS: setting }); },
                 onSetupPreview: applySetupPreview,
+                onPreviewStatus: syncCurrentStepActionState,
                 onStatus: () => {
                     const quota = document.getElementById('wizard-subscription-quota');
                     if (quota && state.currentStep === 'budget') quota.innerHTML = subscriptionQuotaHtml();
@@ -750,6 +825,8 @@ import { accountRowFacts } from './harness_accounts.js';
                 <p class="step-copy">Start with Codex, or connect API access. You can add more accounts any time.</p>
             </div></div>
             ${agentsStepHtml({ compact: true, showRoster: false })}
+            <div id="onboarding-access-note" class="wizard-inline-note" role="status" hidden></div>
+            <button id="onboarding-access-retry" class="btn btn-default" type="button" hidden>Retry model discovery</button>
             <details class="wizard-collapse" data-collapse="api-access" ${state.apiAccessOpen || hasApiAccess() ? 'open' : ''}>
                 <summary><span>API keys and local models</span><span class="selection-badge">${hasApiAccess() ? 'Configured' : 'Optional'}</span></summary>
                 <div class="wizard-collapse-body">${renderProvidersStep({ embedded: true })}</div>
@@ -830,7 +907,7 @@ import { accountRowFacts } from './harness_accounts.js';
                     <p class="step-copy">${escapeHtml(STEP_META.review_mode.copy)}</p>
                 </div>
                 </div>
-                <div class="wizard-inline-note">${state.reviewerSlots ? 'Your reviewer assignments are ready below. You can change every reviewer, including deep self-review.' : 'Reviewer assignments will be prepared from your connected access.'}</div>
+                <div class="wizard-inline-note">${state.reviewerSlots ? 'Your reviewer assignments are ready below. You can change every reviewer, including deep self-review.' : agentsStep?.previewError ? 'Automatic reviewer assignments are unavailable. Configure them below, or use Main on the summary.' : 'Reviewer assignments will be prepared from your connected access.'}</div>
                 <details class="wizard-collapse" data-collapse="reviewers" ${state.reviewersOpen ? 'open' : ''}><summary>Reviewers</summary>
                     <div class="wizard-collapse-body">${renderReviewerSlotsSection()}</div>
                 </details>
@@ -917,6 +994,7 @@ import { accountRowFacts } from './harness_accounts.js';
                 </div>
             </div>
             <div class="summary-card">${summaryRowsHtml()}</div>
+            ${state.recoveryPrepared ? '<div class="wizard-inline-note">Automatic subscription presets were skipped. Reviewers were assigned to Main. Check the assignments above, then Start Ouroboros to save this draft. Later changes in Settings are manual.</div>' : ''}
         `;
     }
 
@@ -994,10 +1072,10 @@ import { accountRowFacts } from './harness_accounts.js';
                     <div class="wizard-footer">
                         <div class="footer-copy">${escapeHtml(meta.footer)}</div>
                         <div class="footer-actions">
-                            <button class="btn btn-secondary" id="back-btn" type="button" ${index === 0 || state.saving ? 'disabled' : ''}>Back</button>
+                            <button class="btn btn-secondary" id="back-btn" type="button" ${index === 0 || state.saving || state.preparingRecovery ? 'disabled' : ''}>Back</button>
                             ${state.currentStep === 'accounts' ? `<button class="btn btn-secondary" id="quick-start-btn" type="button" ${hasModelSubscription() ? '' : 'hidden'}>Review &amp; start</button>` : ''}
-                            ${state.currentStep === 'summary' && shouldOfferPresetSkip() ? `
-                                <button class="btn btn-secondary" id="skip-presets-btn" type="button" ${state.saving ? 'disabled' : ''}>Finish without subscription presets</button>
+                            ${state.currentStep === 'summary' ? `
+                                <button class="btn btn-secondary" id="skip-presets-btn" type="button" ${shouldOfferPresetSkip() ? '' : 'hidden'} ${state.saving || state.preparingRecovery ? 'disabled' : ''}>Use Main for reviewers</button>
                             ` : ''}
                             <button class="btn ${saveUnknown ? 'btn-secondary' : 'btn-primary'}" id="next-btn" type="button" ${nextButtonShouldBeDisabled() ? 'disabled' : ''}>${escapeHtml(nextLabel)}</button>
                             ${saveUnknown ? `
@@ -1268,19 +1346,8 @@ import { accountRowFacts } from './harness_accounts.js';
             syncCurrentStepActionState();
         }
 
-    // --- Completion ---------------------------------------------------------
-    // ONE completion path on every host (D-8). The wizard runs against a live
-    // gateway everywhere, so it posts the single atomic transaction and then
-    // tells whichever shell embeds this page that setup is done; only the
-    // announcement differs (embedded frame / desktop setup window / browser tab).
-    //
-    // The two legacy fallbacks are GONE. `POST /api/settings` + `POST
-    // /api/owner/runtime-mode` was the pair whose failure between the two writes
-    // left providers saved and runtime mode not, and the desktop `save_wizard`
-    // bridge existed only to author the fresh-install `light` safety coverage
-    // that the endpoint now authors itself, on its own server-side freshness
-    // proof. Keeping either as a "not deployed yet" hedge meant a first run
-    // could still silently take a non-atomic path.
+    // One atomic completion on every host (D-8); only shell notification differs.
+    // Separate settings/runtime-mode writes could leave a half-saved installation.
 
     const ONBOARDING_COMPLETE_ENDPOINT = '/api/onboarding/complete';
 
@@ -1411,12 +1478,24 @@ import { accountRowFacts } from './harness_accounts.js';
         return 'ok';
     }
 
-    async function saveWizard({ skipPresets = false } = {}) {
-        if (state.saving) return;
-        if (skipPresets) {
-            state.skipSubscriptionPresets = true;
-            await agentsStep?.setSkipPresets(true);
-        }
+    async function prepareMainReviewers() {
+        if (state.saving || state.preparingRecovery) return;
+        const error = validateModelsStep();
+        if (error) { navigateStep('models'); state.error = error; return syncCurrentStepActionState(); }
+        state.skipSubscriptionPresets = true;
+        state.preparingRecovery = true;
+        state.error = '';
+        syncCurrentStepActionState();
+        const ready = await agentsStep?.setSkipPresets(true, { replaceReviewers: true });
+        if (disposed) return;
+        state.preparingRecovery = false;
+        state.recoveryPrepared = Boolean(ready);
+        state.error = ready ? '' : agentsStep?.previewError || 'Reviewer assignments could not be prepared. Retry before saving.';
+        render(); // Show the recovered assignments; only the next explicit Start saves.
+    }
+
+    async function saveWizard() {
+        if (state.saving || state.preparingRecovery) return;
         const providersError = validateProvidersStep();
         const modelsError = validateModelsStep();
         const reviewError = validateReviewStep();
@@ -1428,7 +1507,8 @@ import { accountRowFacts } from './harness_accounts.js';
                 ? 'Available subagents are still updating from your latest setup choices. Try Finish again in a moment.'
                 : `Available subagents could not be refreshed from your latest setup choices${agentsStep.previewError ? `: ${agentsStep.previewError}` : '.'}`)
             : '';
-        state.error = providersError || modelsError || reviewError || budgetError
+        state.error = (state.skipSubscriptionPresets && !state.recoveryPrepared ? 'Use Main for reviewers to prepare the assignments before saving.' : '')
+            || providersError || modelsError || reviewError || budgetError
             || subagentsError || previewError;
         if (state.error) return syncCurrentStepActionState();
         state.saving = true;
@@ -1484,12 +1564,17 @@ import { accountRowFacts } from './harness_accounts.js';
             else nextStep();
         });
         document.getElementById('skip-presets-btn')?.addEventListener('click', () => {
-            saveWizard({ skipPresets: true });
+            void prepareMainReviewers();
         });
         document.getElementById('check-save-btn')?.addEventListener('click', () => {
             checkSaveStatus();
         });
         document.getElementById('quick-start-btn')?.addEventListener('click', reviewAndStart);
+        document.getElementById('onboarding-access-retry')?.addEventListener('click', async () => {
+            await Promise.allSettled([agentsStep?.refreshStatus(), refreshModelSources(),
+                agentsStep?.refreshSubagentsPreview({ force: true })]);
+            if (!disposed) syncCurrentStepActionState();
+        });
         if (state.currentStep === 'accounts') { bindProvidersStep(); bindAgentsStep(); }
         if (state.currentStep === 'providers') bindProvidersStep();
         if (state.currentStep === 'agents') bindAgentsStep();
@@ -1502,6 +1587,9 @@ import { accountRowFacts } from './harness_accounts.js';
     applyModelDefaults(false);
     window.addEventListener('pagehide', (event) => {
         if (event.persisted) return;
+        disposed = true;
+        catalogGeneration += 1;
+        catalogRequest?.controller.abort();
         modelRoles.destroy();
         destroyReviewerSlots();
     });
