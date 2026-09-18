@@ -9,6 +9,15 @@ from tests import test_subscription_setup_browser as setup_browser
 pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
 subscription_ui = setup_browser.subscription_ui
 capture = setup_browser.capture
+# Every route picker offers an API lane per provider whose credential is
+# stored, so a fixture that selects one advertises that provider's key first.
+API_KEYS = {"openrouter": "OPENROUTER_API_KEY", "openai": "OPENAI_API_KEY"}
+
+
+def api_lane(ui, provider="openrouter"):
+    """Store `provider`'s key in the served settings and return its route choice."""
+    ui["settings"][API_KEYS[provider]] = "***set***"
+    return f"api:{provider}"
 
 
 @pytest.fixture
@@ -49,10 +58,7 @@ def configure_mixed(ui):
         "advisory": {"enabled": True, "route": {"kind": "api_chat", "target_id": target, "profile_id": "personal"}},
         "deep_review": {"subagent_id": "native"},
     }
-    # An actor's saved route is not provider readiness: offer OpenAI through
-    # the same configured-credential fact the real source picker reads.
-    ui["settings"].update(OPENAI_API_KEY="fixture-openai-credential",
-                          OUROBOROS_SUBAGENTS=actors, OUROBOROS_REVIEWER_SLOTS=json.dumps(slots))
+    ui["settings"].update(OUROBOROS_SUBAGENTS=actors, OUROBOROS_REVIEWER_SLOTS=json.dumps(slots))
     ui["fixture"]["preview"]["reviewer_slots"] = slots
     ui["fixture"]["catalog"]["model_sources"] = [
         {"id": "opaque-source", "label": "Codex", "credentialHarness": "codex"},
@@ -75,6 +81,7 @@ def open_agents(ui):
 
 def test_reviewer_source_roundtrip_restores_its_own_model_and_account(role_ui):
     configure_mixed(role_ui)
+    lane = api_lane(role_ui, 'openai')
     page = open_agents(role_ui)
     for selector, model_field, account_field in [
         ('[data-slot-id="triad_1"]', '[data-slot-custom-api]', '[data-slot-profile]'),
@@ -82,13 +89,15 @@ def test_reviewer_source_roundtrip_restores_its_own_model_and_account(role_ui):
     ]:
         row = page.locator(selector)
         route = row.locator('[data-slot-route], [data-advisory-route]')
-        route.select_option('api:openai')
+        route.select_option(lane)
+        # The chooser holds the model alone; the source select names the provider.
         row.locator(model_field).fill('other-choice')
         route.select_option('subscription:opaque-source')
         assert row.locator(model_field).input_value() == 'gpt-test'
         assert row.locator(account_field).input_value() == 'personal'
-        route.select_option('api:openai')
+        route.select_option(lane)
         assert row.locator(model_field).input_value() == 'other-choice'
+        assert route.input_value() == lane
         route.select_option('subscription:opaque-source')
     page.locator('[data-advisory-row]').scroll_into_view_if_needed()
     capture(page, "reviewer-source-roundtrip-restored")
@@ -96,7 +105,7 @@ def test_reviewer_source_roundtrip_restores_its_own_model_and_account(role_ui):
     with page.expect_response('**/api/reviewer-slots'):
         page.locator('#btn-reload-settings').click()
         page.get_by_role('button', name='Discard and continue', exact=True).click()
-    page.locator('[data-advisory-route]').select_option('api:openai')
+    page.locator('[data-advisory-route]').select_option(lane)
     assert page.locator('[data-advisory-api-model]').input_value() == ''
 
 
@@ -167,9 +176,10 @@ def test_subscription_accounts_roundtrip_existing_editors(role_ui, width):
 def test_source_switch_and_catalog_refresh_keep_focus_and_draft(role_ui):
     ui = role_ui
     configure_mixed(ui)
+    lane = api_lane(ui, 'openai')
     page = open_agents(ui)
     triad = page.locator('[data-slot-id="triad_1"]')
-    triad.locator('[data-slot-route]').select_option("api:openai")
+    triad.locator('[data-slot-route]').select_option(lane)
     assert triad.locator('[data-slot-profile]').count() == 0
     triad.locator('[data-slot-custom-api]').fill("openai::gpt-api")
     triad.locator('[data-slot-route]').select_option("subscription:opaque-source")

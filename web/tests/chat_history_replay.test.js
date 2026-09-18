@@ -2,6 +2,70 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mergeHistoricalTimelineItem, compareHistoryPosition } from '../modules/chat_history_replay.js';
 import { createChatHistoryPager } from '../modules/chat_history.js';
+import { updateLiveTimelineItem } from '../modules/chat_render_batch.js';
+
+test('one child lifecycle survives chronological replay and older pages without losing narration', () => {
+    const narration = 'Searching evidence. '.repeat(60) + 'COMPLETE_NARRATION_END';
+    const lifecycleKey = 'subagent-lifecycle:child';
+    const frames = [
+        { headline: 'Scheduled', phase: 'queued', dedupeKey: lifecycleKey },
+        { headline: 'Searching evidence', body: narration, dedupeKey: 'subagent-progress:child' },
+        { headline: 'Running', phase: 'working', dedupeKey: lifecycleKey },
+        { headline: 'Searching evidence', body: narration, dedupeKey: 'subagent-progress:child' },
+        { headline: 'Completed', phase: 'done', terminal: true, dedupeKey: lifecycleKey },
+    ];
+    const row = index => ({ history_id: `progress:${index}`,
+        history_position: { source: 'progress', offset: index }, ts: `2026-09-12T12:00:0${index}Z` });
+    for (const order of [[0, 1, 2, 3, 4], [4, 3, 2, 1, 0], [2, 1, 0, 4, 3]]) {
+        const record = { items: [], finished: true };
+        for (const index of order) mergeHistoricalTimelineItem(record, frames[index], row(index), String(index));
+        const status = record.items.filter(item => item.dedupeKey === lifecycleKey);
+        assert.equal(status.length, 1);
+        assert.equal(status[0].headline, 'Completed');
+        assert.equal(status[0].sourceHistoryId, 'progress:4');
+        const voices = record.items.filter(item => item.historyId);
+        assert.deepEqual(voices.map(item => item.historyId), ['progress:1', 'progress:3']);
+        assert.deepEqual(voices.map(item => item.fullBody), [narration, narration]);
+        assert.equal(record.items.length, 3);
+        const before = JSON.stringify(record.items);
+        for (const index of order) assert.equal(mergeHistoricalTimelineItem(record, frames[index], row(index), String(index)), false);
+        assert.equal(JSON.stringify(record.items), before);
+        assert.equal(record.finished, true);
+    }
+});
+
+test('an older lifecycle page cannot regress a status already updated live', () => {
+    const record = { items: [] };
+    const key = 'subagent-lifecycle:child';
+    const frame = (headline, second) => updateLiveTimelineItem(record,
+        { headline, phase: 'working', dedupeKey: key },
+        { headline, ts: `12:00:0${second}`, rawTs: `2026-09-12T12:00:0${second}Z`,
+            syntheticKey: key, inPlaceByKey: true });
+    frame('Scheduled', 0);
+    const item = record.items[0];
+    frame('Running', 3);
+    const old = { history_id: 'progress:1', history_position: { source: 'progress', offset: 1 },
+        ts: '2026-09-12T12:00:01Z' };
+    assert.equal(mergeHistoricalTimelineItem(record,
+        { headline: 'Scheduled', phase: 'queued', dedupeKey: key }, old, '12:00:01'), false);
+    assert.equal(record.items[0], item);
+    assert.equal(item.headline, 'Running');
+    assert.equal(record.items.length, 1);
+});
+
+test('equal-time child lifecycle rows use source order, not page arrival order', () => {
+    const record = { items: [] };
+    const summary = { headline: 'Running', phase: 'working', dedupeKey: 'subagent-lifecycle:child' };
+    const row = offset => ({ history_id: `progress:${offset}`, ts: '2026-09-12T12:00:00Z',
+        history_position: { source: 'progress', offset } });
+    mergeHistoricalTimelineItem(record, summary, row(2), '12:00');
+    assert.equal(mergeHistoricalTimelineItem(record, { ...summary, headline: 'Scheduled' }, row(1), '12:00'), false);
+    assert.equal(record.items[0].headline, 'Running');
+    mergeHistoricalTimelineItem(record, { ...summary, headline: 'Completed', terminal: true }, row(3), '12:00');
+    assert.equal(record.items.length, 1);
+    assert.equal(record.items[0].headline, 'Completed');
+    assert.equal(mergeHistoricalTimelineItem(record, summary, row(2), '12:00'), false);
+});
 
 test('equal-time identical narration retains physical identities in source order', () => {
     const record = { items: [], finished: true };

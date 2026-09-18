@@ -1050,11 +1050,13 @@ def test_ui_smoke_collapsed_activity_line_named_vs_unnamed(
                     assert 0.9 <= bands["running-act"]["activity"]["lines"] <= 1.2, bands
                     assert bands["unnamed-act"]["activity"]["display"] == "none", bands
                     # Useful root activity sizes naturally up to three lines; empty activity
-                    # reserves no band on either running or finished cards.
+                    # reserves no band on either running or finished cards. An uncoined turn
+                    # promotes its only note to the title, so the collapsed line stays empty
+                    # while the block still stands on that row of work.
                     _emit_ws_frame(page, {
                         "type": "chat", "role": "assistant", "is_progress": True,
-                        "chat_id": 1, "task_id": "done-empty", "suggested_name": "Quick task",
-                        "content": "", "ts": "2026-07-29T10:00:03+00:00",
+                        "chat_id": 1, "task_id": "done-empty",
+                        "content": "Quick task", "ts": "2026-07-29T10:00:03+00:00",
                     })
                     done_empty = page.locator('.chat-live-card[data-task-id="done-empty"]')
                     done_empty.wait_for(state="attached", timeout=30_000)
@@ -1313,8 +1315,11 @@ def test_ui_smoke_chat_chronology_reconnect_and_plain_answer_marker(direct_serve
                     timeout=30_000,
                 )
                 state = page.evaluate(
+                    # The paged-history control heads the list and carries no
+                    # timestamp of its own: it is chrome, not a transcript row.
                     """() => [...document.querySelector('#chat-messages').children]
                         .filter((node) => !node.classList.contains('typing-bubble')
+                            && !node.classList.contains('chat-load-older')
                             && !node.textContent.includes('Reconnected'))
                         .map((node) => ({
                             text: node.textContent,
@@ -1323,6 +1328,7 @@ def test_ui_smoke_chat_chronology_reconnect_and_plain_answer_marker(direct_serve
                             taskId: node.dataset.taskId || '',
                         }))"""
                 )
+                assert page.locator("#chat-messages > .chat-load-older").count() == 1
                 assert [item["card"] for item in state] == [
                     False, True, True, False, True, False, False,
                 ]
@@ -1725,6 +1731,8 @@ def test_ui_smoke_direct_mode_nests_subagent_child_cards(direct_server_with_data
                 assert "compared output" in expanded_text
                 assert "done" in expanded_text.lower()
                 assert "Scheduled subagent child1" not in expanded_text
+                assert "Subagent child1 running" not in expanded_text
+                assert child.locator('[data-live-line-key="terminal-subagent-lifecycle-child1"]').count() == 1
                 assert child_summary.get_attribute("aria-expanded") == "true"
                 assert child.locator("[data-live-timeline]").first.get_attribute("id")
                 assert result_toggle.get_attribute("aria-controls")
@@ -1765,9 +1773,15 @@ def test_ui_smoke_direct_mode_nests_subagent_child_cards(direct_server_with_data
                 replay_progress.locator(".chat-live-line-toggle").click()
                 assert child_activity_early in replay_progress.inner_text()
                 assert child_activity_tail in replay_progress.inner_text()
+                assert "Scheduled subagent child1" not in replay_child.inner_text()
+                assert "Subagent child1 running" not in replay_child.inner_text()
+                assert replay_child.locator('[data-live-line-key="terminal-subagent-lifecycle-child1"]').count() == 1
                 page.wait_for_timeout(900)  # cover the routine background history sync
                 assert replay_child.locator('.chat-live-line-repeat:not([hidden])').count() == 0
                 page.screenshot(path=str(data_dir.parent / "review-truth-child-reconnect.png"), full_page=True)
+                replay_progress.locator(".chat-live-line-toggle").click()
+                replay_child.scroll_into_view_if_needed()
+                page.screenshot(path=str(data_dir.parent / "lifecycle-current-status.png"), full_page=True)
                 assert page.locator(".chat-bubble.progress").count() == 0
                 assert page.locator(".chat-bubble", has_text="Final child answer should stay inside the child card.").count() == 0
 
@@ -3036,11 +3050,8 @@ def test_ui_owner_context_mode_and_scope_slot_save(direct_server_with_data):
                 assert after["context_mode_auto_low"] is False
 
                 # 2. A scope slot saves with no window question anywhere.
-                # 6.2: the scope route is a review-lane row. D-10 moved the lanes
-                # out of Models into their own Agents tab. The seeded row is
-                # already an API row, so retyping its model id is the whole edit —
-                # the grouped combobox offers `api:<provider>` values, never a
-                # bare `api`, so nothing is selected here.
+                # Select the fixture's configured provider, then edit its model;
+                # the grouped combobox uses provider-specific API choices.
                 page.click('[data-nav-page="settings"]')
                 page.wait_for_selector("#s-context-mode", state="attached", timeout=30_000)
                 page.locator('[data-settings-tab="agents"]').click()
@@ -3049,7 +3060,8 @@ def test_ui_owner_context_mode_and_scope_slot_save(direct_server_with_data):
                     '#reviewer-scope-rows .reviewer-slot-row [data-slot-route]'
                 ).first
                 scope_route.wait_for(state="visible", timeout=30_000)
-                assert str(scope_route.input_value()).startswith("api"), scope_route.input_value()
+                scope_route.select_option("api:openai-compatible")
+                assert scope_route.input_value() == "api:openai-compatible"
                 custom_input = page.locator(
                     '#reviewer-scope-rows .reviewer-slot-row [data-slot-custom-api]'
                 ).first
