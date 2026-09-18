@@ -21,13 +21,11 @@ harness exit code) and synchronizes by durable-event polling:
   respected: a third paid cycle is refused with the typed
   ``PLAN_REVIEW_CYCLES_EXHAUSTED`` result at $0 (no reviewer dispatched) plus
   the durable ``review_cycles_exhausted`` escalation event.
-* S15 — COMMIT TRIAD+SCOPE, ADVISORY enforcement class: the same red triad
-  verdict that BLOCKS a blocking install is recorded and waved through — the
-  commit lands, and the wave-through leaves the constitutional loud trace
-  (``review_advisory_override`` event + ``state/advisory_overrides.json``
-  counter + the verdicts on the durable commit-attempt row). Effect asserted BY
-  CLASS (AGENTS.md directive): S15+S16 are the same organ under the two
-  enforcement values.
+* S15 — COMMIT TRIAD+SCOPE, ADVISORY: critical feedback returns before Git
+  effects; the scripted author reads its real reference and explicitly continues
+  without another paid panel. The commit lands with a hash-bound author record,
+  original criticism and the loud ``review_advisory_override`` event/counter.
+  S15+S16 assert the same organ under both enforcement values.
 * S16 — COMMIT TRIAD+SCOPE, BLOCKING enforcement class: a critical triad FAIL
   blocks the commit (repo HEAD does not move), a byte-identical resubmission is
   refused FREE with the typed ``IDENTICAL_DIFF_REFUSED`` (no reviewer paid
@@ -526,15 +524,12 @@ def test_s14_plan_review_cycle_cap_refuses_third_paid_cycle(e2e_clone, tmp_path_
 S12_DOC = "docs/notes/system_e2e_w3a_advisory.md"
 S12_MSG = "docs: system_e2e w3a advisory-class smoke (doc-only)"
 S12_SCRIPT = [
-    {"tool": "write_file", "arguments": {
-        "root": "system_repo", "path": S12_DOC,
+    {"tool": "write_file", "arguments": {"root": "system_repo", "path": S12_DOC,
         "content": "# w3a advisory-class smoke\n\nDoc-only change for the enforcement-class pin.\n",
     }},
     {"tool": "commit_reviewed", "arguments": {
-        "commit_message": S12_MSG,
-        "paths": [S12_DOC],
-        "skip_advisory_review": True,
-        "skip_tests": True,
+        "commit_message": S12_MSG, "paths": [S12_DOC],
+        "skip_advisory_review": True, "skip_tests": True,
         "goal": "Land the advisory-class smoke note despite a scripted red triad verdict.",
         "scope": f"{S12_DOC} only.",
     }},
@@ -543,49 +538,64 @@ S12_SCRIPT = [
 
 @pytest.mark.integration
 @pytest.mark.serial
-def test_s15_advisory_class_red_verdict_recorded_and_commit_lands(
-        e2e_clone, tmp_path_factory):
+def test_s15_advisory_class_red_verdict_recorded_and_commit_lands(e2e_clone, tmp_path_factory):
     require_lane(LANE_MOCK)
     root = tmp_path_factory.mktemp("s12")
     review_script = ReviewScript({"triad_review": [W3A_TRIAD_RED] * 3})
-    stub = ScriptedStubModel(S12_SCRIPT, review_script=review_script)
+    feedback = {}
+    decision = {"disposition": "rejected", "rationale": "I inspected the missing-marker criticism; this doc-only enforcement fixture intentionally retains the note and records my decision."}
+
+    def continue_after_feedback(body):
+        try:
+            calls = {c["id"]: c["function"]["name"] for m in body["messages"] for c in m.get("tool_calls", [])}
+            message = next(m for m in reversed(body["messages"]) if m.get("role") == "tool" and calls.get(m.get("tool_call_id")) == "commit_reviewed")
+            feedback.update(json.loads(message["content"].split("\n", 1)[1]), head=_head(e2e_clone))
+            critic = feedback["review_outcome"]
+            assert feedback["head"] == head_before, "commit preceded feedback exposure"
+            if critic["status"] == "reviewing":
+                return _Again(S12_SCRIPT[1])  # collect the same custody, never a new paid panel
+            assert critic["status"] == "reviewed" and critic["phase"] == "review_only" and critic["paid"]
+            assert any(f.get("severity") == "critical" and "scripted critical finding (system_e2e w3a)" in f.get("reason", "") for f in critic["critical_findings"])
+        except (AssertionError, KeyError, ValueError, StopIteration) as exc:
+            return {"final": f"E2E_SCRIPT_ERROR: expected exposed critical commit feedback: {exc}"}
+        return {"tool": "commit_reviewed", "arguments": {**S12_SCRIPT[1]["arguments"],
+            "review_reference": feedback["review_reference"], "author_disposition": decision}}
+
+    stub = _HoldingStubModel([*S12_SCRIPT, continue_after_feedback], review_script=review_script)
     with stub:
-        settings = keyless_settings(
-            stub,
-            OUROBOROS_RUNTIME_MODE="advanced",
-            OUROBOROS_REVIEW_ENFORCEMENT="advisory",
-        )
+        settings = keyless_settings(stub, OUROBOROS_RUNTIME_MODE="advanced", OUROBOROS_REVIEW_ENFORCEMENT="advisory")
         server = start_server(e2e_clone, root, settings)
         try:
-            task_id = submit_running(
-                server, "Write the advisory-class note and land it via commit_reviewed, then finish.")
+            head_before = _head(e2e_clone)
+            task_id = submit_running(server, "Write the advisory-class note, inspect the critical feedback, explicitly choose whether to commit, then finish.")
             result = server.wait_task(task_id, timeout=600)
             assert result.get("status") == "completed", result
+            assert "E2E_SCRIPT_ERROR" not in str(result), result
             oracle = ArtifactOracle(server.data_root)
             wait_durable_result(oracle, task_id)
-
-            # The commit LANDED despite the critical triad verdicts — the
-            # advisory class waves through instead of blocking.
-            assert S12_MSG in _git_log_subjects(e2e_clone)
-
-            # The constitutional loud trace (BIBLE P3 "loud advisory"): the
-            # typed override event AND the persistent counter file.
+            assert feedback["head"] == head_before and stub.script_consumed()
+            assert _git_log_subjects(e2e_clone).count(S12_MSG) == 1
             task_drive = oracle.task_drive(task_id)
+            # Loud Advisory remains durable: the original critical cause and counter.
             overrides = task_drive.events("review_advisory_override")
             assert overrides, "no review_advisory_override event in the task drive"
             assert overrides[-1].get("block_reason") == "critical_findings", overrides[-1]
-            counter_path = task_drive.data_root / "state" / "advisory_overrides.json"
-            counter = json.loads(counter_path.read_text(encoding="utf-8"))
+            counter = json.loads((task_drive.data_root / "state" / "advisory_overrides.json").read_text(encoding="utf-8"))
             assert int(counter.get("count") or 0) >= 1, counter
-
-            # The verdicts themselves are durably recorded on the commit-attempt
-            # ledger (state/advisory_review.json attempts).
-            attempts = task_drive.advisory_review().get("attempts") or []
-            attempt_blob = json.dumps(attempts)
-            assert "scripted critical finding (system_e2e w3a)" in attempt_blob, (
-                "red triad verdicts missing from the durable commit-attempt ledger")
-
-            # Both organs actually ran on the stub.
+            # The paid critic remains intact beside a separate unpaid author commit.
+            attempts = [a for a in task_drive.advisory_review().get("attempts", []) if a.get("task_id") == task_id]
+            assert "scripted critical finding (system_e2e w3a)" in json.dumps(attempts), attempts
+            reference = feedback["review_reference"]
+            critic = next(a for a in attempts if a["attempt"] == reference["attempt"])
+            succeeded = next(a for a in attempts if a["status"] == "succeeded")
+            assert critic["status"] == "reviewed" and critic["triad_raw_results"] == feedback["review_outcome"]["triad_raw_results"]
+            assert sum(bool(a.get("paid")) for a in attempts) == 1 and not succeeded["paid"]
+            author = succeeded["author_disposition"]
+            assert author["review_reference"] == reference
+            assert author["subject_hash"] == succeeded["pre_review_fingerprint"] == succeeded["post_review_fingerprint"] == reference["pre_review_fingerprint"]
+            assert author["enforcement"] == "advisory" and author["source"] == "author"
+            assert {key: author[key] for key in decision} == decision and author["recorded_at"]
+            assert len(_tool_rows(task_drive, "commit_reviewed")) >= 2
             kinds = stub.kinds()
             assert kinds.count("triad_review") == 3, kinds
             assert kinds.count("scope_review") == 1, kinds

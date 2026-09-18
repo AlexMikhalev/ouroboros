@@ -272,8 +272,18 @@ def test_s11_delegated_transport_wire_custody_and_typed_refusals(
     require_lane(LANE_MOCK)
     root = tmp_path_factory.mktemp("s11")
     data_root = pathlib.Path(root) / "data"
+    successful_receipts = []
+
+    def capture_success_before_refusal(_body):
+        # This existing next step runs after delegate_wait and before either
+        # refusal: latest-observation history will correctly replace the success.
+        successful_receipts.append(
+            ArtifactOracle(data_root)._json("state/subagent_last_delegation.json"))
+        return S11_SCRIPT[2]
+
+    script = [*S11_SCRIPT[:2], capture_success_before_refusal, S11_SCRIPT[3]]
     with FakeClaudexorDaemon() as daemon, \
-            ScriptedStubModel(S11_SCRIPT,
+            ScriptedStubModel(script,
                               final_answer=f"{S11_PARENT_MARKER}: delegated run absorbed.") as stub:
         daemon.install(data_root / "claudexor")
         settings = keyless_settings(stub, OUROBOROS_SUBAGENTS=_roster(_SCOUT_ROW, _PINNED_ROW))
@@ -314,6 +324,7 @@ def test_s11_delegated_transport_wire_custody_and_typed_refusals(
 
             # Typed refusals: durable, DEFINITE, invocation-retiring.
             failed = _custody_rows(oracle, "delegate_run_start_failed")
+            assert len(failed) == 2, failed
             reasons = {str(row.get("reason") or "") for row in failed}
             assert "fake_route_refused" in reasons, failed
             assert "credential_profile_unknown" in reasons, failed
@@ -340,8 +351,9 @@ def test_s11_delegated_transport_wire_custody_and_typed_refusals(
             assert daemon.calls("DELETE", "/v2/projects/"), (
                 "the settled readonly run's owned registration was never retired")
 
-            # -- «last delegated run» receipt: requested vs applied, honest --
-            receipt = oracle._json("state/subagent_last_delegation.json")
+            # -- successful receipt, captured before the later refusals ------
+            assert len(successful_receipts) == 1, successful_receipts
+            receipt = successful_receipts[0]
             assert receipt.get("run_id") == run_id, receipt
             assert receipt.get("route") == "fake-harness", receipt
             assert receipt.get("requested_model") == "mock-model", receipt
@@ -349,6 +361,29 @@ def test_s11_delegated_transport_wire_custody_and_typed_refusals(
             assert receipt.get("requested_profile") == "", receipt
             assert receipt.get("applied_profile") == daemon.applied_profile, receipt
             assert receipt.get("selected_subagent_id") == "cx-scout", receipt
+            assert receipt.get("invocation_id") == invocation_id, receipt
+            assert receipt.get("task_id") == task_id, receipt
+            assert receipt.get("outcome") == "succeeded", receipt
+
+            # -- latest observations include definite starts that never ran --
+            receipt = oracle._json("state/subagent_last_delegation.json")
+            latest = receipt.get("latest_by_subagent") or {}
+            assert set(latest) == {"cx-scout", "cx-pinned"}, receipt
+            assert [row.get("selected_subagent_id") for row in failed] == ["cx-scout", "cx-pinned"], failed
+            for failure, post, pin in zip(failed, posts[1:], ("", "ghost-profile")):
+                observed = latest[failure["selected_subagent_id"]]
+                assert observed.get("selected_subagent_id") == failure["selected_subagent_id"], observed
+                assert observed.get("run_id") == failure["invocation_id"] == post["idempotency_key"], observed
+                assert observed.get("invocation_id") == failure["invocation_id"], observed
+                assert observed.get("task_id") == failure["task_id"] == task_id, observed
+                assert observed.get("occurred_at") == failure["ts"], observed
+                assert observed.get("outcome") == "not_started", observed
+                assert observed.get("failure_code") == failure["reason"], observed
+                assert observed.get("route") == failure["route"] == daemon.harness_id, observed
+                assert observed.get("requested_model") == post["body"]["model"] == "mock-model", observed
+                assert observed.get("requested_profile") == (post["body"].get("credentialProfileId") or "") == pin, observed
+                assert observed.get("applied_model") == observed.get("applied_profile") == "", observed
+            assert {key: value for key, value in receipt.items() if key != "latest_by_subagent"} == latest["cx-pinned"], receipt
 
             # -- the terminal facts REACHED the model (transcript truth) -----
             transcript = "\n".join(body_text(call_body) for _kind, call_body in stub.calls)
