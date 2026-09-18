@@ -6,6 +6,8 @@ import subprocess
 import sys
 import types
 
+import pytest
+
 import ouroboros.launcher_bootstrap as bootstrap_module
 
 
@@ -369,7 +371,8 @@ def test_start_agent_exports_presentation_posture(monkeypatch, tmp_path):
     assert captured["env"]["OUROBOROS_PRESENTATION"] == "web"
 
 
-def test_start_agent_unix_uses_process_group_and_writes_server_record(monkeypatch, tmp_path):
+@pytest.mark.parametrize("parent_host", [None, "", "0.0.0.0"])
+def test_start_agent_unix_uses_process_group_and_writes_server_record(monkeypatch, tmp_path, parent_host):
     import launcher
 
     data_dir = tmp_path / "data"
@@ -395,7 +398,12 @@ def test_start_agent_unix_uses_process_group_and_writes_server_record(monkeypatc
     monkeypatch.setattr(launcher, "DATA_DIR", data_dir)
     monkeypatch.setattr(launcher, "REPO_DIR", repo_dir)
     monkeypatch.setattr(launcher, "EMBEDDED_PYTHON", sys.executable)
-    monkeypatch.setattr(launcher, "_load_settings", lambda: {})
+    saved = {"OUROBOROS_SERVER_HOST": "127.0.0.1"}
+    monkeypatch.setattr(launcher, "_load_settings", lambda: saved)
+    if parent_host is None:
+        monkeypatch.delenv("OUROBOROS_SERVER_HOST", raising=False)
+    else:
+        monkeypatch.setenv("OUROBOROS_SERVER_HOST", parent_host)
     monkeypatch.setattr(launcher, "_apply_settings_to_env", lambda _settings: None)
     monkeypatch.setattr(launcher, "subprocess_new_group_kwargs", lambda: {"start_new_session": True})
     monkeypatch.setattr(launcher, "_hidden_popen", fake_popen)
@@ -414,6 +422,13 @@ def test_start_agent_unix_uses_process_group_and_writes_server_record(monkeypatc
     assert record["server_path"] == str((repo_dir / "server.py").resolve())
     assert record["argv"] == [sys.executable, str((repo_dir / "server.py").resolve())]
     assert record["created_at"]
+    assert record["server_host_source"] == ("environment" if parent_host else "settings")
+    assert captured["kwargs"]["env"]["OUROBOROS_SERVER_HOST"] == (
+        saved["OUROBOROS_SERVER_HOST"] if parent_host is None else parent_host)
+    saved["OUROBOROS_SERVER_HOST"] = "127.0.0.2"
+    launcher.start_agent(port=9876)
+    assert captured["kwargs"]["env"]["OUROBOROS_SERVER_HOST"] == (
+        saved["OUROBOROS_SERVER_HOST"] if parent_host is None else parent_host)
 
 
 def test_recorded_server_cleanup_ignores_unrelated_pid(monkeypatch, tmp_path):

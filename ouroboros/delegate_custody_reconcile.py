@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from ouroboros._usage_rows import REVIEW_ATTRIBUTION_KEYS
 from ouroboros.delegate_registration_policy import record_persistent as _record_persistent
+from ouroboros.subagent_history import session_request_facts
 
 from typing import TYPE_CHECKING
 
@@ -250,6 +251,8 @@ def _recover_pending_invocation(drive_root: Any, gateway: Any,
                 "run_id": "", "task_id": task_id, "project_id": record["project_id"],
                 "project_retired": retired, "reason": f"recovery_refused_{exc.code}",
                 "invocation_id": invocation_id, "definite": True,
+                **session_request_facts(record["request"], selected_subagent_id=record.get("selected_subagent_id", ""),
+                    task_id=task_id, route=record.get("route", ""), processing=record.get("processing") or {}),
             })
             result = {"invocation_id": invocation_id, "task_id": task_id,
                       "action": "invocation_retired"}
@@ -273,6 +276,8 @@ def _recover_pending_invocation(drive_root: Any, gateway: Any,
         route_id=str(record["route"] or body.get("primaryHarness") or ""),
         model=str(body.get("model") or ""),
         profile_id=str(body.get("credentialProfileId") or ""),
+        effort=body.get("effort"),
+        processing_preference=(record.get("processing") or {}).get("requested"),
         project_id=record["project_id"], project_owned=bool(record["project_owned"]),
         project_persistent=_record_persistent(record),
         root_task_id=str(record.get("root_task_id") or ""),

@@ -905,10 +905,11 @@ export function renderSettingsPage() {
                     <button type="button" class="btn btn-secondary" id="btn-reload-settings">Reload Settings</button>
                     <button class="btn btn-save" id="btn-save-settings">Save Settings</button>
                     <button type="button" class="btn btn-secondary" id="btn-restart-now" hidden
-                        title="Restart the agent process to apply the saved changes">Restart now</button>
+                        title="Restart the agent process">Restart now</button>
                 </div>
                 <div class="settings-footer-status">
                     <span id="settings-unsaved-indicator" class="settings-inline-status settings-unsaved-indicator" aria-hidden="true">Unsaved changes</span>
+                    <div id="settings-restart-status" class="settings-inline-status" role="status" aria-live="polite" hidden></div>
                     <div id="settings-status" class="settings-inline-status" role="status" aria-live="polite" aria-atomic="true"></div>
                 </div>
             </div>

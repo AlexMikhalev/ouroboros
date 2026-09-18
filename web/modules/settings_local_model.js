@@ -45,15 +45,18 @@ function setProgressBar(fraction) {
     bar.setAttribute('aria-valuenow', Math.round(fraction * 100));
 }
 
-export function bindLocalModelControls({ state }) {
+export function bindLocalModelControls({ state, onApplication } = {}) {
     let destroyed = false;
     let stopPending = false;
     let ready = false;
+    let statusSequence = 0;
     async function updateLocalStatus() {
         if (destroyed || state.activePage !== 'settings') return;
+        const sequence = ++statusSequence;
         try {
             const d = await fetchJson('/api/local-model/status', { cache: 'no-store' });
-            if (destroyed) return;
+            if (destroyed || sequence !== statusSequence) return;
+            if (d.settings_application && onApplication) onApplication(d.settings_application);
             const el = document.getElementById('local-model-status');
             if (!el) return;
             const isReady = d.status === 'ready';
@@ -75,6 +78,7 @@ export function bindLocalModelControls({ state }) {
             if (d.runtime_status === 'install_ok') text += ' — Runtime installed ✓';
             if (d.runtime_status === 'install_error') text += ' — Runtime install failed';
             if (d.error && !isInstalling) text += ' — ' + d.error;
+            if (d.settings_application?.pending_keys?.length) text += ' — Saved changes need Stop, then Start.';
 
             el.textContent = text;
             el.dataset.tone = isReady ? 'ok' : (d.status === 'error' || d.runtime_status === 'install_error' ? 'error' : 'muted');
@@ -119,6 +123,7 @@ export function bindLocalModelControls({ state }) {
         }
         setTestResult('');
         setProgressBar(null);
+        setInlineStatus(document.getElementById('local-model-action-status'), '', 'muted');
         try {
             const resp = await apiFetch('/api/local-model/start', {
                 method: 'POST',

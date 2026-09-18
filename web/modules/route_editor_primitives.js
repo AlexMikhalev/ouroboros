@@ -538,7 +538,7 @@ export function describeExecutionEvidence(entry) {
     if ('requested_model' in entry || 'applied_model' in entry) {
         const parts = [];
         const route = String(entry.route || '');
-        if (route) parts.push(`${route} session`);
+        if (route) parts.push(route === 'api_model' ? 'API model' : `${route} session`);
         // Last-actual evidence is APPLIED telemetry only. Older receipts may
         // retain the requested route while omitting what the harness actually
         // served; never dress that requested value up as execution truth.
@@ -551,6 +551,9 @@ export function describeExecutionEvidence(entry) {
         const processing = processingExecutionText(entry.processing);
         if (processing) parts.push(processing);
         if (when) parts.push(when);
+        if (entry.outcome) parts.push(`${entry.outcome}${entry.failure_code ? ` (${entry.failure_code})` : ''}`);
+        if (entry.fallback?.model) parts.push(`fallback replied: ${entry.fallback.model}`);
+        if ('occurred_at' in entry) parts.push(entry.occurred_at || `observed ${entry.observed_at || entry.ts}; occurrence time unknown`);
         return parts.join(' · ');
     }
     const effective = entry.effective || entry;

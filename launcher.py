@@ -267,12 +267,14 @@ def _server_process_identity_matches(record: dict) -> bool:
     return expected_server in command or ("server.py" in command and expected_repo in command)
 
 
-def _write_server_process_record(proc: subprocess.Popen, *, port: int, server_py: pathlib.Path) -> None:
+def _write_server_process_record(proc: subprocess.Popen, *, port: int, server_py: pathlib.Path,
+                                 server_host_source: str) -> None:
     try:
         record = {
             "pid": int(proc.pid),
             "pgid": process_group_id(proc.pid),
             "server_path": str(server_py.resolve()),
+            "server_host_source": server_host_source,
             "repo_dir": str(REPO_DIR.resolve()),
             "requested_port": int(port),
             "port": int(port),
@@ -386,6 +388,7 @@ def start_agent(port: int = AGENT_SERVER_PORT) -> subprocess.Popen:
     # export exclusion closed — setdefault lets the settings value stand in
     # only when the environment says nothing.
     saved_host = str(settings.get("OUROBOROS_SERVER_HOST") or "").strip()
+    host_source = "environment" if str(env.get("OUROBOROS_SERVER_HOST") or "").strip() else "settings"
     if saved_host:
         env.setdefault("OUROBOROS_SERVER_HOST", saved_host)
     env["OUROBOROS_SERVER_PORT"] = str(port)
@@ -465,7 +468,7 @@ def start_agent(port: int = AGENT_SERVER_PORT) -> subprocess.Popen:
             return proc
         log.info("Agent pid %d assigned to Windows Job Object", proc.pid)
 
-    _write_server_process_record(proc, port=port, server_py=server_py)
+    _write_server_process_record(proc, port=port, server_py=server_py, server_host_source=host_source)
 
     def _stream_output() -> None:
         # Size-capped copy (CPL4-C5): same bound as the server.log stdlib

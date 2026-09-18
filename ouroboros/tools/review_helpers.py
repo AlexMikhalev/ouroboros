@@ -665,6 +665,7 @@ def get_advisory_runtime_diagnostics(model: str, prompt_chars: int,
 def check_worktree_readiness(
     repo_dir: "Path",
     paths: "list[str] | None" = None,
+    *, information: "list[str] | None" = None,
 ) -> "list[str]":
     """Run cheap deterministic pre-advisory checks; never crash."""
     repo_dir = Path(repo_dir)
@@ -742,9 +743,13 @@ def check_worktree_readiness(
     # line rejects the same finding. Cheap since the history replay retired
     # (one live inventory plus a couple of git object reads).
     try:
-        from ouroboros.review import validate_size_ratchet  # local import: ouroboros.review imports this module
+        from ouroboros.review import collect_size_ratchet_inventory, size_headroom_lines, validate_size_ratchet
 
-        for finding in validate_size_ratchet(repo_dir):
+        inventory = collect_size_ratchet_inventory(repo_dir) if information is not None else None
+        if information is not None and inventory is not None:
+            touched = parse_changed_paths_from_porcelain(status_result.stdout or "") if status_result is not None else []
+            information.extend(size_headroom_lines(inventory, paths=touched))
+        for finding in validate_size_ratchet(repo_dir, inventory=inventory):
             warnings.append(f"official CI will enforce: {finding}")
     except Exception as exc:
         # A broken validator must not silently disable the only local surface —
