@@ -1,12 +1,16 @@
 """Assembly of the preflight (advisory) pre-review prompt and its git captures.
 
 Owns what the advisory reviewer is shown: the staged+unstaged diff capture and
-its hard cap, the porcelain changed-file capture, the unresolved-obligation
-history section, and the prompt builder with its two delivery forms (inlined
-governance bodies, or the mandatory-read pointer form both live routes use)
-plus the pointer form's MANDATORY READ budget: the corpus measured from the
-files the pointers name, and the section that tells the native episode's
-reviewer the bound that holds it or the typed shortfall code when none does.
+its hard cap, the porcelain changed-file capture, the touched-path manifest the
+retrieving deliveries receive in place of file bodies, the unresolved-obligation
+history section, and the brief itself — one delivery form, because both live
+routes RETRIEVE. Its governance corpus is tiered by the one SSOT for every
+review surface (``tools.governance_context``): the rules this change activates
+arrive in full, the map arrives as navigation, and the manifest of both is
+disclosed in the brief and recorded on the caller's prompt facts. The MANDATORY
+READ budget then names the reading this brief actually requires — the touched
+bodies the reviewer reads with its own tools — the bound the episode applies,
+and the reading order for a corpus larger than one working view.
 Extracted from ouroboros/tools/claude_advisory_review.py (v7 D06 split,
 re-derived on the v7next tip: the reference leaf predated the native-episode
 rework of the prompt builder and was not reused); claude_advisory_review.py
@@ -29,7 +33,6 @@ from ouroboros.triad_review import (
     REVIEW_JSON_MATRIX_CONTRACT,
 )
 from ouroboros.tools.review_helpers import (
-    CANONICAL_GOVERNANCE_DOCS,
     build_rebuttal_section,
     REVIEW_SEVERITY_THRESHOLDS,
     REVIEW_THOROUGHNESS_BLOCK,
@@ -112,6 +115,84 @@ def _get_changed_file_list(
         return f"⚠️ ADVISORY_ERROR: git status error: {exc}"
 
 
+_PORCELAIN_DISPOSITIONS = {
+    "A": "added", "C": "copied", "D": "deleted", "M": "modified",
+    "R": "renamed", "T": "typechange", "U": "unmerged", "?": "added (untracked)",
+}
+
+
+def _touched_path_disposition(repo_dir: pathlib.Path, rel: str, status: str) -> str:
+    """One touched path's disposition: its porcelain status when the capture
+    named it (index column first, then the worktree column), else what the tree
+    shows for a path the caller scoped in by itself."""
+    for code in str(status or ""):
+        named = _PORCELAIN_DISPOSITIONS.get(code)
+        if named:
+            return named
+    return "modified" if (pathlib.Path(repo_dir) / rel).is_file() else "deleted"
+
+
+def _advisory_touched_manifest(
+    repo_dir: pathlib.Path,
+    paths: Optional[List[str]],
+    changed_files: str,
+) -> str:
+    """The touched-path manifest a RETRIEVING advisory delivery receives.
+
+    Both live deliveries retrieve: the native episode holds the host's
+    read-only inspection tools and a delegated session holds its own, over the
+    exact tree this manifest names. Inlining the bodies here spends the
+    reviewer's own reach twice and crowds out the reading the prompt makes
+    mandatory: at 882 KB of a 1,033 KB send (the 2026-09-17 measurement) the
+    episode's transcript bound refuses the whole first send
+    (``native_bound_below_first_send``). Each row carries what a body cannot
+    supply on its own, the path's disposition and its size, and the complete
+    change stays in the staged diff below.
+
+    A span-only release carrier keeps the shared cut disclosure
+    (``pack_exclusion_note``): the release preflight has already verified it
+    against VERSION, so its row says so instead of inviting a read.
+    """
+    from ouroboros.tools.review_file_pack import (
+        pack_exclusion_note,
+        parse_changed_paths_from_porcelain,
+        paths_from_porcelain_line,
+        span_only_release_carriers,
+    )
+
+    root = pathlib.Path(repo_dir)
+    listed = (
+        list(paths) if paths is not None
+        else parse_changed_paths_from_porcelain(changed_files)
+    )
+    if not listed:
+        return "(no touched files)"
+    statuses: dict[str, str] = {}
+    for line in str(changed_files or "").splitlines():
+        for rel in paths_from_porcelain_line(line, include_sources_for_renames=False):
+            statuses[rel] = line[:2]
+    cut = set(span_only_release_carriers(root, listed, worktree=True))
+    carriers = [rel for rel in listed if rel in cut]
+    rows = []
+    for rel in listed:
+        try:
+            size = f"{(root / rel).stat().st_size:,} bytes"
+        except OSError:
+            size = "no file in the tree"
+        disposition = ("carrier-cut" if rel in cut
+                       else _touched_path_disposition(root, rel, statuses.get(rel, "")))
+        rows.append(f"- {rel} — {size} — {disposition}")
+    note = pack_exclusion_note(carriers)
+    return "\n".join([
+        f"{len(rows)} touched path(s). The bodies are NOT inlined here: read any path in "
+        "full with read_file (bounded chunks supported); every changed line is in the "
+        "staged diff below.",
+        "",
+        *rows,
+        *(["", note] if note else []),
+    ])
+
+
 def _build_blocking_history_section(drive_root: pathlib.Path, repo_key: str = "") -> str:
     """Build section summarizing unresolved obligations from blocking rounds."""
     try:
@@ -128,74 +209,151 @@ def _build_blocking_history_section(drive_root: pathlib.Path, repo_key: str = ""
     )
 
 
-# The governance documents every retrieving delivery is told to read IN FULL
-# (the mandatory-read pointers of `_build_advisory_prompt`); the CHECKLISTS
-# entry is the surface's one checklist section. `_mandatory_read_corpus_chars`
-# measures exactly these, never a remembered size.
-# The canonical five, from their one owner. A book entrypoint measures as its
-# COMPOSED text here, because that is what the non-retrieving branch inlines
-# and what a retrieving reviewer is told to read in full.
-_MANDATORY_READ_DOCS = CANONICAL_GOVERNANCE_DOCS
+# Chars per estimated token: the `utils.estimate_tokens` heuristic inverted, the
+# same scale `review_native_episode` converts a reviewer window with. The
+# episode counts its transcript in chars and the governance tiers budget in
+# tokens, so the two meet here.
+_CHARS_PER_ESTIMATED_TOKEN = 4
 
 
-def _checklist_name(review_surface: str) -> str:
-    return "Skill Review Checklist" if review_surface == "skill" else "Repo Commit Checklist"
+def advisory_governance_context(
+    repo_dir: pathlib.Path,
+    *,
+    review_surface: str = "repo",
+    touched_paths=(),
+    checklist_section_text: str = "",
+    reviewer_model: str = "",
+    use_local=None,
+):
+    """The governance tiers this advisory brief delivers, from the ONE SSOT.
+
+    Both advisory deliveries retrieve, so the tiers are asked for the
+    ``retrieving`` delivery: the applicable checklist section, ``BIBLE.md`` and
+    the standing disclosures arrive in full, the rules this change class
+    activates arrive within the inline share, and the reference books arrive as
+    navigation the reviewer reads with its own ``read_file``.
+
+    The share is taken against the window this brief is actually sent in: the
+    native episode's transcript bound (``review_native_transcript_bound`` — the
+    row's window minus its output reserve, under the owner ceiling), on the
+    token scale above. A delegated session row names its model only after the
+    run, so an empty id resolves the owner ceiling, the one bound that holds
+    for every route.
+    """
+    from ouroboros.review_native_episode import review_native_transcript_bound
+    from ouroboros.review_records import ReviewSlot
+    from ouroboros.tools.governance_context import governance_context
+
+    bound = review_native_transcript_bound(
+        str(reviewer_model or ""), output_reserve=ReviewSlot.max_tokens,
+        use_local=use_local, model_role="reviewer:advisory_slot_1")
+    return governance_context(
+        pathlib.Path(repo_dir),
+        surface=f"advisory:{review_surface}",
+        touched_paths=touched_paths or (),
+        usable_window_tokens=max(0, int(bound) // _CHARS_PER_ESTIMATED_TOKEN),
+        delivery="retrieving",
+        checklist_section_text=checklist_section_text,
+    )
 
 
-def _mandatory_read_corpus_chars(repo_dir: pathlib.Path, review_surface: str = "repo") -> int:
-    """Wire size (chars — the native episode's bound unit; chars/4 is its token
-    scale) of the documents the MANDATORY FULL READ pointers name, measured
-    from the files they resolve at prompt-build time: four full documents plus
-    the surface's CHECKLISTS.md section, each as the JSON-serialized text a
-    read_file result rides the next send in (escaping included). A document
-    the tree lacks counts 0 — the pointer still names it and the reviewer's
-    own read discloses the miss."""
+def _governance_delivery_section(governance) -> str:
+    """The governance manifest as the reviewer reads it: what arrived in full,
+    what is one read away, and what the whole delivery costs this send.
+
+    Every document the tiers did not inline is NAMED here with its size on
+    disk, so no rule is silently absent (BIBLE P1) and the reviewer knows which
+    reads are still its own; the caller's durable prompt facts carry the same
+    rows."""
+    inline = [row for row in governance.manifest if row.get("disposition") == "inline"]
+    named = [row for row in governance.manifest if row.get("disposition") != "inline"]
+
+    def _row(row: dict) -> str:
+        chars = int(row.get("chars") or 0)
+        return f"{row.get('path')}" + (f" ({chars:,} chars)" if chars else "")
+
+    lines = [
+        "## Governance delivery (manifest)\n",
+        f"~{governance.tokens_estimate:,} estimated tokens of governance ride this send: "
+        f"{len(inline)} document(s)/section(s) in full, {len(named)} named for reading.",
+        "In full above: " + ("; ".join(_row(row) for row in inline) or "(none)") + ".",
+    ]
+    if named:
+        lines.append(
+            "Named and read on demand (complete on disk, nothing dropped): "
+            + "; ".join(_row(row) for row in named) + ".")
+    return "\n".join(lines) + "\n"
+
+
+def _mandatory_read_corpus_chars(
+    repo_dir: pathlib.Path,
+    paths: Optional[List[str]] = None,
+) -> int:
+    """Size of the reading this brief REQUIRES: the complete body of every
+    touched path the manifest names, measured from the tree at prompt-build
+    time as its bytes on disk — the magnitude the episode's bound counts in
+    chars, and chars/4 is its token scale. The governance corpus is not counted
+    here — the rules this change activates are inlined by the tiers and the
+    rest is navigation the reviewer reads at its own choosing — so the declared
+    reading is change-relative.
+
+    A span-only release carrier is excluded: its row tells the reviewer not to
+    read it. A path with no file in the tree (a deletion, an unreadable entry)
+    counts 0 — its complete change evidence is the staged diff."""
+    from ouroboros.tools.review_file_pack import span_only_release_carriers
+
+    root = pathlib.Path(repo_dir)
+    listed = [str(rel) for rel in (paths or []) if str(rel or "").strip()]
+    if not listed:
+        return 0
+    cut = set(span_only_release_carriers(root, listed, worktree=True))
     total = 0
-    for rel in _MANDATORY_READ_DOCS:
-        if rel == "docs/CHECKLISTS.md":
-            try:
-                text = _car().load_checklist_section(
-                    _checklist_name(review_surface), pathlib.Path(repo_dir) / rel)
-            except (OSError, ValueError):
-                text = ""
-        else:
-            text = _car().load_governance_doc(repo_dir, rel, on_missing="silent")
-        total += len(json.dumps(text, ensure_ascii=False)) if text else 0
+    for rel in listed:
+        if rel in cut:
+            continue
+        try:
+            total += (root / rel).stat().st_size
+        except OSError:
+            continue  # no file in the tree: the diff carries the change
     return total
 
 
 def _mandatory_read_budget_section(corpus_chars: int, need_chars: int, bound: int) -> str:
     """The prompt's MANDATORY READ budget for the native episode: the measured
-    corpus (chars and the bound's token scale), the transcript need, the bound
-    the episode applies with its landing line, and — when the reading cannot
-    land before the landing notice — the typed shortfall code, so the
-    full-read pointers above are never a silent contradiction."""
+    reading it requires (chars and the bound's token scale), the transcript
+    need, the bound the episode applies with its landing line, and — when the
+    reading exceeds one working view — the typed code plus the reading ORDER
+    that spends the views well, so the full-read instruction stays honest
+    either way."""
     from ouroboros.review_native_episode import native_landing_at, native_mandatory_read_disclosure
 
     disclosure = native_mandatory_read_disclosure(bound, need_chars)
     tokens = max(1, (int(corpus_chars) + 3) // 4)  # the utils.estimate_tokens heuristic on a size
     lines = [
         "\n## MANDATORY READ budget (native inspection episode)\n",
-        f"The MANDATORY FULL READ pointers above name {int(corpus_chars):,} chars "
-        f"(~{tokens:,} estimated tokens) of documents; with this task text the mandatory "
-        f"reading needs {int(need_chars):,} transcript chars. This episode's transcript bound "
-        f"is {int(bound):,} chars; the host posts its [EPISODE_BUDGET] landing notice at "
-        f"{native_landing_at(bound):,} chars.",
+        f"The touched bodies this review must read in full hold {int(corpus_chars):,} chars "
+        f"(~{tokens:,} estimated tokens); with this task text the mandatory reading needs "
+        f"{int(need_chars):,} transcript chars. This episode's transcript bound is "
+        f"{int(bound):,} chars; the host posts its [EPISODE_BUDGET] landing notice at "
+        f"{native_landing_at(bound):,} chars. The governance rules this change activates "
+        "are already inline above; the documents named in the governance manifest are "
+        "complete on disk and read on demand.",
     ]
     if disclosure:
         lines.append(
-            f"MANDATORY_READ_DISCLOSURE: {disclosure} — the mandatory reading does NOT land "
-            "before the landing notice at the bound this reviewer's window allows, so the "
-            "full-read instruction above cannot be honoured in this episode (the episode facts "
-            "record the same code). Read the checklist section, BIBLE.md and the changed files "
-            "first, then DEVELOPMENT.md, DESIGN.md and ARCHITECTURE.md as the room allows, and "
-            "mark every checklist item you could not ground in a document you did not finish "
-            "as unverified instead of reviewing it from memory."
+            f"MANDATORY_READ_DISCLOSURE: {disclosure} — the mandatory reading is larger than "
+            "one working view at this bound (the episode facts record the same code). The "
+            "episode CONTINUES across successive working views, so this is a reading ORDER, "
+            "not a refusal: read the staged diff and the touched bodies that carry the "
+            "change first, then the governance documents you still need from the manifest, "
+            "taking the next working view when the landing notice arrives. Mark as "
+            "unverified only what you did not actually read, and never ground a checklist "
+            "item in a document you did not open."
         )
     else:
         lines.append(
-            "The mandatory reading lands before the landing notice: read every pointed "
-            "document in full (in bounded chunks) before answering."
+            "The mandatory reading lands before the landing notice: read every touched "
+            "body in full (in bounded chunks) before answering."
         )
     return "\n".join(lines) + "\n"
 
@@ -208,52 +366,50 @@ def _build_advisory_prompt(
     resolved_paths: Optional[List[str]] = None,
     drive_root: Optional[pathlib.Path] = None,
     prompt_context: Optional[dict] = None,
-    governance_by_retrieval: bool = False,
 ) -> str:
-    """Build the read-only advisory prompt.
+    """Build the read-only advisory brief.
+
+    Both live deliveries RETRIEVE — the native episode holds the host's
+    read-only inspection tools, a delegated session holds its own — over the
+    exact tree this brief describes, so no body is inlined: the touched files
+    arrive as their manifest and the governance corpus arrives tiered
+    (``advisory_governance_context``), with the rules this change activates in
+    full and the reference books as navigation. Selected task execution
+    evidence is separately redacted and bound to its canonical source before
+    either delivery runs.
 
     Managed-resolution routing does NOT live here: ``_advisory_review_diff``
     (the only production diff source) resolves the subject before this builder
     runs and passes the finished diff in ``prompt_context``. The ``diff is
     None`` branch below exists for direct callers (tests) only.
 
-    ``governance_by_retrieval=True`` is the agent_session delivery form: every
-    other section is unchanged, but the governance BODIES are replaced by
-    resolvable pointers (see below) so the pack stays compact enough for any
-    real route window."""
+    ``prompt_context`` may carry the governance context and checklist section
+    the caller already built for its durable record (one tiering per brief);
+    a direct caller gets its own. ``prompt_context["governance_facts"]``, when
+    the caller supplies a dict, receives the delivered manifest — the same
+    out-parameter shape ``options["execution"]`` uses on the run path."""
     prompt_context = dict(prompt_context or {})
     diff: Optional[str] = prompt_context.get("diff")
     changed_files: Optional[str] = prompt_context.get("changed_files")
-    touched_pack = str(prompt_context.get("touched_pack") or "")
-    omitted_paths = prompt_context.get("omitted_paths")
     review_surface = str(prompt_context.get("review_surface") or "repo")
     expected_items = prompt_context.get("expected_items")
-    checklist_name = _checklist_name(review_surface)
-    if governance_by_retrieval:
-        # agent_session delivery: do NOT inline the governance bodies (hundreds of KB) —
-        # each becomes a resolvable absolute pointer plus a mandatory-read
-        # instruction, and the session reads the docs itself with its own
-        # tools. The authority for this form is the plan-review agent_session
-        # precedent (plan_review_runtime's retrieving-session task and its
-        # DEVELOPMENT.md "Core Governance Artifacts" row), NOT BIBLE P3
-        # retrieving-scope. The advisory session pack deliberately contains
-        # the staged diff, changed-file pack and public repository documents.
-        # Selected task execution evidence is separately redacted and bound to
-        # its canonical source before either retrieving delivery runs.
-        bible = _car()._mandatory_read_pointer(repo_dir, "BIBLE.md")
-        checklists = _car()._mandatory_read_pointer(repo_dir, "docs/CHECKLISTS.md", section=checklist_name)
-        dev_guide = _car()._mandatory_read_pointer(repo_dir, "docs/DEVELOPMENT.md")
-        design_doc = _car()._mandatory_read_pointer(repo_dir, "docs/DESIGN.md")
-        arch_doc = _car()._mandatory_read_pointer(repo_dir, "docs/ARCHITECTURE.md")
-    else:
-        bible = _car().load_governance_doc(repo_dir, "BIBLE.md", on_missing="placeholder", fallback="(BIBLE.md not found)")
+    checklist_name = "Skill Review Checklist" if review_surface == "skill" else "Repo Commit Checklist"
+    checklists = str(prompt_context.get("checklist_section") or "")
+    if not checklists:
         try:
             checklists = _car().load_checklist_section(checklist_name)
         except Exception:
             checklists = _car().load_governance_doc(repo_dir, "docs/CHECKLISTS.md", on_missing="placeholder", fallback="(CHECKLISTS.md not found)")
-        dev_guide = _car().load_governance_doc(repo_dir, "docs/DEVELOPMENT.md", on_missing="placeholder", fallback="(DEVELOPMENT.md not found)")
-        design_doc = _car().load_governance_doc(repo_dir, "docs/DESIGN.md", on_missing="placeholder", fallback="(DESIGN.md not found)")
-        arch_doc = _car().load_governance_doc(repo_dir, "docs/ARCHITECTURE.md", on_missing="placeholder", fallback="(ARCHITECTURE.md not found)")
+    governance = prompt_context.get("governance") or advisory_governance_context(
+        repo_dir, review_surface=review_surface, touched_paths=resolved_paths or (),
+        checklist_section_text=checklists,
+        reviewer_model=str(prompt_context.get("reviewer_model") or ""),
+        use_local=prompt_context.get("reviewer_use_local"),
+    )
+    facts = prompt_context.get("governance_facts")
+    if isinstance(facts, dict):
+        facts["governance_manifest"] = list(governance.manifest)
+        facts["governance_tokens_estimate"] = int(governance.tokens_estimate)
     if diff is None:
         diff = _car()._get_staged_diff(repo_dir, paths=resolved_paths)
     if changed_files is None:
@@ -278,14 +434,17 @@ def _build_advisory_prompt(
             _car().make_repo_key(repo_dir),
         )
 
-    omitted_note = ""
-    if omitted_paths:
-        preview = ", ".join(list(omitted_paths)[:5])
-        if len(omitted_paths) > 5:
-            preview += f", +{len(omitted_paths) - 5} more"
-        omitted_note = (
-            f"\n*(Inline pack contains omission notes for {len(omitted_paths)} path(s): {preview})*\n"
-        )
+    touched_section = (
+        "## Touched files (manifest — the bodies are not inlined)\n\n"
+        f"{_advisory_touched_manifest(repo_dir, resolved_paths, changed_files)}\n\n"
+    )
+    # The change-class half of the governance delivery opens the change-relative
+    # body of the brief: tier 1 stays in the stable head above (byte-stable
+    # across commits), the selection and the navigation travel with the change
+    # they were chosen for.
+    governance_tail = "\n\n".join(part for part in (
+        governance.selected_inline, governance.navigation,
+        _governance_delivery_section(governance)) if part.strip())
 
     critical_calibration = _car().CRITICAL_FINDING_CALIBRATION  # noqa: F841 — used in f-string below
     skill_host_context = _car().build_skill_host_context(repo_dir) if review_surface == "skill" else ""
@@ -355,19 +514,18 @@ def _build_advisory_prompt(
         f"## Output format\n"
         f"{REVIEW_JSON_MATRIX_CONTRACT if expected_items else REVIEW_JSON_ARRAY_CONTRACT}\n"
         f"{expected_items_section}\n\n"
+        # Tier 1 of the governance delivery ends the stable head: the applicable
+        # checklist section, then the constitution and the standing disclosures.
         f"## CHECKLISTS.md (What to review)\n\n{checklists}\n\n"
+        f"{governance.stable_inline}\n\n"
+        f"{governance_tail}\n\n"
         f"{scope_section}\n\n{goal_section}\n\n"
-        f"## DEVELOPMENT.md (Engineering standards)\n\n{dev_guide}\n\n"
-        f"## DESIGN.md (UI design system)\n\n{design_doc}\n\n"
-        f"## BIBLE.md (Constitutional context — top priority)\n\n{bible}\n\n"
-        "## ARCHITECTURE.md (System structure — critical for version sync and module checks)\n\n"
-        f"{arch_doc}\n\n{skill_host_context}\n\n{blocking_history}\n\n"
+        f"{skill_host_context}\n\n{blocking_history}\n\n"
         f"{build_rebuttal_section(str(prompt_context.get('review_rebuttal') or ''))}\n"
         f"{prompt_context.get('task_evidence_section') or ''}\n"
         f"## Commit message\n\n{commit_message}\n\n"
         f"## Changed files (git status --porcelain)\n\n{changed_files}\n\n"
-        "## Current touched files (full content — read these with read_file for deeper inspection)\n\n"
-        f"{touched_pack}\n{omitted_note}\n\n"
+        f"{touched_section}"
         f"## Staged diff\n\n{diff}\n\n"
         f"## Step-by-step instructions\n{step_instructions}\n"
     )

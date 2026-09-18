@@ -12,6 +12,8 @@ observed reads remain in this operation's existing artifacts. Its full required
 source manifest is independent from any one window. There is no round cap;
 the provider window, owner deadline and paid ledger retain their own bounds.
 Every provider call is its own paid row; format repair reuses the final answer.
+Observed source coverage is diagnostic evidence beside that answer, never a
+quorum decision or a reason to buy another review.
 """
 
 from __future__ import annotations
@@ -466,11 +468,20 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         return receipt.status == "applied"
 
     def _read_coverage(self) -> dict:
-        """Fold exact delivered intervals over the caller's complete required manifest."""
+        """Fold exact delivered intervals over the caller's complete required manifest.
+
+        Four states: ``unobserved`` when the surface declared no manifest at all,
+        ``declared_empty`` (a complete coverage of nothing) when it declared an
+        empty one, and ``complete``/``incomplete`` over a declared manifest.
+        """
         from ouroboros.tool_access import resource_root_path
-        required = (self.assignment.request.policy or {}).get("native_required_sources")
-        if not isinstance(required, list) or not required:
+        policy = self.assignment.request.policy or {}
+        required = policy.get("native_required_sources")
+        if not isinstance(required, list):
             return {"status": "unobserved", "reason": "required_source_manifest_missing", "sources": []}
+        if not required:
+            return {"status": "complete", "reason": "declared_empty", "sources": [],
+                    "required_source_count": 0}
         if self._inspection_ctx is None:
             return {"status": "unobserved", "reason": "native_inspection_unavailable", "sources": required}
         rows = []
@@ -481,6 +492,10 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 if (type(total) is not int or total < 0 or len(row["source_revision"]) != 64
                         or len(row["complete_sha256"]) != 64 or row["range_basis"] != "unicode_text_universal_newlines"):
                     raise ValueError("invalid required source identity")
+                if row.get("coverage_basis") == "delivered_inline":
+                    row.update(status="complete", missing_ranges=[], covered_chars=total)
+                    rows.append(row)
+                    continue
                 base = resource_root_path(self._inspection_ctx, row["root"])
                 spans = []
                 for receipt in self._tool_receipts:
@@ -525,7 +540,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             coverage = {**coverage, "status": "incomplete", "reason": self._source_gap}
         facts = {"native_read_coverage": coverage, "native_history_source": history_ref,
                  "native_view_changes": self._view_changes, "native_source_gap": self._source_gap}
-        if policy.get("native_required_sources") is not None and coverage["status"] != "complete":
+        if coverage["status"] == "incomplete":
             facts["native_incomplete"] = "required_source_coverage_incomplete"
         return facts
 
@@ -956,7 +971,11 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         if required is not None:
             ref = (self.assignment.request.policy or {}).get("native_required_sources_ref") or self._store_source("required-sources", required)
             messages[-1]["content"] += "\nRequired source manifest: " + json.dumps(ref, ensure_ascii=False)
-            messages[-1]["content"] += "\nRead every required source through its exact physical address, using multiple working views as needed. Missing source evidence remains incomplete."
+            messages[-1]["content"] += (
+                "\nSources marked delivered_inline are already included in full. Read the other required "
+                "sources through their exact physical addresses, using multiple working views as needed. "
+                "Observed read coverage remains diagnostic evidence beside your findings."
+            )
         return registry, schemas, messages, _wire_size(messages, schemas)
 
     def _chat_kwargs(self, messages: List[Dict[str, Any]], schemas: List[Dict[str, Any]], max_tokens: int) -> Dict[str, Any]:

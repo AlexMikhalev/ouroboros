@@ -1,17 +1,14 @@
-"""Deep review composes complete books and consumes revision-bound coverage."""
+"""Deep review navigates the books by address and consumes revision-bound coverage."""
 
 import hashlib
 import json
 
-import pytest
-
 from ouroboros import deep_self_review as deep
 from ouroboros.artifacts import read_actor_source_bytes
-from ouroboros.reference_books import compose_book, load_reference_book
 from tests.test_deep_review_slot import _native_row, _ScriptedLLM, _tool_call
 
 
-def _corpus(root, *, newline="\n"):
+def _corpus(root):
     files = {
         "BIBLE.md": "# Constitution\n\nThe constitutional source.\n",
         "docs/CHECKLISTS.md": "# Checklists\n\n## Review\n\nCheck the actual contract.\n",
@@ -22,7 +19,6 @@ def _corpus(root, *, newline="\n"):
         for name in ("flow", "state"):
             files[f"docs/{book_id}/{name}.md"] = (
                 f"# {name.title()}\n\nIntroduction to {book_id} {name}.\n\n## Contract\n\nExact {book_id} {name} contract body.\n")
-    files = {rel: text.replace("\n", newline) for rel, text in files.items()}
     for rel, text in files.items():
         target = root / rel
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -38,59 +34,44 @@ def _required(root, rel):
             "range_basis": "unicode_text_universal_newlines"}
 
 
-@pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
-def test_packed_chaptered_books_are_complete_once_and_stable_before_atlas(tmp_path, monkeypatch, newline):
-    monkeypatch.setattr(deep, "get_context_mode", lambda: "max")
-    monkeypatch.setattr(deep, "_compute_graph_centrality", lambda *a: {})
-    prefixes = []
-    for name in ("first", "second"):
-        repo, data = tmp_path / name, tmp_path / f"{name}-data"
-        files = _corpus(repo, newline=newline)
-        monkeypatch.setattr(deep, "_dulwich_tracked_paths", lambda *a: (list(files), []))
-        monkeypatch.chdir(tmp_path)
-        pack, stats = deep.build_review_pack(repo, data)
-        for rel, text in files.items():
-            if rel.startswith(("docs/architecture/", "docs/development/")):
-                assert pack.count(text) == 1
-        prefix = "\n".join(f"## Reference book: docs/{book_id.upper()}.md\n\n" + compose_book(load_reference_book(repo, book_id))
-                           for book_id in ("architecture", "development"))
-        assert pack.startswith(prefix)
-        assert str(repo) not in prefix
-        assert all(view["delivery"] == "full" for view in stats["context_manifest"]["reference_book_views"])
-        prefixes.append(prefix)
-    assert prefixes[0] == prefixes[1]
 
-
-def test_low_packed_architecture_overview_does_not_reinline_omitted_chapters(tmp_path, monkeypatch):
+def test_the_deep_task_inlines_the_review_protocol_and_navigates_the_books(tmp_path):
+    """The deep surface reviews no change, so the governance tiers yield the
+    standing rules and nothing change-relative: the standing disclosures and
+    the review protocol this reviewer executes arrive in full, every reference
+    book arrives as navigation with the read instruction, and BIBLE.md arrives
+    inline like every other surface's tier-1 governance."""
     repo, data = tmp_path / "repo", tmp_path / "data"
-    files = _corpus(repo)
-    monkeypatch.setattr(deep, "get_context_mode", lambda: "low")
-    monkeypatch.setattr(deep, "_compute_graph_centrality", lambda *a: {})
-    monkeypatch.setattr(deep, "_dulwich_tracked_paths", lambda *a: (list(files), []))
-    pack, stats = deep.build_review_pack(repo, data)
-    assert "Introduction to architecture flow." in pack
-    assert "Exact architecture flow contract body." not in pack
-    assert "Exact development flow contract body." in pack
-    assert "docs/architecture/flow.md" in pack
-    row = next(r for r in stats["context_manifest"]["coverage"] if r["path"] == "docs/architecture/flow.md")
-    assert "overview only" in row["reason"]
+    _corpus(repo)
+    (repo / "docs" / "CHECKLISTS_ARCHIVE.md").write_text(
+        "# Standing archive\n\nSTANDING DISCLOSURE: the archive body.\n", encoding="utf-8")
+    (repo / "docs" / "DESIGN.md").write_text("# Design\n\nThe design system body.\n", encoding="utf-8")
+    entry = repo / "docs" / "DEVELOPMENT.md"
+    entry.write_text(entry.read_text(encoding="utf-8")
+                     + "- [Protocol](development/05-review-and-commit-protocol.md)\n", encoding="utf-8")
+    (repo / "docs" / "development" / "05-review-and-commit-protocol.md").write_text(
+        "# Review & Commit Protocol\n\nIntro.\n\n## Stages\n\nThe protocol body.\n", encoding="utf-8")
 
+    task, _facts = deep._retrieving_task(repo, data, usable_window_tokens=200_000)
 
-def test_missing_declared_chapter_never_becomes_a_successful_partial_packed_book(tmp_path, monkeypatch):
-    repo = tmp_path / "repo"
-    files = _corpus(repo)
-    (repo / "docs/architecture/state.md").unlink()
-    monkeypatch.setattr(deep, "_dulwich_tracked_paths", lambda *a: (list(files), []))
-    pack, stats = deep.build_review_pack(repo, tmp_path / "data")
-    assert pack == "" and "book unavailable" in stats["skipped"][0]
-    assert "state.md" in stats["skipped"][0]
+    assert "STANDING DISCLOSURE: the archive body." in task          # tier 1
+    assert "The protocol body." in task                              # tier 2, always
+    assert "The design system body." not in task                     # no touched web/ path
+    assert task.count("The constitutional source.") == 1              # tier 1
+    assert _facts["required_sources"][0]["coverage_basis"] == "delivered_inline"
+    assert "Governance navigation (read on demand)" in task
+    assert 'read_file(root="system_repo"' in task
+    assert "Source: `docs/architecture/flow.md`" in task
+    assert "Exact architecture flow contract body." not in task      # the map is never whole
+    # Order: the standing rules and the map precede the change-relative body.
+    assert task.index("STANDING DISCLOSURE") < task.index("## Memory")
 
 
 def test_retrieving_book_navigation_uses_only_physical_chapter_addresses(tmp_path, monkeypatch):
     repo, data = tmp_path / "repo", tmp_path / "data"
     _corpus(repo)
     # This legacy mapper must not be fed a composed book with invented entrypoint lines.
-    # The deep-review packet reads the chapter-addressed view (context_layout.book_navigation);
+    # The deep-review task reads the chapter-addressed view (context_layout.book_navigation);
     # the legacy monolith mapper is no longer imported here at all.
     assert not hasattr(deep, "generate_doc_nav_map")
     task, _facts = deep._retrieving_task(repo, data)
@@ -114,7 +95,7 @@ def test_exact_coverage_overrides_complete_legacy_lines_without_rebinding_curren
     assert detail["state"] == "partial" and detail["covered_chars"] == 7
     assert detail["source_revision"] == row["source_revision"]
     assert detail["evidence_basis"] == "source_ranges" and "covered_lines" not in detail
-    assert deep._delivery_incomplete("native_tool_rounds", usage) == "required_source_coverage_incomplete"
+    assert deep._delivery_incomplete("native_tool_rounds", usage) == "none"
 
 
 def test_legacy_line_evidence_stays_explicit_and_unsent_reads_never_complete_it(tmp_path):
@@ -142,5 +123,7 @@ def test_native_deep_review_reports_exact_chapter_gap_without_changing_the_findi
     assert usage["deep_review_coverage_basis"] == "source_ranges"
     assert usage["native_incomplete"] == "required_source_coverage_incomplete"
     assert "docs/architecture/flow.md NOT read" in text
+    assert "incomplete=none" in text
     history = json.loads(read_actor_source_bytes(data, "book-review", usage["native_history_source"]))
-    assert history["required_sources"] == required
+    assert history["required_sources"] == [
+        {**required[0], "coverage_basis": "delivered_inline"}, required[1]]

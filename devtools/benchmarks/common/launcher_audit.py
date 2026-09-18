@@ -26,8 +26,8 @@ INVARIANT A — ADMISSION IS THE OUTER BOUNDARY.
     campaign lock. It exists specifically so a losing launcher cannot race and
     overwrite the winning launcher's manifest. The exemption is resolved to one
     exact first-party module and is shape-checked: hashing the absolute run-root,
-    opening the host temp lock, and flocking it are allowed; any additional
-    denied read, mutation, network call, or deferred dependency revokes it.
+    opening the host temp lock, and using the canonical platform lock are allowed;
+    any additional denied read, mutation, network call, or deferred dependency revokes it.
 
 INVARIANT B — CONFINEMENT IS COMPUTED FROM THE ACTIVE CHECKOUT.
     A launcher whose provenance is attested against a checkout it was HANDED (``--repo-dir``,
@@ -161,7 +161,7 @@ _PRE_ADMISSION_LOCK_MODULE = (
 )
 _PRE_ADMISSION_LOCK_NAME = "acquire_campaign_execution_lock"
 _PRE_ADMISSION_LOCK_REQUIRED_CALLS = frozenset({
-    "encode", "flock", "gettempdir", "open", "sha256",
+    "encode", "lock", "gettempdir", "open", "sha256",
 })
 
 
@@ -414,6 +414,20 @@ def _safe_pre_admission_lock_helper(target: ast.FunctionDef, unit: _Unit) -> boo
     calls = {_dotted_callee(node.func).split(".")[-1] for node in call_nodes}
     if not _PRE_ADMISSION_LOCK_REQUIRED_CALLS.issubset(calls):
         return False
+    # The canonical helper selects the shared blocking/nonblocking owner; the
+    # host platform decides flock versus LockFileEx inside that owner.
+    choices = [node.value for node in ast.walk(target) if isinstance(node, ast.Assign)
+               and any(isinstance(name, ast.Name) and name.id == "lock" for name in node.targets)]
+    if len(choices) != 1 or not isinstance(choices[0], ast.IfExp):
+        return False
+    choice = choices[0]
+    if tuple(_dotted_callee(node) for node in (choice.test, choice.body, choice.orelse)) != (
+        "blocking", "file_lock_exclusive", "file_lock_exclusive_nb",
+    ):
+        return False
+    if any(_pre_admission_lock_binding_shadowed(unit, name, module="ouroboros.platform_layer")
+           for name in ("file_lock_exclusive", "file_lock_exclusive_nb")):
+        return False
     open_calls = [
         node for node in call_nodes
         if _dotted_callee(node.func).split(".")[-1] == "open"
@@ -429,12 +443,14 @@ def _safe_pre_admission_lock_helper(target: ast.FunctionDef, unit: _Unit) -> boo
     return True
 
 
-def _pre_admission_lock_binding_shadowed(unit: _Unit, leaf: str) -> bool:
+def _pre_admission_lock_binding_shadowed(
+    unit: _Unit, leaf: str, *, module: str = _PRE_ADMISSION_LOCK_MODULE,
+) -> bool:
     canonical_imports = [
         (node, alias)
         for node in unit.tree.body
         if isinstance(node, ast.ImportFrom)
-        and node.module == _PRE_ADMISSION_LOCK_MODULE
+        and node.module == module
         for alias in node.names
         if (alias.asname or alias.name) == leaf and alias.name == leaf
     ]
