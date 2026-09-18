@@ -573,3 +573,31 @@ def test_a_closed_verdict_from_a_cheap_panel_is_not_reopened_by_a_stronger_decla
     again = _call(ctx, reviewer_effort="max")
     assert _control(again) == {"outcome": "GREEN", "closed": True}
     assert "cached exact review" in again and len(sub.calls) == 1
+
+
+def test_default_effort_and_omission_share_the_configured_open_wave(harness, monkeypatch):
+    _patch_health(monkeypatch, lambda slots: {})
+    _effort_aware_builder(harness, monkeypatch)
+    finding = json.dumps([_finding("n1", "blocking", breaks="claim_1")])
+    transport = harness.install({"s1": finding, "s2": CLEAN, "s3": CLEAN})
+    ctx = harness.make_ctx()
+    assert _control(_call(ctx, reviewer_effort="default"))["closed"] is False
+    before = _state(harness)["waves"][-1]
+    assert before["reviewer_effort"] == ""
+    assert [s.effort for s in transport.calls[0]["slots"]] == [s.effort for s in harness.state["slots"]]
+    for effort in ("", "default"):
+        assert "cached exact review" in _call(ctx, reviewer_effort=effort)
+    after = _state(harness)["waves"][-1]
+    assert after["request_fingerprint"] == before["request_fingerprint"]
+    assert after["reviewer_config_fingerprint"] == before["reviewer_config_fingerprint"]
+    assert len(transport.calls) == _state(harness)["cycles_paid"] == 1
+
+
+@pytest.mark.parametrize("effort", ["low", "high", "none"])
+def test_real_new_plan_keeps_an_explicit_effort(harness, monkeypatch, effort):
+    _patch_health(monkeypatch, lambda slots: {})
+    _effort_aware_builder(harness, monkeypatch)
+    transport = harness.install({"s1": CLEAN, "s2": CLEAN, "s3": CLEAN})
+    assert _control(_call(harness.make_ctx(), reviewer_effort=effort))["closed"]
+    assert _state(harness)["waves"][-1]["reviewer_effort"] == effort
+    assert [slot.effort for slot in transport.calls[0]["slots"]] == [effort] * 3

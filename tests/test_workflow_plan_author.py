@@ -25,7 +25,7 @@ def test_last_critic_correction_retains_current_source(harness, monkeypatch, enf
     before = load_plan_review_state(h.drive, ctx.task_id)
     critic = copy.deepcopy(before["waves"][0])
     spec = {**DECK_SPEC, "acceptance_claims": ["the corrected claim"]}
-    result = _call(ctx, spec, plan="Corrected complete plan.", review_disposition={
+    result = _call(ctx, spec, plan="Corrected complete plan.", reviewer_effort="default", review_disposition={
         "review_fingerprint": critic["request_fingerprint"], "items": [], "author_action": action,
         "author_disposition": {"disposition": "partial", "rationale": "Corrected the budget and saved the exact plan."}})
     assert "Current author plan saved" in result
@@ -108,3 +108,144 @@ def test_full_plan_needs_explicit_action_even_with_a_prior_wave(harness, monkeyp
     assert "PLAN_REVIEW_DISPOSITION_MIXED_ENVELOPE" in result
     assert load_plan_review_state(h.drive, ctx.task_id) == before
     assert len(transport.calls) == 1
+
+
+@pytest.mark.parametrize("action", [None, "none"])
+def test_first_plan_accepts_default_filled_neutral_fields(harness, action):  # noqa: F811
+    ctx = harness.make_ctx()
+    transport = harness.install({})
+    disposition = {"review_fingerprint": "", "items": [],
+                   "author_disposition": {"disposition": "deferred", "rationale": ""}}
+    if action is not None:
+        disposition["author_action"] = action
+    before = copy.deepcopy(disposition)
+    result = _call(ctx, reviewer_effort="default", review_disposition=disposition)
+    assert "ERROR:" not in result
+    state = load_plan_review_state(harness.drive, ctx.task_id)
+    assert len(transport.calls) == state["cycles_paid"] == 1
+    assert state["waves"][0]["reviewer_effort"] == ""
+    assert not state["current_attempt"].get("author_subject")
+    assert disposition == before
+    # The named neutral and omission have exactly the same identity and replay.
+    fingerprint = state["current_attempt"]["fingerprint"]
+    assert "cached exact review" in _call(ctx)
+    assert len(transport.calls) == 1
+    assert load_plan_review_state(harness.drive, ctx.task_id)["current_attempt"]["fingerprint"] == fingerprint
+
+
+@pytest.mark.parametrize("enforcement", ["advisory", "blocking"])
+@pytest.mark.parametrize("author", [
+    {"disposition": "partial", "rationale": "Collect"},
+    {"disposition": "deferred", "rationale": ""},
+])
+def test_neutral_action_records_finding_answers_but_no_author_finish(harness, monkeypatch, enforcement, author):  # noqa: F811
+    harness.state["enforcement"] = enforcement
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", enforcement)
+    ctx = harness.make_ctx()
+    findings = json.dumps([_finding("question", "need_evidence", locator="notes.md")])
+    transport = harness.install({s: findings for s in ("s1", "s2", "s3")})
+    _call(ctx)
+    state = load_plan_review_state(harness.drive, ctx.task_id)
+    wave = state["waves"][-1]
+    disposition = {"review_fingerprint": wave["request_fingerprint"], "author_action": "none",
+        "author_disposition": author, "items": [
+            {"finding_id": f["finding_id"], "decision": "accept", "rationale": "The requested notes are attached."}
+            for f in wave["findings"]]}
+    before = copy.deepcopy(disposition)
+    result = pr._handle_plan_task(ctx, goal="", plan="", spec={k: [] for k in DECK_SPEC},
+                                 reviewer_effort="low", review_disposition=disposition)
+    assert "ERROR:" not in result
+    after = load_plan_review_state(harness.drive, ctx.task_id)
+    exact = authority_wave(harness.drive, ctx.task_id, after["waves"][-1])
+    assert exact["closed"] and exact["dispositions"] == disposition["items"]
+    assert not exact.get("author_disposition") and not after["waves"][-1].get("author_disposition")
+    assert not after["current_attempt"].get("author_subject")
+    assert len(transport.calls) == after["cycles_paid"] == 1
+    assert disposition == before
+
+
+@pytest.mark.parametrize("field,value", [("goal", "Changed goal"), ("plan", "Changed plan"),
+    ("spec", {"in_scope": ["Changed scope"]})])
+def test_neutral_action_still_rejects_a_real_mixed_envelope(harness, field, value):  # noqa: F811
+    ctx = harness.make_ctx()
+    transport = harness.install({})
+    result = pr._handle_plan_task(ctx, **{field: value}, reviewer_effort="low", review_disposition={
+        "review_fingerprint": "f" * 64, "items": [], "author_action": "none"})
+    assert "PLAN_REVIEW_DISPOSITION_MIXED_ENVELOPE" in result
+    assert field + "=" in result and "Changed" in result
+    assert not transport.calls and not (harness.drive / "task_results" / (ctx.task_id + ".json")).exists()
+
+
+@pytest.mark.parametrize("action", ["finish", "stop", "bogus", ["finish"]])
+def test_author_action_errors_name_values_without_erasing_explicit_intent(harness, action):  # noqa: F811
+    ctx = harness.make_ctx()
+    transport = harness.install({})
+    result = _call(ctx, reviewer_effort="default", review_disposition={
+        "review_fingerprint": "", "items": [], "author_action": action,
+        "author_disposition": {"disposition": "deferred", "rationale": ""}})
+    assert "PLAN_AUTHOR_SUBJECT_INVALID" in result
+    assert "author_action=" in result and str(action if isinstance(action, str) else action[0]) in result
+    assert "review_fingerprint" in result
+    assert not transport.calls
+
+
+@pytest.mark.parametrize("author", [[], {"disposition": "partial", "rationale": [],},
+    {"disposition": "partial", "rationale": "Collect", "unknown": ""}])
+def test_neutral_action_does_not_discard_malformed_author_fields(harness, author):  # noqa: F811
+    result = _call(harness.make_ctx(), review_disposition={"review_fingerprint": "", "items": [],
+        "author_action": "none", "author_disposition": author})
+    assert "ERROR:" in result and "author_disposition" in result
+
+
+def test_author_action_error_names_unknown_field_and_value(harness):  # noqa: F811
+    result = _call(harness.make_ctx(), review_disposition={
+        "review_fingerprint": "", "items": [], "author_action": "finish",
+        "unexpected": "remove-this-field"})
+    assert "PLAN_AUTHOR_SUBJECT_INVALID" in result
+    assert 'unexpected="remove-this-field"' in result
+
+
+def test_plan_neutral_enums_are_named_first_and_default():
+    props = pr.get_tools()[0].schema["parameters"]["properties"]
+    for schema, neutral in [(props["reviewer_effort"], "default"),
+                            (props["review_disposition"]["properties"]["author_action"], "none")]:
+        assert schema["enum"][0] == schema["default"] == neutral
+        assert "" not in schema["enum"]
+    assert "none" in props["reviewer_effort"]["enum"]  # real explicit effort remains
+
+
+@pytest.mark.parametrize("effort", ["low", "high", "none"])
+def test_collection_without_author_action_ignores_the_effort_override(harness, effort):  # noqa: F811
+    ctx = harness.make_ctx()
+    transport = harness.install({})
+    _call(ctx)
+    before = load_plan_review_state(harness.drive, ctx.task_id)
+    result = pr._handle_plan_task(ctx, goal="", plan="", spec={k: [] for k in DECK_SPEC},
+        reviewer_effort=effort, review_disposition={
+            "review_fingerprint": before["waves"][-1]["request_fingerprint"], "items": []})
+    assert "ERROR:" not in result and len(transport.calls) == 1
+    assert load_plan_review_state(harness.drive, ctx.task_id) == before
+
+
+def test_omitted_action_keeps_intentional_legacy_advisory_finish(harness, monkeypatch):  # noqa: F811
+    harness.state["enforcement"] = "advisory"
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
+    ctx = harness.make_ctx()
+    findings = json.dumps([_finding("budget", "blocking", breaks="claim_1")])
+    transport = harness.install({s: findings for s in ("s1", "s2", "s3")})
+    _call(ctx)
+    before = load_plan_review_state(harness.drive, ctx.task_id)
+    disposition = {"review_fingerprint": before["waves"][-1]["request_fingerprint"], "items": [],
+        "author_disposition": {"disposition": "partial", "rationale": "I considered the findings and will proceed."}}
+    result = pr._handle_plan_task(ctx, review_disposition=disposition)
+    assert "ERROR:" not in result
+    after = load_plan_review_state(harness.drive, ctx.task_id)
+    assert after["waves"][-1]["author_disposition"]["rationale"] == disposition["author_disposition"]["rationale"]
+    assert not after["waves"][-1]["closed"] and len(transport.calls) == 1
+
+
+def test_mixed_envelope_error_discloses_bounded_field_previews(harness):  # noqa: F811
+    result = pr._handle_plan_task(harness.make_ctx(), plan="Long plan " * 10_000,
+        review_disposition={"review_fingerprint": "f" * 64, "items": []})
+    assert "PLAN_REVIEW_DISPOSITION_MIXED_ENVELOPE" in result and "plan=" in result
+    assert "OMISSION NOTE" in result and len(result) < 1200

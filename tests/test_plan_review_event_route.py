@@ -15,6 +15,8 @@ import threading
 import time
 from types import SimpleNamespace
 
+import pytest
+
 
 from tests.test_plan_review_engine import CLEAN, DECK_SPEC, _call, _control, _state
 from tests.test_plan_review_engine import harness as _engine_harness
@@ -473,3 +475,50 @@ def test_the_open_wave_text_names_the_route_that_waits_for_the_settlement_frame(
                 "returns on it") in text
         assert f"plan_task(review_disposition={{review_fingerprint: '{fp}', items: []}})" in text
         assert "schedule_followup" not in text  # a new root task cannot collect this wave
+
+
+@pytest.mark.parametrize("effort", ["low", "high", "none", "default"])
+@pytest.mark.parametrize("enforcement", ["blocking", "advisory"])
+def test_neutral_collection_uses_the_paid_wave_not_schema_filled_overrides(harness, monkeypatch, effort, enforcement):
+    """Real substrate and saved source: padded fields never buy or author a new wave."""
+    import copy
+    from ouroboros.tools import plan_review as pr
+    from ouroboros.tools.plan_review_artifacts import authority_wave
+
+    harness.state["enforcement"] = enforcement
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", enforcement)
+    executor = _install_real_substrate(monkeypatch)
+    ctx = harness.make_ctx()
+    try:
+        _call(ctx)
+        wave = _state(harness)["waves"][-1]
+        fingerprint = wave["request_fingerprint"]
+        exact = authority_wave(harness.drive, ctx.task_id, wave)
+        assert _wait_until(lambda: executor.execute_calls == 3)
+        for author in ({"disposition": "partial", "rationale": "Collect"},
+                       {"disposition": "deferred", "rationale": ""}):
+            payload = {"goal": "", "plan": "", "spec": {k: [] for k in DECK_SPEC},
+                "reviewer_effort": effort, "review_disposition": {"review_fingerprint": fingerprint,
+                "items": [], "author_action": "none", "author_disposition": author}}
+            original = copy.deepcopy(payload)
+            result = pr._handle_plan_task(ctx, **payload)
+            assert _control(result) == {"outcome": "DEGRADED", "closed": False}
+            pending = _state(harness)
+            assert pending["waves"][-1]["custody_pending"]
+            assert not pending["waves"][-1].get("author_disposition")
+            assert not pending["current_attempt"].get("author_subject")
+            assert payload == original and executor.execute_calls == 3
+        executor.release.set()
+        assert _wait_until(lambda: len(_mailbox_entries(harness.drive, ctx.task_id)) == 1)
+        result = pr._handle_plan_task(ctx, **payload)
+        assert _control(result) == {"outcome": "GREEN", "closed": True}
+        state = _state(harness)
+        collected = authority_wave(harness.drive, ctx.task_id, state["waves"][-1])
+        assert executor.execute_calls == 3 and state["cycles_paid"] == 1
+        assert len(state["waves"]) == 1 and collected["request_fingerprint"] == fingerprint
+        assert collected["reviewer_effort"] == exact["reviewer_effort"] == ""
+        assert collected["reviewer_config_fingerprint"] == exact["reviewer_config_fingerprint"]
+        assert not collected.get("author_disposition") and payload == original
+    finally:
+        executor.release.set()
+    assert _wait_until(lambda: len(_mailbox_entries(harness.drive, ctx.task_id)) == 1)

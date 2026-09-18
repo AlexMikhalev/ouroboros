@@ -126,6 +126,10 @@ class _PlanRequest:
     spec: Any
     reviewer_effort: str = ""  # the envelope's declared panel strength ('' = the owner's setting)
 
+    def __post_init__(self):
+        effort = str(self.reviewer_effort or "").strip().lower()
+        object.__setattr__(self, "reviewer_effort", "" if effort == "default" else effort)
+
 _SPEC_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -216,7 +220,7 @@ _DISPOSITION_SCHEMA = {
     "additionalProperties": False,
     "description": (
         "Answer the findings of the wave (ordinary dispositions use only this field); "
-        "explicit author_action with author_disposition may also select a full current goal/plan/spec without a new reviewer. The wave is "
+        "explicit author_action=finish|stop with author_disposition may also select a full current goal/plan/spec without a new reviewer. The wave is "
         "named by review_fingerprint. While that wave is still open with reviewer slots in "
         "flight, this call first COLLECTS what has settled at $0 without waiting (items may be "
         "[]); to wait longer, re-submit the same envelope. note/need_evidence findings close at $0; a blocking "
@@ -227,8 +231,8 @@ _DISPOSITION_SCHEMA = {
     "properties": {
         "review_fingerprint": {"type": "string"},
         "author_disposition": plan_spec.AUTHOR_DISPOSITION_SCHEMA,
-        "author_action": {"type": "string", "enum": ["finish", "stop"],
-                          "description": "Explicit current-plan choice. stop permits unfinished finalization only; finish never overrides Blocking review."},
+        "author_action": {"type": "string", "enum": ["none", "finish", "stop"], "default": "none",
+                          "description": "Default none means no author action, even if author_disposition is filled; collect or answer findings only. finish/stop explicitly select the current plan. stop permits unfinished finalization only; finish never overrides Blocking review."},
         "items": {
             "type": "array",
             "items": {
@@ -262,7 +266,7 @@ def get_tools():
                     "when another paid cycle is available. Cycles are bounded by the owner's Max review cycles; an unchanged "
                     "envelope replays the recorded result for free (a locator a reviewer asked for "
                     "with need_evidence is attached by the host next time and makes the envelope "
-                    "new; a different reviewer_effort re-dispatches a paid panel). Under blocking enforcement an "
+                    "new; a new review-mode call with a different reviewer_effort re-dispatches a paid panel). Under blocking enforcement an "
                     "open review holds implementation. An explicit review_disposition.author_action=stop "
                     "permits unfinished finalization only. Advisory author_action=finish may select a corrected "
                     "goal+plan+spec in the same call without another panel, citing the earlier review_fingerprint "
@@ -277,7 +281,9 @@ def get_tools():
                         "goal": {"type": "string", "description": "Why — the outcome the work serves."},
                         "plan": {"type": "string", "description": "Accompanying prose: how you intend to do it (context for reviewers; the spec is what is judged)."},
                         "spec": _SPEC_SCHEMA,
-                        "reviewer_effort": _REVIEWER_EFFORT_SCHEMA,
+                        "reviewer_effort": {**_REVIEWER_EFFORT_SCHEMA,
+                            "enum": ["default", *_REVIEWER_EFFORT_SCHEMA["enum"]], "default": "default",
+                            "description": "default uses the configured effort without an override; ignored when collecting or answering a recorded wave. " + _REVIEWER_EFFORT_SCHEMA["description"]},
                         "review_disposition": _DISPOSITION_SCHEMA,
                     },
                     # Review, disposition-only, or explicit author selection with a current envelope.
@@ -311,7 +317,9 @@ def _vacuous_disposition(value: object) -> bool:
     beside an EMPTY fingerprint names no wave and answers no finding, so it carries
     nothing either: without this a model that fills every schema key sent it with
     its first plan and looped on PLAN_REVIEW_DISPOSITION_MIXED_ENVELOPE (seen live)."""
-    if not isinstance(value, dict) or set(value) - {"review_fingerprint", "items", "author_disposition"}:
+    if not isinstance(value, dict) or set(value) - {"review_fingerprint", "items", "author_disposition", "author_action"}:
+        return False
+    if value.get("author_action", "none") != "none":
         return False
     author = value.get("author_disposition")
     author_vacuous = author is None or (
@@ -326,19 +334,37 @@ def _typed_refusal(ctx: ToolContext, code: str, text: str) -> str:
     unchanged; only the registry-visible status stops reading as a successful call."""
     return _publish_tool_result(ctx, ToolResult(status=TOOL_CODE_SPECS[code].status, code=code, text=text))
 
+def _argument_values(values: dict, names: Any) -> str:
+    """Bounded diagnostic previews; full caller arguments remain in their existing trace."""
+    return "; ".join(f"{name}={plan_spec.bounded_text(json.dumps(values.get(name), ensure_ascii=False, default=str), plan_spec.MAX_ITEM_CHARS)}"
+                     for name in names)
+
 def _handle_plan_task(ctx: ToolContext, **params) -> str:
     raw_disposition = params.get("review_disposition")
-    # The registry refuses unknown params; a vacuous envelope field carries no plan.
-    envelope_fields = [k for k in ("goal", "plan", "spec", "reviewer_effort") if not _vacuous(k, params.get(k))]
+    # Explicit none disambiguates schema-filled author fields from the legacy finish form.
+    # Normalize a copy: the caller's trace must retain the exact submitted arguments.
+    if isinstance(raw_disposition, dict) and raw_disposition.get("author_action") == "none":
+        raw_disposition = dict(raw_disposition)
+        author = raw_disposition.pop("author_disposition", None)
+        if author is not None and (not isinstance(author, dict) or set(author) - {"disposition", "rationale"}
+                or not all(isinstance(author.get(key), str) for key in ("disposition", "rationale"))
+                or author["disposition"] not in plan_spec.AUTHOR_DISPOSITION_SCHEMA["properties"]["disposition"]["enum"]):
+            return _typed_refusal(ctx, "TOOL_ARG_ERROR", "ERROR: PLAN_AUTHOR_SUBJECT_INVALID: "
+                "author_action=none requires a schema-shaped author_disposition when supplied; "
+                + _argument_values(params["review_disposition"], ("author_action", "author_disposition")))
+        raw_disposition.pop("author_action")
+    # Effort declares a NEW panel's strength; a recorded wave keeps its frozen roster.
+    envelope_fields = [k for k in ("goal", "plan", "spec") if not _vacuous(k, params.get(k))]
     if raw_disposition is not None and not _vacuous_disposition(raw_disposition):
-        if isinstance(raw_disposition, dict) and raw_disposition.get("author_action"):
+        if isinstance(raw_disposition, dict) and "author_action" in raw_disposition:
             return _apply_author_subject(ctx, raw_disposition, params if envelope_fields else None)
         if envelope_fields:
             return _typed_refusal(
                 ctx, "TOOL_ARG_ERROR",
                 "ERROR: PLAN_REVIEW_DISPOSITION_MIXED_ENVELOPE: disposition mode accepts "
                 "review_disposition only; a changed plan needs a new review-mode call "
-                "without review_disposition. No plan attempt was recorded.",
+                "without review_disposition. No plan attempt was recorded. Non-empty plan fields: "
+                + _argument_values(params, envelope_fields),
             )
         if not isinstance(raw_disposition, dict):
             return _typed_refusal(
@@ -354,7 +380,7 @@ def _handle_plan_task(ctx: ToolContext, **params) -> str:
         )
     request = _PlanRequest(
         goal=str(params.get("goal") or ""), plan=str(params.get("plan") or ""), spec=params.get("spec"),
-        reviewer_effort=str(params.get("reviewer_effort") or "").strip().lower(),
+        reviewer_effort=params.get("reviewer_effort"),
     )
     try:  # the ToolEntry envelope is the outer settlement bound (plan_review_collect.run_plan_coroutine)
         return _collect.run_plan_coroutine(_run_plan_review_async(ctx, request))
@@ -956,10 +982,13 @@ def _apply_author_subject(ctx: ToolContext, disposition: dict, envelope: Optiona
 
     try:
         if set(disposition) - {"review_fingerprint", "items", "author_disposition", "author_action"}:
-            raise ValueError("unknown disposition fields")
-        action = disposition.get("author_action") or "finish"
-        if action not in {"finish", "stop"} or review_retry_cancelled(ctx):
-            raise ValueError("invalid action or task cancelled")
+            raise ValueError("unknown disposition fields: " + _argument_values(disposition,
+                sorted(set(disposition) - {"review_fingerprint", "items", "author_disposition", "author_action"})))
+        action = disposition.get("author_action", "finish")
+        if action not in ("finish", "stop"):
+            raise ValueError("author_action must be none, finish or stop; none uses collection mode")
+        if review_retry_cancelled(ctx):
+            raise ValueError("task cancelled; author_action cannot be applied")
         root, task_id = _planning_state_location(ctx)
         state = load_plan_review_state(root, task_id)
         critic_fp = str(disposition.get("review_fingerprint") or "")
@@ -1003,7 +1032,8 @@ def _apply_author_subject(ctx: ToolContext, disposition: dict, envelope: Optiona
             status="cycles_exhausted" if exhausted else "open", reason="author_stop" if action == "stop" else "author_current_plan",
             author_subject={"source_ref": ref, "review_fingerprint": critic_fp, "author_disposition": author})
     except (OSError, TimeoutError, ValueError) as exc:
-        return _typed_refusal(ctx, "TOOL_ARG_ERROR", f"ERROR: PLAN_AUTHOR_SUBJECT_INVALID: {exc}")
+        return _typed_refusal(ctx, "TOOL_ARG_ERROR", f"ERROR: PLAN_AUTHOR_SUBJECT_INVALID: {exc}; "
+            + _argument_values(disposition, ("author_action", "review_fingerprint", "items", "author_disposition")))
     allowed = action == "finish" and not review_enforcement_blocks(enforcement)
     text = (f"Current author plan saved: {fingerprint}. Critic subject: {critic_fp}. "
             "No reviewer called and no cycle consumed; original findings and custody remain unchanged. "
