@@ -151,7 +151,8 @@ def test_native_budget_stays_total_across_shutdown_observation_slices(monkeypatc
     from ouroboros import launcher_bootstrap as bootstrap, config
 
     ticks = iter([0.0, 0.0, 0.2, 0.4, 0.6])
-    monkeypatch.setattr(bootstrap.time, 'monotonic', lambda: next(ticks))
+    # Keep the finite test clock out of asyncio's Windows Proactor cleanup.
+    monkeypatch.setattr(bootstrap, 'time', SimpleNamespace(monotonic=lambda: next(ticks)))
     monkeypatch.setattr(config, 'EXTERNAL_PLATFORM_UPDATE_TIMEOUT_SEC', 0.5)
     waits, cleanup = [], []
     def communicate(timeout):
