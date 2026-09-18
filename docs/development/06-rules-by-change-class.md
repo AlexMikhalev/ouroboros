@@ -664,8 +664,11 @@ and what enforces each.
   correct that attempt; ordinary terminal rows stay immutable, and full/incremental
   validation must agree. Reconcile through existing custody maintenance only after
   physical ownership ends, preserve review owners, and read exact recorded model
-  operations without creating new work. Refresh existing cost projections without
-  fabricating completion (ARCHITECTURE §6 "Budget tracking"; storage rules and tests:
+  operations without creating new work. Retry existing cost projections independently
+  of another ledger transition, including after compaction, using one indexed
+  maintenance-drive view rather than filtering it for each owner. A different
+  recorded budget root keeps its own accounting path; never fabricate completion
+  (ARCHITECTURE §6 "Budget tracking"; storage rules and tests:
   `docs/USAGE_COMPACTION.md`, `tests/test_usage_abandoned_ledger.py`).
 - Hold the usage-ledger cross-process lock only for budget check, validated append and
   fsync — never over network I/O; a caller that owns a finalization reserve passes it
@@ -909,7 +912,8 @@ and what enforces each.
 - Keep delivered result, unresolved tool-call evidence and host acceptance separate.
   Error count alone does not degrade execution or establish objective acceptance;
   retain `execution.unresolved_tool_errors` and the cosmetic bucket, and expose the
-  existing no-review warning for either when the objective is `not_evaluated`. Test
+  existing no-review warning for either when the canonical objective is
+  `not_evaluated`, including after delivery/child-state normalization. Test
   every verdict and the no-review case while preserving stronger typed terminal causes
   (ARCHITECTURE §6 "Task lifecycle"; `tests/test_outcome_tool_error_axes.py`).
 - Every direct child result needs an exact-hash disposition through the existing
@@ -1084,4 +1088,3 @@ Enforcement: review-only — CHECKLISTS item 2(f) scores the no-`[:N]` rule in
 commit review.
 
 ---
-

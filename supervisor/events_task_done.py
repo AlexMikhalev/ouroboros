@@ -77,13 +77,17 @@ def _finished_with_warnings(task_done_event: Dict[str, Any]) -> bool:
 
 def _authoritative_terminal_cost(
     task_id: str, task: Dict[str, Any], result: Dict[str, Any], evt: Dict[str, Any], drive_root: pathlib.Path,
+    *, breakdown: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    """Project one terminal task/root from the physical-attempt authority."""
+    """Project terminal cost; the optional breakdown belongs to drive_root only."""
     from ouroboros.cost_projection import honest_accounted_amount
     from supervisor.state import reconstruct_task_cost
 
     authority_root = pathlib.Path(task.get("budget_drive_root") or drive_root)
-    projection = reconstruct_task_cost(task_id, fields=True, drive_root=authority_root)
+    if breakdown is not None and authority_root.resolve() != pathlib.Path(drive_root).resolve():
+        breakdown = None  # A split/copyback task keeps its canonical monetary authority.
+    projection = reconstruct_task_cost(task_id, fields=True, drive_root=authority_root,
+                                       **({"breakdown": breakdown} if breakdown is not None else {}))
     from ouroboros.task_results import resolve_task_lineage
 
     metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
@@ -115,10 +119,15 @@ def _authoritative_terminal_cost(
         try:
             from ouroboros.usage_accounting import usage_breakdown
 
-            subtree = usage_breakdown(
-                authority_root,
-                root_task_id=str(lineage["root_task_id"] or task_id),
-            )
+            root_id = str(lineage["root_task_id"] or task_id)
+            if breakdown is None:
+                subtree = usage_breakdown(authority_root, root_task_id=root_id)
+            else:
+                from ouroboros._usage_rows import _breakdown_bucket, _with_integrity
+
+                subtree = breakdown["by_root"].get(root_id)
+                if subtree is None:
+                    subtree = _with_integrity(_breakdown_bucket(()), bool(breakdown.get("integrity_degraded")))
             subtree_final = bool(subtree.get("cost_final"))
             subtree_amount = honest_accounted_amount(subtree)
             projection.update({
@@ -169,8 +178,10 @@ def _authoritative_terminal_cost(
     return with_cost_aliases(projection)
 
 
-def _refresh_terminal_task_cost(drive_root: pathlib.Path, task_id: str) -> bool:
-    """Refresh bookkeeping after late settlement without publishing task completion."""
+def _refresh_terminal_task_cost(
+    drive_root: pathlib.Path, task_id: str, *, breakdown: Dict[str, Any] | None = None,
+) -> bool:
+    """Refresh bookkeeping only; a supplied breakdown is bound to drive_root."""
     from ouroboros.task_status import SETTLED_STATUSES
 
     current = load_task_result(drive_root, task_id, strict=True) or {}
@@ -179,7 +190,7 @@ def _refresh_terminal_task_cost(drive_root: pathlib.Path, task_id: str) -> bool:
     checkpoint = current.get("root_phase_checkpoint") or {}
     if post_task_synthesis_is_open(checkpoint.get("post_task_synthesis")):
         return False
-    fields = _authoritative_terminal_cost(task_id, current, current, {}, drive_root)
+    fields = _authoritative_terminal_cost(task_id, current, current, {}, drive_root, breakdown=breakdown)
     if fields.get("cost_accounting_status") != "available" or all(current.get(key) == value for key, value in fields.items()):
         return False
 

@@ -870,6 +870,12 @@ def normalize_outcome_axes(result: Dict[str, Any]) -> Dict[str, Any]:
     for key, value in axes.items():
         if key not in normalized:
             normalized[key] = value
+    # Delivery/deferred-work states are not acceptance. Keep the warning when
+    # normalization restores their objective to not_evaluated.
+    if normalized["objective"].get("status") == OBJECTIVE_NOT_EVALUATED and (
+        normalized["execution"].get("unresolved_tool_errors") or normalized["execution"].get("cosmetic_tool_errors")
+    ):
+        _merge_objective_warning(normalized["objective"], WARN_RESIDUAL_TOOL_ERRORS_WITHOUT_REVIEW)
     return normalized
 
 

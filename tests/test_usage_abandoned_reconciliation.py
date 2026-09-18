@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import hashlib
 import json
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -303,3 +304,214 @@ def test_a_daemon_failure_never_starves_a_later_retained_local_receipt(env, monk
     assert _final(env, waiting)["state"] == "dispatched"
     assert load_task_result(env.root, "child")["accounted_upper_bound_usd"] == 1.65
     assert calls == ["attached", "waiting", "closed"]
+
+
+@pytest.mark.parametrize("failed_task", ["child", "root"])
+@pytest.mark.parametrize("compact", [False, True])
+def test_failed_projection_retries_from_settled_or_compacted_truth(env, monkeypatch, failed_task, compact):
+    from ouroboros import usage_compaction, _usage_rows_memo
+    from supervisor import events_task_done
+
+    _terminal(env)
+    _terminal(env, "root", checkpoint={"post_task_synthesis": "completed"})
+    if compact:
+        # Real compaction requires a byte saving, not merely one foldable row.
+        for _ in range(20):
+            usage.settle_attempt(_attempt(env), cost_usd=0.0, cost_final=True)
+    reservation = _attempt(env, provider="claudexor")
+    for task_id in ("child", "root"):
+        events_task_done._refresh_terminal_task_cost(env.root, task_id)
+    _remote_request(env, reservation, "receipt")
+    _remote_receipt(env, reservation, "receipt")
+    writer = events_task_done.write_task_result
+    failed = []
+
+    def fail_once(root, task_id, status, **fields):
+        if task_id == failed_task and not failed:
+            failed.append(task_id)
+            raise TimeoutError("fixture result lock busy after ledger settlement")
+        return writer(root, task_id, status, **fields)
+
+    monkeypatch.setattr(events_task_done, "write_task_result", fail_once)
+    maintenance._reconcile_abandoned_usage(env.root)
+    assert failed == [failed_task]
+    assert _final(env, reservation)["cost_usd"] == 0.4
+    amount_key = "accounted_upper_bound_usd" + ("_with_children" if failed_task == "root" else "")
+    assert load_task_result(env.root, failed_task)[amount_key] == 1.25
+    if compact:
+        monkeypatch.setattr(usage_compaction, "_fold_clock", lambda: time.time() + 1_000_000)
+        with usage._locked(env.root) as heartbeat:
+            assert usage_compaction.compact_usage_ledger_locked(env.root, heartbeat=heartbeat)
+            rows = usage._read_records_locked_cached(env.root)
+        assert not any(row["attempt_id"] == reservation.attempt_id for row in rows)
+        assert any(row.get("kind") == "usage_baseline_group" and row.get("task_id") == "child"
+                   and row.get("root_task_id") == "root" for row in rows)
+    # A new process needs no remembered refresh failure to discover this duty.
+    with _usage_rows_memo._ROWS_MEMO_LOCK:
+        _usage_rows_memo._ROWS_MEMO.clear()
+    with _usage_rows_memo._LEDGER_READ_CACHE_LOCK:
+        _usage_rows_memo._LEDGER_READ_CACHE.clear()
+    ledger_before = (env.root / usage.LEDGER_REL).read_bytes()
+    events_before = len(_events(env))
+
+    maintenance._reconcile_abandoned_usage(env.root)
+
+    assert (env.root / usage.LEDGER_REL).read_bytes() == ledger_before
+    assert len(_events(env)) == events_before + 1
+    for task_id, key in (("child", "accounted_upper_bound_usd"),
+                         ("root", "accounted_upper_bound_usd_with_children")):
+        stored = load_task_result(env.root, task_id)
+        assert stored[key] == 0.4 and stored["cost_final"] is True
+        assert stored["result"] == f"Preserved {task_id} answer" and stored["status"] == "cancelled"
+    assert load_task_result(env.root, "root")["root_phase_checkpoint"] == {"post_task_synthesis": "completed"}
+    before = ledger_before, (env.root / "logs/events.jsonl").read_bytes()
+    maintenance._reconcile_abandoned_usage(env.root)
+    assert ((env.root / usage.LEDGER_REL).read_bytes(), (env.root / "logs/events.jsonl").read_bytes()) == before
+    assert all(row.get("type") != "task_done" for row in (
+        json.loads(line) for line in (env.root / "logs/events.jsonl").read_text(encoding="utf-8").splitlines()))
+
+
+def test_native_late_receipt_refreshes_without_another_eligible_transition(env):
+    _terminal(env)
+    _terminal(env, "root")
+    reservation = _attempt(env)
+    maintenance._reconcile_abandoned_usage(env.root)
+    assert is_abandoned_settlement(_final(env, reservation))
+    assert load_task_result(env.root, "child")["accounted_upper_bound_usd"] == 1.25
+
+    usage.settle_attempt(reservation, {"prompt_tokens": 12, "completion_tokens": 3}, cost_usd=0.4, cost_final=True)
+    ledger = (env.root / usage.LEDGER_REL).read_bytes()
+    maintenance._reconcile_abandoned_usage(env.root)
+
+    assert (env.root / usage.LEDGER_REL).read_bytes() == ledger
+    child = load_task_result(env.root, "child")
+    assert child["accounted_upper_bound_usd"] == 0.4 and child["cost_final"] is True
+    assert (child["prompt_tokens"], child["completion_tokens"]) == (12, 3)
+    assert load_task_result(env.root, "root")["accounted_upper_bound_usd_with_children"] == 0.4
+    before = _events(env)
+    maintenance._reconcile_abandoned_usage(env.root)
+    assert _events(env) == before
+
+
+def test_projection_retry_keeps_live_post_task_and_review_guards(env, monkeypatch):
+    from supervisor import events_task_done
+
+    _terminal(env, "live")
+    _terminal(env, "synthesis", checkpoint={"post_task_synthesis": "running"})
+    _terminal(env, "review")
+    _terminal(env, "root", checkpoint={"post_task_synthesis": "running"})
+    env.live.add("live")
+    for task_id in ("live", "synthesis"):
+        usage.settle_attempt(_attempt(env, task_id), cost_usd=0.4, cost_final=True)
+    with usage.usage_scope(usage.UsageScope(review_slot_id="acceptance-slot")):
+        review = _attempt(env, "review")
+    usage.settle_attempt(review, cost_usd=0.4, cost_final=True)
+    before = (env.root / usage.LEDGER_REL).read_bytes()
+    monkeypatch.setattr(events_task_done, "_refresh_terminal_task_cost",
+                        lambda *args, **kwargs: pytest.fail("ineligible owner cannot refresh"))
+    maintenance._reconcile_abandoned_usage(env.root)
+    assert (env.root / usage.LEDGER_REL).read_bytes() == before
+    assert not _events(env)
+
+
+@pytest.mark.parametrize("integrity_degraded", [False, True])
+def test_projection_uses_one_indexed_breakdown_for_distinct_owners(env, monkeypatch, integrity_degraded):
+    from ouroboros import task_results
+    from ouroboros.usage_ledger import QUARANTINE_REL
+    from supervisor import events_task_done
+
+    owners = []
+    for index in range(3):
+        root_id, child_id = f"root-{index}", f"child-{index}"
+        for task_id in (root_id, child_id):
+            write_task_result(env.root, task_id, "cancelled", result="Preserved answer",
+                              root_task_id=root_id, parent_task_id="" if task_id == root_id else root_id,
+                              delegation_role="root" if task_id == root_id else "subagent")
+            owners.append(task_id)
+        for _ in range(2):
+            reservation = usage.reserve_attempt(usage.AttemptRequest(
+                model="test-model", provider="openai", drive_root=env.root,
+                task_id=child_id, root_task_id=root_id, parent_task_id=root_id,
+                reservation_usd=None if index == 1 else 1.25,
+                force_unknown_reservation=index == 1, global_limit_usd=100.0,
+            ))
+            if index != 2:
+                usage.mark_dispatched(reservation)
+            if index == 0:
+                usage.settle_attempt(reservation, {"prompt_tokens": 7}, cost_usd=0.4, cost_final=True)
+    if integrity_degraded:
+        (env.root / QUARANTINE_REL).write_text("fixture quarantine evidence\n", encoding="utf-8")
+    reads, aggregations = [], []
+    read_task, breakdown = task_results.load_task_result, usage.usage_breakdown
+    monkeypatch.setattr(task_results, "load_task_result",
+                        lambda root, task_id, **kw: reads.append(task_id) or read_task(root, task_id, **kw))
+
+    def aggregate(root, **kwargs):
+        aggregations.append(kwargs)
+        return breakdown(root, **kwargs)
+
+    monkeypatch.setattr(usage, "usage_breakdown", aggregate)
+    maintenance._reconcile_abandoned_usage(env.root)
+    assert aggregations == [{}], "one bulk view, no per-owner full-ledger filters"
+    assert sorted(reads) == sorted(owners), "ownership reads are cached across attempts"
+    for task_id in owners:
+        stored = load_task_result(env.root, task_id)
+        expected = events_task_done._authoritative_terminal_cost(task_id, stored, stored, {}, env.root)
+        assert all(stored.get(key) == value for key, value in expected.items()), task_id
+        assert stored["ledger_integrity_degraded"] is integrity_degraded
+    known = load_task_result(env.root, "child-0")
+    unknown = load_task_result(env.root, "child-1")
+    released = load_task_result(env.root, "child-2")
+    assert (known["accounted_upper_bound_usd"], known["total_rounds"], known["prompt_tokens"]) == (0.8, 2, 14)
+    assert unknown["accounted_upper_bound_usd"] is None and unknown["non_final_rows"] == 2
+    assert (released["accounted_upper_bound_usd"], released["total_rounds"]) == (0.0, 0)
+    assert load_task_result(env.root, "root-1")["accounted_upper_bound_usd_with_children"] is None
+
+
+def test_bulk_projection_failure_defers_without_fake_zero_or_per_owner_fallback(env, monkeypatch):
+    _terminal(env)
+    _terminal(env, "root")
+    reservation = _attempt(env)
+    breakdown = usage.usage_breakdown
+    calls = []
+
+    def unavailable(root, **kwargs):
+        calls.append(kwargs)
+        raise TimeoutError("fixture ledger projection unavailable")
+
+    monkeypatch.setattr(usage, "usage_breakdown", unavailable)
+    maintenance._reconcile_abandoned_usage(env.root)
+    assert is_abandoned_settlement(_final(env, reservation))
+    assert calls == [{}] and not _events(env)
+    assert "accounted_upper_bound_usd" not in load_task_result(env.root, "child")
+    before = (env.root / usage.LEDGER_REL).read_bytes()
+    monkeypatch.setattr(usage, "usage_breakdown", breakdown)
+    maintenance._reconcile_abandoned_usage(env.root)
+    assert (env.root / usage.LEDGER_REL).read_bytes() == before
+    assert load_task_result(env.root, "child")["accounted_upper_bound_usd"] == 1.25
+    assert load_task_result(env.root, "root")["accounted_upper_bound_usd_with_children"] == 1.25
+
+
+@pytest.mark.parametrize("task_id", ["child", "root"])
+def test_prefetched_projection_preserves_a_different_canonical_budget_root(env, task_id):
+    canonical = env.root / "canonical-budget"
+    _terminal(env, task_id)
+    write_task_result(env.root, task_id, "cancelled", budget_drive_root=str(canonical))
+    usage.settle_attempt(_attempt(env, task_id), cost_usd=0.1, cost_final=True)
+    actual = usage.reserve_attempt(usage.AttemptRequest(
+        model="test-model", provider="openai", drive_root=canonical,
+        task_id=task_id, root_task_id="root", parent_task_id="" if task_id == "root" else "root",
+        reservation_usd=1.25, global_limit_usd=100.0,
+    ))
+    usage.mark_dispatched(actual)
+    usage.settle_attempt(actual, {"prompt_tokens": 21}, cost_usd=0.7, cost_final=True)
+    before = [(root / usage.LEDGER_REL).read_bytes() for root in (env.root, canonical)]
+
+    maintenance._reconcile_abandoned_usage(env.root)
+
+    stored = load_task_result(env.root, task_id)
+    assert stored["budget_drive_root"] == str(canonical)
+    assert (stored["accounted_upper_bound_usd"], stored["prompt_tokens"]) == (0.7, 21)
+    if task_id == "root":
+        assert stored["accounted_upper_bound_usd_with_children"] == 0.7
+    assert [(root / usage.LEDGER_REL).read_bytes() for root in (env.root, canonical)] == before

@@ -76,3 +76,57 @@ def test_advisory_review_cannot_clear_unreviewed_tool_error_warning():
     assert axes["objective"]["status"] == "not_evaluated"
     assert axes["objective"]["source"] == "none"
     assert axes["objective"]["warning"] == "residual_tool_errors_without_review"
+
+
+@pytest.mark.parametrize("exit_code,signal,bucket", [
+    (-9, "SIGKILL", "unresolved_tool_errors"), (1, "", "cosmetic_tool_errors"),
+])
+@pytest.mark.parametrize("extra,execution,reason", [
+    ({}, "ok", "final_message"),
+    ({"delivery_candidate": {"degraded": True, "degraded_reason": "invalid_delivery_control_after_repair"}},
+     "degraded", "invalid_delivery_control_after_repair"),
+    ({"child_result_dispositions": {"deferred_count": 1}}, "degraded", "child_results_deferred"),
+])
+def test_persisted_unjudged_objective_keeps_warning_after_normalization(
+    tmp_path, exit_code, signal, bucket, extra, execution, reason,
+):
+    from types import SimpleNamespace
+
+    from ouroboros.agent_task_pipeline import _store_task_result
+    from ouroboros.outcomes import public_task_result
+    from ouroboros.task_results import load_task_result
+
+    call = {"tool": "run_command", "args": {"cmd": ["false"]}, "is_error": True,
+            "status": "non_zero_exit", "exit_code": exit_code, "result": "SHELL_EXIT_ERROR"}
+    if signal:
+        call["signal"] = signal
+    _store_task_result(
+        env=SimpleNamespace(drive_root=tmp_path),
+        task={"id": "normalized-warning", "type": "task", "text": "Produce an answer"},
+        text="Retained answer.", usage={"rounds": 2, "cost": 0},
+        llm_trace={"tool_calls": [call], **copy.deepcopy(extra)}, review_evidence={},
+    )
+    saved = load_task_result(tmp_path, "normalized-warning")
+    original = copy.deepcopy(saved)
+    public = public_task_result(saved)
+    for record in (saved, public, public_task_result(public)):
+        axes = record["outcome_axes"]
+        assert axes["objective"]["status"] == "not_evaluated"
+        assert axes["objective"]["warnings"].count("residual_tool_errors_without_review") == 1
+        assert axes["execution"]["status"] == execution
+        assert axes["execution"]["reason_code"] == reason
+        assert axes["execution"][bucket][0]["exit_code"] == exit_code
+    assert saved == original
+
+
+@pytest.mark.parametrize("verdict", ["pass", "fail", "degraded"])
+def test_normalization_does_not_warn_over_authoritative_acceptance(verdict):
+    from ouroboros.outcomes import normalize_outcome_axes
+
+    record = {"status": "completed", "outcome_axes": {
+        "objective": {"status": verdict, "source": "task_acceptance_review"},
+        "execution": {"status": "ok", "unresolved_tool_errors": [{"exit_code": -9}]},
+    }}
+    original = copy.deepcopy(record)
+    assert normalize_outcome_axes(record)["objective"] == original["outcome_axes"]["objective"]
+    assert record == original

@@ -94,6 +94,22 @@ def _reconcile_abandoned_usage(drive_root: pathlib.Path) -> None:
     tasks, refresh = {}, set()
     gateway, gateway_unavailable = None, False
 
+    def eligible_task(task_id):
+        if not task_id:
+            return False
+        if task_id not in tasks:
+            try:
+                task = load_task_result(root, task_id, strict=True) or {}
+                checkpoint = task.get("root_phase_checkpoint") or {}
+                tasks[task_id] = task if (
+                    task.get("status") in SETTLED_STATUSES
+                    and not task_has_live_ownership(task_id)
+                    and not post_task_synthesis_is_open(checkpoint.get("post_task_synthesis"))
+                ) else None
+            except Exception:
+                tasks[task_id] = None  # Unreadable ownership permits neither duty.
+        return tasks[task_id] is not None
+
     def borrowed_gateway():
         nonlocal gateway, gateway_unavailable
         if gateway_unavailable:
@@ -108,28 +124,19 @@ def _reconcile_abandoned_usage(drive_root: pathlib.Path) -> None:
 
     try:
         for row in rows:
-            remote = row.get("provider") == "claudexor"
-            abandoned = is_abandoned_settlement(row)
-            if (row.get("kind", "attempt") != "attempt"
-                or any(row.get(key) for key in usage.REVIEW_ATTRIBUTION_KEYS)
-                or (row.get("state") not in {"reserved", "dispatched", "unresolved"}
-                    and not (remote and abandoned))):
+            kind = row.get("kind", "attempt")
+            if kind not in {"attempt", "usage_baseline_group"} or any(row.get(key) for key in usage.REVIEW_ATTRIBUTION_KEYS):
                 continue
             task_id = str(row.get("task_id") or "")
-            if not task_id:
+            # Settled/compacted attribution still owes projection after a failed write.
+            refresh.update(owner for owner in (task_id, str(row.get("root_task_id") or "")) if eligible_task(owner))
+            if not eligible_task(task_id):
                 continue
-            if task_id not in tasks:
-                try:
-                    task = load_task_result(root, task_id, strict=True) or {}
-                    checkpoint = task.get("root_phase_checkpoint") or {}
-                    tasks[task_id] = task if (
-                        task.get("status") in SETTLED_STATUSES
-                        and not task_has_live_ownership(task_id)
-                        and not post_task_synthesis_is_open(checkpoint.get("post_task_synthesis"))
-                    ) else None
-                except Exception:
-                    tasks[task_id] = None  # An unreadable owner is never proof of abandonment.
-            if tasks[task_id] is None:
+            remote = row.get("provider") == "claudexor"
+            abandoned = is_abandoned_settlement(row)
+            if (kind != "attempt"
+                or (row.get("state") not in {"reserved", "dispatched", "unresolved"}
+                    and not (remote and abandoned))):
                 continue
             reservation = usage.AttemptReservation(
                 str(row["attempt_id"]), root, str(row.get("model") or ""),
@@ -157,7 +164,6 @@ def _reconcile_abandoned_usage(drive_root: pathlib.Path) -> None:
                         continue
                 else:
                     continue
-                refresh.update((task_id, str(row.get("root_task_id") or "")))
             except ClaudexorUnavailable as exc:
                 gateway_unavailable = gateway_unavailable or exc.code == "daemon_unreachable"
                 log.debug("Model usage custody deferred for %s: %s", row["attempt_id"], exc.code)
@@ -169,9 +175,18 @@ def _reconcile_abandoned_usage(drive_root: pathlib.Path) -> None:
                 gateway.close()
             except Exception:
                 log.debug("Usage recovery gateway close failed", exc_info=True)
-    for task_id in sorted(refresh - {""}):
+    if not refresh:
+        return
+    try:
+        usage.ensure_legacy_imported(root)
+        # One post-transition indexed view avoids per-owner scans; failure retries next pass.
+        breakdown = usage.usage_breakdown(root)
+    except Exception:
+        log.warning("Reconciled usage projection unavailable", exc_info=True)
+        return
+    for task_id in sorted(refresh):
         try:
-            _refresh_terminal_task_cost(root, task_id)
+            _refresh_terminal_task_cost(root, task_id, breakdown=breakdown)
         except Exception:
             log.warning("Reconciled task cost refresh failed for %s", task_id, exc_info=True)
 

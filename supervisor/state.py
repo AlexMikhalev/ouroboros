@@ -687,8 +687,9 @@ def per_task_cost_summary(max_tasks: int = 10, tail_bytes: int = 512_000) -> Lis
 
 def reconstruct_task_cost(
     task_id: str, *, fields: bool = False, drive_root: Optional[pathlib.Path] = None,
+    breakdown: Optional[Dict[str, Any]] = None,
 ) -> Any:
-    """Reconstruct cost, or return honest terminal fields when requested."""
+    """Reconstruct cost; an indexed breakdown belongs to this drive after legacy import."""
     want = str(task_id or "")
     if not want:
         projection = {
@@ -704,8 +705,15 @@ def reconstruct_task_cost(
             from ouroboros.usage_accounting import ensure_legacy_imported, usage_breakdown
 
             authority_root = pathlib.Path(drive_root) if drive_root is not None else DRIVE_ROOT
-            ensure_legacy_imported(authority_root)
-            bucket = usage_breakdown(authority_root, task_id=want)
+            if breakdown is None:
+                ensure_legacy_imported(authority_root)
+                bucket = usage_breakdown(authority_root, task_id=want)
+            else:
+                from ouroboros._usage_rows import _breakdown_bucket, _with_integrity
+
+                bucket = breakdown["by_task"].get(want)
+                if bucket is None:
+                    bucket = _with_integrity(_breakdown_bucket(()), bool(breakdown.get("integrity_degraded")))
             projection = {
                 "cost_accounting_status": "available",
                 "accounted_upper_bound_usd": (
