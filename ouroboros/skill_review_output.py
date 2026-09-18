@@ -198,7 +198,7 @@ def render_skill_review_block(
             fail_items.append({"item": display_item})
         retry_coaching = build_self_verification_template(
             fail_items,
-            attempt_idx=attempt_idx,
+            attempt_idx=review_round,
             tool_name="skill_review",
             context_noun="skill pack",
         )

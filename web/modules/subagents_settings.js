@@ -360,16 +360,13 @@ export function availableSubagentRowMarkup(row, state, index = 0) {
                     ? selectHtml(`data-subagent-field="account" aria-label="Account for Subagent ${ordinal}"`, [{ label: '', options: profileOptions }], row.route.credential_profile_id || '')
                     : ''}
                 ${effortSelectHtml(`data-subagent-field="effort" aria-label="Reasoning effort for Subagent ${ordinal}"`, row.effort || '', 'route default')}
-            </div>
-            ${processingDetailsHtml(`data-subagent-field="processing_preference" aria-label="Processing for Subagent ${ordinal}"`, row.processing_preference, state.processingPreference)}
-            ${session ? `<div class="ui-field">
-                <label for="actor-${escapeHtml(rowKey)}-access">Access</label>
-                ${selectHtml(`id="actor-${escapeHtml(rowKey)}-access" data-subagent-field="access" aria-label="Access for Subagent ${ordinal}"`, [{ label: '', options: [
+                ${session ? selectHtml(`id="actor-${escapeHtml(rowKey)}-access" data-subagent-field="access" aria-label="Access for Subagent ${ordinal}"`, [{ label: '', options: [
                     { value: 'full', label: 'Full system access (default)' },
                     { value: 'workspace_write', label: 'Working files' },
-                ] }], row.access || 'full')}
-                <div class="ui-field-help" id="actor-${escapeHtml(rowKey)}-access-help">Full system access can reach outside the working folder. The selected agent must support it. Explicit task restrictions still apply.</div>
-            </div>` : ''}
+                ] }], row.access || 'full') : ''}
+            </div>
+            ${processingDetailsHtml(`data-subagent-field="processing_preference" aria-label="Processing for Subagent ${ordinal}"`, row.processing_preference, state.processingPreference)}
+            ${session ? `<div class="ui-field-help" id="actor-${escapeHtml(rowKey)}-access-help">Full system access can reach outside the working folder. The selected agent must support it. Explicit task restrictions still apply.</div>` : ''}
             <div id="actor-${escapeHtml(rowKey)}-meta" class="available-subagent-meta ui-field-help" data-subagent-meta${meta.tone ? ` data-tone="${escapeHtml(meta.tone)}"` : ''} title="${escapeHtml(meta.text)}"${meta.text ? '' : ' hidden'}>${escapeHtml(meta.text)}</div>
         </article>`;
 }
