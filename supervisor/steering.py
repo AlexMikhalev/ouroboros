@@ -80,7 +80,6 @@ def _refuse_steering_while_cancelling(
     ctx: Any,
     evt: Dict[str, Any],
     target: str,
-    chat_id: int,
     *,
     target_label: str = "",
     notify: bool = True,
@@ -246,7 +245,7 @@ def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
     # resolved so the durable receipt and owner notice use the same event-time
     # human label as a successful delivery.
     if _refuse_steering_while_cancelling(
-        ctx, evt, target, chat_id, target_label=target_label,
+        ctx, evt, target, target_label=target_label,
     ):
         return
 
@@ -374,7 +373,7 @@ def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
         # to hold the global queue lock for — and the old `return` skipped the
         # notice entirely).
         if _refuse_steering_while_cancelling(
-            ctx, evt, target, chat_id, target_label=target_label, notify=False,
+            ctx, evt, target, target_label=target_label, notify=False,
         ):
             cancel_pending_refused = True
         elif task_issued:
