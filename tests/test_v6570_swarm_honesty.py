@@ -72,8 +72,8 @@ def test_policy_denial_does_not_degrade_or_headline_tool_failure():
         assert ex["policy_denials"][0]["status"] == status, status
 
 
-def test_genuine_error_still_headlines_tool_failure():
-    from ouroboros.outcomes import EXECUTION_DEGRADED, derive_loop_outcome
+def test_genuine_error_is_recorded_without_headlining_a_tool_failure():
+    from ouroboros.outcomes import EXECUTION_OK, derive_loop_outcome
 
     out = derive_loop_outcome(
         "done",
@@ -81,8 +81,10 @@ def test_genuine_error_still_headlines_tool_failure():
         {"tool_calls": [{"tool": "run_command", "is_error": True, "status": "error",
                          "result": "⚠️ boom"}]},
     )
-    assert out["outcome_axes"]["execution"]["status"] == EXECUTION_DEGRADED
-    assert out["reason_code"] == "tool_failure"
+    assert out["outcome_axes"]["execution"]["status"] == EXECUTION_OK
+    assert out["reason_code"] == "final_message"
+    assert out["outcome_axes"]["execution"]["unresolved_tool_errors"][0]["status"] == "error"
+    assert out["outcome_axes"]["objective"]["warning"] == "residual_tool_errors_without_review"
 
 
 # --- EFFORT_SCALE SSOT (1.8) -------------------------------------------------

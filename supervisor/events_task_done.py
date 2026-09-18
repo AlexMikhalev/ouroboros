@@ -169,6 +169,42 @@ def _authoritative_terminal_cost(
     return with_cost_aliases(projection)
 
 
+def _refresh_terminal_task_cost(drive_root: pathlib.Path, task_id: str) -> bool:
+    """Refresh bookkeeping after late settlement without publishing task completion."""
+    from ouroboros.task_status import SETTLED_STATUSES
+
+    current = load_task_result(drive_root, task_id, strict=True) or {}
+    if current.get("status") not in SETTLED_STATUSES:
+        return False
+    checkpoint = current.get("root_phase_checkpoint") or {}
+    if post_task_synthesis_is_open(checkpoint.get("post_task_synthesis")):
+        return False
+    fields = _authoritative_terminal_cost(task_id, current, current, {}, drive_root)
+    if fields.get("cost_accounting_status") != "available" or all(current.get(key) == value for key, value in fields.items()):
+        return False
+
+    def project(latest, patch):
+        post = (latest.get("root_phase_checkpoint") or {}).get("post_task_synthesis")
+        if latest.get("status") not in SETTLED_STATUSES or post_task_synthesis_is_open(post):
+            raise ValueError("Cost refresh lost terminal task ownership")
+        return {**patch, "status": latest["status"]}
+
+    stored = write_task_result(
+        drive_root, task_id, current["status"], strict_existing_dict=True,
+        _field_projector=project, **fields,
+    )
+    event = {"type": "task_cost_finalized", "ts": utc_now_iso(), "task_id": task_id,
+             "root_task_id": str(stored.get("root_task_id") or task_id), **carry_cost_meta(stored)}
+    if append_jsonl(drive_root / "logs" / "events.jsonl", event):
+        from supervisor.message_bus import try_get_bridge
+        from supervisor.log_addressing import address_handler_push
+
+        bridge = try_get_bridge()
+        if bridge is not None:
+            bridge.push_log(address_handler_push(drive_root, event))
+    return True
+
+
 def _task_done_review_projection(
     result: Dict[str, Any], event: Dict[str, Any],
 ) -> Dict[str, Any]:
@@ -906,6 +942,8 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
         task_done_event["typed_routing_action"] = str(evt.get("typed_routing_action") or "").strip()
     if isinstance(artifact_bundle, dict):
         task_done_event["artifact_bundle"] = artifact_bundle
+    if isinstance(final_task_result.get("cancel_origin"), dict):
+        task_done_event["cancel_origin"] = dict(final_task_result["cancel_origin"])
     review_status = final_task_result.get("review_status") if isinstance(final_task_result, dict) else None
     if not isinstance(review_status, dict):
         review_status = evt.get("review_status")

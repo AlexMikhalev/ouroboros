@@ -633,7 +633,9 @@ class _ModelInvocation:
                 # verified wire bytes, including whitespace and numeric spelling.
                 call_type="llm_claudexor_response", payload={"result_json_utf8": raw.decode("utf-8")}, keep_raw=True,
                 manifest={"operation_id": self.operation_id, "invocation_id": self.invocation_id,
-                          "response_ref": self.response_ref, "model_role": self.role},
+                          "response_ref": self.response_ref, "model_role": self.role,
+                          "operation_state": self.detail.get("state"),
+                          "dispatch_state": (self.detail.get("dispatch") or {}).get("state")},
             )
         except Exception as error:
             # The caller keeps the useful result and the engine keeps its bytes.
@@ -877,6 +879,72 @@ def chat_claudexor(target: dict, messages: list, tools: list | None, **parameter
         finally:
             invocation.close()
     raise AssertionError("Unreachable model preparation loop")
+
+
+def recover_model_attempt(drive_root, row: dict, *, gateway_factory=None):
+    """Read an abandoned caller's existing operation; never create or cancel one.
+
+    A retained terminal receipt needs no network. Older receipts without dispatch
+    facts re-read their exact operation. Missing identity or live/unknown custody
+    defers; terminal work with unavailable price keeps that price unknown.
+    """
+    from ouroboros.observability import call_manifest_path, read_call_payload
+    from ouroboros.utils import read_json_dict
+
+    task_id, attempt_id = str(row.get("task_id") or ""), str(row.get("attempt_id") or "")
+    call_id = f"{attempt_id}_model_response"
+    manifest, payload = {}, {}
+    try:
+        manifest, payload, _ = read_call_payload(drive_root, task_id=task_id, call_id=call_id)
+    except FileNotFoundError:
+        pass
+    if manifest and manifest.get("invocation_id") != attempt_id:
+        return None
+    request = read_json_dict(call_manifest_path(drive_root, task_id, f"{attempt_id}_model_request")) or {}
+    if request and (request.get("invocation_id") != attempt_id or request.get("task_id") != task_id):
+        return None
+    operation_id = manifest.get("operation_id") or request.get("operation_id")
+    if not operation_id or (request.get("operation_id") and request["operation_id"] != operation_id):
+        return None
+    operation_state, dispatch_state = manifest.get("operation_state"), manifest.get("dispatch_state")
+    raw = payload.get("result_json_utf8") if isinstance(payload, dict) else None
+    gateway = None
+    try:
+        if operation_state not in {"succeeded", "failed", "cancelled"} or not dispatch_state:
+            gateway = (gateway_factory or read_owned_gateway)()
+            detail = gateway.get_model_operation(operation_id, timeout_sec=_READ_TIMEOUT_SEC)
+            operation_state = detail.get("state")
+            dispatch_state = (detail.get("dispatch") or {}).get("state")
+            if operation_state not in {"succeeded", "failed", "cancelled"}:
+                return None
+            response = detail.get("response") or {}
+            response_ref = response.get("ref") or manifest.get("response_ref") or {}
+            if raw is None and response.get("state") == "ready":
+                raw = gateway.get_model_result(operation_id, expected_ref=response_ref,
+                                               timeout_sec=_READ_TIMEOUT_SEC, raw_bytes=True).decode("utf-8")
+            payload = {"result_json_utf8": raw} if raw is not None else {"operation": detail}
+            persist_call(drive_root, task_id=task_id, call_id=call_id,
+                         call_type="llm_claudexor_response", payload=payload, keep_raw=True,
+                         manifest={"operation_id": operation_id, "invocation_id": attempt_id,
+                                   "response_ref": response_ref, "operation_state": operation_state,
+                                   "dispatch_state": dispatch_state})
+            if raw is not None and response.get("state") == "ready":
+                try:
+                    gateway.acknowledge_model_result(operation_id, response_ref["sha256"])
+                except Exception:
+                    log.debug("Recovered model response retained without ACK", exc_info=True)
+        if dispatch_state == "not_started":
+            return "released", {}, None, False
+        if dispatch_state != "response_received" or raw is None:
+            return "abandoned", {}, None, False
+        result = json.loads(raw)
+        if not isinstance(result, dict) or result.get("outcome") not in {"completed", "incomplete", "failed"}:
+            return "abandoned", {}, None, False
+        usage, cost, final = _usage(result)
+        return "settled", usage, cost, final
+    finally:
+        if gateway is not None and gateway_factory is None:
+            gateway.close()
 
 
 async def chat_claudexor_async(target: dict, messages: list, tools: list | None, **parameters: Any) -> tuple[dict, dict]:

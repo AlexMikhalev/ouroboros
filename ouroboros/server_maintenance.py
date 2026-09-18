@@ -66,8 +66,114 @@ def _run_cancel_delivery_ref_sweep(drive_root: pathlib.Path) -> None:
             retry_pending_child_ref_promotions(drive_root)
         except Exception:
             log.debug("Pending child-ref promotion retry failed", exc_info=True)
+        try:
+            _reconcile_abandoned_usage(drive_root)
+        except Exception:
+            log.warning("Abandoned usage reconciliation failed", exc_info=True)
     finally:
         _CANCEL_INTENT_SWEEP_LOCK.release()
+
+
+def _reconcile_abandoned_usage(drive_root: pathlib.Path) -> None:
+    """Close unowned terminal-task attempts; price and remote custody stay separate."""
+    from ouroboros import usage_accounting as usage
+    from ouroboros.claudexor_daemon import read_owned_gateway
+    from ouroboros.gateways.claudexor import ClaudexorUnavailable
+    from ouroboros.llm_claudexor import recover_model_attempt
+    from ouroboros.post_task_checkpoint import post_task_synthesis_is_open
+    from ouroboros.task_results import load_task_result
+    from ouroboros.task_status import SETTLED_STATUSES
+    from ouroboros.transport_custody import ProviderNotDispatched, release_pre_dispatch_attempt
+    from ouroboros.usage_ledger import is_abandoned_settlement
+    from supervisor.events_task_done import _refresh_terminal_task_cost
+    from supervisor.queue import task_has_live_ownership
+
+    root = pathlib.Path(drive_root)
+    with usage._locked(root):
+        rows = list(usage._final_rows(usage._read_records_locked_cached(root)).values())
+    tasks, refresh = {}, set()
+    gateway, gateway_unavailable = None, False
+
+    def borrowed_gateway():
+        nonlocal gateway, gateway_unavailable
+        if gateway_unavailable:
+            raise ClaudexorUnavailable("daemon_unreachable", "Usage recovery deferred until the next maintenance pass")
+        if gateway is None:
+            try:
+                gateway = read_owned_gateway()
+            except Exception:
+                gateway_unavailable = True
+                raise
+        return gateway
+
+    try:
+        for row in rows:
+            remote = row.get("provider") == "claudexor"
+            abandoned = is_abandoned_settlement(row)
+            if (row.get("kind", "attempt") != "attempt"
+                or any(row.get(key) for key in usage.REVIEW_ATTRIBUTION_KEYS)
+                or (row.get("state") not in {"reserved", "dispatched", "unresolved"}
+                    and not (remote and abandoned))):
+                continue
+            task_id = str(row.get("task_id") or "")
+            if not task_id:
+                continue
+            if task_id not in tasks:
+                try:
+                    task = load_task_result(root, task_id, strict=True) or {}
+                    checkpoint = task.get("root_phase_checkpoint") or {}
+                    tasks[task_id] = task if (
+                        task.get("status") in SETTLED_STATUSES
+                        and not task_has_live_ownership(task_id)
+                        and not post_task_synthesis_is_open(checkpoint.get("post_task_synthesis"))
+                    ) else None
+                except Exception:
+                    tasks[task_id] = None  # An unreadable owner is never proof of abandonment.
+            if tasks[task_id] is None:
+                continue
+            reservation = usage.AttemptReservation(
+                str(row["attempt_id"]), root, str(row.get("model") or ""),
+                str(row.get("provider") or ""), row.get("reservation_upper_bound_usd"),
+                str(row.get("processing_preference") or ""), str(row.get("submitted_processing_mode") or ""),
+                row.get("processing_basis"),
+            )
+            try:
+                recovered = None
+                if remote and row.get("state") != "reserved":
+                    recovered = recover_model_attempt(root, row, gateway_factory=borrowed_gateway)
+                    if recovered is None:
+                        continue
+                disposition, reported, cost, final = recovered or ("abandoned", {}, None, False)
+                if disposition == "settled":
+                    usage.settle_attempt(reservation, reported, cost_usd=cost, cost_final=final)
+                elif disposition == "released":
+                    if not release_pre_dispatch_attempt(reservation, ProviderNotDispatched("recovered model operation never started")):
+                        continue
+                elif disposition == "abandoned":
+                    if abandoned:
+                        continue
+                    state = usage.terminalize_abandoned_attempt(reservation, reason="owner_task_terminal", expected_seq=row.get("seq"))
+                    if state not in {"settled", "released"}:
+                        continue
+                else:
+                    continue
+                refresh.update((task_id, str(row.get("root_task_id") or "")))
+            except ClaudexorUnavailable as exc:
+                gateway_unavailable = gateway_unavailable or exc.code == "daemon_unreachable"
+                log.debug("Model usage custody deferred for %s: %s", row["attempt_id"], exc.code)
+            except Exception:
+                log.warning("Usage reconciliation deferred for %s", row["attempt_id"], exc_info=True)
+    finally:
+        if gateway is not None:
+            try:
+                gateway.close()
+            except Exception:
+                log.debug("Usage recovery gateway close failed", exc_info=True)
+    for task_id in sorted(refresh - {""}):
+        try:
+            _refresh_terminal_task_cost(root, task_id)
+        except Exception:
+            log.warning("Reconciled task cost refresh failed for %s", task_id, exc_info=True)
 
 
 def _periodic_supervisor_maintenance(

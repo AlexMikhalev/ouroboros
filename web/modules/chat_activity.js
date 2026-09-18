@@ -1206,7 +1206,7 @@ export function costMetaKeys(src) {
 
 const CARD_META_KEYS = [
     ...COST_META_KEYS, 'executor_route', 'execution_evidence', 'actual_substrate',
-    'executor_observation', 'model_execution', 'tool_calls', 'model', 'ts', 'initiator',
+    'executor_observation', 'model_execution', 'tool_calls', 'model', 'ts', 'initiator', 'cancel_origin',
 ];
 export function cardMetaKeys(src) {
     return Object.fromEntries(CARD_META_KEYS.map((key) => [key, src?.[key]]));

@@ -84,7 +84,7 @@ def test_store_task_result_preserves_failed_status(tmp_path):
     assert payload["result"] == "final failure reply"
 
 
-def test_store_task_result_marks_unresolved_tool_failure_failed(tmp_path):
+def test_store_task_result_keeps_delivered_answer_and_unresolved_tool_errors(tmp_path):
     from ouroboros.task_results import STATUS_COMPLETED
 
     env = SimpleNamespace(drive_root=tmp_path)
@@ -109,10 +109,12 @@ def test_store_task_result_marks_unresolved_tool_failure_failed(tmp_path):
 
     payload = json.loads((tmp_path / "task_results" / "task-tool-failed.json").read_text(encoding="utf-8"))
     assert payload["status"] == STATUS_COMPLETED
-    assert payload["outcome_axes"]["execution"]["status"] == "degraded"
+    assert payload["outcome_axes"]["execution"]["status"] == "ok"
     assert payload["outcome_axes"]["objective"]["status"] == "not_evaluated"
-    assert payload["reason_code"] == "tool_failure"
-    assert payload["loop_outcome"]["failure"]["tool_errors"][0]["status"] == "artifact_output_error"
+    assert payload["outcome_axes"]["objective"]["warning"] == "residual_tool_errors_without_review"
+    assert payload["reason_code"] == "final_message"
+    assert payload["loop_outcome"]["failure"] is None
+    assert payload["outcome_axes"]["execution"]["unresolved_tool_errors"][0]["status"] == "artifact_output_error"
 
 
 def test_store_task_result_allows_recovered_tool_failure_success(tmp_path):

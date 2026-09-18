@@ -329,10 +329,11 @@ def test_loop_outcome_distinguishes_success_empty_and_provider_failure():
             "result": "⚠️ ARTIFACT_OUTPUT_ERROR: command succeeded but declared output registration failed.",
         }]},
     )
-    assert tool_failure["outcome_axes"]["execution"]["status"] == EXECUTION_DEGRADED
-    assert tool_failure["reason_code"] == "tool_failure"
-    assert tool_failure["failure"]["kind"] == "tool"
-    assert tool_failure["failure"]["tool_errors"][0]["status"] == "artifact_output_error"
+    assert tool_failure["outcome_axes"]["execution"]["status"] == EXECUTION_OK
+    assert tool_failure["reason_code"] == "final_message"
+    assert tool_failure["failure"] is None
+    assert tool_failure["outcome_axes"]["execution"]["unresolved_tool_errors"][0]["status"] == "artifact_output_error"
+    assert tool_failure["outcome_axes"]["objective"]["warning"] == "residual_tool_errors_without_review"
 
     answer_with_tool_error = derive_loop_outcome(
         "FINAL ANSWER: 42",
@@ -344,8 +345,8 @@ def test_loop_outcome_distinguishes_success_empty_and_provider_failure():
             "result": "bad probe",
         }]},
     )
-    assert answer_with_tool_error["outcome_axes"]["execution"]["status"] == EXECUTION_DEGRADED
-    assert answer_with_tool_error["outcome_axes"]["execution"]["reason_code"] == "tool_failure"
+    assert answer_with_tool_error["outcome_axes"]["execution"]["status"] == EXECUTION_OK
+    assert answer_with_tool_error["outcome_axes"]["execution"]["reason_code"] == "final_message"
     assert answer_with_tool_error["reason_code"] == "final_message"
     assert answer_with_tool_error["failure"] is None
     assert answer_with_tool_error["final_answer"] == "42"
@@ -365,7 +366,7 @@ def test_loop_outcome_distinguishes_success_empty_and_provider_failure():
         },
     )
     assert stale_latch["final_answer"] == ""
-    assert stale_latch["reason_code"] == "tool_failure"
+    assert stale_latch["reason_code"] == "final_message"
 
     # A2 (v6.50.2): an access-policy block on a READ-ONLY exploratory tool is honest
     # telemetry, not a degraded execution — the agent simply could not look there. It is
@@ -412,8 +413,8 @@ def test_loop_outcome_distinguishes_success_empty_and_provider_failure():
     assert policy_write_block["failure"] is None
     assert execution["policy_denials"][0]["status"] == "resource_policy_blocked"
 
-    # Boundary: a GENUINE tool/exec error (not a policy refusal) on a write/shell tool
-    # STILL degrades — the policy_denials demotion is scoped to `*_blocked` refusals.
+    # A real tool error remains unresolved evidence; the delivered answer's
+    # execution status is not inferred from the number of unsuccessful calls.
     real_error = derive_loop_outcome(
         "Done.",
         {"rounds": 1},
@@ -424,8 +425,9 @@ def test_loop_outcome_distinguishes_success_empty_and_provider_failure():
             "result": "⚠️ unexpected error",
         }]},
     )
-    assert real_error["outcome_axes"]["execution"]["status"] == EXECUTION_DEGRADED
-    assert real_error["reason_code"] == "tool_failure"
+    assert real_error["outcome_axes"]["execution"]["status"] == EXECUTION_OK
+    assert real_error["reason_code"] == "final_message"
+    assert real_error["outcome_axes"]["execution"]["unresolved_tool_errors"][0]["status"] == "error"
 
 
 def test_a_listing_miss_then_a_success_elsewhere_leaves_execution_ok(tmp_path):
@@ -789,7 +791,7 @@ def test_normalize_outcome_axes_canonicalizes_partial_and_unknown_legacy():
 
 
 def test_t4_cosmetic_partition_guards():
-    # A GENUINE tool error STILL degrades (partition is structural).
+    # A genuine error keeps its unresolved classification and unreviewed warning.
     blocking = derive_loop_outcome(
         "Done",
         {"rounds": 2},
@@ -801,7 +803,9 @@ def test_t4_cosmetic_partition_guards():
             "result": "⚠️ unexpected write error",
         }]},
     )
-    assert blocking["outcome_axes"]["execution"]["status"] == EXECUTION_DEGRADED
+    assert blocking["outcome_axes"]["execution"]["status"] == EXECUTION_OK
+    assert blocking["outcome_axes"]["execution"]["unresolved_tool_errors"][0]["status"] == "error"
+    assert blocking["outcome_axes"]["objective"]["warning"] == "residual_tool_errors_without_review"
 
     # v6.57.0 (1.3): a POLICY refusal (`write_file_blocked`) is NOT degrading — it lands in
     # policy_denials telemetry (the runtime declined the write; the deliverable, if any, is
@@ -856,14 +860,12 @@ def test_t4_cosmetic_partition_guards():
 
 
 def test_signal_death_is_not_cosmetic_but_plain_exit_still_is():
-    """D7 (node-runtime sprint): the NEW contract for the cosmetic demotion.
+    """A killed child remains unresolved, never cosmetic or silently clean.
 
-    A run_command/run_script child KILLED BY A SIGNAL (typed meta: exit_code<0
-    or a signal name — e.g. the macOS kernel-CODESIGNING SIGKILL of a broken
-    node, an OOM kill, an external `kill -9`) is a REAL execution-degrading
-    tool error, symmetric with the timeout exclusion. A plain non-zero exit
-    (exit_code=1 probe/teardown noise) REMAINS cosmetic — that half of the T4
-    contract is deliberately unchanged."""
+    SIGKILL/OOM is an actual tool error even when a later answer is delivered.
+    It stays visible in execution evidence and warns when no acceptance review
+    judged the result. A plain non-zero exit remains cosmetic.
+    """
     killed = derive_loop_outcome(
         "Done.",
         {"rounds": 2},
@@ -878,10 +880,12 @@ def test_signal_death_is_not_cosmetic_but_plain_exit_still_is():
         }]},
     )
     execution = killed["outcome_axes"]["execution"]
-    assert execution["status"] == EXECUTION_DEGRADED
-    assert execution["reason_code"] == "tool_failure"
-    assert execution["failure"]["tool_errors"][0]["signal"] == "SIGKILL"
+    assert execution["status"] == EXECUTION_OK
+    assert execution["reason_code"] == "final_message"
+    assert execution["failure"] is None
+    assert execution["unresolved_tool_errors"][0]["signal"] == "SIGKILL"
     assert not execution["cosmetic_tool_errors"]
+    assert killed["outcome_axes"]["objective"]["warning"] == "residual_tool_errors_without_review"
 
     plain = derive_loop_outcome(
         "Done.",
@@ -944,13 +948,13 @@ def test_cancel_panic_kill_never_reaches_user_verdict_as_tool_failure(tmp_path):
     assert axes["execution"]["reason_code"] == "cancelled"
     assert "tool_failure" not in json.dumps(axes)
 
-    # 2) The honest OTHER half of the contract: had the SAME trace terminated
-    #    naturally (no cancel), the signal death IS a real degradation.
+    # 2) A natural completion retains the signal death as unresolved evidence
+    #    and discloses the unreviewed result without deriving execution failure.
     late = derive_loop_outcome("done", {}, sigkill_trace)
-    assert late["outcome_axes"]["execution"]["status"] == EXECUTION_DEGRADED
-    assert late["outcome_axes"]["execution"]["reason_code"] == "tool_failure"
+    assert late["outcome_axes"]["execution"]["status"] == EXECUTION_OK
+    assert late["outcome_axes"]["execution"]["unresolved_tool_errors"][0]["signal"] == "SIGKILL"
 
-    # 3) A LATE worker write carrying that degraded outcome cannot clobber the
+    # 3) A LATE worker write carrying that completed outcome cannot clobber the
     #    cancelled verdict: terminal statuses are sticky (monotonic guard).
     write_task_result(
         tmp_path, "t-cancel", "completed",

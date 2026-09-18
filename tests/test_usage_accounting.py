@@ -266,12 +266,15 @@ def test_abandoned_attempt_settles_with_the_usage_the_dead_child_reported(data_r
     assert [row["state"] for row in _ledger(data_root)] == ["reserved", "dispatched", "settled"]
 
 
-def test_abandoned_attempt_without_reported_usage_stays_honestly_unresolved(data_root):
+def test_abandoned_attempt_closes_with_its_price_honestly_unknown(data_root):
     reservation = ua.reserve_attempt(_request(data_root))
     ua.mark_dispatched(reservation)
 
-    assert ua.terminalize_abandoned_attempt(reservation, reason="child aborted") == "unresolved"
-    assert ua.usage_projection(data_root)["unresolved_upper_bound_usd"] == 1.0
+    assert ua.terminalize_abandoned_attempt(reservation, reason="child aborted") == "settled"
+    projection = ua.usage_projection(data_root)
+    assert projection["unresolved_upper_bound_usd"] == projection["accounted_usd"] == 1.0
+    assert projection["confirmed_usd"] == 0.0 and projection["cost_final"] is False
+    assert _ledger(data_root)[-1]["settle_reason"] == "abandoned"
 
 
 def test_abandoned_attempt_before_dispatch_is_released(data_root):

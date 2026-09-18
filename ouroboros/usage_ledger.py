@@ -42,6 +42,7 @@ _TERMINAL = frozenset({"settled", "unresolved", "released"})
 
 __all__ = (
     "LEDGER_REL", "LOCK_REL", "QUARANTINE_REL", "UsageAccountingError", "UsageLedgerCorrupt",
+    "is_abandoned_settlement",
 )
 
 
@@ -51,6 +52,17 @@ class UsageAccountingError(RuntimeError):
 
 class UsageLedgerCorrupt(UsageAccountingError):
     """Raised when durable history is structurally invalid."""
+
+
+def is_abandoned_settlement(row: Dict[str, Any]) -> bool:
+    """An administratively closed attempt whose actual price is still unknown."""
+    return (
+        str(row.get("kind") or "attempt") == "attempt"
+        and row.get("state") == "settled"
+        and row.get("settle_reason") == "abandoned"
+        and row.get("cost_usd") is None
+        and row.get("cost_final") is False
+    )
 
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -318,14 +330,16 @@ def _validate_records(
     *,
     start_seq: int = 1,
     states: Optional[Dict[str, str]] = None,
+    late_receipt_ids: Optional[set[str]] = None,
 ) -> None:
     """Validate row structure, dense sequence, and per-attempt transitions.
 
     ``start_seq``/``states`` are the ADDITIVE resume seam for incremental tail
     validation: a caller that already validated a prefix passes the next
-    expected sequence number and the prefix's per-attempt last-state map (which
-    is mutated in place as the tail validates). Defaults reproduce the historic
-    whole-ledger behavior exactly.
+    expected sequence number, per-attempt last states and ids still awaiting a
+    late receipt. Both collections are mutated as the tail validates. The latter
+    preserves the distinction between an abandoned settlement and an ordinary
+    immutable settlement across the incremental boundary.
 
     Baseline rows (docs/USAGE_COMPACTION.md)
     are legal ONLY as the leading block of a from-scratch validation: exactly
@@ -360,6 +374,7 @@ def _validate_records(
             )
 
     states = {} if states is None else states
+    late_receipt_ids = set() if late_receipt_ids is None else late_receipt_ids
     expected = int(start_seq)
     for row in records:
         try:
@@ -374,6 +389,8 @@ def _validate_records(
         kind = str(row.get("kind") or "attempt")
         if not attempt_id or state not in {"reserved", "dispatched", *_TERMINAL}:
             raise UsageLedgerCorrupt(f"invalid usage ledger row seq={row.get('seq')}")
+        if row.get("settle_reason") == "abandoned" and not is_abandoned_settlement(row):
+            raise UsageLedgerCorrupt(f"invalid abandoned settlement in usage row seq={sequence}")
         _validate_candidate_facts(row, sequence)
         for numeric_field in (
             "cost_usd", "reservation_upper_bound_usd", "reservation_usd",
@@ -469,9 +486,21 @@ def _validate_records(
                 raise UsageLedgerCorrupt(
                     f"dispatched->released requires a typed pre-dispatch reason at seq={row.get('seq')}"
                 )
+        elif kind == "attempt" and attempt_id in late_receipt_ids and (
+            (state == "settled" and (
+                row.get("settle_reason") == "late_receipt"
+                or (previous == "unresolved" and is_abandoned_settlement(row))
+            ))
+            or (state == "released" and str(row.get("reason") or "").startswith("before_dispatch_failed:"))
+        ):
+            pass  # One late receipt replaces uncertainty, never another actual settlement.
         else:
             raise UsageLedgerCorrupt(f"attempt {attempt_id} changed after terminal state")
         states[attempt_id] = state
+        if kind == "attempt" and (state == "unresolved" or is_abandoned_settlement(row)):
+            late_receipt_ids.add(attempt_id)
+        else:
+            late_receipt_ids.discard(attempt_id)
     _close_baseline_block()
 
 
@@ -531,7 +560,7 @@ class LedgerResumeState:
 
     Identity (``st_ino``/``st_dev``), extent (``size`` = byte offset after the
     last validated row) and ``st_mtime_ns`` fingerprint the file as it was read
-    UNDER THE LOCK; ``row_count`` and the per-attempt last-``states`` map seed
+    UNDER THE LOCK; ``row_count``, last-``states`` and ``late_receipt_ids`` seed
     tail validation so transition rules hold across the resume boundary. A
     missing ledger is represented as ``st_ino/st_dev = -1`` with ``size = 0``;
     ``st_ino/st_dev = -2`` marks a deliberately NON-RESUMABLE fingerprint (the
@@ -545,6 +574,7 @@ class LedgerResumeState:
     st_mtime_ns: int
     row_count: int
     states: Dict[str, str] = field(default_factory=dict)
+    late_receipt_ids: set[str] = field(default_factory=set)
 
 
 def _ledger_resume_state(
@@ -557,11 +587,16 @@ def _ledger_resume_state(
     with the validated content — including any quarantine truncation the read
     itself performed)."""
     states = {str(row.get("attempt_id") or ""): str(row.get("state") or "") for row in records}
+    late_receipt_ids = {
+        attempt_id for attempt_id, row in _final_rows(records).items()
+        if str(row.get("kind") or "attempt") == "attempt"
+        and (row.get("state") == "unresolved" or is_abandoned_settlement(row))
+    }
     path = root / LEDGER_REL
     try:
         stat = os.stat(path)
     except FileNotFoundError:
-        return LedgerResumeState(-1, -1, 0, -1, len(records), states)
+        return LedgerResumeState(-1, -1, 0, -1, len(records), states, late_receipt_ids)
     if stat.st_size > 0:
         try:
             with open(path, "rb") as handle:
@@ -576,9 +611,9 @@ def _ledger_resume_state(
             # _append_rows_locked repairs the boundary before writing, but reads
             # before any repair — or after a foreign blind append — must not
             # resume from a mid-line offset). Refuse until the tail is row-aligned.
-            return LedgerResumeState(-2, -2, stat.st_size, -1, len(records), states)
+            return LedgerResumeState(-2, -2, stat.st_size, -1, len(records), states, late_receipt_ids)
     return LedgerResumeState(
-        stat.st_ino, stat.st_dev, stat.st_size, stat.st_mtime_ns, len(records), states
+        stat.st_ino, stat.st_dev, stat.st_size, stat.st_mtime_ns, len(records), states, late_receipt_ids
     )
 
 
@@ -635,8 +670,10 @@ def _read_new_records_locked(
             return None
         records.append(row)
     seeded_states = dict(resume.states)
+    seeded_late_receipt_ids = set(resume.late_receipt_ids)
     try:
-        _validate_records(records, start_seq=resume.row_count + 1, states=seeded_states)
+        _validate_records(records, start_seq=resume.row_count + 1, states=seeded_states,
+                          late_receipt_ids=seeded_late_receipt_ids)
     except UsageLedgerCorrupt:
         return None
     return records, LedgerResumeState(
@@ -646,6 +683,7 @@ def _read_new_records_locked(
         stat.st_mtime_ns,
         resume.row_count + len(records),
         seeded_states,
+        seeded_late_receipt_ids,
     )
 
 
