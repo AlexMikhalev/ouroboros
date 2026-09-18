@@ -134,7 +134,11 @@ Run roots are append-only outside `repo/` and live `data/`; the focused contract
   registered as artifacts, adopted only with a declaration-time sha through the
   SSOT `artifacts.record_task_scratch`, and excluded from the workspace patch
   via `.scratch_manifest.json`; the guard verifies candidates post-exec by
-  stat, so a path mention is not a write. Never overload one for the other.
+  stat, so a path mention is not a write. Invalid prose-like paths yield no finding;
+  a failed whole audit is a separate diagnostic, never a replacement for completed
+  process output, exit/signal/timeout or runtime facts. Preserve genuine undeclared
+  findings and declared-output registration failures. Never overload one channel
+  for the other.
 - cwd: an omitted cwd selects `active_workspace`; a light direct task that
   needs writable scratch selects `task_drive` explicitly; a long-running
   service in light uses an explicit external/task/artifact cwd, and its
@@ -632,7 +636,10 @@ and what enforces each.
   a successful, positive never-dispatched release; unknown or dispatched claims stay
   charged.
 - Resource refusals wait inside the live call, before helper catch-all blocks, on the
-  existing task owner, mailbox, clocks and settings writer — no parked rounds,
+  existing task owner, mailbox, clocks and settings writer. Reprepare from canonical
+  messages, not the prior caption/off send copy; retain original images and apply
+  the selected route's image policy anew while preserving typed native reset and
+  its live turn slot. No parked rounds,
   compensation processes or replay of completed tools/reviews (ARCHITECTURE §6 "Quota
   and auth waits"). Typed errors cross the tracked image child intact; the shared
   waiting card keeps its revision fences and accepted/applied/saved distinction, and a
@@ -708,7 +715,9 @@ and what enforces each.
   `session_id`, per data root and model, shared by every task, child and consciousness
   cycle — Codex reuses a prefix across conversations only under the same session;
   ARCHITECTURE §6 "Caller-owned subscription model calls"); API-compatible lanes keep
-  prefix-derived session identity. A consciousness wake-up shares an owner turn's
+  prefix-derived session identity, excluding cache/host metadata from the copied
+  first-user identity on OpenRouter while preserving real task/model differences
+  and explicit affinity. A consciousness wake-up shares an owner turn's
   byte-identical schema array and system prefix, so what the level or wake reason
   changes lives only in the wake's user message and the dynamic tail; its model slot
   (the owner's `consciousness` role, when set) decides which cache it lands in. Between
@@ -1071,6 +1080,13 @@ Enforcement: the adversarial tests the first bullet mandates, plus
 
 #### Cognitive Artifact Integrity
 
+- An authored Main view uses the same canonical source checkpoint/materializer as
+  review and consolidation (ARCHITECTURE §6 "Context fitting, retry, and compaction").
+  Observe only the successful ordinary turn before tools execute; preserve exact
+  source references, complete tool units, newer owner messages and current schema
+  residency. Pure prospective fit does not call a model or introduce a new admission
+  threshold. Test the actual loop wiring, including projected images and reprepare,
+  rather than seeding the observation in a helper-only test.
 - Cognitive artifacts (identity.md, scratchpad, task reflections, review outputs,
   pattern register) must NOT use hardcoded `[:N]` truncation. When content must be
   shortened, summarize explicitly — attempts, changes and conclusions survive — and
