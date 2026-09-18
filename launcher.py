@@ -1575,10 +1575,8 @@ def main(argv=()):
         os._exit(0)
 
     window.events.closing += _on_closing
-    _webview_window = window
+    _webview_window = window  # Persist cookies and website data (ouroboros.theme); rebuild/limits: ARCHITECTURE §3.
 
-    # Persist cookies and website data, including ouroboros.theme; rebuild packaged launchers.
-    # Storage/profile limits: ARCHITECTURE §3, Navigation and shared UI contracts.
     webview.start(debug=False, private_mode=False)
 
 
