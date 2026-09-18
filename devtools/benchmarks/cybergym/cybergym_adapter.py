@@ -21,6 +21,8 @@ import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from typing import Any
 
+from ouroboros.platform_layer import file_lock_exclusive, file_unlock
+
 from devtools.benchmarks.cybergym.cybergym_dispatch import (  # noqa: F401
     GATEWAY_CIRCUIT_BREAKER_THRESHOLD,
     BudgetCapReached,
@@ -893,25 +895,12 @@ class BudgetLedger:
     def _lock(self) -> Iterator[None]:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = self.path.with_name(self.path.name + ".lock")
-        handle = lock_path.open("a+", encoding="utf-8")
-        locked = False
-        try:
+        with lock_path.open("a+", encoding="utf-8") as handle:
+            file_lock_exclusive(handle.fileno())
             try:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-                locked = True
-            except ImportError:
-                # Windows callers still get append-only semantics; the platform's
-                # atomic rename/open rules provide the narrow fallback available here.
-                pass
-            yield
-        finally:
-            if locked:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            handle.close()
+                yield
+            finally:
+                file_unlock(handle.fileno())
 
     def _append(self, event: Mapping[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

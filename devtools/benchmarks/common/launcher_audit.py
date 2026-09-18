@@ -160,9 +160,10 @@ _PRE_ADMISSION_LOCK_MODULE = (
     "devtools.benchmarks.cybergym.cybergym_result_index"
 )
 _PRE_ADMISSION_LOCK_NAME = "acquire_campaign_execution_lock"
+_PRE_ADMISSION_PLATFORM_LOCKS = frozenset({"file_lock_exclusive", "file_lock_exclusive_nb"})
 _PRE_ADMISSION_LOCK_REQUIRED_CALLS = frozenset({
-    "encode", "lock", "gettempdir", "open", "sha256",
-})
+    "encode", "gettempdir", "open", "sha256",
+}) | _PRE_ADMISSION_PLATFORM_LOCKS
 
 
 def _dotted_callee(node: ast.expr) -> str:
@@ -416,17 +417,21 @@ def _safe_pre_admission_lock_helper(target: ast.FunctionDef, unit: _Unit) -> boo
         return False
     # The canonical helper selects the shared blocking/nonblocking owner; the
     # host platform decides flock versus LockFileEx inside that owner.
-    choices = [node.value for node in ast.walk(target) if isinstance(node, ast.Assign)
-               and any(isinstance(name, ast.Name) and name.id == "lock" for name in node.targets)]
-    if len(choices) != 1 or not isinstance(choices[0], ast.IfExp):
+    choices = [node for node in ast.walk(target) if isinstance(node, ast.If)
+               and _dotted_callee(node.test) == "blocking"]
+    if len(choices) != 1:
         return False
-    choice = choices[0]
-    if tuple(_dotted_callee(node) for node in (choice.test, choice.body, choice.orelse)) != (
-        "blocking", "file_lock_exclusive", "file_lock_exclusive_nb",
+    branches = (choices[0].body, choices[0].orelse)
+    if any(len(branch) != 1 or not isinstance(branch[0], ast.Expr)
+           or not isinstance(branch[0].value, ast.Call) for branch in branches):
+        return False
+    if tuple(_dotted_callee(branch[0].value.func) for branch in branches) != (
+        "file_lock_exclusive", "file_lock_exclusive_nb",
     ):
         return False
-    if any(_pre_admission_lock_binding_shadowed(unit, name, module="ouroboros.platform_layer")
-           for name in ("file_lock_exclusive", "file_lock_exclusive_nb")):
+    if any(unit.imports.get(name) != "ouroboros.platform_layer"
+           or _pre_admission_lock_binding_shadowed(unit, name, module="ouroboros.platform_layer")
+           for name in _PRE_ADMISSION_PLATFORM_LOCKS):
         return False
     open_calls = [
         node for node in call_nodes
