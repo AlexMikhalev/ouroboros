@@ -713,17 +713,14 @@ and what enforces each.
   byte-identical schema array and system prefix, so what the level or wake reason
   changes lives only in the wake's user message and the dynamic tail; its model slot
   (the owner's `consciousness` role, when set) decides which cache it lands in. Between
-  the sends of ONE execution the transcript is append-only — compaction is the one
-  sanctioned rewrite; any other break discards OpenAI-family caches and is recorded as
-  `prompt_prefix_break` (ARCHITECTURE §6 "Task lifecycle") — so the per-round acceptance
-  observation is an append-only row `_append_or_merge_user_content` never merges into.
-  Other user content may merge only when `unsent_in_previous_send` proves the tail
-  absent from the last observed send; callers without a slot or observation append.
-  This observation follows a usable ordinary response, not every physical send;
-  image eviction is unchanged. Pin plain/multipart content and real local/GigaChat
-  request builders (`tests/test_transcript_prefix.py` on the real `run_llm_loop`,
-  `tests/test_transcript_provider_shapes.py`). Review gate: CHECKLISTS item 22
-  (`cache_friendliness`).
+  sends of one execution, only compaction may rewrite the transcript; other breaks
+  discard OpenAI-family caches (`prompt_prefix_break`; ARCHITECTURE §6 "Task lifecycle"). `_append_or_merge_user_content` never merges into acceptance
+  observations. Other content merges only if `unsent_in_previous_send` proves the
+  tail absent from the last observed send; without a slot or observation, append.
+  Observation follows a usable ordinary response, not every physical send; image
+  eviction is unchanged. Pin plain/multipart content and real local/GigaChat builders
+  (`tests/test_transcript_prefix.py` on `run_llm_loop`,
+  `tests/test_transcript_provider_shapes.py`); CHECKLISTS item 22 (`cache_friendliness`).
 - Provider fallback is disabled only for a SEALED reasoning artifact
   (`ouroboros/reasoning_artifacts.py::transcript_has_sealed_reasoning`) — only a sealed
   artifact is bound to the endpoint that minted it; readable reasoning stays
@@ -901,22 +898,18 @@ and what enforces each.
   malformed output, false-completion prevention, replay/log durability, failure modes —
   not just the happy path. Audit/checkpoint rounds never silently reuse the normal
   final-answer path unless that invariant is explicitly tested and documented.
-- Keep a complete loop-local `DeliveryCandidate` once a substantive answer exists, with
-  host control exposure as sticky provenance inherited through every replacement
-  (mechanism, residuals: ARCHITECTURE §6 "Task lifecycle"; `ouroboros/loop_delivery.py`).
-  A FORCED finalization resolves an armed control purely, without retry: valid
-  keep/replace honored, anything malformed keeps the retained candidate with a typed
-  degraded reason, protocol JSON never reaches chat or the durable result. Main
-  distinguishes consumed owner source from changed requirements; effective criteria and
-  material effects (nominated read observations included) define the reviewed subject;
-  ingress generations preserve unread-message ordering; status text, narration or a
-  changed working view buy no review; task-scoped service outputs/errors are finalized
-  before host acceptance. The control never bypasses verification, acceptance, safety,
-  skill finalization, deadline, child handoff, the unconditional `FINAL ANSWER:` latch
-  or the task-level answer protocol. Host-authored notices stay outside answer bytes
-  and acceptance identity (existing terminal record/outbox/System projection, visible on
-  replay and single-body/headless transports); an unchanged answer never regains a
-  verdict superseded by real owner or evidence changes.
+- Keep a complete loop-local `DeliveryCandidate`; sticky host-control provenance survives
+  replacement (`ouroboros/loop_delivery.py`; ARCHITECTURE §6 "Task lifecycle").
+  FORCED resolution: pure, no retry; honor valid keep/replace, preserve malformed controls'
+  candidate with a typed degraded reason; no protocol JSON in chat/durable results.
+  Distinguish consumed owner source from changed requirements; effective criteria and
+  material effects (nominated reads included) define the subject; ingress generations
+  preserve unread order. Status/narration/working-view changes buy no review. Finalize
+  task-scoped service outputs/errors before acceptance. Controls never bypass
+  verification, acceptance, safety, skill finalization, deadline, child handoff,
+  unconditional `FINAL ANSWER:` or the task-level answer protocol. Host notices stay
+  outside answer bytes/identity via terminal record/outbox/System on replay and
+  single-body/headless transports; unchanged answers never revive superseded verdicts.
 - Keep delivered result, unresolved tool-call evidence and host acceptance separate.
   Error count alone does not degrade execution or establish objective acceptance;
   retain `execution.unresolved_tool_errors` and the cosmetic bucket, and expose the
@@ -934,42 +927,36 @@ and what enforces each.
   choosing a value and its enum reads the validator's own set. A child in the legacy
   `cancel_requested` latch is intent, not outcome — cancel-pending until custody
   settles it.
-- Host task acceptance is root-only; eligibility is structured
+- Host acceptance: root-only, structured eligibility
   (`outcomes.turn_has_reviewable_effects` plus a typed deliverable/criterion), never
-  keywords (BIBLE P3/P5); the agent-callable nomination is never authoritative (the
-  acceptance model, per-enforcement waiting, `previous_revision_accepted`, the
-  `late_settlement` row: ARCHITECTURE §6 "Task acceptance"). Freeze the request and
-  resolved roster; pending work and free collection use existing review custody and
-  mailbox continuation. Before assembling evidence for a NEW panel and before any
-  capacity refusal (`review_cycles_exhausted`), reconcile every already-paid panel of
-  the same root still recorded as running, at $0 over its recorded request and roster
-  — else a subject re-authored mid-flight discards bought verdicts. Verdicts are advice
-  for the author and reach Main whatever its draft: the settlement wake carries them,
-  and the acceptance continuation contract is re-offered when its bytes change
-  (identical bytes are not repeated; a spent malformed-control repair stays spent).
-  Ready feedback skips parking, never preparation of the retained answer's control:
-  a settled panel or queued wake must still preserve typed-answer provenance.
-  A complete revised answer may be ordinary prose; typed keep/replace/finish remain
-  optional. Prose resets the pending-review choice to wait and never infers finish.
-  Existing effect, owner-revision and child-action controls remain strict; owner-source
-  acknowledgement and forced finalization retain their rules. Empty or recognizable
-  malformed controls preserve the retained answer (`tests/test_acceptance_optional_control.py`). A
-  delivery under a running panel is never a second panel and never a capacity refusal
-  (`acceptance_settlement._deliver_under_running_panel`): waiting is the default and,
-  under blocking enforcement, the only option (Cyber Pro never waits); under advisory
-  Main finishes only through an explicit `"pending_review":"finish"` on its delivery
-  control; the trace stays reachable past loop exit (`remember_settlement_trace`). A
-  panel settling after the task ended attaches to the result and is announced once as
-  a `card_row="reviews"` row of the task's card; no model turn starts, and the task's
-  reviewer run is never its open delegation. The worker never writes Main's live
-  candidate or author decision; subtree/status facts stay separate from reviewer
-  findings and from Cyber's authority (BIBLE P0).
-- Delivery-control JSON applies only to a final response with no tool calls; retaining
-  leaves tools available. Keeping the answer while changing effective criteria or
-  material evidence is a new review subject, not authority from an old verdict; source
-  acknowledgement never infers semantic change by generation. A requested file or diff
-  implies no universal commit-or-revert rule; self-modification keeps its
-  reviewed-commit contract (BIBLE P0/P3).
+  keywords or authoritative agent nomination (BIBLE P3/P5; acceptance model,
+  per-enforcement waiting, `previous_revision_accepted`, `late_settlement`:
+  ARCHITECTURE §6 "Task acceptance"). Freeze request/roster; existing review custody/
+  mailbox handles pending/free collection. Before new-panel evidence or
+  `review_cycles_exhausted`, reconcile every paid panel still marked running for that
+  root: $0, recorded request/roster; reauthoring loses no verdict. Settlement wakes bring
+  verdicts whatever Main's draft. Re-offer only changed contract bytes; a spent repair
+  stays spent. Settled panels/queued wakes
+  skip parking, not retained-answer control preparation or typed provenance.
+  Accept complete revised prose, never a status note; typed keep/replace/finish are
+  optional. Prose resets pending-review choice to wait, never infers finish.
+  Effect, owner-revision and
+  child-action controls stay strict; owner-source acknowledgement and forced
+  finalization retain their rules. Empty or recognizable malformed controls retain
+  the answer (`tests/test_acceptance_optional_control.py`). Running-panel delivery
+  buys no second panel and causes no capacity refusal
+  (`acceptance_settlement._deliver_under_running_panel`). Default: wait; blocking: wait
+  only; Cyber Pro: never wait; advisory: early finish needs explicit
+  `"pending_review":"finish"` on delivery control. Keep the trace
+  past exit (`remember_settlement_trace`). Late settlement: attach to the ended result,
+  announce once on its task card (`card_row="reviews"`); no model turn or reviewer-as-
+  open-delegation. Workers never write Main's candidate/author decision; subtree/status,
+  findings and Cyber authority stay separate (BIBLE P0).
+- Delivery-control JSON governs only tool-less final responses; retention leaves tools
+  available. Changed criteria/material evidence mean a new subject even with kept text,
+  never old verdict authority. Source acknowledgement infers no semantic change from
+  generation. File/diff requests impose no commit-or-revert rule; self-modification
+  keeps reviewed commits (BIBLE P0/P3).
 - Post-task synthesis receives `completion_observations` from the terminal result
   writer (ARCHITECTURE §6 "Post-task reflection"); counts come from
   `OWNER_DELIVERY_TOOL_NAMES`, not prose; recovery uses the stored snapshot; global
