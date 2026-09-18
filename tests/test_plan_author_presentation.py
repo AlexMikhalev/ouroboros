@@ -8,12 +8,15 @@ import pytest
 
 from ouroboros.outcomes import public_task_result
 from ouroboros.task_results import load_plan_review_state, load_task_result
+from ouroboros.preflight_node import resolve_node
 from tests.test_plan_review_engine import DECK_SPEC, _call, _finding, harness as _harness
+from tests.test_preflight_node import requires_node
 
 harness = _harness
 pytestmark = pytest.mark.serial
 
 
+@requires_node
 @pytest.mark.parametrize("action", ["finish", "stop"])
 @pytest.mark.parametrize("cap", ["1", "2"])
 def test_current_plan_author_is_not_an_extra_reviewer(harness, monkeypatch, action, cap):
@@ -70,6 +73,6 @@ def test_current_plan_author_is_not_an_extra_reviewer(harness, monkeypatch, acti
         assert.equal(pending.state, 'running');
         assert.equal(pending.authorDecisionText, group.authorDecisionText);
     """
-    completed = subprocess.run(["node", "--input-type=module", "-e", script],
+    completed = subprocess.run([resolve_node(), "--input-type=module", "-e", script],
         input=json.dumps(detail), capture_output=True, text=True, timeout=30)
     assert completed.returncode == 0, completed.stdout + completed.stderr

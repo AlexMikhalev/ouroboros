@@ -321,7 +321,8 @@ The server binds to `127.0.0.1:8765` by default. Read [`docs/DEPLOYMENT.md`](doc
 #### Run Tests
 
 ```bash
-make test
+python scripts/run_tests.py                  # full local battery (same as `make test`)
+python scripts/run_tests.py tests/test_x.py  # focused run
 ```
 
 `pyproject.toml` is the direct-dependency authority and `uv.lock` is the
