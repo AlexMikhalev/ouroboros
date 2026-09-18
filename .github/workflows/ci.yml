@@ -952,8 +952,8 @@ jobs:
           SCREENSHOTS="$RUNNER_TEMP/android-smoke/screenshots"
           mkdir -p "$SCREENSHOTS"
           capture_native_ui() {
-            adb shell uiautomator dump /sdcard/obo-native-ui.xml
-            adb pull /sdcard/obo-native-ui.xml "$SCREENSHOTS/$1.xml"
+            adb shell uiautomator dump /data/local/tmp/obo-native-ui.xml
+            adb pull /data/local/tmp/obo-native-ui.xml "$SCREENSHOTS/$1.xml"
             adb exec-out screencap -p > "$SCREENSHOTS/$1.png"
             test -s "$SCREENSHOTS/$1.png"
           }
