@@ -1,4 +1,4 @@
-"""Typed process facts: the handler→loop seam for host process tools.
+"""Scoped process configuration and facts at the handler→loop boundary.
 
 R5 (node-runtime sprint, stream B): the process-tool handler measures its child
 directly (returncode, POSIX signal name, wall-clock duration, and — via the
@@ -9,8 +9,9 @@ for the same tool call and merges them into the typed ``result_meta``.
 Thread-local, not ctx-scoped, because the tool executor runs each handler in
 its own worker thread — the slot is therefore naturally per-in-flight-call,
 and an ABANDONED (outer-timeout) handler thread that finishes late writes only
-its own thread's slot and can never contaminate a later call's facts. The
-rendered result text is unchanged by this channel; a record with no typed
+its own thread's slot and can never contaminate a later call's facts. Selected Settings values stay in the scoped launch environment; diagnostics
+are redacted before publication. Runtime provenance is also rendered in the
+result. A record with no typed
 publication carries no process facts at all — under the typed-result organ
 (D02) prose is never harvested into typed fields.
 
@@ -21,12 +22,169 @@ This lives outside ``tools/shell.py`` deliberately: it is a loop↔handler seam
 
 from __future__ import annotations
 
+import contextlib
+import functools
+import json
+import os
 import pathlib
+import shutil
 import threading
 import time
 from typing import Dict
 
 from ouroboros.platform_layer import posix_signal_name
+
+
+def settings_environment_allowed(ctx) -> bool:
+    """The existing service authority to select new Settings references."""
+    from ouroboros.config import get_runtime_mode
+    from ouroboros.presence_authority import presence_ceiling_from_context
+    from ouroboros.runtime_mode_policy import mode_has_unrestricted_agency
+    from ouroboros.tool_access import active_tool_profile, _TOP_LEVEL_PRINCIPAL_PROFILES
+
+    profile = active_tool_profile(ctx)
+    cyber_actor = profile == "acting_subagent" and mode_has_unrestricted_agency(get_runtime_mode())
+    return (cyber_actor or profile in (_TOP_LEVEL_PRINCIPAL_PROFILES | {"operator_control"})) and presence_ceiling_from_context(ctx) is None
+
+
+def redact_process_data(value):
+    """Mask selected values at result/receipt egress, retaining typed host facts."""
+    from ouroboros.secret_masking import redact_known_values
+
+    prepared = getattr(_process_facts_tls, "environment", None)
+    secrets = prepared[1] if prepared is not None else ()
+    if isinstance(value, dict):
+        # Host vocabulary/identity is not a child echo. In particular a one-char
+        # selected secret must not rewrite PASS/status or receipt identity hashes.
+        typed = {"tool", "status", "code", "contract_kind", "expected_match", "ts",
+                 "criterion_source", "check_rendering", "root", "source", "kind",
+                 "sha256", "content_sha256", "input_sha256", "output_sha256"}
+        return {key: item if key in typed else redact_process_data(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [redact_process_data(item) for item in value]
+    return redact_known_values(value, secrets)
+
+
+@contextlib.contextmanager
+def process_environment_scope(ctx, name, arguments):
+    """One admitted Settings snapshot shared by resolution and nested launchers."""
+    from ouroboros.config import load_settings, runtime_settings
+    from ouroboros.workspace_executor import resolve_process_env, validate_process_env
+    from ouroboros.tools.tool_result import ToolResult
+
+    prior = getattr(_process_facts_tls, "environment", None)
+    old_runtime = getattr(_process_facts_tls, "runtime_provenance", None)
+    prepared, error = prior, None
+    if prior is None and name in {"run_command", "run_script", "verify_and_record"}:
+        try:
+            refs = validate_process_env(arguments.get("env_from_settings"))
+            if refs and name == "verify_and_record" and arguments.get("contract_kind") not in {"visible_verifier", "explicit_command", "explicit_metric"}:
+                raise ValueError("env_from_settings applies only to run-kind verification")
+            if refs and not settings_environment_allowed(ctx):
+                error = ToolResult(status="blocked", code="ACCESS_BLOCKED",
+                    text="⚠️ PROCESS_ENV_REFERENCE_BLOCKED: this task cannot select settings-backed process environment.")
+            else:
+                prepared = resolve_process_env(None, refs,
+                    settings=runtime_settings(settings_reader=load_settings) if refs else None)
+        except ValueError as exc:
+            error = ToolResult(status="error", code="TOOL_ARG_ERROR", text=f"⚠️ TOOL_ARG_ERROR: {exc}")
+    _process_facts_tls.environment = prepared
+    if prior is None:
+        _process_facts_tls.runtime_provenance = None
+    try:
+        yield error
+    finally:
+        _process_facts_tls.environment = prior
+        _process_facts_tls.runtime_provenance = old_runtime
+
+
+def process_environment_tool(handler):
+    """Also support direct helpers; mask before the registry persists results."""
+    @functools.wraps(handler)
+    def invoke(ctx, *args, **kwargs):
+        from ouroboros.tools.tool_result import ToolResult, _publish_tool_result, _published_tool_result, _replace_tool_result
+
+        name = {"_run_shell": "run_command", "_run_script": "run_script", "_verify_and_record": "verify_and_record"}[handler.__name__]
+        arguments = dict(kwargs)
+        if name == "verify_and_record" and args:
+            arguments.setdefault("contract_kind", args[0])
+        with process_environment_scope(ctx, name, arguments) as error:
+            if error is not None:
+                return _publish_tool_result(ctx, error)
+            try:
+                result = handler(ctx, *args, **kwargs)
+            except Exception as exc:
+                if getattr(_process_facts_tls, "environment", (None, ()))[1]:
+                    raise RuntimeError(redact_process_data(str(exc))) from None
+                raise
+            published = _published_tool_result(ctx, None)
+            text = redact_process_data(result)
+            provenance = getattr(_process_facts_tls, "runtime_provenance", None)
+            if provenance and name != "run_script":
+                text += "\n\nRuntime selection: " + json.dumps(provenance, ensure_ascii=False, sort_keys=True)
+            if isinstance(published, ToolResult) and published.text == result:
+                text = _publish_tool_result(ctx, _replace_tool_result(published, text=text,
+                    meta_updates=redact_process_data(dict(published.meta))))
+            return text
+    return invoke
+
+
+def selected_process_environment():
+    prepared = getattr(_process_facts_tls, "environment", None)
+    return prepared[0] if prepared is not None else {}
+
+
+def process_path_for_cwd(path, cwd):
+    """Resolve PATH search entries against the child cwd, preserving lexical paths."""
+    return os.pathsep.join(
+        str(pathlib.Path(part) if pathlib.Path(part).is_absolute() else pathlib.Path(cwd) / part)
+        for part in path.split(os.pathsep)
+    )
+
+
+def record_runtime_selection(ctx, argv, cwd, environment):
+    """Non-executing provenance over the actual launch environment; never rewrite argv."""
+    from ouroboros.workspace_executor import executor_ref_from_ctx, map_host_path
+
+    trace = getattr(ctx, "_active_interpreter_resolution", None)
+    requested = str(getattr(trace, "requested_interpreter", "") or (argv[0] if argv else ""))
+    name = pathlib.Path(requested).name.lower()
+    python = getattr(trace, "family", "") == "python" or name.startswith("python")
+    wrapper = name in {"env", "sh", "bash", "zsh", "dash", "cmd", "cmd.exe", "powershell", "pwsh"}
+    if not python and not wrapper:
+        return
+    executor = executor_ref_from_ctx(ctx)
+    remote = False
+    if executor is not None and executor.kind != "local":
+        try:
+            map_host_path(executor, pathlib.Path(cwd))
+            remote = True
+        except ValueError:
+            pass
+    selected = ""
+    source = str(getattr(trace, "environment", "") or "explicit")
+    unknown = ""
+    if wrapper:
+        source, unknown = "wrapper", "runtime inside wrapper not inspected"
+    elif remote:
+        source, unknown = "backend_path", "physical backend executable not reported"
+    else:
+        spelling = str(argv[0])
+        if os.path.dirname(spelling):
+            candidate = pathlib.Path(spelling)
+            candidate = candidate if candidate.is_absolute() else pathlib.Path(cwd) / candidate
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                selected = os.path.abspath(candidate)  # lexical venv path, not realpath
+        else:
+            path = process_path_for_cwd(environment.get("PATH", os.defpath), cwd)
+            selected = shutil.which(spelling, path=path) or ""
+            source = "PATH" if not trace or not trace.changed else source
+        if not selected:
+            unknown = "executable not established on the launch PATH"
+    _process_facts_tls.runtime_provenance = redact_process_data({
+        "requested": requested, "selected_path": selected or None, "source": source,
+        "unknown_reason": unknown, "version": getattr(trace, "runtime_version", "") or None,
+    })
 
 
 def signal_name_for_returncode(returncode) -> str:
@@ -67,6 +225,7 @@ PROCESS_FACT_KEYS = (
     "signal",
     "duration_ms",
     "resolved_runtime",
+    "runtime_provenance",
     "timed_out",
     "killed_by_host",
     "pre_exec_failure",
@@ -139,6 +298,9 @@ def publish_process_facts(
         }
         if failures:
             facts["ws_relay_failures"] = failures
+    if provenance := getattr(_process_facts_tls, "runtime_provenance", None):
+        facts["runtime_provenance"] = provenance
+    facts = redact_process_data(facts)
     _process_facts_tls.facts = facts
     # Returned so a producer that ALSO discloses these facts elsewhere (the
     # verify_and_record receipt) copies the published ones instead of deriving

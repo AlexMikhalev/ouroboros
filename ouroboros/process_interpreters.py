@@ -598,7 +598,8 @@ def resolve_process_node(
     # idempotent bootstrap; whoever runs first performs the one mutation).  The
     # snapshot is the base of any attested child-env PATH prepend.
     bootstrap_process_path()
-    path_snapshot = str(os.environ.get("PATH", "") or "")
+    from ouroboros.tools.process_facts import process_path_for_cwd, selected_process_environment
+    path_snapshot = str(selected_process_environment().get("PATH", os.environ.get("PATH", "")) or "")
 
     constraint = normalize_task_constraint(effective_constraint)
     cwd_text = str(original.get("cwd") or "")
@@ -651,12 +652,11 @@ def resolve_process_node(
 
     surface = _surface_for(ctx, binding, constraint)
     probe_token = requested if trigger == "runtime" else "node"
-    located = shutil.which(probe_token) or ""
+    located = shutil.which(probe_token, path=process_path_for_cwd(path_snapshot, work_dir)) or ""
     if located and not os.path.isabs(located):
-        # A relative PATH entry resolves against the WORKER cwd here but against
-        # the command's work_dir at exec time: neither health nor brokenness is
-        # provable from this process, so never substitute on that evidence —
-        # run as written (argv and child env stay byte-identical) (T10).
+        # Search entries are bound to the launch cwd above. If a platform still
+        # cannot establish an absolute candidate, retain the as-written launch
+        # rather than substituting a runtime on unprovable evidence (T10).
         trace = _node_trace(
             tool=name,
             requested_interpreter=requested,
@@ -894,7 +894,8 @@ def record_interpreter_resolution(ctx: Any, trace: Optional[InterpreterResolutio
             log_dir = pathlib.Path(drive_logs())
         else:
             log_dir = pathlib.Path(getattr(ctx, "drive_root")) / "logs"
-        append_jsonl(log_dir / "events.jsonl", event)
+        from ouroboros.tools.process_facts import redact_process_data
+        append_jsonl(log_dir / "events.jsonl", redact_process_data(event))
     except Exception:
         # Trace persistence must not make an otherwise-valid process call fail.
         return

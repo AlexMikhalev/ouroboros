@@ -278,24 +278,17 @@ def write_workspace_patch_artifacts(
     # every innocent in-flight sibling; shared-tree integrity is verified by the
     # reverse-patch check in tools/subagent_integration (verified_shared_workspace),
     # and base_sha stays the patch BASE so parent-committed work is still captured.
-    if task_base_sha and acting_constraint is not None and acting_constraint.surface == "self_worktree":
+    if (task_base_sha and acting_constraint is not None
+            and acting_constraint.surface == "self_worktree" and current_head != base_head):
         if not current_head:
             errors.extend(head_errors)
-            head_error = {
-                "type": "workspace_head_unverified",
-                "message": "workspace HEAD could not be verified at artifact finalization",
-                "expected_head": base_head,
-                "current_head": "",
-            }
-            errors.append(head_error)
-        elif current_head != base_head:
-            head_error = {
-                "type": "workspace_head_changed",
-                "message": "workspace HEAD changed during task execution; patch artifact is invalid",
-                "expected_head": base_head,
-                "current_head": current_head,
-            }
-            errors.append(head_error)
+        errors.append({
+            "type": "workspace_head_changed" if current_head else "workspace_head_unverified",
+            "message": ("workspace HEAD changed during task execution; patch artifact is invalid"
+                        if current_head else "workspace HEAD could not be verified at artifact finalization"),
+            "expected_head": base_head,
+            "current_head": current_head or "",
+        })
     if errors:
         total_size, digest = 0, ""
         status = ARTIFACT_STATUS_FAILED
@@ -316,6 +309,12 @@ def write_workspace_patch_artifacts(
         "workspace_root": str(root),
         "patch_name": "workspace.patch",
         "manifest_name": "workspace_patch.json",
+        "base_provenance": ("task_constraint" if task_base_sha else "admission_head" if preflight_head
+                            else "empty_tree" if base_is_empty_tree else "capture_head"),
+        "base_explanation": "Application patch relative to the recorded base; includes eligible workspace changes and may include branch differences. It does not attribute authorship.",
+        "comparison_note": "No auxiliary comparison target was selected. Use vcs_diff(base=..., head=...) for two trees, or base only for the current worktree.",
+        "current_branch": _git_stdout(["git", "symbolic-ref", "--quiet", "--short", "HEAD"], root, allow_rc={0, 1}, errors=diagnostics).strip(),
+        "tracking_upstream": _git_stdout(["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], root, allow_rc={0, 128}, errors=diagnostics).strip(),
         "base_ref": base_ref,
         "base_head": base_head,
         "base_is_empty_tree": base_is_empty_tree,

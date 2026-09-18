@@ -167,9 +167,11 @@ from ouroboros.tools.process_facts import describe_returncode as _describe_retur
 
 
 def _format_process_output(stdout: str, stderr: str, *, limit: int = 50_000) -> str:
-    """Render bounded stdout/stderr sections."""
-    stdout_text = str(stdout or "")
-    stderr_text = str(stderr or "")
+    """Mask diagnostic copies before bounds can split a selected secret."""
+    from ouroboros.tools.process_facts import redact_process_data
+
+    stdout_text = redact_process_data(str(stdout or ""))
+    stderr_text = redact_process_data(str(stderr or ""))
     parts: List[str] = []
     if stdout_text.strip():
         parts.append(f"STDOUT:\n{stdout_text}")

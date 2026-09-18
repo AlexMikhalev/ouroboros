@@ -233,13 +233,15 @@ def execute(
     timeout_sec: int,
     *,
     env_overlay: "dict[str, str] | None" = None,
+    target_env: "dict[str, str] | None" = None,
 ) -> ExecutorResult:
     """Run one foreground command in the configured backend.
 
     ``env_overlay`` (e.g. the interpreter resolver's attested emergency PATH
     prepend) applies only to the LOCAL backend, which runs on this host; the
     docker backend deliberately ignores it — host paths and host PATH must not
-    leak into a container environment.
+    leak into a container environment. Explicit target_env is separate and
+    reaches either backend; Docker carries its values only through inert aliases.
     """
     executor = executor_ref_from_ctx(ctx)
     if executor is None:
@@ -251,9 +253,10 @@ def execute(
         return _execute_local(
             executor, cmd, cwd_path, timeout_sec,
             drive_root=_drive_root_from_ctx(ctx),
-            env_overlay=env_overlay,
+            env_overlay=env_overlay, **({"target_env": target_env} if target_env else {}),
         )
-    return _execute_docker(executor, cmd, backend_cwd, timeout_sec, drive_root=_drive_root_from_ctx(ctx))
+    return _execute_docker(executor, cmd, backend_cwd, timeout_sec, drive_root=_drive_root_from_ctx(ctx),
+                           **({"target_env": target_env} if target_env else {}))
 
 
 def _system_repo_dir() -> str | None:
@@ -304,6 +307,7 @@ def _execute_local(
     *,
     drive_root: pathlib.Path | None,
     env_overlay: "dict[str, str] | None" = None,
+    target_env: "dict[str, str] | None" = None,
 ) -> ExecutorResult:
     started = time.monotonic()
     proc = subprocess.Popen(
@@ -314,7 +318,7 @@ def _execute_local(
         stdin=subprocess.DEVNULL,
         text=True,
         errors="replace",
-        env=scrub_repo_from_pythonpath(_env_with_overlay(env_overlay), _system_repo_dir()),
+        env=overlay_env(overlay_env(scrub_repo_from_pythonpath(_env_with_overlay(None), _system_repo_dir()), target_env), env_overlay),
         **subprocess_new_group_kwargs(),
     )
     record_path = _register_process(
@@ -352,11 +356,14 @@ def _execute_docker(
     timeout_sec: int,
     *,
     drive_root: pathlib.Path | None,
+    target_env: "dict[str, str] | None" = None,
 ) -> ExecutorResult:
     if executor.network == "none":
         _assert_docker_network_none(executor.container_name)
     pidfile = f"/tmp/ouroboros-exec-{uuid.uuid4().hex}.pid"
-    command = shlex.join(str(part) for part in cmd)
+    prefix = f"OUROBOROS_PROCESS_ENV_{uuid.uuid4().hex}_"
+    aliases = {key: f"{prefix}{index}" for index, key in enumerate(target_env or {})}
+    command = _docker_env_command(shlex.join(str(part) for part in cmd), aliases)
     exec_payload = shlex.quote(f"exec {command}")
     quoted_pidfile = shlex.quote(pidfile)
     wrapper = (
@@ -374,6 +381,7 @@ def _execute_docker(
     docker_cmd = [
         "docker",
         "exec",
+        *[part for alias in aliases.values() for part in ("--env", alias)],
         "--workdir",
         backend_cwd,
         executor.container_name,
@@ -389,6 +397,7 @@ def _execute_docker(
         text=True,
         errors="replace",
         stdin=subprocess.DEVNULL,
+        **({"env": {**os.environ, **{aliases[key]: value for key, value in target_env.items()}}} if target_env else {}),
         **subprocess_new_group_kwargs(),
     )
     record_path = _register_process(
@@ -1194,14 +1203,17 @@ def _executor_service_env() -> dict[str, str]:
     return scrub_repo_from_pythonpath(service_env(), _system_repo_dir())
 
 
+def _docker_env_command(command: str, aliases: dict[str, str] | None) -> str:
+    """Expand selected values only in the target, never in host argv or shell code."""
+    if not aliases:
+        return command
+    unset = shlex.join([part for alias in aliases.values() for part in ("-u", alias)])
+    assignments = " ".join(f'{shlex.quote(key)}="${{{alias}}}"' for key, alias in aliases.items())
+    return f"env {unset} -- {assignments} {command}"
+
+
 def _docker_service_start_shell(record: _ExecutorService, log_path: str, aliases: dict[str, str] | None = None) -> str:
-    command = shlex.join(record.cmd)
-    if aliases:
-        # Expand values only inside the container; env removes transport aliases
-        # and supports names that are not shell identifiers. No value is quoted into code.
-        unset = shlex.join([part for alias in aliases.values() for part in ("-u", alias)])
-        assignments = " ".join(f'{shlex.quote(key)}="${{{alias}}}"' for key, alias in aliases.items())
-        command = f"env {unset} -- {assignments} {command}"
+    command = _docker_env_command(shlex.join(record.cmd), aliases)
     exec_payload = shlex.quote(f"exec {command}")
     quoted_cwd = shlex.quote(record.backend_cwd)
     quoted_log = shlex.quote(log_path)
