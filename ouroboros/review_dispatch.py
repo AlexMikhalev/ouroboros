@@ -210,8 +210,8 @@ def reconcile_pending_acceptance_runs(
             log.warning("acceptance run %s could not be reconciled: %s",
                         str(run.get("panel_id") or "")[:16], exc)
             continue
-        # Keep the paid operation's request; only its producer facts advance.
-        run.update({key: value for key, value in vars(result).items() if key != "request"})
+        # Keep the host panel identity and paid request; only producer facts advance.
+        run.update({key: value for key, value in vars(result).items() if key not in {"request", "panel_id"}})
         advanced += not acceptance_run_pending(run)
     return advanced
 

@@ -187,8 +187,8 @@ _DIALOGUE_TERMINAL = dict(
             "fence_reopen_failed", _ACTIONABLE_FAIL, {"fence_ok": False},
             (ACCEPTANCE_FINALIZED_UNACCEPTED, "fence_reopen_failed"),
         ),
-        ("dialogue_terminal", _DIALOGUE_TERMINAL, {}, (ACCEPTANCE_FINALIZED_UNACCEPTED, "dialogue_terminal")),
-        ("review_degraded", _NO_QUORUM, {}, (ACCEPTANCE_FINALIZED_UNACCEPTED, "review_degraded")),
+        ("dialogue_terminal", _DIALOGUE_TERMINAL, {}, (ACCEPTANCE_REVISION_REQUESTED, "improvement_capsule")),
+        ("review_degraded", _NO_QUORUM, {}, (ACCEPTANCE_REVISION_REQUESTED, "improvement_capsule")),
         (
             "open_obligations_gates_exhausted", _ACTIONABLE_FAIL,
             {
@@ -312,16 +312,17 @@ def test_bare_fail_reaches_the_reviewer_fail_branch_not_a_capsule():
     assert rs.build_improvement_capsule(_result(**_ACTIONABLE_FAIL)).strip()
 
 
-def test_infra_failure_branch_is_finalized_unaccepted(tmp_path):
+def test_infra_failure_is_returned_to_author_without_claiming_acceptance(tmp_path):
     ctx = _apply_ctx(tmp_path)
-    assert _record_acceptance_infra_failure(ctx, RuntimeError("boom")) is False
+    assert _record_acceptance_infra_failure(ctx, RuntimeError("boom")) is True
     decision = ctx.llm_trace["acceptance_decision"]
-    assert decision["status"] == ACCEPTANCE_FINALIZED_UNACCEPTED
-    assert decision["reason"] == "infra_failure"
-    assert decision["degraded_reasons"] == ["RuntimeError: boom"]
-    # The synthetic DEGRADED run record — the typed expression of "never a silent
-    # skip" — is unchanged by the host-status collapse.
-    assert ctx.llm_trace["review_runs"][-1]["aggregate_signal"] == "DEGRADED"
+    assert decision["status"] == ACCEPTANCE_REVISION_REQUESTED
+    assert decision["reason"] == "review_outcome_received"
+    assert "boom" in ctx.messages[-1]["content"]
+    run = ctx.llm_trace["review_runs"][-1]
+    assert run["aggregate_signal"] == "DEGRADED"
+    assert run["degraded_reasons"] == ["RuntimeError: boom"]
+    assert not run.get("feedback_delivered")
 
 
 def test_supersede_paths_request_a_revision_with_their_own_reason(tmp_path):

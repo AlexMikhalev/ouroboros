@@ -120,7 +120,8 @@ def test_predeclared_stance_cannot_hide_the_first_feedback(monkeypatch, tmp_path
     )
     assert _apply_task_acceptance_result(ctx, result) is True
     assert ctx.llm_trace["acceptance_decision"]["reason"] == "improvement_capsule"
-    assert ctx.llm_trace["review_runs"][-1]["feedback_delivered"]
+    assert ctx.llm_trace["review_runs"][-1]["feedback_offered"]
+    assert not ctx.llm_trace["review_runs"][-1].get("feedback_delivered")
     assert ctx.messages and "Fix the output" in ctx.messages[-1]["content"]
     assert not tools_ctx._task_acceptance_reviewed
 
@@ -160,6 +161,8 @@ def test_post_review_finish_handles_revised_answer_without_another_panel(monkeyp
     )
     assert run("initial answer") is True
     critic_hash = trace["review_runs"][-1]["binding_hash"]
+    from ouroboros.acceptance_settlement import expose_acceptance_feedback
+    expose_acceptance_feedback(trace, messages, "author-root")
     trace["tool_calls"].append({"tool": "task_acceptance_review", "args": {}})
     merge_agent_acceptance_stance(trace, {"disposition": "partial", "explicit_finish": change != "ordinary_evidence", "rationale": "I fixed the material issue."}, tools_ctx)
     if change in {"owner", "evidence"}:

@@ -37,6 +37,8 @@ def _custody_kwargs(tmp_path, *, surface, retry_key, slots, run_slot, ctx):
         reconciliation_identity={"subject_hash": "f" * 64},
     )
 
+    ctx.task_id = request.task_id
+
     def error_actor(slot, error, operation_id="", operation_state="settled"):
         return ReviewActorRecord(
             slot_id=slot.slot_id, model=slot.model, status="error", error=error,
@@ -97,9 +99,9 @@ def test_drain_deadline_releases_pending_dispatch_rows_and_the_last_settlement_w
         assert _mailbox_entries(tmp_path, request.task_id) == []
         release["s1"].set()
         deadline = time.time() + 10
-        while len(progress) < 1 and time.time() < deadline:
+        while not any("[s1]: finished;" in line for line in progress) and time.time() < deadline:
             time.sleep(0.01)
-        assert len(progress) == 1 and "reviewer slot s1 settled (ok)" in progress[0]
+        assert sum("[s1]: finished;" in line and "state=settled" in line for line in progress) == 1
         assert _mailbox_entries(tmp_path, request.task_id) == []  # one slot still running
         release["s2"].set()
         while len(_mailbox_entries(tmp_path, request.task_id)) < 1 and time.time() < deadline:
@@ -169,7 +171,8 @@ def test_requests_without_a_drain_deadline_and_other_surfaces_are_untouched(tmp_
     assert request.drain_deadline is None
     [actor] = custody.run_custodied_review_slots(**kwargs)  # waits for the worker as before
     assert actor.status == "ok" and actor.operation_state == "settled"
-    assert not custody._RELEASED_WAVES and progress == []
+    assert not custody._RELEASED_WAVES
+    assert len(progress) == 2 and "[s1]: started;" in progress[0] and "[s1]: finished;" in progress[1]
     assert _mailbox_entries(tmp_path, request.task_id) == []
     # A non-plan surface released at a drain deadline gets pending rows but no frame.
     triad, triad_kwargs = _custody_kwargs(
@@ -185,7 +188,7 @@ def test_requests_without_a_drain_deadline_and_other_surfaces_are_untouched(tmp_
     deadline = time.time() + 5
     while custody._RELEASED_WAVES and time.time() < deadline:
         time.sleep(0.01)
-    assert _mailbox_entries(tmp_path, request.task_id) == [] and progress == []
+    assert _mailbox_entries(tmp_path, request.task_id) == [] and all(line.startswith("Review ") for line in progress)
 
 
 class _HeldExecutor:
@@ -270,7 +273,8 @@ def test_fresh_dispatch_returns_at_the_barrier_and_the_resubmitted_envelope_coll
     state = _state(harness)
     assert state["cycles_paid"] == 1 and state["waves"][-1]["paid"] is True
     assert executor.execute_calls == 3
-    assert any("reviewer slot s1 settled (ok)" in line for line in harness.progress)
+    # The final mailbox frame can precede another slot's progress callback.
+    assert _wait_until(lambda: any("[s1]: finished;" in line and "state=settled" in line for line in harness.progress))
 
 
 def test_barrier_wave_replaces_a_stale_paid_predecessor_and_pays_only_at_collection(tmp_path):
@@ -373,7 +377,7 @@ def test_a_slot_settling_during_the_barrier_release_never_splits_the_wave_into_t
             # s1 settles right after its own row is minted, before s2's row exists.
             assert entered["s1"].wait(10)
             release["s1"].set()
-            assert _wait_until(lambda: any("reviewer slot s1 settled" in line for line in progress))
+            assert _wait_until(lambda: any("[s1]: finished;" in line for line in progress))
         return actor
 
     monkeypatch.setattr(custody, "_late_or_timeout_actor", interleaved)

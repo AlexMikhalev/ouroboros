@@ -33,13 +33,20 @@ The accepted campaign configuration is:
 | Provider routing | OpenRouter default routing; no provider pin |
 | Reasoning | High effort |
 | Agent loop | Single agent, no scheduled subagents or external coding delegation |
-| Acceptance | Required, blocking, three same-model reviewer slots; two review cycles allow one rework |
+| Acceptance | Required, blocking, three same-model reviewer slots; at most two paid review panels, each followed by author reaction within ordinary task limits; Blocking still requires fresh approval to accept corrected work |
 | Round bound | 100 Ouroboros rounds; not a promise of identical tool-call counts to other engines |
 | Workspace and memory | External task workspace, empty task memory |
 | Runtime / safety | `pro`; LLM safety pass `off` in the disposable benchmark environment |
 | Native web | Disabled, including native browser/search tools; benchmark-required MCP tools remain available |
 | Post-task evolution | Disabled |
 | Qualification timeout | 3600 seconds per agent phase; final full-run timeout chosen after smoke |
+
+Acceptance semantics in the table describe this source revision. The Kimi K3
+and Qwen3.8-27B campaigns pinned to Ouroboros seed
+`484d241cfdb6d3f731f2307672625927746075aa` retain that seed's earlier rule:
+two review cycles allow one rework. Interpret each run using its recorded
+`run_manifest.json` source SHA and immutable image, not a later revision of
+this document. Updating the document does not change existing runs or results.
 
 The pinned upstream runner keeps its agent container alive with `sleep 7200`.
 That inherited two-hour lifetime can end a long task regardless of a larger

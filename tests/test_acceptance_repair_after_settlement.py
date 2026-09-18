@@ -63,4 +63,6 @@ def test_prose_after_settlement_needs_control_only_for_unacknowledged_owner_inpu
     assert f.model_step == (4 if owner_followup else 3), f.progress
     assert any("[DELIVERY_CONTROL_REPAIR]" in str(messages) for messages in f.model_inputs) is owner_followup
     host = [r for r in trace["review_runs"] if r.get("authority") == "host_root"]
-    assert [r.get("aggregate_signal") for r in host] == ["FAIL", "DEGRADED"], host
+    assert [r.get("aggregate_signal") for r in host] == ["FAIL"], host
+    assert trace["acceptance_decision"]["reason"] == "review_cycles_exhausted"
+    assert trace["review_decision"]["dispatch_refusal"]["reason"] == "review_cycles_exhausted"

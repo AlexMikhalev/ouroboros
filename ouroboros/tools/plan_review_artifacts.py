@@ -723,3 +723,22 @@ def record_plan_review_supplement(
 
     _update_plan_review_state(results_drive_root, task_id, _attach)
     return attached
+
+
+def current_author_plan(drive_root: Any, task_id: str, state: dict) -> Optional[dict]:
+    """Resolve the selected author source separately from closed reviewer authority."""
+    from ouroboros.artifacts import read_actor_source_bytes
+    from ouroboros.review_records import validate_author_disposition
+
+    attempt = state.get("current_attempt") or {}
+    subject = attempt.get("author_subject") or {}
+    author = validate_author_disposition(subject.get("author_disposition"), subject_hash=str(attempt.get("fingerprint") or ""))
+    if not author:
+        return None
+    try:
+        value = json.loads(read_actor_source_bytes(drive_root, task_id, subject["source_ref"]))
+        if value.get("kind") != "plan_author_subject" or value.get("fingerprint") != author["subject_hash"] or not isinstance(value.get("spec"), dict):
+            raise ValueError("author plan source identity mismatch")
+        return {**value, "author_disposition": author, "review_fingerprint": subject["review_fingerprint"]}
+    except (OSError, KeyError, TypeError, ValueError) as exc:
+        raise PlanReviewSourceUnavailable(f"PLAN_AUTHOR_SOURCE_UNAVAILABLE: {exc}") from exc

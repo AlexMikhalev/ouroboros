@@ -52,6 +52,7 @@ from ouroboros.skill_publish_snapshot import (
     capture_skill_publish_snapshot,
 )
 from ouroboros.skill_review_status import normalize_skill_review_status
+from ouroboros.skill_publish_eligibility import publication_author_acceptance
 from ouroboros.tool_access import (
     ResolvedResourceBinding,
     build_resolved_resource_binding,
@@ -70,6 +71,7 @@ _GENERATED_H2_HEADINGS = (
     "Version change",
     "Author Checklist",
     "Known advisory findings",
+    "Recorded reviewer findings",
     "Secret scan attestation",
 )
 
@@ -209,12 +211,13 @@ def _validate_local_skill(
             "skill_load_failed",
             "Repair the installed skill payload, then retry.",
         )
-    if normalize_skill_review_status(loaded.review.status) not in PUBLISHABLE_STATUSES and not cyber:
+    author = publication_author_acceptance(loaded.review, loaded.content_hash)
+    if normalize_skill_review_status(loaded.review.status) not in PUBLISHABLE_STATUSES and not cyber and not author:
         raise _PublishFailure(
             "review_not_publishable",
             "Resolve review blockers or pending review work, then retry.",
         )
-    if str(getattr(loaded.review, "review_profile", "") or "") == "owner_attested" and not cyber:
+    if str(getattr(loaded.review, "review_profile", "") or "") == "owner_attested" and not cyber and not author:
         raise _PublishFailure(
             "review_owner_attested",
             "Run the full skill review for public publication, then retry.",
@@ -368,9 +371,11 @@ def _provenance_hint(snapshot: SkillPublishSnapshot) -> str:
 
 
 def _advisory_findings_section(review: Any) -> str:
-    """Render every bounded non-blocking FAIL row from the local review."""
+    """Render bounded FAIL rows without changing their original severity."""
     rows: List[str] = []
-    for finding in getattr(review, "findings", None) or []:
+    reference = (getattr(review, "author_disposition", {}) or {}).get("review_reference") or {}
+    findings = list(getattr(review, "findings", None) or []) + list(reference.get("feedback") or [])
+    for finding in findings:
         if not isinstance(finding, dict):
             continue
         if str(finding.get("verdict") or "").upper() != "FAIL":
@@ -385,8 +390,8 @@ def _advisory_findings_section(review: Any) -> str:
     if not unique:
         return ""
     return (
-        "## Known advisory findings\n"
-        "Non-blocking FAIL findings from the local skill review:\n" + "\n".join(unique) + "\n"
+        "## Recorded reviewer findings\n"
+        "Original FAIL findings from the local skill review:\n" + "\n".join(unique) + "\n"
     )
 
 
@@ -465,6 +470,24 @@ def _close_unterminated_fence(body: str) -> str:
 
 
 def _author_checklist(review: Any, snapshot_hash: str = "") -> str:
+    author = publication_author_acceptance(review, snapshot_hash)
+    if author:
+        reference = author.get("review_reference") or {}
+        reviewed_hash = str(review.reviewed_content_hash or review.content_hash or "")
+        rationale = " ".join(str(author["rationale"]).split())
+        basis = ("Independent review was unavailable; no critic approval is inferred."
+                 if reference.get("basis") == "unavailable"
+                 else "The original critic evidence is preserved; author acceptance does not claim a fresh clean review.")
+        return (
+            "## Author Checklist\n"
+            f"- Advisory author acceptance: {author['disposition']}. {basis}\n"
+            f"- Original critic status: {review.status}; reviewed hash: {reviewed_hash or 'unavailable'}.\n"
+            f"- Author review basis: {reference.get('basis') or 'reviewed'}; reference hash: {reference.get('content_hash') or reviewed_hash or 'unavailable'}.\n"
+            f"- Author-accepted and published snapshot: {snapshot_hash}.\n"
+            "- Author acceptance does not represent another independent critic review.\n"
+            f"- Author rationale: {rationale}\n"
+            "- The pull request is the only requested public effect.\n"
+        )
     if mode_has_unrestricted_agency(get_runtime_mode()):
         reviewed_hash = str(review.reviewed_content_hash or review.content_hash or "")
         return (
@@ -522,12 +545,14 @@ def _pr_body_prompt(
         "author_note": note[:2000],
         "provenance": provenance[:1000],
         "review_status": normalize_skill_review_status(str(getattr(review, "status", "") or "")),
+        "author_accepted": bool(publication_author_acceptance(review, snapshot.content_hash)),
+        "review_stale": review.is_stale_for(snapshot.content_hash),
         **dict(version_change or {}),
     }
     return (
         "Write concise Markdown for only these sections: Summary and What This Skill Does. "
         "Use only the structured facts below. Do not invent claims or reproduce Author "
-        "Checklist, Version change, Known advisory findings, Secret scan attestation, Note, or Provenance "
+        "Checklist, Version change, Recorded reviewer findings, Known advisory findings, Secret scan attestation, Note, or Provenance "
         "sections; the host renders those. Version strings are opaque; do not infer their order.\n\n"
         + json.dumps(facts, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )
@@ -731,8 +756,8 @@ def _render_pr_body(
         f"- blockers={attempt.blocker_count}; warnings={attempt.warning_count}; "
         f"audited={attempt.audited_false_positive_count}.\n"
     )
-    if attempt.advice:
-        attestation += f"- Scanner status: {attempt.advice.get('scanner_status', 'not_run')}.\n"
+    if attempt.advice.get("scanner_status"):
+        attestation += f"- Scanner status: {attempt.advice['scanner_status']}.\n"
         if attempt.advice.get("scanner_errors"):
             attestation += f"- Scanner errors (advisory): {attempt.advice['scanner_errors']}\n"
     return body_without_attestation.rstrip() + "\n\n" + attestation
@@ -803,14 +828,21 @@ def _submit_skill_to_hub(
         expected_repository = f"{owner}/{repo}"
         snapshot = capture_skill_publish_snapshot(loaded)
         attempt.snapshot_hash = snapshot.content_hash
-        if cyber:
+        author = publication_author_acceptance(loaded.review, snapshot.content_hash)
+        if cyber or author:
             attempt.advice.update({
-                "safety_advisory": True,
+                "safety_advisory": cyber,
                 "review_status": str(loaded.review.status),
                 "review_profile": str(loaded.review.review_profile or ""),
                 "reviewed_content_hash": str(loaded.review.reviewed_content_hash or loaded.review.content_hash or ""),
                 "review_stale": loaded.review.is_stale_for(snapshot.content_hash),
                 "review_record": str(canonical_data_root(ctx) / "state" / "skills" / safe_skill / "review.json"),
+            })
+        if author:
+            attempt.advice.update({
+                "author_accepted": True, "author_content_hash": author["subject_hash"],
+                "author_disposition": author["disposition"], "author_rationale": author["rationale"],
+                "author_review_basis": str((author.get("review_reference") or {}).get("basis") or "reviewed"),
             })
         attempt.mark("snapshot_captured")
         if not snapshot.manifest.version.strip():

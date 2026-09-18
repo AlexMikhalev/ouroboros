@@ -54,15 +54,27 @@ explicit work-order review obligations.
   recent-overrides fields in `review_status`. Silent advisory is forbidden.
 - **Author finality remains evidence, not reviewer PASS:** plan, task acceptance,
   skill, and commit owners may record an explicit author disposition against the
-  exact current subject hash under ordinary advisory enforcement after actual first feedback.
+  exact current subject after received feedback or a disclosed unavailable review under Advisory.
+  Material commit outcomes return before Git effects; explicit continuation uses
+  the returned `review_reference` and author disposition, with independent current
+  preflight/test/Git checks and no new critic.
   Cyber may decide to continue without prior feedback, keeping the actual missing,
   failed or pending review separate from its own decision.
   A revised author subject keeps the original critic hash/findings separately;
-  author finish precedes any repeat panel. A skill's changed bytes require the
-  existing deterministic preflight; ordinary Blocking still needs fresh reviewer authority.
+  author finish precedes any repeat panel. The last paid panel still permits ordinary
+  author correction; N limits paid waves, not default author responses. Blocking may
+  save corrections and stop, but still needs fresh reviewer authority to advance.
+  An explicit unfinished stop creates neither approval nor an automatic follow-up.
+  A skill's current deterministic preflight must pass; existing grants, enablement
+  and dependencies stay independent. Hub submission uses the same qualified Advisory
+  authority plus its existing publication consent and scanner, disclosing original
+  critical severity and current author/published hashes without invented PASS.
+  Pending physical work without feedback is not unavailable; preserved partial
+  feedback can support Advisory choice without cancelling the other actors.
   Main judges semantic criteria and material evidence after acknowledging the
   observed owner source; source generation alone is not semantic supersession.
-  Historical feedback remains independently addressable.
+  Historical feedback remains independently addressable. For Main's acceptance
+  decision, a queued outcome or predeclared stance is not proof of exposure.
 - Once advisory is fresh → call commit_reviewed immediately without further edits.
 - `skip_advisory_review=True` skips only advisory freshness and the
   obligation/debt admission attached to it. Use LLM judgment when this cheap
@@ -894,7 +906,12 @@ all reviewers' findings from the previous cycle, the agent's dispositions and th
 a reformulation of an earlier finding is not a new finding, and a new blocking finding must say
 why it was invisible before. When the cap is spent under blocking enforcement the host holds
 implementation and escalates with the typed `review_cycles_exhausted` reason; under advisory the
-agent may proceed with the wave open under a loud host disclosure.
+agent may proceed with the wave open under a loud host disclosure. Explicit
+`review_disposition.author_action` plus author disposition may retain/select a full
+corrected goal/plan/spec against the actual critic fingerprint without another panel.
+The current author source and decision stay separate from critic closure: Advisory
+finish can select them; Blocking stop preserves unfinished work without authorizing
+implementation. Critic findings, paid counts and pending custody remain intact.
 
 ### Rules for reviewers
 

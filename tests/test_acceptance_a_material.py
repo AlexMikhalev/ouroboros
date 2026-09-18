@@ -225,8 +225,10 @@ def test_junk_continue_abstains_so_a_single_terminal_vote_terminalizes(
     _no_fence(monkeypatch)
     trace: dict = {"tool_calls": [], "review_runs": []}
     ctx = _ctx(tmp_path, trace=trace)
-    assert _apply_task_acceptance_result(ctx, result, record_run=False) is False
-    assert trace["acceptance_decision"]["reason"] == "dialogue_terminal"
+    assert _apply_task_acceptance_result(ctx, result) is True
+    assert trace["acceptance_decision"]["status"] == ACCEPTANCE_REVISION_REQUESTED
+    assert "unreachable_here" in ctx.messages[-1]["content"]
+    assert trace["review_runs"][-1]["aggregate_signal"] == "FAIL"
 
 
 def test_degraded_panel_lone_terminal_vote_does_not_shadow_the_degraded_causes(
@@ -252,10 +254,10 @@ def test_degraded_panel_lone_terminal_vote_does_not_shadow_the_degraded_causes(
     _no_fence(monkeypatch)
     trace: dict = {"tool_calls": [], "review_runs": []}
     ctx = _ctx(tmp_path, trace=trace)
-    assert _apply_task_acceptance_result(ctx, result, record_run=False) is False
-    decision = trace["acceptance_decision"]
-    assert decision["reason"] == "review_degraded"
-    assert decision["degraded_reasons"] == ["slot_0 transport_failed: 502 from provider"]
+    assert _apply_task_acceptance_result(ctx, result) is True
+    assert trace["acceptance_decision"]["status"] == ACCEPTANCE_REVISION_REQUESTED
+    assert trace["review_runs"][-1]["degraded_reasons"] == ["slot_0 transport_failed: 502 from provider"]
+    assert "502 from provider" in ctx.messages[-1]["content"]
 
 
 # ---------------------------------------------------------------------------
@@ -568,6 +570,7 @@ def test_the_degraded_terminal_keeps_its_wording_and_its_causes(monkeypatch, tmp
     emitted: list = []
     trace: dict = {"tool_calls": [], "review_runs": []}
     ctx = _ctx(tmp_path, trace=trace)
+    ctx.budget_profile["max_improvement_passes"] = 0  # explicit author rail, not critic dialogue
     ctx.emit_progress = lambda message, *, incident=None: emitted.append(message)
     result = ReviewRunResult(
         request={"surface": "task_acceptance", "policy": {"min_successful_slots": 1}},

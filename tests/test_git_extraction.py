@@ -107,8 +107,10 @@ def test_git_catalog_schema_bytes_and_handler_owners_are_stable():
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode()
+    # Informed Advisory continuation adds review_reference/author_disposition;
+    # both aliases share goal/scope and task-attribution/rebuttal guidance.
     assert hashlib.sha256(schema_bytes).hexdigest() == (
-        "729fdf1425126168c7408e431611f70ddd11139fa1c4161628fbcec7a27bf8ec"
+        "6ddfd5ee7943071de91819fcee85602895431ca5f55356c51601a7dd8c990631"
     )
     assert {
         entry.name: (entry.handler.__module__, entry.handler.__name__)

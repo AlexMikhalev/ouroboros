@@ -772,6 +772,7 @@ def _emit_operation(
     entry: ActiveReviewAttempt,
     slot: Any,
     phase: str,
+    actor: Any = None,
     **extra: Any,
 ) -> None:
     if usage_ctx is None:
@@ -793,12 +794,21 @@ def _emit_operation(
         }
         if event_queue is not None:
             emit_cognitive_operation_event(event_queue, **values)
-            return
-        from ouroboros.tools.review_helpers import emit_review_event
+        else:
+            from ouroboros.tools.review_helpers import emit_review_event
 
-        emit_review_event(usage_ctx, {"type": "cognitive_operation", **values})
+            emit_review_event(usage_ctx, {"type": "cognitive_operation", **values})
     except Exception:
         log.debug("review operation event failed", exc_info=True)
+    try:
+        emit = getattr(usage_ctx, "emit_progress_fn", None)
+        if callable(emit) and phase in {"started", "finished", "failed"}:
+            from ouroboros.review_execution_projection import review_actor_progress_text
+
+            emit(review_actor_progress_text(str(getattr(request, "surface", "") or ""), phase, slot, actor))
+    except Exception:
+        # Publish custody before best-effort UI disclosure.
+        log.debug("review actor progress failed", exc_info=True)
 
 
 def _late_or_timeout_actor(
@@ -1020,11 +1030,12 @@ def _settle_review_attempt(
         _emit_operation(
             usage_ctx, task_id=task_id, request=request, entry=entry, slot=slot,
             phase="failed" if actor.status == "error" else "finished",
+            actor=actor,
         )
     if entry.released_early:  # plan review's event route: progress line + the settled-wave frame
         from ouroboros.tools.plan_review_collect import announce_released_settlement
 
-        announce_released_settlement(usage_ctx, request=request, task_id=task_id, slot=slot, actor=actor,
+        announce_released_settlement(usage_ctx, request=request, task_id=task_id, actor=actor,
                                      settled_wave=dict(released_wave.get("slots") or {}), roster_size=int(released_wave.get("total") or 0))
         if getattr(request, "surface", "") == "task_acceptance" and (released_wave or quorum_wave):
             from ouroboros.acceptance_settlement import announce_acceptance_settlement
@@ -1089,12 +1100,13 @@ def _settled_slot_verdict(actor: Any) -> Dict[str, str]:
         parsed, findings, signal = parse_review_findings(str(getattr(actor, "raw_text", "") or ""))
     except Exception:
         log.debug("released acceptance verdict could not be parsed", exc_info=True)
-        return {"verdict": "", "note": ""}
+        parsed, findings, signal = {}, [], ""
     from ouroboros.utils import truncate_review_artifact
 
     note = str((parsed or {}).get("summary") or "") if isinstance(parsed, dict) else ""
     note = note or next((str(row.get("recommendation") or row.get("item") or "")
                          for row in (findings or []) if isinstance(row, dict)), "")
+    note = note or str(getattr(actor, "error", "") or getattr(actor, "parse_reason", "") or "")
     return {"verdict": str(signal or "").upper(), "note": truncate_review_artifact(" ".join(note.split()), limit=400)}
 
 

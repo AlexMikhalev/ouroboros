@@ -718,6 +718,7 @@ def adopt_evolution_commit_intent(
 
 def record_evolution_commit(
     campaign_id: str, transaction_id: str, task_id: str, commit_sha: str,
+    *, triad_scope_status: str = "unknown", author_disposition: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """CAS the exact reviewed local commit into its still-authorized transaction."""
     from supervisor import state
@@ -758,7 +759,8 @@ def record_evolution_commit(
             tx.update({
                 "preflight_status": "passed",
                 "advisory_status": "fresh_or_bypassed",
-                "triad_scope_status": "passed",
+                "triad_scope_status": str(triad_scope_status or "unknown"),
+                **({"author_disposition": dict(author_disposition)} if author_disposition else {}),
                 "commit_sha": commit_sha,
                 "commit_receipt": dict(receipt),
                 "restart_required": True,

@@ -831,6 +831,8 @@ def test_multi_improvement_stale_replace_is_decoded_before_acceptance_and_delive
     monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "auto")
     monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "4")
     monkeypatch.setenv("OUROBOROS_MAX_ROUNDS", "10")
+    from tests.test_loop_acceptance_gate import _seed_acceptance_root
+    _seed_acceptance_root(tmp_path, "issue-449", SimpleNamespace())
     registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
     registry._ctx.is_direct_chat = False
     registry._ctx.task_contract = {

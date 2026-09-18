@@ -147,10 +147,10 @@ def _events(path):
     return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
 
-def _call(client=None, **kwargs):
+def _call(client=None, *, timeout=1.0, **kwargs):
     return vision._vision_query_with_timeout(client, prompt="Describe only this image",
                                              images=[{"url": "data:image/png;base64,AAAA"}],
-                                             model=MODEL, timeout=1.0, **kwargs)
+                                             model=MODEL, timeout=timeout, **kwargs)
 
 
 def test_private_ipc_publication_never_exposes_an_empty_control_file(tmp_path, monkeypatch):
@@ -179,7 +179,10 @@ def test_private_ipc_publication_never_exposes_an_empty_control_file(tmp_path, m
 def test_real_child_retains_one_generation_and_unknown_cost(child_fixture, mode):
     state, events, root = child_fixture
     state["mode"] = mode
-    text, usage = _call()
+    # Lost-create recovery must survive ordinary cold imports on its first
+    # control outage. The other cases keep 20ms to prove that transport bounds
+    # do not become logical inference deadlines.
+    text, usage = _call(timeout=1.0 if mode == "lose_create" else 0.02)
     assert text == "pixels read exactly once 🐍"
     assert usage["cost"] is None and usage["cost_final"] is False
     assert len(usage["ledger_attempt_ids"]) == 1

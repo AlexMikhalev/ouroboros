@@ -351,7 +351,6 @@ def _finalize_blocked_review(
         return f"{combined_msg}\n\n---\n{warning}"
     return combined_msg
 
-
 _DOC_ONLY_EXTENSIONS = (".md", ".txt", ".rst")
 
 
@@ -550,6 +549,9 @@ def _reset_commit_review_state(ctx):
     ctx._last_triad_models = []
     ctx._last_scope_model = ""
     ctx._last_triad_raw_results = []
+    ctx._last_review_critical_findings = []
+    ctx._last_review_block_reason = ""
+    ctx._last_review_advisory_findings = []
     ctx._last_scope_raw_result = {}
     ctx._review_degraded_reasons = []
     ctx._current_review_tool_name = "commit_reviewed"
@@ -558,6 +560,10 @@ def _reset_commit_review_state(ctx):
     ctx._review_frozen_rows = {}
     ctx._review_custody_lost = False
     ctx._current_review_attempt_number = None
+    ctx._author_commit_source = None
+    ctx._author_commit_decision = None
+    ctx._author_commit_record = None
+    ctx._commit_review_status = "unknown"
 
 
 def _reconcile_advisory_before_preparation(ctx, commit_message, *, goal, scope, paths, review_rebuttal,
@@ -589,6 +595,9 @@ def _reconcile_advisory_before_preparation(ctx, commit_message, *, goal, scope, 
     except Exception as exc:
         return f"⚠️ REVIEW_PENDING: preflight custody could not be reconciled: {exc}"
     return ""
+
+
+from ouroboros.tools.commit_gate import _return_commit_feedback  # noqa: E402
 
 
 def _run_reviewed_stage_cycle(
@@ -676,12 +685,20 @@ def _run_reviewed_stage_cycle(
             "post_fingerprint": {},
         }
     # Free-cycle identity runs before advisory freshness and any paid dispatch.
-    gate_outcome = _git()._free_cycle_gate(
+    author_source = getattr(ctx, "_author_commit_source", None)
+    gate_outcome = None if author_source is not None else _git()._free_cycle_gate(
         ctx, commit_message, commit_start,
         pre_fingerprint=pre_fingerprint, review_rebuttal=review_rebuttal,
         goal=goal, scope=scope,
     )
     advisory_replay: Optional[Dict[str, Any]] = None
+    if author_source is not None:
+        from ouroboros.tools.commit_gate import bind_author_commit_candidate
+        preflight = bind_author_commit_candidate(ctx, commit_message, pre_fingerprint)
+        if preflight:
+            return {"status": "blocked", "message": preflight, "block_reason": "preflight"}
+        advisory_replay = {"advisory_replay": "Explicit current-author continuation; original reviewer facts retained.", "replay_reason": "author_finish"}
+        skip_advisory_pre_review = True
     if gate_outcome is not None:
         if "advisory_replay" in gate_outcome:
             advisory_replay = gate_outcome
@@ -754,8 +771,6 @@ def _run_reviewed_stage_cycle(
         phase="review",
         pre_review_fingerprint=pre_fingerprint.get("fingerprint", ""),
         fingerprint_status="pending",
-        # PAID lands write-ahead only at the first physical dispatch; assembly
-        # refusals and advisory free replays remain unpaid.
         rebuttal_sha256=str(getattr(ctx, "_current_review_rebuttal_sha256", "") or ""),
         review_contract_fingerprint=str(
             getattr(ctx, "_current_review_contract_fingerprint", "") or ""
@@ -764,41 +779,13 @@ def _run_reviewed_stage_cycle(
         late_result_pending=bool(getattr(ctx, "_review_reconcile_only", False)),
     )
 
-    if advisory_replay is not None:
-        # ADVISORY free outcome: disclose loudly and let the commit proceed
-        # without buying another triad+scope run. Honest wording per cause
-        # (wording-3): an identical-diff replay REUSES a recorded verdict; a
-        # ceiling exhaustion on NEW bytes has no verdict to reuse — the diff
-        # ships without a fresh review and the disclosure must say so.
+    if author_source is not None:
         review_err, scope_result, triad_block_reason, triad_advisory = None, None, "", []
-        replay_reason = str(advisory_replay.get("replay_reason") or "")
-        if not review_enforcement_blocks("blocking"):
-            progress_note = "Cyber Pro: continuing without a new reviewer dispatch; original review facts are retained."
-        elif replay_reason == _git().IDENTICAL_DIFF_BLOCK_REASON:
-            progress_note = (
-                "Max Review Cycles: identical staged diff — reusing the recorded "
-                "review verdict, no paid triad+scope dispatch."
-            )
-        else:
-            progress_note = (
-                "Max Review Cycles: paid-cycle ceiling exhausted — no review outcome "
-                "exists for this diff; the commit proceeds without a fresh triad+scope "
-                "review under advisory enforcement."
-            )
-        disclosure = (
-            "Review enforcement=Advisory: no new triad+scope review was bought for "
-            f"this commit ({replay_reason}); no fresh automatic preflight was bought. "
-            + str(advisory_replay.get("advisory_replay") or "")
-        )
-        if not review_enforcement_blocks("blocking"):
-            disclosure = "Cyber Pro: proceeding without a new review. " + str(advisory_replay.get("advisory_replay") or "")
-        advisory_list = getattr(ctx, "_review_advisory", None)
-        if isinstance(advisory_list, list):
-            advisory_list.append(disclosure)
-        try:
-            ctx.emit_progress_fn(progress_note)
-        except Exception:
-            pass
+        ctx._review_advisory.append("Explicit Advisory author continuation; no fresh reviewer approval was created.")
+    elif advisory_replay is not None:
+        review_err, scope_result, triad_block_reason, triad_advisory = None, None, "", []
+        from ouroboros.tools.commit_gate import disclose_commit_review_replay
+        disclose_commit_review_replay(ctx, advisory_replay)
     else:
         _git()._install_paid_dispatch_stamp(ctx, commit_message, commit_start, pre_fingerprint)
         try:
@@ -828,9 +815,12 @@ def _run_reviewed_stage_cycle(
         if isinstance(advisory_list, list):
             advisory_list.extend(scope_advisory)
     post_fingerprint = _git()._fingerprint_staged_diff(pathlib.Path(ctx.repo_dir))
-    if _git()._review_custody_pending(ctx) and (pending_message := _git()._finalize_pending_review(
+    if author_source is None and _git()._review_custody_pending(ctx) and (pending_message := _git()._finalize_pending_review(
             ctx, commit_message, commit_start,
             pre_fingerprint=pre_fingerprint, post_fingerprint=post_fingerprint)):
+        from ouroboros.config import get_review_enforcement
+        if get_review_enforcement() == "advisory" and review_enforcement_blocks("blocking"):
+            return _return_commit_feedback(ctx, commit_message, commit_start, pre_fingerprint, post_fingerprint, pending=True)
         return {
             "status": "blocked",
             "message": pending_message,
@@ -855,13 +845,20 @@ def _run_reviewed_stage_cycle(
 
     if review_retry_cancelled(ctx) or owner_deadline_exhausted_for_context(ctx):
         blocked, combined_msg, block_reason = True, "⚠️ REVIEW_STOPPED: owner cancellation or deadline prevents this commit.", "owner_stopped"
+    from ouroboros.config import get_review_enforcement
+    material = (blocked or combined_findings or getattr(ctx, "_last_review_critical_findings", [])
+                or getattr(ctx, "_last_review_advisory_findings", []) or scope_advisory
+                or getattr(ctx, "_last_review_block_reason", "") or triad_block_reason
+                or getattr(ctx, "_review_degraded_reasons", []) or advisory_replay is not None)
+    if (author_source is None and get_review_enforcement() == "advisory" and review_enforcement_blocks("blocking")
+            and material and block_reason != "owner_stopped"):
+        return _return_commit_feedback(ctx, commit_message, commit_start, pre_fingerprint, post_fingerprint,
+                                       reason=block_reason or triad_block_reason or getattr(ctx, "_last_review_block_reason", "") or "author_decision_required", findings=combined_findings or [
+                *getattr(ctx, "_last_review_critical_findings", []),
+                *(scope_result.critical_findings if scope_result is not None else [])])
     if blocked:
-        # Typed block-row classification (Q16/Δ5): a reviewer VERDICT builds
-        # the identical-diff refusal streak; an INFRA fact (fit/quorum/
-        # transport/sub-floor) never does and retries freely. Money is a
-        # separate axis: paid was stamped at PHYSICAL dispatch, so a
-        # dispatched-then-infra-blocked wave still counts toward the ceiling,
-        # while an assembly-refused (undispatched) infra block stays free.
+        # Verdicts extend the identical-diff refusal streak; infrastructure does
+        # not. Either outcome retains the physical dispatch's paid-cycle fact.
         block_class = _git().classify_review_block(
             triad_blocked=bool(review_err),
             triad_block_reason=str(triad_block_reason or ""),
@@ -884,6 +881,9 @@ def _run_reviewed_stage_cycle(
             "post_fingerprint": post_fingerprint,
             "combined_findings": combined_findings,
         }
+    ctx._commit_review_status = ("author_continued" if author_source is not None else
+        "passed" if advisory_replay is None and not material and scope_result is not None
+        and getattr(scope_result, "status", "") == "responded" and getattr(ctx, "_last_triad_raw_results", []) else "not_confirmed")
     return {
         "status": "passed",
         "message": "",

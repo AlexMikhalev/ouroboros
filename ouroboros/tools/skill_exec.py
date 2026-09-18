@@ -578,11 +578,12 @@ def _author_finish_existing_skill_review(
     *,
     disposition: str,
     rationale: str,
+    review_reference: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Record author finish in Advisory or Cyber without buying a new panel.
 
-    Advisory needs prior feedback and a passing current preflight; Cyber may
-    continue with either missing or failed. Reviewer hash, findings and status
+    Advisory needs feedback or a returned terminal unavailable reference plus
+    current preflight; Cyber may continue with either missing or failed. Critic
     stay intact; only the author record binds the newly accepted bytes.
     """
     from ouroboros.config import get_review_enforcement
@@ -605,10 +606,35 @@ def _author_finish_existing_skill_review(
     )
     drive_root = binding.state_drive_root
     review_state = load_review_state(drive_root, skill_name, skill_type=loaded.manifest.type, skill_dir=loaded.skill_dir)
-    if not cyber and review_state.status == "pending":
-        return {"error": "SKILL_REVIEW_ERROR: existing review is pending or has no reviewer verdict."}
-    if not cyber and not (review_state.findings or review_state.raw_actor_records or review_state.raw_result):
-        return {"error": "SKILL_REVIEW_ERROR: no prior reviewer evidence is available for author finish."}
+    prior_feedback = (review_state.status != "pending" and review_state.review_profile != "owner_attested"
+                      and bool(review_state.findings or review_state.raw_actor_records or review_state.raw_result))
+    basis = {"surface": "skill", "basis": "reviewed", "content_hash": review_state.reviewed_content_hash or review_state.content_hash}
+    if not prior_feedback and not cyber:
+        from ouroboros.skill_review_runner import _read_review_job, review_job_state_path
+        from ouroboros.skill_review_history import load_history
+        from ouroboros.review_custody import _row_is_pending
+
+        job = _read_review_job(review_job_state_path(drive_root, skill_name))
+        history = load_history(drive_root, skill_name, limit=1)
+        actors = (history[-1].get("raw_actor_records") or []) if history and history[-1].get("job_id") == job.get("job_id") else []
+        reserved = {operation for chunk in (job.get("review_wave") or {}).get("chunks", [])
+                    for operation in (chunk.get("operations") or {}).values()}
+        reported = {actor.get("operation_id") for actor in actors if isinstance(actor, dict)}
+        feedback = [item for actor in actors if isinstance(actor, dict)
+                    for item in (actor.get("parsed_items") or [])
+                    if isinstance(item, dict) and item.get("verdict") in {"PASS", "FAIL"}]
+        supplied = review_reference if isinstance(review_reference, dict) else {}
+        if (not job.get("job_id") or not job.get("content_hash") or not job.get("finished_at")
+                or (not feedback and (reserved - reported or any(_row_is_pending(actor) for actor in actors if isinstance(actor, dict))))
+                or job.get("skill") != skill_name
+                or job.get("status") not in {"completed", "succeeded", "failed", "interrupted", "cancelled", "timeout"}
+                or job.get("review_status") not in {"pending", "failed", "interrupted", "cancelled", "timeout"}
+                or supplied.get("job_id") != job["job_id"] or supplied.get("content_hash") != job["content_hash"]):
+            return {"error": "SKILL_REVIEW_ERROR: author finish needs prior reviewer feedback or the exact review_reference returned by a terminal review with feedback or disclosed unavailability. Running or unresolved physical reviewers are not unavailable."}
+        basis = {"surface": "skill", "basis": "partial_feedback" if feedback else "unavailable", **{key: job[key] for key in
+                 ("job_id", "content_hash", "status", "review_status", "finished_at")}}
+        if feedback:
+            basis["feedback"] = feedback
     try:
         author_record = build_author_disposition(
             disposition=disposition,
@@ -621,23 +647,24 @@ def _author_finish_existing_skill_review(
         return {"error": f"SKILL_REVIEW_ERROR: {exc}"}
     previous_hash = str(review_state.reviewed_content_hash or review_state.content_hash or "")
     preflight_facts = None
-    if previous_hash != current_hash:
-        # Current preflight is independent evidence; Cyber may continue with its
-        # failure, while ordinary Advisory still requires it to pass.
-        preflight = _run_deterministic_preflight(
-            ctx, drive_root, loaded, current_hash, persist=False, binding=binding,
-        )
-        if preflight is not None and not cyber:
-            return {"error": "SKILL_REVIEW_ERROR: deterministic preflight did not pass for the current payload."}
-        if preflight is not None:
-            from ouroboros.utils import append_jsonl, utc_now_iso
+    # Current preflight is independent evidence; Cyber may continue with its
+    # failure, while ordinary Advisory still requires it to pass.
+    preflight = _run_deterministic_preflight(
+        ctx, drive_root, loaded, current_hash, persist=False, binding=binding,
+    )
+    if preflight is not None and not cyber:
+        return {"error": "SKILL_REVIEW_ERROR: deterministic preflight did not pass for the current payload."}
+    if preflight is not None:
+        from ouroboros.utils import append_jsonl, utc_now_iso
 
-            preflight_facts = {"content_hash": current_hash, "status": preflight.status,
-                               "findings": list(preflight.findings or []), "error": preflight.error}
-            append_jsonl(ctx.drive_logs() / "events.jsonl", {
-                "ts": utc_now_iso(), "type": "skill_review_author_preflight",
-                "skill_name": skill_name, "decision_authority": "cyber_pro", **preflight_facts,
-            })
+        preflight_facts = {"content_hash": current_hash, "status": preflight.status,
+                           "findings": list(preflight.findings or []), "error": preflight.error}
+        append_jsonl(ctx.drive_logs() / "events.jsonl", {
+            "ts": utc_now_iso(), "type": "skill_review_author_preflight",
+            "skill_name": skill_name, "decision_authority": "cyber_pro", **preflight_facts,
+        })
+    basis["preflight"] = {"content_hash": current_hash, "status": "failed" if preflight_facts is not None else "pass"}
+    author_record["review_reference"] = basis
     review_state.author_disposition = author_record
     save_review_state(drive_root, skill_name, review_state)
     from ouroboros.skill_loader import auto_grant_if_enabled
@@ -673,6 +700,7 @@ def _handle_review_skill(
     review_rebuttal: str = "",
     author_disposition: str = "",
     author_rationale: str = "",
+    review_reference: Optional[Dict[str, Any]] = None,
     _resolved_binding: ResolvedResourceBinding | None = None,
     **_kwargs: Any,
 ) -> str:
@@ -700,7 +728,7 @@ def _handle_review_skill(
         if author_value not in {"accepted", "rejected", "partial", "deferred"} or not author_reason:
             return "⚠️ SKILL_REVIEW_ERROR: explicit author finish requires a valid disposition and rationale."
         finished = _author_finish_existing_skill_review(
-            ctx, binding, skill_name, disposition=author_value, rationale=author_reason,
+            ctx, binding, skill_name, disposition=author_value, rationale=author_reason, review_reference=review_reference,
         )
         if finished is None:
             return "⚠️ SKILL_REVIEW_ERROR: author finish could not bind the selected skill revision."
@@ -758,6 +786,8 @@ def _handle_review_skill(
     # advisory_result) in the agent's reasoning context, feeding context overflow
     # on multi-round skill work. Forensic raw records remain on disk in
     # state/skills/<name>/review.json (Skills page + on-demand reads).
+    if payload.get("job_id") and payload.get("content_hash"):
+        markdown += "\n\nReview reference: " + json.dumps({"job_id": payload["job_id"], "content_hash": payload["content_hash"]}, sort_keys=True)
     return markdown
 
 
@@ -1261,7 +1291,12 @@ _REVIEW_SCHEMA = {
             "author_disposition": {
                 "type": "string",
                 "enum": ["accepted", "rejected", "partial", "deferred"],
-                "description": "Optional advisory author finish for this exact content hash; keeps the original reviewer hash; changed payloads require deterministic preflight, and pending reviews cannot finish.",
+                "description": "Optional Advisory author finish for the current content hash. Keeps original critic evidence; changed or unavailable-review cases require current deterministic preflight. For terminal partial-feedback or unavailable outcomes, pass the returned review_reference.",
+            },
+            "review_reference": {
+                "type": "object", "properties": {"job_id": {"type": "string"}, "content_hash": {"type": "string"}},
+                "required": ["job_id", "content_hash"],
+                "description": "For a partial-feedback or unavailable outcome: exact reference returned by that skill review. An in-flight critic without feedback is not unavailable.",
             },
             "author_rationale": {
                 "type": "string",

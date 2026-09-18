@@ -143,6 +143,20 @@ def build_review_status_payload(projection: Dict[str, Any], *, next_step: str, i
         "status_summary": _review_status_message(projection),
         "next_step": next_step,
     }
+    if selected_attempt is not None and selected_attempt.phase in {"review_only", "late_wait"}:
+        from ouroboros.config import get_review_enforcement
+        from ouroboros.review_records import review_outcome_received
+
+        received = review_outcome_received(
+            [*selected_attempt.triad_raw_results, selected_attempt.scope_raw_result],
+            findings=[*selected_attempt.critical_findings, *selected_attempt.advisory_findings],
+            terminal=selected_attempt.phase == "review_only" and selected_attempt.status == "reviewed",
+        )
+        if get_review_enforcement() == "advisory" and received:
+            payload["review_reference"] = {"surface": "commit", **{key: getattr(selected_attempt, key) for key in
+                ("repo_key", "task_id", "tool_name", "attempt", "pre_review_fingerprint")}}
+            payload["next_step"] = ("Read the returned findings. You may revise and request another permitted review, stop, or call "
+                "commit_reviewed with this review_reference and an explicit author_disposition/rationale to commit the current attributed candidate without a new panel. Independent checks still apply.")
     payload["message"] = payload["status_summary"]
     # Persistent advisory-enforcement visibility (BIBLE P3 loud-advisory bound):
     # how many blocking-grade signals advisory enforcement waved through.

@@ -267,6 +267,14 @@ pointer alone; a card in another chat keeps the excerpt.
   every surface kept inventing its own literal instead. They are gone; the
   vocabulary above is the whole vocabulary.)
 
+Current completion and independent criticism are separate facts. An informed Advisory
+author finish may complete the current subject while its original review remains
+FAIL or DEGRADED; the old critic alone must not paint that completion Failed.
+Independent execution, artifact, verification or publication failures still apply.
+Blocking corrections saved without fresh approval and an explicit unfinished stop
+remain unaccepted; show the retained work and reason through the existing five-word
+status family and details, without inventing reviewer PASS or a new status badge.
+
 ### The tone primitive
 
 Two shapes carry a tone, and they are not interchangeable:
@@ -415,6 +423,10 @@ not child-task cards and never prove execution by themselves.
   (`Skill review`, `Plan review`, or `Task acceptance`). Expanding a group
   reveals its ordered attempt rows. Group state and verdict remain
   domain-specific; one blocker never recolours the whole task card.
+- Start progress labels the frozen model/route/profile as requested; settlement
+  reports that same slot's observed execution or says it was not reported. An API
+  model sent in a request is not an independently observed provider label, and
+  duplicate model slots remain distinct. No global last-run identity fills a gap.
 - Disclosure is user-owned. Review results, retries, failures, terminal task
   state, reconnect, and lazy-detail loading update content in place but never
   open or close the task, Reviews section, or group.

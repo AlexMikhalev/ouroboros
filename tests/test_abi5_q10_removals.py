@@ -144,16 +144,16 @@ def test_deadline_pacing_aliases_are_gone_from_the_contract_shape():
 
 
 def test_deadline_no_longer_lifts_the_improvement_count_axis(monkeypatch):
-    """The alias's one behavior — a deadline turning the count cap off outside
-    Required+Blocking — is gone: the shared cycle cap binds regardless, and the
-    signature no longer even accepts a deadline fact."""
+    """Deadlines do not change an explicit author cap. The paid panel limit
+    no longer derives a separate author count, and has_deadline stays retired."""
     import inspect
 
     from ouroboros.task_pacing import effective_max_improvement_passes
 
     monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "2")
     profile = {"improvement_policy": "fixed", "max_improvement_passes": None}
-    assert effective_max_improvement_passes(profile) == 1
+    assert effective_max_improvement_passes(profile) is None
+    assert effective_max_improvement_passes({**profile, "max_improvement_passes": 1}) == 1
     params = inspect.signature(effective_max_improvement_passes).parameters
     assert "has_deadline" not in params
 

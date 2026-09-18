@@ -187,7 +187,7 @@ def build_task_acceptance_evidence(
     claims, claims_source, plan_exhibit = _accept_effective_claims(
         ctx, contract, drive_root, task_id,
     )
-    if claims_source == "plan_review":
+    if claims_source in {"plan_review", "author_plan"}:
         contract = {**contract, "acceptance_claims": claims}
     receipts = read_context_verification_receipts(ctx, task_id, fallback_root=drive_root) if task_id else []
     owner_directives = _accept_owner_directives(ctx, drive_root, task_id)
@@ -875,7 +875,7 @@ def format_review_evidence_for_prompt(
     Another task's advisory runs leave the main JSON body entirely and are
     rendered last, under their own attributing heading.
     """
-    evidence = evidence if isinstance(evidence, dict) else {}
+    evidence = {key: value for key, value in evidence.items() if key != "task_inputs"} if isinstance(evidence, dict) else {}
     foreign_section = _foreign_advisory_section(evidence)
     if foreign_section:
         evidence = {key: value for key, value in evidence.items() if key not in _FOREIGN_ADVISORY_KEYS}
