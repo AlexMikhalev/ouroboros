@@ -366,10 +366,15 @@ def validate_subagent_snapshot(raw: Any, *, access: Optional[str] = None) -> dic
         raise SubagentSelectionError(
             "subagent_snapshot_invalid", "The task has no complete immutable subagent snapshot."
         )
-    if access is not None:
-        if kind != "agent_session" or access not in SESSION_ACCESS_LOWERING:
-            raise SubagentSelectionError(
-                "subagent_access_invalid", "access may only lower an agent_session to readonly or workspace_write.")
+    if access not in (None, "inherit", *SESSION_ACCESS_LOWERING):
+        raise SubagentSelectionError(
+            "subagent_access_invalid",
+            f"access={access!r} for subagent_id={snapshot['selected_subagent_id']!r} "
+            f"({kind}) must be inherit, readonly or workspace_write; inherit preserves "
+            "the configured session access, and API-model access is controlled by write_surface.")
+    # API actors derive authority from write_surface; a populated session-only
+    # option must not make that route unreachable for all-fields tool forms.
+    if kind == "agent_session" and access in SESSION_ACCESS_LOWERING:
         if access == "readonly" or captured_access == "full":
             snapshot["access"] = access
     from ouroboros.model_slots import normalize_processing_preference
