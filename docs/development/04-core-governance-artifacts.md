@@ -129,18 +129,19 @@ in `tests/test_loop_misc.py`.
 
 ### Invariant: Compaction must earn its rewrite
 
-Context compaction is a deficit-requested materializer, not an independent
-threshold, timer, route, or retry policy (the no-reclaim-no-mutation rule and
-the route+round latch: ARCHITECTURE §6 "Context fitting, retry, and compaction"). For a
-non-empty selection, persist the exact actor-visible checkpoint before calling
-the summarizer. A replacement publishes only once transcript/unit binding,
-complete coverage, checkpoint provenance and a strictly smaller size on the
-caller's ContextFit basis are proved, with matching image proxy and density
-(raw base64 bytes are not token reclaim). Only typed summarizer context
-overflow may split a source; capsules keep host-only provenance metadata, so
-recompaction never loses the original provenance union. Enforcement:
-`tests/test_compaction.py`, `tests/test_loop_compaction.py`,
-`tests/test_loop_compaction_policy.py`.
+Helper compaction is deficit-driven: checkpoint the exact actor-visible source
+before summarizing, then publish only completely covered, bound units with
+provenance and a strictly smaller ContextFit size (same image proxy/density).
+Only typed summarizer overflow may split sources; capsules retain the original
+provenance union. No-positive-reclaim and route+round rules belong to ARCHITECTURE
+§6 "Context fitting, retry, and compaction"; the materializer adds no threshold,
+timer, route or retry policy.
+
+Authored views reuse that custody but follow the actor's note/source selection,
+so need not shrink. Preserve complete units, owner/new tail and schema residency;
+measure without new Main admission gates. Test actual loop wiring, not manually
+seeded observations: `tests/test_main_authored_context.py`, alongside the helper
+coverage in `tests/test_compaction.py`.
 
 ### Invariant: No silent truncation
 

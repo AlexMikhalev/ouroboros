@@ -696,39 +696,32 @@ and what enforces each.
 - Runtime notices after the first user/assistant/tool turn are `[SYSTEM NOTICE]` user
   notices, not new `role=system` messages; `LLMClient` demotes non-leading system
   messages at the provider boundary.
-- **Cache-friendliness invariant.** Byte-stable governance and task contracts precede
-  mutable evidence; never put timestamps, hashes, counters or task identity in a stable
-  cached prefix — they fragment provider caches while conveying no stable policy.
-  Builders declare bare breakpoints (`review_substrate.assert_cache_breakpoint_cap`
-  keeps the review builders at four or fewer; `tests/test_review_prompt_caching.py`);
-  only `LLMClient._normalize_payload_cache_ttl` finalizes the wire payload; no provider
-  hops, body rerouting or generic cache/retry framework. A wrap-up call keeps schemas,
-  the server-web flag and `tool_choice` identical to the working round and instructs in
-  text (a tool-less variant rebuilds the whole prefix; a `tool_choice` change rebuilds
-  the messages tier). `context_fit.seal_task_transcript` owns the single message-side
-  breakpoint — the task message until the rolling tool-result seal qualifies, migrated
-  in the same call — preserved on the direct-Anthropic lane by
-  `_anthropic_blocks_from_content` and on OpenRouter by `supports_message_cache_control`,
-  pinned by `tests/test_review_prompt_caching.py` (ARCHITECTURE §6 "Context fitting,
-  retry, and compaction"). The subscription transport carries one install-scoped cache
-  affinity (`llm_claudexor.cache_key_for_model`: one Codex `prompt_cache_key`, hence one
-  `session_id`, per data root and model, shared by every task, child and consciousness
-  cycle — Codex reuses a prefix across conversations only under the same session;
-  ARCHITECTURE §6 "Caller-owned subscription model calls"); API-compatible lanes keep
-  prefix-derived session identity, excluding cache/host metadata from the copied
-  first-user identity on OpenRouter while preserving real task/model differences
-  and explicit affinity. A consciousness wake-up shares an owner turn's
-  byte-identical schema array and system prefix, so what the level or wake reason
-  changes lives only in the wake's user message and the dynamic tail; its model slot
-  (the owner's `consciousness` role, when set) decides which cache it lands in. Between
-  sends of one execution, only compaction may rewrite the transcript; other breaks
-  discard OpenAI-family caches (`prompt_prefix_break`; ARCHITECTURE §6 "Task lifecycle"). `_append_or_merge_user_content` never merges into acceptance
-  observations. Other content merges only if `unsent_in_previous_send` proves the
-  tail absent from the last observed send; without a slot or observation, append.
-  Observation follows a usable ordinary response, not every physical send; image
-  eviction is unchanged. Pin plain/multipart content and real local/GigaChat builders
-  (`tests/test_transcript_prefix.py` on `run_llm_loop`,
-  `tests/test_transcript_provider_shapes.py`); CHECKLISTS item 22 (`cache_friendliness`).
+- **Cache-friendliness invariant.** Keep stable governance/task contracts before
+  mutable evidence; timestamps, hashes, counters and task IDs never belong in a
+  cached prefix. Builders place bare breakpoints (four at most in review,
+  `review_substrate.assert_cache_breakpoint_cap`); only
+  `LLMClient._normalize_payload_cache_ttl` finalizes them. Preserve existing
+  provider hints and recovery; do not add a generic cache/retry framework.
+  Wrap-up calls keep schemas, server-web flag and `tool_choice` unchanged and
+  instruct in text, because removing tools or changing tool choice rebuilds
+  cached input. Preserve `context_fit.seal_task_transcript`'s single message
+  marker as it moves between task and tool result; direct Anthropic and
+  OpenRouter keep their supported wire markers. OpenRouter's derived identity
+  excludes cache/host metadata, preserving real task/model differences and
+  explicit affinity. Claudexor's `cache_key_for_model` is shared per install/model
+  across tasks, children and wakes: Codex reuses cross-conversation prefixes
+  only under the same session. Other API routes retain their prefix identity.
+  A wake shares an owner turn's schemas/governance; autonomy and wake reason
+  stay in its user message/tail, and its configured consciousness model selects
+  the cache. Within one execution, only compaction intentionally rewrites sent
+  history (`prompt_prefix_break`). Never merge acceptance observations; merge
+  another tail only when `unsent_in_previous_send` proves it was unsent,
+  otherwise append. Observe usable ordinary responses, not every physical
+  send; image eviction is unchanged. Mechanisms: ARCHITECTURE §6 "Context fitting,
+  retry, and compaction" / "Task lifecycle" / "Caller-owned subscription model
+  calls". Enforce with `tests/test_review_prompt_caching.py`,
+  `tests/test_transcript_prefix.py` (real Main loop, plain/multipart) and
+  `tests/test_transcript_provider_shapes.py` (local/GigaChat); CHECKLISTS item 22.
 - Provider fallback is disabled only for a SEALED reasoning artifact
   (`ouroboros/reasoning_artifacts.py::transcript_has_sealed_reasoning`) — only a sealed
   artifact is bound to the endpoint that minted it; readable reasoning stays
@@ -1080,13 +1073,6 @@ Enforcement: the adversarial tests the first bullet mandates, plus
 
 #### Cognitive Artifact Integrity
 
-- An authored Main view uses the same canonical source checkpoint/materializer as
-  review and consolidation (ARCHITECTURE §6 "Context fitting, retry, and compaction").
-  Observe only the successful ordinary turn before tools execute; preserve exact
-  source references, complete tool units, newer owner messages and current schema
-  residency. Pure prospective fit does not call a model or introduce a new admission
-  threshold. Test the actual loop wiring, including projected images and reprepare,
-  rather than seeding the observation in a helper-only test.
 - Cognitive artifacts (identity.md, scratchpad, task reflections, review outputs,
   pattern register) must NOT use hardcoded `[:N]` truncation. When content must be
   shortened, summarize explicitly — attempts, changes and conclusions survive — and
