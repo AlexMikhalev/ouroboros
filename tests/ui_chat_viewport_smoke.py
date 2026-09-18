@@ -125,6 +125,14 @@ def run_chat_viewport_smoke(
     def hold_first_route(routes):
         return lambda route: routes.append(route) if not routes else route.fallback()
 
+    def incomplete_activity_census(route):
+        # These WS-only tasks do not exist on the fixture server. Its empty
+        # roster cannot disprove them; reconciliation cases opt in below.
+        response = route.fetch()
+        payload = response.json()
+        payload["active_chat_activities_complete"] = False
+        route.fulfill(response=response, json=payload)
+
     def visible_card_anchor(page):
         return page.evaluate(
             """() => {
@@ -152,6 +160,7 @@ def run_chat_viewport_smoke(
             page = browser.new_page(viewport={"width": 1280, "height": 760})
             try:
                 page.add_init_script(f"({_CAPTURE_TEST_SOCKET})()")
+                page.route("**/api/state", incomplete_activity_census)
                 page.goto(url, wait_until="domcontentloaded", timeout=30_000)
                 page.add_style_tag(
                     content="#chat-messages, #chat-messages * { overflow-anchor: none !important; }"
@@ -735,6 +744,7 @@ def run_chat_viewport_smoke(
                 page.evaluate(_SETTLE_TWO_FRAMES)
                 assert_noop_read(page, noop_top)
                 page.unroute("**/api/state")
+                page.route("**/api/state", incomplete_activity_census)
 
                 # A production-shaped review reference hydrates asynchronously;
                 # both the fetch result and its review DOM reconcile stay anchored.
