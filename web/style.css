@@ -7199,7 +7199,8 @@ textarea.chat-input {
     text-overflow: ellipsis;
 }
 .project-work-coverage { font-size: var(--type-meta); color: var(--text-meta); }
-.chat-panel-statusbar { flex-wrap: wrap; gap: var(--space-2); }
+/* Compact horizontal spacing leaves room for wider native system-font metrics. */
+.chat-panel-statusbar { flex-wrap: wrap; gap: var(--space-2) var(--space-1); }
 .chat-live-executor-chip { max-width: 100%; white-space: normal; }
 .chat-live-meta-text, .chat-live-executor-chip .harness-identity-label { overflow-wrap: anywhere; }
 .chat-bubble .message:not(:has(> *)),

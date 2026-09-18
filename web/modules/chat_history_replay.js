@@ -22,15 +22,16 @@ export function mergeHistoricalTimelineItem(record, summary, row, ts) {
     if (summary.visible === false || !(summary.headline || summary.body)) return false;
     const identity = String(row?.history_id || '');
     if (!identity) return false;
-    // A terminal projection is still one logical completion; narration consists
-    // of independently addressed source records, even when text and time match.
-    const key = summary.terminal ? summary.dedupeKey : `history:${identity}`;
+    // A child's lifecycle is one evolving status, just as it is live. Its
+    // authored progress keeps every source record, even when text and time match.
+    const evolving = summary.terminal || String(summary.dedupeKey || '').startsWith('subagent-lifecycle:');
+    const key = evolving ? summary.dedupeKey : `history:${identity}`;
     let item = record.items.find((entry) => entry.dedupeKey === key);
-    if (!item && !summary.terminal) {
+    if (!item && !evolving) {
         item = record.items.find((entry) => !entry.historyId
             && entry.dedupeKey === summary.dedupeKey && entry.sourceTs === row.ts);
     }
-    if (item && summary.terminal) {
+    if (item && evolving) {
         const incomingTime = Date.parse(row.ts), existingTime = Date.parse(item.sourceTs || '');
         if (incomingTime < existingTime || incomingTime === existingTime
                 && compareHistoryPosition(row.history_position, item.historyPosition) < 0) return false;
@@ -57,9 +58,9 @@ export function mergeHistoricalTimelineItem(record, summary, row, ts) {
             body: summary.body || '', fullBody: summary.fullBody || summary.body || '',
             fullRef: summary.fullRef || '', truncated: summary.truncated || false,
             ts: ts || '', sourceTs: row.ts || '', count: 1, dedupeKey: key,
-            ...(summary.terminal ? { sourceHistoryId: identity } : { historyId: identity }),
+            ...(evolving ? { sourceHistoryId: identity } : { historyId: identity }),
             historyPosition: row.history_position,
-            lineKey: summary.terminal ? `terminal-${String(key).replace(/[^A-Za-z0-9_-]/g, '-')}`
+            lineKey: evolving ? `terminal-${String(key).replace(/[^A-Za-z0-9_-]/g, '-')}`
                 : `history-${identity.replace(/[^A-Za-z0-9_-]/g, '-')}`,
         });
     }
