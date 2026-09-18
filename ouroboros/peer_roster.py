@@ -117,12 +117,14 @@ def render_roster_note(roster: Dict[str, Any], *, exclude: str = "") -> str:
         "[System task message]",
         "[INDEPENDENT_ROOTS] Active independent tasks the host lists. You may message "
         "any of them with steer_task(task_id, message); it arrives as a message from "
-        "THIS task (never as owner text) and files cannot be attached to it.",
+        "THIS task (never as owner text) and files cannot be attached to it. "
+        "A live direct conversation uses the direct chat lane; its initiator may be the owner or consciousness.",
     ]
     for row in shown:
         room = f"project={row['project_id']}" if row["project_id"] else f"chat={row.get('chat_id')}"
         title = row["title"] or "(untitled)"
-        lines.append(f"- {row['task_id']} · {title} · {room} · {row['status']}")
+        direct = " · live direct conversation" if row.get("direct_chat") else ""
+        lines.append(f"- {row['task_id']} · {title} · {room} · {row['status']}{direct}")
     if not shown:
         lines.append("- (none)")
     if len(rows) > len(shown):

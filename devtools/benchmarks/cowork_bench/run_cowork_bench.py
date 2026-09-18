@@ -15,6 +15,7 @@ import argparse
 import hashlib
 import csv
 import json
+import math
 import os
 import pathlib
 import shutil
@@ -43,7 +44,7 @@ from devtools.benchmarks.common.result_index import (
 )
 from devtools.benchmarks.common.run_roots import assert_outside_repo, repo_root_from_devtools, run_root, timestamp_run_id
 from devtools.benchmarks.common.secrets import credential_fingerprint
-from devtools.benchmarks.cowork_bench.campaign import CampaignBudget, campaign_lock, key_usage
+from devtools.benchmarks.cowork_bench.campaign import CampaignBudget, campaign_lock, key_usage, validate_usage
 from devtools.benchmarks.cowork_bench.resource_limits import LABEL_KEY, prepare_resource_env
 from ouroboros.platform_layer import kill_process_group_id, terminate_process_group_id
 from ouroboros.process_custody import spawn_supervised
@@ -364,20 +365,39 @@ def select_tasks(bench_dir: pathlib.Path, args: argparse.Namespace, config: dict
     return remaining
 
 def remove_run_containers(docker_host: str, run_label: str) -> None:
-    """Clean only resources labeled by this invocation, including anonymous helper containers."""
+    """Settle only this invocation's resources, including concurrent cleanup removals."""
     selector = f"label={LABEL_KEY}={run_label}"
-    containers = _docker(docker_host, "ps", "-aq", "--filter", selector, timeout=60)
-    if containers.returncode != 0:
-        raise RuntimeError("cannot verify this run's container custody")
-    ids = containers.stdout.split()
-    if ids and _docker(docker_host, "rm", "-fv", *ids, timeout=120).returncode:
-        raise RuntimeError("could not stop all containers owned by this run")
-    networks = _docker(docker_host, "network", "ls", "-q", "--filter", selector, timeout=60)
-    if networks.returncode != 0:
-        raise RuntimeError("cannot verify this run's network custody")
-    ids = networks.stdout.split()
-    if ids and _docker(docker_host, "network", "rm", *ids, timeout=120).returncode:
-        raise RuntimeError("could not remove all networks owned by this run")
+    for kind, listing, removal in (
+        ("container", ("ps", "-aq"), ("rm", "-fv")),
+        ("network", ("network", "ls", "-q"), ("network", "rm")),
+    ):
+        found = _docker(docker_host, *listing, "--filter", selector, timeout=60)
+        if found.returncode:
+            raise RuntimeError(f"cannot verify this run's {kind} custody")
+        ids = found.stdout.split()
+        if not ids:
+            continue
+        removal_notice = {}
+        try:
+            removed = _docker(docker_host, *removal, *ids, timeout=120)
+            if removed.returncode or removed.stderr:
+                removal_notice = {"returncode": removed.returncode, "stdout": removed.stdout or "",
+                                  "stderr": removed.stderr or "", "exception": None}
+        except (OSError, subprocess.SubprocessError) as exc:
+            # The daemon may have completed removal despite a client failure.
+            removal_notice = {"returncode": None, "stdout": str(getattr(exc, "stdout", "") or ""),
+                              "stderr": str(getattr(exc, "stderr", "") or ""),
+                              "exception": {"type": type(exc).__name__, "message": str(exc)}}
+        if removal_notice:
+            print(json.dumps({"event": "cowork_cleanup_remove", "resource": kind,
+                              "run_label": run_label, "selected_ids": ids, **removal_notice}), flush=True)
+        remaining = _docker(docker_host, *listing, "--filter", selector, timeout=60)
+        if remaining.returncode:
+            raise RuntimeError(f"cannot verify this run's {kind} custody after removal")
+        if remaining.stdout.split():
+            print(json.dumps({"event": "cowork_cleanup_remaining", "resource": kind,
+                              "run_label": run_label, "remaining_ids": remaining.stdout.split()}), flush=True)
+            raise RuntimeError(f"could not remove all {kind}s owned by this run")
 
 
 def mark_stop(path: pathlib.Path, reason: str) -> None:
@@ -400,6 +420,51 @@ def stop_process_group(proc: subprocess.Popen) -> None:
     proc.wait(timeout=15)
 
 
+def observe_campaign_usage(api_key: str, campaign: CampaignBudget,
+                           diagnostics: list[dict[str, Any]], *, phase: str) -> None:
+    """Confirm suspect meter reads within one 15-second window, never accept a lower counter."""
+    deadline = time.monotonic() + 15.0
+    previous = campaign.record["last_usage"]
+    last_error: Exception = TimeoutError("usage confirmation window expired")
+    rejected = False
+    for attempt in range(1, 4):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        value = None
+        try:
+            value = key_usage(api_key, timeout=remaining)
+            if time.monotonic() > deadline:
+                raise TimeoutError("usage confirmation arrived after its shared deadline")
+            validate_usage(value, previous)
+        except Exception as exc:  # Provider/transport/parse failures share the bounded confirmation.
+            last_error = exc
+            value = getattr(exc, "observed_usage", value)
+            observation = {
+                "observed_at": time.time(), "phase": phase, "attempt": attempt,
+                "previous_usage": previous,
+                "observed_usage": value if value is None or math.isfinite(value) else repr(value),
+                "accepted": False, "error_type": type(exc).__name__, "error": str(exc),
+            }
+            diagnostics.append(observation)
+            print(json.dumps({"event": "cowork_meter_observation", **observation}), flush=True)
+            rejected = True
+        else:
+            # Persistence failures are not suspect provider reads and are never retried here.
+            campaign.observe(value)
+            if rejected:
+                observation = {"observed_at": time.time(), "phase": phase, "attempt": attempt,
+                               "previous_usage": previous, "observed_usage": value, "accepted": True}
+                diagnostics.append(observation)
+                print(json.dumps({"event": "cowork_meter_observation", **observation}), flush=True)
+            return
+        if attempt < 3:
+            delay = min(3.0, max(0.0, deadline - time.monotonic()))
+            if delay:
+                time.sleep(delay)
+    raise last_error
+
+
 def supervise_run(args: argparse.Namespace, command: list[str], bench_dir: pathlib.Path,
                   run_env: dict[str, str], api_key: str, campaign: CampaignBudget) -> dict[str, Any]:
     """Own runner lifetime, budget meter and disk reserve until every owned resource is settled.
@@ -410,7 +475,9 @@ def supervise_run(args: argparse.Namespace, command: list[str], bench_dir: pathl
     """
     root = bench_dir.parent
     stop_file = pathlib.Path(run_env["COWORK_STOP_FILE"])
-    reserve = max(args.budget_reserve_usd, args.concurrency * args.per_task_cost_usd)
+    # A task's lifetime budget is not a reservation of unsettled provider charges.
+    # The CLI validates this explicit billing allowance as nonnegative.
+    reserve = args.budget_reserve_usd
     initial_spent = campaign.spent
     if campaign.remaining <= reserve:
         raise ValueError("campaign remaining budget does not cover the in-flight reserve")
@@ -418,6 +485,7 @@ def supervise_run(args: argparse.Namespace, command: list[str], bench_dir: pathl
     proc = None
     reason = ""
     meter_error = ""
+    meter_diagnostics: list[dict[str, Any]] = []
     code = 1
     campaign.start(root)
 
@@ -436,7 +504,7 @@ def supervise_run(args: argparse.Namespace, command: list[str], bench_dir: pathl
                     reason = stop_file.read_text(encoding="utf-8").strip()
                     break
                 try:
-                    campaign.observe(key_usage(api_key))
+                    observe_campaign_usage(api_key, campaign, meter_diagnostics, phase="poll")
                 except Exception as exc:
                     meter_error = type(exc).__name__
                     reason = "budget_meter_unavailable"
@@ -455,6 +523,7 @@ def supervise_run(args: argparse.Namespace, command: list[str], bench_dir: pathl
                     "run_spent_usd": campaign.spent - initial_spent, "inflight_reserve_usd": reserve,
                     "disk_free_bytes": free, "root_free_bytes": root_free,
                     "ledger_counts": counts, "stop_reason": reason, "meter_error": meter_error,
+                    "meter_diagnostics": meter_diagnostics,
                 })
                 if reason:
                     mark_stop(stop_file, reason)
@@ -477,7 +546,7 @@ def supervise_run(args: argparse.Namespace, command: list[str], bench_dir: pathl
             for sig, handler in old_handlers.items():
                 signal.signal(sig, handler)
         try:
-            campaign.observe(key_usage(api_key))
+            observe_campaign_usage(api_key, campaign, meter_diagnostics, phase="final")
         except Exception as exc:
             meter_error = type(exc).__name__
         campaign.finish(root, outcome=reason or "runner_finished", meter_error=meter_error)
@@ -485,10 +554,11 @@ def supervise_run(args: argparse.Namespace, command: list[str], bench_dir: pathl
             "observed_at": time.time(), "finished": True, "runner_exit_code": code,
             "campaign_spent_usd": campaign.spent, "campaign_remaining_usd": campaign.remaining,
             "run_spent_usd": campaign.spent - initial_spent, "stop_reason": reason,
-            "meter_error": meter_error,
+            "meter_error": meter_error, "meter_diagnostics": meter_diagnostics,
             "ledger_counts": write_ledger(root / "result_index.jsonl", bench_dir, args.model, args.selected_tasks),
         })
     return {"stop_reason": reason, "runner_exit_code": code, "meter_error": meter_error,
+            "meter_diagnostics": meter_diagnostics,
             "key_spend_usd": campaign.spent - initial_spent, "campaign_spent_usd": campaign.spent,
             "campaign_remaining_usd": campaign.remaining, "inflight_reserve_usd": reserve}
 

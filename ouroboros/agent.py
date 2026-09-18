@@ -984,7 +984,12 @@ class OuroborosAgent:
                     except Exception:
                         log.debug("Failed to persist review continuation after task exception", exc_info=True)
 
-            if not isinstance(text, str) or not text.strip():
+            intentional_empty = (
+                getattr(ctx, "_presence_completion_accepted", False)
+                and (getattr(ctx, "_presence_completion", None) or {}).get("outcome") in {"silent", "tool_delivered"}
+                and str(usage.get("execution_status") or usage.get("result_status") or "") not in {"failed", "infra_failed"}
+            )
+            if not isinstance(text, str) or (not text.strip() and not intentional_empty):
                 text = "⚠️ Model returned an empty response. Try rephrasing your request."
 
             # A task that scoped ITSELF mid-run (ensure_project_scope) set the scope on

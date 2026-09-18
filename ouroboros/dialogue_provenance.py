@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Mapping
 
 
@@ -91,6 +92,12 @@ def dialogue_provenance(entry: Mapping[str, Any]) -> str:
     source = str(entry.get("source") or "").strip()
     if source and not facts:
         facts.append(f"source={source}")
+    delivery = _mapping(transport.get("delivery"))
+    state = _text(delivery.get("state"))
+    if state:
+        label = {"authored": "authored (delivery unconfirmed)",
+                 "accepted": "accepted (provider acceptance only)"}.get(state, state)
+        facts.append(f"delivery={label}")
     return "; ".join(facts)
 
 
@@ -100,10 +107,21 @@ def dialogue_author(entry: Mapping[str, Any]) -> str:
     return f"{speaker} [{provenance}]" if provenance else speaker
 
 
+def dialogue_text(entry: Mapping[str, Any]) -> str:
+    """Keep observed delivery metadata distinct from the quoted message body."""
+    text = str(entry.get("text", ""))
+    transport = _mapping(entry.get("transport"))
+    message = _mapping(transport.get("message"))
+    if entry.get("type") == "presence_delivery" and message:
+        text += "\n[Delivery details: " + json.dumps(dict(message), ensure_ascii=False, sort_keys=True) + "]"
+    return text
+
+
 __all__ = [
     "dialogue_author",
     "dialogue_provenance",
     "dialogue_speaker",
+    "dialogue_text",
     "is_presence_task",
     "presence_provenance_fields",
     "presence_provenance_from_task",

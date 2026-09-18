@@ -401,7 +401,7 @@ def test_steering_is_refused_while_a_cancel_intent_is_active(tmp_path, monkeypat
         RUNNING={"steerme": {"task": {"id": "steerme", "chat_id": 1}}},
         PENDING=[],
         get_chat_agent=lambda: None,
-        send_with_budget=lambda *a, **k: sent.append(a),
+        send_with_budget=lambda *a, **k: sent.append((a, k)),
         persist_queue_snapshot=lambda **_kw: True,
     )
     _handle_steer_task(
@@ -410,7 +410,9 @@ def test_steering_is_refused_while_a_cancel_intent_is_active(tmp_path, monkeypat
     assert receipts and receipts[0]["status"] == "rejected"
     assert receipts[0]["reason"] == "cancel_pending"
     assert drain_owner_messages(tmp_path, "steerme") == []
-    assert sent and "cancellation is pending" in sent[0][1]
+    assert sent == [((1, "Task · Not delivered: that task is being stopped"), {
+        "role": "system", "system_type": "steer_not_delivered", "task_id": "steerme",
+    })]
 
 def test_drop_cancelled_pending_stamps_the_decision_and_honors_the_stored_status(
     qenv, monkeypatch,

@@ -299,20 +299,20 @@ def test_the_lane_attaches_the_level_to_the_wake_contract(monkeypatch, tmp_path)
 # --- ISSUER: a wake speaks as a task -------------------------------------------
 
 
-def test_routing_issuer_treats_a_wake_as_a_task_but_keeps_real_owner_relays(tmp_path):
+def test_routing_issuer_keeps_wake_relays_task_authored_and_explicit_owner_ingress(tmp_path):
     from ouroboros.tools.control_routing import ISSUER_OWNER_TURN, ISSUER_TASK, _routing_issuer
 
     wake = types.SimpleNamespace(task_id="wake-1", is_direct_chat=True, last_owner_delivery=None,
                                  task_metadata=dict(_wake_task("act")["metadata"]))
     assert _routing_issuer(wake) == {"kind": ISSUER_TASK, "task_id": "wake-1", "root_task_id": "wake-1"}
     owner = types.SimpleNamespace(task_id="turn-1", is_direct_chat=True, last_owner_delivery=None,
-                                  task_metadata={"client_message_id": "cm-1"})
+                                  task_metadata={})
     assert _routing_issuer(owner) == {"kind": ISSUER_OWNER_TURN}
-    # The two other triggers stay: a consciousness root relaying a REAL owner message.
+    # Draining real owner dialogue provides receipt identity, never authorship.
     relaying = types.SimpleNamespace(task_id="c-root", is_direct_chat=False,
                                      last_owner_delivery={"client_message_id": "cm-9", "text": "go"},
                                      task_metadata={"initiator": "consciousness"})
-    assert _routing_issuer(relaying) == {"kind": ISSUER_OWNER_TURN}
+    assert _routing_issuer(relaying) == {"kind": ISSUER_TASK, "task_id": "c-root", "root_task_id": "c-root"}
     stamped = types.SimpleNamespace(task_id="c-root", is_direct_chat=True, last_owner_delivery=None,
                                     task_metadata={"initiator": "consciousness", "client_message_id": "cm-2"})
     assert _routing_issuer(stamped) == {"kind": ISSUER_OWNER_TURN}

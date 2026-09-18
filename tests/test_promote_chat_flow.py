@@ -2730,6 +2730,7 @@ def test_handle_steer_task_stale_target_notifies_visibly(tmp_path, monkeypatch):
     from supervisor.events import _handle_steer_task
     from ouroboros.owner_mailbox import drain_owner_entries
     from ouroboros.projects_registry import create_project
+    from ouroboros.project_dialogue import routing_refusal_cause
 
     monkeypatch.setattr(queue, "DRIVE_ROOT", str(tmp_path))
     room = int(create_project(tmp_path, "issuing-room", name="Issuing Room")["chat_id"])
@@ -2740,12 +2741,19 @@ def test_handle_steer_task_stale_target_notifies_visibly(tmp_path, monkeypatch):
             "other": {"task": {"id": "other", "chat_id": 999}},  # different chat
             "sub": {"task": {"id": "sub", "chat_id": room, "delegation_role": "subagent"}},
         },
-        send_with_budget=lambda cid, text, *a, **k: notices.append(text),
+        send_with_budget=lambda cid, text, **kwargs: notices.append((cid, text, kwargs)),
     )
     _handle_steer_task({"target_task_id": "gone", "message": "a", "chat_id": room}, ctx)   # not running
     _handle_steer_task({"target_task_id": "other", "message": "b", "chat_id": room}, ctx)  # wrong chat
     _handle_steer_task({"target_task_id": "sub", "message": "c", "chat_id": room}, ctx)    # subagent
-    assert len(notices) == 3 and all("Couldn't steer task" in n for n in notices)
+    assert len(notices) == 3
+    for (cid, text, kwargs), target, reason in zip(
+        notices, ("gone", "other", "sub"), ("target_unknown", "chat_mismatch", "subagent_target"),
+    ):
+        assert cid == room
+        assert kwargs == {"role": "system", "system_type": "steer_not_delivered", "task_id": target}
+        assert routing_refusal_cause("steer_task", "needs_manual_target", reason) in text
+        assert "I'll" not in text and "Couldn't steer task" not in text
     assert drain_owner_entries(tmp_path, "gone") == []
     assert drain_owner_entries(tmp_path, "other") == []
     assert drain_owner_entries(tmp_path, "sub") == []
@@ -2997,7 +3005,7 @@ def _steer_refusal(tmp_path, monkeypatch, *, running: dict, chat_id: int = 1):
     ctx = types.SimpleNamespace(
         DRIVE_ROOT=tmp_path, RUNNING=running, PENDING=[],
         get_chat_agent=lambda: None,
-        send_with_budget=lambda _chat_id, text: sent.append(text),
+        send_with_budget=lambda _chat_id, text, **kwargs: sent.append((text, kwargs)),
     )
     _handle_steer_task(
         {"target_task_id": "target-1", "message": "hurry up", "chat_id": chat_id}, ctx,
@@ -3011,6 +3019,7 @@ def test_steer_refusal_names_the_room_when_the_task_belongs_to_another_chat(tmp_
     receipt said only `target_not_steerable`. The room is what the owner needs.
     The refusing turn is itself a Project room (Main may address any root)."""
     from ouroboros.projects_registry import create_project
+    from ouroboros.project_dialogue import routing_refusal_cause
 
     create_project(tmp_path, "roomp", name="RoomP")
     issuing_room = int(create_project(tmp_path, "rooma", name="RoomA")["chat_id"])
@@ -3020,24 +3029,31 @@ def test_steer_refusal_names_the_room_when_the_task_belongs_to_another_chat(tmp_
     })
 
     assert receipt["status"] == "needs_manual_target" and receipt["reason"] == "chat_mismatch"
-    assert sent and "RoomP › Deploy the docs" in sent[0]
-    assert "may have finished" not in sent[0]
-    assert "belongs to another chat" in sent[0]
+    assert len(sent) == 1
+    text, kwargs = sent[0]
+    assert text == "RoomP › Deploy the docs · " + routing_refusal_cause("steer_task", "needs_manual_target", "chat_mismatch")
+    assert kwargs == {"role": "system", "system_type": "steer_not_delivered", "task_id": "target-1"}
 
 
-@pytest.mark.parametrize("running, reason, phrase", [
-    ({}, "target_unknown", "may have finished"),
+@pytest.mark.parametrize("running, reason", [
+    ({}, "target_unknown"),
     ({"target-1": {"task": {"id": "target-1", "chat_id": 1, "delegation_role": "subagent",
-                            "title": "Review"}}}, "subagent_target", "delegated helper"),
+                            "title": "Review"}}}, "subagent_target"),
     ({"target-1": {"task": {"id": "target-1", "chat_id": 1, "_is_direct_chat": True,
-                            "title": "Chat"}}}, "direct_chat_turn", "conversation turn has already"),
+                            "title": "Chat"}}}, "direct_chat_turn"),
 ])
 def test_steer_refusal_keeps_a_distinct_reason_for_every_other_cause(
-        tmp_path, monkeypatch, running, reason, phrase):
+        tmp_path, monkeypatch, running, reason):
+    from ouroboros.project_dialogue import routing_refusal_cause
+
     receipt, sent = _steer_refusal(tmp_path, monkeypatch, running=running)
 
     assert receipt["reason"] == reason and receipt["status"] == "needs_manual_target"
-    assert sent and phrase in sent[0]
+    assert len(sent) == 1
+    text, kwargs = sent[0]
+    assert routing_refusal_cause("steer_task", "needs_manual_target", reason) in text
+    assert "I'll" not in text and "Couldn't steer task" not in text
+    assert kwargs == {"role": "system", "system_type": "steer_not_delivered", "task_id": "target-1"}
 
 
 def test_the_steer_tool_renders_the_typed_reason_and_still_defaults_without_one(monkeypatch):

@@ -14,8 +14,10 @@ the owner acknowledgement/notice. A TASK speaking for itself never travels as
 owner text: its words are written as a ``KIND_TASK_MESSAGE`` row with
 ``independent_task`` provenance through the same writer ``forward_to_worker``
 uses, any host-listed active independent root is addressable (owner 6C, the
-hidden partition included), no chat is told, and the receipt plus one typed
-Logs row carry the true author and target (owner 5=A/7A).
+hidden partition included), no standalone chat message is sent, and the receipt plus one typed
+Logs row carry the true author and target (owner 5=A/7A). A relay retains the
+drained owner message's acknowledgement without acquiring owner authority.
+An unlabelled owner refusal is a typed System row, never Ouroboros speech.
 """
 
 from __future__ import annotations
@@ -31,12 +33,10 @@ log = logging.getLogger(__name__)
 
 
 def _relayed_owner_message(client_message_id: str) -> str:
-    """The OWNER message a steer's bytes relay, stored on the mailbox entry so the
-    target's drain can stamp what reached THAT turn.
+    """The owner message identified by this receipt, or empty for a synthetic act.
 
-    An agent-authored steer belongs to no owner message: it keys its receipt on the
-    host-minted synthetic id, which relays nothing and is not stored — so the target's
-    own next steer mints a fresh receipt id instead of inheriting this one."""
+    Only owner-text delivery copies it into the recipient's mailbox. A task
+    relay may key its receipt on that message without passing on owner authority."""
     from ouroboros.project_dialogue import AGENT_RECEIPT_ID_PREFIX
 
     return "" if client_message_id.startswith(AGENT_RECEIPT_ID_PREFIX) else client_message_id
@@ -80,7 +80,6 @@ def _refuse_steering_while_cancelling(
     ctx: Any,
     evt: Dict[str, Any],
     target: str,
-    chat_id: int,
     *,
     target_label: str = "",
     notify: bool = True,
@@ -110,21 +109,28 @@ def _refuse_steering_while_cancelling(
     # message's receipt line; only an UNLABELLED owner act (a synthetic receipt
     # id) needs the standalone sentence — the same rule as the other refusals.
     notify = notify and not _relayed_owner_message(str(evt.get("client_message_id") or "").strip())
-    if notify and not _task_issued(evt) and chat_id:
-        try:
-            ctx.send_with_budget(chat_id, _cancel_pending_notice(target_label))
-        except Exception:
-            log.debug("steer_task cancel-pending notice failed", exc_info=True)
+    if notify and not _task_issued(evt):
+        _refusal_row(ctx, evt, target, target_label, "rejected", "cancel_pending")
     return True
 
 
-def _cancel_pending_notice(target_label: str) -> str:
-    return (
-        f"⚠️ Couldn't steer task {target_label or '(no longer available)'} — "
-        "its cancellation is pending "
-        "(the supervisor is tearing it down). Wait for the settled "
-        "outcome or start a new task."
-    )
+def _refusal_row(
+    ctx: Any, evt: Dict[str, Any], target: str, target_label: str, status: str, reason: str,
+) -> None:
+    """An unlabelled owner act has no chat receipt row, so publish its host cause as System."""
+    from ouroboros.project_dialogue import routing_refusal_cause
+    from supervisor.message_bus import notification_chat_route
+
+    chat = notification_chat_route(evt.get("chat_id"))
+    if chat is None:
+        return
+    try:
+        ctx.send_with_budget(
+            chat, f"{target_label or 'Task'} · {routing_refusal_cause('steer_task', status, reason, None)}",
+            role="system", system_type="steer_not_delivered", task_id=target,
+        )
+    except Exception:
+        log.debug("steer refusal row failed for %s", target, exc_info=True)
 
 
 def _steer_receipt(
@@ -132,15 +138,16 @@ def _steer_receipt(
     reason: str = "", detail: str = "", attachment_manifest: Any = None,
 ) -> Dict[str, Any]:
     """The durable token-bound receipt every outcome writes; a task-authored act
-    additionally gets its Logs row and never publishes a chat acknowledgement
-    (nothing in any chat carries its synthetic id, and no owner asked)."""
+    additionally gets its Logs row and a chat acknowledgement only when tied to
+    a real owner message; synthetic task receipts stay silent."""
     from supervisor.events import _emit_routing_receipt
 
     task_issued = _task_issued(evt)
+    owner_message_id = _relayed_owner_message(str(evt.get("client_message_id") or "").strip())
     receipt = _emit_routing_receipt(
         ctx, evt, action="steer_task", target=target, target_label=target_label,
         status=status, reason=reason, detail=detail,
-        attachment_manifest=attachment_manifest, publish=not task_issued,
+        attachment_manifest=attachment_manifest, publish=not task_issued or bool(owner_message_id),
     )
     if task_issued:
         _record_task_message_routing(
@@ -149,33 +156,6 @@ def _steer_receipt(
             reason=reason,
         )
     return receipt
-
-
-def _steer_refusal_notice(refusal: str, target_label: str) -> str:
-    """The owner sentence for one typed steering refusal.
-
-    The cause is the whole point: a task running in its own project room is not a
-    task that "may have finished", and the room it runs in is the way to reach it.
-    """
-    label = target_label or "(no longer available)"
-    return {
-        "direct_chat_turn": (
-            f"⚠️ Couldn't steer task {label} — its direct conversation turn has already "
-            "ended. I'll answer here or start a new task instead."
-        ),
-        "subagent_target": (
-            f"⚠️ Couldn't steer task {label} — it is a delegated helper, which takes "
-            "direction from the task that started it. I'll answer here or start a new "
-            "task instead."
-        ),
-        "chat_mismatch": (
-            f"⚠️ Couldn't steer task {label} — it belongs to another chat, not this one. "
-            f"Open {label} and send it there, or start a new task here."
-        ),
-    }.get(refusal, (
-        f"⚠️ Couldn't steer task {label} — it isn't running in this chat anymore "
-        "(it may have finished). I'll answer here or start a new task instead."
-    ))
 
 
 def _owner_lane_allows(ctx: Any, task: Dict[str, Any], target: str, chat_id: int) -> bool:
@@ -265,7 +245,7 @@ def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
     # resolved so the durable receipt and owner notice use the same event-time
     # human label as a successful delivery.
     if _refuse_steering_while_cancelling(
-        ctx, evt, target, chat_id, target_label=target_label,
+        ctx, evt, target, target_label=target_label,
     ):
         return
 
@@ -295,11 +275,8 @@ def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
             ctx, evt, target, target_label=target_label, status="needs_manual_target", reason=refusal,
         )
         owner_unlabelled = not task_issued and not _relayed_owner_message(client_message_id)
-        if owner_unlabelled and chat_id:
-            try:
-                ctx.send_with_budget(chat_id, _steer_refusal_notice(refusal, target_label))
-            except Exception:
-                log.debug("steer_task refusal notice failed", exc_info=True)
+        if owner_unlabelled:
+            _refusal_row(ctx, evt, target, target_label, "needs_manual_target", refusal)
         log.info("steer_task: %s target %s for chat %s", refusal, target, chat_id)
         return
     # Idempotent delivery: a stable msg_id from client_message_id+target dedups
@@ -396,7 +373,7 @@ def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
         # to hold the global queue lock for — and the old `return` skipped the
         # notice entirely).
         if _refuse_steering_while_cancelling(
-            ctx, evt, target, chat_id, target_label=target_label, notify=False,
+            ctx, evt, target, target_label=target_label, notify=False,
         ):
             cancel_pending_refused = True
         elif task_issued:
@@ -458,14 +435,8 @@ def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
         # GR2-9: the message was refused, so the inputs staged for it must not
         # linger in the dying task's artifact store. The notice is the owner's:
         # a task that spoke for itself has its typed refusal and Logs row.
-        if not task_issued and chat_id:
-            # Same owner-labelled rule as the up-front check: a relayed owner
-            # message already carries the cause on its receipt line.
-            if not relayed_owner_message_id:
-                try:
-                    ctx.send_with_budget(chat_id, _cancel_pending_notice(target_label))
-                except Exception:
-                    log.debug("steer_task cancel-pending notice failed", exc_info=True)
+        if not task_issued and not relayed_owner_message_id:
+            _refusal_row(ctx, evt, target, target_label, "rejected", "cancel_pending")
     if delivered:
         if fence_generation_changed:
             ctx.persist_queue_snapshot(reason="acceptance_fence_owner_message")

@@ -16,7 +16,7 @@ import re
 import pytest
 
 from ouroboros.project_dialogue import (
-    ADMISSION_NOTICE_TYPES,
+    ORIGIN_ADDRESSED_NOTICE_TYPES,
     ROUTING_REFUSAL_CAUSES,
     room_membership,
     routing_refusal_cause,
@@ -160,14 +160,14 @@ def test_producer_literals_are_all_covered_or_exempt():
     assert not (set(EXEMPT) & set(ROUTING_REFUSAL_CAUSES)), "a reason cannot be both exempt and worded"
 
 
-def test_admission_notice_types_are_the_two_host_rows():
-    """R3/R14: a refusal is `task_not_started`; an admission whose receipt could
-    not be confirmed is `task_start_unconfirmed` — never «not started»."""
-    assert ADMISSION_NOTICE_TYPES == frozenset({"task_not_started", "task_start_unconfirmed"})
+def test_origin_addressed_notice_types_cover_admission_and_steering():
+    assert ORIGIN_ADDRESSED_NOTICE_TYPES == frozenset({
+        "task_not_started", "task_start_unconfirmed", "steer_not_delivered",
+    })
 
 
-@pytest.mark.parametrize("notice_type", sorted(ADMISSION_NOTICE_TYPES))
-def test_admission_notice_rows_stay_in_the_owners_chat(notice_type):
+@pytest.mark.parametrize("notice_type", sorted(ORIGIN_ADDRESSED_NOTICE_TYPES))
+def test_origin_addressed_notice_rows_stay_in_the_owners_chat(notice_type):
     """R12: the refused task id is bound to the project it never started in, so
     binding lineage would move the notice out of Main into that project on
     reload. The notice is addressed to the chat the OWNER wrote in."""
@@ -183,6 +183,41 @@ def test_admission_notice_rows_stay_in_the_owners_chat(notice_type):
     ordinary = {"direction": "out", "type": "chat", "task_id": "refused-task", "chat_id": 1}
     assert main(1, ordinary) is False
     assert project(1, ordinary) is True
+
+
+@pytest.mark.parametrize("chat_id", [1, 0, -1001])
+@pytest.mark.parametrize("labelled", [False, True])
+@pytest.mark.parametrize("after_lock", [False, True])
+def test_cancel_refusal_is_one_system_notice_only_when_no_owner_receipt_can_tell_it(
+    tmp_path, monkeypatch, chat_id, labelled, after_lock,
+):
+    import types
+    import ouroboros.cancel_intents as cancel_intents
+    from ouroboros.owner_mailbox import drain_owner_entries
+    from supervisor.steering import _handle_steer_task
+
+    checks = iter([False, True] if after_lock else [True])
+    monkeypatch.setattr(cancel_intents, "cancel_pending", lambda *_a, **_k: next(checks))
+    notices = []
+    ctx = types.SimpleNamespace(
+        DRIVE_ROOT=tmp_path, PENDING=[],
+        RUNNING={"target": {"task": {"id": "target", "title": "Review", "chat_id": chat_id,
+                                    "drive_root": str(tmp_path)}}},
+        send_with_budget=lambda cid, text, **kw: notices.append((cid, text, kw)),
+    )
+    _handle_steer_task({
+        "target_task_id": "target", "message": "Continue", "chat_id": chat_id,
+        "client_message_id": "owner-message" if labelled else "agent-steer:unlabelled",
+        "issuer": {"kind": "owner_turn"},
+    }, ctx)
+
+    assert drain_owner_entries(tmp_path, "target") == []
+    if labelled or chat_id < 0:
+        assert notices == []
+    else:
+        assert notices == [(chat_id, "Review · " + routing_refusal_cause("steer_task", "rejected", "cancel_pending"), {
+            "role": "system", "system_type": "steer_not_delivered", "task_id": "target",
+        })]
 
 
 def test_the_parallel_receipt_producer_reads_the_same_host_table(tmp_path):

@@ -447,6 +447,7 @@ def test_presence_delivers_host_notice_once_and_preserves_silence(tmp_path, monk
         def handle_task(self, task):
             task["_skip_post_task_synthesis"] = True
             ctx = SimpleNamespace(_presence_completion={"outcome": outcome, "message": ANSWER},
+                                  _presence_completion_accepted=True,
                                   _swarm_handoff_attempt={"status": "scheduled", "task_id": "next-task"})
             pending = []
             pipeline.emit_task_results(
