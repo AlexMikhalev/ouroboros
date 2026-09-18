@@ -1,187 +1,113 @@
-"""Enforcement-aware Atlas-backed scope reviewer for the commit pipeline.
+"""Retrieving scope reviewer for the commit pipeline.
 
-Runs beside triad review and sees touched context plus a generated repo atlas. Critical findings follow
-the selected enforcement outside Cyber; Cyber findings are advisory to action.
-Failed rows retain their original status and typed origin. The commit aggregate applies permission to
-technical failures independently of candidate, custody and owner admission.
-In owner-selected ``low`` context mode no reviewer runs and a typed skip is recorded.
+Runs beside triad review and REACHES the whole body: every scope row delivers by
+retrieval — an ``api_chat`` row as a bounded native inspection episode on its own
+route, an ``agent_session`` row as a delegated read-only session. What the
+reviewer is owed in full arrives as the change-relative required-source manifest
+(``scope_required_sources``); observed coverage remains diagnostic evidence
+beside the findings and never changes quorum eligibility. Reviewer window size
+is not a condition of authority: it sizes the output reserve of the request
+and nothing else. Critical findings follow the
+selected enforcement outside Cyber; Cyber findings are advisory to action.
+Failed rows retain their original status and typed origin. The commit aggregate
+applies permission to technical failures independently of candidate, custody and
+owner admission. Scope review applies in every context mode.
 """
 
 from __future__ import annotations
 
+import contextvars
 import logging
-import pathlib
 from dataclasses import dataclass, field, replace
 from typing import Any, List, Optional
 
+from ouroboros.config import runtime_setting
 from ouroboros.llm import LLMClient
 # review_repo_dirs_for stays importable and MONKEYPATCHABLE on this module:
 # review_admission.prepare_scope_review resolves it through this namespace.
 from ouroboros.review_substrate import review_repo_dirs_for, scope_reviewer_slots  # noqa: F401
+from ouroboros.reviewer_window import window_scaled_reserves as _shared_window_scaled_reserves
 from ouroboros.tools.registry import ToolContext
-from ouroboros.tools.review_context_atlas import (
-    ReviewContextAtlasRequest,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
-    atlas_assembly_failed,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
-    atlas_assembly_failure_reason,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
-    atlas_hard_budget_overflowed,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
-    atlas_required_beyond_diff,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
-    atlas_unassembled_required,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
-    compile_review_context_atlas,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
-)
 from ouroboros.tools.scope_review_contract import (
     SCOPE_REQUIRED_ITEMS,
-    TouchedContextStatus as _TouchedContextStatus,
     build_scope_block_message as _build_block_message,
     classify_scope_findings as _classify_scope_findings,
-    compute_touched_context_status as _compute_touched_status,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
-    ladder_terminal_cause as _ladder_terminal_cause,
     normalize_scope_items as _normalize_scope_items,
 )
-from ouroboros.tools.review_binary_context import (
-    StagedDiffUnavailable, capture_staged_diff, staged_path_is_binary)  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
-from ouroboros.tools.review_synthesis import build_scope_review_prompt  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
 from ouroboros.tools.review_helpers import (
-    build_goal_section,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
-    build_rebuttal_section as _shared_build_rebuttal_section,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
-    build_scope_section,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
-    build_touched_file_pack,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
-    load_checklist_section,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
+    CANONICAL_GOVERNANCE_DOCS,
     review_drive_root,
     review_enforcement_blocks,
-    CRITICAL_FINDING_CALIBRATION,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
-    BINARY_EXTENSIONS,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
-    _SENSITIVE_EXTENSIONS,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
-    _SENSITIVE_NAMES,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
-    load_governance_doc,
-    _ANTI_THRASHING_RULE_VERDICT,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
-    _CONVERGENCE_RULE_TEXT,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
-    _HISTORY_VERIFICATION_ONLY_RULE,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
-    build_review_history_section as _shared_review_history_section,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
-    format_review_history_entry,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
-    parse_git_name_status,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
+    _ANTI_THRASHING_RULE_VERDICT,
+    _CONVERGENCE_RULE_TEXT,
+    _HISTORY_VERIFICATION_ONLY_RULE,
+    build_review_history_section as _shared_review_history_section,
+    format_review_history_entry,
+)
+from ouroboros.tools.scope_window import (
+    SCOPE_MODEL_DEFAULT as _SCOPE_MODEL_DEFAULT,
+    SCOPE_SIZING_FALLBACK_WINDOW as _SCOPE_SIZING_FALLBACK,
+    scope_window as _scope_window,
 )
 from ouroboros.triad_review import REVIEW_JSON_MATRIX_CONTRACT, extract_json_array
 from ouroboros.utils import (
-    run_cmd,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
     utc_now_iso,
     append_jsonl,
     estimate_tokens,
-    truncate_review_artifact as _truncate_review_artifact,
 )
 
 log = logging.getLogger(__name__)
 _SCOPE_REQUIRED_ITEMS = SCOPE_REQUIRED_ITEMS  # compatibility export used by tests/review tooling
-from ouroboros.reviewer_window import ReviewerWindow  # noqa: E402
-# v7next F2.3b (D06): the budget math lives in its owner leaf; re-exported here
-# (NOT at EOF — ``run_scope_review``'s default argument reads
-# ``_SCOPE_INPUT_TOKEN_LIMIT`` at def time) so this facade stays the single
-# import surface for callers and tests. The private owner aliases
-# (_SCOPE_MODEL_DEFAULT, _SCOPE_BUDGET_TOKEN_LIMIT, _SCOPE_FAILCLOSED_WINDOW,
-# _SCOPE_MODEL_CONTEXT_WINDOW, _shared_window_scaled_reserves,
-# _calibrated_input_token_limit, _is_provider_oversize_error) moved with their
-# budget readers and keep their historical patch points on this module.
-from ouroboros.tools.scope_review_budget import (  # noqa: E402, F401 -- intentional public re-exports
-    _SCOPE_BUDGET_TOKEN_LIMIT,
-    _SCOPE_FAILCLOSED_WINDOW,
-    _SCOPE_INPUT_TOKEN_LIMIT,
-    _SCOPE_MAX_TOKENS,
-    _SCOPE_MODEL_CONTEXT_WINDOW,
-    _SCOPE_MODEL_DEFAULT,
-    _SCOPE_OUTPUT_MARGIN_TOKENS,
-    _SCOPE_REVIEW_SLOT_TIMEOUT_SEC,
-    _calibrated_input_token_limit,
-    _effective_scope_input_limit,
-    _get_scope_model,
-    _is_provider_oversize_error,
-    _provider_error_is_oversize,
-    _shared_window_scaled_reserves,
-    _window_scaled_reserves,
-)
 
-def _scope_review_skipped_in_low_context() -> bool:
-    """Whether the owner's context mode declares scope review out of scope.
+# The canonical corpus has ONE owner (``review_helpers``); the governance tiers
+# a brief delivers are decided by ``governance_context``, and this alias keeps
+# the historical spelling the external review tooling's inventory reads.
+_CANONICAL_CONTEXT_DOCS = CANONICAL_GOVERNANCE_DOCS
 
-    Owner policy coupling (v6.80.0), NOT a structural impossibility: a narrow
-    cognitive horizon means whole-repo scope review is declaredly not performed. The
-    triad's blocking staged-diff review is unaffected in every mode.
+# The brief's forensic coverage manifest for the row being assembled. A
+# ContextVar because assembly and dispatch can run on different threads: the
+# assembling half captures it, the dispatching half re-seeds it.
+_SCOPE_CONTEXT_MANIFEST = contextvars.ContextVar("scope_context_manifest", default={})
 
-    Reads the OWNER-SELECTED mode, never the effective one: the /api/settings model
-    auto-downgrade narrows the effective mode on an agent-reachable path, and honouring
-    that here would let the agent switch this gate off for its own commits."""
-    try:
-        from ouroboros.config import get_owner_context_mode
-        return get_owner_context_mode() == "low"
-    except Exception:
-        return False
+_SCOPE_MAX_TOKENS = 100_000  # 100K output tokens
+
+_SCOPE_REVIEW_SLOT_TIMEOUT_SEC = None
+
+_SCOPE_OUTPUT_MARGIN_TOKENS = 155_000
 
 
-# Window authority moved to `tools/scope_window.py` (module-size gate); re-imported
-# under the old private aliases so callers/tests keep one patch point on THIS module.
-from ouroboros.tools.scope_window import (  # noqa: E402
-    WINDOW_ASSERTED as _WINDOW_ASSERTED,  # noqa: F401 (test-read re-export)
-    WINDOW_CONFIRMED as _WINDOW_CONFIRMED,  # noqa: F401 (test-read re-export)
-    WINDOW_SENTINEL as _WINDOW_SENTINEL,  # noqa: F401 (test-read re-export)
-    WINDOW_STALE as _WINDOW_STALE,  # noqa: F401 (test-read re-export)
-    WINDOW_UNKNOWN as _WINDOW_UNKNOWN,  # noqa: F401 (test-read re-export)
-    scope_window as _scope_window,
-    scope_window_provenance as _scope_window_provenance,
-    window_provenance_phrase as _window_provenance_phrase,
-)
+def _current_scope_context_manifest() -> dict:
+    return dict(_SCOPE_CONTEXT_MANIFEST.get({}) or {})
 
-def _low_context_skip_result(scope_model: str) -> "ScopeReviewResult":
-    """Typed, non-blocking record of the owner-declared low-context-mode skip.
 
-    Without a durable row a low-mode commit is forensically indistinguishable from
-    the bug "scope review silently failed to launch" (BIBLE P1: every significant
-    cognitive act stays reconstructible). It rides the SAME review-evidence surface
-    that records the fail-closed results (``build_scope_actor_record``)."""
-    return ScopeReviewResult(
-        blocked=False,
-        status="skipped_low_context_mode",
-        model_id=scope_model,
-        prompt_chars=0,
-        prompt_chars_source="not_assembled",
-        advisory_findings=[{
-            "verdict": "PASS",
-            "severity": "advisory",
-            "item": "scope_review_skipped_low_context_mode",
-            "reason": (
-                "ℹ️ SCOPE_REVIEW_SKIPPED_LOW_CONTEXT_MODE: the owner-selected `low` "
-                "context mode declares whole-repository scope review not performed, so "
-                "no scope reviewer was called and scope did not gate this commit. This "
-                "is an owner policy coupling, not a capability limit: the triad's "
-                "blocking staged-diff review ran in full, as it does in every mode. "
-                "Switch the context mode to `max` to restore the blocking scope gate."
-            ),
-            "model": scope_model,
-        }],
+def _window_scaled_reserves(window: int) -> tuple:
+    """(output_reserve, tokenizer_margin) scaled to the reviewer window.
+
+    The absolute 1M-calibrated reserves (100K output + 155K margin) would
+    swallow a small window whole (gigachat 131K => a request whose max_tokens
+    alone exceeds the route — Provider Independence). Sub-floor windows scale
+    the reserves to the window instead: a quarter for output (floored at 8K so
+    the reviewer can still produce the full checklist JSON) and an eighth for
+    tokenizer margin. >=1M windows keep the absolute reserves unchanged.
+    """
+    return _shared_window_scaled_reserves(
+        window,
+        output_reserve=_SCOPE_MAX_TOKENS,
+        tokenizer_margin=_SCOPE_OUTPUT_MARGIN_TOKENS,
     )
 
 
-def _scope_sub_floor_finding(
-    scope_model: str, window: int, provenance: str = _WINDOW_UNKNOWN, observed_at: str = "",
-) -> dict:
-    return {
-        "verdict": "FAIL",
-        "severity": "advisory",
-        "item": "scope_review_sub_floor",
-        "reason": (
-            f"⚠️ SCOPE_REVIEW_SUB_FLOOR: scope reviewer {scope_model} resolves to a "
-            f"{_window_provenance_phrase(window, provenance, observed_at)} for authority purposes, "
-            "which does not establish the >=1M blocking scope floor with sourced, "
-            "current Capability Evidence (BIBLE P3). Its findings are ADVISORY-ONLY "
-            "and cannot satisfy the blocking scope gate; connect the provider so the "
-            "route can be probed, owner-ack this route's window, or configure a "
-            ">=1M-window scope model, to restore an authoritative verdict."
-        ),
-        "model": scope_model,
-    }
+def _get_scope_model() -> str:
+    """Return the configured scope review model (env → settings default)."""
+    try:
+        from ouroboros.config import get_scope_review_models
 
-
-# Defense-in-depth cap for deleted-file HEAD content inlined into the prompt.
-# Stable-prefix boundary (chars) of the last assembled scope prompt: everything
-# before it (instructions + checklist + canonical docs) is byte-stable across commits
-# and carries the provider cache marker at dispatch; contextvar keeps the builder contract.
+        models = get_scope_review_models()
+        if models:
+            return models[0]
+    except Exception:
+        pass
+    return runtime_setting("OUROBOROS_SCOPE_REVIEW_MODEL", "").strip() or _SCOPE_MODEL_DEFAULT
 
 
 @dataclass
@@ -195,14 +121,19 @@ class ScopeReviewResult:
     # Canonical per-actor evidence.
     raw_text: str = ""
     model_id: str = ""
-    # responded|error|parse_failure|empty_response|budget_exceeded|fixed_overflow|
-    # sub_floor|session_advisory|omitted|empty — only `responded` is AUTHORITATIVE
+    # responded|error|parse_failure|empty_response — a returned, conforming
+    # verdict counts toward quorum independently of observed read coverage.
     status: str = "responded"
+    # complete|declared_empty|unobserved|incomplete — how much of the required
+    # -source manifest the host or harness recorded this row reading. These
+    # observations never replace the reviewer's judgment or create a retry.
+    coverage: str = "unobserved"
+    coverage_manifest_ref: dict = field(default_factory=dict)
     failure_phase: str = ""
     failure_code: str = ""
+    # The measured size of the brief this row sent (len of the first send's
+    # work order); the actor record labels it `measured` for that reason.
     prompt_chars: int = 0
-    # measured (len(prompt)) | estimated_from_tokens (no prompt was assembled)
-    prompt_chars_source: str = "measured"
     tokens_in: int = 0
     tokens_out: int = 0
     cost_usd: float = 0.0
@@ -215,11 +146,64 @@ class ScopeReviewResult:
     pending_invocation_id: str = ""
     delegated_run_id: str = ""
 
-def _load_canonical_context_docs(repo_dir: pathlib.Path) -> str:
-    parts: list[str] = []
-    for rel_path in _CANONICAL_CONTEXT_DOCS:
-        parts.append(f"## {rel_path}\n\n{load_governance_doc(repo_dir, rel_path, on_missing='placeholder')}")
-    return "\n\n---\n\n".join(parts)
+
+def _build_review_history_section(history: list, open_obligations: list = None) -> str:
+    """Format previous triad rounds for scope-review context."""
+    return _shared_review_history_section(
+        history,
+        open_obligations,
+        title="## Previous triad review rounds",
+        include_commit_message=False,
+        compact_labels=True,
+    )
+
+
+def _build_scope_history_section(
+    scope_review_history: Optional[list], history_section: str = "",
+) -> str:
+    """Format prior scope review rounds into a brief section.
+
+    A scope-only retry chain leaves the TRIAD history empty, so the shared
+    anti-thrashing block never reaches its convergence rule; from the third
+    scope round on it is appended here instead. ``history_section`` is the
+    already-rendered triad history: when it carries the rule, this section does
+    not repeat it.
+    """
+    if not scope_review_history:
+        return ""
+    rounds = []
+    for i, entry in enumerate(scope_review_history, 1):
+        status = str(entry.get("status") or "responded").strip()
+        label = (
+            "BLOCKED" if entry.get("blocked")
+            else status.upper() if status and status != "responded"
+            else "PASSED"
+        )
+        parts = [f"Round {i}: {label}"]
+        critical_findings = list(entry.get("critical_findings") or [])
+        advisory_findings = list(entry.get("advisory_findings") or [])
+        if critical_findings:
+            parts.append("Critical findings:")
+            for finding in critical_findings:
+                parts.append(f"- {format_review_history_entry(finding, default_severity='critical')}")
+        if advisory_findings:
+            parts.append("Advisory findings:")
+            for finding in advisory_findings:
+                parts.append(f"- {format_review_history_entry(finding)}")
+        if not critical_findings and not advisory_findings:
+            parts.append(str(entry.get("summary") or "(no summary)"))
+        rounds.append("\n".join(parts))
+    section = (
+        "\n## Prior scope review rounds (your previous findings for this commit)\n\n"
+        + "\n\n---\n".join(rounds)
+        + "\n\nAddress any previously raised issues. If the same issue persists, "
+        "mark it FAIL again with a reference to the prior round.\n"
+        f"\nIMPORTANT: {_HISTORY_VERIFICATION_ONLY_RULE}\n"
+        f"\nIMPORTANT: {_ANTI_THRASHING_RULE_VERDICT}\n"
+    )
+    if len(scope_review_history) >= 2 and _CONVERGENCE_RULE_TEXT not in str(history_section or ""):
+        section = section.rstrip() + f"\n\n**IMPORTANT: {_CONVERGENCE_RULE_TEXT}**\n"
+    return section
 
 
 def _log_scope_result(
@@ -229,18 +213,12 @@ def _log_scope_result(
     prompt_chars: int = 0,
     prompt_tokens: int = 0,
     model_id: str = "",
-    window_binding: Optional[dict] = None,
+    coverage: str = "unobserved",
 ) -> None:
-    """Append a scope_review_complete event to events.jsonl.
-
-    Also emits budget headroom metrics so operators can see when the scope
-    pack is approaching the gate. ``headroom_tokens`` is a signed delta
-    (negative when the prompt exceeds the gate — would have been skipped).
-    """
+    """Append a scope_review_complete event to events.jsonl."""
     prompt_tokens = int(prompt_tokens or 0)
     if prompt_tokens <= 0 and prompt_chars:
         prompt_tokens = max(0, int(prompt_chars) // 4)
-    input_limit = _effective_scope_input_limit(scope_model=model_id, window_binding=window_binding)
     try:
         append_jsonl(ctx.drive_logs() / "events.jsonl", {
             "ts": utc_now_iso(), "type": "scope_review_complete",
@@ -249,15 +227,14 @@ def _log_scope_result(
             "critical_count": critical_count,
             "advisory_count": advisory_count,
             "prompt_tokens": prompt_tokens,
-            "prompt_tokens_budget": input_limit,
-            "headroom_tokens": input_limit - prompt_tokens,
+            "read_coverage": coverage,
         })
     except Exception:
         pass
 
 
-# The one user turn every api scope row sends; the commit gate's wave admission
-# measures the same pair the substrate dispatches.
+# The one user turn every scope row's episode opens with; the commit gate's wave
+# admission measures the same first send the substrate dispatches.
 SCOPE_USER_TURN = "Review the staged change and context above. Output ONLY a JSON array."
 # The output contract a RETRIEVING scope row (session or native episode) is
 # handed: the extraction fallback canonicalizes to the SCOPE contract —
@@ -269,30 +246,8 @@ SCOPE_RETRIEVING_OUTPUT_CONTRACT = (
 )
 
 
-def scope_api_messages(prompt: str, stable_prefix_len: int) -> list:
-    """The exact message pair an api scope row sends — split at the recorded
-    stable/dynamic boundary so the byte-stable prefix carries the provider
-    cache marker and the per-commit tail stays unmarked. One builder for the
-    send and for the commit gate's wave admission, which measures it."""
-    from ouroboros.tools.review_helpers import cached_prompt_blocks
-
-    stable_len = int(stable_prefix_len or 0)
-    if 0 < stable_len <= len(prompt):
-        system_content: Any = cached_prompt_blocks(prompt[:stable_len], prompt[stable_len:])
-    else:
-        # No recorded boundary (e.g. a caller that did not assemble via
-        # _build_scope_prompt): send a plain string. Marking the WHOLE prompt —
-        # per-commit diff included — as a 1h cache block would pay the extended
-        # write premium on content that never repeats.
-        system_content = prompt
-    return [
-        {"role": "system", "content": system_content},
-        {"role": "user", "content": SCOPE_USER_TURN},
-    ]
-
-
 def _call_scope_llm(
-    prompt: str,
+    prompt: str = "",
     scope_model: str | None = None,
     ctx: ToolContext | None = None,
     slot_id: str = "",
@@ -302,8 +257,11 @@ def _call_scope_llm(
     slot_effort: str = "",
     session_target: str = "",
     session_profile: str = "", retry_key: str = "", subagent_id: str = "", use_local: bool | None = None, task_evidence: dict = None,
+    required_sources: Optional[list] = None,
+    required_sources_ref: Optional[dict] = None,
+    native_data_root: str = "",
 ) -> tuple:
-    """Execute the scope review call synchronously — api pack or agent session.
+    """Execute the scope review call synchronously — native episode or session.
 
     Returns (raw_text, usage, error_msg) — error_msg is non-empty on failure.
     ``usage`` may contain a private ``_review_refs`` entry with durable prompt
@@ -311,47 +269,64 @@ def _call_scope_llm(
 
     ``slot_id`` is the identity of the configured row this call belongs to,
     supplied by whoever fanned the rows out. ``route`` is the row's configured
-    delivery: on ``agent_session`` the substrate's session executor delivers
-    ``session_task`` in ``session_root`` and the api pack is never rendered
-    (5.2); parsing, classification and blocking above this call are identical
-    for both deliveries (5.3)."""
+    transport: on ``agent_session`` the substrate's session executor delivers the
+    brief in ``session_root``, on ``api_chat`` the native episode executor runs
+    it as a bounded inspection episode on the row's own route. Parsing,
+    classification and blocking above this call are identical for both (5.3).
+    The brief rides as ``session_task``; ``prompt`` is the same text under its
+    historical spelling for callers that pass it positionally.
+
+    ``required_sources`` rides the request policy, so a native episode folds its
+    observed reads over the manifest and a delegated session's harness-observed
+    reads fold over the same rows. ``native_data_root`` is the data root a
+    native episode reads its own sources under — the recorded task evidence
+    view, or the root the brief paged its exact staged diff into."""
     from ouroboros.config import resolve_effort as _resolve_effort
-    from ouroboros.review_execution import ReviewRouteKind, delivery_retrieves
+    from ouroboros.review_execution import ReviewRouteKind
     from ouroboros.tools.review import _owner_deadline_at
 
     scope_model = scope_model or _get_scope_model()
     # 6.1/6.3: the row's own effort wins; the global key stays the default.
     scope_effort = slot_effort or _resolve_effort("scope_review")
     delegated = str(getattr(route, "value", route) or "") == "agent_session"
-    retrieves = delivery_retrieves(route, subagent_id)  # RETRIEVES class: no pack
+    brief = session_task or prompt
     # Output budget scales with the reviewer window: requesting the absolute
     # 100K reserve on a small-window model would 400 on input+max_tokens.
     _scope_output_tokens, _ = _window_scaled_reserves(
         _scope_window(scope_model, **({"model_role": f"reviewer:{slot_id}",
-                      "credential_profile_id": session_profile, "use_local": use_local} if slot_id else {})).sizing_window(_SCOPE_FAILCLOSED_WINDOW)
+                      "credential_profile_id": session_profile, "use_local": use_local} if slot_id else {})).sizing_window(_SCOPE_SIZING_FALLBACK)
     )
-    messages: Any = [] if retrieves else scope_api_messages(prompt, int(_SCOPE_STABLE_PREFIX_LEN.get() or 0))
     try:
         from ouroboros.review_substrate import ReviewRequest, run_review_request
 
         from ouroboros.review_evidence import commit_review_evidence_refs
         evidence = task_evidence or {}
-        policy = {"output_contract": SCOPE_RETRIEVING_OUTPUT_CONTRACT} if retrieves else {}
-        if retrieves and not delegated and evidence:
-            policy["native_data_root"] = evidence["data_root"]
+        policy = {"output_contract": SCOPE_RETRIEVING_OUTPUT_CONTRACT}
+        if required_sources is not None:
+            # BOTH retrieving deliveries carry the manifest: the native
+            # episode folds its own read receipts over it, and a delegated
+            # session's harness-observed reads fold over the same rows.
+            policy["native_required_sources"] = required_sources
+            policy["native_required_sources_ref"] = dict(required_sources_ref or {})
+        if not delegated:
+            # The episode's own reader root: the recorded task evidence view, or
+            # the root the brief paged its exact staged-diff source under.
+            root = str(native_data_root or (evidence.get("data_root") if evidence else "") or "")
+            if root:
+                policy["native_data_root"] = root
         request = ReviewRequest(
             surface="scope_review",
             evidence={"task_execution": evidence} if evidence else {},
             evidence_refs=commit_review_evidence_refs(evidence),
             goal=SCOPE_USER_TURN,
-            messages=messages,
+            messages=[],
             task_id=str(getattr(ctx, "task_id", "") or "scope_review") if ctx is not None else "scope_review", retry_key=str(retry_key or ""),
             call_type="scope_review",
             max_tokens=_scope_output_tokens,
             default_temperature=0.2,
             no_proxy=True,
-            session_task=session_task if retrieves else "",
-            session_root=session_root if retrieves else "",
+            session_task=brief,
+            session_root=session_root,
             reconcile_only=bool(getattr(ctx, "_review_reconcile_only", False)),
             deadline_at=_owner_deadline_at(ctx),
             policy=policy,
@@ -369,6 +344,9 @@ def _call_scope_llm(
             session_target=session_target if delegated else "",
             session_profile=session_profile, subagent_id=str(subagent_id or ""),
             use_local=row.use_local if use_local is None else use_local,
+            # Every scope row retrieves: an api row binds the native episode
+            # executor whether or not an actor id binds it.
+            native_retrieval_override=not delegated,
         )
         result = run_review_request(
             request,
@@ -411,243 +389,6 @@ def _call_scope_llm(
         return "", None, error_msg
 
 
-def _scope_oversize_result(
-    *,
-    scope_model_id: str,
-    prompt_chars: int,
-    prompt_tokens_est: int,
-    prompt_ref: dict,
-    response_ref: dict,
-    provider_detail: str,
-    tokens_in: int = 0,
-    tokens_out: int = 0,
-    cost_usd: float = 0.0,
-    operation: Optional[dict] = None,
-) -> "ScopeReviewResult":
-    authority_note = "The blocking scope gate has no authoritative verdict. "
-    advisory = {
-        "verdict": "FAIL",
-        "severity": "advisory",
-        "item": "scope_review_skipped",
-        "reason": (
-            f"⚠️ SCOPE_REVIEW_SKIPPED: the provider rejected the assembled scope prompt "
-            f"(~{prompt_tokens_est} estimated tokens) as exceeding the model's real "
-            f"context window. {authority_note}"
-            "Provider error: "
-            + _truncate_review_artifact(str(provider_detail), 1000)
-        ),
-        "model": scope_model_id,
-    }
-    return ScopeReviewResult(
-        blocked=True,
-        block_message=(
-            "⚠️ SCOPE_REVIEW_BLOCKED: the provider rejected the scope prompt as "
-            "oversized, so the required >=1M blocking scope gate produced no "
-            "authoritative verdict. Split the staged change or restore a fitting "
-            ">=1M reviewer route."
-        ),
-        status="fixed_overflow",
-        model_id=scope_model_id,
-        prompt_chars=prompt_chars,
-        tokens_in=tokens_in,
-        tokens_out=tokens_out,
-        cost_usd=cost_usd,
-        context_manifest=_current_scope_context_manifest(),
-        prompt_ref=prompt_ref,
-        response_ref=response_ref,
-        advisory_findings=[advisory],
-        **(operation or {}),
-    )
-
-
-def _handle_prompt_signals(
-    prompt: Optional[str],
-    context_status: Optional["_TouchedContextStatus"],
-    input_limit: int = _SCOPE_INPUT_TOKEN_LIMIT,
-    scope_model: str = "",
-    managed: bool = False,
-    window_binding: Optional[dict] = None,
-) -> Optional[ScopeReviewResult]:
-    """Translate touched-context status into an early ScopeReviewResult.
-
-    ``managed=True`` (the authorized managed resolver) makes the terminal
-    remedies honest: a two-parent resolution cannot split its staged diff."""
-    if context_status is None:
-        return None  # proceed with LLM call
-
-    if context_status.status == "budget_exceeded":
-        token_count = context_status.token_count
-        # Report the REAL window-scaled reserves, not the 1M constants.
-        _resolved = _scope_window(scope_model, **(window_binding or {})) if scope_model else ReviewerWindow(
-            window_tokens=_SCOPE_MODEL_CONTEXT_WINDOW,
-        )
-        _window = _resolved.sizing_window(_SCOPE_FAILCLOSED_WINDOW)
-        _provenance = _scope_window_provenance(_resolved)
-        _output_reserve, _ = _window_scaled_reserves(_window)
-        _budget = (f"input budget ({input_limit} tokens, reserving {_output_reserve} for "
-                   f"output within its {_window_provenance_phrase(_window, _provenance, _resolved.observed_at)})")
-        _cause, _remedy = _ladder_terminal_cause(
-            context_status, input_limit, budget_phrase=_budget, managed=managed)
-        log.warning(
-            "Scope review pack did not assemble: %s; window=%d provenance=%s (fail-closed).",
-            _cause, _window, _provenance,
-        )
-        return ScopeReviewResult(
-            blocked=True,
-            block_message=(
-                f"⚠️ SCOPE_REVIEW_BLOCKED: {_cause}, so the required >=1M blocking "
-                "scope gate has no authoritative verdict."
-            ),
-            status="sub_floor", failure_phase="context", failure_code="sub_floor",
-            # No prompt string exists on this path (ladder sentinel): the char count
-            # is DERIVED from the token estimate and labelled as such.
-            prompt_chars=token_count * 4,
-            prompt_chars_source="estimated_from_tokens",
-            advisory_findings=[{
-                "verdict": "FAIL",
-                "severity": "advisory",
-                "item": "scope_review_skipped",
-                "reason": (
-                    f"⚠️ SCOPE_REVIEW_SKIPPED: {_cause}. The blocking scope gate has "
-                    f"no authoritative verdict. {_remedy}"
-                ),
-                "model": scope_model or "scope_reviewer",
-            }],
-        )
-
-    if context_status.status == "fixed_overflow":
-        # The ladder exhausted every degradation step. TWO failures land here — an
-        # irreducible overflowing prompt, and a REQUIRED artifact that never
-        # assembled — and they can COINCIDE, so the cause(s) are READ from the
-        # status and every one that applies is rendered. Fails CLOSED either way.
-        token_count = context_status.token_count
-        cause, remedy = _ladder_terminal_cause(context_status, input_limit, managed=managed)
-        return ScopeReviewResult(
-            blocked=True,
-            status="fixed_overflow", failure_phase="context", failure_code="fixed_overflow",
-            prompt_chars=token_count * 4,
-            prompt_chars_source="estimated_from_tokens",
-            block_message=(
-                f"⚠️ SCOPE_REVIEW_BLOCKED: {cause}. {remedy} "
-                "Fail-closed stop — not a skippable budget condition."
-            ),
-        )
-
-    if context_status.status == "empty":
-        return ScopeReviewResult(
-            blocked=True,
-            status="empty", failure_phase="context", failure_code="empty",
-            block_message=(
-                "⚠️ SCOPE_REVIEW_BLOCKED: Could not read any touched files — "
-                "scope review requires direct file context. Commit blocked."
-            ),
-        )
-
-    if context_status.status == "omitted":
-        omitted_names = ", ".join(context_status.omitted_paths) or "(unknown)"
-        return ScopeReviewResult(
-            blocked=True,
-            status="omitted", failure_phase="context", failure_code="omitted",
-            block_message=(
-                f"⚠️ SCOPE_REVIEW_BLOCKED: Some touched file(s) could not be included "
-                f"in direct context (binary/oversize/unreadable): {omitted_names}.\n"
-                "Scope review requires complete touched-file context. Commit blocked.\n"
-                "Possible fixes: reduce file size, commit binary files separately, "
-                "or ensure all touched files are readable text."
-            ),
-        )
-
-    # Unknown status is a programming error; fail closed.
-    log.error(
-        "Scope review: unrecognised _TouchedContextStatus.status=%r — blocking commit (fail-closed).",
-        context_status.status,
-    )
-    return ScopeReviewResult(
-        blocked=True,
-        status="error",
-        block_message=(
-            f"⚠️ SCOPE_REVIEW_BLOCKED: Unexpected context status '{context_status.status}' — "
-            "commit blocked (fail-closed). This is a programming error; please report it."
-        ),
-    )
-
-
-def _apply_scope_authority(
-    critical_findings: List[dict],
-    advisory_findings: List[dict],
-    *,
-    scope_model_id: str,
-    result_kwargs: dict,
-    delegated: bool = False, native_retrieval: bool = False,
-    window_binding: Optional[dict] = None,
-) -> tuple[List[dict], List[dict], Optional[ScopeReviewResult]]:
-    """One-pass P3 authority for THIS row's delivery: is the reviewer's window ESTABLISHED
-    enough for its verdict to gate a commit? ``api_chat`` must fit the whole assembled pack
-    (constitutional >=1M; sub-floor BLOCKS); ``agent_session`` assembles none and needs
-    SOURCED window evidence instead (scope_review_session owns that decision). NEITHER is
-    waved through — skipping this for sessions let one gate with no window test at all.
-    Authority is read from the EVIDENCE, not from the number: a window that is merely
-    large enough is not a window that was established — an expired record, an outage-
-    carried record, and the unevidenced designated-default sentinel all size a prompt
-    at >=1M and all fail here (the BIBLE P3 rule stated in code).
-
-    WHOSE window, for a retrieving row: the ACKED HARNESS ROUTE's. ``scope_model_id``
-    is that row's opaque ``harness[=model]`` spec, and `reviewer_window.reviewer_route`
-    fingerprints it under its own provider precisely so the owner's ack is recorded
-    against the route it travels. It is NOT the model the engine later reports back —
-    that arrives only after the run, is absent on telemetry that predates the receipt,
-    and would make the authority of a row depend on a fact no pre-flight can know.
-    Re-keying this lookup to the reported model was measured: it fails every session
-    scope row, closing a delivery path the owner deliberately opened. When the engine
-    resolves something other than what the route asked for, that divergence is already
-    disclosed on its own axis — ``capability_delta``, reason
-    ``session_route_resolves_its_own_model`` — which is where a landing below the ask
-    belongs, not in the window predicate."""
-    resolved = _scope_window(scope_model_id, session=delegated, **(window_binding or {}))
-    if delegated or native_retrieval:
-        # Native actor rows = the same retrieving class (P3 alternate mode, sourced >=200K floor).
-        from ouroboros.tools.scope_review_session import session_scope_authority
-
-        # EVIDENCE, never the sizing fallback: the session floor is gated on SOURCED
-        # provenance, and a fail-closed sizing number handed over as a window would
-        # read as evidence for exactly the session-floor number. A STALE record sizes
-        # a prompt but authorises nothing (api-row rule): provenance blanked first.
-        return session_scope_authority(
-            critical_findings, advisory_findings, scope_model=scope_model_id,
-            window=int(resolved.window_tokens or 0),
-            provenance="" if resolved.stale else str(resolved.status or ""),
-            result_kwargs=result_kwargs, phrase=_window_provenance_phrase(
-                resolved.sizing_window(_SCOPE_FAILCLOSED_WINDOW),
-                _scope_window_provenance(resolved), resolved.observed_at),
-        )
-    if resolved.blocking_authority_allowed:
-        return critical_findings, advisory_findings, None
-    window = resolved.sizing_window(_SCOPE_FAILCLOSED_WINDOW)
-    provenance = _scope_window_provenance(resolved)
-    for finding in critical_findings:
-        finding["severity"] = "advisory"
-        finding["reason"] = "[sub-floor scope reviewer] " + str(finding.get("reason", ""))
-    advisory_findings = list(critical_findings) + list(advisory_findings)
-    critical_findings = []
-    advisory_findings.append(
-        _scope_sub_floor_finding(scope_model_id, window, provenance, resolved.observed_at)
-    )
-    return critical_findings, advisory_findings, ScopeReviewResult(
-        blocked=True,
-        block_message=(
-            f"⚠️ SCOPE_REVIEW_BLOCKED: scope reviewer {scope_model_id} has a "
-            f"{_window_provenance_phrase(window, provenance, resolved.observed_at)}, which does not "
-            "establish the required >=1M floor with sourced Capability Evidence. Its "
-            "advisory findings were preserved, but it cannot supply the authoritative "
-            "scope verdict required to commit."
-        ),
-        critical_findings=critical_findings,
-        advisory_findings=advisory_findings,
-        status="sub_floor",
-        **result_kwargs,
-    )
-
-
 def run_scope_review(
     ctx: ToolContext,
     commit_message: str,
@@ -658,13 +399,13 @@ def run_scope_review(
     scope_review_history: Optional[list] = None,  # prior scope rounds for this commit
     scope_model: Optional[str] = None,
     slot_id: str = "",  # identity of the configured row this call runs (see scope_reviewer_slots)
-    route: Any = None,  # the row's configured delivery (ReviewRouteKind); None/api_chat = api
+    route: Any = None,  # the row's configured transport (ReviewRouteKind); None/api_chat = native episode
     slot_effort: str = "",  # the row's own effort (6.1); "" = global scope_review effort
     session_target: str = "",  # the row's own harness[=model] target; "" = shared route
     session_profile: str = "",  # credential pin (Q2-в); "" = rotation
-    subagent_id: str = "",  prepared: Optional[dict] = None, retry_key: str = "",  # assembled packet + immutable cycle identity
+    subagent_id: str = "",  prepared: Optional[dict] = None, retry_key: str = "",  # assembled brief + immutable cycle identity
 ) -> ScopeReviewResult:
-    """Run blocking scope review from a prepared packet or a direct call."""
+    """Run blocking scope review from a prepared brief or a direct call."""
     if prepared is None:
         from ouroboros.tools.review_admission import prepare_scope_review
 
@@ -673,35 +414,35 @@ def run_scope_review(
             review_rebuttal=review_rebuttal, review_history=review_history,
             scope_review_history=scope_review_history, scope_model=scope_model,
             slot_id=slot_id, route=route, slot_effort=slot_effort,
-            session_target=session_target, session_profile=session_profile, subagent_id=subagent_id,
+            session_target=session_target, session_profile=session_profile,
+            subagent_id=subagent_id,
         )
         if final is not None:
             return final
     _SCOPE_CONTEXT_MANIFEST.set(dict(prepared["context_manifest"] or {}))
-    _SCOPE_STABLE_PREFIX_LEN.set(int(prepared["stable_prefix_len"] or 0))
-    prompt, session_task = prepared["prompt"], prepared["session_task"]
+    session_task = prepared["session_task"]
     repo_dir, scope_model_id = prepared["repo_dir"], prepared["scope_model_id"]
     slot_id, route = prepared["slot_id"], prepared["route"]
     slot_effort, session_target = prepared["slot_effort"], prepared["session_target"]
-    session_profile, delegated = prepared["session_profile"], bool(prepared["delegated"])
+    session_profile = prepared["session_profile"]
     subagent_id = str(prepared.get("subagent_id") or "")
+    _manifest_ref = dict(prepared.get("required_sources_ref") or {})
 
-    _prompt_chars = len(prompt)  # type: ignore[arg-type]
-    _prompt_tokens_est = estimate_tokens(prompt)  # type: ignore[arg-type]
+    _prompt_chars = len(session_task)
+    _prompt_tokens_est = estimate_tokens(session_task)
     raw_text, usage, llm_error = _call_scope_llm(
-        prompt, scope_model=scope_model_id, ctx=ctx, slot_id=slot_id,
+        scope_model=scope_model_id, ctx=ctx, slot_id=slot_id,
         route=route, session_task=session_task, session_root=str(repo_dir),
         slot_effort=slot_effort, session_target=session_target,
         session_profile=session_profile, retry_key=retry_key, subagent_id=subagent_id,
         use_local=prepared.get("use_local"), task_evidence=prepared.get("task_evidence"),
-    )  # type: ignore[arg-type]
+        required_sources=prepared.get("required_sources"),
+        required_sources_ref=_manifest_ref,
+        native_data_root=str(prepared.get("native_data_root") or ""),
+    )
     _usage = dict(usage or {})
     host_route = _usage.get("model_role_route") or {}
     actual_model = str(host_route.get("model") or scope_model_id)
-    window_binding = {"model_role": f"reviewer:{slot_id}" if slot_id else "",
-                      "credential_profile_id": host_route.get("credential_profile_id", session_profile),
-                      "use_local": host_route.get("use_local", prepared.get("use_local")),
-                      "model_route": (_usage.get("claudexor") or {}).get("route")}
     _review_refs = dict(_usage.pop("_review_refs", {}) or {})
     _prompt_ref = dict(_review_refs.get("prompt_ref") or {})
     _response_ref = dict(_review_refs.get("response_ref") or {})
@@ -718,25 +459,6 @@ def run_scope_review(
     failure = {"failure_phase": str(_usage.get("review_failure_phase") or ""),
                "failure_code": str(_usage.get("failure_code") or "")}
     if llm_error:
-        if _is_provider_oversize_error(llm_error):
-            # The real tokenizer rejected the prompt; the >=1M gate fails closed.
-            log.warning(
-                "Scope reviewer rejected the prompt as oversize "
-                "(estimate-gate passed; real tokenizer denser). Failing the "
-                "blocking scope gate closed. Error: %s", llm_error,
-            )
-            return _scope_oversize_result(
-                scope_model_id=scope_model_id,
-                prompt_chars=_prompt_chars,
-                prompt_tokens_est=_prompt_tokens_est,
-                prompt_ref=_prompt_ref,
-                response_ref=_response_ref,
-                provider_detail=llm_error,
-                tokens_in=_tokens_in,
-                tokens_out=_tokens_out,
-                cost_usd=_cost_usd,
-                operation={**_operation, **failure},
-            )
         return ScopeReviewResult(
             blocked=True,
             block_message=llm_error,
@@ -749,27 +471,6 @@ def run_scope_review(
             **_operation,
         )
     # Usage emission happens once inside the shared review substrate.
-    if _provider_error_is_oversize(_usage, _prompt_tokens_est, actual_model, window_binding):
-        # Some gateways report oversize as an empty body plus provider_error 400;
-        # route independently-proven size errors through the same closed gate.
-        _pe_msg = str((_usage.get("provider_error") or {}).get("message") or "")
-        log.warning(
-            "Scope reviewer hit provider_error code=400 oversize (empty body; "
-            "estimate-gate passed). Failing the blocking scope gate closed. "
-            "provider_error: %s", _pe_msg or "(no message)",
-        )
-        return _scope_oversize_result(
-            scope_model_id=scope_model_id,
-            prompt_chars=_prompt_chars,
-            prompt_tokens_est=_prompt_tokens_est,
-            prompt_ref=_prompt_ref,
-            response_ref=_response_ref,
-            provider_detail=_pe_msg,
-            tokens_in=_tokens_in,
-            tokens_out=_tokens_out,
-            cost_usd=_cost_usd,
-            operation={**_operation, "failure_phase": "delivery", "failure_code": "provider_error"},
-        )
     if not raw_text.strip():
         # Empty model response is distinct from transport/API error.
         return ScopeReviewResult(
@@ -836,6 +537,21 @@ def run_scope_review(
         )
 
     critical_findings, advisory_findings = _classify_scope_findings(parsed_items)
+    # How much of the required-source manifest this row was OBSERVED to read.
+    # One reader for every retrieving delivery: a native episode reports
+    # host-observed receipts, a delegated session harness-observed ones. A
+    # delivery that reports no coverage fact at all stays `unobserved` — the P3
+    # provenance limit, not a finding that the review was incomplete.
+    from ouroboros.tools.scope_required_sources import coverage_state
+
+    _coverage_fact = _usage.get("native_read_coverage")
+    _manifest = _current_scope_context_manifest()
+    if isinstance(_coverage_fact, dict):
+        # A native episode attests its reads as host-observed; a delegated
+        # session states its provenance on the folded fact directly.
+        _manifest = {**_manifest, "native_read_coverage": _coverage_fact,
+                     "read_provenance": str(_usage.get("read_provenance")
+                                            or _usage.get("host_file_read_attestation") or "")}
     result_kwargs = {
         "parsed_items": parsed_items,
         "model_id": scope_model_id,
@@ -844,26 +560,21 @@ def run_scope_review(
         "tokens_in": _tokens_in,
         "tokens_out": _tokens_out,
         "cost_usd": _cost_usd,
-        "context_manifest": _current_scope_context_manifest(),
+        "context_manifest": _manifest,
+        "coverage": coverage_state(_coverage_fact),
+        "coverage_manifest_ref": _manifest_ref,
         "prompt_ref": _prompt_ref,
         "response_ref": _response_ref,
         **_operation,
     }
-    critical_findings, advisory_findings, authority_block = _apply_scope_authority(
-        critical_findings, advisory_findings, scope_model_id=actual_model,
-        result_kwargs=result_kwargs, delegated=delegated,
-        native_retrieval=bool(subagent_id) and not delegated, window_binding=window_binding)
-    if authority_block is not None:
-        authority_block.failure_phase = "window_authority"
-        authority_block.failure_code = authority_block.status
-        return authority_block
     _log_scope_result(
         ctx,
         len(critical_findings),
         len(advisory_findings),
         prompt_chars=_prompt_chars,
         prompt_tokens=_prompt_tokens_est,
-        model_id=actual_model, window_binding=window_binding,
+        model_id=actual_model,
+        coverage=result_kwargs["coverage"],
     )
 
     if critical_findings:
@@ -886,29 +597,3 @@ def run_scope_review(
         status="responded",
         **result_kwargs,
     )
-
-
-# v7next F2.3a (D06): moved spans live in their owner leaves; re-exported
-# here so this facade stays the single import surface for callers and tests.
-from ouroboros.tools.scope_review_pack import (  # noqa: E402, F401 -- intentional public re-exports
-    _CANONICAL_CONTEXT_DOCS,
-    _CURRENT_TOUCHED_CONTEXT_SKIP_PREFIXES,
-    _DELETED_INLINE_MAX_BYTES,
-    _SCOPE_CONTEXT_MANIFEST,
-    _SCOPE_STABLE_PREFIX_LEN,
-    _ScopeAtlasNotAssembled,
-    _ScopePromptContext,
-    _build_review_history_section,
-    _build_scope_history_section,
-    _build_scope_prompt,
-    _carrier_span_only_paths,
-    _classify_deleted_for_inline,
-    _current_scope_context_manifest,
-    _degradable_diff_only_paths,
-    _gather_scope_packs,
-    _inline_deleted_file_pack,
-    _parse_staged_name_status,
-    _record_ladder_steps,
-    _render_touched_section,
-    _should_skip_current_touched_context,
-)

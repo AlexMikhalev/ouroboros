@@ -215,8 +215,10 @@ def test_partial_account_refresh_keeps_draft_and_only_failed_account_history(acc
         assert "not in discovery" in suggestions(page, field)[DRAFT_MODEL]
         account.select_option("work")
         assert "not checked" in suggestions(page, field)[DRAFT_MODEL]
-        assert row.locator("[data-subagent-status]").inner_text() == "Draft · Not checked"
-        assert "model list could not be read" in row.locator("[data-subagent-meta]").inner_text()
+        status = row.locator("[data-subagent-status]")
+        assert status.inner_text() == "Draft · Not checked"
+        # The unread account catalog is disclosed on the row's own status sentence.
+        assert "model list could not be read" in status.get_attribute("title")
         account.select_option("")
     roles.capture(page, "account-catalog-partial-" + consumer.lower().replace(" ", "-"))
     assert_saved(ui, consumer, DRAFT_MODEL, "")

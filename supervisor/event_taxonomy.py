@@ -164,6 +164,10 @@ EVENT_DISPOSITIONS: Dict[str, EventDisposition] = {
     "review_density_probe": _telemetry(
         "ouroboros/tools/review_admission.py",
         note="one bounded exact-model send that calibrates tokenizer density before a size refusal"),
+    "review_scope_delivery_migrated": _telemetry(
+        "ouroboros/tools/review_admission.py",
+        note="one-time disclosure that a stored bare api scope row now delivers by retrieval "
+             "(a bounded native inspection episode) instead of the retired packet"),
     "review_scope_lead_unobserved": _telemetry(
         "ouroboros/tools/parallel_review.py",
         note="the commit gate's scope-first hold ended without observing the scope seat's own reservation"),

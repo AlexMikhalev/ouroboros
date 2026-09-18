@@ -1050,11 +1050,13 @@ def test_ui_smoke_collapsed_activity_line_named_vs_unnamed(
                     assert 0.9 <= bands["running-act"]["activity"]["lines"] <= 1.2, bands
                     assert bands["unnamed-act"]["activity"]["display"] == "none", bands
                     # Useful root activity sizes naturally up to three lines; empty activity
-                    # reserves no band on either running or finished cards.
+                    # reserves no band on either running or finished cards. An uncoined turn
+                    # promotes its only note to the title, so the collapsed line stays empty
+                    # while the block still stands on that row of work.
                     _emit_ws_frame(page, {
                         "type": "chat", "role": "assistant", "is_progress": True,
-                        "chat_id": 1, "task_id": "done-empty", "suggested_name": "Quick task",
-                        "content": "", "ts": "2026-07-29T10:00:03+00:00",
+                        "chat_id": 1, "task_id": "done-empty",
+                        "content": "Quick task", "ts": "2026-07-29T10:00:03+00:00",
                     })
                     done_empty = page.locator('.chat-live-card[data-task-id="done-empty"]')
                     done_empty.wait_for(state="attached", timeout=30_000)
@@ -1313,8 +1315,11 @@ def test_ui_smoke_chat_chronology_reconnect_and_plain_answer_marker(direct_serve
                     timeout=30_000,
                 )
                 state = page.evaluate(
+                    # The paged-history control heads the list and carries no
+                    # timestamp of its own: it is chrome, not a transcript row.
                     """() => [...document.querySelector('#chat-messages').children]
                         .filter((node) => !node.classList.contains('typing-bubble')
+                            && !node.classList.contains('chat-load-older')
                             && !node.textContent.includes('Reconnected'))
                         .map((node) => ({
                             text: node.textContent,
@@ -1323,6 +1328,7 @@ def test_ui_smoke_chat_chronology_reconnect_and_plain_answer_marker(direct_serve
                             taskId: node.dataset.taskId || '',
                         }))"""
                 )
+                assert page.locator("#chat-messages > .chat-load-older").count() == 1
                 assert [item["card"] for item in state] == [
                     False, True, True, False, True, False, False,
                 ]
@@ -1725,6 +1731,8 @@ def test_ui_smoke_direct_mode_nests_subagent_child_cards(direct_server_with_data
                 assert "compared output" in expanded_text
                 assert "done" in expanded_text.lower()
                 assert "Scheduled subagent child1" not in expanded_text
+                assert "Subagent child1 running" not in expanded_text
+                assert child.locator('[data-live-line-key="terminal-subagent-lifecycle-child1"]').count() == 1
                 assert child_summary.get_attribute("aria-expanded") == "true"
                 assert child.locator("[data-live-timeline]").first.get_attribute("id")
                 assert result_toggle.get_attribute("aria-controls")
@@ -1765,9 +1773,15 @@ def test_ui_smoke_direct_mode_nests_subagent_child_cards(direct_server_with_data
                 replay_progress.locator(".chat-live-line-toggle").click()
                 assert child_activity_early in replay_progress.inner_text()
                 assert child_activity_tail in replay_progress.inner_text()
+                assert "Scheduled subagent child1" not in replay_child.inner_text()
+                assert "Subagent child1 running" not in replay_child.inner_text()
+                assert replay_child.locator('[data-live-line-key="terminal-subagent-lifecycle-child1"]').count() == 1
                 page.wait_for_timeout(900)  # cover the routine background history sync
                 assert replay_child.locator('.chat-live-line-repeat:not([hidden])').count() == 0
                 page.screenshot(path=str(data_dir.parent / "review-truth-child-reconnect.png"), full_page=True)
+                replay_progress.locator(".chat-live-line-toggle").click()
+                replay_child.scroll_into_view_if_needed()
+                page.screenshot(path=str(data_dir.parent / "lifecycle-current-status.png"), full_page=True)
                 assert page.locator(".chat-bubble.progress").count() == 0
                 assert page.locator(".chat-bubble", has_text="Final child answer should stay inside the child card.").count() == 0
 
@@ -2971,16 +2985,17 @@ def test_ui_smoke_v679_subagent_depth_zero_round_trips_through_settings(direct_s
             pytest.skip(str(exc))
         raise
 @pytest.mark.ui_browser
-def test_ui_owner_context_mode_and_scope_review_ack(direct_server_with_data):
-    """Owner context intent and scope-review ack, driven in a real browser.
+def test_ui_owner_context_mode_and_scope_slot_save(direct_server_with_data):
+    """Owner context intent and a scope-slot save, driven in a real browser.
 
-    Two claimed-complete owner flows that source-string tests cannot certify:
+    Two owner flows that source-string tests cannot certify:
 
     1. OWNER MAX. Switching an explicit Low to Max succeeds without a Main-route
        context-window confirmation; the frozen compatibility field remains false.
-    2. SCOPE-REVIEW CAPABILITY ACK. Saving a scope-review slot whose route has no >=1M evidence
-       must raise the owner confirm and, on accept, persist a route-scoped capability ack and say
-       so in the settings status line.
+    2. SCOPE SLOT. Saving a scope row whose route has no window evidence at all
+       completes with no confirmation: window size is not a condition of scope
+       authority (owner decision 2026-09-17), so there is nothing to confirm and
+       no ack is written.
     """
     pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")
     from playwright.sync_api import Error as PlaywrightError
@@ -3034,10 +3049,9 @@ def test_ui_owner_context_mode_and_scope_review_ack(direct_server_with_data):
                 assert after["context_mode"] == "max"
                 assert after["context_mode_auto_low"] is False
 
-                # 2. Scope-review capability notice -> owner confirm -> route-scoped ack.
-                # 6.2: the scope route is a review-lane row — pick the API-model
-                # route in the grouped combobox and type the id. D-10 moved the
-                # lanes out of Models into their own Agents tab.
+                # 2. A scope slot saves with no window question anywhere.
+                # Select the fixture's configured provider, then edit its model;
+                # the grouped combobox uses provider-specific API choices.
                 page.click('[data-nav-page="settings"]')
                 page.wait_for_selector("#s-context-mode", state="attached", timeout=30_000)
                 page.locator('[data-settings-tab="agents"]').click()
@@ -3046,37 +3060,32 @@ def test_ui_owner_context_mode_and_scope_review_ack(direct_server_with_data):
                     '#reviewer-scope-rows .reviewer-slot-row [data-slot-route]'
                 ).first
                 scope_route.wait_for(state="visible", timeout=30_000)
-                scope_route.select_option("api")
+                scope_route.select_option("api:openai-compatible")
+                assert scope_route.input_value() == "api:openai-compatible"
                 custom_input = page.locator(
                     '#reviewer-scope-rows .reviewer-slot-row [data-slot-custom-api]'
                 ).first
                 custom_input.wait_for(state="visible", timeout=30_000)
-                custom_input.fill("openai-compatible::scope-reviewer-x")
+                custom_input.fill("scope-reviewer-x")
                 page.locator("#btn-save-settings").click()
-                # The capability ack is an in-app dialog since the native-dialog
-                # class ban (tests/test_web_dialogs_static.py); Playwright's
-                # page.on("dialog") hook only fires for window.alert/confirm/prompt.
-                ack_dialog = page.locator(".confirm-dialog")
-                ack_dialog.wait_for(state="visible", timeout=60_000)
-                ack_text = ack_dialog.inner_text()
-                page.screenshot(path=str(evidence_dir / "v6800-scope-review-ack.png"), full_page=True)
-                ack_dialog.locator("[data-confirm-ok]").last.click()
                 page.wait_for_function(
-                    "() => (document.querySelector('#settings-status')?.textContent || '')"
-                    ".includes('scope-review route')",
+                    "() => !document.querySelector('#btn-save-settings').disabled",
                     timeout=60_000,
                 )
+                page.screenshot(path=str(evidence_dir / "scope-slot-save-no-window-question.png"),
+                                full_page=True)
 
-                assert "1,000,000-token context window" in ack_text
-                assert "openai-compatible::scope-reviewer-x" in ack_text, "the ack must name the exact route"
+                # No dialog of any kind: the owner is never asked to confirm a
+                # reviewer's window, so a route with no evidence saves silently.
+                assert page.locator(".confirm-dialog").count() == 0
                 status_text = page.locator("#settings-status").inner_text()
-                assert "Confirmed the required context window for 1 scope-review route(s)." in status_text
-                evidence = json.loads((data_dir / "state" / "capability_evidence.json").read_text(encoding="utf-8"))
-                acked = [
-                    entry for entry in (evidence.get("acks") or evidence.get("probes") or {}).values()
-                    if str(entry.get("model") or "") == "openai-compatible::scope-reviewer-x"
-                ]
-                assert acked, "no route-scoped capability evidence was stored for the acked reviewer"
+                assert "context window" not in status_text, status_text
+                assert "Settings saved" in status_text or "No changes" in status_text, status_text
+                saved_slots = json.loads(settings_path.read_text(encoding="utf-8"))["OUROBOROS_REVIEWER_SLOTS"]
+                assert "scope-reviewer-x" in json.dumps(saved_slots)
+                evidence_path = data_dir / "state" / "capability_evidence.json"
+                evidence = json.loads(evidence_path.read_text(encoding="utf-8")) if evidence_path.exists() else {}
+                assert not (evidence.get("owner_acks") or {}), "a scope slot save wrote an owner window ack"
             finally:
                 browser.close()
     except PlaywrightError as exc:

@@ -1,40 +1,32 @@
 #!/usr/bin/env python3
-"""Measure the review packs for one staged change — offline, $0.
+"""Measure the commit triad packet for one staged change — offline, $0.
 
-Reports, for the checkout at ``--repo`` (its INDEX is the reviewed change; EVERY
-governance corpus — BIBLE.md, the checklist section + archive, DEVELOPMENT.md,
-DESIGN.md, ARCHITECTURE.md — is read from that one checkout):
+Reports, for the checkout at ``--repo`` (its INDEX is the reviewed change; every
+governance corpus it selects — BIBLE.md, the checklist section + archive, and
+whatever ``tools/governance_context.py`` inlines or navigates for these touched
+paths — is read from that one checkout):
 
 * the triad touched-file pack BEFORE and AFTER the disclosed pack exclusions
   (``review_file_pack.triad_pack_exclusions``: span-only release carriers on a
   VERSION-staged commit, governance docs byte-identical to the inlined prefix);
-* the FULL scope input (``scope_full``): the prompt the REAL assembler
-  (``scope_review_pack._build_scope_prompt``) builds for this index — scope
-  checklist + the five canonical docs in full (the byte-stable prefix), intent
-  scaffolding, touched snapshots + deleted-file HEAD content, the staged diff and
-  the generated repo atlas — split at the assembler's own stable-prefix
-  boundary, with the guaranteed-fit ladder's facts from the scope context
-  manifest (atlas status, selected/tracked counts, ladder steps, unassembled
-  REQUIRED artifacts) and the headroom the scope input cap leaves. Its touched
-  section BEFORE and AFTER the span-only release-carrier cut is printed as a
-  labelled SUB-number (``scope_full.scope_touched``): a fragment of the input,
-  never the input. The prompt is built for an empty commit message (the goal
-  section of the real run adds its length);
-* the advisory changed-context pack BEFORE and AFTER the same carrier cut over
-  the pair it reviews (HEAD→working tree);
-* the byte-stable governance prefix the triad prepends (checklist section +
-  archive, DEVELOPMENT.md, DESIGN.md, ARCHITECTURE.md) and the constitutional
-  head (preamble + BIBLE.md) each api row receives per round, part by part;
+* the advisory touched-path MANIFEST (``preflight_review_prompt``): the
+  retrieving advisory delivery names each path with its size and disposition
+  and inlines no bodies, so the number here is the manifest, not a pack;
+* the governance context the triad packet carries, tier by tier: the byte-stable
+  prefix (checklist section + archive + tier-1 inline rules), the change-class
+  selection and the navigation maps that open the dynamic tail, and the
+  constitutional head (preamble + BIBLE.md) each api row receives per round;
 * the ZERO-DIFF message — everything an api row receives before the first pack
   or diff byte, serialized as ``_multi_model_review_async`` sends it: the
-  constitutional head + the stable prefix + the dynamic scaffolding rendered
-  with an empty pack and diff + the fixed user turn — the quorum input limit of
-  the rows that RECEIVE the pack (the ``api_chat`` rows without a configured-
-  subagent binding, filtered exactly as ``review`` filters them before
-  ``fit_triad_prompt``; a session row or a subagent api row retrieves with its
-  own tools and never constrains the ladder), and the headroom that limit
-  leaves for the pack + diff. A panel whose every row retrieves gets the
-  explicit "no API pack is assembled for this panel" instead of a number.
+  constitutional head + the stable prefix + the governance tail and dynamic
+  scaffolding rendered with an empty pack and diff + the fixed user turn — the
+  quorum input limit of the rows that RECEIVE the packet (the ``api_chat`` rows
+  without a configured-subagent binding, filtered exactly as ``review`` filters
+  them before ``fit_triad_prompt``; a session row or a subagent api row
+  retrieves with its own tools and never constrains the ladder), and the
+  headroom that limit leaves for the pack + diff. A panel whose every row
+  retrieves gets the explicit "no API pack is assembled for this panel" instead
+  of a number.
 
 Units: chars, the host's own ``utils.estimate_tokens`` (chars/4 — the unit
 ``review_admission.fit_triad_prompt`` compares against the quorum limit, so every
@@ -53,19 +45,11 @@ CACHE only (``capability_evidence.probe(allow_fetch=False)`` under
 ``$OUROBOROS_DATA_DIR``) — an unknown route is disclosed and sized at the fit
 ladder's own full-window default, never probed or persisted; the o200k BPE is
 served from the local tiktoken cache only (``TIKTOKEN_CACHE_DIR``) and a missing
-BPE is a typed, disclosed miss, never a download. The scope assembler resolves
-its input cap through ``scope_window`` (one lazy provider-metadata fetch per
-evidence TTL) — this measurer never lets it: for the duration of the build the
-assembler's call-time seams (``scope_review._effective_scope_input_limit`` /
-``_scope_window``) are bound to a cap computed by the cap's own formula
-(``_scope_input_limit``) on the cache-only window, or on ``--scope-window`` when
-given, and ``load_checklist_section`` to the measured checkout's CHECKLISTS.md.
-The atlas is git + filesystem, built with ``drive_root=None`` (no inventory is
-persisted). Nothing is dispatched.
+BPE is a typed, disclosed miss, never a download. Nothing is dispatched.
 
 Usage::
 
-    python devtools/measure_review_pack.py --repo /path/to/checkout [--json] [--scope-window N]
+    python devtools/measure_review_pack.py --repo /path/to/checkout [--json]
 """
 
 from __future__ import annotations
@@ -84,11 +68,6 @@ sys.path.insert(0, str(REPO_ROOT))
 TRIAD_USER_TURN = "Review the staged diff and context provided in the instructions above."
 FIT_UNITS = ("chars/4 (utils.estimate_tokens) — the unit review_admission.fit_triad_prompt "
              "compares against the quorum limit")
-SCOPE_LIMIT_NOTE = (
-    "scope input cap computed offline by _effective_scope_input_limit's own formula on the window "
-    "named here (window-scaled reserves, density-calibrated cap read from the evidence store, "
-    "REVIEW_PROMPT_TOKEN_BUDGET ceiling); the runtime resolves its window through scope_window, "
-    "which this measurer never calls")
 NO_API_PACK_NOTE = (
     "no API pack is assembled for this panel: every configured row retrieves the subject with its "
     "own tools (agent_session rows and configured-subagent api rows), so there is no quorum input "
@@ -137,10 +116,10 @@ def _measure(text: str, enc) -> dict:
 
 
 def _staged_entries(repo: pathlib.Path) -> list[tuple[str, str, str]]:
-    """``(status, current_path, source_path)`` per staged entry, parsed exactly as
-    the scope assembler parses ``git diff --cached --name-status`` — so a staged
-    deletion is a ``D`` entry the scope arm inlines from HEAD (the real pack's
-    deleted-file section), not a current path that resolves to nothing."""
+    """``(status, current_path, source_path)`` per staged entry, through the host's
+    own ``parse_git_name_status`` — so a rename names both ends and a staged
+    deletion stays a ``D`` entry instead of a current path that resolves to
+    nothing."""
     from ouroboros.tools.review_file_pack import parse_git_name_status
 
     out = subprocess.run(
@@ -204,27 +183,63 @@ def _checklist_section(repo: pathlib.Path) -> str:
     return f"{section}\n\n{archive}" if archive else section
 
 
-def _governance_prefix(repo: pathlib.Path) -> dict[str, str]:
-    """The stable prefix parts exactly as `_prepare_unified_review` loads them, from ``repo``."""
-    from ouroboros.tools import review
-    from ouroboros.tools.review_helpers import load_governance_doc
+def _governance_usable_window(models: list[str]) -> int:
+    """The usable input window the packet's governance share is taken against,
+    by ``review._triad_governance_usable_window``'s own arithmetic on cache-only
+    windows (the runtime keys it by slot id; this measurer has models only)."""
+    from ouroboros.tools import review as _rv
 
-    docs = {
-        rel: load_governance_doc(repo, rel, on_missing="explicit")
-        for rel in ("docs/DEVELOPMENT.md", "docs/DESIGN.md", "docs/ARCHITECTURE.md")
-    }
+    usable: dict[str, int] = {}
+    for model in models:
+        window, _evidence = _cached_window(model)
+        output_reserve, tokenizer_margin = _rv.window_scaled_reserves(
+            window, output_reserve=_rv._review_output_budget(), tokenizer_margin=50_000)
+        usable[model] = max(0, int(window) - int(output_reserve) - int(tokenizer_margin))
+    return int(_rv._quorum_input_token_limit(list(usable), usable)) if usable else 0
+
+
+def _governance_prefix(
+    repo: pathlib.Path, touched_paths: list[str], api_models: list[str],
+) -> dict[str, str]:
+    """The governance regions exactly as `_prepare_unified_review` assembles them.
+
+    ``governance_context`` is the ONE decision about which rules a packet
+    carries: tier 1 rides the cache-marked stable prefix, the change-class
+    selection and the navigation maps open the dynamic tail. A panel with no api
+    row assembles no packet, so it asks for no governance — the same branch the
+    runtime takes. Everything is read from ``repo``, never from this checkout."""
+    from ouroboros.tools import review
+    from ouroboros.tools.governance_context import GovernanceContext, governance_context
+
     checklist = _checklist_section(repo)
+    governance = governance_context(
+        repo,
+        surface="triad",
+        touched_paths=touched_paths,
+        usable_window_tokens=_governance_usable_window(api_models),
+        delivery="packet",
+        checklist_section_text=checklist,
+        already_inline=("BIBLE.md", "docs/CHECKLISTS_ARCHIVE.md"),
+    ) if api_models else GovernanceContext()
     stable = review._REVIEW_PROMPT_TEMPLATE_STABLE.format(
         preamble=review.REVIEW_PREAMBLE,
         critical_calibration=review.CRITICAL_FINDING_CALIBRATION,
         json_contract=review.REVIEW_JSON_ARRAY_CONTRACT,
         anti_pattern_lock_guard=review.REPO_ANTI_PATTERN_LOCK_GUARD,
         checklist_section=checklist,
-        dev_guide_text=docs["docs/DEVELOPMENT.md"],
-        design_text=docs["docs/DESIGN.md"],
-        architecture_section=docs["docs/ARCHITECTURE.md"],
-    )
-    return {"stable_prefix": stable, "checklist_section": checklist, **docs}
+    ) + (f"\n{governance.stable_inline}\n" if governance.stable_inline.strip() else "")
+    tail = "\n\n".join(
+        part for part in (governance.selected_inline, governance.navigation) if part.strip())
+    return {
+        "stable_prefix": stable,
+        "checklist_section": checklist,
+        "tier_1_inline_rules": governance.stable_inline,
+        "change_class_selection": governance.selected_inline,
+        "navigation_maps": governance.navigation,
+        "governance_tail": tail,
+        "manifest": governance.manifest,
+        "inline_whole_documents": governance.inline_whole_documents,
+    }
 
 
 def _constitutional_head(repo: pathlib.Path) -> str:
@@ -239,13 +254,15 @@ def _constitutional_head(repo: pathlib.Path) -> str:
 def _zero_diff_message(repo: pathlib.Path, prefix: dict[str, str], paths: list[str]) -> dict[str, str]:
     """Every byte an api row receives BEFORE the pack and the diff, part by part in
     wire order: the constitutional head (prepended to the system content), the
-    stable prefix, the dynamic scaffolding (`_REVIEW_PROMPT_TEMPLATE_DYNAMIC` with
-    an empty pack and diff: the goal section of an empty commit message, no scope,
-    no rebuttal, no history, the changed-files list) and the fixed user turn."""
+    stable prefix, the governance tail plus the dynamic scaffolding
+    (`_REVIEW_PROMPT_TEMPLATE_DYNAMIC` with an empty pack and diff: the goal
+    section of an empty commit message, no scope, no rebuttal, no history, the
+    changed-files list) and the fixed user turn."""
     from ouroboros.tools import review
     from ouroboros.tools.review_helpers import build_goal_section, build_scope_section
 
-    dynamic = review._REVIEW_PROMPT_TEMPLATE_DYNAMIC.format(
+    tail = prefix["governance_tail"]
+    dynamic = (f"{tail}\n\n" if tail else "") + review._REVIEW_PROMPT_TEMPLATE_DYNAMIC.format(
         goal_section=build_goal_section("", "", ""),
         scope_section=build_scope_section(""),
         current_files_section="",
@@ -258,7 +275,8 @@ def _zero_diff_message(repo: pathlib.Path, prefix: dict[str, str], paths: list[s
     return {
         "constitutional_head_preamble_plus_BIBLE": _constitutional_head(repo),
         "stable_prefix": prefix["stable_prefix"],
-        # `_assemble_prompt` joins stable + "\n" + dynamic; the separator rides with the tail.
+        # `_assemble_prompt` joins stable + "\n" + dynamic; the separator rides
+        # with the tail, and the governance tail opens that dynamic half.
         "dynamic_scaffolding_empty_pack_and_diff": "\n" + dynamic,
         "user_turn": TRIAD_USER_TURN,
     }
@@ -315,76 +333,7 @@ def _quorum_limit(models: list[str]) -> tuple[int, dict[str, dict]]:
         models, {m: s["input_limit_chars_div_4"] for m, s in slots.items()})), slots
 
 
-def _scope_input_limit(model: str, window: int) -> int:
-    """The scope input cap by ``_effective_scope_input_limit``'s own formula on an
-    EXPLICIT sizing window: window-scaled reserves, then the density-calibrated
-    cap (``calibrated_input_token_limit``; density read from the evidence store
-    under ``$OUROBOROS_DATA_DIR``, the cold floor when nothing is recorded) under
-    ``REVIEW_PROMPT_TOKEN_BUDGET``. The runtime helper itself is not called: it
-    resolves the window through ``scope_window``, whose lazy metadata fetch this
-    measurer never performs."""
-    from ouroboros.tools import scope_review_budget as sb
-
-    output_reserve, margin = sb._window_scaled_reserves(window)
-    return max(0, sb._calibrated_input_token_limit(
-        model, context_window=window, output_reserve=output_reserve,
-        tokenizer_margin=margin, budget_cap=sb._SCOPE_BUDGET_TOKEN_LIMIT))
-
-
-def _scope_full(repo: pathlib.Path, model: str, window: int, limit: int, enc) -> dict:
-    """The REAL scope input for this index: ``_build_scope_prompt`` run as
-    ``review_admission.prepare_scope_review`` runs it for an ordinary commit
-    (no managed subject, ``drive_root=None`` so no inventory is persisted and no
-    obligations are read), split at the assembler's own stable-prefix boundary,
-    plus the ladder facts of the scope context manifest. The assembler's
-    call-time seams are bound for the duration of the build (module docstring):
-    the cap to ``limit``, the window to ``window`` (the ``budget_exceeded``
-    terminal reads it), the checklist to the measured checkout."""
-    from unittest import mock
-
-    from ouroboros.reviewer_window import ReviewerWindow
-    from ouroboros.tools import scope_review as sr
-    from ouroboros.tools import scope_review_pack as sp
-    from ouroboros.tools.review_helpers import load_checklist_section
-
-    def _checklist(section_name: str, checklist_path=None) -> str:
-        return load_checklist_section(section_name, checklist_path or repo / "docs" / "CHECKLISTS.md")
-
-    with mock.patch.object(sr, "_effective_scope_input_limit", lambda *, scope_model="": limit), \
-            mock.patch.object(sr, "_scope_window",
-                              lambda m, *, session=False: ReviewerWindow(window_tokens=window, model=m)), \
-            mock.patch.object(sr, "load_checklist_section", _checklist):
-        prompt, status = sp._build_scope_prompt(
-            repo, commit_message="",
-            context=sp._ScopePromptContext(scope_model=model, governance_repo_dir=repo, drive_root=None))
-    manifest = sp._current_scope_context_manifest()
-    atlas = {key: manifest.get(key) for key in (
-        "status", "selected_count", "tracked_count", "atlas_tokens", "fixed_prompt_tokens",
-        "estimated_total_tokens", "target_total_tokens", "hard_total_tokens", "compact_manifest_in_prompt")}
-    atlas["unassembled_required"] = [str(row.get("path") or "?") for row in manifest.get("unassembled_required") or []]
-    atlas["ladder_steps"] = list(manifest.get("ladder_steps") or [])
-    out: dict = {"model": model, "input_limit_chars_div_4": limit, "limit_note": SCOPE_LIMIT_NOTE,
-                 "assembled": prompt is not None, "atlas": atlas}
-    if prompt is None:
-        out["refusal"] = {
-            "status": status.status, "token_count": status.token_count,
-            "omitted_paths": list(status.omitted_paths),
-            "unassembled_required": list(status.unassembled_required),
-            "atlas_overflowed": bool(status.atlas_overflowed),
-        }
-        return out
-    stable_len = int(sp._SCOPE_STABLE_PREFIX_LEN.get() or 0)
-    total = _measure(prompt, enc)
-    out.update({
-        "total": total,
-        "stable_prefix": _measure(prompt[:stable_len], enc),
-        "dynamic_tail": _measure(prompt[stable_len:], enc),
-        "headroom_chars_div_4": limit - total["chars_div_4"],
-    })
-    return out
-
-
-def measure(repo: pathlib.Path, *, scope_window: int | None = None) -> dict:
+def measure(repo: pathlib.Path) -> dict:
     from ouroboros.reviewer_slot_config import commit_triad_delivery
     from ouroboros.tools.review_file_pack import build_touched_file_pack, triad_pack_exclusions
 
@@ -394,10 +343,13 @@ def measure(repo: pathlib.Path, *, scope_window: int | None = None) -> dict:
         enc, tokenizer = None, f"o200k unavailable (cache-only): {exc}"
     entries = _staged_entries(repo)
     paths = [ep[1] for ep in entries]  # the --name-only list the triad packs
-    deleted = [ep[1] for ep in entries if ep[0] == "D"]
     porcelain = _porcelain(repo)
     _require_index_is_worktree(porcelain)
-    prefix = _governance_prefix(repo)
+    # The governance selection is change-relative and packet-only, so the panel
+    # is resolved first: an all-retrieving panel assembles neither.
+    panel_rows = _panel_rows(commit_triad_delivery())
+    api_models = [row["model"] for row in panel_rows if row["receives_pack"]]
+    prefix = _governance_prefix(repo, paths, api_models)
 
     def _pack(exclude: set[str], note: str) -> str:
         section, omitted = build_touched_file_pack(repo, paths, exclude_paths=exclude)
@@ -408,48 +360,28 @@ def measure(repo: pathlib.Path, *, scope_window: int | None = None) -> dict:
             section += f"\n\n{note}"
         return section
 
-    excluded, note = triad_pack_exclusions(repo, paths, prefix_texts={
-        rel: prefix[rel] for rel in ("docs/DEVELOPMENT.md", "docs/DESIGN.md", "docs/ARCHITECTURE.md")})
+    excluded, note = triad_pack_exclusions(
+        repo, paths, prefix_texts=dict(prefix["inline_whole_documents"]))
     before, after = _pack(set(), ""), _pack(excluded, note)
     per_file = {}
     for rel in paths:
         one, _ = build_touched_file_pack(repo, [rel])
         per_file[rel] = {**_measure(one, enc), "excluded": rel in excluded}
-    # The scope pack's touched section (its own HEAD→index pair, current paths
-    # and deleted paths split as the assembler splits them) before/after the
-    # carrier cut — a SUB-number of the full scope input measured below — and
-    # the advisory pack (its HEAD→working tree pair, paths resolved from the
-    # porcelain as the run resolves them). The index IS the working tree —
-    # checked above, and re-checked on the resolved path set — so both advisory
-    # arms measure the one staged change.
-    from ouroboros.tools import scope_review_pack as _sp
-    from ouroboros.tools.review_file_pack import build_advisory_changed_context
+    # The advisory delivery retrieves, so what it sends about the touched files is
+    # the MANIFEST (path, size, disposition), not their bodies. Its paths come
+    # from `git status --porcelain` as the run resolves them (HEAD→working tree);
+    # the index IS the working tree — checked above, and re-checked on the
+    # resolved path set — so both sides name the one staged change.
+    from ouroboros.tools.preflight_review_prompt import _advisory_touched_manifest
+    from ouroboros.tools.review_file_pack import parse_changed_paths_from_porcelain
 
-    current = [p for p in paths if p not in deleted]
-    ctx_paths = [p for p in current if not _sp._should_skip_current_touched_context(p)]
-    skipped = [p for p in current if _sp._should_skip_current_touched_context(p)]
-    carriers = _sp._carrier_span_only_paths(repo, ctx_paths, None)
-    scope_before = _sp._render_touched_section(repo, ctx_paths, deleted, skipped, [])[0]
-    scope_after = _sp._render_touched_section(
-        repo, [p for p in ctx_paths if p not in carriers], deleted, skipped, [], carrier_span_only=carriers)[0]
-    scope_model = _sp._sr()._get_scope_model()
-    if scope_window is not None:
-        window, window_evidence = int(scope_window), "--scope-window (operator-named)"
-    else:
-        window, window_evidence = _cached_window(scope_model)
-    scope_full = {"window": window, "window_evidence": window_evidence,
-                  **_scope_full(repo, scope_model, window, _scope_input_limit(scope_model, window), enc)}
-    advisory_paths = [p for p in paths if p != "docs/ARCHITECTURE.md"]  # the run's exclude_paths
-    advisory_before, _ = build_touched_file_pack(repo, advisory_paths)
-    resolved, advisory_after, _ = build_advisory_changed_context(
-        repo, changed_files_text=porcelain, exclude_paths={"docs/ARCHITECTURE.md"})
-    resolved = [p for p in resolved if p != "docs/ARCHITECTURE.md"]
+    advisory_paths = list(paths)
+    resolved = parse_changed_paths_from_porcelain(porcelain)
     if sorted(resolved) != sorted(advisory_paths):
         raise MeasuredCheckoutDirty(
             f"the advisory arm resolved {resolved} from the porcelain while the index names "
             f"{advisory_paths}; the checkout is not one staged change")
-    panel_rows = _panel_rows(commit_triad_delivery())
-    api_models = [row["model"] for row in panel_rows if row["receives_pack"]]
+    advisory_manifest = _advisory_touched_manifest(repo, advisory_paths, porcelain)
     zero_parts = _zero_diff_message(repo, prefix, paths)
     zero_tokens = _measure("".join(zero_parts.values()), enc)["chars_div_4"]
     fit: dict = {
@@ -486,25 +418,19 @@ def measure(repo: pathlib.Path, *, scope_window: int | None = None) -> dict:
             "exclusion_note": note,
             "per_file": per_file,
         },
-        "scope_full": {
-            **scope_full,
-            # The touched section alone: one fragment of the input above, never the input.
-            "scope_touched": {
-                "before": _measure(scope_before, enc), "after": _measure(scope_after, enc),
-                "carrier_span_only": list(carriers), "deleted_paths": list(deleted),
-            },
-        },
-        "advisory_touched": {
-            "before": _measure(advisory_before, enc), "after": _measure(advisory_after, enc),
+        "advisory_touched_manifest": {
+            **_measure(advisory_manifest, enc),
             "paths": advisory_paths,  # both arms: the index list == the porcelain-resolved list
         },
-        "governance_prefix": {
+        "governance_context": {
             "stable_prefix_total": _measure(prefix["stable_prefix"], enc),
+            "governance_tail_total": _measure(prefix["governance_tail"], enc),
+            "manifest": prefix["manifest"],
             "parts": {
                 "checklist_section_plus_archive": _measure(prefix["checklist_section"], enc),
-                "docs/DEVELOPMENT.md": _measure(prefix["docs/DEVELOPMENT.md"], enc),
-                "docs/DESIGN.md": _measure(prefix["docs/DESIGN.md"], enc),
-                "docs/ARCHITECTURE.md": _measure(prefix["docs/ARCHITECTURE.md"], enc),
+                "tier_1_inline_rules": _measure(prefix["tier_1_inline_rules"], enc),
+                "change_class_selection": _measure(prefix["change_class_selection"], enc),
+                "navigation_maps": _measure(prefix["navigation_maps"], enc),
                 "constitutional_head_preamble_plus_BIBLE": _measure(
                     zero_parts["constitutional_head_preamble_plus_BIBLE"], enc),
             },
@@ -522,11 +448,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--repo", required=True, help="checkout whose staged change is measured")
     parser.add_argument("--json", action="store_true", help="print the full JSON report only")
-    parser.add_argument("--scope-window", type=int, default=None, metavar="N",
-                        help="size the scope input cap on this reviewer window instead of the cache-only one")
     args = parser.parse_args(argv)
     try:
-        report = measure(pathlib.Path(args.repo).resolve(), scope_window=args.scope_window)
+        report = measure(pathlib.Path(args.repo).resolve())
     except MeasuredCheckoutDirty as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 2
@@ -541,41 +465,19 @@ def main(argv: list[str] | None = None) -> int:
     for rel, m in sorted(pack["per_file"].items(), key=lambda kv: -(kv[1]["o200k"] or kv[1]["chars"])):
         flag = "CUT " if m["excluded"] else "keep"
         print(f"  {flag} {rel:40} {m['chars']:>10,} chars {m['o200k']!s:>9} o200k")
-    scope = report["scope_full"]
-    print(f"scope full input (real assembler; model {scope['model']}, window {scope['window']:,} — "
-          f"{scope['window_evidence']}; cap {scope['input_limit_chars_div_4']:,} chars/4):")
-    if scope["assembled"]:
-        for part in ("stable_prefix", "dynamic_tail", "total"):
-            m = scope[part]
-            print(f"  {part:14} {m['chars']:>10,} chars  {m['chars_div_4']:>9,} chars/4  {m['o200k']!s:>9} o200k")
-        print(f"  headroom under the cap: {scope['headroom_chars_div_4']:,} chars/4")
-    else:
-        r = scope["refusal"]
-        print(f"  NOT assembled: {r['status']} at ~{r['token_count']:,} chars/4; unassembled required "
-              f"{r['unassembled_required']}; atlas_overflowed={r['atlas_overflowed']}; omitted {r['omitted_paths']}")
-    atlas = scope["atlas"]
-    print(f"  atlas: status {atlas['status']}; selected {atlas['selected_count']} of {atlas['tracked_count']} tracked; "
-          f"atlas {atlas['atlas_tokens']} + fixed {atlas['fixed_prompt_tokens']} chars/4; "
-          f"unassembled required {atlas['unassembled_required']}")
-    for step in atlas["ladder_steps"]:
-        print(f"  ladder: {step.get('step')} tokens_after={step.get('tokens_after')} "
-              f"deficit={step.get('deficit')} diff_only_files={step.get('diff_only_files')} "
-              f"paths={step.get('paths') or step.get('diff_only_paths') or []}")
-    print(f"  ({scope['limit_note']})")
-    touched = scope["scope_touched"]
-    for arm in ("before", "after"):
-        m = touched[arm]
-        print(f"  scope touched section (sub-number of the input above) {arm:6}: {m['chars']:>10,} chars  "
-              f"{m['chars_div_4']:>9,} chars/4  {m['o200k']!s:>9} o200k")
-    print(f"  scope carrier_span_only: {touched['carrier_span_only']}; deleted: {touched['deleted_paths']}")
-    for arm in ("before", "after"):
-        m = report["advisory_touched"][arm]
-        print(f"advisory touched  {arm:6}: {m['chars']:>10,} chars  {m['chars_div_4']:>9,} chars/4  {m['o200k']!s:>9} o200k")
-    print(f"governance corpus (one checkout: {report['repo']}), per api row, per round:")
-    for name, m in report["governance_prefix"]["parts"].items():
+    m = report["advisory_touched_manifest"]
+    print(f"advisory touched manifest (bodies not inlined): {m['chars']:>10,} chars  "
+          f"{m['chars_div_4']:>9,} chars/4  {m['o200k']!s:>9} o200k")
+    print(f"governance context (one checkout: {report['repo']}), per api row, per round:")
+    for name, m in report["governance_context"]["parts"].items():
         print(f"  {name:42} {m['chars']:>10,} chars {m['o200k']!s:>9} o200k")
-    total = report["governance_prefix"]["stable_prefix_total"]
+    total = report["governance_context"]["stable_prefix_total"]
     print(f"  stable prefix total (without BIBLE head) {total['chars']:>10,} chars {total['o200k']!s:>9} o200k")
+    tail = report["governance_context"]["governance_tail_total"]
+    print(f"  change-relative governance tail          {tail['chars']:>10,} chars {tail['o200k']!s:>9} o200k")
+    for row in report["governance_context"]["manifest"]:
+        print(f"  {str(row.get('path') or '?'):42} tier {row.get('tier')} {row.get('disposition')} "
+              f"{int(row.get('chars') or 0):>9,} chars — {row.get('reason')}")
     zero = report["zero_diff_message"]
     print(f"zero-diff message ({' + '.join(zero['components'])}): "
           f"{zero['total']['chars']:,} chars  {zero['total']['chars_div_4']:,} chars/4  {zero['total']['o200k']!s} o200k")

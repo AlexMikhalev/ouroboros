@@ -159,6 +159,10 @@ def wait_for_acceptance_feedback(tools: Any, limit_ctx: Any, trace: dict,
     binding = getattr(ctx, "_task_acceptance_pending", "")
     if not binding:
         return
+    from ouroboros.acceptance_settlement import awaited_panel_has_settled
+
+    if awaited_panel_has_settled(ctx, trace):
+        return  # its verdicts already woke this turn; the next round runs, nothing settles again
     from ouroboros.loop_transport import _owner_signal_pending
 
     # A wake arriving during Main's request must reach the normal ingress drain.

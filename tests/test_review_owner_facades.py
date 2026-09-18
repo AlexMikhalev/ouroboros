@@ -101,12 +101,3 @@ def test_review_leaves_inherit_the_unlabeled_merge_class():
         assert parent_name.replace(".", "/") + ".py" not in HOT_CODE_PATHS, parent_name
         for leaf_name in leaves:
             assert leaf_name.replace(".", "/") + ".py" not in HOT_CODE_PATHS, leaf_name
-
-
-def test_advisory_leaves_are_mandatory_review_stack_context():
-    """The advisory preflight's prompt/run leaves decide what the advisory
-    gate sees, so they are force-include review-stack artifacts exactly like
-    the scope leaves (F2 close-out conformance, item 2)."""
-    from ouroboros.tools.review_context_atlas import _REVIEW_STACK_PATHS
-    assert "ouroboros/tools/preflight_review_prompt.py" in _REVIEW_STACK_PATHS
-    assert "ouroboros/tools/preflight_review_run.py" in _REVIEW_STACK_PATHS

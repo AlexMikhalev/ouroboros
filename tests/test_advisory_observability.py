@@ -97,7 +97,6 @@ def test_empty_advisory_result_is_error(monkeypatch, tmp_path):
                         ))
     monkeypatch.setattr(adv_mod, "_get_staged_diff", lambda *a, **kw: "diff")
     monkeypatch.setattr(adv_mod, "_get_changed_file_list", lambda *a, **kw: "M file.py")
-    monkeypatch.setattr(adv_mod, "build_advisory_changed_context", lambda *a, **kw: (["file.py"], "pack", []))
     monkeypatch.setattr(adv_mod, "_build_advisory_prompt", lambda *a, **kw: "prompt")
     ctx = SimpleNamespace(repo_dir=tmp_path, drive_root=tmp_path, pending_events=[], emit_progress_fn=lambda *_: None)
 
@@ -608,8 +607,8 @@ def test_advisory_context_build_failure_is_surfaced(monkeypatch, tmp_path):
     monkeypatch.setattr(adv_mod, "_get_changed_file_list", lambda *args, **kwargs: "M foo.py")
     monkeypatch.setattr(
         adv_mod,
-        "build_advisory_changed_context",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("context pack exploded")),
+        "_build_advisory_prompt",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("context assembly exploded")),
     )
 
     from types import SimpleNamespace
@@ -1098,8 +1097,6 @@ class TestLLMFallbackExtraction:
                         lambda prompt, repo_dir, ctx_, slot, model, **_: (
                             fake_run_readonly(), model,
                         ))
-        monkeypatch.setattr(self.mod, "build_advisory_changed_context",
-                            lambda *a, **kw: ([], "", set()))
         monkeypatch.setattr(self.mod, "_get_staged_diff",
                             lambda *a, **kw: "diff --git a/foo.py b/foo.py")
         monkeypatch.setattr(self.mod, "_get_changed_file_list",
@@ -1263,7 +1260,6 @@ class TestEmptyArrayIsVerifiedClean:
                                 ), model))
         monkeypatch.setattr(adv_mod, "_get_staged_diff", lambda *a, **kw: "diff")
         monkeypatch.setattr(adv_mod, "_get_changed_file_list", lambda *a, **kw: "M f.py")
-        monkeypatch.setattr(adv_mod, "build_advisory_changed_context", lambda *a, **kw: (["f.py"], "pack", []))
         monkeypatch.setattr(adv_mod, "_build_advisory_prompt", lambda *a, **kw: "prompt")
         ctx = SimpleNamespace(repo_dir=tmp_path, drive_root=tmp_path,
                               pending_events=[], emit_progress_fn=lambda *_: None)

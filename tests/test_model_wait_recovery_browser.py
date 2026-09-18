@@ -9,7 +9,7 @@ from ouroboros import model_wait, owner_mailbox
 from ouroboros.task_results import load_task_result
 from tests.test_llm_claudexor import setup as subscription_transport
 from tests.test_model_wait import live_wait as wait_fixture
-from tests.test_model_wait_browser import TASK, waiting_ui as waiting_fixture
+from tests.test_model_wait_browser import API_LANE, TASK, waiting_ui as waiting_fixture
 from tests.test_subscription_setup_browser import subscription_ui as ui_fixture, capture
 
 setup = subscription_transport
@@ -97,7 +97,7 @@ def test_fallback_local_change_discloses_task_only_and_keeps_other_roles(waiting
     waiter = page.locator('[data-wait-id="light-wait"]')
     waiter.locator('[data-wait-role]').filter(has_text="Fallback 2").wait_for()
     waiter.locator('[data-wait-change]').click()
-    waiter.locator('[data-model-role-source]').select_option("openai")
+    waiter.locator('[data-model-role-source]').select_option(API_LANE)
     waiter.locator('[data-model-role-model]').fill("replacement")
     local = waiter.locator('[data-model-local]')
     persist = waiter.locator('[data-wait-persist]')

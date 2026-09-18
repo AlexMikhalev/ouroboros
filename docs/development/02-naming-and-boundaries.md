@@ -389,7 +389,7 @@ Adding or changing a provider updates one coherent route contract:
 3. canonical tool/reasoning/image/cache intent at `llm.py`, wire projection and
    exact-route recovery in the small transport leaves;
 4. nullable pricing/settlement and truthful capability omissions;
-5. review and scope routing with sourced context-window evidence;
+5. review and scope routing with sourced context-window evidence for send sizing;
 6. direct-provider and single-provider regression tests;
 7. the route's real streamed wire recorded (redacted) into
    `tests/fixtures/llm_wire/` and replayed — a hand-written fixture is not
@@ -397,9 +397,10 @@ Adding or changing a provider updates one coherent route contract:
    `physical_stream` blob the runtime retains.
 
 Local-only installs keep their local route; unreachable shipped remote defaults
-may be cleared, explicit owner values may not. Scope authority follows BIBLE P3:
-owner-selected Max requires the applicable sourced window evidence, owner-selected
-Low records the declared skip rather than pretending a partial review occurred.
+may be cleared, explicit owner values may not. Scope runs in every context-size
+mode; window evidence governs send sizing, not review authority. Reading coverage
+is diagnostic under BIBLE P3: missing observations do not discard a received
+verdict or remove a responding reviewer from quorum.
 Current model ids and defaults belong in code/config, not here. Use
 `provider_models.ACTIVE_MODEL_SETTING_KEYS` for any new active consumer;
 `LEGACY_MODEL_SETTING_KEYS` is migration/history only, and `OUROBOROS_MODEL_HEAVY`
