@@ -15,13 +15,17 @@ This chapter owns the engineering rules that preserve the visual and interaction
   shared button, including question pointers, Project lifecycle and routing
   receipts. Spacing above/below, wrap and focus clearance belong to this one
   composition, never a global button margin or a nowrap text ancestor.
-  Question lifecycle words live once in `question_presentation.js` (pointer and
+  Question lifecycle words live once in `question_presentation.js` (Main row and
   quiz header) and their Python twin `project_dialogue.QUESTION_STATUS`; a new
   state is added to both sides in the same commit with a row in
-  `question_presentation_parity.json` (the pointer's data flow and precedence:
-  ARCHITECTURE "Chat and Projects"). Geometry and exact-question navigation are
-  exercised by `test_ui_coherence_browser.py`; answer delivery and the Main
-  answer preview by `test_ui_result_browser.py`.
+  `question_presentation_parity.json` (the row's data flow and precedence:
+  ARCHITECTURE "Chat and Projects"). The Main row's own lead for a passed
+  question lives only in `questionRow`, because Python never emits it. The row
+  is judged on a realistic burst: `web/tests/question_rows.test.js` pins the
+  line/card projection, the one-touch answer and its races; geometry at desktop
+  and phone width, exact-question navigation and reload are exercised by
+  `test_ui_coherence_browser.py`; the one-touch answer against a real server and
+  the settled line by `test_ui_result_browser.py`.
 - **A list editor** reveals the entry it just added through `ui_helpers.revealNewRow(row, field)` — the one seam for "scrolled into view, caret in the first field" — and a freshly added entry shows no error before the owner tries to save. `tests/test_available_subagents_ui_static.py` pins the seam; the `ui_browser` acceptance in `tests/test_ui_smoke_agents_panel.py` pins the behaviour.
 - **A host fact about a task is a row of that task's card**, never a standalone bubble beside it: the producer stamps the placement (`card_row` with `card_row_id`) and the browser attaches the row to the card record through one helper shared by the live branch and replay, falling back to a standalone System row only when the task has no card record in the page (mechanism: ARCHITECTURE §3 "Main rows and host-stamped card rows"). A host fact that belongs in the card but is produced without a placement fact is review debt under this rule (CHECKLISTS item 30 scores conformance); the untyped terminal host notice and the origin-addressed routing notices stay ordinary rows by design. A client-side list of row types is not the rule (`docs/development/02`, an open default behind a closed exception list).
 - **Task outcome truth** stays in `log_events.js::taskOutcomeSeverity` and `taskTerminalPhase`; `taskPresentation` is the one compact factual projection consumed by chips, live completion, history replay and child terminal presentation. Its host mirror is `project_dialogue.outcome_phase`, pinned to the browser by one shared fixture (`web/tests/fixtures/outcome_phase_parity.json`): a new axis, reason or acceptance status is added to both sides in the same commit, with a row in that fixture. The detail line under the headline comes from `taskReasonDetail` alone (precedence: ARCHITECTURE §3 "Task cards, errors and reason lines") — never from a second producer. A non-terminal diagnostic may add a timeline fact but must not promote the whole task, and an unknown event name never acquires Chat severity from `error`/`crash`/`fail` keyword matching. The Chat header reports connection, the `/api/state` activity census, the owner's own unconfirmed sends and live task cards only; a failed task status does not synthesize header attention, a toast, unread state or an owner action. Never derive header liveness from a WS frame: a typing frame is a submission receipt, and the `/api/state` census is the only inserter into the client live-activity set (contract and residuals: ARCHITECTURE §3 "Liveness census and the chat header"; enforced by `web/tests/chat_header_census.test.js`).

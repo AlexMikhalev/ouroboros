@@ -132,12 +132,14 @@ class ChatOutbound(TypedDict):
     project_chat_id: NotRequired[int]
     source_status: NotRequired[str]
     owner_wait_state: NotRequired[str]
-    # The complete Project-question pointer: question, option labels, recorded answer and wait facts.
+    # The complete Project-question row: question, labels, assumption, recommendation, answer, wait facts.
     owner_wait_resume_reason: NotRequired[str]
     wait_for_answer: NotRequired[bool]
     wait_ended_at: NotRequired[str]
     question: NotRequired[str]
     options: NotRequired[List[str]]
+    assumption: NotRequired[str]
+    recommended_index: NotRequired[int]
     answered_index: NotRequired[int]
     comment: NotRequired[str]
     task_incident: NotRequired[str]

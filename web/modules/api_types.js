@@ -281,6 +281,8 @@
  * @property {string=} wait_ended_at
  * @property {string=} question
  * @property {string[]=} options
+ * @property {string=} assumption
+ * @property {number=} recommended_index
  * @property {number=} answered_index
  * @property {string=} comment
  * @property {"chat"} type

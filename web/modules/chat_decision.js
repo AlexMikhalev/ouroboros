@@ -5,10 +5,10 @@
 // answer. Both read as a record after settlement. The routing picker
 // settles into the plain routing ack line once its dispatch is confirmed.
 import { MAX_DECISION_COMMENT, MAX_QUIZ_OPTIONS } from './api_types.js';
-import { renderRoutingAnnotation, routingOptionLabel } from './chat_activity.js';
-import { createSystemMessageAction, createSystemMessageActions } from './ui_helpers.js';
+import { bindContentButton, renderRoutingAnnotation, routingOptionLabel } from './chat_activity.js';
+import { createSystemMessageAction, createSystemMessageActions, renderProjectChip } from './ui_helpers.js';
 
-import { ANSWERABLE_QUIZ_STATES, QUIZ_LIFECYCLE, questionPresentation, questionPreview, waitFacts } from './question_presentation.js';
+import { ANSWERABLE_QUIZ_STATES, QUIZ_LIFECYCLE, questionPresentation, questionRow, waitFacts } from './question_presentation.js';
 
 const WAIT_FIELDS = ['wait_for_answer', 'wait_ended_at', 'owner_wait_state', 'owner_wait_resume_reason'];
 // The signature line after a bounded wait closed says the same thing the host notice
@@ -92,7 +92,7 @@ export function createChatDecision({
             || !block || String(block.quiz_id || '') !== String(quizId)
             || !QUIZ_LIFECYCLE.includes(block.state)) return null;
         const wait = detail.owner_wait?.quiz_id === quizId ? detail.owner_wait
-            : detail.owner_wait?.quiz_id ? { state: 'resumed' } : null;
+            : detail.owner_wait?.quiz_id && (block.wait_for_answer === true || block.wait_ended_at) ? { state: 'resumed' } : null;
         const source = { ...block, task_id: taskId, project_id: detail.project_id, ts: block.asked_at,
             ...(wait ? { owner_wait_state: wait.state || '', owner_wait_resume_reason: wait.resume_reason || '' } : {}) };
         return { ...source, ...observe(source) };
@@ -124,34 +124,84 @@ export function createChatDecision({
         return true;
     }
 
-    // The pointer paints from its row alone: history and the live delivery carry the
-    // question, option labels, the recorded answer and the wait facts (the Python
-    // producer is project_dialogue.project_question_pointer). Freshness comes from the
-    // ordinary history reconciliation and the quiz_state frame, never a poll of its own.
+    // One Main row per Project question, and its size follows the owner's attention (DESIGN
+    // "Project question row"): a card with the option buttons only while the task waits on
+    // it, one line that opens the question in every other state. The view is a pure function
+    // of the row — history, the live delivery and the activity census carry the question, the
+    // option labels, the assumption, the recommendation, the recorded answer and the wait
+    // facts (project_dialogue.project_question_pointer) — so an unchanged row writes nothing.
+    // Freshness is the ordinary history reconciliation and the quiz_state frame, never a poll.
+    const openQuestion = (row) => window.dispatchEvent(new CustomEvent('ouro:open-project', { detail: {
+        project: { id: row.project_id, name: row.project_name, chat_id: row.project_chat_id },
+        task_id: row.task_id, quiz_id: row.quiz_id,
+    } }));
+
     function updatePointer(view, frame, live = false) {
         const current = observe({ ...frame, state: frame.state || frame.quiz_state }, live);
-        // A narrower re-delivery (the activity census, a lifecycle frame) never blanks the
-        // question or the option labels a complete row already painted.
-        for (const field of ['question', 'options', 'project_name'])
+        // A narrower re-delivery (the activity census, a lifecycle frame) never blanks what a
+        // complete row already painted.
+        for (const field of ['question', 'options', 'project_name', 'assumption', 'recommended_index'])
             if (field in current && (current[field] == null || current[field] === '' || current[field]?.length === 0)) delete current[field];
         view.row = { ...view.row, ...current, quiz_state: current.state };
-        const presentation = questionPresentation(view.row);
-        const preview = questionPreview(view.row);
-        return onDomWrite(() => {
-            let changed = false;
-            const write = (node, text) => {
-                if (node.textContent !== text) { node.textContent = text; changed = true; }
-            };
-            write(view.label, presentation.status);
-            write(view.question, preview.question || 'Open the original question for its text.');
-            write(view.answer, preview.answer ? `Your answer: ${preview.answer}` : '');
-            write(view.source, `In ${view.row.project_name || 'Project'}`);
-            write(view.action, presentation.action);
-            if (view.card.dataset.state !== current.state) {
-                view.card.dataset.state = current.state; changed = true;
-            }
-            return changed;
+        const model = { ...questionRow(view.row), state: current.state, project: view.row.project_name || 'Project',
+            options: (view.row.options || []).map(String), recommended: view.row.recommended_index ?? null };
+        const signature = JSON.stringify(model);
+        if (view.signature === signature) return false;
+        view.signature = signature;
+        return onDomWrite(() => { paintPointer(view, model); return true; });
+    }
+
+    function paintPointer(view, model) {
+        const { card, bubble, time } = view;
+        const part = (name, text, tag = 'span') => {
+            const node = document.createElement(tag); node.className = `project-question-${name}`; node.textContent = text; return node;
+        };
+        // Settling removes the option button the owner just pressed: focus follows to the row.
+        const focused = card.contains?.(document.activeElement);
+        [...card.children].forEach((node) => node.remove());
+        bubble.dataset.questionMode = model.waiting ? 'card' : 'row';
+        card.dataset.state = model.state;
+        if (!model.waiting) {
+            card.setAttribute('role', 'button');
+            card.tabIndex = 0;
+            const status = part('status', '');
+            const dot = document.createElement('span');
+            dot.className = 'chat-quiz-dot';
+            status.append(dot, part('status-text', model.lead));
+            card.append(status, ...(model.detail ? [part('answer', model.detail)] : []),
+                part('preview', model.question || 'Open the original question for its text.'),
+                part('source', model.project), part('go', '↗'), ...(time ? [time] : []));
+            if (focused) card.focus?.({ preventScroll: true });
+            return;
+        }
+        card.removeAttribute('role');
+        card.removeAttribute('tabindex');
+        const question = part('question chat-quiz-question', '', 'div');
+        if (renderMarkdown) question.innerHTML = renderMarkdown(view.row.question || '');
+        else question.textContent = view.row.question || '';
+        const options = part('options chat-quiz-options', '', 'div');
+        model.options.forEach((label, index) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'chat-quiz-option';
+            const text = part('option-label chat-quiz-option-label', label);
+            if (model.recommended === index) appendRecommendedBadge(text);
+            button.append(text);
+            // Main takes a ready option only; own words, option details and the stake stay in Project.
+            button.addEventListener('click', () => submitAnswer(card,
+                { taskId: view.row.task_id, quizId: view.row.quiz_id, options: model.options }, index, '',
+                (node, state, answered) => updatePointer(view, { task_id: view.row.task_id, quiz_id: view.row.quiz_id,
+                    state, answered_index: answered, comment: node.dataset.ownerComment || '' }, true)));
+            options.append(button);
         });
+        const foot = part('foot', '', 'div');
+        foot.append(createSystemMessageActions(createSystemMessageAction({
+            label: 'Details and own answer', onClick: () => openQuestion(view.row) })), ...(time ? [time] : []));
+        const body = part('body', '', 'div');
+        body.append(question, options, foot);
+        card.append(renderProjectChip({ name: model.project, status: questionPresentation(view.row).status,
+            onClick: () => openQuestion(view.row) }), body);
+        if (enhanceMarkdown && renderMarkdown) enhanceMarkdown(question);
     }
 
     function buildQuestionPointer(msg) {
@@ -163,23 +213,14 @@ export function createChatDecision({
         card.className = 'project-question-pointer';
         card.dataset.taskId = String(msg.task_id);
         card.dataset.quizId = String(msg.quiz_id);
-        const element = (name) => {
-            const node = document.createElement('div'); node.className = `project-question-${name}`; return node;
-        };
-        const view = { row: { ...msg }, card, label: element('status'), question: element('preview'),
-            answer: element('answer'), source: element('source') };
-        view.action = createSystemMessageAction({ label: 'View question', onClick: () => {
-            window.dispatchEvent(new CustomEvent('ouro:open-project', { detail: {
-                project: { id: view.row.project_id, name: view.row.project_name, chat_id: view.row.project_chat_id },
-                task_id: view.row.task_id, quiz_id: view.row.quiz_id,
-            } }));
-        } });
-        card.append(view.question, view.label, view.answer, view.source, createSystemMessageActions(view.action));
         const bubble = frameNode(msg, card);
         bubble.classList.remove('assistant');
-        bubble.classList.add('system');
-        const sender = bubble.querySelector('.sender');
-        if (sender) sender.textContent = 'System';
+        bubble.classList.add('project-question');
+        bubble.querySelector('.sender')?.remove();
+        const view = { row: { ...msg }, card, bubble, time: bubble.querySelector('.msg-time') };
+        // The whole line is one control whose text stays selectable; inside the waiting card
+        // the nested buttons own their clicks, and the rest of the card does nothing.
+        bindContentButton(card, () => { if (bubble.dataset.questionMode === 'row') openQuestion(view.row); });
         pointerViews.set(key, view);
         updatePointer(view, msg);
         return bubble;
@@ -242,7 +283,7 @@ export function createChatDecision({
     }
 
 
-    async function submitAnswer(card, quiz, index, comment) {
+    async function submitAnswer(card, quiz, index, comment, settle = setCardState) {
         if (card.dataset.pending === '1') return;
         card.dataset.pending = '1';
         const text = String(comment || '');
@@ -283,7 +324,7 @@ export function createChatDecision({
                 }
                 if (recorded) card.dataset.ownerComment = recorded;
                 else delete card.dataset.ownerComment;
-                setCardState(card, 'answered', answered);
+                settle(card, 'answered', answered);
                 // A late answer is recorded like any other; where it went is the
                 // host's fact (`forwarded`), so the card says so instead of implying
                 // the finished task will act on it.
@@ -304,7 +345,7 @@ export function createChatDecision({
                 // the local draft must not survive as the displayed record.
                 if (typeof body.comment === 'string' && body.comment) card.dataset.ownerComment = body.comment;
                 else delete card.dataset.ownerComment;
-                setCardState(card, body.state, answered);
+                settle(card, body.state, answered);
                 showToast(body.state === 'answered'
                     ? 'Already answered.' : 'This question is no longer open.', 'error');
                 return;
@@ -781,11 +822,6 @@ export function createChatDecision({
     }
 
     return { buildQuizCard, buildQuestionPointer, appendQuestionPointer, readQuestion, revealQuestion, setCardState, applyQuizStateFrame, renderRoutingDecision,
-        resetViews(rows = []) {
-            const keep = new Set(rows.map((row) => questionKey(row.task_id, row.quiz_id || row.quiz?.quiz_id)));
-            for (const key of observations.keys()) if (!keep.has(key)) observations.delete(key);
-            quizViews.clear(); pointerViews.clear();
-        },
         releaseViews(root) {
             for (const [key, card] of quizViews) if (root.contains(card)) quizViews.delete(key);
             for (const [key, view] of pointerViews) if (root.contains(view.card)) pointerViews.delete(key);

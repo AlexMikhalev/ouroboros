@@ -688,7 +688,7 @@ def _make_thread_filter(
         if thread_id != 1 or not isinstance(entry, dict) or entry.get("type") not in {"quiz", "quiz_answer"}:
             return 0
         quiz = entry.get("quiz")
-        if not isinstance(quiz, dict) or quiz.get("wait_for_answer") is not True:
+        if not isinstance(quiz, dict):
             return 0
         chat = bound_room_chat(bindings_by_task, {"task_id": entry.get("task_id")}) or _stored_chat_id(entry.get("chat_id"), 1)
         return chat if chat in project_chat_ids else 0

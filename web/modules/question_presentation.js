@@ -18,6 +18,8 @@ const STATUS = {
 // answered/superseded — turns a card into a pure record). One JS home for both lists.
 export const QUIZ_LIFECYCLE = ['open', 'answered', 'expired_terminal', 'superseded'];
 export const ANSWERABLE_QUIZ_STATES = ['open', 'expired_terminal'];
+// A passed optional question leads with the path the task took instead of a bare status.
+const CONTINUING = 'Unanswered · continuing with:';
 const PREVIEW_CHARS = 280;
 const PREVIEW_MARK = '… (preview; open for full text)';
 
@@ -53,4 +55,19 @@ export function questionPreview(row = {}) {
     const answer = (row.quiz_state || row.state) === 'answered'
         ? [selected, row.comment].filter(Boolean).map(excerpt).join(' — ') : '';
     return { question: excerpt(row.question), answer };
+}
+
+// The Main row of one Project question: status words, then the owner's answer or the
+// assumption the task continues under, then the question as context. `waiting` is the one
+// state that grows the row into a card with the option buttons.
+export function questionRow(row = {}) {
+    const state = row.quiz_state || row.state || 'unknown';
+    const { answer, question } = questionPreview(row);
+    const assumption = state === 'open' ? excerpt(row.assumption) : '';
+    return {
+        waiting: state === 'open' && waitFacts(row).waiting,
+        lead: answer ? `${STATUS.answered}:` : assumption ? CONTINUING : questionPresentation(row).status,
+        detail: answer || assumption,
+        question,
+    };
 }

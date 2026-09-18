@@ -343,8 +343,12 @@ def test_mcp_transport_fields_use_named_shared_controls_without_changing_drafts(
 
 
 @pytest.mark.parametrize('width,height', [(1100, 722), (390, 844)])
-def test_question_pointer_composition_preview_navigation_and_reload(subscription_ui, width, height):
-    """Real SPA readers and WebSocket handlers; disposable source data, no owner writes."""
+def test_question_rows_burst_answer_from_main_navigation_and_reload(subscription_ui, width, height):
+    """Real SPA readers and WebSocket handlers; disposable source data, no owner writes.
+
+    A realistic burst: one task asked three questions in a row and another question of the same
+    Project was passed under its assumption. Every settled or passed question is one line; only
+    the question the task waits on is a card, and one touch on it answers from Main."""
     from urllib.parse import parse_qs
 
     ui = subscription_ui
@@ -352,83 +356,121 @@ def test_question_pointer_composition_preview_navigation_and_reload(subscription
     page.set_viewport_size({'width': width, 'height': height})
     project = {'id': 'question-proof', 'name': 'Evidence project with a deliberately long descriptive name',
                'chat_id': 42, 'lifecycle': 'active', 'visible_revision': 0}
-    block = {'quiz_id': 'exact-question', 'state': 'open', 'question': 'Which evidence should we retain?',
-             'options': ['Keep the primary source', 'Use the replication'],
-             'option_details': ['Preserve the full original measurements.', 'Compare the independent run.'],
-             'wait_for_answer': True, 'asked_at': '2026-09-16T00:00:00Z'}
-    wait = {'quiz_id': block['quiz_id'], 'state': 'waiting'}
-    sockets = []
-    page.route_web_socket('**/ws', lambda ws: (sockets.append(ws), ws.send(json.dumps({'type': 'heartbeat'}))))
+    blocks = {
+        'exact-question': {'state': 'answered', 'question': 'Which evidence should we retain?', 'answered_index': 0,
+            'options': ['Keep the primary source', 'Use the replication'], 'wait_for_answer': True,
+            'option_details': ['Preserve the full original measurements.', 'Compare the independent run.'],
+            'comment': 'Retain the provenance and the original source.', 'asked_at': '2026-09-16T00:00:00Z'},
+        'second': {'state': 'answered', 'question': 'Second of three: publish the interim table as well?', 'answered_index': 1,
+            'options': ['Publish it now', 'Hold it until the replication lands'], 'wait_for_answer': True,
+            'asked_at': '2026-09-16T00:01:00Z'},
+        'passed': {'state': 'open', 'question': 'Which figure format keeps the appendix small?', 'options': ['PNG', 'WebP'],
+            'assumption': 'WebP at quality 82', 'recommended_index': 1, 'asked_at': '2026-09-16T00:02:00Z'},
+        'waiting': {'state': 'open', 'wait_for_answer': True, 'recommended_index': 0, 'asked_at': '2026-09-16T00:03:00Z',
+            'question': 'Third of three. The **licence** of the external dataset forbids redistribution, so the archive '
+                        'can either ship without it and link to the source, or wait for written permission, which the '
+                        'maintainers usually grant within a week. Which way do we go?',
+            'options': ['Ship without it and link the source', 'Wait for written permission']},
+    }
+    wait = {'quiz_id': 'waiting', 'state': 'waiting'}
+    decisions = []
+    page.route_web_socket('**/ws', lambda ws: ws.send(json.dumps({'type': 'heartbeat'})))
     page.route('**/api/projects', lambda r: r.fulfill(json={'projects': [project]}))
     page.route('**/api/state', lambda r: r.fulfill(json={'supervisor_ready': True,
         'active_chat_activities': [], 'projects': [project], 'project_chat_ids': [42]}))
-    page.route('**/api/tasks/proof-task', lambda r: r.fulfill(json={'task_id': 'proof-task',
-        'project_id': project['id'], 'owner_quiz': {block['quiz_id']: block}, 'owner_wait': wait}))
+    page.route('**/api/tasks/proof-task', lambda r: r.fulfill(json={'task_id': 'proof-task', 'project_id': project['id'],
+        'owner_quiz': {qid: {'quiz_id': qid, **block} for qid, block in blocks.items()}, 'owner_wait': wait}))
+
+    def decide(route):
+        sent = route.request.post_data_json
+        decisions.append(sent)
+        blocks['waiting'].update(state='answered', answered_index=sent['option_index'])
+        wait['state'] = 'resumed'
+        route.fulfill(json={'ok': True, 'state': 'answered', 'answered_index': sent['option_index']})
+    page.route('**/api/decisions', decide)
 
     def history(route):
         chat_id = parse_qs(urlparse(route.request.url).query).get('chat_id', ['1'])[0]
         if chat_id == '42':
-            # Source question is outside this window: exact navigation must read detail.
+            # Source questions are outside this window: exact navigation must read detail.
             rows = [{'role': 'assistant', 'text': 'Later retained project message.', 'ts': '2026-09-16T01:00:00Z'}]
         else:
-            # The row the Python producer emits: complete for display, no detail read needed.
+            # The rows the Python producer emits: complete for display, no detail read needed.
             rows = [{'role': 'system', 'system_type': 'project_question_pointer', 'task_id': 'proof-task',
-                'quiz_id': block['quiz_id'], 'quiz_state': block['state'], 'project_id': project['id'],
-                'project_name': project['name'], 'project_chat_id': 42, 'owner_wait_state': wait['state'],
-                'question': block['question'], 'options': block['options'], 'ts': block['asked_at'],
-                **{key: block[key] for key in ('wait_for_answer', 'wait_ended_at', 'answered_index', 'comment') if key in block}}]
+                'quiz_id': qid, 'quiz_state': block['state'], 'project_id': project['id'],
+                'project_name': project['name'], 'project_chat_id': 42, 'ts': block['asked_at'],
+                **({'owner_wait_state': wait['state']} if qid == wait['quiz_id'] else {}),
+                **{key: block[key] for key in ('question', 'options', 'assumption', 'recommended_index',
+                                               'wait_for_answer', 'answered_index', 'comment') if key in block}}
+                for qid, block in blocks.items()]
         route.fulfill(json={'messages': rows, 'progress': []})
     page.route('**/api/chat/history*', history)
     open_app(ui)
-    pointer = page.locator('#chat-messages .project-question-pointer')
-    pointer.get_by_text(block['question'], exact=True).wait_for()
-    pointer.get_by_text('Waiting for your answer', exact=True).wait_for()
-    action = pointer.get_by_role('button', name='Answer question', exact=True)
-    action.focus()
+    rows = page.locator('#chat-messages .chat-bubble.project-question')
+    rows.nth(3).wait_for()
+    assert rows.evaluate_all("els => els.map(el => el.dataset.questionMode)") == ['row', 'row', 'row', 'card']
+    comment = blocks['exact-question']['comment']
+    first = rows.nth(0).locator('.project-question-pointer')
+    first.get_by_text('You answered:', exact=True).wait_for()
+    first.get_by_text('Keep the primary source — ' + comment, exact=True).wait_for()
+    rows.nth(2).get_by_text('Unanswered · continuing with:', exact=True).wait_for()
+    rows.nth(2).get_by_text('WebP at quality 82', exact=True).wait_for()
+    card = rows.nth(3)
+    card.get_by_text('Waiting for your answer', exact=True).wait_for()
+    assert 'usually grant within a week' in card.locator('.chat-quiz-question').inner_text(), 'the waiting card shows the whole question'
+    assert card.locator('.chat-quiz-question strong').inner_text() == 'licence'
+    assert card.locator('.chat-quiz-option').count() == 2 and card.locator('.chat-quiz-comment').count() == 0
+    assert card.locator('.chat-quiz-option').nth(0).locator('.chat-quiz-option-recommended').count() == 1
+    geometry = page.evaluate("""() => {
+        const rows=[...document.querySelectorAll('#chat-messages .chat-bubble.project-question')];
+        const box=(el)=>el.getBoundingClientRect();
+        const lines=rows.filter(el=>el.dataset.questionMode==='row');
+        const source=rows[1].querySelector('.project-question-source'), go=rows[1].querySelector('.project-question-go');
+        return {heights: rows.map(el=>Math.round(box(el).height)),
+            burst: Math.round(box(lines[2]).bottom-box(lines[0]).top),
+            overflow: Math.max(...rows.map(el=>el.scrollWidth-el.clientWidth)),
+            page: document.documentElement.scrollWidth-innerWidth,
+            right: Math.max(...rows.map(el=>box(el).right)), viewport: innerWidth,
+            sourceCut: source.scrollWidth>source.clientWidth, arrow: box(go).width>0 && box(go).right<=innerWidth,
+            previewOneLine: rows.slice(0,3).every(el=>box(el.querySelector('.project-question-preview')).height<28),
+            statusSizes: [...new Set(rows.map(el=>getComputedStyle(el.querySelector('.project-question-status, .chat-live-project-status')).fontSize))]};
+    }""")
+    print(json.dumps({'question_rows_geometry': geometry, 'viewport': [width, height]}))
+    setup_browser.capture(page, f'question-rows-burst-{width}')
+    assert geometry['overflow'] <= 1 and geometry['page'] <= 0 and geometry['right'] <= width, geometry
+    assert geometry['previewOneLine'] and geometry['arrow'] and geometry['sourceCut'], geometry
+    assert geometry['statusSizes'] == ['12px'], geometry
+    # One line on a wide column; status and answer over question, project and time on a phone.
+    assert geometry['heights'][1] <= (48 if width >= 980 else 90), geometry
+    assert geometry['burst'] <= (150 if width >= 980 else 300), geometry
+    # The line is one keyboard control with a visible ring.
+    first.focus()
     # WebKit on macOS follows native keyboard navigation: Option+Tab includes
     # buttons even when the OS's full-keyboard-access preference is disabled.
     page.keyboard.press('Alt+Tab')
     page.keyboard.press('Alt+Shift+Tab')
-    assert action.evaluate('el=>el===document.activeElement'), page.evaluate('document.activeElement.outerHTML')
-    assert action.evaluate("el=>getComputedStyle(el).outlineStyle") != 'none'
-    metrics = pointer.evaluate("""el => {
-        const row=el.querySelector('.system-message-actions'), b=row.querySelector('button');
-        const r=row.getBoundingClientRect(), a=b.getBoundingClientRect();
-        return {above:a.top-row.previousElementSibling.getBoundingClientRect().bottom,
-            below:r.bottom-a.bottom, overflow:el.scrollWidth-el.clientWidth,
-            wrap:getComputedStyle(row).flexWrap, buttonRight:a.right, viewport:innerWidth};
-    }""")
-    assert metrics['above'] >= 12 and metrics['below'] >= 12, metrics
-    assert metrics['overflow'] <= 1 and metrics['buttonRight'] <= width, metrics
-    assert metrics['wrap'] == 'wrap'
-    print(json.dumps({'question_geometry': metrics, 'viewport': [width, height]}))
-    setup_browser.capture(page, f'question-waiting-focus-{width}')
-    wait['state'] = 'resumed'
-    block.pop('wait_for_answer'); block['wait_ended_at'] = '2026-09-16T00:01:00Z'
-    # The production timeout frame carries only wait_for_answer:false.
-    for ws in sockets:
-        ws.send(json.dumps({'type': 'quiz_state', 'task_id': 'proof-task', 'quiz_id': block['quiz_id'],
-                           'state': 'open', 'wait_for_answer': False}))
-    pointer.get_by_text('Unanswered · the task continued; an answer is still accepted', exact=True).wait_for()
-    comment = 'Retain the provenance and the original source.'
-    block.update(state='answered', answered_index=0, comment=comment)
-    for ws in sockets:
-        ws.send(json.dumps({'type': 'quiz_state', 'task_id': 'proof-task', 'quiz_id': block['quiz_id'],
-                           'state': 'answered', 'answered_index': 0, 'comment': comment}))
-    pointer.get_by_text('You answered', exact=True).wait_for()
-    pointer.get_by_text('Your answer: Keep the primary source — ' + comment, exact=True).wait_for()
-    setup_browser.capture(page, f'question-answered-preview-{width}')
-    pointer.get_by_role('button', name='View answer', exact=True).click()
+    assert first.evaluate('el=>el===document.activeElement'), page.evaluate('document.activeElement.outerHTML')
+    assert first.evaluate("el=>getComputedStyle(el).outlineStyle") != 'none'
+    # One touch answers the waiting question from Main: one request, and the card folds into a line.
+    card.locator('.chat-quiz-option').nth(1).click()
+    page.locator('#chat-messages .chat-bubble.project-question[data-question-mode="row"]').nth(3).wait_for()
+    rows.nth(3).locator('.project-question-answer').get_by_text('Wait for written permission', exact=True).wait_for()
+    assert rows.nth(3).locator('.chat-quiz-option').count() == 0
+    assert [(sent['decision_id'], sent['option_index'], 'comment' in sent) for sent in decisions] == [
+        ('quiz:proof-task:waiting', 1, False)]
+    setup_browser.capture(page, f'question-rows-answered-{width}')
+    # A line opens its exact question in the Project, with the details Main never shows.
+    first.click()
     quiz = page.locator('.chat-quiz-card[data-task-id="proof-task"][data-quiz-id="exact-question"]')
     quiz.get_by_text('Preserve the full original measurements.', exact=True).wait_for()
     quiz.get_by_text("Owner's answer: " + comment, exact=True).wait_for()
     assert quiz.locator('.chat-quiz-option.chosen').inner_text().startswith('Keep the primary source')
     assert quiz.locator('.chat-quiz-comment').count() == 0
-    assert quiz.locator('.chat-quiz-wait-ended').count() == 0
     setup_browser.capture(page, f'question-exact-navigation-{width}')
     page.reload()
-    pointer.get_by_text('Your answer: Keep the primary source — ' + comment, exact=True).wait_for()
-    pointer.get_by_role('button', name='View answer', exact=True).click()
+    rows.nth(3).get_by_text('Wait for written permission', exact=True).wait_for()
+    assert rows.evaluate_all("els => els.map(el => el.dataset.questionMode)") == ['row', 'row', 'row', 'row']
+    first.click()
     quiz.get_by_text("Owner's answer: " + comment, exact=True).wait_for()
     setup_browser.capture(page, f'question-reloaded-{width}')
-    assert not [path for path, _ in ui['posts'] if path == '/api/decisions']
+    assert len(decisions) == 1, 'a reload and a navigation never answer anything'
