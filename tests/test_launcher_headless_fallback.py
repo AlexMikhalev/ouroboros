@@ -521,7 +521,10 @@ def test_headless_first_run_onboarding_opens_no_window(monkeypatch, capsys):
     # passing test proves the headless path never touches webview.
     monkeypatch.setitem(sys.modules, "webview", None)
 
-    outcome = launcher_onboarding.present_first_run_onboarding({}, 8765, headless=True)
+    outcome = launcher_onboarding.present_first_run_onboarding(
+        {}, 8765, headless=True,
+        open_external_url=lambda url: pytest.fail("headless setup opened a link"),
+    )
 
     assert outcome == {"saved": False, "restart_required": False}
     assert "browser" in capsys.readouterr().out

@@ -182,17 +182,22 @@ def test_setup_window_loads_the_live_onboarding_page(monkeypatch):
 
     created, _fake = _install_fake_webview(monkeypatch)
 
-    outcome = launcher_onboarding.present_first_run_onboarding({}, 8899)
+    opened = []
+    outcome = launcher_onboarding.present_first_run_onboarding(
+        {}, 8899, open_external_url=lambda url: opened.append(url) or {"ok": True},
+    )
 
     assert created["url"] == "http://127.0.0.1:8899/onboarding"
     assert created.get("html") is None
     assert created["started"] is True
-    # Window LIFECYCLE ONLY. The bridge is not a settings authority any more:
+    # Window lifecycle and external links, but no settings authority:
     # completion is the same atomic endpoint a browser owner posts to, so a
     # bridge method able to write settings.json would be a live authority with
     # no caller and no audit.
     api = created["js_api"]
     assert callable(getattr(api, "onboarding_finished", None))
+    assert api.open_external_url("https://example.test/signin") == {"ok": True}
+    assert opened == ["https://example.test/signin"]
     assert not hasattr(api, "save_wizard")
     assert not hasattr(api, "claude_code_status")
     assert not hasattr(api, "install_claude_code")
@@ -208,7 +213,9 @@ def test_closing_the_setup_window_without_saving_is_non_fatal(monkeypatch):
 
     _install_fake_webview(monkeypatch)  # start() returns without any bridge call
 
-    assert launcher_onboarding.present_first_run_onboarding({}, 8765)["saved"] is False
+    assert launcher_onboarding.present_first_run_onboarding(
+        {}, 8765, open_external_url=launcher._open_external_url,
+    )["saved"] is False
 
     src = inspect.getsource(launcher.main)
     cancel_at = src.index('if not onboarding["saved"]')
@@ -229,7 +236,9 @@ def test_completion_reporting_restart_required_recycles_the_managed_server(monke
 
     _created, fake = _install_fake_webview(monkeypatch, on_start=drive)
 
-    outcome = launcher_onboarding.present_first_run_onboarding({}, 8765)
+    outcome = launcher_onboarding.present_first_run_onboarding(
+        {}, 8765, open_external_url=launcher._open_external_url,
+    )
 
     assert outcome == {"saved": True, "restart_required": True}
     assert all(window.destroyed for window in fake.windows)
@@ -275,9 +284,11 @@ def test_the_desktop_setup_window_cannot_write_settings_at_all(monkeypatch, tmp_
         api.onboarding_finished({"ok": True, "restart_required": True})
 
     _created, _fake = _install_fake_webview(monkeypatch, on_start=drive)
-    outcome = launcher_onboarding.present_first_run_onboarding({}, 8765)
+    outcome = launcher_onboarding.present_first_run_onboarding(
+        {}, 8765, open_external_url=lambda url: {"ok": False},
+    )
 
-    assert seen["methods"] == ["onboarding_finished"]
+    assert seen["methods"] == ["onboarding_finished", "open_external_url"]
     assert outcome == {"saved": True, "restart_required": True}
     # The window reported completion, and the LAUNCHER still wrote nothing: the
     # bytes on disk (if any) came from the endpoint the page posted to.
@@ -308,7 +319,9 @@ def test_the_launcher_never_authors_settings_during_first_run(monkeypatch, tmp_p
         assert not hasattr(created["js_api"], "save_wizard")
 
     _install_fake_webview(monkeypatch, on_start=drive)
-    outcome = launcher_onboarding.present_first_run_onboarding({}, 8765)
+    outcome = launcher_onboarding.present_first_run_onboarding(
+        {}, 8765, open_external_url=lambda url: {"ok": False},
+    )
 
     assert outcome["saved"] is False
     assert not (tmp_path / "settings.json").exists()
