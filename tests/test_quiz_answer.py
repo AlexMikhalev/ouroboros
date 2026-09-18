@@ -429,6 +429,7 @@ def test_escalate_invalid_payload_is_typed(tmp_path):
     assert out.startswith("⚠️ QUIZ_OPTIONS_INVALID")
     out = _escalate(ctx, question="?", options=["a", "b"], assumption="")
     assert out.startswith("⚠️ QUIZ_ASSUMPTION_REQUIRED")
+    assert "what you do meanwhile" in out  # the refusal names its own repair
 
 
 
