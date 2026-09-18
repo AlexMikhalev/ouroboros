@@ -44,6 +44,7 @@ def auto_start_local_model(settings: dict) -> None:
             n_gpu_layers=n_gpu_layers,
             n_ctx=n_ctx,
             chat_format=chat_format,
+            source=source, filename=filename,
         )
         log.info("Local model auto-started successfully")
     except Exception as exc:

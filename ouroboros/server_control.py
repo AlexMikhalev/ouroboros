@@ -36,7 +36,8 @@ def restart_current_process(
         )
     except Exception:
         desired_host = str(host)
-    env["OUROBOROS_SERVER_HOST"] = desired_host
+    # Keep real env/argv overrides, but do not turn a Settings-derived host into
+    # an env pin: the next owner save must still apply on the following restart.
     env["OUROBOROS_SERVER_PORT"] = str(port)
     env.pop("OUROBOROS_MANAGED_BY_LAUNCHER", None)
     if owner_initiated:

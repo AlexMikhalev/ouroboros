@@ -576,7 +576,8 @@ async def api_local_model_start(request: Request) -> JSONResponse:
         # Download can be slow, run in thread to not block the async event loop
         model_path = await asyncio.to_thread(mgr.download_model, source, filename)
 
-        mgr.start_server(model_path, port=port, n_gpu_layers=n_gpu_layers, n_ctx=n_ctx, chat_format=chat_format)
+        mgr.start_server(model_path, port=port, n_gpu_layers=n_gpu_layers, n_ctx=n_ctx,
+                         chat_format=chat_format, source=source, filename=filename)
         return JSONResponse({"status": "starting", "model_path": model_path})
     except Exception as e:
         return json_exception(e)
@@ -600,7 +601,7 @@ async def api_local_model_status(request: Request) -> JSONResponse:
         # on the very first poll — before the user clicks Start.
         if mgr._runtime_status == "unknown" and mgr.get_status() == "offline":
             await asyncio.to_thread(mgr.check_runtime)
-        return JSONResponse(mgr.status_dict())
+        return JSONResponse({**mgr.status_dict(), "settings_application": mgr.settings_application(load_settings())})
     except Exception as e:
         return JSONResponse({"status": "error", "error": str(e)})
 

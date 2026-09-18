@@ -121,6 +121,8 @@ class RunCustody:
     model: str = ""
     # Requested pin (`credentialProfileId`); '' = automatic; applied half = final-attempt telemetry.
     profile_id: str = ""
+    effort: Optional[str] = None
+    processing_preference: Optional[str] = None
     project_id: str = ""
     project_owned: bool = False
     # #362: a stable user-target registration outlives any single run.
@@ -229,12 +231,19 @@ def emit(drive_root: Any, kind: str, payload: Dict[str, Any]) -> bool:
     answer.
     """
     try:
-        written = bool(append_jsonl(event_log_path(drive_root), {"ts": utc_now_iso(), "type": kind, **payload}))
+        event = {"ts": utc_now_iso(), "type": kind, **payload}
+        written = bool(append_jsonl(event_log_path(drive_root), event))
     except Exception:
         log.warning("delegate custody row could not be written (%s)", kind, exc_info=True)
         return False
     if not written:
         log.warning("delegate custody row was rejected by the event log (%s)", kind)
+    elif kind == START_FAILED:
+        from ouroboros.subagent_history import record_session_start_failure
+        try:
+            record_session_start_failure(drive_root, event)
+        except Exception:
+            log.debug("Start history unavailable", exc_info=True)
     return written
 
 def daemon_says_absent(exc: Any) -> bool:
@@ -362,6 +371,7 @@ def _iter_rows(path: pathlib.Path, tail_bytes: Optional[int] = None) -> Iterator
 
 
 from ouroboros.delegate_registration_policy import (
+    STARTED_OPTION_FIELDS as _STARTED_OPTION_FIELDS,
     STARTED_FIRST_WINS_FACTS as _STARTED_FIRST_WINS_FACTS,
     STARTED_PROGRESS_FLAGS as _STARTED_PROGRESS_FLAGS,
     STARTED_STR_FIELDS as _STARTED_STR_FIELDS,
@@ -396,6 +406,9 @@ def _merge_started_into(entry: RunCustody, previous: RunCustody) -> None:
         prior = getattr(previous, attr)
         if prior:
             setattr(entry, attr, prior)
+    for attr in _STARTED_OPTION_FIELDS:
+        if getattr(previous, attr) is not None:
+            setattr(entry, attr, getattr(previous, attr))
     if previous.work_order_source_request:
         entry.work_order_source_request = dict(previous.work_order_source_request)
     for start, end in previous.verified_source_ranges:
@@ -425,6 +438,7 @@ def _apply(state: Dict[str, RunCustody], row: Dict[str, Any]) -> None:
                 dict(source_request) if isinstance(source_request, dict) else {}
             ),
             **{attr: str(row.get(key) or "") for attr, key in _STARTED_STR_FIELDS},
+            **{key: row[key] for key in _STARTED_OPTION_FIELDS if isinstance(row.get(key), str)},
         )
         entry.category = entry.category or "subagent"
         entry.source = entry.source or "delegated_subagent"
@@ -811,6 +825,9 @@ def record_started(drive_root: Any, custody: RunCustody,
     for attr in ("access", "mode", "isolation"):
         if shape and attr in shape:
             setattr(custody, attr, str(shape.get(attr) or ""))
+    for attr in _STARTED_OPTION_FIELDS:
+        if shape and isinstance(shape.get(attr), str):
+            setattr(custody, attr, shape[attr])
     if shape and "delegated" in shape:
         custody.delegated = shape.get("delegated") is True
     previous = _CUSTODY.get(custody.run_id)
@@ -826,6 +843,7 @@ def record_started(drive_root: Any, custody: RunCustody,
         "work_order_source_request": custody.work_order_source_request or {},
         **{key: getattr(custody, attr) for attr, key in _STARTED_STR_FIELDS},
         **(shape or {}),
+        **{key: getattr(custody, key) for key in _STARTED_OPTION_FIELDS if getattr(custody, key) is not None},
     })
 
 
@@ -1035,6 +1053,11 @@ def settle_run(drive_root: Any, gateway: Any, custody: RunCustody, detail: Dict[
             if custody.settled:
                 _retire_project_locked(drive_root, gateway, custody)
     if custody.settled:
+        from ouroboros.subagent_history import record_session_execution
+        try:
+            record_session_execution(drive_root, custody, detail, observed)
+        except Exception:
+            log.debug("Session history unavailable", exc_info=True)
         resolve_containment_fault(drive_root, custody, "settled_terminal")
     # CONSUMPTION BEFORE SETTLEMENT is a fact, not a gate; asking before staging
     # now would answer "no omission" for every first settlement (the render-

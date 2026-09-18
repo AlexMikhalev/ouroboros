@@ -221,7 +221,8 @@ export function rowStatus(row, state) {
 const ROUTE_HINT = 'Choose how this subagent runs: an API model or an agent session.';
 
 function executionFor(snapshot, subagentId) {
-    const receipt = snapshot?.subagent_last_delegation;
+    const history = snapshot?.subagent_last_delegation;
+    const receipt = history?.latest_by_subagent?.[subagentId] || history;
     if (!receipt || typeof receipt !== 'object') return null;
     return String(receipt.selected_subagent_id || '') === String(subagentId || '')
         ? receipt : null;
@@ -238,13 +239,25 @@ export function rowMeta(row, state, errors) {
     // An empty draft (`openai::` with no model yet) is still an invitation.
     if (!String(row.route?.target_id || '').trim()
         || (!session && !routeModelFields(row.route).model.trim())) return { text: ROUTE_HINT, tone: '' };
-    const evidence = describeExecutionEvidence(executionFor(state.snapshot, row.subagent_id));
+    const receipt = executionFor(state.snapshot, row.subagent_id);
+    const evidence = describeExecutionEvidence(receipt);
+    const identity = receipt?.identity;
+    const sameRoute = identity && identity.kind === row.route.kind
+        && identity.target_id === row.route.target_id
+        && identity.credential_profile_id === String(routePin(row.route) || '')
+        && (!session || identity.access === String(row.access || 'full'))
+        && identity.effort === String(row.effort || '')
+        && identity.processing_preference === String(row.processing_preference || state.processingPreference || '');
+    const identityComplete = identity && ['kind', 'target_id', 'credential_profile_id', 'effort',
+        'processing_preference', ...(session ? ['access'] : [])].every((key) => typeof identity[key] === 'string');
+    const historyLabel = identityComplete ? (sameRoute ? 'Last run' : 'Earlier settings')
+        : identity ? 'Last actual run (settings not fully reported)' : 'Last actual run';
     // The exact stored spelling is disclosed here, where it informs, and never
     // in a placeholder, where it would instruct (docs/DESIGN.md §7). A session
     // target already reads as harness plus model in its own controls.
     const saved = session ? '' : `stored as ${String(row.route.target_id).trim()}`;
     return {
-        text: [saved, evidence ? `Last actual run: ${evidence}` : ''].filter(Boolean).join(' · '),
-        tone: '',
+        text: [saved, evidence ? `${historyLabel}: ${evidence}` : ''].filter(Boolean).join(' · '),
+        tone: '', ...(evidence ? { history: true } : {}),
     };
 }

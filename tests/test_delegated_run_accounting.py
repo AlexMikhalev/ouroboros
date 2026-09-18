@@ -194,7 +194,7 @@ def test_d29_absent_authroute_records_empty_never_invented(tmp_path, monkeypatch
 def test_final_attempt_identity_survives_settlement_and_parent_delivery(tmp_path, monkeypatch, observed):
     from ouroboros.subagents import subagent_last_delegation
 
-    monkeypatch.setattr("ouroboros.config.DATA_DIR", tmp_path / "canonical-data")
+    monkeypatch.setattr("ouroboros.config.DATA_DIR", tmp_path)
     payload, ledger, event = _settled_run(tmp_path, monkeypatch, {
         "state": "succeeded", "spendUsd": 0.0, "model": "request-echo",
         "authRoute": {"profileId": "old-profile"}, "effectiveAccess": "readonly",
@@ -263,7 +263,7 @@ def _settled_run(tmp_path, monkeypatch, summary, observed=None):
     monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _Stub())
     delegate._CUSTODY.clear()
     delegate._CUSTODY["run-1"] = delegate._RunCustody(
-        task_id="t-a", route_id="r", model="m", project_id="p", project_owned=True)
+        run_id="run-1", task_id="t-a", route_id="r", model="m", project_id="p", project_owned=True)
     ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path)
     ctx.task_id = "t-a"
     ctx.task_metadata = {"root_task_id": "t-a"}
@@ -298,7 +298,7 @@ def _waited_run(tmp_path, monkeypatch, summary, requested_model="m", observed=No
     monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _Stub())
     delegate._CUSTODY.clear()
     delegate._CUSTODY["run-1"] = delegate._RunCustody(
-        task_id="t-a", route_id="r", model=requested_model,
+        run_id="run-1", task_id="t-a", route_id="r", model=requested_model,
         project_id="p", project_owned=False)
     ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path)
     ctx.task_id = "t-a"
@@ -352,7 +352,7 @@ def test_the_last_delegation_projection_is_written_at_the_settle_seam(tmp_path, 
 
     # Isolated data plane: the projection is keyed off config.DATA_DIR, which
     # xdist workers would otherwise share (and the sibling test writes it too).
-    monkeypatch.setattr("ouroboros.config.DATA_DIR", tmp_path / "proj-data")
+    monkeypatch.setattr("ouroboros.config.DATA_DIR", tmp_path / "proj")
     _waited_run(tmp_path / "proj", monkeypatch,
                 {"state": "succeeded", "spendUsd": 0.0, "model": "claude-opus-5"},
                 requested_model="sonnet")
@@ -386,29 +386,24 @@ def test_no_receipt_on_a_failed_settlement_and_one_after_the_successful_retry(tm
     import ouroboros.delegate_custody as custody_mod
     from ouroboros.subagents import subagent_last_delegation
 
-    monkeypatch.setattr("ouroboros.config.DATA_DIR", tmp_path / "receipt-data")
+    monkeypatch.setattr("ouroboros.config.DATA_DIR", tmp_path / "w1")
 
-    real_settle = custody_mod.settle_run
+    real_emit = custody_mod.emit
     outcomes = iter([False, True])
 
-    def _flaky_settle(drive_root, gateway, custody, detail):
-        ok = next(outcomes)
-        result = real_settle(drive_root, gateway, custody, detail)
-        if not ok:
-            custody.settled = False
-            result = dict(result)
-            result["settled"] = False
-        return result
+    def flaky_emit(drive_root, kind, payload):
+        if kind == custody_mod.SETTLED and not next(outcomes):
+            return False
+        return real_emit(drive_root, kind, payload)
 
-    monkeypatch.setattr(custody_mod, "settle_run", _flaky_settle)
-    monkeypatch.setattr("ouroboros.tools.delegate.custody.settle_run", _flaky_settle, raising=False)
+    monkeypatch.setattr(custody_mod, "emit", flaky_emit)
 
     _waited_run(tmp_path / "w1", monkeypatch,
                 {"state": "succeeded", "spendUsd": 0.0, "model": "claude-opus-5"},
                 requested_model="sonnet")
     assert subagent_last_delegation() == {}, "receipt minted on a FAILED settlement"
 
-    _waited_run(tmp_path / "w2", monkeypatch,
+    _waited_run(tmp_path / "w1", monkeypatch,
                 {"state": "succeeded", "spendUsd": 0.0, "model": "claude-opus-5"},
                 requested_model="sonnet")
     record = subagent_last_delegation()

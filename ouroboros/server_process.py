@@ -38,6 +38,44 @@ _supervisor_stop = threading.Event()
 # re-exec needs to decide whether the runtime-mode ratchet pin rides along.
 _owner_restart_requested = threading.Event()
 
+# Confirmed inputs of the components this process started. Settings saves may
+# replace os.environ, so it is not an applied-state baseline. Never persisted.
+_applied_restart_settings: dict = {}
+_applied_server_host_source = "unknown"
+_applied_settings_lock = threading.Lock()
+
+
+def record_applied_restart_settings(values: dict, *, server_host_source: str | None = None) -> None:
+    """Publish only known startup inputs, after their component starts."""
+    from ouroboros.settings_scales import RESTART_REQUIRED_SETTINGS
+
+    global _applied_server_host_source
+    with _applied_settings_lock:
+        _applied_restart_settings.update({key: value for key, value in values.items()
+                                         if key in RESTART_REQUIRED_SETTINGS})
+        if "OUROBOROS_SERVER_HOST" in values:
+            _applied_server_host_source = server_host_source or "unknown"
+
+
+def applied_restart_settings() -> dict:
+    """Return process facts without deriving them from mutable saved intent."""
+    with _applied_settings_lock:
+        return dict(_applied_restart_settings)
+
+
+def applied_server_host_source(drive_root: pathlib.Path) -> str:
+    """Resolve launcher provenance on read: its PID record may arrive after bind."""
+    with _applied_settings_lock:
+        source = _applied_server_host_source
+    if source != "launcher":
+        return source
+    record = read_json_dict(pathlib.Path(drive_root) / "state" / "server_process.json") or {}
+    server_path = pathlib.Path(__file__).resolve().parents[1] / "server.py"
+    if record.get("pid") != os.getpid() or record.get("server_path") != str(server_path):
+        return "unknown"
+    source = record.get("server_host_source")
+    return source if source in ("environment", "settings") else "unknown"
+
 
 def _request_restart_exit(owner: bool = False) -> None:
     """Signal server shutdown with restart exit code.

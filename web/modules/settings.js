@@ -455,7 +455,8 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     const disposeSettingsTabs = bindSettingsTabs(page, { state });
     bindSecretInputs(page);
     bindEffortSegments(page);
-    const disposeLocalModel = bindLocalModelControls({ state });
+    const disposeLocalModel = bindLocalModelControls({ state,
+        onApplication: (local) => syncRestartState({ ...restartState, local_model: local }) });
     // Best-effort About version from /api/health.
     apiFetch('/api/health')
         .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
@@ -471,6 +472,8 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     let settingsDirty = false;
     let draftRevision = 0;
     let loadSequence = 0;
+    let restartReadSequence = 0;
+    let restartState = { restart_required: false };
     let settingsSaving = false;
     let saveOutcomeUnknown = false;
     let validationAttempted = false;
@@ -503,6 +506,25 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     function syncProcessingPreference(settings) {
         setSubagentsProcessingPreference(settings[PROCESSING_PREFERENCE_KEY]);
         setReviewerProcessingPreference(settings[PROCESSING_PREFERENCE_KEY], modelRoleMap(settings[MODEL_PROCESSING_PREFERENCES_KEY]));
+    }
+
+    function syncRestartState(value) {
+        if (!value || typeof value.restart_required !== 'boolean') return;
+        restartState = value;
+        const restartAvailable = value.restart_required || value.restart_source_unknown_keys?.length > 0;
+        byId('btn-restart-now').hidden = !restartAvailable;
+        const text = [value.summary, value.local_model?.summary].filter(Boolean).join(' ');
+        const target = byId('settings-restart-status');
+        target.hidden = !text;
+        setInlineStatus(target, text, restartAvailable || value.local_model?.pending_keys?.length ? 'warn' : 'muted');
+    }
+
+    async function refreshRestartState() {
+        const sequence = ++restartReadSequence;
+        try {
+            const data = await apiClient.settings();
+            if (sequence === restartReadSequence) syncRestartState(data?._meta?.restart_state);
+        } catch { /* An unavailable read cannot clear a known pending change. */ }
     }
 
     function syncSettingsLoadState() {
@@ -758,6 +780,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
 
     async function loadSettings() {
         const sequence = ++loadSequence;
+        const restartSequence = ++restartReadSequence;
         const revision = draftRevision;
         const [data, extData] = await Promise.all([
             apiClient.settings(),
@@ -766,6 +789,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         if (!data || typeof data !== 'object' || Array.isArray(data) || data.error) {
             throw new Error(data?.error || 'The server did not return a settings document.');
         }
+        if (restartSequence === restartReadSequence) syncRestartState(data._meta?.restart_state);
         const sections = Array.isArray(extData?.live?.settings_sections)
             ? extData.live.settings_sections
             : [];
@@ -832,6 +856,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     async function refreshSettingsAfterExtensionChange(reason = 'skills changed') {
         if (extensionRefreshPending || settingsSaving || saveOutcomeUnknown) return;
         if (settingsDirty) {
+            await refreshRestartState();
             setStatus(`Settings changed externally (${reason}). Reload after saving or discarding your draft.`, 'warn');
             return;
         }
@@ -1116,6 +1141,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
             refreshSettingsAfterExtensionChange(action);
         });
     }
+    const disposeRestartReconnect = ws?.on?.('open', refreshRestartState);
 
     window.addEventListener('ouro:page-shown', (event) => {
         if (event.detail?.page === 'settings') refreshSettingsAfterExtensionChange('settings page shown');
@@ -1132,6 +1158,8 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         disposeSettingsTabs();
         window.removeEventListener('beforeunload', beforeUnload);
         disposeLocalModel();
+        disposeRestartReconnect?.();
+        restartReadSequence += 1;
         baselineSettleDisposer?.();
         modelRoles.destroy();
         document.removeEventListener('settings-model-catalog:updated', onModelCatalog);
@@ -1215,10 +1243,6 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         await reloadSettingsWithFeedback();
     });
 
-    // #285: true from a restart-required save until the restart command is
-    // actually sent — keeps the Restart now affordance across later saves.
-    let restartPending = false;
-
     byId('btn-save-settings').addEventListener('click', async () => {
         if (settingsSaving || saveOutcomeUnknown) return;
         if (!settingsLoaded) {
@@ -1257,9 +1281,6 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         settingsSaving = true;
         setButtonBusy(saveButton, true);
         setStatus('Saving…', 'muted');
-        // A pending restart LATCHES: a later save that needs no restart must
-        // not hide the button while the process still runs the old config.
-        if (!restartPending) byId('btn-restart-now')?.setAttribute('hidden', '');
         let saved = false;
         try {
             const data = await apiClient.saveSettings(body);
@@ -1315,6 +1336,8 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
             } else if (data.restart_required) {
                 statusMsg = 'Settings saved. Some changes require a restart to take effect';
                 statusType = 'warn';
+            } else if (data.restart_state?.summary || data.restart_state?.local_model?.summary) {
+                statusMsg = 'Settings saved';
             } else if (data.immediate_changed && data.next_task_changed) {
                 statusMsg = 'Settings saved. Some changes took effect immediately; others apply on the next task';
             } else if (data.immediate_changed) {
@@ -1368,10 +1391,8 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
                 statusType = 'warn';
             }
             setStatus(statusMsg, statusType);
-            if (data.restart_required || runtimeModeResult?.restart_required) {
-                restartPending = true;
-            }
-            if (restartPending) byId('btn-restart-now')?.removeAttribute('hidden');
+            syncRestartState(data.restart_state);
+            await refreshRestartState();
             window.dispatchEvent(new CustomEvent('ouro:settings-updated', { detail: { reason: 'settings saved', source: 'settings' } }));
         } catch (e) {
             const receipt = e?.body || e?.payload;
@@ -1392,8 +1413,6 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     byId('btn-restart-now')?.addEventListener('click', async () => {
         const outcome = await confirmAndSendRestart({ openConfirmDialog, ws });
         if (outcome === 'sent') {
-            restartPending = false;
-            byId('btn-restart-now')?.setAttribute('hidden', '');
             setStatus('Restart requested. If the agent refuses, the reason appears in the main chat.', 'muted');
         } else if (outcome === 'not_connected') {
             setStatus('Not connected — the restart command was not sent.', 'warn');

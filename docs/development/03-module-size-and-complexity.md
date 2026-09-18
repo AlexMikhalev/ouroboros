@@ -46,9 +46,12 @@ P7 makes context fit a maintenance constraint, not a line-count aesthetic.
   base; lane placement and base fallback: ARCHITECTURE §8 "CI topology").
   Local surfaces never block on size: the default pytest lanes exclude the
   marker, and `check_worktree_readiness` and `codebase_health` report the same
-  `validate_size_ratchet` findings as "official CI will enforce" warnings. Why
-  a locally evolved fork is never trapped by inherited debt (no
-  committed-history replay): ARCHITECTURE §6 "Review stack".
+  `validate_size_ratchet` findings as "official CI will enforce" warnings.
+  Both readouts also show capacity from the same inventory and current limits;
+  readiness passes it separately from warnings and focuses on touched paths.
+  Registered debt and omitted rows are labelled; a nearly full valid module
+  remains admissible. Why a locally evolved fork is never trapped by inherited
+  debt (no committed-history replay): ARCHITECTURE §6 "Review stack".
 
 ### Pragmatic SOLID
 
