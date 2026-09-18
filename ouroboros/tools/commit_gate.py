@@ -779,26 +779,6 @@ def _invalidate_advisory(
         pass
 
 
-def _mark_review_attempt_late(
-    ctx: ToolContext,
-    *,
-    soft_timeout_sec: int,
-    duration_sec: float,
-) -> None:
-    warning = (
-        f"Soft timeout exceeded {soft_timeout_sec}s; waiting for a possible late reviewed result."
-    )
-    _record_commit_attempt(
-        ctx,
-        commit_message=str(getattr(ctx, "_current_review_commit_message", "") or ""),
-        status="reviewing",
-        duration_sec=duration_sec,
-        readiness_warnings=[warning],
-        late_result_pending=True,
-        phase="late_wait",
-    )
-
-
 def _check_overlapping_review_attempt(ctx: ToolContext) -> Optional[str]:
     from ouroboros.review_state import (
         _REVIEW_ATTEMPT_GRACE_SEC,
