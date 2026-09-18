@@ -915,6 +915,13 @@ jobs:
             --keystore "$ROOT/test.keystore" --key-alias ouroboros-host \
             --keystore-pass-file "$ROOT/password" \
             --version-code "$GITHUB_RUN_NUMBER" --version-name "$(cat VERSION)"
+      - name: Enable emulator hardware acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          "$ANDROID_HOME/emulator/emulator" -accel-check
+
       - name: Boot emulator and smoke install/start
         shell: bash
         run: |
@@ -925,9 +932,10 @@ jobs:
           LOG="$RUNNER_TEMP/android-smoke/emulator.log"
           "$ANDROID_HOME/emulator/emulator" -avd "$AVD" -no-window -no-audio -no-boot-anim \
             -port 5554 \
-            -no-snapshot -gpu swiftshader_indirect -accel off >"$LOG" 2>&1 &
+            -no-snapshot -gpu swiftshader_indirect -accel on >"$LOG" 2>&1 &
           emulator_pid=$!
-          trap 'cat "$LOG"; kill "$emulator_pid" 2>/dev/null || true' EXIT
+          # Retain startup crashes even when UI checks fail before instrumentation.
+          trap 'timeout 15s adb logcat -d > "$RUNNER_TEMP/android-smoke/logcat.txt" 2>&1 || true; cat "$LOG"; kill "$emulator_pid" 2>/dev/null || true' EXIT
           for attempt in $(seq 1 180); do
             kill -0 "$emulator_pid" 2>/dev/null || { wait "$emulator_pid"; exit 1; }
             [ "$(timeout 5s adb get-state 2>/dev/null)" = "device" ] && break
@@ -951,8 +959,8 @@ jobs:
           SCREENSHOTS="$RUNNER_TEMP/android-smoke/screenshots"
           mkdir -p "$SCREENSHOTS"
           capture_native_ui() {
-            adb shell uiautomator dump /sdcard/obo-native-ui.xml
-            adb pull /sdcard/obo-native-ui.xml "$SCREENSHOTS/$1.xml"
+            adb shell uiautomator dump /data/local/tmp/obo-native-ui.xml
+            adb pull /data/local/tmp/obo-native-ui.xml "$SCREENSHOTS/$1.xml"
             adb exec-out screencap -p > "$SCREENSHOTS/$1.png"
             test -s "$SCREENSHOTS/$1.png"
           }
@@ -996,6 +1004,7 @@ jobs:
             ${{ runner.temp }}/android-smoke/emulator.log
             ${{ runner.temp }}/android-smoke/instrument.txt
             ${{ runner.temp }}/android-smoke/device-log.txt
+            ${{ runner.temp }}/android-smoke/logcat.txt
           if-no-files-found: warn
 
   # The publisher key is used only on the trusted tag path. Root/boot/device
