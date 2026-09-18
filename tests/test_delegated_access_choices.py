@@ -37,7 +37,7 @@ def test_direct_default_and_lowering_reach_actual_post(full_run, monkeypatch, lo
         assert not result.get('snapshot_id')
 
 
-@pytest.mark.parametrize('lower,expected', [(None, 'full'), ('workspace_write', 'workspace_write'), ('readonly', 'readonly')])
+@pytest.mark.parametrize('lower,expected', [(None, 'full'), ('inherit', 'full'), ('workspace_write', 'workspace_write'), ('readonly', 'readonly')])
 def test_schedule_snapshot_reaches_actor_first_post(full_run, monkeypatch, lower, expected):
     from ouroboros.tools import control
     from ouroboros.tools.registry import ToolContext
@@ -92,11 +92,14 @@ def test_lowering_and_legacy_snapshots_never_widen():
 
     lower, _ = runtime.select_subagent_snapshot(_settings('workspace_write'), subagent_id='coder')
     assert runtime.validate_subagent_snapshot(lower, access='workspace_write')['access'] == 'workspace_write'
+    assert runtime.validate_subagent_snapshot(lower, access='inherit') == lower
     readonly = runtime.validate_subagent_snapshot(lower, access='readonly')
+    assert runtime.validate_subagent_snapshot(readonly, access='inherit') == readonly
     assert runtime.validate_subagent_snapshot(readonly, access='workspace_write')['access'] == 'readonly'
     assert delegated_run_shape(False, 'full').access == 'readonly'
     legacy = {key: value for key, value in lower.items() if key != 'access'}
     assert runtime.validate_subagent_snapshot(legacy).get('access', 'workspace_write') == 'workspace_write'
+    assert runtime.validate_subagent_snapshot(legacy, access='inherit') == legacy
     with pytest.raises(runtime.SubagentSelectionError, match='subagent_access_invalid'):
         runtime.validate_subagent_snapshot(lower, access='full')
 

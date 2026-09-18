@@ -317,10 +317,15 @@ def _finalize_schedule_emission(ctx: ToolContext, emission: Dict[str, Any]) -> s
         "future calls must pass subagent_id."
         if legacy_selection else ""
     )
+    access_note = (
+        f"\naccess={emission['requested_access']!r} ignored for subagent_id={selected_id!r} "
+        "(api_model); write_surface controls read/write authority."
+        if route_kind == "api_model" and emission.get("requested_access") is not None else ""
+    )
     return (
         f"Subagent request queued {task_ids[0]}: {objective} "
         f"(subagent_id={selected_id}, route={route_kind}, {commitment})"
-        f"{worker_note}{slot_note}{profile_note}{coop_note}{legacy_note}"
+        f"{worker_note}{slot_note}{profile_note}{coop_note}{legacy_note}{access_note}"
     )
 
 
@@ -644,7 +649,7 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
             legacy_executor_supplied="executor" in params,
         )
     except SubagentSelectionError as exc:
-        return f"⚠️ {exc.code}: {exc.detail}"
+        return _publish_scheduling_refusal(ctx, "error", "TOOL_ARG_ERROR", f"⚠️ {exc.code}: {exc.detail}")
     route = configured_subagent.get("route") if isinstance(configured_subagent.get("route"), dict) else {}
     if fields.get("directory_strategy") == "copy" and route.get("kind") != "agent_session":
         return _publish_scheduling_refusal(
@@ -652,7 +657,6 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
             "⚠️ TOOL_ARG_ERROR (schedule_subagent): directory_strategy=copy is unsupported for native/API children, which use shared files directly; select an agent_session actor for copy.")
     requested_model_lane = "auto"  # bounded historical projection only
     requested_executor = "harness" if route.get("kind") == "agent_session" else "native"
-
     current_depth, depth_error = _context_task_depth(ctx)
     if depth_error:
         return f"⚠️ TOOL_ERROR (schedule_subagent): invalid_task_depth: {depth_error}"
@@ -894,6 +898,7 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
         "write_surface": requested_surface,
         "configured_subagent": configured_subagent,
         "legacy_selection": legacy_selection,
+        "requested_access": params.get("access"),
         # Host-minted shared coop tree only (a caller-supplied write_root is the
         # parent's own knowledge already).
         "coop_shared_tree": (
