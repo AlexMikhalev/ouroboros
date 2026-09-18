@@ -159,6 +159,12 @@ def wait_for_acceptance_feedback(tools: Any, limit_ctx: Any, trace: dict,
     binding = getattr(ctx, "_task_acceptance_pending", "")
     if not binding:
         return
+    from ouroboros.loop_transport import _owner_signal_pending
+
+    # A wake arriving during Main's request must reach the normal ingress drain.
+    if _owner_signal_pending(limit_ctx.incoming_messages, ctx.drive_root, ctx.task_id,
+                             seen, getattr(ctx, "task_attempt", None) or 1):
+        return
     # Re-offered on EVERY wake: a replacement candidate inherits
     # ``control_episode_seen``, which hid the one free route back to the verdicts.
     _loop()._arm_delivery_control(tools, limit_ctx, trace, skip_if_unchanged=True)
