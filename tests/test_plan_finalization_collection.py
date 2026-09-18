@@ -108,30 +108,41 @@ def test_gate_collects_the_original_packet_after_owner_clarification(
     assert _sent(panel) == 3 and _state(harness)["cycles_paid"] == 1
 
 
-def test_two_clean_siblings_do_not_release_a_still_running_panel(harness, panel):
+@pytest.mark.parametrize("mode", ["blocking", "advisory", "hurry"])
+def test_two_clean_siblings_do_not_close_a_still_running_panel(harness, panel, mode):
+    harness.state["enforcement"] = "advisory" if mode == "advisory" else "blocking"
     ctx = harness.make_ctx()
     _call(ctx)
     assert _wait_until(lambda: _sent(panel) == 3)
     panel["s1"].release.set()
     panel["s2"].release.set()
     assert _wait_until(lambda: sum("settled (ok)" in line for line in harness.progress) == 2)
-    decision = force_plan_decision(ctx, {}, enforcement="blocking")
-    assert decision["allow"] is False and decision["custody_pending"] is True
+    if mode == "hurry":
+        ctx._owner_hurry_latch = {"reason": "owner_hurry"}
+    enforcement = "advisory" if mode == "advisory" else "blocking"
+    decision = force_plan_decision(ctx, {}, enforcement=enforcement)
+    assert decision["allow"] is (mode != "blocking") and decision["custody_pending"] is True
     assert not panel["s3"].release.is_set() and _sent(panel) == 3
     assert "running or awaiting collection" in plan_review_reminder(decision)
     assert "no parseable reviewer quorum" not in plan_review_reminder(decision)
-    railed = force_plan_decision(ctx, {}, enforcement="blocking", hard_rail="round_limit")
+    railed = force_plan_decision(ctx, {}, enforcement=enforcement, hard_rail="round_limit")
     assert railed["allow"] is True and railed["status"] == "rail_degraded"
     disclosure = plan_review_disclosure(railed, "round_limit")
     assert "running or awaiting collection" in disclosure
     assert "no parseable reviewer quorum" not in disclosure
     _settle(panel, ctx)
-    assert force_plan_decision(ctx, {}, enforcement="blocking")["status"] == "closed"
+    assert force_plan_decision(ctx, {}, enforcement=enforcement)["status"] == "closed"
     assert _sent(panel) == 3 and _state(harness)["cycles_paid"] == 1
 
 
 @pytest.mark.parametrize("hurry", [False, True])
-def test_advisory_and_hurry_leave_the_paid_wave_for_later_collection(harness, panel, hurry):
+@pytest.mark.parametrize("blocking_finding", [False, True])
+def test_advisory_and_hurry_collect_the_paid_wave_at_the_gate(harness, panel, hurry, blocking_finding):
+    """Owner 10=A accepts local collection latency, never more paid review work."""
+    harness.state["enforcement"] = "blocking" if hurry else "advisory"
+    if blocking_finding:
+        for executor in panel.values():
+            executor.answer = json.dumps([_finding("b1", "blocking", breaks="claim_1")])
     ctx = harness.make_ctx()
     _call(ctx)
     assert _wait_until(lambda: _sent(panel) == 3)
@@ -139,14 +150,20 @@ def test_advisory_and_hurry_leave_the_paid_wave_for_later_collection(harness, pa
     if hurry:
         ctx._owner_hurry_latch = {"reason": "owner_hurry"}
     decision = force_plan_decision(ctx, {}, enforcement="blocking" if hurry else "advisory")
-    assert decision["allow"] is True and decision["custody_pending"] is True
+    assert decision["allow"] is True
+    assert decision["outcome"] == ("REVISE_PLAN" if blocking_finding else "GREEN")
+    assert not decision.get("custody_pending") and not decision.get("review_late_result_pending")
     assert decision.get("owner_hurry_local_advisory", False) is hurry
-    assert _state(harness)["waves"][-1]["custody_pending"] is True
-    assert _sent(panel) == 3
-    if hurry:
-        del ctx._owner_hurry_latch
-    assert force_plan_decision(ctx, {}, enforcement="blocking")["status"] == "closed"
-    assert _sent(panel) == 3
+    assert not _state(harness)["waves"][-1].get("custody_pending")
+    disclosure = plan_review_disclosure(decision)
+    if blocking_finding:
+        assert "REVISE_PLAN" in disclosure
+        assert "running or awaiting collection" not in disclosure
+        assert "a late result is still owed" not in disclosure
+    else:
+        assert decision["status"] == "closed" and not disclosure
+    assert force_plan_decision(ctx, {}, enforcement="blocking" if hurry else "advisory") == decision
+    assert _sent(panel) == 3 and _state(harness)["cycles_paid"] == 1
 
 
 def test_ordinary_task_and_unattributed_health_do_not_open_a_panel(harness, panel):
