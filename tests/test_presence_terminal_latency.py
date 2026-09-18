@@ -50,8 +50,12 @@ def test_native_agent_returns_durable_result_before_synthesis_and_retry_reuses_i
     monkeypatch.setattr(pipeline, "_apply_reflection_memory_actions", lambda *_a, **_k: stages.append("memory"))
     monkeypatch.setattr(loop, "call_llm_with_retry", lambda *_a, **_k: (_call(outcome, "Reply" if outcome == "message" else ""), 0.0))
 
+    # Cold tool-catalog construction is setup, outside the completion-order barrier.
+    ready_agents = [agent_module.OuroborosAgent(agent_module.Env(
+        repo_dir=tmp_path, drive_root=tmp_path)) for _ in range(2)]
+
     def factory(**_kwargs):
-        actual = agent_module.OuroborosAgent(agent_module.Env(repo_dir=tmp_path, drive_root=tmp_path))
+        actual = ready_agents.pop(0)
         actual.llm = SimpleNamespace(default_model=lambda: "test-model")
 
         def prepare(task, _refusal):
