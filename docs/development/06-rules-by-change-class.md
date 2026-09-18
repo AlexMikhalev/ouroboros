@@ -954,6 +954,11 @@ and what enforces each.
   source downloads while the task still runs; the persisted consumer verified after the
   real merge and child cleanup; an operation-scoped memo reuses verified work but never
   caches failure or becomes a second store.
+- Mirror a split root's actual execution start and child-drive binding into its
+  canonical result through the existing terminal-preserving writer.
+  Recover a legacy missing binding only from positive known-child start evidence
+  plus the existing fresh-queue/later-worker orphan proof, never while pending or
+  actively cancelled and never as permission to resume execution.
 - Pooled terminal file preparation belongs to `headless.prepare_terminal_task_files`
   at the worker's task_done boundary — after blocking post-task work, before the slot
   is released; earlier answer/metrics delivery stays early (ARCHITECTURE §5 "Supervisor
