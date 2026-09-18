@@ -410,6 +410,10 @@ def test_escalate_subagent_writes_parent_mailbox_frame(tmp_path, monkeypatch):
     assert "forward_to_worker(task_id=child-9" in text
     # No owner card, no projection for the child hop.
     assert not [e for e in ctx.pending_events if e.get("type") == "send_quiz"]
+    # A habit-filled bound is disclosed on the child's receipt too, never sent up the chain.
+    out = _escalate(ctx, question="Again?", options=["a", "b"], assumption="keep going.", max_wait_minutes=1)
+    assert out.endswith("assumption: keep going. (max_wait_minutes ignored: it applies only to wait_for_answer=true)")
+    assert "max_wait_minutes" not in drain_owner_entries(tmp_path, "root-1", set())[-1]["text"]
     assert quiz_states(tmp_path, "child-9") == {}
 
 

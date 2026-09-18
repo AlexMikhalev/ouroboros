@@ -1462,7 +1462,7 @@ def get_tools() -> List[ToolEntry]:
                 "is irreversible or costly to redo, or the choice is the owner's to make "
                 "(spending, publishing, deleting); your judgment decides. The task then waits after the "
                 "current tool batch without model calls; waiting questions in one batch share one wait, "
-                "which ends on the first owner reply."
+                "which ends on the first incoming message."
             ),
             "parameters": {"type": "object", "properties": {
                 "question": {"type": "string", "description": "The decision being escalated (markdown renders in chat)"},

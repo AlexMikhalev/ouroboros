@@ -66,10 +66,11 @@ class TestValidateQuizPayload:
         for named_default in (0, 1, 5, 60, -5, True, "30"):
             assert "max_wait_minutes" not in validate_quiz_payload(
                 "q", ["a", "b"], "", "assume", max_wait_minutes=named_default)
-        # A required wait keeps the refusal, and the refusal names the repair.
-        with pytest.raises(QuizValidationError) as err:
-            validate_quiz_payload("q", ["a", "b"], "", "", wait_for_answer=True, max_wait_minutes=0)
-        assert "omit it for an unbounded wait" in str(err.value)
+        # A required wait keeps the refusal, and every such refusal names the repair.
+        for bad in (0, 361):
+            with pytest.raises(QuizValidationError) as err:
+                validate_quiz_payload("q", ["a", "b"], "", "", wait_for_answer=True, max_wait_minutes=bad)
+            assert "omit it for an unbounded wait" in str(err.value)
 
     def test_empty_or_oversized_question_refused(self):
         with pytest.raises(QuizValidationError):

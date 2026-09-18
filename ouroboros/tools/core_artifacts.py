@@ -391,7 +391,7 @@ def _validate_wait_bound(max_wait_minutes: Any, *, wait_for_answer: bool) -> Opt
         raise QuizValidationError(
             "QUIZ_WAIT_BOUND_INVALID",
             f"max_wait_minutes must be at most {ceiling_minutes} "
-            "(the task's absolute wall-clock ceiling).",
+            "(the task's absolute wall-clock ceiling); omit it for an unbounded wait.",
         )
     return int(max_wait_minutes)
 
@@ -551,7 +551,8 @@ def _escalate(
         if not written:
             return f"⚠️ ESCALATE_UNWRITTEN: the escalation to parent {parent_task_id} was not persisted."
         return (f"OK: escalated to parent task {parent_task_id}; continuing under "
-                f"assumption: {payload['assumption']}{'.' if ignored_bound else ''}{ignored_bound}")
+                f"assumption: {payload['assumption']}"
+                + (f" ({ignored_bound.strip().rstrip('.')})" if ignored_bound else ""))
 
     # Root task: the owner gets a typed quiz card.
     from ouroboros.owner_quiz import record_asked

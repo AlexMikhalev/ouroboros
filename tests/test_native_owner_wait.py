@@ -272,6 +272,9 @@ def test_a_bounded_wait_does_not_lend_its_bound_to_the_next_question_of_the_batc
     second = _escalate(ctx, question="Second?", options=["a", "b"], wait_for_answer=True)
     assert "the task waits after this tool batch" in second and "up to" not in second
     assert ctx._owner_wait_max_minutes == 0 and ctx._owner_wait_deadline_at == ""
+    from ouroboros.owner_wait import _wait_bound_fields
+
+    assert _wait_bound_fields(ctx) == {}, "the parked wait carries no bound either"
     assert ctx._owner_wait_requested == list(ctx.event_queue.queue)[-1]["quiz_id"]
 
 
