@@ -47,7 +47,7 @@ const TS = '2026-09-12T12:00:00Z';
 const TASK = 'ordinary-turn';
 const VERBS = ['promote_chat_to_task', 'route_to_project', 'steer_task'];
 
-function fixture(history = []) {
+function fixture(history = [], chatId = 1) {
     const { prior, mount } = installDom(async (url) => ({ ok: true, json: async () =>
         String(url).startsWith('/api/chat/history')
             ? { messages: history, window: { complete: true } }
@@ -57,7 +57,7 @@ function fixture(history = []) {
         isConnected: () => true, send() {} };
     const instance = createChatInstance({ ws,
         state: { activePage: 'chat', projectChatIds: new Set(), unreadCount: 0 },
-        updateUnreadBadge() {}, chatId: 1, idPrefix: 'chat', mountEl: mount,
+        updateUnreadBadge() {}, chatId, idPrefix: 'chat', mountEl: mount,
         stateSnapshots: { begin: () => ({ generation: 1, requestedAt: Date.now() }),
             isCurrent: () => true, apply() {} },
     });
@@ -69,8 +69,8 @@ function fixture(history = []) {
         meta: () => walkCard(messages, TASK)?.querySelector('[data-live-meta]')?.innerHTML || '',
         owner: () => messages.children.find((node) => node.dataset.clientMessageId === 'owner-message'),
         answerVisible: () => messages.children.some((node) => /The task is scheduled/.test(node.innerHTML)),
-        emit: (type, row) => handlers.get(type)({ chat_id: 1, ts: TS, ...row }),
-        log: (row) => handlers.get('log')({ chat_id: 1, data: { task_id: TASK, ts: TS, ...row } }),
+        emit: (type, row) => handlers.get(type)({ chat_id: chatId, ts: TS, ...row }),
+        log: (row) => handlers.get('log')({ chat_id: chatId, data: { task_id: TASK, ts: TS, ...row } }),
         close() { instance.destroy(); restoreDom(prior); },
     };
 }
@@ -86,6 +86,43 @@ const final = { task_id: TASK, role: 'assistant', content: 'The task is schedule
     accounted_upper_bound_usd: 0.75, cost_final: true, cost_accounting_status: 'available' };
 // The host stamps every frame of an addressing call with the action it represents.
 const stamped = (tool, row = {}) => ({ tool, routing_action: tool, ...row });
+
+for (const [room, chatId, destination, visible] of [
+    ['Main', 1, 42, true], ['destination Project', 42, 42, false],
+    ['string destination', 42, '42', false], ['another Project', 43, 42, true],
+]) {
+    test(`routing receipt in ${room} keeps its text and only offers navigation to another room`, async () => {
+        // A Main-origin row can also be projected into its destination Project.
+        const receipt = { ...annotation, project_id: 'requested-project', project_chat_id: destination,
+            target_label: 'Requested Project › Requested work' };
+        const history = [{ ...ownerRow, chat_annotation: receipt }];
+        const f = fixture(history, chatId);
+        try {
+            f.emit('chat', { ...ownerRow, chat_id: chatId });
+            f.emit('message_annotation', receipt);
+            const owner = f.owner();
+            const note = owner.querySelector('.msg-routing-annotation');
+            const actions = owner.querySelector('.msg-routing-actions');
+            assert.equal(note.textContent, 'Started task · Requested Project › Requested work');
+            assert.equal(Boolean(actions), visible);
+            f.emit('message_annotation', receipt);
+            assert.equal(owner.querySelector('.msg-routing-actions'), actions, 'same receipt keeps the same action row');
+            for (const revision of [1, 2]) {
+                await f.instance.refreshHistory({ revision });
+                assert.equal(f.owner(), owner, 'history updates the canonical bubble in place');
+                assert.equal(owner.querySelector('.msg-routing-annotation'), note);
+                assert.equal(owner.querySelectorAll('.msg-routing-actions').length, visible ? 1 : 0);
+            }
+        } finally { f.close(); }
+        const replay = fixture(history, chatId);
+        try {
+            await replay.instance.refreshHistory({ revision: 1 });
+            assert.equal(Boolean(replay.owner().querySelector('.msg-routing-actions')), visible, 'cold history uses its own room');
+            assert.equal(replay.owner().querySelector('.msg-routing-annotation').textContent,
+                'Started task · Requested Project › Requested work');
+        } finally { replay.close(); }
+    });
+}
 
 for (const tool of VERBS) {
     test(`${tool} alone is a receipt: no block live, the annotation on the owner message, the answer intact`, () => {

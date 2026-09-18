@@ -193,12 +193,14 @@ test('a replayed refusal receipt shows the host cause and a later scheduled rece
     assert.equal(note.textContent, cause);
     await f.refresh(page([{ ...message, chat_annotation: {
         action: 'promote_chat_to_task', status: 'scheduled', target: 'task-started', target_label: 'Investigation',
+        project_id: 'current-project', project_chat_id: 2,
     } }]));
     assert.equal(f.bubbles().filter((node) => node.dataset.historyId === 'chat:250').length, 1);
     assert.equal(f.bubbles().find((node) => node.dataset.historyId === 'chat:250'), bubble);
     assert.equal(bubble.querySelector('.msg-routing-annotation'), note);
     assert.equal(bubble.dataset.chatAnnotationStatus, 'scheduled');
     assert.equal(note.textContent, 'Started task · Investigation');
+    assert.equal(bubble.querySelector('.msg-routing-actions'), null, 'the current Project is already displayed');
 });
 
 test('two physical rows with identical timestamp and body remain two messages across refresh', async (t) => {
