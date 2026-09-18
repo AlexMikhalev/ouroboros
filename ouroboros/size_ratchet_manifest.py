@@ -232,6 +232,7 @@ BAND_PATHS = {
     "web/tests/chat_instance_dom.test.js": "Entered the band from 1000 lines with the alias-free subagent cost pin (stage-2 fix wave): that regression reproduces only through the real createChatInstance card path, and this file owns the DOM harness that drives it; split when the next createChatInstance face lands.",
     "web/tests/harness_login_cards.test.js": "Login-card suite grew past 1000 lines with the name-the-account face cases (agy pickup, issue #232); split when the next face lands.",
     "web/tests/reviewer_slots.test.js": "Entered the band with the 2026-09-13 reviewer-slots editor: the per-row source picker, its read-only derived disclosure and the persistence cases stay in one module beside the editor they cover; split when a second editor surface lands.",
+    "web/tests/subagents_settings.test.js": "Real editor parsing, lowering choices, dirty drafts and duplicate/API transitions are covered together.",
 }
 
 BYTE_BASELINE_DEBT = {

@@ -43,9 +43,9 @@ def persistent_registration(execution_root: str, access: str) -> bool:
     names the user's project, not a disposable snapshot, and must outlive
     the run (#362).
     """
-    from ouroboros.subagents import is_mutating_delegated_access
+    from ouroboros.configured_subagents import SESSION_ACCESS_PROFILES
 
-    return bool(str(execution_root or "").strip()) and is_mutating_delegated_access(str(access or ""))
+    return bool(str(execution_root or "").strip()) and access in SESSION_ACCESS_PROFILES
 
 
 def record_persistent(record) -> bool:

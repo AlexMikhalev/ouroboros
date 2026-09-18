@@ -719,7 +719,7 @@ class ClaudexorGateway:
         return ""
 
     def ensure_full_access(self, root: str) -> Dict[str, Any]:
-        """Apply a caller-authorized initial scope grant, preserving an existing denial.
+        """Create a missing scoped full grant; the caller owns when to request it.
 
         Scoped GET also returns default false for an absent trust file. The
         actual-file list distinguishes absence from an explicit refusal; its
@@ -747,7 +747,8 @@ class ClaudexorGateway:
                 if entry["allowFullAccess"]:
                     return entry
                 raise ClaudexorUnavailable(
-                    "trust_full_access_required", "Full access is disabled for this scope; its existing choice was preserved.",
+                    "trust_full_access_required", "Full access is disabled for this scope; its existing choice was preserved. "
+                    "Lower this call with access=workspace_write or select Working files on the actor row.",
                     status_code=403,
                 )
         granted = _trust_state(self._request(

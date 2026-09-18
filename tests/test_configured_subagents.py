@@ -68,27 +68,29 @@ def test_strict_config_round_trips_object_and_json_to_one_canonical_string():
     expected = _config()
     for item in expected["items"]:
         item.pop("name", None)
+        if item["route"]["kind"] == "agent_session":
+            item["access"] = "full"
     assert json.loads(canonical) == expected
     assert canonical == normalize_configured_subagents(canonical)[1]
     assert configured_subagents_fingerprint(config_from_object) == (configured_subagents_fingerprint(config_from_json))
     assert LEGACY_SUBAGENT_COMPATIBILITY == "remove_after_next_minor_release"
 
 
-def test_session_access_is_per_actor_and_round_trips_without_changing_default_bytes():
+def test_session_access_defaults_full_and_preserves_an_explicit_lower_choice():
     original, original_bytes = normalize_configured_subagents(_config())
     explicit_default, default_bytes = normalize_configured_subagents(_config(_row(access="workspace_write")))
-    assert explicit_default == original and default_bytes == original_bytes
+    assert explicit_default != original and default_bytes != original_bytes
     assert explicit_default.items[0].access == "workspace_write"
 
     configured, serialized = normalize_configured_subagents(_config(
-        _row("broad", access="full"), _row("ordinary"),
+        _row("broad"), _row("ordinary", access="workspace_write"),
     ))
     assert [row.access for row in configured.items] == ["full", "workspace_write"]
     assert json.loads(serialized)["items"][0]["access"] == "full"
-    assert "access" not in json.loads(serialized)["items"][1]
+    assert json.loads(serialized)["items"][1]["access"] == "workspace_write"
     assert parse_configured_subagents(serialized) == configured
     full_only = parse_configured_subagents(_config(_row(access="full")))
-    assert configured_subagents_fingerprint(full_only) != configured_subagents_fingerprint(original)
+    assert configured_subagents_fingerprint(full_only) == configured_subagents_fingerprint(original)
 
 
 @pytest.mark.parametrize("access", [None, "", "readonly", "inherit_native", True, {}, "FULL"])
@@ -97,10 +99,10 @@ def test_invalid_actor_access_is_not_silently_coerced(access):
         parse_configured_subagents(_config(_row(access=access)))
 
 
-def test_api_actor_cannot_request_full_session_access():
-    row = _row(route={"kind": "api_model", "target_id": "provider/model"}, access="workspace_write")
+def test_api_actor_cannot_request_session_access():
+    row = _row(route={"kind": "api_model", "target_id": "provider/model"})
     config, serialized = normalize_configured_subagents(_config(row))
-    assert config.items[0].access == "workspace_write"
+    assert config.items[0].access == ""
     assert "access" not in json.loads(serialized)["items"][0]
     row["access"] = "full"
     with pytest.raises(ValueError, match="meaningful only for agent_session"):
@@ -121,7 +123,7 @@ def test_access_edit_changes_existing_preset_fingerprint():
                "available_subagents": json.loads(json.dumps(raw))}
     settings = {SUBAGENTS_SETTING: raw, SUBAGENTS_RECEIPT_KEY: receipt}
     assert resolve_configured_subagents(settings).source == SOURCE_ONBOARDING_DEFAULT
-    raw["items"][0]["access"] = "full"
+    raw["items"][0]["access"] = "workspace_write"
     assert resolve_configured_subagents(settings).source == SOURCE_CONFIGURED
 
 

@@ -6,9 +6,9 @@ import httpx
 import pytest
 
 from ouroboros import delegate_custody as custody, subagents
-from ouroboros.delegate_shared import delegate_payload
 from ouroboros.delegate_registration_policy import persistent_registration, record_persistent
 from ouroboros.tools import delegate
+from ouroboros.delegate_shared import delegate_payload
 from tests.test_owner_settings_write_seam import _settings_app, isolated_settings as isolated_settings
 from tests._delegated_transport_shared import (
     _delegating_ctx, _gateway,
@@ -109,15 +109,15 @@ def test_full_start_http_contract_and_real_snapshot_capture(full_run):
     assert request['harnesses'] == ['some-route'] and request['authPreference'] == 'subscription'
     assert request['model'] == 'selected-model' and request['effort'] == 'max'
     assert 'No filesystem sandbox is requested' in request['instructions']
-    assert 'ACCESS: you may edit inside this root with full native process access requested' in request['instructions']
+    assert 'ACCESS: full native process access is requested' in request['instructions']
     assert 'effective access is established by the run receipt' in request['instructions']
     assert 'private snapshot is not an OS sandbox' in request['instructions']
-    assert request['instructions'].count('this line governs.') == 1
+    assert request['instructions'].count('this line governs native process access') == 1
     assert 'OS-enforced boundary' not in result['note']
     assert facts['trust_posts'] == [{'repoRoot': target, 'allowFullAccess': True}]
     snapshot = Path(result['execution_root'])
-    assert snapshot != Path(target) and (snapshot / 'README.md').read_text(encoding="utf-8") == 'seed\n'
-    (snapshot / 'native-result.py').write_text('result = 42\n')
+    assert snapshot != Path(target) and (snapshot / 'README.md').read_text(encoding='utf-8') == 'seed\n'
+    (snapshot / 'native-result.py').write_text('result = 42\n', encoding='utf-8')
     assert not (Path(target) / 'native-result.py').exists()
     row = custody.replay(custody.custody_root(ctx))['full-run']
     assert row.access == 'full' and row.project_persistent and row.snapshot_id == key
@@ -129,7 +129,7 @@ def test_full_start_http_contract_and_real_snapshot_capture(full_run):
     assert not (Path(target) / 'native-result.py').exists()
     outcome = _integrate_delegated_patch(ctx, 'full-run', 'apply', 'Fixture verified.')
     assert '✅ Integrated' in outcome, outcome
-    assert (Path(target) / 'native-result.py').read_text(encoding="utf-8") == 'result = 42\n'
+    assert (Path(target) / 'native-result.py').read_text(encoding='utf-8') == 'result = 42\n'
 
 
 @pytest.mark.parametrize('recorded_access,current_access', [('full', 'workspace_write'), ('workspace_write', 'full')])
@@ -175,7 +175,7 @@ def test_full_mutation_still_requires_active_matching_workspace(tmp_path, monkey
     shape = subagents.delegated_run_shape(True, 'full')
     ctx.workspace_mode = ''
     record, refusal = delegate._mutation_authority(ctx, shape)
-    assert not record and delegate_payload(refusal)['reason'] == 'workspace_not_active'
+    assert not record and 'workspace_not_active' in refusal.text
 
 
 def test_full_retry_without_snapshot_binding_is_refused(tmp_path):
@@ -187,7 +187,7 @@ def test_full_retry_without_snapshot_binding_is_refused(tmp_path):
         'execution': {'isolation': 'live', 'delegated': True}, 'primaryHarness': 'some-route'},
         project_id='stable', project_owned=False, route='some-route')
     binding, refusal = delegate._resolve_retry_invocation(ctx, drive, 'original', 'work')
-    assert binding is None and delegate_payload(refusal)['reason'] == 'retry_binding_absent'
+    assert binding is None and 'retry_binding_absent' in refusal.text
 
 
 def test_full_registration_and_access_evidence_keep_their_existing_owners():
@@ -210,16 +210,18 @@ def test_session_access_is_snapshotted_and_changes_existing_fingerprint():
     }]}
     settings = {'OUROBOROS_SUBAGENTS': config}
     before, _ = select_subagent_snapshot(settings, subagent_id='native-coder')
-    assert before.get('access', 'workspace_write') == 'workspace_write'
-    config['items'][0]['access'] = 'full'
-    selected, _ = select_subagent_snapshot(settings, subagent_id='native-coder')
-    assert selected['access'] == 'full'
-    assert selected['config_fingerprint'] != before['config_fingerprint']
+    assert before['access'] == 'full'
     config['items'][0]['access'] = 'workspace_write'
-    assert validate_subagent_snapshot(selected)['access'] == 'full'
+    selected, _ = select_subagent_snapshot(settings, subagent_id='native-coder')
+    assert selected['access'] == 'workspace_write'
+    assert selected['config_fingerprint'] != before['config_fingerprint']
+    config['items'][0]['access'] = 'full'
+    assert validate_subagent_snapshot(selected)['access'] == 'workspace_write'
     catalog = model_visible_subagent_catalog(settings)
-    assert catalog['rows'][0]['mutating_access'] == 'workspace_write'
-    assert validate_subagent_snapshot(before).get('access', 'workspace_write') == 'workspace_write'
+    assert catalog['rows'][0]['mutating_access'] == 'full'
+    assert validate_subagent_snapshot(before)['access'] == 'full'
+    legacy = {key: value for key, value in before.items() if key != 'access'}
+    assert validate_subagent_snapshot(legacy).get('access', 'workspace_write') == 'workspace_write'
 
 
 def test_saved_full_access_reaches_dispatch_preflight_without_mutable_settings(full_run, monkeypatch):
@@ -267,7 +269,7 @@ def test_owner_http_save_projects_full_choice_into_task_start_snapshot(monkeypat
     with TestClient(app) as client:
         response = client.post('/api/settings', json={SUBAGENTS_SETTING: config})
         assert response.status_code == 200, response.text
-        assert json.loads(json.loads(isolated_settings.read_text(encoding="utf-8"))[SUBAGENTS_SETTING])['items'][0]['access'] == 'full'
+        assert json.loads(json.loads(isolated_settings.read_text(encoding='utf-8'))[SUBAGENTS_SETTING])['items'][0]['access'] == 'full'
         start = apply_task_start_settings()
         selected, _ = select_subagent_snapshot(start.settings, subagent_id='phone-coder')
         assert selected['access'] == 'full'

@@ -17,6 +17,8 @@ from typing import Any, Mapping, Optional
 from ouroboros.configured_subagents import (
     ConfiguredSubagent,
     ConfiguredSubagentsResolution,
+    SESSION_ACCESS_PROFILES,
+    SESSION_ACCESS_LOWERING,
     SOURCE_INVALID,
     SOURCE_LEGACY_MIGRATED,
     SOURCE_UNDECIDED,
@@ -282,6 +284,7 @@ def select_subagent_snapshot(
     legacy_executor: Any = None,
     legacy_model_lane_supplied: bool = False,
     legacy_executor_supplied: bool = False,
+    access: Optional[str] = None,
 ) -> tuple[dict[str, Any], bool]:
     """Resolve one row and return ``(immutable_snapshot, used_legacy_seam)``.
 
@@ -326,7 +329,7 @@ def select_subagent_snapshot(
         row = matches[0]
         used_legacy = True
 
-    return {
+    return validate_subagent_snapshot({
         "schema": 1,
         "selected_subagent_id": row.subagent_id,
         "config_fingerprint": configured_subagents_fingerprint(config),
@@ -338,33 +341,37 @@ def select_subagent_snapshot(
         "effort": row.effort,
         "processing_preference": resolve_processing_preference(
             override=row.processing_preference or None, settings=dict(settings)),
-        **({"access": row.access} if row.access != "workspace_write" else {}),
+        **({"access": row.access} if row.route.is_session else {}),
         "selected_at": utc_now_iso(),
-    }, used_legacy
+    }, access=access), used_legacy
 
 
-def validate_subagent_snapshot(raw: Any) -> dict[str, Any]:
-    """Validate the small durable execution subset without consulting settings."""
+def validate_subagent_snapshot(raw: Any, *, access: Optional[str] = None) -> dict[str, Any]:
+    """Validate captured intent and optionally lower it, never consult live settings."""
 
     snapshot = dict(raw) if isinstance(raw, dict) else {}
     route = snapshot.get("route") if isinstance(snapshot.get("route"), dict) else {}
     kind = str(route.get("kind") or "")
     target = str(route.get("target_id") or "").strip()
-    from ouroboros.subagents import is_mutating_delegated_access
-
-    access = snapshot.get("access", "workspace_write")
+    captured_access = snapshot.get("access", "workspace_write")
     if (
         int(snapshot.get("schema") or 0) != 1
         or not str(snapshot.get("selected_subagent_id") or "").strip()
         or not str(snapshot.get("config_fingerprint") or "").strip()
         or kind not in {"api_model", "agent_session"}
         or not target
-        or not is_mutating_delegated_access(access)
-        or (access == "full" and kind != "agent_session")
+        or captured_access not in (*SESSION_ACCESS_PROFILES, "readonly")
+        or ("access" in snapshot and kind != "agent_session")
     ):
         raise SubagentSelectionError(
             "subagent_snapshot_invalid", "The task has no complete immutable subagent snapshot."
         )
+    if access is not None:
+        if kind != "agent_session" or access not in SESSION_ACCESS_LOWERING:
+            raise SubagentSelectionError(
+                "subagent_access_invalid", "access may only lower an agent_session to readonly or workspace_write.")
+        if access == "readonly" or captured_access == "full":
+            snapshot["access"] = access
     from ouroboros.model_slots import normalize_processing_preference
 
     try:
@@ -527,10 +534,6 @@ def resolve_configured_actor_dispatch(
     )
 
 
-def current_exact_start_selection() -> dict[str, Any]:
-    return dict(_EXACT_START_SELECTION.get() or {})
-
-
 def current_subagent_alternatives(exclude_id: str = "") -> list[dict[str, Any]]:
     """Project the current saved choices without ranking or probing them."""
 
@@ -600,7 +603,7 @@ def prepare_delegate_start_actor(
     from ouroboros import delegate_custody as custody
     from ouroboros.delegate_recovery import unsettled_start_ids
     from ouroboros.delegate_shared import _fail
-    selection = current_exact_start_selection()
+    selection = dict(_EXACT_START_SELECTION.get() or {})
     selected_snapshot = selection.get("snapshot")
     if recovering:
         if selected_snapshot:
@@ -740,14 +743,15 @@ def exact_start(ctx: Any, prompt: str, spec: Optional[dict[str, Any]] = None) ->
     ).strip()
     coordination_context = str(options.pop("_coordination_context", "") or "")
     work_order_source_request = options.pop("work_order_source_request", None)
+    access = options.pop("access", None)
     try:
         if str(options.get("retry_of") or "").strip() and (
-            selected_id or selected_snapshot is not None
+            selected_id or selected_snapshot is not None or access is not None
         ):
             raise SubagentSelectionError(
                 "retry_selector_conflict",
                 "retry_of replays its already-bound immutable route and cannot accept a new "
-                "subagent selector.",
+                "subagent selector or access choice.",
             )
         if selected_id and selected_snapshot is not None:
             raise SubagentSelectionError(
@@ -766,7 +770,7 @@ def exact_start(ctx: Any, prompt: str, spec: Optional[dict[str, Any]] = None) ->
                 subagent_id=selected_id,
             )
         if selected_snapshot is not None:
-            selected_snapshot = validate_subagent_snapshot(selected_snapshot)
+            selected_snapshot = validate_subagent_snapshot(selected_snapshot, access=access)
     except SubagentSelectionError as exc:
         from ouroboros.delegate_shared import _fail
 
@@ -909,6 +913,10 @@ def delegate_start_entry(ctx: Any, prompt: str, _resolved_binding: Any = None, *
         # argument the replay cannot honor is refused typed, never silently
         # discarded (the fresh-start refusals, mirrored).
         expected_id = str(bootstrap.get("selected_subagent_id") or "")
+        if params.get("access") is not None:
+            _blocked("retry_selector_conflict")
+            return _fail("delegate_start", "retry_selector_conflict",
+                         "A retry replays its recorded access; omit access.")
         requested_id = str(params.get("subagent_id") or "").strip()
         if requested_id and requested_id != expected_id:
             _blocked("configured_actor_route_mismatch")
@@ -955,7 +963,6 @@ def delegate_start_entry(ctx: Any, prompt: str, _resolved_binding: Any = None, *
 __all__ = [
     "SubagentSelectionError",
     "apply_task_start_settings",
-    "current_exact_start_selection",
     "current_model_visible_subagent_catalog",
     "current_subagent_alternatives",
     "delegate_start_entry",

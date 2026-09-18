@@ -85,16 +85,17 @@ def route_health(
         # skip (2026-08-18 precedent: the pin is itself an explicit owner row).
         return "route_disabled", ""
     supported = [str(v) for v in entry.get("accessProfilesSupported") or []]
-    # A DELEGATED run is externally confined, and the engine rewrites its access to
+    # Older engines externally confined a delegated workspace-write run as
     # `external_sandbox_full` before admitting it (`RequestRequirementsResolver.adapterAccess`)
     # — so the profile the route must declare is that one, not the literal the request
-    # carries. Comparing the literal refused every route whose adapter stands its own
+    # carries. Full access must be advertised literally; that legacy conversion
+    # cannot prove it. Comparing the literal refused every route whose adapter stands its own
     # sandbox down in favour of the engine's boundary and therefore declares only the
     # confined profile: today opencode, which was given `external_sandbox_full` for
     # exactly this run. Refusing what the engine would admit turned `executor="harness"`
     # into a typed blocker and `auto` into a silent, metered drop to a native child.
     if shape.access not in supported and not (
-        shape.delegated and "external_sandbox_full" in supported
+        shape.access == "workspace_write" and shape.delegated and "external_sandbox_full" in supported
     ):
         return f"access_profile_unsupported:{shape.access}", ""
     # An engine below the marker floor REJECTS `execution.delegated` outright — the field

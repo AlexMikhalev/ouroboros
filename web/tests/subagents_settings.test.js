@@ -48,6 +48,7 @@ function apiRow(overrides = {}) {
 function sessionRow(overrides = {}) {
     return {
         subagent_id: 'codex_builder',
+        access: 'full',
         recommended_use: 'Implementation in a real workspace.',
         route: {
             kind: ROUTE_KIND_AGENT_SESSION,
@@ -847,16 +848,16 @@ test('the head dot takes the worse of the two status axes', () => {
     assert.match(availableSubagentRowMarkup(apiRow(), live, 0), /data-tone="neutral"[^>]*>Saved · Checked at start</);
 });
 
-test('actor access round-trips full while default keeps the previous fingerprint', () => {
+test('actor access defaults to full and round-trips an explicit lower choice', () => {
     const defaults = setting([apiRow(), sessionRow()]);
-    const explicit = setting([apiRow({ access: 'workspace_write' }), sessionRow({ access: 'workspace_write' })]);
-    assert.deepEqual(parseAvailableSubagentsSetting(explicit).setting, defaults);
-    assert.equal(subagentSettingsFingerprint(explicit), subagentSettingsFingerprint(defaults));
+    const explicit = setting([apiRow(), sessionRow({ access: 'workspace_write' })]);
+    assert.deepEqual(parseAvailableSubagentsSetting(explicit).setting, explicit);
+    assert.notEqual(subagentSettingsFingerprint(explicit), subagentSettingsFingerprint(defaults));
     const full = setting([sessionRow({ access: 'full' })]);
     const parsed = parseAvailableSubagentsSetting(JSON.stringify(full));
     assert.equal(parsed.error, '');
     assert.deepEqual(buildAvailableSubagentsSetting(parsed.setting), full);
-    assert.notEqual(subagentSettingsFingerprint(full), subagentSettingsFingerprint(setting([sessionRow()])));
+    assert.equal(subagentSettingsFingerprint(full), subagentSettingsFingerprint(setting([sessionRow()])));
     for (const access of [null, '', 'FULL', ' full ', false, 'readonly', 'inherit_native']) {
         assert.equal(parseAvailableSubagentsSetting(setting([sessionRow({ access })])).setting, null);
     }
@@ -871,7 +872,7 @@ test('session access uses a named native select with a readable capability expla
     const html = availableSubagentRowMarkup(sessionRow({ access: 'full' }), QUIET_STATE);
     assert.match(html, /<select class="ui-control"[^>]*data-subagent-field="access"/);
     assert.match(html, /value="full" selected>Full system access/);
-    assert.match(html, /Working files \(default\)/);
+    assert.match(html, /Full system access \(default\)/);
     assert.match(html, /Full system access can reach outside the working folder/);
     assert.match(html, /The selected agent must support it/);
     assert.doesNotMatch(availableSubagentRowMarkup(apiRow(), QUIET_STATE), /data-subagent-field="access"/);
@@ -913,28 +914,28 @@ function accessEditorDom() {
     return { doc: { getElementById: () => container }, row: (index = 0) => rows[index] };
 }
 
-test('access edit saves and clones full, resets for API and omits restored default', () => {
+test('access edit saves and clones the lower choice, resets for API and restores full', () => {
     const dom = accessEditorDom();
     const changes = [];
     const editor = createAvailableSubagentsEditor({ doc: dom.doc, win: null, onChange: (value) => changes.push(value) });
     editor.load(setting([sessionRow()]));
     const control = (name, index = 0) => dom.row(index).querySelector(`[data-subagent-field="${name}"]`);
-    control('access').emit('change', 'full');
+    control('access').emit('change', 'workspace_write');
     assert.equal(editor.dirty, true);
-    assert.equal(editor.collect().OUROBOROS_SUBAGENTS.items[0].access, 'full');
+    assert.equal(editor.collect().OUROBOROS_SUBAGENTS.items[0].access, 'workspace_write');
     assert.equal(changes.at(-1).items[0].route.access, undefined);
     assert.match(control('access').attributes['aria-describedby'], /-access-help/);
     dom.row().querySelector('[data-subagent-duplicate]').emit('click');
     assert.equal(editor.setting.items.length, 2);
-    assert.equal(editor.setting.items[1].access, 'full');
+    assert.equal(editor.setting.items[1].access, 'workspace_write');
     assert.notEqual(editor.setting.items[0].subagent_id, editor.setting.items[1].subagent_id);
     control('route', 1).emit('change', 'api');
     assert.equal(editor.setting.items[1].access, undefined);
     assert.equal(control('access', 1), null);
     control('model', 1).emit('input', 'openai/gpt-5.6-luna');
     assert.deepEqual(editor.validate(), []);
-    control('access').emit('change', 'workspace_write');
-    assert.equal(editor.collect().OUROBOROS_SUBAGENTS.items[0].access, undefined);
+    control('access').emit('change', 'full');
+    assert.equal(editor.collect().OUROBOROS_SUBAGENTS.items[0].access, 'full');
     editor.destroy();
 });
 

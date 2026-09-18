@@ -21,6 +21,7 @@ SUBAGENTS_SETTING = "OUROBOROS_SUBAGENTS"
 SUBAGENTS_RECEIPT_KEY = "OUROBOROS_SUBAGENT_PRESET_RECEIPT"
 MAX_CONFIGURED_SUBAGENTS = 10
 SESSION_ACCESS_PROFILES = ("workspace_write", "full")
+SESSION_ACCESS_LOWERING = ("readonly", "workspace_write")
 # Removal marker, not a runtime gate: the singleton/Heavy reader is intentionally
 # one compatibility window rather than a permanent second configuration system.
 LEGACY_SUBAGENT_COMPATIBILITY = "remove_after_next_minor_release"
@@ -71,7 +72,7 @@ class ConfiguredSubagent:
     route: RouteSpec = None  # type: ignore[assignment]
     effort: str = ""
     processing_preference: str = ""
-    access: str = "workspace_write"
+    access: str = "full"
 
 
 @dataclass(frozen=True)
@@ -192,11 +193,11 @@ def parse_configured_subagents(raw: Any) -> ConfiguredSubagents:
             reject_api_pin=True,
         )
         _validate_session_target(route, where)
-        access = row.get("access", "workspace_write")
-        if not isinstance(access, str) or access not in SESSION_ACCESS_PROFILES:
+        access = row.get("access", "full") if route.is_session else ""
+        if route.is_session and (not isinstance(access, str) or access not in SESSION_ACCESS_PROFILES):
             raise ValueError(f"{SUBAGENTS_SETTING}: {where}.access must be workspace_write or full")
-        if access != "workspace_write" and not route.is_session:
-            raise ValueError(f"{SUBAGENTS_SETTING}: {where}.access full is meaningful only for agent_session")
+        if "access" in row and not route.is_session:
+            raise ValueError(f"{SUBAGENTS_SETTING}: {where}.access is meaningful only for agent_session")
         effort = _effort(row.get("effort"), where)
         validate_compound_session_effort(
             route, effort, setting=SUBAGENTS_SETTING, where=where,
@@ -230,8 +231,8 @@ def configured_subagents_dict(config: ConfiguredSubagents) -> dict[str, Any]:
             payload["effort"] = row.effort
         if row.processing_preference:
             payload["processing_preference"] = row.processing_preference
-        # Preserve old canonical bytes/fingerprints when the owner kept the default.
-        if row.access != "workspace_write":
+        # A saved lower choice must not become the full default on its next read.
+        if row.route.is_session:
             payload["access"] = row.access
         items.append(payload)
     return {"enabled": config.enabled, "items": items}
@@ -574,6 +575,7 @@ __all__ = [
     "PRIMARY_RECOMMENDATION",
     "SCOUT_RECOMMENDATION",
     "SESSION_ACCESS_PROFILES",
+    "SESSION_ACCESS_LOWERING",
     "SOURCE_CONFIGURED",
     "SOURCE_INVALID",
     "SOURCE_LEGACY_MIGRATED",
