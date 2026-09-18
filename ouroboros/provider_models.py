@@ -450,9 +450,8 @@ DEEPSEEK_DIRECT_DEFAULTS = {
     # caveat), so the slot follows the OpenAI/Anthropic fill pattern rather
     # than the MiniMax clear-instead-of-fill path (whose guaranteed floor was
     # 512K). The route's /models endpoint publishes NO window metadata, so the
-    # ≥1M authority for blocking deep/scope review in Max mode still requires
-    # the owner capability acknowledgement — until then the gate fails closed
-    # loudly rather than silently degrading (see ARCHITECTURE §7).
+    # sizing remains evidence-driven; a missing window measurement does not
+    # remove review authority (see ARCHITECTURE §7).
     "deep_self_review": "deepseek::deepseek-v4-pro",
     # No vision default: deepseek-v4-flash-vision-exp is experimental; it is
     # recognized by supports_vision() for explicit owner selection only.

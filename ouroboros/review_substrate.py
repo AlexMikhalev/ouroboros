@@ -163,6 +163,13 @@ def scope_reviewer_slots(
     legacy path used to take this parameter's old literal default instead,
     silently running the BLOCKING reviewer below configured strength (the
     downgrade class the owner forbade).
+
+    Every scope row delivers by RETRIEVAL (owner decision 2026-09-17): an
+    ``api_chat`` row on this surface means a bounded native inspection episode
+    on that model, an ``agent_session`` row a delegated read-only session.
+    ``scope_delivery_rows`` states that on the row itself, so the transport
+    seam reads one fact instead of inferring delivery from an actor id the
+    scope surface does not require.
     """
     if effort is None:
         from ouroboros.config import resolve_effort
@@ -173,14 +180,30 @@ def scope_reviewer_slots(
 
         structured = structured_scope_review_slots()
         if structured is not None:
-            return structured
+            return scope_delivery_rows(structured)
         # Resolved at call time so the configured list stays the live authority.
         from ouroboros.config import get_scope_review_models
 
         models = get_scope_review_models()
-    return reviewer_slots(
+    return scope_delivery_rows(reviewer_slots(
         models, effort=effort, role_hint=SCOPE_ROLE_HINT, id_prefix=SCOPE_SLOT_ID_PREFIX,
-    )
+    ))
+
+
+def scope_delivery_rows(slots: List[ReviewSlot]) -> List[ReviewSlot]:
+    """Mark every ``api_chat`` scope row as a native retrieving reviewer.
+
+    The scope surface owns the delivery of its own rows, so the fact rides the
+    row rather than a synthesized ``subagent_id``: identity, route, model,
+    credential pin, effort, processing preference and local-route flag stay
+    exactly as configured.
+    """
+    return [
+        replace(slot, native_retrieval_override=True)
+        if str(getattr(slot.route, "value", slot.route) or "") == ReviewRouteKind.API_CHAT.value
+        else slot
+        for slot in slots
+    ]
 
 
 def review_usage_category(surface: str) -> str:

@@ -221,9 +221,9 @@ def _enforce_task_timeouts_locked(
             float(_queue().get_task_idle_timeout_sec()),
             float(_queue().get_per_call_timeout_ceiling_sec()) + 120.0,
         )
-        # deep_self_review runs a single long 1M-context LLM call with NO intermediate
-        # progress events (no tool loop), so the idle timer governs it from started_at;
-        # its prior ~60min tolerance is preserved so it is not idle-killed mid-call.
+        # Deep review can spend a long interval reasoning between tool calls.
+        # Preserve its one-hour idle tolerance; episode deadlines and absolute
+        # ceilings still apply independently.
         if task_type == "deep_self_review":
             idle_timeout = max(idle_timeout, 3600.0)
         abs_ceiling = float(_queue().get_task_abs_ceiling_sec())

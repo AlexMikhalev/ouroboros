@@ -107,7 +107,7 @@ test('the deep self-review row rides the composed setting on the shared vocabula
     // no `deep_review` key is ever invented.
     assert.equal('deep_review' in JSON.parse(buildReviewerSlotsSetting(base)), false);
 
-    // A direct api row: the packed review. '' effort is OMITTED (the
+    // A direct api row: the inspection episode. '' effort is OMITTED (the
     // Behavior-tab deep effort keeps deciding); the synthesized label and the
     // fixed identity never reach the saved bytes.
     const api = JSON.parse(buildReviewerSlotsSetting({
@@ -135,14 +135,17 @@ test('the deep self-review row rides the composed setting on the shared vocabula
     assert.deepEqual(ref.deep_review, { subagent_id: 'deep-critic' });
 });
 
-test('the deep self-review block says the ONE difference from the advisory where the owner picks', () => {
+test('the deep self-review block states the delivery where the owner picks', () => {
     const markup = renderReviewerSlotsSection();
     assert.match(markup, /<h4[^>]*>Deep self-review<\/h4>/);
     assert.match(markup, /id="reviewer-deep-review-row"/);
-    // API model = one packed review here; the advisory's API model = inspection episode.
-    assert.match(markup, /receives ONE packed review/);
-    assert.match(markup, /unlike the advisory, whose API model runs an inspection episode/);
+    // Same delivery as the advisory: an API model runs the inspection episode.
+    assert.match(markup, /Delivery is the same\s+as the advisory's/);
+    assert.doesNotMatch(markup, /packed|Atlas/);
+    assert.match(markup, /a model you name or a configured subagent/);
     assert.match(markup, /native\s+inspection episode with host-observed reads/);
+    assert.match(markup, /core rules supplied inline/);
+    assert.match(markup, /reference books available on demand/);
     assert.match(markup, /reads not host-observed/);
     assert.match(markup, /memory whitelist reaches the reviewer\s+inline byte-exact/);
     assert.match(markup, /outranks the Behavior-tab deep\s+self-review effort/);
@@ -151,8 +154,12 @@ test('the deep self-review block says the ONE difference from the advisory where
         { subagent_id: 'api-critic', route: { kind: 'api_model', target_id: 'openai/gpt-5.6-terra' } },
         { subagent_id: 'sess', route: { kind: ROUTE_KIND_SESSION, target_id: 'codex=gpt-5.6-sol' } },
     ];
-    assert.match(deepReviewDeliveryNote({ route: { kind: ROUTE_KIND_API, target_id: 'openai/x' } }), /One packed review/);
-    assert.match(deepReviewDeliveryNote({ route: { kind: ROUTE_KIND_API, target_id: 'openai/x' } }), /inspection episode instead/);
+    // A bare API route and a configured subagent on an API model say the SAME
+    // thing, because they are the same delivery.
+    assert.equal(deepReviewDeliveryNote({ route: { kind: ROUTE_KIND_API, target_id: 'openai/x' } }),
+        deepReviewDeliveryNote({ subagent_id: 'api-critic' }, { roster }));
+    assert.match(deepReviewDeliveryNote({ route: { kind: ROUTE_KIND_API, target_id: 'openai/x' } }), /Native inspection episode/);
+    assert.match(deepReviewDeliveryNote({ route: { kind: ROUTE_KIND_API, target_id: 'openai/x' } }), /host-observed/);
     assert.match(deepReviewDeliveryNote({ subagent_id: 'api-critic' }, { roster }), /Native inspection episode/);
     assert.match(deepReviewDeliveryNote({ subagent_id: 'api-critic' }, { roster }), /host-observed/);
     assert.match(deepReviewDeliveryNote({ subagent_id: 'api-critic' }, { roster }), /memory whitelist reaches it inline byte-exact/);
@@ -162,6 +169,24 @@ test('the deep self-review block says the ONE difference from the advisory where
     // Absence claims follow provenance, as everywhere in this editor.
     assert.match(deepReviewDeliveryNote({ subagent_id: 'gone' }, { roster }), /none exists with this ID/);
     assert.match(deepReviewDeliveryNote({ subagent_id: 'gone' }, { roster: [], rosterKnown: false }), /could not be read/);
+});
+
+test('the scope group states the delivery and asks for no window confirmation', () => {
+    // Owner decision (2026-09-17): a scope reviewer's context window is not a
+    // condition of its authority, so the note must not promise authority "once
+    // that agent's context window is confirmed at 200K or more" — the owner has no
+    // window to confirm and no place to confirm it. Both scope deliveries retrieve;
+    // what differs is who executed the reads, which is what the note now says.
+    const markup = renderReviewerSlotsSection();
+    const scopeAt = markup.indexOf('class="reviewer-slots-heading">Scope slots');
+    const note = markup.slice(scopeAt, markup.indexOf('id="reviewer-scope-rows"'));
+    assert.ok(scopeAt > 0, 'the Scope slots group exists');
+    assert.match(note, /Every scope row reads the repository itself/);
+    assert.match(note, /bounded inspection episode with host read-only tools/);
+    assert.match(note, /recovered from the harness run journal/);
+    assert.doesNotMatch(markup, /200K|200,000/);
+    assert.doesNotMatch(markup, /context window is\s+confirmed/);
+    assert.doesNotMatch(markup, /does not attest which files the agent opened/);
 });
 
 test('the Models tab no longer authors the deep self-review model (R7)', () => {

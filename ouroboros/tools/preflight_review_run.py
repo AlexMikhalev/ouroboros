@@ -584,6 +584,7 @@ def _run_claude_advisory(
 
     from ouroboros.review_evidence import commit_review_evidence_section
     resuming = bool(execution.get("pending_invocation_id"))
+    governance_facts: dict = {}  # the delivered tiers, filled in by the builder
     try:
         task_evidence = _prepare_advisory_task_evidence(ctx, repo_dir, options, execution, delegated_route)
     except (OSError, ValueError, TypeError) as exc:
@@ -614,12 +615,12 @@ def _run_claude_advisory(
                 changed_files_text = _car()._get_changed_file_list(repo_dir, paths=context_paths)
                 if changed_files_text.startswith("⚠️ ADVISORY_ERROR:"):
                     return assembly_failure(changed_files_text)
-                resolved_paths, touched_pack, omitted_paths = _car().build_advisory_changed_context(
-                    repo_dir,
-                    changed_files_text=changed_files_text,
-                    paths=context_paths,
-                    exclude_paths={"docs/ARCHITECTURE.md"},
-                )
+                # A retrieving reviewer receives the touched-path MANIFEST, so
+                # this is a path scope only: the bodies stay in its own tree.
+                from ouroboros.tools.review_file_pack import parse_changed_paths_from_porcelain
+
+                resolved_paths = (list(context_paths) if context_paths is not None
+                                  else parse_changed_paths_from_porcelain(changed_files_text))
                 preflight_err = _car()._syntax_preflight_staged_py_files(repo_dir, resolved_paths)
                 if preflight_err:
                     log.warning("Advisory skipped — syntax preflight blocked: %s", preflight_err.splitlines()[0])
@@ -627,7 +628,7 @@ def _run_claude_advisory(
             else:
                 diff_text = "(not included; this advisory review is scoped to the supplied payload pack)"
                 changed_files_text = "(not included; this advisory review is scoped to the supplied payload pack)"
-                resolved_paths, touched_pack, omitted_paths = [], "", []
+                resolved_paths = []
                 managed_subject_diff = False
 
             prompt = _car()._build_advisory_prompt(
@@ -640,18 +641,17 @@ def _run_claude_advisory(
                 prompt_context={
                     "diff": diff_text,
                     "changed_files": changed_files_text,
-                    "touched_pack": touched_pack,
-                    "omitted_paths": omitted_paths,
                     "review_surface": review_surface,
                     "review_rebuttal": str(options.get("review_rebuttal") or ""),
                     "expected_items": expected_items,
                     "task_evidence_section": task_evidence_section,
+                    # Both deliveries RETRIEVE, so no body is inlined: touched
+                    # files arrive as their manifest and governance arrives
+                    # tiered against THIS row's window (hence the route here).
+                    "reviewer_model": model,
+                    "reviewer_use_local": getattr(_slot, "use_local", None),
+                    "governance_facts": governance_facts,
                 },
-                # Both deliveries RETRIEVE governance docs via mandatory-read
-                # pointers (the session with its own tools, the native episode with
-                # host inspection tools): the inlined multi-hundred-KB governance
-                # pack died with the Claude-SDK transport.
-                governance_by_retrieval=True,
             )
         except Exception as exc:
             return assembly_failure(f"⚠️ ADVISORY_ERROR: failed to build advisory prompt: {exc}")
@@ -692,13 +692,12 @@ def _run_claude_advisory(
             scope_effort = _slot.effort or "low"
             if _car().owner_deadline_exhausted_for_context(ctx, reserve_sec=_car().get_finalization_grace_sec()):
                 raise TimeoutError("owner deadline leaves no dispatch window for advisory review")
-            # The documents the pointer form requires read IN FULL, measured
-            # from the files at prompt-build time: the episode's bound is
-            # lifted to hold them when the reviewer's window allows, else the
-            # prompt and the episode facts carry the typed shortfall code.
+            # The reading this brief requires IN FULL: the touched bodies its
+            # manifest names (the activated rules are already inline). The
+            # episode declares it and types a reading across working views.
             result, model = _car()._run_advisory_native(
                 prompt, repo_dir, ctx, _slot, model,
-                mandatory_read_corpus_chars=_car()._mandatory_read_corpus_chars(repo_dir, review_surface),
+                mandatory_read_corpus_chars=_car()._mandatory_read_corpus_chars(repo_dir, resolved_paths),
                 **({"task_evidence": task_evidence} if task_evidence else {}),
             )
 
@@ -726,6 +725,8 @@ def _run_claude_advisory(
             "review_surface": review_surface,
             "effort": scope_effort,
             "status": "completed" if getattr(result, "success", False) else "error",
+            # Disclosure (BIBLE P1): what governance this brief delivered.
+            "governance_manifest": list(governance_facts.get("governance_manifest") or []),
         }
         try:
             setattr(ctx, "_last_claude_advisory_meta", dict(meta))

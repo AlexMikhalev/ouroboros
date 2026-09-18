@@ -28,8 +28,9 @@ _MIN_CLAIMS_FOR_SYNTHESIS = 2
 
 _SYNTHESIS_PROMPT_TEMPLATE = (
     "You are a code-review claim synthesizer. You receive a list of raw findings\n"
-    "from multiple independent reviewers (triad diff-reviewers + one Atlas-backed\n"
-    "scope reviewer). Your job is to produce a deduplicated canonical list.\n"
+    "from multiple independent reviewers (triad diff-reviewers + the\n"
+    "whole-repository scope reviewer). Your job is to produce a deduplicated\n"
+    "canonical list.\n"
     "\n"
     "## Rules\n"
     "\n"
@@ -358,17 +359,17 @@ def build_scope_review_prompt(
     critical_calibration: str,
     task_evidence_section: str = "",
 ) -> tuple:
-    # STABLE-FIRST for provider prompt caching: instructions, checklist and
-    # canonical docs are byte-stable across commits and form the cache-marked
-    # prefix; goal/scope/history/diff/atlas are the per-commit tail. The
-    # boundary is recorded in _SCOPE_STABLE_PREFIX_LEN (later placeholder
-    # substitution and touched-file degradation only edit the dynamic tail).
+    # STABLE-FIRST for provider prompt caching: instructions, checklist and the
+    # always-inline governance tier are byte-stable across commits and form the
+    # cache-marked prefix; goal/scope/history/diff/index are the per-commit
+    # tail. The returned boundary is the length of that prefix.
     stable = f"""\
 {REVIEW_PREAMBLE}
 
 ## Your role
 
-You are the Atlas-backed whole-repository reviewer. Diff reviewers cover line-level mistakes;
+You are the whole-repository reviewer, and you REACH the repository with your own
+read-only tools. Diff reviewers cover line-level mistakes;
 you cover cross-module contracts, forgotten touchpoints, hidden regressions,
 prompt/doc sync, architecture fit, and end-to-end intent completeness.
 
@@ -436,8 +437,9 @@ Do NOT invent a new id for the same root cause.
 
 ## Canonical Documentation Context
 
-These files are always included explicitly. Do not treat their absence from the
-wider repository pack as omission.
+These rules are inlined for every review of every change. Every other governance
+document is named in the navigation below and is one read away; none of them is
+omitted.
 
 {canonical_docs}
 """
@@ -448,13 +450,12 @@ wider repository pack as omission.
 
 {task_evidence_section}
 
-## Current touched files (post-change — what the file looks like NOW)
+## Touched files
 
-Files deleted by this diff appear here with an explicit `DELETED` marker and
-their HEAD content inlined unless a typed marker states otherwise (suppressed
-content, or a budget-degraded snapshot); other removed lines are visible via
-the staged diff below. HEAD versions of modified files are not sent as a
-separate section — the staged diff below already shows every `-` line.
+The manifest below names every path this change touches, with what happened to
+it and how large it is in the candidate tree. No file body is inlined: the
+staged diff carries every added and removed line, and you read any file itself
+with your own tools.
 
 {current_files_section}
 

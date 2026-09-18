@@ -1016,7 +1016,7 @@ def run_delegated_review_session(
             "custody_durable": custody_durable,
             "idempotent_recovery": recovering,
             "settlement": settlement,
-            "route_id": str(entry.route_id),
+            "route_id": str(entry.route_id), "run_dir": str(summary.get("runDir") or ""),
             # One final attempt, never the requested pool or a mixed summary route.
             "effective_route_ids": [observed["harness_id"]] if observed.get("harness_id") else [],
             "observed_attempt": observed,
@@ -1429,6 +1429,21 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
                 "effective": f"model {facts['model']}",
                 "reason": "session_route_resolves_its_own_model",
             })
+        # What the vendor harness READ, folded from the tool-call journal the
+        # engine keeps under the run directory (`run_dir`, the only witness of a
+        # session's reads there is): the same usage facts a native episode folds
+        # from its host-executed receipts, under the weaker `harness_observed`
+        # provenance. The verdict is paid evidence, so the fold never raises out
+        # of settlement — an unreadable journal is a disclosed `unobserved`.
+        from ouroboros.review_session_reads import session_read_facts
+
+        policy = request.policy or {}
+        self._session_usage.update(session_read_facts(
+            str(facts.get("run_dir") or ""), policy,
+            session_root=str(request.session_root or ""),
+            store={"root": policy.get("native_data_root") or self.assignment.custody_root,
+                   "task_id": request.task_id or "review", "run_id": self._run_id,
+                   "source_id": f"{self.assignment.call_id}-session-reads"}))
         # PAID EVIDENCE: the transcript always feeds the parser whole. A profile
         # continuity `cannot_verify` is telemetry, never a reason to blank it.
         self._raw_transcript = facts["text"]
@@ -1492,6 +1507,11 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
             "delegated_run_id": self._run_id,
             "verdict_method": method,
         }
+        if usage.get("native_incomplete"):
+            # The partial-product fact travels WITH the product, exactly as the
+            # native episode carries it: a consumer reading the text alone must
+            # still see that a required source went unread.
+            message["native_incomplete"] = usage["native_incomplete"]
         return ReviewAttemptResult(message=message, usage=usage, raw_text=canonical)
     def _emit_capability_delta(self, deltas: List[Dict[str, Any]], method: str) -> None:
         """Durable half of the disclosure (D4): every landing below what was

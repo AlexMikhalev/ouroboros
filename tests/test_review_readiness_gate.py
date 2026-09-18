@@ -214,58 +214,6 @@ class TestReadinessGateBlocksBeforeAlreadyFresh:
             assert not any("large" in w.lower() for w in warnings)
 
 
-class TestBuildAdvisoryChangedContextNoDuplicateGitStatus:
-    """build_advisory_changed_context must not perform a second git-status call."""
-
-    def test_uses_changed_files_text_not_second_git_status(self, tmp_path):
-        """When paths is None, resolved paths come from changed_files_text, not a new subprocess."""
-        from ouroboros.tools.review_helpers import build_advisory_changed_context
-
-        porcelain_text = "M  ouroboros/loop.py\nM  ouroboros/tools/review_helpers.py\n"
-
-        subprocess_call_count = [0]
-
-        def mock_subprocess_run(cmd, **kwargs):
-            subprocess_call_count[0] += 1
-            result = MagicMock(returncode=0)
-            result.stdout = b""
-            return result
-
-        with patch("ouroboros.tools.review_helpers.subprocess.run", side_effect=mock_subprocess_run):
-            with patch("ouroboros.tools.review_helpers.build_touched_file_pack", return_value=("(touched files)", [])):
-                resolved, touched, omitted = build_advisory_changed_context(
-                    tmp_path,
-                    changed_files_text=porcelain_text,
-                    paths=None,
-                )
-
-        # No subprocess calls should have been made (paths resolved from porcelain text)
-        assert subprocess_call_count[0] == 0, (
-            f"Expected 0 subprocess calls, got {subprocess_call_count[0]}; "
-            "build_advisory_changed_context must use changed_files_text, not a second git-status"
-        )
-        assert "ouroboros/loop.py" in resolved
-        assert "ouroboros/tools/review_helpers.py" in resolved
-
-    def test_explicit_paths_override_changed_files_text(self, tmp_path):
-        """When paths is explicitly provided, it overrides changed_files_text entirely."""
-        from ouroboros.tools.review_helpers import build_advisory_changed_context
-
-        explicit_paths = ["ouroboros/agent.py"]
-        porcelain_text = "M  ouroboros/loop.py\n"
-
-        with patch("ouroboros.tools.review_helpers.build_touched_file_pack", return_value=("(pack)", [])):
-            resolved, touched, omitted = build_advisory_changed_context(
-                tmp_path,
-                changed_files_text=porcelain_text,
-                paths=explicit_paths,
-            )
-
-        # Explicit paths take precedence — porcelain_text paths should NOT appear
-        assert resolved == ["ouroboros/agent.py"]
-        assert "ouroboros/loop.py" not in resolved
-
-
 class TestSharedGitReviewHelpers:
     """Regression coverage for shared review/git parsing helpers."""
 

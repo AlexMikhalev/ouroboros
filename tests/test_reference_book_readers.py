@@ -96,7 +96,6 @@ def test_the_live_books_reach_the_packed_review_surfaces_whole():
 # --- the canonical corpus --------------------------------------------------
 
 def test_a_chapter_is_canonical_exactly_as_its_entrypoint_was(tmp_path):
-    from ouroboros.tools.review_context_atlas import atlas_required_beyond_diff
     from ouroboros.tools.review_helpers import (
         canonical_governance_sources,
         is_canonical_governance_path,
@@ -105,9 +104,6 @@ def test_a_chapter_is_canonical_exactly_as_its_entrypoint_was(tmp_path):
     assert is_canonical_governance_path("docs/architecture/06-agent-core.md")
     assert is_canonical_governance_path("docs/DEVELOPMENT.md")
     assert not is_canonical_governance_path("docs/reference-books-migration.md")
-    # Owed in full regardless of the change: the staged diff is never a
-    # substitute for a canonical artifact, chapter or entrypoint.
-    assert atlas_required_beyond_diff("docs/development/06-rules-by-change-class.md")
 
     _chaptered_corpus(tmp_path)
     (tmp_path / "BIBLE.md").write_text("# Constitution\n", encoding="utf-8")
@@ -212,17 +208,24 @@ def test_every_chapter_over_the_read_cap_is_covered_by_the_prefix_guarantee():
 
 # --- the mandatory-read corpus --------------------------------------------
 
-def test_the_mandatory_read_pointer_measures_the_book_not_its_membership_page():
-    from ouroboros.tools import preflight_review_prompt as prompt
+def test_the_governance_tiers_account_for_the_chapters_not_the_membership_page():
+    """A reviewer budgeted for a book must be budgeted for its CHAPTERS: the
+    governance tiers select, measure and disclose chapter sources, so an
+    entrypoint's own membership page never stands in for the book it lists."""
+    from ouroboros.reference_books import book_path_role
+    from ouroboros.tools.preflight_review_prompt import advisory_governance_context
 
-    measured = prompt._mandatory_read_corpus_chars(REPO)
+    rows = {row["path"]: row for row in advisory_governance_context(
+        REPO, touched_paths=["ouroboros/loop.py"]).manifest}
     entrypoints = sum(len((REPO / rel).read_text(encoding="utf-8"))
                       for rel in BOOK_ENTRYPOINTS.values())
+    chapters = [row for path, row in rows.items() if book_path_role(path) == "chapter"]
+    measured = sum(int(row["chars"]) for row in chapters)
     assert measured > 20 * entrypoints, (
-        "a retrieving reviewer told to read the books in full must be budgeted "
-        f"for their chapters; measured {measured} against {entrypoints} of membership"
+        f"measured {measured} of chapters against {entrypoints} of membership"
     )
-    assert set(prompt._MANDATORY_READ_DOCS) >= set(BOOK_ENTRYPOINTS.values())
+    for rel in BOOK_ENTRYPOINTS.values():
+        assert rows[rel]["disposition"] == "navigation", rel
 
 
 # --- physical reference and coverage readers -------------------------------
@@ -265,12 +268,15 @@ def test_a_non_constitutional_plan_pointer_maps_the_chapters(tmp_path):
 
 
 def test_the_scope_session_governance_map_addresses_chapters():
-    from ouroboros.tools.scope_review_session import governance_nav_maps
+    from ouroboros.tools.governance_context import governance_context
 
-    maps = governance_nav_maps(REPO, ("docs/ARCHITECTURE.md", "docs/CHECKLISTS.md"))
+    maps = governance_context(
+        REPO, surface="scope", touched_paths=(), delivery="retrieving",
+        checklist_section_text="(scope checklist)").navigation
     assert "Source: `docs/architecture/10-key-invariants.md`" in maps
-    # A non-book governance document keeps the single-source map.
-    assert "## docs/CHECKLISTS.md (navigation map)" in maps
+    # The checklist book arrives as its applicable section plus a pointer to the
+    # rest, so the navigation names it without mapping it.
+    assert "`docs/CHECKLISTS.md` — the complete checklist book" in maps
 
 
 def test_a_mandatory_full_read_pointer_enumerates_the_chapter_closure(tmp_path):

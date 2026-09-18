@@ -308,11 +308,13 @@ class TestScopeChecklistFailClosed:
     def test_missing_checklist_raises(self, monkeypatch):
         import pytest
 
-        import ouroboros.tools.scope_review as scope_review
+        import ouroboros.tools.scope_review_session as scope_session
 
-        monkeypatch.setattr(scope_review, "load_checklist_section", lambda *_a, **_k: "")
+        monkeypatch.setattr(scope_session, "load_checklist_section", lambda *_a, **_k: "")
         with pytest.raises(RuntimeError, match="fail-closed"):
-            scope_review._build_scope_prompt(pathlib.Path("."), "msg")
+            scope_session.build_scope_session_task(
+                pathlib.Path("."), scope_session.ScopeBriefInputs(commit_message="msg"),
+            )
 
 
 class TestStatusSetSSOT:
