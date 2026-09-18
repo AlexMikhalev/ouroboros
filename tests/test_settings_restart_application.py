@@ -58,6 +58,8 @@ def test_socket_owners_publish_only_successfully_bound_inputs(tmp_path, monkeypa
     with bound_service_socket(tmp_path, "host_service", "127.0.0.1", 0) as sock:
         port = sock.getsockname()[1]
         assert server_process.applied_restart_settings()["OUROBOROS_HOST_SERVICE_PORT"] == port
+        # Linux permits another SO_REUSEADDR bind until the server is listening.
+        sock.listen()
         with pytest.raises(OSError):
             with bound_service_socket(tmp_path, "main", "127.0.0.1", port):
                 pass
