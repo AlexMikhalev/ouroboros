@@ -370,7 +370,7 @@ def checkout_and_reset(branch: str, reason: str = "unspecified",
         fetch_remote = "origin"
 
     if fetch_remote:
-        rc, _, err = _go().git_capture(["git", "fetch", fetch_remote])
+        rc, _, err = _go()._git_network_bounded(["fetch", fetch_remote])
         if rc != 0:
             msg = f"git fetch {fetch_remote} failed: {err or 'unknown error'}"
             _go().append_jsonl(
