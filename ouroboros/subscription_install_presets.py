@@ -301,16 +301,6 @@ def _session_target(harness: str, model_id: str) -> str:
     return f"{harness}={model_id}"
 
 
-def _row_effort(seat: PresetSeat) -> str:
-    """A row's ``effort`` field.
-
-    Present on EVERY harness on purpose. On cursor the compound slug is what the
-    vendor honours, but the review/delegation surfaces materialize an effort
-    regardless — leaving the field empty would send the surface's global default
-    alongside a slug that says something else."""
-    return seat.effort
-
-
 def _resolved_row(seat: PresetSeat, model_id: str) -> Dict[str, Any]:
     return {
         "surface": seat.surface,

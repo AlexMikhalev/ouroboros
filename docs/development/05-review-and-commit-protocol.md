@@ -2,182 +2,39 @@
 
 This chapter owns the three stages of a reviewed commit — prepared preflight, the authoritative gate, and publication binding — together with the shared paid-cycle cap, the free-replay rules, the external-review evidence contract and the release-sync rule a pull request must obey. It exists because technical failure and commit permission are separate facts, and every rule here keeps a missing review from becoming a PASS.
 
-Keep optional task evidence outside the stable governance prefix; shrink its excerpt before reducing existing review material. A source pointer gives a packet-only model no retrieval capability. Rejoin preserves the original hash and project-local view while any physical reviewer may still read it. Removing an ignored view never deletes the canonical source; no separate notes corpus, blanket ToolResult metadata or mandatory whole-history read belongs to this evidence.
+Keep optional task evidence outside the stable governance prefix and shrink its excerpt before reducing existing review material; a source pointer gives a packet-only model no retrieval capability; rejoin preserves the original hash and project-local view while any physical reviewer may still read it; removing an ignored view never deletes the canonical source. No separate notes corpus, blanket ToolResult metadata or mandatory whole-history read belongs to this evidence.
 
-Reviewed commits separate improvement evidence from candidate-bound authority.
-Finish the edits and focused tests, then call `commit_reviewed`; standalone
-`preflight_review` remains available when an earlier critique is useful.
-`docs/CHECKLISTS.md` owns reviewer questions, severity and output contracts;
-ARCHITECTURE "Review delivery" owns the dataflow.
+Reviewed commits separate improvement evidence from candidate-bound authority: finish the edits and focused tests, then call `commit_reviewed` (standalone `preflight_review` stays available when an earlier critique is useful). `docs/CHECKLISTS.md` owns reviewer questions, severity and output contracts; ARCHITECTURE §6 "Review delivery" owns the dataflow.
 
-1. **Prepared preflight.** Authorization and unresolved-work checks precede
-   mechanical file preparation, staging/classification/protection and the
-   fingerprint. Existing free-cycle/budget admission precedes any automatic
-   preflight. When needed, the same `preflight_review` runs inline with the full
-   `review_rebuttal` and the independently applicable test preflight. The
-   candidate must remain unchanged before triad/scope dispatch. Explicit
-   `skip_advisory_review=True`, disabled and unconfigured paths retain their
-   audited behavior. A free advisory replay reads freshness but buys neither
-   another preflight nor another triad/scope wave. Stale coverage still needs
-   the explicit audited skip; applicable compensating tests run even when the
-   reviewer backend is available. Explicit test skips are not green proof.
-2. **Authoritative gate.** Independently configured deterministic test policy,
-   staged fingerprinting, triad review, applicable scope review, aggregation,
-   and pre/post revalidation. The exact binding: `docs/architecture/06-agent-core.md` § "Git and commit
-   review".
-3. **Publication binding.** The created commit/tag is checked against that same binding before push. Any
-   mutation, rebase, conflict resolution, or changed landing parent
-   invalidates exact-candidate authority and requires the applicable final
-   gate again.
+1. **Prepared preflight.** Authorization and unresolved-work checks precede mechanical file preparation, staging/classification/protection and the fingerprint; free-cycle/budget admission precedes any automatic preflight. When needed, `preflight_review` runs inline with the full `review_rebuttal` and the independently applicable test preflight. The candidate must remain unchanged before triad/scope dispatch. Explicit `skip_advisory_review=True`, disabled and unconfigured paths keep their audited behavior; a free advisory replay reads freshness but buys neither another preflight nor another triad/scope wave; stale coverage still needs the explicit audited skip, applicable compensating tests run even when the reviewer backend is available, and explicit test skips are not green proof.
+2. **Authoritative gate.** Independently configured deterministic test policy, staged fingerprinting, triad review, applicable scope review, aggregation, and pre/post revalidation — the exact binding: ARCHITECTURE §6 "Git and commit review".
+3. **Publication binding.** The created commit/tag is checked against that same binding before push; any mutation, rebase, conflict resolution or changed landing parent invalidates exact-candidate authority and requires the applicable final gate again.
 
-A technical review failure may permit continuing under owner-selected advisory
-enforcement on a known, independently bound candidate. The failure's phase,
-reason, received findings and full result stay recorded as failure, never PASS.
-Outside Cyber Pro, Blocking enforcement still blocks. Cyber may continue
-without prior review, preserving the original findings, missing sources and
-pending invocation. It never fabricates candidate bytes, completed custody or
-physical effects; Stop, deadline and cost facts remain independently recorded.
-Diagnostic
-`repo_commit_ready` projects this permission only from an exact repo/hash match;
-it does not change the failed review's status or freshness.
+A technical review failure may permit continuing under owner-selected advisory enforcement on a known, independently bound candidate; the failure's phase, reason, received findings and full result stay recorded as failure, never PASS. Outside Cyber Pro, Blocking enforcement still blocks. Cyber may continue without prior review, preserving the original findings, missing sources and pending invocation; it never fabricates candidate bytes, completed custody or physical effects, and Stop, deadline and cost facts stay independently recorded. Diagnostic `repo_commit_ready` projects this permission only from an exact repo/hash match and changes neither the failed review's status nor its freshness.
 
-Pending triad/scope reconciliation retains the prepared index and never
-restages or reconstructs a lost index; pending delegated preflight rejoins its
-exact durable invocation rather than posting a replacement, and an explicit
-audited preflight skip releases only logical admission — it neither cancels
-physical work nor erases its cost or custody (the custody mechanics, late
-results and the definite start-failure discharge:
-`docs/architecture/06-agent-core.md` § "Review delivery"). Both commit and
-review-only entry points forward the explicit skip; a subsequent standalone
-request can rejoin exact historical custody or check new evidence, and released
-unrelated history is not a logical lock. The external review wrapper uses the
-same cycle and retains its candidate checkout/index while custody remains
-unresolved.
+Pending triad/scope reconciliation retains the prepared index and never restages or reconstructs a lost index; pending delegated preflight rejoins its exact durable invocation rather than posting a replacement; an explicit audited preflight skip releases only logical admission — it neither cancels physical work nor erases its cost or custody (the audited-skip custody, exact rejoin and definite start-failure discharge: ARCHITECTURE §6 "Commit advisory cycle"; late results: "Late completion and typed refusals"). Both commit and review-only entry points forward the explicit skip; a later standalone request can rejoin exact historical custody or check new evidence, and released unrelated history is not a logical lock. The external review wrapper uses the same cycle and keeps its candidate checkout/index while custody is unresolved.
 
-Triad slots review the staged diff against `docs/CHECKLISTS.md`; duplicate
-model ids remain independent slots and `config.adaptive_quorum` owns quorum. A managed-update resolution commit reviews the declared M0→S resolution delta
-(the managed exception: `docs/architecture/06-agent-core.md` § "Git and commit
-review"). Scope slots deliver by RETRIEVAL, in every context mode: each row receives the
-brief — intent, touched-path manifest, repository index, governance tiers, the
-staged change and the change-relative required-source manifest — and reaches the
-rest of the body with its own read-only tools
-(`docs/architecture/06-agent-core.md` § "Review stack"). The reviewer's window
-neither grants nor removes that verdict's authority. Reading coverage is diagnostic on every route. Preserve complete, incomplete,
-declared-empty and unobserved facts beside the exact verdict; none removes a
-responding reviewer from quorum, blocks a commit or automatically starts a
-paid repeat. The author decides whether a concrete gap needs further reading.
-Native receipts attest delivered ranges; a session's journal provides weaker
-inferences and unknown extents remain unknown. A route or brief-assembly failure is not a clean
-verdict. The gate is one logical reviewer interaction per
-API slot, with at most one bounded second physical send on a same-route
-transport rail for a PACKET api row; a hosted agent-session slot is one
-multistep execution whose local extraction reuses its collected transcript.
-A native tool-round slot (an api row bound to a configured subagent) is
-likewise one multistep episode with no send count; its bounds and typed ends:
-`docs/architecture/06-agent-core.md` § "Review delivery". A retrieving delivery canonicalizes
-its answer by the surface's output SHAPE (`triad_review.review_output_shape`:
-`array` | `object` | `report`), never by surface-name branches inside the
-canonicalizer: the shape table is form only, and a new object- or
-report-shaped surface registers there instead of teaching the extraction rail
-another `if`.
+Triad slots review the staged diff against `docs/CHECKLISTS.md`; duplicate model ids remain independent slots and `config.adaptive_quorum` owns quorum. A managed-update resolution reviews the declared M0→S delta (ARCHITECTURE §6 "Git and commit review"). Every scope row retrieves, in every context mode: its brief supplies intent, touched-path manifest, repository index, governance tiers, the complete change inline or exactly addressed for paging, and a change-relative required-source manifest; the reviewer reads the rest across its working views (ARCHITECTURE §6 "Review stack"). Window size neither grants nor removes authority. Reading coverage is diagnostic on every route: preserve complete, incomplete, declared-empty and unobserved facts beside the verdict, without excluding a responding reviewer from quorum, blocking a commit or automatically buying another review. Native receipts attest delivered ranges; a session journal provides weaker inferences, and unknown extents remain unknown. The author judges whether a concrete gap needs more reading; failed delivery or brief assembly is never a clean verdict. The gate is one logical reviewer interaction per API slot, with at most one bounded second physical send on a same-route transport rail for a PACKET row. A hosted session is one multistep execution whose local extraction reuses its transcript; a native tool-round row is one multistep episode with no send count (bounds and typed ends: ARCHITECTURE §6 "Review delivery"). Retrieving delivery canonicalizes by output SHAPE (`triad_review.review_output_shape`: `array` | `object` | `report`), never surface-name branches; a new object/report surface registers in the shape table.
 
-Advisory row parsing and hosted-review identity evidence are mechanism
-(`docs/architecture/06-agent-core.md` § "Review delivery"); what a change must
-preserve: the full raw result, ordinary PASS rows and genuine empty-clean
-responses in tests, and the exact contributor checker's refusal of unconfirmed
-model identity, including a display label that cannot prove the pin.
+Advisory row parsing and hosted-review identity evidence are mechanism (ARCHITECTURE §6 "Session identity and advisory parsing"); a change must preserve the full raw result, ordinary PASS rows and genuine empty-clean responses in tests, and the exact contributor checker's refusal of unconfirmed model identity, including a display label that cannot prove the pin.
 
-Paid review cycles across the gates are bounded by one shared owner knob,
-`OUROBOROS_REVIEW_MAX_CYCLES` — a STRING, positive integer or `unlimited`,
-default `"2"` (Settings → Behavior → "Max Review Cycles"). Its SSOT is `ouroboros/review_cycles.py`; the four per-gate meanings are stated
-once in `docs/architecture/06-agent-core.md` § "Review stack" (the retired
-legacy key is migrated at settings load). `unlimited` removes only the local count —
-deadline, budget, and lifecycle rails still bind — and a malformed value fails
-closed to the default, logged once.
+Paid review cycles across the gates are bounded by one shared owner knob, `OUROBOROS_REVIEW_MAX_CYCLES` — a STRING, positive integer or `unlimited`, default `"2"` (Settings → Behavior → "Max Review Cycles"). Its SSOT is `ouroboros/review_cycles.py`; the four per-gate meanings are stated once in ARCHITECTURE §6 "Review stack" (the retired legacy key is migrated at settings load). `unlimited` removes only the local count — deadline, budget and lifecycle rails still bind — and a malformed value fails closed to the default, logged once.
 
-For task acceptance, the exact-binding tree-wallet claim is a strict
-write-ahead stamp bound to every delivery the panel's rows run — one idempotent
-claim per panel (owner R11, 2026-09-01: the paid identity is material, not
-route). The per-delivery stamp points, the once-per-panel launch floor (owner
-R55), the R23 clamps on a running panel and the disclosed deadline-cut residual
-are stated once in `docs/architecture/06-agent-core.md` § "Task lifecycle" and
-the `review_dispatch.py` row of
-`docs/architecture/01-high-level-architecture.md`. Panel assembly, an
-unavailable route, or another pre-transport refusal consumes no claim and
-leaves the binding retryable; an unavailable claim releases the usage
-reservation and blocks every parallel panel slot before reviewer transport
-rather than degrading hard authority into fail-open cost telemetry. The
-compatibility positive-capture residual (issue #588) is disclosed at its owner,
-the `review_execution.py` row of the same map.
+For task acceptance, the exact-binding tree-wallet claim is a strict write-ahead stamp bound to every delivery the panel's rows run — one idempotent claim per panel, because the paid identity is material, not route. The per-delivery stamp points, the once-per-panel launch floor, the clamps on a running panel and the disclosed deadline-cut residual are stated once in ARCHITECTURE §6 "Task lifecycle" and "Review stack". Panel assembly, an unavailable route or another pre-transport refusal consumes no claim and leaves the binding retryable; an unavailable claim releases the usage reservation and blocks the parallel panel slots before reviewer transport on the write-ahead paths. The compatibility positive-capture fallback retains its disclosed late-stamping residual (ARCHITECTURE §6 "Paid stamp and owner custody"); it must not be described as pre-transport proof.
 
-Never pay for byte-identical review material (`ouroboros/tools/commit_gate.py` owns
-the mechanism): the commit gate refuses a byte-identical staged diff for free
-from the FIRST verdict-block (`identical_diff_refused`, quoting the recorded
-verdict), and skill review replays a recorded substantive verdict for an
-identical snapshot at $0 while the persisted state still covers it. A rebuttal
-is identified by CONTENT sha256 — a hash new to the streak buys exactly ONE
-paid re-review; a repeated hash is refused free. The two axes stay distinct:
-refusal-streak eligibility is about VERDICTS (a rebuttal is spent only by the
-substantive verdict it bought), while money is about DISPATCH (every
-physically dispatched wave counts whatever its terminal; infra facts refused
-at assembly never dispatched and stay outside the count; the paid fact is
-recorded write-ahead). A refusal that spent nothing is a typed `not_dispatched` fact, never a verdict
-(the one shape of every $0 exit: `docs/architecture/06-agent-core.md` § "Review
-stack").
-Exhaustion is always the typed
-`review_cycles_exhausted` event with honest exits — under advisory
-enforcement a commit after exhaustion proceeds as a free replay with a loud
-typed disclosure; blocking refuses it.
+Never pay for byte-identical review material (`ouroboros/tools/commit_gate.py` owns the mechanism): the commit gate refuses a byte-identical staged diff for free from the FIRST verdict-block (`identical_diff_refused`, quoting the recorded verdict), and skill review replays a recorded substantive verdict for an identical snapshot at $0 while the persisted state still covers it. A rebuttal is identified by CONTENT sha256 — a hash new to the streak buys exactly ONE paid re-review; a repeated hash is refused free. The two axes stay distinct: refusal-streak eligibility is about VERDICTS (a rebuttal is spent only by the substantive verdict it bought), money is about DISPATCH (every physically dispatched wave counts whatever its terminal; infra facts refused at assembly never dispatched and stay outside the count; the paid fact is recorded write-ahead). A refusal that spent nothing is a typed `not_dispatched` fact, never a verdict (the one shape of every $0 exit: ARCHITECTURE §6 "Review stack"). Exhaustion is always the typed `review_cycles_exhausted` event with honest exits — under advisory enforcement a commit after exhaustion proceeds as a free replay with a loud typed disclosure; blocking refuses it.
 
-Scope of the review-contract fingerprint (deliberate): it covers the reviewer
-roster, routes, enforcement, resolved efforts, and prompt constants —
-including the session serialization only when Skill Review actually contains
-an agent-session row — while governance-document CONTENTS — `BIBLE.md`,
-`docs/CHECKLISTS.md`, `docs/ARCHITECTURE.md`, this handbook and
-`docs/DESIGN.md` — are deliberately outside it, so editing those documents
-neither lapses recorded verdicts nor frees replays. The accepted
-trade-off is that an old verdict can replay under amended governance text;
-this keeps routine documentation maintenance from repricing every recorded
-review.
+Scope of the review-contract fingerprint (deliberate): it covers the reviewer roster, routes, enforcement, resolved efforts and prompt constants, plus effective scope delivery, its output contract and source-policy version — including the session serialization only when Skill Review actually contains an agent-session row — while governance-document CONTENTS (`BIBLE.md`, `docs/CHECKLISTS.md`, `docs/ARCHITECTURE.md`, this handbook and `docs/DESIGN.md`) are deliberately outside it, so editing those documents neither lapses recorded verdicts nor frees replays. The accepted trade-off is that an old verdict can replay under amended governance text; this keeps routine documentation maintenance from repricing every recorded review.
 
 ### External PR review is not commit authorization
 
-The authoring agent freezes the final committed base-to-head range and gives
-it to a separate agent context for read-only review; same-conversation
-self-review does not count, and unavailable review is recorded `NOT_RUN`,
-never silently presented as clean. `CONTRIBUTING.md` owns the public procedure
-and evidence fields. `scripts/run_external_review.py --contributor` is
-maintainer-grade tooling: it freezes the configured triad/scope
-rows, binds each row to its dispatched prompt receipt and observed response
-receipt, and records exact base/head/tree/diff hashes, route/model/profile
-facts, terminal settlement, capability deltas, and full redacted
-agent-session transcripts; missing, tampered, drifted, unprovable, or
-contradictory receipts make the packet `INCOMPLETE`. The lane always executes
-the TARGET BASE's own review machinery — invoked from any other checkout it
-re-runs itself from a detached worktree of the base commit — so a proposal is
-never reviewed by its own copy of the review flow, whatever it touches. This
-evidence establishes readiness; it does not authorize commit, push, merge, or
-publication — maintainers choose the landing parent and release version,
-preserve authorship, and run the normal final exact-candidate gate.
+The authoring agent freezes the final committed base-to-head range and gives it to a separate agent context for read-only review; same-conversation self-review does not count, and unavailable review is recorded `NOT_RUN`, never silently presented as clean. `CONTRIBUTING.md` owns the public procedure and evidence fields. `scripts/run_external_review.py --contributor` is maintainer-grade tooling: it freezes the configured triad/scope rows, binds each row to its dispatched prompt receipt and observed response receipt, and records exact base/head/tree/diff hashes, route/model/profile facts, terminal settlement, capability deltas and full redacted agent-session transcripts; missing, tampered, drifted, unprovable or contradictory receipts make the packet `INCOMPLETE`. The lane always executes the TARGET BASE's own review machinery — invoked from any other checkout it re-runs itself from a detached worktree of the base commit — so a proposal is never reviewed by its own copy of the review flow. This evidence establishes readiness; it does not authorize commit, push, merge or publication — maintainers choose the landing parent and release version, preserve authorship, and run the normal final exact-candidate gate.
 
 ### Release sync
 
-A pull request into `ouroboros` leaves every version carrier byte-identical to
-its target (the carrier list and the one projection that writes them:
-`docs/architecture/10-key-invariants.md`, invariant 2). At integration,
-`ouroboros/tools/release_sync.py::sync_release_metadata()` projects the chosen
-version and `version_carrier_desyncs()` verifies the file carriers (the history
-row is pinned by the packaging-sync test); changelog prose remains a deliberate
-maintainer edit. The installer filename templates, the immutable exact-tag
-download links and the stable promotion of `main` are
-`docs/architecture/08-git-branching-ci-and-build.md` § "Build scripts".
+A pull request into `ouroboros` leaves every version carrier byte-identical to its target (the carrier list and the one projection that writes them: ARCHITECTURE §10, invariant 2). At integration, `ouroboros/tools/release_sync.py::sync_release_metadata()` projects the chosen version and `version_carrier_desyncs()` verifies the file carriers (the history row is pinned by the packaging-sync test); changelog prose remains a deliberate maintainer edit. The installer filename templates, the immutable exact-tag download links and the stable promotion of `main` are ARCHITECTURE §8 "Build scripts".
 
-Hermetic preflight uses a disposable worktree, temporary
-data/settings/pycache, and scrubbed runtime/secret-class environment. Tests
-must rebind imported process-global roots and fail closed on the live data
-root; setting only `OUROBOROS_DATA_DIR` is insufficient. A reviewed local
-commit is the durability boundary; an `origin` push and CI are follow-up
-signals, not prerequisites for local self-modification survival.
+Hermetic preflight uses a disposable worktree, temporary data/settings/pycache, and a scrubbed runtime/secret-class environment. Tests must rebind imported process-global roots and fail closed on the live data root; setting only `OUROBOROS_DATA_DIR` is insufficient. A reviewed local commit is the durability boundary; an `origin` push and CI are follow-up signals, not prerequisites for local self-modification survival.
 
 ---
 

@@ -30,9 +30,8 @@ from ouroboros.review_state import (
     _utc_now,
 )
 from ouroboros.config import get_review_enforcement as _get_review_enforcement
-from ouroboros.config import get_finalization_grace_sec
+from ouroboros.config import get_finalization_grace_sec  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
 from ouroboros.deadline_utils import (
-    dispatch_window_remaining_sec,
     owner_deadline_exhausted_for_context,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
 )
 from ouroboros.tools.review_helpers import (
@@ -181,15 +180,6 @@ def _advisory_native_model(slot=None) -> str:
     if configured:
         return _same_model_payable_spelling(configured)
     return _advisory_default_model()
-
-
-def _advisory_child_timeout(ctx: object) -> Optional[float]:
-    metadata = getattr(ctx, "task_metadata", {})
-    return dispatch_window_remaining_sec(
-        deadline_at=(metadata or {}).get("deadline_at") if isinstance(metadata, dict) else None,
-        deadline_ts=getattr(ctx, "deadline_ts", None),
-        reserve_sec=get_finalization_grace_sec(),
-    )
 
 
 def _run_advisory_native(

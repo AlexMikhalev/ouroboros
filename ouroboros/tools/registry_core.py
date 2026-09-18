@@ -43,17 +43,12 @@ from ouroboros.tool_capabilities import (
 )
 from ouroboros.tool_access import (
     active_tool_profile,
-    build_resolved_resource_binding,
     canonical_repo_relative_path,
     decide_tool_access,
     light_cognitive_or_root_redirect,
-    _path_is_relative_to_casefold,
     shell_cwd_block_message,
-    resource_root_path,
-    user_files_path_block_reason,
     workspace_mode_block_reason,
 )
-from ouroboros.tools.deliverables_shell import lexical_user_files_block_reason
 from ouroboros.tools.tool_catalog import (
     DuplicateToolNameError as _DuplicateToolNameError,
     ToolCatalog as _ToolCatalog,
@@ -422,59 +417,6 @@ class ToolRegistry:
             tc and getattr(tc, "mode", "") == ACTING_SUBAGENT_MODE
             and str(getattr(tc, "surface", "") or "") == "self_worktree"
         )
-
-    def _deliverables_shell_target_allowed(
-        self,
-        candidate: pathlib.Path,
-        *,
-        lexical_candidate: pathlib.Path | None = None,
-    ) -> bool:
-        """Return whether a top-level user-files shell may write this target.
-
-        The workspace shell guard owns the process-root boundary.  This narrow
-        exception reuses the user-files policy and the configured Deliverables
-        root for the one existing top-level profile that already has
-        ``user_files:shell``.  Delegated children never inherit the carve-out.
-        """
-        if self._is_acting_subagent() or self._is_local_readonly_subagent():
-            return False
-        profile = active_tool_profile(self._ctx)
-        if not decide_tool_access(
-            profile=profile,
-            root="user_files",
-            operation="shell",
-        ).allow:
-            return False
-        try:
-            if lexical_user_files_block_reason(lexical_candidate or candidate):
-                return False
-            target = pathlib.Path(candidate).resolve(strict=False)
-            deliverables = resource_root_path(self._ctx, "deliverables")
-            # Validate the configured container itself before admitting a child.
-            # A root that contains a protected repo/data drive is not a genuine
-            # sibling; checking only the final file would otherwise turn its
-            # harmless-looking sibling paths into a broad parent escape.
-            if user_files_path_block_reason(self._ctx, deliverables):
-                return False
-            if not (
-                target.is_relative_to(deliverables)
-                or _path_is_relative_to_casefold(target, deliverables)
-            ):
-                return False
-            try:
-                deliverable_binding = build_resolved_resource_binding(
-                    self._ctx,
-                    root="user_files",
-                    operation="shell",
-                    path=str(target),
-                )
-            except (OSError, TypeError, ValueError, RuntimeError):
-                return False
-            if not _presence_binding_allowed(self._ctx, deliverable_binding):
-                return False
-            return not user_files_path_block_reason(self._ctx, target)
-        except (OSError, TypeError, ValueError, RuntimeError):
-            return False
 
     def _acting_tool_grants(self) -> set | None:
         from ouroboros.config import get_runtime_mode
