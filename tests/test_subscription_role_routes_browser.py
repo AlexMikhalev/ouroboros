@@ -200,7 +200,7 @@ def test_source_switch_and_catalog_refresh_keep_focus_and_draft(role_ui):
     capture(page, "role-source-refresh-focus")
 
 
-def test_scope_and_inline_deep_keep_packed_delivery_and_auto_account(role_ui):
+def test_scope_and_inline_deep_keep_native_delivery_and_auto_account(role_ui):
     ui = role_ui
     configure_mixed(ui)
     slots = ui["fixture"]["preview"]["reviewer_slots"]
@@ -214,7 +214,8 @@ def test_scope_and_inline_deep_keep_packed_delivery_and_auto_account(role_ui):
     scope.locator('[data-slot-profile]').select_option("")
     scope.locator('[data-slot-custom-api]').fill("gpt-scope-next")
     deep = page.locator('[data-deep-review-row]')
-    assert "One packed review" in deep.inner_text()
+    assert "Native inspection episode" in deep.inner_text()
+    assert "host read-only tools" in deep.inner_text()
     deep.locator('[data-deep-review-profile]').select_option("work")
     deep.locator('[data-deep-review-api-model]').fill("gpt-deep-next")
     deep.scroll_into_view_if_needed()
@@ -229,7 +230,8 @@ def test_scope_and_inline_deep_keep_packed_delivery_and_auto_account(role_ui):
     open_agents(ui)
     assert page.locator('[data-slot-id="scope_1"] [data-slot-profile]').input_value() == ""
     assert page.locator('[data-deep-review-profile]').input_value() == "work"
-    assert "One packed review" in page.locator('[data-deep-review-row]').inner_text()
+    assert "Native inspection episode" in page.locator('[data-deep-review-row]').inner_text()
+    assert "host read-only tools" in page.locator('[data-deep-review-row]').inner_text()
 
 
 def test_models_does_not_guess_a_credential_family_when_source_mapping_is_unread(role_ui):

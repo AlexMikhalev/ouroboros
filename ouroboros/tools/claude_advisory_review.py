@@ -35,7 +35,6 @@ from ouroboros.deadline_utils import (
     owner_deadline_exhausted_for_context,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
 )
 from ouroboros.tools.review_helpers import (
-    build_advisory_changed_context,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
     build_skill_host_context,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
     build_blocking_findings_json_section,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
     load_checklist_section,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle

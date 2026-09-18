@@ -215,8 +215,7 @@ class TestAliasProducerFanOutSweep:
         ("ouroboros/tools/preflight_review_run.py", "cost_usd", "_run_claude_advisory"): ("single advisory receipt cost reused by event projections", 1),
         ("ouroboros/tools/review_admission.py", "cost_usd", "triad_not_dispatched_records"): ("review admission receipt", 1),
         ("ouroboros/tools/review_helpers.py", "cost_usd", "build_scope_actor_record"): ("review usage receipt", 1),
-        ("ouroboros/tools/scope_review.py", "cost_usd", "_scope_oversize_result"): ("scope review receipt", 1),
-        ("ouroboros/tools/scope_review.py", "cost_usd", "run_scope_review"): ("scope review receipt", 6),
+        ("ouroboros/tools/scope_review.py", "cost_usd", "run_scope_review"): ("scope review receipt", 4),
         ("ouroboros/tools/parallel_review.py", "cost_usd", "_run_scope"): ("scope review receipt", 1),
         # evolution checkpoint plane (durable state files, never a gateway payload;
         # the campaign HISTORY row producer left this list in fix-round-3)

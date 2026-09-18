@@ -370,7 +370,7 @@ def test_session_copy_lifetime_follows_existing_review_custody(evidence_context,
     assert read_actor_source_bytes(ctx.budget_drive_root, ctx.task_id, ctx._commit_review_evidence["source_ref"])
 
 
-@pytest.mark.parametrize("delivery", ["packet", "native", "session"])
+@pytest.mark.parametrize("delivery", ["native", "session"])
 def test_scope_request_preserves_selected_source(evidence_context, monkeypatch, delivery):
     from ouroboros.tools import scope_review
     from ouroboros.review_records import ReviewRouteKind, ReviewSlot
@@ -543,10 +543,11 @@ def test_fresh_stage_captures_current_evidence_after_rejoin_flag_reset(evidence_
     assert len(observed) == 1 and "NEW_ASSESSMENT" in observed[0]["preview"]
 
 
-@pytest.mark.parametrize("surface", ["triad", "scope"])
-def test_real_packet_assembly_omits_optional_excerpt_before_required_material(evidence_context, monkeypatch, surface):
+def test_real_packet_assembly_omits_optional_excerpt_before_required_material(evidence_context, monkeypatch):
+    """The triad packet drops the optional evidence excerpt before it degrades
+    required material, and before it spends a paid density probe."""
     from ouroboros.review_records import ReviewRouteKind
-    from ouroboros.tools import review, review_admission, scope_review, scope_review_pack
+    from ouroboros.tools import review, review_admission
 
     ctx = evidence_context
     for path in ("BIBLE.md", "docs/DEVELOPMENT.md", "docs/DESIGN.md", "docs/ARCHITECTURE.md", "docs/CHECKLISTS.md"):
@@ -562,29 +563,20 @@ def test_real_packet_assembly_omits_optional_excerpt_before_required_material(ev
     ctx._commit_review_evidence = evidence
     cap = [10**9]
     monkeypatch.setattr(review_admission, "density_probe_before_size_refusal", lambda *a, **kw: pytest.fail("optional excerpt should fit before paid density probe"))
-    if surface == "triad":
-        monkeypatch.setattr(review, "_preflight_check", lambda *a: None)
-        monkeypatch.setattr(review, "_load_checklist_section", lambda: "CHECKLIST_MARKER")
-        monkeypatch.setattr("ouroboros.reviewer_slot_config.commit_triad_delivery", lambda: {
-            "models": ["fixture"], "routes": [ReviewRouteKind.API_CHAT], "slot_ids": ["triad-one"],
-            "session_profiles": [""], "subagent_ids": [""], "use_local": [False]})
-        monkeypatch.setattr(review, "reviewer_context_window", lambda *a, **kw: 1000000)
-        monkeypatch.setattr(review, "calibrated_input_token_limit", lambda *a, **kw: cap[0])
-        monkeypatch.setattr(review, "estimate_tokens", len)
-        def build():
-            prepared, early, exited = review._prepare_unified_review(ctx, "candidate", goal="INTENT_MARKER", review_rebuttal="REBUTTAL_MARKER")
-            assert not exited and early is None
-            return prepared["prompt"], prepared["stable_prefix_len"]
-    else:
-        monkeypatch.setattr(scope_review, "load_checklist_section", lambda *a: "CHECKLIST_MARKER")
-        monkeypatch.setattr(scope_review, "estimate_tokens", len)
-        monkeypatch.setattr(scope_review, "_effective_scope_input_limit", lambda **kw: cap[0])
-        monkeypatch.setattr(scope_review_pack, "_gather_scope_packs", lambda *a, **kw: "ATLAS_MARKER")
-        def build():
-            prompt, status = scope_review_pack._build_scope_prompt(ctx.repo_dir, "candidate", goal="INTENT_MARKER", review_rebuttal="REBUTTAL_MARKER",
-                context=scope_review_pack._ScopePromptContext(task_evidence=evidence))
-            assert status is None
-            return prompt, scope_review_pack._SCOPE_STABLE_PREFIX_LEN.get()
+    monkeypatch.setattr(review, "_preflight_check", lambda *a: None)
+    monkeypatch.setattr(review, "_load_checklist_section", lambda: "CHECKLIST_MARKER")
+    monkeypatch.setattr("ouroboros.reviewer_slot_config.commit_triad_delivery", lambda: {
+        "models": ["fixture"], "routes": [ReviewRouteKind.API_CHAT], "slot_ids": ["triad-one"],
+        "session_profiles": [""], "subagent_ids": [""], "use_local": [False]})
+    monkeypatch.setattr(review, "reviewer_context_window", lambda *a, **kw: 1000000)
+    monkeypatch.setattr(review, "calibrated_input_token_limit", lambda *a, **kw: cap[0])
+    monkeypatch.setattr(review, "estimate_tokens", len)
+
+    def build():
+        prepared, early, exited = review._prepare_unified_review(ctx, "candidate", goal="INTENT_MARKER", review_rebuttal="REBUTTAL_MARKER")
+        assert not exited and early is None
+        return prepared["prompt"], prepared["stable_prefix_len"]
+
     full, prefix = build()
     long_exhibit = commit_review_evidence_section(evidence, delivery="packet")
     short_exhibit = commit_review_evidence_section(evidence, delivery="packet", compact=True)
@@ -595,11 +587,14 @@ def test_real_packet_assembly_omits_optional_excerpt_before_required_material(ev
     fitted, next_prefix = build()
     assert fitted == expected and next_prefix == prefix
     assert full[:prefix] == fitted[:prefix]
-    for marker in ("GOVERNANCE_MARKER", "CHECKLIST_MARKER", "INTENT_MARKER", "REBUTTAL_MARKER", "MANDATORY_SNAPSHOT", "+MANDATORY_SNAPSHOT"):
+    for marker in ("CHECKLIST_MARKER", "INTENT_MARKER", "REBUTTAL_MARKER", "MANDATORY_SNAPSHOT", "+MANDATORY_SNAPSHOT"):
         assert marker in fitted
+    # The triad packet no longer pastes the reference books in full: the
+    # governance tiers deliver them as navigation, BIBLE.md rides every api
+    # row's constitutional head (outside this prompt) and the standing
+    # disclosures ride the checklist section. Nothing is dropped silently —
+    # every document is named here and dispositioned in the manifest.
+    assert "Governance navigation (index of sources not inlined)" in fitted
+    assert "docs/ARCHITECTURE.md" in fitted and "docs/DEVELOPMENT.md" in fitted
     assert "OPTIONAL_IMAGE_EXCERPT" not in fitted and "excerpt omitted to fit" in fitted
     assert ctx._commit_review_evidence == evidence
-    if surface == "scope":
-        steps = scope_review_pack._current_scope_context_manifest()["ladder_steps"]
-        assert any(step["step"] == "task_evidence_excerpt_omitted" for step in steps)
-        assert all(not step.get("diff_only_files") and not step.get("zero_context_diff") for step in steps)

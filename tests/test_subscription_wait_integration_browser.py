@@ -206,7 +206,12 @@ def integrated_wait(subscription_ui, live_wait, monkeypatch):
                     }] if task else [],
                 }))
             page.route("**/api/state", state_response)
-            page.goto(ui["url"] + "/")
+            with page.expect_response(lambda response: urlparse(response.url).path == "/api/chat/history") as initial_history:
+                page.goto(ui["url"] + "/")
+            assert initial_history.value.status == 200
+            # State can paint the wait first. Finish the real history paint
+            # while metadata is still held, before deliberately making it stale.
+            page.wait_for_selector("#chat-messages > .chat-load-older", state="attached")
             page.wait_for_selector(f'[data-wait-id="{first["wait_id"]}"]')
             yield SimpleNamespace(ui=ui, page=page, root=root, controller=controller, gateway=gateway,
                 client=client, wait_id=first["wait_id"], first=first, source_release=source_release,
@@ -243,7 +248,7 @@ def test_browser_wait_controls_apply_once_and_only_to_light(integrated_wait, per
     assert flow.catalog_entered.wait(5)
     latest = flow.canonical()["model_waits"][flow.wait_id]
     assert latest["revision"] > flow.first["revision"]
-    row.locator("[data-wait-auto]").uncheck()
+    row.locator("[data-wait-auto]").click()  # A rejected toggle returns to checked.
     page.wait_for_function("() => document.querySelector('[data-wait-notice]').textContent.includes('stale_model_wait')")
     assert flow.responses[-1]["status"] == 409
     assert flow.responses[-1]["body"]["reason_code"] == "stale_model_wait"

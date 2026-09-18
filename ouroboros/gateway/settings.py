@@ -550,47 +550,6 @@ def _active_main_route(
     return {"provider": provider, "model": model, "base_url": base_url, "use_local": use_local}
 
 
-# Settings keys a review slot's route can resolve its base URL through. Changing one
-# changes the ROUTE FINGERPRINT for an unchanged model, so it must retrigger the
-# capability notice exactly as a slot change does (see _review_capability_notices).
-_REVIEW_ROUTE_BASE_URL_KEYS = frozenset({
-    "OPENAI_BASE_URL",
-    "OPENAI_COMPATIBLE_BASE_URL",
-    "CLOUDRU_FOUNDATION_MODELS_BASE_URL",
-    "GIGACHAT_BASE_URL",
-    "MINIMAX_REGION",
-})
-
-
-def _review_slot_route(settings: Dict[str, Any], model: str, *, session: bool = False) -> Dict[str, Any]:
-    """(provider, model, base_url, use_local) for a REVIEW slot's own route.
-
-    Deliberately NOT ``_active_main_route``: a review slot is pinned by its own model
-    id and must never inherit the main lane's USE_LOCAL_MAIN routing.
-
-    ``session=True`` is a RETRIEVING row, whose target is a harness route spec rather
-    than a provider model id; it fingerprints under the session provider that
-    ``reviewer_window.reviewer_route`` owns, so the ack recorded from this notice and
-    the evidence the scope gate reads back are the same route. Resolving it through
-    ``provider_for_model`` instead would file a harness under ``openrouter`` and the
-    ack would never match."""
-    from ouroboros.provider_models import provider_for_model
-    from ouroboros.reviewer_window import SESSION_ROUTE_PROVIDER
-
-    if session:
-        return {"provider": SESSION_ROUTE_PROVIDER, "model": str(model or ""),
-                "base_url": "", "use_local": False}
-    provider = provider_for_model(str(model or ""))
-    base_url = _provider_base_url(settings, provider)
-    use_local = provider == "local" or str(model or "").endswith(" (local)")
-    return {
-        "provider": "local" if use_local else provider,
-        "model": str(model or ""),
-        "base_url": base_url,
-        "use_local": use_local,
-    }
-
-
 def _unrecognised_review_models(models: Any) -> list:
     """Review-slot model ids the provider catalog does not know (evidence-based).
 
@@ -632,24 +591,12 @@ def _candidate_scope_models(settings: Dict[str, Any]) -> list:
     """Scope-review API model candidates from CANDIDATE settings (6.1-aware).
 
     The structured reviewer-slot value wins when present and parseable: its
-    api_chat scope rows are the routes the >=1M gate applies to. A retrieving
-    (session) row is NOT a provider model id, so it is not a candidate here —
-    its own >=200K floor and its own ack route are handled by
-    ``_candidate_scope_session_targets``. Otherwise the live derived config
+    api_chat scope rows carry provider model ids, which is what
+    ``_unrecognised_review_models`` can check against a provider catalog. A
+    retrieving (session) row's target is a harness route spec, not a model id,
+    so it is not a candidate here. Otherwise the live derived config
     (ABI 7.0/ABI-10: the comma settings keys are retired)."""
     return [r.target_id for r in _candidate_reviewer_rows(settings, "scope") if not r.is_session]
-
-
-def _candidate_scope_session_targets(settings: Dict[str, Any]) -> list:
-    """Scope-review RETRIEVING row targets from CANDIDATE settings.
-
-    A retrieving row's blocking authority rests on SOURCED window evidence at the
-    session floor (``scope_review_session.SESSION_WINDOW_FLOOR``), and a harness
-    route publishes no model metadata — so owner-ack is the ONLY path that floor
-    can ever be reached by. Leaving these rows out of the notice made the floor
-    decorative: the mode could not reach `asserted` through any product path, so
-    every retrieving row stayed advisory-only forever by construction."""
-    return [r.target_id for r in _candidate_reviewer_rows(settings, "scope") if r.is_session and r.target_id]
 
 
 def _candidate_triad_models(settings: Dict[str, Any]) -> list:
@@ -658,81 +605,6 @@ def _candidate_triad_models(settings: Dict[str, Any]) -> list:
     # ABI 7.0 (ABI-10): no comma settings key to read — without a structured
     # value the candidate set is the live derived triad.
     return [r.target_id for r in _candidate_reviewer_rows(settings, "triad") if not r.is_session]
-
-
-def _review_capability_notices(settings: Dict[str, Any]) -> list:
-    """Owner-facing Capability Evidence notices for the configured review slots.
-
-    The Max-context gate only ever probed the MAIN route, so a PINNED scope reviewer
-    could not become "known" through any path and silently ran with the conservative
-    sub-floor window — exactly the failure the owner hit. Saving settings now probes
-    the review + scope-review slots too and returns the SAME
-    ``needs_ack:{route, route_fp, evidence}`` contract the Max gate already uses, and
-    ``settings.js`` renders it through the SAME confirm -> owner-capability-ack flow.
-    Advisory only: a slot without evidence stays fail-closed at review time (the pin is
-    routing intent, never evidence) — this just makes "known" reachable.
-
-    ONLY the scope-review surface is probed: it is the one surface whose window evidence
-    gates anything, so probing the triad slots was network work whose result was
-    discarded. The caller gates this on a ROUTE-AFFECTING change (the scope slot itself
-    or any base URL that route resolves through), not every settings save: capability is
-    a property of provider+base_url+model, so a hot base-URL change produces a route with
-    no evidence exactly as a model change does.
-
-    BOTH scope deliveries are offered their ack, each against ITS OWN floor: an api row
-    against the constitutional >=1M, a RETRIEVING row against the >=200K session floor
-    (BIBLE P3's retrieving amendment). The floor travels with the notice as
-    ``floor_tokens`` so the UI asks about the number that route is actually judged by.
-
-    The slot is read from the CANDIDATE settings, not from ``get_scope_review_models()``:
-    that reads process env, which is not necessarily the value being saved, so the notice
-    could describe the outgoing route instead of the incoming one."""
-    notices: list = []
-    try:
-        from ouroboros.capability_evidence import ONE_MILLION, confirms_at_least, model_account_options, probe
-        from ouroboros.config import DATA_DIR
-        from ouroboros.tools.scope_review_session import SESSION_WINDOW_FLOOR
-
-        candidates = _candidate_reviewer_rows(settings, "scope")
-        seen: set = set()
-        for row in candidates:
-            model, session = row.target_id, row.is_session
-            floor = SESSION_WINDOW_FLOOR if row.retrieves else ONE_MILLION
-            route = _review_slot_route(settings, model, session=session)
-            options = model_account_options(model, role=f"reviewer:{row.slot_id}",
-                        credential_profile_id=row.profile_id) if route["provider"] == "claudexor" else None
-            ev = probe(
-                DATA_DIR, provider=route["provider"], model=route["model"],
-                base_url=route["base_url"], use_local=route["use_local"],
-                allow_fetch=True, allow_generative=False,
-                options=options,
-            )
-            if ev.route_fp in seen:
-                continue
-            seen.add(ev.route_fp)
-            bound = route["provider"] != "claudexor" or bool(
-                ev.source_id and ev.credential_profile_id and ev.account_fingerprint
-                and (ev.source == "owner_ack" or ev.provenance and not ev.stale))
-            if options is not None and bound:
-                route["options"] = {**options, "credential_profile_id": ev.credential_profile_id,
-                                    "account_fingerprint": ev.account_fingerprint}
-            # SAME freshness policy the scope gate applies at review time
-            # (`reviewer_window.ReviewerWindow.blocking_authority_allowed`): an expired
-            # or outage-carried record will NOT authorise a blocking verdict, so the
-            # owner must be offered the ack now rather than told the slot is fine and
-            # then blocked at commit time by the twin check.
-            if not confirms_at_least(ev, floor, require_fresh=True):
-                notices.append({
-                    "surface": "scope_review_session" if session else "scope_review",
-                    "needs_ack": {**route, "route_fp": ev.route_fp, "evidence": ev.to_json()} if bound else None,
-                    "role": f"reviewer:{row.slot_id}", "binding_known": bound,
-                    "window_tokens": int(ev.window_tokens or 0),
-                    "floor_tokens": int(floor),
-                    "verified": int(ev.window_tokens or 0) > 0,
-                })
-    except Exception:
-        log.debug("review capability probe skipped", exc_info=True)
-    return notices
 
 
 @owner_write_guard
@@ -772,8 +644,8 @@ def _api_owner_context_mode_sync(request: Request, body: Any) -> JSONResponse:
     def _set_context_mode(current: Dict[str, Any]) -> Dict[str, Any]:
         current["OUROBOROS_CONTEXT_MODE"] = next_mode
         # The retired marker survives one compatibility window only as explicit false
-        # provenance, so owner Low still means "scope review not performed" while a bare
-        # forwarded env Low remains owner Max.
+        # provenance, so a stored Low carries owner intent while a bare forwarded env
+        # Low remains owner Max for the owner's own working window.
         current["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] = "false"
         return current
 
@@ -954,7 +826,7 @@ async def api_reviewer_slots(request: Request) -> JSONResponse:
     payload["source"] = config.source
     payload["triad"] = [_row(r) for r in config.triad]
     payload["scope"] = [_row(r) for r in config.scope]
-    # The deep self-review singleton: the saved row, or the packed api row
+    # The deep self-review singleton: the saved row, or the native api row
     # synthesized from the legacy model key — disclosed as such so the editor
     # can say the row is not saved yet (saving materializes the migration).
     payload["deep_review"] = {k: v for k, v in _row(deep_review_slot(config)).items() if k != "slot_id"}
@@ -1505,19 +1377,6 @@ def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
                     "and can break the review quorum — check for a truncated value."
                 )
                 resp["warnings"] = warnings
-        # Capability is a property of the whole ROUTE (provider + base_url + model), and
-        # the lazy scope probe memoises by that fingerprint. A base-URL change therefore
-        # produces an unprobed route exactly as a model change does; gating notices on
-        # the model alone left the next scope review at the conservative sub-floor with
-        # the advertised owner-ack path unreachable.
-        if any(
-            k.startswith("OUROBOROS_SCOPE_REVIEW_MODEL") or k == "OUROBOROS_REVIEWER_SLOTS"
-            or k in _REVIEW_ROUTE_BASE_URL_KEYS
-            for k in all_changed
-        ):
-            _capability_notices = _review_capability_notices(current)
-            if _capability_notices:
-                resp["review_capability_notices"] = _capability_notices
         return JSONResponse(resp)
     except Exception as e:
         if boundary.committed:

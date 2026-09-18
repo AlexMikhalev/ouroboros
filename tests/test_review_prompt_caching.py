@@ -1045,27 +1045,6 @@ def test_acceptance_request_messages_are_cache_blocked():
     assert _request_messages(explicit, slot) == [{"role": "user", "content": "raw"}]
 
 
-def test_scope_prompt_records_stable_boundary(tmp_path, monkeypatch):
-    from ouroboros.tools import scope_review as sr
-
-    # The boundary contextvar is set by _assemble_prompt inside
-    # _build_scope_prompt; validate via the recorded value on a tiny repo.
-    import subprocess
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    (tmp_path / "f.py").write_text("x = 1\n")
-    subprocess.run(["git", "-C", str(tmp_path), "add", "f.py"], check=True)
-    prompt, status = sr._build_scope_prompt(
-        tmp_path,
-        "test msg",
-        context=sr._ScopePromptContext(drive_root=tmp_path),
-    )
-    assert prompt is not None and status is None
-    n = sr._SCOPE_STABLE_PREFIX_LEN.get()
-    assert 0 < n < len(prompt)
-    stable = prompt[:n]
-    assert "Canonical Documentation Context" in stable
-    assert "## Staged diff" not in stable
-    assert "## Staged diff" in prompt[n:]
 
 
 # ---------------------------------------------------------------------------
@@ -1534,7 +1513,9 @@ def test_scope_review_usage_flows_through_substrate_once():
 
     rs.ReviewCoordinator.__init__ = _patched
     try:
-        raw, usage, err = _call_scope_llm("scope prompt", scope_model="anthropic/claude-fable-5", ctx=_Ctx())
+        raw, usage, err = _call_scope_llm(
+            "", scope_model="anthropic/claude-fable-5", ctx=_Ctx(),
+            session_task="review the staged change", session_root="/tmp")
     finally:
         rs.ReviewCoordinator.__init__ = original
     assert err == "" and raw

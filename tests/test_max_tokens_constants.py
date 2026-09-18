@@ -125,16 +125,11 @@ def test_review_prompt_token_budget_is_ssot():
     intentionally leaves limited output headroom and remains best-effort.
     """
     from ouroboros.tools.review_helpers import REVIEW_PROMPT_TOKEN_BUDGET
-    from ouroboros.tools.scope_review import _SCOPE_BUDGET_TOKEN_LIMIT
 
     assert REVIEW_PROMPT_TOKEN_BUDGET == 920_000, (
         f"REVIEW_PROMPT_TOKEN_BUDGET drifted to {REVIEW_PROMPT_TOKEN_BUDGET}; "
         "see review_helpers.py docstring before changing — call sites do "
         "not silently re-pin to an old budget."
-    )
-    assert _SCOPE_BUDGET_TOKEN_LIMIT == REVIEW_PROMPT_TOKEN_BUDGET, (
-        f"_SCOPE_BUDGET_TOKEN_LIMIT ({_SCOPE_BUDGET_TOKEN_LIMIT}) must equal "
-        f"the SSOT REVIEW_PROMPT_TOKEN_BUDGET ({REVIEW_PROMPT_TOKEN_BUDGET})."
     )
     # Plan review reserves output headroom inside the reviewer window (same class of
     # fix as scope review), but v6.80.0 replaced its module constants with PER-SLOT
@@ -156,79 +151,44 @@ def test_review_prompt_token_budget_is_ssot():
     )
 
 
-def test_scope_input_budget_reserves_output_within_window():
-    """Scope input cap + reserved output must fit the reviewer context window.
-
-    Regression guard for the deterministic provider 400 where the 920K input gate
-    plus the 100K output reservation exceeded the 1M window and fail-closed-blocked
-    every commit. The assembled INPUT prompt is gated on ``_SCOPE_INPUT_TOKEN_LIMIT``,
-    which must leave room for ``_SCOPE_MAX_TOKENS`` output inside
-    ``_SCOPE_MODEL_CONTEXT_WINDOW`` while never exceeding the shared 920K SSOT.
-    """
-    from ouroboros.tools.scope_review import (
-        _SCOPE_BUDGET_TOKEN_LIMIT,
-        _SCOPE_INPUT_TOKEN_LIMIT,
-        _SCOPE_MAX_TOKENS,
-        _SCOPE_MODEL_CONTEXT_WINDOW,
-        _SCOPE_OUTPUT_MARGIN_TOKENS,
-    )
-
-    assert _SCOPE_INPUT_TOKEN_LIMIT == 745_000
-    assert _SCOPE_INPUT_TOKEN_LIMIT + _SCOPE_MAX_TOKENS <= _SCOPE_MODEL_CONTEXT_WINDOW, (
-        f"scope input cap ({_SCOPE_INPUT_TOKEN_LIMIT}) + reserved output "
-        f"({_SCOPE_MAX_TOKENS}) exceeds the {_SCOPE_MODEL_CONTEXT_WINDOW}-token "
-        "reviewer window; the provider would hard-400 and fail closed."
-    )
-    assert _SCOPE_INPUT_TOKEN_LIMIT + _SCOPE_MAX_TOKENS + _SCOPE_OUTPUT_MARGIN_TOKENS <= _SCOPE_MODEL_CONTEXT_WINDOW, (
-        "scope input cap must leave both output reservation and tokenizer-underestimate headroom."
-    )
-    assert _SCOPE_OUTPUT_MARGIN_TOKENS >= 150_000, (
-        "scope review needs a large tokenizer headroom margin for atlas-heavy prompts."
-    )
-    assert _SCOPE_INPUT_TOKEN_LIMIT <= _SCOPE_BUDGET_TOKEN_LIMIT, (
-        "scope input cap must not exceed the shared prompt-size SSOT."
-    )
 
 
-def test_scope_input_limit_is_density_calibrated(monkeypatch, tmp_path):
-    """Scope reviewers get a MEASURED-density-calibrated input cap (v6.80.0).
+def test_review_input_limit_is_density_calibrated(monkeypatch, tmp_path):
+    """Reviewer packs get a MEASURED-density-calibrated input cap (v6.80.0).
 
-    Regression guard for the deterministic 400 where a 739,508-estimated-token scope
-    pack measured 1,166,914 REAL tokens on the Claude tokenizer (~1.58x the chars/4
+    Regression guard for the deterministic 400 where a 739,508-estimated-token pack
+    measured 1,166,914 REAL tokens on the Claude tokenizer (~1.58x the chars/4
     estimate on code) and was rejected by every fable-5 upstream as "prompt is too
     long: > 1,000,000 maximum". The hand-set family constant is gone; the cap must
-    still keep estimated*density + output inside the 1M window, must never exceed the
-    shared SSOT, and must never be LOOSER than the historical absolute-margin cap.
+    still keep estimated*density + output inside the 1M window and must never exceed
+    the shared SSOT.
     """
     from ouroboros.capability_evidence import COLD_START_TOKEN_DENSITY
-    from ouroboros.tools.scope_review import (
-        _SCOPE_BUDGET_TOKEN_LIMIT,
-        _SCOPE_INPUT_TOKEN_LIMIT,
-        _SCOPE_MAX_TOKENS,
-        _SCOPE_MODEL_CONTEXT_WINDOW,
-        _effective_scope_input_limit,
+    from ouroboros.tools.review_helpers import (
+        REVIEW_PROMPT_TOKEN_BUDGET, calibrated_input_token_limit,
     )
 
-    # This test verifies the CALIBRATION at a 1M window, not the window-resolution
-    # policy: since the v6.46.0 false-1M fix an off-default model with no Capability
-    # Evidence fail-closes to the sub-floor.
-    from ouroboros.reviewer_window import ReviewerWindow
-    monkeypatch.setattr("ouroboros.tools.scope_review._scope_window",
-                        lambda m: ReviewerWindow(1_000_000, "confirmed"))
     monkeypatch.setenv("OUROBOROS_DATA_DIR", str(tmp_path))
 
     assert COLD_START_TOKEN_DENSITY >= 1.58, (
         "the conservative cold-start density must cover the measured 1.58x Claude code density"
     )
-    cap = _effective_scope_input_limit(scope_model="anthropic/claude-fable-5")
-    assert int(cap * COLD_START_TOKEN_DENSITY) + _SCOPE_MAX_TOKENS <= _SCOPE_MODEL_CONTEXT_WINDOW, (
+
+    def cap_for(model: str) -> int:
+        return calibrated_input_token_limit(
+            model, context_window=1_000_000, output_reserve=100_000,
+            tokenizer_margin=155_000, drive_root=tmp_path,
+        )
+
+    cap = cap_for("anthropic/claude-fable-5")
+    assert int(cap * COLD_START_TOKEN_DENSITY) + 100_000 <= 1_000_000, (
         "calibrated cap * real-token density + output reserve must fit the 1M window"
     )
-    assert cap <= _SCOPE_BUDGET_TOKEN_LIMIT
+    assert cap <= REVIEW_PROMPT_TOKEN_BUDGET
     # Every spelling of the shipped reviewer resolves to the same calibrated cap, and
-    # the historical absolute-margin cap remains an upper bound for ANY model.
+    # the historical absolute-margin form remains an upper bound for ANY model.
     for spelling in ("anthropic::claude-fable-5", "fable-5", "~mythos-5", "openai/gpt-5.5"):
-        assert _effective_scope_input_limit(scope_model=spelling) <= _SCOPE_INPUT_TOKEN_LIMIT
+        assert cap_for(spelling) <= 1_000_000 - 100_000 - 155_000
 
 
 def test_calibrated_input_limit_shared_helper(tmp_path, monkeypatch):
@@ -240,7 +200,6 @@ def test_calibrated_input_limit_shared_helper(tmp_path, monkeypatch):
     """
     import inspect
 
-    from ouroboros import deep_self_review
     from ouroboros.capability_evidence import (
         COLD_START_TOKEN_DENSITY,
         MEASURED_DENSITY_SAFETY_FACTOR,
@@ -281,10 +240,7 @@ def test_calibrated_input_limit_shared_helper(tmp_path, monkeypatch):
     assert limit("openai/gpt-5.5") == 1_000_000 - 100_000 - 155_000  # margin-bounded
     assert limit("openai/gpt-5.5") > int(900_000 / COLD_START_TOKEN_DENSITY)
 
-    # Deep self-review's PACKED delivery consumes the same helper for its
-    # model-aware gate (the retrieving deliveries have no pack to size).
-    assert "calibrated_input_token_limit" in inspect.getsource(deep_self_review._run_packed_review)
-    # ...as does the triad, whose pack size moves with the same formula.
+    # The triad's pack size moves with the same formula.
     from ouroboros.tools import review as triad
     assert "calibrated_input_token_limit" in inspect.getsource(triad)
 
@@ -297,18 +253,18 @@ def test_scope_cap_of_an_unwitnessed_reviewer_ignores_another_models_witness(tmp
     protected-path artifacts before any reviewer was dispatched. The cap of an
     unwitnessed reviewer is the floor's, whatever other models measured."""
     from ouroboros.capability_evidence import _DENSITY_MEMO, COLD_START_TOKEN_DENSITY, record_token_density
-    from ouroboros.reviewer_window import ReviewerWindow
-    from ouroboros.tools.scope_review import _effective_scope_input_limit
+    from ouroboros.tools.review_helpers import calibrated_input_token_limit
 
-    monkeypatch.setattr("ouroboros.tools.scope_review._scope_window",
-                        lambda m: ReviewerWindow(1_050_000, "confirmed"))
     monkeypatch.setenv("OUROBOROS_DATA_DIR", str(tmp_path))
     _DENSITY_MEMO.clear()
     record_token_density(
         tmp_path, "google/gemini-3.8-flash", prompt_chars=900_708, prompt_tokens=407_767,
     )
 
-    cap = _effective_scope_input_limit(scope_model="openai/gpt-5.6-terra")
+    cap = calibrated_input_token_limit(
+        "openai/gpt-5.6-terra", context_window=1_050_000, output_reserve=100_000,
+        tokenizer_margin=155_000, drive_root=tmp_path,
+    )
     assert cap == int((1_050_000 - 100_000) / COLD_START_TOKEN_DENSITY) == 575_757
     assert cap != 499_627
 
@@ -415,62 +371,6 @@ def test_scope_actor_record_surfaces_error_text():
     assert build_scope_actor_record(ok, slot_id="s")["error"] == ""
 
 
-def test_deep_self_review_budget_uses_ssot(tmp_path, monkeypatch):
-    """The packed deep review gates the FULL assembled prompt (system + user)
-    on the model-calibrated, output-reserving input limit the shared helper
-    returns (min(SSOT, window − output − margin), as scope/plan review do),
-    measured with the shared ``estimate_tokens`` (chars/4) — pinned by
-    BEHAVIOR: the limit is what the helper says, the measure includes the
-    system prompt, and a pack over it is refused before any send.
-    """
-    from unittest import mock
-
-    from ouroboros import deep_self_review
-    from ouroboros.deep_self_review import (
-        _DEEP_INPUT_TOKEN_LIMIT,
-        _DEEP_MAX_OUTPUT_TOKENS,
-        _DEEP_MODEL_CONTEXT_WINDOW,
-        _DEEP_OUTPUT_MARGIN_TOKENS,
-        _SYSTEM_PROMPT,
-        run_deep_self_review,
-    )
-    from ouroboros.reviewer_slot_config import DEEP_REVIEW_SLOT_ID, ConfiguredReviewerSlot
-    from ouroboros.tools.review_helpers import REVIEW_PROMPT_TOKEN_BUDGET
-    from ouroboros.utils import estimate_tokens
-
-    # The uncalibrated window arithmetic: SSOT budget with the output reserve.
-    assert _DEEP_INPUT_TOKEN_LIMIT == min(
-        REVIEW_PROMPT_TOKEN_BUDGET,
-        _DEEP_MODEL_CONTEXT_WINDOW - _DEEP_MAX_OUTPUT_TOKENS - _DEEP_OUTPUT_MARGIN_TOKENS,
-    )
-    assert _DEEP_INPUT_TOKEN_LIMIT + _DEEP_MAX_OUTPUT_TOKENS <= _DEEP_MODEL_CONTEXT_WINDOW, (
-        "deep review input cap + reserved output exceeds the reviewer window; "
-        "the provider would hard-400."
-    )
-
-    # The ENFORCED limit is the shared helper's answer (here: a sentinel), and
-    # the gated measure is system prompt + pack: a pack that fits alone but
-    # not with the system prompt is refused, quoting the enforced number.
-    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
-    limit = estimate_tokens(_SYSTEM_PROMPT) + 100
-    monkeypatch.setattr(deep_self_review, "calibrated_input_token_limit", lambda *a, **k: limit)
-    row = ConfiguredReviewerSlot(slot_id=DEEP_REVIEW_SLOT_ID, kind="api_chat", target_id="openai/x")
-    llm = mock.Mock()
-    llm.chat.return_value = ({"content": "ok"}, {"cost": 0.0})
-    (tmp_path / "state").mkdir()
-    too_big = "x" * (4 * 150)  # ~150 tokens: fits the limit alone, not with the system prompt
-    with mock.patch.object(deep_self_review, "build_review_pack",
-                           return_value=(too_big, {"file_count": 1, "total_chars": len(too_big), "skipped": []})):
-        text, usage = run_deep_self_review(tmp_path, tmp_path, llm, lambda _m: None, slot=row)
-    assert "too large" in text and f"~{limit:,} tokens" in text
-    assert usage["execution_status"] == "infra_failed" and not llm.chat.called
-    fits = "x" * (4 * 50)
-    with mock.patch.object(deep_self_review, "build_review_pack",
-                           return_value=(fits, {"file_count": 1, "total_chars": len(fits), "skipped": []})):
-        text, _usage = run_deep_self_review(tmp_path, tmp_path, llm, lambda _m: None, slot=row)
-    assert text.endswith("ok") and llm.chat.call_count == 1
-
-
 def test_tool_timeout_uses_max_of_settings_and_per_tool():
     """_get_tool_timeout must return max(settings, per_tool) not just settings."""
     from unittest.mock import patch
@@ -544,8 +444,9 @@ def test_advisory_pre_review_timeout_covers_tests_and_review():
         assert entries[name].timeout_sec == _preflight_tool_timeout_sec()
 
 
-def test_full_repo_pack_excludes_junk_dirs():
-    """build_full_repo_pack must skip broad non-core directories."""
+def test_repository_index_collapses_junk_dirs():
+    """The repository index must collapse broad non-core directories instead of
+    spending a per-path row on each of their files."""
     from ouroboros.tools.review_helpers import _FULL_REPO_SKIP_DIR_PREFIXES
     for prefix in ("assets/", "tests/", "devtools/"):
         assert prefix in _FULL_REPO_SKIP_DIR_PREFIXES, f"{prefix} not in skip list"
@@ -576,11 +477,10 @@ def test_unevidenced_reviewer_keeps_the_full_window_assumption(tmp_path, monkeyp
     the ABSENT-evidence default stays the full window — the same policy
     `context_fit` applies to the main lane (unknown routes try Max, never a
     silent 200K; BIBLE P1). Guessing small is not the conservative direction on
-    these surfaces: the governance packs (BIBLE + DEVELOPMENT + ARCHITECTURE +
-    CHECKLISTS) run ~169K tokens, so a sub-floor guess made `plan_slot_fit`
-    decline EVERY plan review before dispatch on a cold-evidence install. Only
-    scope review fails closed, because its blocking authority is what a wrong
-    assumption would forge, and it applies that sub-floor itself.
+    these surfaces, because the guess DECLINES work: a sub-floor guess made
+    `plan_slot_fit` decline EVERY plan review before dispatch on a
+    cold-evidence install. A caller that must fail closed applies its own
+    sub-floor to the resolved window; the number never decides authority.
     """
     from types import SimpleNamespace
 

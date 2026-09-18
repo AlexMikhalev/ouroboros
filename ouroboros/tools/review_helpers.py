@@ -50,6 +50,13 @@ def review_enforcement_blocks(enforcement: str | None = None) -> bool:
 # PROMPT, never the reviewer model or a window floor (BIBLE P3).
 
 
+# The cold-start density probe (``capability_evidence.cold_start_density_probe``)
+# measures the exact model's tokenizer on a bounded slice of the triad packet
+# it would otherwise refuse or degrade for size (the rung lives in
+# ``review_admission.density_probe_before_size_refusal``).
+DENSITY_PROBE_SAMPLE_CHARS = 80_000
+
+
 def calibrated_input_token_limit(
     model_id: str,
     *,
@@ -82,43 +89,6 @@ def calibrated_input_token_limit(
         int((context_window - output_reserve) / max(1.0, density)),
         context_window - output_reserve - tokenizer_margin,
     )
-
-
-# The cold-start density probe itself (one bounded send on the exact model that
-# sources a witness) is ``capability_evidence.cold_start_density_probe``, shared
-# by the packed deep self-review and the commit gate; the sample it measures on
-# is a slice of the REAL pack content, built here from the atlas manifest.
-DENSITY_PROBE_SAMPLE_CHARS = 80_000
-
-
-def density_probe_sample(repo_dir: pathlib.Path, manifest: dict) -> str:
-    """A bounded slice of the REAL atlas content (the refused required rows
-    first, then the selected rows) so the probe measures the density of what
-    the pack is made of, not of an unrelated text."""
-    from ouroboros.tool_access_paths import path_is_relative_to
-
-    parts: list[str] = []
-    total = 0
-    manifest = dict(manifest or {})
-    rows = list(manifest.get("unassembled_required") or []) + list(manifest.get("selected") or [])
-    root = pathlib.Path(repo_dir)
-    for row in rows:
-        rel = str((row or {}).get("path") or "")
-        # Containment resolved on the filesystem (not a POSIX-shaped string
-        # test): a drive-absolute or ``..`` row on any platform stays outside.
-        if not rel or not path_is_relative_to(root / rel, root):
-            continue
-        try:
-            text = (root / rel).read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        room = DENSITY_PROBE_SAMPLE_CHARS - total
-        if room <= 0:
-            break
-        chunk = text[:room]
-        parts.append(f"### {rel}\n{chunk}\n")
-        total += len(chunk)
-    return "".join(parts)
 
 
 SKILL_HOST_CONTEXT_FILES = (
@@ -888,9 +858,6 @@ from ouroboros.tools.review_file_pack import (  # noqa: E402, F401 -- intentiona
     _VENDORED_SUFFIXES,
     _is_probably_binary,
     _raw_bytes_binary,
-    build_advisory_changed_context,
-    build_full_repo_pack,
-    build_head_snapshot_section,
     build_touched_file_pack,
     format_name_status_for_preflight,
     iter_repo_pack_entries,
