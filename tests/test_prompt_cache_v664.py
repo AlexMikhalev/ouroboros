@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import json
 
 import pytest
 
@@ -78,6 +80,138 @@ def test_openrouter_uses_session_id_without_replacing_existing_extra_body(monkey
     assert kwargs["extra_body"]["session_id"] != other["extra_body"]["session_id"]
     assert kwargs["extra_body"]["reasoning"]["effort"] == "high"
     assert "prompt_cache_key" not in kwargs
+
+
+def _sealed_transcripts():
+    from ouroboros.context_fit import seal_task_transcript
+
+    messages = _messages(stable="stable policy " * 800)
+    snapshots = []
+    for count in range(1, 8):
+        messages.extend([
+            {"role": "assistant", "content": "", "tool_calls": [{
+                "id": f"read-{count}", "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            }]},
+            {"role": "tool", "tool_call_id": f"read-{count}", "content": f"evidence {count}"},
+        ])
+        if count >= 5:
+            seal_task_transcript(messages)
+            snapshots.append(copy.deepcopy(messages))
+    # A compacted transcript can return the cache boundary to the task message.
+    messages = messages[:len(snapshots[0])]
+    seal_task_transcript(messages)
+    snapshots.append(messages)
+    return snapshots
+
+
+@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("model,cache_markers", [
+    ("openai/gpt-5.5", False), ("anthropic/claude-fable-5", True),
+])
+def test_openrouter_session_survives_marker_migration_on_sdk_wire(asynchronous, model, cache_markers):
+    import httpx
+    import openai
+    from ouroboros.llm import LLMClient
+
+    snapshots = _sealed_transcripts()
+    originals = copy.deepcopy(snapshots)
+    client = LLMClient(api_key="unused")
+    target = {
+        "provider": "openrouter", "resolved_model": model, "usage_model": model,
+        "supports_openrouter_extensions": True,
+    }
+    tools = [{"type": "function", "function": {
+        "name": "read_file", "parameters": {"type": "object", "properties": {}},
+    }}]
+    payloads = [client._build_remote_kwargs(
+        target, messages, "high", 512, "auto", None, tools,
+        skip_capability_fetch=True,
+    ) for messages in snapshots]
+    assert snapshots == originals, "affinity projection must not mutate the canonical transcript"
+    captured = []
+
+    def respond(request):
+        captured.append(json.loads(request.content))
+        return httpx.Response(200, json={
+            "id": "fixture", "object": "chat.completion", "created": 0, "model": model,
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "done"},
+                         "finish_reason": "stop"}],
+        })
+
+    async def send_async():
+        async with openai.AsyncOpenAI(
+            api_key="fixture", base_url="https://fixture.invalid/v1", max_retries=0,
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+        ) as sdk:
+            for payload in payloads:
+                await sdk.chat.completions.create(**payload)
+
+    if asynchronous:
+        asyncio.run(send_async())
+    else:
+        with openai.OpenAI(
+            api_key="fixture", base_url="https://fixture.invalid/v1", max_retries=0,
+            http_client=httpx.Client(transport=httpx.MockTransport(respond)),
+        ) as sdk:
+            for payload in payloads:
+                sdk.chat.completions.create(**payload)
+
+    assert len(captured) == 4
+    assert len({payload["session_id"] for payload in captured}) == 1
+    assert all(payload["tools"] == captured[0]["tools"] for payload in captured)
+    boundaries = []
+    for payload in captured:
+        marked = [i for i, message in enumerate(payload["messages"])
+                  if message["role"] != "system" and isinstance(message["content"], list)
+                  for block in message["content"] if "cache_control" in block]
+        boundaries.append(marked)
+    if cache_markers:
+        assert boundaries == [[1], [3], [5], [1]], "supported markers must still migrate both ways"
+    else:
+        assert boundaries == [[], [], [], []]
+        for previous, current in zip(captured[:2], captured[1:3]):
+            assert current["messages"][:len(previous["messages"])] == previous["messages"]
+        assert captured[3]["messages"] == captured[0]["messages"]
+
+
+def test_derived_session_ignores_transport_metadata_but_preserves_semantic_inputs():
+    from ouroboros.llm import LLMClient
+
+    messages = _messages()
+    messages[1]["content"] = [
+        {"type": "text", "text": "solve exactly"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA==", "detail": "high"}},
+    ]
+    baseline = copy.deepcopy(messages)
+    identity = LLMClient._openrouter_session_identity("openai/gpt-5.5", messages)
+    for ttl in ("5m", "1h"):
+        annotated = copy.deepcopy(messages)
+        annotated[1]["content"][0]["cache_control"] = {"type": "ephemeral", "ttl": ttl}
+        annotated[1]["content"][1].update({
+            "_caption": "host caption", "_source_path": "/fixture/image.png", "_context_capsule": "host",
+        })
+        original = copy.deepcopy(annotated)
+        assert LLMClient._openrouter_session_identity("openai/gpt-5.5", annotated) == identity
+        assert annotated == original
+    changed = []
+    for text in ("another task", "solve exactly "):
+        candidate = copy.deepcopy(messages)
+        candidate[1]["content"][0]["text"] = text
+        changed.append(candidate)
+    candidate = copy.deepcopy(messages)
+    candidate[1]["content"][1]["image_url"]["url"] = "data:image/png;base64,AQ=="
+    changed.append(candidate)
+    candidate = copy.deepcopy(messages)
+    candidate[1]["content"].reverse()
+    changed.append(candidate)
+    candidate = copy.deepcopy(messages)
+    candidate[0]["content"][0]["text"] = "another policy"
+    changed.append(candidate)
+    assert all(LLMClient._openrouter_session_identity("openai/gpt-5.5", candidate) != identity
+               for candidate in changed)
+    assert LLMClient._openrouter_session_identity("openai/gpt-5.6-sol", messages) != identity
+    assert messages == baseline
 
 
 def test_named_openai_cache_parameter_gets_one_exact_retry(monkeypatch):

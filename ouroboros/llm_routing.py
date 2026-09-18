@@ -262,7 +262,12 @@ class _ProviderRoutingMixin:
         first_user: Any = ""
         for message in messages:
             if str(message.get("role") or "") == "user":
-                first_user = message.get("content")
+                # Cache boundaries migrate during a task. Their markers and
+                # host-only block metadata must not rotate its routing key.
+                first_user = cls._copy_messages_with_cache_policy(
+                    [message], allow_message_cache_control=False,
+                    flatten_tool_content_blocks=False,
+                )[0].get("content")
                 break
         serialized_user = json.dumps(
             first_user,

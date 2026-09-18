@@ -2749,7 +2749,7 @@
               "reason_code": "requested_wire_form",
               "source_profile_fingerprint": "760c6157eb99a45072ed50ff3f02dda60fc887c3534865f85fbad14fcca919d1",
               "accepted_profile_fingerprint": "760c6157eb99a45072ed50ff3f02dda60fc887c3534865f85fbad14fcca919d1",
-              "candidate_sha256": "085023a67633d3e571ad3492f17a02b112ebc45a77980651f9e00e1a4c1b39cc",
+              "candidate_sha256": "9451eeb0c00429e0c3b5e88d3ec0795aa56ed2818e36b1f238ff30669cd22b22",
               "ladder_ordinal": 1,
               "applied_actions": [],
               "task_local": false,
@@ -2780,7 +2780,7 @@
                   "effort": "medium",
                   "exclude": false
                 },
-                "session_id": "ouroboros-session-e8e49f8c93db5babc27cd74e553a4242"
+                "session_id": "ouroboros-session-f706174fa3ad320daf733cb9d635fe32"
               },
               "max_tokens": 65536,
               "messages": [
@@ -2860,7 +2860,7 @@
                 }
               ]
             },
-            "payload_sha256": "085023a67633d3e571ad3492f17a02b112ebc45a77980651f9e00e1a4c1b39cc"
+            "payload_sha256": "9451eeb0c00429e0c3b5e88d3ec0795aa56ed2818e36b1f238ff30669cd22b22"
           }
         ],
         "physical_attempts": [
@@ -2868,7 +2868,7 @@
             "source": "llm.chat",
             "model": "anthropic/claude-sonnet-4.6",
             "provider": "openrouter",
-            "candidate_raw_sha256": "085023a67633d3e571ad3492f17a02b112ebc45a77980651f9e00e1a4c1b39cc",
+            "candidate_raw_sha256": "9451eeb0c00429e0c3b5e88d3ec0795aa56ed2818e36b1f238ff30669cd22b22",
             "candidate_raw_size_bytes": 870,
             "candidate_measurement_kind": "canonical_json_v1",
             "states": [
