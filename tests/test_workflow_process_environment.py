@@ -73,20 +73,108 @@ def test_verify_matches_raw_selected_value_before_receipt_redaction(process_cont
     assert receipt["expected"] == "***" and secret not in result.text
 
 
+@pytest.mark.parametrize("tool,padding,suffix", [
+    ("run_command", 24982, 60000),
+    ("run_command", 60000, 24982),
+    ("run_script", 24982, 60000),
+    ("run_script", 60000, 24982),
+    ("verify_and_record", 3990, 60000),
+    ("verify_and_record", 19990, 60000),
+])
+@pytest.mark.parametrize("returncode,stream", [(0, "stdout"), (7, "stderr")])
+def test_selected_secret_is_masked_before_diagnostic_bounds(
+    process_context, monkeypatch, tool, padding, suffix, returncode, stream,
+):
+    from ouroboros.outcomes import verification_receipts_path
+
+    registry, ctx, workspace, data = process_context
+    secret = "UNIQUE_CONFIDENTIAL_FRAGMENT_0123456789_END"
+    monkeypatch.setattr("ouroboros.config.load_settings", lambda: {"CUSTOM_KEY": secret})
+    program = (
+        "import os,sys; "
+        f"print('x'*{padding}+os.environ['TOKEN']+'y'*{suffix}, file=sys.{stream}); "
+        f"sys.exit({returncode})"
+    )
+    args = {"cwd": str(workspace), "env_from_settings": {"TOKEN": "CUSTOM_KEY"}}
+    if tool == "run_script":
+        args.update(script=program, interpreter=sys.executable)
+    elif tool == "verify_and_record":
+        args.update(contract_kind="explicit_command", check=[sys.executable, "-c", program], expected=secret)
+    else:
+        args.update(cmd=[sys.executable, "-c", program])
+    result = registry.execute_result(tool, args)
+    rendered = result.text
+    assert "truncated" in rendered
+    if tool == "verify_and_record":
+        receipt = json.loads(verification_receipts_path(data, ctx.task_id).read_text(encoding="utf-8").splitlines()[-1])
+        assert receipt["returncode"] == returncode and receipt["matched"] is True
+        assert receipt["status"] == ("fail" if returncode else "pass")
+        assert len(receipt["summary"]) < 20100
+        assert len(rendered) < 6000
+        rendered += json.dumps(receipt)
+    else:
+        assert result.meta["exit_code"] == returncode
+        assert result.status == ("error" if returncode else "ok")
+        assert len(rendered) < 52000
+        assert "yyyyyyyyyy" in rendered, "the bounded tail remains available"
+    assert "xxxxxxxxxx" in rendered, "ordinary output remains available"
+    assert secret[:10] not in rendered and secret[-10:] not in rendered
+
+
+@pytest.mark.parametrize("match_mode", ["exact", "exact_line", "json_equals"])
+@pytest.mark.parametrize("matches", [True, False])
+def test_verify_secret_masking_preserves_strict_expected_match(
+    process_context, monkeypatch, match_mode, matches,
+):
+    from ouroboros.outcomes import verification_receipts_path
+
+    registry, ctx, workspace, data = process_context
+    secret = "synthetic-exact-output-secret"
+    monkeypatch.setattr("ouroboros.config.load_settings", lambda: {"CUSTOM_KEY": secret})
+    output = "json.dumps(os.environ['TOKEN'])" if match_mode == "json_equals" else "os.environ['TOKEN']"
+    expected = secret if matches else "wrong-value"
+    if match_mode == "json_equals":
+        expected = json.dumps(expected)
+    result = registry.execute_result("verify_and_record", {
+        "contract_kind": "explicit_command", "cwd": str(workspace),
+        "check": [sys.executable, "-c", f"import os,json; print({output})"],
+        "expected": expected, "expected_match": match_mode,
+        "env_from_settings": {"TOKEN": "CUSTOM_KEY"},
+    })
+    receipt = json.loads(verification_receipts_path(data, ctx.task_id).read_text(encoding="utf-8").splitlines()[-1])
+    assert receipt["matched"] is matches and receipt["returncode"] == 0
+    assert receipt["status"] == ("pass" if matches else "fail")
+    assert secret not in result.text + json.dumps(receipt)
+    assert "***" in result.text and "***" in receipt["summary"]
+
+
 @pytest.mark.parametrize("failure", ["nonzero", "spawn", "timeout"])
-def test_selected_secret_does_not_escape_failed_process(process_context, monkeypatch, failure):
-    registry, _ctx, workspace, _data = process_context
+@pytest.mark.parametrize("tool", ["run_command", "run_script", "verify_and_record"])
+def test_selected_secret_does_not_escape_failed_process(process_context, monkeypatch, failure, tool):
+    from ouroboros.outcomes import verification_receipts_path
+
+    registry, ctx, workspace, data = process_context
     secret = "synthetic-failed-process-secret"
     monkeypatch.setattr("ouroboros.config.load_settings", lambda: {"CUSTOM_KEY": secret})
-    if failure == "spawn":
-        cmd = [str(workspace / "absent")]
+    interpreter = str(workspace / secret) if failure == "spawn" else sys.executable
+    program = "import os,sys,time; print(os.environ['TOKEN'],flush=True); " + ("sys.exit(7)" if failure == "nonzero" else "time.sleep(5)")
+    args = {"cwd": str(workspace), "timeout_sec": 1, "env_from_settings": {"TOKEN": "CUSTOM_KEY"}}
+    if tool == "run_script":
+        args.update(script=program, interpreter=interpreter)
+    elif tool == "verify_and_record":
+        args.update(contract_kind="explicit_command", check=[interpreter, "-c", program])
     else:
-        cmd = [sys.executable, "-c", "import os,sys,time; print(os.environ['TOKEN'],flush=True); " + ("sys.exit(7)" if failure == "nonzero" else "time.sleep(5)")]
-    result = registry.execute_result("run_command", {"cmd": cmd, "cwd": str(workspace),
-        "timeout_sec": 1, "env_from_settings": {"TOKEN": "CUSTOM_KEY"}})
+        args.update(cmd=[interpreter, "-c", program])
+    result = registry.execute_result(tool, args)
     assert secret not in result.text
-    assert result.status != "ok"
-    if failure == "nonzero":
+    if tool == "verify_and_record" and failure != "spawn":
+        receipt = json.loads(verification_receipts_path(data, ctx.task_id).read_text(encoding="utf-8").splitlines()[-1])
+        assert receipt["status"] == "fail"
+        assert receipt["returncode"] == (7 if failure == "nonzero" else None)
+        assert secret not in json.dumps(receipt)
+    else:
+        assert result.status != "ok"
+    if failure == "nonzero" and tool != "verify_and_record":
         assert result.meta["exit_code"] == 7 and "***" in result.text
 
 
@@ -129,6 +217,40 @@ def test_runtime_uses_explicit_child_path_not_host_path(process_context, monkeyp
     assert result.status == "ok" and "chosen-runtime" in result.text, result.text
     if runtime == "python":
         assert str(binary) in result.text and '"source": "PATH"' in result.text
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executable shims; native Windows execution is not exercised")
+@pytest.mark.parametrize("backend", ["host", "local"])
+@pytest.mark.parametrize("relative_dir", ["relative-node-bin", ""])
+def test_relative_selected_path_reaches_workspace_node(process_context, monkeypatch, backend, relative_dir):
+    from ouroboros import process_interpreters
+
+    registry, ctx, workspace, data = process_context
+    if backend == "local":
+        ctx.executor_ref = {"type": "local", "workspace_host_path": str(workspace), "workspace_backend_path": "/workspace"}
+    selected_dir = workspace / relative_dir
+    selected_dir.mkdir(exist_ok=True)
+    bundled_dir = data / "bundle"
+    bundled_dir.mkdir()
+    for directory, label in ((selected_dir, "chosen-relative-node"), (bundled_dir, "incorrect-bundled-node")):
+        binary = directory / "node"
+        binary.write_text(
+            '#!/bin/sh\nif [ "$1" = "--version" ]; then echo v22.1.0; else echo ' + label + '; fi\n',
+            encoding="utf-8",
+        )
+        binary.chmod(0o755)
+    selected_path = os.pathsep.join((relative_dir, "/usr/bin", "/bin"))
+    monkeypatch.setattr("ouroboros.config.load_settings", lambda: {"OPENAI_BASE_URL": selected_path})
+    monkeypatch.setattr(process_interpreters, "resolve_bundled_node", lambda: str(bundled_dir / "node"))
+    result = registry.execute_result("run_command", {"cmd": ["node", "-e", "unused"], "cwd": str(workspace),
+        "env_from_settings": {"PATH": "OPENAI_BASE_URL"}})
+    assert result.status == "ok" and result.meta["exit_code"] == 0, result.text
+    assert "chosen-relative-node" in result.text and "incorrect-bundled-node" not in result.text
+    events = [json.loads(line) for line in (data / "logs/events.jsonl").read_text(encoding="utf-8").splitlines()]
+    trace = next(event for event in reversed(events) if event.get("type") == "node_runtime_resolution")
+    assert trace["requested_interpreter"] == trace["resolved_interpreter"] == "node"
+    assert trace["runtime_path"] == str(selected_dir / "node")
+    assert trace["path_snapshot"] == selected_path and not trace["env_path_prepend"]
 
 
 def test_unknown_wrapper_provenance_never_invents_a_python_path(process_context):

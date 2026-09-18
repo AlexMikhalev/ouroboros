@@ -64,7 +64,9 @@ _RECEIPT_DECLARED_SUMMARY_CAP = 1000
 
 
 def _bounded(text: Any, cap: int) -> str:
-    t = str(text or "").strip()
+    # Raw output remains available to expected-match evaluation. Only this
+    # diagnostic copy is masked, before a bound could expose a secret fragment.
+    t = redact_process_data(str(text or "")).strip()
     if len(t) <= cap:
         return t
     return t[:cap] + f"\n…[truncated {len(t) - cap} of {len(t)} chars]"
@@ -325,7 +327,7 @@ def _compare_files_bytes_equal(
             rc = int(rc_raw)
         except (TypeError, ValueError):
             return False, f"bytes_equal: executor cmp returned no exit status for {a_raw} vs {b_raw}"
-        out = ((res.stdout or "") + ("\n" + res.stderr if res.stderr else "")).strip()
+        out = redact_process_data((res.stdout or "") + ("\n" + res.stderr if res.stderr else "")).strip()
         if rc == 0:
             return True, f"bytes_equal: {a_raw} == {b_raw} (executor cmp)"
         if rc > 1:

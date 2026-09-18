@@ -134,6 +134,14 @@ def selected_process_environment():
     return prepared[0] if prepared is not None else {}
 
 
+def process_path_for_cwd(path, cwd):
+    """Resolve PATH search entries against the child cwd, preserving lexical paths."""
+    return os.pathsep.join(
+        str(pathlib.Path(part) if pathlib.Path(part).is_absolute() else pathlib.Path(cwd) / part)
+        for part in path.split(os.pathsep)
+    )
+
+
 def record_runtime_selection(ctx, argv, cwd, environment):
     """Non-executing provenance over the actual launch environment; never rewrite argv."""
     from ouroboros.workspace_executor import executor_ref_from_ctx, map_host_path
@@ -168,8 +176,7 @@ def record_runtime_selection(ctx, argv, cwd, environment):
             if candidate.is_file() and os.access(candidate, os.X_OK):
                 selected = os.path.abspath(candidate)  # lexical venv path, not realpath
         else:
-            path = os.pathsep.join(str(pathlib.Path(part) if pathlib.Path(part).is_absolute() else pathlib.Path(cwd) / part)
-                                   for part in environment.get("PATH", os.defpath).split(os.pathsep))
+            path = process_path_for_cwd(environment.get("PATH", os.defpath), cwd)
             selected = shutil.which(spelling, path=path) or ""
             source = "PATH" if not trace or not trace.changed else source
         if not selected:
