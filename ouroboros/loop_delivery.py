@@ -612,9 +612,13 @@ def _delivery_control_prompt(candidate: DeliveryCandidate, *, keep_allowed: bool
         f"{candidate.content_sha256[:12]}) is retained by the loop; do not replace it with a "
         f"service notice. {keep_line}\n"
         "You may continue using tools whenever more work is needed. This instruction applies "
-        "only to your final response with no tool calls. When ready to finalize, return "
-        "exactly one JSON object and no other text:\n"
-        '{"delivery_control":"keep"}\n'
+        "only to your final response with no tool calls. "
+        + ("Return the complete revised user-facing answer as ordinary prose, not a status "
+           "note. Prose never requests pending_review:finish. "
+           "Optionally, return exactly one JSON object and no other text:\n"
+           if candidate.finalization_control.startswith("acceptance_feedback")
+           else "When ready to finalize, return exactly one JSON object and no other text:\n")
+        + '{"delivery_control":"keep"}\n'
         "or\n"
         '{"delivery_control":"replace","full_answer":"<the complete user-facing answer>"}'
         "\nEither form may include acceptance_subject with the latest observed "
@@ -658,6 +662,14 @@ def _arm_delivery_control(
     candidate = getattr(tools._ctx, "_delivery_candidate", None)
     if not isinstance(candidate, _loop().DeliveryCandidate):
         return
+    if control == "acceptance_feedback" and (
+        candidate.finalization_control in _DELIVERY_HOLD_CONTROLS
+        or candidate.finalization_control == "owner_revision_required"
+        or _delivery_replace_required(candidate)
+        or (getattr(tools._ctx, "_delivery_control_required", False)
+            and not candidate.finalization_control.startswith("acceptance_feedback"))
+    ):
+        return  # A pending panel never relaxes another gate's existing control.
     evidence_revision, evidence_fingerprint = _loop()._delivery_evidence_state(tools, ctx, llm_trace)
     candidate.finalization_control = control
     # The acceptance wake re-offers an EXISTING candidate's contract: its one
@@ -897,6 +909,15 @@ def _resolve_delivery_control(
     control_kind, replacement, error = _classify_parsed_delivery_control(
         parsed, duplicate_protocol_key, embedded_protocol,
     )
+    from ouroboros.observability import strip_protocol_fence
+
+    if (candidate.finalization_control.startswith("acceptance_feedback")
+            and raw and control_kind == "none"
+            and not strip_protocol_fence(raw).startswith("{")
+            and not _loop()._task_acceptance_owner_generation_changed(tools._ctx)):
+        tools._ctx._acceptance_pending_review_choice = "wait"
+        tools._ctx._delivery_control_required = False
+        return "fresh", _loop()._extract_plain_text_from_content(content)
     # ANY parsed object carrying the protocol key is control intent, whatever
     # the verb or placement — a mangled protocol attempt is never prose (raw
     # JSON leaked to chat); validity judged below.
@@ -984,7 +1005,8 @@ def _resolve_delivery_control(
         candidate.repair_attempted = True
         candidate.finalization_control = (
             f"{candidate.finalization_control}_repair_requested"
-            if _loop()._delivery_replace_required(candidate)
+            if (_loop()._delivery_replace_required(candidate)
+                or candidate.finalization_control.startswith("acceptance_feedback"))
             else "repair_requested"
         )
         if raw:

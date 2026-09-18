@@ -615,3 +615,26 @@ def test_pending_review_rides_beside_the_verb_and_is_recorded_on_every_answer(tm
         json.dumps({"delivery_control": "keep"}), registry, ctx, trace,
     )
     assert status == "resolved" and registry._ctx._acceptance_pending_review_choice == "wait"
+
+
+@pytest.mark.parametrize("content", ["", [{"type": "thinking", "thinking": "reasoning only"}], "invalid control"])
+def test_delivery_repair_keeps_the_sent_control_prefix(tmp_path, content):
+    import copy
+    from ouroboros.transcript_prefix import observe_send
+    from tests.test_delivery_forced_finalization import _forced_test_context
+
+    loop, registry, ctx, trace = _forced_test_context(tmp_path)
+    ctx.messages.insert(0, {"role": "system", "content": "Complete the task."})
+    candidate = loop._replace_delivery_candidate(registry, ctx, trace, "Complete retained answer.", control="candidate")
+    loop._arm_delivery_control(registry, ctx, trace)
+    observe_send(registry._ctx, ctx.messages, round_idx=1)
+    sent = copy.deepcopy(ctx.messages)
+
+    status, text = loop._resolve_delivery_control(content, registry, ctx, trace)
+
+    assert (status, text) == ("retry", "")
+    assert ctx.messages[:len(sent)] == sent
+    assert "[DELIVERY_CONTROL_REPAIR]" in ctx.messages[-1]["content"]
+    assert ctx.messages[-1]["role"] == "user"
+    assert observe_send(registry._ctx, ctx.messages, round_idx=2) is None
+    assert candidate.full_text == "Complete retained answer."

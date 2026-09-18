@@ -118,17 +118,22 @@ def test_the_scheduled_lane_runs_the_keyless_suite_on_a_throwaway_root():
     assert [step.get("uses") for step in steps][:2] == [
         "actions/checkout@v4", "./.github/actions/setup-python-env",
     ]
-    run_step = next(step for step in steps if "run" in step)
-    assert run_step["run"].strip() == (
-        'python -m pytest tests/system_e2e/ -o addopts="" -q'
-    )
-    env = run_step["env"]
-    assert env["OUROBOROS_E2E_DEEP"] == "mock"
+    run_steps = [step for step in steps if "run" in step]
+    assert len(run_steps) == 2
+    expected = [("tests/system_e2e/", "OUROBOROS_E2E_DEEP"),
+                ("tests/test_e2e_cancellation_scenarios.py", "OUROBOROS_E2E_CANCEL")]
     # All four roots, all under the runner's temp: a scenario server that
     # escaped its isolation could otherwise write into the checkout.
     roots = ["OUROBOROS_APP_ROOT", "OUROBOROS_REPO_DIR", "OUROBOROS_DATA_DIR",
              "OUROBOROS_SETTINGS_PATH"]
-    assert all("runner.temp" in str(env[name]) for name in roots), env
+    for run_step, (target, lane) in zip(run_steps, expected):
+        assert run_step["run"].strip() == (
+            f'python -m pytest {target} -o addopts="" -o faulthandler_timeout=540 -q'
+        )
+        env = run_step["env"]
+        assert env[lane] == "mock"
+        assert env["PYTHONUNBUFFERED"] == "1"
+        assert all("runner.temp" in str(env[name]) for name in roots), env
 
 
 def test_the_scheduled_lane_asks_for_no_secret():

@@ -70,7 +70,7 @@ def _extract_plain_text_from_content(content: Any) -> str:
 def _append_or_merge_user_message(
     messages: List[Dict[str, Any]], text: str, *, slot: Any = None,
 ) -> None:
-    """Append a user message without creating consecutive user turns."""
+    """Append a user message, merging only when its tail is known unsent."""
     _append_or_merge_user_content(messages, text, slot=slot)
 
 
@@ -118,10 +118,10 @@ def _append_or_merge_user_content(
     """Append user content without flattening multipart blocks.
 
     ``slot`` is the execution slot the send observer parks the previous send's
-    digests on (the loop's ToolContext); with it, a tail row that already went
-    out is never merged into (issue #906): the new content becomes its own row.
+    digests on (the loop's ToolContext). Merge only when that recorded send
+    proves the tail absent; an unknown or sent tail stays intact.
     """
-    from ouroboros.transcript_prefix import sent_in_previous_send
+    from ouroboros.transcript_prefix import unsent_in_previous_send
 
     if isinstance(content, list):
         incoming_images = sum(
@@ -130,9 +130,8 @@ def _append_or_merge_user_content(
         )
         if incoming_images:
             _evict_stale_image_blocks(messages, incoming=incoming_images)
-    if messages and sent_in_previous_send(slot, messages[-1]):
-        # A sent row is byte-frozen: merging into it would rewrite an
-        # already-sent message and break byte-prefix prompt caching.
+    if not (messages and unsent_in_previous_send(slot, messages[-1])):
+        # Unknown or sent content stays intact, including slot-less producers.
         messages.append({"role": "user", "content": content})
         return
     if messages and messages[-1].get("role") == "user":

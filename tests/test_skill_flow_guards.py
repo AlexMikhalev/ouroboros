@@ -263,7 +263,7 @@ def test_skill_finalization_empty_text_does_not_append_empty_assistant(monkeypat
         ({"content": "", "tool_calls": []}, {}),
         ({"content": "final", "tool_calls": []}, {}),
     ])
-    seen_message_tails = []
+    seen_messages = []
 
     class _Tools:
         CODE_TOOLS = set()
@@ -291,7 +291,7 @@ def test_skill_finalization_empty_text_does_not_append_empty_assistant(monkeypat
             return "test-model"
 
     def fake_call(_llm, messages, *_args, **_kwargs):
-        seen_message_tails.append([m.get("role") for m in messages[-3:]])
+        seen_messages.append([dict(message) for message in messages])
         return next(calls)
 
     monkeypatch.setenv("OUROBOROS_MAX_ROUNDS", "3")
@@ -310,5 +310,8 @@ def test_skill_finalization_empty_text_does_not_append_empty_assistant(monkeypat
     )
 
     assert result == "final"
-    assert any(tail[-1:] == ["user"] and "assistant" not in tail[-2:] for tail in seen_message_tails)
-    assert all(tail[-2:] != ["user", "user"] for tail in seen_message_tails)
+    assert len(seen_messages) == 2
+    assert seen_messages[1][-1]["role"] == "user"
+    assert not any(message.get("role") == "assistant"
+                   and not message.get("content") and not message.get("tool_calls")
+                   for request in seen_messages for message in request)

@@ -178,12 +178,24 @@ def test_mock_keepalive_completion(completion_stub, multipart):
 
 
 @pytest.mark.parametrize("marker", ["[OWNER_STOP]", "[FINALIZE_NOW]"])
-def test_mock_finalizes_after_production_multipart_append(completion_stub, marker):
+@pytest.mark.parametrize("tail_state", ["unknown", "sent", "unsent"])
+def test_mock_finalizes_after_production_multipart_append(completion_stub, marker, tail_state):
+    from types import SimpleNamespace
+
     from ouroboros.loop_messages import _append_or_merge_user_message
+    from ouroboros.transcript_prefix import observe_send
 
     messages = [{"role": "user", "content": [{"type": "text", "text": "Keep watching."}]}]
-    _append_or_merge_user_message(messages, f"{marker} Summarize and stop.")
-    assert len(messages) == 1 and isinstance(messages[0]["content"], list)
+    original = json.loads(json.dumps(messages))
+    slot = None if tail_state == "unknown" else SimpleNamespace()
+    if slot is not None:
+        observe_send(slot, messages if tail_state == "sent" else [], round_idx=1)
+    _append_or_merge_user_message(messages, f"{marker} Summarize and stop.", slot=slot)
+    assert isinstance(messages[0]["content"], list)
+    if tail_state == "unsent":
+        assert len(messages) == 1
+    else:
+        assert len(messages) == 2 and messages[:1] == original
     body = {
         "messages": messages,
         "tools": [{"type": "function", "function": {"name": "list_files"}}],

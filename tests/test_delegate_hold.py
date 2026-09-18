@@ -279,7 +279,10 @@ def test_recovered_latch_reenters_hold_before_any_dispatch(tmp_path, monkeypatch
 
     def fake_call(_llm, messages, *_a, **_k):
         order.append("dispatch")
-        assert "[DELEGATED LEAF WAKE / UNKNOWN-HOLD RESUME]" in messages[-1]["content"]
+        wakes = [m for m in messages if m.get("role") == "user"
+                 and "[DELEGATED LEAF WAKE / UNKNOWN-HOLD RESUME]" in str(m.get("content", ""))]
+        assert len(wakes) == 1
+        assert "run-leaf" in wakes[0]["content"] and "w3" in wakes[0]["content"]
         return {"role": "assistant", "content": "resumed"}, 0.0
 
     monkeypatch.setattr(loop_mod, "call_llm_with_retry", fake_call)

@@ -411,7 +411,7 @@ def test_s14_plan_review_revise_then_accept_cycle_with_honest_chronicle(
             # The immutable per-wave artifacts carry the exact reviewer wave
             # bytes. The asynchronous route snapshots each cycle TWICE and both
             # snapshots are evidence: the OPEN barrier wave recorded at dispatch
-            # (custody pending, unpaid, no verdict yet) and the wave the $0
+            # (custody pending, possibly already dispatched) and the wave the $0
             # collection closed. The verdict chronicle is the collected pair:
             # one REVISE_PLAN wave, one GREEN wave. The task artifact store
             # lives under the SERVER data root (task_results/artifacts/), not
@@ -425,9 +425,22 @@ def test_s14_plan_review_revise_then_accept_cycle_with_honest_chronicle(
                 return int(payload.get("cycle_index") or 0)
 
             barrier = sorted((p for p in payloads if p.get("custody_pending")), key=by_cycle)
-            collected = sorted((p for p in payloads if not p.get("custody_pending")), key=by_cycle)
+            from ouroboros.tools.plan_review_artifacts import read_wave
+
+            collected = [read_wave(oracle.data_root, task_id, wave["wave_artifact"])
+                         for wave in waves]
+            # The durable index names the exact verdict snapshots; the reader
+            # verifies their bytes/hash instead of trusting a directory count.
+            assert collected == sorted(
+                (p for p in payloads if not p.get("custody_pending")), key=by_cycle)
             assert [p.get("aggregate") for p in barrier] == ["DEGRADED"] * 2, barrier
-            assert [p.get("paid") for p in barrier] == [False] * 2, barrier
+            for pending in barrier:
+                states = [actor.get("operation_state") for actor in pending["actors"]]
+                assert len(states) == 3
+                assert set(states) <= {"pending_dispatch", "in_flight", "settled"}, states
+                # One dispatched sibling makes this a paid wave even while
+                # another sibling is still waiting at the dispatch barrier.
+                assert pending["paid"] is any(state != "pending_dispatch" for state in states)
             assert [p.get("cycle_index") for p in collected] == [1, 2], collected
             assert [p.get("paid") for p in collected] == [True] * 2, collected
             aggregates = [str(p.get("aggregate") or "") for p in collected]
@@ -827,21 +840,18 @@ S14_ANSWER_V2 = "Final answer: the summary is complete. W3A_DONE"
 _OWNER_SOURCE_RE = re.compile(r'"owner_source_sha256": "([0-9a-f]{64})"')
 
 
-def _control_step(delivery_control: str, full_answer: str):
+def _control_step(delivery_control: str, full_answer: str | None = None):
     """A scripted answer to the host's delivery control.
 
-    A pending acceptance wait offers keep/replace, but a panel that settles
-    before that wait leaves an ordinary answer round. Follow the actual prompt:
-    return the full answer unless this candidate lineage was offered control.
-    Historical control remains valid under the runtime's control reader. The
-    exact owner source selector comes from the latest subject observation."""
+    Acceptance is asynchronous (owner D4=A): the panel settles in custody and its
+    verdicts wake Main with the keep/replace control re-offered, so the scripted
+    agent answers that control instead of a bare final. The exact owner source
+    selector is read from the transcript's last ``[ACCEPTANCE_SUBJECT_OBSERVATION]``
+    (the wave-2 dynamic-argument contract of ``scripted_completion``)."""
     def step(body: dict) -> dict:
-        text = body_text(body)
-        if "[DELIVERY_FINALIZATION_CONTROL]" not in text:
-            return {"final": full_answer}
-        found = _OWNER_SOURCE_RE.findall(text)
+        found = _OWNER_SOURCE_RE.findall(body_text(body))
         control = {"delivery_control": delivery_control}
-        if delivery_control == "replace":
+        if full_answer is not None:
             control["full_answer"] = full_answer
         if found:
             control["acceptance_subject"] = {"owner_source_sha256": found[-1]}
@@ -857,14 +867,15 @@ def _s14_settings(stub) -> dict:
     )
 
 
-def _keep_until_acceptance_settled(full_answer: str, *, wave_ordinal: int):
+def _keep_until_acceptance_settled(full_answer: str, *, wave_ordinal: int, answer_form: str):
     """Keep the same answer through quorum wakes until the intended wave settles.
 
     A final-slot notification can arrive during Main's response to the quorum
     wake. The host then drains it in another round, reusing the paid verdict.
     That round still belongs to this phase, not the stub's exhausted fallback.
     """
-    keep = _control_step("keep", full_answer)
+    keep = (_control_step("keep") if answer_form == "control"
+            else lambda _body: {"final": full_answer})
     waits = {"rounds": 0}
 
     def step(body: dict):
@@ -887,18 +898,21 @@ def _keep_until_acceptance_settled(full_answer: str, *, wave_ordinal: int):
 
 @pytest.mark.integration
 @pytest.mark.serial
-def test_s17_acceptance_reject_rework_accept(e2e_clone, tmp_path_factory):
+@pytest.mark.parametrize("answer_form", ["prose", "control"])
+def test_s17_acceptance_reject_rework_accept(e2e_clone, tmp_path_factory, answer_form):
     require_lane(LANE_MOCK)
     root = tmp_path_factory.mktemp("s14")
     review_script = ReviewScript({
         "acceptance": [W3A_ACCEPT_REJECT] * 3 + [W3A_ACCEPT_PASS] * 3,
     })
-    # V1 is nominated; rework submits V2 after the REJECT wave (a second paid
-    # panel), and the PASS wave delivers V2. Quorum and final-slot wakes may
-    # need separate Main turns, which keep the same V2 until both waves settled.
+    # Both answer forms retain V2 through separate quorum/final-slot wakes;
+    # repeated collection must not buy a third panel or exhaust the script.
+    rework = ({"final": S14_ANSWER_V2} if answer_form == "prose"
+              else _control_step("replace", S14_ANSWER_V2))
     stub = _HoldingStubModel(
-        [{"final": S14_ANSWER_V1}, _control_step("replace", S14_ANSWER_V2),
-         _keep_until_acceptance_settled(S14_ANSWER_V2, wave_ordinal=2)],
+        [{"final": S14_ANSWER_V1}, rework,
+         _keep_until_acceptance_settled(S14_ANSWER_V2, wave_ordinal=2,
+                                       answer_form=answer_form)],
         review_script=review_script,
     )
     with stub:
@@ -935,15 +949,17 @@ def test_s17_acceptance_reject_rework_accept(e2e_clone, tmp_path_factory):
 
 @pytest.mark.integration
 @pytest.mark.serial
+@pytest.mark.parametrize("answer_form", ["prose", "control"])
 def test_s17_acceptance_identical_rework_is_free_replay_refusal(
-        e2e_clone, tmp_path_factory):
+        e2e_clone, tmp_path_factory, answer_form):
     require_lane(LANE_MOCK)
     root = tmp_path_factory.mktemp("s14b")
     review_script = ReviewScript({"acceptance": [W3A_ACCEPT_REJECT] * 3})
-    # Keep (when offered) or an ordinary identical answer collects the REJECT
-    # verdict; the improvement round resubmits the same answer at $0.
+    # Both ordinary prose and explicit keep collect the rejected answer's
+    # verdict; unchanged material must replay at $0 without a new panel.
+    followup = ({"final": S14_ANSWER_V1} if answer_form == "prose" else _control_step("keep"))
     stub = ScriptedStubModel(
-        [{"final": S14_ANSWER_V1}, _control_step("keep", S14_ANSWER_V1), {"final": S14_ANSWER_V1}],
+        [{"final": S14_ANSWER_V1}, followup, {"final": S14_ANSWER_V1}],
         review_script=review_script,
     )
     with stub:

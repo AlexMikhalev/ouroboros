@@ -578,23 +578,25 @@ jobs:
       # lane's own `integration` marker is exactly what that default excludes.
       - name: Run the keyless system E2E scenario lane (real isolated servers)
         env:
+          PYTHONUNBUFFERED: "1"
           OUROBOROS_E2E_DEEP: mock
           OUROBOROS_APP_ROOT: ${{ runner.temp }}/ouroboros-system-e2e/app
           OUROBOROS_REPO_DIR: ${{ runner.temp }}/ouroboros-system-e2e/repo
           OUROBOROS_DATA_DIR: ${{ runner.temp }}/ouroboros-system-e2e/data
           OUROBOROS_SETTINGS_PATH: ${{ runner.temp }}/ouroboros-system-e2e/data/settings.json
-        run: python -m pytest tests/system_e2e/ -o addopts="" -q
+        run: python -m pytest tests/system_e2e/ -o addopts="" -o faulthandler_timeout=540 -q
       # The cancellation E-suite mock lane (18 scenarios + 4 mock-only) ran only on
       # operator hosts before 7.0; on the same isolated roots it is keyless too
       # (owner decision, batch №13 item 16, 2026-09-02).
       - name: Run the cancellation E-suite mock lane
         env:
+          PYTHONUNBUFFERED: "1"
           OUROBOROS_E2E_CANCEL: mock
           OUROBOROS_APP_ROOT: ${{ runner.temp }}/ouroboros-e2e-cancel/app
           OUROBOROS_REPO_DIR: ${{ runner.temp }}/ouroboros-e2e-cancel/repo
           OUROBOROS_DATA_DIR: ${{ runner.temp }}/ouroboros-e2e-cancel/data
           OUROBOROS_SETTINGS_PATH: ${{ runner.temp }}/ouroboros-e2e-cancel/data/settings.json
-        run: python -m pytest tests/test_e2e_cancellation_scenarios.py -o addopts="" -q
+        run: python -m pytest tests/test_e2e_cancellation_scenarios.py -o addopts="" -o faulthandler_timeout=540 -q
 
   # ──────────────────────────────────────────────────────────────────
   # Scheduled (paid): the LIVE E2E stand (devtools/e2e_live/run_live_lanes.py)
