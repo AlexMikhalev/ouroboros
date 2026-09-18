@@ -11,6 +11,7 @@ from hashlib import sha256
 import uuid
 
 from ouroboros import delegate_custody as custody
+from ouroboros.configured_subagents import SESSION_ACCESS_PROFILES
 from ouroboros.artifacts import stream_artifact_file
 from ouroboros.utils import atomic_write_json
 
@@ -60,7 +61,7 @@ def blocked_geometry_refusal(ctx, authority, selector_root, strategy, scope_path
     ``directory_execution``'s geometry validation and because ``_delegate_start`` sits
     at the 300-line function cap on a shrink-only band path.
     """
-    if not (selector_root or getattr(authority, "access", "") != "workspace_write"):
+    if not (selector_root or getattr(authority, "access", "") not in SESSION_ACCESS_PROFILES):
         return None
     if default_shaped_directory_options(strategy, scope_paths):
         return None

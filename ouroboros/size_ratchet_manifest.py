@@ -99,13 +99,10 @@ BAND_BASELINE_PATHS = (
 )
 
 BAND_PATHS = {
-    "devtools/benchmarks/cybergym/cybergym_adapter.py": "Stateful campaign layer after the protocol split (ratchet heal); shrink next touch.",
-    "devtools/benchmarks/cybergym/cybergym_docker.py": "Docker runtime layer of the executor split: one container-machinery seam.",
     "devtools/benchmarks/cybergym/cybergym_executor.py": "Executor assembly after docker/lifecycle/wire splits (ratchet heal); shrink next touch.",
     "devtools/benchmarks/cybergym/cybergym_lifecycle.py": "Run/settle lifecycle layer of the executor split: one accounting seam.",
     "devtools/benchmarks/cybergym/cybergym_protocol.py": "Stateless protocol layer of the adapter split: constants, validators, provenance.",
-    "devtools/benchmarks/cybergym/cybergym_sidecar.py": "Sidecar attestation core after the observations split (ratchet heal); shrink next touch.",
-    "devtools/benchmarks/cybergym/run_cybergym.py": "CyberGym launcher is one submit-shaped entry point (drift heal); split when a second arm lands.",
+    "devtools/benchmarks/cybergym/cybergym_reconcile.py": "CyberGym recovery joins existing checkpoint, result, claim and cleanup authority without repeating an agent; one recovery owner retains that crash-window contract.",
     "devtools/benchmarks/swe_bench_pro/e1v2/run_pro.py": None,
     "devtools/benchmarks/terminal_bench/harbor_installed_agent.py": None,
     "devtools/benchmarks/terminal_bench/run_tb.py": None,
@@ -176,11 +173,14 @@ BAND_PATHS = {
     "supervisor/update_merge.py": "Entered the band from above (1593 lines) by extraction: the F2.4 update-engine re-split moved the planner, the clean-plan commit builder and the live materializer \u2014 the carrier engine's three insertion points \u2014 into supervisor/update_merge_plan.py (D34 return, owner answers 5.12-5.14=A); shrink-only.",
     "tests/system_e2e/harness.py": "system_e2e harness: waves 3a+3b grew the one scenario-suite machinery module into the band \u2014 skill-review stub branch, review-organ verdict scripting (ReviewScript), plan-review/native-episode classification markers, the advisory reviewer-slot row and the S11-S17 manifest rows; split when the next wave lands new actors.",
     "tests/system_e2e/test_system_scenarios_w4.py": "system_e2e wave-4 scenario module: six scenarios (S18-S23 - update carrier/conflict/crash variants, chat-lineage cancel, absorb kill-recovery, delegated interactive answer) plus the interactive fake-daemon contract pin; one module per wave is the suite convention - split only if a later wave extends THIS module instead of adding its own.",
+    "tests/test_acceptance_async_loop.py": "Shared real-loop fixtures bind asynchronous settlement, owner ingress, exposure and final author response; keeping the lifecycle assertions together avoids duplicating the coordinator harness.",
     "tests/test_advisory_observability.py": None,
     "tests/test_available_subagents_runtime.py": "Configured-session route and legacy custody regressions retained after removing compulsory source-request production tests.",
     "tests/test_build_scripts.py": None,
     "tests/test_commit_gate.py": None,
-    "tests/test_cybergym_protocol.py": "CyberGym protocol suite arrived in one piece with the benchmark (drift heal); split when the next protocol family lands.",
+    "tests/test_cybergym_dispatch.py": "CyberGym dispatch tests cover completion-order admission, transient gateway pauses and budget-refusal recovery through one existing fake campaign harness.",
+    "tests/test_cybergym_docker.py": "CyberGym workspace custody tests cover atomic gateway transfer, recovery and durable-result acknowledgement using the same attested fake container fixtures.",
+    "tests/test_cybergym_executor_wire.py": "CyberGym served-wire evidence tests combine request-accounting disclosure with existing provider, final-PoC and classification coverage; gateway custody remains in its dedicated test module.",
     "tests/test_deep_review_slot.py": "\u04243 deep self-review suite: the deep_review row/endpoint half and the three-delivery half (retrieving executors, coverage, header, custody, availability) share one fixture set (repo/drive roots, scripted LLM, fake session executor); split at the config-vs-delivery seam once the row contract stops moving, not by size.",
     "tests/test_delegate_answer.py": "Entered the band by the #204 escalation-route pins (walk-up, schema and expiry-note source pins) on top of the phase-B interaction suite; one coherent delegated-question surface, split only when a natural seam appears",
     "tests/test_delegated_skill_payload.py": "Sol scope-review fix batch: P1 trust probes (forged index, symlinked git metadata), P2 golden-E2E review close and schema/docs pins joined the existing R1+gate-fix payload suite.",
@@ -231,6 +231,7 @@ BAND_PATHS = {
     "web/tests/chat_instance_dom.test.js": "Entered the band from 1000 lines with the alias-free subagent cost pin (stage-2 fix wave): that regression reproduces only through the real createChatInstance card path, and this file owns the DOM harness that drives it; split when the next createChatInstance face lands.",
     "web/tests/harness_login_cards.test.js": "Login-card suite grew past 1000 lines with the name-the-account face cases (agy pickup, issue #232); split when the next face lands.",
     "web/tests/reviewer_slots.test.js": "Entered the band with the 2026-09-13 reviewer-slots editor: the per-row source picker, its read-only derived disclosure and the persistence cases stay in one module beside the editor they cover; split when a second editor surface lands.",
+    "web/tests/subagents_settings.test.js": "Real editor parsing, lowering choices, dirty drafts and duplicate/API transitions are covered together.",
 }
 
 BYTE_BASELINE_DEBT = {

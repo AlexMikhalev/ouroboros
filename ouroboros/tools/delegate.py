@@ -14,9 +14,9 @@ destroys the verdict you wanted.
 
 Read-only and mutating children share ONE nanny and ONE transport. The only difference
 is the access profile the HOST derives from the calling task's authority (``readonly``
-vs ``workspace_write``) and the run shape that follows from it; there is no second
+vs the captured mutating profile) and the run shape that follows from it; there is no second
 pipeline and no second slot. The child gets a broker tool, never a shell, so it can ask
-the host to run something but never choose with what powers.
+the host to run something and lower native access, never widen its task authority.
 
 Custody: the daemon token never leaves ``gateways.claudexor``; nothing here puts it in
 a ToolContext, a child environment, or a harness sandbox. WHICH run belongs to WHICH
@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from ouroboros import delegate_custody as custody
 from ouroboros import delegate_progress as progress
 from ouroboros.delegate_custody import RunCustody as _RunCustody
+from ouroboros.configured_subagents import SESSION_ACCESS_PROFILES, SESSION_ACCESS_LOWERING
 from ouroboros.tool_capabilities import tool_result_limit
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.tools.tool_result import ToolResult
@@ -156,10 +157,12 @@ _CLAUDEXOR_MAX_SECONDS = 604_800
 # The process-local memo of the durable custody rows (the authority lives in the module
 # above); re-bound here because sibling code and tests name it on this surface.
 _CUSTODY = custody._CUSTODY
+_RETRY_HINT = ("to retry THIS start call use delegate_start(prompt=..., "
+               "retry_of=pending_invocation_id); a plain call starts a NEW run")
 
 
 def _host_instructions(authority: "DelegatedRunShape", assignment: str = "",
-                       payload_skill: str = "") -> str:
+                       payload_skill: str = "", coordination_context: str = "") -> str:
     """The system-prompt text this run's shape earns. One builder, no dialect.
 
     ``assignment`` is the host-authored contract block (``_assignment_instructions``);
@@ -171,28 +174,23 @@ def _host_instructions(authority: "DelegatedRunShape", assignment: str = "",
     if payload_skill:
         text = payload_host_instructions(text, payload_skill)
     if authority.delegated:
-        text += _UNPROVEN_BOUNDARY_INSTRUCTION
-    text += access_instruction(authority.access)  # the typed profile outranks prose
+        text += (
+            " No filesystem sandbox is requested; scoped HOME selects native state "
+            "and credentials, not filesystem confinement. Report actual access "
+            "honestly and do not claim to be sandboxed."
+            if authority.access == "full" else _UNPROVEN_BOUNDARY_INSTRUCTION
+        )
+    text += access_instruction(authority.access)  # native powers, not a wider assignment
     if assignment:
         text += "\n\n" + assignment
-    return text
+    return append_coordination_context(text, coordination_context)
 
 
-def _build_start_instructions(
-    authority: "DelegatedRunShape", assignment: str = "", payload_skill: str = "",
-    coordination_context: str = "",
-) -> str:
-    """Build complete host instructions for a fresh physical start."""
-    return append_coordination_context(
-        _host_instructions(authority, assignment, payload_skill), coordination_context,
-    )
-
-
-def _derive_authority(ctx: ToolContext) -> "DelegatedRunShape":
+def _derive_authority(ctx: ToolContext, access: str = "workspace_write") -> "DelegatedRunShape":
     """Derive the run shape from the task's own authority — one question, asked here.
 
-    Host-derived, never model-supplied: the child asks the host to run something, and
-    the host decides with what powers. Ouroboros asks for an access PROFILE and lets
+    Mutating eligibility is host-derived; the model may only lower the captured
+    native profile. Ouroboros asks for an access PROFILE and lets
     Claudexor pick the mechanism (fs sandbox, tool allowlist, ...) — no harness branch.
 
     The SHAPE belongs to ``subagents.delegated_run_shape``. An acting child or an
@@ -215,7 +213,7 @@ def _derive_authority(ctx: ToolContext) -> "DelegatedRunShape":
         constraint = getattr(ctx, "task_constraint", None)
         surface = str(getattr(constraint, "surface", "") or "external_workspace")
         mutating = presence_ceiling_allows_delegated_surface(ctx, surface)
-    return delegated_run_shape(mutating)
+    return delegated_run_shape(mutating, access)
 
 
 def _presence_delegate_read_refusal(ctx: ToolContext) -> Optional[ToolResult]:
@@ -386,11 +384,11 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
         route = actor["route"]
         if selector_root:
             authority, payload_auth, payload_error = _payload_mutation_authority(
-                ctx, drive, bucket, skill_name, _resolved_binding)
+                ctx, drive, bucket, skill_name, _resolved_binding, actor.get("access", "workspace_write"))
             if payload_error:
                 return payload_error
         else:
-            authority = _derive_authority(ctx)
+            authority = _derive_authority(ctx, actor.get("access", "workspace_write"))
             payload_auth = None
             if refusal := _presence_delegate_read_refusal(ctx):
                 return refusal
@@ -400,11 +398,12 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
     if not recovering:
         assignment = "" if bool(actor.get("compiled_work_order")) else _assignment_instructions(ctx)
         payload_skill = str(((payload_auth or {}).get("resource_ref") or {}).get("skill_name") or "")
-        instructions = _build_start_instructions(
+        instructions = _host_instructions(
             authority, assignment, payload_skill=payload_skill, coordination_context=_coordination_context,
         )
 
     access = authority.access
+    requested = recovering  # Recovery may already own a physical run.
     try:
         gateway = ensure_owned_gateway()
     except ClaudexorUnavailable as exc:
@@ -438,7 +437,7 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
                     return root_error
             invocation_id = custody.new_invocation_id()
             root = record_auth["target_root"]
-            if authority.access == "workspace_write":
+            if authority.access in SESSION_ACCESS_PROFILES:
                 # Git/payload snapshots are registered before POST; directory
                 # copies belong to the engine, with the stable target kept separate.
                 target_root = record_auth["target_root"]
@@ -471,6 +470,8 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
                 gateway, scope_root, execution_root, getattr(authority, "access", ""))
             if directory_options:
                 project_persistent = True
+            if authority.access == "full":
+                gateway.ensure_full_access(scope_root)
             # Assignment plus instructions identifies pending work; the invocation
             # remains the wire key, and retry replays its original complete body.
             seconds = _bounded_max_seconds(ctx, max_seconds)
@@ -547,9 +548,7 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
             return _fail("delegate_start", "queued_without_run_id",
                          f"Claudexor returned a queued handle without a run id: {handle!r}",
                          pending_invocation_id=invocation_id,
-                         retry_hint="to retry THIS start call use "
-                                    "delegate_start(prompt=..., "
-                                    "retry_of=pending_invocation_id); a plain call starts a NEW run",
+                         retry_hint=_RETRY_HINT,
                          **_retire_orphaned_registration(ctx, gateway, owned_project_id, project_persistent=project_persistent,
                                                          definite_refusal=False,
                                                          reason="queued_without_run_id",
@@ -558,17 +557,16 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
         # A registration we created BEFORE the start must not outlive a failed start.
         # It used to be left behind with nothing anywhere naming its id.
         status = int(getattr(exc, "status_code", 0) or 0)
-        definite = 400 <= status < 500
+        definite = 400 <= status < 500 or not requested
         # An UNKNOWN outcome hands back the retry token: only the caller can say
         # whether the next call is a retry of this intention or a new intention, and
         # without the token every next call is a new one. A definite refusal retires
         # the id, so no token rides a refusal.
         pending = ({} if definite or not invocation_id else
                    {"pending_invocation_id": invocation_id,
-                    "retry_hint": "to retry THIS start call use "
-                                  "delegate_start(prompt=..., "
-                                  "retry_of=pending_invocation_id); a plain call starts a NEW run"})
+                    "retry_hint": _RETRY_HINT})
         return _fail("delegate_start", exc.code, str(exc), executor="blocked",
+                     **({"definitely_unrun": True} if not requested else {}),
                      reset_at=getattr(exc, "reset_at", ""), **pending,
                      **_retire_orphaned_registration(ctx, gateway, owned_project_id, project_persistent=project_persistent,
                                                      definite_refusal=definite,
@@ -641,11 +639,10 @@ def _started_payload(handle: Dict[str, Any], run_id: str, route: Any, access: st
             "tree: at terminal its diff is captured for you, and NOTHING lands in "
             "the shared tree until you explicitly integrate_delegated_patch(run_id="
             "...) to apply or reject it — read the captured diff before you claim "
-            "it, and never let the run commit. It was ASKED to run under a scoped "
-            "HOME and an OS-enforced boundary; whether the engine applied either is "
-            "a per-run fact that delegate_wait reads back from the run's own "
-            "artifacts. A host with no boundary mechanism runs it anyway and says "
-            "so there."
+            "it, and never let the run commit. The requested native access profile "
+            f"is {authority.access}; scoped HOME selects native state and credentials, "
+            "not filesystem confinement. Actual access is read from the run's own "
+            "artifacts by delegate_wait."
             if authority.isolation == "live" else
             " This run cannot write anything: it reads and answers."
         )
@@ -1192,7 +1189,7 @@ def get_tools() -> List[ToolEntry]:
                 "terminal `cost` block from delegate_wait before you treat this as free; "
                 "it also costs time, quota and a worker slot. Your working root, "
                 "access profile and route come from YOUR task authority; you cannot widen "
-                "them, and there is no argument here that would let you try. If you hold "
+                "them. Optional access only lowers native rights; omission inherits. If you hold "
                 "a MUTATING shape a Git workspace uses a PRIVATE SNAPSHOT of your write "
                 "root. For an ordinary folder, choose directory_strategy=direct or copy "
                 "and select copied inputs with scope_paths; omission means direct work. "
@@ -1238,6 +1235,10 @@ def get_tools() -> List[ToolEntry]:
                     "Required for a fresh start made directly: exact agent_session actor id from Available "
                     "subagents. Omit for the current configured snapshotted route and for retry_of. API actor ids are refused here "
                     "and must be scheduled as recursive children."},
+                "access": {"type": "string", "enum": list(SESSION_ACCESS_LOWERING), "description":
+                    "Optional reduction of native access for this fresh run: readonly or workspace_write. "
+                    "Omit to inherit the captured actor profile (new mutating sessions default to full). "
+                    "Explicit readonly task authority still wins. Omit on retry_of."},
                 "root": {"type": "string", "enum": ["skill_payload"], "description":
                     "Optional exact-resource selector: 'skill_payload' delegates ONE "
                     "installed user-managed skill payload you can already write. Omit "

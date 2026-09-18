@@ -1483,7 +1483,7 @@ def get_tools() -> List[ToolEntry]:
         "skip_tests": {"type": "boolean", "default": False, "description": "Skip pre-commit tests."},
         "review_rebuttal": {"type": "string", "default": "", "description": "A NEW content-hashed counter-argument buys one paid re-review within capacity; repeating it is free-refused."},
         "skip_advisory_review": {"type": "boolean", "default": False, "description": skip_advisory_description},
-        "goal": {"type": "string", "default": ""}, "scope": {"type": "string", "default": ""},
+        "goal": {"type": "string", "default": "", "description": "High-level goal of this change. Used by scope reviewer to judge completeness."}, "scope": {"type": "string", "default": "", "description": "Declared scope boundary. Issues outside scope are advisory-only for scope reviewer."},
         "review_reference": {"type": "object", "description": "Exact reference returned by this task's prior commit review, for free informed Advisory continuation."},
         "author_disposition": {"type": "object", "additionalProperties": False,
             "properties": {"disposition": {"type": "string", "enum": ["accepted", "rejected", "partial", "deferred"]}, "rationale": {"type": "string"}},

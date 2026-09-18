@@ -54,15 +54,27 @@ explicit work-order review obligations.
   recent-overrides fields in `review_status`. Silent advisory is forbidden.
 - **Author finality remains evidence, not reviewer PASS:** plan, task acceptance,
   skill, and commit owners may record an explicit author disposition against the
-  exact current subject hash under ordinary advisory enforcement after actual first feedback.
+  exact current subject after received feedback or a disclosed unavailable review under Advisory.
+  Material commit outcomes return before Git effects; explicit continuation uses
+  the returned `review_reference` and author disposition, with independent current
+  preflight/test/Git checks and no new critic.
   Cyber may decide to continue without prior feedback, keeping the actual missing,
   failed or pending review separate from its own decision.
   A revised author subject keeps the original critic hash/findings separately;
-  author finish precedes any repeat panel. A skill's changed bytes require the
-  existing deterministic preflight; ordinary Blocking still needs fresh reviewer authority.
+  author finish precedes any repeat panel. The last paid panel still permits ordinary
+  author correction; N limits paid waves, not default author responses. Blocking may
+  save corrections and stop, but still needs fresh reviewer authority to advance.
+  An explicit unfinished stop creates neither approval nor an automatic follow-up.
+  A skill's current deterministic preflight must pass; existing grants, enablement
+  and dependencies stay independent. Hub submission uses the same qualified Advisory
+  authority plus its existing publication consent and scanner, disclosing original
+  critical severity and current author/published hashes without invented PASS.
+  Pending physical work without feedback is not unavailable; preserved partial
+  feedback can support Advisory choice without cancelling the other actors.
   Main judges semantic criteria and material evidence after acknowledging the
   observed owner source; source generation alone is not semantic supersession.
-  Historical feedback remains independently addressable.
+  Historical feedback remains independently addressable. For Main's acceptance
+  decision, a queued outcome or predeclared stance is not proof of exposure.
 - Once advisory is fresh → call commit_reviewed immediately without further edits.
 - `skip_advisory_review=True` skips only advisory freshness and the
   obligation/debt admission attached to it. Use LLM judgment when this cheap
@@ -183,7 +195,7 @@ Used by `commit_reviewed` for all changes to the Ouroboros repository.
 | 4 | code_quality | Careful code review: bugs, logic errors, crashes, regressions, race conditions, resource leaks? | critical |
 | 5 | security_issues | Security vulnerabilities: injection, path traversal, secret leakage, unsafe operations? | critical |
 | 6 | tests_affected | Did code logic change without corresponding test changes? (PASS if only docs/config/memory changed, or if tests already cover the new behavior.) **Critical FAIL requires all three:** (a) name a specific behavior, code path, symbol, or failure scenario that THIS diff introduces or changes; (b) explain why existing or newly staged tests do NOT catch that specific scenario; (c) the gap is concrete, not speculative. Existing tests in any module or layer count when they exercise the changed behavior and would catch the identified failure; module or feature proximity alone is not coverage. Requiring an additional overlapping selector/unit/e2e test is only justified when a second distinct failure mode is named explicitly. If the only concern is "I'd feel better with one more test," that is advisory, not critical. | critical |
-| 7 | architecture_doc | Did the change REPLACE the current description of every node it touched in `docs/ARCHITECTURE.md` / `docs/DEVELOPMENT.md` (map rows, flows, invariants)? PASS when a new module, endpoint or data flow gains its one-line row and touched descriptions read as current truth; PASS with "Not applicable" when nothing architectural changed. FAIL when the edit only appended a version stamp, a decision codename, a "used to / previously" narrative, or a second statement of a fact already owned elsewhere in the docs (P6 present-tense map, P7 one home per fact — see DEVELOPMENT.md "Documentation contract"). | critical |
+| 7 | architecture_doc | Did the change REPLACE the current description of every node it touched in `docs/ARCHITECTURE.md` / `docs/DEVELOPMENT.md` (map rows, flows, invariants)? PASS when a new module, endpoint or data flow gains its one-line row and touched descriptions read as current truth; PASS with "Not applicable" when nothing architectural changed. Check the owning physical chapters: a removed or relocated claim names its surviving owner or evidence of retirement; registry tests prove membership, not preservation of meaning. FAIL when the edit only appended a version stamp, a decision codename, a "used to / previously" narrative, or a second statement of a fact already owned elsewhere in the docs (P6 present-tense map, P7 one home per fact — see DEVELOPMENT.md "Documentation contract"). | critical |
 | 8 | version_bump | Does this commit leave VERSION unchanged, or leave release artifacts out of sync? Exception: external contribution commits are version-neutral per P9 (proposed) / CONTRIBUTING.md — the maintainer's integration commit performs the bump; unchanged carriers on a contributor PR are correct, not a FAIL. | critical |
 | 9 | changelog_and_badge | VERSION bumped but README.md badge or changelog not updated? (PASS if VERSION not bumped.) | critical |
 | 10 | tool_registration | New tool function added but not exported in `get_tools()` OR missing explicit entry in `ouroboros/safety.py::TOOL_POLICY`? (PASS if no new tool.) Both surfaces are required: `get_tools()` makes the tool visible; `TOOL_POLICY` makes the per-call safety routing explicit and is guarded by the `test_tool_policy_covers_all_builtin_tools` invariant. | critical |
@@ -894,7 +906,12 @@ all reviewers' findings from the previous cycle, the agent's dispositions and th
 a reformulation of an earlier finding is not a new finding, and a new blocking finding must say
 why it was invisible before. When the cap is spent under blocking enforcement the host holds
 implementation and escalates with the typed `review_cycles_exhausted` reason; under advisory the
-agent may proceed with the wave open under a loud host disclosure.
+agent may proceed with the wave open under a loud host disclosure. Explicit
+`review_disposition.author_action` plus author disposition may retain/select a full
+corrected goal/plan/spec against the actual critic fingerprint without another panel.
+The current author source and decision stay separate from critic closure: Advisory
+finish can select them; Blocking stop preserves unfinished work without authorizing
+implementation. Critic findings, paid counts and pending custody remain intact.
 
 ### Rules for reviewers
 

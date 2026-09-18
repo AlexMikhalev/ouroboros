@@ -2,9 +2,9 @@
 
 This chapter states what the handbook is for and which document owns what: the constitution, the architecture map, the design semantics and the reviewer checklists each keep their own authority, and this book carries only imperative rules for changing the body. It also names the domain manifest that owns module-to-domain assignment and the generated map read beside it, because moving code across a domain boundary is the owner's call rather than a manifest edit.
 
-This is Ouroboros's engineering handbook: imperative rules for changing the
-body, grouped by change class, each naming the surface that enforces it (test,
-gate, CI lane) or stating that none does. `BIBLE.md` owns constitutional
+The handbook's own shape is fixed by its entrypoint (imperative rules per change
+class, each naming its enforcing surface or stating that none does); the other
+authorities are these. `BIBLE.md` owns constitutional
 principles; `docs/ARCHITECTURE.md` owns the current structure, data flow, and
 rationale map; `docs/DESIGN.md` owns visual and interaction semantics;
 `docs/CHECKLISTS.md` owns reviewer items, severity, and output contracts. This

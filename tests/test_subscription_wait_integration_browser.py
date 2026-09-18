@@ -63,6 +63,8 @@ def integrated_wait(subscription_ui, live_wait, monkeypatch):
     config.SETTINGS_PATH.write_text(json.dumps(settings), encoding="utf-8")
     original_settings = config.SETTINGS_PATH.read_bytes()
     ui["settings"].update(settings)
+    # The wait picker offers an API lane per provider whose credential is stored.
+    ui["settings"]["OPENAI_API_KEY"] = "***set***"
 
     source_entered, source_release = threading.Event(), threading.Event()
     catalog_entered, catalog_release = threading.Event(), threading.Event()
@@ -265,7 +267,7 @@ def test_browser_wait_controls_apply_once_and_only_to_light(integrated_wait, per
     assert not row.locator("[data-wait-auto]").is_checked()
 
     row.locator("[data-wait-change]").click()
-    row.locator("[data-model-role-source]").select_option("openai")
+    row.locator("[data-model-role-source]").select_option("api:openai")
     row.locator("[data-model-role-model]").fill("owner-model")
     assert not row.locator("[data-wait-persist]").is_checked()
     if persist_role:

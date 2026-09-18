@@ -32,6 +32,7 @@ from datetime import datetime, timezone  # noqa: F401
 from typing import Any, Dict, List, Mapping
 
 from ouroboros.config import runtime_setting
+from ouroboros.configured_subagents import SESSION_ACCESS_PROFILES
 from ouroboros.config import (
     SETTINGS_DEFAULTS,
     get_heavy_model,
@@ -116,9 +117,9 @@ def normalize_subagent_executor(value: Any) -> str:
 class DelegatedRunShape:
     """The complete run shape a child's own authority entitles it to.
 
-    Not a knob: every field follows from the ONE question ``delegated_run_shape``
-    asks, and none of them appears in any tool schema, so the model has nothing to
-    widen. It is derived here rather than at each consumer because the consumers are
+    The model may lower native access, never widen the captured task authority.
+    Every other field follows from the ONE question ``delegated_run_shape`` asks.
+    It is derived here rather than at each consumer because the consumers are
     not one — the DISPATCHER health-checks the route before a token is spent and the
     NANNY builds the wire request — and a shape re-derived at each of them drifts:
     a change to the access profile that forgets the isolation, or to the isolation
@@ -131,13 +132,14 @@ class DelegatedRunShape:
     delegated: bool = False
 
 
-def delegated_run_shape(acting: bool) -> DelegatedRunShape:
+def delegated_run_shape(acting: bool, access: str = "workspace_write") -> DelegatedRunShape:
     """The run shape for an acting (mutating) child, or for a read-only one.
 
-    A MUTATING child runs ``live``: Claudexor edits the nanny's OWN worktree in place,
-    so the nanny's existing workspace-patch capture sees the harness's edits with no
-    new plumbing, and the same capture invalidates itself if the harness dared to
-    commit. In place is also the ONE shape where Claudexor would otherwise hand the
+    A MUTATING child runs ``live`` in the host's private execution snapshot;
+    captured changes still require explicit integration. The selected immutable
+    session supplies its captured access; old snapshots keep workspace_write.
+    This changes the harness's OS powers, not the task's assignment or write target.
+    In place is also the ONE shape where Claudexor would otherwise hand the
     harness the operator's real ``$HOME`` — which holds the daemon control token — so
     ``delegated`` travels with it, inseparably, in the same record.
 
@@ -145,9 +147,10 @@ def delegated_run_shape(acting: bool) -> DelegatedRunShape:
     envelope, which is scoped already and needs no marker: that is one transport with
     one derived difference, not a second pipeline.
     """
-    if acting:
-        return DelegatedRunShape(access="workspace_write", mode="agent",
-                                 isolation="live", delegated=True)
+    if acting and access != "readonly":
+        if access not in SESSION_ACCESS_PROFILES:
+            raise ValueError("Delegated session access must be workspace_write or full")
+        return DelegatedRunShape(access=access, mode="agent", isolation="live", delegated=True)
     return DelegatedRunShape(access="readonly", mode="ask")
 
 
