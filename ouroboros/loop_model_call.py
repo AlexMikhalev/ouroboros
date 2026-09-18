@@ -571,7 +571,7 @@ def _reprepare_waiting_main(ctx: _RoundModelCallContext, kwargs: dict):
     # images, then build the newly selected route's physical view below.
     prepared = LLMClient.sanitize_reasoning_on_model_switch(ctx.messages, ctx.active_model, model)
     if native_reset:
-        from ouroboros.llm_claudexor import reset_native_messages
+        from ouroboros.llm_messages import reset_native_messages
 
         prepared, _ = reset_native_messages(
             prepared, observed, source=observed.get("source"), model=observed.get("model"))
