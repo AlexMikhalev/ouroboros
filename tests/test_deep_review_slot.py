@@ -849,9 +849,9 @@ def test_native_read_extent_rides_the_receipts_and_drives_coverage(review_repo, 
     assert receipt["end_line"] < 1500 and receipt["eof"] is False
     tool_msg = [m for m in llm.calls[1]["messages"] if m.get("role") == "tool"][0]["content"]
     # Source labels begin at zero; receipt line addresses begin at one.
-    assert "RESULT TRUNCATED" in tool_msg
-    assert f"line {receipt['end_line'] - 1:05d} " + "b" * 60 + "\n" in tool_msg
-    assert f"line {receipt['end_line']:05d} " + "b" * 60 + "\n" not in tool_msg
+    body = tool_msg.split("\n⚠️ RESULT TRUNCATED", 1)[0]  # the notice opens with its OWN newline: judge the delivered body only
+    assert body != tool_msg and f"line {receipt['end_line'] - 1:05d} " + "b" * 60 + "\n" in body
+    assert f"line {receipt['end_line']:05d} " + "b" * 60 + "\n" not in body  # a cut on a line's last character is not that line complete
     assert "coverage=inspection.md:partial(" in text
 
 
