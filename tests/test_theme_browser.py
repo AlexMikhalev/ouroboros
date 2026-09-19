@@ -1,7 +1,9 @@
 """Appearance through real shell documents on the selected Playwright engine."""
 import json
 import pytest
-from tests.test_subscription_setup_browser import subscription_ui, capture
+from tests.test_subscription_setup_browser import capture, subscription_ui as _subscription_ui
+
+subscription_ui = _subscription_ui  # re-exported pytest fixture (requested by name below)
 
 pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
 
