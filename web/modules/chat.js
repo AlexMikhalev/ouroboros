@@ -1727,9 +1727,13 @@ export function createChatInstance({
         // timeline); a child's title is its lineage identity; a block without work
         // (open attention, a bare non-Done ending) carries no title; otherwise the
         // activity headline.
+        // A Failed outcome reported during the finalizing hold keeps the title slot: the chip says
+        // only "Finalizing…" then, so narration must not be the one thing that hides the failure.
+        if (shouldPromote && !record.finished && taskPresentation(summary.phase).headline === 'Failed') record.failedHeadline = headline;
         const title = record.suggestedName || (record.isSubagent ? childTitle(record)
             : !blockHasWork(record) ? ''
-                : (record.lastHumanHeadline || (record.finished ? 'Task activity' : activeHeadline)));
+                : (record.finished ? record.lastHumanHeadline || 'Task activity'
+                    : record.failedHeadline || record.lastHumanHeadline || activeHeadline));
         if (record.titleEl.textContent !== title) record.titleEl.textContent = title;
         // The collapsed line is a compact projection; the full activity stays in the
         // expanded timeline. Every card, a child's included, takes activity only from
