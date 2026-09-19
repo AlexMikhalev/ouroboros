@@ -60,10 +60,17 @@ class TestValidateQuizPayload:
                 validate_quiz_payload("q", ["a", "b"], "", "",
                                       wait_for_answer=True, max_wait_minutes=bad)
             assert err.value.code == "QUIZ_WAIT_BOUND_INVALID"
-        # A bound without waiting is a contradiction, not a silent no-op.
-        with pytest.raises(QuizValidationError) as err:
-            validate_quiz_payload("q", ["a", "b"], "", "assume", max_wait_minutes=5)
-        assert err.value.code == "QUIZ_WAIT_BOUND_INVALID"
+        # On an optional question a bound only names the documented default (no wait), so it
+        # takes the omitted path whatever a habit-filled schema put there; the asker's receipt
+        # discloses it (tests/test_native_owner_wait.py).
+        for named_default in (0, 1, 5, 60, -5, True, "30"):
+            assert "max_wait_minutes" not in validate_quiz_payload(
+                "q", ["a", "b"], "", "assume", max_wait_minutes=named_default)
+        # A required wait keeps the refusal, and every such refusal names the repair.
+        for bad in (0, 361):
+            with pytest.raises(QuizValidationError) as err:
+                validate_quiz_payload("q", ["a", "b"], "", "", wait_for_answer=True, max_wait_minutes=bad)
+            assert "omit it for an unbounded wait" in str(err.value)
 
     def test_empty_or_oversized_question_refused(self):
         with pytest.raises(QuizValidationError):

@@ -433,21 +433,23 @@ export function selectionInside(el, selection = globalThis.getSelection?.()) {
  * A click-to-toggle surface whose content stays selectable (DESIGN.md §5): a
  * pointer click whose drag left a selection inside it does nothing, and Enter /
  * Space activate it like a native button. The surface is a `div[role=button]`
- * because WebKit never lets text inside a real <button> be selected.
+ * because WebKit never lets text inside a real <button> be selected. A surface that is a
+ * control only in some of its states passes `isActive`: while it says no, clicks and keys
+ * pass through untouched (nothing is stopped, so document-level handlers still see them).
  */
-export function bindContentButton(el, onActivate) {
+export function bindContentButton(el, onActivate, isActive = () => true) {
     if (!el) return;
     const nestedControl = (event) => {
         const control = event.target?.closest?.('button, a, input, textarea, select, label, summary, [contenteditable="true"], [role="button"]');
         return control && control !== el;
     };
     el.addEventListener('click', (event) => {
-        if (nestedControl(event) || (event.detail && selectionInside(el))) return;
+        if (!isActive() || nestedControl(event) || (event.detail && selectionInside(el))) return;
         event.stopPropagation?.();
         onActivate(event);
     });
     el.addEventListener('keydown', (event) => {
-        if (!nestedControl(event) && (event.key === 'Enter' || event.key === ' ')) {
+        if (isActive() && !nestedControl(event) && (event.key === 'Enter' || event.key === ' ')) {
             event.preventDefault();
             event.stopPropagation?.();
             if (!event.repeat) el.click();

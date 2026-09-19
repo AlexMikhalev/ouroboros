@@ -1,4 +1,4 @@
-"""Required Project questions share their durable ask with every display lens."""
+"""Project questions share their durable ask with every display lens."""
 import json
 import os
 
@@ -69,7 +69,7 @@ def test_real_escalation_bridge_history_detail_and_answer(tmp_path, monkeypatch)
     assert quiz_states(tmp_path, "task-1")[qid]["option_details"][1] == "Multiple writers over network"
 
 
-def test_pointer_quota_dedup_and_optional_filter(tmp_path):
+def test_pointer_quota_and_dedup(tmp_path):
     from ouroboros.utils import append_jsonl
 
     project = create_project(tmp_path, "many-questions", name="Many Questions")
@@ -88,6 +88,56 @@ def test_pointer_quota_dedup_and_optional_filter(tmp_path):
     assert all(row["system_type"] == "project_question_pointer" for row in messages)
 
 
+def test_an_optional_question_projects_into_main_with_its_assumption_and_never_reads_as_resumed(tmp_path, monkeypatch):
+    """Every Project question is one Main row, whether or not the task waits on it. The optional
+    one carries the assumption the task continues under and the asker's recommendation; a newer
+    REQUIRED wait of the same task must not repaint it as a wait that ended, because it never
+    waited (only a question the task waited on can have been resumed)."""
+    from supervisor import message_bus, state
+
+    project = create_project(tmp_path, "mixed-project", name="Mixed Project")
+    write_task_result(tmp_path, "t1", STATUS_RUNNING, project_id=project["id"], chat_id=project["chat_id"])
+    ctx = _tool_ctx(tmp_path, task_id="t1", chat_id=project["chat_id"])
+    ctx.owner_wait_callback = lambda *_: None
+    assert _escalate(ctx, question="Which format?", assumption="WebP meanwhile",
+                     options=[{"label": "PNG"}, {"label": "WebP", "recommended": True}]).startswith("OK:")
+    optional = ctx.pending_events[0]
+    monkeypatch.setattr(message_bus, "DATA_DIR", tmp_path)
+    state.init(tmp_path, 100)
+    frames = []
+    bridge = message_bus.LocalChatBridge({})
+    bridge._broadcast_fn = frames.append
+    monkeypatch.setattr(message_bus, "get_bridge", lambda: bridge)
+    assert bridge.send_quiz(project["chat_id"], **{key: optional[key] for key in (
+        "quiz_id", "question", "options", "stake", "assumption", "state", "task_id")})[0]
+    assert [row["type"] for row in frames] == ["quiz", "chat"]
+    live = frames[1]
+    assert live["system_type"] == "project_question_pointer" and live["chat_id"] == 1
+    assert live["assumption"] == "WebP meanwhile" and live["recommended_index"] == 1
+    assert live["options"] == ["PNG", "WebP"] and "wait_for_answer" not in live
+    assert live["content"] == "Unanswered · an answer is still accepted in Mixed Project"
+
+    # The same task now waits on a newer required question.
+    assert _escalate(ctx, question="Publish?", wait_for_answer=True,
+                     options=[{"label": "Yes", "recommended": True}, {"label": "No"}]).startswith("OK:")
+    required = ctx.pending_events[1]
+    assert bridge.send_quiz(project["chat_id"], **{key: required[key] for key in (
+        "quiz_id", "question", "options", "stake", "assumption", "state", "task_id", "wait_for_answer")})[0]
+    set_owner_wait(tmp_path, "t1", {"quiz_id": required["quiz_id"], "wait_id": "w1", "state": "waiting"})
+    main = {row["quiz_id"]: row for row in json.loads(_assemble_history_response(tmp_path, 1, 10, 0))["messages"]}
+    assert set(main) == {optional["quiz_id"], required["quiz_id"]}
+    calm, waiting = main[optional["quiz_id"]], main[required["quiz_id"]]
+    assert "owner_wait_state" not in calm and "wait_for_answer" not in calm
+    assert calm["assumption"] == "WebP meanwhile" and calm["recommended_index"] == 1
+    assert calm["text"] == "Unanswered · an answer is still accepted in Mixed Project"
+    assert waiting["owner_wait_state"] == "waiting" and waiting["recommended_index"] == 0
+    assert waiting["text"] == "Waiting for your answer in Mixed Project"
+    # The Project room's own card of the optional question reads the same facts.
+    room = {row["quiz"]["quiz_id"]: row["quiz"] for row in json.loads(
+        _assemble_history_response(tmp_path, project["chat_id"], 10, 0))["messages"] if row.get("msg_type") == "quiz"}
+    assert "owner_wait_state" not in room[optional["quiz_id"]]
+
+
 @pytest.mark.parametrize("same_timestamp", [False, True])
 def test_activity_question_uses_same_memo_and_preserves_wait_semantics(tmp_path, monkeypatch, same_timestamp):
     from ouroboros.gateway import state as gs
@@ -97,7 +147,8 @@ def test_activity_question_uses_same_memo_and_preserves_wait_semantics(tmp_path,
     project = create_project(tmp_path, "waiting-project", name="Waiting Project")
     write_task_result(tmp_path, "t1", STATUS_RUNNING, project_id=project["id"],
                       root_phase_checkpoint={"post_task_synthesis": "running"})
-    record_asked(tmp_path, "t1", quiz_id="q1", question="?", options=["a", "b"], wait_for_answer=True)
+    record_asked(tmp_path, "t1", quiz_id="q1", question="?", options=["a", "b"], wait_for_answer=True,
+                 recommended_index=0)
     set_owner_wait(tmp_path, "t1", {"quiz_id": "q1", "wait_id": "w1", "state": "waiting"})
     monkeypatch.setattr(queue, "PENDING", [])
     monkeypatch.setattr(queue, "RUNNING", {"t1": {"task": {"id": "t1", "project_id": project["id"], "chat_id": project["chat_id"]}}})
@@ -110,6 +161,13 @@ def test_activity_question_uses_same_memo_and_preserves_wait_semantics(tmp_path,
     assert rows[0]["required_question"]["text"] == "Waiting for your answer in Waiting Project"
     # The census pointer is as complete as the history row: the browser never paints a blank over it.
     assert rows[0]["required_question"]["question"] == "?" and rows[0]["required_question"]["options"] == ["a", "b"]
+    # A card painted from the census alone still badges the recommended option (index zero included).
+    assert rows[0]["required_question"]["recommended_index"] == 0
+    # Folding an older Main card needs the named question's OWN asked_at, so the census
+    # pointer carries it as `ts`. Losing that stamp does not fail loudly — it silently
+    # stops every fold (web/modules/chat_decision.js::appendActivityQuestion), so the
+    # cross-boundary contract is pinned on the producer side too.
+    assert rows[0]["required_question"]["ts"] == quiz_states(tmp_path, "t1")["q1"]["asked_at"]
     assert reads.count(str(tmp_path / "task_results/t1.json")) == 1
     gs._chat_activities_snapshot_safe(tmp_path, direct_turns=[])
     assert reads.count(str(tmp_path / "task_results/t1.json")) == 1

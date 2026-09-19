@@ -1,4 +1,4 @@
-// Read-only presentation of one owner question, shared by the Main pointer and the
+// Read-only presentation of one owner question, shared by the Main row and the
 // quiz card header. Task liveness and answerability are separate facts: a status
 // leads with one word that answers "is there an unanswered question for me?" and
 // keeps the lifecycle context after it. The Python pointer fallback
@@ -18,6 +18,8 @@ const STATUS = {
 // answered/superseded — turns a card into a pure record). One JS home for both lists.
 export const QUIZ_LIFECYCLE = ['open', 'answered', 'expired_terminal', 'superseded'];
 export const ANSWERABLE_QUIZ_STATES = ['open', 'expired_terminal'];
+// A passed optional question leads with the path the task took instead of a bare status.
+const CONTINUING = 'Unanswered · continuing with:';
 const PREVIEW_CHARS = 280;
 const PREVIEW_MARK = '… (preview; open for full text)';
 
@@ -35,9 +37,7 @@ export function questionPresentation(row = {}) {
     const { waiting, resumed } = waitFacts(row);
     const key = !QUIZ_LIFECYCLE.includes(state) ? 'unknown' : state !== 'open' ? state
         : waiting ? 'waiting' : resumed ? 'resumed' : 'open';
-    const action = state === 'answered' ? 'View answer'
-        : ANSWERABLE_QUIZ_STATES.includes(state) ? 'Answer question' : 'View question';
-    return { status: STATUS[key], action };
+    return { status: STATUS[key] };
 }
 
 // A cut that saves fewer characters than its own marker is pure damage: such text stays whole.
@@ -53,4 +53,19 @@ export function questionPreview(row = {}) {
     const answer = (row.quiz_state || row.state) === 'answered'
         ? [selected, row.comment].filter(Boolean).map(excerpt).join(' — ') : '';
     return { question: excerpt(row.question), answer };
+}
+
+// The Main row of one Project question: status words, then the owner's answer or the
+// assumption the task continues under, then the question as context. `waiting` is the one
+// state that grows the row into a card with the option buttons.
+export function questionRow(row = {}) {
+    const state = row.quiz_state || row.state || 'unknown';
+    const { answer, question } = questionPreview(row);
+    const assumption = state === 'open' ? excerpt(row.assumption) : '';
+    return {
+        waiting: state === 'open' && waitFacts(row).waiting,
+        lead: answer ? `${STATUS.answered}:` : assumption ? CONTINUING : questionPresentation(row).status,
+        detail: answer || assumption,
+        question,
+    };
 }

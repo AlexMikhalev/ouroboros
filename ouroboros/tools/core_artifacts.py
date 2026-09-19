@@ -359,7 +359,8 @@ def validate_quiz_payload(
     if not assumption_text and not wait_for_answer:
         raise QuizValidationError(
             "QUIZ_ASSUMPTION_REQUIRED",
-            "state the assumption you continue under until the owner answers.",
+            "state the assumption you continue under until the owner answers "
+            "(what you do meanwhile, for example your recommended option).",
         )
     bound = _validate_wait_bound(max_wait_minutes, wait_for_answer=wait_for_answer)
     return {
@@ -373,17 +374,15 @@ def validate_quiz_payload(
 
 def _validate_wait_bound(max_wait_minutes: Any, *, wait_for_answer: bool) -> Optional[int]:
     """The optional wait bound in whole minutes, capped by the task ceiling."""
-    if max_wait_minutes is None:
+    if max_wait_minutes is None or not wait_for_answer:
+        # On an optional question a bound only spells out the documented default (no wait):
+        # it takes the omitted path, and the asker's receipt says so.
         return None
-    if not wait_for_answer:
-        raise QuizValidationError(
-            "QUIZ_WAIT_BOUND_INVALID",
-            "max_wait_minutes applies only to wait_for_answer=true.",
-        )
     if (isinstance(max_wait_minutes, bool) or not isinstance(max_wait_minutes, int)
             or max_wait_minutes < 1):
         raise QuizValidationError(
-            "QUIZ_WAIT_BOUND_INVALID", "max_wait_minutes must be a positive integer.",
+            "QUIZ_WAIT_BOUND_INVALID",
+            "max_wait_minutes must be a positive integer; omit it for an unbounded wait.",
         )
     from ouroboros.config import get_task_abs_ceiling_sec
 
@@ -392,7 +391,7 @@ def _validate_wait_bound(max_wait_minutes: Any, *, wait_for_answer: bool) -> Opt
         raise QuizValidationError(
             "QUIZ_WAIT_BOUND_INVALID",
             f"max_wait_minutes must be at most {ceiling_minutes} "
-            "(the task's absolute wall-clock ceiling).",
+            "(the task's absolute wall-clock ceiling); omit it for an unbounded wait.",
         )
     return int(max_wait_minutes)
 
@@ -453,6 +452,8 @@ def _escalate(
                                         max_wait_minutes=max_wait_minutes)
     except QuizValidationError as exc:
         return f"⚠️ {exc.code}: {exc}"
+    ignored_bound = (" max_wait_minutes ignored: it applies only to wait_for_answer=true."
+                     if max_wait_minutes is not None and not wait_for_answer else "")
     task_id = str(getattr(ctx, "task_id", "") or "").strip()
     if not task_id:
         return "⚠️ ESCALATE_UNAVAILABLE: escalate requires an active task context."
@@ -550,7 +551,8 @@ def _escalate(
         if not written:
             return f"⚠️ ESCALATE_UNWRITTEN: the escalation to parent {parent_task_id} was not persisted."
         return (f"OK: escalated to parent task {parent_task_id}; continuing under "
-                f"assumption: {payload['assumption']}")
+                f"assumption: {payload['assumption']}"
+                + (f" ({ignored_bound.strip().rstrip('.')})" if ignored_bound else ""))
 
     # Root task: the owner gets a typed quiz card.
     from ouroboros.owner_quiz import record_asked
@@ -598,6 +600,8 @@ def _escalate(
     if wait_for_answer:
         bound = payload.get("max_wait_minutes")
         ctx._owner_wait_requested = quiz_id
+        # One batch shares one wait: an earlier question's bound must not outlive it.
+        ctx._owner_wait_deadline_at, ctx._owner_wait_max_minutes = "", 0
         if bound:
             # An ABSOLUTE stamp, not a countdown: the bound must survive a
             # planned restart instead of starting over on the warm resume.
@@ -616,4 +620,4 @@ def _escalate(
     return (f"OK: quiz {quiz_id} {delivered}; continuing under assumption: "
             f"{payload['assumption']}. The answer (if any) arrives as an owner "
             "quiz answer in a later round; the card stays answerable after this "
-            "task ends — a later answer reaches this chat as an ordinary owner message.")
+            f"task ends — a later answer reaches this chat as an ordinary owner message.{ignored_bound}")

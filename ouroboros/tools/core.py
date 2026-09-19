@@ -1456,12 +1456,13 @@ def get_tools() -> List[ToolEntry]:
                 "A root task asks the OWNER (a typed quiz card with option buttons); "
                 "a subagent asks its PARENT task (a typed mailbox frame the parent "
                 "answers with forward_to_worker or escalates higher, verbatim). "
-                "For optional clarification, state an assumption and continue independent work. "
-                "A live root, including ordinary Main or Project conversation, may set wait_for_answer=true when the answer is necessary: "
-                "after the current tool batch it waits without model calls, preserving its browser "
-                "and freeing active worker capacity. Addressed owner text resumes your judgment. "
-                "Stop and existing task deadlines remain effective. The card outlives the task: "
-                "an answer that arrives later reaches the chat as an ordinary owner message."
+                "By default name your recommended option as the assumption and keep working: "
+                "the card stays answerable, and a late answer still arrives. "
+                "Set wait_for_answer=true (a live root, ordinary conversation included) when the next step "
+                "is irreversible or costly to redo, or the choice is the owner's to make "
+                "(spending, publishing, deleting); your judgment decides. The task then waits after the "
+                "current tool batch without model calls; waiting questions in one batch share one wait, "
+                "which ends on the first incoming message."
             ),
             "parameters": {"type": "object", "properties": {
                 "question": {"type": "string", "description": "The decision being escalated (markdown renders in chat)"},

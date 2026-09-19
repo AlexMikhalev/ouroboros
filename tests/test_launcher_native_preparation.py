@@ -109,7 +109,9 @@ def test_preparation_shutdown_reaps_actual_detached_child_before_launcher_exit(t
         'import pathlib, subprocess, sys, time\n'
         'child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], '
         'start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n'
-        f'pathlib.Path({str(child_file)!r}).write_text(str(child.pid))\n'
+        f'pending = pathlib.Path({str(child_file.with_suffix(".pending"))!r})\n'
+        'pending.write_text(str(child.pid))\n'
+        f'pending.replace({str(child_file)!r})\n'
         'time.sleep(60)\n'
     )
     shutdown = threading.Event()

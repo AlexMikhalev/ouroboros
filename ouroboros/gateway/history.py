@@ -688,7 +688,7 @@ def _make_thread_filter(
         if thread_id != 1 or not isinstance(entry, dict) or entry.get("type") not in {"quiz", "quiz_answer"}:
             return 0
         quiz = entry.get("quiz")
-        if not isinstance(quiz, dict) or quiz.get("wait_for_answer") is not True:
+        if not isinstance(quiz, dict):
             return 0
         chat = bound_room_chat(bindings_by_task, {"task_id": entry.get("task_id")}) or _stored_chat_id(entry.get("chat_id"), 1)
         return chat if chat in project_chat_ids else 0
@@ -889,7 +889,7 @@ def _collect_chat_rows(
                         from ouroboros.project_dialogue import owner_wait_projection
 
                         quiz.update(owner_wait_projection(_qid, _quiz_source(_qtid)["wait"],
-                                                          _live if isinstance(_live, dict) else None))
+                                                          _live if isinstance(_live, dict) else quiz))
                 rec.update(msg_type="quiz", quiz=quiz)
             if "task_terminal_status" in entry:
                 rec["task_terminal_status"] = str(entry.get("task_terminal_status") or "")

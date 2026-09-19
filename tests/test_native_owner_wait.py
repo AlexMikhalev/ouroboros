@@ -233,6 +233,49 @@ def test_escalate_records_the_bound_and_says_what_the_wait_promises(tmp_path):
     optional = _escalate(ctx, question="Which one?", options=["a", "b"], assumption="a meanwhile")
     assert "the card stays answerable after this task ends" in optional
     assert "a later answer reaches this chat as an ordinary owner message" in optional
+    assert "max_wait_minutes ignored" not in optional
+
+
+def test_optional_question_with_a_habit_filled_bound_is_asked_and_says_so(tmp_path):
+    """A schema-filling model names max_wait_minutes on a question it does not wait for. That
+    is the documented default spelled out, not a different request: the card is asked, no wait
+    starts, and the receipt discloses the ignored argument."""
+    from ouroboros.tools.core_artifacts import _escalate
+    from ouroboros.tools.registry import ToolContext
+
+    ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, task_id="native",
+                      is_direct_chat=True, current_chat_id=1, event_queue=queue.Queue())
+    ctx.owner_wait_callback = direct_owner_wait
+    for named_default in (0, 1, 60):
+        result = _escalate(ctx, question="Which one?", options=["a", "b"],
+                           assumption="a meanwhile", max_wait_minutes=named_default)
+        assert result.startswith("OK: quiz "), result
+        assert "max_wait_minutes ignored: it applies only to wait_for_answer=true." in result
+        event = ctx.event_queue.get_nowait()
+        assert event["type"] == "send_quiz" and "wait_for_answer" not in event
+        block = load_task_result(tmp_path, "native")["owner_quiz"][event["quiz_id"]]
+        assert "max_wait_minutes" not in block
+    assert not getattr(ctx, "_owner_wait_requested", "")
+
+
+def test_a_bounded_wait_does_not_lend_its_bound_to_the_next_question_of_the_batch(tmp_path):
+    """One tool batch shares one wait, named after its LAST waiting question. A bound the
+    earlier question asked for must not survive into a wait that asked for none."""
+    from ouroboros.tools.core_artifacts import _escalate
+    from ouroboros.tools.registry import ToolContext
+
+    ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, task_id="native",
+                      is_direct_chat=True, current_chat_id=1, event_queue=queue.Queue())
+    ctx.owner_wait_callback = direct_owner_wait
+    _escalate(ctx, question="First?", options=["a", "b"], wait_for_answer=True, max_wait_minutes=20)
+    assert ctx._owner_wait_max_minutes == 20 and ctx._owner_wait_deadline_at
+    second = _escalate(ctx, question="Second?", options=["a", "b"], wait_for_answer=True)
+    assert "the task waits after this tool batch" in second and "up to" not in second
+    assert ctx._owner_wait_max_minutes == 0 and ctx._owner_wait_deadline_at == ""
+    from ouroboros.owner_wait import _wait_bound_fields
+
+    assert _wait_bound_fields(ctx) == {}, "the parked wait carries no bound either"
+    assert ctx._owner_wait_requested == list(ctx.event_queue.queue)[-1]["quiz_id"]
 
 
 @pytest.mark.parametrize("required", [False, True])

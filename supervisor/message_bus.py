@@ -1022,7 +1022,7 @@ class LocalChatBridge:
             },
         )
         _advance_project_visible_revision(chat_id)
-        if wait_for_answer and self._broadcast_fn and msg.get("project_thread"):
+        if self._broadcast_fn and msg.get("project_thread"):
             try:
                 from ouroboros.owner_quiz import quiz_states
                 from ouroboros.project_dialogue import project_question_pointer
@@ -1043,8 +1043,8 @@ class LocalChatBridge:
                         "source_status": pointer.get("source_status", ""),
                     }
                     # The complete pointer row (ChatOutbound mirrors): present only when known.
-                    for key in ("question", "options", "answered_index", "comment", "wait_for_answer",
-                                "wait_ended_at", "owner_wait_resume_reason"):
+                    for key in ("question", "options", "assumption", "recommended_index", "answered_index",
+                                "comment", "wait_for_answer", "wait_ended_at", "owner_wait_resume_reason"):
                         if key in pointer:
                             frame[key] = pointer[key]
                     self._broadcast_fn(frame)

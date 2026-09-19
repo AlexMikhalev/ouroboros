@@ -5,10 +5,10 @@ import { excerpt, questionPresentation, questionPreview, waitFacts } from '../mo
 
 // Each fixture row is the pointer row the Python producer emits for that case
 // (tests/test_project_question_pointer.py pins the emission); the browser must read the
-// same status and action out of it.
+// same status out of it.
 const cases = JSON.parse(readFileSync(new URL('./fixtures/question_presentation_parity.json', import.meta.url)));
 for (const row of cases) test(`question status parity: ${row.case}`, () => {
-    assert.deepEqual(questionPresentation(row.row), { status: row.status, action: row.action });
+    assert.deepEqual(questionPresentation(row.row), { status: row.status });
 });
 
 test('waiting needs positive evidence and a closed bound ends it', () => {

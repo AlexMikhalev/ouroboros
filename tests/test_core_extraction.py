@@ -112,11 +112,13 @@ def test_core_catalog_schema_bytes_and_handler_owners_are_stable():
     # message from an independent task. Rolled again for owner decision В17a=A: the
     # escalate description stops promising expiry at task end (a late answer reaches
     # the chat as an ordinary owner message) and the optional `max_wait_minutes`
-    # bound joins its parameters. Diffing the whole catalog base to head shows
-    # exactly those edits and nothing else.
-    # Workflow scope: describe lazy artifact writes and the shared brace-mask selector.
+    # bound joins its parameters. Rolled again for the owner's "autonomy first" decision:
+    # the escalate description states when waiting is worth it (an irreversible or costly
+    # next step, or a choice that is the owner's to make) and that waiting questions of one
+    # batch share one wait, ended by the first incoming message; 935 -> 932 bytes. Diffing the
+    # whole catalog base to head shows exactly those edits and nothing else.
     assert hashlib.sha256(schema_bytes).hexdigest() == (
-        "eb0f87df6a8507019363fe4fb9ba0e0d96cadb094e7619cb41b0821cb71c8e43"
+        "0f72df2827a90d691d5c3fd1107170b050489061e9d55201a1feda0da647f82b"
     )
     assert {
         entry.name: (entry.handler.__module__, entry.handler.__name__)

@@ -117,27 +117,27 @@ class ChatOutbound(TypedDict):
     # while post-task synthesis still runs, so the frame is NOT the task's
     # terminal conclusion — task_done settles the card/turn.
     task_phase: NotRequired[str]
-    # Typed terminal fact on a frame that IS the turn's conclusion: stamped on
-    # direct/ephemeral finals (and the direct error branch) so the client's
-    # live gate settles the activity without waiting for a snapshot. One of
-    # completed/failed/cancelled/rejected_duplicate.
+    # Direct/ephemeral finals and errors settle client activity without a snapshot:
+    # completed/failed/cancelled/rejected_duplicate, not an early answer.
     task_terminal_status: NotRequired[str]
     ephemeral_decision: NotRequired[bool]
     tool_calls: NotRequired[int]
     rounds: NotRequired[int]
     suggested_name: NotRequired[str]
     model_execution: NotRequired[Dict[str, Any]]
+    # Project question projection into Main; the durable question stays in Project.
     quiz_id: NotRequired[str]
     quiz_state: NotRequired[str]
     project_chat_id: NotRequired[int]
     source_status: NotRequired[str]
     owner_wait_state: NotRequired[str]
-    # The complete Project-question pointer: question, option labels, recorded answer and wait facts.
     owner_wait_resume_reason: NotRequired[str]
     wait_for_answer: NotRequired[bool]
     wait_ended_at: NotRequired[str]
     question: NotRequired[str]
     options: NotRequired[List[str]]
+    assumption: NotRequired[str]
+    recommended_index: NotRequired[int]
     answered_index: NotRequired[int]
     comment: NotRequired[str]
     task_incident: NotRequired[str]
