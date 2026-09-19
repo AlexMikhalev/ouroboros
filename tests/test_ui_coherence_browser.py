@@ -422,7 +422,10 @@ def test_question_rows_burst_answer_from_main_navigation_and_reload(subscription
     activities.append({'activity_id': 'proof-task', 'chat_id': 42, 'project_id': project['id'],
         'kind': 'direct_chat', 'phase': 'working', 'required_question': {
             'task_id': 'proof-task', 'quiz_id': 'waiting', 'quiz_state': 'open',
-            'project_id': project['id'], 'project_chat_id': 42, 'owner_wait_state': 'waiting'}})
+            'project_id': project['id'], 'project_chat_id': 42, 'owner_wait_state': 'waiting',
+            # The producer always stamps the named question's own asked_at, and folding an
+            # older card needs that proof of order (project_question_pointer).
+            'ts': blocks['waiting']['asked_at']}})
     page.wait_for_function("() => document.querySelectorAll('#chat-messages .chat-bubble.project-question')[1]?.dataset.questionMode === 'row'", timeout=15000)
     assert len(history_reads) == read_count, 'census freshness must not require history refetch'
     assert rows.evaluate_all("els => els.map(el => el.dataset.questionMode)") == ['row', 'row', 'row', 'row', 'card']

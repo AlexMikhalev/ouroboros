@@ -223,14 +223,14 @@ test('a fresh single-wait census folds older cards, not optional or foreign ques
     const fx = fixture({ isMain: true });
     try {
         const older = fx.decision.buildQuestionPointer(WAITING);
-        const newer = fx.decision.buildQuestionPointer({ ...WAITING, quiz_id: 'q2' });
+        const newer = fx.decision.buildQuestionPointer({ ...WAITING, quiz_id: 'q2', ts: ASKED[1] });
         const optional = fx.decision.buildQuestionPointer({ ...ROW, quiz_id: 'opt', quiz_state: 'open', assumption: 'local' });
         const foreign = fx.decision.buildQuestionPointer({ ...WAITING, task_id: 'other' });
-        fx.decision.appendActivityQuestion({ ...WAITING, quiz_id: 'q2' }, 0);
+        fx.decision.appendActivityQuestion({ ...WAITING, quiz_id: 'q2', ts: ASKED[1] }, 0);
         assert.deepEqual([mode(older), mode(newer)], ['card', 'card'], 'a pre-arrival request cannot close a newer card');
-        fx.decision.appendActivityQuestion({ ...WAITING, quiz_id: 'q2', owner_wait_state: undefined });
+        fx.decision.appendActivityQuestion({ ...WAITING, quiz_id: 'q2', ts: ASKED[1], owner_wait_state: undefined });
         assert.equal(mode(older), 'card', 'absence of positive wait evidence proves nothing');
-        fx.decision.appendActivityQuestion({ ...WAITING, quiz_id: 'q2' });
+        fx.decision.appendActivityQuestion({ ...WAITING, quiz_id: 'q2', ts: ASKED[1] });
         assert.deepEqual([mode(older), mode(newer), mode(optional), mode(foreign)], ['row', 'card', 'row', 'card']);
         assert.match(text(older, 'status-text'), /task continued/);
         assert.equal(text(optional, 'status-text'), 'Unanswered · continuing with:');
@@ -259,10 +259,14 @@ test('a census naming an older wait cannot fold the newer waiting card', () => {
         // The real wait arrives: now the order is proven, so q1 folds and q2 stays the card.
         assert.equal(fx.decision.appendActivityQuestion({ ...WAITING, quiz_id: 'q2', ts: ASKED[1] }), true);
         assert.deepEqual([mode(first), mode(second)], ['row', 'card']);
-        // Without a readable stamp on either side there is no proof, so the card stays.
+        // Neither a missing stamp nor an equal one is an order: both leave the card answerable.
+        // The stamps carry sub-millisecond precision that Date.parse truncates, so equality
+        // can hold for two genuinely different questions.
         const cold = fx.decision.buildQuestionPointer({ ...WAITING, quiz_id: 'q3', ts: '' });
-        fx.decision.appendActivityQuestion({ ...WAITING, quiz_id: 'q4', ts: ASKED[1] });
+        const tied = fx.decision.buildQuestionPointer({ ...WAITING, quiz_id: 'q4', ts: '2026-09-18T22:00:00.000100+00:00' });
+        fx.decision.appendActivityQuestion({ ...WAITING, quiz_id: 'q5', ts: '2026-09-18T22:00:00.000900+00:00' });
         assert.equal(mode(cold), 'card', 'an unstamped card is never folded on an unproven order');
+        assert.equal(mode(tied), 'card', 'a sub-millisecond tie is not proof that the named wait is newer');
     } finally { fx.restore(); }
 });
 
