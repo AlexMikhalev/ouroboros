@@ -248,11 +248,20 @@ export function createChatDecision({
         // nothing. A read begun before a card arrived cannot end that newer wait.
         if (!isMain || !msg?.task_id || !msg.quiz_id
             || !['waiting', 'resumed'].includes(msg.owner_wait_state)) return false;
+        // Ordering is proven by the questions themselves, never by the time the read
+        // started: the task publishes a new quiz BEFORE its owner_wait row is written,
+        // so a census taken in that window still names the PREVIOUS question. A named
+        // wait can therefore only end a question asked no later than the named one.
+        // Missing or unreadable stamps are no proof, and an unproven card stays a card:
+        // an extra card is answerable, a wrongly folded one loses its buttons until reload.
+        const namedAt = Date.parse(msg.ts ?? '');
         return onDomWrite(() => {
             let changed = false;
             for (const view of pointerViews.values()) {
+                const viewAt = Date.parse(view.row.ts ?? '');
                 if (view.row.task_id !== msg.task_id || view.row.quiz_id === msg.quiz_id
                     || view.row.project_id !== msg.project_id || view.observedAt > requestedAt
+                    || !Number.isFinite(namedAt) || !Number.isFinite(viewAt) || viewAt > namedAt
                     || !questionRow(view.row).waiting) continue;
                 changed = updatePointer(view, { task_id: msg.task_id, quiz_id: view.row.quiz_id,
                     state: 'open', owner_wait_state: 'resumed' }, true) || changed;

@@ -6,7 +6,11 @@ import test from 'node:test';
 import { questionRow } from '../modules/question_presentation.js';
 import { fixture, turn } from './chat_decision_fixture.js';
 
-const ROW = { task_id: 't-1', quiz_id: 'qz-1', project_id: 'p1', project_chat_id: 23,
+// The producer always stamps `ts` from the question's own asked_at
+// (ouroboros/project_dialogue.py::project_question_pointer), and one batch is asked in
+// sequence, so its rows differ by seconds. Folding reads that order, never wall time.
+const ASKED = ['2026-09-18T22:00:00+00:00', '2026-09-18T22:00:07+00:00'];
+const ROW = { task_id: 't-1', quiz_id: 'qz-1', project_id: 'p1', project_chat_id: 23, ts: ASKED[0],
     project_name: 'Storage', quiz_state: 'answered', question: 'Merge now?', options: ['Yes', 'No'] };
 const WAITING = { ...ROW, quiz_state: 'open', wait_for_answer: true, owner_wait_state: 'waiting', recommended_index: 0 };
 const text = (node, name) => node.querySelector(`.project-question-${name}`)?.textContent ?? null;
@@ -236,6 +240,29 @@ test('a fresh single-wait census folds older cards, not optional or foreign ques
         assert.equal(mode(older), 'row', 'stale history cannot restore the closed wait');
         older.click();
         assert.equal(fx.opened[0].quiz_id, 'qz-1', 'the unanswered question remains reachable');
+    } finally { fx.restore(); }
+});
+
+test('a census naming an older wait cannot fold the newer waiting card', () => {
+    const fx = fixture({ isMain: true });
+    try {
+        const first = fx.decision.buildQuestionPointer({ ...WAITING, quiz_id: 'q1', ts: ASKED[0] });
+        const second = fx.decision.buildQuestionPointer({ ...WAITING, quiz_id: 'q2', ts: ASKED[1] });
+        assert.deepEqual([mode(first), mode(second)], ['card', 'card']);
+        // The task published q2 and kept working: its owner_wait row still names q1, already
+        // resumed. This read began AFTER q2's card arrived, so request time permits the fold.
+        fx.decision.appendActivityQuestion(
+            { ...WAITING, quiz_id: 'q1', ts: ASKED[0], owner_wait_state: 'resumed' }, Date.now() + 1000);
+        assert.deepEqual([mode(first), mode(second)], ['card', 'card'],
+            'an older named wait is no evidence about a later question');
+        assert.equal(options(second).length, 2, 'the newer question keeps its option buttons');
+        // The real wait arrives: now the order is proven, so q1 folds and q2 stays the card.
+        assert.equal(fx.decision.appendActivityQuestion({ ...WAITING, quiz_id: 'q2', ts: ASKED[1] }), true);
+        assert.deepEqual([mode(first), mode(second)], ['row', 'card']);
+        // Without a readable stamp on either side there is no proof, so the card stays.
+        const cold = fx.decision.buildQuestionPointer({ ...WAITING, quiz_id: 'q3', ts: '' });
+        fx.decision.appendActivityQuestion({ ...WAITING, quiz_id: 'q4', ts: ASKED[1] });
+        assert.equal(mode(cold), 'card', 'an unstamped card is never folded on an unproven order');
     } finally { fx.restore(); }
 });
 

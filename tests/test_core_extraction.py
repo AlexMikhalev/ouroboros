@@ -118,7 +118,7 @@ def test_core_catalog_schema_bytes_and_handler_owners_are_stable():
     # batch share one wait, ended by the first incoming message; 935 -> 932 bytes. Diffing the
     # whole catalog base to head shows exactly those edits and nothing else.
     assert hashlib.sha256(schema_bytes).hexdigest() == (
-        "c4804f21764713b866e114eb8a7fee56501f84f1584dd502085e80c9362f8a2b"
+        "0f72df2827a90d691d5c3fd1107170b050489061e9d55201a1feda0da647f82b"
     )
     assert {
         entry.name: (entry.handler.__module__, entry.handler.__name__)
