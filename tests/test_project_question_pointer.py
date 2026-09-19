@@ -163,6 +163,11 @@ def test_activity_question_uses_same_memo_and_preserves_wait_semantics(tmp_path,
     assert rows[0]["required_question"]["question"] == "?" and rows[0]["required_question"]["options"] == ["a", "b"]
     # A card painted from the census alone still badges the recommended option (index zero included).
     assert rows[0]["required_question"]["recommended_index"] == 0
+    # Folding an older Main card needs the named question's OWN asked_at, so the census
+    # pointer carries it as `ts`. Losing that stamp does not fail loudly — it silently
+    # stops every fold (web/modules/chat_decision.js::appendActivityQuestion), so the
+    # cross-boundary contract is pinned on the producer side too.
+    assert rows[0]["required_question"]["ts"] == quiz_states(tmp_path, "t1")["q1"]["asked_at"]
     assert reads.count(str(tmp_path / "task_results/t1.json")) == 1
     gs._chat_activities_snapshot_safe(tmp_path, direct_turns=[])
     assert reads.count(str(tmp_path / "task_results/t1.json")) == 1
