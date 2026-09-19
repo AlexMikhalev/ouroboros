@@ -1596,7 +1596,7 @@ body.resizing-panels { user-select: none; }
 }
 
 .skill-review-summary-main {
-    color: rgba(255, 244, 220, 0.96);
+    color: var(--status-warn-fg);
     font-weight: 650;
 }
 
@@ -3166,7 +3166,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 .chat-swarm {
     height: var(--composer-control-height);
     padding: 0 12px;
-    border: 1px solid rgba(226, 232, 240, 0.12);
+    border: 1px solid rgba(var(--neutral-rgb), 0.12);
     border-radius: 999px;
     background: rgba(var(--composer-rgb), 0.38);
     color: var(--text-meta);
@@ -3198,7 +3198,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     display: inline-flex;
     align-items: center;
     height: var(--composer-control-height);
-    border: 1px solid rgba(226, 232, 240, 0.12);
+    border: 1px solid rgba(var(--neutral-rgb), 0.12);
     border-radius: 999px;
     overflow: hidden;
     background: rgba(var(--composer-rgb), 0.38);
@@ -4310,8 +4310,8 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     width: 10px;
     height: 10px;
     border-radius: 50%;
-    border: 2px solid rgba(255, 220, 226, 0.24);
-    border-top-color: rgba(255, 220, 226, 0.9);
+    border: 2px solid rgba(var(--neutral-rgb), 0.18);
+    border-top-color: var(--accent-light);
     animation: skills-review-spin 900ms linear infinite;
 }
 
@@ -4326,14 +4326,14 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     height: 10px;
     margin-left: 8px;
     border-radius: 50%;
-    border: 2px solid rgba(250, 250, 250, 0.25);
-    border-top-color: rgba(250, 250, 250, 0.9);
+    border: 2px solid rgba(var(--neutral-rgb), 0.25);
+    border-top-color: var(--text-primary);
     animation: skills-review-spin 900ms linear infinite;
     vertical-align: -1px;
 }
 
 .skills-access {
-    border: 1px solid rgba(250, 250, 250, 0.1);
+    border: 1px solid rgba(var(--neutral-rgb), 0.1);
     border-radius: var(--radius-md);
     padding: 10px 12px;
     background: rgba(var(--neutral-rgb), 0.02);
@@ -4385,7 +4385,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 
 .skills-details {
     margin-top: 4px;
-    border-top: 1px solid rgba(250, 250, 250, 0.06);
+    border-top: 1px solid rgba(var(--neutral-rgb), 0.06);
     padding-top: 10px;
 }
 
@@ -4444,7 +4444,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     width: min(100%, 620px);
     margin-top: 8px;
     padding: 10px 12px;
-    border: 1px solid rgba(250, 250, 250, 0.08);
+    border: 1px solid rgba(var(--neutral-rgb), 0.08);
     border-radius: var(--radius-md);
     background: rgba(var(--neutral-rgb), 0.025);
     display: flex;
@@ -4563,9 +4563,9 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 }
 
 .skills-source-muted {
-    background: rgba(250, 250, 250, 0.05);
+    background: rgba(var(--neutral-rgb), 0.05);
     color: var(--text-meta);
-    border-color: rgba(250, 250, 250, 0.1);
+    border-color: rgba(var(--neutral-rgb), 0.1);
 }
 
 .skills-load-error {
@@ -5084,7 +5084,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     width: 28px;
     height: 28px;
     border-radius: var(--radius-xs);
-    border: 1px solid rgba(226, 232, 240, 0.14);
+    border: 1px solid rgba(var(--neutral-rgb), 0.14);
     background: rgba(var(--composer-rgb), 0.48);
     color: var(--text-meta);
     backdrop-filter: blur(10px);
@@ -7412,7 +7412,7 @@ textarea.chat-input {
     height: 36px;
     min-height: 36px;
     padding: 6px 10px;
-    border: 1px solid rgba(250, 250, 250, 0.1);
+    border: 1px solid rgba(var(--neutral-rgb), 0.1);
     background: rgba(var(--neutral-rgb), 0.03);
     color: inherit;
     border-radius: 6px;
@@ -7431,7 +7431,7 @@ textarea.chat-input {
 .skills-presence-runtime select:not(.ui-control),
 .skills-presence-runtime input:not(.ui-control) {
     min-height: 32px;
-    border: 1px solid rgba(250, 250, 250, 0.12);
+    border: 1px solid rgba(var(--neutral-rgb), 0.12);
     border-radius: var(--radius-sm);
     background: rgba(var(--menu-rgb), 0.8);
     color: var(--text-primary);

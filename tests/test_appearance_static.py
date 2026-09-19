@@ -120,3 +120,21 @@ def test_chat_palette_redraw_is_local_viewport_work():
     chat = _read('web/modules/chat.js')
     mount = chat.split('function enhanceMountedMarkdown(root)', 1)[1].split('const {', 1)[0]
     assert 'onThemeDomWrite: withStableViewport' in mount
+
+
+def test_surface_sheets_carry_no_near_white_ink():
+    """Light is only as complete as the last hard-coded near-white literal.
+
+    `rgba(250, 250, 250, .1)` is a border on the Dark shell and nothing at all on the Light one;
+    near-white text is simply unreadable there. Such ink goes through the palette channels
+    (`rgba(var(--neutral-rgb), a)`) or a foreground role; only `web/ui.css`, the token sheet,
+    may name a literal, because it declares both palettes side by side.
+    """
+    near_white = re.compile(r"rgba\(\s*(2[2-5]\d)\s*,\s*(2[2-5]\d)\s*,\s*(2[2-5]\d)\s*,")
+    leftovers = [
+        f"{sheet.relative_to(REPO_ROOT)}:{number}: {line.strip()}"
+        for sheet in sorted(WEB.glob("*.css")) if sheet.name != "ui.css"
+        for number, line in enumerate(sheet.read_text(encoding="utf-8").splitlines(), 1)
+        if near_white.search(line)
+    ]
+    assert not leftovers, "near-white literals outside the token sheet:\n" + "\n".join(leftovers)

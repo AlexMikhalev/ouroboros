@@ -121,6 +121,7 @@
     --status-error-fg: #fca5a5;
     --status-error-bg: var(--red-dim);
     --status-error-border: rgba(239, 68, 68, 0.30);
+    --status-info-fg: #93c5fd;
     --status-neutral-fg: var(--text-meta);
     --status-neutral-bg: rgba(var(--neutral-rgb), 0.06);
     --status-neutral-border: rgba(var(--neutral-rgb), 0.12);
@@ -202,6 +203,7 @@
     --status-ok-fg: #176b49;
     --status-warn-fg: #805300;
     --status-error-fg: #b42332;
+    --status-info-fg: #24558d;
     --focus-accent-border: #a82c3b;
     --chart-grid: rgba(var(--neutral-rgb), 0.14);
     --chart-text: #4a515d;

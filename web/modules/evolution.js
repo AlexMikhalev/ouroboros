@@ -343,7 +343,15 @@ export function initEvolution({ ws, state, mount }) {
         // Keep the series-coded blue axis in a readable foreground shade.
         // Never rebuild an instance just to change its ink.
         const { text, grid } = chartChrome();
-        const blue = getComputedStyle(document.documentElement).getPropertyValue('--status-info-fg').trim() || text;
+        const style = getComputedStyle(document.documentElement);
+        const token = (name, fallback) => style.getPropertyValue(name).trim() || fallback;
+        const blue = token('--status-info-fg', text);
+        const tooltip = evoChart.options?.plugins?.tooltip;
+        if (tooltip) {
+            tooltip.backgroundColor = token('--bg-secondary', tooltip.backgroundColor);
+            tooltip.titleColor = token('--text-primary', tooltip.titleColor);
+            tooltip.bodyColor = token('--text-meta', tooltip.bodyColor);
+        }
         for (const [id, scale] of Object.entries(evoChart.scales || {})) {
             const options = scale.options;
             if (options.grid) options.grid.color = grid;
