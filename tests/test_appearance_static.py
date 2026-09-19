@@ -130,7 +130,7 @@ def test_surface_sheets_carry_no_near_white_ink():
     (`rgba(var(--neutral-rgb), a)`) or a foreground role; only `web/ui.css`, the token sheet,
     may name a literal, because it declares both palettes side by side.
     """
-    near_white = re.compile(r"rgba\(\s*(2[2-5]\d)\s*,\s*(2[2-5]\d)\s*,\s*(2[2-5]\d)\s*,")
+    near_white = re.compile(r"rgba\(\s*(2[0-5]\d)\s*,\s*(2[0-5]\d)\s*,\s*(2[0-5]\d)\s*,")
     leftovers = [
         f"{sheet.relative_to(REPO_ROOT)}:{number}: {line.strip()}"
         for sheet in sorted(WEB.glob("*.css")) if sheet.name != "ui.css"

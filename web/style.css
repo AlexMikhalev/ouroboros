@@ -1468,7 +1468,7 @@ body.resizing-panels { user-select: none; }
 .chat-bubble.assistant {
     background: linear-gradient(135deg, var(--accent-18), rgba(120, 24, 36, 0.18));
     border: 1px solid rgba(240, 122, 134, 0.24);
-    box-shadow: inset 0 1px 0 rgba(255, 214, 220, 0.05);
+    box-shadow: inset 0 1px 0 rgba(var(--neutral-rgb), 0.05);
     align-self: flex-start;
     margin-right: 20%;
 }
@@ -1605,7 +1605,7 @@ body.resizing-panels { user-select: none; }
     align-items: center;
     justify-content: space-between;
     gap: 10px;
-    color: rgba(255, 240, 210, 0.66);
+    color: var(--text-meta);
     font-size: var(--type-meta);
 }
 
@@ -1743,7 +1743,7 @@ body.resizing-panels { user-select: none; }
     border: 1px solid var(--accent-dim);
     background: var(--accent-04);
     backdrop-filter: blur(12px);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18), inset 0 1px 0 rgba(255, 200, 210, 0.03);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18), inset 0 1px 0 rgba(var(--neutral-rgb), 0.03);
     overflow: hidden;
     container-type: inline-size;
     container-name: livecard;
@@ -2305,7 +2305,7 @@ body.resizing-panels { user-select: none; }
     max-width: 100%;
     border-color: var(--accent-18);
     background: var(--bg-secondary);
-    box-shadow: inset 0 1px 0 rgba(255, 200, 210, 0.03);
+    box-shadow: inset 0 1px 0 rgba(var(--neutral-rgb), 0.03);
 }
 
 /* An opaque secondary surface prevents translucent tints accumulating at depth.
