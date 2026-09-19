@@ -455,6 +455,8 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     const disposeSettingsTabs = bindSettingsTabs(page, { state });
     bindSecretInputs(page);
     bindEffortSegments(page);
+    // Appearance is client-local and injected after boot; never a server setting.
+    globalThis.ouroTheme?.mount();
     const disposeLocalModel = bindLocalModelControls({ state,
         onApplication: (local) => syncRestartState({ ...restartState, local_model: local }) });
     // Best-effort About version from /api/health.

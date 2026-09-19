@@ -1,6 +1,7 @@
 import { allowanceLabel, escapeHtmlText, formatUsd2 } from './utils.js';
 import { apiFetch } from './api_client.js';
 import { openConfirmDialog } from './confirm_dialog.js';
+import { applyChartTheme, chartChrome, onThemeChange } from './theme_palette.js';
 
 /**
  * Ask for the evolution-campaign objective (pure decision helper, node-tested
@@ -66,6 +67,7 @@ export function initEvolution({ ws, state, mount }) {
     let evoChart = null;
     let loadSequence = 0;
     let chartLoaded = false;
+    let disposed = false;
     const refreshBtn = document.getElementById('evo-refresh');
     const startBtn = document.getElementById('evo-start');
     const stopBtn = document.getElementById('evo-stop');
@@ -202,6 +204,7 @@ export function initEvolution({ ws, state, mount }) {
     }
 
     async function loadEvolution(force = false) {
+        if (disposed) return;
         chartLoaded = true;
         const requestId = ++loadSequence;
         refreshBtn.disabled = true;
@@ -311,14 +314,16 @@ export function initEvolution({ ws, state, mount }) {
                 scales: {
                     x: {
                         ticks: { color: '#64748b', font: { size: 10, family: 'JetBrains Mono, monospace' }, maxRotation: 45 },
-                        grid: { color: '#1e293b' },
+                        grid: { color: chartChrome().grid },
                     },
                     y: {
                         type: 'linear',
                         position: 'left',
+                        // Repaint assigns readable themed blue to this series
+                        // axis, and neutral themed ink to the other axes.
                         title: { display: true, text: 'Lines of Code', color: '#60a5fa', font: { size: 11 } },
                         ticks: { color: '#60a5fa', font: { size: 10 } },
-                        grid: { color: '#1e293b' },
+                        grid: { color: chartChrome().grid },
                     },
                     y1: {
                         type: 'linear',
@@ -330,6 +335,30 @@ export function initEvolution({ ws, state, mount }) {
                 },
             },
         });
+        repaintChart();
+    }
+
+    function repaintChart() {
+        if (!evoChart) return;
+        // Keep the series-coded blue axis in a readable foreground shade.
+        // Never rebuild an instance just to change its ink.
+        const { text, grid } = chartChrome();
+        const style = getComputedStyle(document.documentElement);
+        const token = (name, fallback) => style.getPropertyValue(name).trim() || fallback;
+        const blue = token('--status-info-fg', text);
+        const tooltip = evoChart.options?.plugins?.tooltip;
+        if (tooltip) {
+            tooltip.backgroundColor = token('--bg-secondary', tooltip.backgroundColor);
+            tooltip.titleColor = token('--text-primary', tooltip.titleColor);
+            tooltip.bodyColor = token('--text-meta', tooltip.bodyColor);
+        }
+        for (const [id, scale] of Object.entries(evoChart.scales || {})) {
+            const options = scale.options;
+            if (options.grid) options.grid.color = grid;
+            if (options.ticks) options.ticks.color = id === 'y' ? blue : text;
+            if (options.title) options.title.color = id === 'y' ? blue : text;
+        }
+        applyChartTheme(evoChart, { scales: {} });
     }
 
     function renderTagsList(points) {
@@ -392,24 +421,39 @@ export function initEvolution({ ws, state, mount }) {
         loadEvolution(true);
     });
 
-    ws.on('open', () => {
+    const unsubscribeOpen = ws.on('open', () => {
         if (isEvolutionVisible()) {
             ensureEvolutionLoaded(false);
         }
     });
 
-    window.addEventListener('ouro:page-shown', (event) => {
+    const onPageShown = (event) => {
         if (event?.detail?.page === 'dashboard' && state.dashboardActiveSubtab === 'evolution') {
             ensureEvolutionLoaded(false);
         }
-    });
-    window.addEventListener('ouro:dashboard-subtab-shown', (event) => {
+    };
+    const onSubtabShown = (event) => {
         if (event?.detail?.tab === 'evolution') ensureEvolutionLoaded(false);
-    });
-
-    document.addEventListener('visibilitychange', () => {
+    };
+    const onVisibilityChange = () => {
         if (!document.hidden && isEvolutionVisible()) {
             if (chartLoaded) loadEvolution(false);
         }
-    });
+    };
+    window.addEventListener('ouro:page-shown', onPageShown);
+    window.addEventListener('ouro:dashboard-subtab-shown', onSubtabShown);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    const unsubscribeTheme = onThemeChange(repaintChart);
+    return () => {
+        if (disposed) return;
+        disposed = true;
+        loadSequence += 1;
+        unsubscribeOpen();
+        unsubscribeTheme();
+        window.removeEventListener('ouro:page-shown', onPageShown);
+        window.removeEventListener('ouro:dashboard-subtab-shown', onSubtabShown);
+        document.removeEventListener('visibilitychange', onVisibilityChange);
+        if (evoChart) evoChart.destroy();
+        evoChart = null;
+    };
 }

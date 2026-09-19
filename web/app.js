@@ -725,7 +725,7 @@ setInterval(refreshProjectsNav, 20000);
 settingsControls = initSettings(ctx);
 dashboardControls = initDashboard(ctx);
 initLogs({ ...ctx, mount: document.getElementById('dashboard-panel-logs') });
-initEvolution({ ...ctx, mount: document.getElementById('dashboard-panel-evolution') });
+const disposeEvolution = initEvolution({ ...ctx, mount: document.getElementById('dashboard-panel-evolution') });
 initUpdates({ ...ctx, mount: document.getElementById('dashboard-panel-updates') });
 initActivity({ ...ctx, mount: document.getElementById('dashboard-panel-activity') });
 initCosts({ ...ctx, mount: document.getElementById('dashboard-panel-costs') });
@@ -739,6 +739,7 @@ const disposeMatrixRain = initMatrixRain();
 const disposeScrollFades = Array.from(document.querySelectorAll('.scroll-fade-y'), bindScrollFade);
 window.addEventListener('pagehide', (event) => {
     if (event.persisted) return;
+    disposeEvolution();
     disposeMatrixRain();
     disposeScrollFades.forEach((dispose) => dispose());
 });

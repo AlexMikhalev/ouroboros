@@ -9,6 +9,7 @@ import {
     withWidgetRequestTimeout,
 } from './widget_job.js';
 import { chartConfig, formatNumber, getPath, renderChartDataTable, renderTableCell } from './widget_chart.js';
+import { applyChartTheme, onThemeChange } from './theme_palette.js';
 import { mountModuleWidget, mountRouteIframeWidget } from './widget_module.js';
 import { planWidgetListPatch, widgetKey, widgetTabsSignature } from './widget_list.js';
 import {
@@ -586,6 +587,14 @@ async function mountDeclarativeWidget(mount, tab, render) {
     controllers.add(interactions);
     let disposed = false;
 
+    // Re-tint the charts this mount already owns. They keep their instances, so
+    // the plotted data and the reuse shape in chartShapes both survive; only the
+    // chrome colours move. Released by dispose(), the same owner that destroys them.
+    const unsubscribeTheme = onThemeChange(() => {
+        if (disposed) return;
+        chartInstances.forEach((chart) => applyChartTheme(chart));
+    });
+
     const actionFeedback = (key, outcome, data = {}) => {
         componentState[`feedback:${key}`] = {
             status: outcome,
@@ -635,6 +644,7 @@ async function mountDeclarativeWidget(mount, tab, render) {
             componentState: { ...componentState },
         });
         disposed = true;
+        unsubscribeTheme();
         controllers.forEach((controller) => controller.abort());
         controllers.clear();
         chartInstances.forEach((chart) => chart.destroy());
@@ -932,7 +942,12 @@ async function mountDeclarativeWidget(mount, tab, render) {
                     return;
                 }
                 if (existing) existing.destroy();
-                chartInstances.set(chartKey, new Chart(canvas, config));
+                const chart = new Chart(canvas, config);
+                // widget_chart.js is DOM-free by contract, so its serialized
+                // config carries neutral chrome; the live theme is layered on
+                // here, where the document is actually readable.
+                applyChartTheme(chart);
+                chartInstances.set(chartKey, chart);
                 chartShapes.set(chartKey, shape);
             } catch (err) {
                 console.warn('widgets: chart render failed', err);

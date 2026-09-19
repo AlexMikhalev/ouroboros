@@ -369,7 +369,10 @@ def test_every_css_variable_is_declared_somewhere() -> None:
     `--text-link` — each carrying a hardcoded fallback that was the value
     actually rendering, and three of those fallbacks (`#e5534b`, `#b58900`,
     `#16181d`) were colours from no palette in this product."""
-    js = _js_sources()
+    # Only a JS WRITE declares a variable: `setProperty('--x', …)` or an inline `--x: …` in a
+    # style string. A read (`getPropertyValue('--x')`) consumes one, so it must not vouch for it.
+    js_written = set(re.findall(r"""setProperty\(\s*['"`](--[\w-]+)|(?<![\w-])(--[a-z][\w-]*)\s*:""", _js_sources()))
+    js_written = {name for pair in js_written for name in pair if name}
     dangling: list[str] = []
     for document in ("web/index.html", "web/onboarding_template.html"):
         sheets = _document_stylesheets(document)
@@ -377,7 +380,7 @@ def test_every_css_variable_is_declared_somewhere() -> None:
         for rel in sheets:
             for lineno, line in enumerate(_decommented(_read(rel)).splitlines(), 1):
                 for name in VAR_REFERENCE.findall(line):
-                    if name not in declared and name not in js:
+                    if name not in declared and name not in js_written:
                         dangling.append(f"{document}: {rel}:{lineno}: var({name})")
     assert not dangling, (
         "these variables are never declared, in CSS or by a JS setProperty, so "

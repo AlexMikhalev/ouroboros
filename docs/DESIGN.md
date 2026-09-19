@@ -16,8 +16,19 @@ styles by both the SPA and the served onboarding document. Page styles own
 composition, not another copy of the shared palette. This file names roles;
 it does not copy an inventory.
 
-The theme is **dark only**. There is no light-theme plumbing, and adding a
-second theme is an architecture change, not a styling change.
+The shell offers **Settings → Appearance → Light / Dark / System**. New clients
+start on System; explicit Light or Dark remains pinned. The shared semantic
+palettes in `web/ui.css` preserve geometry and status meanings. Light uses white
+reading surfaces, dark text and an opaque header, with decorative matrix hidden.
+
+Appearance belongs to a browser profile or desktop client, not an account or
+server setting. Existing saved Light/Dark choices keep their meaning. Storage
+failures are visible; clearing site data returns the choice to System. Switching
+repaints mounted charts and diagrams without rebuilding views or losing drafts.
+Independent iframe interiors remain author-owned, not automatically recoloured.
+Desktop persistence requires a launcher built with persistent WebView storage;
+server restart alone cannot verify survival across full quit/relaunch. Mechanism
+and deployment limits: ARCHITECTURE §3 “Navigation and shared UI contracts”.
 
 ---
 
@@ -193,6 +204,22 @@ Primary (15.9:1) and meta (9.2:1) clear the 4.5:1 floor against `--bg-primary`
 with room to spare. `--text-disabled` is deliberately BELOW it (3.5:1) and is
 therefore reserved for genuinely disabled or incidental content, which WCAG
 exempts; it must never carry meaning a reader has to obtain.
+
+### A selected state is not exempt from contrast
+
+A **status hue** and a **status foreground** are different values, and the
+selected state of a control must use the foreground. Selected Advisory in the
+enforcement group read `--amber` (`#f59e0b`) over a 12% amber wash: ~2:1 on the
+light surface, unreadable exactly when the owner had chosen it. The rule that
+closes this: a selected control tints with the `--status-*-fg` /
+`--status-*-bg` / `--status-*-border` triple, which is defined per theme, and
+never with the raw hue token, which is not.
+
+The same reasoning covers images. A colour baked into a `data:` URI cannot be
+themed, because a custom property cannot be interpolated into the URI string —
+which is why the select chevron was a pale `#e2e8f0` on white. **The whole
+image is the token** (`--select-arrow`), overridden per theme, not the colour
+inside it. `tests/test_appearance_static.py` holds both facts.
 
 ## 4. Status and chips
 
@@ -818,9 +845,8 @@ has migrated. Migrated today:
   Dashboard → Updates tab (status card, one action row, collapsed Recovery
   with a single restore list), and chat (typography, foreground and status
   colour; component geometry keeps its local literals per the viewport
-  reserve contract, and the glass surface tints — frosted header/composer
-  backgrounds, bubble gradients and their border tints — remain local
-  literals with no token equivalents yet)
+  reserve contract, while the shared palette channels keep translucent glass
+  surfaces coherent across themes)
 - the global `.muted`, `.form-section h3` and shared `.ui-status` tone rules
 
 The remaining page-specific typography in skills, marketplace, widgets, logs

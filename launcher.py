@@ -1226,7 +1226,7 @@ def main(argv=()):
             width=420,
             height=200,
         )
-        webview.start()
+        webview.start(private_mode=False)
         return
 
     import atexit
@@ -1313,7 +1313,7 @@ def main(argv=()):
             width=520,
             height=300,
         )
-        webview.start(func=_git_page, args=[git_window])
+        webview.start(func=_git_page, args=[git_window], private_mode=False)
         if not check_git():
             sys.exit(1)
 
@@ -1415,7 +1415,7 @@ def main(argv=()):
             width=520,
             height=260,
         )
-        webview.start()
+        webview.start(private_mode=False)
         return
 
     def _resolve_bridge_file_url(raw_url: str) -> str:
@@ -1575,9 +1575,9 @@ def main(argv=()):
         os._exit(0)
 
     window.events.closing += _on_closing
-    _webview_window = window
+    _webview_window = window  # Persist cookies and website data (ouroboros.theme); rebuild/limits: ARCHITECTURE §3.
 
-    webview.start(debug=False)
+    webview.start(debug=False, private_mode=False)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Ouroboros Setup</title>
+  <script src="/static/theme.js"></script>
   <link rel="icon" href="/static/favicon.png" type="image/png">
   <link rel="stylesheet" href="/static/ui.css">
   <link rel="stylesheet" href="/static/onboarding.css">
@@ -11,6 +12,11 @@
   <link rel="stylesheet" href="/static/reviewer_slots.css">
 </head>
 <body>
+  <div class="onboarding-appearance">
+    <span class="theme-choice-label" id="onboarding-appearance-label">Appearance</span>
+    <div data-theme-control aria-labelledby="onboarding-appearance-label"></div>
+    <span class="theme-status" data-theme-status role="status"></span>
+  </div>
   <div id="root"></div>
   <script>
     window.__OURO_ONBOARDING_BOOTSTRAP__ = __ONBOARDING_BOOTSTRAP__;

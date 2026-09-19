@@ -309,6 +309,37 @@ def pytest_collection_modifyitems(config, items):  # noqa: ARG001
     _pin_lane_groups(items, config.getoption("--serial-shards"))
 
 
+_BROWSER_LANE_MARKERS = ("ui_browser", "ui_browser_docker", "browser")
+
+
+def pytest_collection_finish(session):
+    """Browser lanes keep asserting the Dark palette unless a test asks otherwise.
+
+    A client with no saved Appearance choice follows the system, and Playwright's own default
+    `prefers-color-scheme` is `light` — so every page a browser test opens would silently render
+    Light. Pages and contexts therefore default to `color_scheme="dark"`; a test that wants Light
+    passes `color_scheme=` or calls `page.emulate_media(...)`, which still win. Playwright is
+    imported only when a browser-lane test was actually collected.
+    """
+    if not any(item.get_closest_marker(name) for item in session.items for name in _BROWSER_LANE_MARKERS):
+        return
+    try:
+        from playwright.sync_api import Browser
+    except Exception:
+        return
+    for name in ("new_page", "new_context"):
+        original = getattr(Browser, name)
+        if getattr(original, "_ouroboros_dark_default", False):
+            continue
+
+        def dark_by_default(self, *args, __original=original, **kwargs):
+            kwargs.setdefault("color_scheme", "dark")
+            return __original(self, *args, **kwargs)
+
+        dark_by_default._ouroboros_dark_default = True
+        setattr(Browser, name, functools.wraps(original)(dark_by_default))
+
+
 def pytest_addoption(parser):
     parser.addoption(
         "--serial-shards", type=int, default=0,

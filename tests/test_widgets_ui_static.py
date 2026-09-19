@@ -389,12 +389,12 @@ def test_widgets_launch_policy_controls_and_stop_suppression():
     assert ".widgets-card-controls .ui-status[data-tone]::before" in style
     # An open policy menu is never painted under a sibling card (CA-14).
     assert ".widgets-card:has(.skills-card-menu-dialog[open]) {" in style
-    # Widgets is not a migrated surface (DESIGN.md section 8): the phase-2/3 card
-    # controls / menu / facade rules keep the surface's literals, not type tokens;
-    # the shared `.ui-status[data-tone]` pair (section 4) is the one exception.
+    # Appearance shares readable foreground roles in both themes, while this
+    # historical surface keeps its existing type geometry (DESIGN section 8).
     controls_css = style.split("/* Framed-card head controls", 1)[1].split(".widgets-card-source {", 1)[0]
-    for token in ("var(--type-", "var(--line-", "var(--text-meta)"):
+    for token in ("var(--type-", "var(--line-"):
         assert token not in controls_css, token
+    assert "color: var(--text-meta);" in controls_css
     # Page: policy gate, suppression, owner controls, whole-map persistence.
     assert "const stoppedByOwner = new Set();" in page
     assert "effectiveStartMode(tab, uiPreferences) !== 'manual'" in page

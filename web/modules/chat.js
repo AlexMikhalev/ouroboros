@@ -698,9 +698,9 @@ export function createChatInstance({
     function enhanceMountedMarkdown(root) {
         return enhanceChatMarkdown(root, {
             onDomWrite: _remoteActivityDepth > 0 ? withRemoteActivity : withStableViewport,
+            onThemeDomWrite: withStableViewport,
         });
     }
-
     const {
         renderLiveCardTimeline,
         appendTimelineItem,
