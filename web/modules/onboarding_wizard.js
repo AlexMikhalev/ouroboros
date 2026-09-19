@@ -1459,8 +1459,7 @@ import { accountRowFacts } from './harness_accounts.js';
             parsed = false;
         }
         if (!data || typeof data !== 'object') { data = {}; parsed = false; }
-        // ONE reader for both answers (typed refusal and success envelope); the
-        // branches live in onboarding_agents_step.js so every one is node-tested.
+        // ONE reader for both answers (typed refusal, success envelope); the branches are node-tested in onboarding_agents_step.js.
         const answer = readCompletionAnswer({
             status: response.status, ok: response.ok, parsed, data,
         });
@@ -1484,21 +1483,14 @@ import { accountRowFacts } from './harness_accounts.js';
         if (state.saving || state.preparingRecovery) return;
         const error = validateModelsStep();
         if (error) { navigateStep('models'); state.error = error; return syncCurrentStepActionState(); }
-        state.skipSubscriptionPresets = true;
-        state.preparingRecovery = true;
-        state.error = '';
+        Object.assign(state, { skipSubscriptionPresets: true, preparingRecovery: true, error: '' });
         syncCurrentStepActionState();
         const ready = await agentsStep?.setSkipPresets(true, { replaceReviewers: true });
         if (disposed) return;
-        state.preparingRecovery = false;
-        state.recoveryPrepared = Boolean(ready);
+        Object.assign(state, { preparingRecovery: false, recoveryPrepared: Boolean(ready) });
         state.error = ready ? '' : agentsStep?.previewError || 'Reviewer assignments could not be prepared. Retry before saving.';
-        if (ready) {
-            state.recoveryMain = mainBinding();
-        } else {
-            // A failed recovery must not latch the wizard out of its ordinary
-            // path: the desktop setup window has no reload, so the owner keeps
-            // the normal Finish and the still-offered Use Main retry.
+        if (ready) state.recoveryMain = mainBinding();
+        else { // a failed recovery must not latch the wizard (no reload in the desktop setup window): keep Finish and the Use Main retry
             state.skipSubscriptionPresets = false;
             void agentsStep?.setSkipPresets(false);
         }
