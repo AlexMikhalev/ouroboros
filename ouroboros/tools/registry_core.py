@@ -904,7 +904,7 @@ class ToolRegistry:
         rows: List[Dict[str, Any]] = [
             {"name": name} for name in self.available_tools()
             if name not in registry_guards._WEB_TOOLS or _resource_allowed(self._ctx, "web")
-            if name != "vcs_pull_ff" or _resource_allowed(self._ctx, "network")
+            if name not in {"vcs_pull_ff", "generate_image", "list_image_models", "recover_image"} or _resource_allowed(self._ctx, "network")
         ]
         for surface in ("ext_", "mcp_"):
             if namespace and not namespace.startswith(surface) or not _resource_allowed(self._ctx, "network"):
@@ -1024,6 +1024,8 @@ class ToolRegistry:
         """Run one builtin handler under the scoped attestation."""
         from ouroboros.process_interpreters import interpreter_attestation
         from ouroboros.owner_pause import OwnerPauseRefused, run_tool_handler
+        from ouroboros.model_wait import ModelWaitInterrupted
+        from ouroboros.usage_accounting import UsageAccountingError
 
         observed_skill = None
         missing = object()
@@ -1074,7 +1076,7 @@ class ToolRegistry:
                     ):
                         return None, published
                     return None, result
-                except OwnerPauseRefused:
+                except (OwnerPauseRefused, ModelWaitInterrupted, UsageAccountingError):
                     raise
                 except TypeError as e:
                     return f"⚠️ TOOL_ERROR ({name}): {e}", None

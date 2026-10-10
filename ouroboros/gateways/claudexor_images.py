@@ -1,106 +1,71 @@
-"""Image-operation client family for the Claudexor engine.
+"""Image facet of the engine's existing model-operation transport.
 
-The four image-operation verbs live as free functions over
-:class:`ClaudexorGateway`'s request seam (no model-operation payload-ref
-protocol or duplicate client class). The
-engine-side ``/v2/image-operations`` family ships in a companion Claudexor PR;
-presence is negotiated structurally through the engine's own
-``GET /v2/operations`` catalog (``image_operation_supported``), never by
-version folklore.
-
-Contract notes that differ from model operations on purpose:
-
-- The request body is the image request itself (``model``/``prompt``/``n``/
-  ``quality``/``size``/``background``), NOT a staged upload ref: image
-  requests are small JSON, and the engine validates them directly. The
-  model-operations ``{resourceId, sha256, sizeBytes}`` payload-ref contract
-  does not apply here.
-- Edit inputs ride as data URLs with their sniffed MIME type (PNG/JPEG/WebP).
-- The result is a JSON envelope (``data[].b64_json`` + ``usage``) without a
-  size/digest custody contract yet; the caller decodes payloads straight to
-  artifacts and ACKs with the sha256 of the bytes it retained.
+Mirrors schema/model-image.ts: model-purpose uploads, requestKind=image, and the
+ordinary status/result/whole-result ACK/cancel verbs. No image endpoint or scheduler.
 """
-
 from __future__ import annotations
 
 import base64
-import uuid
-from typing import Any, Dict, List, Optional, Tuple
+import hashlib
+from typing import Any
 
-# The negotiated route family (mirrors the companion Claudexor PR). Localized
-# here so an engine-side shape change is a one-line client fix.
-IMAGE_OPERATION_PATH = "/v2/image-operations"
-
-
-def image_operation_supported(operations: List[Dict[str, Any]]) -> bool:
-    """Does the serving engine's own route catalog list POST /v2/image-operations?
-
-    Same structural negotiation as ``run_message_supported``: presence of the
-    route in ``GET /v2/operations`` is the capability; an engine that does not
-    implement the family answers a 404 the tool must never reach.
-    """
-    return any(
-        operation.get("method") == "POST" and operation.get("path") == IMAGE_OPERATION_PATH
-        for operation in operations if isinstance(operation, dict)
-    )
+from ouroboros.gateways.claudexor import (
+    _model_idempotency_key, _model_operation, _model_payload_ref, operation_query_supported,
+)
+from ouroboros.gateways.image_api import ImageBackendError, read_result_image
 
 
-def create_image_operation(gateway: Any, request: Dict[str, Any], *,
-                           images: Optional[List[Tuple[bytes, str]]] = None,
-                           idempotency_key: str = "") -> Dict[str, Any]:
-    """Create or rejoin exactly one caller-identified image generation.
-
-    The Idempotency-Key is the caller's identity for THIS generation; this
-    client never mints a second one for a retry. ``images`` carries
-    ``(payload_bytes, mime)`` pairs for edit mode and is inlined as data URLs
-    (bounded by the tool's input cap; the engine validates the rest).
-    """
-    body: Dict[str, Any] = {"request": dict(request)}
-    if images:
-        body["images"] = [
-            {"dataUrl": "data:%s;base64,%s" % (mime, base64.b64encode(data).decode("ascii"))}
-            for data, mime in images
-        ]
-    return gateway._request(
-        "POST", IMAGE_OPERATION_PATH, json_body=body,
-        headers={"Idempotency-Key": str(idempotency_key) or uuid.uuid4().hex},
-    )
+def image_operation_supported(operations: list[dict]) -> bool:
+    return operation_query_supported(operations, method="POST", path="/v2/model-operations",
+                                     name="requestKind", value="image")
 
 
-def get_image_operation(gateway: Any, operation_id: str, *,
-                        timeout_sec: Optional[float] = None) -> Dict[str, Any]:
-    from urllib.parse import quote
-
-    body = gateway._request(
-        "GET", f"{IMAGE_OPERATION_PATH}/{quote(str(operation_id), safe='')}",
-        timeout_sec=timeout_sec,
-    )
-    return body if isinstance(body, dict) else {}
-
-
-def get_image_result(gateway: Any, operation_id: str, *,
-                     timeout_sec: Optional[float] = None) -> Dict[str, Any]:
-    """Read the settled image result envelope (data[].b64_json + usage).
-
-    No size/digest custody contract yet; the caller decodes payload bytes
-    straight to artifacts — base64 never enters model context — and ACKs the
-    sha256 of the bytes it retained.
-    """
-    from urllib.parse import quote
-
-    body = gateway._request(
-        "GET", f"{IMAGE_OPERATION_PATH}/{quote(str(operation_id), safe='')}/result",
-        timeout_sec=timeout_sec,
-    )
-    return body if isinstance(body, dict) else {}
+def image_request(route: str, prompt: str, images: list[tuple[bytes, str]],
+                  options: dict, credential_profile_id: str = "") -> dict:
+    source, separator, model = route.partition("=")
+    if not separator or not source.strip() or not model.strip():
+        raise ValueError("Subscription image route must be claudexor::<source>=<image-model>.")
+    if set(options) - {"size", "quality", "background", "n"}:
+        raise ValueError("Subscription image options are size, quality, background and n.")
+    if "size" in options and (not isinstance(options["size"], str) or not options["size"].strip()):
+        raise ValueError("size must be a nonempty vendor size token.")
+    if "quality" in options and options["quality"] not in {"low", "medium", "high", "auto"}:
+        raise ValueError("Subscription quality must be low, medium, high or auto.")
+    if "background" in options and options["background"] not in {"transparent", "opaque", "auto"}:
+        raise ValueError("background must be transparent, opaque or auto.")
+    if "n" in options and (type(options["n"]) is not int or not 1 <= options["n"] <= 10):
+        raise ValueError("n must be an integer from 1 to 10 in one provider request.")
+    return {"source": source, "model": model, "prompt": prompt,
+            "account": ({"mode": "pin", "profileId": credential_profile_id}
+                        if credential_profile_id else {"mode": "auto"}),
+            "images": [{"mime": mime, "sha256": "sha256:" + hashlib.sha256(data).hexdigest(),
+                        "dataBase64": base64.b64encode(data).decode("ascii")} for data, mime in images],
+            "options": dict(options)}
 
 
-def acknowledge_image_result(gateway: Any, operation_id: str, sha256: str) -> Dict[str, Any]:
-    """Acknowledge only the exact bytes the caller has retained; no implicit ACK."""
-    from urllib.parse import quote
+def create_image_operation(gateway: Any, request_ref: dict, *, idempotency_key: str) -> dict:
+    return _model_operation(gateway._request(
+        "POST", "/v2/model-operations?requestKind=image",
+        json_body={"request": _model_payload_ref(request_ref)},
+        headers={"Idempotency-Key": _model_idempotency_key(idempotency_key)}))
 
-    body = gateway._request(
-        "POST", f"{IMAGE_OPERATION_PATH}/{quote(str(operation_id), safe='')}/ack",
-        json_body={"sha256": sha256},
-    )
-    return body if isinstance(body, dict) else {}
+
+def image_result_data(result: dict) -> tuple[list[dict], list[dict]]:
+    """Keep valid siblings and report rejected rows against their original index."""
+    images = result.get("images")
+    if not isinstance(images, list):
+        return [], [{"stage": "result", "code": "IMAGE_RESULT_INVALID", "error": "Engine images is not an array."}]
+    rows, failures = [], []
+    for index, item in enumerate(images):
+        try:
+            if not isinstance(item, dict):
+                raise ImageBackendError("IMAGE_RESULT_INVALID", "Invalid engine image row.")
+            row = {"b64_json": item.get("dataBase64"), "media_type": item.get("mime")}
+            data, mime = read_result_image(row)
+            if (mime != item.get("mime") or len(data) != item.get("sizeBytes")
+                    or "sha256:" + hashlib.sha256(data).hexdigest() != item.get("sha256")):
+                raise ImageBackendError("IMAGE_RESULT_INVALID", "Engine image differs from its declared MIME, size or SHA-256.")
+            rows.append(row)
+        except ImageBackendError as exc:
+            failures.append({"index": index, "stage": "verify_image", "code": exc.code, "error": str(exc)})
+    return rows, failures

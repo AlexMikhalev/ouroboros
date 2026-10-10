@@ -548,7 +548,7 @@ def _write_agent_job_config(config: HarborCommandConfig) -> pathlib.Path:
 # Recording them would put a model in the manifest that provably did not assist the run — the same
 # class of lie as recording the wrong one, just in the other direction.
 _UNFORWARDED_MODEL_SLOT_KEYS = (
-    "OUROBOROS_MODEL_VISION", "OUROBOROS_MODEL_CONSCIOUSNESS", "OUROBOROS_MODEL_IMAGE",
+    "OUROBOROS_MODEL_VISION", "OUROBOROS_MODEL_CONSCIOUSNESS",
 )
 
 

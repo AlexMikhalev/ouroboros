@@ -454,7 +454,7 @@ def _capability_resource_guard_result(
                 f"blocks {name!r}."
             ),
         )
-    if name == "vcs_pull_ff" and not _resource_allowed(ctx, "network"):
+    if name in {"vcs_pull_ff", "generate_image", "list_image_models", "recover_image"} and not _resource_allowed(ctx, "network"):
         return ToolResult(
             status="blocked",
             code="RESOURCE_CONSTRAINT_BLOCKED",

@@ -66,7 +66,6 @@ from ouroboros.provider_models import migrate_model_value
 _MODEL_ID_SLOT_KEYS = tuple(
     key for key in ACTIVE_MODEL_SLOT_KEYS if not key.startswith("OUROBOROS_EFFORT_")
     and key not in MODEL_ROUTE_OPTION_KEYS
-    and key != "OUROBOROS_MODEL_IMAGE"
 )
 
 TASK_CHECKPOINT_BASENAME = "ouroboros_task_checkpoint.json"

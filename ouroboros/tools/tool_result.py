@@ -392,13 +392,41 @@ TOOL_CODE_SPECS: Mapping[str, ToolCodeSpec] = MappingProxyType(
             "error",
             "error",
             "error",
-            "re-read the engine operation or start a NEW generation deliberately; never blind-retry",
+            "call recover_image for the original request_id; never blind-retry generation",
         ),
         "IMAGE_ERROR": _code_spec(
             "error",
             "error",
             "error",
             "inspect the engine operation state for the failure reason",
+        ),
+        # Direct image APIs (gateways/image_api.py): the request never left the
+        # host (nothing billed; a new call is safe), the provider answered with a
+        # terminal refusal, or the paid response arrived but part of it could not
+        # be retained (recover from the retained response, never regenerate).
+        "IMAGE_NOT_DISPATCHED": _code_spec(
+            "unavailable",
+            "unavailable",
+            "warning",
+            "repair connectivity and call again; nothing was sent or billed",
+        ),
+        "IMAGE_PROVIDER_REJECTED": _code_spec(
+            "error",
+            "error",
+            "error",
+            "correct the request or choose another route; the provider refused this one",
+        ),
+        "IMAGE_RESULT_INCOMPLETE": _code_spec(
+            "error",
+            "error",
+            "error",
+            "call recover_image for the original request_id; inspect retained artifacts; do not generate again",
+        ),
+        "PATH_BLOCKED": _code_spec(
+            "blocked",
+            "blocked",
+            "warning",
+            "select an input file inside the task's readable resource roots and grants",
         ),
         "MCP_UNAVAILABLE": _code_spec(
             "unavailable",
@@ -864,6 +892,10 @@ _EXACT_IDENTIFIER_CODES = MappingProxyType(
         "IMAGE_RATE_LIMITED": "IMAGE_RATE_LIMITED",
         "IMAGE_OUTCOME_UNKNOWN": "IMAGE_OUTCOME_UNKNOWN",
         "IMAGE_ERROR": "IMAGE_ERROR",
+        "IMAGE_NOT_DISPATCHED": "IMAGE_NOT_DISPATCHED",
+        "IMAGE_PROVIDER_REJECTED": "IMAGE_PROVIDER_REJECTED",
+        "IMAGE_RESULT_INCOMPLETE": "IMAGE_RESULT_INCOMPLETE",
+        "PATH_BLOCKED": "PATH_BLOCKED",
         "TOOL_ARG_ERROR": "TOOL_ARG_ERROR",
         "INVALID_ARG": "TOOL_ARG_ERROR",
         "CHILD_RESULT_DISPOSITION_INVALID": "TOOL_ARG_ERROR",

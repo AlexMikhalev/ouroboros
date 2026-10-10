@@ -20,15 +20,12 @@ from ouroboros.provider_models import (
 )
 
 
-def test_image_generation_slot_is_not_a_chat_model_role():
-    from ouroboros.config import normalize_settings_raw
+def test_image_generation_has_no_settings_default_or_chat_role():
+    from ouroboros.settings_defaults import SETTINGS_DEFAULTS
+    from ouroboros.settings_setup_contract import build_setup_contract
 
-    saved = normalize_settings_raw({"OUROBOROS_MODEL_IMAGE": "gpt-image-2",
-                                    MODEL_ACCOUNTS_KEY: {"main": "profile"}})
-    assert saved["OUROBOROS_MODEL_IMAGE"] == "gpt-image-2"
-    assert json.loads(saved[MODEL_ACCOUNTS_KEY]) == {"main": "profile"}
-    # The shared browser editor must not offer image Account/Window/Processing:
-    # a Settings POST carrying them is refused, not silently normalized.
+    assert "OUROBOROS_MODEL_IMAGE" not in SETTINGS_DEFAULTS
+    assert all(slot["slot"] != "image" for slot in build_setup_contract()["modelSlots"])
     with pytest.raises(ValueError):
         normalize_model_role_options(MODEL_ACCOUNTS_KEY, {"image": "profile"})
 

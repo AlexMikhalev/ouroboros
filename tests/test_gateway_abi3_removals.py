@@ -192,6 +192,7 @@ class TestAliasProducerFanOutSweep:
         ("ouroboros/usage_accounting.py", "cost_usd", "_account_response"): ("ledger settlement call shared by sync and async received responses", 1),
         ("ouroboros/usage_journal.py", "cost_usd", "legacy_candidates"): ("legacy usage telemetry import rows (the store's one-time migration)", 2),
         ("ouroboros/tools/search.py", "cost_usd", "_web_search"): ("ledger settlement call (web search attempt)", 1),
+        ("ouroboros/tools/imagegen.py", "cost_usd", "_recover_image"): ("original physical-attempt ledger settlement; public image receipts use actual_cost_usd/estimated_cost_usd", 1),
         # usage/observability event streams (events.jsonl, live log frames;
         # /api/logs replay converts to the honest name at the boundary)
         ("ouroboros/loop_llm_call.py", "cost_usd", "call_llm_with_retry"): ("llm_round usage event rows", 1),

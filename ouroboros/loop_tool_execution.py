@@ -46,6 +46,7 @@ from ouroboros.tools.tool_result import (
     ToolResult,
 )
 from ouroboros.usage_accounting import UsageAccountingError
+from ouroboros.model_wait import ModelWaitInterrupted
 from ouroboros.utils import (
     append_jsonl,
     emit_cognitive_operation_event,
@@ -292,7 +293,7 @@ def _get_tool_timeout(
 _DEADLINE_CLAMPED_TOOLS = frozenset({
     "web_search", "browse_page", "browser_action", "youtube_transcript",
     "wait_task", "wait_tasks", "await_messages", "plan_task", "task_acceptance_review",
-    "analyze_screenshot", "vlm_query",
+    "analyze_screenshot", "vlm_query", "generate_image", "list_image_models", "recover_image",
 })
 
 
@@ -505,6 +506,8 @@ def _typed_result_metadata(
         # One typed projection supplies both the legacy bucket and the published result facts.
         meta.update(tool_result_status=tool_result.status, tool_result_code=tool_result.code,
                     tool_result_meta=dict(tool_result.meta))
+        if tool_result.meta.get("artifact_registered") is True:
+            meta["artifact_registered"] = True
     # Legacy non-process deliverable fallback reads the FULL result before trace
     # truncation. Process producers must supply the typed fact below.
     if (
@@ -537,8 +540,6 @@ def _typed_result_metadata(
         signal_name = tool_result.meta.get("signal")
         if isinstance(signal_name, str) and signal_name:
             meta["signal"] = signal_name
-        if tool_result.meta.get("artifact_registered") is True:
-            meta["artifact_registered"] = True
     if (
         meta["status"] == "ok"
         and isinstance(tool_result, ToolResult)
@@ -700,7 +701,7 @@ def _execute_single_tool(
     try:
         tool_result = host_refusal if host_refusal is not None else tools.execute_result(fn_name, args)
         result = tool_result.text
-    except UsageAccountingError:
+    except (UsageAccountingError, ModelWaitInterrupted):
         raise
     except Exception as e:
         tool_ok = False
@@ -1268,7 +1269,7 @@ def handle_tool_calls(
                 idx = future_to_index[future]
                 try:
                     results[idx] = future.result()
-                except UsageAccountingError:
+                except (UsageAccountingError, ModelWaitInterrupted):
                     raise
                 except Exception as exc:
                     tc = tool_calls[idx]
@@ -1596,5 +1597,4 @@ def process_tool_results(
             by_call[exec_result["tool_call_id"]]["image_attachment"] = observation
 
     return error_count
-
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import math
 from typing import Any, Dict, Optional, Tuple
 
@@ -236,3 +237,35 @@ def usage_from_response(response: Any) -> Tuple[Dict[str, Any], Optional[float],
     )
     cost = next((number for value in candidates if (number := _number(value)) is not None), None)
     return normalized, cost, cost is not None
+
+
+def model_operation_usage(result: dict, effort: dict | None = None, *, request_kind: str = "chat") -> tuple[dict, float | None, bool]:
+    """Normalize explicit model usage; never run the generic body-error/free branch."""
+    from ouroboros.effort_evidence import model_effort_usage
+
+    counters = result.get("usage") or {}
+    cost_evidence = result.get("cost") or {}
+    cash = provider_cost_value(cost_evidence.get("cashUsd"))
+    knowledge = cost_evidence.get("knowledge")
+    cost = cash if knowledge in {"exact", "estimated"} else None
+    if knowledge == "estimated" and cost is None:
+        cost = provider_cost_value(cost_evidence.get("estimatedUsd"))
+    if request_kind == "image":
+        # Image units are not text tokens; preserve evidence without invoking
+        # the ledger's text tariff estimator when cash knowledge is unknown.
+        return {"cost_basis": "image_generation", "cost_evidence": {
+            "usage": copy.deepcopy(counters), "cost": copy.deepcopy(cost_evidence)}}, cost, cost is not None and knowledge == "exact"
+    usage = {key: counters.get(native) for key, native in (
+        ("prompt_tokens", "input_tokens"), ("completion_tokens", "output_tokens"),
+        ("cached_tokens", "cached_input_tokens"), ("cache_write_tokens", "cache_write_tokens"),
+        ("reasoning_tokens", "reasoning_tokens"))}
+    usage.update(model_effort_usage(result, effort))
+    if isinstance(result.get("processing"), dict):
+        usage["processing"] = copy.deepcopy(result["processing"])
+    if cost_evidence:
+        usage["cost_evidence"] = copy.deepcopy(cost_evidence)
+    usage["total_tokens"] = (
+        int(usage["prompt_tokens"] or 0) + int(usage["completion_tokens"] or 0)
+        if all(usage[key] is not None for key in ("prompt_tokens", "completion_tokens")) else None
+    )
+    return usage, cost, cost is not None and knowledge == "exact"

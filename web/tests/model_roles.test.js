@@ -96,17 +96,13 @@ test('role pins and context survive a no-edit save, including identical model na
     editor.destroy();
 });
 
-test('image-operation model saves as a bare engine id, without unsupported chat-role options', () => {
+test('image generation has no settings default or chat model role', () => {
     const editor = createModelRolesEditor({ hostId: 'test', doc: () => null });
-    editor.load({ OUROBOROS_MODEL: 'openai::model', OUROBOROS_MODEL_IMAGE: 'gpt-image-2' }, contract);
+    editor.load({ OUROBOROS_MODEL: 'openai::model', OUROBOROS_MODEL_IMAGE: 'legacy' }, contract);
     const saved = editor.collect();
-    assert.equal(saved.OUROBOROS_MODEL_IMAGE, 'gpt-image-2');
-    assert.ok(!('image' in (saved.OUROBOROS_MODEL_ACCOUNTS || {})));
-    assert.ok(!('image' in (saved.OUROBOROS_MODEL_CONTEXT_WINDOWS || {})));
-    assert.ok(!('image' in (saved.OUROBOROS_MODEL_PROCESSING_PREFERENCES || {})));
+    assert.ok(!('OUROBOROS_MODEL_IMAGE' in saved));
+    assert.ok(!contract.modelSlots.some((slot) => slot.slot === 'image'));
     assert.equal(editor.validate(), '');
-    editor.load({ OUROBOROS_MODEL: 'openai::model', OUROBOROS_MODEL_IMAGE: 'claudexor::codex=gpt-image-2' }, contract);
-    assert.match(editor.validate(), /bare engine model id/);
     editor.destroy();
 });
 

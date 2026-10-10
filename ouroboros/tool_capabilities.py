@@ -67,7 +67,7 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset({
     "web_search",
     "browse_page", "browser_action", "analyze_screenshot", "view_image",
     "ocr_pdf", "youtube_transcript", "extract_video_frames",
-    "generate_image",
+    "generate_image", "list_image_models", "recover_image",
     *OWNER_DELIVERY_TOOL_NAMES,
     "escalate",
     "switch_model",
@@ -133,7 +133,7 @@ LOCAL_READONLY_SUBAGENT_TOOL_NAMES: frozenset[str] = frozenset({
     "ocr_pdf", "youtube_transcript", "extract_video_frames",
     # Reads this child's own callable catalog (the name-miss answer points here);
     # it grants nothing, unlike enable_tools, which stays Nano schema selection.
-    "list_available_tools",
+    "list_available_tools", "list_image_models",
 })
 
 ACTING_SUBAGENT_MODE: str = "acting_subagent"
@@ -179,7 +179,7 @@ ACTING_SUBAGENT_TOOL_NAMES: frozenset[str] = frozenset({
     "integrate_delegated_patch",
     "web_search", "browse_page", "browser_action", "analyze_screenshot", "vlm_query", "view_image",
     "ocr_pdf", "youtube_transcript", "extract_video_frames",
-    "list_available_tools",
+    "list_available_tools", "list_image_models", "generate_image", "recover_image",
 })
 
 def schema_selection_tools_for_context(ctx: object) -> frozenset[str]:

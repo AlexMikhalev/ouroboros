@@ -417,11 +417,10 @@ def test_model_id_classifiers_preserve_the_prior_ordered_vocabulary():
     )
     assert _ACTIVE_FIXED_MODEL_KEYS == prior
     assert _MODEL_ID_SLOT_KEYS == (*prior[:7], "OUROBOROS_REVIEWER_SLOTS", *prior[7:])
-    # Image generation has its own engine operation, not a chat provider-ID slot.
-    # It remains visible in the manifest but must never be migrated by ProgramBench.
+    # Image generation selects a route per call and has no Settings model slot.
     from devtools.benchmarks.common.manifests import ACTIVE_MODEL_SLOT_KEYS
 
-    assert "OUROBOROS_MODEL_IMAGE" in ACTIVE_MODEL_SLOT_KEYS
+    assert "OUROBOROS_MODEL_IMAGE" not in ACTIVE_MODEL_SLOT_KEYS
     assert "OUROBOROS_MODEL_IMAGE" not in _MODEL_ID_SLOT_KEYS
 
 

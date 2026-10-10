@@ -94,16 +94,6 @@
         "stateKey": "visionModel"
       },
       {
-        "inputId": "image-model",
-        "label": "Image Model",
-        "note": "Bare Claudexor image model id (e.g. gpt-image-2); empty uses gpt-image-2. No chat-model source or window.",
-        "settingKey": "OUROBOROS_MODEL_IMAGE",
-        "settingsInputId": "s-model-image",
-        "settingsToggleId": "",
-        "slot": "image",
-        "stateKey": "imageModel"
-      },
-      {
         "inputId": "consciousness-model",
         "label": "Consciousness Model",
         "note": "High-horizon background consciousness. Empty uses Main.",
@@ -408,7 +398,6 @@
     "consciousnessModel": "",
     "deepseekKey": "",
     "fallbackModel": "openai/gpt-5.6-luna",
-    "imageModel": "",
     "lightModel": "openai/gpt-5.6-luna",
     "localChatFormat": "",
     "localContextLength": 16384,

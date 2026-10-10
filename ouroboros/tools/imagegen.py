@@ -1,460 +1,577 @@
-"""gpt-image-2 generation through the Claudexor engine's image operations.
-
-The tool is a thin client of the engine's ``/v2/image-operations`` family
-(``gateways/claudexor_images.py``): the engine owns subscription credentials,
-account rotation and quota mapping, exactly as for model operations. The route
-family is negotiated STRUCTURALLY through the engine's own ``GET /v2/operations``
-catalog, so this tool stays dormant and refuses typed until an engine that
-implements the routes serves it — no version folklore.
-
-Invariants carried from the working prototype (Praxis / praxis-relay):
-
-1. ONE request = ONE attempt. A paid generation is never retried automatically:
-   the idempotency key is minted per tool call, and an interrupted or unknown
-   outcome surfaces as a typed ``IMAGE_OUTCOME_UNKNOWN`` marker plus a durable
-   ``image_outcome_unknown`` row in ``events.jsonl`` (operation id + key),
-   never as a silent second send.
-2. Image quota is NOT the text quota. An upstream ``image_generation_limit_reached``
-   (HTTP 429) surfaces typed with the reset fact the engine provides and does
-   not park or deprioritise the account's text lane — that mapping is the
-   engine's own quota logic; this client only reports it.
-3. No base64 in model context. The result's ``b64_json`` payloads decode
-   straight into content-addressed chat-media artifacts; the tool returns only
-   ``{path, sha256, mime, size, usage}``.
-4. Generation is not delivery. Storing the artifact is the tool's commit
-   point; ``send=True`` sends each image up to the photo cap through the
-   existing ``send_photo`` path. Larger images stay artifact-only (path in
-   the result); a failed send never erases the artifact.
-"""
-
+"""Model-selected image creation/editing, ordinary task artifacts, explicit delivery."""
 from __future__ import annotations
 
-import base64
+import hashlib
 import json
 import logging
 import pathlib
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+from typing import Any
 
-from ouroboros.artifacts import store_chat_media_bytes
-from ouroboros.gateways.claudexor_images import (
-    IMAGE_OPERATION_PATH,
-    acknowledge_image_result,
-    create_image_operation,
-    get_image_operation,
-    get_image_result,
-    image_operation_supported,
-)
-from ouroboros.tools.core_artifacts import _send_photo
+from ouroboros.artifacts import store_task_artifact_bytes, task_artifact_dir_path, task_id_for_artifacts
+from ouroboros.gateways import image_api, claudexor_images
+from ouroboros.gateways.claudexor import ClaudexorUnavailable
+from ouroboros.claudexor_daemon import ensure_owned_gateway, read_owned_gateway
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
-from ouroboros.usage_accounting import AttemptRequest, UsageAccountingError, execute_physical_attempt
+from ouroboros.usage_accounting import (
+    AttemptRequest, PhysicalAttemptLimitExceeded, PhysicalAttemptPreparationFailed,
+    execute_physical_attempt,
+)
 
 log = logging.getLogger(__name__)
-
-# Per-image and edit-input limit; the engine independently bounds its full response.
-_MAX_IMAGE_BYTES = 32 * 1024 * 1024
-
-# Prompt contract mirrored from the upstream API (relay validation): 1..32000.
-_MAX_PROMPT_CHARS = 32000
-
-# send_photo's inline delivery cap (10 MiB); larger images stay artifact-only.
-_PHOTO_INLINE_CAP = 10 * 1024 * 1024
-
-# Upstream generation bound (relay images.rs upstream timeout) and the
-# per-read transport bound used inside the poll loop.
-_UPSTREAM_TIMEOUT_SEC = 240.0
-_READ_TIMEOUT_SEC = 30.0
-_POLL_INTERVAL_SEC = 2.0
-
-
-def _sniff_mime(data: bytes) -> str:
-    if data[:8] == b"\x89PNG\r\n\x1a\n":
-        return "image/png"
-    if data[:3] == b"\xff\xd8\xff":
-        return "image/jpeg"
-    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return "image/webp"
-    return ""
+_DOC_DATE = "2026-10-09"
+_OPENAI_DOC = "https://developers.openai.com/api/reference/resources/images/methods/edit"
+_ZAI_DOC = "https://docs.z.ai/api-reference/image/generate-image"
+# Documentation evidence read on _DOC_DATE, not an allowlist or a live catalog:
+# an explicit unfamiliar model is sent to its requested source unchanged.
+_DOCUMENTED = {
+    "openai": {"models": ("gpt-image-2.5-sunburst", "gpt-image-2.5-flare", "gpt-image-2", "gpt-image-1.5",
+                          "gpt-image-1", "gpt-image-1-mini", "chatgpt-image-latest"),
+               "editing": True, "evidence": _OPENAI_DOC,
+               "parameters": {"n": "1-10", "size": "auto | WIDTHxHEIGHT (model-specific limits)",
+                              "quality": "low | medium | high | xhigh | max | auto (model-specific)",
+                              "background": "transparent | opaque | auto", "output_format": "png | jpeg | webp",
+                              "output_compression": "0-100", "moderation": "low | auto", "input_fidelity": "high | low"}},
+    "zai": {"models": ("glm-image", "cogview-4-250304"), "editing": False, "evidence": _ZAI_DOC,
+            "parameters": {"size": "WIDTHxHEIGHT (model-specific limits)", "quality": "hd | standard"}},
+}
+_EXTENSIONS = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif", "image/svg+xml": "svg"}
 
 
-def _refuse(ctx: Any, message: str, code: str) -> str:
-    status = ("blocked" if code == "ACCESS_BLOCKED" else "unavailable"
-              if code in ("CAPABILITY_UNAVAILABLE", "IMAGE_RATE_LIMITED") else "error")
-    return _publish_tool_result(ctx, ToolResult(status=status, code=code, text=message))
+def _result(ctx: Any, code: str, text: str, *, details: dict | None = None) -> str:
+    status = "ok" if code == "OK" else ("unavailable" if code in {"CAPABILITY_UNAVAILABLE", "IMAGE_RATE_LIMITED", "IMAGE_NOT_DISPATCHED"}
+                                        else "blocked" if code == "PATH_BLOCKED" else "error")
+    if details is not None:
+        text += "\n" + json.dumps(details, ensure_ascii=False, indent=2)
+    artifacts = bool(details and (details.get("images") or details.get("response")))
+    return _publish_tool_result(ctx, ToolResult(status=status, code=code, text=text,
+                                               meta={"artifact_registered": True} if artifacts else {}))
 
 
-def _gateway_for(ctx: Any):
-    """Attach to the owned daemon without starting it (a generation request
-    must not wake a stopped daemon as a side effect of capability probing).
+def _route(model: str) -> tuple[str, str]:
+    source, sep, name = str(model or "").strip().partition("::")
+    if not sep or source not in {*image_api.IMAGE_API_SOURCES, "claudexor"} or not name.strip():
+        raise ValueError("model must select an image route: openai::<model>, openrouter::<model>, zai::<model>, or claudexor::<source>=<model>. Use list_image_models; no default is chosen.")
+    return source, name.strip()
 
-    ``read_owned_gateway`` raises ``ClaudexorUnavailable`` on absence (never
-    returns None), so the absent case is mapped HERE to the typed refusal.
-    """
-    from ouroboros.claudexor_daemon import read_owned_gateway
-    from ouroboros.gateways.claudexor import ClaudexorUnavailable
 
+def _targets() -> dict[str, dict]:
+    """Shared-layer route facts per source; a missing credential is an empty api_key."""
+    return {source: image_api.resolve_image_target(f"{source}::probe") for source in image_api.IMAGE_API_SOURCES}
+
+
+def _catalog_entry(source: str, model: str, *, editing: bool | None, evidence: str,
+                   parameters: Any = None, pricing: Any = None) -> dict:
+    return {"model": f"{source}::{model}", "source": source, "billing": "api",
+            "credential_configured": True, "account_availability": "unverified",
+            "generation": True, "editing": editing,
+            "evidence": {"source": evidence, "checked_on": _DOC_DATE},
+            "parameters": parameters or {}, "pricing": pricing, "actual_cost_usd": None}
+
+
+def _subscription_catalog() -> tuple[list[dict], list[dict]]:
     try:
         gateway = read_owned_gateway()
+        try:
+            if not claudexor_images.image_operation_supported(gateway.operations()):
+                return [], [{"source": "claudexor", "code": "CAPABILITY_UNAVAILABLE",
+                             "detail": "Engine does not advertise requestKind=image."}]
+            sources = gateway.list_model_sources(view="accounts").get("sources", [])
+            rows = []
+            for source in sources:
+                capability = source.get("imageGeneration")
+                if not isinstance(capability, dict):
+                    continue
+                for model in capability.get("models", []):
+                    rows.append({"model": f"claudexor::{source['id']}={model}", "source": source["id"],
+                        "billing": "subscription", "credential_configured": None,
+                        "account_availability": "unverified", "generation": True,
+                        "editing": capability.get("maxInputImages", 0) > 0,
+                        "evidence": capability, "parameters": capability.get("supportedOptions", []),
+                        "pricing": None, "actual_cost_usd": None})
+            return rows, []
+        finally:
+            gateway.close()
     except ClaudexorUnavailable as exc:
-        raise _DaemonAbsent(str(getattr(exc, "code", "") or exc)) from exc
-    if gateway is None:  # defensive: older signatures may answer None
-        raise _DaemonAbsent("daemon_not_discovered")
-    return gateway
+        return [], [{"source": "claudexor", "code": "CAPABILITY_UNAVAILABLE", "detail": exc.code}]
 
 
-class _DaemonAbsent(ConnectionError):
-    """Owned daemon not attached in this process; typed, not a crash."""
-
-
-def _image_429_refusal(reset_fact: str) -> str:
-    line = ("⚠️ IMAGE_RATE_LIMITED: image generation quota exhausted for this account. "
-            "The text lane is NOT parked; try again after the image window resets.")
-    if reset_fact:
-        line += f" Reset fact from the engine: {reset_fact}."
-    return line
-
-
-class _ImageOperationFailed(Exception):
-    """The engine settled the operation at a non-succeeded terminal state.
-
-    Carries the typed ``problem`` from ``ControlImageOperationDetail`` — the
-    terminal detail has no ``error``/``reason`` fields, so ``problem`` IS the
-    failure report (``code``/``message``/``context.resetsAt``). ``interrupted``
-    means dispatch-unknown per the engine: possibly billed, outcome genuinely
-    unknown, never silently retried.
-    """
-
-    def __init__(self, state: str, problem: Optional[Dict[str, Any]] = None):
-        engine_code = ""
-        provider_message = ""
-        reset_at = ""
-        if isinstance(problem, dict):
-            engine_code = str(problem.get("code") or "")
-            provider_message = str(problem.get("message") or "")
-            context = problem.get("context")
-            if isinstance(context, dict):
-                reset_at = str(context.get("resetsAt") or context.get("reset_at") or "")
-        super().__init__(f"image_operation_failed:{state}:{engine_code}:{provider_message}")
-        self.state = str(state)
-        self.engine_code = engine_code
-        self.provider_message = provider_message
-        self.reset_at = reset_at
-
-
-def _generate_image(ctx: ToolContext, prompt: str, n: int = 1, quality: str = "auto",
-                    size: str = "auto", background: str = "auto",
-                    image_paths: Optional[List[str]] = None, caption: str = "",
-                    send: bool = True) -> str:
-    """Generate image(s) through the engine's image operations; one attempt, no retry."""
-    if not prompt or not prompt.strip():
-        return _refuse(ctx, "⚠️ Prompt is required (1–32000 chars).", "TOOL_ARG_ERROR")
-    if len(prompt) > _MAX_PROMPT_CHARS:
-        return _refuse(ctx, f"⚠️ Prompt exceeds {_MAX_PROMPT_CHARS} characters.", "TOOL_ARG_ERROR")
-    n = int(n) if n is not None else 1
-    if n < 1 or n > 10:
-        return _refuse(ctx, "⚠️ n must be 1–10.", "TOOL_ARG_ERROR")
-    if quality not in ("auto", "low", "medium", "high"):
-        return _refuse(ctx, "⚠️ quality must be auto|low|medium|high.", "TOOL_ARG_ERROR")
-    if background not in ("auto", "opaque", "transparent"):
-        return _refuse(ctx, "⚠️ background must be auto|opaque|transparent.", "TOOL_ARG_ERROR")
-
-    model = ""
-    try:
-        from ouroboros.config import runtime_setting
-        model = str(runtime_setting("OUROBOROS_MODEL_IMAGE") or "")
-    except Exception:
-        model = ""
-
-    try:
-        gateway = _gateway_for(ctx)
-    except _DaemonAbsent:
-        return _refuse(
-            ctx,
-            "⚠️ CAPABILITY_UNAVAILABLE: the Claudexor daemon is not attached; "
-            "image generation needs the owned engine. Start it from Settings → Accounts.",
-            "CAPABILITY_UNAVAILABLE",
-        )
-
-    request: Dict[str, Any] = {
-        "model": model or "gpt-image-2", "prompt": prompt, "n": n,
-        "quality": quality, "size": size, "background": background,
-    }
-    try:
-        return _generate_image_with_gateway(ctx, gateway, request, image_paths, caption, send)
-    finally:
+def _list_image_models(ctx: ToolContext, model: str = "") -> str:
+    """Expose capability evidence without selecting a model or testing an account."""
+    targets = _targets()
+    rows, errors = [], []
+    for source, doc in _DOCUMENTED.items():
+        if targets[source]["api_key"]:
+            for name in doc["models"]:
+                rows.append(_catalog_entry(source, name, editing=doc["editing"], evidence=doc["evidence"],
+                                           parameters=doc["parameters"]))
+    if targets["openrouter"]["api_key"]:
+        catalog_url = targets["openrouter"]["base_url"] + "/images/models"
         try:
-            gateway.close()  # read_owned_gateway transfers client ownership to us
-        except Exception:
-            log.exception("imagegen: failed to close owned gateway")
-
-
-def _generate_image_with_gateway(ctx: ToolContext, gateway: Any, request: Dict[str, Any],
-                                 image_paths: Optional[List[str]], caption: str, send: bool) -> str:
-    # Capability negotiation — typed refusal BEFORE any paid request.
-    try:
-        operations = gateway.operations()
-    except Exception as exc:
-        return _refuse(ctx, f"⚠️ CAPABILITY_UNAVAILABLE: engine catalog unreadable ({type(exc).__name__}).", "CAPABILITY_UNAVAILABLE")
-    if not image_operation_supported(operations):
-        return _refuse(
-            ctx,
-            "⚠️ CAPABILITY_UNAVAILABLE: this Claudexor engine does not implement image "
-            "operations (POST " + IMAGE_OPERATION_PATH + " not in /v2/operations). "
-            "The tool activates structurally once the engine ships the route family.",
-            "CAPABILITY_UNAVAILABLE",
-        )
-
-    edit_inputs: List[tuple] = []
-    if image_paths:
-        if len(image_paths) > 5:
-            return _refuse(ctx, "⚠️ image_paths accepts at most 5 edit inputs.", "TOOL_ARG_ERROR")
-        from ouroboros.protected_artifacts import block_reason_for_path
-        from ouroboros.tools.registry import active_repo_dir_for
-        from ouroboros.tools.vision import _allowed_file_roots, _path_is_under, _read_file_parity_block
-
-        for raw in image_paths:
-            source = pathlib.Path(str(raw)).expanduser()
-            if not source.is_absolute():
-                source = pathlib.Path(active_repo_dir_for(ctx)) / source
-            source = source.resolve()
-            # An edit upload is a byte read, not an unrestricted file argument.
-            # Reuse the same readable roots, per-path rules and execute-only
-            # artifact guard as view_image before any byte reaches Claudexor.
-            if not any(_path_is_under(source, root) for root in _allowed_file_roots(ctx)):
-                return _refuse(ctx, "⚠️ Edit input is outside readable resource roots.", "ACCESS_BLOCKED")
-            block = _read_file_parity_block(ctx, source) or block_reason_for_path(ctx, source, "read_bytes")
-            if block:
-                return _refuse(ctx, f"⚠️ Edit input read blocked: {block}", "ACCESS_BLOCKED")
-            if not source.is_file():
-                return _refuse(ctx, f"⚠️ Edit input not found: {raw}", "TOOL_ARG_ERROR")
-            if source.stat().st_size > _MAX_IMAGE_BYTES:
-                return _refuse(ctx, f"⚠️ Edit input exceeds {_MAX_IMAGE_BYTES} bytes: {raw}", "TOOL_ARG_ERROR")
-            try:
-                data = source.read_bytes()
-            except OSError as exc:
-                return _refuse(ctx, f"⚠️ Edit input unreadable: {type(exc).__name__}", "TOOL_ARG_ERROR")
-            if len(data) > _MAX_IMAGE_BYTES:
-                return _refuse(ctx, f"⚠️ Edit input exceeds {_MAX_IMAGE_BYTES} bytes: {raw}", "TOOL_ARG_ERROR")
-            mime = _sniff_mime(data)
-            if not mime:
-                return _refuse(ctx, f"⚠️ Edit input is not a PNG/JPEG/WebP image: {raw}", "TOOL_ARG_ERROR")
-            edit_inputs.append((data, mime))
-
-    idempotency_key = f"image-{uuid.uuid4().hex}"
-    op_id_ref = [""]
-
-    def _remaining(deadline: float) -> float:
-        # A READ BOUND for the poll loop: never longer than the read cap, and
-        # never past the deadline (the cap stays a cap, not a floor — a floor
-        # here let the last read outlive the deadline by up to 30 s). The small
-        # minimum keeps httpx from a degenerate zero timeout.
-        return max(0.5, min(_READ_TIMEOUT_SEC, deadline - time.monotonic()))
-
-    def _send() -> Dict[str, Any]:
-        op = create_image_operation(gateway, request, images=edit_inputs or None,
-                                    idempotency_key=idempotency_key)
-        op_id = str(op.get("id") or op.get("operationId") or "")
-        op_id_ref[0] = op_id
-        deadline = time.monotonic() + _UPSTREAM_TIMEOUT_SEC
-        while True:
-            if time.monotonic() >= deadline:
-                raise TimeoutError(f"image_operation_timeout:{op_id}")
-            state_op = get_image_operation(gateway, op_id, timeout_sec=_remaining(deadline))
-            state = str(state_op.get("state") or state_op.get("status") or "")
-            if state in ("succeeded", "ready", "complete", "completed"):
-                return get_image_result(gateway, op_id, timeout_sec=_remaining(deadline))
-            if state in ("failed", "cancelled", "interrupted", "error"):
-                # Terminal per the engine's RunLifecycle. The typed failure
-                # report is the detail's ``problem`` — there is no
-                # error/reason field on the terminal detail.
-                raise _ImageOperationFailed(state, state_op.get("problem"))
-            # Bounded sleep: never past the deadline.
-            time.sleep(min(_POLL_INTERVAL_SEC, max(0.05, deadline - time.monotonic())))
-
-    # Accounting: one physical attempt covering create+poll+result — the
-    # budget fence of the task tree is inherited by execute_physical_attempt.
-    attempt_request = AttemptRequest(
-        model=request["model"],
-        provider="claudexor",
-        prompt_tokens_estimate=max(1, len(request["prompt"]) // 4),
-        max_completion_tokens=0,
-        force_unknown_reservation=True,
-        drive_root=getattr(ctx, "budget_drive_root", None) or getattr(ctx, "drive_root", None),
-        task_id=str(getattr(ctx, "task_id", "") or ""),
-        root_task_id=str(getattr(ctx, "root_task_id", "") or getattr(ctx, "task_id", "") or ""),
-        category="image_generation",
-        source="imagegen",
-    )
-    drive_root = getattr(ctx, "budget_drive_root", None) or getattr(ctx, "drive_root", None)
-
-    def _record_unknown_outcome(error_text: str) -> str:
-        # Interrupted/unknown generation — NEVER retried here; the durable row
-        # carries the operation id so a NEW request can be made deliberately.
-        append_jsonl_safe(drive_root, {
-            "type": "image_outcome_unknown",
-            "operation_id": op_id_ref[0] or "",
-            "idempotency_key": idempotency_key,
-            "error": error_text[:500],
-        })
-        return _refuse(
-            ctx,
-            f"⚠️ IMAGE_OUTCOME_UNKNOWN: the generation attempt ended without a settled "
-            f"result (operation {op_id_ref[0] or 'unknown'}). It may have been billed — "
-            f"it is NOT retried automatically. Re-read operation {op_id_ref[0] or '?'} via the "
-            f"engine, or start a NEW request deliberately.",
-            "IMAGE_OUTCOME_UNKNOWN",
-        )
-
-    try:
-        result_body = execute_physical_attempt(attempt_request, _send)
-    except _ImageOperationFailed as exc:
-        # A KNOWN terminal outcome from the engine's own detail — not an
-        # unknown dispatch, so no "may have been billed" row is written.
-        if exc.engine_code == "image_generation_limit_reached":
-            return _refuse(ctx, _image_429_refusal(exc.reset_at), "IMAGE_RATE_LIMITED")
-        if exc.state == "interrupted":
-            # Dispatch-unknown per the engine: possibly billing-unknown, genuinely unknown.
-            return _record_unknown_outcome(
-                f"engine_interrupted:{exc.engine_code or 'no_code'}: {exc.provider_message}")
-        engine_detail = f", engine code {exc.engine_code}" if exc.engine_code else ""
-        return _refuse(
-            ctx,
-            f"⚠️ IMAGE_ERROR: the engine settled the operation as '{exc.state}'"
-            f"{engine_detail} — {exc.provider_message or 'no problem reported'}.",
-            "IMAGE_ERROR",
-        )
-    except UsageAccountingError:
-        # Reservation/fence/preparation can refuse before _send runs. The loop
-        # owns the budget-pause rail; do not fabricate a possibly billed image.
-        raise
-    except Exception as exc:
-        code = str(getattr(exc, "code", "") or "")
-        status = getattr(exc, "status_code", None)
-        message = str(exc)
-        if code == "image_generation_limit_reached" or status == 429:
-            reset_fact = (str(getattr(exc, "reset_at", "") or "")
-                          or str(getattr(exc, "retry_after", "") or ""))
-            return _refuse(ctx, _image_429_refusal(reset_fact), "IMAGE_RATE_LIMITED")
-        return _record_unknown_outcome(f"{type(exc).__name__}: {message}")
-
-    # Result custody: decode each b64 payload straight to a chat-media artifact;
-    # ACK the exact bytes retained (sha256 of the payload, not a field).
-    data_rows = result_body.get("data") if isinstance(result_body, dict) else None
-    if not isinstance(data_rows, list) or not data_rows:
-        _record_unknown_outcome("empty_data_rows")
-        return _refuse(ctx, "⚠️ IMAGE_OUTCOME_UNKNOWN: engine returned no image data.", "IMAGE_OUTCOME_UNKNOWN")
-
-    artifact_rows: List[Dict[str, Any]] = []
-    delivery_submitted = 0
-    delivery_failed: List[int] = []
-    for row in data_rows:
-        if not isinstance(row, dict):
-            continue
-        b64 = row.get("b64_json")
-        if not b64 or not isinstance(b64, str):
-            continue
+            for item in image_api.fetch_image_models(targets["openrouter"]["base_url"]):
+                name = str(item.get("id") or "")
+                if not name:
+                    continue
+                params = item.get("supported_parameters")
+                row = _catalog_entry("openrouter", name,
+                    editing=("input_references" in params) if isinstance(params, (dict, list)) else None,
+                    evidence=catalog_url, parameters=params, pricing=item.get("pricing"))
+                row["endpoints"] = item.get("endpoints")
+                row["evidence"] = {"source": catalog_url, "observed_at": datetime.now(timezone.utc).isoformat()}
+                rows.append(row)
+        except Exception as exc:
+            errors.append({"source": "openrouter", "code": "IMAGE_CATALOG_UNAVAILABLE",
+                           "detail": f"Public image catalog unavailable ({type(exc).__name__}); support remains unknown."})
+    subscription, subscription_errors = _subscription_catalog()
+    rows.extend(subscription)
+    errors.extend(subscription_errors)
+    if model:
         try:
-            raw = base64.b64decode(b64, validate=True)
-        except Exception:
-            continue
-        if len(raw) > _MAX_IMAGE_BYTES or not _sniff_mime(raw):
-            continue
-        mime = _sniff_mime(raw)
-        stored = store_chat_media_bytes(drive_root, str(getattr(ctx, "task_id", "") or ""), raw, mime)
-        if stored:
-            artifact_rows.append(stored)
-            try:
-                acknowledge_image_result(gateway, op_id_ref[0], stored["sha256"])
-            except Exception:
-                log.exception("imagegen: ack failed for %s", op_id_ref[0])
-            if send:
-                # The existing photo verb stamps chat_id; a bare event without
-                # it is silently dropped outside a bound Project. Its cap is
-                # distinct from the engine's per-image result limit.
-                index = len(artifact_rows)
-                if len(raw) > _PHOTO_INLINE_CAP:
-                    delivery_failed.append(index)
-                    continue
-                try:
-                    receipt = _send_photo(ctx, file_path=stored["path"], caption=caption if index == 1 else "")
-                except Exception:
-                    log.exception("imagegen: owner photo submission failed for image %s", index)
-                    delivery_failed.append(index)
-                    continue
-                if receipt.startswith("OK:"):
-                    delivery_submitted += 1
-                else:
-                    delivery_failed.append(index)
-
-    if not artifact_rows:
-        return _refuse(ctx, "⚠️ IMAGE_ERROR: engine response contained no decodable image payload.", "IMAGE_ERROR")
-
-    summary = {
-        "operation_id": op_id_ref[0],
-        "generated": len(artifact_rows),
-        "images": [{"path": row["path"], "sha256": row["sha256"], "mime": row["mime"],
-                    "size": row["size"]} for row in artifact_rows],
-        "delivery": {"requested": bool(send), "submitted": delivery_submitted,
-                     "failed_indices": delivery_failed},
-        "usage": result_body.get("usage") if isinstance(result_body.get("usage"), dict) else {},
-    }
-    return _publish_tool_result(ctx, ToolResult(
-        status="ok", code="OK",
-        text="OK: generated " + str(len(artifact_rows)) + " image(s).\n" + json.dumps(summary, ensure_ascii=False, indent=2),
-    ))
+            source, name = _route(model)
+        except ValueError as exc:
+            return _result(ctx, "TOOL_ARG_ERROR", str(exc))
+        rows = [row for row in rows if row["model"] == model]
+        if not rows and source in targets and targets[source]["api_key"]:
+            row = _catalog_entry(source, name, editing=False if source == "zai" else None,
+                                 evidence=_ZAI_DOC if source == "zai" else "not_observed")
+            row["generation"] = None
+            rows.append(row)
+    return _result(ctx, "OK", "OK: image route evidence; configured credentials do not prove account access or quota.",
+                   details={"models": rows, "errors": errors,
+                            "pricing_note": "Catalog prices are provider evidence; absent prices stay unknown. Runtime cost receipts retain the provider or engine knowledge label; no local image tariff is inferred.",
+                            "selection": "Choose explicitly for the task within its budget; honor the requested source. Unknown support is not denial. No automatic fallback."})
 
 
-def append_jsonl_safe(drive_root: Any, event: Dict[str, Any]) -> None:
+def _read_inputs(ctx: ToolContext, images: list[dict]) -> list[tuple[bytes, str]]:
+    from ouroboros.presence_authority import presence_ceiling_allows_binding, presence_ceiling_from_context
+    from ouroboros.protected_artifacts import block_reason_for_path
+    from ouroboros.tool_access import build_resolved_resource_binding
+    from ouroboros.tools.core_file_tools import _runtime_data_read_block
+    from ouroboros.tools.vision import _read_file_parity_block
+
+    if not isinstance(images, list) or len(images) > 16:
+        raise ValueError("images must contain at most 16 file references {root, path}.")
+    inputs, total = [], 0
+    ceiling = presence_ceiling_from_context(ctx)
+    for item in images:
+        if not isinstance(item, dict) or not isinstance(item.get("path"), str) or not item["path"]:
+            raise ValueError("Every image input needs a file path and its resource root.")
+        binding = build_resolved_resource_binding(ctx, root=item.get("root", "active_workspace"),
+                                                 path=item["path"], operation="read")
+        path = binding.target_path
+        if ceiling is not None and not presence_ceiling_allows_binding(ceiling, binding):
+            raise PermissionError("Image input lies outside the Presence file grant.")
+        block = (_runtime_data_read_block(ctx, path, root=binding.root)
+                 or _read_file_parity_block(ctx, path)
+                 or block_reason_for_path(ctx, path, "read_bytes", binding))
+        if block:
+            raise PermissionError(str(block))
+        with path.open("rb") as stream:
+            data = stream.read(image_api.MAX_IMAGE_BYTES + 1)
+        mime = image_api.sniff_image_mime(data)
+        if len(data) > image_api.MAX_IMAGE_BYTES or mime not in {"image/png", "image/jpeg", "image/webp"}:
+            raise ValueError("Edit inputs must be original PNG/JPEG/WebP files of at most 32 MiB each.")
+        total += len(data)
+        if total > image_api.MAX_RESULT_BYTES:
+            raise ValueError("Combined edit inputs exceed 64 MiB.")
+        inputs.append((data, mime))
+    return inputs
+
+
+def _record_unknown(ctx: ToolContext, request_id: str, model: str, code: str) -> None:
     try:
         from ouroboros.utils import append_jsonl, utc_now_iso
 
-        path = pathlib.Path(str(drive_root)) / "logs" / "events.jsonl"
-        append_jsonl(path, {**event, "ts": utc_now_iso()})
+        root = getattr(ctx, "budget_drive_root", None) or ctx.drive_root
+        append_jsonl(pathlib.Path(root) / "logs" / "events.jsonl", {
+            "type": "image_outcome_unknown", "ts": utc_now_iso(), "request_id": request_id,
+            "model": model, "code": code, "task_id": task_id_for_artifacts(ctx)})
     except Exception:
-        log.exception("imagegen: failed to append event")
+        log.exception("Could not retain image attempt observation")
 
 
-def get_tools() -> List[ToolEntry]:
+def _retain_call(ctx: ToolContext, request_id: str, model: str, stage: str, payload: dict, **facts) -> dict:
+    """Use the existing private call/CAS custody, beside the ORIGINAL money ledger."""
+    from ouroboros.observability import persist_call
+
+    subscription = model.startswith("claudexor::")
+    family = "model" if subscription else "image"
+    return persist_call(pathlib.Path(getattr(ctx, "budget_drive_root", None) or ctx.drive_root),
+        task_id=task_id_for_artifacts(ctx), call_id=f"{request_id}_{family}_{stage}",
+        call_type=f"{'llm_claudexor' if subscription else 'image_api'}_{stage}",
+        payload=payload, keep_raw=True,
+        manifest={"invocation_id": request_id, "request_kind": "image", "model": model, **facts})
+
+
+def _recover_image(ctx: ToolContext, request_id: str) -> str:
+    """Observe one recorded request; never upload, create, reserve or generate."""
+    from ouroboros import usage_accounting as usage, usage_store
+    from ouroboros.llm_claudexor import recover_model_attempt
+    from ouroboros.observability import read_call_payload
+    from ouroboros.transport_custody import ProviderNotDispatched, release_pre_dispatch_attempt
+    from ouroboros.usage_ledger import is_abandoned_settlement
+
+    root = pathlib.Path(getattr(ctx, "budget_drive_root", None) or ctx.drive_root)
+    task = task_id_for_artifacts(ctx)
+    with usage_store.read(root) as txn:
+        row = txn.attempt(request_id)
+    if not row or row.get("task_id") != task or row.get("category") != "image_generation":
+        return _result(ctx, "TOOL_ARG_ERROR", "request_id must name an image attempt owned by this task.")
+    model = row["model"]
+    subscription = row["provider"] == "claudexor"
+    try:
+        recovered = recover_model_attempt(root, row) if subscription else None
+        if subscription and recovered is None:
+            return _result(ctx, "IMAGE_OUTCOME_UNKNOWN", "The recorded operation has no observable terminal result. No generation was submitted.",
+                           details={"request_id": request_id, "automatic_retry": False})
+        reservation = usage.AttemptReservation(request_id, root, model, row["provider"], row.get("reservation_upper_bound_usd"))
+        eligible = row["state"] in {"dispatched", "unresolved"} or is_abandoned_settlement(row)
+        if recovered and recovered[0] == "released":
+            if eligible:
+                release_pre_dispatch_attempt(reservation, ProviderNotDispatched("Recorded image operation never started"),
+                                             expected_revision=row["revision"])
+            eligible = False
+        family = "model" if subscription else "image"
+        manifest, payload, _ref = read_call_payload(root, task_id=task, call_id=f"{request_id}_{family}_response")
+        if manifest.get("invocation_id") != request_id:
+            raise ValueError("Image response identity mismatch")
+        if recovered and recovered[0] == "released" and not payload.get("result_json_utf8"):
+            return _result(ctx, "IMAGE_NOT_DISPATCHED", "Engine confirmed the original image attempt never started.", details={"request_id": request_id})
+        result = json.loads(payload["result_json_utf8"])
+        if recovered and recovered[0] not in {"settled", "released"}:
+            return _result(ctx, "IMAGE_OUTCOME_UNKNOWN", "The retained response does not prove a completed generation; no request was repeated.",
+                           details={"request_id": request_id})
+        counters, cost, final = recovered[1:] if recovered else image_api.image_usage(result)
+        if eligible:
+            usage.settle_attempt(reservation, counters, cost_usd=cost, cost_final=final, expected_revision=row["revision"])
+        if subscription:
+            return _retain_subscription_result(ctx, result, payload["result_json_utf8"].encode("utf-8"),
+                model=model, request_id=request_id,
+                facts={"operation_id": manifest.get("operation_id"), "recovered": True,
+                       "dispatch_state": manifest.get("dispatch_state"), "acknowledgement": "pending"},
+                acknowledge=lambda: _acknowledge_image(manifest["operation_id"], manifest["response_ref"]))
+        return _retain_images(ctx, result, model=model, request_id=request_id, facts={"recovered": True})
+    except (ClaudexorUnavailable, FileNotFoundError, ValueError, KeyError) as exc:
+        return _result(ctx, "IMAGE_OUTCOME_UNKNOWN", f"Image observation unavailable ({type(exc).__name__}); no generation was submitted.",
+                       details={"request_id": request_id, "automatic_retry": False})
+
+
+def _retain_images(ctx: ToolContext, result: dict, *, model: str, request_id: str,
+                   retained_response: dict | None = None, facts: dict | None = None,
+                   after_retention=None) -> str:
+    """Save received output before any optional later view/send call."""
+    drive, task = ctx.drive_root, task_id_for_artifacts(ctx)
+    rows = result.get("data")
+    outputs, failures, total = [], list((facts or {}).get("failures") or []), 0
+    retained = retained_response
+    # Exact response material makes failed decoding/downloads recoverable without
+    # resubmitting a billed generation. It is a file reference, never inline base64.
+    try:
+        if retained is None:
+            retained = store_task_artifact_bytes(drive, task, f"image-response-{request_id}.json",
+                        json.dumps(result, ensure_ascii=False).encode("utf-8"), kind="image_response")
+    except Exception as exc:
+        failures.append({"stage": "response_retention", "error": type(exc).__name__})
+    if not isinstance(rows, list) or not rows:
+        failures.append({"stage": "result", "code": "IMAGE_RESULT_INVALID", "error": "Provider returned no image rows."})
+        rows = []
+    for index, row in enumerate(rows):
+        try:
+            if not isinstance(row, dict):
+                raise image_api.ImageBackendError("IMAGE_RESULT_INVALID", "Image row must be an object.")
+            data, mime = image_api.read_result_image(row)
+            total += len(data)
+            if total > image_api.MAX_RESULT_BYTES:
+                raise image_api.ImageBackendError("IMAGE_RESULT_INVALID", "Combined output exceeds 64 MiB.")
+            name = f"image-{hashlib.sha256(data).hexdigest()}.{_EXTENSIONS[mime]}"
+            stored = store_task_artifact_bytes(drive, task, name, data, kind="generated_image")
+            outputs.append({**stored, "mime": mime, "size": len(data),
+                            "absolute_path": str(task_artifact_dir_path(drive, task) / stored["path"])})
+        except Exception as exc:
+            failures.append({"index": index, "stage": "retain_image", "code": getattr(exc, "code", "IMAGE_ARTIFACT_ERROR"),
+                             "error": str(exc) if isinstance(exc, image_api.ImageBackendError) else type(exc).__name__})
+    _usage, cost, final = image_api.image_usage(result)
+    summary = {"request_id": request_id, "model": model, "generated": len(outputs), "images": outputs,
+               "response": retained, "failures": failures, "usage": result.get("usage", {}),
+               "warnings": result.get("warnings"), "problem": result.get("problem") or result.get("error"),
+               "actual_cost_usd": cost if final else None, "estimated_cost_usd": cost if not final else None,
+               "cost_final": final, "delivery": "not_requested"}
+    summary.update(facts or {})
+    summary["failures"] = failures
+    if (after_retention and retained and not any(
+            failure.get("stage") in {"response_retention", "retain_image"} for failure in failures)):
+        summary.update(after_retention())
+    if failures or summary.get("problem") or summary.get("warnings"):
+        return _result(ctx, "IMAGE_RESULT_INCOMPLETE", "Image request returned; retained files are listed below. Recover from the response file; do not generate again merely to repair retention or delivery.", details=summary)
+    return _result(ctx, "OK", f"OK: retained {len(outputs)} image(s). Use view_image to inspect or an explicitly authorized send tool to deliver.", details=summary)
+
+
+def _generate_image(ctx: ToolContext, prompt: str, model: str, images: list[dict] | None = None,
+                    options: dict | None = None, credential_profile_id: str = "") -> str:
+    """One caller-selected route, one accounting attempt, no model/billing fallback."""
+    try:
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError("prompt must contain the requested image or edit instruction.")
+        if options is not None and not isinstance(options, dict):
+            raise ValueError("options must be an object of provider-supported image parameters.")
+        source, _name = _route(model)
+        inputs = _read_inputs(ctx, [] if images is None else images)
+        if source == "claudexor":
+            payload = claudexor_images.image_request(_name, prompt, inputs, options or {}, credential_profile_id)
+            return _generate_subscription_image(ctx, model, payload)
+        if credential_profile_id:
+            raise ValueError("credential_profile_id is only meaningful for a subscription route.")
+        target = image_api.resolve_image_target(model)
+        if not target["api_key"]:
+            return _result(ctx, "CAPABILITY_UNAVAILABLE", f"No {source} API credential is configured; choose a connected source with list_image_models.")
+        url, body = image_api.prepare_image_request(source, target["model"], prompt, base_url=target["base_url"],
+                                                    images=inputs, options=options or {})
+    except PermissionError as exc:
+        return _result(ctx, "PATH_BLOCKED", str(exc))
+    except (ValueError, OSError) as exc:
+        return _result(ctx, "TOOL_ARG_ERROR", str(exc))
+    request_id = uuid.uuid4().hex
+    request = AttemptRequest(model=model, provider=source, force_unknown_reservation=True,
+        drive_root=getattr(ctx, "budget_drive_root", None) or ctx.drive_root,
+        # Leave root/parent identity to the bound usage scope: ToolContext has no
+        # root_task_id field, and substituting the child's id drops its tree cap.
+        task_id=task_id_for_artifacts(ctx),
+        category="image_generation", source="imagegen")
+    # Only the typed image-client failures are translated here. BudgetExceeded is
+    # the loop's own budget rail (loop.py) and Pause/Stop controls are the
+    # registry's: both propagate untouched, so a refused or interrupted dispatch
+    # is never reported as an unknown bill.
+    def prepare(reservation):
+        nonlocal request_id
+        request_id = reservation.attempt_id
+        _retain_call(ctx, request_id, model, "request", body)
+
+    def send():
+        result = image_api.send_image_request(url, body, target["api_key"], target["headers"])
+        # Retain before settlement/publication can lose the received response.
+        # A disk fault must not discard useful bytes or their usage receipt.
+        try:
+            _retain_call(ctx, request_id, model, "response", {"result_json_utf8": json.dumps(result)})
+        except OSError:
+            log.exception("Image response custody unavailable; retaining task artifacts next")
+        return result
+
+    try:
+        result = execute_physical_attempt(
+            request, send, before_dispatch=prepare, extractor=image_api.image_usage)
+    except (PhysicalAttemptPreparationFailed, PhysicalAttemptLimitExceeded) as exc:
+        return _result(ctx, "CAPABILITY_UNAVAILABLE", f"Image request was refused before provider dispatch ({type(exc).__name__}); no generation was submitted and no alternate source was selected.")
+    except image_api.ImageBackendError as exc:
+        if exc.code == "IMAGE_OUTCOME_UNKNOWN":
+            _record_unknown(ctx, request_id, model, exc.code)
+        return _result(ctx, exc.code, str(exc), details={"request_id": request_id, "model": model,
+                       "provider_code": exc.provider_code, "retry_after": exc.retry_after,
+                       "automatic_retry": False})
+    return _retain_images(ctx, result, model=model, request_id=request_id)
+
+
+def _acknowledge_image(operation_id: str, response_ref: dict, gateway=None) -> dict:
+    """Called only after the original ledger and ordinary artifacts are durable."""
+    owned = gateway is None
+    try:
+        gateway = gateway or read_owned_gateway()
+        receipt = gateway.acknowledge_model_result(operation_id, response_ref["sha256"])
+        return {"acknowledgement": (receipt.get("response") or {}).get("state", "pending")}
+    except ClaudexorUnavailable:
+        return {"acknowledgement": "pending"}
+    finally:
+        if owned and gateway is not None:
+            gateway.close()
+
+
+def _retain_subscription_result(ctx: ToolContext, result: dict, raw: bytes, *,
+                                model: str, request_id: str, facts: dict, acknowledge=None) -> str:
+    from ouroboros.llm_claudexor import _usage
+
+    _counters, cost, final = _usage(result, request_kind="image")
+    facts = {**facts, "route": result.get("route"), "requested_model": result.get("requestedModel"),
+             "actual_cost_usd": cost if final else None, "estimated_cost_usd": cost if not final else None,
+             "cost_final": final, "cost_evidence": result.get("cost"), "usage": result.get("usage"),
+             "applied_options": result.get("appliedOptions"), "warnings": result.get("warnings") or facts.get("warnings"),
+             "problem": result.get("problem"), "outcome": result.get("outcome")}
+    try:
+        retained = store_task_artifact_bytes(ctx.drive_root, task_id_for_artifacts(ctx),
+            f"image-response-{request_id}.json", raw, kind="image_response")
+    except OSError:
+        return _result(ctx, "IMAGE_RESULT_INCOMPLETE", "Image result received; ordinary artifact retention failed. Use recover_image with this request_id; never repeat generation.",
+                       details={**facts, "request_id": request_id})
+    rows, failures = claudexor_images.image_result_data(result)
+    facts["failures"] = failures
+    if result.get("outcome") == "failed" and not rows:
+        problem = result.get("problem") or {}
+        code = "IMAGE_RATE_LIMITED" if (problem.get("context") or {}).get("httpStatus") == 429 else "IMAGE_PROVIDER_REJECTED"
+        if facts.get("dispatch_state") == "not_started":
+            code = "IMAGE_NOT_DISPATCHED"
+        if acknowledge:
+            facts.update(acknowledge())
+        return _result(ctx, code, "Engine returned a terminal image refusal.",
+                       details={**facts, "request_id": request_id, "model": model,
+                                "response": retained, "provider_code": problem.get("code"), "delivery": "not_requested"})
+    if result.get("outcome") == "unknown" and not facts.get("warnings"):
+        facts["warnings"] = ["Engine outcome remains unknown. Retained images are usable; never repeat generation automatically."]
+    return _retain_images(ctx, {"data": rows}, model=model, request_id=request_id,
+                          retained_response=retained, facts=facts, after_retention=acknowledge)
+
+
+def _generate_subscription_image(ctx: ToolContext, model: str, payload: dict) -> str:
+    """One create; persist observed identity and whole receipt in existing CAS."""
+    from ouroboros import config
+    from ouroboros.deadline_utils import llm_transport_timeout_sec
+    from ouroboros.gateways.claudexor import _READ_TIMEOUT_SEC
+    from ouroboros.llm_claudexor import ClaudexorModelNotDispatched, _usage
+    from ouroboros.model_wait import ModelWaitInterrupted, current_model_wait
+    from ouroboros.usage_accounting import last_physical_attempt_capture
+
+    request_id, operation_id = uuid.uuid4().hex, ""
+    request_ref, raw_result = {}, b""
+    gateway = None
+    recovery = {"request_id": request_id, "model": model, "automatic_retry": False}
+    timeout = llm_transport_timeout_sec()
+    try:
+        gateway = ensure_owned_gateway()
+        if not claudexor_images.image_operation_supported(gateway.operations()):
+            return _result(ctx, "CAPABILITY_UNAVAILABLE", "Engine does not advertise requestKind=image; no request sent.")
+        sources = gateway.list_model_sources(view="accounts").get("sources", [])
+        capability = next((row.get("imageGeneration") for row in sources if row.get("id") == payload["source"]), None)
+        if not isinstance(capability, dict):
+            return _result(ctx, "CAPABILITY_UNAVAILABLE", "Selected engine source has no image facet; no request sent.")
+        if len(payload["images"]) > capability["maxInputImages"]:
+            raise ValueError("Too many edit references for the selected engine source.")
+        if set(payload["options"]) - set(capability["supportedOptions"]):
+            raise ValueError("Selected engine source does not support the requested image options.")
+
+        def prepare(reservation):
+            nonlocal request_ref, request_id
+            request_id = reservation.attempt_id
+            recovery["request_id"] = request_id
+            _retain_call(ctx, request_id, model, "request", payload)
+            request_ref = gateway.upload_model_request(payload, idempotency_key=request_id)
+            recovery["request_ref"] = request_ref
+            _retain_call(ctx, request_id, model, "request", payload, request_ref=request_ref)
+
+        def control():
+            waiter = current_model_wait()
+            reason = waiter.control_reason() if waiter else None
+            if reason:
+                if operation_id:
+                    try:
+                        gateway.cancel_model_operation(operation_id, reason_code="host_cancelled")
+                    except ClaudexorUnavailable:
+                        pass  # cancellation requested, terminal state is still unknown
+                raise ModelWaitInterrupted(reason)
+
+        def observe(detail):
+            _retain_call(ctx, request_id, model, "request", payload,
+                         request_ref=request_ref, operation_id=operation_id)
+            _retain_call(ctx, request_id, model, "response", {"operation": detail},
+                         operation_id=operation_id, operation_state=detail.get("state"),
+                         dispatch_state=(detail.get("dispatch") or {}).get("state"),
+                         response_ref=(detail.get("response") or {}).get("ref"))
+
+        def receive():
+            nonlocal operation_id, raw_result
+            control()
+            deadline = time.monotonic() + timeout
+            try:
+                detail = claudexor_images.create_image_operation(gateway, request_ref, idempotency_key=request_id)
+                operation_id = detail["id"]
+                recovery["operation_id"] = operation_id
+                observe(detail)
+                while detail.get("state") in {"queued", "running"}:
+                    control()
+                    if time.monotonic() >= deadline:
+                        raise image_api.ImageBackendError("IMAGE_OUTCOME_UNKNOWN", "Image wait expired; use recover_image for this request_id.")
+                    time.sleep(min(config.CLAUDEXOR_MODEL_POLL_INTERVAL_SEC, max(0, deadline - time.monotonic())))
+                    detail = gateway.get_model_operation(operation_id, timeout_sec=min(timeout, _READ_TIMEOUT_SEC))
+                    observe(detail)
+                dispatch = (detail.get("dispatch") or {}).get("state")
+                recovery["dispatch_state"] = dispatch
+                response = detail.get("response") or {}
+                if response.get("state") != "ready":
+                    if dispatch == "not_started":
+                        raise ClaudexorModelNotDispatched(detail.get("problem") or {}, operation_id=operation_id)
+                    raise image_api.ImageBackendError("IMAGE_OUTCOME_UNKNOWN", "No engine result is available; use recover_image for this request_id.")
+                recovery["response_ref"] = response["ref"]
+                raw_result = gateway.get_model_result(operation_id, expected_ref=response["ref"],
+                                                      timeout_sec=min(timeout, _READ_TIMEOUT_SEC), raw_bytes=True)
+                result = json.loads(raw_result)
+                # Exact receipt survives a crash before accounting/artifact custody.
+                _retain_call(ctx, request_id, model, "response", {"result_json_utf8": raw_result.decode("utf-8")},
+                             operation_id=operation_id, operation_state=detail.get("state"),
+                             dispatch_state=dispatch, response_ref=response["ref"])
+                recovery["acknowledgement"] = "pending"
+                if dispatch == "not_started":
+                    raise ClaudexorModelNotDispatched(detail.get("problem") or {}, operation_id=operation_id)
+                if not isinstance(result, dict) or result.get("outcome") not in {"completed", "unknown", "failed"}:
+                    raise image_api.ImageBackendError("IMAGE_OUTCOME_UNKNOWN", "Engine outcome remains unknown; observe this operation only.")
+                return result
+            except ClaudexorUnavailable as exc:
+                if not operation_id and exc.code == "model_request_invalid":
+                    raise ClaudexorModelNotDispatched({"code": exc.code}, operation_id=operation_id) from None
+                # After acceptance, failed control I/O is not an unsent call.
+                raise image_api.ImageBackendError("IMAGE_OUTCOME_UNKNOWN", "Engine observation unavailable; use recover_image for this request_id.") from None
+            except OSError:
+                raise image_api.ImageBackendError("IMAGE_OUTCOME_UNKNOWN", "Local operation custody failed after create; the request_id still identifies this attempt. No generation was repeated.") from None
+
+        request = AttemptRequest(model=model, provider="claudexor", force_unknown_reservation=True,
+            drive_root=getattr(ctx, "budget_drive_root", None) or ctx.drive_root,
+            task_id=task_id_for_artifacts(ctx), category="image_generation", source="imagegen")
+        result = execute_physical_attempt(request, receive, before_dispatch=prepare,
+                                          extractor=lambda result: _usage(result, request_kind="image"))
+        # The shared accounting wrapper preserves a useful response even if its
+        # ledger write fails. Such a response may be retained, but cannot be ACKed.
+        capture = last_physical_attempt_capture()
+        accounted = capture is not None and capture.state == "settled"
+        if not accounted:
+            recovery["warnings"] = ["Original accounting is pending; use recover_image before acknowledging custody."]
+        return _retain_subscription_result(ctx, result, raw_result, model=model, request_id=request_id, facts=recovery,
+            acknowledge=(lambda: _acknowledge_image(operation_id, recovery["response_ref"], gateway)) if accounted else None)
+    except ClaudexorModelNotDispatched:
+        if raw_result:
+            return _retain_subscription_result(ctx, json.loads(raw_result), raw_result,
+                model=model, request_id=request_id, facts=recovery,
+                acknowledge=lambda: _acknowledge_image(operation_id, recovery["response_ref"], gateway))
+        return _result(ctx, "IMAGE_NOT_DISPATCHED", "Engine confirmed no image dispatch.", details=recovery)
+    except (PhysicalAttemptPreparationFailed, PhysicalAttemptLimitExceeded, ClaudexorUnavailable) as exc:
+        return _result(ctx, "CAPABILITY_UNAVAILABLE", f"Image request refused before dispatch ({type(exc).__name__}).", details=recovery)
+    except image_api.ImageBackendError as exc:
+        if exc.code == "IMAGE_OUTCOME_UNKNOWN":
+            _record_unknown(ctx, request_id, model, exc.code)
+        return _result(ctx, exc.code, str(exc), details=recovery)
+    finally:
+        if gateway is not None:
+            gateway.close()
+
+
+def get_tools() -> list[ToolEntry]:
+    image_ref = {"type": "object", "properties": {
+        "root": {"type": "string", "description": "Existing file resource root, e.g. active_workspace or artifact_store."},
+        "path": {"type": "string", "description": "Original file path from an attachment manifest, prior image result, or workspace."}},
+        "required": ["root", "path"], "additionalProperties": False}
     return [
-        ToolEntry(
-            name="generate_image",
-            schema={
-                "name": "generate_image",
-                "description": (
-                    "Generate image(s) with gpt-image-2 through the Claudexor engine's "
-                    "image operations (subscription billing, Plus and up). ONE request = "
-                    "ONE attempt: an interrupted generation is reported as "
-                    "image_outcome_unknown and is never retried automatically. The result "
-                    "is stored as a content-addressed artifact; base64 never enters the "
-                    "conversation. Image quota is a separate bucket from the text quota — "
-                    "an image 429 does not park the account's text lane. send=true sends "
-                    "each image up to 10 MiB to the owner chat as a photo; "
-                    "larger images stay artifact-only, with an explicit unsent "
-                    "index. Requires an engine that implements "
-                    "POST /v2/image-operations; older engines get a typed refusal — the "
-                    "engine-side route family ships in a companion Claudexor PR."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "prompt": {"type": "string", "description": "1–32000 chars."},
-                        "n": {"type": "integer", "description": "How many images (1–10)."},
-                        "quality": {"type": "string", "enum": ["auto", "low", "medium", "high"]},
-                        "size": {"type": "string", "description": "auto or WxH (engine validates)."},
-                        "background": {"type": "string", "enum": ["auto", "opaque", "transparent"]},
-                        "image_paths": {
-                            "type": "array", "items": {"type": "string"}, "maxItems": 5,
-                            "description": "Edit mode: 1–5 input images (PNG/JPEG/WebP, <=32 MiB each).",
-                        },
-                        "caption": {"type": "string", "description": "Photo caption when send=true."},
-                        "send": {"type": "boolean", "description": "Send each image up to 10 MiB as a photo; larger ones stay artifact-only (default true)."},
-                    },
-                    "required": ["prompt"],
-                },
-            },
-            handler=_generate_image,
-            timeout_sec=360,
-        ),
+        ToolEntry(name="recover_image", schema={"name": "recover_image",
+            "description": "Recover a previous image attempt owned by this task by its request_id. Reads retained response bytes or observes its recorded engine operation and reconciles the original accounting attempt. Recreates ordinary image artifacts after a failed download/storage step. Never sends a generation, uploads inputs, changes billing source or reserves another attempt. A lost create reply with no recorded operation id remains unknown.",
+            "parameters": {"type": "object", "properties": {"request_id": {"type": "string"}},
+                           "required": ["request_id"]}}, handler=_recover_image, is_code_tool=False),
+        ToolEntry(name="list_image_models", schema={"name": "list_image_models",
+            "description": "Discover connected image sources with source-qualified generation/edit evidence, billing and provider-reported pricing. Configured is not account-live verification. Choose for the task within budget, honoring explicit source/model requests. No default image slot or automatic chooser. Unknown model support is not a denial.",
+            "parameters": {"type": "object", "properties": {"model": {"type": "string", "description": "Optional exact source-qualified model to inspect, including unfamiliar names."}}, "required": []}},
+            handler=_list_image_models, is_code_tool=False),
+        ToolEntry(name="generate_image", schema={"name": "generate_image",
+            "description": "Create or edit images through an explicitly selected connected route from list_image_models, independent of the conversational model. With images, edit their original file bytes; without them, generate from text. Saves ordinary task artifacts accessible to the parent. Generation does not view or send: call view_image/send_photo/send_file separately when needed and authorized. Exactly one request; never retry or change billing source automatically after timeout, partial output, download, storage or delivery failure. Unknown costs remain unknown within the existing task budget fence.",
+            "parameters": {"type": "object", "properties": {
+                "prompt": {"type": "string"},
+                "model": {"type": "string", "description": "Explicit route: openai::<id>, openrouter::<id>, zai::<id>, or claudexor::<source>=<id>."},
+                "images": {"type": "array", "items": image_ref, "maxItems": 16, "description": "Optional original PNG/JPEG/WebP files to edit. Z.ai is text-only."},
+                "options": {"type": "object", "description": "Optional native image parameters for this source/model; omit unspecified defaults. OpenAI: n, size, quality, background, output_format, output_compression, moderation, input_fidelity. Z.ai: size, quality (hd|standard). Subscription: size, quality (low|medium|high|auto), background, n. OpenRouter: the endpoint's own supported_parameters from list_image_models (e.g. resolution, aspect_ratio, size, quality, output_format, background, seed, provider); provider validation and billing follow its own contract."},
+                "credential_profile_id": {"type": "string", "description": "Optional exact subscription account pin; never used for an API source."}},
+                "required": ["prompt", "model"]}}, handler=_generate_image, is_code_tool=False),
     ]

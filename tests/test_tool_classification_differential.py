@@ -379,6 +379,10 @@ CURRENT_PRODUCER_CONTRACTS = {
     "IMAGE_RATE_LIMITED": (True, "unavailable"),
     "IMAGE_OUTCOME_UNKNOWN": (True, "error"),
     "IMAGE_ERROR": (True, "error"),
+    "IMAGE_NOT_DISPATCHED": (True, "unavailable"),
+    "IMAGE_PROVIDER_REJECTED": (True, "error"),
+    "IMAGE_RESULT_INCOMPLETE": (True, "error"),
+    "PATH_BLOCKED": (True, "blocked"),
     # The actual skill-metadata target refusal publishes its specific native
     # code; standalone historical-style text retains the generic blocked code.
     "SKILL_PAYLOAD_BLOCKED": (True, "blocked"),

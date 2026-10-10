@@ -1111,6 +1111,11 @@ def test_the_brief_of_a_three_file_change_on_the_real_tree_is_measured(tmp_path)
     # membership renders 57,064 index chars; the new module, smoke script and
     # grant directory add exactly 161 (57,225). The full brief measures 210,080;
     # retain the base's 81-char slack, without rounding up the measured growth.
-    assert without_diff < 210_161, without_diff
+    # 210_161 -> 210_598 (image integration, 2026-10-09): exact donor 60ce5840
+    # measures 210,395 with a 57,465-char index; complete candidate membership
+    # measures 210,517 with a 57,587-char index (includes exact engine schemas).
+    # Governance is byte-identical.
+    # Keep the existing 81-char slack; no prompt truncation or baseline waiver.
+    assert without_diff < 210_598, without_diff
     assert sections["repository_index"] > 20_000          # the index really ran
     assert sections["governance_stable_inline"] > 40_000  # BIBLE really inline

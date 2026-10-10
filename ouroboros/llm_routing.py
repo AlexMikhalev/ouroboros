@@ -503,6 +503,9 @@ class _ProviderRoutingMixin:
             "supports_generation_cost": True,
         }
 
+    # Non-chat provider facets share the same route, credential and header owner.
+    resolve_remote_target = _resolve_remote_target
+
     def _get_client(self):
         target = self._resolve_remote_target("openrouter::")
         return self._get_remote_client(target)
