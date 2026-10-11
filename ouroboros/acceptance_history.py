@@ -102,14 +102,66 @@ def seed_acceptance_history(ctx: Any, trace: dict, cause: str) -> None:
         log.warning("Acceptance history seed unavailable", exc_info=True)
 
 
+DELIVERY_AUTHOR_MODEL = "model"
+DELIVERY_AUTHOR_HOST = "host"
+
+
+def emitted_delivery_authorship(delivery: dict | None, usage: dict | None) -> str:
+    """Who wrote the bytes the host EMITTED as the terminal answer.
+
+    ``model``: the producer stamped ``model_final``, or a ``host_notice`` whose
+    text is the loop's retained model answer (the typed ``_best_effort_extracted``
+    fact the same forced rails stamp). ``host``: the projector replaced the text
+    with its System incident receipt (``host_salvage``), or a host notice the
+    host wrote alone. ``""``: no stamped origin (a legacy or Presence-rendered
+    row) — unknown provenance, never reclassified from text or length (#1572).
+    """
+    from ouroboros.task_finalization import (
+        TERMINAL_ORIGIN_HOST_NOTICE, TERMINAL_ORIGIN_HOST_SALVAGE, TERMINAL_ORIGIN_MODEL_FINAL,
+    )
+
+    delivery = delivery if isinstance(delivery, dict) else {}
+    usage = usage if isinstance(usage, dict) else {}
+    origin = str(delivery.get("terminal_origin") or usage.get("terminal_origin") or "")
+    if origin == TERMINAL_ORIGIN_MODEL_FINAL:
+        return DELIVERY_AUTHOR_MODEL
+    if origin == TERMINAL_ORIGIN_HOST_SALVAGE:
+        return DELIVERY_AUTHOR_HOST
+    if origin == TERMINAL_ORIGIN_HOST_NOTICE:
+        return DELIVERY_AUTHOR_MODEL if usage.get("_best_effort_extracted") is True else DELIVERY_AUTHOR_HOST
+    return ""
+
+
+def host_incident_receipt(record: dict | None) -> bool:
+    """Source-proven: the retained emitted record is the host's incident receipt.
+
+    ``terminal_delivery`` captures the role, system type and origin of the exact
+    bytes it sent. A ``terminal_incident`` System row (the ``host_salvage``
+    projection) is the host's receipt, never a delivered answer; an old record
+    without these keys stays unknown (#1572). Named gap: a legacy ``host_notice``
+    receipt proves nothing either way — the loop's extraction fact was never
+    persisted (new rows mint no debt for a host-written notice at all), so such
+    a debt keeps today's consumption rather than a text-shape guess.
+    """
+    from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_SALVAGE
+
+    record = record if isinstance(record, dict) else {}
+    return (str(record.get("system_type") or "") == "terminal_incident"
+            or str(record.get("terminal_origin") or "") == TERMINAL_ORIGIN_HOST_SALVAGE)
+
+
 def retain_acceptance_history(drive_root: Any, task: dict, text: str, trace: dict,
                               evidence: dict, observations: dict, artifacts: list,
-                              delivery: dict | None) -> dict:
+                              delivery: dict | None, *, usage: dict | None = None) -> dict:
     """Pin final values and identities without reading any referenced source bytes.
 
     The ordinary copyback/GC owner promotes retained refs later. Artifact paths
     without an immutable source handle are manifests only, never permission to
     reconstruct historical evidence from whatever bytes happen to be there.
+    The subject is the EMITTED delivery: a host-authored terminal (the salvage
+    receipt, or a notice the host wrote alone) is not a delivery, so it leaves
+    no debt — the row's ``terminal_origin`` and bypass reason remain the record,
+    and the raw model partial stays in the result and salvage copy (#1572).
     """
     from ouroboros.artifacts import read_actor_source_bytes, store_actor_source_bytes
     from ouroboros.observability import CALL_SOURCE_REF_FIELDS, TOOL_SOURCE_REF_FIELDS
@@ -118,6 +170,8 @@ def retain_acceptance_history(drive_root: Any, task: dict, text: str, trace: dic
 
     seed = trace.get("acceptance_history_seed")
     if not isinstance(seed, dict):
+        return {}
+    if emitted_delivery_authorship(delivery, usage) == DELIVERY_AUTHOR_HOST:
         return {}
     tid = str(task.get("id") or "")
     canonical = Path(task.get("budget_drive_root") or drive_root)

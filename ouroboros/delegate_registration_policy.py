@@ -44,6 +44,77 @@ def review_owned_source(source: Any) -> bool:
     return str(source or "").startswith("review_substrate")
 
 
+# The evidence-only purpose of a private checking copy (#1609): a researcher or an
+# external reviewer may run configured checks there, and its copy may name the tree
+# it was made from, but nothing it produces is ever integrated into that tree.
+INVESTIGATION_AUTHORITY = "investigation"
+_NO_APPLY_AUTHORITY_SOURCES = frozenset({INVESTIGATION_AUTHORITY, "readonly"})
+
+
+def no_write_authority(root: str, *, investigation: bool) -> dict:
+    """The mutation-authority facts of a run that writes nothing back: read-only, or an
+    evidence-only investigation whose root is provenance, never an apply target."""
+    return {"target_root": root, "source": INVESTIGATION_AUTHORITY if investigation else "readonly",
+            "capture_mode": "evidence" if investigation else "none"}
+
+
+def _fact(record: Any, key: str) -> Any:
+    return record.get(key) if isinstance(record, dict) else getattr(record, key, None)
+
+
+def candidate_apply_possible(record: Any) -> bool:
+    """Could this run's captured work be integrated into the tree it was made from?
+
+    ONE reading of the first-wins authority facts, shared by every integration
+    branch and every observer: a ``RunCustody``, a pending-invocation row or an
+    ``invocation_record`` all carry ``authority_source``, ``snapshot_id`` and
+    ``resource_ref``. False on the evidence-only (or readonly) authority source,
+    or on no recorded source over no capture binding at all: nothing was captured
+    that could be applied. That absence does not say the run never wrote, which
+    ``independent_review_without_apply`` must prove separately. Every other shape,
+    an unknown source included, stays possible: a conservative answer, not
+    proof of permission.
+    """
+    source = str(_fact(record, "authority_source") or "")
+    if source in _NO_APPLY_AUTHORITY_SOURCES:
+        return False
+    if source:
+        return True
+    ref = _fact(record, "resource_ref")
+    directory_copy = (isinstance(ref, dict) and ref.get("workspace_kind") == "directory"
+                      and ref.get("strategy") == "copy")
+    return bool(str(_fact(record, "snapshot_id") or "")) or directory_copy
+
+
+def _recorded_readonly_ask(record: Any) -> bool:
+    """The read-only reviewer's own recorded shape: a STARTED row's granted
+    ``access``/``mode``, or a pending row's stored wire request, is readonly Ask
+    with no private execution binding. Absent shape facts prove nothing."""
+    request = _fact(record, "request")
+    request = request if isinstance(request, dict) else {}
+    return (str(_fact(record, "access") or request.get("access") or "") == "readonly"
+            and str(_fact(record, "mode") or request.get("mode") or "") == "ask"
+            and not request.get("execution") and not str(_fact(record, "execution_root") or ""))
+
+
+def independent_review_without_apply(record: Any) -> bool:
+    """A run its REVIEW panel owns that cannot change the reviewed candidate.
+
+    True only for a recognized review-owned ``source`` together with positive
+    no-write evidence: the evidence-only (or readonly) authority a #1609 start
+    records, or, on a row without that fact (an explicitly read-only reviewer
+    seat, or one from before it), its recorded readonly Ask shape with no
+    capture binding. An unknown or missing source, or missing shape, is never
+    independent.
+    """
+    if not review_owned_source(_fact(record, "source")):
+        return False
+    authority = str(_fact(record, "authority_source") or "")
+    if authority:
+        return authority in _NO_APPLY_AUTHORITY_SOURCES
+    return not candidate_apply_possible(record) and _recorded_readonly_ask(record)
+
+
 def persistent_registration(execution_root: str, access: str) -> bool:
     """Is this run's project registration a durable user identity?
 
@@ -77,6 +148,24 @@ def record_persistent(record) -> bool:
     execution = request.get("execution")
     workspace_root = execution.get("workspaceRoot") if isinstance(execution, dict) else ""
     return persistent_registration(str(workspace_root or ""), str(request.get("access") or ""))
+
+
+def minted_review_root(root: str, drive: Any) -> bool:
+    """A tree minted for one review: an isolated review checkout (``<data>/state/review_checkouts``),
+    a retained review-input snapshot (``source_handles/review_inputs`` of a task under the data
+    root) or a checkout the subagent worktree registry holds (a child's copy, a body candidate).
+    Any other root, an owner's project or the system repository, keeps its registration
+    wherever it lives, even under the data root."""
+    import pathlib
+
+    from ouroboros.subagent_worktrees import registered_checkout
+    from ouroboros.tools.review_subject import CHECKOUT_SUBDIR
+
+    path, data = pathlib.Path(root).resolve(), pathlib.Path(drive).resolve()
+    parts = path.relative_to(data).parts if path.is_relative_to(data) else ()
+    return (parts[:2] == ("state", CHECKOUT_SUBDIR)
+            or any(parts[i:i + 2] == ("source_handles", "review_inputs") for i in range(len(parts) - 1))
+            or registered_checkout(root))
 
 
 def resolve_registration(gateway, scope_root: str, execution_root: str, access: str, *, minted: bool = False):

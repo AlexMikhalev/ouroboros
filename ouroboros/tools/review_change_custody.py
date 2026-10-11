@@ -56,8 +56,11 @@ def pending_round_attempt(ctx: Any, *, root: pathlib.Path, retry_key: str) -> Op
     the rerun collects it instead of paying for a second physical review; only a
     NEW paid wave meets the per-task cycle ceiling. An unreadable review state
     raises: it is not evidence that nothing is owed."""
-    from ouroboros.review_state import ReviewStateMutation, _utc_now, make_repo_key, update_state
+    from ouroboros.review_state import _STATE_RELPATH, ReviewStateMutation, _utc_now, make_repo_key, update_state
 
+    drive = pathlib.Path(ctx.drive_root)
+    if not (drive / _STATE_RELPATH).exists():
+        return None  # no review state holds no open round; a refused call writes none
     repo_key, task_id = make_repo_key(root), str(getattr(ctx, "task_id", "") or "")
 
     def _active(state: Any) -> ReviewStateMutation:
@@ -66,8 +69,29 @@ def pending_round_attempt(ctx: Any, *, root: pathlib.Path, retry_key: str) -> Op
                 if item.tool_name == TOOL_NAME and item.task_id == task_id and item.review_retry_key == retry_key]
         return ReviewStateMutation(rows, changed=bool(expired))
 
-    rows = update_state(pathlib.Path(ctx.drive_root), _active)
+    rows = update_state(drive, _active)
     return rows[-1] if rows else None
+
+
+def pending_preflight_for_call(ctx: Any, *, goal: str, scope: str, review_rebuttal: str) -> Optional[Any]:
+    """Probe the same public preflight identity before a commit's fresh-row check.
+
+    No checkout or operation is created. A missing/unreadable exact match keeps
+    the ordinary invalid-catalog refusal before staging.
+    """
+    from ouroboros.tools.review_change import _round_sha, _system_repo, parse_request
+    from ouroboros.tools.review_subject import ReviewSubjectSpec, freeze_subject, review_retry_key
+
+    try:
+        root = _system_repo(ctx)
+        request = parse_request(dict(subject="worktree", surface="preflight", reviewers=["recorded"],
+                                     goal=goal, scope=scope, review_rebuttal=review_rebuttal))
+        frozen = freeze_subject(ctx, ReviewSubjectSpec(root_kind="system_repo", root=str(root),
+                                                       kind="worktree", surface="preflight"))
+        return pending_round_attempt(ctx, root=root, retry_key=review_retry_key(
+            frozen, round_sha=_round_sha(request, frozen)))
+    except (OSError, ValueError, RuntimeError):
+        return None
 
 
 def arm_rejoin(ctx: Any, wave: Any) -> None:
@@ -147,3 +171,156 @@ def settle_attempt(ctx: Any, wave: Any, outcome: Dict[str, Any], payload: Dict[s
             degraded_reasons=[str(item) for item in verdict.get("degraded_reasons") or []])))
     except Exception:
         log.warning("review_change attempt row was not settled", exc_info=True)
+
+
+def _recorded_commit_identity(ctx, surface: str, row: dict, retry_key: str) -> dict:
+    attempt = getattr(ctx, "_pending_review_attempt", None)
+    return dict(
+        task_id=str(getattr(ctx, "task_id", "") or getattr(attempt, "task_id", "") or ""),
+        surface=surface, row=row, retry_key=retry_key,
+        root_task_id=str(getattr(attempt, "root_task_id", "") or ""),
+        review_contract=str(getattr(attempt, "review_contract_fingerprint", "") or ""),
+    )
+
+
+def recorded_commit_assignment(ctx, surface: str, row: dict):
+    from ouroboros.review_operation import recorded_review_assignment
+    from ouroboros.tools.review import review_drive_root
+
+    return recorded_review_assignment(review_drive_root(ctx), **_recorded_commit_identity(
+        ctx, surface, row, str(getattr(ctx, "_current_review_retry_key", "") or "")))
+
+
+def recorded_commit_plan(ctx) -> dict:
+    """Restore the paid combined seats, including which questions count for quorum.
+
+    The write-ahead roster owns composition before a result record exists. Older
+    rows use their original ledger's composition, never the current catalog.
+    Missing physical source remains a custody gap in the normal collector.
+    """
+    from ouroboros.review_ledger import ledger_root, load_record, seat_parts
+    from ouroboros.review_records import ReviewSlot
+
+    attempt = getattr(ctx, "_pending_review_attempt", None)
+    recorded = load_record(ledger_root(ctx), str(getattr(attempt, "review_record_id", "") or "")) or {}
+    prior = {str(row.get("seat_id") or ""): row for row in recorded.get("rows") or []}
+    rows = list(((getattr(ctx, "_review_frozen_rows", {}) or {}).get("multi_model_review", {}) or {}).values())
+    slots, composition = [], []
+    for row in rows:
+        try:
+            _request, slot = recorded_commit_assignment(ctx, "multi_model_review", row)
+        except (OSError, ValueError, KeyError, TypeError):
+            slot = ReviewSlot(slot_id=str(row.get("slot_id") or ""),
+                              model=str(row.get("model_id") or row.get("model") or "unknown"),
+                              route=str(row.get("route") or "api_chat"))
+        slots.append(slot)
+        composition.append({**prior.get(slot.slot_id, {}), **dict(row.get("review_plan") or {})})
+    plan = {key: [getattr(slot, attr) for slot in slots] for key, attr in (
+        ("models", "model"), ("slot_ids", "slot_id"), ("routes", "route"), ("efforts", "effort"),
+        ("session_targets", "session_target"), ("session_profiles", "session_profile"),
+        ("subagent_ids", "subagent_id"), ("use_local", "use_local"), ("session_accesses", "session_access"))}
+    plan.update(retrieves=[slot.retrieves for slot in slots],
+                parts=[tuple(row.get("parts") or seat_parts(slot)) for slot, row in zip(slots, composition)],
+                additional=[bool(row.get("additional")) for row in composition],
+                brief_shas=[str(row.get("brief_sha") or "") for row in composition])
+    return plan
+
+
+def recorded_change_panel(ctx, attempt):
+    """The original pool composition before any current catalog lookup."""
+    from types import SimpleNamespace
+    from ouroboros.review_custody import prepare_frozen_review_reconciliation
+    from ouroboros.review_ledger import ledger_root, load_record
+    from ouroboros.reviewer_slot_config import PoolSeat
+    from ouroboros.tools.review_change import ComposedPanel
+    from ouroboros.review_records import ReviewSlot
+
+    collector = SimpleNamespace(**vars(ctx))
+    collector._pending_review_attempt = attempt
+    collector._current_review_retry_key = attempt.review_retry_key
+    prepare_frozen_review_reconciliation(collector, attempt)
+    plan = recorded_commit_plan(collector)
+    seats = []
+    for index, slot_id in enumerate(plan["slot_ids"]):
+        saved = collector._review_frozen_rows["multi_model_review"][slot_id]
+        try:
+            _request, slot = recorded_commit_assignment(collector, "multi_model_review", saved)
+        except (OSError, ValueError, KeyError, TypeError):
+            slot = ReviewSlot(slot_id=slot_id, model=plan["models"][index], route=plan["routes"][index])
+        seats.append(PoolSeat(slot, plan["parts"][index], plan["additional"][index]))
+    prior = load_record(ledger_root(ctx), str(attempt.review_record_id or "")) or {}
+    return ComposedPanel(tuple(seats), True, dict(prior.get("panel") or {}))
+
+
+def collect_recorded_commit_actor(ctx, surface: str, slot_id: str, retry_key: str) -> dict:
+    """Join a live original seat; otherwise collect its recorded source/token."""
+    from dataclasses import asdict
+    from ouroboros.delegate_custody import invocation_record
+    from ouroboros.review_live_join import preparing_live_review_assignment, recorded_live_review_attempt
+    from ouroboros.review_operation import collect_recorded_review_actor, recorded_review_assignment, recover_review_producer
+    from ouroboros.review_substrate import run_review_request
+    from ouroboros.tools.review import review_drive_root
+
+    row = ((getattr(ctx, "_review_frozen_rows", {}) or {}).get(surface, {}) or {}).get(slot_id, {})
+    identity = _recorded_commit_identity(ctx, surface, row, retry_key)
+    root = review_drive_root(ctx)
+    try:
+        request, slot = recorded_review_assignment(root, **identity)
+    except FileNotFoundError:
+        assignment = preparing_live_review_assignment(**identity)
+        if assignment is None:
+            return collect_recorded_review_actor(root, **identity, usage_ctx=ctx)
+        request, slot = assignment
+    except (OSError, ValueError, KeyError, TypeError):
+        return collect_recorded_review_actor(root, **identity, usage_ctx=ctx)
+    recovered = recover_review_producer(root, request, slot, row)
+    if recovered is not None and recovered.operation_state != "in_flight":
+        return asdict(recovered)
+    token = str(row.get("pending_invocation_id") or (row.get("usage") or {}).get("pending_invocation_id")
+                or (row.get("recovery_binding") or {}).get("pending_invocation_id") or "")
+    invocation = invocation_record(root, token) if token else None
+    live = recorded_live_review_attempt(request, slot, row)
+    if live is None and (not invocation or invocation.get("state") != "pending"):
+        return collect_recorded_review_actor(root, **identity, usage_ctx=ctx)
+    # The existing custody drain joins a matching local worker, including API
+    # work detached by Pause. Cold collection above remains nonblocking.
+    # Only an unresolved original start can require a POST, with the existing
+    # invocation token and its raw recorded request. No replacement is admitted.
+    request.reconcile_only = True
+    collector = ctx
+    if live is not None:
+        # Coordinator defaults must not fill original unknowns from today's author.
+        collector = copy.copy(ctx)
+        collector._review_live_join_only = True
+        collector.task_attempt = request.task_attempt
+        collector.task_metadata = {**dict(getattr(ctx, "task_metadata", {}) or {}),
+                                   "deadline_at": request.deadline_at,
+                                   "root_task_id": request.reconciliation_identity["root_task_id"]}
+    result = run_review_request(request, slots=[slot], drive_root=root, usage_ctx=collector)
+    if getattr(collector, "_review_custody_lost", False):
+        ctx._review_custody_lost = True
+    return (result.actors or [{}])[0]
+
+
+def prepare_recorded_commit_review(ctx, *, target_repo, blocking_review: bool, layer: str,
+                                   frozen: Any = None, review_rebuttal: str = "") -> tuple:
+    """Restore a paid packet from its roster without fresh source/catalog assembly.
+
+    The roster and recorded plan own the questions owed by the existing physical
+    operations. An empty roster has nothing to collect; no new seat is invented.
+    The wave's saved dispute input (or its explicit gap) is restored first
+    (``review_history.prepare_history``), so the collected record never names
+    today's history heads as its predecessors.
+    """
+    from ouroboros.review_history import prepare_history
+
+    prepare_history(ctx, frozen, review_rebuttal)
+    rows = ((getattr(ctx, "_review_frozen_rows", {}) or {}).get("multi_model_review", {}) or {})
+    if not rows:
+        return None, None, True
+    plan = recorded_commit_plan(ctx)
+    ctx._last_triad_models = list(plan["models"])
+    return {"prompt": "", "stable_prefix_len": 0, "models": plan["models"],
+            "routes": plan["routes"], "row_plan": plan, "session_task": "",
+            "target_repo": target_repo, "blocking_review": blocking_review,
+            "layer": layer}, None, False

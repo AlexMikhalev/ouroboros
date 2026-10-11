@@ -12,7 +12,7 @@ it navigates with, and the coupling history of this subject), closed by
 A ``coupling_only`` seat receives the same brief and is told to answer Part 2
 alone. The transport decides only how the seat reads what the brief does not
 carry: an ``api_chat`` row runs a bounded native inspection episode, an
-``agent_session`` row a delegated read-only session.
+``agent_session`` row a delegated session with its configured technical rights.
 
 The brief carries
 
@@ -356,7 +356,7 @@ def _retrieval_slot(brief: BriefInputs, reason: str) -> str:
     subject = brief.managed_subject
     lead = (
         "(not inlined — retrieve the staged change in this repository root yourself, "
-        "with `git diff --cached` when your read-only mode permits commands and by "
+        "with `git diff --cached` when your access permits commands and by "
         f"reading the files when it does not. Host disclosure: {reason})"
     )
     if subject is not None:

@@ -58,7 +58,15 @@ ACCESS_INSTRUCTIONS = {
 }
 
 
-def access_instruction(access: str) -> str:
+INVESTIGATION_INSTRUCTION = (
+    " PURPOSE: this is an evidence-only investigation. Your private copy exists so you can run the "
+    "checks you judge useful (tests, scripts, fixtures, temporary files); nothing in it is applied to "
+    "the reviewed or researched tree or creates an obligation to apply it. Put any file worth keeping "
+    "under .review-evidence/: the host retains that folder and the copy's other changes as evidence."
+)
+
+
+def access_instruction(access: str, *, investigation: bool = False) -> str:
     """The ONE canonical sentence for a run's typed access profile, or "".
 
     A parent's prose ban ("Read-only no edits/commands...") in a work order once
@@ -70,7 +78,8 @@ def access_instruction(access: str) -> str:
     defect. The parent's prose is never parsed, only outranked. An unrecognized
     profile renders nothing rather than inventing a rule.
     """
-    return ACCESS_INSTRUCTIONS.get(str(access or "").strip(), "")
+    line = ACCESS_INSTRUCTIONS.get(str(access or "").strip(), "")
+    return line + (INVESTIGATION_INSTRUCTION if investigation and line and access != "readonly" else "")
 
 
 def execution_binding_instruction(execution_root: str, authority_root: str) -> str:

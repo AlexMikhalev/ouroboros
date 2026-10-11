@@ -224,6 +224,68 @@ def _reserve_skill_wave(ctx, drive_root, skill, file_packs, models, row_plan, at
     return wave
 
 
+def _chunk_checkpoint(drive_root, skill_name: str, job_id: str, wave_id: str, index: int, retry_key: str):
+    """Bind each seat's invocation token into its reserved wave chunk BEFORE the POST.
+
+    The token lands under the lifecycle job's lock, only while that job still runs
+    this wave and the seat's reserved operation is the one being sent; the same
+    token again is idempotent, a different one is refused. A refusal stops the
+    POST (``checkpoint_pending_invocation``), so a resume finds every token of
+    every seat that could have been sent (#1582).
+    """
+    from ouroboros.skill_review_runner import review_job_state_path
+    from ouroboros.utils import update_json_locked
+
+    def record(*, surface: str, slot_id: str, operation_id: str, invocation_id: str) -> None:
+        def bind(current):
+            wave = current.get("review_wave") if isinstance(current.get("review_wave"), dict) else {}
+            chunks = list(wave.get("chunks") or [])
+            chunk = dict(chunks[index]) if index < len(chunks) and isinstance(chunks[index], dict) else {}
+            bound = dict(chunk.get("invocations") or {})
+            if (current.get("job_id") != job_id or current.get("status") != "running"
+                    or wave.get("wave_id") != wave_id or surface != "skill_review"
+                    or chunk.get("retry_key") != retry_key
+                    or (chunk.get("operations") or {}).get(slot_id) != operation_id
+                    or bound.get(slot_id) not in (None, "", invocation_id)):
+                raise RuntimeError("the running Skill Review wave no longer owns this seat's invocation")
+            chunks[index] = {**chunk, "invocations": {**bound, slot_id: invocation_id}}
+            return {**current, "review_wave": {**wave, "chunks": chunks}}
+        update_json_locked(review_job_state_path(drive_root, skill_name), bind, strict_existing_dict=True)
+    return record
+
+
+def skill_checking_source(drive_root: Any, skill: Any, row_plan: Dict[str, Any],
+                          content_hash: str) -> Dict[str, Any] | None:
+    """A writable seat checks a copy of exactly the payload its packs carry (loader hash
+    ``content_hash``); None when every seat keeps the read-only inspection boundary."""
+    from types import SimpleNamespace
+
+    from ouroboros.review_checking import bound_directory_source, writable_seat
+    from ouroboros.skill_loader import compute_content_hash
+
+    routes = list(row_plan.get("routes") or [])
+    accesses = row_plan.get("session_accesses") or [""] * len(routes)
+    if not any(writable_seat(SimpleNamespace(route=route, session_access=access))
+               for route, access in zip(routes, accesses)):
+        return None
+    return bound_directory_source(skill.skill_dir, data_root=drive_root, expected_hash=content_hash,
+                                  content_hash_of=lambda root: compute_content_hash(
+                                      root, manifest_entry=skill.manifest.entry,
+                                      manifest_scripts=skill.manifest.scripts))
+
+
+def retained_beside_preflight(outcome: Any, preflight_outcome: Any) -> None:
+    """A wave collected while the current preflight fails keeps its paid findings beside
+    the preflight failure and stays pending: collection never grants execution (#1582)."""
+    if preflight_outcome is None:
+        return
+    from ouroboros.skill_review_status import STATUS_PENDING
+
+    outcome.status = STATUS_PENDING
+    outcome.error = f"{preflight_outcome.error}; the resumed wave's paid findings were collected and retained"
+    outcome.findings = [*preflight_outcome.findings, *outcome.findings]
+
+
 def run_skill_review_passes(
     ctx: Any,
     drive_root: Any,
@@ -239,6 +301,7 @@ def run_skill_review_passes(
     rebuttal_sha256: str = "",
     build_prompt: Callable[..., Tuple[str, int, Dict[str, Any]]],
     run_review: Callable[..., str],
+    checking_source: Dict[str, Any] | None = None,
 ) -> Tuple[str, Dict[str, Any], str, str]:
     """Return ``(prompt, advisory_evidence, result_json_text, infra_error)``. A non-empty
     ``infra_error`` means a pass failed and the caller should fail closed (pending). ``evidence``
@@ -257,6 +320,22 @@ def run_skill_review_passes(
     )
 
     attribution = dict(usage_attribution or {})
+    resuming = bool(getattr(ctx, "_skill_review_resume", None))
+    if resuming:
+        from ouroboros.skill_review_collect import collect_skill_review_wave
+
+        result = collect_skill_review_wave(ctx, drive_root, file_packs, required_items=required_items)
+        return "", {"status": "not_rerun", "reason": "collection of the recorded wave"}, json.dumps(result), ""
+    if checking_source is None:
+        checking_source = skill_checking_source(drive_root, skill, row_plan or {}, content_hash)
+
+    def prompt_for(pack: str) -> Tuple[str, int, Dict[str, Any]]:
+        return build_prompt(
+            ctx, drive_root, skill,
+            manifest_dump=manifest_dump, content_hash=content_hash,
+            file_pack=pack, history=history, review_rebuttal=review_rebuttal,
+        )
+
     try:
         wave = _reserve_skill_wave(ctx, drive_root, skill, file_packs, models, row_plan,
                                    attribution, content_hash, review_contract_fingerprint, rebuttal_sha256)
@@ -298,6 +377,7 @@ def run_skill_review_passes(
                 "session_policy": {"output_contract": matrix_contract},
                 "surface": "skill_review",
                 "usage_attribution": attribution,
+                **({"checking_source": checking_source} if checking_source is not None else {}),
             })
         if wave is None:
             return run_review(ctx, content=content, prompt=prompt, models=models,
@@ -305,15 +385,15 @@ def run_skill_review_passes(
         chunk = wave["chunks"][chunk_index]
         if chunk["retry_key"] != retry_key:
             raise RuntimeError("Skill Review chunk identity changed before reconciliation")
-        names = ("_review_reserved_operations", "_review_frozen_rows", "_review_reconcile_only")
+        names = ("_review_reserved_operations", "_review_frozen_rows", "_review_reconcile_only",
+                 "_review_pending_invocation_checkpoint")
         prior = {name: getattr(ctx, name, None) for name in names}
         ctx._review_reserved_operations = {"skill_review": chunk["operations"]}
-        ctx._review_reconcile_only = bool(getattr(ctx, "_skill_review_resume", None))
-        if ctx._review_reconcile_only:
-            ctx._review_frozen_rows = {"skill_review": {
-                slot: {"slot_id": slot, "operation_id": operation,
-                       "operation_state": "in_flight", "late_result_pending": True}
-                for slot, operation in chunk["operations"].items()}}
+        ctx._review_reconcile_only, ctx._review_pending_invocation_checkpoint = False, None
+        if str(getattr(ctx, "_skill_review_lifecycle_job_id", "") or ""):
+            ctx._review_pending_invocation_checkpoint = _chunk_checkpoint(
+                drive_root, skill.name, str(ctx._skill_review_lifecycle_job_id), str(wave.get("wave_id") or ""),
+                chunk_index, retry_key)
         try:
             return run_review(ctx, content=content, prompt=prompt, models=models,
                               stable_prefix_len=stable_prefix_len, **delivery)
@@ -322,11 +402,7 @@ def run_skill_review_passes(
                 setattr(ctx, name, value)
 
     if len(file_packs) == 1:
-        prompt, stable_prefix_len, advisory_evidence = build_prompt(
-            ctx, drive_root, skill,
-            manifest_dump=manifest_dump, content_hash=content_hash,
-            file_pack=file_packs[0], history=history, review_rebuttal=review_rebuttal,
-        )
+        prompt, stable_prefix_len, advisory_evidence = prompt_for(file_packs[0])
         try:
             result_json_text = _run(
                 _SINGLE_CONTENT,
@@ -349,11 +425,7 @@ def run_skill_review_passes(
     merged_results: List[Any] = []
     total = len(file_packs)
     for idx, pack in enumerate(file_packs):
-        chunk_prompt, chunk_stable_len, adv = build_prompt(
-            ctx, drive_root, skill,
-            manifest_dump=manifest_dump, content_hash=content_hash,
-            file_pack=pack, history=history, review_rebuttal=review_rebuttal,
-        )
+        chunk_prompt, chunk_stable_len, adv = prompt_for(pack)
         prompt = chunk_prompt
         if idx == 0:
             advisory_evidence = adv

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Optional
 
 
 def owned_started_review_custody(
@@ -32,6 +32,29 @@ def owned_started_review_custody(
             code="review_recovery_ownership_unverified",
         )
     return run_id, found
+
+
+def recorded_review_shape(run_request: Any) -> Optional[Any]:
+    """The run shape a stored review request recorded, or None when no review runs it.
+
+    Ask/readonly is every request recorded before configured reviewer rights and
+    every read-only seat. A seat with configured ``workspace_write``/``full``
+    access recorded Agent mode with its private checking copy as the delegated
+    live ``workspaceRoot``. Recovery replays exactly this shape — never today's
+    configuration — so an old read-only invocation is never relabelled.
+    """
+    from ouroboros.subagents import DelegatedRunShape
+
+    mode, access = run_request.get("mode"), run_request.get("access")
+    execution = run_request.get("execution")
+    if mode == "ask" and access == "readonly" and "execution" not in run_request:
+        return DelegatedRunShape(access="readonly", mode="ask")
+    if mode == "agent" and access in {"workspace_write", "full"} and (run_request.get("_use_thread") is True and (
+            "execution" not in run_request) or isinstance(execution, dict) and execution.get("isolation") == "live"
+            and execution.get("delegated") is True and str(execution.get("workspaceRoot") or "")):
+        return DelegatedRunShape(access=access, mode="agent", isolation="live", delegated=True,
+                                 investigation=True)
+    return None
 
 
 def review_recovery_facts(
@@ -88,8 +111,7 @@ def review_recovery_facts(
         or run_request.get("harnesses") != [route_id]
         or str(record.get("route") or "") != route_id
         or str(run_request.get("authPreference") or "") != "subscription"
-        or str(run_request.get("mode") or "") != "ask"
-        or str(run_request.get("access") or "") != "readonly"
+        or recorded_review_shape(run_request) is None
     ):
         raise ReviewRouteUnavailable(
             "delegated review recovery has an invalid canonical stored request; "
@@ -155,3 +177,25 @@ def checkpoint_pending_invocation(
         )
         refusal.reported_cause = run_failure_cause({"safeMessage": cause})
         raise refusal from exc
+
+
+def exact_recovery_join(executor: Any, custody_root: Any, retry_state: Optional[Dict[str, Any]],
+                        operation_id: str, slot: Any, *, replay: bool) -> bool:
+    """Is this seat an exact delegated recovery? When it only collects, restore its RAW request.
+
+    Such a recovery has already crossed the paid boundary: a session seat carrying
+    both its pending invocation token and its operation id. A collection (``replay``)
+    sends nothing of its own: the RAW request recorded before the POST is the
+    transport source, never a prompt rebuilt from mutable history or the redacted,
+    overwritable ``{operation}_prompt`` record (#1582).
+    """
+    from ouroboros.delegate_custody import invocation_record
+
+    token = str((retry_state or {}).get("pending_invocation_id") or "").strip()
+    session = str(getattr(slot.route, "value", slot.route) or "") == "agent_session"
+    if not (token and str(operation_id or "").strip() and session):
+        return False
+    stored = (invocation_record(custody_root, token) or {}).get("request") if replay else None
+    if isinstance(stored, dict) and isinstance(stored.get("prompt"), str):
+        executor._session_prompt = stored["prompt"]
+    return True

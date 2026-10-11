@@ -57,6 +57,7 @@ from ouroboros.config import get_finalization_grace_sec
 from ouroboros.review_session_custody import (
     checkpoint_pending_invocation,
     owned_started_review_custody,
+    recorded_review_shape,
     review_recovery_facts,
 )
 from ouroboros.review_session_preparation import prepare_review_session_request, render_review_session_prompt
@@ -664,12 +665,11 @@ from ouroboros.review_verdict_extraction import (  # noqa: F401 — re-exported 
 
 
 # ---------------------------------------------------------------------------
-# The agent-session route: a delegated read-only Claudexor run per slot.
+# The agent-session route: configured access in a delegated checking copy, or readonly.
 # ---------------------------------------------------------------------------
 
-# Layered by Claudexor into the harness's native system-prompt channel — a
-# statement of role, not the enforcement (the enforcement is the readonly
-# access profile the engine derives).
+# Layered by Claudexor into the harness's native system-prompt channel: the role of an
+# explicitly readonly seat (writable seats get the checking-copy instructions instead).
 _REVIEW_SESSION_INSTRUCTIONS = (
     "You are a delegated read-only REVIEWER session. Retrieve the evidence "
     "yourself with the tools your read-only mode actually gives you inside this "
@@ -684,24 +684,6 @@ _REVIEW_SESSION_INSTRUCTIONS = (
 
 _SESSION_POLL_SEC = 3.0
 _CLAUDEXOR_MAX_SECONDS = 604_800
-
-
-def _minted_review_root(root: str, drive: Any) -> bool:
-    """A tree minted for one review: an isolated review checkout (``<data>/state/review_checkouts``),
-    a retained review-input snapshot (``source_handles/review_inputs`` of a task under the data
-    root) or a checkout the subagent worktree registry holds (a child's copy, a body candidate).
-    Any other root, an owner's project or the system repository, keeps its registration
-    wherever it lives, even under the data root."""
-    import pathlib
-
-    from ouroboros.subagent_worktrees import registered_checkout
-    from ouroboros.tools.review_subject import CHECKOUT_SUBDIR
-
-    path, data = pathlib.Path(root).resolve(), pathlib.Path(drive).resolve()
-    parts = path.relative_to(data).parts if path.is_relative_to(data) else ()
-    return (parts[:2] == ("state", CHECKOUT_SUBDIR)
-            or any(parts[i:i + 2] == ("source_handles", "review_inputs") for i in range(len(parts) - 1))
-            or registered_checkout(root))
 
 
 def _retire_orphaned_review_registration(
@@ -771,6 +753,9 @@ class SessionInvocation:
     pending_invocation_checkpoint: Optional[Callable[[str], None]] = None
     owner_deadline_at: str = ""
     source_delivery: Optional[Dict[str, Any]] = None
+    # #1609: the seat's configured technical access ('' = historical read-only) and its wave's frozen checking source.
+    access: str = ""
+    checking_source: Optional[Dict[str, Any]] = None
 
 def run_delegated_review_session(
     *,
@@ -793,15 +778,17 @@ def run_delegated_review_session(
     )
     from ouroboros.subagents import delegated_run_shape, route_health
     from ouroboros.usage_accounting import current_usage_scope
+    from ouroboros.review_checking import bind_checking_thread, session_checking, terminal_seat_evidence
     task_id, surface, slot_id, timeout_sec, logical_key_extra, output_schema, \
         session_route, instructions, retry_state = session_invocation_fields(invocation)
     owner_deadline_at = invocation.owner_deadline_at
     use_thread = bool(invocation.use_thread)
     thread_id = str(invocation.thread_id or "")
     turn_id = ""
-    _scope = current_usage_scope()
-    root_task_id, parent_task_id, usage_custody = session_custody_attribution(_scope)
-    shape = delegated_run_shape(False)  # a reviewer reads and answers
+    root_task_id, parent_task_id, usage_custody = session_custody_attribution(current_usage_scope())
+    # A reviewer never holds candidate write authority: writable access is an investigation.
+    shape = delegated_run_shape(False, str(invocation.access or "readonly"))
+    checking: Dict[str, Any] = {}
     state = retry_state if retry_state is not None else {}
     run_id, run_request, invocation_id = "", None, ""
     started_custody = None
@@ -810,8 +797,7 @@ def run_delegated_review_session(
     if record is not None and record["state"] == "started" and record["run_id"]:
         run_id, started_custody = owned_started_review_custody(
             custody, custody_drive, record, task_id)
-        run_request, invocation_id = record.get("request"), retry_token
-    elif record is not None and record["state"] == "pending":
+    if record is not None and (run_id or record["state"] == "pending"):
         run_request, invocation_id = record.get("request"), retry_token
     # Known pending custody survives body loss; recovery reports the missing request.
     recovering = bool(run_id or invocation_id)
@@ -824,6 +810,10 @@ def run_delegated_review_session(
             record, run_request, started_custody, prompt=prompt, root=root,
             claimant_task_id=task_id, claimant_surface=surface, claimant_slot_id=slot_id,
             claimant_operation_id=str(invocation.operation_id or ""))
+        # The recorded rights and checking copy replay as they were sent.
+        shape = recorded_review_shape(run_request)
+        if shape.investigation:
+            checking["custody"] = {k: str(record.get(k) or "") for k in ("authority_source", "execution_root", "target_root")}
         thread_id = str(run_request.get("_thread_id") or thread_id)
         use_thread = bool(thread_id or run_request.get("_use_thread"))
     else:
@@ -840,6 +830,9 @@ def run_delegated_review_session(
             "reconciliation; refusing to start a second paid run", code="review_custody_lost")
     gateway = ensure_owned_gateway()
     try:
+        if use_thread and shape.investigation and not run_id:
+            from ouroboros.review_thread_continuity import require_delegated_review_threads
+            require_delegated_review_threads(gateway)
         if not recovering and not run_id and not (use_thread and thread_id):
             unavailable, reset_at = route_health(
                 gateway, route.route_id, shape, route_model=route.model,
@@ -857,9 +850,9 @@ def run_delegated_review_session(
         if not recovering:
             from ouroboros.acceptance_retrieving import prepare_session_source
             prepare_session_source(invocation.source_delivery, task_id=task_id)
-            from ouroboros.delegate_registration_policy import resolve_registration
+            from ouroboros.delegate_registration_policy import minted_review_root, resolve_registration
             project_id, owned_project_id, _persistent, ephemeral = resolve_registration(  # a sticky thread keeps it
-                gateway, root, "", shape.access, minted=not use_thread and _minted_review_root(root, custody_drive))
+                gateway, root, "", shape.access, minted=not use_thread and minted_review_root(root, custody_drive))
             existing_project = "" if owned_project_id else project_id
             schema_asked = bool(output_schema) and _effective_route_carries_schema(
                 gateway, route.route_id)
@@ -867,17 +860,25 @@ def run_delegated_review_session(
                 "review_slot", surface, slot_id, task_id, *logical_key_extra,
                 route.route_id, shape.access, shape.mode, root, prompt,
             )
-            if use_thread and not thread_id:
+            if shape.investigation:  # a thread advances its own clone; a run gets a copy per operation
+                checking = session_checking(gateway, custody_drive=custody_drive, task_id=task_id,
+                    operation_id=str(invocation.operation_id or ""), root=root, source=invocation.checking_source,
+                    shape=shape, thread_seat=f"{surface}:{slot_id}" if use_thread else "", thread_id=thread_id)
+            if use_thread:
                 from ouroboros.review_thread_continuity import ensure_review_thread
                 thread_id = ensure_review_thread(
-                    gateway, custody, thread_id, route=route, root=root,
-                    surface=surface, slot_id=slot_id, task_id=task_id)
+                    gateway, custody, thread_id or checking.get("thread_id", ""), route=route, root=root,
+                    workspace_root=checking.get("thread_root", ""),
+                    surface=surface, slot_id=slot_id, task_id=task_id, access=shape.access)
+                if shape.investigation:
+                    bind_checking_thread(custody_drive, task_id, f"{surface}:{slot_id}", thread_id)
                 existing_project = project_id  # the retained thread now needs this registration
             invocation_id = custody.new_invocation_id()
             seconds = bounded_seconds(timeout_sec, default=300, maximum=_CLAUDEXOR_MAX_SECONDS)
             run_request = prepare_review_session_request(
                 invocation, route, prompt=prompt, root=root, ephemeral=ephemeral,
-                thread_id=thread_id, schema_asked=schema_asked)
+                thread_id=thread_id, schema_asked=schema_asked,
+                shape=shape, execution=checking.get("execution"), instructions=checking.get("instructions", ""))
         if not run_id:
             from ouroboros.budget_pause import dispatch_fenced
 
@@ -905,7 +906,7 @@ def run_delegated_review_session(
                 # #112: pending recovery replays the request row's lineage.
                 root_task_id=root_task_id, parent_task_id=parent_task_id,
                 review_source_delivery=dict(invocation.source_delivery or {}),
-                **usage_custody,
+                **usage_custody, **checking.get("custody", {}),
             )
             if not requested:
                 # No durable request means no POST; only a fresh registration is retirable.
@@ -967,7 +968,8 @@ def run_delegated_review_session(
                 profile_id=str(getattr(route, "profile_id", "") or ""),
                 project_id=project_id, project_owned=bool(project_id) and not existing_project,
                 root_task_id=root_task_id, parent_task_id=parent_task_id, **usage_custody,
-                ledger_root=str(custody_drive), idempotency_key=key, invocation_id=invocation_id or retry_token)
+                ledger_root=str(custody_drive), idempotency_key=key, invocation_id=invocation_id or retry_token,
+                **checking.get("custody", {}))
             # A missing started row leaves the run process-local and unresumable.
             custody_durable = bool(custody.record_started(custody_drive, entry, shape={
                 "effort": route.effort, "access": shape.access, "mode": shape.mode,
@@ -979,6 +981,9 @@ def run_delegated_review_session(
         poll_deadline = time.monotonic() + window
         detail = _poll_session_terminal(gateway, custody, custody_drive, entry, run_id, window)
         late_success = time.monotonic() >= poll_deadline  # a terminal the deadline read discovered
+        if shape.investigation:  # every terminal turn retains its own named outputs and delta
+            checking["evidence"] = terminal_seat_evidence(
+                custody_drive, task_id, str(invocation.operation_id or ""), detail)
         settlement = custody.settle_run(custody_drive, gateway, entry, detail)
         summary = custody.summary_of(detail)
         observed = final_attempt_facts(detail, run_id)
@@ -1019,11 +1024,16 @@ def run_delegated_review_session(
             "auth_route_receipt": summary.get("authRoute") or {},
             # Only effectiveAccess witnesses applied access; request echo is insufficient.
             "applied_access": str(summary.get("effectiveAccess") or ""),
+            "requested_access": shape.access, "checking_evidence": checking.get("evidence") or {},
         }
     except BaseException as exc:
+        if shape.investigation and not checking.get("evidence"):
+            checking["evidence"] = terminal_seat_evidence(
+                custody_drive, task_id, str(invocation.operation_id or ""), getattr(exc, "checking_terminal_detail", None))
         if run_id:
-            setattr(exc, "delegated_run_started", True)
-            setattr(exc, "delegated_run_id", run_id)
+            exc.delegated_run_started, exc.delegated_run_id = True, run_id
+        if checking.get("evidence"):
+            exc.checking_evidence = checking["evidence"]
         raise
     finally:
         gateway.close()
@@ -1094,12 +1104,14 @@ def _poll_session_terminal(gateway: Any, custody: Any, custody_drive: Any, entry
             if settled is not None:
                 return settled
             named = str(first.get("interaction_id") or "")
-            raise ReviewSessionWaitingOnUser(
+            error = ReviewSessionWaitingOnUser(
                 f"delegated review session {run_id} paused on an interactive question"
                 + (f" ({named}: {question[:300]!r})" if named or question else "")
                 + " — review slots are non-interactive, so the slot terminated early and typed ("
                 + _cancel_honesty_clause(outcome, state)
                 + ") instead of silently burning its whole budget waiting")
+            error.checking_terminal_detail = carried
+            raise error
         if time.monotonic() >= deadline:
             outcome, state, carried = _slot_cancel_outcome(
                 gateway, custody, custody_drive, entry, run_id, "review_slot_timeout")
@@ -1114,8 +1126,10 @@ def _poll_session_terminal(gateway: Any, custody: Any, custody_drive: Any, entry
                     f"delegated review session {run_id} could not be observed within the slot "
                     f"budget of {seconds:g}s and the deadline cancel/verify was unreachable too; "
                     "the run remains the slot's paid attempt and stays in flight", run_id=run_id) from unobserved
-            raise TimeoutError(f"delegated review session {run_id} exceeded the slot budget "
-                               f"of {seconds:g}s (" + _cancel_honesty_clause(outcome, state) + ")")
+            error = TimeoutError(f"delegated review session {run_id} exceeded the slot budget "
+                                 f"of {seconds:g}s (" + _cancel_honesty_clause(outcome, state) + ")")
+            error.checking_terminal_detail = carried
+            raise error
         remaining = max(0.0, deadline - time.monotonic())
         if remaining <= 0:
             continue
@@ -1308,8 +1322,9 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
         failure = self._settled_failure
         run_id = self._run_id or str(getattr(failure, "delegated_run_id", "") or "")
         pending = str(self._retry_state.get("pending_invocation_id") or "")
+        evidence = getattr(failure, "checking_evidence", None)
         return {"delegated_run_started": bool(run_id), "delegated_run_id": run_id,
-                "pending_invocation_id": pending}
+                "pending_invocation_id": pending, **({"checking_evidence": evidence} if evidence else {})}
 
     def restore_custody(self, state: Dict[str, Any]) -> None:
         # The logical waiter and the physical worker share this small mutable
@@ -1371,6 +1386,8 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
                 pending_invocation_checkpoint=self._pending_invocation_checkpoint,
                 owner_deadline_at=str(getattr(request, "deadline_at", "") or ""),
                 source_delivery=(getattr(request, "slot_source_delivery", None) or {}).get(slot.slot_id),
+                access=str(getattr(slot, "session_access", "") or ""),
+                checking_source=getattr(request, "checking_source", None) or None,
             ),
         )
         self._run_id = facts["run_id"]
@@ -1417,6 +1434,9 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
             # telemetry predates it — absent, never the requested value dressed as applied.
             "applied_profile": facts.get("applied_profile", ""),
             "applied_access": facts.get("applied_access", ""),
+            # The rights this seat asked for and what its private checking copy produced.
+            "requested_access": facts.get("requested_access", ""),
+            **({"checking_evidence": facts["checking_evidence"]} if facts.get("checking_evidence") else {}),
             # Whether the durable start row landed: a verdict delivered by a run with NO
             # durable custody stays legible instead of looking identical to a custodied one.
             "custody_durable": bool(facts.get("custody_durable")),

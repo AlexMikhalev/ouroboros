@@ -326,6 +326,9 @@ def continuation_prompt(facts: Dict[str, Any], caller_text: str) -> str:
                 "do not redo or re-apply that work.")
     elif disposition == "rejected":
         tree = "Its captured changes were REJECTED: the tree you start from does NOT contain them."
+    elif disposition == "evidence_retained":
+        tree = ("It was an evidence-only investigation in a private copy: none of its changes are in the tree "
+                "you start from; they are retained as evidence.")
     elif disposition == "undisposed":
         tree = ("Its captured changes are NOT in the tree you start from: they wait for your supervisor's "
                 "decision, so do not assume them.")

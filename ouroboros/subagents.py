@@ -125,28 +125,35 @@ class DelegatedRunShape:
     mode: str
     isolation: str = ""
     delegated: bool = False
+    # Technical rights without write authority (#1609): the run executes in a
+    # private checking copy whose results are evidence, never a candidate patch.
+    investigation: bool = False
 
 
 def delegated_run_shape(acting: bool, access: str = "workspace_write") -> DelegatedRunShape:
-    """The run shape for an acting (mutating) child, or for a read-only one.
+    """The run shape a child's captured technical access entitles it to.
 
-    A MUTATING child runs ``live`` in the host's private execution snapshot;
-    captured changes still require explicit integration. The selected immutable
-    session supplies its captured access; old snapshots keep workspace_write.
-    This changes the harness's OS powers, not the task's assignment or write target.
-    In place is also the ONE shape where Claudexor would otherwise hand the
-    harness the operator's real ``$HOME`` — which holds the daemon control token — so
-    ``delegated`` travels with it, inseparably, in the same record.
+    TECHNICAL access alone decides the shape. A ``workspace_write``/``full`` run
+    executes ``live`` in a private host copy; ``acting`` decides only what that
+    copy is FOR: an acting child's captured changes await explicit integration,
+    while a non-acting one (research, an external reviewer) is an evidence-only
+    ``investigation`` whose copy is never applied and creates no apply duty.
+    The selected immutable session supplies its captured access; old snapshots
+    keep workspace_write. This changes the harness's OS powers, not the task's
+    assignment or write target. In place is also the ONE shape where Claudexor
+    would otherwise hand the harness the operator's real ``$HOME`` — which holds
+    the daemon control token — so ``delegated`` travels with it, inseparably.
 
-    A READ-ONLY child has nothing to write back, so it runs in Claudexor's default
-    envelope, which is scoped already and needs no marker: that is one transport with
-    one derived difference, not a second pipeline.
+    An explicitly READ-ONLY run has nothing to write back, so it runs in
+    Claudexor's default envelope, which is scoped already and needs no marker:
+    one transport with one derived difference, not a second pipeline.
     """
-    if acting and access != "readonly":
-        if access not in SESSION_ACCESS_PROFILES:
-            raise ValueError("Delegated session access must be workspace_write or full")
-        return DelegatedRunShape(access=access, mode="agent", isolation="live", delegated=True)
-    return DelegatedRunShape(access="readonly", mode="ask")
+    if access == "readonly":
+        return DelegatedRunShape(access="readonly", mode="ask")
+    if access not in SESSION_ACCESS_PROFILES:
+        raise ValueError("Delegated session access must be readonly, workspace_write or full")
+    return DelegatedRunShape(access=access, mode="agent", isolation="live", delegated=True,
+                             investigation=not acting)
 
 
 def delegated_execution_workspace_root(
@@ -374,7 +381,7 @@ def probe_subagent_executor(
     from ouroboros.claudexor_daemon import ensure_owned_gateway
     from ouroboros.gateways.claudexor import ClaudexorUnavailable
 
-    run_shape = shape if shape is not None else delegated_run_shape(False)
+    run_shape = shape if shape is not None else delegated_run_shape(False, "readonly")
     gateway = None
     try:
         gateway = ensure_owned_gateway()
@@ -415,7 +422,8 @@ def dispatch_executor_resolution(task: Mapping[str, Any]) -> SubagentExecutorRes
 
     constraint = normalize_task_constraint(task.get("task_constraint"))
     surface = str(getattr(constraint, "surface", "") or "")
-    shape = delegated_run_shape(predicted_subagent_profile(write_surface=surface) == "acting_subagent")
+    acting = predicted_subagent_profile(write_surface=surface) == "acting_subagent"
+    shape = delegated_run_shape(acting, "workspace_write" if acting else "readonly")
     return probe_subagent_executor(requested, shape=shape)
 
 

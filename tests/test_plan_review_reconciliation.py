@@ -497,10 +497,16 @@ def _install_barrier_substrate(monkeypatch, calls, *, texts=None, still_pending=
     slots, which settled as typed $0 not_dispatched refusals: nothing was sent)."""
     import ouroboros.review_custody as review_custody
     import ouroboros.review_substrate as review_substrate
+    from ouroboros.review_dispatch import review_reconciliation_identity
 
     texts = dict(texts or {})
 
     def substrate(request, *, slots, drive_root, llm, usage_ctx=None):
+        # Match the real coordinator before saving producer custody: its
+        # original request includes the root and review contract bindings.
+        request.reconciliation_identity = review_reconciliation_identity(
+            request, slots, root_task_id=request.task_id,
+        )
         calls.append({"retry_key": request.retry_key, "slots": [s.slot_id for s in slots],
                       "reconcile_only": request.reconcile_only, "drain": request.drain_deadline,
                       "_request": request, "_slots": list(slots)})

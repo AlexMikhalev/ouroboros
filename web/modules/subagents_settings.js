@@ -110,7 +110,7 @@ function rowParseError(row, index) {
     if (row.route.credential_profile_id != null && typeof row.route.credential_profile_id !== 'string') return `${at} account pin must be a string`;
     const routeKind = row.route.kind.trim().toLowerCase();
     if (![ROUTE_KIND_API_MODEL, ROUTE_KIND_AGENT_SESSION].includes(routeKind)) return `${at} has unsupported route kind`;
-    if (row.access !== undefined && !['workspace_write', 'full'].includes(row.access)) return `${at} access must be workspace_write or full`;
+    if (row.access !== undefined && !['readonly', 'workspace_write', 'full'].includes(row.access)) return `${at} access must be readonly, workspace_write or full`;
     if (row.access !== undefined && routeKind !== ROUTE_KIND_AGENT_SESSION) return `${at} access requires an Agent session`;
     if (!routeSupportsAccount({ ...row.route, kind: routeKind })
         && String(row.route.credential_profile_id || '').trim()) return `${at} has an account pin on an API route`;
@@ -176,8 +176,8 @@ function rowErrors(row, index, ids, rows = null, inherited = '') {
     }
     ids.add(id);
     const route = row?.route || {};
-    if (row?.access !== undefined && !['workspace_write', 'full'].includes(row.access)) {
-        errors.push('access must be Working files or Full system access.');
+    if (row?.access !== undefined && !['readonly', 'workspace_write', 'full'].includes(row.access)) {
+        errors.push('access must be Read only, Working files or Full system access.');
     } else if (row?.access !== undefined && route.kind !== ROUTE_KIND_AGENT_SESSION) {
         errors.push('can select access only with an Agent session.');
     }
@@ -504,6 +504,7 @@ function verifiedAccountSnapshot(state) {
 const ACCESS_CHOICES = [
     { value: 'full', label: 'Full system access' },
     { value: 'workspace_write', label: 'Working files' },
+    { value: 'readonly', label: 'Read only' },
 ];
 const ACCESS_HELP = 'Full system access (the default) can reach outside the working folder. The selected agent must support it. Explicit task restrictions still apply.';
 

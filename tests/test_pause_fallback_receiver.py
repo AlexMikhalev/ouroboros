@@ -16,6 +16,8 @@ pytestmark = pytest.mark.serial
 
 
 def test_pause_returns_from_actual_loop_fallback_before_sender_finishes(tmp_path, monkeypatch):
+    # The cold-pause exit retains its fence; restore this test's process-global mutations.
+    monkeypatch.setattr(budget_pause, "_FENCED", set(budget_pause._FENCED))
     monkeypatch.setenv("TOTAL_BUDGET", "1000")
     monkeypatch.setenv("OUROBOROS_DATA_DIR", str(tmp_path))
     monkeypatch.setattr("ouroboros._usage_wait.ABANDON_POLL_SEC", 0.02)

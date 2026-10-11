@@ -350,7 +350,10 @@ def test_delegated_start_pause_after_claim_prevents_post(tmp_path, monkeypatch):
         assert request_owner_pause("root", request_id="delegate-final")["ok"]
         return value
     monkeypatch.setattr(delegate, "claimed_start_request", claim)
-    token = subagent_runtime._EXACT_START_SELECTION.set({"snapshot": _transport_snapshot(subagents.get_subagent_harness())})
+    # A read-only child (the stub serves readonly only); #1609: technical access alone
+    # decides the run shape, so the selected row says so.
+    token = subagent_runtime._EXACT_START_SELECTION.set(
+        {"snapshot": _transport_snapshot(subagents.get_subagent_harness(), access="readonly")})
     try:
         outcome = delegate._delegate_start(_nanny_ctx(tmp_path, "root"), "work")
     finally:

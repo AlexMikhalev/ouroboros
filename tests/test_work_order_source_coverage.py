@@ -80,6 +80,7 @@ def _started_entry(tmp_path, request, sha):
         work_order_source_request=request,
         execution_root=str(tmp_path / "snapshot"),
         target_root=str(tmp_path / "repo"),
+        authority_source="external_workspace_root",  # an acting run: its capture may be applied
     )
     assert custody.record_started(tmp_path, entry)
     custody._CUSTODY[entry.run_id] = entry
@@ -101,7 +102,7 @@ def _source_response(request, text, start, end):
 def test_actor_first_coordination_appendix_preserves_complete_text():
     import ouroboros.tools.delegate as delegate
 
-    authority = SimpleNamespace(delegated=False, access="readonly")
+    authority = SimpleNamespace(delegated=False, access="readonly", investigation=False)
     context = " \n" + "яё𐍈🚀\n" * 55_000 + "DECISIVE_TAIL\n "
     instructions = delegate._host_instructions(authority, coordination_context=context)
     assert instructions.endswith(context)

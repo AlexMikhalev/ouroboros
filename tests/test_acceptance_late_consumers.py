@@ -536,6 +536,8 @@ def test_immediate_complete_and_failed_publication_retry_keep_one_supplement(lat
     f = delivered(tmp_path, monkeypatch, retry=True)
     ctx = _caller(f)
     ctx.event_queue = queue.Queue()
+    # Cold recovery has no caller context; use the same local event transport.
+    monkeypatch.setattr("supervisor.workers.get_event_q", lambda: ctx.event_queue)
     original_run = review_substrate.run_review_request
     def synchronous(request, **kwargs):
         request.drain_deadline = time.monotonic() + 5

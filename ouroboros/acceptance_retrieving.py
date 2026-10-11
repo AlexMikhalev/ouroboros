@@ -13,7 +13,7 @@ first send would not hold the packet — or whose packet overflowed the shared
 budget — gets a compact first send and the complete packet as ONE exact,
 write-once source at an address this row's own reader resolves: the task
 artifact store for a native episode, the retained file's absolute path for a
-session using its ordinary read-only file tools. Both use existing host-owned
+session using its ordinary file tools. Both use existing host-owned
 custody, without workspace copies or attachment capability gates. Missing or
 changed source bytes are a typed refusal; an actual session read failure remains
 an explicit evidence gap, never proof that the source does not exist.
@@ -110,7 +110,7 @@ def _source_path(root: Any, task_id: str, ref: Dict[str, Any]) -> str:
 def _session_address(path: str) -> str:
     """An exact file read under existing authority, not an extra-root grant."""
     return (f'read the immutable packet file at absolute path {json.dumps(path, ensure_ascii=False)} '
-            'with your ordinary read-only file tools, in ranges. The host authorizes reading this exact '
+            'with your ordinary file tools, in ranges. The host authorizes reading this exact '
             'source even when it is outside your workspace; keep the task workspace as your root')
 
 
@@ -130,7 +130,8 @@ def _first_send_fits(request: Any, slot: Any, text: str, *, session: bool) -> tu
         from ouroboros.review_session_preparation import prepare_review_session_request, render_review_session_prompt
         route = session_route_for_review_slot(slot)
         invocation = SessionInvocation(task_id=request.task_id, surface=request.surface, slot_id=slot.slot_id,
-                                       timeout_sec=604800, output_schema=review_session_output_schema(request.surface))
+                                       timeout_sec=604800, output_schema=review_session_output_schema(request.surface),
+                                       access=str(getattr(slot, "session_access", "") or ""))
         wire = prepare_review_session_request(invocation, route,
             prompt=render_review_session_prompt(request, slot, text), root=request.session_root,
             thread_id="", schema_asked=True)
@@ -156,7 +157,8 @@ def _measure_delivery(request: Any, slot: Any, text: str, *, session: bool,
         return None
 
 
-_SESSION_INTRO = "You review as a read-only agent session in the task workspace."
+_SESSION_INTRO = ("You review as an agent session in the task workspace (read-only, or in a private checking "
+                  "copy of it when your seat holds write access).")
 _NATIVE_INTRO = ("You review as a bounded read-only native inspection episode; the host data root at the "
                  "pointers is readable.")
 

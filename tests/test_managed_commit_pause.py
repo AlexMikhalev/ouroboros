@@ -1,4 +1,5 @@
 """Owner Pause on the real managed sibling of commit_reviewed, then rejoin its tail."""
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -181,3 +182,32 @@ def test_managed_pause_before_commit_keeps_precommit_resolution(managed_commit, 
     assert not update_merge.read_update_tx().get("postcommit_resume")
     assert assisted._git(f.repo, "rev-parse", "HEAD").stdout.strip() == f.plan["base_sha"]
     assert update_merge.managed_assisted_precommit_verify(update_merge.read_update_tx())[0]
+
+
+def test_managed_resume_never_reads_or_rewrites_new_commit_review_custody(managed_commit, monkeypatch):
+    """The retained managed commit resumes its own gates. The NEW-commit custody lookup
+    (pending-attempt flags and its stale-row expiry write) is not part of that resume."""
+    from ouroboros.review_state import make_repo_key
+    from ouroboros.tools.commit_gate import _check_overlapping_review_attempt
+
+    f = managed_commit
+    assert "OWNER_PAUSE" in git._repo_commit_push(f.ctx, "reviewed managed resolution")
+    owner_pause.release_fence(f.drive, "resolver", reason="owner_resume")
+    f.mode["pause"] = ""
+    row = {"commit_message": "reviewed managed resolution", "status": "reviewing", "task_id": "resolver",
+           "repo_key": make_repo_key(f.repo), "tool_name": "commit_reviewed"}
+    state = f.drive / "state" / "advisory_review.json"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(json.dumps({"attempts": [
+        {**row, "ts": "2026-08-24T00:00:00Z", "attempt": 4, "paid": True, "review_retry_key": "commit_review:exact"},
+        # An unpaid legacy row the lookup would expire, i.e. rewrite the store.
+        {**row, "ts": "2020-01-01T00:00:00Z", "attempt": 1, "task_id": "other-task"},
+    ]}), encoding="utf-8")
+    before = state.read_bytes()
+    monkeypatch.setattr(git, "_check_overlapping_review_attempt", _check_overlapping_review_attempt)
+    result = git._repo_commit_push(f.ctx, "reviewed managed resolution")
+    assert result.startswith("OK: committed"), result
+    assert state.read_bytes() == before
+    assert not getattr(f.ctx, "_review_resume_pending", False)
+    assert getattr(f.ctx, "_current_review_attempt_number", None) is None
+    assert f.effects.count("commit") == f.effects.count("review") == 1

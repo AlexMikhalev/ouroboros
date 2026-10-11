@@ -27,6 +27,17 @@ def _call(tool, *, is_error=False, status="ok", root=None):
     return {"tool": tool, "is_error": is_error, "status": status, "args": args}
 
 
+def _nominated(trace):
+    """The typed root deferral ``process_tool_results`` records for a real nomination
+    (#1602: the review tool's NAME alone no longer nominates)."""
+    trace.setdefault("acceptance_evidence_calls", []).append({
+        "status": "deferred_to_host_acceptance", "authoritative": False,
+        "request": {"surface": "task_acceptance", "goal": "g", "subject": "s", "checklist": "", "task_id": "root"},
+        "agent_supplied": {"acceptance_request": {"claim": "s", "goal": "g", "checklist": ""}},
+    })
+    return trace
+
+
 # ----- turn_has_reviewable_effects -----
 
 def test_commit_is_a_reviewable_effect():
@@ -356,10 +367,23 @@ def test_agent_request_preserves_existing_mode_and_lineage_boundaries(
     ctx.is_direct_chat = direct
     if child:
         ctx.task_metadata = {"root_task_id": "parent", "parent_task_id": "parent", "delegation_role": "worker"}
-    trace = {"tool_calls": [_call("task_acceptance_review")]}
+    trace = _nominated({"tool_calls": [_call("task_acceptance_review")]})
     run(trace)
     assert len(requests) == expected
     assert len(trace.get("review_runs", [])) == expected
+
+
+@pytest.mark.parametrize("mode", ["auto", "required"])
+def test_a_completion_acknowledgement_alone_never_orders_a_panel(monkeypatch, host_acceptance, mode):
+    """#1602: the same tool acknowledging a stop/finish is a control fact, not a nomination."""
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", mode)
+    ctx, run, requests = host_acceptance
+    ctx.is_direct_chat = True
+    trace = {"tool_calls": [{**_call("task_acceptance_review"), "completion_control": True,
+                             "args": {"author_action": "stop", "rationale": "Unfinished."}}]}
+    run(trace)
+    assert requests == [] and not trace.get("review_runs")
+    assert trace["review_decision"]["eligibility"] == "not_eligible"
 
 
 @pytest.mark.parametrize("requested", [False, True])
@@ -370,7 +394,7 @@ def test_auto_forced_exit_records_review_debt_only_when_requested(
 
     monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "auto")
     ctx, _run, requests = host_acceptance
-    trace = {"tool_calls": [_call("task_acceptance_review")] if requested else []}
+    trace = _nominated({"tool_calls": [_call("task_acceptance_review")]}) if requested else {"tool_calls": []}
     _record_forced_acceptance_bypass(SimpleNamespace(
         tools=SimpleNamespace(_ctx=ctx), task_id="root",
         accumulated_usage={"reason_code": "budget_exhausted"},

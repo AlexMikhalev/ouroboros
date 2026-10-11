@@ -198,9 +198,25 @@ def test_author_execution_scope_is_stripped_while_operation_clocks_bound_the_dra
     assert resolved[-1]["quota_clock"]["elapsed_sec"] >= 0.2, "the union clock is the operation's own"
 
 
-def test_explicit_calendar_deadline_still_bounds_the_reviewer_wait(env):
+def test_explicit_calendar_deadline_still_bounds_the_reviewer_wait(env, monkeypatch):
+    from ouroboros import deadline_utils
+
     f = env
-    deadline = (datetime.now(timezone.utc) + timedelta(seconds=0.4)).isoformat()
+    minted, real_now = datetime.now(timezone.utc), deadline_utils.utc_now
+    deadline = (minted + timedelta(seconds=0.4)).isoformat()
+    setup = []
+    catalog = f.model.claudexor_model_catalog
+
+    def observe_wait(*args, **kwargs):
+        if not setup:
+            # Open the calendar window after the refused send parked, not during panel setup.
+            assert len(f.model.calls) == 1
+            setup.append(real_now() - minted)
+        return catalog(*args, **kwargs)
+
+    monkeypatch.setattr(f.model, "claudexor_model_catalog", observe_wait)
+    # The operation snapshots this deadline before setup; its calendar stands still until the wait.
+    monkeypatch.setattr(deadline_utils, "utc_now", lambda: real_now() - setup[0] if setup else minted)
     with _parent(f, deadline_at=deadline):
         result = run_review_request(_request(drain=False), slots=[_slot()], drive_root=f.root,
                                     usage_ctx=f.ctx, llm=f.model)

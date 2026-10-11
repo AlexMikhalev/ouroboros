@@ -530,9 +530,10 @@ def test_skill_review_legacy_session_dispatch_keeps_shared_profile_pin(
 
     monkeypatch.delenv(REVIEW_SESSION_ROUTE_ENV, raising=False)
     monkeypatch.setenv("OUROBOROS_SUBAGENTS", pool_roster(pool_seat(
-        "t1", "fake-review=fake-small", kind="agent_session", profile_id="legacy-profile", effort="high")))
+        "t1", "fake-review=fake-small", kind="agent_session", profile_id="legacy-profile", effort="high", access="readonly")))
     delivery = commit_triad_delivery()
     assert delivery["session_profiles"] == ["legacy-profile"]
+    assert delivery["session_accesses"] == ["readonly"]
     fake_route.detail = _terminal_detail(json.dumps({"findings": [
         {"item": "manifest_schema", "verdict": "PASS", "severity": "advisory",
          "reason": "checked"},

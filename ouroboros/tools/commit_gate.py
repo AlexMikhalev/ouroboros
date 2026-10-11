@@ -260,6 +260,15 @@ def commit_review_contract_fingerprint() -> str:
         if any(native_direct):
             for row, native in zip(rows, native_direct):
                 row.append("native_retrieval" if native else "")
+        # A session seat's writable technical access (#1609) changes what it can
+        # check, as in the skill/plan fingerprints and the attempt key. The column
+        # appears only when some row is writable, so read-only and legacy panels
+        # keep their exact bytes.
+        writable = ["" if str(access or "readonly") == "readonly" else str(access)
+                    for access in (row_plan.get("session_accesses") or [])]
+        if any(writable):
+            for row, access in zip(rows, writable):
+                row.append(access)
         # What each seat is ASKED is contract identity: a seat that gains or
         # loses the coupling question is a different review.
         parts = {str(slot_id or ""): list(seat_parts) for slot_id, seat_parts in zip(row_plan["slot_ids"], row_plan["parts"])}
@@ -937,7 +946,8 @@ def preflight_reviewer_error(selector: str) -> str:
     return ""
 
 
-def commit_preflight_choice_error(selector: str, *, skipped: bool, continuation: bool) -> str:
+def commit_preflight_choice_error(selector: str, *, skipped: bool, continuation: bool,
+                                 ctx: Any = None, goal: str = "", scope: str = "", review_rebuttal: str = "") -> str:
     """A commit's preflight is a named row, an explicit skip, or neither; an author
     continuation dispatches no critic, so it names no row either ("" = the choice stands)."""
     if not selector:
@@ -946,7 +956,13 @@ def commit_preflight_choice_error(selector: str, *, skipped: bool, continuation:
         return "preflight_reviewer and skip_advisory_review=True are opposite choices; pass one."
     if continuation:
         return "preflight_reviewer and an author continuation are separate choices (the continuation dispatches no critic)."
-    return preflight_reviewer_error(selector)
+    error = preflight_reviewer_error(selector)
+    if error and ctx is not None:
+        from ouroboros.tools.review_change_custody import pending_preflight_for_call
+
+        if pending_preflight_for_call(ctx, goal=goal, scope=scope, review_rebuttal=review_rebuttal) is not None:
+            return ""  # collect its original seat; never admit a replacement
+    return error
 
 
 def compose_commit_panel(ctx: ToolContext, reviewers: Sequence[str], reason: str) -> Any:

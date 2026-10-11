@@ -864,3 +864,22 @@ def managed_update_wave_estimate(remaining_usd: float) -> dict:
         event["estimated_wave_usd"] = round(float(total), 6)
         event["exceeds_known_remaining"] = float(total) > float(remaining_usd) + 1e-9
     return event
+
+
+def commit_checking_source(ctx: Any, row_plan: dict, target_repo: Any, frozen: Any) -> dict:
+    """Freeze the final admitted writable seats' exact subject before dispatch.
+
+    A previously frozen subject keeps its pinned parent/tree and reading root;
+    the ordinary commit path checks the index. Readonly/API panels need no copy.
+    """
+    from types import SimpleNamespace
+    from ouroboros.review_checking import frozen_checking_source, wave_checking_source, writable_seat
+    from ouroboros.tools import review as _rv
+
+    routes = row_plan["routes"]
+    seats = [SimpleNamespace(route=route, session_access=access) for route, access in
+             zip(routes, row_plan.get("session_accesses") or [""] * len(routes))]
+    data_root = _rv.review_drive_root(ctx)
+    return (frozen_checking_source(frozen, data_root=data_root)
+            if frozen is not None and any(writable_seat(slot) for slot in seats)
+            else wave_checking_source(target_repo, seats, data_root=data_root, subject="index"))

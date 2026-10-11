@@ -99,6 +99,21 @@ def test_public_skill_call_reaggregates_late_cas_at_cycle_cap(late_skill):
     assert not (h.root / "state/skills/late/enabled.json").exists()
 
 
+def test_current_contract_change_does_not_replace_a_recoverable_api_wave(late_skill):
+    h = late_skill
+    _handle_review_skill(h.ctx(), skill="late")
+    h.release.set()
+    assert h.settled.wait(10)
+    old = json.loads(h.history.read_bytes().splitlines()[-1])
+    h.delivery["efforts"] = ["high"] * 2
+    _handle_review_skill(h.ctx(), skill="late")
+    new = json.loads(h.history.read_bytes().splitlines()[-1])
+    assert new["review_resume_of"] == old["wave_id"]
+    assert new["review_contract_fingerprint"] == old["review_contract_fingerprint"]
+    assert load_review_state(h.root, "late").status == "clean"
+    assert len(h.calls) == 2
+
+
 @pytest.mark.parametrize("defect", ["missing", "partial", "tampered", "operation"])
 def test_incomplete_skill_cas_never_authorizes_pass_or_another_send(late_skill, defect):
     from ouroboros.observability import call_manifest_path
@@ -128,7 +143,7 @@ def test_incomplete_skill_cas_never_authorizes_pass_or_another_send(late_skill, 
     assert h.history.read_bytes().startswith(original)
 
 
-@pytest.mark.parametrize("axis", ["task", "attempt", "content", "contract", "rebuttal", "cancel", "superseded", "chunks"])
+@pytest.mark.parametrize("axis", ["task", "attempt", "content", "rebuttal", "cancel", "superseded", "chunks"])
 def test_unrelated_or_superseded_skill_intent_does_not_inherit(late_skill, monkeypatch, axis):
     h = late_skill
     _handle_review_skill(h.ctx(), skill="late")
@@ -138,7 +153,6 @@ def test_unrelated_or_superseded_skill_intent_does_not_inherit(late_skill, monke
     if axis == "task": ctx.task_id = "new-task"
     if axis == "attempt": ctx.task_attempt = 2
     if axis == "content": (h.skill_dir / "SKILL.md").write_text((h.skill_dir / "SKILL.md").read_text() + "Changed.\n")
-    if axis == "contract": h.delivery["efforts"] = ["high"] * 2
     if axis == "rebuttal": rebuttal = "Please assess this new counterargument."
     if axis in {"cancel", "superseded"}:
         row = json.loads(h.history.read_bytes().splitlines()[-1])
@@ -178,7 +192,8 @@ def test_timeout_history_is_immutable_and_current_lifecycle_keeps_postconditions
     def timeout():
         with guard:
             if not timed_out:
-                runner._mark_review_job_timeout(h.root, "late", "", reason="lifecycle_timeout")
+                owner = runner._read_review_job(runner.review_job_state_path(h.root, "late"))["job_id"]
+                runner._mark_review_job_timeout(h.root, "late", "", reason="lifecycle_timeout", job_id=owner)
                 timed_out.append(1)
     h.behavior.before_wait = timeout
     _handle_review_skill(h.ctx(), skill="late")

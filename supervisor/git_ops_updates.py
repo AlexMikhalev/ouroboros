@@ -91,10 +91,19 @@ def managed_update_remote_url(meta: Optional[Dict[str, Any]] = None) -> str:
     fork/mirror/air-gapped install depends on it). The hardcoded official
     repository URL is only the DEFAULT for installs that configured no source —
     it must never silently retarget a configured install on an update fetch
-    (W2-F2, owner sanction 2026-09-01 №4=A).
+    (W2-F2, owner sanction 2026-09-01 №4=A). The one exception is a former
+    official home (``repo_remotes.LEGACY_OFFICIAL_REPOS``, the archived joi-lab
+    repositories that builds before v6.8.0 store): that address was the
+    project's own, never the owner's choice, so it resolves to the official
+    repository (owner decision 2026-10-11 №3=A). The old launcher rewrites the
+    stored address on every start, so the mapping applies on every resolution.
     """
+    from ouroboros.repo_remotes import is_legacy_official_repo
+
     info = meta if meta is not None else _go()._read_managed_repo_meta()
     configured = str(info.get("managed_remote_url") or "").strip()
+    if is_legacy_official_repo(configured):
+        return _go().OFFICIAL_UPDATE_REMOTE_URL
     return configured or _go().OFFICIAL_UPDATE_REMOTE_URL
 
 

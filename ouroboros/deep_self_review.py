@@ -12,7 +12,8 @@ two shapes:
   host's read-only tools (the runtime root is its readable data plane) while
   BIBLE.md, the standing disclosures and memory whitelist reach it inline;
   repository reads and inline delivery remain distinct coverage evidence;
-* an ``agent_session`` row is a delegated read-only session — the same task,
+* an ``agent_session`` row uses its configured rights in a private checking copy
+  (or explicit read-only session) — the same task,
   reads not host-observed (disclosed as ``unobserved``).
 
 Both deliveries ride the shared review executor seam: the product
@@ -87,7 +88,7 @@ known error patterns from patterns.md that remain unfixed, and ideas how to impr
 # inline. No second tool read is needed for those exact delivered documents.
 _RETRIEVING_METHOD = """
 
-How to work: inspect the repository yourself with read-only tools. `BIBLE.md`
+How to work: inspect the repository yourself with your own tools. `BIBLE.md`
 ({bible_chars:,} chars) and the standing disclosures are delivered IN FULL below:
 use them as your reference without a redundant tool read. Every finding is checked
 against the constitution. The governance sections that follow are the rules delivered to you in
@@ -207,7 +208,7 @@ def _session_route_reason(row: ConfiguredReviewerSlot) -> str:
         return f"agent_service_unavailable: {type(exc).__name__}: {exc}"
     try:
         unavailable, _reset_at = route_health(
-            gateway, route.route_id, delegated_run_shape(False), route_model=route.model,
+            gateway, route.route_id, delegated_run_shape(False, row.access or "readonly"), route_model=route.model,
             pinned_profile=str(row.profile_id or getattr(route, "profile_id", "") or ""),
         )
     finally:
@@ -675,10 +676,15 @@ def _run_retrieving_review(
         use_local=row.use_local if row.use_local is not None else review_model_uses_local(sendable),
         route=ReviewRouteKind.AGENT_SESSION if row.is_session else ReviewRouteKind.API_CHAT,
         session_target=row.session_target, session_profile=row.profile_id,
+        session_access=row.access if row.is_session else "",
         subagent_id=row.subagent_id,
     )
+    from ouroboros.review_checking import wave_checking_source
+    from ouroboros.observability import new_call_id
+
+    request.checking_source = wave_checking_source(repo_dir, [slot], data_root=drive_root)
     assignment = ReviewAssignment(
-        request=request, slot=slot, call_id=f"deep_self_review:{task_id or 'manual'}",
+        request=request, slot=slot, call_id=new_call_id("deep_self_review"),
         call_type="deep_self_review", custody_root=pathlib.Path(drive_root),
     )
     if row.is_session:

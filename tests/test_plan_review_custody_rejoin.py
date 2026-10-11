@@ -21,6 +21,8 @@ import json
 import threading
 import time
 
+import pytest
+
 from tests.test_plan_review_engine import CLEAN, _call, _control, _finding, _slots, _state
 from tests.test_plan_review_engine import harness as _engine_harness
 from tests.test_plan_review_event_route import _mailbox_entries, _wait_until
@@ -39,8 +41,10 @@ class _ScriptedSeats:
         self.first_release, self.rejoin_release = threading.Event(), threading.Event()
         self.rejoin_remaining = None
         self.rejoin_cell = None
+        self.assignments = []
 
     def __call__(self, assignment, **_kw):
+        self.assignments.append(assignment)
         return _Seat(self, assignment)
 
 
@@ -121,7 +125,8 @@ def _s3_row(h):
     return next(a for a in _state(h)["waves"][-1]["actors"] if a["slot_id"] == "s3")
 
 
-def test_a_seat_surviving_a_restart_holds_green_and_delivers_its_late_blocking_finding(harness, monkeypatch):
+@pytest.mark.parametrize("changed_roster", [False, True])
+def test_a_seat_surviving_a_restart_holds_green_and_delivers_its_late_blocking_finding(harness, monkeypatch, changed_roster):
     import ouroboros.review_custody as custody
     from ouroboros import delegate_custody
     from ouroboros.config import NESTED_SETTLEMENT_MARGIN_SEC
@@ -141,6 +146,14 @@ def test_a_seat_surviving_a_restart_holds_green_and_delivers_its_late_blocking_f
         assert _wait_until(lambda: len(_mailbox_entries(harness.drive, "task-1")) == 1)
     finally:
         seats.first_release.set()
+    if changed_roster:
+        from dataclasses import replace
+
+        # The paid s3 invocation predates session_access. Today's panel has
+        # different identities and Full rights, and must never be sent here.
+        harness.state["slots"] = [replace(slot, slot_id="new-" + slot.slot_id,
+                                          model="new/model", session_access="full")
+                                  for slot in harness.state["slots"]]
     # The identical envelope resumes the in-flight wave: two clean seats and the
     # delegated seat still owed — persisted as in_flight WITH its token. Not GREEN.
     resumed = _control(_call(ctx))
@@ -181,3 +194,5 @@ def test_a_seat_surviving_a_restart_holds_green_and_delivers_its_late_blocking_f
     assert wave["custody_pending"] is False and wave["paid"] is True
     assert "s3:b1" in {f.get("finding_id") for f in wave.get("findings") or []}, wave.get("findings")
     assert seats.s3_calls == 3, "one rejoin, never a second paid send"
+    assert all(a.slot.slot_id in {"s1", "s2", "s3"} and not a.slot.session_access
+               for a in seats.assignments)

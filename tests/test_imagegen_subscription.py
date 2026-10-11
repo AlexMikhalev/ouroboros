@@ -500,3 +500,119 @@ def test_accounting_failure_retains_outputs_but_withholds_ack_until_reconciled(e
     assert recovered["acknowledgement"] == "acknowledged"
     assert usage.read_usage_records(ctx.drive_root)[0]["state"] == "settled"
     assert wire.upload_count == wire.generation_count == 1
+
+
+@pytest.mark.parametrize("receipt", ["settled", "released"])
+@pytest.mark.parametrize("racing_state", ["unresolved", "abandoned", "terminal"])
+def test_recovery_cas_loser_requires_durable_accounting_before_whole_ack(
+        engine, ctx, tmp_path, monkeypatch, receipt, racing_state):
+    import threading
+
+    from ouroboros import usage_accounting as usage, usage_store
+    from ouroboros.artifacts import task_artifact_dir_path
+    from ouroboros.observability import read_call_payload
+    from ouroboros.transport_custody import ProviderNotDispatched, release_pre_dispatch_attempt
+    from ouroboros.usage_ledger import is_abandoned_settlement
+
+    wire = ImageWire(lose=("GET", "/v2/model-operations/op-one/result"))
+    if receipt == "released":
+        wire.unsent = wire.ready_unsent = True
+        wire.native.update(outcome="failed", images=[], problem={
+            "code": "quota_unavailable", "message": "Image quota", "retryable": True,
+            "context": {"requestKind": "image"}})
+        wire.result = _bytes(wire.native)
+    engine(wire)
+    ctx.budget_drive_root = tmp_path / "original-budget"
+
+    def original_row():
+        with usage_store.read(ctx.budget_drive_root) as txn:
+            return txn.attempt(wire.operation[0])
+
+    transition = usage._transition
+    raced, transitions = [], []
+    worker_waiting, release_worker, worker_updated = (threading.Event() for _ in range(3))
+    generated, ack_rows = [], []
+
+    def late_worker_then_transition(reservation, state, **fields):
+        transitions.append((state, threading.current_thread().name))
+        if state == "unresolved":
+            worker_waiting.set()
+            assert release_worker.wait(5), "recovery did not release the late worker"
+            try:
+                return transition(reservation, state, **fields)
+            finally:
+                worker_updated.set()
+        # Real ledger writes deterministically occupy the gap between recovery's
+        # initial indexed read and its revision-CAS settlement/release.
+        if not raced and fields.get("_expected_revision") is not None:
+            raced.append(fields["_expected_revision"])
+            release_worker.set()
+            assert worker_updated.wait(5), "late worker did not update the ledger"
+            if racing_state == "abandoned":
+                usage.terminalize_abandoned_attempt(reservation, reason="late_owner_terminal")
+            elif racing_state == "terminal" and receipt == "released":
+                assert release_pre_dispatch_attempt(reservation, ProviderNotDispatched("never started"))
+            elif racing_state == "terminal":
+                usage.settle_attempt(reservation, {"input_tokens": 10, "output_tokens": 20})
+            assert original_row()["revision"] > fields["_expected_revision"]
+        return transition(reservation, state, **fields)
+
+    def no_new_attempt_or_history(*args, **kwargs):
+        pytest.fail("recovery must not reserve an attempt or scan usage history")
+
+    def durable_before_ack():
+        ack_rows.append(original_row())
+
+    wire.before_ack = durable_before_ack
+    monkeypatch.setattr(usage, "_transition", late_worker_then_transition)
+    worker = threading.Thread(target=lambda: generated.append(invoke(ctx)), name="late-image-worker")
+    worker.start()
+    try:
+        assert worker_waiting.wait(5), f"late update missing: {transitions!r}; result={generated!r}"
+        request_id = wire.operation[0]
+        before = original_row()
+        assert before["state"] == "dispatched"
+        registry = ToolRegistry(repo_dir=ctx.repo_dir, drive_root=ctx.drive_root)
+        registry.set_context(ctx)
+        # The original sender is paused before its real unresolved write, not
+        # replaced by a fake settlement API or a manually fabricated ledger row.
+        monkeypatch.setattr(usage, "reserve_attempt", no_new_attempt_or_history)
+        attempts = usage_store.Txn.attempts
+        monkeypatch.setattr(usage_store.Txn, "attempts", no_new_attempt_or_history)
+        monkeypatch.setattr(usage_store.Txn, "open_attempts", no_new_attempt_or_history)
+        result = registry.execute_result("recover_image", {"request_id": request_id})
+    finally:
+        release_worker.set()
+        worker.join(5)
+    assert not worker.is_alive() and len(generated) == 1
+    assert generated[0].code == "IMAGE_OUTCOME_UNKNOWN"
+    facts = _summary(result.text)
+    assert raced == [before["revision"]]
+    assert facts["recovered"] is True and facts["operation_id"] == "op-one"
+    if receipt == "settled":
+        assert facts["generated"] == 2
+    assert (task_artifact_dir_path(ctx.drive_root, ctx.task_id) / facts["response"]["path"]).read_bytes() == wire.result
+    manifest, payload, _ = read_call_payload(ctx.budget_drive_root, task_id=ctx.task_id,
+                                            call_id=f"{request_id}_model_response")
+    assert payload["result_json_utf8"].encode() == wire.result and manifest["operation_id"] == "op-one"
+    assert all(Path(image["absolute_path"]).read_bytes() == PNG for image in facts.get("images", []))
+    if racing_state == "terminal":
+        assert facts["acknowledgement"] == "acknowledged"
+    else:
+        assert original_row()["state"] == ("settled" if racing_state == "abandoned" else "unresolved")
+        assert is_abandoned_settlement(original_row()) == (racing_state == "abandoned")
+        assert facts["acknowledgement"] == "pending" and facts["warnings"]
+        assert "accounting" in " ".join(facts["warnings"]).lower()
+        assert not any(call.url.path.endswith("/ack") for call in wire.calls)
+        assert result.code == ("IMAGE_RESULT_INCOMPLETE" if receipt == "settled" else "IMAGE_NOT_DISPATCHED")
+        # A later explicit recovery reuses this attempt/receipt and can now ACK.
+        retry = registry.execute_result("recover_image", {"request_id": request_id})
+        assert _summary(retry.text)["acknowledgement"] == "acknowledged"
+    assert original_row()["state"] == receipt and not is_abandoned_settlement(original_row())
+    assert wire.generation_count == wire.upload_count == 1
+    assert sum(call.url.path.endswith("/ack") for call in wire.calls) == 1
+    assert len(ack_rows) == 1 and ack_rows[0]["state"] == receipt and not is_abandoned_settlement(ack_rows[0])
+    assert sum(call.method == "POST" and call.url.path == "/v2/model-operations" for call in wire.calls) == 1
+    monkeypatch.setattr(usage_store.Txn, "attempts", attempts)
+    assert len(usage.read_usage_records(ctx.budget_drive_root)) == 1
+    assert usage.read_usage_records(ctx.drive_root) == []

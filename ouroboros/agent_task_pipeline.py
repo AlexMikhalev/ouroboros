@@ -1193,7 +1193,7 @@ def _store_task_result(env: Any, task: Dict[str, Any], text: str,
         from ouroboros.acceptance_history import retain_acceptance_history
         history_fields = retain_acceptance_history(
             env.drive_root, task, text, llm_trace, review_evidence or {},
-            observations, artifacts, final_delivery,
+            observations, artifacts, final_delivery, usage=usage,
         )
         write_task_result(
             env.drive_root,

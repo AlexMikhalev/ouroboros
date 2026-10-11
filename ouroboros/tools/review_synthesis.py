@@ -384,8 +384,8 @@ def build_coupling_part(
 
 ### Your role in this part
 
-You are the whole-repository reviewer, and you REACH the repository with your own
-read-only tools. Part 1 covers the change itself line by line; this part covers
+You are the whole-repository reviewer: REACH the subject through your available
+tools, using the assigned checking copy if your seat can write. Part 1 covers the change; this part covers
 what the change is COUPLED to: cross-module contracts, forgotten touchpoints,
 hidden regressions, prompt/doc sync, architecture fit, and end-to-end intent
 completeness. For each finding name the exact file, symbol, test, prompt, doc,

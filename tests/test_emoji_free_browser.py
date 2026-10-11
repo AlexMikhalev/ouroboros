@@ -200,7 +200,7 @@ def test_host_display_copy_authorship_reload_reconnect(direct_server_with_data, 
 @pytest.mark.parametrize("kind,text", [
     ("startup_notice", "♻️ Restored pending queue from snapshot: quoted by the narrator"),
     ("skill_review", "✅ Skill review round 1 — quoted by the narrator"),
-])
+], ids=["startup", "skill-review"])  # IDs name artifact folders; quoted payloads may contain ':'.
 def test_authored_narration_with_stale_host_type(direct_server_with_data, request, engine, kind, text):
     server = direct_server_with_data
     with _browser(server, request, engine) as (page, evidence, errors):

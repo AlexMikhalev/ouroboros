@@ -9,6 +9,8 @@ root registers with one POST once the engine's answer carries ``created``.
 from __future__ import annotations
 
 import json
+import pathlib
+import subprocess
 
 import pytest
 
@@ -18,6 +20,7 @@ from ouroboros.gateways import claudexor as cx
 from tests._delegated_transport_shared import (  # noqa: F401 - autouse transport binding
     _delegating_ctx,
     _owned_gateway_uses_each_test_transport,
+    _select_transport_access,
 )
 from tests.system_e2e.interfaces import FakeClaudexorDaemon
 
@@ -38,6 +41,8 @@ def engine(tmp_path, monkeypatch):
 
         monkeypatch.setattr(cx, "ClaudexorGateway", handshaken)
         monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", f"{daemon.harness_id}=mock-model")
+        # These children are read-only: technical access, not the task profile, decides the shape.
+        _select_transport_access(monkeypatch, "readonly")
         yield daemon
 
 
@@ -87,3 +92,29 @@ def test_a_user_root_registers_with_the_engine_created_answer(engine, tmp_path):
     assert (second.project_id, second.project_owned) == (first.project_id, False)
     for start in engine.run_start_posts():
         assert "ephemeral" not in start["body"]["scope"], "a user root keeps its registration"
+
+
+def test_a_writable_investigation_of_a_registry_checkout_starts_ephemeral_in_its_private_copy(
+        engine, tmp_path, monkeypatch):
+    """A minted scope root stays unregistered when the child investigates in a private copy:
+    ``scope.ephemeral`` names the root, ``execution.workspaceRoot`` the copy it may write."""
+    from ouroboros.subagent_worktrees import _registry_path
+
+    _select_transport_access(monkeypatch, "workspace_write")
+    ctx = _delegating_ctx(tmp_path, acting=False, task_id="t-investigation")
+    repo = pathlib.Path(ctx.repo_dir)
+    (repo / "README.md").write_text("seed\n", encoding="utf-8")
+    for argv in (["init"], ["add", "-A"], ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "seed"]):
+        subprocess.run(["git", *argv], cwd=repo, capture_output=True, check=True)
+    _registry_path().parent.mkdir(parents=True, exist_ok=True)
+    _registry_path().write_text(json.dumps({"worktrees": [{"path": str(repo)}]}), encoding="utf-8")
+    row = _start(ctx)
+    [start] = engine.run_start_posts()
+    body = start["body"]
+    assert body["scope"] == {"kind": "project", "root": str(repo), "ephemeral": True}
+    assert (body["access"], body["mode"]) == ("workspace_write", "agent")
+    copy = pathlib.Path(body["execution"]["workspaceRoot"]).resolve()
+    assert copy != repo.resolve() and repo.resolve() not in copy.parents
+    assert engine.calls(path_prefix="/v2/projects") == []
+    assert row.authority_source == "investigation"
+    assert (row.project_id, row.project_owned, row.project_persistent) == ("", False, False)

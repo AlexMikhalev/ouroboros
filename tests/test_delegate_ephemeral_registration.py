@@ -21,6 +21,7 @@ from tests._delegated_transport_shared import (  # noqa: F401 - autouse transpor
     _delegating_ctx,
     _gateway,
     _owned_gateway_uses_each_test_transport,
+    _select_transport_access,
 )
 
 
@@ -147,6 +148,7 @@ def _start(tmp_path, monkeypatch, *, version, register_root=False, folderless=Fa
     data = tmp_path / "data"
     monkeypatch.setenv("OUROBOROS_DATA_DIR", str(data))
     ctx = _delegating_ctx(tmp_path, acting=False, task_id="t-ephemeral")
+    _select_transport_access(monkeypatch, "readonly")  # technical access decides the shape
     if register_root:  # the host's own registry names the root: a child's copy
         _registry_path().parent.mkdir(parents=True, exist_ok=True)
         _registry_path().write_text(json.dumps({"worktrees": [{"path": str(ctx.repo_dir)}]}), encoding="utf-8")

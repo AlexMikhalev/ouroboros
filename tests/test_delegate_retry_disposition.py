@@ -24,7 +24,12 @@ pytestmark = pytest.mark.serial
 def directory_result(tmp_path, monkeypatch, *, chain=("retry-a", "retry-b"),
                      owner="retry-a", strategy="copy", lost_apply=False):
     ctx = retry_context(tmp_path, monkeypatch, chain=chain)
+    # The authority a real writable folder start records for this root's external
+    # workspace. #1609: the first-wins authority source is what separates a writable
+    # run from an evidence-only investigation, and a source-less direct run (no
+    # snapshot, no engine copy) reads as one with nothing to integrate.
     entry = durable_run(ctx, owner=owner, run_id="directory-run", access="workspace_write",
+                        authority_source="external_workspace_root",
                         resource_ref={"workspace_kind": "directory", "strategy": strategy,
                                       "scopePaths": ["."]})
     engine = DirectoryEngine(Path(ctx.workspace_root), strategy, lost_apply=lost_apply)

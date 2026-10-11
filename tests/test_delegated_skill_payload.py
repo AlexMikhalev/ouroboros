@@ -1420,20 +1420,31 @@ def test_host_states_the_typed_access_profile_once_and_says_it_governs():
     derived, and the run died unable to reach its own read surface. The host
     renders ONE sentence from `DelegatedRunShape.access`, names it as the
     native-mechanism text, while explicit task constraints still bind."""
-    from ouroboros.delegate_start_instructions import access_instruction
+    from ouroboros.delegate_start_instructions import INVESTIGATION_INSTRUCTION, access_instruction
     from ouroboros.subagents import delegated_run_shape
     from ouroboros.tools.delegate import _host_instructions
 
     precedence = ("this line governs native process access, while explicit task "
                   "constraints and the assigned edit target still bind.")
-    readonly = _host_instructions(delegated_run_shape(False))
+    # #1609: technical access alone decides the shape, so the read-only run is the
+    # explicitly readonly one.
+    readonly = _host_instructions(delegated_run_shape(False, "readonly"))
     assert "ACCESS: you may read and run read-only commands inside this root" in readonly
     assert readonly.count(precedence) == 1  # one sentence, never a paragraph
+    assert INVESTIGATION_INSTRUCTION not in readonly
 
     acting = _host_instructions(delegated_run_shape(True))
     assert "ACCESS: you may edit inside this root" in acting
     assert acting.count(precedence) == 1
     assert "read and run read-only commands" not in acting
+    assert INVESTIGATION_INSTRUCTION not in acting
+
+    # A non-acting child that captured writable access is an evidence-only investigation:
+    # the same ONE access sentence, followed once by the purpose that forbids applying.
+    investigation = _host_instructions(delegated_run_shape(False))
+    assert "ACCESS: you may edit inside this root" in investigation
+    assert investigation.count(precedence) == 1
+    assert investigation.count(INVESTIGATION_INSTRUCTION) == 1
     full = _host_instructions(delegated_run_shape(True, "full"))
     assert full.count(precedence) == 1
     assert "No filesystem sandbox is requested" in full
@@ -1441,7 +1452,7 @@ def test_host_states_the_typed_access_profile_once_and_says_it_governs():
     assert "source edits delivered through the assigned root" in full
 
     assignment = "ASSIGNMENT\nRead-only, no edits or commands."
-    with_assignment = _host_instructions(delegated_run_shape(False), assignment)
+    with_assignment = _host_instructions(delegated_run_shape(False, "readonly"), assignment)
     assert with_assignment.endswith("\n\n" + assignment)  # assignment still last
     assert with_assignment.index(precedence) < with_assignment.index(assignment)
 

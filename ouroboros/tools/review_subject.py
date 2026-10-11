@@ -526,10 +526,10 @@ def capture_review_diff(ctx: Any, repo_dir, *, unified: int = 3) -> str:
 _SESSION_SUBJECT_RETRIEVE = (
     "## Subject (session delivery)\n"
     "The review subject is the STAGED diff of the repository you are running "
-    "in. Retrieve it yourself with whatever your read-only tools allow: if you "
+    "in. Retrieve it yourself with whatever your tools allow: if you "
     "can run commands, `git diff --cached` (and `git diff --cached --name-only` "
-    "for the file list); if your read-only mode withholds command execution — it "
-    "commonly does — read the touched files directly and compare them against "
+    "for the file list); if command execution is withheld — a read-only session "
+    "commonly withholds it — read the touched files directly and compare them against "
     "`.git`. Read the touched files as needed either way."
 )
 

@@ -34,7 +34,8 @@ REVIEW_DELIVERIES = (REVIEW_DELIVERY_NATIVE, REVIEW_DELIVERY_PACKET)
 MINTED_FROM_REVIEW_LANE = "review_lane"
 MINTED_FROM_FACTORY_DEFAULT = "factory_default"
 MINTED_FROM_VALUES = (MINTED_FROM_REVIEW_LANE, MINTED_FROM_FACTORY_DEFAULT)
-SESSION_ACCESS_PROFILES = ("workspace_write", "full")
+SESSION_ACCESS_PROFILES = ("workspace_write", "full")  # profiles with technical write access
+SESSION_ACCESS_CHOICES = ("readonly", *SESSION_ACCESS_PROFILES)
 SESSION_ACCESS_LOWERING = ("readonly", "workspace_write")
 # Removal marker, not a runtime gate: the singleton/Heavy reader is intentionally
 # one compatibility window rather than a permanent second configuration system.
@@ -239,8 +240,8 @@ def parse_configured_subagents(raw: Any) -> ConfiguredSubagents:
         )
         _validate_session_target(route, where)
         access = row.get("access", "full") if route.is_session else ""
-        if route.is_session and (not isinstance(access, str) or access not in SESSION_ACCESS_PROFILES):
-            raise ValueError(f"{SUBAGENTS_SETTING}: {where}.access must be workspace_write or full")
+        if route.is_session and (not isinstance(access, str) or access not in SESSION_ACCESS_CHOICES):
+            raise ValueError(f"{SUBAGENTS_SETTING}: {where}.access must be readonly, workspace_write or full")
         if "access" in row and not route.is_session:
             raise ValueError(f"{SUBAGENTS_SETTING}: {where}.access is meaningful only for agent_session")
         effort = _effort(row.get("effort"), where)
@@ -814,7 +815,7 @@ __all__ = [
     "REVIEW_DELIVERY_NATIVE",
     "REVIEW_DELIVERY_PACKET",
     "SCOUT_RECOMMENDATION",
-    "SESSION_ACCESS_PROFILES",
+    "SESSION_ACCESS_PROFILES", "SESSION_ACCESS_CHOICES",
     "SESSION_ACCESS_LOWERING",
     "SOURCE_CONFIGURED",
     "SOURCE_INVALID",

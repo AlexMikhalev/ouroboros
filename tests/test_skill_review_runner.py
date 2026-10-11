@@ -987,10 +987,10 @@ def test_cancel_and_timeout_each_write_one_idempotent_terminal_row(tmp_path):
     from ouroboros.utils import atomic_write_json
     atomic_write_json(review_job_state_path(drive_root, "beta"), beta_job)
     _mark_review_job_timeout(
-        drive_root, "beta", "hash-b", reason="TimeoutError: lifecycle deadline",
+        drive_root, "beta", "hash-b", reason="TimeoutError: lifecycle deadline", job_id="timeout-job",
     )
     _mark_review_job_timeout(
-        drive_root, "beta", "hash-b", reason="TimeoutError: lifecycle deadline",
+        drive_root, "beta", "hash-b", reason="TimeoutError: lifecycle deadline", job_id="timeout-job",
     )
 
     for skill, expected_status, expected_job in (

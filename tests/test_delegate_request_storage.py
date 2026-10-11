@@ -11,7 +11,7 @@ from ouroboros import delegate_custody as custody
 from ouroboros import observability
 from ouroboros.delegate_pending import request_body
 from tests._delegated_transport_shared import (
-    _LiveRunStub, _nanny_ctx,
+    _LiveRunStub, _nanny_ctx, _select_transport_access,
     _owned_gateway_uses_each_test_transport,  # noqa: F401 -- autouse fixture
 )
 from tests._review_session_route_shared import fake_route as _fake_route
@@ -68,6 +68,9 @@ def test_canonical_body_and_event_precede_dispatch(tmp_path, monkeypatch, reques
     else:
         stub = _LiveRunStub()
         stub_type = type(stub)
+        # A READ-ONLY child: technical access alone decides the run shape (#1609),
+        # and this readonly-only daemon serves exactly that request.
+        _select_transport_access(monkeypatch, "readonly")
         monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "some-route=weak-model:low")
         monkeypatch.setattr(gateway, "ClaudexorGateway", lambda *a, **k: stub)
     original_start = stub_type.start_run
@@ -194,6 +197,7 @@ def test_lost_ack_keeps_the_original_start_claim_when_its_body_is_unreadable(tmp
             return {"runId": "original-run"}
 
     stub = LostAcknowledgment()
+    _select_transport_access(monkeypatch, "readonly")   # a read-only child (#1609)
     monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "some-route=weak-model:low")
     monkeypatch.setattr(gateway, "ClaudexorGateway", lambda *args, **kwargs: stub)
     ctx = _nanny_ctx(tmp_path, task_id="owner")

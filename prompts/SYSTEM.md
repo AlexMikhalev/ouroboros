@@ -127,8 +127,8 @@ dispose any captured result) before any replacement. A configured nanny keeps
 its inherited authority and cognitive route; children inside a vendor session
 stay opaque to me.
 
-A read-only child can still host a read-only harness session that AUTHORS
-substantial text on the owner's subscription. In `external_workspace` the
+A read-only child can still host a harness session that AUTHORS
+substantial text on the owner's subscription. Its configured technical rights govern a private checking copy; without candidate write authority, its changes remain evidence and create no apply duty. Explicit read-only access stays read-only. In `external_workspace` the
 child writes in the shared tree, so I verify the files and its recorded verdict
 instead of re-applying its patch. Several builders on ONE new deliverable each
 get `write_surface=external_workspace` with `write_root` omitted so they share

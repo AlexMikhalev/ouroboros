@@ -10,6 +10,8 @@ Execution resolves one selected canonical directory through the full loader on e
 
 ### Skill review authority
 
+These gates govern installed-skill activation. A reviewer's configured rights separately govern checks of untrusted code in its private copy: Full is not an OS sandbox, and checking grants no skill activation.
+
 Skill review combines deterministic preflight with independent multi-model feedback; an optional advisory cannot replace that feedback, and a deterministic preflight failure persists as PENDING, not as advisory-overridable BLOCKERS. Official catalog payloads get their reduced-noise profile only when sidecar, catalog and local file sets and every SHA-256 match a fresh catalog read exactly; the `official_hub_verified` hint in the listing and manifest runs the same match against the display-plane catalog memo (`marketplace/ouroboroshub.py`) and is never authority. Under Advisory an explicit author finish may accept current bytes after prior substantive feedback, or with an exact returned terminal job/hash reference carrying partial feedback or disclosed review unavailability; each finish runs current preflight and records its proof in `author_disposition.review_reference`, and a running critic without feedback is not "unavailable". `SkillReviewState.gate_for` supplies the same current authority to readiness, grants, extension and Host Service consumers; the original critic hash, status and findings never change. Blocking always needs fresh critic approval; Cyber keeps its P0/P3 judgment. Hub publication reuses this authority (§6 Skill publication).
 
 ### Telegram seed

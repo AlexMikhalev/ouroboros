@@ -742,6 +742,8 @@ def slot_row(slot: Any) -> dict:
         "subagent_id": str(getattr(slot, "subagent_id", "") or ""),
         "use_local": bool(getattr(slot, "use_local", False)),
         "processing_preference": str(getattr(slot, "processing_preference", "") or ""),
+        **({"session_access": str(slot.session_access)}
+           if str(getattr(slot, "session_access", "") or "readonly") != "readonly" else {}),
     }
 
 
@@ -811,6 +813,7 @@ def frozen_plan_slots(wave: dict, *, state_root: Optional[pathlib.Path] = None, 
         slot_id=r["slot_id"], model=r["model"], effort=r["effort"], route=ReviewRouteKind(r["route"]),
         session_target=r["session_target"], session_profile=r["session_profile"], subagent_id=r["subagent_id"],
         use_local=r["use_local"], processing_preference=r["processing_preference"],
+        session_access=str(r.get("session_access") or ""),
         native_retrieval_override=r["delivery"] == "native", max_tokens=PLAN_REVIEW_MAX_TOKENS,
         role_hint="plan reviewer", default_temperature=0.2,
     ) for r in rows]

@@ -361,8 +361,10 @@ def test_review_scope_preserves_limit_provenance(tmp_path, monkeypatch):
     monkeypatch.setattr(review_custody, 'run_custodied_review_slots', intercept)
     parent = ua.UsageScope(drive_root=tmp_path, task_id='task', root_task_id='task', global_limit_usd=80,
                           global_limit_source='task_start_budget_resolver', global_limit_revision='revision-42')
+    # Every field the coordinator reads before custody; no writable seat, so nothing is frozen.
     request = SimpleNamespace(reconcile_only=False, surface='plan_review', task_id='task',
-                              usage_attribution={}, deadline_at='', task_attempt=None)
+                              usage_attribution={}, deadline_at='', task_attempt=None,
+                              checking_source={}, session_root='')
     with ua.usage_scope(parent), pytest.raises(Captured):
         ReviewCoordinator(llm=object(), drive_root=tmp_path).run(request, [object()])
     assert observed['global_limit_usd'] == 80

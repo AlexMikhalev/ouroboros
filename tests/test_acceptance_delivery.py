@@ -343,7 +343,8 @@ _CLEAN_VERDICT = {
 
 _ROW_API = _row("t_api", "openai/fake-reviewer", delivery="packet")
 _ROW_NATIVE = _row("t_actor", "openai/fake-reviewer")
-_ROW_SESSION = _row("t_sess", "fake-review=fake-small", kind="agent_session")
+# The source/wallet fixture promises the original Ask shape explicitly.
+_ROW_SESSION = _row("t_sess", "fake-review=fake-small", kind="agent_session", access="readonly")
 
 
 def _offline_env(monkeypatch, *rows):

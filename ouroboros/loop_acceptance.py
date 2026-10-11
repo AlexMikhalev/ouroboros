@@ -50,8 +50,9 @@ def _task_acceptance_eligible(
     """Return ``(host_should_review, trigger_reason)``.
 
     Both modes review observable effects and typed deliverables/criteria.
-    ``auto`` also honors an agent's explicit review-tool request, so read-only
-    research remains reviewable without classifying its prose or tool counts.
+    ``auto`` also honors an agent's recorded NOMINATION (the typed root deferral,
+    never the review tool's name alone), so read-only research remains
+    reviewable without classifying its prose or tool counts.
     Queue membership alone qualifies only in ``required``. Child reviews stay
     advisory, and ``off`` never reviews.
     Eligibility uses typed contracts and runtime facts, never message content.
@@ -74,13 +75,27 @@ def _task_acceptance_eligible(
             or bool(contract.get("acceptance_claims"))
         ):
             return True, f"{prefix}_contract"
-        if any(
-            isinstance(call, dict) and call.get("tool") == "task_acceptance_review"
-            for call in (llm_trace.get("tool_calls") or [])
-        ):
+        if recorded_acceptance_nomination(llm_trace):
             return True, f"{prefix}_agent_request"
         return False, "skipped_conversation"
     return False, "skipped_unknown_mode"
+
+
+def recorded_acceptance_nomination(llm_trace: Dict[str, Any]) -> bool:
+    """Whether the agent actually NOMINATED its result for host acceptance.
+
+    The nomination is the typed root deferral ``process_tool_results`` recorded
+    (``deferred_to_host_acceptance``, ``authoritative=false``), the same record
+    the host evidence builder reads. The tool NAME is not a nomination: the same
+    tool also acknowledges a finish/stop, amends a historical cap or summarizes a
+    historical panel, and none of those asks for a panel (#1602).
+    """
+    return any(
+        isinstance(call, dict)
+        and str(call.get("status") or "") == "deferred_to_host_acceptance"
+        and call.get("authoritative") is False
+        for call in (llm_trace.get("acceptance_evidence_calls") or [])
+    )
 
 
 from ouroboros.loop_messages import (  # noqa: F401 — shared owner-source surface

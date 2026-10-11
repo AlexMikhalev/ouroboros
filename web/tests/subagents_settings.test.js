@@ -959,12 +959,14 @@ test('actor access defaults to full and round-trips an explicit lower choice', (
     const explicit = setting([apiRow(), sessionRow({ access: 'workspace_write' })]);
     assert.deepEqual(parseAvailableSubagentsSetting(explicit).setting, explicit);
     assert.notEqual(subagentSettingsFingerprint(explicit), subagentSettingsFingerprint(defaults));
+    const readonly = setting([sessionRow({ access: 'readonly' })]);
+    assert.deepEqual(buildAvailableSubagentsSetting(parseAvailableSubagentsSetting(JSON.stringify(readonly)).setting), readonly);
     const full = setting([sessionRow({ access: 'full' })]);
     const parsed = parseAvailableSubagentsSetting(JSON.stringify(full));
     assert.equal(parsed.error, '');
     assert.deepEqual(buildAvailableSubagentsSetting(parsed.setting), full);
     assert.equal(subagentSettingsFingerprint(full), subagentSettingsFingerprint(setting([sessionRow()])));
-    for (const access of [null, '', 'FULL', ' full ', false, 'readonly', 'inherit_native']) {
+    for (const access of [null, '', 'FULL', ' full ', false, 'inherit_native']) {
         assert.equal(parseAvailableSubagentsSetting(setting([sessionRow({ access })])).setting, null);
     }
     assert.equal(parseAvailableSubagentsSetting(setting([apiRow({ access: 'full' })])).setting, null);
@@ -980,6 +982,7 @@ test('session access uses a named native select with a readable capability expla
     assert.match(html, /value="full" selected>Full system access/);
     assert.match(html, /<dt>Access<\/dt><dd id="actor-codex_builder-access-help">Full system access \(the default\)/);
     assert.match(html, /can reach outside the working folder/);
+    assert.match(availableSubagentRowMarkup(sessionRow({ access: 'readonly' }), QUIET_STATE), /value="readonly" selected>Read only/);
     assert.match(html, /The selected agent must support it/);
     assert.doesNotMatch(availableSubagentRowMarkup(apiRow(), QUIET_STATE), /data-subagent-field="access"/);
     const row = sessionRow({ effort: 'high', processing_preference: 'standard' });
@@ -1076,6 +1079,11 @@ test('access edit saves and clones the lower choice, resets for API and restores
     assert.equal(control('access', 1), null);
     control('model', 1).emit('input', 'openai/gpt-5.6-luna');
     assert.deepEqual(editor.validate(), []);
+    control('access').emit('change', 'readonly');
+    const saved = editor.collect().OUROBOROS_SUBAGENTS;
+    assert.equal(saved.items[0].access, 'readonly');
+    editor.load(JSON.stringify(saved));
+    assert.equal(editor.collect().OUROBOROS_SUBAGENTS.items[0].access, 'readonly');
     control('access').emit('change', 'full');
     assert.equal(editor.collect().OUROBOROS_SUBAGENTS.items[0].access, 'full');
     editor.destroy();

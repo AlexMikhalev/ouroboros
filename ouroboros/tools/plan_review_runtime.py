@@ -111,8 +111,9 @@ def _architecture_navigation(system_root: pathlib.Path, architecture_text: str) 
 
 def _session_task_text(system_prompt: str, user_content: str, session_root: str) -> str:
     return (
-        "RETRIEVING REVIEWER (agent session): you run read-only inside "
-        f"{session_root or 'the active workspace'}. The evidence below is the host's REDACTED "
+        "RETRIEVING REVIEWER (agent session): you review "
+        f"{session_root or 'the active workspace'} (read-only, or in a private checking copy of it "
+        "when your seat holds write access). The evidence below is the host's REDACTED "
         "snapshot — the same bytes every reviewer sees — so do NOT re-read the raw evidence "
         "locators (a session reading originals would leak what the api route redacts, 4e133c8a); "
         "the ONE exception is the governance pack — BIBLE.md and docs/ARCHITECTURE.md are public "
@@ -1109,7 +1110,6 @@ def plan_panel_health_snapshot(slots: list) -> Optional[Dict[str, Dict[str, str]
 
     if not owned_daemon_provisioned():
         return None
-    shape = delegated_run_shape(False)  # a reviewer reads and answers
     evidence: Dict[str, Dict[str, str]] = {}
     by_route: Dict[tuple, tuple[str, str]] = {}
     gateway = None
@@ -1127,7 +1127,10 @@ def plan_panel_health_snapshot(slots: list) -> Optional[Dict[str, Dict[str, str]
             # share one verdict (a spent pin would otherwise be vouched for by a
             # sibling's health, or vice versa).
             pin = str(getattr(route, "profile_id", "") or "")
-            key = (route.route_id, route.model, pin)
+            # Rights are part of the subject too: a route may serve read-only seats
+            # and refuse a writable one (its access profile or the delegated marker).
+            shape = delegated_run_shape(False, str(getattr(slot, "session_access", "") or "readonly"))
+            key = (route.route_id, route.model, pin, shape.access)
             if key not in by_route:
                 by_route[key] = route_health(gateway, route.route_id, shape,
                                              route_model=route.model,
@@ -1213,7 +1216,9 @@ def plan_reviewer_config_fingerprint(slots: list) -> str:
          str(getattr(getattr(s, "route", None), "value", "") or ""),
          str(getattr(s, "session_target", "") or ""),
          str(getattr(s, "session_profile", "") or ""),
-         str(getattr(s, "effort", "") or "")]
+         str(getattr(s, "effort", "") or ""),
+         # Rights are identity; a read-only (or legacy) seat keeps its exact bytes.
+         *([str(s.session_access)] if str(getattr(s, "session_access", "") or "readonly") != "readonly" else [])]
         for s in slots or []
     ]
     # Actor binding is delivery identity; column added only when some row

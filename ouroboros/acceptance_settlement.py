@@ -281,7 +281,7 @@ def acceptance_settlement_message(request: Any, wave: Dict[str, Any]) -> str:
     early = len(wave.get("answered_before_release_ids") or ())
     head = ACCEPTANCE_SETTLEMENT_WAKE.format(
         retry_key=str(getattr(request, "retry_key", "") or ""),
-        settled=early + sum(1 for status in slots.values() if status),
+        settled=early + sum(1 for status in slots.values() if status and status != "unresolved"),
         total=max(int(wave.get("total") or 0), len(slots) + early),
     )
     lines = _reviewer_lines(wave)
@@ -766,15 +766,14 @@ def canonical_acceptance_trace(root: Any, task_id: str, retry_key: str, *,
 
 def _collected_wave(run: Dict[str, Any]) -> Dict[str, Any]:
     """The reviewers' own lines for a wave whose release roster died with its worker."""
-    from ouroboros.review_custody import _settled_slot_verdict
+    from ouroboros.review_custody import RELEASED_UNRESOLVED, _settled_slot_verdict
 
     slots, verdicts = {}, {}
-    for actor in run.get("actors") or []:
-        if not isinstance(actor, dict):
-            continue
+    for actor in (row for row in run.get("actors") or [] if isinstance(row, dict)):
         slot_id = str(actor.get("slot_id") or "")
-        slots[slot_id] = "" if actor.get("operation_state") in {"pending_dispatch", "in_flight"} else str(actor.get("status") or "settled")
-        if slots[slot_id]:
+        slots[slot_id] = {"pending_dispatch": "", "in_flight": "", "custody_lost": RELEASED_UNRESOLVED}.get(
+            actor.get("operation_state"), str(actor.get("status") or "settled"))  # unknown is not settled (#1547)
+        if slots[slot_id] not in {"", RELEASED_UNRESOLVED}:
             verdicts[slot_id] = _settled_slot_verdict(SimpleNamespace(**{"raw_text": "", "error": "", **actor}))
     return {"slots": slots, "verdicts": verdicts, "total": len(slots)}
 

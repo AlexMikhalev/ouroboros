@@ -228,6 +228,7 @@ def test_a_slot_without_an_answer_never_reads_as_a_reviewers_inconclusive_verdic
     text. Only an answer carries a reviewer's verdict; the slot state speaks for
     the rest, and the host's error text stays out of the owner's line."""
     from ouroboros.acceptance_settlement import _collected_wave
+    from ouroboros.review_custody import RELEASED_UNRESOLVED
     from ouroboros.triad_review import parse_review_findings
 
     own = '{"verdict": "DEGRADED", "summary": "The ledger could not be opened."}'
@@ -246,8 +247,11 @@ def test_a_slot_without_an_answer_never_reads_as_a_reviewers_inconclusive_verdic
     ]
     run = _run(aggregate_signal="DEGRADED", actors=actors, slot_roster=[])
     wave = _collected_wave(run)
-    assert {slot: row["verdict"] for slot, row in wave["verdicts"].items()} == dict.fromkeys("abcdef", "DEGRADED")
+    assert {slot: row["verdict"] for slot, row in wave["verdicts"].items()} == dict.fromkeys("abcef", "DEGRADED")
     assert wave["slots"]["g"] == ""
+    # A custody-lost slot's outcome is UNKNOWN, not settled (#1547): it carries no
+    # parsed verdict at all, so nothing could mistake it for a reviewer's answer.
+    assert wave["slots"]["d"] == RELEASED_UNRESOLVED and "d" not in wave["verdicts"]
     lines = _late_settlement_text(run, wave).split("\n")[1:]
     assert lines == ["- m/a (requested): unavailable",
                      '- m/b (requested): unavailable — the engine reported: "The engine is rate limited"',

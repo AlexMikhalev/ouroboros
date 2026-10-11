@@ -465,6 +465,22 @@ def review_operation_binding(request: Any, slot: Any, operation_id: str) -> dict
     }
 
 
+def recorded_binding_conflicts(binding: Any, expected: dict) -> bool:
+    """Does a recorded binding name another operation than ``expected``? An absent or
+    empty one is no conflict; its pending invocation token is a separate fact."""
+    if binding is None:
+        return False
+    return not isinstance(binding, dict) or bool(binding) and (
+        {key: value for key, value in binding.items() if key != "pending_invocation_id"} != expected)
+
+
+def recorded_invocation_tokens(row: dict) -> set:
+    """Every pending invocation token a frozen seat row recorded (row, usage, binding)."""
+    return {str(value) for value in (
+        row.get("pending_invocation_id"), (row.get("usage") or {}).get("pending_invocation_id"),
+        (row.get("recovery_binding") or {}).get("pending_invocation_id")) if value}
+
+
 def review_reconciliation_identity(request: Any, slots: list, *, root_task_id: str, contract: Any = "") -> dict:
     """Reuse the caller's material/cycle identity and the exact configured roster."""
     import hashlib
@@ -480,9 +496,12 @@ def review_reconciliation_identity(request: Any, slots: list, *, root_task_id: s
     roster = []
     for slot in slots:
         values = asdict(slot) if is_dataclass(slot) else dict(getattr(slot, "__dict__", {}) or {})
+        # A read-only seat keeps the roster identity recorded before seats carried
+        # rights (#1609); writable rights are identity, as in ``_attempt_key``.
         roster.append({k: v for k, v in values.items()
                        if k not in {"timeout_sec", "transport_timeout_sec"}
-                       and (k != "processing_preference" or v)})
+                       and (k != "processing_preference" or v)
+                       and (k != "session_access" or str(v or "readonly") != "readonly")})
     retry_key = getattr(request, "retry_key", None)
     return {
         "subject_hash": digest(retry_key or {

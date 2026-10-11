@@ -420,6 +420,7 @@ D20 = "Presence"
 "ouroboros/review_custody.py" = "D06"
 "ouroboros/review_operation.py" = "D06"
 "ouroboros/review_pause.py" = "D06"
+"ouroboros/review_live_join.py" = "D06"
 "ouroboros/review_source_closure.py" = "D06"
 "ouroboros/send_clock.py" = "D02"
 "ouroboros/review_cycles.py" = "D06"
@@ -427,6 +428,7 @@ D20 = "Presence"
 "ouroboros/review_evidence.py" = "D06"
 "ouroboros/review_evidence_sections.py" = "D06"
 "ouroboros/review_evidence_refs.py" = "D06"
+"ouroboros/review_checking.py" = "D06"
 "ouroboros/review_execution.py" = "D06"
 "ouroboros/review_session_reads.py" = "D06"
 "ouroboros/review_execution_projection.py" = "D06"
@@ -493,6 +495,7 @@ D20 = "Presence"
 "ouroboros/skill_review_packs.py" = "D14"
 "ouroboros/skill_review_prompt.py" = "D14"
 "ouroboros/skill_review_rebuttals.py" = "D14"
+"ouroboros/skill_review_collect.py" = "D14"
 "ouroboros/skill_review_cycles.py" = "D14"
 "ouroboros/skill_review_history.py" = "D14"
 "ouroboros/skill_review_passes.py" = "D14"
@@ -1044,6 +1047,7 @@ lazy_only = [
   "D13->D09",
   "D13->D15",
   "D14->D01",
+  "D14->D07",
   "D14->D08",
   "D14->D17",
   "D14->D20",

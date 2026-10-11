@@ -36,7 +36,6 @@ import json
 import logging
 import time
 import uuid
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, NamedTuple
 
 from ouroboros import delegate_custody as custody
@@ -110,7 +109,8 @@ from ouroboros.delegate_interactions import (  # noqa: F401
 # facade back); re-exported here because sibling code, the tests and
 # monkeypatch targets name them on THIS surface.
 from ouroboros.deadline_utils import deadline_expired
-from ouroboros.delegate_directory import blocked_geometry_refusal
+from ouroboros.delegate_directory import (
+    blocked_geometry_refusal, git_directory_options_refusal, prepare_directory_execution, snapshot_checkout)
 from ouroboros.delegate_registration_policy import resolve_registration
 from ouroboros.subagent_worktrees import registered_checkout
 from ouroboros.delegate_shared import (  # noqa: F401
@@ -191,7 +191,7 @@ def _host_instructions(authority: "DelegatedRunShape", assignment: str = "",
             "honestly and do not claim to be sandboxed."
             if authority.access == "full" else _UNPROVEN_BOUNDARY_INSTRUCTION
         )
-    text += access_instruction(authority.access)  # native powers, not a wider assignment
+    text += access_instruction(authority.access, investigation=authority.investigation)  # powers, not a wider assignment
     if assignment:
         text += "\n\n" + assignment
     return append_coordination_context(text, coordination_context)
@@ -206,17 +206,17 @@ def _derive_authority(ctx: ToolContext, access: str = "workspace_write") -> "Del
 
     The SHAPE belongs to ``subagents.delegated_run_shape``. An acting child or an
     ordinary root with a selected external workspace/room holds write authority
-    there; ``_mutation_authority`` validates that same physical target. The existing
-    snapshot capability decides whether it can execute that mutating assignment.
+    there; ``_mutation_authority`` validates that same physical target. Without
+    that authority the captured access still runs, as an evidence-only
+    investigation in a private copy (#1609). Observe and a Presence ceiling keep
+    their read-only research.
     """
     from ouroboros.subagents import delegated_run_shape
-    from ouroboros.tool_access import (
-        _TOP_LEVEL_PRINCIPAL_PROFILES, active_tool_profile, project_room_lens_dir,
-    )
+    from ouroboros.tool_access import _TOP_LEVEL_PRINCIPAL_PROFILES, active_tool_profile, project_room_lens_dir
+    from ouroboros.consciousness_authority import is_observe_origin
+    from ouroboros.presence_authority import presence_ceiling_allows_delegated_surface, presence_ceiling_from_context
 
     profile = active_tool_profile(ctx)
-    from ouroboros.consciousness_authority import is_observe_origin
-
     if is_observe_origin(getattr(ctx, "task_metadata", {})):
         # Observe can use the delegated harness for research, but never turns it
         # into an in-place writer merely because the caller omitted/raised access.
@@ -225,12 +225,11 @@ def _derive_authority(ctx: ToolContext, access: str = "workspace_write") -> "Del
         profile in _TOP_LEVEL_PRINCIPAL_PROFILES and project_room_lens_dir(ctx) is not None
     )
     if mutating:
-        from ouroboros.presence_authority import presence_ceiling_allows_delegated_surface
-
         constraint = getattr(ctx, "task_constraint", None)
         surface = str(getattr(constraint, "surface", "") or "external_workspace")
         mutating = presence_ceiling_allows_delegated_surface(ctx, surface)
-    return delegated_run_shape(mutating, access)
+    presence_bound = presence_ceiling_from_context(ctx) is not None
+    return delegated_run_shape(mutating, "readonly" if not mutating and presence_bound else access)
 
 
 def _presence_delegate_read_refusal(ctx: ToolContext) -> Optional[ToolResult]:
@@ -519,33 +518,7 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
                     canonical_work_order_fingerprint=str(_canonical_work_order_fingerprint or ""))
                 if refusal:
                     return refusal
-            if authority.access in SESSION_ACCESS_PROFILES:
-                target_root = record_auth["target_root"]
-                authority_source = record_auth["source"]
-                if authority_source == "skill_payload":
-                    snapshot, snap_error = _provision_payload_snapshot(
-                        ctx, drive, record_auth, invocation_id)
-                elif not (Path(target_root) / ".git").exists():
-                    from ouroboros.delegate_directory import prepare_directory_execution
-                    try:
-                        authority, directory_options, resource_ref = prepare_directory_execution(
-                            ctx, gateway, target_root, authority, directory_strategy, scope_paths)
-                    except ValueError as exc:
-                        return _fail("delegate_start", "directory_execution_unavailable", str(exc), definitely_unrun=True)
-                    snapshot, snap_error = None, ""
-                else:
-                    from ouroboros.delegate_directory import git_directory_options_refusal
-                    if error := git_directory_options_refusal(target_root, directory_strategy, scope_paths):
-                        return _fail("delegate_start", "directory_execution_unavailable", error, definitely_unrun=True)
-                    snapshot, snap_error = ((continuation.snapshot, None) if continuation.snapshot
-                                            else _provision_snapshot(ctx, drive, target_root, invocation_id))
-                if snap_error:
-                    _settle_refused_provision(ctx, gateway, snap_error, invocation_id, history_facts)
-                    return snap_error
-                if snapshot is not None:
-                    snapshot_id, baseline_sha, root = snapshot.snapshot_id, snapshot.baseline_sha, snapshot.path
-                    resource_ref = dict(record_auth.get("resource_ref") or {})
-            if authority.access == "readonly":
+            if authority.access == "readonly" or authority.investigation:  # a folderless Project's staged inputs
                 from ouroboros.delegate_readonly_inputs import prepare_folderless_inputs
 
                 try:
@@ -555,8 +528,33 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
                 if readonly_root:
                     root = readonly_root
                     instructions += input_instruction
+            if authority.access in SESSION_ACCESS_PROFILES:
+                target_root = record_auth["target_root"]
+                authority_source = record_auth["source"]
+                if authority_source == "skill_payload":
+                    snapshot, snap_error = _provision_payload_snapshot(
+                        ctx, drive, record_auth, invocation_id)
+                elif not (checkout := snapshot_checkout(ctx, target_root, authority)):
+                    try:
+                        authority, directory_options, resource_ref = prepare_directory_execution(
+                            ctx, gateway, target_root, authority, directory_strategy, scope_paths, readonly_root)
+                    except ValueError as exc:
+                        return _fail("delegate_start", "directory_execution_unavailable", str(exc), definitely_unrun=True)
+                    snapshot, snap_error = None, ""
+                else:
+                    if error := git_directory_options_refusal(checkout, directory_strategy, scope_paths):
+                        return _fail("delegate_start", "directory_execution_unavailable", error, definitely_unrun=True)
+                    snapshot, snap_error = ((continuation.snapshot, None) if continuation.snapshot else
+                                            _provision_snapshot(ctx, drive, checkout, invocation_id, start=target_root,
+                                                                independent=authority.investigation))
+                if snap_error:
+                    _settle_refused_provision(ctx, gateway, snap_error, invocation_id, history_facts)
+                    return snap_error
+                if snapshot is not None:
+                    snapshot_id, baseline_sha, root = snapshot.snapshot_id, snapshot.baseline_sha, snapshot.path
+                    resource_ref = dict(record_auth.get("resource_ref") or {})
             execution_root = (root if directory_options.get("isolation") == "live" else "") if directory_options else delegated_execution_workspace_root(gateway, authority, root)
-            scope_root = target_root if execution_root or directory_options else root
+            scope_root = (readonly_root or target_root) if execution_root or directory_options else root
             if snapshot is not None:
                 binding_fingerprint = execution_binding_fingerprint(
                     execution_root or root, target_root)
@@ -702,11 +700,13 @@ def _started_payload(handle: Dict[str, Any], run_id: str, route: Any, access: st
         "You are the nanny and the host. Poll with delegate_wait; the run's own "
         "claims are evidence to check, not a verified result."
         + (
-            " This run edits a PRIVATE SNAPSHOT of your write root, not the shared "
-            "tree: at terminal its diff is captured for you, and NOTHING lands in "
-            "the shared tree until you explicitly integrate_delegated_patch(run_id="
-            "...) to apply or reject it — read the captured diff before you claim "
-            "it, and never let the run commit. The requested native access profile "
+            (" This run is an evidence-only investigation in a PRIVATE COPY: its changes are kept as evidence, "
+             "never applied (integrate_delegated_patch refuses); never let it commit." if authority.investigation else
+             " This run edits a PRIVATE SNAPSHOT of your write root, not the shared "
+             "tree: at terminal its diff is captured for you, and NOTHING lands in "
+             "the shared tree until you explicitly integrate_delegated_patch(run_id="
+             "...) to apply or reject it — read the captured diff before you claim "
+             "it, and never let the run commit.") + " The requested native access profile "
             f"is {authority.access}; scoped HOME selects native state and credentials, "
             "not filesystem confinement. Actual access is read from the run's own "
             "artifacts by delegate_wait."
@@ -744,14 +744,12 @@ def _started_payload(handle: Dict[str, Any], run_id: str, route: Any, access: st
     }
     if not durable:
         payload["pending_invocation_id"] = str(invocation_id or "")
-    if processing:
-        payload["processing"] = processing
-    if continuation:
-        # The binding facts, stated where the nanny reads them: which settled run
-        # this continues, its cause, its tree and the advice its child was given.
-        payload["continuation"] = dict(continuation)
-    if snapshot_facts:
-        payload["snapshot"] = snapshot_facts
+    # Optional receipts expose the captured processing, continuation and snapshot
+    # facts; copy the continuation binding before publishing it to the nanny.
+    for key, value in (("processing", processing), ("continuation", dict(continuation or {})),
+                       ("snapshot", snapshot_facts)):
+        if value:
+            payload[key] = value
     if snapshot_id:
         # The C1 binding, stated where the nanny can read it: the run edits the
         # EXECUTION snapshot; the authority target receives nothing until apply.
@@ -769,7 +767,10 @@ def _started_payload(handle: Dict[str, Any], run_id: str, route: Any, access: st
             ("CUSTODY IS NOT DURABLE. " if not durable else "")
             + ("This run writes directly in the selected folder; effects are already on site, without a full rollback promise. "
                if direct else "The engine prepares a separate copy of the selected inputs; its actual execution directory is not yet observed. ")
-            + "Use delegate_wait for its complete file manifest and result. Copy results use integrate_delegated_patch for apply or reject."
+            + "Use delegate_wait for its complete file manifest and result. "
+            + ("This evidence-only investigation's results are kept as evidence, never applied "
+               "(integrate_delegated_patch refuses); never let it commit." if authority.investigation
+               else "Copy results use integrate_delegated_patch for apply or reject.")
         )
     return delegate_result(payload)
 
@@ -1093,9 +1094,11 @@ def _delegate_wait(ctx: ToolContext, run_id: str, wait_sec: Optional[int] = None
     # missing record still cannot become a wider run.
     if entry.access:
         from ouroboros.subagents import DelegatedRunShape as _Shape
+        from ouroboros.delegate_registration_policy import INVESTIGATION_AUTHORITY
 
         authority = _Shape(access=entry.access, mode=entry.mode,
-                           isolation=entry.isolation, delegated=entry.delegated)
+                           isolation=entry.isolation, delegated=entry.delegated,
+                           investigation=entry.authority_source == INVESTIGATION_AUTHORITY)
     else:
         authority = _derive_authority(ctx)
     # FACTS against premature cancels: how long the run has actually been going and

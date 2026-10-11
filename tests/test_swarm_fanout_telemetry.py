@@ -188,6 +188,9 @@ def _real_delegate_start(
                 "route": {"kind": "agent_session", "target_id": target,
                           "credential_profile_id": route.profile_id},
                 "effort": route.effort,
+                # A READ-ONLY child (local_readonly_subagent): technical access alone
+                # decides the run shape now (#1609), so the session states it.
+                "access": "readonly",
             },
         })
         try:
@@ -221,6 +224,7 @@ def _real_delegate_start(
                 "credential_profile_id": "",
             },
             "effort": "low",
+            "access": "readonly",   # the same read-only child (#1609)
         }
         ctx._configured_actor_bootstrap = {
             "snapshot": snapshot,

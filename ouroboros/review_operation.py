@@ -483,9 +483,12 @@ def review_operation_scope(*, request: Any, slots: List[Any], usage_ctx: Any,
     """
     from ouroboros.model_wait import current_model_wait, operation_wait_scope
     from ouroboros.review_custody import review_dispatch_plan
+    from ouroboros.review_live_join import live_join_operation
 
     parent = current_model_wait()
-    if parent is None or bool(getattr(request, "reconcile_only", False)):
+    reconcile = bool(getattr(request, "reconcile_only", False))
+    live = live_join_operation(request, slots, usage_ctx) if parent is not None and reconcile else None
+    if parent is None or (reconcile and live is None):
         yield OperationBinding()
         return
     plan = review_dispatch_plan(request, slots, usage_ctx)
@@ -495,7 +498,9 @@ def review_operation_scope(*, request: Any, slots: List[Any], usage_ctx: Any,
     restore = None
     preparing = current_review_operation()
     root = _result_root(usage_ctx, parent)
-    if (preparing is not None and preparing.preparing and preparing.task_id == str(task_id)
+    if live is not None:
+        binding.operation = live  # no new owner, even if settlement races
+    elif (preparing is not None and preparing.preparing and preparing.task_id == str(task_id)
             and preparing.retry_key == request.retry_key and preparing.result_root == root):
         binding.operation = preparing
         binding.refused, restore = _retain_before_dispatch(preparing, request, slots, sends, usage_ctx, root)
@@ -896,6 +901,62 @@ def review_operation_event_admitted(root: Any, payload: Dict[str, Any]) -> bool:
 
 # --- pure collection -----------------------------------------------------------
 
+def recorded_review_assignment(root: Any, *, task_id: str, surface: str, row: dict,
+                               retry_key: str, root_task_id: str = "",
+                               review_contract: str = "") -> Tuple[Any, Any]:
+    """Read a paid seat's original inputs, proving them against its owning wave.
+
+    Current configuration is not an input to collection. The operation pointer,
+    original prompt and its full binding must agree; a missing source is a gap.
+    Old slots without session_access retain ReviewSlot's historical readonly
+    meaning. This is retained evidence, never a transport body for a new send.
+    """
+    from ouroboros.observability import read_call_payload
+    from ouroboros.review_dispatch import recorded_binding_conflicts, review_operation_binding
+    from ouroboros.review_records import ReviewRequest, ReviewSlot, ReviewRouteKind
+
+    operation = str(row.get("operation_id") or "")
+    if not operation:
+        raise ValueError("recorded operation identity missing")
+    manifest, prompt, _refs = read_call_payload(
+        root, task_id=task_id or "review", call_id=f"{operation}_prompt")
+    request = ReviewRequest(**prompt["request"])
+    slot = ReviewSlot(**{**prompt["slot"], "route": ReviewRouteKind(prompt["slot"]["route"])})
+    expected = review_operation_binding(request, slot, operation)
+    if (manifest.get("review_operation_binding") != expected
+            or not all(expected.get(key) for key in ("subject_hash", "review_contract", "roster_hash", "root_task_id"))):
+        raise ValueError("original prompt operation binding mismatch")
+    if (request.task_id != task_id or request.surface != surface or request.retry_key != retry_key
+            or slot.slot_id != str(row.get("slot_id") or row.get("slot") or "")):
+        raise ValueError("original request task/material/slot mismatch")
+    if root_task_id and expected.get("root_task_id") != root_task_id:
+        raise ValueError("original request root mismatch")
+    if review_contract and expected.get("review_contract") != review_contract:
+        raise ValueError("original request contract mismatch")
+    if recorded_binding_conflicts(row.get("recovery_binding"), expected):
+        raise ValueError("recorded wave binding mismatch")
+    return request, slot
+
+
+def collect_recorded_review_actor(root: Any, *, task_id: str, surface: str, row: dict,
+                                  retry_key: str, usage_ctx: Any = None, root_task_id: str = "",
+                                  review_contract: str = "") -> dict:
+    """Collect a frozen consumer row using its recorded assignment, never current slots."""
+    from ouroboros.review_records import ReviewSlot
+
+    try:
+        request, slot = recorded_review_assignment(
+            root, task_id=task_id, surface=surface, row=row, retry_key=retry_key,
+            root_task_id=root_task_id, review_contract=review_contract)
+        actor, _fact = _collect_pending_row(root, request, slot, row, usage_ctx, None)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        slot = ReviewSlot(slot_id=str(row.get("slot_id") or row.get("slot") or ""),
+                          model=str(row.get("model") or row.get("model_id") or ""))
+        actor = _row_actor(slot, str(row.get("operation_id") or ""), row, state="custody_lost",
+                           reason=f"Original review assignment unavailable: {exc}")
+    return asdict(actor)
+
+
 def recover_review_producer(root: Any, request: Any, slot: Any, row: dict) -> Any:
     """Resolve one known operation from its complete existing CAS, never dispatch.
 
@@ -905,13 +966,13 @@ def recover_review_producer(root: Any, request: Any, slot: Any, row: dict) -> An
     """
     from ouroboros.observability import read_call_payload
     from ouroboros.review_custody import finalize_review_actor
-    from ouroboros.review_dispatch import review_operation_binding
+    from ouroboros.review_dispatch import recorded_invocation_tokens, review_operation_binding
     from ouroboros.review_records import ReviewActorRecord
 
     operation = str(row.get("operation_id") or "")
     if not operation or not root:
         return None
-    expected = review_operation_binding(request, slot, operation)
+    expected = dict(row.get("recovery_binding") or {})
     refs, payload = {}, None
     try:
         for suffix in ("response", "error"):
@@ -926,6 +987,13 @@ def recover_review_producer(root: Any, request: Any, slot: Any, row: dict) -> An
         outcome = payload.get("producer_outcome") if isinstance(payload, dict) else None
         if not manifest.get("producer_complete") or not isinstance(outcome, dict):
             return None  # Historical/partial blobs carry no completed-producer receipt.
+        original_request, original_slot = recorded_review_assignment(
+            root, task_id=request.task_id, surface=request.surface, row=row,
+            retry_key=request.retry_key,
+            root_task_id=(request.reconciliation_identity or {}).get("root_task_id", ""))
+        expected = review_operation_binding(original_request, original_slot, operation)
+        if review_operation_binding(request, slot, operation) != expected:
+            raise ValueError("operation/task/root/material/contract/roster binding mismatch")
         binding = outcome.get("recovery_binding")
         if not isinstance(binding, dict) or manifest.get("review_operation_binding") != binding:
             raise ValueError("producer binding missing or inconsistent")
@@ -938,14 +1006,9 @@ def recover_review_producer(root: Any, request: Any, slot: Any, row: dict) -> An
             root, task_id=request.task_id or "review", call_id=f"{operation}_prompt")
         if prompt_manifest.get("review_operation_binding") != expected:
             raise ValueError("original prompt operation binding mismatch")
-        original_request = SimpleNamespace(**prompt["request"])
-        original_slot = SimpleNamespace(**prompt["slot"])
-        if review_operation_binding(original_request, original_slot, operation) != expected:
-            raise ValueError("original request provenance mismatch")
         token = str(binding.get("pending_invocation_id") or "")
-        frozen_token = str(row.get("pending_invocation_id") or
-                           (row.get("usage") or {}).get("pending_invocation_id") or "")
-        if frozen_token and token != frozen_token:
+        frozen_tokens = recorded_invocation_tokens(row)
+        if frozen_tokens and frozen_tokens != {token}:
             raise ValueError("recorded pending invocation mismatch")
         if str(getattr(slot.route, "value", slot.route)) == "agent_session":
             from ouroboros.delegate_custody import invocation_record
@@ -969,13 +1032,11 @@ def recover_review_producer(root: Any, request: Any, slot: Any, row: dict) -> An
             actor.error = actor.error or "Producer outcome still lacks terminal custody; full partial source retained"
         return actor
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        return ReviewActorRecord(
-            slot_id=slot.slot_id, model=slot.model, status="error",
-            error=f"Exact persisted review result unavailable: {exc}",
-            failure_code="review_custody_lost", operation_id=operation,
-            operation_state="custody_lost", late_result_pending=True,
-            response_ref=refs, recovery_binding=expected,
-        )
+        actor = _row_actor(slot, operation, row, state="custody_lost",
+                           reason=f"Exact persisted review result unavailable: {exc}")
+        actor.response_ref = refs or actor.response_ref
+        actor.recovery_binding = dict(row.get("recovery_binding") or expected)
+        return actor
 
 
 
@@ -985,25 +1046,31 @@ def _row_actor(slot: Any, operation_id: str, row: Optional[dict], *, state: str,
 
     row = row or {}
     lost = state == "custody_lost"
+    usage = copy.deepcopy(dict(row.get("usage") or {}))
+    if lost and row.get("pending_invocation_id"):
+        usage.setdefault("pending_invocation_id", row["pending_invocation_id"])
     return ReviewActorRecord(
         slot_id=slot.slot_id, model=slot.model, status="error" if lost else "not_dispatched", error=reason,
         failure_code="review_custody_lost" if lost else "", operation_id=operation_id,
-        operation_state=state, late_result_pending=lost, usage=copy.deepcopy(dict(row.get("usage") or {})),
-        response_ref=dict(row.get("response_ref") or {}), recovery_binding=dict(row.get("recovery_binding") or {}))
+        operation_state=state, late_result_pending=lost, usage=usage,
+        prompt_ref=dict(row.get("prompt_ref") or {}), response_ref=dict(row.get("response_ref") or {}),
+        recovery_binding=dict(row.get("recovery_binding") or {}))
 
 
 def _invocation_for_operation(root: Any, slot: Any, operation_id: str, row: dict) -> Optional[Dict[str, Any]]:
     """The durable delegated invocation this operation requested, if one is on record."""
     from ouroboros import delegate_custody as custody
 
-    token = str(row.get("pending_invocation_id") or (row.get("usage") or {}).get("pending_invocation_id") or "")
+    token = str(row.get("pending_invocation_id") or (row.get("usage") or {}).get("pending_invocation_id")
+                or (row.get("recovery_binding") or {}).get("pending_invocation_id") or "")
     rows = list(custody.custody_rows(root))
     if not token:
         token = next((str(item.get("invocation_id") or "") for item in rows
                       if item.get("type") == custody.START_REQUESTED
                       and str(item.get("operation_id") or "") == operation_id
                       and str(item.get("slot_id") or "") == str(slot.slot_id)), "")
-    return custody.invocation_record(root, token, rows=rows) if token else None
+    record = custody.invocation_record(root, token, rows=rows) if token else None
+    return {**record, "invocation_id": token} if record is not None else None
 
 
 def _observe_delegated_review(root: Any, request: Any, slot: Any, row: dict, operation_id: str,
@@ -1016,11 +1083,23 @@ def _observe_delegated_review(root: Any, request: Any, slot: Any, row: dict, ope
     settles it, because that controller may still be binding its run.
     """
     from ouroboros.review_custody import _frozen_actor
+    from ouroboros.review_dispatch import (
+        recorded_binding_conflicts, recorded_invocation_tokens, review_operation_binding)
 
+    if recorded_binding_conflicts(row.get("recovery_binding"), review_operation_binding(request, slot, operation_id)):
+        return _row_actor(slot, operation_id, row, state="custody_lost",
+                          reason="The recorded review assignment binding is inconsistent."), UNAVAILABLE
     record = _invocation_for_operation(root, slot, operation_id, row)
-    if record is not None and record.get("state") == "started" and record.get("run_id") and (
-            str(record.get("task_id") or "") == str(request.task_id or "")
-            and str(record.get("operation_id") or operation_id) == operation_id):
+    if record is not None:
+        expected = {"task_id": request.task_id, "surface": request.surface, "slot_id": slot.slot_id,
+                    "operation_id": operation_id,
+                    "root_task_id": (request.reconciliation_identity or {}).get("root_task_id") or request.task_id}
+        tokens = recorded_invocation_tokens(row)
+        if (any(str(record.get(k) or "") != str(value or "") for k, value in expected.items())
+                or (tokens and tokens != {str(record.get("invocation_id") or "")})):
+            return _row_actor(slot, operation_id, row, state="custody_lost",
+                              reason="The recorded delegated invocation belongs to another operation."), UNAVAILABLE
+    if record is not None and record.get("state") == "started" and record.get("run_id"):
         observed = _attach_only_run(root, request, slot, operation_id, str(record["run_id"]), record)
         return (observed, COLLECTED) if observed is not None else (_frozen_actor(row, slot), DEFERRED)
     if not controller_known:
@@ -1029,10 +1108,6 @@ def _observe_delegated_review(root: Any, request: Any, slot: Any, row: dict, ope
         return _row_actor(slot, operation_id, row, state="custody_lost", reason=(
             "No durable start request was found for this reviewer; the custody history cannot prove "
             "nothing was sent, so its outcome stays unknown and it is never re-sent.")), UNAVAILABLE
-    if (str(record.get("task_id") or "") != str(request.task_id or "")
-            or str(record.get("operation_id") or operation_id) != operation_id):
-        return _row_actor(slot, operation_id, row, state="custody_lost",
-                          reason="The recorded delegated invocation belongs to another operation."), UNAVAILABLE
     if record.get("state") == "failed_definite":
         return _row_actor(slot, operation_id, row, state="not_dispatched",
                           reason="The daemon definitively refused this reviewer's start."), NEVER_DISPATCHED
@@ -1078,7 +1153,24 @@ def _attach_only_run(root: Any, request: Any, slot: Any, operation_id: str, run_
         except Exception:
             log.debug("attach-only gateway close failed", exc_info=True)
     usage = {"provider": "claudexor", "delegated_run_started": True, "delegated_run_id": run_id,
+             "invocation_id": str(invocation.get("invocation_id") or ""),
              "collection": "attach_only_observation", "cost": None, "run_state": state}
+    try:
+        from ouroboros.review_checking import capture_seat_evidence, checking_writers_settled
+
+        # Ordinary daemon success is published after the runner and owned
+        # adapter close/drain. Failed or recovered unknown outcomes lack that
+        # boundary; this is not a claim about arbitrary detached OS descendants.
+        evidence = capture_seat_evidence(root, request.task_id, operation_id,
+                                         release=checking_writers_settled(detail))
+    except Exception as exc:
+        # The paid verdict remains collectible even if retaining its checking
+        # artifacts fails; leave the original area in custody and name the gap.
+        log.warning("Collected review evidence capture failed: %s", operation_id, exc_info=True)
+        evidence = {"status": "capture_failed", "operation_id": operation_id,
+                    "error": f"{type(exc).__name__}: {exc}"}
+    if evidence:
+        usage["checking_evidence"] = evidence
     observed = final_attempt_facts(detail, run_id)
     if isinstance(observed.get("effort_resolution"), dict):
         usage["effort_resolution"] = observed["effort_resolution"]
@@ -1093,6 +1185,8 @@ def _attach_only_run(root: Any, request: Any, slot: Any, operation_id: str, run_
         "model": usage["resolved_model"], "route_id": requested_route,
         "effective_route_ids": [usage["delegated_route"]] if usage["delegated_route"] else []})
     binding = review_operation_binding(request, slot, operation_id)
+    if invocation.get("invocation_id"):
+        binding["pending_invocation_id"] = str(invocation["invocation_id"])
     if state != "succeeded":
         return ReviewActorRecord(slot_id=slot.slot_id, model=slot.model, status="error", usage=usage,
                                  error=f"delegated review run {run_id} ended {state or 'without a state'}",

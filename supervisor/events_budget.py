@@ -842,7 +842,7 @@ def observe_held_budget_selection(q: Any, task_id: str) -> Dict[str, Any]:
     invalidates this observation rather than inheriting its permission.
     """
     from supervisor.queue_transitions import pending_member_replay_safe
-    from supervisor.continuation_admission import action_writers
+    from supervisor.continuation_admission import CONTINUE_PURPOSE, action_writers
 
     try:
         with q._queue_lock:
@@ -852,7 +852,7 @@ def observe_held_budget_selection(q: Any, task_id: str) -> Dict[str, Any]:
             authority = _held_selection_authority(q, task)
         candidate = authority["task"]
         predecessor = str(((candidate.get("metadata") or {}).get("continuation") or {}).get("predecessor_task_id") or "")
-        blockers = action_writers(q, predecessor) if predecessor else []
+        blockers = action_writers(q, predecessor, purpose=CONTINUE_PURPOSE) if predecessor else []
         safe, error = pending_member_replay_safe(q, candidate)
         return {"candidate": task, "authority": authority, "blockers": blockers,
                 "safe": safe, "unsafe_error": error}

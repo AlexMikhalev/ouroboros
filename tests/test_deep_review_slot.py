@@ -813,3 +813,29 @@ def test_slot_override_with_an_empty_target_or_unknown_kind_is_refused_typed(rev
         assert text.startswith("❌ Deep self-review unavailable: ") and fragment in text
         assert usage["reason_code"] == "deep_self_review_unavailable"
     assert not llm.chat.called
+
+
+@pytest.mark.parametrize('access', ['readonly', 'full'])
+def test_selected_catalog_session_keeps_rights_and_each_explicit_deep_call_is_new(
+        review_repo, review_drive, monkeypatch, access):
+    from ouroboros.reviewer_slot_config import catalog_review_row
+    from tests.review_pool_rosters import pool_roster, pool_seat, set_review_pool
+    import ouroboros.review_execution as review_execution
+
+    set_review_pool(monkeypatch, pool_roster(pool_seat(
+        'selected-session', 'codex=gpt-5.6-sol', kind='agent_session', access=access)))
+    row = catalog_review_row(None, 'selected-session')
+    _FakeSessionExecutor.instances = []
+    monkeypatch.setattr(review_execution, '_review_route_executor', _FakeSessionExecutor)
+    monkeypatch.setattr(deep_self_review, '_session_route_reason', lambda row: '')
+    for _ in range(2):
+        text, usage = run_deep_self_review(review_repo, review_drive, object(), lambda _m: None,
+                                           task_id='same-task', slot=row)
+        assert text.endswith(_REPORT)
+    first, second = [ex.assignment for ex in _FakeSessionExecutor.instances]
+    assert first.call_id != second.call_id
+    for assignment in (first, second):
+        assert assignment.slot.session_access == access
+        assert bool(assignment.request.checking_source) is (access == 'full')
+        assert assignment.request.policy['native_data_root'] == str(review_drive)
+        assert 'I am Ouroboros.' in assignment.request.session_task

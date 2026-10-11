@@ -204,7 +204,7 @@ def test_lifecycle_timeout_terminal_merges_the_dispatch_marker(tmp_path, monkeyp
         content_hash="h-t", root_task_id="root-5",
         review_contract_fingerprint="cf-9", rebuttal_sha256="reb-9",
     )
-    _mark_review_job_timeout(drive, "demo", "h-t", reason="lifecycle_timeout")
+    _mark_review_job_timeout(drive, "demo", "h-t", reason="lifecycle_timeout", job_id="job-77")
     rows = _history_rows(tmp_path)
     assert rows and rows[-1]["status"] == "timeout"
     assert rows[-1]["paid"] is True  # merged from the marker, result was None

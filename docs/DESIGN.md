@@ -1569,9 +1569,11 @@ credential harness. Saved subscription-model account pins survive catalog gaps
 and unrelated saves; direct API-key models do not offer a subscription-account
 pin. Catalog entries are suggestions, not account-specific entitlement or
 context evidence. Changing a model or account never changes the delivery kind:
-a configured subagent reference remains a reference to its native inspection
-episode, a scope or deep self-review row keeps reading the repository itself
-whatever model it names, and an inline packet row stays inline. Catalog refreshes
+an API catalog row keeps its explicit Native or Packet choice regardless of its
+subagent id, while a session row retrieves with its native tools. Session Access
+uses the catalog's existing select: Full system access (default), Working files,
+or Read only. Writable reviewers check private copies; their outputs remain
+evidence without product integration. Access never changes delivery. Catalog refreshes
 preserve the edited value, focus, selection and scroll position. Returning to a
 reviewer's previous source restores that source's model/account draft; a source
 not previously selected starts without another source's pin.

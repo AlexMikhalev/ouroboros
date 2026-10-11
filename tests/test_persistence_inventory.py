@@ -718,7 +718,12 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # 351 -> 353 (#1563 saved work): the rolling per-attempt working checkpoint,
 # ``task_results/artifacts/<task>/source_handles/working`` and its ``*.json`` file
 # (``ouroboros/working_checkpoint.py``; one row beside the source-handle rows).
-EXPECTED_SCAN_PATHS = 353
+# 353 -> 364 (Sprint 4 review pool): per-operation reviewer checking
+# areas/markers/evidence generations, retained frozen folder views and staging
+# names (review_checking.py), plus investigation named evidence
+# (tools/subagent_integration_delegated.py). The two section-4 checking rows and
+# section-7 delegated evidence row in PERSISTENCE.md cover the measured additions.
+EXPECTED_SCAN_PATHS = 364
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

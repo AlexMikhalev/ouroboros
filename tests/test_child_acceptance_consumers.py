@@ -79,6 +79,7 @@ def test_child_selected_session_and_explicit_root_off_panel_reach_real_consumers
     assert [r["slot_id"] for r in child["actors"]] == ["t_sess"]
     starts = [s for instance in fake.instances for s in instance.start_requests]
     assert len(starts) == 1 and starts[0]["scope"]["root"] == str(workspace)
+    assert starts[0]["access"] == "readonly" and starts[0]["mode"] == "ask"
     assert starts[0]["maxSeconds"] <= 1200 and not llm.calls
     root = _call(_ctx(tmp_path, workspace, governance, child=False))
     assert {r["slot_id"] for r in root["actors"]} == {"t_api", "t_actor", "t_sess"}

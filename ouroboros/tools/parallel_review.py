@@ -78,7 +78,12 @@ def _reserve_parallel_review_roster(ctx, prepared) -> None:
             route=routes[index] if index < len(routes) else "api_chat",
             effort=efforts[index] if index < len(efforts) else "",
         )
-        rows.append(_reserved_actor_row(slot, operation_id))
+        reserved = _reserved_actor_row(slot, operation_id)
+        reserved["review_plan"] = {key: row_plan[key][index] for key in
+            ("parts", "additional", "retrieves", "brief_shas") if index < len(row_plan.get(key) or [])}
+        if "brief_shas" in reserved["review_plan"]:
+            reserved["review_plan"]["brief_sha"] = reserved["review_plan"].pop("brief_shas")
+        rows.append(reserved)
         operations["multi_model_review"][slot_id] = operation_id
 
     if not operations["multi_model_review"]:

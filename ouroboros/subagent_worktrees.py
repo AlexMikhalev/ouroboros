@@ -557,12 +557,17 @@ def _git_env(repo_dir: Path, *args: str, env: Dict[str, str],
 
 def provision_execution_snapshot(
     *, target_root: Any, task_id: Any, snapshot_id: str,
-    worktree_root: Optional[Any] = None, data_dir: Optional[Any] = None,
+    worktree_root: Optional[Any] = None, data_dir: Optional[Any] = None, independent: bool = False,
 ) -> ExecutionSnapshotHandle:
-    """Provision a run-owned current-tree snapshot; custody owns its lifetime."""
+    """Provision a run-owned current-tree snapshot; custody owns its lifetime.
+
+    ``independent`` (an evidence-only investigation, #1609) makes the execution
+    root a private clone instead of a linked worktree, so the run's own Git
+    operations never reach the target's refs, stash or config; the clone still
+    compares working files as the target does (``_adopt_source_comparison``)."""
     return _provision_git_copy(
         target_root=target_root, task_id=task_id, snapshot_id=snapshot_id,
-        worktree_root=worktree_root, data_dir=data_dir,
+        worktree_root=worktree_root, data_dir=data_dir, independent=independent,
     )
 
 
@@ -576,6 +581,7 @@ def _provision_git_copy(
     task_copy: bool = False,
     parent_task_id: str = "",
     source_is_system_repo: bool = True,
+    independent: bool = False,
 ) -> ExecutionSnapshotHandle | WorktreeHandle:
     """Snapshot ``target_root``'s REAL current tree into a private execution root.
 
@@ -766,8 +772,12 @@ def _provision_git_copy(
             wt_path.parent.mkdir(parents=True, exist_ok=True)
             if task_copy:
                 _git(target, "worktree", "add", "--no-checkout", "--force", str(wt_path), branch)
+            elif independent:
+                clone_private_checkout(Path(git_dir), wt_path, head=baseline_sha)
             else:
                 _git(target, "worktree", "add", "--detach", "--no-checkout", str(wt_path), baseline_sha)
+        if independent:
+            _adopt_source_comparison(target, Path(git_dir), wt_path)
         # Populate outside the lock: the same reset git's own `worktree add` runs
         # (no submodule recursion) — minus the target's post-checkout hook.
         _git(wt_path, "reset", "--hard", "--quiet", "--no-recurse-submodules")
@@ -849,6 +859,67 @@ def isolated_git_env() -> Dict[str, str]:
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_TERMINAL_PROMPT"] = "0"
     return env
+
+
+def clone_private_checkout(source: Path, dest: Path, *, head: str = "") -> None:
+    """An INDEPENDENT private clone of ``source`` at ``dest``, with nothing checked out.
+
+    A linked worktree shares its repository's refs, stash, config and hooks, so an
+    ordinary ``git stash``/``branch``/``tag``/``config`` run inside it lands in the
+    author's repository. This clone borrows the source's object store read-only
+    (``--shared`` alternates; objects it writes stay its own) and owns everything
+    else. Its ``origin`` remote is removed, so no push has a default target.
+    ``head`` becomes its detached HEAD; the caller populates index and worktree.
+    """
+    env = isolated_git_env()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    for args in (["clone", "--shared", "--no-checkout", "--quiet", str(source), str(dest)],
+                 ["-C", str(dest), "remote", "remove", "origin"],
+                 *([["-C", str(dest), "update-ref", "--no-deref", "HEAD", head]] if head else [])):
+        subprocess.run(["git", *args], capture_output=True, check=True, env=env, timeout=600)
+
+
+# What git consults, besides the tree's own .gitattributes, to convert and
+# compare working files: line endings and executable-bit trust.
+_COMPARISON_CONFIG = r"^core\.(autocrlf|eol|filemode|attributesfile)$"
+
+
+def _adopt_source_comparison(target: Path, git_dir: Path, clone: Path) -> None:
+    """Make an independent clone convert and compare working files as its source does.
+
+    The baseline was hashed through the source's EFFECTIVE conversion; the
+    copied bytes are re-hashed in the clone (the provisioning check, the child's
+    own Git, the capture), which sees only the system/global scope of the config
+    a linked worktree would share. So the source's effective values of these
+    keys that the clone does not already see, and its ``info/attributes``, are
+    written into the clone. Data only: no filter, driver, hook or other
+    executable setting is transferred, so a baseline that depends on one still
+    refuses at the provisioning check.
+    """
+    def effective(repo: Path) -> Dict[str, str]:
+        listed = _git(repo, "config", "-z", "--get-regexp", _COMPARISON_CONFIG, check=False).stdout
+        # Later scopes win; a valueless entry is a boolean true.
+        return {key: value if newline else "true"
+                for key, newline, value in (item.partition("\n") for item in listed.split("\0") if item)}
+
+    inherited = effective(clone)
+    for key, value in effective(target).items():
+        if key == "core.attributesfile":
+            # Keep this lower-precedence input separate from info/attributes.
+            # A relative path may name ignored data absent from the clone.
+            source_path = _git(target, "config", "-z", "--path", "--get", key).stdout.rstrip("\0")
+            source_file = target / source_path
+            if source_file.is_file():
+                private_file = clone / ".git" / "info" / "source-attributes"
+                private_file.parent.mkdir(exist_ok=True)
+                private_file.write_bytes(source_file.read_bytes())
+                value = str(private_file)
+        if inherited.get(key) != value:
+            _git(clone, "config", "--local", key, value)
+    attributes = git_dir / "info" / "attributes"
+    if attributes.is_file():
+        (clone / ".git" / "info").mkdir(exist_ok=True)
+        (clone / ".git" / "info" / "attributes").write_bytes(attributes.read_bytes())
 
 
 def payload_git_metadata_refusal(exec_root: Path) -> str:

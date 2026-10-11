@@ -64,6 +64,8 @@ class ActiveReviewAttempt:
     # Wall clock of the send THIS process performs; empty when it rejoins an
     # operation an earlier process paid for, whose send moment it cannot know.
     started_at: str = ""
+    logical_deadline: Optional[float] = None  # in this operation's slot clock
+    assignment: tuple = ()  # original inputs, including preparation before prompt persistence
     # The operation-owned wait/lifetime this worker belongs to (None: no owner).
     operation: Any = field(default_factory=current_review_operation)
 
@@ -304,20 +306,15 @@ def _attach_worker_exception_facts(
             actor.http_status = status
     if isinstance(actor, dict):
         actor["usage"] = usage
-        code = str(getattr(exc, "code", "") or "")
-        if code:
-            actor["failure_code"] = code
-        reset_at = str(getattr(exc, "reset_at", "") or "")
-        if reset_at:
-            actor["reset_at"] = reset_at
     else:
         actor.usage = usage
-        code = str(getattr(exc, "code", "") or "")
-        if code and not str(getattr(actor, "failure_code", "") or ""):
-            actor.failure_code = code
-        reset_at = str(getattr(exc, "reset_at", "") or "")
-        if reset_at and not str(getattr(actor, "reset_at", "") or ""):
-            actor.reset_at = reset_at
+    for target, source in (("failure_code", "code"), ("reset_at", "reset_at")):
+        value = str(getattr(exc, source, "") or "")
+        if value:
+            if isinstance(actor, dict):
+                actor[target] = value
+            elif not str(getattr(actor, target, "") or ""):
+                setattr(actor, target, value)
 
 
 def _terminal_provider_status(actor: Any, failure_custody: Dict[str, Any]) -> int | None:
@@ -494,27 +491,20 @@ def _frozen_actor(row: Dict[str, Any], slot: Any) -> Any:
         model=str(row.get("model_id") or row.get("model") or getattr(slot, "model", "")),
         status=actor_status,
         raw_text=raw_text,
-        error=str(row.get("error") or ""),
         usage=usage,
         prompt_ref=dict(row.get("prompt_ref") or {}),
         response_ref=dict(row.get("response_ref") or {}),
-        operation_id=str(row.get("operation_id") or ""),
         late_result_pending=pending,
-        transport_status=str(row.get("transport_status") or ""),
-        failure_code=str(row.get("failure_code") or ""),
-        reset_at=str(row.get("reset_at") or ""),
-        reported_cause=str(row.get("reported_cause") or ""),
         http_status=http_status,
-        parse_status=str(row.get("parse_status") or ""),
-        semantic_verdict=str(row.get("semantic_verdict") or ""),
-        provider=str(row.get("provider") or ""),
-        actor_role=str(row.get("actor_role") or ""),
         coverage=copy.deepcopy(row.get("coverage") or {}) if isinstance(row.get("coverage"), dict) else {},
         quorum_contribution=bool(row.get("quorum_contribution")),
-        reason=str(row.get("reason") or ""),
-        enforcement_impact=str(row.get("enforcement_impact") or ""),
         operation_state=operation_state,
         recovery_binding=dict(row.get("recovery_binding") or {}),
+        **{key: str(row.get(key) or "") for key in (
+            "error", "operation_id", "transport_status", "failure_code", "reset_at",
+            "reported_cause", "parse_status", "semantic_verdict", "provider",
+            "actor_role", "reason", "enforcement_impact",
+        )},
     )
 
 
@@ -529,16 +519,12 @@ def merge_frozen_review_reconciliation(usage_ctx: Any) -> None:
         current_groups: Dict[str, List[Dict[str, Any]]] = {}
         invalid_rows: List[Dict[str, Any]] = []
         for index, row in enumerate(current):
-            if not isinstance(row, dict):
-                invalid_rows.append(_custody_lost_row(
-                    surface, index, "current review roster row is not an object",
-                ))
-                setattr(usage_ctx, "_review_custody_lost", True)
-                continue
-            slot_id = str(row.get("slot_id") or row.get("slot") or "")
+            slot_id = str(row.get("slot_id") or row.get("slot") or "") if isinstance(row, dict) else ""
             if not slot_id:
                 invalid_rows.append(_custody_lost_row(
-                    surface, index, "current review roster row has no slot id", row,
+                    surface, index,
+                    "current review roster row has no slot id" if isinstance(row, dict)
+                    else "current review roster row is not an object", row,
                 ))
                 setattr(usage_ctx, "_review_custody_lost", True)
                 continue
@@ -573,7 +559,10 @@ def merge_frozen_review_reconciliation(usage_ctx: Any) -> None:
             if candidate is not None and operation_id and str(
                 candidate.get("operation_id") or ""
             ) == operation_id:
-                merged.append(copy.deepcopy(candidate))
+                collected = copy.deepcopy(candidate)
+                if isinstance(original.get("review_plan"), dict):
+                    collected["review_plan"] = copy.deepcopy(original["review_plan"])
+                merged.append(collected)
                 continue
             lost = copy.deepcopy(original)
             lost["operation_state"] = "custody_lost"
@@ -716,6 +705,8 @@ def _attempt_key(request: Any, slot: Any) -> str:
         slot_data["default_temperature"] = slot.default_temperature
     if getattr(slot, "processing_preference", ""):
         slot_data["processing_preference"] = slot.processing_preference
+    if str(getattr(slot, "session_access", "") or "readonly") != "readonly":
+        slot_data["session_access"] = slot.session_access  # writable rights are identity
     identity = {
         "retry_key": retry_key,
         "surface": getattr(request, "surface", ""),
@@ -780,6 +771,8 @@ def _rejoin_window(root: Any, token: str, frozen_row: Any, logical_window: float
         try:
             record = invocation_record(root, token) or {}
             started, cap = run_timing(root, str(record.get("run_id") or ""))
+            # A start never bound to a run still began at its durable request row.
+            started = started or str(record.get("requested_at") or "")
             max_seconds = float(cap or record.get("max_seconds") or 0)
         except Exception:
             log.debug("rejoin window: durable custody unreadable", exc_info=True)
@@ -854,31 +847,26 @@ def _late_or_timeout_actor(
                 entry.timed_out = True
     if released_early and entry is not None:
         # Paid iff dispatched: a $0 presence until the settled row proves a physical send.
-        actor = error_actor(
-            slot, f"Pending dispatch; the physical review operation is in flight (window {timeout:g}s)",
-            entry.operation_id, "pending_dispatch",
-        )
-        actor.late_result_pending = True
-        actor.awaiting_since = entry.started_at
-        stamp_review_controller(actor, entry)
-        return actor
+        message = f"Pending dispatch; the physical review operation is in flight (window {timeout:g}s)"
+        state = "pending_dispatch"
+    else:
+        message = f"Timeout after {timeout:g}s; physical review operation remains in flight"
+        state = "in_flight" if entry is not None else "settled"
     actor = error_actor(
-        slot,
-        f"Timeout after {timeout:g}s; physical review operation remains in flight",
-        entry.operation_id if entry is not None else "",
-        "in_flight" if entry is not None else "settled",
+        slot, message, entry.operation_id if entry is not None else "", state,
     )
     if entry is not None:
+        if released_early:
+            actor.late_result_pending = True
+        elif entry.retry_state:
+            usage = dict(getattr(actor, "usage", None) or {})
+            usage.update({
+                key: str(entry.retry_state.get(key) or "")
+                for key in ("pending_invocation_id", "delegated_run_id")
+                if entry.retry_state.get(key)
+            })
+            actor.usage = usage
         actor.awaiting_since = entry.started_at
-    if entry is not None and entry.retry_state:
-        usage = dict(getattr(actor, "usage", None) or {})
-        usage.update({
-            key: str(entry.retry_state.get(key) or "")
-            for key in ("pending_invocation_id", "delegated_run_id")
-            if entry.retry_state.get(key)
-        })
-        actor.usage = usage
-    if entry is not None:
         stamp_review_controller(actor, entry)
     return actor
 
@@ -1048,8 +1036,12 @@ def _settle_review_attempt(
         if entry.released_early and entry.wave_key in _RELEASED_WAVES:
             roster = _RELEASED_WAVES[entry.wave_key]
             slot_id = str(getattr(slot, "slot_id", "") or "")
-            roster["slots"][slot_id] = str(actor.status or "settled")
-            if getattr(request, "surface", "") == "task_acceptance":  # plan review's frame carries counts only
+            # A worker that ended without a terminal answer leaves an operation whose
+            # outcome is unknown: the wave still wakes its task, but the seat is
+            # neither settled nor failed (#1547).
+            unresolved = released_slot_unresolved(actor)
+            roster["slots"][slot_id] = RELEASED_UNRESOLVED if unresolved else str(actor.status or "settled")
+            if getattr(request, "surface", "") == "task_acceptance" and not unresolved:
                 roster.setdefault("verdicts", {})[slot_id] = _settled_slot_verdict(actor)
             if all(roster["slots"].values()):
                 released_wave = _RELEASED_WAVES.pop(entry.wave_key)
@@ -1103,6 +1095,15 @@ def _settle_review_attempt(
         if _ACTIVE.get(entry.key) is entry:
             _ACTIVE.pop(entry.key, None)
     release_review_operation(entry)
+
+
+RELEASED_UNRESOLVED = "unresolved"
+
+
+def released_slot_unresolved(actor: Any) -> bool:
+    """A released seat whose physical operation has no known outcome yet."""
+    state = actor.get("operation_state") if isinstance(actor, dict) else getattr(actor, "operation_state", "")
+    return str(state or "") in {"in_flight", "custody_lost"}
 
 
 def _wave_key(request: Any) -> str:
@@ -1293,7 +1294,6 @@ def _run_custodied_review_slots(
         slot_windows[slot_id] = window
         slot_deadlines[slot_id] = monotonic_now(slot_id) + window
         custody_lost = False
-        no_resend_operation_id = ""
         frozen_surfaces = getattr(usage_ctx, "_review_frozen_rows", None)
         frozen_surface = (
             frozen_surfaces.get(str(getattr(request, "surface", "") or ""), {})
@@ -1314,7 +1314,7 @@ def _run_custodied_review_slots(
             if bool(getattr(request, "reconcile_only", False)) and isinstance(frozen_row, dict):
                 if _row_is_pending(frozen_row):
                     token = str(frozen_row.get("pending_invocation_id") or "")
-                    if not retry_state and token:
+                    if not retry_state:
                         retry_state = {
                             "pending_invocation_id": token,
                             "operation_id": str(frozen_row.get("operation_id") or ""),
@@ -1332,6 +1332,7 @@ def _run_custodied_review_slots(
             # API rows recover complete CAS outcomes; a token never authorizes a send.
             exact_recovery = bool(
                 retry_token and retry_operation_id and route_value == "agent_session"
+                and not getattr(usage_ctx, "_review_live_join_only", False)
             )
             retry_payload = dict(retry_state)
             retry_payload.pop("operation_id", None)
@@ -1342,6 +1343,8 @@ def _run_custodied_review_slots(
                     log.debug("cached review actor copy failed", exc_info=True)
             if cached_actor is not None and not binding_matches(
                     getattr(cached_actor, "recovery_binding", {}), cached_actor.operation_id):
+                cached_actor, custody_lost = None, True
+            if cached_actor is not None and retry_operation_id and cached_actor.operation_id != retry_operation_id:
                 cached_actor, custody_lost = None, True
             entry = _ACTIVE.get(key)
             if entry is not None and not binding_matches(entry.recovery_binding, entry.operation_id):
@@ -1383,6 +1386,8 @@ def _run_custodied_review_slots(
                         # A rejoin inherits an EARLIER process's send; only a new
                         # physical operation is sent from here, and only now.
                         started_at="" if exact_recovery else utc_now_iso(),
+                        logical_deadline=slot_deadlines[slot_id],
+                        assignment=copy.deepcopy((request, slot)),
                     )
                     entry.recovery_binding = review_operation_binding(request, slot, entry.operation_id)
                     entry.wave_key = _wave_key(request)
@@ -1391,30 +1396,22 @@ def _run_custodied_review_slots(
                     owner = True
                     if isinstance(pending_attempts, dict):
                         pending_attempts.pop(key, None)
-        if no_resend_operation_id:
+        if no_resend_operation_id or custody_lost:
             if usage_ctx is not None:
                 setattr(usage_ctx, "_review_custody_lost", True)
             actor = error_actor(
                 slot,
-                "Provider outcome remains unknown; refusing a second physical review dispatch",
-                no_resend_operation_id,
+                "Provider outcome remains unknown; refusing a second physical review dispatch"
+                if no_resend_operation_id else "Exact review custody is unavailable; refusing a second paid dispatch",
+                no_resend_operation_id or retry_operation_id,
                 "custody_lost",
             )
-            actor.failure_code = "provider_outcome_unknown"
-            actor.late_result_pending = True
-            if recovered is not None and recovered.operation_id == no_resend_operation_id:
-                actor.response_ref = recovered.response_ref
+            if no_resend_operation_id:
+                actor.failure_code = "provider_outcome_unknown"
+                actor.late_result_pending = True
+                if recovered is not None and recovered.operation_id == no_resend_operation_id:
+                    actor.response_ref = recovered.response_ref
             immediate_actors[slot_id] = actor
-            return
-        if custody_lost:
-            if usage_ctx is not None:
-                setattr(usage_ctx, "_review_custody_lost", True)
-            immediate_actors[slot_id] = error_actor(
-                slot,
-                "Exact review custody is unavailable; refusing a second paid dispatch",
-                "",
-                "custody_lost",
-            )
             return
         if entry is None:
             immediate_actors[slot_id] = error_actor(
@@ -1423,6 +1420,12 @@ def _run_custodied_review_slots(
             )
             return
         slot_entries[slot_id] = entry
+        if not owner and bool(getattr(request, "reconcile_only", False)) and entry.logical_deadline is not None:
+            # A live rejoin uses the original clock/window, never another full
+            # slot timeout. The operation scope has rebound that same clock.
+            slot_deadlines[slot_id] = min(slot_deadlines[slot_id], entry.logical_deadline)
+            window = max(0.0, slot_deadlines[slot_id] - monotonic_now(slot_id))
+            slot_windows[slot_id] = window
         if window <= 0 and cached_actor is None:
             immediate_actors[slot_id] = _late_or_timeout_actor(
                 slot, entry, window, error_actor,
@@ -1498,10 +1501,7 @@ def _run_custodied_review_slots(
         start(slot)
 
     actors: List[Any] = list(immediate_actors.values())
-    pending = {
-        str(getattr(slot, "slot_id", "") or "") for slot in slots
-        if str(getattr(slot, "slot_id", "") or "") not in immediate_actors
-    }
+    pending = set(slot_entries) - immediate_actors.keys()
     drain_deadline = getattr(request, "drain_deadline", None)
     operation, detached = current_review_operation(), False
     while pending and (drain_deadline is None or time.monotonic() < drain_deadline):
@@ -1513,8 +1513,7 @@ def _run_custodied_review_slots(
         expired = {slot_id for slot_id in pending if slot_deadlines[slot_id] <= monotonic_now(slot_id)}
         if calendar_remaining == 0.0:
             expired.update(pending & waiting_slots)
-        for slot_id in expired:
-            pending.remove(slot_id)
+        pending.difference_update(expired)
         if not pending:
             break
         if operation is not None and author_detaches(operation, [slot_entries.get(slot_id) for slot_id in pending]):

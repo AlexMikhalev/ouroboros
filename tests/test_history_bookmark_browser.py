@@ -306,7 +306,9 @@ def test_a_card_line_arrives_with_its_source_page_and_a_reopen_reads_only_the_ne
                 # A late, lower revision cannot roll back the visible receipt.
                 _emit_ws_frame(page, {**old, 'type': 'chat', 'is_progress': True,
                                      'card_row_revision': 2, 'ts': stamp(99), 'content': 'Stale queued receipt'})
-                assert all(part in line.inner_text() for part in text.splitlines())
+                # The retained source above is exact; the known host prefix is display-only.
+                assert text.startswith('✅ PR #1347 merge:')
+                assert all(part in line.inner_text() for part in text.removeprefix('✅ ').splitlines())
             else:
                 line.locator('[data-live-line-toggle]').click()
                 assert line.get_attribute('data-expanded') == '1'

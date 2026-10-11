@@ -21,7 +21,8 @@ from ouroboros import delegate_custody as custody
 from ouroboros.delegate_custody import RunCustody as _RunCustody
 # ONE refusal author for the whole delegate surface: the neutral leaf
 # `delegate_shared` (phase B's facade split), never a local twin that could drift.
-from ouroboros.delegate_registration_policy import record_persistent as _record_persistent
+from ouroboros.delegate_registration_policy import (
+    INVESTIGATION_AUTHORITY, no_write_authority, record_persistent as _record_persistent)
 from ouroboros.delegate_shared import _fail, lock_busy_facts
 from ouroboros.configured_subagents import SESSION_ACCESS_PROFILES
 from ouroboros.tools.tool_result import ToolResult
@@ -55,18 +56,17 @@ _CAPTURE_DELEGATED_SNAPSHOT = "delegated_snapshot"
 def _mutation_authority(ctx: ToolContext, authority: "DelegatedRunShape") -> tuple[Dict[str, str], Optional[ToolResult]]:
     """The UNIFIED host-derived authority record for one delegated run (B5).
 
-    ``{"target_root", "source", "capture_mode"}``. Two sources, one shape:
-    ``acting_constraint`` (an acting child's ``task_constraint.write_root``,
-    which must equal the genuinely ACTIVE workspace root — `active_repo_dir_for`
-    falls back to the LIVE repo when `is_workspace_mode()` is false) and
-    ``external_workspace_root`` (an ordinary root's selected external workspace
-    or Project room, where it already holds write+shell authority).
-    Read-only runs return the ordinary active root with ``capture_mode: "none"``.
+    ``{"target_root", "source", "capture_mode"}``. Two sources, one shape: ``acting_constraint`` (an
+    acting child's ``task_constraint.write_root``, which must equal the genuinely ACTIVE workspace root
+    — `active_repo_dir_for` falls back to the LIVE repo when `is_workspace_mode()` is false) and
+    ``external_workspace_root`` (an ordinary root's selected external workspace or Project room, where it
+    already holds write+shell authority). A run without write authority — read-only, or an evidence-only
+    investigation (#1609) — gets ``no_write_authority``: the active root as provenance only.
     Disagreement anywhere is a typed refusal, never a best-effort guess.
     """
     root = str(active_repo_dir_for(ctx))
-    if authority.access not in SESSION_ACCESS_PROFILES:
-        return {"target_root": root, "source": "readonly", "capture_mode": "none"}, None
+    if authority.access not in SESSION_ACCESS_PROFILES or authority.investigation:
+        return no_write_authority(root, investigation=authority.investigation), None
     constraint = getattr(ctx, "task_constraint", None)
     mode = str(
         (constraint.get("mode") if isinstance(constraint, dict)
@@ -279,7 +279,8 @@ def _resolve_retry_invocation(ctx: ToolContext, drive: pathlib.Path, retry_token
     authority = DelegatedRunShape(access=str(request_body.get("access") or ""),
                                   mode=str(request_body.get("mode") or ""),
                                   isolation=str(execution.get("isolation") or ""),
-                                  delegated=bool(execution.get("delegated")))
+                                  delegated=bool(execution.get("delegated")),
+                                  investigation=record.get("authority_source") == INVESTIGATION_AUTHORITY)
     scope_root = str(scope.get("root") or "")
     # Claudexor 3.8.1+ separates stable project identity (scope.root) from
     # the one-shot execution snapshot.  Retry still replays the stored body
@@ -359,21 +360,30 @@ def _resolve_retry_invocation(ctx: ToolContext, drive: pathlib.Path, retry_token
     ), None
 
 
-def _provision_snapshot(ctx: ToolContext, drive: pathlib.Path, target_root: str,
-                        invocation_id: str) -> Tuple[Optional[Any], Optional[ToolResult]]:
+def _provision_snapshot(ctx: ToolContext, drive: pathlib.Path, target_root: str, invocation_id: str, *,
+                        independent: bool = False, start: str = "") -> Tuple[Optional[Any], Optional[ToolResult]]:
     """Provision the C1 private execution snapshot for one mutating run.
 
     Registered durably (worktree registry) and described durably (baseline manifest
     artifact) BEFORE the caller records any start intent, so a worker death at any
     later point leaves a nameable, GC-reconcilable root — never an orphan directory.
     Returns ``(handle, None)`` or ``(None, typed_refusal)``.
+
+    ``start`` is an investigation's starting folder inside the ``target_root`` worktree
+    (``delegate_directory.snapshot_checkout``): the whole worktree is cloned, and the
+    returned handle's ``path`` is the matching folder, which the run, its custody,
+    named evidence and a continuation use; the registry keeps the clone root that
+    capture and release address.
     """
-    from ouroboros.subagent_worktrees import provision_execution_snapshot
+    from dataclasses import replace
+
+    from ouroboros.subagent_worktrees import provision_execution_snapshot, remove_execution_snapshot
 
     task_id = str(getattr(ctx, "task_id", "") or "")
     try:
+        folder = pathlib.Path(start or target_root).resolve().relative_to(pathlib.Path(target_root).resolve())
         handle = provision_execution_snapshot(
-            target_root=target_root, task_id=task_id, snapshot_id=invocation_id)
+            target_root=target_root, task_id=task_id, snapshot_id=invocation_id, independent=independent)
     except Exception as exc:
         return None, _fail(
             "delegate_start", "execution_snapshot_failed",
@@ -381,8 +391,20 @@ def _provision_snapshot(ctx: ToolContext, drive: pathlib.Path, target_root: str,
             f"({type(exc).__name__}: {exc}). The run was NOT started: a mutating "
             "delegated run executes only in its own snapshot, never in the shared tree.",
             target_root=target_root, definitely_unrun=True, **lock_busy_facts(exc))
-    _record_baseline_manifest(drive, task_id, invocation_id, handle)
-    return handle, None
+    if folder.parts and not (pathlib.Path(handle.path) / folder).is_dir():
+        try:  # unclaimed: nothing else names it, and the startup GC reconciles a failed release
+            remove_execution_snapshot(handle.snapshot_id)
+        except Exception:
+            log.warning("Failed to release snapshot %s without its starting folder", handle.snapshot_id, exc_info=True)
+        return None, _fail(
+            "delegate_start", "execution_snapshot_failed",
+            f"The starting folder {folder.as_posix()} is not part of the worktree snapshot (an ignored or "
+            "empty folder), so the investigation has no copy to start in. The run was NOT started: start "
+            "from the worktree root, or lower this call with access='readonly' to read the folder in place.",
+            target_root=target_root, definitely_unrun=True)
+    _record_baseline_manifest(drive, task_id, invocation_id, handle,
+                              **({"start_folder": folder.as_posix()} if folder.parts else {}))
+    return (replace(handle, path=str(pathlib.Path(handle.path) / folder)) if folder.parts else handle), None
 
 
 def _record_baseline_manifest(drive: pathlib.Path, task_id: str, invocation_id: str,
@@ -533,16 +555,16 @@ def _capture_terminal_patch(ctx: ToolContext, entry: Optional[_RunCustody], *, g
 def capture_terminal_patch_for_drive(drive: Any, entry: _RunCustody, *, gateway=None) -> Optional[Dict[str, Any]]:
     """The drive-rooted core of the terminal capture — same contract, no ToolContext.
 
-    One capture author for both the nanny flow and the RECONCILIATION path
-    (orphan sweep, kill-path reconcile, pending-invocation recovery), so they
-    cannot drift in what a "captured patch" is; the apply/reject DECISION stays
-    with a live owner, never taken here. ``patch_captured`` MEANS "a usable
-    patch artifact exists" (C1-R3): the custody row is minted only over a
-    ready-status manifest; a failure manifest is returned as the failed block
-    but leaves the row uncaptured (every retry point stays open), and a pre-R3
-    row over a failed manifest falls through to a fresh capture.
+    One capture author for both the nanny flow and the RECONCILIATION path (orphan sweep, kill-path
+    reconcile, pending-invocation recovery), so they cannot drift in what a "captured patch" is; the
+    apply/reject DECISION stays with a live owner, never taken here — an evidence-only investigation has
+    none to take, so its ready capture is retained as evidence at once (#1609). ``patch_captured`` MEANS
+    "a usable patch artifact exists" (C1-R3): the custody row is minted only over a ready-status
+    manifest; a failure manifest is returned as the failed block but leaves the row uncaptured (every
+    retry point stays open), and a pre-R3 row over a failed manifest falls through to a fresh capture.
     """
     from ouroboros.delegate_directory import is_directory_run, capture_directory_result, directory_capture_block
+    from ouroboros.tools.subagent_integration_delegated import retain_investigation_evidence
 
     if is_directory_run(entry):
         owned_gateway = None
@@ -550,7 +572,8 @@ def capture_terminal_patch_for_drive(drive: Any, entry: _RunCustody, *, gateway=
             if gateway is None:
                 from ouroboros.claudexor_daemon import read_owned_gateway
                 owned_gateway = gateway = read_owned_gateway()
-            return directory_capture_block(drive, entry, capture_directory_result(drive, entry, gateway))
+            block = directory_capture_block(drive, entry, capture_directory_result(drive, entry, gateway))
+            return retain_investigation_evidence(drive, entry, block, gateway)
         except Exception as exc:
             return {"status": "failed", "capture_kind": "engine_directory", "authority_target_root": entry.target_root,
                     "note": f"Directory capture unavailable: {type(exc).__name__}: {exc}. The engine result is retained; no new run was started."}
@@ -581,7 +604,7 @@ def capture_terminal_patch_for_drive(drive: Any, entry: _RunCustody, *, gateway=
         if entry.patch_captured and str(manifest.get("status") or "") in ready:
             stored_drift = manifest.get("authority_drift")
             evidence = stored_drift if isinstance(stored_drift, dict) else _target_drift_evidence(entry)
-            return _capture_block(entry, cap_dir, manifest, evidence)
+            return retain_investigation_evidence(drive, entry, _capture_block(entry, cap_dir, manifest, evidence))
     exec_root = pathlib.Path(entry.execution_root)
     if not exec_root.exists():
         return {
@@ -609,8 +632,10 @@ def capture_terminal_patch_for_drive(drive: Any, entry: _RunCustody, *, gateway=
             # sensitive veto, binary handling, sha256 manifest and all.
             from ouroboros.subagent_worktrees import find_execution_snapshot
             snapshot = find_execution_snapshot(entry.snapshot_id) or {}
+            # A Git-subdirectory investigation runs in a folder of its clone; the
+            # capture always diffs the whole registered clone.
             _, manifest = write_workspace_patch_artifacts(
-                exec_root, cap_dir,
+                pathlib.Path(str(snapshot.get("path") or exec_root)), cap_dir,
                 task={"metadata": {"workspace_preflight": {"git": {"head": entry.baseline_sha}},
                                    "file_baseline": snapshot.get("file_baseline") or {}}},
             )
@@ -648,7 +673,7 @@ def capture_terminal_patch_for_drive(drive: Any, entry: _RunCustody, *, gateway=
             patch_size=manifest.get("patch_size"),
             capture_dir=str(cap_dir),
         )
-    return _capture_block(entry, cap_dir, manifest, drift_evidence)
+    return retain_investigation_evidence(drive, entry, _capture_block(entry, cap_dir, manifest, drift_evidence))
 
 
 def capture_stranded_patch(drive_root: Any, run: _RunCustody) -> Dict[str, Any]:
@@ -665,7 +690,7 @@ def capture_stranded_patch(drive_root: Any, run: _RunCustody) -> Dict[str, Any]:
     return {
         "patch_capture": str(block.get("status") or ""),
         "patch_artifact": block.get("patch_artifact"),
-        "patch_disposition": "pending",
+        "patch_disposition": str(block.get("disposition") or "pending"),  # an investigation's is evidence_retained
     }
 
 

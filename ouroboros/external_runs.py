@@ -15,7 +15,7 @@ import pathlib
 import time
 from typing import Any, Dict, List, Optional
 
-from ouroboros.delegate_registration_policy import review_owned_source
+from ouroboros.delegate_registration_policy import independent_review_without_apply, review_owned_source
 
 log = logging.getLogger(__name__)
 
@@ -98,10 +98,16 @@ def observe_task_runs(root: Any, task_id: str, *, reason: str = "budget_resume_u
 
             pending = [row for row in pending_invocations(pathlib.Path(root), rows=snapshot)
                        if str(row.get("task_id") or "") == mine]
+            # Every projected row also carries the custody facts a purpose-bound
+            # reader may filter on: the registering ``source`` and whether the
+            # row is an independent review without candidate-apply possibility
+            # (``delegate_registration_policy``). The census itself never filters.
             pending_rows = [{"run_id": "", "invocation_id": str(row.get("invocation_id") or ""),
                              "route": str(row.get("route") or ""),
                              "cost_coverage": "unproven_preterminal", "stop_policy": "reconcile_first",
                              "review_owned": review_owned_source(row.get("source")),
+                             "source": str(row.get("source") or ""),
+                             "independent_review": independent_review_without_apply(row),
                              "state": EXTERNAL_STOP_UNKNOWN, "stop_outcome": "pending_invocation_unbound",
                              "detail": ""} for row in pending]
         except Exception as exc:
@@ -123,6 +129,8 @@ def observe_task_runs(root: Any, task_id: str, *, reason: str = "budget_resume_u
                 "route": str(getattr(run, "route", "") or getattr(run, "route_id", "") or ""),
                 "cost_coverage": "unproven_preterminal", "stop_policy": "observe_only",
                 "review_owned": review_owned_source(getattr(run, "source", "")),
+                "source": str(getattr(run, "source", "") or ""),
+                "independent_review": independent_review_without_apply(run),
                 "state": EXTERNAL_RUNNING, "stop_outcome": "", "detail": "", **fields}
 
     if stop_policy == STOP_POLICY_OBSERVE:

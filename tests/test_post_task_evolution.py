@@ -485,6 +485,8 @@ def test_execute_panic_stop_wires_owner_stop(tmp_path, monkeypatch):
                         calls["complete"].append((reason, status, cleanup_worktree)))
     monkeypatch.setattr(pte_mod, "drop_pending_request", lambda dr: calls["drop"].append(dr))
     # Neutralize destructive teardown: real process/port kills and the hard exit must not run.
+    # The native Panic door also visits retained multiprocessing children.
+    monkeypatch.setattr("multiprocessing.active_children", lambda: [])
     monkeypatch.setattr(platform_layer, "kill_process_on_port", lambda *a, **k: None)
     monkeypatch.setattr(platform_layer, "force_kill_pid", lambda *a, **k: None)
     import ouroboros.tools.shell as _shell

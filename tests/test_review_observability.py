@@ -31,6 +31,10 @@ def _make_ctx(tmp_path: pathlib.Path) -> MagicMock:
     # materialises a literal ``MagicMock/mock.drive_root.__truediv__()...`` dir
     # in the repo CWD (then committed by a careless ``git add -A``).
     ctx.drive_root = str(tmp_path)
+    # A real ToolContext has no reconcile flag until the commit gate arms one
+    # (``tools/git.py``). Left unset, the auto-MagicMock is truthy and the commit
+    # review takes the reconcile-only path over a roster of mocks instead of the pool.
+    ctx._review_reconcile_only = False
     ctx.task_id = "test-task"
     ctx._review_history = []
     ctx._review_iteration_count = 0
@@ -528,6 +532,7 @@ def test_last_triad_raw_results_reset_at_start_of_run_unified_review(tmp_path, m
     ctx, fan_out = _run_unified_review_with_one_fresh_seat(tmp_path, monkeypatch, pool=True)
 
     assert fan_out.called, "the one-seat pool must reach the fan-out"
+    assert fan_out.call_args.kwargs["models"] == ["fresh-model"], "the pool, not a recorded roster, was dispatched"
     # After the run, stale model_id must not appear
     model_ids = [r["model_id"] for r in ctx._last_triad_raw_results]
     assert "stale-model" not in model_ids, (
@@ -547,6 +552,31 @@ def test_last_triad_raw_results_reset_precedes_the_empty_pool_exit(tmp_path, mon
     assert not fan_out.called, "an empty pool dispatches no wave"
     assert ctx._last_review_block_reason == REVIEW_POOL_EMPTY_REASON
     assert ctx._last_triad_raw_results == [], "stale actor records must not outlive the attempt that made them"
+
+
+def test_the_empty_pool_exit_holds_for_a_real_tool_context(tmp_path, monkeypatch):
+    """The same exit over the product's own ``ToolContext``, which no test double can
+    make truthy by accident: no reconcile flag is armed, so an empty pool is the typed
+    ``pool_empty`` block and no wave, whatever a prior attempt left behind."""
+    from ouroboros.tools import review as review_mod
+    from ouroboros.tools.registry import ToolContext
+    from ouroboros.tools.review_helpers import REVIEW_POOL_EMPTY_REASON
+
+    ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, task_id="test-task")
+    ctx._last_triad_raw_results = [{"model_id": "stale-model", "status": "responded"}]
+    fan_out = MagicMock()
+    with patch.object(review_mod, "run_cmd", return_value="some diff content"), \
+         patch("ouroboros.tools.review_binary_context.capture_staged_diff", return_value="some diff content"), \
+         patch.object(review_mod, "_handle_multi_model_review", fan_out), \
+         patch.object(review_mod, "_load_checklist_section", return_value="## checklist"), \
+         patch.object(review_mod, "_preflight_check", return_value=None), \
+         patch.object(review_mod, "load_governance_doc", return_value=""), \
+         patch("ouroboros.tools.review_helpers.build_touched_file_pack", return_value=("(files)", [])):
+        review_mod._run_unified_review(ctx, "test commit")
+
+    assert not fan_out.called, "an empty pool dispatches no wave"
+    assert ctx._last_review_block_reason == REVIEW_POOL_EMPTY_REASON
+    assert ctx._last_triad_raw_results == []
 
 
 # ── Test 10: parse_failure actors do NOT count toward quorum ──────────────────

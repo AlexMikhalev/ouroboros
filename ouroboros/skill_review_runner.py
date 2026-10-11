@@ -18,7 +18,7 @@ import re
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Optional
 
 from ouroboros import skill_review_history
 from ouroboros.config import get_skills_repo_path, load_settings
@@ -55,7 +55,7 @@ from ouroboros.skill_review_status import (
     STATUS_WARNINGS,
     normalize_skill_review_status,
 )
-from ouroboros.utils import append_jsonl, atomic_write_json, read_json_dict, utc_now_iso
+from ouroboros.utils import append_jsonl, atomic_write_json, read_json_dict, update_json_locked, utc_now_iso
 from ouroboros.tool_access import (
     ResolvedResourceBinding,
     build_resolved_resource_binding,
@@ -553,22 +553,25 @@ def mark_stale_review_job_interrupted(
     stale_after_sec: int = _STALE_REVIEW_JOB_SEC,
 ) -> None:
     path = review_job_state_path(drive_root, skill_name)
-    data = _read_review_job(path)
-    interrupt_reason = _running_job_interrupt_reason(data, stale_after_sec=stale_after_sec)
-    if interrupt_reason is None:
-        return
     now = utc_now_iso()
-    payload = {
-        **data,
-        "status": "interrupted",
-        "lifecycle_status": "interrupted",
-        "finished_at": now,
-        "interrupted_at": now,
-        "interrupt_reason": interrupt_reason,
-        "content_hash": data.get("content_hash") or current_content_hash,
-    }
-    payload["terminal_reason"] = payload["interrupt_reason"]
-    _write_review_job(path, payload)
+    payload: Dict[str, Any] = {}
+
+    def mark(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        # Under the job lock: a seat's pre-POST invocation checkpoint (#1582)
+        # landing between a read and this write must not be erased by it.
+        interrupt_reason = _running_job_interrupt_reason(data, stale_after_sec=stale_after_sec)
+        if interrupt_reason is None:
+            return None
+        payload.update(with_schema_version({
+            **data, "status": "interrupted", "lifecycle_status": "interrupted", "finished_at": now,
+            "interrupted_at": now, "interrupt_reason": interrupt_reason, "terminal_reason": interrupt_reason,
+            "content_hash": data.get("content_hash") or current_content_hash,
+        }, SKILL_OWNER_STATE_SCHEMA_VERSION))
+        return payload
+
+    update_json_locked(path, mark)
+    if not payload:
+        return
     _append_terminal_history(
         drive_root,
         skill_name,
@@ -810,14 +813,10 @@ def _can_persist_review_outcome(
     return True
 
 
-def _review_job_finish_skip_reason(
-    drive_root: pathlib.Path,
-    skill_name: str,
-    job_id: str,
-) -> str:
+def _review_job_finish_skip_reason(data: Dict[str, Any], job_id: str) -> str:
+    """Why lifecycle owner ``job_id`` may not finish the CURRENT job record, or ''."""
     if not job_id:
         return ""
-    data = _read_review_job(review_job_state_path(pathlib.Path(drive_root), skill_name))
     current_job_id = str(data.get("job_id") or "")
     if current_job_id and current_job_id != job_id:
         return "review job id no longer matches lifecycle owner"
@@ -833,21 +832,30 @@ def _mark_review_job_timeout(
     content_hash: str,
     *,
     reason: str,
+    job_id: str,
 ) -> None:
+    """Time out the caller's OWN running job: ``job_id`` is the job its ``_on_started``
+    recorded. A waiter that timed out before it owned one ('') leaves the running
+    owner's job alone, whatever content hash the two share."""
     path = review_job_state_path(drive_root, skill_name)
-    current = _read_review_job(path)
-    if str(current.get("status") or "") != "running":
-        return
     now = utc_now_iso()
-    payload = {
-        **current,
-        "status": "timeout",
-        "lifecycle_status": "timeout",
-        "finished_at": now,
-        "terminal_reason": reason or "lifecycle_timeout",
-        "content_hash": current.get("content_hash") or content_hash,
-    }
-    _write_review_job(path, payload)
+    payload: Dict[str, Any] = {}
+
+    def mark(current: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        # Locked, as for a stale interrupt, and only over this owner's own record.
+        if (not job_id or str(current.get("job_id") or "") != job_id
+                or str(current.get("status") or "") != "running"):
+            return None
+        payload.update(with_schema_version({
+            **current, "status": "timeout", "lifecycle_status": "timeout", "finished_at": now,
+            "terminal_reason": reason or "lifecycle_timeout",
+            "content_hash": current.get("content_hash") or content_hash,
+        }, SKILL_OWNER_STATE_SCHEMA_VERSION))
+        return payload
+
+    update_json_locked(path, mark)
+    if not payload:
+        return
     _append_terminal_history(
         drive_root,
         skill_name,
@@ -1001,6 +1009,7 @@ def _on_started(
     *,
     refresh_content_hash: Callable[[], str] | None = None,
     bound_content_hash: Dict[str, str] | None = None,
+    owned_job: Dict[str, str] | None = None,
 ) -> Callable[[LifecycleJob], None]:
     def _callback(job: LifecycleJob) -> None:
         now = utc_now_iso()
@@ -1052,6 +1061,8 @@ def _on_started(
             "terminal_reason": "",
         }
         _write_review_job(review_job_state_path(drive_root, skill_name), payload)
+        if owned_job is not None:
+            owned_job["job_id"] = job.id  # the one record this caller may later time out
         append_jsonl(
             _events_path(drive_root),
             {
@@ -1084,11 +1095,61 @@ def _on_finished(
         duration = None
         if "value" in started_monotonic:
             duration = round(max(0.0, time.monotonic() - started_monotonic["value"]), 3)
-        skip_reason = ""
-        if "value" not in started_monotonic:
-            skip_reason = "review job never acquired lifecycle file lock"
-        else:
-            skip_reason = _review_job_finish_skip_reason(drive_root, skill_name, job.id)
+        skip_reason = "" if "value" in started_monotonic else "review job never acquired lifecycle file lock"
+        review_status = normalize_skill_review_status(
+            getattr(result, "status", "") if result is not None else ""
+        )
+        error = (
+            f"{type(exc).__name__}: {exc}" if exc is not None
+            else str(getattr(result, "error", "") if result is not None else "")
+        )
+        deps_error = str(getattr(result, "deps_error", "") if result is not None else "")
+        state_status = "completed" if job.status == "succeeded" else job.status or "failed"
+        terminal_reason = error or deps_error or job.error or job.status or state_status
+        payload: Dict[str, Any] = {}
+        if not skip_reason:
+            terminal: Dict[str, Any] = {
+                "status": state_status,
+                "skill": skill_name,
+                "job_id": job.id,
+                "lifecycle_status": job.status,
+                "dedupe_key": job.dedupe_key,
+                "started_at": job.started_at,
+                "last_heartbeat_at": now,
+                "finished_at": job.finished_at or now,
+                "duration_sec": duration,
+                "pid": os.getpid(),
+                "review_status": review_status,
+                "error": error,
+                "deps_error": deps_error,
+                "terminal_reason": terminal_reason,
+                # Computed outside the job lock, which a seat's checkpoint briefly waits on.
+                "executions": _skill_review_executions(drive_root, skill_name, result),
+            }
+            replayed_from_ts = str(getattr(result, "replayed_from_ts", "") or "")
+            if replayed_from_ts:
+                terminal["replayed_from_ts"] = replayed_from_ts
+
+            def finish(current: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+                # ONE locked update of the CURRENT job (#1582): its owner is re-checked under
+                # the lock a seat's pre-POST invocation checkpoint takes, so the latest wave,
+                # with every token bound meanwhile, reaches the job and its terminal history.
+                nonlocal skip_reason
+                skip_reason = _review_job_finish_skip_reason(current, job.id)
+                if skip_reason:
+                    return None
+                payload.update(with_schema_version({
+                    **current,
+                    **terminal,
+                    "content_hash": (
+                        getattr(result, "content_hash", "")
+                        or current.get("content_hash")
+                        or lifecycle_content_hash
+                    ),
+                }, SKILL_OWNER_STATE_SCHEMA_VERSION))
+                return payload
+
+            update_json_locked(review_job_state_path(drive_root, skill_name), finish)
         if skip_reason:
             append_jsonl(
                 _events_path(drive_root),
@@ -1103,46 +1164,6 @@ def _on_finished(
                 },
             )
             return
-        review_status = normalize_skill_review_status(
-            getattr(result, "status", "") if result is not None else ""
-        )
-        error = (
-            f"{type(exc).__name__}: {exc}" if exc is not None
-            else str(getattr(result, "error", "") if result is not None else "")
-        )
-        deps_error = str(getattr(result, "deps_error", "") if result is not None else "")
-        state_status = "completed" if job.status == "succeeded" else job.status or "failed"
-        current = _read_review_job(review_job_state_path(drive_root, skill_name))
-        terminal_reason = error or deps_error or job.error or job.status or state_status
-        payload = {
-            **current,
-            "status": state_status,
-            "skill": skill_name,
-            "content_hash": (
-                getattr(result, "content_hash", "")
-                or current.get("content_hash")
-                or lifecycle_content_hash
-            ),
-            "job_id": job.id,
-            "lifecycle_status": job.status,
-            "dedupe_key": job.dedupe_key,
-            "started_at": job.started_at,
-            "last_heartbeat_at": now,
-            "finished_at": job.finished_at or now,
-            "duration_sec": duration,
-            "pid": os.getpid(),
-            "review_status": review_status,
-            "error": error,
-            "deps_error": deps_error,
-            "terminal_reason": terminal_reason,
-        }
-        payload["executions"] = _skill_review_executions(
-            drive_root, skill_name, result,
-        )
-        replayed_from_ts = str(getattr(result, "replayed_from_ts", "") or "")
-        if replayed_from_ts:
-            payload["replayed_from_ts"] = replayed_from_ts
-        _write_review_job(review_job_state_path(drive_root, skill_name), payload)
         # Lifecycle completion is not a semantic review verdict.  A runner can
         # finish without returning a result (for example after an in-process
         # handoff), so never let the lifecycle word ``completed`` paint a
@@ -1341,6 +1362,7 @@ def run_skill_review_lifecycle_blocking(
     dedupe_key = _review_dedupe_key(skill_name, content_hash)
     started_monotonic: Dict[str, float] = {}
     bound_content_hash: Dict[str, str] = {}
+    owned_job: Dict[str, str] = {}
     progress = JobProgressTarget()
     provenance = _review_provenance(ctx, source, skill_name)
 
@@ -1416,6 +1438,7 @@ def run_skill_review_lifecycle_blocking(
                         drive_root, skill_name, repo_path, binding,
                     ),
                     bound_content_hash=bound_content_hash,
+                    owned_job=owned_job,
                 ),
                 on_finished=_on_finished(
                     drive_root,
@@ -1431,6 +1454,7 @@ def run_skill_review_lifecycle_blocking(
     except TimeoutError as exc:
         _mark_review_job_timeout(
             drive_root, skill_name, content_hash, reason=f"{type(exc).__name__}: {exc}",
+            job_id=owned_job.get("job_id", ""),
         )
         raise
 

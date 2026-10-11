@@ -25,6 +25,7 @@ from tests._delegated_transport_shared import (  # noqa: F401  (autouse fixture 
     _event_types,
     _nanny_ctx,
     _owned_gateway_uses_each_test_transport,
+    _select_transport_access,
 )
 
 
@@ -580,6 +581,9 @@ def test_no_post_fires_when_the_start_request_row_did_not_land(tmp_path, monkeyp
             posts.append(idempotency_key)
             return {"runId": "run-1"}
 
+    # A READ-ONLY child (the stub serves readonly only): technical access alone decides
+    # the run shape now (#1609), so the premise is stated, not inferred from the ctx.
+    _select_transport_access(monkeypatch, "readonly")
     monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "some-route=weak-model:low")
     monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _Stub())
     real_append = dc.append_jsonl

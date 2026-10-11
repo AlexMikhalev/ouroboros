@@ -229,12 +229,10 @@ def _recover_image(ctx: ToolContext, request_id: str) -> str:
                            details={"request_id": request_id, "automatic_retry": False})
         reservation = usage.AttemptReservation(request_id, root, model, row["provider"], row.get("reservation_upper_bound_usd"))
         eligible = row["state"] in {"dispatched", "unresolved"} or is_abandoned_settlement(row)
-        accounted = True
         if recovered and recovered[0] == "released":
-            accounted = row["state"] == "released"
             if eligible:
-                accounted = release_pre_dispatch_attempt(reservation, ProviderNotDispatched("Recorded image operation never started"),
-                                                         expected_revision=row["revision"])
+                release_pre_dispatch_attempt(reservation, ProviderNotDispatched("Recorded image operation never started"),
+                                             expected_revision=row["revision"])
             eligible = False
         family = "model" if subscription else "image"
         manifest, payload, _ref = read_call_payload(root, task_id=task, call_id=f"{request_id}_{family}_response")
@@ -250,11 +248,17 @@ def _recover_image(ctx: ToolContext, request_id: str) -> str:
         if eligible:
             usage.settle_attempt(reservation, counters, cost_usd=cost, cost_final=final, expected_revision=row["revision"])
         if subscription:
+            # A late worker can win the revision CAS without either writer raising.
+            # ACK needs the durable original row, not a successful function return.
+            with usage_store.read(root) as txn:
+                current = txn.attempt(request_id)
+            expected_state = "released" if recovered[0] == "released" else "settled"
+            accounted = bool(current and current["state"] == expected_state and not is_abandoned_settlement(current))
             return _retain_subscription_result(ctx, result, payload["result_json_utf8"].encode("utf-8"),
                 model=model, request_id=request_id,
                 facts={"operation_id": manifest.get("operation_id"), "recovered": True,
                        "dispatch_state": manifest.get("dispatch_state"), "acknowledgement": "pending",
-                       "warnings": None if accounted else ["Original accounting release is pending; use recover_image before acknowledging custody."]},
+                       "warnings": None if accounted else ["Original accounting is pending; use recover_image before acknowledging custody."]},
                 acknowledge=(lambda: _acknowledge_image(manifest["operation_id"], manifest["response_ref"])) if accounted else None)
         return _retain_images(ctx, result, model=model, request_id=request_id, facts={"recovered": True})
     except (ClaudexorUnavailable, FileNotFoundError, ValueError, KeyError) as exc:

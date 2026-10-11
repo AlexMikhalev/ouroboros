@@ -172,3 +172,60 @@ def test_late_fail_keeps_its_full_source_and_veto(completed_late):
     assert result.actors[0]["raw_text"] == completed_late[4]
     assert result.actors[0]["operation_state"] == "late_settled"
     assert len(completed_late[3]) == 1
+
+
+# The roster_hash the pre-#1609 producer (d00559d7f, before ReviewSlot.session_access
+# existed) recorded for these rosters, computed by running that producer's own code.
+PRE_FIELD_ROSTER_HASH = {
+    "api": "a8c84df55e7932facf7da821a9133ecaf5fedb8a5f273a20c043dfa81a3ef82b",
+    "api+session": "e1b45dd5faf476416405b5802d32bd4b1a491e27ea90a50f9bfb6108378be269",
+}
+
+
+def _roster_hash(*slots):
+    from ouroboros.review_dispatch import review_reconciliation_identity
+
+    return review_reconciliation_identity(_request(), list(slots), root_task_id="root", contract="c")["roster_hash"]
+
+
+def test_read_only_seats_keep_the_roster_identity_recorded_before_seats_carried_rights():
+    from ouroboros.review_records import ReviewRouteKind
+
+    api = ReviewSlot("row-a", "fake/model", timeout_sec=0.03)
+    session = dict(route=ReviewRouteKind.AGENT_SESSION, session_target="codex=gpt-5", session_profile="p1")
+    assert _roster_hash(api) == PRE_FIELD_ROSTER_HASH["api"]
+    for access in ("", "readonly"):
+        assert _roster_hash(api, ReviewSlot("row-s", "codex=gpt-5", session_access=access, **session)) \
+            == PRE_FIELD_ROSTER_HASH["api+session"], access
+    writable = {_roster_hash(api, ReviewSlot("row-s", "codex=gpt-5", session_access=access, **session))
+                for access in ("workspace_write", "full")}
+    assert len(writable) == 2 and PRE_FIELD_ROSTER_HASH["api+session"] not in writable  # rights are identity
+
+
+@pytest.fixture
+def pre_field_late(monkeypatch, request):
+    """``completed_late`` produced as before seats carried rights: the real producer
+    serializes every ReviewSlot without the ``session_access`` field."""
+    import dataclasses
+
+    real = dataclasses.asdict
+
+    def pre_field(obj, *args, **kwargs):
+        values = real(obj, *args, **kwargs)
+        if isinstance(obj, ReviewSlot):
+            values.pop("session_access")
+        return values
+
+    with monkeypatch.context() as patch:
+        patch.setattr(dataclasses, "asdict", pre_field)
+        return request.getfixturevalue("completed_late")
+
+
+def test_a_paid_result_recorded_before_the_upgrade_is_collected_after_it(pre_field_late):
+    root, _slot, row, calls, text = pre_field_late
+    _manifest, payload, _ = read_call_payload(root, task_id="late-cas", call_id=row["operation_id"] + "_response")
+    assert payload["producer_outcome"]["recovery_binding"]["roster_hash"] == PRE_FIELD_ROSTER_HASH["api"]
+    result = recover(pre_field_late)
+    assert result.aggregate_signal == "PASS"
+    assert result.actors[0]["operation_state"] == "late_settled" and result.actors[0]["raw_text"] == text
+    assert len(calls) == 1  # collected, never bought again

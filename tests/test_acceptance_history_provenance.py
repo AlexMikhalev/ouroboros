@@ -343,6 +343,11 @@ def test_legacy_checkpoint_cold_maintenance_requires_exact_same_root_claim(tmp_p
     from ouroboros.task_results import task_result_path
     from supervisor.terminal_delivery import pending_deliveries
 
+    # Cold maintenance publishes through the supervisor transport; keep that
+    # transport local so a long isolated test root needs no AF_UNIX socket.
+    import queue
+    events = queue.Queue()
+    monkeypatch.setattr("supervisor.workers.get_event_q", lambda: events)
     checkpoint, binding = _checkpointed_operation(tmp_path, legacy=True)
     ref = checkpoint['source_ref']
     original_bytes = read_actor_source_bytes(tmp_path, TASK, ref)

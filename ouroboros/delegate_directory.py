@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from hashlib import sha256
+import subprocess
 import uuid
 
 from ouroboros import delegate_custody as custody
@@ -47,6 +48,36 @@ def git_directory_options_refusal(target_root, strategy, scope_paths, *, git_wor
     if (git_workspace or (Path(target_root) / ".git").exists()) and not default_shaped_directory_options(strategy, scope_paths):
         return "Directory options apply to ordinary folders; Git workspaces keep their snapshot contract."
     return ""
+
+
+def snapshot_checkout(ctx, target_root, authority) -> str:
+    """The Git worktree a session start snapshots, or "" for the ordinary-folder session.
+
+    A worktree root is its own checkout. An evidence-only investigation (#1609) started
+    in a Git SUBDIRECTORY (schedule_subagent's named starting folder) snapshots the
+    enclosing worktree, so every checking input is present, and starts in the matching
+    folder of that private clone. A writer keeps the worktree-root rule, and a worktree
+    overlapping the data drive is never cloned: the folder session then refuses it typed.
+    """
+    from ouroboros.platform_layer import bootstrap_process_path
+    from ouroboros.tool_access import paths_overlap_casefold
+    from ouroboros.workspace_admission import has_git_metadata
+
+    root = Path(target_root)
+    if (root / ".git").exists():
+        return str(root)
+    if not getattr(authority, "investigation", False) or not has_git_metadata(root.resolve()):
+        return ""
+    bootstrap_process_path()
+    try:
+        probe = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=str(root),
+                               capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    top = Path(probe.stdout.strip()).resolve() if probe.returncode == 0 and probe.stdout.strip() else None
+    if top is None or paths_overlap_casefold(top, Path(custody.custody_root(ctx)).resolve()):
+        return ""
+    return str(top)
 
 
 def blocked_geometry_refusal(ctx, authority, selector_root, strategy, scope_paths):
@@ -103,13 +134,37 @@ def directory_execution(gateway, strategy=None, scope_paths=None):
     return execution, reference
 
 
-def prepare_directory_execution(ctx, gateway, target_root, authority, strategy, scope_paths):
-    """Keep the selected folder's physical validation and engine preparation together."""
+def prepare_directory_execution(ctx, gateway, target_root, authority, strategy, scope_paths, staged=""):
+    """Keep the selected folder's physical validation and engine preparation together.
+
+    ``staged`` is a folderless Project investigation's per-invocation input copy, made
+    from the live scratch by the input owner (``delegate_readonly_inputs``): the engine
+    copies THAT host-prepared folder, recorded as ``source_root``, so the scratch itself
+    is never the engine's source or a workspace. A folder no private copy can serve
+    tells an investigation its one repair, the explicit readonly lowering.
+    """
     from dataclasses import replace
     from ouroboros.workspace_admission import validate_workspace_root
 
-    validate_workspace_root(target_root, system_repo_dir=ctx.repo_dir, drive_root=custody.custody_root(ctx))
+    investigation = getattr(authority, "investigation", False)
+    if not staged:
+        try:
+            validate_workspace_root(target_root, system_repo_dir=ctx.repo_dir, drive_root=custody.custody_root(ctx))
+        except ValueError as exc:
+            if not investigation:
+                raise
+            raise ValueError(f"{exc}; an evidence-only investigation has no private copy for this folder, "
+                             "so lower this call with access='readonly' to read it in place") from exc
+    if investigation:
+        # An evidence-only investigation (#1609) never writes the folder itself: it
+        # works in the engine's private copy of the whole folder unless it names a scope.
+        if strategy == "direct":
+            raise ValueError("an investigation without write authority works in a private copy; "
+                             "omit directory_strategy or choose copy")
+        strategy, scope_paths = "copy", scope_paths or ["."]
     options, reference = directory_execution(gateway, strategy, scope_paths)
+    if staged:
+        reference["source_root"] = str(staged)
     return replace(authority, isolation=options["isolation"]), options, reference
 
 
@@ -148,8 +203,9 @@ def capture_directory_result(drive, entry, gateway):
     raw_path = cap_dir / "engine-files-manifest.json"
     raw = _download(gateway, entry.run_id, source, raw_path, {"sha256": digest})
     original = json.loads(raw_path.read_text())
+    source_root = entry.resource_ref.get("source_root") or entry.target_root  # a staged folderless input copy
     if (original.get("version") != 1 or not original.get("executionRoot")
-            or Path(original.get("sourceRoot") or "").resolve() != Path(entry.target_root).resolve()
+            or Path(original.get("sourceRoot") or "").resolve() != Path(source_root).resolve()
             or not isinstance(original.get("entries"), list)):
         raise ValueError("engine directory manifest has an invalid source or execution binding")
     direct = entry.resource_ref["strategy"] == "direct"

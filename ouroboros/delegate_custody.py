@@ -83,6 +83,7 @@ PATCH_DISPOSED = "delegate_run_patch_disposed"
 # Not a row: the replayed disposition of a run whose snapshot a successor's STARTED
 # row took over (``_supersede``); its work rides the successor's cumulative capture.
 SUPERSEDED = "superseded"
+EVIDENCE_RETAINED = "evidence_retained"  # investigation capture; never applied
 # CR1-3 (owed-before-sent, one row earlier than the disposition): APPLY-INTENT lands
 # BEFORE the target tree is mutated; RESOLVED lands only when the attempt is KNOWN to
 # have left the tree unmutated. An intent with neither resolution nor disposition
@@ -416,6 +417,7 @@ from ouroboros.delegate_registration_policy import (
     STARTED_FIRST_WINS_FACTS as _STARTED_FIRST_WINS_FACTS,
     STARTED_PROGRESS_FLAGS as _STARTED_PROGRESS_FLAGS,
     STARTED_STR_FIELDS as _STARTED_STR_FIELDS,
+    candidate_apply_possible,
     review_owned_source,
 )
 
@@ -869,6 +871,7 @@ def invocation_record(drive_root: Any, invocation_id: str, *,
                 # #1196: the cap and HOW it was decided replay with the body a
                 # retry re-POSTs, so the replayed STARTED row keeps the same basis.
                 "max_seconds": int(row.get("max_seconds") or 0) if str(row.get("max_seconds") or "").lstrip("-").isdigit() else 0,
+                "requested_at": str(row.get("ts") or ""),  # preserve an unbound start's original window
                 "max_seconds_basis": str(row.get("max_seconds_basis") or ""),
                 "work_order_source_request": (
                     copy.deepcopy(row.get("work_order_source_request"))
@@ -1339,7 +1342,7 @@ def undisposed_patches(drive_root: Any, state: Optional[Dict[str, RunCustody]] =
     return [custody for custody in (state if state is not None else replay(drive_root)).values()
             if (custody.snapshot_id or (custody.resource_ref.get("workspace_kind") == "directory"
                                        and custody.resource_ref.get("strategy") == "copy"))
-            and custody.settled and not custody.patch_disposed]
+            and custody.settled and not custody.patch_disposed and candidate_apply_possible(custody)]
 
 
 def record_containment_fault(drive_root: Any, custody: RunCustody, reason: str,

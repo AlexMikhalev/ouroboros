@@ -86,6 +86,9 @@ def _start_with_contract(
             "credential_profile_id": "",
         },
         "effort": "low",
+        # A READ-ONLY child (local_readonly_subagent): technical access alone decides
+        # the run shape now (#1609), so the selected session states it explicitly.
+        "access": "readonly",
     }
     payload = json.loads(subagent_runtime.exact_start(ctx, prompt, {
         "snapshot": snapshot,

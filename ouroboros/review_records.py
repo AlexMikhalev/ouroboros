@@ -240,6 +240,8 @@ class ReviewSlot:
     # bare model, or a session row) means the packet. Never derived from the
     # presence of a subagent id (F8).
     native_retrieval_override: Optional[bool] = None
+    # Configured technical rights; absent historical seats preserve readonly.
+    session_access: str = ""
 
     @property
     def native_retrieval(self) -> bool:
@@ -298,6 +300,8 @@ class ReviewRequest:
     # The round its sends are billed to (#1544), set by resolve_review_wave or by a fan-out
     # naming one round for its rows. Attribution only: no identity, no prompt-cache split.
     resolved_wave_id: str = ""
+    # Frozen once before fanout for independent writable checking copies.
+    checking_source: Dict[str, Any] = field(default_factory=dict)
 
 
 def new_review_wave_id() -> str:

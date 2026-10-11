@@ -24,6 +24,7 @@ from tests._delegated_transport_shared import (  # noqa: F401  (autouse fixture 
     _event_types,
     _nanny_ctx,
     _owned_gateway_uses_each_test_transport,
+    _select_transport_access,
     _transport_snapshot,
 )
 from tests._usage_store_testing import ledger_rows
@@ -40,6 +41,10 @@ def test_custody_survives_the_worker_that_started_the_run(tmp_path, monkeypatch)
     from ouroboros.gateways import claudexor as gw
 
     stub = _LiveRunStub()
+    # A READ-ONLY reviewing child: technical access alone decides the run shape now
+    # (#1609), so the read-only premise this custody test is about is stated, not
+    # inferred from the non-acting ctx.
+    _select_transport_access(monkeypatch, "readonly")
     monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "some-route=weak-model:low")
     monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: stub)
     delegate._CUSTODY.clear()
@@ -105,6 +110,7 @@ def test_the_invocation_id_is_reused_on_retry_and_fresh_per_intended_start(
                                        headers=dict(gateway._client.headers))
         return gateway
 
+    _select_transport_access(monkeypatch, "readonly")   # a read-only child (#1609)
     monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "some-route=weak-model:low")
     monkeypatch.setattr(gw, "ClaudexorGateway", _fresh)
     delegate._CUSTODY.clear()
@@ -253,6 +259,7 @@ def test_a_retry_testifies_about_the_stored_invocation_not_the_current_config(
         return ctx
 
     monkeypatch.setattr(gw, "ClaudexorGateway", _fresh)
+    _select_transport_access(monkeypatch, "readonly")   # a read-only child (#1609)
     delegate._CUSTODY.clear()
 
     # 1. The intended start: route-a=model-old:low at root-a. It registers and OWNS
@@ -339,7 +346,8 @@ def test_a_retry_testifies_about_the_stored_invocation_not_the_current_config(
     script[:] = ["transport_error", "definite_refusal"]
     lost2 = json.loads(delegate.exact_start(
         _ctx(root_c), "other work",
-        {"snapshot": _transport_snapshot(subagents.parse_subagent_harness("route-a=model-old:low"))},
+        {"snapshot": _transport_snapshot(subagents.parse_subagent_harness("route-a=model-old:low"),
+                                         access="readonly")},
     ).text)
     assert lost2["reason"] == "daemon_unreachable"
     prj_c = projects[str(root_c)]
@@ -364,6 +372,7 @@ def test_custody_rows_outlive_the_child_drive_they_were_written_from(tmp_path, m
 
     canonical, child = tmp_path / "canonical", tmp_path / "child"
     child.mkdir(parents=True)
+    _select_transport_access(monkeypatch, "readonly")   # a read-only child (#1609)
     monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "some-route=weak-model:low")
     monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _LiveRunStub())
     delegate._CUSTODY.clear()
@@ -408,6 +417,7 @@ def test_delegated_spend_settles_into_the_canonical_budget_ledger(tmp_path, monk
                                               "effectiveAccess": "readonly",
                                               "inputTokens": 10, "outputTokens": 5}}
 
+    _select_transport_access(monkeypatch, "readonly")   # a read-only child (#1609)
     monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "some-route=weak-model:low")
     monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _Terminal())
     delegate._CUSTODY.clear()
@@ -536,6 +546,7 @@ def test_every_pre_custody_exit_names_the_registration_it_created(tmp_path, monk
             raise MemoryError("an untyped failure between register_project and custody")
 
     stub = _Untyped()
+    _select_transport_access(monkeypatch, "readonly")   # a read-only child (#1609)
     monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "some-route=weak-model:low")
     monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: stub)
     delegate._CUSTODY.clear()
@@ -611,6 +622,7 @@ def test_reconciliation_recovers_a_pending_invocation_whose_worker_died(tmp_path
                                        headers=dict(gateway._client.headers))
         return gateway
 
+    _select_transport_access(monkeypatch, "readonly")   # a read-only child (#1609)
     monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "some-route=weak-model:low")
     monkeypatch.setattr(gw, "ClaudexorGateway", _fresh)
     delegate._CUSTODY.clear()
@@ -707,6 +719,7 @@ def test_a_start_whose_custody_row_did_not_land_does_not_claim_to_be_custodied(t
     import ouroboros.tools.delegate as delegate
     from ouroboros.gateways import claudexor as gw
 
+    _select_transport_access(monkeypatch, "readonly")   # a read-only child (#1609)
     monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "some-route=weak-model:low")
     monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _LiveRunStub())
     real_append = dc.append_jsonl
@@ -769,6 +782,7 @@ def test_a_failed_start_does_not_leave_the_registration_it_created(
             raise gw.ClaudexorUnavailable("daemon_busy" if status_code == 503 else "run_start_failed",
                                           "start outcome", status_code=status_code)
 
+    _select_transport_access(monkeypatch, "readonly")
     monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "some-route=weak-model:low")
     monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _Stub())
     delegate._CUSTODY.clear()
@@ -805,6 +819,7 @@ def test_a_queued_handle_with_no_run_id_names_its_registration_like_its_twin(tmp
         def remove_project(self, pid): live.discard(pid)
         def start_run(self, request, *, idempotency_key=""): return {"status": "queued"}
 
+    _select_transport_access(monkeypatch, "readonly")   # a read-only child (#1609)
     monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "some-route=weak-model:low")
     monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _Stub())
     delegate._CUSTODY.clear()

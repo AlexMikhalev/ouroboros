@@ -107,8 +107,14 @@ def _replay(q: Any, predecessor: str, nonce: str, successor: str) -> Optional[Di
                 "successor_task_id": successor, "unconfirmed": True, "detail": str(exc)[:200]}
 
 
+# The ONE explicit purpose that may leave an independent review out of the
+# writer census: the owner's Continue. Every other consumer (Pause, Resume,
+# money, sleep, restart) keeps the whole observation.
+CONTINUE_PURPOSE = "owner_continue"
+
+
 def conflicting_writers(q: Any, predecessor: str, *, drive_root: Any = None,
-                        owner_pause_fence_id: str = "") -> List[Dict[str, Any]]:
+                        owner_pause_fence_id: str = "", purpose: str = "") -> List[Dict[str, Any]]:
     """Observe all retained tree custody, regardless of the member's lifecycle.
 
     Queue authority is copied briefly; custody observations never cancel runs.
@@ -120,12 +126,23 @@ def conflicting_writers(q: Any, predecessor: str, *, drive_root: Any = None,
     predecessor's own late phase (D10) is custody too: running or open, or
     paused (Resume would write again) — the Pause's own census alone reads its
     saved pause as settled.
+    ``purpose=CONTINUE_PURPOSE`` is the owner's Continue (#1572): a delegated
+    run or unbound start the observation projects as ``independent_review``
+    (a review surface registered it and it has no candidate-apply possibility),
+    and a model attempt under a reviewer slot's (or skill review's) custody
+    attribution, read the predecessor's work but cannot write it, so they do
+    not hold the Continue; a legitimately running
+    panel still finishes and attaches its verdict. Missing or unknown
+    provenance, ordinary delegations, author research copies, author model
+    attempts, tool/process/merge/executor custody and unreadable custody keep
+    holding. The empty default is the complete census for every other consumer.
     """
     from ouroboros.budget_pause import observe_task_runs
     from ouroboros.owner_pause import tree_member_results
     from supervisor.queue_transitions import budget_pause_fact, queued_admitted_dispatch
 
     custody_root = pathlib.Path(drive_root or q.DRIVE_ROOT)
+    for_continue = purpose == CONTINUE_PURPOSE
     blockers: List[Dict[str, Any]] = []
     members = {predecessor}
     member_results = {}
@@ -186,7 +203,8 @@ def conflicting_writers(q: Any, predecessor: str, *, drive_root: Any = None,
                              "invocation_id": str(run.get("invocation_id") or ""),
                              # The owner Pause's consumers read it; Continue's hold does not.
                              "review_owned": bool(run.get("review_owned"))}
-                            for run in observed.get("runs") or [] if isinstance(run, dict))
+                            for run in observed.get("runs") or [] if isinstance(run, dict)
+                            and not (for_continue and run.get("independent_review") is True))
     try:
         from ouroboros import process_custody as pc
         from ouroboros.platform_layer import pid_is_alive
@@ -218,21 +236,30 @@ def conflicting_writers(q: Any, predecessor: str, *, drive_root: Any = None,
                     continue
                 # A reviewer's own send (its slot/skill attribution) is review
                 # custody: the owner Pause's readers list it as still finishing.
+                review_owned = bool(attempt.get("review_slot_id") or attempt.get("review_skill"))
+                # Only the review substrate's per-slot scope binds that attribution,
+                # and every send there reads the candidate without writing it, whatever
+                # ``source`` its route stamps (llm.anthropic, web_search.*, extraction).
+                # A review ``source`` without it has no current producer and holds.
+                if for_continue and review_owned:
+                    continue
                 blockers.append({"kind": "model_handoff", "attempt_id": attempt.get("attempt_id"),
-                                 "review_owned": bool(attempt.get("review_slot_id") or attempt.get("review_skill"))})
+                                 "review_owned": review_owned})
     except Exception as exc:
         blockers.append({"kind": "attempt_custody_unreadable", "detail": str(exc)[:200]})
     return blockers
 
 
 def action_writers(q: Any, predecessor: str, *, drive_root: Any = None,
-                   owner_pause_fence_id: str = "") -> List[Dict[str, Any]]:
+                   owner_pause_fence_id: str = "", purpose: str = "") -> List[Dict[str, Any]]:
     """An ADDRESSED action's census (Continue, Resume, held selection) of ``predecessor``.
 
     It first retires the positively ended local owners of this tree only
     (``local_custody_repair``: a retained witness or platform-qualified
     absence), then observes exactly as ``conflicting_writers`` — which stays
     the passive, write-free reader every census and GET uses (#1554).
+    ``purpose`` is passed through unchanged: only the owner's Continue and its
+    held selection name ``CONTINUE_PURPOSE``; Pause and Resume keep the default.
     """
     from ouroboros.local_custody_repair import repair_ended_local_custody
     from ouroboros.owner_pause import tree_member_results
@@ -246,7 +273,8 @@ def action_writers(q: Any, predecessor: str, *, drive_root: Any = None,
                            {"type": "local_custody_retired", "root_task_id": predecessor, "retired": repaired})
     except Exception:
         log.warning("Ended local custody of %s was not repaired; it stays held", predecessor, exc_info=True)
-    return conflicting_writers(q, predecessor, drive_root=drive_root, owner_pause_fence_id=owner_pause_fence_id)
+    return conflicting_writers(q, predecessor, drive_root=drive_root, owner_pause_fence_id=owner_pause_fence_id,
+                               purpose=purpose)
 
 
 def _successor_task(q: Any, predecessor: str, result: Dict[str, Any], binding: Dict[str, Any],
@@ -451,7 +479,7 @@ def admit_continuation(predecessor_task_id: str, *, action_nonce: str) -> Dict[s
         except Exception as exc:
             return {"ok": False, "error": "continuation_claim_unwritable", "detail": str(exc)[:200]}
         binding = dict(claim["binding"])
-    blockers = action_writers(q, predecessor)
+    blockers = action_writers(q, predecessor, purpose=CONTINUE_PURPOSE)
     admission = {"binding": binding, "binding_sha256": binding_sha(binding), "admitted_at": utc_now_iso(),
                  "held": bool(blockers)}
     task = _successor_task(q, predecessor, result, binding, verdict, sources, admission)

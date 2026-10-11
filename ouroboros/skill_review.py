@@ -165,6 +165,7 @@ from ouroboros.skill_review_cycles import (  # noqa: E402
     plugin_api_admission_refusal_outcome as _admission_refusal_outcome,
     record_accepted_rebuttal as _record_accepted_rebuttal,  # noqa: F401 — re-export
     review_wave_budget_block as _review_wave_budget_block,
+    skill_wave_purchased as _wave_purchased,
 )
 
 
@@ -407,6 +408,7 @@ def _skill_cycles_gate(
     *,
     persist: bool = True,
     file_packs: Optional[List[str]] = None,
+    resume_only: bool = False,
 ) -> tuple[Optional["SkillReviewOutcome"], str, str, str]:
     """Select exact late reconciliation or free substantive replay before paid
     admission. The shared cap counts per root task, or per manual content hash.
@@ -429,6 +431,8 @@ def _skill_cycles_gate(
     if file_packs is not None and select_skill_review_resume(ctx, skill, drive_root,
             skill_review_wave_binding(ctx, skill, drive_root, content_hash, contract_fp,
                                       rebuttal_sha, file_packs)):
+        return None, ctx._skill_review_resume["binding"]["review_contract_fingerprint"], rebuttal_sha, review_profile
+    if resume_only:  # failed current preflight or settings may still collect the paid wave
         return None, contract_fp, rebuttal_sha, review_profile
     replayed = free_replay_outcome(
         skill, drive_root=drive_root, group_id=group_id, content_hash=content_hash,
@@ -467,7 +471,7 @@ def _stamp_paid_facts(
     write-ahead dispatch marker recorded before the first transport call
     (plan-review precedent), so a crash cannot launder the spend and an
     assembly-refused $0 wave never counts."""
-    outcome.paid = bool(stamp is not None and getattr(stamp, "fired", False))
+    outcome.paid = _wave_purchased(stamp)
     outcome.review_contract_fingerprint = contract_fp
     outcome.rebuttal_sha256 = rebuttal_sha
     if stamp is not None:
@@ -650,25 +654,21 @@ def review_skill(
         return SkillReviewOutcome(skill_name=skill.name, status=STATUS_PENDING,
             content_hash=content_hash,
             error="Skill payload changed during deterministic preflight; review did not dispatch.")
-    if preflight_outcome is not None:
-        return preflight_outcome
-    if slot_err := reviewer_slot_config_error():  # #116: refuse loudly, never the silent default panel
-        return SkillReviewOutcome(
-            skill_name=skill.name, status=STATUS_PENDING, content_hash=content_hash,
-            error=f"invalid review pool configuration blocks skill review: {slot_err}")
+    slot_err = reviewer_slot_config_error()
     try:
-        delivery = commit_triad_delivery()
+        delivery = {} if slot_err else commit_triad_delivery()
     except ValueError as exc:
-        return SkillReviewOutcome(
-            skill_name=skill.name, status=STATUS_PENDING, content_hash=content_hash,
-            error=f"invalid review pool configuration blocks skill review: {exc}")
-    models = list(delivery["models"])
+        slot_err, delivery = str(exc), {}
+    models = list(delivery.get("models") or [])
     early_outcome, contract_fp, rebuttal_sha, review_profile = _skill_cycles_gate(
         ctx, skill, drive_root, models, delivery, review_rebuttal, content_hash, persist=persist,
-        file_packs=file_packs,
+        file_packs=file_packs, resume_only=preflight_outcome is not None or bool(slot_err),
     )
-    if early_outcome is not None:
-        return early_outcome
+    if early_outcome is not None or (preflight_outcome is not None and not getattr(ctx, "_skill_review_resume", None)):
+        return early_outcome or preflight_outcome
+    if slot_err and not getattr(ctx, "_skill_review_resume", None):
+        return SkillReviewOutcome(skill_name=skill.name, status=STATUS_PENDING, content_hash=content_hash,
+            error=f"invalid review pool configuration blocks skill review: {slot_err}")
     admission_outcome = _admission_gate(ctx, skill, drive_root, content_hash, persist)
     if admission_outcome is not None:
         return admission_outcome
@@ -683,10 +683,8 @@ def review_skill(
     # fit the remaining root budget is declined up front (typed event, $0 spent,
     # skill honestly pending) instead of dying mid-wave. Fail-open on unknowns.
     from ouroboros.review_execution import ReviewRouteKind
-    api_models = [
-        model for model, route in zip(models, delivery["routes"])
-        if route is ReviewRouteKind.API_CHAT
-    ]
+    api_models = [model for model, route in zip(models, delivery.get("routes") or [])
+                  if route is ReviewRouteKind.API_CHAT]
     budget_block = (
         _review_wave_budget_block(ctx, skill.name, file_packs, api_models)
         if api_models and not getattr(ctx, "_skill_review_resume", None) else None
@@ -695,7 +693,7 @@ def review_skill(
         return SkillReviewOutcome(skill_name=skill.name, status=STATUS_PENDING,
                                   reviewer_models=models, content_hash=content_hash,
                                   error=budget_block)
-    from ouroboros.skill_review_passes import run_skill_review_passes
+    from ouroboros.skill_review_passes import retained_beside_preflight, run_skill_review_passes
 
     # F3 write-ahead seam: the durable dispatch marker lands immediately
     # before the panel's first transport call (assembly failures inside the
@@ -763,6 +761,7 @@ def review_skill(
             error=f"review service error: {result_json['error']}",
         ))
 
+    models = list(result_json["recorded_models"]) if getattr(ctx, "_skill_review_resume", None) else models
     parsed_review = parse_model_review_results(result_json, required_items=_SKILL_REVIEW_ITEMS)
     emit_review_model_error_events(ctx, parsed_review, source="skill_review", skill_name=skill.name)
     findings, responded_models = parsed_review.findings, parsed_review.responsive_models
@@ -773,7 +772,7 @@ def review_skill(
         # is honored but the lost diversity is recorded loudly AND durably (Bible
         # P3) — in the outcome + review history below, not just this log line.
         log.warning("Skill review (trust gate) ran with a single reviewer (single_reviewer_no_diversity).")
-    if len(responded_models) < required_quorum:
+    if len(responded_models) < required_quorum or result_json.get("collection_pending"):
         return _paid_facts(_skill_quorum_failure_outcome(
             skill,
             findings=findings,
@@ -789,7 +788,7 @@ def review_skill(
             lifecycle_owns_history=bool(getattr(ctx, "_skill_review_lifecycle_guard", False)),
             # F3(a): the internal history append must carry the paid facts —
             # a dispatched quorum failure spent reviewer money.
-            paid=bool(getattr(stamp, "fired", False)),
+            paid=_wave_purchased(stamp),
             review_contract_fingerprint=contract_fp,
             rebuttal_sha256=rebuttal_sha,
             wave_id=str(getattr(stamp, "wave_id", "") or ""),
@@ -817,6 +816,7 @@ def review_skill(
         convergence_hint=_convergence_hint(history, findings, current_status=status),
         review_profile=review_profile,
     ))
+    retained_beside_preflight(outcome, preflight_outcome)
 
     if persist:
         return _persist_reviewed_outcome(

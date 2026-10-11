@@ -141,7 +141,7 @@ _ROOT_EFFORT_PARAM = {"type": "string", "enum": list(EFFORT_SCALE), "description
 
 
 _SCHEDULE_SUBAGENT_DESCRIPTION = (
-    "Schedule a live child of Ouroboros; returns task_id. Default READ-ONLY children inspect "
+    "Schedule a live child of Ouroboros; returns task_id. Default native READ-ONLY children inspect "
     "local repo/data/history and web/browser. Each returns findings; apart from knowledge notes, memory marks "
     "and chronicle drafts in its own name, it cannot write local state, commit, enable tools, or run "
     "shell/review/runtime/skills. write_surface selects a MUTATIVE (acting) child; you alone commit "
@@ -154,7 +154,10 @@ _SCHEDULE_SUBAGENT_DESCRIPTION = (
     "tree, inherited by descendants; integrate_subagent_patch verifies their combined files. "
     "genesis gives EACH child a separate empty Git repo under the durable projects root, for a new "
     "game/site/app/Ouroboros or independent best-of-N builds; the project directory IS the deliverable, "
-    "never integrated into this repo. Harness-delegated work uses a private snapshot and integrate_delegated_patch. "
+    "never integrated into this repo. Acting harness work uses a private snapshot and integrate_delegated_patch. "
+    "A non-acting Agent session keeps configured access in an evidence-only private checking copy; "
+    "access='readonly' selects read-only session execution. Its captured changes are retained as evidence, "
+    "not product patches: do not call integrate_delegated_patch to apply or reject them. "
     "Runtime data, including installed skill payloads, is never a write_surface. For skill mutation, "
     "call delegate_start(subagent_id=..., prompt=..., root='skill_payload', bucket=..., skill_name=...) "
     "yourself; children cannot open payload delegation and may only design/review it read-only. "
@@ -308,7 +311,7 @@ def get_tools() -> List[ToolEntry]:
         # cancel_task + peek_task + discard_child_result are registered by ouroboros/tools/join_ledger.py.
         ToolEntry("request_deep_self_review", {
             "name": "request_deep_self_review",
-            "description": "Request a deep self-review of the entire Ouroboros project against the Constitution: review_change(subject=system, surface=system) with one seat — the enabled catalog row you name in `reviewer` (review pool member or not), else the Main model. An API row runs a bounded read-only inspection episode, an agent-session row reads the repository itself; both receive the core memory whitelist inline byte-exact (memory is never receipt-checked). The report goes to chat and memory/deep_review.md, with the surface=system review record linked.",
+            "description": "Request a deep self-review of the entire Ouroboros project against the Constitution: review_change(subject=system, surface=system) with one seat — the enabled catalog row you name in `reviewer` (review pool member or not), else the Main model. An API row runs a bounded read-only inspection episode, an agent-session row uses its configured access (writable sessions run in a private checking copy and retain evidence without applying changes); both receive the core memory whitelist inline byte-exact (memory is never receipt-checked). The report goes to chat and memory/deep_review.md, with the surface=system review record linked.",
             "parameters": {"type": "object", "properties": {
                 "reason": {"type": "string", "description": "Why you want a review (context for the reviewer)"},
                 "reviewer": {"type": "string", "description": "One enabled catalog row by id or handle; empty = the Main model"},

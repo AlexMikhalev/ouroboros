@@ -518,7 +518,9 @@ def test_harness_point_refusal_without_a_route_is_typed(tmp_path, monkeypatch):
 
 
 def test_harness_point_launch_produces_a_run_identity_and_route_facts(tmp_path, monkeypatch):
-    request, payload = _started_request(tmp_path, acting=False, monkeypatch=monkeypatch)
+    # The harness point launch of a read-only child (#1609: technical access alone
+    # decides the run shape, so the read-only row is selected explicitly).
+    request, payload = _started_request(tmp_path, acting=False, monkeypatch=monkeypatch, access="readonly")
     assert payload["status"] == "started" and payload.get("run_id")
     assert request is not None
     wire = json.dumps(request)

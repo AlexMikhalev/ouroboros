@@ -18,6 +18,7 @@ from ouroboros import (
 from tests._delegated_transport_shared import (  # noqa: F401  (autouse fixture applies on import)
     _owned_gateway_uses_each_test_transport,
     _plain_ctx,
+    _select_transport_access,
 )
 from tests._usage_store_testing import ledger_rows
 
@@ -557,6 +558,9 @@ def test_the_start_request_asks_for_the_substrate_it_claims(tmp_path, monkeypatc
             return {"runId": "run-1"}
         def close(self): pass
 
+    # A READ-ONLY child (the stub serves readonly only): technical access alone decides
+    # the run shape now (#1609); the billing substrate asked for is the same either way.
+    _select_transport_access(monkeypatch, "readonly")
     monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "some-route=weak-model:low")
     monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _Stub())
     delegate._CUSTODY.clear()
@@ -587,6 +591,7 @@ def test_a_202_handle_without_a_run_id_is_a_live_run_not_a_failure(tmp_path, mon
         def start_run(self, request, *, idempotency_key=""): return {"jobId": "job-42"}   # 202: no runId yet
         def close(self): pass
 
+    _select_transport_access(monkeypatch, "readonly")   # a read-only child (#1609)
     monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "some-route=weak-model:low")
     monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _Stub())
     delegate._CUSTODY.clear()

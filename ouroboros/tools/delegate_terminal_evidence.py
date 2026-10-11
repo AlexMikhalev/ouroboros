@@ -73,8 +73,11 @@ def retry_terminal_result(ctx: ToolContext, run_id: str, *, gateway: Any = None)
         if (status != custody.OWNED or entry is None or current_owner != predecessor
                 or entry.terminal_state != state):
             return _fail("delegate_wait", "run_not_owned", "Retry result authority changed.", run_id=run_id)
+        from ouroboros.delegate_registration_policy import INVESTIGATION_AUTHORITY
+
         authority = DelegatedRunShape(access=entry.access, mode=entry.mode,
-                                      isolation=entry.isolation, delegated=entry.delegated)
+                                      isolation=entry.isolation, delegated=entry.delegated,
+                                      investigation=entry.authority_source == INVESTIGATION_AUTHORITY)
         payload = _delivered_terminal_payload(ctx, run_id, detail, authority, entry, gateway)
         capture = _delegate()._capture_terminal_patch(ctx, entry, gateway=gateway)
         if capture is not None:

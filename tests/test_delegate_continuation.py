@@ -32,6 +32,7 @@ from tests._delegated_transport_shared import (  # noqa: F401 -- autouse transpo
     _delegating_ctx,
     _nanny_ctx,
     _owned_gateway_uses_each_test_transport,
+    _select_transport_access,
 )
 
 ROUTE = "some-route"
@@ -332,6 +333,9 @@ def _settle(tmp_path, run_id, task_id, *, state="failed", reason=LIMIT):
 
 
 def test_continue_from_puts_the_engine_key_in_the_body_and_the_facts_in_the_prompt(tmp_path, monkeypatch):
+    # A READ-ONLY reading child continues in a fresh workspace: technical access alone
+    # decides the run shape now (#1609), so the read-only premise is stated explicitly.
+    _select_transport_access(monkeypatch, "readonly")
     _first, _payload, _ctx, _calls = _start(tmp_path, monkeypatch, acting=False, run_id="run-prev",
                                             prompt="summarize the repository")
     _settle(tmp_path, "run-prev", "t-nanny-read")
@@ -359,6 +363,7 @@ def test_continue_from_puts_the_engine_key_in_the_body_and_the_facts_in_the_prom
 
 
 def test_an_engine_without_continue_from_refuses_typed_and_starts_nothing(tmp_path, monkeypatch):
+    _select_transport_access(monkeypatch, "readonly")   # a read-only child (#1609)
     _start(tmp_path, monkeypatch, acting=False, run_id="run-prev")
     _settle(tmp_path, "run-prev", "t-nanny-read")
     request, payload, _ctx, calls = _start(tmp_path, monkeypatch, acting=False, run_id="run-next",
@@ -571,6 +576,7 @@ def test_a_configured_session_continues_with_its_note_never_the_canonical_work_o
     """The old session (or the engine's evidence packet) already holds the work order."""
     import ouroboros.tools.delegate as delegate
 
+    _select_transport_access(monkeypatch, "readonly")   # a read-only child (#1609)
     _start(tmp_path, monkeypatch, acting=False, run_id="run-prev")
     _settle(tmp_path, "run-prev", "t-nanny-read")
     bound = delegate.prepare_delegate_start_actor
@@ -620,6 +626,7 @@ def test_empty_retry_of_an_ordinary_start_still_requires_the_recorded_prompt(tmp
     from ouroboros.gateways.claudexor import ClaudexorUnavailable
 
     lost = ClaudexorUnavailable("daemon_unreachable", "connection reset", status_code=503)
+    _select_transport_access(monkeypatch, "readonly")   # a read-only child (#1609)
     _r, unknown, _ctx, _calls = _start(
         tmp_path, monkeypatch, acting=False, run_id="run-first", prompt="original work", start_error=lost)
     invocation = unknown["pending_invocation_id"]

@@ -124,11 +124,11 @@ LOCAL_READONLY_SUBAGENT_TOOL_NAMES: frozenset[str] = frozenset({
     # updates the existing child result through join_ledger's lineage/hash authority.
     # It has no repo/control-plane effect, so remains valid for read-only subagents.
     "tree_note", "tree_read", "override_delegation_constraint",
-    # Nanny verbs. The child gets no shell — it gets the right to ASK the host to run a
-    # session, and the host derives the access profile from THIS task's authority, so a
-    # read-only child can only ever host a read-only session. delegate_answer and
-    # delegate_message speak only to a run this task already owns (custody-gated
-    # like cancel); a message is placed into the run's live turn, never a shell.
+    # Nanny verbs grant no native child shell. A hosted session uses captured rights
+    # in an evidence-only investigation copy when the task has no product-write
+    # authority; explicit readonly, Observe and Presence ceilings still narrow it.
+    # delegate_answer/message address only this task's owned run (like cancel);
+    # speaking to its live turn grants neither shell nor candidate-apply authority.
     "delegate_start", "delegate_wait", "delegate_cancel", "delegate_answer",
     "delegate_message",
     "web_search", "browse_page", "browser_action", "analyze_screenshot", "vlm_query", "view_image",

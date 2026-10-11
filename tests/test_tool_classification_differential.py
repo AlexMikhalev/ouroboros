@@ -402,6 +402,9 @@ CURRENT_PRODUCER_CONTRACTS = {
     # applied or rejected alone; nothing changes. Its peers' answer, asserted live.
     "INTEGRATE_DELEGATED_CONTINUATION_PENDING": (True, "integration_blocked"),
     "INTEGRATE_DELEGATED_SUPERSEDED": (True, "integration_blocked"),
+    # An evidence-only investigation's capture is never integrated (#1609): its
+    # refusal changes nothing and is its peers' answer, asserted live.
+    "INTEGRATE_DELEGATED_INVESTIGATION_EVIDENCE": (True, "integration_blocked"),
     # A reject request cannot undo direct effects already in the folder.
     # The refusal belongs to this disposition, not to the earlier write.
     "INTEGRATE_DIRECTORY_ALREADY_APPLIED": (True, "integration_blocked"),

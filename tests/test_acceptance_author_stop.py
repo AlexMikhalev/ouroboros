@@ -165,6 +165,15 @@ def test_a_stop_survives_service_teardown_without_another_model_round(tmp_path, 
     assert [event["kind"] for event in run.trace.get("verification_events") or []] == ["services_stopped"]
     assert run.trace["task_completion"]["action"] == "stop"
     assert run.panels == [], "an explicit stop must never buy a reviewer panel"
+    # #1602: the acknowledgement is a control fact, not a review that never ran.
+    from ouroboros.outcomes import build_verification_ledger
+    from ouroboros.review_projection import compact_review_projection
+
+    assert not run.trace.get("review_runs")
+    assert compact_review_projection(run.trace.get("review_runs"))["panels"] == []
+    ledger = build_verification_ledger(task={"id": "stop-root"}, loop_outcome={"outcome_axes": {}},
+                                       llm_trace=run.trace, artifact_bundle={})
+    assert [row for row in ledger["entries"] if row["kind"] == "task_acceptance_review"] == []
     decision = run.trace["acceptance_decision"]
     assert decision["reason"] == "author_stop" and decision["author_action"] == "stop"
     assert decision["author_disposition"]["action"] == "stop"
